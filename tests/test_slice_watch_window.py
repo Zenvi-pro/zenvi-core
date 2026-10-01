@@ -4,6 +4,8 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
@@ -196,6 +198,333 @@ def test_slice_explicit_time_skips_watch():
                             )
     assert watch_calls == []
     assert "Sliced" in out
+
+
+def _run_watch_clip_window(watch_result, **kwargs):
+    """watch_clip_window on a clip covering source 60-80s; returns (out, watch_calls, searched)."""
+    from contextlib import ExitStack
+
+    watch_calls = []
+    searched = []
+
+    def fake_watch(path, start, end, query, **kw):
+        watch_calls.append((float(start), float(end), query))
+        return dict(watch_result)
+
+    ctx = MagicMock()
+    ctx.source_start = 60.0
+    ctx.source_end = 80.0
+    ctx.title = "Podcast"
+    ctx.file_id = "file-1"
+    ctx.source_path = "/v.mp4"
+    resolved = MagicMock(ok=True, clip=MagicMock())
+    resolved.clip.data = {"file_id": "file-1", "start": 60.0, "end": 80.0}
+    patches = [
+        patch.object(tool_handlers, "_resolve_timeline_clip_for_tool", lambda **_kw: resolved),
+        patch.object(tool_handlers, "_get_source_file_for_clip", return_value=MagicMock(data={})),
+        patch.object(tool_handlers, "_lookup_watch_meta", return_value=("/v.mp4", 229.0, [])),
+        patch.object(tool_handlers, "_watch_confirm_cut", fake_watch),
+        patch.object(tool_handlers, "_tl_search_items_in_window",
+                     lambda *a, **k: searched.append(a) or ([], None)),
+        patch("classes.timeline_clip_context.build_timeline_clip_context", return_value=ctx),
+        patch("classes.timeline_clip_context.resolve_parent_file_data", return_value={}),
+    ]
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        out = tool_handlers.watch_clip_window(timeline_clip_id="C1", **kwargs)
+    return out, watch_calls, searched
+
+
+def test_watch_clip_window_reports_frames_cuts_and_visibility_in_source_seconds():
+    out, calls, _ = _run_watch_clip_window(
+        {
+            "cut_source": 71.0, "in_source": 70.0, "out_source": 72.0,
+            "matched": True, "used_fallback": False, "reason": "iPad on the desk",
+            "window_start": 67.0, "window_end": 74.0,
+            "frame_times": [69.9, 70.0, 71.5, 72.0],
+            "scene_times": [70.0, 72.0],
+            "visible_at": [70.0, 71.5],
+        },
+        query="guy with the iPad", start="69", end="72",
+    )
+    assert calls == [(69.0, 72.0, "guy with the iPad")]
+    assert "69.90, 70.00, 71.50, 72.00" in out
+    assert "Shot cuts" in out and "70.00, 72.00" in out
+    assert "Visible 70.000s–72.000s source" in out
+    assert "source" in out.lower()
+
+
+def test_watch_clip_window_miss_does_not_offer_a_keep_range():
+    """A miss used to print "Keep 64–78s" beside "no match" - the agent re-watched."""
+    out, _calls, _ = _run_watch_clip_window(
+        {
+            "cut_source": 69.0, "in_source": 69.0, "out_source": 72.0,
+            "matched": False, "used_fallback": True, "reason": "No iPad in these frames.",
+            "window_start": 67.0, "window_end": 74.0,
+            "frame_times": [67.0, 70.0], "scene_times": [], "visible_at": [],
+        },
+        query="guy with the iPad", start="69", end="72",
+    )
+    assert "Keep" not in out
+    assert "Not visible in these frames" in out
+    assert "Shot cuts in window: none" in out
+
+
+@pytest.mark.parametrize(
+    "kwargs, needle",
+    [
+        ({"query": "is the iPad guy visible at 72.5 seconds"}, "start"),
+        ({"query": "iPad guy between 45-62s"}, "start"),
+        ({"query": "iPad guy", "start": "69"}, "start"),
+        ({"query": "iPad guy", "start": "100", "end": "110"}, "outside"),
+    ],
+)
+def test_watch_clip_window_refuses_instead_of_watching_elsewhere(kwargs, needle):
+    out, calls, searched = _run_watch_clip_window({"cut_source": 0}, **kwargs)
+    assert out.startswith("Error:"), out
+    assert needle in out.lower()
+    assert calls == [] and searched == []
+
+
+def test_watch_clip_window_reads_timecodes_in_start_and_end():
+    """"1:09"/"1:12" used to parse as no window, so it watched a search hit."""
+    out, calls, searched = _run_watch_clip_window(
+        {"cut_source": 70.0, "matched": False, "used_fallback": True},
+        query="guy with the iPad", start="1:09", end="1:12",
+    )
+    assert calls == [(69.0, 72.0, "guy with the iPad")], out
+    assert searched == []
+
+
+@pytest.mark.parametrize("start, end", [("soon", "later"), ("nan", "72"), ("69", "inf")])
+def test_watch_clip_window_refuses_times_that_do_not_parse(start, end):
+    out, calls, searched = _run_watch_clip_window(
+        {"cut_source": 0}, query="guy with the iPad", start=start, end=end,
+    )
+    assert out.startswith("Error:"), out
+    assert calls == [] and searched == []
+
+
+def test_watch_clip_window_watches_only_the_part_of_the_window_the_clip_plays():
+    # The clip plays source 60-80s; 50-60 is not on the timeline.
+    out, calls, _ = _run_watch_clip_window(
+        {"cut_source": 65.0, "matched": False, "used_fallback": True},
+        query="guy with the iPad", start="50", end="70",
+    )
+    assert calls == [(60.0, 70.0, "guy with the iPad")], out
+
+
+def test_watch_clip_window_does_not_report_a_match_in_the_padding_as_in_the_clip():
+    """The watch pads its window; a match at 57-58.5s is before this clip starts."""
+    out, _calls, _ = _run_watch_clip_window(
+        {
+            "cut_source": 58.0, "in_source": 57.0, "out_source": 58.5,
+            "matched": True, "used_fallback": False,
+            "frame_times": [58.0, 60.0, 62.0], "scene_times": [], "visible_at": [58.0],
+        },
+        query="guy with the iPad", start="60", end="62",
+    )
+    assert "Visible" not in out, out
+    assert "Not visible in this clip's frames" in out
+    assert "58.00" in out
+    assert "into the clip" not in out
+
+
+def test_watch_clip_window_clamps_a_match_that_straddles_the_clip_start():
+    out, _calls, _ = _run_watch_clip_window(
+        {
+            "cut_source": 59.0, "in_source": 58.0, "out_source": 62.0,
+            "matched": True, "used_fallback": False,
+            "frame_times": [58.0, 60.0, 61.0], "scene_times": [], "visible_at": [58.0, 61.0],
+        },
+        query="guy with the iPad", start="60", end="62",
+    )
+    assert "Visible 60.000s–62.000s source; peak 60.000s source (0:00 into the clip)" in out, out
+    assert "Seen in frames: 61.00." in out
+    assert "this clip plays 60.00-80.00" in out
+
+
+def _slice_with_explicit_seconds(siblings=None, **kwargs):
+    from contextlib import ExitStack
+
+    resolved = MagicMock(ok=True, clip=MagicMock())
+    resolved.clip.id = "clip-1"
+    resolved.clip.data = {"file_id": "file-1", "position": 0.0, "start": 60.0, "end": 80.0, "layer": 1}
+    sf = MagicMock()
+    sf.data = {"path": "/v.mp4", "duration": 229}
+    blocked = []
+    time_slices = []
+    cuts = []
+    cuts_on = []
+    _slice_with_explicit_seconds.last_cuts_on = cuts_on
+
+    def run_main(fn):
+        if getattr(fn, "__name__", "") == "_do_time_slice":
+            time_slices.append(True)
+            # Expose which clip the range slice targeted (closure cell).
+            try:
+                cells = dict(zip(fn.__code__.co_freevars, fn.__closure__))
+                _slice_with_explicit_seconds.last_range_target = cells["tgt_id"].cell_contents
+            except Exception:
+                _slice_with_explicit_seconds.last_range_target = None
+            return "Sliced at 0:10 and 0:12 (source). Three segments: before, selected range, after."
+        return fn() if callable(fn) else None
+
+    def cut(clip_id, cs, ce, cp, cut_source, **kw):
+        cuts.append(float(cut_source))
+        cuts_on.append(clip_id)
+        return f"Sliced at {cut_source - cs:.0f}s ({kw.get('label')})."
+
+    patches = [
+        patch.object(tool_handlers, "_watch_confirm_cut", lambda *a, **k: blocked.append("watch")),
+        patch.object(tool_handlers, "_twelvelabs_search_in_window",
+                     lambda *a, **k: blocked.append("search") or ([], None)),
+        patch.object(tool_handlers, "_slice_at_source_cut", cut),
+        patch.object(tool_handlers, "_sibling_clips_from_same_file", lambda *a, **k: list(siblings or [])),
+        patch.object(tool_handlers, "_run_on_main_thread", side_effect=run_main),
+        patch.object(tool_handlers, "_get_source_file_for_clip", return_value=sf),
+        patch("classes.clip_resolver.resolve_timeline_clip", return_value=resolved),
+        patch("classes.ai_metadata_utils.get_source_window", return_value=(60.0, 80.0)),
+        patch("classes.timeline_clip_context.resolve_parent_file_data", return_value=sf.data),
+    ]
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        out = tool_handlers.slice_clip_at_best_match(query="guy with the iPad", clip_query="podcast", **kwargs)
+    return out, blocked, time_slices, cuts
+
+
+def test_slice_at_explicit_source_range_skips_search_and_watch():
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="70", end_seconds="72")
+    assert blocked == []
+    assert time_slices and not cuts
+    assert "Sliced" in out
+
+
+def test_slice_at_one_explicit_source_second_cuts_there():
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="70")
+    assert blocked == []
+    assert cuts == [70.0] and not time_slices
+    assert "Sliced" in out
+
+
+def test_slice_explicit_seconds_outside_the_clip_is_an_error():
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="10", end_seconds="12")
+    assert out.startswith("Error:")
+    assert blocked == [] and not time_slices and not cuts
+    # With no other placement from this file, the error says so instead of
+    # leaving the caller to guess.
+    assert "only clip from this file" in out
+
+
+# The resolved clip covers source [60, 80]. Siblings are other timeline
+# placements cut from the same file: (id, source_start, source_end, position, layer).
+_SIBLINGS = [("clip-0", 0.0, 60.0, 0.0, 1), ("clip-2", 80.0, 229.0, 40.0, 1)]
+
+
+def test_slice_cut_at_clip_start_is_a_noop_not_an_error():
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="60")
+    assert not out.startswith("Error:")
+    assert out.startswith("Nothing to slice")
+    assert "start of this clip" in out
+    assert blocked == [] and not time_slices and not cuts
+
+
+def test_slice_cut_at_clip_end_is_a_noop_not_an_error():
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(end_seconds="80")
+    assert out.startswith("Nothing to slice")
+    assert "end of this clip" in out
+    assert not cuts and not time_slices
+
+
+def test_slice_cut_redirects_to_the_sibling_that_holds_the_time():
+    # 98s lives in clip-2 (source 80-229), not in the resolved clip (60-80).
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="98", siblings=_SIBLINGS)
+    assert "Sliced" in out
+    assert cuts == [98.0]
+    assert _slice_with_explicit_seconds.last_cuts_on == ["clip-2"]
+    assert "timeline_clip_id=clip-2" in out
+    assert blocked == [] and not time_slices
+
+
+def test_slice_cut_with_no_sibling_holding_the_time_names_the_sibling_windows():
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="300", siblings=_SIBLINGS)
+    assert out.startswith("Error:")
+    assert "300.00s" in out
+    assert "timeline_clip_id=clip-0" in out and "timeline_clip_id=clip-2" in out
+    assert "[80.00s\u2013229.00s]" in out
+    assert not cuts and not time_slices
+
+
+def test_slice_cut_on_a_sibling_edge_is_not_redirected_into_a_failing_cut():
+    # 60s is the resolved clip's start (no-op) and clip-0's end; neither is a cut.
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="60", siblings=_SIBLINGS)
+    assert out.startswith("Nothing to slice")
+    assert not cuts
+    # 229s is clip-2's end: no clip has room to cut there, so say so.
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="229", siblings=_SIBLINGS)
+    assert out.startswith("Error:")
+    assert not cuts and not time_slices
+
+
+def test_slice_range_redirects_to_the_sibling_that_holds_it():
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(
+        start_seconds="100", end_seconds="110", siblings=_SIBLINGS,
+    )
+    assert "Sliced" in out
+    assert time_slices and not cuts
+    assert _slice_with_explicit_seconds.last_range_target == "clip-2"
+
+
+def test_slice_range_equal_to_the_whole_clip_is_a_noop():
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="60", end_seconds="80")
+    assert out.startswith("Nothing to slice")
+    assert not cuts and not time_slices
+
+
+def test_slice_range_spanning_two_clips_is_an_error_that_names_them():
+    # 70-100 straddles the resolved clip (60-80) and clip-2 (80-229).
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(
+        start_seconds="70", end_seconds="100", siblings=_SIBLINGS,
+    )
+    assert out.startswith("Error:")
+    assert "timeline_clip_id=clip-2" in out
+    assert not cuts and not time_slices
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"start_seconds": "soon"},
+    {"start_seconds": "70", "end_seconds": "later"},
+    {"start_seconds": "nan", "end_seconds": "72"},
+])
+def test_slice_refuses_explicit_seconds_that_do_not_parse(kwargs):
+    """An unparsable time used to fall through to a search and cut at its match."""
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(**kwargs)
+    assert out.startswith("Error:"), out
+    assert blocked == [] and not time_slices and not cuts
+
+
+def test_slice_reads_a_timecode_in_start_seconds():
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="1:10")
+    assert cuts == [70.0], out
+    assert blocked == [] and not time_slices
+
+
+def test_sibling_scan_without_a_source_file_id_matches_nothing():
+    """Two clips with no file_id are not the same source - never cut the other one."""
+    query_mod = MagicMock()
+    query_mod.Clip.filter.return_value = [
+        MagicMock(id="title-1", data={"position": 0.0, "start": 0.0, "end": 5.0, "layer": 1}),
+    ]
+    with patch.dict(sys.modules, {"classes.query": query_mod}):
+        with patch.object(tool_handlers, "_get_source_file_for_clip", return_value=None):
+            with patch("classes.ai_metadata_utils.get_source_window", return_value=(0.0, 5.0)):
+                assert tool_handlers._sibling_clips_from_same_file("", exclude_clip_id="clip-1") == []
+                # The same clip is still found when it really shares the file.
+                query_mod.Clip.filter.return_value[0].data["file_id"] = "file-1"
+                found = tool_handlers._sibling_clips_from_same_file("file-1", exclude_clip_id="clip-1")
+    assert [sib[0] for sib in found] == ["title-1"]
 
 
 def test_watch_clip_window_in_handlers():
