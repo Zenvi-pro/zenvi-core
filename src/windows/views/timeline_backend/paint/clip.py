@@ -979,17 +979,32 @@ class ClipPainter(BasePainter):
         start = self._resize_new_start
         end = self._resize_new_end
         position = self._resize_new_position
+        quantize = getattr(self.w, "_quantize_span", None)
+        if quantize is None:
+            from classes import frame_time as ft
+            from classes.clip_utils import project_fps_fraction
+            fps = project_fps_fraction()
+
+            def quantize(position, start, end, _fps=fps):
+                return ft.quantize_span(position, start, end, _fps)
+
         if isinstance(item, Clip):
             if self.enable_timing:
                 duration = end - start
-                item.data["start"] = self._timing_original_start
-                item.data["end"] = self._snap_time(self._timing_original_start + duration)
-                item.data["position"] = self._snap_time(position)
+                position, start_q, end_q = quantize(
+                    position,
+                    self._timing_original_start,
+                    self._timing_original_start + duration,
+                )
+                item.data["start"] = start_q
+                item.data["end"] = end_q
+                item.data["position"] = position
                 self.RetimeClip(item.id, item.data["end"], item.data["position"])
             else:
-                item.data["start"] = self._snap_time(start)
-                item.data["end"] = self._snap_time(end)
-                item.data["position"] = self._snap_time(position)
+                position, start, end = quantize(position, start, end)
+                item.data["start"] = start
+                item.data["end"] = end
+                item.data["position"] = position
                 self.update_clip_data(item.data, only_basic_props=True, ignore_reader=True)
             # Clear pending override after update to ensure consistency
             self._pending_clip_overrides.pop(item.id, None)
@@ -1006,10 +1021,11 @@ class ClipPainter(BasePainter):
                 static_mask = bool(reader.get("has_single_image")) if "has_single_image" in reader else bool(
                     is_single_image_media(reader)
                 )
-            item.data["position"] = self._snap_time(position)
-            item.data["start"] = self._snap_time(start)
-            item.data["end"] = self._snap_time(end)
-            item.data["duration"] = self._snap_time(item.data["end"] - item.data["start"])
+            position, start, end = quantize(position, start, end)
+            item.data["position"] = position
+            item.data["start"] = start
+            item.data["end"] = end
+            item.data["duration"] = end - start
             item.data["_auto_direction"] = static_mask
             self.update_transition_data(item.data, only_basic_props=True)
 

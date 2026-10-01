@@ -97,6 +97,17 @@ class SettingStore(JsonDataStore):
         self.data_type = "user settings"
         self.settings_filename = "openshot.settings"
         self.defaults_path = os.path.join(info.PATH, 'settings', '_default.settings')
+        # True for a headless session: it reads the user's preferences but must
+        # never write them -- a desktop window running alongside owns the file,
+        # and whichever process saved last would silently undo the other.
+        self.read_only = False
+
+    def write_to_file(self, file_path, data, path_mode="ignore", previous_path=None):
+        """Write settings JSON to disk, unless this store is read-only."""
+        if self.read_only:
+            log.debug("Settings are read-only in this session; not writing %s", file_path)
+            return None
+        return super().write_to_file(file_path, data, path_mode, previous_path)
 
     def _apply_runtime_defaults(self, settings_list):
         """Overlay runtime-detected libopenshot defaults onto selected settings."""
