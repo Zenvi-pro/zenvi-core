@@ -1090,3 +1090,22 @@ def test_solo_render_canvas_keeps_the_project_aspect_ratio():
     assert _solo_render_size(1080, 1920) == (360, 640)
     assert _solo_render_size(576, 1024) == (360, 640)
     assert _solo_render_size(320, 240) == (320, 240)
+
+
+def test_lut_look_mix_sets_lut_strength_not_the_grade_mix(monkeypatch):
+    """ColorGrade runs its LUT after the mix: mix=0.45 on a LUT look faded an
+    earlier "warmer" to 45% and left the LUT at full strength (seen in the app)."""
+    from classes import color_agent as ca
+    from classes import tool_handlers as th
+
+    warm = merge_color_grade(blank_color_grade("cg"), {"temperature": 0.08})
+    clips = {"c1": _MatchClip("c1", [warm])}
+    _grade_env(monkeypatch, clips)
+
+    out = json.loads(th.apply_look(clipIds="c1", lookId="warm_cinema", mix=0.45))
+    assert out["ok"] is True
+    grade = ca.find_color_grade(clips["c1"].data["effects"])
+    assert scalar_y(grade, "lut_intensity") == pytest.approx(0.45)
+    assert scalar_y(grade, "mix") == pytest.approx(1.0)
+    assert scalar_y(grade, "temperature") == pytest.approx(0.08)
+    assert grade["lut_path"].endswith("warm_cinema.cube")

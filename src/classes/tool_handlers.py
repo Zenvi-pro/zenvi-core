@@ -10269,7 +10269,8 @@ def apply_look(
 
     Pass lookId from list_looks_tool (warm_up, teal_cinema, grain:35mm_classic, …)
     or lutPath to a .cube. Optional mix / stackGrain / grainPreset. Soft presets
-    replace ColorGrade knobs (same as the Look menu); LUT merges onto existing grade.
+    replace ColorGrade knobs (same as the Look menu); LUT merges onto existing grade,
+    and for a LUT, mix (or lutIntensity) is the LUT's strength.
     Target resolution: explicit ids → selection → playhead; clipIds=\"all\" / all_clips
     for every timeline clip.
     """
@@ -10408,10 +10409,15 @@ def apply_look(
                             )
                             effects.append(existing)
                         patch = {"lut": {"path": abs_lut}}
-                        if lut_intensity_val is not None:
-                            patch["lut"]["strength"] = lut_intensity_val
-                        if mix_val is not None:
-                            patch["mix"] = mix_val
+                        # ColorGrade applies its LUT after the mix, so mix
+                        # would only fade the clip's existing knobs (an earlier
+                        # "warmer") and leave the LUT at full strength. For a
+                        # LUT look, mix means how strong the look is.
+                        strength = (
+                            lut_intensity_val if lut_intensity_val is not None else mix_val
+                        )
+                        if strength is not None:
+                            patch["lut"]["strength"] = strength
                         merged = ca.merge_color_grade(existing, patch)
                         replaced = False
                         new_effects = []
