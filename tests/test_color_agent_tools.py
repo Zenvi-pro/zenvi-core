@@ -1079,3 +1079,14 @@ def test_grade_writers_run_their_file_checks_off_the_gui_thread():
     for name in ("apply_color_tool", "apply_look_tool"):
         assert name in th.BACKGROUND_SAFE_TOOLS
         assert name not in th.READ_ONLY_TOOLS
+
+
+def test_solo_render_canvas_keeps_the_project_aspect_ratio():
+    """A 1080x1920 project used to render solo frames on a 640x360-clamped
+    canvas (e.g. 304x360), pillarboxing the clip and skewing its scopes."""
+    from classes.tool_handlers import _solo_render_size
+
+    assert _solo_render_size(1920, 1080) == (640, 360)
+    assert _solo_render_size(1080, 1920) == (360, 640)
+    assert _solo_render_size(576, 1024) == (360, 640)
+    assert _solo_render_size(320, 240) == (320, 240)

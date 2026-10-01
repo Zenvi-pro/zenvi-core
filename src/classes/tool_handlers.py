@@ -9765,6 +9765,18 @@ def _frame_to_jpeg_b64(frame, long_edge: int = 480, quality: int = 72) -> str:
                 pass
 
 
+def _solo_render_size(width: int, height: int, long_edge: int = 640) -> tuple[int, int]:
+    """Small render canvas with the project's aspect ratio.
+
+    Clamping each side on its own (640 x 360) turned a portrait project into a
+    near-square canvas, pillarboxing the clip; the black bars then dragged the
+    scopes (avg luma, histograms) and showed up in the preview the model reads.
+    """
+    width, height = max(1, int(width)), max(1, int(height))
+    scale = min(1.0, float(long_edge) / float(max(width, height)))
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
 def _render_clip_isolated(
     clip_data: dict,
     timeline_frame: int,
@@ -9798,15 +9810,7 @@ def _render_clip_isolated(
         width, height, sample_rate, channels, channel_layout = 1280, 720, 48000, 2, 3
         fps_num, fps_den = 30, 1
 
-    # Smaller preview size for speed when available.
-    try:
-        tl = getattr(getattr(app.window, "timeline_sync", None), "timeline", None)
-        pw = int(getattr(tl, "preview_width", 0) or 0)
-        ph = int(getattr(tl, "preview_height", 0) or 0)
-        if pw > 0 and ph > 0:
-            width, height = min(pw, 640), min(ph, 360)
-    except Exception:
-        width, height = min(width, 640), min(height, 360)
+    width, height = _solo_render_size(width, height)
 
     solo = copy.deepcopy(clip_data)
     solo["position"] = 0.0
@@ -9980,8 +9984,9 @@ def _profile_media_path(
     app = _get_app()
     project = app.project
     try:
-        width = min(int(project.get("width") or 1280), 640)
-        height = min(int(project.get("height") or 720), 360)
+        width, height = _solo_render_size(
+            int(project.get("width") or 1280), int(project.get("height") or 720)
+        )
         sample_rate = int(project.get("sample_rate") or 48000)
         channels = int(project.get("channels") or 2)
         channel_layout = int(project.get("channel_layout") or 3)
