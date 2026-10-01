@@ -1664,6 +1664,9 @@
     window.clearMessages = function () {
         typingEl = null;
         messagesEl.innerHTML = '';
+        // A new transcript (tab switch, restore) opens at its newest message,
+        // whatever the previous one was scrolled to.
+        pinnedToBottom = true;
     };
 
     function sendMessage() {
