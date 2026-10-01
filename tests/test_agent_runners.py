@@ -2267,3 +2267,28 @@ def test_hermes_offers_cli_default_and_drops_other_models(qapp):
     assert runner.BACKEND_ID == BACKEND_HERMES
     assert runner._coerce_model("cli-default") == ""
     assert runner._coerce_model("claude-opus-5") == ""
+
+
+def test_register_hermes_decodes_its_output_as_utf8(monkeypatch):
+    """Seen in the app: Connect failed with "'ascii' codec can't decode byte
+    0xe2". Hermes prints "✓ Set ...", and text=True follows a GUI app's empty
+    locale."""
+    import windows.agent_runners as ar
+
+    calls = []
+
+    def run(argv, **kw):
+        calls.append((argv, kw))
+        return types.SimpleNamespace(returncode=0, stdout="✓ Set", stderr="")
+
+    monkeypatch.setattr(ar.subprocess, "run", run)
+    monkeypatch.setattr(ar, "_which_cli", lambda name: "/bin/hermes")
+    ok, message = ar.register_hermes(7434, "tok")
+    assert ok is True and "ZENVI_MCP_TOKEN=tok" in message
+    assert [c[0][2:4] for c in calls] == [
+        ["set", "mcp_servers.zenvi_editor.url"],
+        ["set", "mcp_servers.zenvi_editor.headers.Authorization"]]
+    assert calls[1][0][4] == "Bearer ${ZENVI_MCP_TOKEN}", "the token is not written"
+    for _, kw in calls:
+        assert kw.get("encoding") == "utf-8" and kw.get("errors") == "replace"
+        assert "text" not in kw

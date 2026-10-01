@@ -900,7 +900,10 @@ def register_hermes(port: int, token: str):
         for key, value in settings:
             result = subprocess.run(
                 [hermes, "config", "set", key, value],
-                capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL,
+                # Explicit UTF-8: a GUI-launched app often has no LANG, and
+                # text=True then decodes Hermes' "✓ Set ..." as ASCII and fails.
+                capture_output=True, encoding="utf-8", errors="replace",
+                timeout=30, stdin=subprocess.DEVNULL,
                 # The home HermesRunner and _hermes_is_registered use.
                 env=_cli_child_env(),
             )
