@@ -44,5 +44,9 @@ uvicorn>=0.30
 #   pip install -r requirements-manim.txt
 # See requirements-manim.txt
 
+# OS keychain for bring-your-own provider keys (src/classes/provider_keys.py):
+# macOS Keychain, Windows Credential Manager, Secret Service on Linux.
+keyring>=25
+
 # Error reporting
 sentry-sdk
