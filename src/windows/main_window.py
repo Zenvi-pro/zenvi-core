@@ -1183,8 +1183,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         unsaved-changes prompt. Media files are imported into the current
         project, like files given on the command line. No paths: just raise.
         """
-        if self._project_loading:
-            # Reached from a processEvents() inside an open in progress.
+        if self._project_loading or QApplication.activeModalWidget() is not None:
+            # Reached from a processEvents() inside an open in progress, or
+            # from a dialog's own event loop (Export, Preferences, a previous
+            # handoff's save prompt): swapping the project out from under it
+            # is not safe, so wait until it has closed.
             QTimer.singleShot(250, lambda: self.open_external_paths(paths))
             return
         self.setWindowState((self.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive)
