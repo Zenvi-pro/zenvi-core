@@ -72,6 +72,62 @@ def test_mcp_iter_tool_defs_uses_strict_schemas():
         assert defs[name]["inputSchema"]["additionalProperties"] is False
 
 
+def test_normalize_drops_empty_track_index_and_coerces_string_int():
+    from classes.agent_tools.schema import normalize_args
+
+    dropped = normalize_args("get_transcript_tool", {
+        "clipId": "c1",
+        "trackIndex": "",
+        "force": "false",
+    })
+    assert "trackIndex" not in dropped
+    assert dropped["force"] is False
+    assert dropped["clipId"] == "c1"
+
+    coerced = normalize_args("get_transcript_tool", {"trackIndex": "0", "force": "true"})
+    assert coerced["trackIndex"] == 0
+    assert coerced["force"] is True
+
+
+def test_validate_accepts_assistant_stringly_transcript_args():
+    assert validate_args("get_transcript_tool", {
+        "clipId": "c1",
+        "trackIndex": "",
+        "force": "false",
+    }) is None
+    assert validate_args("get_transcript_tool", {
+        "fileId": "f1",
+        "trackIndex": "0",
+    }) is None
+
+
+def test_validate_accepts_timeline_detail_level():
+    assert validate_args("get_timeline_state_tool", {"detail_level": "summary"}) is None
+    assert validate_args("get_timeline_state_tool", {}) is None
+    assert validate_args("list_clips_tool", {"detail_level": "full"}) is None
+    assert validate_args("list_clips_tool", {}) is None
+
+
+def test_validate_accepts_remove_words_matches():
+    assert validate_args("remove_words_tool", {
+        "clipId": "c1",
+        "matches": ["FlowCut", "flocut"],
+    }) is None
+    assert validate_args("add_captions_tool", {
+        "clipId": "c1",
+        "engine": "auto",
+    }) is None
+
+
+def test_validate_accepts_transcript_aliases():
+    assert validate_args("get_transcript_tool", {
+        "timeline_clip_id": "PHM7T104LX",
+    }) is None
+    assert validate_args("get_transcript_tool", {
+        "file_id": "FZOEBK3JJZ",
+    }) is None
+
+
 # ---------------------------------------------------------------------------
 # Schemas vs. the handlers that run them, and vs. the assistant backend.
 #
@@ -102,6 +158,14 @@ KWARG_PROPS = {
     "slice_clip_at_best_match_tool": {"track"},
     "split_file_add_clip_tool": {"require_visual_match"},
     "watch_clip_tool": {"query"},
+    # Phase 5 speech tools read the snake_case aliases for clipId / fileId
+    "transcribe_media_tool": {"file_id"},
+    "get_transcript_tool": {"file_id", "timeline_clip_id"},
+    "remove_words_tool": {"timeline_clip_id"},
+    "remove_silence_tool": {"timeline_clip_id"},
+    "export_captions_tool": {"timeline_clip_id"},
+    "detect_beats_tool": {"file_id", "timeline_clip_id"},
+    "diarize_media_tool": {"file_id", "timeline_clip_id"},
 }
 
 # Sent by the assistant backend's stubs but unused by this handler. They stay in

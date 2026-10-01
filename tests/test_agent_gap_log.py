@@ -24,6 +24,17 @@ def test_classify_gap_no_match_returns_none(gap_log):
     assert gap_log.classify_gap("") is None
 
 
+def test_vision_gap_self_retires_when_inspect_exists(gap_log, monkeypatch):
+    monkeypatch.setattr(gap_log, "_tool_names", lambda: set())
+    gap = gap_log.classify_gap("does the title overlap her face — look at the timeline")
+    assert gap is not None
+    assert "inspect_timeline" in gap
+    monkeypatch.setattr(
+        gap_log, "_tool_names", lambda: {"inspect_timeline_tool"},
+    )
+    assert gap_log.classify_gap("does the title overlap her face — look at the timeline") is None
+
+
 def test_classify_gap_self_retires_once_tool_exists(gap_log, monkeypatch):
     # Simulate the missing tool having shipped: the rule must stop firing.
     monkeypatch.setattr(

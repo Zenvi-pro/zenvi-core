@@ -41,7 +41,14 @@ from classes.clip_placement import (
     should_watch_placement,
     source_window_for_file,
 )
-from classes.agent_tools.handlers import PHASE3_HANDLERS, PHASE3_DISPLAY_LABELS
+from classes.agent_tools.handlers import (
+    PHASE3_DISPLAY_LABELS,
+    PHASE3_HANDLERS,
+    PHASE4_DISPLAY_LABELS,
+    PHASE4_HANDLERS,
+    PHASE5_DISPLAY_LABELS,
+    PHASE5_HANDLERS,
+)
 from classes.image_types import is_audio_only_media
 from classes.track_display import (
     format_track_label_for_llm,
@@ -2789,6 +2796,83 @@ def slice_clip_at_playhead(**_kw) -> str:
         _run_on_main_thread(_do_slice)
 
         return result_box[0] or "Error: the slice did not run."
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def reverse_clip(
+    timeline_clip_id="",
+    clip_query="",
+    track="",
+    occurrence="0",
+    mode="reverse",
+    **_kw,
+) -> str:
+    """Reverse a timeline clip (or reset time remapping).
+
+    Same as Timeline → Speed → Reverse / Reset. mode='reverse' plays backward;
+    mode='reset' clears reverse/speed time curves back to forward 1x.
+    Resolve with timeline_clip_id or clip_query (+ track/occurrence if needed).
+    """
+    action = str(mode or "reverse").strip().lower()
+    if action in ("reverse", "backward", "backwards"):
+        menu_action_name = "REVERSE"
+        done = "Reversed"
+    elif action in ("reset", "none", "forward", "unreverse"):
+        menu_action_name = "NONE"
+        done = "Reset time on"
+    else:
+        return "Error: mode must be 'reverse' or 'reset'."
+
+    if not str(timeline_clip_id or "").strip() and not str(clip_query or "").strip():
+        return "Error: reverse_clip_tool requires timeline_clip_id or clip_query."
+
+    try:
+        resolved = _resolve_timeline_clip_for_tool(
+            timeline_clip_id=timeline_clip_id,
+            clip_query=clip_query,
+            track=track,
+            occurrence=occurrence,
+        )
+        if not resolved.ok or not resolved.clip:
+            return resolved.error or "Error: Could not resolve timeline clip."
+
+        clip_id = str(getattr(resolved.clip, "id", "") or "")
+        if not clip_id:
+            return "Error: Resolved clip has no id."
+
+        result_box = [None]
+
+        def _do_reverse():
+            from classes.query import Clip
+            from windows.views.retime import time_curve_is_reversed
+            from windows.views.timeline_backend.enums import MenuTime
+
+            app = _get_app()
+            timeline = getattr(app.window, "timeline", None)
+            if timeline is None or not hasattr(timeline, "Time_Triggered"):
+                result_box[0] = "Error: Timeline view is not available."
+                return
+            clip = Clip.get(id=clip_id)
+            if clip is None:
+                result_box[0] = f"Error: timeline_clip_id={clip_id} is no longer on the timeline."
+                return
+            # Timeline > Speed > Reverse toggles, so asking a reversed clip to
+            # reverse would play it forward again; a no-op must not add an undo step.
+            time_data = clip.data.get("time")
+            points = time_data.get("Points") if isinstance(time_data, dict) else None
+            if menu_action_name == "REVERSE" and time_curve_is_reversed(time_data):
+                result_box[0] = f"timeline_clip_id={clip_id} is already reversed; nothing changed."
+                return
+            if menu_action_name == "NONE" and (not isinstance(points, list) or len(points) <= 1):
+                result_box[0] = f"timeline_clip_id={clip_id} already plays forward at 1x; nothing changed."
+                return
+            menu_action = getattr(MenuTime, menu_action_name)
+            timeline.Time_Triggered(menu_action, [clip_id], "1X")
+            result_box[0] = f"{done} timeline_clip_id={clip_id}."
+
+        _run_on_main_thread(_do_reverse)
+        return result_box[0] or f"{done} timeline_clip_id={clip_id}."
     except Exception as e:
         return f"Error: {e}"
 
@@ -9004,15 +9088,31 @@ def duck_under_speech(
                     missing.append(cid)
             if missing:
                 return f"Error: no timeline clip with audio for id(s): {', '.join(missing)}."
-            # A declared speech clip with no cues falls back to waveform energy.
+            # A declared speech clip with no cues falls back to VAD, then energy.
             for entry in speech:
                 if not entry["windows"]:
-                    energetic = am.speech_windows_from_energy(entry["data"])
-                    if energetic:
-                        entry["windows"] = energetic
-                        entry["window_source"] = "energy"
+                    data = entry.get("data") if isinstance(entry.get("data"), dict) else {}
+                    path = str(((data.get("reader") or {}) if isinstance(data.get("reader"), dict) else {}).get("path") or "")
+                    windows, src = am.speech_windows_best(data, None, media_path=path)
+                    if windows:
+                        entry["windows"] = windows
+                        entry["window_source"] = src
         else:
             speech = [e for e in entries if e["role"] == "speech" and e["windows"]]
+            if not speech:
+                for entry in entries:
+                    if entry.get("windows"):
+                        continue
+                    data = entry.get("data") if isinstance(entry.get("data"), dict) else {}
+                    path = str(((data.get("reader") or {}) if isinstance(data.get("reader"), dict) else {}).get("path") or "")
+                    if not path:
+                        continue
+                    windows, src = am.speech_windows_best(data, None, media_path=path)
+                    if windows and src == "local_vad":
+                        entry["windows"] = windows
+                        entry["window_source"] = src
+                        entry["role"] = "speech"
+                        speech.append(entry)
 
         if not speech:
             unknown = [e["id"] for e in entries if e["role"] == "unknown"]
@@ -9287,6 +9387,7 @@ AGENT_TOOL_HANDLERS = {
     "add_clip_to_timeline_tool": add_clip_to_timeline,
     "import_video_url_and_add_to_timeline_tool": import_video_url_and_add_to_timeline,
     "slice_clip_at_playhead_tool": slice_clip_at_playhead,
+    "reverse_clip_tool": reverse_clip,
     # Search / slice / modify (tag-query resolved)
     "search_clips_tool": search_clips,
     "search_clip_scenes_tool": search_clip_scenes,
@@ -9322,10 +9423,12 @@ AGENT_TOOL_HANDLERS = {
 from classes.editor_tools import REGISTRY as _EDITOR_TOOL_SPECS  # noqa: E402
 from classes.agent_tools.schema import TOOL_SCHEMAS as _TOOL_SCHEMAS  # noqa: E402
 
-# #183's add_effect / add_title / set_keyframes / set_project_setting are served
-# by the editor tools of the same names, whose arguments are a superset of theirs.
-AGENT_TOOL_HANDLERS.update({name: func for name, func in PHASE3_HANDLERS.items()
-                            if name not in _EDITOR_TOOL_SPECS})
+# #183's add_effect / add_title / set_keyframes / set_project_setting and #220's
+# add_captions are served by the editor tools of the same names, whose arguments
+# are a superset of theirs.
+for _phase_handlers in (PHASE3_HANDLERS, PHASE4_HANDLERS, PHASE5_HANDLERS):
+    AGENT_TOOL_HANDLERS.update({name: func for name, func in _phase_handlers.items()
+                                if name not in _EDITOR_TOOL_SPECS})
 _editor_overlap = set(_EDITOR_TOOL_SPECS) & set(AGENT_TOOL_HANDLERS)
 assert not _editor_overlap, f"editor_tools re-registers {sorted(_editor_overlap)}"
 AGENT_TOOL_HANDLERS.update({name: spec.func for name, spec in _EDITOR_TOOL_SPECS.items()})
@@ -9362,6 +9465,7 @@ TOOL_DISPLAY_LABELS = {
     "add_clip_to_timeline_tool": "Add clip to timeline",
     "import_video_url_and_add_to_timeline_tool": "Import video to timeline",
     "slice_clip_at_playhead_tool": "Slice clip at playhead",
+    "reverse_clip_tool": "Reverse clip",
     "search_clips_tool": "Search project index",
     "search_clip_scenes_tool": "Search clip scenes",
     "get_project_catalog_tool": "Read project catalog",
@@ -9385,6 +9489,8 @@ TOOL_DISPLAY_LABELS = {
     "get_timeline_state_tool": "Read timeline state",
 }
 TOOL_DISPLAY_LABELS.update(PHASE3_DISPLAY_LABELS)
+TOOL_DISPLAY_LABELS.update(PHASE4_DISPLAY_LABELS)
+TOOL_DISPLAY_LABELS.update(PHASE5_DISPLAY_LABELS)
 TOOL_DISPLAY_LABELS.update({name: spec.label for name, spec in _EDITOR_TOOL_SPECS.items()})
 
 assert set(TOOL_DISPLAY_LABELS) == set(AGENT_TOOL_HANDLERS), (
@@ -9457,6 +9563,14 @@ READ_ONLY_TOOLS = frozenset({
     "get_timeline_placements_metadata_tool",
     "propose_overlay_windows_tool",
     "analyze_timeline_audio_tool",
+    "inspect_timeline_tool",
+    "inspect_media_tool",
+    "get_transcript_tool",
+    "transcribe_media_tool",
+    "detect_beats_tool",
+    "diarize_media_tool",
+    "search_media_local_tool",
+    "export_captions_tool",
 }) | frozenset(name for name, spec in _EDITOR_TOOL_SPECS.items() if spec.read_only)
 
 # Tools that perform long-running network/IO work and only briefly touch Qt
@@ -9492,6 +9606,18 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     # HyperFrames download + alpha re-encode can take a while.
     "fetch_motion_graphics_video_tool",
     "fetch_remotion_video_from_supabase_tool",
+    "inspect_timeline_tool",
+    "inspect_media_tool",
+    # Local ASR / VAD / beats / embeds can take minutes; Qt mutations marshal themselves.
+    "get_transcript_tool",
+    "transcribe_media_tool",
+    "remove_words_tool",
+    "remove_silence_tool",
+    "add_captions_tool",
+    "export_captions_tool",
+    "detect_beats_tool",
+    "diarize_media_tool",
+    "search_media_local_tool",
 }) | frozenset(name for name, spec in _EDITOR_TOOL_SPECS.items() if spec.background_safe)
 
 # Tools whose main-thread work can legitimately run far longer than
@@ -9534,9 +9660,8 @@ def _main_thread_timeout(tool_name: str, tool_args: dict) -> int:
     return max(_MAIN_THREAD_TIMEOUT_DEFAULT, _MAIN_THREAD_TIMEOUT_PER_STEP * n)
 
 
-def execute_tool(tool_name: str, tool_args: dict) -> str:
-    """Execute a tool by name. Returns a contract-3 JSON receipt string."""
-    from classes.agent_tools.execute import bind_runtime, execute_tool as _dispatch
+def _bind_execute_runtime() -> None:
+    from classes.agent_tools.execute import bind_runtime
 
     bind_runtime(
         handlers=TOOL_HANDLERS,
@@ -9551,11 +9676,24 @@ def execute_tool(tool_name: str, tool_args: dict) -> str:
         qthread=QThread,
         main_thread_timeout=_main_thread_timeout,
     )
+
+
+def execute_tool(tool_name: str, tool_args: dict) -> str:
+    """Execute a tool by name. Returns a contract-3 JSON receipt string."""
+    return execute_tool_rich(tool_name, tool_args).receipt.to_json()
+
+
+def execute_tool_rich(tool_name: str, tool_args: dict):
+    """Execute a tool; return ToolOutput (receipt + optional images)."""
+    from classes.agent_tools.execute import execute_tool_rich as _dispatch
     from classes.editor_tools import prepare_args
+
+    _bind_execute_runtime()
     # Editor tools accept what models send ("1.5", "true"): coerce before the strict
     # validation, and refuse a value that cannot be in the registry's own words.
     args, problem = prepare_args(tool_name, tool_args or {})
     if problem:
+        from classes.agent_tools.output import ToolOutput
         from classes.agent_tools.receipt import ToolReceipt
-        return ToolReceipt.refused(tool_name, problem).to_json()
+        return ToolOutput(receipt=ToolReceipt.refused(tool_name, problem))
     return _dispatch(tool_name, args)
