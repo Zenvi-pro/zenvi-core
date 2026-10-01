@@ -231,6 +231,8 @@ def _discard_group(app, tid) -> bool:
     redo_len = len(updates.redoHistory)
     updates.undo()
     del updates.redoHistory[redo_len:]
+    # undo() just enabled Redo for the entries dropped above.
+    updates.update_watchers()
     return True
 
 

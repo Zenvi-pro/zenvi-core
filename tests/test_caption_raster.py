@@ -237,6 +237,10 @@ class _Updates:
         self.actionHistory = list(history)
         self.redoHistory = ["older redo"]
         self.undone = []
+        self.watched = 0
+
+    def update_watchers(self):
+        self.watched += 1
 
     def undo(self):
         tid = self.actionHistory[-1].transaction
@@ -258,6 +262,7 @@ def test_discard_group_reverts_and_forgets_the_failed_request():
     assert app.updates.undone == [track, image]
     assert app.updates.actionHistory == [user_edit]
     assert app.updates.redoHistory == ["older redo"]
+    assert app.updates.watched == 1  # Undo/Redo buttons re-read the trimmed history
 
 
 def test_discard_group_leaves_history_alone_when_another_edit_followed():
