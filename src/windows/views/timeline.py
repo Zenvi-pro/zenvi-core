@@ -5717,9 +5717,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if auto_transition:
             new_clip["_auto_transition"] = True
 
-        # Add the clip to the timeline
-        self._ensure_layers_exist([track])
-        self.update_clip_data(new_clip, only_basic_props=False, ignore_refresh=ignore_refresh)
+        # Add the clip to the timeline, joining the caller's transaction (a
+        # drop, an agent tool) or opening one, so the waveform below shares it.
+        with updates.nested_transaction(get_app().updates) as tid:
+            self._ensure_layers_exist([track])
+            self.update_clip_data(new_clip, only_basic_props=False, ignore_refresh=ignore_refresh)
 
         # Track the added clip
         self.item_ids.append(new_clip.get('id'))
@@ -5732,7 +5734,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         has_audio = True if has_audio is None else bool(has_audio)
         clip_id = new_clip.get("id")
         if has_audio and not has_video and clip_id:
-            self.Show_Waveform_Triggered([clip_id])
+            # The file/clip waveform saves land later from a worker thread.
+            # Tag them with the insert's transaction: one drop, one undo step.
+            self.Show_Waveform_Triggered([clip_id], transaction_id=tid)
 
         # Trigger manual move event to initialize UI snapping
         if call_manual_move:
