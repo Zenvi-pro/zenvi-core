@@ -1,0 +1,128 @@
+# Comments "bugbot run" on open PRs that Cursor Bugbot has not reviewed yet (#159).
+#
+# Bugbot reviews a PR when someone comments "bugbot run" from a GitHub account
+# linked to a Cursor account that has Bugbot. This workflow posts that comment
+# as @jashanpratapsingh, with his token. Which PRs get it, and why the others
+# are skipped, is decided by scripts/bugbot_trigger.py. To see what it would do
+# right now, run it from a checkout (it uses your `gh` login and posts nothing):
+#     python3 scripts/bugbot_trigger.py --dry-run
+#
+# Switching it on (@jashanpratapsingh, once):
+#   0. Bugbot must be on for his Cursor account: cursor.com/dashboard -> Bugbot,
+#      with GitHub connected as @jashanpratapsingh and Zenvi-pro/zenvi-core enabled.
+#   1. github.com -> Settings -> Developer settings -> Personal access tokens ->
+#      Fine-grained tokens -> Generate new token:
+#        Resource owner     Zenvi-pro
+#        Repository access  Only select repositories -> Zenvi-pro/zenvi-core
+#        Permissions        Repository -> Pull requests: Read and write
+#                           (GitHub adds Metadata: Read-only. Nothing else is
+#                           needed while the repo is public; if it ever goes
+#                           private, also add Contents and Checks: Read-only.)
+#      If Zenvi-pro makes fine-grained tokens wait for approval, approve it under
+#      Zenvi-pro -> Settings -> Personal access tokens -> Pending requests.
+#      When the token expires, runs fail with HTTP 401: make a new one, update the secret.
+#   2. Zenvi-pro/zenvi-core -> Settings -> Secrets and variables -> Actions ->
+#      New repository secret: name BUGBOT_TRIGGER_TOKEN, value the token.
+#   3. Actions -> Bugbot trigger -> Run workflow, with "dry_run" ticked. The log
+#      lists every open PR and what would happen to it. Run it again unticked to
+#      go live, or let the hourly schedule do it.
+# Until the secret exists, every run ends green with a notice and does nothing.
+#
+# Limitation: account mismatch. On an individual Cursor plan, Bugbot only
+# reviews PRs authored by the GitHub account that asks. His "bugbot run" on
+# anyone else's PR gets "Bugbot couldn't run - GitHub account mismatch" (as on
+# #158), so only his own PRs are covered (--only-authors below). If his Cursor
+# account joins a Cursor team that covers this repository, switch the default
+# to --all-authors below (or tick "all_authors" on a manual run).
+#
+# If Bugbot refuses one of his triggers (not enabled for the account, out of
+# free reviews, account mismatch), the script posts nothing for 24 h rather
+# than collect more refusals. Once the Cursor side is fixed, run this workflow
+# by hand with "retry" ticked.
+#
+# pull_request_target runs with this repository's secrets, even for PRs from
+# forks. So this workflow never checks out or runs PR code: it checks out the
+# base branch and runs only scripts/bugbot_trigger.py, which reads PR metadata
+# through the API.
+
+name: Bugbot trigger
+
+on:
+  schedule:
+    - cron: "23 * * * *"  # hourly, off the top of the hour
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List what it would do; post nothing"
+        type: boolean
+        default: false
+      all_authors:
+        description: "Every author's PRs, not only @jashanpratapsingh's (needs a Cursor team)"
+        type: boolean
+        default: false
+      retry:
+        description: "Ask again where Bugbot refused before (after fixing the Cursor side)"
+        type: boolean
+        default: false
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize]
+
+# GITHUB_TOKEN only checks out the script. The comments are posted with
+# BUGBOT_TRIGGER_TOKEN.
+permissions:
+  contents: read
+
+# One run at a time, so two runs can never both decide a PR is due. Every run
+# scans all open PRs, so a queued run that GitHub replaces with a newer one
+# loses nothing.
+concurrency:
+  group: bugbot-trigger
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    # Drafts are never commented on; don't start a run for their pushes.
+    if: github.event_name != 'pull_request_target' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check for BUGBOT_TRIGGER_TOKEN
+        id: gate
+        env:
+          BUGBOT_TRIGGER_TOKEN: ${{ secrets.BUGBOT_TRIGGER_TOKEN }}
+        run: |
+          if [ -n "$BUGBOT_TRIGGER_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Bugbot trigger is off::The BUGBOT_TRIGGER_TOKEN repository secret is not set, so nothing was commented. The header of .github/workflows/bugbot-trigger.yml says how to set it up."
+          fi
+
+      # No ref: on pull_request_target that is the base branch, never the PR head.
+      - name: Check out the base branch
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Comment "bugbot run" where it is due
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.BUGBOT_TRIGGER_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          ALL_AUTHORS: ${{ inputs.all_authors }}
+          RETRY: ${{ inputs.retry }}
+        run: |
+          args=(--repo "$GITHUB_REPOSITORY")
+          if [ "$ALL_AUTHORS" = true ]; then
+            args+=(--all-authors)
+          else
+            args+=(--only-authors jashanpratapsingh)
+          fi
+          if [ "$DRY_RUN" = true ]; then args+=(--dry-run); fi
+          if [ "$RETRY" = true ]; then args+=(--retry); fi
+          if [ "$GITHUB_EVENT_NAME" = pull_request_target ]; then
+            # Let Bugbot's own automatic review of this push show up first: the
+            # script leaves heads pushed under --grace-minutes (2) ago alone.
+            sleep 150
+          fi
+          python3 scripts/bugbot_trigger.py "${args[@]}"
