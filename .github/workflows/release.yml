@@ -322,7 +322,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/libopenshot-install
-          key: libopenshot-v1.0.0-audio-v1.0.0-opencv4-arm64-macos14-py311-v1-${{ hashFiles('installer/mac-patches/**', 'installer/patch-libopenshot-ffmpeg.py') }}
+          key: libopenshot-v1.0.0-audio-v1.0.0-opencv4-arm64-macos14-py311-v1-${{ hashFiles('installer/mac-patches/**', 'installer/patch-libopenshot-ffmpeg.py', 'installer/apply-libopenshot-patches.sh') }}
 
       - name: Build libopenshot from source (arm64 only)
         if: matrix.arch == 'arm64' && steps.cache-libopenshot.outputs.cache-hit != 'true'
@@ -338,23 +338,20 @@ jobs:
           LIBOPENSHOT_AUDIO_TAG=v1.0.0
           PATCH_DIR="$GITHUB_WORKSPACE/installer/mac-patches"
 
-          # Apply every installer/mac-patches/<prefix>-*.patch that still applies
-          # (tag-locked names, `git apply --check` guarded — same scheme as
-          # scripts/build-mac-libopenshot.sh). A patch upstream already merged
-          # simply fails the check and is skipped.
+          # Apply every installer/mac-patches/<prefix>-*.patch (tag-locked names,
+          # same scheme as scripts/build-mac-libopenshot.sh). The helper skips a
+          # patch that is already applied and fails the build on one that no
+          # longer applies, so an out-of-date patch cannot ship silently.
           apply_patches() {
-            local src_dir="$1" prefix="$2" patch
+            local src_dir="$1" prefix="$2"
             shopt -s nullglob
             local patches=("$PATCH_DIR/${prefix}"-*.patch)
             shopt -u nullglob
-            for patch in "${patches[@]}"; do
-              if git -C "$src_dir" apply --check --whitespace=nowarn "$patch" 2>/dev/null; then
-                echo "Applying $(basename "$patch")"
-                git -C "$src_dir" apply --whitespace=nowarn "$patch"
-              else
-                echo "Skipping $(basename "$patch") (does not apply at this tag; likely already upstream)"
-              fi
-            done
+            if [ ${#patches[@]} -eq 0 ]; then
+              echo "No patches named ${prefix}-*.patch"
+              return 0
+            fi
+            bash "$GITHUB_WORKSPACE/installer/apply-libopenshot-patches.sh" "$src_dir" "${patches[@]}"
           }
 
           # Build libopenshot-audio (libopenshot 1.0.0 requires OpenShotAudio >= 1.0.0)
@@ -375,8 +372,10 @@ jobs:
           git clone --depth=1 --branch "$LIBOPENSHOT_TAG" \
             https://github.com/OpenShot/libopenshot.git /tmp/libopenshot
 
-          # Tag-locked source patches, e.g. libopenshot-v1.0.0-noncrop-location.patch
-          # (the post-1.0.0 upstream fix keeping non-Crop location_x/y canvas-relative).
+          # Tag-locked source patches: libopenshot-v1.0.0-noncrop-location.patch
+          # (the post-1.0.0 upstream fix keeping non-Crop location_x/y canvas-relative)
+          # and libopenshot-v1.0.0-discard-preroll.patch (stream-copy trims start at
+          # their first shown frame instead of decoding the whole file to a black one).
           apply_patches /tmp/libopenshot "libopenshot-${LIBOPENSHOT_TAG}"
 
           # Tolerant patching: each step is a no-op if upstream already
@@ -1122,7 +1121,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .ci-deps/openshot-bundle
-          key: windows-msys2-libopenshot-v1.0.0-opencv-v2-ucrt-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh', 'installer/ci-win-msys-packages.sh', 'installer/patch-libopenshot-ffmpeg.py', 'installer/patch-libopenshot-opencv5.py', 'installer/mac-patches/**') }}
+          key: windows-msys2-libopenshot-v1.0.0-opencv-v2-ucrt-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh', 'installer/ci-win-msys-packages.sh', 'installer/patch-libopenshot-ffmpeg.py', 'installer/patch-libopenshot-opencv5.py', 'installer/apply-libopenshot-patches.sh', 'installer/mac-patches/**') }}
 
       - name: Build unittest-cpp, libopenshot-audio, libopenshot (MSYS2 / README)
         if: steps.cache-libopenshot-win.outputs.cache-hit != 'true'

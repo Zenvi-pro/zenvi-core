@@ -40,6 +40,7 @@ from qt_api import (
     BINDING_VERSION_STR,
     Slot,
     qInstallMessageHandler,
+    QLoggingCategory,
     QtMsgType,
 )
 from qt_api import QApplication, QEvent, QMessageBox, QTimer
@@ -52,6 +53,26 @@ _QT_MSG_PREFIXES = {
     QtMsgType.QtCriticalMsg: "critical",
     QtMsgType.QtFatalMsg: "fatal",
 }
+
+
+def _install_qt_message_handler():
+    """Install the Qt message handler, with warnings filtered out inside Qt.
+
+    The handler is Python: it runs on the thread that emitted the message and
+    needs the GIL. Qt emits font warnings ("OpenType support missing for ...",
+    "QObject::startTimer: Timers can only be used with threads started with
+    QThread") while holding its font-database lock, on whichever thread is
+    drawing text -- a title's SVG thumbnail, the preview player drawing a
+    Caption. When the GUI thread is measuring text at that moment it holds the
+    GIL and waits for that lock, the other thread holds the lock and waits for
+    the GIL, and the editor freezes for good.
+
+    So default-category warnings are dropped by Qt before any handler runs.
+    Critical and fatal messages still reach the handler. For debugging,
+    QT_LOGGING_RULES="default.warning=true" in the environment brings them back.
+    """
+    QLoggingCategory.setFilterRules("default.warning=false")
+    qInstallMessageHandler(_qt_message_handler)
 
 
 def _qt_message_handler(msg_type, context, message):
@@ -225,8 +246,7 @@ class OpenShotApp(QApplication):
             if self.mode != "unittest":
                 reroute_output()
 
-            # Suppress noisy QWebChannel warnings (TimelineView properties without notify signals)
-            qInstallMessageHandler(_qt_message_handler)
+            _install_qt_message_handler()
 
         except ImportError as ex:
             tb = traceback.format_exc()

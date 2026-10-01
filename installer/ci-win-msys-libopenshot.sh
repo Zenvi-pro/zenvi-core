@@ -15,23 +15,21 @@ LIBOPENSHOT_AUDIO_TAG="${LIBOPENSHOT_AUDIO_TAG:-$LIBOPENSHOT_TAG}"
 ZENVI_OPENCV="${ZENVI_OPENCV:-ON}"
 PATCH_DIR="${GITHUB_WORKSPACE}/installer/mac-patches"
 
-# Apply every installer/mac-patches/<prefix>-*.patch that still applies (the
-# same tag-locked, `git apply --check`-guarded scheme as
-# scripts/build-mac-libopenshot.sh). Mac-only patches simply fail the check
-# here and are skipped.
+# Apply every installer/mac-patches/<prefix>-*.patch (the same tag-locked scheme
+# as scripts/build-mac-libopenshot.sh; the patches are source fixes, not
+# Mac-specific). The helper skips a patch that is already applied and fails the
+# build on one that no longer applies. .gitattributes keeps the patches LF: a
+# CRLF checkout (core.autocrlf=true on Windows runners) makes every patch fail.
 apply_patches() {
-  local src_dir="$1" prefix="$2" patch
+  local src_dir="$1" prefix="$2"
   shopt -s nullglob
   local patches=("${PATCH_DIR}/${prefix}"-*.patch)
   shopt -u nullglob
-  for patch in "${patches[@]}"; do
-    if git -C "${src_dir}" apply --check --whitespace=nowarn "${patch}" 2>/dev/null; then
-      echo "Applying $(basename "${patch}")"
-      git -C "${src_dir}" apply --whitespace=nowarn "${patch}"
-    else
-      echo "Skipping $(basename "${patch}") (does not apply to ${src_dir##*/} at this tag)"
-    fi
-  done
+  if [[ ${#patches[@]} -eq 0 ]]; then
+    echo "No patches named ${prefix}-*.patch"
+    return 0
+  fi
+  bash "${GITHUB_WORKSPACE}/installer/apply-libopenshot-patches.sh" "${src_dir}" "${patches[@]}"
 }
 
 DEPS="${GITHUB_WORKSPACE}/.ci-deps"
@@ -71,7 +69,8 @@ cmake --install "${AUDIO_SRC}/build"
 # libopenshot → /ucrt64 + FFmpeg 7+ compat patches (upstream may already include some)
 git clone --depth 1 --branch "${LIBOPENSHOT_TAG}" https://github.com/OpenShot/libopenshot.git "${DEPS}/libopenshot"
 export LOS="${DEPS}/libopenshot"
-# Tag-locked source patches (e.g. the v1.0.0 non-crop location fix from libopenshot develop).
+# Tag-locked source patches (v1.0.0: the non-crop location fix from libopenshot
+# develop, and the stream-copy trim pre-roll fix).
 apply_patches "${LOS}" "libopenshot-${LIBOPENSHOT_TAG}"
 find "${LOS}" \( -name "CMakeLists.txt" -o -name "*.cmake" \) -print0 | \
   xargs -0 -r grep -l "avresample" 2>/dev/null | while read -r f; do
