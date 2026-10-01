@@ -233,9 +233,9 @@ except Exception:
     pass
 
 try:
-    # PassThrough lets Qt use the exact QT_SCALE_FACTOR value (e.g. 1.5) without rounding
-    # to the nearest integer (e.g. 2.0).
-    os.environ['QT_SCALE_FACTOR_ROUNDING_POLICY'] = "PassThrough"
+    # Round fractional display scales (e.g. Windows 125% -> 1.0). PassThrough renders
+    # the whole UI at 1.25x with soft, pixelated icons.
+    os.environ['QT_SCALE_FACTOR_ROUNDING_POLICY'] = "Round"
 
     # Enable High-DPI resolutions
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
