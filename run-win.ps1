@@ -197,7 +197,11 @@ BINDINGS_DIR="$LIBOPENSHOT_SRC/build/bindings/python"
 # Check for the actual compiled module, not just the directory -- the
 # directory can exist (with only CMake's own build files in it) even when
 # the bindings subdirectory was never actually built.
-if ! find "$BINDINGS_DIR" -iname 'openshot.py' 2>/dev/null | grep -q .; then
+# Also rebuild when an existing build predates a Zenvi source patch: a patch
+# that still applies cleanly to the checkout has not been built in yet.
+PREROLL_PATCH="$REPO_ROOT_UNIX/installer/mac-patches/libopenshot-v1.0.0-discard-preroll.patch"
+if ! find "$BINDINGS_DIR" -iname 'openshot.py' 2>/dev/null | grep -q . ||
+    git -C "$LIBOPENSHOT_SRC" apply --check --whitespace=nowarn "$PREROLL_PATCH" 2>/dev/null; then
     cd "$DEPS_DIR"
     [ -d libopenshot ] || git clone https://github.com/OpenShot/libopenshot.git
     cd libopenshot
@@ -219,6 +223,12 @@ if ! find "$BINDINGS_DIR" -iname 'openshot.py' 2>/dev/null | grep -q .; then
     else
         echo "WARNING: could not download the FFmpeg 7+ compatibility patch -- build may fail on newer FFmpeg."
     fi
+
+    # Zenvi source fix, not yet upstream: without it the first frame of a
+    # stream-copy trimmed MP4 decodes the whole file and comes back black.
+    # Written against v1.0.0; it also applies to the default branch built here.
+    # Skipped if already applied; the setup stops if upstream changed the code.
+    bash "$REPO_ROOT_UNIX/installer/apply-libopenshot-patches.sh" . "$PREROLL_PATCH"
 
     rm -rf build
     mkdir -p build && cd build

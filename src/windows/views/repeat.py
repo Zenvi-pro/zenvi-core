@@ -32,6 +32,7 @@ from qt_api import (
     QDialogButtonBox, QHBoxLayout
 )
 from classes.app import get_app
+from classes.timeline_ops import repeat_is_active
 
 _ = get_app()._tr
 
@@ -223,8 +224,8 @@ def apply_repeat(clip, pattern, start_dir, passes, delay_frames, ramp, fps_float
             p["co"]["X"] = max(1, x_val)
         time_span_x = trim_span_frames
 
-    # Store original data if not already
-    if "repeat_cache" not in clip.data:
+    # Store original data (a cache left behind by undo or Reset is stale: rebuild it)
+    if not repeat_is_active(clip.data):
         cache = {
             "start": clip.data.get("start", 0.0),
             "end": clip.data["end"],
@@ -281,15 +282,26 @@ def apply_repeat(clip, pattern, start_dir, passes, delay_frames, ramp, fps_float
             total_frames = max(total_frames, used)
 
     # Update trims to cover the repeated span starting at 0
-    new_duration = total_frames / fps_float
+    from classes import frame_time as ft
+    from fractions import Fraction
+    try:
+        fps = fps_float if hasattr(fps_float, "numerator") else Fraction(fps_float).limit_denominator(1_000_000)
+        new_duration = ft.to_seconds(int(total_frames), fps)
+    except Exception:
+        new_duration = float(total_frames) / float(fps_float)
     clip.data["start"] = 0.0
     clip.data["end"] = new_duration
     clip.data["duration"] = new_duration
 
 
 def reset_repeat(clip):
-    cache = clip.data.pop("repeat_cache", None)
-    if not cache:
+    active = repeat_is_active(clip.data)
+    cache = clip.data.get("repeat_cache")
+    # Saved as an empty cache: an update merges keys, so dropping the key
+    # would leave the old cache in the project.
+    if "repeat_cache" in clip.data:
+        clip.data["repeat_cache"] = {}
+    if not active:
         return
     clip.data["start"] = cache.get("start", clip.data.get("start"))
     clip.data["end"] = cache.get("end", clip.data.get("end"))
