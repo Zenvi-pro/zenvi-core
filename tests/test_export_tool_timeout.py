@@ -12,6 +12,7 @@ timeout mechanics (using small durations standing in for the real 30s /
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -49,8 +50,10 @@ def _force_background_thread(monkeypatch):
 
 
 def test_export_video_marshals_itself_with_the_extended_timeout(monkeypatch):
-    """execute_tool skips the 30s wrap (BACKGROUND_SAFE); export_video
-    passes the 6-hour ceiling into _run_on_main_thread."""
+    """execute_tool skips the 30s wrap (BACKGROUND_SAFE); export_video_tool
+    passes the 6-hour ceiling into _run_on_main_thread for the render."""
+    from classes.editor_tools import project_export_render as render
+
     assert "export_video_tool" in th.BACKGROUND_SAFE_TOOLS
     assert th._EXPORT_MAIN_THREAD_TIMEOUT == 6 * 60 * 60
 
@@ -63,16 +66,28 @@ def test_export_video_marshals_itself_with_the_extended_timeout(monkeypatch):
 
     monkeypatch.setattr(th, "_run_on_main_thread", fake_run_on_main_thread)
 
+    out_file = "/tmp/zenvi-export-timeout-test.mp4"
     export_mod = types.ModuleType("windows.export")
-    export_mod.export_video_headless = MagicMock(return_value=None)
-    export_mod.get_default_export_settings = lambda: (None, None, None, "/tmp/out.mp4")
+    export_mod.export_video_headless = MagicMock(
+        side_effect=lambda path, *a, **k: open(path, "wb").write(b"\x00" * 8))
     monkeypatch.setitem(sys.modules, "windows.export", export_mod)
+    monkeypatch.setattr(render, "build_export_plan", lambda *a, **k: {
+        "path": out_file, "export_type": "video_audio", "vformat": "mp4", "vcodec": "libx264", "acodec": "aac",
+        "width": 1920, "height": 1080, "fps_num": 30, "fps_den": 1, "fps": 30.0,
+        "pixel_ratio": {"num": 1, "den": 1}, "video_bitrate": "20 crf", "audio_bitrate": "160 kb/s",
+        "sample_rate": 48000, "channels": 2, "channel_layout": 3, "interlaced": False, "start_seconds": 0.0,
+        "end_seconds": 1.0, "start_frame": 1, "end_frame": 30, "range": "whole", "profile": "", "profile_path": None,
+        "notes": [], "preset": "MP4 (h.264)", "preset_category": "All Formats", "quality": "High"})
+    monkeypatch.setattr(render, "window", lambda: MagicMock())
+    try:
+        result = th.execute_tool("export_video_tool", {"overwrite": True})
+    finally:
+        if os.path.exists(out_file):
+            os.remove(out_file)
 
-    result = th.export_video(show_dialog="false", output_path="/tmp/out.mp4")
-
-    assert "Error" not in result
-    assert seen_timeouts == [6 * 60 * 60], (
-        "export_video must use the extended timeout, not the 30s default"
+    assert "Error" not in result, result
+    assert 6 * 60 * 60 in seen_timeouts, (
+        "export_video_tool must render with the extended timeout, not the 30s default"
     )
 
 
