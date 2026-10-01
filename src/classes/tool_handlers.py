@@ -8623,6 +8623,9 @@ _EXTRA_TOOL_DISPLAY_LABELS = {
     # Denied to the assistant, but a refused call still lands in the transcript.
     "webfetch": "Reading a web page",
     "websearch": "Searching the web",
+    # Claude Code (a CLI chat backend) defers most tool schemas -- the Zenvi
+    # editor tools among them -- and loads them with ToolSearch before a call.
+    "toolsearch": "Looking up editor tools",
 }
 
 
@@ -8637,6 +8640,9 @@ def humanize_tool_name(tool_name: str) -> str:
     if tool_name.lower() in _EXTRA_TOOL_DISPLAY_LABELS:
         return _EXTRA_TOOL_DISPLAY_LABELS[tool_name.lower()]
     base = tool_name[:-5] if tool_name.endswith("_tool") else tool_name
+    # CLI runtimes name their tools in CamelCase ("NotebookEdit"); split the
+    # words first, or capitalize() mashes them into "Notebookedit".
+    base = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", base)
     return base.replace("_", " ").strip().capitalize() or "Run tool"
 
 
