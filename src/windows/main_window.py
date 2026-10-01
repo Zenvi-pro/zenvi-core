@@ -5104,8 +5104,14 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             set_fixed = dock.setFixedHeight
             restore = lambda: (dock.setMinimumHeight(old_min), dock.setMaximumHeight(old_max))
         if current != size:
+            # Startup forces a dock again before its queued restore has run. Only the
+            # first call saw the real limits; a second restore would pin the dock.
+            pending = vars(self).setdefault("_pending_dock_extent_restores", {})
+            key = (dock, orientation)
+            if key not in pending:
+                pending[key] = restore
+                QTimer.singleShot(0, lambda: pending.pop(key)())
             set_fixed(size)
-            QTimer.singleShot(0, restore)
 
     def _apply_saved_dock_sizes(self):
         """Apply saved logical sizes for docks Qt state commonly drifts."""
