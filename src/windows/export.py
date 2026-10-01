@@ -63,6 +63,7 @@ try:
     from classes.export_acceleration.export_tuning import (
         export_cache_bytes,
         get_export_pipeline_profile,
+        media_paths_under_proxy_root,
         uses_mp4_faststart_preset,
     )
     from classes.export_acceleration.export_pipeline import (
@@ -81,6 +82,7 @@ try:
 except Exception:  # pragma: no cover - import soft-fail for partial installs
     export_cache_bytes = None
     get_export_pipeline_profile = None
+    media_paths_under_proxy_root = None
     uses_mp4_faststart_preset = None
     PipelineCancelled = Exception
     run_pipelined_export = None
@@ -1181,6 +1183,21 @@ class Export(QDialog):
             self.timeline.SetMaxSize(video_settings.get("width"), video_settings.get("height"))
             self.timeline.ApplyMapperToClips()
 
+            # Export must read originals, never Optimize Preview proxy files.
+            if media_paths_under_proxy_root:
+                try:
+                    proxy_hits = media_paths_under_proxy_root(
+                        self.project._data, getattr(info, "PROXY_PATH", None)
+                    )
+                    if proxy_hits:
+                        log.warning(
+                            "Export project data references Optimize Preview proxy paths "
+                            "(should use originals): %s",
+                            proxy_hits[:5],
+                        )
+                except Exception:
+                    log.debug("Proxy-path export check failed", exc_info=True)
+
             max_frame = 0
             format_of_progress_string = "%4.1f%% "
             fps_encode = 0
@@ -1287,10 +1304,23 @@ class Export(QDialog):
                     export_ok = True
                     return
 
-            # Start video cache thread
-            self.cache_thread.Reader(self.timeline)
-            self.cache_thread.setSpeed(1)
-            self.cache_thread.StartThread()
+            # Prefer pipelined export when enabled (default on). Kill switch:
+            # Preferences → Performance → "Pipelined Export".
+            # Decided before starting VideoCacheThread so pipeline and cache
+            # never contend on the same Timeline.GetFrame.
+            use_pipeline = bool(
+                run_pipelined_export
+                and get_export_pipeline_profile
+                and (self.s.get("exportPipelined") if self.s else True)
+            )
+            if export_type == _("Image Sequence") or export_type == _("Audio Only"):
+                use_pipeline = False
+
+            # Serial path only: cache thread seeks ahead of the encode loop.
+            if not use_pipeline and self.cache_thread:
+                self.cache_thread.Reader(self.timeline)
+                self.cache_thread.setSpeed(1)
+                self.cache_thread.StartThread()
 
             w = openshot.FFmpegWriter(export_file_path)
 
@@ -1387,17 +1417,6 @@ class Export(QDialog):
             end_frame_export = video_settings.get("end_frame")
             last_exported_time = time.time()
             last_displayed_exported_portion = 0.0
-
-            # Prefer pipelined export when enabled (default on). Kill switch:
-            # Preferences → Performance → "Pipelined Export".
-            use_pipeline = bool(
-                run_pipelined_export
-                and get_export_pipeline_profile
-                and (self.s.get("exportPipelined") if self.s else True)
-            )
-            # Image sequences and audio-only keep the serial path.
-            if export_type == _("Image Sequence") or export_type == _("Audio Only"):
-                use_pipeline = False
 
             if use_pipeline:
                 fps_dict = video_settings.get("fps") or {}

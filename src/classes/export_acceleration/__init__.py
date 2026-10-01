@@ -23,6 +23,7 @@ from classes.export_acceleration.hw_encode import (
 from classes.export_acceleration.export_tuning import (
     export_cache_bytes,
     get_export_pipeline_profile,
+    media_paths_under_proxy_root,
     uses_mp4_faststart_preset,
 )
 from classes.export_acceleration.export_pipeline import (
@@ -49,6 +50,7 @@ __all__ = [
     "probe_video_encoder",
     "export_cache_bytes",
     "get_export_pipeline_profile",
+    "media_paths_under_proxy_root",
     "uses_mp4_faststart_preset",
     "PipelineCancelled",
     "run_pipelined_export",

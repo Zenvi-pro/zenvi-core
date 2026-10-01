@@ -13,6 +13,7 @@ import pytest
 from classes.export_acceleration.export_tuning import (
     export_cache_bytes,
     get_export_pipeline_profile,
+    media_paths_under_proxy_root,
     uses_mp4_faststart_preset,
 )
 from classes.export_acceleration.hw_decode import (
@@ -56,6 +57,24 @@ def test_export_cache_bytes_scales_with_resolution():
     assert hd >= 256 * 1024 * 1024
     assert uhd > hd
     assert uhd <= 2 * 1024 * 1024 * 1024
+
+
+def test_media_paths_under_proxy_root_detects_proxy_only(tmp_path):
+    proxy_root = tmp_path / "optimized"
+    proxy_root.mkdir()
+    original = tmp_path / "clips" / "a.mp4"
+    original.parent.mkdir()
+    original.write_bytes(b"x")
+    proxy = proxy_root / "a_proxy.mp4"
+    proxy.write_bytes(b"y")
+    project = {
+        "files": [{"path": str(original)}],
+        "clips": [{"reader": {"path": str(proxy)}}],
+    }
+    hits = media_paths_under_proxy_root(project, str(proxy_root))
+    assert hits == [str(proxy)]
+    clean = {"files": [{"path": str(original)}], "clips": [{"reader": {"path": str(original)}}]}
+    assert media_paths_under_proxy_root(clean, str(proxy_root)) == []
 
 
 def test_pipeline_profile_serial_on_low_core():
