@@ -63,7 +63,8 @@ TAG="${LIBOPENSHOT_TAG:-v0.5.0}"
 AUDIO_TAG="${LIBOPENSHOT_AUDIO_TAG:-$TAG}"
 OPENCV="${ZENVI_OPENCV:-ON}"
 EXTRA_CXX_FLAGS="${ZENVI_CXX_FLAGS:-}"
-JOBS="${ZENVI_BUILD_JOBS:-$(sysctl -n hw.logicalcpu)}"
+# "|| echo": off a Mac, reach the macOS-only check below instead of dying here.
+JOBS="${ZENVI_BUILD_JOBS:-$(sysctl -n hw.logicalcpu 2>/dev/null || echo 4)}"
 case "$OPENCV" in
   ON|OFF) ;;
   *) echo "ERROR: ZENVI_OPENCV must be ON or OFF (got '$OPENCV')"; exit 1 ;;
