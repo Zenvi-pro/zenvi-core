@@ -1097,7 +1097,10 @@ class Export(QDialog):
 
         owns_pause = not getattr(self, "_auto_save_paused", False)
         if owns_pause:
-            self._auto_save_was_active = pause_window_auto_save()
+            # A headless render runs off the GUI thread from a project snapshot,
+            # so auto-save may keep running (and its timer is not ours to touch).
+            self._auto_save_was_active = (
+                False if getattr(self, "_headless", False) else pause_window_auto_save())
             self._auto_save_paused = True
             # Reset per-export-attempt guards. Only the top-level call (not
             # the audio-codec-failure retry recursion below) should do this,
@@ -1473,7 +1476,8 @@ class Export(QDialog):
                         )
                         # Serial path still runs on the UI thread for the dialog;
                         # processEvents keeps the cancel button alive.
-                        QCoreApplication.processEvents()
+                        if not getattr(self, "_headless", False):
+                            QCoreApplication.processEvents()
 
                     max_frame = frame
                     try:
@@ -2030,6 +2034,7 @@ def get_default_export_settings():
 
     # Defaults from project profile
     fps = project.get("fps") or {"num": 30, "den": 1}
+    fps_float = float(fps.get("num", 30)) / float(fps.get("den", 1) or 1)
     width = project.get("width") or 1920
     height = project.get("height") or 1080
     sample_rate = project.get("sample_rate") or 48000
@@ -2045,7 +2050,8 @@ def get_default_export_settings():
         "pixel_ratio": {"num": 1, "den": 1},
         "video_bitrate": 2000000,
         "start_frame": 1,
-        "end_frame": max(1, int(project.get("duration") or 0) or 1),
+        # duration is in seconds; frames are 1-based, so the last one is round(seconds * fps).
+        "end_frame": max(1, int(round(float(project.get("duration") or 0) * fps_float))),
         "interlace": False,
         "topfirst": False,
         "spherical": False,
