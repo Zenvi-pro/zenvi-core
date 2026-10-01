@@ -1202,7 +1202,7 @@ class Export(QDialog):
             format_of_progress_string = "%4.1f%% "
             fps_encode = 0
 
-            # Smart render: full copy, source passthrough, or partial copy+encode.
+            # Smart render: full copy, or partial copy+encode.
             smart_enabled = bool(
                 try_smart_render_export
                 and decide_smart_render
@@ -1279,8 +1279,9 @@ class Export(QDialog):
                     end_frame=_ef,
                     encode_span=_encode_smart_span,
                     enabled=True,
-                    allow_passthrough=True,
                     allow_partial=True,
+                    # A Video Only export drops the source audio from copies.
+                    audio_settings=audio_settings if export_type == _("Video & Audio") else None,
                 )
                 if result:
                     self.ExportStarted.emit(

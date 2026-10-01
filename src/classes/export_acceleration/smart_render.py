@@ -6,9 +6,13 @@ Eligibility uses the same identity defaults as the Properties panel:
 
 Modes:
   full_copy — spans match export width/fps/codec; ffmpeg stream-copy
-  source_passthrough — single clean clip; trim+copy source even if export
-    profile differs (MP4/MOV only)
   partial — mix of copy + encode segments, then concat
+
+A copy is only made when the source already is what the export settings ask
+for (codec, size, fps, audio): copying a source that differs would silently
+ignore the user's settings. A stream copy also starts on the keyframe before a
+cut and overshoots a cut end with B-frames, so only a whole clip that plays its
+whole source file is copied, and the copy is counted before it is used.
 """
 
 from __future__ import annotations
@@ -19,11 +23,32 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from classes.export_acceleration.hw_encode import is_hardware_encoder
 from classes.ffmpeg_cli import run_ffmpeg
 from classes.logger import log
 
-# Format mismatches that source-passthrough may ignore for a single clean clip.
-_FORMAT_REASONS = frozenset({"resolution-mismatch", "fps-mismatch", "codec-mismatch"})
+# libopenshot defaults (Clip::init_settings) for the other clip properties that
+# change the picture, and the audio-only ones (checked when audio is exported).
+_PICTURE_DEFAULTS = (
+    ("margin", "margin", 0.0),
+    ("corner_radius", "rounded-corners", 0.0),
+) + tuple(
+    ("perspective_c%d_%s" % (corner, axis), "perspective", -1.0)
+    for corner in range(1, 5)
+    for axis in ("x", "y")
+)
+_AUDIO_DEFAULTS = (
+    ("volume", "volume-change", 1.0),
+    ("channel_filter", "audio-channels", -1.0),
+    ("channel_mapping", "audio-channels", -1.0),
+)
+
+# yuv420p and yuvj420p: what a default H.264 export writes.
+_COPYABLE_PIXEL_FORMATS = (0, 12)
+
+# Default for export_audio: the caller did not say, so treat the source audio
+# as exported (check audio properties, but not the audio format).
+_KEEP_AUDIO = object()
 
 # Neutral ColorGrade knob defaults (Y values).
 _COLOR_GRADE_IDENTITY = {
@@ -51,7 +76,7 @@ class SmartRenderSpan:
 
 @dataclass(frozen=True)
 class SmartRenderDecision:
-    mode: str  # "full_copy" | "source_passthrough" | "partial" | "none"
+    mode: str  # "full_copy" | "partial" | "none"
     spans: tuple[SmartRenderSpan, ...] = ()
     clip: Optional[dict] = None
     reason_counts: dict[str, int] = field(default_factory=dict)
@@ -74,23 +99,22 @@ def _clip_timeline_range(clip: dict, fps: float) -> tuple[int, int]:
 
 
 def _deviates_from_identity(obj: Any, identity: float) -> bool:
-    """True if keyframe/scalar is animated or not at the given identity."""
+    """True if a keyframe/scalar leaves the given identity at any point."""
     if obj is None:
         return False
     if isinstance(obj, (int, float)):
         return abs(float(obj) - float(identity)) > 1e-6
     if isinstance(obj, dict):
         points = obj.get("Points") or obj.get("points") or []
-        if not points:
-            return False
-        if len(points) > 1:
-            return True
         try:
-            co = points[0].get("co") or {}
-            y = float(co.get("Y", co.get("y", identity)))
-            return abs(y - float(identity)) > 1e-6
+            for point in points:
+                co = point.get("co") or {}
+                y = float(co.get("Y", co.get("y", identity)))
+                if abs(y - float(identity)) > 1e-6:
+                    return True
         except Exception:
             return True
+        return False
     return False
 
 
@@ -173,12 +197,36 @@ def _crop_is_active(clip: dict) -> bool:
     return False
 
 
-def clip_transform_reasons(clip: dict) -> list[str]:
-    """Disqualify for transforms/effects/source only (ignore export format)."""
+def _audio_family(codec: str) -> str:
+    name = (codec or "").lower()
+    for family in ("aac", "mp3", "ac3", "opus", "vorbis", "flac"):
+        if family in name:
+            return family
+    return name
+
+
+def clip_transform_reasons(
+    clip: dict,
+    *,
+    export_fps: Optional[float] = None,
+    export_audio: Any = _KEEP_AUDIO,
+) -> list[str]:
+    """Disqualify for transforms/effects/source only (ignore export format).
+
+    *export_audio* None means the export has no audio, so audio-only
+    properties do not matter (the copy drops the source audio).
+    """
     reasons: list[str] = []
     if _effects_block_smart_render(clip.get("effects")):
         reasons.append("has-effects")
 
+    reader = clip.get("reader") or {}
+    if (reader.get("type") not in (None, "FFmpegReader")
+            or reader.get("has_video") is False
+            or reader.get("has_single_image")):
+        reasons.append("not-a-video-file")
+
+    audio_matters = export_audio is not None
     for prop, label, identity in (
         ("scale_x", "scaled", 1.0),
         ("scale_y", "scaled", 1.0),
@@ -187,23 +235,49 @@ def clip_transform_reasons(clip: dict) -> list[str]:
         ("rotation", "rotated", 0.0),
         ("shear_x", "sheared", 0.0),
         ("shear_y", "sheared", 0.0),
-        ("volume", "volume-change", 1.0),
         ("alpha", "alpha-change", 1.0),
         ("time", "speed-change", 1.0),
-    ):
+    ) + _PICTURE_DEFAULTS + (_AUDIO_DEFAULTS if audio_matters else ()):
         if _deviates_from_identity(clip.get(prop), identity):
             if label not in reasons:
                 reasons.append(label)
 
+    # 0 switches the clip's video or audio off; -1 (auto) and 1 leave it on.
+    for prop, label in (("has_video", "video-off"), ("has_audio", "audio-off")):
+        if prop == "has_audio" and not audio_matters:
+            continue
+        if _keyframe_y(clip.get(prop), -1.0) in (0.0, None) and clip.get(prop) is not None:
+            reasons.append(label)
+
+    if clip.get("waveform"):
+        reasons.append("waveform")
+
+    # A copy can only begin on a keyframe and overshoots a cut end, so the clip
+    # has to play its whole source file.
+    half_frame = 0.5 / max(float(export_fps or 30.0), 1.0)
+    try:
+        start = float(clip.get("start", 0.0))
+        end = float(clip.get("end", 0.0))
+        source_duration = float(reader.get("duration") or 0.0)
+    except (TypeError, ValueError):
+        start = end = source_duration = 0.0
+    if (start > half_frame or source_duration <= 0
+            or abs(end - source_duration) > half_frame):
+        reasons.append("trimmed")
+
     time_prop = clip.get("time")
     if isinstance(time_prop, str) and time_prop not in ("TIME_MAP_FORWARD", "none", ""):
+        if "speed-change" not in reasons:
+            reasons.append("speed-change")
+    # libopenshot remaps time whenever the curve has two or more points, even a
+    # flat one (that is a freeze frame).
+    if isinstance(time_prop, dict) and len(time_prop.get("Points") or time_prop.get("points") or []) > 1:
         if "speed-change" not in reasons:
             reasons.append("speed-change")
 
     if _crop_is_active(clip):
         reasons.append("cropped")
 
-    reader = clip.get("reader") or {}
     path = (reader.get("path") or clip.get("path") or "")
     if not path or not os.path.isfile(path):
         reasons.append("missing-source")
@@ -219,6 +293,7 @@ def clip_format_reasons(
     export_fps: float,
     export_vcodec: str,
     source_meta: Optional[dict] = None,
+    export_audio: Any = _KEEP_AUDIO,
 ) -> list[str]:
     """Disqualify when source format does not match the export target."""
     reasons: list[str] = []
@@ -250,6 +325,27 @@ def clip_format_reasons(
         name = str(source_meta["codec_name"]).lower()
         if export_family == "h264" and name not in ("h264", "avc1"):
             reasons.append("codec-mismatch")
+    else:
+        reasons.append("codec-unknown")
+
+    pixel_format = reader.get("pixel_format")
+    if pixel_format is not None and pixel_format not in _COPYABLE_PIXEL_FORMATS:
+        reasons.append("pixel-format-mismatch")
+
+    # The copy keeps the source audio as it is, so it must already be what
+    # the export asks for.
+    if isinstance(export_audio, dict) and reader.get("has_audio"):
+        try:
+            same_audio = (
+                _audio_family(reader.get("acodec") or "")
+                == _audio_family(export_audio.get("acodec") or "aac")
+                and int(reader.get("sample_rate") or 0) == int(export_audio.get("sample_rate") or 0)
+                and int(reader.get("channels") or 0) == int(export_audio.get("channels") or 0)
+            )
+        except (TypeError, ValueError):
+            same_audio = False
+        if not same_audio:
+            reasons.append("audio-mismatch")
 
     return reasons
 
@@ -262,10 +358,11 @@ def clip_smart_render_reasons(
     export_fps: float,
     export_vcodec: str,
     source_meta: Optional[dict] = None,
+    export_audio: Any = _KEEP_AUDIO,
 ) -> list[str]:
     """Return disqualification reasons (empty => eligible for matched stream-copy)."""
     return (
-        clip_transform_reasons(clip)
+        clip_transform_reasons(clip, export_fps=export_fps, export_audio=export_audio)
         + clip_format_reasons(
             clip,
             export_width=export_width,
@@ -273,6 +370,7 @@ def clip_smart_render_reasons(
             export_fps=export_fps,
             export_vcodec=export_vcodec,
             source_meta=source_meta,
+            export_audio=export_audio,
         )
     )
 
@@ -286,12 +384,17 @@ def analyze_smart_render_spans(
     export_vcodec: str = "libx264",
     start_frame: int = 1,
     end_frame: Optional[int] = None,
-    ignore_format: bool = False,
+    export_audio: Any = _KEEP_AUDIO,
 ) -> list[SmartRenderSpan]:
-    """Partition [start_frame, end_frame] into copy vs encode spans."""
+    """Partition [start_frame, end_frame] into copy vs encode spans.
+
+    *export_audio* is the export's audio settings, or None without audio.
+    """
     fps = export_fps if export_fps is not None else _fps_float(project_data)
     clips = list(project_data.get("clips") or [])
-    transitions = list(project_data.get("transitions") or [])
+    # Project data keeps transitions under "effects".
+    transitions = list(project_data.get("effects") or []) + list(
+        project_data.get("transitions") or [])
     if end_frame is None:
         duration = float(project_data.get("duration") or 0) or 0
         end_frame = max(start_frame, int(round(duration * fps)))
@@ -349,16 +452,14 @@ def analyze_smart_render_spans(
             reasons = ["transition"]
         else:
             clip = covering[0]
-            if ignore_format:
-                reasons = clip_transform_reasons(clip)
-            else:
-                reasons = clip_smart_render_reasons(
-                    clip,
-                    export_width=export_width,
-                    export_height=export_height,
-                    export_fps=fps,
-                    export_vcodec=export_vcodec,
-                )
+            reasons = clip_smart_render_reasons(
+                clip,
+                export_width=export_width,
+                export_height=export_height,
+                export_fps=fps,
+                export_vcodec=export_vcodec,
+                export_audio=export_audio,
+            )
             if not reasons:
                 kind = "copy"
 
@@ -372,7 +473,21 @@ def analyze_smart_render_spans(
             current_reasons = reasons
 
     flush(end_frame)
-    return spans
+
+    # Only a whole clip is copied (see the module docstring): a span cut short
+    # by the export range or by an overlapping clip is encoded.
+    whole: list[SmartRenderSpan] = []
+    for span in spans:
+        if span.kind == "copy" and span.clip is not None:
+            if (span.start_frame, span.end_frame) != _clip_timeline_range(span.clip, fps):
+                span = SmartRenderSpan(
+                    kind="encode",
+                    start_frame=span.start_frame,
+                    end_frame=span.end_frame,
+                    reasons=("partial-clip",),
+                )
+        whole.append(span)
+    return whole
 
 
 def _reason_counts(spans: list[SmartRenderSpan]) -> dict[str, int]:
@@ -381,12 +496,6 @@ def _reason_counts(spans: list[SmartRenderSpan]) -> dict[str, int]:
         for reason in span.reasons:
             counts[reason] += 1
     return dict(counts)
-
-
-def _container_allows_passthrough(export_file_path: str, vformat: str) -> bool:
-    ext = os.path.splitext(export_file_path)[1].lower().lstrip(".")
-    fmt = (vformat or ext or "").lower()
-    return fmt in ("mp4", "mov", "m4v") or ext in ("mp4", "mov", "m4v")
 
 
 def decide_smart_render(
@@ -400,10 +509,10 @@ def decide_smart_render(
     end_frame: int,
     export_file_path: str = "",
     vformat: str = "mp4",
-    allow_passthrough: bool = True,
     allow_partial: bool = True,
+    export_audio: Any = _KEEP_AUDIO,
 ) -> SmartRenderDecision:
-    """Choose full_copy, source_passthrough, partial, or none."""
+    """Choose full_copy, partial, or none."""
     spans = analyze_smart_render_spans(
         project_data,
         export_width=export_width,
@@ -412,7 +521,7 @@ def decide_smart_render(
         export_vcodec=export_vcodec,
         start_frame=start_frame,
         end_frame=end_frame,
-        ignore_format=False,
+        export_audio=export_audio,
     )
     counts = _reason_counts(spans)
     if not spans:
@@ -436,45 +545,6 @@ def decide_smart_render(
             detail=f"copy={copy_n} encode={encode_n}",
         )
 
-    # Source passthrough: one clean clip covering the whole range; format may differ.
-    if allow_passthrough and _container_allows_passthrough(export_file_path, vformat):
-        clean_spans = analyze_smart_render_spans(
-            project_data,
-            export_width=export_width,
-            export_height=export_height,
-            export_fps=export_fps,
-            export_vcodec=export_vcodec,
-            start_frame=start_frame,
-            end_frame=end_frame,
-            ignore_format=True,
-        )
-        if (
-            clean_spans
-            and all(s.kind == "copy" for s in clean_spans)
-            and len({id(s.clip) for s in clean_spans if s.clip is not None}) == 1
-        ):
-            clip = next(s.clip for s in clean_spans if s.clip is not None)
-            # Only use passthrough when format mismatch (or empty reasons under match)
-            # was the obstacle — not when transforms failed.
-            transform_only = clip_transform_reasons(clip)
-            if not transform_only:
-                reader = clip.get("reader") or {}
-                detail = "source={}x{} codec={}; export={}x{} codec={}".format(
-                    reader.get("width"),
-                    reader.get("height"),
-                    reader.get("vcodec") or reader.get("video_codec"),
-                    export_width,
-                    export_height,
-                    export_vcodec,
-                )
-                return SmartRenderDecision(
-                    mode="source_passthrough",
-                    spans=tuple(clean_spans),
-                    clip=clip,
-                    reason_counts=counts,
-                    detail=detail,
-                )
-
     return SmartRenderDecision(
         mode="none",
         spans=tuple(spans),
@@ -490,6 +560,7 @@ def _stream_copy_span(
     end_frame: int,
     fps: float,
     output_path: str,
+    include_audio: bool = True,
 ) -> bool:
     reader = clip.get("reader") or {}
     path = reader.get("path") or clip.get("path")
@@ -515,6 +586,10 @@ def _stream_copy_span(
             path,
             "-t",
             f"{duration:.6f}",
+            # One video and (optionally) one audio stream, like an export writes.
+            "-map",
+            "0:v:0",
+            *(["-map", "0:a:0?"] if include_audio else ["-an"]),
             "-c",
             "copy",
             "-avoid_negative_ts",
@@ -530,6 +605,47 @@ def _stream_copy_span(
         log.warning("Smart-render stream-copy failed: %s", result.stderr)
         return False
     return os.path.isfile(output_path) and os.path.getsize(output_path) > 0
+
+
+def _video_frame_count(path: str) -> Optional[int]:
+    """Packets (one per frame) in *path*'s first video stream.
+
+    Counted by demuxing rather than read from the header: Matroska has no
+    per-stream frame count, and a counted pre-roll packet is what this guards.
+    """
+    result = run_ffmpeg(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-count_packets",
+            "-show_entries",
+            "stream=nb_read_packets",
+            "-of",
+            "csv=p=0",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    try:
+        return int((result.stdout or "").strip().splitlines()[0])
+    except (IndexError, ValueError):
+        return None
+
+
+def _has_frames(path: str, expected: int) -> bool:
+    """True when a written file holds exactly the *expected* frames."""
+    actual = _video_frame_count(path)
+    if actual != expected:
+        log.warning(
+            "Smart render: %s has %s frames, expected %s; falling back to encode",
+            os.path.basename(path), actual, expected,
+        )
+        return False
+    return True
 
 
 def _concat_copy(paths: list[str], output_path: str) -> bool:
@@ -591,10 +707,14 @@ def try_smart_render_export(
     end_frame: int,
     encode_span: Optional[Callable[[int, int, str], bool]] = None,
     enabled: bool = True,
-    allow_passthrough: bool = True,
     allow_partial: bool = True,
+    audio_settings: Any = _KEEP_AUDIO,
 ) -> Optional[dict]:
-    """Attempt smart render. Returns metrics dict on success, None to fall back."""
+    """Attempt smart render. Returns metrics dict on success, None to fall back.
+
+    *audio_settings* is the export's audio settings, or None for an export
+    without audio (copies then drop the source audio).
+    """
     if not enabled:
         return None
 
@@ -605,9 +725,12 @@ def try_smart_render_export(
     export_vcodec = str(video_settings.get("vcodec") or "libx264")
     vformat = str(video_settings.get("vformat") or "mp4")
 
-    # Partial needs a working encode callback.
-    if allow_partial and encode_span is None:
+    # Partial needs a working encode callback. Its segments are written by a
+    # writer of their own, outside run_export's encoder checks, so a hardware
+    # encoder (h264_videotoolbox aborts the app on libopenshot 1.0) is not used.
+    if allow_partial and (encode_span is None or is_hardware_encoder(export_vcodec)):
         allow_partial = False
+    include_audio = audio_settings is not None
 
     decision = decide_smart_render(
         project_data,
@@ -619,8 +742,8 @@ def try_smart_render_export(
         end_frame=end_frame,
         export_file_path=export_file_path,
         vformat=vformat,
-        allow_passthrough=allow_passthrough,
         allow_partial=allow_partial,
+        export_audio=audio_settings,
     )
 
     if decision.mode == "none":
@@ -637,26 +760,6 @@ def try_smart_render_export(
         decision.detail,
         decision.reason_counts or {},
     )
-
-    if decision.mode == "source_passthrough" and decision.clip is not None:
-        ok = _stream_copy_span(
-            decision.clip,
-            start_frame=start_frame,
-            end_frame=end_frame,
-            fps=fps,
-            output_path=export_file_path,
-        )
-        if not ok:
-            log.warning("Smart render passthrough failed; falling back to full encode")
-            return None
-        return {
-            "mode": "source_passthrough",
-            "spans": 1,
-            "copy_spans": 1,
-            "encode_spans": 0,
-            "path": export_file_path,
-            "detail": decision.detail,
-        }
 
     spans = list(decision.spans)
     if not spans:
@@ -679,8 +782,9 @@ def try_smart_render_export(
                     end_frame=span.end_frame,
                     fps=fps,
                     output_path=out,
-                )
-                if not ok and encode_span is not None:
+                    include_audio=include_audio,
+                ) and _has_frames(out, span.end_frame - span.start_frame + 1)
+                if not ok and decision.mode == "partial" and encode_span is not None:
                     ok = encode_span(span.start_frame, span.end_frame, out)
             else:
                 if encode_span is None:
@@ -694,6 +798,8 @@ def try_smart_render_export(
 
         if not _concat_copy(segment_paths, export_file_path):
             log.warning("Smart render concat failed; falling back")
+            return None
+        if not _has_frames(export_file_path, end_frame - start_frame + 1):
             return None
 
         copy_spans = sum(1 for s in spans if s.kind == "copy")

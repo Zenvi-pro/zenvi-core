@@ -395,6 +395,7 @@ def _clip(
     height=1080,
     vcodec="h264",
     with_color_grade=False,
+    source_duration=None,
 ):
     """OpenShot-shaped clip: location/rotation at 0, scale/volume/time/alpha at 1."""
     clip = {
@@ -407,6 +408,7 @@ def _clip(
             "height": height,
             "fps": {"num": 30, "den": 1},
             "vcodec": vcodec,
+            "duration": end if source_duration is None else source_duration,
         },
         "scale_x": _pt(1.0),
         "scale_y": _pt(1.0),
@@ -562,7 +564,8 @@ def test_decide_full_copy_matched_h264(tmp_path):
     assert decision.mode == "full_copy"
 
 
-def test_decide_passthrough_hevc_to_h264_export(tmp_path):
+def test_a_hevc_source_in_a_720p_h264_export_is_encoded(tmp_path):
+    """Copying the 1080p HEVC source would ignore the 720p H.264 the user asked for."""
     path = tmp_path / "phone.mov"
     path.write_bytes(b"fake")
     project = {
@@ -581,11 +584,11 @@ def test_decide_passthrough_hevc_to_h264_export(tmp_path):
         export_file_path=str(tmp_path / "out.mp4"),
         vformat="mp4",
     )
-    assert decision.mode == "source_passthrough"
-    assert decision.clip is not None
+    assert decision.mode == "none"
+    assert {"resolution-mismatch", "codec-mismatch"} <= set(decision.reason_counts)
 
 
-def test_decide_passthrough_blocked_by_real_effect(tmp_path):
+def test_decide_blocked_by_real_effect(tmp_path):
     path = tmp_path / "phone.mov"
     path.write_bytes(b"fake")
     clip = _clip(str(path), vcodec="hevc")
@@ -631,15 +634,16 @@ def test_decide_partial_when_second_clip_has_effect(tmp_path):
     assert any(s.kind == "encode" for s in decision.spans)
 
 
-def test_trimmed_clip_still_eligible(tmp_path):
+def test_trimmed_clip_is_encoded(tmp_path):
+    """-ss/-t with -c copy starts on the keyframe before the cut and overshoots its end."""
     path = tmp_path / "a.mp4"
     path.write_bytes(b"fake")
     clip = _clip(str(path), start=1.0, end=3.0)
-    assert clip_transform_reasons(clip) == []
+    assert "trimmed" in clip_transform_reasons(clip)
     reasons = clip_smart_render_reasons(
         clip, export_width=1920, export_height=1080, export_fps=30, export_vcodec="libx264"
     )
-    assert reasons == []
+    assert "trimmed" in reasons
 
 
 # ---------------------------------------------------------------------------
