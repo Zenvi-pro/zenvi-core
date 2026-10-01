@@ -70,9 +70,7 @@ try:
         PipelineCancelled,
         run_pipelined_export,
     )
-    from classes.export_acceleration.hw_encode import (
-        maybe_apply_hardware_bitrate,
-    )
+    from classes.export_acceleration.hw_encode import maybe_apply_hardware_bitrate
     from classes.export_acceleration.hw_decode import force_software_decode
     from classes.export_acceleration.smart_render import (
         analyze_smart_render_spans,
@@ -91,6 +89,12 @@ except Exception:  # pragma: no cover - import soft-fail for partial installs
     analyze_smart_render_spans = None
     decide_smart_render = None
     try_smart_render_export = None
+
+# On its own, so an unrelated acceleration import failing cannot skip the trial.
+try:
+    from classes.export_acceleration.hw_encode import safe_video_encoder
+except Exception:  # pragma: no cover
+    safe_video_encoder = None
 
 MAX_FPS_SPINBOX_VALUE = 2147483647
 
@@ -1096,6 +1100,24 @@ class Export(QDialog):
 
         invoke_on_gui(_show, context=self)
 
+    def _present_encoder_fallback(self, hardware_codec, software_codec):
+        """Tell the user their hardware preset is exporting in software. Dialog only."""
+        if getattr(self, "_headless", False):
+            return
+        _ = get_app()._tr
+
+        def _show():
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Information)
+            msg.setWindowTitle(_("Hardware Encoder Unavailable"))
+            msg.setText(
+                _("The %(hardware)s encoder could not encode a test frame on this computer, "
+                  "so this video will be exported with %(software)s instead.")
+                % {"hardware": hardware_codec, "software": software_codec})
+            msg.exec_()
+
+        invoke_on_gui(_show, context=self)
+
     def _show_export_finished(self):
         """Dialog-only success UI. Headless export just returns.
 
@@ -1445,6 +1467,24 @@ class Export(QDialog):
                 vc = video_settings.get("vcodec") or "libx264"
                 if not isinstance(vc, str):
                     vc = str(vc)
+                # FFmpeg can list a hardware encoder that then aborts the whole
+                # app on its first frame, so try it in a child process first.
+                if safe_video_encoder is not None:
+                    headless = getattr(self, "_headless", False)
+                    safe_vc = safe_video_encoder(
+                        vc, poll=None if headless else QCoreApplication.processEvents)
+                    if not headless and not self.exporting:
+                        # Cancelled while the trial ran: stop before the writer opens a file.
+                        if getattr(self, "_export_cancel_confirmed", False):
+                            self._export_cancel_confirmed = False
+                            super(Export, self).reject()
+                        else:
+                            self.enableControls()
+                        return
+                    if safe_vc != vc:
+                        self._present_encoder_fallback(vc, safe_vc)
+                        vc = safe_vc
+                        video_settings = dict(video_settings, vcodec=vc)
                 fps_dict = video_settings.get("fps") or {}
                 fps_num = int(fps_dict.get("num", 30))
                 fps_den = int(fps_dict.get("den", 1) or 1)

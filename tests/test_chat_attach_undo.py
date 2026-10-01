@@ -107,6 +107,48 @@ def test_chat_owns_keys_when_view_has_focus():
     assert chat_owns_clipboard_keys(Chat(), focus_widget=None, under_mouse=False) is True
 
 
+def test_chat_focus_proxy_counts_only_while_focused():
+    """RC v1.2.0 B1: QtWebEngine's focus proxy is a child of the chat view, so
+    its ancestry always reached the view and every Undo / Copy / Paste went to
+    the chat while the dock was visible. Only real keyboard focus counts."""
+
+    class Widget:
+        def __init__(self, parent=None, focused=False):
+            self._parent = parent
+            self.focused = focused
+
+        def parentWidget(self):
+            return self._parent
+
+        def hasFocus(self):
+            return self.focused
+
+    class View(Widget):
+        proxy = None
+
+        def focusProxy(self):
+            return self.proxy
+
+    class Chat(Widget):
+        def isVisible(self):
+            return True
+
+    chat = Chat()
+    view = View(parent=chat)
+    view.proxy = Widget(parent=view)
+    chat._chat_view = view
+    timeline = Widget()
+
+    assert chat_owns_clipboard_keys(chat, focus_widget=None, under_mouse=False) is False
+    assert chat_owns_clipboard_keys(chat, focus_widget=timeline, under_mouse=False) is False
+    # A focused widget outside the chat wins over the chat being under the mouse.
+    assert chat_owns_clipboard_keys(chat, focus_widget=timeline, under_mouse=True) is False
+
+    assert chat_owns_clipboard_keys(chat, focus_widget=view.proxy) is True
+    view.proxy.focused = True
+    assert chat_owns_clipboard_keys(chat, focus_widget=None) is True
+
+
 def test_encode_chat_images_jpeg_from_png(tmp_path):
     try:
         from PIL import Image

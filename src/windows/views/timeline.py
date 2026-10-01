@@ -267,6 +267,49 @@ def _save_look_effects(view, clip, effects):
     get_app().updates.apply_last_action_to_history(original_clip_data)
 
 
+# Transactions a waveform request joined (an audio drop, Separate Audio), as
+# opposed to a request that is an undo step of its own (Display Waveform).
+_joined_waveform_tids = set()
+
+
+def _save_waveform(item, tid, inserted_by_tid=False):
+    """Save waveform data that arrived from the worker on a clip or file.
+
+    It shares the undo step of the edit that asked for it (*tid*), while that
+    edit is still the newest one. After a newer edit, joining that step would
+    make it the newest and Undo would revert the older edit first; after Clear
+    History there is no step left to join, and the save would become one of
+    its own. In both cases the waveform is saved outside undo history instead.
+    """
+    manager = get_app().updates
+    history = manager.actionHistory
+    late = tid in _joined_waveform_tids and not (history and history[-1].transaction == tid)
+    if not late:
+        item.save()
+        return
+    # Like UpdateManager.update_untracked: keep any pending drag action.
+    pending = manager.pending_action
+    manager.ignore_history = True
+    try:
+        item.save()
+    finally:
+        manager.ignore_history = False
+        manager.pending_action = pending
+    # Redo replays the recorded insert: give it the waveform, or the clip
+    # would come back without one.
+    ui = (getattr(item, "data", None) or {}).get("ui")
+    if not ui or not inserted_by_tid:
+        return
+    # Newest first, stopping at the insert: the walk covers only the edits made
+    # since the drop, however long the history is. Only asked for clips, which
+    # the joined transaction inserted; a file has no insert to find.
+    for action in reversed(history):
+        if (action.transaction == tid and action.type == "insert"
+                and isinstance(action.values, dict) and action.values.get("id") == item.id):
+            action.values["ui"] = dict(action.values.get("ui") or {}, **ui)
+            break
+
+
 class TimelineView(updates.UpdateInterface, ViewClass):
     """ A Web(Engine/Kit)View QWidget used to load the Timeline """
 
@@ -2017,6 +2060,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             files[file_id].append(clip.data.get("id"))
 
         # Get audio data for all "selected" files/clips
+        if transaction_id:
+            _joined_waveform_tids.add(transaction_id)
         get_audio_data(files, transaction_id=transaction_id)
 
     def Hide_Waveform_Triggered(self, clip_ids):
@@ -2060,7 +2105,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     file.data = ui_data
             else:
                 file.data = ui_data
-            file.save()
+            _save_waveform(file, tid)
 
         # Clear transaction id
         get_app().updates.transaction_id = None
@@ -2104,7 +2149,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 if not preserve_existing_waveform and isinstance(clip_ui.get("audio_data"), list):
                     clip_ui["waveform_token"] = str(tid or self.get_uuid())
             clip.data = ui_data
-            clip.save()
+            _save_waveform(clip, tid, inserted_by_tid=True)
             if hasattr(self, "clip_painter"):
                 self.clip_painter.clear_cache()
             QTimer.singleShot(0, self.update)
@@ -5066,7 +5111,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         event.accept()
 
     # Add Clip
-    def _waveform_new_audio_clip(self, new_clip):
+    def _waveform_new_audio_clip(self, new_clip, transaction_id=None):
         """Generate waveform data by default for an audio-only clip just added.
 
         Requested under the caller's transaction: the waveform is saved later, from
@@ -5080,7 +5125,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         has_audio = True if has_audio is None else bool(has_audio)
         clip_id = new_clip.get("id")
         if has_audio and not has_video and clip_id:
-            self.Show_Waveform_Triggered([clip_id], transaction_id=get_app().updates.transaction_id)
+            self.Show_Waveform_Triggered(
+                [clip_id], transaction_id=transaction_id or get_app().updates.transaction_id)
 
     def addClip(
         self,
@@ -5181,14 +5227,16 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if auto_transition:
             new_clip["_auto_transition"] = True
 
-        # Add the clip to the timeline
-        self._ensure_layers_exist([track])
-        self.update_clip_data(new_clip, only_basic_props=False, ignore_refresh=ignore_refresh)
+        # Add the clip to the timeline, joining the caller's transaction (a
+        # drop, an agent tool) or opening one, so the waveform below shares it.
+        with updates.nested_transaction(get_app().updates) as tid:
+            self._ensure_layers_exist([track])
+            self.update_clip_data(new_clip, only_basic_props=False, ignore_refresh=ignore_refresh)
 
         # Track the added clip
         self.item_ids.append(new_clip.get('id'))
 
-        self._waveform_new_audio_clip(new_clip)
+        self._waveform_new_audio_clip(new_clip, tid)
 
         # Trigger manual move event to initialize UI snapping
         if call_manual_move:
