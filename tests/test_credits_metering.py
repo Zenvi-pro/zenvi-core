@@ -205,6 +205,70 @@ def test_an_indexed_clip_is_not_reindexed_or_charged(monkeypatch, charges):
     assert charges == []
 
 
+# ── a backend-billed generation repaints the badge ─────────────────────────
+
+
+def _backend(monkeypatch, response):
+    """A ZenviBackendClient whose POST answers *response* (or raises it)."""
+    client = api_client.ZenviBackendClient.__new__(api_client.ZenviBackendClient)
+    client.api_url = "http://backend.test/api/v1"
+    session = MagicMock()
+    if isinstance(response, Exception):
+        session.post.side_effect = response
+    else:
+        session.post.return_value.json.return_value = response
+    client._session = session
+    monkeypatch.setattr(client, "_apply_bearer", lambda s: None)
+    return client
+
+
+def _generate(client, route):
+    if route == "video":
+        return client.generate_video("a paper plane", duration_seconds=5)
+    return client.generate_morph_video("https://x/a.jpg", "https://x/b.jpg")
+
+
+@pytest.mark.parametrize("route", ["video", "morph"])
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"video_url": "https://x/gen.mp4", "local_path": "/tmp/gen.mp4"},  # charged
+        {"video_url": "https://x/gen.mp4", "error": "download failed"},  # refunded
+        RuntimeError("402 Payment Required"),  # never charged
+    ],
+    ids=["charged", "refunded", "refused"],
+)
+def test_a_generation_request_repaints_the_badge_whatever_its_outcome(monkeypatch, route, response):
+    """The desktop fires no charge for these, so it must refetch the balance itself."""
+    refreshes = []
+    monkeypatch.setattr(cc.credits, "refresh_balance", lambda: refreshes.append(route))
+
+    _generate(_backend(monkeypatch, response), route)
+
+    assert refreshes == [route]
+
+
+def test_a_balance_refresh_fetches_off_the_calling_thread_and_repaints(tmp_path, monkeypatch):
+    monkeypatch.setattr(cc, "CREDITS_FILE", str(tmp_path / "zenvi_credits.json"))
+    monkeypatch.setattr(cc, "_current_user_id", lambda: "user-a")
+    client = cc.CreditsClient()
+    monkeypatch.setattr(client, "_get_auth", lambda: (object(), {}, "u"))
+    fetched_on = []
+
+    def rpc(function_name, payload, timeout=8):
+        fetched_on.append(threading.current_thread())
+        return {"total_points": 4130}
+
+    monkeypatch.setattr(client, "_rpc", rpc)
+    heard = threading.Event()
+    client.add_listener(lambda balance: balance == 4130 and heard.set())
+
+    client.refresh_balance()
+
+    assert heard.wait(5)
+    assert threading.current_thread() not in fetched_on
+
+
 # ── the chat turn ──────────────────────────────────────────────────────────
 
 

@@ -311,6 +311,15 @@ class CreditsClient:
         self._store_balance(total, user_id)
         return True, total
 
+    def refresh_balance(self) -> None:
+        """Refetch the balance in the background; the listeners repaint the badge.
+
+        For requests the backend bills itself (BACKEND_METERED_OPS): the
+        desktop fires no charge for those, so nothing else would refetch
+        before the 60 s refresh.
+        """
+        threading.Thread(target=self.balance, daemon=True, name="billing-refresh").start()
+
     def check(self, points_needed: int = 0) -> Tuple[bool, int]:
         """Legacy balance check by raw points (prefer check_operation)."""
         authed, total = self.balance()
