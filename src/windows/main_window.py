@@ -1507,12 +1507,13 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         view = getattr(chat, "_chat_view", None) if chat is not None else None
         under_mouse = bool(view is not None and view.underMouse())
         focus = QApplication.focusWidget()
-        # When the assistant owns focus, undo stays in chat (attachments, then
-        # web text). Never fall through to the timeline from a focused chat.
+        # Prefer chat undo (attachments / web text) when the assistant owns
+        # focus. If chat has nothing to undo, fall through to the timeline —
+        # WebEngine often keeps hasFocus() after a toolbar Undo click, which
+        # used to swallow reverse/slice undos entirely.
         if chat_owns_clipboard_keys(chat, focus, under_mouse):
             if dispatch_chat_edit_action(chat, "undo", focus, under_mouse):
                 return
-            return
 
         get_app().updates.undo()
 
@@ -1530,7 +1531,6 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         if chat_owns_clipboard_keys(chat, focus, under_mouse):
             if dispatch_chat_edit_action(chat, "redo", focus, under_mouse):
                 return
-            return
 
         get_app().updates.redo()
 

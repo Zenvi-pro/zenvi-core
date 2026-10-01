@@ -184,6 +184,13 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "fade_ms": _str_or_num(),
         "mode": _str(description="'replace' (default) or another handler mode."),
     }),
+    "reverse_clip_tool": _obj({
+        "timeline_clip_id": _str(),
+        "clip_query": _str(),
+        "track": _str(),
+        "occurrence": _str_or_num(),
+        "mode": _str(description="'reverse' (default) or 'reset'."),
+    }),
     "duck_under_speech_tool": _obj({
         "bed_clip_ids": _str(),
         "bed_query": _str(),
