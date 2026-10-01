@@ -791,9 +791,11 @@ def probe_cursor_models(cli: str) -> list:
 
 
 # Re-read on this cadence (the same as the backend lineups) or when the CLI
-# binary / version changes; CLI detection calls in every 60 s.
+# binary / version changes. A read that failed (logged out, offline) is retried
+# on the next CLI detection, which runs every 60 s.
 CURSOR_MODELS_TTL_S = 15 * 60
-_cursor_models_read = {"key": None, "at": 0.0}
+CURSOR_MODELS_RETRY_S = 55
+_cursor_models_read = {"key": None, "at": 0.0, "ok": False}
 _cursor_models_lock = threading.Lock()
 
 
@@ -809,10 +811,14 @@ def refresh_cursor_models(version) -> bool:
     now = time.monotonic()
     with _cursor_models_lock:
         last = _cursor_models_read
-        if last["key"] == key and now - last["at"] < CURSOR_MODELS_TTL_S:
+        wait = CURSOR_MODELS_TTL_S if last.get("ok") else CURSOR_MODELS_RETRY_S
+        if last["key"] == key and now - last["at"] < wait:
             return False
         last["key"], last["at"] = key, now
-    return set_cli_lineup(BACKEND_CURSOR, probe_cursor_models(cli))
+    rows = probe_cursor_models(cli)
+    with _cursor_models_lock:
+        _cursor_models_read["ok"] = bool(rows)
+    return set_cli_lineup(BACKEND_CURSOR, rows)
 
 
 # (workspace, server url, token) combinations already approved this session.

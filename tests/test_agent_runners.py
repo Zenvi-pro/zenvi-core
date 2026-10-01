@@ -1333,7 +1333,7 @@ def test_register_cursor_refuses_a_non_object_server_table(monkeypatch, tmp_path
 def fresh_cursor_lineup(monkeypatch):
     import windows.agent_runners as ar
     monkeypatch.setattr(ar, "_cli_lineups", {})
-    monkeypatch.setattr(ar, "_cursor_models_read", {"key": None, "at": 0.0})
+    monkeypatch.setattr(ar, "_cursor_models_read", {"key": None, "at": 0.0, "ok": False})
     ar.set_live_lineups({})
     yield ar
     ar.set_live_lineups({})
@@ -1549,3 +1549,24 @@ def test_other_clis_keep_their_children(qapp):
     from windows.agent_runners import ClaudeCodeRunner, CodexRunner, CursorCliRunner
     assert CursorCliRunner.REAP_ON_EXIT is True
     assert ClaudeCodeRunner.REAP_ON_EXIT is False and CodexRunner.REAP_ON_EXIT is False
+
+
+def test_a_failed_cursor_model_read_is_retried_soon(fresh_cursor_lineup, monkeypatch):
+    """Seen in the app: logged out at startup, the list stayed empty for the
+    full 15 minutes after the user signed in."""
+    ar = fresh_cursor_lineup
+    clock = [1000.0]
+    answers = [[], [{"id": "auto", "name": "Auto"}]]
+    calls = []
+    monkeypatch.setattr(ar.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(ar, "_which_cursor_cli", lambda: "/bin/cursor-agent")
+    monkeypatch.setattr(ar, "probe_cursor_models",
+                        lambda cli: calls.append(cli) or answers.pop(0))
+
+    assert ar.refresh_cursor_models("v1") is False          # logged out
+    clock[0] += 30
+    assert ar.refresh_cursor_models("v1") is False and len(calls) == 1
+    clock[0] += 30                                           # next detection
+    assert ar.refresh_cursor_models("v1") is True and len(calls) == 2
+    clock[0] += 120                                          # a success holds
+    assert ar.refresh_cursor_models("v1") is False and len(calls) == 2
