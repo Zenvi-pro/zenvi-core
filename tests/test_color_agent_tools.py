@@ -740,3 +740,31 @@ def test_apply_color_merge_one_transaction(monkeypatch):
     assert err.startswith("Error:")
     assert clip.data == before
 
+
+
+def test_soft_presets_and_curves_are_the_look_menu_payloads(monkeypatch):
+    """The agent builds the Look menu's exact payloads, curve nodes included.
+
+    color_agent keeps its own copy so it imports without libopenshot; pin it to
+    color_presets.py. Curve nodes written as BEZIER (0) instead of LINEAR (1)
+    bent even the identity curve into an S, so every apply_look_tool preset
+    crushed the shadows and blew out the highlights.
+    """
+    from classes import color_agent as ca
+    from classes import color_presets as cp
+
+    # The headless openshot stub has no enums; these are libopenshot's values.
+    monkeypatch.setattr(cp.openshot, "LINEAR", 1, raising=False)
+    monkeypatch.setattr(cp.openshot, "AUTO", 0, raising=False)
+
+    for preset in ca.LOOK_PRESET_IDS:
+        if preset == "reset":
+            continue
+        base = blank_color_grade("e1")
+        assert ca.apply_soft_color_preset(copy.deepcopy(base), preset) == (
+            cp.apply_color_grade_preset(copy.deepcopy(base), preset)
+        ), preset
+    assert ca.default_curve_data() == cp.default_curve_data()
+    assert ca.default_wheels_data() == cp.default_wheels_data()
+    nodes = ca.points_to_curve([[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]])["nodes"]
+    assert {node["interpolation"] for node in nodes} == {1}

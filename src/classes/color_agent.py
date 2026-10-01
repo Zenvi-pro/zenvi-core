@@ -241,6 +241,15 @@ def set_scalar(effect_json: dict, key: str, value: float) -> None:
     effect_json[key] = _constant_property(value)
 
 
+# libopenshot enums (Point.h): InterpolationType BEZIER=0, LINEAR=1; HandleType
+# AUTO=0. Curve nodes are LINEAR, as in libopenshot's own default curve, the
+# Look menu (color_presets.py) and the Color Grade editor. A BEZIER node with
+# these handles bends every segment into an S, so even an identity curve
+# crushed the shadows and blew out the highlights.
+_CURVE_NODE_INTERPOLATION = 1  # openshot.LINEAR
+_CURVE_NODE_HANDLE_TYPE = 0  # openshot.AUTO
+
+
 def _curve_node(node_id: int, x_value: float, y_value: float) -> dict:
     return {
         "id": int(node_id),
@@ -250,8 +259,8 @@ def _curve_node(node_id: int, x_value: float, y_value: float) -> dict:
         "left_handle_y": _constant_property(1.0),
         "right_handle_x": _constant_property(0.5),
         "right_handle_y": _constant_property(0.0),
-        "interpolation": 0,
-        "handle_type": 0,
+        "interpolation": _CURVE_NODE_INTERPOLATION,
+        "handle_type": _CURVE_NODE_HANDLE_TYPE,
     }
 
 
