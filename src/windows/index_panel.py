@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 
 log = logging.getLogger("windows.index_panel")
 
@@ -58,24 +59,41 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
 
         self.setWidget(body)
         self._generation = None
+        self._loading = False
 
     def refresh(self):
+        """Reload the word list. Transcription can take seconds on a cache
+        miss, so it runs on a worker and the list fills in on the GUI thread."""
         if QDockWidget is object:
             return
-        self._list.clear()
         if self._app is None:
             self._status.setText("App unavailable.")
             return
+        if getattr(self, "_loading", False):
+            return
+        self._loading = True
+        self._status.setText("Loading transcript…")
+        threading.Thread(target=self._load_transcript, name="index_panel_transcript", daemon=True).start()
+
+    def _load_transcript(self):
+        from classes.qt_main_thread import invoke_on_gui
         try:
             from classes.agent_tools.transcript import get_transcript
-            from classes.agent_tools.receipt import parse_receipt
             # The default receipt is compact (script only); the list needs words.
             raw = get_transcript(includeWords=True)
-            receipt = parse_receipt(raw)
         except Exception as exc:
-            self._status.setText(f"Refresh failed: {exc}")
             log.warning("Index refresh failed: %s", exc)
+            raw = exc
+        invoke_on_gui(self._populate, raw)
+
+    def _populate(self, raw):
+        self._loading = False
+        self._list.clear()
+        if isinstance(raw, Exception):
+            self._status.setText(f"Refresh failed: {raw}")
             return
+        from classes.agent_tools.receipt import parse_receipt
+        receipt = parse_receipt(raw)
 
         if receipt.get("status") in ("error", "refused"):
             self._status.setText(receipt.get("summary") or "No transcript.")
