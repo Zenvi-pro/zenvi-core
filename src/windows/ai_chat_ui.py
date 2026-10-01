@@ -1297,7 +1297,9 @@ class AIChatWindow(QDockWidget):
         last = len(self._sessions) <= 1
         if last:
             sess = self._sessions[session_id]
-            if not sess.get("messages"):
+            # "messages" also holds the "New session started" banner (role
+            # "system"), so a chat nobody has typed in is never empty.
+            if all(m[0] == "system" for m in sess.get("messages", ())):
                 self.hide()
                 return
             self._create_session("", sess.get("backend", BACKEND_ZENVI))

@@ -659,14 +659,21 @@ def test_closing_the_last_tab_hides_the_dock_and_leaves_a_fresh_chat(window_cls,
     assert [r["session_id"] for r in keyed_store.load_closed_sessions("P1")] == ["s1"]
 
 
-def test_closing_an_empty_last_tab_just_hides_the_dock(window_cls, keyed_store):
-    win = _ClosableWindow({"s1": {"messages": [], "backend": "zenvi"}}, "s1")
+@pytest.mark.parametrize("messages", [
+    [],
+    # What a fresh tab really holds: the welcome banner _create_session adds.
+    [("system", "<p>New session started. Ask anything about your project.</p>", False)],
+])
+def test_closing_an_empty_last_tab_just_hides_the_dock(window_cls, keyed_store, messages):
+    keyed_store.upsert_session("s1", "P1", title="New Chat", backend="zenvi")
+    win = _ClosableWindow({"s1": {"messages": messages, "backend": "zenvi"}}, "s1")
 
     window_cls._close_session(win, "s1")
 
     assert win.hidden == 1
     assert list(win._sessions) == ["s1"]
     assert win.created == []
+    assert keyed_store.load_sessions("P1", include_closed=False)
 
 
 def test_closing_one_of_several_tabs_keeps_the_dock_open(window_cls, keyed_store):
