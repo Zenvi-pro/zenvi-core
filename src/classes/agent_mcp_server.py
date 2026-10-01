@@ -13,6 +13,9 @@ onto the Qt main thread, so no new thread-safety machinery is required here.
 Security: the server binds to ``127.0.0.1`` and requires a bearer token (persisted
 across restarts, see ``_load_or_create_token``), so only the CLIs we configure
 (with that token) can reach it.
+
+While it listens, the app's server also advertises itself in a discovery file
+(``gui_mcp.json`` / ``headless_mcp.json``, see :mod:`classes.mcp_discovery`).
 """
 
 from __future__ import annotations
@@ -25,6 +28,8 @@ import socket
 import threading
 import time
 
+from classes import mcp_discovery
+
 log = logging.getLogger(__name__)
 
 # Name the external CLIs see; their tools are namespaced as ``mcp__zenvi-editor__<tool>``.
@@ -35,15 +40,21 @@ SERVER_NAME = "zenvi-editor"
 # The built-in Zenvi Assistant bakes watch into its place/slice workflows; CLI
 # harnesses do not run those, so they must watch their own edits explicitly.
 SERVER_INSTRUCTIONS = (
-    "These tools drive a live video editor. After any edit that changes what is "
-    "on the timeline (add_clip_to_timeline_tool, slice_clip_at_best_match_tool, "
+    "These tools drive a live video editor. Every tool returns a JSON receipt "
+    "with contract=3: status (applied|unchanged|refused|error), summary, clips, "
+    "shifted, removedClipIds, createdTracks, watchSuggested, undoSteps. After a "
+    "successful mutation (status=applied), patch your timeline state from the "
+    "receipt — do not re-call get_timeline_state_tool unless notes say track "
+    "indexes shifted. After any edit that changes what is on screen "
+    "(add_clip_to_timeline_tool, slice_clip_at_best_match_tool, "
     "slice_clip_at_playhead_tool, modify_clip_tool, place_motion_graphic_tool, "
-    "apply_transition_tool), call watch_clip_window_tool on the affected clip to "
-    "confirm the result with vision - is the intended moment on screen, did the "
-    "cut land cleanly, is album art covering video. If the edit is wrong, use "
-    "undo_tool and try again. After remove_clip_tool, check get_timeline_state_tool "
-    "instead - a removed clip cannot be watched. watch_clip_window_tool returns an "
-    "Error if the clip cannot be resolved. Its start/end are source seconds; it lists "
+    "apply_transition_tool, add_title_tool, add_effect_tool, set_keyframes_tool), "
+    "call watch_clip_window_tool on the affected clip (or use watchSuggested) to "
+    "confirm with vision. If the edit is wrong, use undo_tool and try again. "
+    "After delete_from_timeline_tool, check the receipt removedClipIds — a "
+    "removed clip cannot be watched. Prefer get_timeline_state_tool only when "
+    "the receipt notes say track indexes shifted. watch_clip_window_tool returns "
+    "Error in summary if the clip cannot be resolved. Its start/end are source seconds; it lists "
     "the frames watched and the shot cuts, so read a cut from there instead of "
     "re-watching, and slice at a known time with start_seconds/end_seconds."
 )
@@ -57,7 +68,7 @@ SERVER_INSTRUCTIONS = (
 PREFERRED_PORT = 7434
 
 # Handler params that should never be exposed to the agent.
-_HIDDEN_PARAMS = {"self", "chat_session_id"}
+_HIDDEN_PARAMS = {"self", "chat_session_id", "transaction_id"}
 
 
 def _param_json_type(param) -> str:
@@ -74,34 +85,24 @@ def _param_json_type(param) -> str:
 
 
 def _build_input_schema(func) -> dict:
-    """Derive a JSON schema for a tool handler from its signature.
-
-    Handlers that only accept ``**kwargs`` (the common case) get a permissive
-    object schema so the agent can pass whatever the tool documents.
-    """
+    """Fallback introspection schema (CI only). Prefer TOOL_SCHEMAS."""
     try:
         sig = inspect.signature(func)
     except (TypeError, ValueError):
-        return {"type": "object", "additionalProperties": True}
+        return {"type": "object", "additionalProperties": False}
 
     props: dict = {}
     required: list = []
-    has_var_keyword = False
     for name, param in sig.parameters.items():
-        if param.kind == inspect.Parameter.VAR_KEYWORD:
-            has_var_keyword = True
+        if param.kind in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL):
             continue
-        if param.kind == inspect.Parameter.VAR_POSITIONAL or name in _HIDDEN_PARAMS:
+        if name in _HIDDEN_PARAMS:
             continue
         props[name] = {"type": _param_json_type(param)}
         if param.default is inspect.Parameter.empty:
             required.append(name)
 
-    if not props:
-        return {"type": "object", "additionalProperties": True}
-
-    schema = {"type": "object", "properties": props,
-              "additionalProperties": has_var_keyword}
+    schema = {"type": "object", "properties": props, "additionalProperties": False}
     if required:
         schema["required"] = required
     return schema
@@ -116,30 +117,54 @@ def _first_doc_paragraph(func) -> str:
 def iter_tool_defs() -> list:
     """Build ``{name, description, inputSchema}`` for every tool we expose.
 
-    The editor tools come straight from ``AGENT_TOOL_HANDLERS``; the extras are
-    tools that only make sense for an external agent CLI (see MCP_EXTRA_TOOLS).
+    ``TOOL_SCHEMAS`` is the source of truth. Introspection is only used when a
+    tool is listed in ``UNSCHEMATIZED`` (should be empty in production).
     """
     from classes.tool_handlers import AGENT_TOOL_HANDLERS, humanize_tool_name
+    from classes.agent_tools.schema import UNSCHEMATIZED, get_schema
 
     defs = []
     for name, func in list(AGENT_TOOL_HANDLERS.items()) + list(_extra_tools().items()):
         description = _first_doc_paragraph(func) or humanize_tool_name(name)
+        schema = get_schema(name)
+        if schema is None:
+            if name in UNSCHEMATIZED or name not in AGENT_TOOL_HANDLERS:
+                # MCP extras may not be in TOOL_SCHEMAS yet — introspect.
+                schema = _build_input_schema(func)
+            else:
+                raise RuntimeError(
+                    f"Tool {name!r} is registered but has no TOOL_SCHEMAS entry"
+                )
         defs.append({
             "name": name,
             "description": description,
-            "inputSchema": _build_input_schema(func),
+            "inputSchema": schema,
         })
     return defs
 
 
+# Tools a launch mode adds on top of MCP_EXTRA_TOOLS -- the headless session's
+# shutdown_headless_tool. The advertised tool list is built once in start(), so
+# register before the server starts.
+_REGISTERED_EXTRA_TOOLS: dict = {}
+
+
+def register_extra_tool(name: str, func) -> None:
+    """Expose *func* as MCP tool *name*, called like the other extras (on a
+    worker thread, never through execute_tool)."""
+    _REGISTERED_EXTRA_TOOLS[name] = func
+
+
 def _extra_tools() -> dict:
     """Non-editor tools exposed only over MCP, keyed by tool name."""
+    tools = {}
     try:
         from classes.agent_api_proxy import MCP_EXTRA_TOOLS
-        return MCP_EXTRA_TOOLS
+        tools.update(MCP_EXTRA_TOOLS)
     except Exception:
         log.debug("MCP extra tools unavailable", exc_info=True)
-        return {}
+    tools.update(_REGISTERED_EXTRA_TOOLS)
+    return tools
 
 
 def _free_port(host: str) -> int:
@@ -222,6 +247,34 @@ class _BearerAuthMiddleware:
         await self.app(scope, receive, send)
 
 
+class _ProjectLoadWatcher:
+    """UpdateManager listener: a ``load`` action means the project was replaced
+    (File > Open, new_project_tool, ...), so the advertised path may be stale."""
+
+    def __init__(self, on_load):
+        self._on_load = on_load
+
+    def changed(self, action):
+        # UpdateManager stops notifying the remaining listeners when one
+        # raises, so this one never does.
+        try:
+            if getattr(action, "type", None) == "load":
+                self._on_load()
+        except Exception:
+            log.debug("Could not refresh the MCP discovery file", exc_info=True)
+
+
+def _current_project_path() -> str | None:
+    try:
+        from classes.app import get_app
+        path = getattr(getattr(get_app(), "project", None), "current_filepath", None)
+    except Exception:
+        log.warning("Could not read the open project's path for the MCP discovery file",
+                    exc_info=True)
+        return None
+    return path if isinstance(path, str) and path else None
+
+
 class ZenviMcpServer:
     """Lazily-started localhost MCP server backed by ``execute_tool``."""
 
@@ -233,6 +286,12 @@ class ZenviMcpServer:
         self._lock = threading.Lock()
         self._uvicorn = None
         self._thread: threading.Thread | None = None
+        # Off unless the app opts in (enable_discovery): a server started by a
+        # test must never overwrite the discovery file of a real running app.
+        self._discovery_file: str | None = None
+        self._discovery_lock = threading.Lock()
+        self._published_project: str | None = None
+        self._watching_project = False
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> "ZenviMcpServer":
@@ -278,7 +337,10 @@ class ZenviMcpServer:
             self._connect_shutdown_hook()
             log.info("Zenvi MCP server listening on %s (%d tools)",
                      self.url(), len(iter_tool_defs()))
-            return self
+        if self._discovery_file:
+            self._watch_project()
+            self._publish_discovery(_current_project_path())
+        return self
 
     def _connect_shutdown_hook(self):
         try:
@@ -288,6 +350,84 @@ class ZenviMcpServer:
                 qapp.aboutToQuit.connect(self.stop)
         except Exception:
             pass
+
+    # -- discovery file ----------------------------------------------------
+    def set_discovery_file(self, path: str | None, on_written=None) -> None:
+        """Advertise this server in *path* while it listens (None: don't).
+
+        Set before start() it takes effect when the server comes up; set on a
+        running server it is written right away, and *on_written* is called
+        (on the writer thread) once the file is on disk.
+        """
+        self._discovery_file = path
+        if path and self._started:
+            self._watch_project()
+            self._publish_discovery(_current_project_path(), on_written)
+
+    def refresh_discovery(self) -> None:
+        """Rewrite the discovery file if the open project changed.
+
+        Cheap enough for the GUI thread: it compares one path and hands the
+        write to a worker thread.
+        """
+        if not self._discovery_file or not self._started:
+            return
+        project = _current_project_path()
+        if project != self._published_project:
+            self._publish_discovery(project)
+
+    def _publish_discovery(self, project: str | None, on_written=None) -> None:
+        self._published_project = project
+        # File I/O stays off the GUI thread; the file is tiny, but every
+        # volume counts as slow (AGENTS.md).
+        threading.Thread(target=self._write_discovery, args=(on_written,),
+                         name="zenvi-mcp-discovery", daemon=True).start()
+
+    def _write_discovery(self, on_written=None) -> None:
+        # Serialized with _remove_discovery: a write that loses the race with
+        # stop() finds the server stopped and does nothing, so no file is left
+        # behind pointing at a closed port. The payload is read here, not when
+        # the write was queued, so the last write always carries the latest path.
+        with self._discovery_lock:
+            path = self._discovery_file
+            if not path or not self._started:
+                return
+            from classes import info
+            payload = mcp_discovery.build_payload(
+                self.url(), _token_path(), os.getpid(), _current_project_path(), info.VERSION)
+            try:
+                mcp_discovery.write(path, payload)
+            except OSError:
+                log.warning("Could not write the MCP discovery file %s", path, exc_info=True)
+                return
+        if on_written is not None:
+            on_written(path)
+
+    def _remove_discovery(self) -> None:
+        with self._discovery_lock:
+            path = self._discovery_file
+            if not path:
+                return
+            try:
+                mcp_discovery.remove(path, os.getpid())
+            except OSError:
+                log.warning("Could not remove the MCP discovery file %s", path, exc_info=True)
+
+    def _watch_project(self) -> None:
+        """Keep the file's ``project`` current: a load replaces the project,
+        a Save As renames it (projectChanged)."""
+        if self._watching_project:
+            return
+        self._watching_project = True
+        try:
+            from classes.app import get_app
+            app = get_app()
+            app.updates.add_listener(_ProjectLoadWatcher(self.refresh_discovery))
+            window = getattr(app, "window", None)
+            if window is not None:
+                window.projectChanged.connect(lambda _path: self.refresh_discovery())
+        except Exception:
+            log.debug("MCP discovery file will not follow project changes", exc_info=True)
 
     def _build_app(self):
         import anyio
@@ -334,6 +474,9 @@ class ZenviMcpServer:
                 return
             self._started = False
             thread = self._thread
+        # Withdraw the advertisement before the port closes, so no CLI is
+        # handed a URL that is about to stop answering.
+        self._remove_discovery()
         try:
             if self._uvicorn is not None:
                 self._uvicorn.should_exit = True
@@ -365,3 +508,17 @@ def get_mcp_server() -> ZenviMcpServer:
         if _server is None:
             _server = ZenviMcpServer()
         return _server
+
+
+def enable_discovery(kind: str, on_written=None) -> str:
+    """Have the process-wide server advertise itself in
+    ``~/.openshot_qt/<kind>_mcp.json`` while it listens; returns that path.
+
+    launch.py calls this for the desktop window before the server starts; a
+    headless session calls it once its project is open, with *on_written*
+    to hear when the file is on disk.
+    """
+    from classes import info
+    path = mcp_discovery.discovery_path(info.USER_PATH, kind)
+    get_mcp_server().set_discovery_file(path, on_written)
+    return path
