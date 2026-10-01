@@ -95,8 +95,8 @@ def select_storyboard_indexes(
 
 
 def compose_sheet_qimage(tiles: Sequence, timestamps: Sequence[float]):
-    from PyQt5.QtCore import Qt
-    from PyQt5.QtGui import QColor, QFont, QImage, QPainter
+    from qt_api import Qt
+    from qt_api import QColor, QFont, QImage, QPainter
 
     if not tiles:
         return None
@@ -135,8 +135,8 @@ def _time_label(t: float) -> str:
 
 
 def gray_8x9_from_qimage(image) -> bytes:
-    from PyQt5.QtCore import Qt
-    from PyQt5.QtGui import QImage
+    from qt_api import Qt
+    from qt_api import QImage
 
     small = image.convertToFormat(QImage.Format_Grayscale8).scaled(
         9, 8, Qt.IgnoreAspectRatio, Qt.SmoothTransformation

@@ -370,7 +370,7 @@ def inspect_media(
 
 def _overview_sheet(rendered: list[dict], *, time_key: str) -> Optional[dict]:
     try:
-        from PyQt5.QtGui import QImage
+        from qt_api import QImage
         from classes.agent_tools.inspect_render import jpeg_bytes_from_qimage
         from classes.agent_tools.storyboard import (
             compose_sheet_qimage,

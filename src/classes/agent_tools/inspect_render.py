@@ -139,7 +139,7 @@ def total_frames_0(project_data: dict, fps) -> int:
 
 
 def jpeg_bytes_from_qimage(qimage) -> bytes:
-    from PyQt5.QtCore import QBuffer, QIODevice
+    from qt_api import QBuffer, QIODevice
 
     buf = QBuffer()
     buf.open(QIODevice.WriteOnly)
@@ -150,7 +150,7 @@ def jpeg_bytes_from_qimage(qimage) -> bytes:
 
 
 def _qimage_from_frame(frame, width: int, height: int):
-    from PyQt5.QtGui import QImage
+    from qt_api import QImage
 
     if hasattr(frame, "GetImage"):
         try:
@@ -232,7 +232,7 @@ def render_timeline_frames(
             if qimg is None or qimg.isNull():
                 continue
             if qimg.width() != rw or qimg.height() != rh:
-                from PyQt5.QtCore import Qt
+                from qt_api import Qt
                 qimg = qimg.scaled(rw, rh, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             seconds = to_seconds(int(frame_0), fps)
             apply_overlay_qimage(qimg, caption=format_frame_caption(int(frame_0), seconds))

@@ -44,7 +44,7 @@ def fit_size(width: int, height: int, longest_edge: int = 512) -> Tuple[int, int
 
 
 def apply_overlay_qimage(image, caption: str | None = None):
-    from PyQt5.QtGui import QColor, QFont, QPainter, QPen
+    from qt_api import QColor, QFont, QPainter, QPen
 
     if image is None or image.isNull():
         return image
