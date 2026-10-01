@@ -235,11 +235,74 @@ def test_panel_reports_each_status(qapp):
     assert "claude" in panel._rows[CLAUDE].desc.text()
 
     panel = _panel(FakeChat({}))       # nothing probed yet
-    assert panel._rows[CLAUDE].word.text() == "checkingΓÇª"
+    assert panel._rows[CLAUDE].word.text() == "checking…"
 
     # The built-in assistant is always ready and never offers Connect.
     assert panel._rows["zenvi"].word.text() == "ready"
     assert not panel._rows["zenvi"].action.isVisible()
+
+
+def test_every_cli_backend_comes_from_the_runner_registry(qapp):
+    """One CLI_RUNNERS entry is all a new agent CLI needs on this side."""
+    from windows.agent_panel import CLI_BINARIES
+    from windows.agent_runners import CLI_RUNNERS
+    from windows.ai_chat_ui import BACKENDS
+
+    assert [b["id"] for b in BACKENDS] == ["zenvi", "claude_code", "codex", "cursor_cli"]
+    for row in BACKENDS[1:]:
+        runner = CLI_RUNNERS[row["id"]]
+        assert row == {"id": runner.BACKEND_ID, "name": runner.DISPLAY_NAME,
+                       "cli": runner.CLI_NAME}
+        assert callable(runner.register)
+    assert "cli" not in BACKENDS[0], "the built-in assistant is not a CLI"
+    assert CLI_BINARIES == {b: r.CLI_NAME for b, r in CLI_RUNNERS.items()}
+    # chat.js reads the executable and CLI-ness from that list.
+    source = open(os.path.join(os.path.dirname(__file__), "..", "src", "chat_ui",
+                               "chat.js"), encoding="utf-8").read()
+    assert "claude_code" not in source and "cursor_cli" not in source
+
+
+def test_cursor_cli_row_follows_install_and_connect_status(qapp):
+    """Cursor CLI is a selectable backend with the same status dots as Codex."""
+    from windows.ai_chat_ui import BACKENDS
+
+    assert any(b["id"] == "cursor_cli" and b["name"] == "Cursor CLI" for b in BACKENDS)
+
+    connected = {
+        "cursor_cli": {"installed": True, "version": "2026.09.10", "registered": True},
+    }
+    panel = _panel(FakeChat(connected, active="cursor_cli"))
+    assert panel._rows["cursor_cli"].word.text() == "connected"
+    assert "2026.09.10" in panel._rows["cursor_cli"].desc.text()
+
+    missing = {"cursor_cli": {"installed": False, "version": None, "registered": False}}
+    panel = _panel(FakeChat(missing))
+    assert panel._rows["cursor_cli"].word.text() == "not installed"
+    assert "cursor-agent" in panel._rows["cursor_cli"].desc.text()
+
+    unregistered = {
+        "cursor_cli": {"installed": True, "version": "2026.09.10", "registered": False},
+    }
+    panel = _panel(FakeChat(unregistered))
+    assert panel._rows["cursor_cli"].word.text() == "not connected"
+    assert panel._rows["cursor_cli"].action.isVisible() or not panel.isVisible()
+
+
+def test_footer_points_at_the_model_pill_only_when_it_has_models(qapp, monkeypatch):
+    """Codex has no list until the backend serves one, so its own config picks
+    the model; Cursor always offers at least "CLI default"."""
+    import windows.agent_runners as ar
+    monkeypatch.setattr(ar, "_cli_lineups", {})
+    ar.set_live_lineups({})
+    try:
+        assert "own config" in _panel(FakeChat(CONNECTED, active=CODEX)).footer.text()
+        ar.set_live_lineups({CODEX: [{"id": "gpt-5.3-codex", "name": "GPT-5.3 Codex"}]})
+        assert "chat panel" in _panel(FakeChat(CONNECTED, active=CODEX)).footer.text()
+    finally:
+        ar.set_live_lineups({})
+    connected = {"cursor_cli": {"installed": True, "version": "2026.09.18", "registered": True}}
+    assert "chat panel" in _panel(FakeChat(connected, active="cursor_cli")).footer.text()
+    assert "chat panel" in _panel(FakeChat(CONNECTED, active=CLAUDE)).footer.text()
 
 
 def test_selected_row_tracks_the_active_backend(qapp):
@@ -254,7 +317,7 @@ def test_connect_marks_the_row_busy_then_reports_the_result(qapp):
 
     panel._on_connect_requested(CODEX)
     assert chat.connects == [CODEX]
-    assert panel._rows[CODEX].word.text() == "connectingΓÇª"
+    assert panel._rows[CODEX].word.text() == "connecting…"
     assert not panel._rows[CODEX].action.isEnabled()
 
     panel.on_connect_result(CODEX, False, "codex config write failed\ndetail")
@@ -369,5 +432,10 @@ def test_close_event_guards_the_timeline_shutdown(qapp):
     before = body[:call]
     guard = before.rindex("try:")
     assert "except" in body[call:], "thumbnail shutdown is not inside a try/except"
-    assert re.search(r"try:\s*\n\s+timeline_widget = getattr", before[guard:]), \
-        "the getattr that raises must itself be inside the try"
+    # Other statements may open the block (the qt_api isdeleted import does),
+    # as long as every line up to the getattr is indented under the try.
+    line_start = before.rindex("\n", 0, guard) + 1
+    assert re.match(
+        r"([ \t]*)try:[ \t]*\n(?:\1[ \t][^\n]*\n|\n)*?\1[ \t]+timeline_widget = getattr",
+        before[line_start:],
+    ), "the getattr that raises must itself be inside the try"

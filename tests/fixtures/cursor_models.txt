@@ -1,0 +1,13 @@
+Available models
+
+auto - Auto (current, default)
+gpt-5.3-codex - Codex 5.3
+composer-2.5 - Composer 2.5
+claude-opus-5-thinking-high - Claude Opus 5 1M Thinking
+claude-fable-5-thinking-high - Claude Fable 5 1M Thinking (NO ZDR)
+gemini-3.7-flash-high - Gemini 3.7 Flash
+grok-4.7-low-fast - Grok 4.7  Low Fast​​
+claude-opus-5-5-high - Claude Opus 5.5 1M High
+kimi-k2.7-code - Kimi K2.7 Code
+
+Tip: use --model <id> (or /model <id> in interactive mode) to switch. Parameterized models also accept quoted overrides, e.g. --model 'claude-opus-4-8[context=1m,effort=high,fast=false]'.
