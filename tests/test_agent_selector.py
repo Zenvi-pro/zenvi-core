@@ -269,21 +269,19 @@ def test_cursor_cli_row_follows_install_and_connect_status(qapp):
 
 
 def test_footer_points_at_the_model_pill_only_when_it_has_models(qapp, monkeypatch):
-    """Cursor's lineup comes from the CLI; until it has listed one, the CLI's
-    own config picks the model and the footer says so."""
+    """Codex has no list until the backend serves one, so its own config picks
+    the model; Cursor always offers at least "CLI default"."""
     import windows.agent_runners as ar
     monkeypatch.setattr(ar, "_cli_lineups", {})
     ar.set_live_lineups({})
+    try:
+        assert "own config" in _panel(FakeChat(CONNECTED, active=CODEX)).footer.text()
+        ar.set_live_lineups({CODEX: [{"id": "gpt-5.3-codex", "name": "GPT-5.3 Codex"}]})
+        assert "chat panel" in _panel(FakeChat(CONNECTED, active=CODEX)).footer.text()
+    finally:
+        ar.set_live_lineups({})
     connected = {"cursor_cli": {"installed": True, "version": "2026.09.18", "registered": True}}
-
-    panel = _panel(FakeChat(connected, active="cursor_cli"))
-    assert "own config" in panel.footer.text()
-
-    ar.set_cli_lineup("cursor_cli", [{"id": "auto", "name": "Auto", "default": True}])
-    panel.refresh()
-    assert "chat panel" in panel.footer.text()
-
-    # Claude Code always has at least its built-in list.
+    assert "chat panel" in _panel(FakeChat(connected, active="cursor_cli")).footer.text()
     assert "chat panel" in _panel(FakeChat(CONNECTED, active=CLAUDE)).footer.text()
 
 

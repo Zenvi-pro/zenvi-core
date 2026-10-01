@@ -100,6 +100,20 @@ def live_lineup_for(backend: str) -> list:
         return [dict(m) for m in _live_lineups.get(backend, [])]
 
 
+# The picker entry that passes no --model, so the CLI's own config decides
+# (issue #136: a clear choice instead of a hidden pill).
+CLI_DEFAULT_MODEL_ID = "cli-default"
+
+
+def _cli_default_entry(uses: str = "") -> dict:
+    """"CLI default", tagged with the model the CLI says it would use."""
+    entry = {"id": CLI_DEFAULT_MODEL_ID, "name": "CLI default", "rank": 0,
+             "featured": True, "default": True}
+    if uses:
+        entry["tags"] = [uses]
+    return entry
+
+
 # Lineups a CLI reported about itself (``cursor-agent models``), for a backend
 # whose models depend on the user's account. The backend's lineup still wins.
 _cli_lineups: dict = {}
@@ -624,10 +638,15 @@ def _cursor_is_registered() -> bool:
         return False
 
 
-def _cursor_server_entry(port: int, token: str) -> dict:
+# cursor-agent expands ${env:NAME} in headers, so the bearer token never has to
+# sit in a file the Cursor editor shares. CursorCliRunner sets the variable.
+_CURSOR_TOKEN_ENV = "ZENVI_MCP_TOKEN"
+
+
+def _cursor_server_entry(port: int) -> dict:
     return {
         "url": "http://127.0.0.1:%d/mcp" % port,
-        "headers": {"Authorization": "Bearer %s" % token},
+        "headers": {"Authorization": "Bearer ${env:%s}" % _CURSOR_TOKEN_ENV},
     }
 
 
@@ -647,17 +666,23 @@ def register_cursor(port: int, token: str):
     touched: it is added, or updated in place when a restart moved the port,
     and every other server is left as it was. An entry that is already
     current is not rewritten, so the check CursorCliRunner makes before each
-    turn costs one read. Invalid JSON is refused, never repaired.
+    turn costs one read. Invalid JSON is refused, never repaired. The entry
+    names the token by environment variable (``$ZENVI_MCP_TOKEN``), like the
+    Codex registration, rather than storing it.
 
-    The file holds other servers' secrets, so the ``.zenvi-backup`` copy and
-    the new file keep its permissions (0600 when it is new), and the new
-    content is staged next to it and moved into place rather than written
-    over it. A symlinked mcp.json (dotfiles) is updated through the link.
+    The file holds other servers' secrets, so the ``.zenvi-backup`` copy (of
+    the file as it was before Zenvi first changed it) and the new file keep
+    its permissions (0600 when it is new), and the new content is staged next
+    to it and moved into place rather than written over it. A symlinked
+    mcp.json (dotfiles) is updated through the link.
 
     Returns ``(ok, message)``.
     """
     path = os.path.realpath(_cursor_mcp_path())
-    connected = "Connected. Run `cursor-agent` in your terminal to use it."
+    connected = (
+        "Connected. Before running cursor-agent yourself, run:\n"
+        "export %s=%s" % (_CURSOR_TOKEN_ENV, token)
+    )
     original = ""
     data = {}
     mode = 0o600
@@ -683,16 +708,18 @@ def register_cursor(port: int, token: str):
     if not isinstance(servers, dict):
         return False, "~/.cursor/mcp.json mcpServers is not an object, not touching it."
 
-    entry = _cursor_server_entry(port, token)
+    entry = _cursor_server_entry(port)
     if servers.get(_CURSOR_MCP_NAME) == entry:
         return True, connected
     servers[_CURSOR_MCP_NAME] = entry
 
     staged = path + ".zenvi-tmp"
+    backup = path + ".zenvi-backup"
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        if original:
-            _write_with_mode(path + ".zenvi-backup", original, mode)
+        # Only the first: later port moves would back up our own edit.
+        if original and not os.path.exists(backup):
+            _write_with_mode(backup, original, mode)
         _write_with_mode(staged, json.dumps(data, indent=2) + "\n", mode)
         os.replace(staged, path)
     except Exception as e:
@@ -717,11 +744,12 @@ _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 def parse_cursor_models(text: str) -> list:
     """Picker entries from ``cursor-agent models`` output, in the CLI's order.
 
-    The list depends on the account and runs to hundreds of ids, so only the
-    model the CLI would use anyway is featured; search reaches the rest.
+    "CLI default" comes first and is preselected, tagged with the model the
+    CLI says it would use. The list depends on the account and runs to
+    hundreds of ids, so nothing else is featured; search reaches the rest.
     """
     rows, seen = [], set()
-    current = fallback = None
+    current = fallback = ""
     for line in _ANSI.sub("", text or "").splitlines():
         match = _CURSOR_MODEL_LINE.match(line.replace("​", "").strip())
         if not match or match.group(1) in seen:
@@ -733,21 +761,15 @@ def parse_cursor_models(text: str) -> list:
         if marks:
             flags = {f.strip() for f in marks.group(1).split(",")}
             name = name[:marks.start()]
-        row = {"id": mid, "name": " ".join(name.split()) or mid,
-               "rank": len(rows) + 1, "featured": False}
-        rows.append(row)
-        if "current" in flags and current is None:
-            current = row
-        if "default" in flags and fallback is None:
-            fallback = row
-    flagged = current or fallback
-    pick = flagged or (rows[0] if rows else None)
-    if pick is not None:
-        pick["featured"] = True
-        pick["default"] = True
-        if flagged is not None:
-            pick["tags"] = ["CLI default"]
-    return rows
+        name = " ".join(name.split()) or mid
+        rows.append({"id": mid, "name": name, "rank": len(rows) + 1, "featured": False})
+        if "current" in flags and not current:
+            current = name
+        if "default" in flags and not fallback:
+            fallback = name
+    if not rows:
+        return []
+    return [_cli_default_entry(current or fallback)] + rows
 
 
 def probe_cursor_models(cli: str) -> list:
@@ -796,6 +818,48 @@ def refresh_cursor_models(version) -> bool:
             return False
         last["key"], last["at"] = key, now
     return set_cli_lineup(BACKEND_CURSOR, probe_cursor_models(cli))
+
+
+# (workspace, server url, token) combinations already approved this session.
+_cursor_approved: set = set()
+_cursor_approved_lock = threading.Lock()
+
+
+def _approve_cursor_mcp(cli: str, cwd: str, env: dict, url: str) -> bool:
+    """Approve zenvi-editor, and only it, for workspace *cwd*; True if it took.
+
+    ``--approve-mcps`` would approve every server the workspace declares, and
+    the workspace is the user's project folder: whatever a downloaded
+    project's .cursor/mcp.json names would start unattended. Approvals are
+    stored per workspace and keyed on the server's resolved config (URL, and
+    the header after ${env:} expansion), so this runs with the token in *env*,
+    again when the port moves, and otherwise once per session. The CLI exits 0
+    even for a server it cannot find, so its answer is read as well.
+    Blocking: it runs the CLI.
+    """
+    key = (cwd, url, env.get(_CURSOR_TOKEN_ENV, ""))
+    with _cursor_approved_lock:
+        if key in _cursor_approved:
+            return True
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    try:
+        result = subprocess.run(
+            [cli, "mcp", "enable", _CURSOR_MCP_NAME], capture_output=True,
+            encoding="utf-8", errors="replace", timeout=60, cwd=cwd, env=env, **kwargs,
+        )
+    except Exception:
+        log.warning("cursor-agent mcp enable failed", exc_info=True)
+        return False
+    answer = (result.stdout or "") + (result.stderr or "")
+    if result.returncode != 0 or "approved" not in answer.lower():
+        log.warning("cursor-agent mcp enable did not approve zenvi-editor: %s",
+                    answer.strip()[:200])
+        return False
+    with _cursor_approved_lock:
+        _cursor_approved.add(key)
+    return True
 
 
 class BaseAgentRunner(QObject):
@@ -1095,7 +1159,7 @@ class BaseAgentRunner(QObject):
         can arrive holding a Zenvi model id, which the CLI would reject.
         """
         offered = models_for_backend(self.BACKEND_ID)
-        if not model_id or not offered:
+        if not model_id or not offered or model_id == CLI_DEFAULT_MODEL_ID:
             return ""
         return model_id if any(m["id"] == model_id for m in offered) else ""
 
@@ -1343,13 +1407,15 @@ class CursorCliRunner(BaseAgentRunner):
     CLI_NAME = "cursor-agent"
     DISPLAY_NAME = "Cursor CLI"
     BACKEND_ID = BACKEND_CURSOR
-    # No built-in lineup: the models depend on the Cursor account, so the
-    # picker shows what `cursor-agent models` lists (refresh_cursor_models).
-    MODELS: list = []
+    # The models depend on the Cursor account, so the picker shows what
+    # `cursor-agent models` lists (refresh_cursor_models). Until it has, the
+    # only choice is to leave the model to the CLI's own config.
+    MODELS = [_cli_default_entry()]
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._think_seq = 0
+        self._mcp_approved = False
         self._begin_turn()
 
     def _begin_turn(self):
@@ -1369,16 +1435,31 @@ class CursorCliRunner(BaseAgentRunner):
         ok, message = register_cursor(self._server.port, self._server.token)
         if not ok:
             return message
+        self._mcp_approved = _approve_cursor_mcp(
+            self._cli_path or self.CLI_NAME, self._cli_cwd or _project_cwd(),
+            self._build_env(), self._server.url(),
+        )
         return None
+
+    def _build_env(self):
+        # register_cursor's entry sends "Bearer ${env:ZENVI_MCP_TOKEN}".
+        extra = {}
+        if self._server is not None and self._server.token:
+            extra[_CURSOR_TOKEN_ENV] = self._server.token
+        return _cli_child_env(extra)
 
     def _build_argv(self, text: str):
         argv = [
             self._cli_path or self.CLI_NAME, "-p",
             "--output-format", "stream-json",
             "--stream-partial-output",
-            "--force", "--trust", "--approve-mcps",
+            "--force", "--trust",
             "--workspace", self._cli_cwd or _project_cwd(),
         ]
+        if not self._mcp_approved:
+            # Approving zenvi-editor alone failed (an older CLI?). Without
+            # this the turn has no editor tools at all.
+            argv.append("--approve-mcps")
         if self._model_id:
             argv += ["--model", self._model_id]
         argv += _add_dir_args()

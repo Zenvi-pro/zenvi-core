@@ -10,6 +10,7 @@ event schema.
 import json
 import os
 import sys
+import types
 
 import pytest
 
@@ -494,7 +495,8 @@ def test_models_for_backend_matches_the_picker_contract(qapp):
     assert sum(1 for m in claude if m.get("default")) == 1
 
     assert models_for_backend(BACKEND_CODEX) == []
-    assert models_for_backend(BACKEND_CURSOR) == []
+    # Cursor's real list comes from the CLI; built in is only "CLI default".
+    assert [m["id"] for m in models_for_backend(BACKEND_CURSOR)] == ["cli-default"]
     assert models_for_backend("zenvi") == []
 
     # Callers mutate what they get (the JS bridge tags entries), so the
@@ -1102,13 +1104,17 @@ def test_cursor_argv_is_headless_and_hides_model(qapp, monkeypatch):
     assert "--stream-partial-output" in argv
     assert "--force" in argv
     assert "--trust" in argv
+    # Not approved yet (no _ensure_ready ran): every server would be, as before.
     assert "--approve-mcps" in argv
     assert argv[argv.index("--workspace") + 1] == r"C:\proj"
     assert argv[argv.index("--resume") + 1] == "cur-abc-123"
     assert argv[argv.index("--add-dir") + 1] == "C:/footage"
     assert argv[-1] == "make a cut"
     assert "--model" not in argv
-    assert runner.MODELS == []
+    assert [m["id"] for m in runner.MODELS] == ["cli-default"]
+
+    runner._mcp_approved = True   # zenvi-editor alone was approved
+    assert "--approve-mcps" not in runner._build_argv("make a cut")
 
 
 def _cursor_home(monkeypatch, tmp_path, which=None):
@@ -1208,7 +1214,10 @@ def test_register_cursor_writes_bearer_and_updates_port(monkeypatch, tmp_path):
     data = json.loads(cfg.read_text())
     server = data["mcpServers"]["zenvi-editor"]
     assert server["url"] == "http://127.0.0.1:7434/mcp"
-    assert server["headers"]["Authorization"] == "Bearer tok123"
+    # The token is named, not stored: cursor-agent expands ${env:...}.
+    assert server["headers"]["Authorization"] == "Bearer ${env:ZENVI_MCP_TOKEN}"
+    assert "tok123" not in cfg.read_text()
+    assert "export ZENVI_MCP_TOKEN=tok123" in message
     assert data["mcpServers"]["other"]["command"] == "npx"
     assert (tmp_path / "mcp.json.zenvi-backup").exists()
     assert ar._cursor_is_registered() is True
@@ -1261,9 +1270,10 @@ def test_register_cursor_does_not_rewrite_a_current_entry(monkeypatch, tmp_path)
     assert cfg.read_text() == written and cfg.stat().st_mtime == 1
     assert (tmp_path / "mcp.json.zenvi-backup").read_text() == users
     assert not (tmp_path / "mcp.json.zenvi-tmp").exists()
-    # A moved port is still picked up.
+    # A moved port is still picked up, and the backup stays the user's file.
     assert ar.register_cursor(7435, "tok123")[0] is True
     assert json.loads(cfg.read_text())["mcpServers"]["zenvi-editor"]["url"].endswith(":7435/mcp")
+    assert (tmp_path / "mcp.json.zenvi-backup").read_text() == users
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
@@ -1337,18 +1347,21 @@ def test_parse_cursor_models_reads_the_real_listing():
         rows = parse_cursor_models(fh.read())
 
     assert [r["id"] for r in rows] == [
+        "cli-default",
         "auto", "gpt-5.3-codex", "composer-2.5", "claude-opus-5-thinking-high",
         "claude-fable-5-thinking-high", "gemini-3.7-flash-high", "grok-4.7-low-fast",
         "claude-opus-5-5-high", "kimi-k2.7-code",
     ]
-    auto = rows[0]
-    assert auto["name"] == "Auto" and auto["default"] is True
-    assert auto["featured"] is True and auto["tags"] == ["CLI default"]
-    assert [r["id"] for r in rows if r["featured"]] == ["auto"], "search reaches the rest"
+    # Preselected, and says what the CLI resolves it to.
+    assert rows[0] == {"id": "cli-default", "name": "CLI default", "rank": 0,
+                       "featured": True, "default": True, "tags": ["Auto"]}
+    assert [r["id"] for r in rows if r["featured"]] == ["cli-default"], "search reaches the rest"
+    assert not any(r.get("default") for r in rows[1:])
     names = {r["id"]: r["name"] for r in rows}
+    assert names["auto"] == "Auto"                                   # flags stripped
     assert names["grok-4.7-low-fast"] == "Grok 4.7 Low Fast"        # zero-width spaces gone
     assert names["claude-fable-5-thinking-high"].endswith("(NO ZDR)")  # not a flag
-    assert [r["rank"] for r in rows] == list(range(1, len(rows) + 1))  # the CLI's order
+    assert [r["rank"] for r in rows] == list(range(len(rows)))      # the CLI's order
 
 
 def test_parse_cursor_models_prefers_the_model_the_cli_is_set_to():
@@ -1357,8 +1370,8 @@ def test_parse_cursor_models_prefers_the_model_the_cli_is_set_to():
     rows = parse_cursor_models(
         "\x1b[1mAvailable models\x1b[0m\n\nauto - Auto (default)\n"
         "composer-2.5 - Composer 2.5 (current)\ncomposer-2.5 - duplicate\n")
-    assert [r["id"] for r in rows] == ["auto", "composer-2.5"]
-    assert [r["id"] for r in rows if r.get("default")] == ["composer-2.5"]
+    assert [r["id"] for r in rows] == ["cli-default", "auto", "composer-2.5"]
+    assert rows[0]["tags"] == ["Composer 2.5"], "what the CLI is set to, not Cursor's pick"
     assert parse_cursor_models("Error: not logged in\n") == []
 
 
@@ -1395,6 +1408,80 @@ def test_cursor_lineup_reaches_the_model_flag(qapp, fresh_cursor_lineup, monkeyp
     argv = runner._build_argv("hi")
     assert argv[argv.index("--model") + 1] == "claude-opus-5-5-high"
     assert runner._coerce_model("claude-opus-5") == "", "not one of Cursor's ids"
+    # "CLI default" leaves the choice to the CLI's own config.
+    runner._model_id = runner._coerce_model("cli-default")
+    assert runner._model_id == "" and "--model" not in runner._build_argv("hi")
     # The backend's lineup, when it serves one, still wins (#202).
     ar.set_live_lineups({ar.BACKEND_CURSOR: [{"id": "composer-2.5", "name": "Composer"}]})
     assert [m["id"] for m in ar.models_for_backend(ar.BACKEND_CURSOR)] == ["composer-2.5"]
+
+
+# ── Cursor: approve zenvi-editor alone, token from the environment ────────
+
+@pytest.fixture
+def fresh_approvals(monkeypatch):
+    import windows.agent_runners as ar
+    monkeypatch.setattr(ar, "_cursor_approved", set())
+    return ar
+
+
+def _ran(calls, stdout, returncode=0):
+    def run(argv, **kw):
+        calls.append((argv, kw))
+        return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+    return run
+
+
+def test_cursor_approves_only_zenvi_editor_once_per_workspace(fresh_approvals, monkeypatch):
+    ar = fresh_approvals
+    calls = []
+    monkeypatch.setattr(ar.subprocess, "run",
+                        _ran(calls, "✓ Enabled and approved MCP server: zenvi-editor\n"))
+    env = {"ZENVI_MCP_TOKEN": "tok"}
+    assert ar._approve_cursor_mcp("/bin/cursor-agent", "/proj", env, "http://127.0.0.1:7434/mcp")
+    argv, kw = calls[0]
+    assert argv == ["/bin/cursor-agent", "mcp", "enable", "zenvi-editor"]
+    # Approvals are per workspace and hash the expanded header: same cwd, token in env.
+    assert kw["cwd"] == "/proj" and kw["env"]["ZENVI_MCP_TOKEN"] == "tok"
+
+    assert ar._approve_cursor_mcp("/bin/cursor-agent", "/proj", env, "http://127.0.0.1:7434/mcp")
+    assert len(calls) == 1, "approved once per session"
+    ar._approve_cursor_mcp("/bin/cursor-agent", "/proj", env, "http://127.0.0.1:7435/mcp")
+    ar._approve_cursor_mcp("/bin/cursor-agent", "/other", env, "http://127.0.0.1:7435/mcp")
+    assert len(calls) == 3, "a moved port or another project needs its own approval"
+
+
+@pytest.mark.parametrize("stdout,returncode", [
+    ("MCP server 'zenvi-editor' not found in configuration\n", 0),   # exits 0 anyway
+    ("error: unknown command 'enable'\n", 1),
+])
+def test_cursor_approval_that_did_not_take_reports_false(fresh_approvals, monkeypatch,
+                                                         stdout, returncode):
+    ar = fresh_approvals
+    calls = []
+    monkeypatch.setattr(ar.subprocess, "run", _ran(calls, stdout, returncode))
+    assert ar._approve_cursor_mcp("cursor-agent", "/proj", {}, "u") is False
+    assert ar._approve_cursor_mcp("cursor-agent", "/proj", {}, "u") is False
+    assert len(calls) == 2, "a failure is not cached"
+
+
+def test_cursor_turn_carries_the_token_and_approves_before_launch(qapp, monkeypatch):
+    import windows.agent_runners as ar
+    seen = {}
+    monkeypatch.setattr(ar, "register_cursor", lambda port, token: (True, "ok"))
+
+    def approve(cli, cwd, env, url):
+        seen.update(cli=cli, cwd=cwd, token=env.get("ZENVI_MCP_TOKEN"), url=url)
+        return True
+    monkeypatch.setattr(ar, "_approve_cursor_mcp", approve)
+    runner = ar.CursorCliRunner()
+    runner._server = types.SimpleNamespace(port=7434, token="tok",
+                                           url=lambda: "http://127.0.0.1:7434/mcp")
+    runner._cli_path = "/bin/cursor-agent"
+    runner._cli_cwd = "/proj"
+
+    assert runner._ensure_ready() is None
+    assert seen == {"cli": "/bin/cursor-agent", "cwd": "/proj", "token": "tok",
+                    "url": "http://127.0.0.1:7434/mcp"}
+    assert runner._build_env()["ZENVI_MCP_TOKEN"] == "tok"
+    assert "--approve-mcps" not in runner._build_argv("hi")
