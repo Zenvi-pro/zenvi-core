@@ -325,9 +325,12 @@ class HeadlessRuntime(QObject):
             return
         # Advertised only now, with the project open and the event loop
         # running, so a CLI that finds the file can call tools straight away.
-        discovery_file = agent_mcp_server.enable_discovery(mcp_discovery.HEADLESS)
-        report("ready: MCP %s (pid %d, project %s, discovery file %s)"
-               % (server.url(), os.getpid(), self._project or "untitled", discovery_file))
+        # "ready" is printed once the file is actually on disk.
+        url, project = server.url(), self._project or "untitled"
+        agent_mcp_server.enable_discovery(
+            mcp_discovery.HEADLESS,
+            on_written=lambda path: report("ready: MCP %s (pid %d, project %s, discovery file %s)"
+                                           % (url, os.getpid(), project, path)))
 
     def _on_signal(self, signum, _frame):
         # A second signal gets the default action, so Ctrl+C twice still ends
@@ -405,9 +408,12 @@ class HeadlessRuntime(QObject):
 
     def _save_project(self, target) -> bool:
         # The window's own save (history, recovery zip, recents). It logs and
-        # reports failures instead of raising, so check the outcome.
-        self._app.window.save_project(target)
+        # reports failures instead of raising, so check the outcome -- marked
+        # dirty first, so that only a save that really wrote clears the flag
+        # (a clean project saved over its own file looks the same either way).
         project = self._app.project
+        project.has_unsaved_changes = True
+        self._app.window.save_project(target)
         return not project.needs_save() and same_file(project.current_filepath, target)
 
 

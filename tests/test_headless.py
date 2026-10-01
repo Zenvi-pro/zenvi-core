@@ -27,10 +27,18 @@ def reported(_reset_headless):
 class FakeProject:
     def __init__(self, path=None, dirty=False):
         self.current_filepath = path
-        self.dirty = dirty
+        self.has_unsaved_changes = dirty
+
+    @property
+    def dirty(self):
+        return self.has_unsaved_changes
+
+    @dirty.setter
+    def dirty(self, value):
+        self.has_unsaved_changes = value
 
     def needs_save(self):
-        return self.dirty
+        return self.has_unsaved_changes
 
 
 class FakeWindow:
@@ -284,12 +292,22 @@ def test_loop_start_advertises_the_session(reported, monkeypatch, tmp_path):
     server = types.SimpleNamespace(start=lambda: started.append(1) or server,
                                    url=lambda: "http://127.0.0.1:7434/mcp")
     monkeypatch.setattr(srv_mod, "get_mcp_server", lambda: server)
-    monkeypatch.setattr(srv_mod, "enable_discovery",
-                        lambda kind: enabled.append(kind) or str(tmp_path / "headless_mcp.json"))
+    callbacks = []
+
+    def fake_enable(kind, on_written=None):
+        enabled.append(kind)
+        callbacks.append(on_written)
+        return str(tmp_path / "headless_mcp.json")
+
+    monkeypatch.setattr(srv_mod, "enable_discovery", fake_enable)
     runtime = _runtime(FakeApp())
     runtime._on_loop_started()
     assert started == [1] and enabled == ["headless"]
+    # "ready" waits until the file is on disk.
+    assert not any(line.startswith("ready") for line in reported)
+    callbacks[0](str(tmp_path / "headless_mcp.json"))
     assert reported[-1].startswith("ready: MCP http://127.0.0.1:7434/mcp")
+    assert reported[-1].endswith("discovery file %s)" % (tmp_path / "headless_mcp.json"))
 
 
 def test_loop_start_fails_the_session_when_mcp_cannot_start(reported, monkeypatch):
@@ -398,6 +416,18 @@ def test_failed_save_keeps_the_session(fake_server, timers, tmp_path):
     receipt = _tool(save=True)
     assert receipt["ok"] is False and "failed" in receipt["error"]
     assert "still running" in receipt["error"]
+    assert timers == []
+
+
+def test_failed_save_of_a_clean_project_over_its_own_file_is_caught(fake_server, timers, tmp_path):
+    # Path and dirty flag are unchanged whether the write worked or not.
+    cut = str(tmp_path / "cut.zvn")
+    app = FakeApp(FakeProject(cut, dirty=False), save_works=False)
+    runtime = _runtime(app)
+    runtime._loop_started = True
+
+    receipt = _tool(save=True)
+    assert receipt["ok"] is False and "failed" in receipt["error"]
     assert timers == []
 
 

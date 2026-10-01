@@ -72,11 +72,17 @@ def server_name(user_dir: str, environ=None, platform=None) -> str:
     return name
 
 
-def launch_paths(positional, project=None, cwd=None) -> list:
-    """Absolute paths a launch was asked to open (the window has its own cwd)."""
+def launch_paths(positional, project=None, cwd=None, project_exts=(".zvn", ".osp", ".flow")) -> list:
+    """Absolute paths a launch was asked to open (the window has its own cwd).
+
+    Arguments that are not files are dropped -- they are usually the values of
+    Qt options such as ``-style fusion`` -- except project paths, whose absence
+    the window reports.
+    """
     base = cwd or os.getcwd()
     items = ([project] if project else []) + [p for p in (positional or []) if p and not p.startswith("-")]
-    return [os.path.abspath(os.path.join(base, os.path.expanduser(p))) for p in items]
+    paths = [os.path.abspath(os.path.join(base, os.path.expanduser(p))) for p in items]
+    return [p for p in paths if p.endswith(tuple(project_exts)) or os.path.exists(p)]
 
 
 def split_launch_paths(paths, project_exts):

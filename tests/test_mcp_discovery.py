@@ -185,8 +185,11 @@ def test_enabling_discovery_on_a_running_server_writes_at_once(server, tmp_path)
     server.start()
     path = str(tmp_path / "headless_mcp.json")
     assert not os.path.exists(path)
-    server.set_discovery_file(path)
-    assert _wait_for(lambda: os.path.exists(path))
+    seen = []
+    server.set_discovery_file(path, on_written=lambda p: seen.append((p, os.path.exists(p))))
+    assert _wait_for(lambda: seen)
+    # Told only once the file is really there.
+    assert seen == [(path, True)]
 
 
 def test_a_server_nobody_opted_in_writes_no_file(server, tmp_path, monkeypatch):

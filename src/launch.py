@@ -336,7 +336,8 @@ def main():
     else:
         # Zenvi already open for this profile? Hand it the files and stop here.
         from classes import single_instance
-        launch_paths = single_instance.launch_paths(args.remain, args.project)
+        launch_paths = single_instance.launch_paths(
+            args.remain, args.project, project_exts=info.ALL_PROJECT_EXTS)
         try:
             outcome, detail = single_instance.hand_off(
                 single_instance.server_name(info.USER_PATH), launch_paths)

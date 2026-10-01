@@ -85,7 +85,12 @@ def test_linux_keeps_the_socket_out_of_shared_tmp(tmp_path):
 
 
 def test_launch_paths_are_absolute_for_the_other_process(tmp_path):
-    paths = si.launch_paths(["cut.zvn", "-style", "clips/a.mp4"], project=None, cwd=str(tmp_path))
+    (tmp_path / "clips").mkdir()
+    (tmp_path / "clips" / "a.mp4").write_bytes(b"")
+    # "fusion" is the value of Qt's -style option, not a file: never handed over.
+    paths = si.launch_paths(["cut.zvn", "-style", "fusion", "clips/a.mp4"], project=None,
+                            cwd=str(tmp_path))
+    # A missing project is still handed over; the window reports it missing.
     assert paths == [str(tmp_path / "cut.zvn"), str(tmp_path / "clips" / "a.mp4")]
     assert si.launch_paths([], project="p.zvn", cwd=str(tmp_path)) == [str(tmp_path / "p.zvn")]
     assert si.launch_paths(None) == []

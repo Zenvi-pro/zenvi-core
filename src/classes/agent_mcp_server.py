@@ -263,6 +263,8 @@ def _current_project_path() -> str | None:
         from classes.app import get_app
         path = getattr(getattr(get_app(), "project", None), "current_filepath", None)
     except Exception:
+        log.warning("Could not read the open project's path for the MCP discovery file",
+                    exc_info=True)
         return None
     return path if isinstance(path, str) and path else None
 
@@ -344,16 +346,17 @@ class ZenviMcpServer:
             pass
 
     # -- discovery file ----------------------------------------------------
-    def set_discovery_file(self, path: str | None) -> None:
+    def set_discovery_file(self, path: str | None, on_written=None) -> None:
         """Advertise this server in *path* while it listens (None: don't).
 
         Set before start() it takes effect when the server comes up; set on a
-        running server it is written right away.
+        running server it is written right away, and *on_written* is called
+        (on the writer thread) once the file is on disk.
         """
         self._discovery_file = path
         if path and self._started:
             self._watch_project()
-            self._publish_discovery(_current_project_path())
+            self._publish_discovery(_current_project_path(), on_written)
 
     def refresh_discovery(self) -> None:
         """Rewrite the discovery file if the open project changed.
@@ -367,14 +370,14 @@ class ZenviMcpServer:
         if project != self._published_project:
             self._publish_discovery(project)
 
-    def _publish_discovery(self, project: str | None) -> None:
+    def _publish_discovery(self, project: str | None, on_written=None) -> None:
         self._published_project = project
         # File I/O stays off the GUI thread; the file is tiny, but every
         # volume counts as slow (AGENTS.md).
-        threading.Thread(target=self._write_discovery, name="zenvi-mcp-discovery",
-                         daemon=True).start()
+        threading.Thread(target=self._write_discovery, args=(on_written,),
+                         name="zenvi-mcp-discovery", daemon=True).start()
 
-    def _write_discovery(self) -> None:
+    def _write_discovery(self, on_written=None) -> None:
         # Serialized with _remove_discovery: a write that loses the race with
         # stop() finds the server stopped and does nothing, so no file is left
         # behind pointing at a closed port. The payload is read here, not when
@@ -390,6 +393,9 @@ class ZenviMcpServer:
                 mcp_discovery.write(path, payload)
             except OSError:
                 log.warning("Could not write the MCP discovery file %s", path, exc_info=True)
+                return
+        if on_written is not None:
+            on_written(path)
 
     def _remove_discovery(self) -> None:
         with self._discovery_lock:
@@ -498,14 +504,15 @@ def get_mcp_server() -> ZenviMcpServer:
         return _server
 
 
-def enable_discovery(kind: str) -> str:
+def enable_discovery(kind: str, on_written=None) -> str:
     """Have the process-wide server advertise itself in
     ``~/.openshot_qt/<kind>_mcp.json`` while it listens; returns that path.
 
     launch.py calls this for the desktop window before the server starts; a
-    headless session calls it once its project is open.
+    headless session calls it once its project is open, with *on_written*
+    to hear when the file is on disk.
     """
     from classes import info
     path = mcp_discovery.discovery_path(info.USER_PATH, kind)
-    get_mcp_server().set_discovery_file(path)
+    get_mcp_server().set_discovery_file(path, on_written)
     return path
