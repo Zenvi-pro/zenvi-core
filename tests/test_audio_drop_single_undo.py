@@ -105,6 +105,10 @@ class _Timeline:
         self.store.clips[clip_id] = dict(clip_json)
         self.store.updates.insert(["clips"], dict(clip_json))
 
+    def _waveform_new_audio_clip(self, new_clip, transaction_id):
+        from windows.views.timeline import TimelineView
+        TimelineView._waveform_new_audio_clip(self, new_clip, transaction_id)
+
     def Show_Waveform_Triggered(self, clip_ids, transaction_id=None):
         self.waveform_jobs.append((list(clip_ids), transaction_id))
 
@@ -177,6 +181,22 @@ def test_one_undo_removes_the_dropped_audio_clip(editor):
     tail = editor.updates._tail_transaction(editor.updates.actionHistory)
     assert len(tail) == len(editor.updates.actionHistory), "undo reverts the whole drop at once"
     assert any(a.type == "insert" for a in tail)
+
+
+def test_a_waveform_that_lands_after_a_newer_edit_stays_out_of_undo(editor):
+    clip_id, tid = _drop(editor)
+    editor.updates.transaction_id = "newer-edit"
+    editor.updates.insert(["markers"], {"id": "M1", "position": 1.0})
+    editor.updates.transaction_id = None
+
+    _land_waveform(editor, clip_id, tid)
+
+    # The waveform is on the clip, but Undo still takes the newer edit first.
+    assert editor.store.clips[clip_id]["ui"]["audio_data"] == [0.1, 0.4]
+    history = editor.updates.actionHistory
+    assert [a.transaction for a in history] == [tid, "newer-edit"]
+    assert [a.transaction for a in editor.updates._tail_transaction(history)] == ["newer-edit"]
+    assert editor.updates.ignore_history is False
 
 
 def test_a_drop_transaction_is_joined_not_split(editor, timeline_module):

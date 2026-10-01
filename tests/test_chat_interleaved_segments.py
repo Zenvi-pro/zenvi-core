@@ -62,6 +62,7 @@ def _window(window_cls, sid="s1"):
             self._active_sid = sid
             self._sessions = {sid: {"messages": []}}
             self._token_buffer = []
+            self._token_buffer_sid = None
             self._token_flush_scheduled = False
             self.js = []
 
@@ -80,6 +81,23 @@ def _window(window_cls, sid="s1"):
 def _stream(win, *chunks):
     for c in chunks:
         win._on_token(c)
+
+
+def test_chunks_buffered_for_a_tab_that_is_gone_are_not_shown(window_cls):
+    """The tab is closed (or replaced, or switched away from) inside the
+    flush window: its pending chunk must not land in the next transcript."""
+    win = _window(window_cls)
+    _stream(win, "shown ")
+    win._flush_token_buffer()
+    assert sum("appendOrUpdateStreamingMessage" in c for c in win.js) == 1
+
+    _stream(win, "half a sen")
+    win._sessions["fresh"] = {"messages": []}
+    win._active_sid = "fresh"
+    win._flush_token_buffer()
+
+    assert sum("appendOrUpdateStreamingMessage" in c for c in win.js) == 1
+    assert win._token_buffer == []
 
 
 def test_pre_tool_prose_is_kept_as_its_own_bubble(window_cls, keyed_store):
@@ -161,3 +179,92 @@ def test_unrelated_final_text_and_no_segments_pass_through(window_cls):
     sess["turn_tail"] = "partial"
     assert win._final_segment_text(sess, "Something else entirely") == \
         "Something else entirely"
+
+
+def test_a_cursor_turn_shows_each_message_once(window_cls, keyed_store):
+    """Cursor's `result` glues its messages together with no separator, so the
+    runner reports them joined the way the chat committed them instead."""
+    import json
+    import os
+    from windows.agent_runners import CursorCliRunner
+
+    win = _window(window_cls)
+    runner = CursorCliRunner()
+    replies = []
+    runner.token_received.connect(lambda t: win._on_token(t))
+    runner.tool_started.connect(lambda c, n, a: win._on_tool_started(c, n, a))
+    runner.response_ready.connect(replies.append)
+    path = os.path.join(os.path.dirname(__file__), "fixtures", "cursor_stream.jsonl")
+    with open(path) as fh:
+        for line in fh:
+            if line.strip():
+                runner._handle_event(json.loads(line))
+
+    sess = win._sessions["s1"]
+    first = ("I'll inspect the zenvi-editor tool schemas, then call "
+             "`list_files_tool` and `add_clip_to_timeline_tool` as requested.")
+    last = "`city.mp4` could not be added because Track 1 is locked."
+    assert sess["turn_segments"] == [first]
+    assert len(replies) == 1
+    # Only the prose after the last tool is left to render at the end.
+    assert win._final_segment_text(sess, replies[0]) == last
+
+
+def test_an_opencode_turn_shows_each_message_once(window_cls, keyed_store):
+    import json
+    import os
+    from windows.agent_runners import OpenCodeRunner
+
+    win = _window(window_cls)
+    runner = OpenCodeRunner()
+    replies = []
+    runner.token_received.connect(lambda t: win._on_token(t))
+    runner.tool_started.connect(lambda c, n, a: win._on_tool_started(c, n, a))
+    path = os.path.join(os.path.dirname(__file__), "fixtures", "opencode_mcp_turn.jsonl")
+    with open(path) as fh:
+        for line in fh:
+            if line.strip():
+                runner._handle_event(json.loads(line))
+    replies.append(runner._final_text)   # what run_request reports at exit
+
+    sess = win._sessions["s1"]
+    assert sess["turn_segments"] == ["I'll list the files first."]
+    tail = win._final_segment_text(sess, replies[0])
+    assert tail.startswith("Added `city.mp4`") and "list the files first" not in tail
+
+
+def test_a_hermes_turn_shows_each_message_once(window_cls, keyed_store):
+    import json
+    import os
+    from windows.agent_runners import HermesRunner
+
+    class _Pipe:
+        def write(self, data):
+            pass
+
+        def flush(self):
+            pass
+
+        def close(self):
+            pass
+
+    win = _window(window_cls)
+    runner = HermesRunner()
+    runner._server = types.SimpleNamespace(token="t", url=lambda: "http://127.0.0.1:1/mcp")
+    runner._proc = types.SimpleNamespace(stdin=_Pipe())
+    runner._cli_cwd = "/proj"
+    runner._after_launch("count the files")
+    replies = []
+    runner.token_received.connect(lambda t: win._on_token(t))
+    runner.tool_started.connect(lambda c, n, a: win._on_tool_started(c, n, a))
+    runner.response_ready.connect(replies.append)
+    path = os.path.join(os.path.dirname(__file__), "fixtures", "hermes_acp_stream.jsonl")
+    with open(path) as fh:
+        for line in fh:
+            if line.strip():
+                runner._handle_event(json.loads(line))
+
+    sess = win._sessions["s1"]
+    assert sess["turn_segments"] == ["I'll list the files and run the command."]
+    assert win._final_segment_text(sess, replies[0]) == \
+        "There are **3 files** and the shell printed `zenvi-ok`."

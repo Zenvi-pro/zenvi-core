@@ -27,18 +27,12 @@
 
 import os
 
-# Try to get the security-patched XML functions from defusedxml
-try:
-    from defusedxml import minidom as xml
-except ImportError:
-    from xml.dom import minidom as xml
-
 from qt_api import Qt, QSortFilterProxyModel, QItemSelectionModel
 from qt_api import QIcon, QStandardItem, QStandardItemModel
 
 import openshot
 
-from classes import info
+from classes import blender_titles, info
 from classes.logger import log
 from classes.app import get_app
 
@@ -72,83 +66,78 @@ class BlenderModel():
         blender_dir = os.path.join(info.PATH, "blender")
         icons_dir = os.path.join(blender_dir, "icons")
 
-        for file in sorted(os.listdir(blender_dir)):
-            path = os.path.join(blender_dir, file)
+        for path in blender_titles.template_paths():
             if path in self.model_paths:
                 continue
-            if os.path.isfile(path) and ".xml" in file:
-                # load xml effect file
-                xmldoc = xml.parse(path)
+            # Column data for the model (shared with the animated title tool)
+            summary = blender_titles.template_summary(path)
+            title = summary["title"]
+            icon_name = summary["icon"]
+            icon_path = os.path.join(icons_dir, icon_name)
+            service = summary["service"]
 
-                # Get column data for model
-                title = xmldoc.getElementsByTagName("title")[0].childNodes[0].data
-                icon_name = xmldoc.getElementsByTagName("icon")[0].childNodes[0].data
-                icon_path = os.path.join(icons_dir, icon_name)
-                service = xmldoc.getElementsByTagName("service")[0].childNodes[0].data
-                xmldoc.unlink()
+            # Check for thumbnail path (in build-in cache)
+            thumb_path = os.path.join(info.IMAGES_PATH, "cache",  "blender_{}".format(icon_name))
 
-                # Check for thumbnail path (in build-in cache)
-                thumb_path = os.path.join(info.IMAGES_PATH, "cache",  "blender_{}".format(icon_name))
+            # Check built-in cache (if not found)
+            if not os.path.exists(thumb_path):
+                # Check user folder cache
+                thumb_path = os.path.join(info.CACHE_PATH, "blender_{}".format(icon_name))
 
-                # Check built-in cache (if not found)
-                if not os.path.exists(thumb_path):
-                    # Check user folder cache
-                    thumb_path = os.path.join(info.CACHE_PATH, "blender_{}".format(icon_name))
+            # Check if thumb exists
+            if not os.path.exists(thumb_path):
 
-                # Check if thumb exists
-                if not os.path.exists(thumb_path):
+                try:
+                    # Reload this reader
+                    clip = openshot.Clip(icon_path)
+                    reader = clip.Reader()
+                    reader.Open()
 
-                    try:
-                        # Reload this reader
-                        clip = openshot.Clip(icon_path)
-                        reader = clip.Reader()
-                        reader.Open()
+                    # Save thumbnail
+                    reader.GetFrame(0).Thumbnail(
+                        thumb_path, 98, 64, "", "",
+                        "#000", False, "png", 85, 0.0)
+                    reader.Close()
+                except Exception:
+                    log.info('Invalid blender image file: %s', icon_path)
+                    continue
 
-                        # Save thumbnail
-                        reader.GetFrame(0).Thumbnail(
-                            thumb_path, 98, 64, "", "",
-                            "#000", False, "png", 85, 0.0)
-                        reader.Close()
-                    except Exception:
-                        log.info('Invalid blender image file: %s', icon_path)
-                        continue
+            # Load icon (using display DPI)
+            icon = QIcon()
+            icon.addFile(thumb_path)
 
-                # Load icon (using display DPI)
-                icon = QIcon()
-                icon.addFile(thumb_path)
+            row = []
+            flags = Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsUserCheckable
+            # Append thumbnail
+            col = QStandardItem(self.app._tr(title))
+            col.setIcon(icon)
+            col.setToolTip(self.app._tr(title))
+            col.setFlags(flags)
+            row.append(col)
 
-                row = []
-                flags = Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsUserCheckable
-                # Append thumbnail
-                col = QStandardItem(self.app._tr(title))
-                col.setIcon(icon)
-                col.setToolTip(self.app._tr(title))
-                col.setFlags(flags)
-                row.append(col)
+            # Append Name
+            col = QStandardItem(self.app._tr(title))
+            col.setData(self.app._tr(title), Qt.DisplayRole)
+            col.setFlags(flags)
+            row.append(col)
 
-                # Append Name
-                col = QStandardItem(self.app._tr(title))
-                col.setData(self.app._tr(title), Qt.DisplayRole)
-                col.setFlags(flags)
-                row.append(col)
+            # Append Path
+            col = QStandardItem(path)
+            col.setData(path, Qt.DisplayRole)
+            col.setFlags(flags)
+            row.append(col)
 
-                # Append Path
-                col = QStandardItem(path)
-                col.setData(path, Qt.DisplayRole)
-                col.setFlags(flags)
-                row.append(col)
+            # Append Service
+            col = QStandardItem(service)
+            col.setData(service, Qt.DisplayRole)
+            col.setFlags(flags)
+            row.append(col)
 
-                # Append Service
-                col = QStandardItem(service)
-                col.setData(service, Qt.DisplayRole)
-                col.setFlags(flags)
-                row.append(col)
+            self.model.appendRow(row)
+            self.model_paths[path] = path
 
-                self.model.appendRow(row)
-                self.model_paths[path] = path
-
-                # Process events in QT (to keep the interface responsive)
-                self.app.processEvents()
+            # Process events in QT (to keep the interface responsive)
+            self.app.processEvents()
 
     def __init__(self, *args):
 

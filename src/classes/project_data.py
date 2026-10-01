@@ -37,7 +37,7 @@ import json
 
 from qt_api import QFileDialog, QMessageBox
 
-from classes import info
+from classes import headless, info
 from classes.app import get_app
 from classes.clip_placement import (
     apply_audio_only_clip_overrides,
@@ -47,6 +47,8 @@ from classes.qt_main_thread import invoke_on_gui
 from classes.image_types import get_media_type, is_audio_only_media
 from classes.json_data import JsonDataStore
 from classes.logger import log
+from classes import frame_time as ft
+from classes.clip_utils import project_fps_fraction
 from classes.updates import UpdateInterface
 from classes.assets import (
     get_assets_path,
@@ -76,6 +78,9 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
         # Track changes after save
         self.has_unsaved_changes = False
+
+        # Media paths the last load could not find (see check_if_paths_are_valid)
+        self.last_missing_media = []
 
         # Load default project data on creation
         self.new()
@@ -453,10 +458,15 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
         return profile
 
-    def load(self, file_path, clear_thumbnails=True):
-        """ Load project from file """
+    def load(self, file_path, clear_thumbnails=True, interactive=True):
+        """ Load project from file
+
+        interactive=False never opens the missing-media dialog: files that cannot
+        be relinked silently stay in place and are listed in last_missing_media.
+        """
 
         self.new()
+        self.last_missing_media = []
 
         if file_path:
             log.info("Loading project file: %s", file_path)
@@ -515,11 +525,12 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             self.has_unsaved_changes = False
 
             # Check if paths are all valid
-            self.check_if_paths_are_valid()
+            self.check_if_paths_are_valid(interactive=interactive)
 
-            # Clear old thumbnails
+            # Clear old thumbnails (never headless: the default folder belongs
+            # to a desktop window that may be running alongside)
             openshot_thumbnails = info.get_default_path("THUMBNAIL_PATH")
-            if os.path.exists(openshot_thumbnails) and clear_thumbnails:
+            if os.path.exists(openshot_thumbnails) and clear_thumbnails and not headless.is_active():
                 # Clear thumbnails
                 shutil.rmtree(openshot_thumbnails, True)
                 os.mkdir(openshot_thumbnails)
@@ -568,8 +579,8 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                                    "libopenshot": openshot.OPENSHOT_VERSION_FULL}
 
         # Get FPS from project
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
+        fps = project_fps_fraction()
+        fps_float = float(fps)
 
         # Import legacy openshot classes (from version 1.X)
         from classes.legacy.openshot import classes as legacy_classes
@@ -690,9 +701,9 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                             # Video Fade IN
                             if clip.video_fade_in:
                                 # Add keyframes
-                                start = openshot.Point(round(clip.start_time * fps_float) + 1, 0.0, openshot.BEZIER)
+                                start = openshot.Point(ft.keyframe_x(clip.start_time, fps), 0.0, openshot.BEZIER)
                                 start_object = json.loads(start.Json(), strict=False)
-                                end = openshot.Point(round((clip.start_time + clip.video_fade_in_amount) * fps_float) + 1, 1.0, openshot.BEZIER)
+                                end = openshot.Point(ft.keyframe_x(clip.start_time + clip.video_fade_in_amount, fps), 1.0, openshot.BEZIER)
                                 end_object = json.loads(end.Json(), strict=False)
                                 new_clip["alpha"]["Points"].append(start_object)
                                 new_clip["alpha"]["Points"].append(end_object)
@@ -700,9 +711,9 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                             # Video Fade OUT
                             if clip.video_fade_out:
                                 # Add keyframes
-                                start = openshot.Point(round((clip.end_time - clip.video_fade_out_amount) * fps_float) + 1, 1.0, openshot.BEZIER)
+                                start = openshot.Point(ft.keyframe_x(clip.end_time - clip.video_fade_out_amount, fps), 1.0, openshot.BEZIER)
                                 start_object = json.loads(start.Json(), strict=False)
-                                end = openshot.Point(round(clip.end_time * fps_float) + 1, 0.0, openshot.BEZIER)
+                                end = openshot.Point(ft.keyframe_x(clip.end_time, fps), 0.0, openshot.BEZIER)
                                 end_object = json.loads(end.Json(), strict=False)
                                 new_clip["alpha"]["Points"].append(start_object)
                                 new_clip["alpha"]["Points"].append(end_object)
@@ -718,9 +729,9 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                             # Audio Fade IN
                             if clip.audio_fade_in:
                                 # Add keyframes
-                                start = openshot.Point(round(clip.start_time * fps_float) + 1, 0.0, openshot.BEZIER)
+                                start = openshot.Point(ft.keyframe_x(clip.start_time, fps), 0.0, openshot.BEZIER)
                                 start_object = json.loads(start.Json(), strict=False)
-                                end = openshot.Point(round((clip.start_time + clip.video_fade_in_amount) * fps_float) + 1, clip.volume / 100.0, openshot.BEZIER)
+                                end = openshot.Point(ft.keyframe_x(clip.start_time + clip.video_fade_in_amount, fps), clip.volume / 100.0, openshot.BEZIER)
                                 end_object = json.loads(end.Json(), strict=False)
                                 new_clip["volume"]["Points"].append(start_object)
                                 new_clip["volume"]["Points"].append(end_object)
@@ -728,9 +739,9 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                             # Audio Fade OUT
                             if clip.audio_fade_out:
                                 # Add keyframes
-                                start = openshot.Point(round((clip.end_time - clip.video_fade_out_amount) * fps_float) + 1, clip.volume / 100.0, openshot.BEZIER)
+                                start = openshot.Point(ft.keyframe_x(clip.end_time - clip.video_fade_out_amount, fps), clip.volume / 100.0, openshot.BEZIER)
                                 start_object = json.loads(start.Json(), strict=False)
-                                end = openshot.Point(round(clip.end_time * fps_float) + 1, 0.0, openshot.BEZIER)
+                                end = openshot.Point(ft.keyframe_x(clip.end_time, fps), 0.0, openshot.BEZIER)
                                 end_object = json.loads(end.Json(), strict=False)
                                 new_clip["volume"]["Points"].append(start_object)
                                 new_clip["volume"]["Points"].append(end_object)
@@ -757,7 +768,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
                             brightness = openshot.Keyframe()
                             brightness.AddPoint(1, trans_begin_value, openshot.BEZIER)
-                            brightness.AddPoint(round(trans.length * fps_float) + 1, trans_end_value, openshot.BEZIER)
+                            brightness.AddPoint(ft.keyframe_x(trans.length, fps), trans_end_value, openshot.BEZIER)
                             contrast = openshot.Keyframe(trans.softness * 10.0)
 
                             # Create transition dictionary
@@ -1487,11 +1498,13 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         s.set("recent_projects", recent_projects)
         s.save()
 
-    def check_if_paths_are_valid(self):
+    def check_if_paths_are_valid(self, interactive=True):
         """Check if all paths are valid, and prompt to update them if needed.
 
         Shows one dialog: skip all, or pick a single folder and fingerprint-match
         every missing file under it. Cancel keeps files and clips in place.
+        interactive=False behaves like "Skip all" without asking, after the
+        silent media-root relink.
         """
         app = get_app()
         settings = app.get_settings()
@@ -1558,16 +1571,35 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         missing_files.sort(key=lambda item: os.path.basename(item[1]).lower())
         missing_clips.sort(key=lambda item: os.path.basename(item[1]).lower())
 
-        total_missing = len(missing_files) + len(missing_clips)
+        # A moved file is missing once for its Project Files entry and again for
+        # every clip cut from it; the prompt counts and names each path once.
+        missing_paths = []
+        seen_paths = set()
+        for _item, p in missing_files + missing_clips:
+            key = os.path.normcase(os.path.normpath(p))
+            if key not in seen_paths:
+                seen_paths.add(key)
+                missing_paths.append(p)
+
+        total_missing = len(missing_paths)
+        self.last_missing_media = sorted(missing_paths)
         if total_missing == 0:
             return
+        if not interactive:
+            log.info("Opening with %s missing file(s) without prompting", total_missing)
+            return
 
-        sample_names = []
-        for _f, p in (missing_files + missing_clips)[:5]:
-            sample_names.append(os.path.basename(p))
+        sample_names = [os.path.basename(p) for p in missing_paths[:5]]
         sample_text = ", ".join(sample_names)
         if total_missing > 5:
             sample_text = _("%s and %s more") % (sample_text, total_missing - 5)
+
+        if headless.is_active():
+            # Nobody can pick a folder: open as "Skip all" would.
+            headless.report(
+                "the project references %s missing file(s), left missing: %s"
+                % (total_missing, sample_text))
+            return
 
         msg = QMessageBox(dialog_parent)
         msg.setWindowTitle(_("Missing project files"))

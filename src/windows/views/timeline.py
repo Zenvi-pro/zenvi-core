@@ -28,13 +28,14 @@
  """
 
 import json
+from contextlib import ExitStack
 from copy import deepcopy
 import logging
 import os
 import sys
 import time
 import uuid
-from functools import partial
+from functools import partial, wraps
 from operator import itemgetter
 
 import openshot
@@ -43,17 +44,18 @@ from qt_api import modifiers_has
 from qt_api import QCursor, QKeySequence
 from qt_api import QDialog
 
-from classes import info, updates
+from classes import frame_time as ft
+from classes import info, transition_ops, updates
 from classes.app import get_app
 from classes.bridge_guard import guarded_slot, slot_transaction
+from classes.timeline_ops import aligned_positions, close_all_gaps, close_gap
+from classes.updates import nested_transaction
 from classes.color_presets import (
     COLOR_GRADE_CLASS_NAME,
     COLOR_PRESET_AUTO_CONTRAST,
     COLOR_PRESET_BOOST_COLOR,
     COLOR_PRESET_LIFT_SHADOWS,
-    COLOR_PRESET_RESET,
     COLOR_PRESET_WARM_UP,
-    apply_color_grade_preset,
     is_color_grade_effect,
 )
 from classes.film_grain_presets import (
@@ -65,72 +67,19 @@ from classes.film_grain_presets import (
     FILM_GRAIN_PRESET_HIGH_ISO,
     FILM_GRAIN_PRESET_NONE,
     FILM_GRAIN_PRESET_SUPER_8,
-    apply_film_grain_preset,
-    is_film_grain_effect,
 )
 
-LOOK_EFFECT_UI_MENU = "look"
-
-LOOK_RESET_EFFECT_CLASSES = {
-    COLOR_GRADE_CLASS_NAME,
-    FILM_GRAIN_CLASS_NAME,
-}
-
-LOOK_EFFECT_PRESETS = {
-    "AnalogTape": {
-        "none": {},
-        "subtle": {
-            "bleed": 0.25,
-            "noise": 0.18,
-            "softness": 0.15,
-            "static_bands": 0.05,
-            "stripe": 0.06,
-            "tracking": 0.20,
-        },
-        "vhs": {
-            "bleed": 0.55,
-            "noise": 0.35,
-            "softness": 0.35,
-            "static_bands": 0.18,
-            "stripe": 0.20,
-            "tracking": 0.45,
-        },
-        "heavy": {
-            "bleed": 0.85,
-            "noise": 0.60,
-            "softness": 0.55,
-            "static_bands": 0.35,
-            "stripe": 0.40,
-            "tracking": 0.75,
-        },
-    },
-    "Blur": {
-        "none": {},
-        "soft_focus": {"horizontal_radius": 3.0, "vertical_radius": 3.0, "sigma": 1.5, "iterations": 2.0},
-        "medium": {"horizontal_radius": 8.0, "vertical_radius": 8.0, "sigma": 4.0, "iterations": 3.0},
-        "heavy": {"horizontal_radius": 20.0, "vertical_radius": 20.0, "sigma": 8.0, "iterations": 4.0},
-    },
-    "Glow": {
-        "none": {},
-        "soft_white": {"mode": 0, "opacity": 0.35, "blur_radius": 18.0, "spread": 0.15, "color": "#ffffffff"},
-        "warm": {"mode": 0, "opacity": 0.45, "blur_radius": 24.0, "spread": 0.20, "color": "#ffd28cff"},
-        "neon": {"mode": 0, "opacity": 0.65, "blur_radius": 16.0, "spread": 0.35, "color": "#35d7ffff"},
-        "inner": {"mode": 1, "opacity": 0.45, "blur_radius": 12.0, "spread": 0.25, "color": "#ffffffff"},
-    },
-    "Shadow": {
-        "none": {},
-        "subtle": {"opacity": 0.30, "blur_radius": 12.0, "spread": 0.05, "distance": 8.0, "angle": 135.0, "color": "#000000ff"},
-        "soft": {"opacity": 0.45, "blur_radius": 28.0, "spread": 0.10, "distance": 14.0, "angle": 135.0, "color": "#000000ff"},
-        "strong": {"opacity": 0.70, "blur_radius": 18.0, "spread": 0.25, "distance": 16.0, "angle": 135.0, "color": "#000000ff"},
-        "long": {"opacity": 0.45, "blur_radius": 24.0, "spread": 0.12, "distance": 44.0, "angle": 135.0, "color": "#000000ff"},
-    },
-    "Sharpen": {
-        "none": {},
-        "subtle": {"amount": 4.0, "radius": 1.5, "threshold": 0.0},
-        "medium": {"amount": 9.0, "radius": 2.5, "threshold": 0.0},
-        "strong": {"amount": 16.0, "radius": 3.5, "threshold": 0.0},
-    },
-}
+from classes.look_presets import (  # noqa: E402  (shared with the agent look tools)
+    LOOK_EFFECT_PRESETS,
+    LOOK_EFFECT_UI_MENU,
+    apply_color_look_preset,
+    apply_film_grain_look_preset,
+    apply_look_effect_preset,
+    is_look_managed_effect,
+    parse_effect_color,
+    reset_look,
+    set_effect_property_value,
+)
 
 from classes.camera_motion import (
     KEN_BURNS_AUTO,
@@ -153,6 +102,7 @@ from classes.camera_motion import (
     source_dimensions_from_reader,
 )
 from classes.effect_init import effect_options
+from classes.effect_ops import merge_effects_by_class
 from classes.file_drop import os_drop_file_ids
 from classes.logger import log
 from classes.query import File, Clip, Transition, Track, Effect
@@ -174,10 +124,39 @@ from .timeline_backend.enums import (
 from .timeline_backend.qwidget import TimelineWidget
 from .timeline_backend.colors import effect_color_hex
 from .menu import StyledContextMenu
-from classes.clip_utils import clamp_timing_to_media, is_single_image_media, apply_file_caption_to_clip
+from classes.clip_utils import (
+    clamp_timing_to_media, is_single_image_media, apply_file_caption_to_clip, project_fps_fraction,
+)
+from classes.keyframe_rules import COPY_KEYFRAME_GROUPS, curve_plateau
 from classes.clip_placement import apply_audio_only_clip_overrides
-from .retime import retime_clip
+from .retime import retime_clip, time_curve_is_reversed
 from .repeat import apply_repeat, reset_repeat, RepeatDialog
+
+# Clip menu > Copy > Keyframes item -> keyframe_rules.COPY_KEYFRAME_GROUPS key
+_COPY_KEYFRAME_GROUP = {
+    MenuCopy.KEYFRAMES_ALL: "all",
+    MenuCopy.KEYFRAMES_ALPHA: "alpha",
+    MenuCopy.KEYFRAMES_SCALE: "scale",
+    MenuCopy.KEYFRAMES_SHEAR: "shear",
+    MenuCopy.KEYFRAMES_ROTATE: "rotation",
+    MenuCopy.KEYFRAMES_LOCATION: "location",
+    MenuCopy.KEYFRAMES_TIME: "time",
+    MenuCopy.KEYFRAMES_VOLUME: "volume",
+}
+
+
+def _one_undo_step(handler):
+    """Group every project change a clip menu handler makes into ONE undo step.
+
+    Joins a transaction already in flight (an agent tool call, No Transform)
+    instead of letting each selected clip become its own step.
+    """
+    @wraps(handler)
+    def grouped(*args, **kwargs):
+        with updates.nested_transaction(get_app().updates):
+            return handler(*args, **kwargs)
+    return grouped
+
 
 # Constants used by this file
 JS_SCOPE_SELECTOR = "$('body').scope()"
@@ -280,6 +259,41 @@ def _event_posf(event):
     return event.position()
 
 
+def _save_look_effects(view, clip, effects):
+    """Save a clip's new Look effect list (classes.look_presets) as one history entry."""
+    original_clip_data = json.loads(json.dumps(clip.data))
+    clip.data["effects"] = effects
+    view.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+    get_app().updates.apply_last_action_to_history(original_clip_data)
+
+
+def _save_waveform(item, tid):
+    """Save waveform data that arrived from the worker on a clip or file.
+
+    It shares the undo step of the edit that asked for it (*tid*). If newer
+    edits were made while it was being computed, joining that step now would
+    make it the newest one, and Undo would revert the older edit first. Then
+    the waveform is saved outside undo history instead.
+    """
+    manager = get_app().updates
+    history = manager.actionHistory
+    late = bool(
+        tid and history and history[-1].transaction != tid
+        and any(action.transaction == tid for action in history)
+    )
+    if not late:
+        item.save()
+        return
+    # Like UpdateManager.update_untracked: keep any pending drag action.
+    pending = manager.pending_action
+    manager.ignore_history = True
+    try:
+        item.save()
+    finally:
+        manager.ignore_history = False
+        manager.pending_action = pending
+
+
 class TimelineView(updates.UpdateInterface, ViewClass):
     """ A Web(Engine/Kit)View QWidget used to load the Timeline """
 
@@ -305,52 +319,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     def _recording_track_for_clip(self, clip):
         """Prefer the nearest lower unlocked track with room for a voiceover."""
-        try:
-            clip_data = clip.data if isinstance(clip.data, dict) else {}
-            source_track = int(clip_data.get("layer", 1) or 1)
-            start = float(clip_data.get("position", 0.0) or 0.0)
-            duration = max(
-                0.0,
-                float(clip_data.get("end", 0.0) or 0.0) - float(clip_data.get("start", 0.0) or 0.0),
-            )
-        except (TypeError, ValueError):
-            return 1
-
-        end = start + max(duration, 0.001)
-        try:
-            tracks = sorted(
-                Track.filter(),
-                key=lambda t: int(t.data.get("number", 0) or 0),
-                reverse=True,
-            )
-        except Exception:
-            tracks = []
-
-        candidate_numbers = [
-            int(track.data.get("number", 0) or 0)
-            for track in tracks
-            if int(track.data.get("number", 0) or 0) < source_track
-            and not track.data.get("lock", False)
-        ]
-        if not candidate_numbers:
-            return source_track
-
-        occupied = {}
-        for existing in Clip.filter():
-            data = existing.data if isinstance(existing.data, dict) else {}
-            try:
-                layer = int(data.get("layer", 0) or 0)
-                left = float(data.get("position", 0.0) or 0.0)
-                right = left + max(0.0, float(data.get("end", 0.0) or 0.0) - float(data.get("start", 0.0) or 0.0))
-            except (TypeError, ValueError):
-                continue
-            occupied.setdefault(layer, []).append((left, right))
-
-        for track_number in candidate_numbers:
-            has_overlap = any(left < end and right > start for left, right in occupied.get(track_number, []))
-            if not has_overlap:
-                return track_number
-        return source_track
+        from classes.recording_placement import recording_track_for_clip
+        clip_data = clip.data if isinstance(clip.data, dict) else {}
+        return recording_track_for_clip(
+            clip_data,
+            [t.data for t in Track.filter() if isinstance(t.data, dict)],
+            [c.data for c in Clip.filter() if isinstance(c.data, dict)],
+        )
 
     def _record_from_clip(self, clip):
         """Seek to a clip's first frame and open Recording on a free lower track."""
@@ -365,7 +340,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         except (KeyError, TypeError, ValueError, ZeroDivisionError):
             fps_value = 30.0
         frame_number = max(1, int(round(position * fps_value)) + 1)
-        self.PlayheadMoved(frame_number, True)
+        self.PlayheadMoved(frame_number)
         self._show_recording_dock_deferred(
             start_time=position,
             track_number=self._recording_track_for_clip(clip),
@@ -564,9 +539,14 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 if not objects:
                     return
 
+                fps = project_fps_fraction()
                 left_most_position = min(obj.data.get("position", 0.0) for obj in objects)
                 top_most_layer = max(obj.data.get("layer", 0) for obj in objects)
-                position_diff = target_position - left_most_position
+                # Paste delta in frames so relative spacing stays exact and every
+                # clip lands on a frame boundary.
+                left_f = ft.to_frame(float(left_most_position), fps)
+                target_f = ft.to_frame(float(target_position), fps)
+                delta_f = target_f - left_f
                 layer_diff = target_layer - top_most_layer if target_layer != -1 else 0
                 layer_map = {}
                 if target_layer != -1:
@@ -586,7 +566,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     obj.data.pop("id", None)
                     obj.id = None
                     self._assign_new_effect_ids(obj.data)
-                    obj.data["position"] = obj.data.get("position", 0.0) + position_diff
+                    old_f = ft.to_frame(float(obj.data.get("position", 0.0)), fps)
+                    obj.data["position"] = ft.to_seconds(old_f + delta_f, fps)
                     old_layer = obj.data.get("layer", 0)
                     try:
                         old_layer_key = int(old_layer)
@@ -610,24 +591,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     if key in excluded_keys:
                         continue
                     if key == "effects" and isinstance(value, list):
-                        existing_effects = target_obj.data.setdefault("effects", [])
-                        effect_map = {
-                            effect.get("class_name"): effect
-                            for effect in existing_effects
-                            if isinstance(effect, dict) and effect.get("class_name")
-                        }
-
-                        for effect in value:
-                            if not isinstance(effect, dict):
-                                continue
-                            effect_copy = deepcopy(effect)
-                            self._assign_new_effect_ids({"effects": [effect_copy]})
-                            effect_type = effect_copy.get("class_name")
-                            if effect_type in effect_map:
-                                effect_map[effect_type].update(effect_copy)
-                            else:
-                                existing_effects.append(effect_copy)
-                        target_obj.data["effects"] = existing_effects
+                        target_obj.data["effects"] = merge_effects_by_class(
+                            target_obj.data.get("effects") or [], value)
                     else:
                         target_obj.data[key] = value
                 target_obj.save()
@@ -1000,30 +965,14 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             log.warning("Unable to load default transition image: %s", transition_path)
             return
 
-        # Generate transition object
-        transition_object = openshot.Mask()
-
-        # Set brightness and contrast, to correctly transition for overlapping clips
-        brightness = transition_object.brightness
-        brightness.AddPoint(1, 1.0, openshot.BEZIER)
-        brightness.AddPoint(round(transition_details["end"] * fps_float) + 1, -1.0, openshot.BEZIER)
-        contrast = openshot.Keyframe(3.0)
-
-        # Create transition dictionary
-        transitions_data = {
-            "id": get_app().project.generate_id(),
-            "layer": transition_details["layer"],
-            "title": "Transition",
-            "type": "Mask",
-            "position": transition_details["position"],
-            "start": transition_details["start"],
-            "end": transition_details["end"],
-            "brightness": json.loads(brightness.Json()),
-            "contrast": json.loads(contrast.Json()),
-            "reader": reader_data,
-            "fade_audio_hint": True,
-            "replace_image": False
-        }
+        # Crossfade (and equal-power audio crossfade) over the overlap
+        transitions_data = transition_ops.new_mask_transition(
+            get_app().project.generate_id(), reader_data,
+            position=transition_details["position"], layer=transition_details["layer"],
+            duration=transition_details["end"] - transition_details["start"], fps_float=fps_float,
+            fade_audio=True)
+        transitions_data["start"] = transition_details["start"]
+        transitions_data["end"] = transition_details["end"]
 
         # Send to update manager
         self.update_transition_data(transitions_data, only_basic_props=False)
@@ -1101,249 +1050,58 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         return transition_size
 
+    def _project_fps_float(self):
+        fps = get_app().project.get("fps")
+        return float(fps["num"]) / float(fps["den"])
+
+    # Transition rules live in classes.transition_ops (shared with the agent tools).
     def _scale_keyframes(self, keyframe, factor):
         """Scale the X values of keyframe points"""
-        for point in keyframe.get("Points", []):
-            if "co" in point and "X" in point["co"] and point["co"]["X"] != 1:
-                point["co"]["X"] = round((point["co"]["X"] - 1) * factor) + 1
+        transition_ops.scale_keyframes(keyframe, factor)
 
     def _anchor_transition_endpoint_keyframes(self, transition_data, total_frames):
         """Keep static transition endpoint keyframes anchored to the clip edges."""
-        if total_frames <= 0 or not isinstance(transition_data, dict):
-            return
-        last_frame = int(total_frames) + 1
-        for prop in ("brightness", "contrast"):
-            keyframe = transition_data.get(prop)
-            points = keyframe.get("Points") if isinstance(keyframe, dict) else None
-            if not isinstance(points, list) or len(points) < 2:
-                continue
-            first = points[0].get("co") if isinstance(points[0], dict) else None
-            last = points[-1].get("co") if isinstance(points[-1], dict) else None
-            if isinstance(first, dict):
-                first["X"] = 1
-            if isinstance(last, dict):
-                last["X"] = last_frame
+        transition_ops.anchor_endpoint_keyframes(transition_data, total_frames)
 
     def _transition_mask_reader(self, transition_data, fallback_data=None):
         """Return reader metadata for a transition payload."""
-        if isinstance(transition_data, dict):
-            for key in ("mask_reader", "reader"):
-                reader = transition_data.get(key)
-                if isinstance(reader, dict):
-                    return reader
-        if isinstance(fallback_data, dict):
-            for key in ("mask_reader", "reader"):
-                reader = fallback_data.get(key)
-                if isinstance(reader, dict):
-                    return reader
-        return {}
+        return transition_ops.mask_reader(transition_data, fallback_data)
 
     def _transition_uses_static_mask(self, transition_data, fallback_data=None):
         """Return True when a transition uses a static single-image mask."""
-        reader = self._transition_mask_reader(transition_data, fallback_data)
-        if "has_single_image" in reader:
-            return bool(reader.get("has_single_image"))
-        return bool(is_single_image_media(reader))
+        return transition_ops.uses_static_mask(transition_data, fallback_data)
 
     def _transition_reader_changed(self, transition_data, fallback_data=None):
         """Return True when the transition reader source changed."""
-        new_reader = self._transition_mask_reader(transition_data, fallback_data)
-        old_reader = self._transition_mask_reader(fallback_data, None)
-
-        if not isinstance(fallback_data, dict):
-            return False
-        if not new_reader and not old_reader:
-            return False
-
-        for key in ("id", "path", "type", "has_single_image", "video_length", "duration"):
-            if new_reader.get(key) != old_reader.get(key):
-                return True
-        return new_reader != old_reader
+        return transition_ops.reader_changed(transition_data, fallback_data)
 
     def _build_transition_default_keyframes(self, duration, start_value, end_value, contrast_value):
         """Build default brightness/contrast keyframes for a transition."""
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
-        duration = max(0.0, float(duration or 0.0))
-
-        brightness = openshot.Keyframe()
-        brightness.AddPoint(1, float(start_value), openshot.BEZIER)
-        if float(start_value) != float(end_value):
-            brightness.AddPoint(round(duration * fps_float) + 1, float(end_value), openshot.BEZIER)
-        contrast = openshot.Keyframe(float(contrast_value))
-        return json.loads(brightness.Json()), json.loads(contrast.Json())
+        return transition_ops.default_keyframes(
+            duration, start_value, end_value, contrast_value, self._project_fps_float())
 
     def _set_transition_mask_defaults(self, transition_data, fallback_data=None):
         """Normalize timing/keyframes for static vs animated transition masks."""
-        if not isinstance(transition_data, dict):
-            return transition_data
+        return transition_ops.set_mask_defaults(transition_data, self._project_fps_float(), fallback_data)
 
-        start = float(transition_data.get("start", 0.0) or 0.0)
-        end = float(transition_data.get("end", start) or start)
-        if end < start:
-            end = start
-        duration = max(0.0, end - start)
-
-        if self._transition_uses_static_mask(transition_data, fallback_data):
-            transition_data["start"] = 0.0
-            transition_data["end"] = duration
-            brightness, contrast = self._build_transition_default_keyframes(duration, 1.0, -1.0, 3.0)
-            mode = "static"
-        else:
-            transition_data["start"] = start
-            transition_data["end"] = end
-            brightness, contrast = self._build_transition_default_keyframes(duration, 0.0, 0.0, 0.0)
-            mode = "animated"
-
-        transition_data["duration"] = max(
-            0.0,
-            float(transition_data.get("end", 0.0) or 0.0) - float(transition_data.get("start", 0.0) or 0.0),
-        )
-        transition_data["brightness"] = brightness
-        transition_data["contrast"] = contrast
-        return transition_data
-
-    def _reverse_keyframes(self, keyframe, total_frames):
+    def _reverse_keyframes(self, keyframe, total_frames=None):
         """Reverse keyframe positions, swapping handles"""
-        points = keyframe.get("Points", [])
-        x_values = [
-            point["co"]["X"]
-            for point in points
-            if isinstance(point.get("co"), dict) and "X" in point["co"]
-        ]
+        transition_ops.reverse_keyframes(keyframe)
 
-        if not x_values:
-            return
-
-        min_x = min(x_values)
-        max_x = max(x_values)
-
-        # Keyframe X positions are 1-indexed.  Use the actual min/max X values to
-        # determine the reflection pivot so we don't lose leading keyframes when
-        # total_frames is smaller than the keyframe range (for example, when the
-        # last point is stored at duration + 1).
-        pivot = min_x + max_x
-
-        new_points = []
-        for point in points:
-            new_point = json.loads(json.dumps(point))
-            if isinstance(new_point.get("co"), dict) and "X" in new_point["co"]:
-                new_point["co"]["X"] = pivot - point["co"]["X"]
-                hl = new_point.pop("handle_left", None)
-                hr = new_point.pop("handle_right", None)
-                if hr is not None:
-                    new_point["handle_left"] = hr
-                if hl is not None:
-                    new_point["handle_right"] = hl
-            new_points.append(new_point)
-
-        keyframe["Points"] = sorted(
-            new_points,
-            key=lambda p: p.get("co", {}).get("X", 0)
-        )
+    def _layer_clip_data(self, transition_data):
+        try:
+            layer = int(transition_data.get("layer", 0))
+        except (TypeError, ValueError, AttributeError):
+            return []
+        return [c.data for c in Clip.filter(layer=layer) if isinstance(c.data, dict)]
 
     def _infer_transition_drop_side(self, transition_data):
         """Return 'left' or 'right' based on which side of a clip the transition overlaps."""
-        if not isinstance(transition_data, dict):
-            return None
-
-        try:
-            layer = int(transition_data.get("layer", 0))
-            position = float(transition_data.get("position", 0.0))
-            start = float(transition_data.get("start", 0.0))
-            end = float(transition_data.get("end", 0.0))
-        except (TypeError, ValueError):
-            return None
-
-        duration = max(0.0, end - start)
-        if duration <= 0.0:
-            return None
-
-        tran_left = position
-        tran_right = position + duration
-        tran_mid = (tran_left + tran_right) / 2.0
-
-        best_match = None
-        for clip in Clip.filter(layer=layer):
-            clip_data = clip.data if isinstance(clip.data, dict) else {}
-            try:
-                clip_left = float(clip_data.get("position", 0.0))
-                clip_start = float(clip_data.get("start", 0.0))
-                clip_end = float(clip_data.get("end", 0.0))
-            except (TypeError, ValueError):
-                continue
-
-            clip_duration = max(0.0, clip_end - clip_start)
-            if clip_duration <= 0.0:
-                continue
-
-            clip_right = clip_left + clip_duration
-            overlap = min(tran_right, clip_right) - max(tran_left, clip_left)
-            if overlap <= 0.0:
-                continue
-
-            clip_mid = (clip_left + clip_right) / 2.0
-            side = "left" if tran_mid <= clip_mid else "right"
-            edge_dist = abs(tran_mid - (clip_left if side == "left" else clip_right))
-            score = (-overlap, edge_dist)
-            if best_match is None or score < best_match[0]:
-                best_match = (score, side)
-
-        return best_match[1] if best_match else None
+        return transition_ops.infer_drop_side(transition_data, self._layer_clip_data(transition_data))
 
     def _auto_orient_transition_keyframes(self, transition_data):
-        """Apply fade-in orientation on left-edge drops (right edge keeps default orientation)."""
-        target_side = self._infer_transition_drop_side(transition_data)
-        if target_side not in ("left", "right"):
-            return
-
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
-        try:
-            duration = float(transition_data.get("end", 0.0)) - float(transition_data.get("start", 0.0))
-        except (TypeError, ValueError):
-            duration = 0.0
-        total_frames = max(1, round(max(0.0, duration) * fps_float))
-
-        # Infer current direction from brightness keyframe values when possible.
-        current_side = None
-        brightness = transition_data.get("brightness")
-        if isinstance(brightness, dict):
-            points = brightness.get("Points", [])
-            keyed = []
-            for point in points:
-                co = point.get("co") if isinstance(point, dict) else None
-                if not isinstance(co, dict):
-                    continue
-                x = co.get("X")
-                y = co.get("Y")
-                if x is None or y is None:
-                    continue
-                try:
-                    keyed.append((float(x), float(y)))
-                except (TypeError, ValueError):
-                    continue
-            if len(keyed) >= 2:
-                keyed.sort(key=lambda k: k[0])
-                first_y = keyed[0][1]
-                last_y = keyed[-1][1]
-                if first_y < last_y:
-                    current_side = "right"
-                elif first_y > last_y:
-                    current_side = "left"
-
-        # Only auto-flip when the current direction is clearly inferable.
-        # This avoids rewriting customized/non-monotonic transition curves.
-        if current_side is None:
-            return
-
-        if current_side == target_side:
-            return
-
-        for prop in ("brightness", "contrast"):
-            keyframe = transition_data.get(prop)
-            if isinstance(keyframe, dict):
-                self._reverse_keyframes(keyframe, total_frames)
+        """Fade in on a clip's left edge, fade out on its right edge."""
+        transition_ops.auto_orient_keyframes(transition_data, self._layer_clip_data(transition_data))
 
     # Javascript callable function to update the project data when a transition changes
     @guarded_slot(str, bool, bool, str)
@@ -1364,48 +1122,16 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if not existing_item:
             # Create a new transition (if not exists)
             existing_item = Transition()
-        existing_item.data = transition_data
 
         # Get FPS from project
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
 
-        # Preserve and scale existing keyframes when only basic props are updated
-        old_duration = old_data.get("end", 0.0) - old_data.get("start", 0.0)
-        new_duration = existing_item.data.get("end", 0.0) - existing_item.data.get("start", 0.0)
-        old_frames = round(old_duration * fps_float) if old_duration > 0 else 0
-        new_frames = round(new_duration * fps_float) if new_duration > 0 else 0
-        uses_static_mask = self._transition_uses_static_mask(existing_item.data, old_data)
-
-        if old_data and only_basic_props:
-            if "brightness" in old_data:
-                existing_item.data["brightness"] = old_data["brightness"]
-            if "contrast" in old_data:
-                existing_item.data["contrast"] = old_data["contrast"]
-
-            if uses_static_mask and old_frames and new_frames and old_frames != new_frames:
-                scale = new_frames / old_frames
-                for prop in ("brightness", "contrast"):
-                    if prop in existing_item.data:
-                        self._scale_keyframes(existing_item.data[prop], scale)
-            if uses_static_mask and new_frames:
-                self._anchor_transition_endpoint_keyframes(existing_item.data, new_frames)
-        elif old_data and self._transition_reader_changed(existing_item.data, old_data):
-            self._set_transition_mask_defaults(existing_item.data, old_data)
-
-        if auto_direction and uses_static_mask:
-            self._auto_orient_transition_keyframes(existing_item.data)
-
-        # Only include the basic properties (performance boost)
-        if only_basic_props and not old_data:
-            existing_item.data = {}
-            existing_item.data["id"] = transition_data["id"]
-            existing_item.data["layer"] = transition_data["layer"]
-            existing_item.data["position"] = transition_data["position"]
-            existing_item.data["start"] = transition_data["start"]
-            existing_item.data["end"] = transition_data["end"]
-            existing_item.data["brightness"] = transition_data.get("brightness", {})
-            existing_item.data["contrast"] = transition_data.get("contrast", {})
+        # Keep, rescale or reset the brightness/contrast curves (classes.transition_ops)
+        existing_item.data = transition_ops.prepare_update(
+            transition_data, old_data, fps_float,
+            only_basic_props=only_basic_props, auto_direction=auto_direction,
+            layer_clips=self._layer_clip_data(transition_data) if auto_direction else None)
 
         # Delete invalid items (i.e. negative duration)
         if self.delete_invalid_timeline_item(existing_item):
@@ -2324,11 +2050,14 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         """Hide the waveform for the selected clip"""
 
         # Loop through each selected clip ID
-        for clip_id in clip_ids:
-            # Get existing clip object & clear audio_data
-            clip = Clip.get(id=clip_id)
-            clip.data = {"ui": {"audio_data": []}}
-            clip.save()
+        with nested_transaction(get_app().updates):
+            for clip_id in clip_ids:
+                # Get existing clip object & clear audio_data
+                clip = Clip.get(id=clip_id)
+                if not clip:
+                    continue
+                clip.data = {"ui": {"audio_data": []}}
+                clip.save()
 
     def fileAudioDataReady_Triggered(self, file_id, ui_data, tid):
         log.debug("fileAudioDataReady_Triggered received for file: %s" % file_id)
@@ -2358,7 +2087,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     file.data = ui_data
             else:
                 file.data = ui_data
-            file.save()
+            _save_waveform(file, tid)
 
         # Clear transaction id
         get_app().updates.transaction_id = None
@@ -2402,7 +2131,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 if not preserve_existing_waveform and isinstance(clip_ui.get("audio_data"), list):
                     clip_ui["waveform_token"] = str(tid or self.get_uuid())
             clip.data = ui_data
-            clip.save()
+            _save_waveform(clip, tid)
             if hasattr(self, "clip_painter"):
                 self.clip_painter.clear_cache()
             QTimer.singleShot(0, self.update)
@@ -2436,169 +2165,130 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Get translation method
         _ = get_app()._tr
 
-        # Group transactions
-        tid = self.get_uuid()
-        get_app().updates.transaction_id = tid
+        # Group transactions (joining one already in flight)
+        with nested_transaction(get_app().updates) as tid:
+            # Loop through each selected clip
+            for clip_id in clip_ids:
 
-        # Loop through each selected clip
-        for clip_id in clip_ids:
-
-            # Get existing clip object
-            clip = Clip.get(id=clip_id)
-            if not clip:
-                # Invalid clip, skip to next item
-                continue
-
-            # Get # of tracks
-            all_tracks = get_app().project.get("layers")
-
-            reader = clip.data.get("reader", {})
-            has_audio = reader.get("has_audio")
-            has_audio = True if has_audio is None else bool(has_audio)
-            channels_value = reader.get("channels")
-            try:
-                channel_count = int(channels_value) if channels_value is not None else None
-            except (TypeError, ValueError):
-                channel_count = None
-            has_video = reader.get("has_video")
-            has_video = True if has_video is None else bool(has_video)
-            original_layer = clip.data.get("layer")
-
-            if (not has_audio) or (channel_count is not None and channel_count <= 0):
-                log.info("Split audio skipped for clip %s (no audio)", clip_id)
-                continue
-
-            def get_track_below(layer_number):
-                """Return the track number directly below the provided layer, creating one when needed."""
-                window = getattr(get_app(), "window", None)
-                create_below = getattr(window, "create_track_below", None)
-                if callable(create_below):
-                    return create_below(layer_number)
-
-                next_track_number = layer_number
-                found_track = False
-                for track in reversed(sorted(all_tracks, key=itemgetter('number'))):
-                    if found_track:
-                        next_track_number = track.get("number")
-                        break
-                    if track.get("number") == layer_number:
-                        found_track = True
-                        continue
-                return next_track_number
-
-            # Get title of clip
-            clip_title = clip.data["title"]
-
-            # Audio-only clips reuse the source clip instead of deleting it
-            if not has_video:
-                if action == MenuSplitAudio.SINGLE:
-                    # Clear channel filter to all channels and keep the clip
-                    p = openshot.Point(1, -1.0, openshot.CONSTANT)
-                    p_object = json.loads(p.Json())
-                    clip.data["channel_filter"] = {"Points": [p_object]}
-                    clip.save()
-
-                    # Generate waveform for existing clip
-                    log.info("Generate waveform for audio-only clip id: %s" % clip.id)
-                    self.Show_Waveform_Triggered([clip.id], transaction_id=tid)
+                # Get existing clip object
+                clip = Clip.get(id=clip_id)
+                if not clip:
+                    # Invalid clip, skip to next item
                     continue
 
-                if action == MenuSplitAudio.MULTIPLE:
-                    channels = channel_count
+                # Get # of tracks
+                all_tracks = get_app().project.get("layers")
 
-                    separate_clip_ids = []
-                    current_layer = original_layer
-                    for channel in range(0, channels):
-                        log.debug("Adding clip for channel %s" % channel)
+                reader = clip.data.get("reader", {})
+                has_audio = reader.get("has_audio")
+                has_audio = True if has_audio is None else bool(has_audio)
+                channels_value = reader.get("channels")
+                try:
+                    channel_count = int(channels_value) if channels_value is not None else None
+                except (TypeError, ValueError):
+                    channel_count = None
+                has_video = reader.get("has_video")
+                has_video = True if has_video is None else bool(has_video)
+                original_layer = clip.data.get("layer")
 
-                        # Each clip is filtered to a different channel
-                        p = openshot.Point(1, channel, openshot.CONSTANT)
+                if (not has_audio) or (channel_count is not None and channel_count <= 0):
+                    log.info("Split audio skipped for clip %s (no audio)", clip_id)
+                    continue
+
+                def get_track_below(layer_number):
+                    """Return the track number directly below the provided layer, creating one when needed."""
+                    window = getattr(get_app(), "window", None)
+                    create_below = getattr(window, "create_track_below", None)
+                    if callable(create_below):
+                        return create_below(layer_number)
+
+                    next_track_number = layer_number
+                    found_track = False
+                    for track in reversed(sorted(all_tracks, key=itemgetter('number'))):
+                        if found_track:
+                            next_track_number = track.get("number")
+                            break
+                        if track.get("number") == layer_number:
+                            found_track = True
+                            continue
+                    return next_track_number
+
+                # Get title of clip
+                clip_title = clip.data["title"]
+
+                # Audio-only clips reuse the source clip instead of deleting it
+                if not has_video:
+                    if action == MenuSplitAudio.SINGLE:
+                        # Clear channel filter to all channels and keep the clip
+                        p = openshot.Point(1, -1.0, openshot.CONSTANT)
                         p_object = json.loads(p.Json())
                         clip.data["channel_filter"] = {"Points": [p_object]}
-
-                        # Explicitly keep video disabled and scale none
-                        p = openshot.Point(1, 0.0, openshot.CONSTANT)
-                        p_object = json.loads(p.Json())
-                        clip.data["has_video"] = {"Points": [p_object]}
-                        clip.data["scale"] = openshot.SCALE_NONE
-
-                        # Keep first clip on the same layer, others below
-                        target_layer = current_layer if channel == 0 else get_track_below(current_layer)
-                        clip.data['layer'] = target_layer
-                        current_layer = clip.data['layer']
-
-                        # Adjust the clip title
-                        channel_label = _("(channel %s)") % (channel + 1)
-                        clip.data["title"] = clip_title + " " + channel_label
-
-                        # Save changes
                         clip.save()
-                        separate_clip_ids.append(clip.id)
 
-                        # Prepare a new clip for the next channel
-                        if channel < channels - 1:
-                            clip.id = None
-                            clip.type = 'insert'
-                            clip.data.pop('id', None)
-                            if clip.key and len(clip.key) > 1:
-                                clip.key.pop(1)
+                        # Generate waveform for existing clip
+                        log.info("Generate waveform for audio-only clip id: %s" % clip.id)
+                        self.Show_Waveform_Triggered([clip.id], transaction_id=tid)
+                        continue
 
-                    # Generate waveform for new clips
-                    log.info("Generate waveform for split audio track clip ids: %s" % str(separate_clip_ids))
-                    self.Show_Waveform_Triggered(separate_clip_ids, transaction_id=tid)
-                    continue
+                    if action == MenuSplitAudio.MULTIPLE:
+                        channels = channel_count
 
-            # Clear audio override
-            p = openshot.Point(1, -1.0, openshot.CONSTANT)  # Override has_audio keyframe to False
-            p_object = json.loads(p.Json())
-            clip.data["has_audio"] = {"Points": [p_object]}
+                        separate_clip_ids = []
+                        current_layer = original_layer
+                        for channel in range(0, channels):
+                            log.debug("Adding clip for channel %s" % channel)
 
-            # Remove the ID property from the clip (so it becomes a new one)
-            clip.id = None
-            clip.type = 'insert'
-            clip.data.pop('id')
-            clip.key.pop(1)
+                            # Each clip is filtered to a different channel
+                            p = openshot.Point(1, channel, openshot.CONSTANT)
+                            p_object = json.loads(p.Json())
+                            clip.data["channel_filter"] = {"Points": [p_object]}
 
-            if action == MenuSplitAudio.SINGLE:
-                # Clear channel filter on new clip
-                p = openshot.Point(1, -1.0, openshot.CONSTANT)
+                            # Explicitly keep video disabled and scale none
+                            p = openshot.Point(1, 0.0, openshot.CONSTANT)
+                            p_object = json.loads(p.Json())
+                            clip.data["has_video"] = {"Points": [p_object]}
+                            clip.data["scale"] = openshot.SCALE_NONE
+
+                            # Keep first clip on the same layer, others below
+                            target_layer = current_layer if channel == 0 else get_track_below(current_layer)
+                            clip.data['layer'] = target_layer
+                            current_layer = clip.data['layer']
+
+                            # Adjust the clip title
+                            channel_label = _("(channel %s)") % (channel + 1)
+                            clip.data["title"] = clip_title + " " + channel_label
+
+                            # Save changes
+                            clip.save()
+                            separate_clip_ids.append(clip.id)
+
+                            # Prepare a new clip for the next channel
+                            if channel < channels - 1:
+                                clip.id = None
+                                clip.type = 'insert'
+                                clip.data.pop('id', None)
+                                if clip.key and len(clip.key) > 1:
+                                    clip.key.pop(1)
+
+                        # Generate waveform for new clips
+                        log.info("Generate waveform for split audio track clip ids: %s" % str(separate_clip_ids))
+                        self.Show_Waveform_Triggered(separate_clip_ids, transaction_id=tid)
+                        continue
+
+                # Clear audio override
+                p = openshot.Point(1, -1.0, openshot.CONSTANT)  # Override has_audio keyframe to False
                 p_object = json.loads(p.Json())
-                clip.data["channel_filter"] = {"Points": [p_object]}
+                clip.data["has_audio"] = {"Points": [p_object]}
 
-                # Filter out video on the new clip
-                p = openshot.Point(1, 0.0, openshot.CONSTANT)  # Override has_video keyframe to False
-                p_object = json.loads(p.Json())
-                clip.data["has_video"] = {"Points": [p_object]}
-                # Also set scale to None
-                # Workaround for https://github.com/OpenShot/openshot-qt/issues/2882
-                clip.data["scale"] = openshot.SCALE_NONE
+                # Remove the ID property from the clip (so it becomes a new one)
+                clip.id = None
+                clip.type = 'insert'
+                clip.data.pop('id')
+                clip.key.pop(1)
 
-                # Adjust the layer; place below the parent clip
-                target_layer = get_track_below(original_layer)
-                clip.data['layer'] = target_layer
-
-                # Adjust the clip title
-                channel_label = _("(all channels)")
-                clip.data["title"] = clip_title + " " + channel_label
-                # Save changes
-                clip.save()
-
-                # Generate waveform for new clip
-                log.info("Generate waveform for split audio track clip id: %s" % clip.id)
-                self.Show_Waveform_Triggered([clip.id], transaction_id=tid)
-
-            if action == MenuSplitAudio.MULTIPLE:
-                # Get # of channels on clip
-                channels = channel_count
-
-                # Loop through each channel
-                separate_clip_ids = []
-                current_layer = original_layer
-                for channel in range(0, channels):
-                    log.debug("Adding clip for channel %s" % channel)
-
-                    # Each clip is filtered to a different channel
-                    p = openshot.Point(1, channel, openshot.CONSTANT)
+                if action == MenuSplitAudio.SINGLE:
+                    # Clear channel filter on new clip
+                    p = openshot.Point(1, -1.0, openshot.CONSTANT)
                     p_object = json.loads(p.Json())
                     clip.data["channel_filter"] = {"Points": [p_object]}
 
@@ -2610,55 +2300,90 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     # Workaround for https://github.com/OpenShot/openshot-qt/issues/2882
                     clip.data["scale"] = openshot.SCALE_NONE
 
-                    # Adjust the layer, so this new audio clip doesn't overlap the parent
-                    target_layer = get_track_below(current_layer)
+                    # Adjust the layer; place below the parent clip
+                    target_layer = get_track_below(original_layer)
                     clip.data['layer'] = target_layer
-                    current_layer = clip.data['layer']
 
                     # Adjust the clip title
-                    channel_label = _("(channel %s)") % (channel + 1)
+                    channel_label = _("(all channels)")
                     clip.data["title"] = clip_title + " " + channel_label
-
                     # Save changes
                     clip.save()
-                    separate_clip_ids.append(clip.id)
 
-                    # Remove the ID property from the clip (so next time, it will create a new clip)
-                    clip.id = None
-                    clip.type = 'insert'
-                    clip.data.pop('id')
+                    # Generate waveform for new clip
+                    log.info("Generate waveform for split audio track clip id: %s" % clip.id)
+                    self.Show_Waveform_Triggered([clip.id], transaction_id=tid)
 
-                # Generate waveform for new clip
-                log.info("Generate waveform for split audio track clip ids: %s" % str(separate_clip_ids))
-                self.Show_Waveform_Triggered(separate_clip_ids, transaction_id=tid)
+                if action == MenuSplitAudio.MULTIPLE:
+                    # Get # of channels on clip
+                    channels = channel_count
 
-        for clip_id in clip_ids:
+                    # Loop through each channel
+                    separate_clip_ids = []
+                    current_layer = original_layer
+                    for channel in range(0, channels):
+                        log.debug("Adding clip for channel %s" % channel)
 
-            # Get existing clip object
-            clip = Clip.get(id=clip_id)
-            if not clip:
-                # Invalid clip, skip to next item
-                continue
+                        # Each clip is filtered to a different channel
+                        p = openshot.Point(1, channel, openshot.CONSTANT)
+                        p_object = json.loads(p.Json())
+                        clip.data["channel_filter"] = {"Points": [p_object]}
 
-            reader = clip.data.get("reader", {})
-            has_video = reader.get("has_video")
-            has_video = True if has_video is None else bool(has_video)
+                        # Filter out video on the new clip
+                        p = openshot.Point(1, 0.0, openshot.CONSTANT)  # Override has_video keyframe to False
+                        p_object = json.loads(p.Json())
+                        clip.data["has_video"] = {"Points": [p_object]}
+                        # Also set scale to None
+                        # Workaround for https://github.com/OpenShot/openshot-qt/issues/2882
+                        clip.data["scale"] = openshot.SCALE_NONE
 
-            if not has_video:
-                continue
+                        # Adjust the layer, so this new audio clip doesn't overlap the parent
+                        target_layer = get_track_below(current_layer)
+                        clip.data['layer'] = target_layer
+                        current_layer = clip.data['layer']
 
-            # Filter out audio on the original clip
-            p = openshot.Point(1, 0.0, openshot.CONSTANT)  # Override has_audio keyframe to False
-            p_object = json.loads(p.Json())
-            clip.data["has_audio"] = {"Points": [p_object]}
+                        # Adjust the clip title
+                        channel_label = _("(channel %s)") % (channel + 1)
+                        clip.data["title"] = clip_title + " " + channel_label
 
-            # Save filter on original clip
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-            clip.save()
+                        # Save changes
+                        clip.save()
+                        separate_clip_ids.append(clip.id)
 
-        # Clear transaction
-        get_app().updates.transaction_id = None
+                        # Remove the ID property from the clip (so next time, it will create a new clip)
+                        clip.id = None
+                        clip.type = 'insert'
+                        clip.data.pop('id')
 
+                    # Generate waveform for new clip
+                    log.info("Generate waveform for split audio track clip ids: %s" % str(separate_clip_ids))
+                    self.Show_Waveform_Triggered(separate_clip_ids, transaction_id=tid)
+
+            for clip_id in clip_ids:
+
+                # Get existing clip object
+                clip = Clip.get(id=clip_id)
+                if not clip:
+                    # Invalid clip, skip to next item
+                    continue
+
+                reader = clip.data.get("reader", {})
+                has_video = reader.get("has_video")
+                has_video = True if has_video is None else bool(has_video)
+
+                if not has_video:
+                    continue
+
+                # Filter out audio on the original clip
+                p = openshot.Point(1, 0.0, openshot.CONSTANT)  # Override has_audio keyframe to False
+                p_object = json.loads(p.Json())
+                clip.data["has_audio"] = {"Points": [p_object]}
+
+                # Save filter on original clip
+                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+                clip.save()
+
+    @_one_undo_step
     def Crop_Triggered(self, clip_ids, mode):
         """Add/remove/select the Crop effect based on mode"""
         get_app().window.clearSelections()
@@ -2772,107 +2497,30 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         return json.loads(effect.Json())
 
     def _is_look_managed_effect(self, effect_json, class_name=None):
-        if not isinstance(effect_json, dict):
-            return False
-        if effect_json.get("ui-menu") != LOOK_EFFECT_UI_MENU:
-            return False
-        return class_name is None or effect_json.get("class_name") == class_name
+        return is_look_managed_effect(effect_json, class_name)
 
     def _parse_effect_color(self, value):
-        if not isinstance(value, str):
-            return None
-        color = value.strip()
-        if color.startswith("#"):
-            color = color[1:]
-        if len(color) not in (6, 8):
-            return None
-        try:
-            red = int(color[0:2], 16)
-            green = int(color[2:4], 16)
-            blue = int(color[4:6], 16)
-            alpha = int(color[6:8], 16) if len(color) == 8 else 255
-        except ValueError:
-            return None
-        return {
-            "red": red,
-            "green": green,
-            "blue": blue,
-            "alpha": alpha,
-        }
+        return parse_effect_color(value)
 
     def _set_effect_property_value(self, effect_json, property_name, value):
-        property_data = effect_json.get(property_name)
-        color_channels = self._parse_effect_color(value)
-        if color_channels and isinstance(property_data, dict):
-            for channel, channel_value in color_channels.items():
-                channel_data = property_data.get(channel)
-                if isinstance(channel_data, dict) and isinstance(channel_data.get("Points"), list):
-                    channel_data["Points"] = [
-                        json.loads(openshot.Point(1, float(channel_value), openshot.BEZIER).Json())
-                    ]
-        elif isinstance(property_data, dict) and isinstance(property_data.get("Points"), list):
-            property_data["Points"] = [json.loads(openshot.Point(1, float(value), openshot.BEZIER).Json())]
-        elif property_name in effect_json:
-            effect_json[property_name] = value
+        set_effect_property_value(effect_json, property_name, value)
 
     def _apply_effect_preset(self, class_name, preset_name, clip_ids):
         """Apply a simple Look effect preset, or remove the effect for the none preset."""
-        presets = LOOK_EFFECT_PRESETS.get(class_name, {})
-        if preset_name not in presets:
+        if preset_name not in LOOK_EFFECT_PRESETS.get(class_name, {}):
             return
 
         for clip_id in clip_ids:
             clip = Clip.get(id=clip_id)
             if not clip or not self._clip_has_visual(clip):
                 continue
-
-            original_clip_data = json.loads(json.dumps(clip.data))
-            effects = clip.data.get("effects")
-            if not isinstance(effects, list):
-                effects = list(effects) if effects else []
-                clip.data["effects"] = effects
-
-            matching_indexes = [
-                index for index, effect_json in enumerate(effects)
-                if self._is_look_managed_effect(effect_json, class_name)
-            ]
-
-            if preset_name == "none":
-                if not matching_indexes:
-                    continue
-                clip.data["effects"] = [
-                    effect_json for effect_json in effects
-                    if not self._is_look_managed_effect(effect_json, class_name)
-                ]
-                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-                get_app().updates.apply_last_action_to_history(original_clip_data)
-                continue
-
             try:
-                preset_effect = self._create_effect_json(class_name)
+                effects = apply_look_effect_preset(
+                    clip.data.get("effects"), class_name, preset_name, self._create_effect_json)
             except RuntimeError:
                 continue
-            preset_effect["ui-menu"] = LOOK_EFFECT_UI_MENU
-
-            if matching_indexes:
-                existing_effect = effects[matching_indexes[0]]
-                if existing_effect.get("id"):
-                    preset_effect["id"] = existing_effect["id"]
-                if "order" in existing_effect:
-                    preset_effect["order"] = existing_effect["order"]
-
-            for property_name, value in presets[preset_name].items():
-                self._set_effect_property_value(preset_effect, property_name, value)
-
-            if matching_indexes:
-                effects[matching_indexes[0]] = preset_effect
-                for index in reversed(matching_indexes[1:]):
-                    del effects[index]
-            else:
-                effects.append(preset_effect)
-
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-            get_app().updates.apply_last_action_to_history(original_clip_data)
+            if effects is not None:
+                _save_look_effects(self, clip, effects)
 
     def Reset_Look_Triggered(self, clip_ids):
         """Remove all effects managed by the clip Look menu."""
@@ -2880,26 +2528,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             clip = Clip.get(id=clip_id)
             if not clip or not self._clip_has_visual(clip):
                 continue
-
-            effects = clip.data.get("effects")
-            if not isinstance(effects, list):
-                continue
-
-            filtered_effects = [
-                effect_json for effect_json in effects
-                if not isinstance(effect_json, dict)
-                or (
-                    effect_json.get("class_name") not in LOOK_RESET_EFFECT_CLASSES
-                    and not self._is_look_managed_effect(effect_json)
-                )
-            ]
-            if len(filtered_effects) == len(effects):
-                continue
-
-            original_clip_data = json.loads(json.dumps(clip.data))
-            clip.data["effects"] = filtered_effects
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-            get_app().updates.apply_last_action_to_history(original_clip_data)
+            effects = reset_look(clip.data.get("effects"))
+            if effects is not None:
+                _save_look_effects(self, clip, effects)
 
     def _ensure_color_grade_effect(self, clip):
         if not clip or not self._clip_has_visual(clip):
@@ -2933,48 +2564,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             clip = Clip.get(id=clip_id)
             if not clip or not self._clip_has_visual(clip):
                 continue
-
-            original_clip_data = json.loads(json.dumps(clip.data))
-            effects = clip.data.get("effects")
-            if not isinstance(effects, list):
-                effects = list(effects) if effects else []
-                clip.data["effects"] = effects
-
-            matching_indexes = [
-                index for index, effect_json in enumerate(effects)
-                if is_color_grade_effect(effect_json)
-            ]
-
-            if preset_name == COLOR_PRESET_RESET:
-                if not matching_indexes:
-                    continue
-                clip.data["effects"] = [
-                    effect_json for effect_json in effects
-                    if not is_color_grade_effect(effect_json)
-                ]
-                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-                get_app().updates.apply_last_action_to_history(original_clip_data)
-                continue
-
-            preset_effect = apply_color_grade_preset(
-                self._create_color_grade_effect_json(),
-                preset_name,
-            )
-
-            if matching_indexes:
-                existing_effect = effects[matching_indexes[0]]
-                if existing_effect.get("id"):
-                    preset_effect["id"] = existing_effect["id"]
-                if "order" in existing_effect:
-                    preset_effect["order"] = existing_effect["order"]
-                effects[matching_indexes[0]] = preset_effect
-                for index in reversed(matching_indexes[1:]):
-                    del effects[index]
-            else:
-                effects.append(preset_effect)
-
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-            get_app().updates.apply_last_action_to_history(original_clip_data)
+            effects = apply_color_look_preset(
+                clip.data.get("effects"), preset_name,
+                lambda _class_name: self._create_color_grade_effect_json())
+            if effects is not None:
+                _save_look_effects(self, clip, effects)
 
     def Film_Grain_Triggered(self, preset_name, clip_ids):
         """Apply Film Grain presets for selected clips."""
@@ -2982,50 +2576,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             clip = Clip.get(id=clip_id)
             if not clip or not self._clip_has_visual(clip):
                 continue
-
-            original_clip_data = json.loads(json.dumps(clip.data))
-            effects = clip.data.get("effects")
-            if not isinstance(effects, list):
-                effects = list(effects) if effects else []
-                clip.data["effects"] = effects
-
-            matching_indexes = [
-                index for index, effect_json in enumerate(effects)
-                if is_film_grain_effect(effect_json)
-            ]
-
-            if preset_name == FILM_GRAIN_PRESET_NONE:
-                if not matching_indexes:
-                    continue
-                clip.data["effects"] = [
-                    effect_json for effect_json in effects
-                    if not is_film_grain_effect(effect_json)
-                ]
-                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-                get_app().updates.apply_last_action_to_history(original_clip_data)
-                continue
-
-            source_effect = (
-                effects[matching_indexes[0]]
-                if matching_indexes
-                else self._create_film_grain_effect_json()
-            )
-            preset_effect = apply_film_grain_preset(source_effect, preset_name)
-
-            if matching_indexes:
-                existing_effect = effects[matching_indexes[0]]
-                if existing_effect.get("id"):
-                    preset_effect["id"] = existing_effect["id"]
-                if "order" in existing_effect:
-                    preset_effect["order"] = existing_effect["order"]
-                for index in reversed(matching_indexes[1:]):
-                    del effects[index]
-                effects[matching_indexes[0]] = preset_effect
-            else:
-                effects.append(preset_effect)
-
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-            get_app().updates.apply_last_action_to_history(original_clip_data)
+            effects = apply_film_grain_look_preset(
+                clip.data.get("effects"), preset_name,
+                lambda _class_name: self._create_film_grain_effect_json())
+            if effects is not None:
+                _save_look_effects(self, clip, effects)
 
     def Adjust_Colors_Triggered(self, clip_ids):
         """Ensure a Color Grade effect exists and open the video scopes."""
@@ -3060,6 +2615,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 get_app().updates.apply_last_action_to_history(original_clip_data)
         return first_effect_id, first_clip_id
 
+    @_one_undo_step
     def Layout_Triggered(self, action, clip_ids):
         """Callback for the layout context menus"""
         log.debug(action)
@@ -3138,7 +2694,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Save changes
             self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
 
-    def Animate_Triggered(self, action, clip_ids, transaction_id=None):
+    def Animate_Triggered(self, action, clip_ids, transaction_id=None, zone_seconds=None, emphasis_seconds=None):
         """Apply one-click motion presets to selected clips.
 
         Each MenuAnimate action encodes the animation type and its zone:
@@ -3146,6 +2702,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
           Out actions → last 1 second of the clip
           Continuous  → entire clip duration
           Pan actions → entire clip, also sets scale mode to SCALE_CROP
+
+        zone_seconds overrides the 1-second In/Out/Emphasis zone, and
+        emphasis_seconds (timeline seconds) replaces the playhead as the start
+        of an Emphasis zone (agent tools).
 
         Keyframe coordinates follow OpenShot conventions:
           location ±1.0 ≈ one full frame dimension (offscreen)
@@ -3173,7 +2733,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 dur = max(1, e - s)                                     # total frames
 
                 # 1-second enter / exit zones clamped to clip length
-                zone = max(1, round(fps_float))
+                zone = max(1, round(fps_float * (float(zone_seconds) if zone_seconds else 1.0)))
                 in_end    = min(s + zone, e)   # end of "In" zone
                 out_start = max(s, e - zone)   # start of "Out" zone
 
@@ -3181,7 +2741,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 # preview_thread.current_frame is timeline-global, while clip
                 # keyframes are stored in the clip's local/source frame space.
                 try:
-                    timeline_frame = int(self.window.preview_thread.current_frame or 1)
+                    if emphasis_seconds is not None:
+                        timeline_frame = int(round(float(emphasis_seconds) * fps_float)) + 1
+                    else:
+                        timeline_frame = int(self.window.preview_thread.current_frame or 1)
                 except Exception:
                     timeline_frame = 1
                 try:
@@ -3356,8 +2919,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     MenuAnimate.WIPE_IN_RIGHT:          "wipe_right_to_left.svg",
                     MenuAnimate.WIPE_IN_TOP:            "wipe_top_to_bottom.svg",
                     MenuAnimate.WIPE_IN_BOTTOM:         "wipe_bottom_to_top.svg",
-                    MenuAnimate.WIPE_OUT_CIRCLE_EXPAND: "circle_in_to_out.svg",
-                    MenuAnimate.WIPE_OUT_CIRCLE_SHRINK: "circle_out_to_in.svg",
+                    # Out reverses the reveal order, so an expanding hole needs the
+                    # out-to-in mask (OpenShot ac9621a02)
+                    MenuAnimate.WIPE_OUT_CIRCLE_EXPAND: "circle_out_to_in.svg",
+                    MenuAnimate.WIPE_OUT_CIRCLE_SHRINK: "circle_in_to_out.svg",
                     MenuAnimate.WIPE_OUT_FADE:          "fade.svg",
                     MenuAnimate.WIPE_OUT_LEFT:          "wipe_left_to_right.svg",
                     MenuAnimate.WIPE_OUT_RIGHT:         "wipe_right_to_left.svg",
@@ -3369,8 +2934,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     MenuAnimate.BLUR_WIPE_IN_RIGHT:          "wipe_right_to_left.svg",
                     MenuAnimate.BLUR_WIPE_IN_TOP:            "wipe_top_to_bottom.svg",
                     MenuAnimate.BLUR_WIPE_IN_BOTTOM:         "wipe_bottom_to_top.svg",
-                    MenuAnimate.BLUR_WIPE_OUT_CIRCLE_EXPAND: "circle_in_to_out.svg",
-                    MenuAnimate.BLUR_WIPE_OUT_CIRCLE_SHRINK: "circle_out_to_in.svg",
+                    MenuAnimate.BLUR_WIPE_OUT_CIRCLE_EXPAND: "circle_out_to_in.svg",
+                    MenuAnimate.BLUR_WIPE_OUT_CIRCLE_SHRINK: "circle_in_to_out.svg",
                     MenuAnimate.BLUR_WIPE_OUT_LEFT:          "wipe_left_to_right.svg",
                     MenuAnimate.BLUR_WIPE_OUT_RIGHT:         "wipe_right_to_left.svg",
                     MenuAnimate.BLUR_WIPE_OUT_TOP:           "wipe_top_to_bottom.svg",
@@ -3645,38 +3210,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 continue
 
             # Filter data copied (if needed)
-            if action == MenuCopy.KEYFRAMES_ALL:
-                clip.data = {'alpha': clip.data['alpha'],
-                             'gravity': clip.data['gravity'],
-                             'scale_x': clip.data['scale_x'],
-                             'scale_y': clip.data['scale_y'],
-                             'shear_x': clip.data['shear_x'],
-                             'shear_y': clip.data['shear_y'],
-                             'rotation': clip.data['rotation'],
-                             'location_x': clip.data['location_x'],
-                             'location_y': clip.data['location_y'],
-                             'time': clip.data['time'],
-                             'volume': clip.data['volume']}
-            elif action == MenuCopy.KEYFRAMES_ALPHA:
-                clip.data = {'alpha': clip.data['alpha']}
-            elif action == MenuCopy.KEYFRAMES_SCALE:
-                clip.data = {'gravity': clip.data['gravity'],
-                             'scale_x': clip.data['scale_x'],
-                             'scale_y': clip.data['scale_y']}
-            elif action == MenuCopy.KEYFRAMES_SHEAR:
-                clip.data = {'shear_x': clip.data['shear_x'],
-                             'shear_y': clip.data['shear_y']}
-            elif action == MenuCopy.KEYFRAMES_ROTATE:
-                clip.data = {'gravity': clip.data['gravity'],
-                             'rotation': clip.data['rotation']}
-            elif action == MenuCopy.KEYFRAMES_LOCATION:
-                clip.data = {'gravity': clip.data['gravity'],
-                             'location_x': clip.data['location_x'],
-                             'location_y': clip.data['location_y']}
-            elif action == MenuCopy.KEYFRAMES_TIME:
-                clip.data = {'time': clip.data['time']}
-            elif action == MenuCopy.KEYFRAMES_VOLUME:
-                clip.data = {'volume': clip.data['volume']}
+            if action in _COPY_KEYFRAME_GROUP:
+                keys = COPY_KEYFRAME_GROUPS[_COPY_KEYFRAME_GROUP[action]]
+                clip.data = {key: clip.data[key] for key in keys if key in clip.data}
             elif action == MenuCopy.ALL_EFFECTS:
                 clip.data = {'effects': clip.data['effects']}
 
@@ -3721,91 +3257,14 @@ class TimelineView(updates.UpdateInterface, ViewClass):
     def RemoveGap_Triggered(self, found_start, found_end, layer_number):
         """Callback for removing gap context menus"""
         log.info(f"Removing gap from {found_start} to {found_end} on layer {layer_number}")
-
-        # Start transaction
-        tid = str(uuid.uuid4())
-        get_app().updates.transaction_id = tid
-
-        gap_size = found_end - found_start
-        for clip in Clip.filter(layer=layer_number) + Transition.filter(layer=layer_number):
-            if clip.data.get("position", 0.0) > found_start:
-                clip.data["position"] -= gap_size
-                clip.save()
-
-        # Clear transaction id
-        get_app().updates.transaction_id = None
+        with nested_transaction(get_app().updates):
+            close_gap(found_start, found_end, layer_number)
 
     def RemoveAllGaps_Triggered(self, found_start, layer_number):
         """Callback for removing all gaps on a layer starting from the detected gap"""
         log.info(f"Removing all gaps on layer {layer_number} starting from {found_start}")
-
-        # Start transaction
-        tid = str(uuid.uuid4())
-        get_app().updates.transaction_id = tid
-
-        # Combine and sort the clips and transitions by their position
-        clips_and_transitions = sorted(
-            Clip.filter(layer=layer_number) + Transition.filter(layer=layer_number),
-            key=lambda c: c.data.get("position", 0.0)
-        )
-
-        # Build groups of overlapping clips/transitions so overlapping items move together
-        groups = []
-        current_group = []
-        current_group_start = None
-        current_group_end = None
-
-        for item in clips_and_transitions:
-            left_edge = item.data.get("position", 0.0)
-            right_edge = left_edge + (item.data.get("end", 0.0) - item.data.get("start", 0.0))
-
-            if current_group and left_edge <= current_group_end:
-                current_group.append(item)
-                current_group_end = max(current_group_end, right_edge)
-            else:
-                if current_group:
-                    groups.append((current_group_start, current_group_end, current_group))
-                current_group = [item]
-                current_group_start = left_edge
-                current_group_end = right_edge
-
-        if current_group:
-            groups.append((current_group_start, current_group_end, current_group))
-
-        # Track the end of the last processed group (after shifting) and cumulative offset
-        last_end = found_start
-        total_offset = 0.0
-        modified_items = []
-
-        for group_start, group_end, group_items in groups:
-            # Skip groups that end before the first detected gap
-            if group_end <= found_start:
-                last_end = max(last_end, group_end)
-                continue
-
-            # Calculate where this group would start after prior shifts
-            shifted_start = group_start - total_offset
-
-            # If there is still a gap, close it and increase the total offset
-            if shifted_start > last_end:
-                gap_size = shifted_start - last_end
-                total_offset += gap_size
-                shifted_start -= gap_size
-                log.info(f"Removing gap from {last_end} to {last_end + gap_size} on layer {layer_number}")
-
-            # Shift the entire overlapping group together
-            for item in group_items:
-                item.data["position"] -= total_offset
-                modified_items.append(item)
-
-            last_end = group_end - total_offset
-
-        # Save only the modified items
-        for item in modified_items:
-            item.save()
-
-        # Clear transaction id
-        get_app().updates.transaction_id = None
+        with nested_transaction(get_app().updates):
+            close_all_gaps(found_start, layer_number)
 
     def Paste_Triggered(self, action, clip_ids, tran_ids):
         """Callback for paste context menus"""
@@ -3838,125 +3297,65 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     def Nudge_Triggered(self, action, clip_ids, tran_ids):
         """Callback for nudging clips/transitions by a specified number of frames."""
-        # Determine the nudge duration in seconds based on the FPS
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
-        nudge_duration = float(action) / fps_float  # Nudge duration in seconds
-        log.debug(f"Nudging by {nudge_duration} seconds")
+        fps = project_fps_fraction()
+        nudge_frames = int(action)
+        log.debug("Nudging by %s frames", nudge_frames)
 
-        # Nudge all selected clips
-        for clip_id in clip_ids:
-            clip = Clip.get(id=clip_id)
-            if not clip:
-                continue
+        with nested_transaction(get_app().updates):
+            # Nudge all selected clips
+            for clip_id in clip_ids:
+                clip = Clip.get(id=clip_id)
+                if not clip:
+                    continue
 
-            # Apply the nudge and ensure the position doesn't go below 0
-            new_position = max(clip.data['position'] + nudge_duration, 0.0)
-            clip.data['position'] = new_position
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+                pos_f = ft.to_frame(float(clip.data.get("position", 0.0)), fps)
+                new_position = ft.to_seconds(max(pos_f + nudge_frames, 0), fps)
+                clip.data['position'] = new_position
+                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
 
-        # Nudge all selected transitions
-        for tran_id in tran_ids:
-            tran = Transition.get(id=tran_id)
-            if not tran:
-                continue
+            # Nudge all selected transitions
+            for tran_id in tran_ids:
+                tran = Transition.get(id=tran_id)
+                if not tran:
+                    continue
 
-            # Apply the nudge and ensure the position doesn't go below 0
-            new_position = max(tran.data['position'] + nudge_duration, 0.0)
-            tran.data['position'] = new_position
-            self.update_transition_data(tran.data, only_basic_props=False)
+                pos_f = ft.to_frame(float(tran.data.get("position", 0.0)), fps)
+                new_position = ft.to_seconds(max(pos_f + nudge_frames, 0), fps)
+                tran.data['position'] = new_position
+                self.update_transition_data(tran.data, only_basic_props=False)
 
     def Align_Triggered(self, action, clip_ids, tran_ids):
         """Callback for alignment context menus"""
         log.debug(action)
 
-        left_edge = -1.0
-        right_edge = -1.0
+        clips = [c for c in (Clip.get(id=clip_id) for clip_id in clip_ids) if c]
+        trans = [t for t in (Transition.get(id=tran_id) for tran_id in tran_ids) if t]
+        positions = aligned_positions(
+            [c.data for c in clips] + [t.data for t in trans], action == MenuAlign.RIGHT)
 
-        # Loop through each selected clip (find furthest left and right edge)
-        for clip_id in clip_ids:
-            # Get existing clip object
-            clip = Clip.get(id=clip_id)
-            if not clip:
-                # Invalid clip, skip to next item
-                continue
+        with nested_transaction(get_app().updates):
+            for clip in clips:
+                clip.data['position'] = positions[clip.id]
+                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+            for tran in trans:
+                tran.data['position'] = positions[tran.id]
+                self.update_transition_data(tran.data, only_basic_props=False)
 
-            position = float(clip.data["position"])
-            start_of_clip = float(clip.data["start"])
-            end_of_clip = float(clip.data["end"])
+    def Fade_Triggered(self, action, clip_ids, position="Entire Clip", transaction_id=None, fade_seconds=None):
+        """Callback for fade context menus — fades both alpha (video) and volume (audio)
 
-            if position < left_edge or left_edge == -1.0:
-                left_edge = position
-            if position + (end_of_clip - start_of_clip) > right_edge or right_edge == -1.0:
-                right_edge = position + (end_of_clip - start_of_clip)
-
-        # Loop through each selected transition (find furthest left and right edge)
-        for tran_id in tran_ids:
-            # Get existing transition object
-            tran = Transition.get(id=tran_id)
-            if not tran:
-                # Invalid transition, skip to next item
-                continue
-
-            position = float(tran.data["position"])
-            start_of_tran = float(tran.data["start"])
-            end_of_tran = float(tran.data["end"])
-
-            if position < left_edge or left_edge == -1.0:
-                left_edge = position
-            if position + (end_of_tran - start_of_tran) > right_edge or right_edge == -1.0:
-                right_edge = position + (end_of_tran - start_of_tran)
-
-        # Loop through each selected clip (update position to align clips)
-        for clip_id in clip_ids:
-            # Get existing clip object
-            clip = Clip.get(id=clip_id)
-            if not clip:
-                # Invalid clip, skip to next item
-                continue
-
-            if action == MenuAlign.LEFT:
-                clip.data['position'] = left_edge
-            elif action == MenuAlign.RIGHT:
-                position = float(clip.data["position"])
-                start_of_clip = float(clip.data["start"])
-                end_of_clip = float(clip.data["end"])
-                right_clip_edge = position + (end_of_clip - start_of_clip)
-
-                clip.data['position'] = position + (right_edge - right_clip_edge)
-
-            # Save changes
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-
-        # Loop through each selected transition (update position to align clips)
-        for tran_id in tran_ids:
-            # Get existing transition object
-            tran = Transition.get(id=tran_id)
-            if not tran:
-                # Invalid transition, skip to next item
-                continue
-
-            if action == MenuAlign.LEFT:
-                tran.data['position'] = left_edge
-            elif action == MenuAlign.RIGHT:
-                position = float(tran.data["position"])
-                start_of_tran = float(tran.data["start"])
-                end_of_tran = float(tran.data["end"])
-                right_tran_edge = position + (end_of_tran - start_of_tran)
-
-                tran.data['position'] = position + (right_edge - right_tran_edge)
-
-            # Save changes
-            self.update_transition_data(tran.data, only_basic_props=False)
-
-    def Fade_Triggered(self, action, clip_ids, position="Entire Clip", transaction_id=None):
-        """Callback for fade context menus — fades both alpha (video) and volume (audio)"""
+        fade_seconds overrides the Fast (1 s) / Slow (3 s) fade length (agent tools).
+        """
         log.debug(action)
 
         # Get FPS from project
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
         clips_with_waveforms = []
+        fast_seconds = float(fade_seconds) if fade_seconds else 1.0
+        slow_seconds = float(fade_seconds) if fade_seconds else 3.0
+        # Existing fades inside this zone are replaced, so Fast replaces Slow and vice versa
+        zone_frames = max(3.0, float(fade_seconds or 0.0)) * fps_float
 
         # Create a transaction ID for all operations in this function (if not provided)
         tid = transaction_id or self.get_uuid()
@@ -3982,30 +3381,67 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 end_animation = end_of_clip
                 if position == "Start of Clip" and action in [MenuFade.IN_FAST, MenuFade.OUT_FAST]:
                     start_animation = start_of_clip
-                    end_animation = min(start_of_clip + (1.0 * fps_float), end_of_clip)
+                    end_animation = min(start_of_clip + (fast_seconds * fps_float), end_of_clip)
                 elif position == "Start of Clip" and action in [MenuFade.IN_SLOW, MenuFade.OUT_SLOW]:
                     start_animation = start_of_clip
-                    end_animation = min(start_of_clip + (3.0 * fps_float), end_of_clip)
+                    end_animation = min(start_of_clip + (slow_seconds * fps_float), end_of_clip)
                 elif position == "End of Clip" and action in [MenuFade.IN_FAST, MenuFade.OUT_FAST]:
-                    start_animation = max(1.0, end_of_clip - (1.0 * fps_float))
+                    start_animation = max(1.0, end_of_clip - (fast_seconds * fps_float))
                     end_animation = end_of_clip
                 elif position == "End of Clip" and action in [MenuFade.IN_SLOW, MenuFade.OUT_SLOW]:
-                    start_animation = max(1.0, end_of_clip - (3.0 * fps_float))
+                    start_animation = max(1.0, end_of_clip - (slow_seconds * fps_float))
                     end_animation = end_of_clip
-
-                # Fade in and out (special case) — recurse for start + end independently
-                if position == "Entire Clip" and action in [MenuFade.IN_OUT_FAST, MenuFade.IN_OUT_SLOW]:
-                    if action == MenuFade.IN_OUT_FAST:
-                        self.Fade_Triggered(MenuFade.IN_FAST, clip_ids, "Start of Clip", transaction_id=tid)
-                        self.Fade_Triggered(MenuFade.OUT_FAST, clip_ids, "End of Clip", transaction_id=tid)
-                    elif action == MenuFade.IN_OUT_SLOW:
-                        self.Fade_Triggered(MenuFade.IN_SLOW, clip_ids, "Start of Clip", transaction_id=tid)
-                        self.Fade_Triggered(MenuFade.OUT_SLOW, clip_ids, "End of Clip", transaction_id=tid)
-                    return
 
                 reader = clip.data.get("reader", {}) if isinstance(clip.data, dict) else {}
                 fade_alpha = bool(reader.get("has_video", True)) or bool(clip.data.get("waveform", False))
                 fade_volume = bool(reader.get("has_audio", True))
+
+                # Fade in and out (special case). Clear both replacement zones
+                # before adding either fade, so overlapping cleanup ranges on
+                # short clips cannot delete keyframes created by the first fade
+                # (OpenShot 0b5db6493).
+                if position == "Entire Clip" and action in [MenuFade.IN_OUT_FAST, MenuFade.IN_OUT_SLOW]:
+                    in_out_seconds = fast_seconds if action == MenuFade.IN_OUT_FAST else slow_seconds
+                    clip_frames = max(0.0, end_of_clip - start_of_clip)
+                    # Leave room between the two fades, even on clips shorter
+                    # than twice the requested fade duration.
+                    fade_frames = min(in_out_seconds * fps_float, clip_frames / 3.0)
+                    fade_in_end = start_of_clip + fade_frames
+                    fade_out_start = end_of_clip - fade_frames
+
+                    cleanup_end = min(start_of_clip + zone_frames, end_of_clip)
+                    cleanup_start = max(start_of_clip, end_of_clip - zone_frames)
+
+                    # Fade to the level the clip otherwise plays at, not to the value at
+                    # the new fade's end: re-applying Fast over Slow would read a
+                    # mid-fade value there and leave the whole clip dim.
+                    target_alpha = source_alpha = curve_plateau(
+                        clip.data.get('alpha'), start_of_clip, end_of_clip, default=1.0)
+                    target_vol = source_vol = curve_plateau(
+                        clip.data.get('volume'), start_of_clip, end_of_clip, default=1.0)
+
+                    def apply_combined_fade(keyframe, target_value, source_value):
+                        self._remove_keypoints_in_range(keyframe, start_of_clip, cleanup_end)
+                        self._remove_keypoints_in_range(keyframe, cleanup_start, end_of_clip)
+                        self.AddPoint(keyframe, json.loads(openshot.Point(
+                            start_of_clip, 0.0, openshot.BEZIER).Json()))
+                        self.AddPoint(keyframe, json.loads(openshot.Point(
+                            fade_in_end, target_value, openshot.BEZIER).Json()))
+                        self.AddPoint(keyframe, json.loads(openshot.Point(
+                            fade_out_start, source_value, openshot.BEZIER).Json()))
+                        self.AddPoint(keyframe, json.loads(openshot.Point(
+                            end_of_clip, 0.0, openshot.BEZIER).Json()))
+
+                    if fade_alpha:
+                        apply_combined_fade(clip.data['alpha'], target_alpha, source_alpha)
+                    if fade_volume:
+                        apply_combined_fade(clip.data['volume'], target_vol, source_vol)
+
+                    self.update_clip_data(
+                        clip.data, only_basic_props=False, ignore_reader=True, transaction_id=tid)
+                    if clip.data.get("ui", {}).get("audio_data", []):
+                        clips_with_waveforms.append(clip.id)
+                    continue
 
                 if action == MenuFade.NONE:
                     p_object = json.loads(openshot.Point(1, 1.0, openshot.BEZIER).Json())
@@ -4017,7 +3453,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 elif action in [MenuFade.IN_FAST, MenuFade.IN_SLOW]:
                     # Clear the full slow-fade zone (3 sec from start) so Fast can replace Slow
                     # and vice versa. No midpoint cap — it caused short clips to miss the start keypoint.
-                    fade_in_zone_end = min(start_of_clip + (3.0 * fps_float), end_of_clip)
+                    fade_in_zone_end = min(start_of_clip + zone_frames, end_of_clip)
 
                     # Read the steady-state value at the zone boundary BEFORE clearing —
                     # any previous fade has fully settled there.
@@ -4037,7 +3473,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 elif action in [MenuFade.OUT_FAST, MenuFade.OUT_SLOW]:
                     # Clear the full slow-fade zone (3 sec from end) so Fast can replace Slow
                     # and vice versa. No midpoint cap — it caused short clips to miss the start keypoint.
-                    fade_out_zone_start = max(1.0, end_of_clip - (3.0 * fps_float))
+                    fade_out_zone_start = max(1.0, end_of_clip - zone_frames)
 
                     # Read the steady-state value at the zone boundary BEFORE clearing —
                     # any previous fade starts at or after this point.
@@ -4124,16 +3560,17 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             )
 
         # Get FPS from project
-        fps = get_app().project.get("fps")
-        fps_num = float(fps["num"])
-        fps_den = float(fps["den"])
+        fps = project_fps_fraction()
+        fps_num = float(fps.numerator)
+        fps_den = float(fps.denominator)
 
         # Get locked tracks from project
         locked_layers = [t.get("number") for t in get_app().project.get("layers") if t.get("lock")]
 
-        # Group transactions
-        tid = self.get_uuid()
-        get_app().updates.transaction_id = tid
+        # Group transactions (joining one already in flight, e.g. an agent tool
+        # call that slices twice, so the whole edit stays one undo step)
+        transaction = ExitStack()
+        transaction.enter_context(nested_transaction(get_app().updates))
 
         # Emit signal to ignore updates (start ignoring updates)
         get_app().window.IgnoreUpdates.emit(True, True)
@@ -4145,9 +3582,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 if callable(flush_overrides):
                     flush_overrides(clip_ids)
 
-            # Get the nearest starting frame position to the playhead (snap to frame boundaries)
-            playhead_position = float(round((playhead_position * fps_num) / fps_den) * fps_den) / fps_num
-            if action == MenuSlice.KEEP_LEFT: playhead_position += fps_den / fps_num
+            # Snap playhead once; KEEP_LEFT advances one frame past the cut.
+            playhead_position = ft.snap(float(playhead_position), fps)
+            if action == MenuSlice.KEEP_LEFT:
+                playhead_position = ft.to_seconds(ft.to_frame(playhead_position, fps) + 1, fps)
 
             # Loop through each clip (using the list of ids)
             for clip_id in clip_ids:
@@ -4165,47 +3603,56 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
                 source_ai_metadata, source_file_data = _source_ai_metadata_for_clip(clip)
 
-                original_position = float(clip.data["position"])  # Original position in timeline seconds
-                start_of_clip = float(clip.data["start"])  # Trim start time in clip seconds
-                end_of_clip = float(clip.data["end"])  # Trim end time in clip seconds
-                original_duration = end_of_clip - start_of_clip  # Duration in media seconds
+                original_position = float(clip.data["position"])
+                start_of_clip = float(clip.data["start"])
+                end_of_clip = float(clip.data["end"])
+                # Frame-domain split so left + right duration equals the original.
+                pos_f = ft.to_frame(original_position, fps)
+                start_f = ft.to_frame(start_of_clip, fps)
+                end_f = ft.to_frame(end_of_clip, fps)
+                play_f = ft.to_frame(playhead_position, fps)
+                cut_f = start_f + (play_f - pos_f)
+                cut_f = min(max(cut_f, start_f + 1), end_f)  # keep both sides non-empty when possible
+                original_duration = ft.to_seconds(end_f - start_f, fps)
 
                 if action == MenuSlice.KEEP_LEFT:
-                    # Keep the left side of the clip, adjust the "end" of the clip
-                    new_end = start_of_clip + (playhead_position - original_position)
+                    new_end = ft.to_seconds(cut_f, fps)
                     clip.data["end"] = new_end
-                    clip.data["duration"] = max(0.0, new_end - start_of_clip)
+                    clip.data["start"] = ft.to_seconds(start_f, fps)
+                    clip.data["position"] = ft.to_seconds(pos_f, fps)
+                    clip.data["duration"] = max(0.0, new_end - clip.data["start"])
 
                     _apply_clip_ai_metadata(clip.data, source_ai_metadata, source_file_data)
 
                     if ripple:
-                        removed_duration = original_duration - (clip.data["end"] - start_of_clip)
+                        removed_duration = original_duration - clip.data["duration"]
                         self.ripple_delete_gap(playhead_position, clip.data["layer"], removed_duration)
 
                 elif action == MenuSlice.KEEP_RIGHT:
-                    # Keep the right side of the clip, adjust the "start" and "position"
-                    new_start = start_of_clip + (playhead_position - original_position)
-                    clip.data["position"] = playhead_position  # Set new timeline position
+                    new_start = ft.to_seconds(cut_f, fps)
+                    clip.data["position"] = ft.to_seconds(play_f, fps)
                     clip.data["start"] = new_start
-                    clip.data["duration"] = max(0.0, end_of_clip - new_start)
+                    clip.data["end"] = ft.to_seconds(end_f, fps)
+                    clip.data["duration"] = max(0.0, clip.data["end"] - new_start)
 
                     _apply_clip_ai_metadata(
                         clip.data, source_ai_metadata, source_file_data, exclusive_start=True,
                     )
 
                     if ripple:
-                        removed_duration = original_duration - (end_of_clip - new_start)
-                        clip.data["position"] = original_position  # Move right side back to original position
+                        removed_duration = original_duration - clip.data["duration"]
+                        clip.data["position"] = ft.to_seconds(pos_f, fps)
                         self.ripple_delete_gap(playhead_position, clip.data["layer"], removed_duration)
 
                         # Seek to new starting frame
-                        new_starting_frame = original_position * (fps_num / fps_den) + 1
+                        new_starting_frame = pos_f + 1
 
                 elif action == MenuSlice.KEEP_BOTH:
-                    # Update clip data for the left clip
-                    new_end = start_of_clip + (playhead_position - original_position)
+                    new_end = ft.to_seconds(cut_f, fps)
                     clip.data["end"] = new_end
-                    clip.data["duration"] = max(0.0, new_end - start_of_clip)
+                    clip.data["start"] = ft.to_seconds(start_f, fps)
+                    clip.data["position"] = ft.to_seconds(pos_f, fps)
+                    clip.data["duration"] = max(0.0, new_end - clip.data["start"])
 
                     # Left clip gets translated metadata
                     _apply_clip_ai_metadata(clip.data, source_ai_metadata, source_file_data)
@@ -4221,9 +3668,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     if len(right_clip_key) > 1:
                         right_clip_key.pop(1)
                     right_clip.key = right_clip_key
-                    right_clip.data["position"] = playhead_position
+                    right_clip.data["position"] = ft.to_seconds(play_f, fps)
                     right_clip.data["start"] = new_end
-                    right_clip.data["end"] = end_of_clip
+                    right_clip.data["end"] = ft.to_seconds(end_f, fps)
                     right_start = float(right_clip.data["start"])
                     right_end = float(right_clip.data.get("end", right_start))
                     right_clip.data["duration"] = max(0.0, right_end - right_start)
@@ -4251,40 +3698,47 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 if not trans or trans.data.get("layer") in locked_layers:
                     continue
 
-                original_position = float(trans.data["position"])  # Timeline position
-                start_of_tran = float(trans.data["start"])  # Trim start time
-                end_of_tran = float(trans.data["end"])  # Trim end time
-                original_duration = end_of_tran - start_of_tran  # Original duration in seconds
+                original_position = float(trans.data["position"])
+                start_of_tran = float(trans.data["start"])
+                end_of_tran = float(trans.data["end"])
+                pos_f = ft.to_frame(original_position, fps)
+                start_f = ft.to_frame(start_of_tran, fps)
+                end_f = ft.to_frame(end_of_tran, fps)
+                play_f = ft.to_frame(playhead_position, fps)
+                cut_f = start_f + (play_f - pos_f)
+                cut_f = min(max(cut_f, start_f + 1), end_f)
+                original_duration = ft.to_seconds(end_f - start_f, fps)
 
                 if action == MenuSlice.KEEP_LEFT:
-                    # Keep the left side of the transition, adjust the "end"
-                    new_end = start_of_tran + (playhead_position - original_position)
-                    trans.data["end"] = new_end
-                    trans.data["duration"] = max(0.0, new_end - start_of_tran)
+                    trans.data["end"] = ft.to_seconds(cut_f, fps)
+                    trans.data["start"] = ft.to_seconds(start_f, fps)
+                    trans.data["position"] = ft.to_seconds(pos_f, fps)
+                    trans.data["duration"] = max(0.0, trans.data["end"] - trans.data["start"])
 
                     if ripple:
-                        removed_duration = original_duration - (trans.data["end"] - start_of_tran)
+                        removed_duration = original_duration - (trans.data["end"] - trans.data["start"])
                         self.ripple_delete_gap(playhead_position, trans.data["layer"], removed_duration)
 
                 elif action == MenuSlice.KEEP_RIGHT:
-                    # Keep the right side of the transition
-                    new_start = start_of_tran + (playhead_position - original_position)
-                    trans.data["position"] = playhead_position
+                    new_start = ft.to_seconds(cut_f, fps)
+                    trans.data["position"] = ft.to_seconds(play_f, fps)
                     trans.data["start"] = new_start
-                    trans.data["duration"] = max(0.0, end_of_tran - new_start)
+                    trans.data["end"] = ft.to_seconds(end_f, fps)
+                    trans.data["duration"] = max(0.0, trans.data["end"] - new_start)
                     if ripple:
-                        removed_duration = original_duration - (end_of_tran - new_start)
-                        trans.data["position"] = original_position
+                        removed_duration = original_duration - (trans.data["end"] - new_start)
+                        trans.data["position"] = ft.to_seconds(pos_f, fps)
                         self.ripple_delete_gap(playhead_position, trans.data["layer"], removed_duration)
 
                         # Seek to new starting frame
-                        new_starting_frame = original_position * (fps_num / fps_den) + 1
+                        new_starting_frame = pos_f + 1
 
                 elif action == MenuSlice.KEEP_BOTH:
-                    # Update data for the left transition
-                    new_tran_end = start_of_tran + (playhead_position - original_position)
+                    new_tran_end = ft.to_seconds(cut_f, fps)
                     trans.data["end"] = new_tran_end
-                    trans.data["duration"] = max(0.0, new_tran_end - start_of_tran)
+                    trans.data["start"] = ft.to_seconds(start_f, fps)
+                    trans.data["position"] = ft.to_seconds(pos_f, fps)
+                    trans.data["duration"] = max(0.0, new_tran_end - trans.data["start"])
 
                     # Split into two transitions (left and right side). Query a
                     # fresh object and deep-copy its data so the new transition
@@ -4301,16 +3755,16 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     if len(right_tran_key) > 1:
                         right_tran_key.pop(1)
                     right_tran.key = right_tran_key
-                    right_tran.data["position"] = playhead_position
+                    right_tran.data["position"] = ft.to_seconds(play_f, fps)
                     right_tran.data["start"] = new_tran_end
-                    right_tran.data["end"] = end_of_tran
-                    right_tran.data["duration"] = max(0.0, float(end_of_tran) - float(new_tran_end))
+                    right_tran.data["end"] = ft.to_seconds(end_f, fps)
+                    right_tran.data["duration"] = max(0.0, right_tran.data["end"] - float(new_tran_end))
                     right_tran.save()
 
                 # Save changes for the left or right slice
                 self.update_transition_data(trans.data, only_basic_props=False)
         finally:
-            get_app().updates.transaction_id = None
+            transaction.close()
 
             # Emit signal to resume updates (stop ignoring updates)
             get_app().window.IgnoreUpdates.emit(False, True)
@@ -4339,13 +3793,21 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             trans.data["position"] -= ripple_gap
             trans.save()
 
-    def Volume_Triggered(self, action, clip_ids, position="Entire Clip", level=1.0, transaction_id=None):
-        """Callback for volume context menus"""
+    def Volume_Triggered(self, action, clip_ids, position="Entire Clip", level=1.0, transaction_id=None,
+                         fade_seconds=None):
+        """Callback for volume context menus
+
+        fade_seconds overrides the Fast (1 s) / Slow (3 s) fade length (agent tools).
+        """
         log.debug(action)
 
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
         clips_with_waveforms = []
+        fast_seconds = float(fade_seconds) if fade_seconds else 1.0
+        slow_seconds = float(fade_seconds) if fade_seconds else 3.0
+        # Existing fades inside this zone are replaced, so Fast replaces Slow and vice versa
+        zone_frames = max(3.0, float(fade_seconds or 0.0)) * fps_float
 
         tid = transaction_id or self.get_uuid()
 
@@ -4364,25 +3826,31 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 start_animation = start_of_clip
                 end_animation = end_of_clip
                 if position == "Start of Clip" and action in [MenuVolume.FADE_IN_FAST, MenuVolume.FADE_OUT_FAST]:
-                    end_animation = min(start_of_clip + (1.0 * fps_float), end_of_clip)
+                    end_animation = min(start_of_clip + (fast_seconds * fps_float), end_of_clip)
                 elif position == "Start of Clip" and action in [MenuVolume.FADE_IN_SLOW, MenuVolume.FADE_OUT_SLOW]:
-                    end_animation = min(start_of_clip + (3.0 * fps_float), end_of_clip)
+                    end_animation = min(start_of_clip + (slow_seconds * fps_float), end_of_clip)
                 elif position == "End of Clip" and action in [MenuVolume.FADE_IN_FAST, MenuVolume.FADE_OUT_FAST]:
-                    start_animation = max(1.0, end_of_clip - (1.0 * fps_float))
+                    start_animation = max(1.0, end_of_clip - (fast_seconds * fps_float))
                 elif position == "End of Clip" and action in [MenuVolume.FADE_IN_SLOW, MenuVolume.FADE_OUT_SLOW]:
-                    start_animation = max(1.0, end_of_clip - (3.0 * fps_float))
+                    start_animation = max(1.0, end_of_clip - (slow_seconds * fps_float))
 
-                # Fade in and out — recurse for start + end independently
+                # Fade in and out: clear both replacement zones before adding either
+                # fade (as Fade_Triggered does), so on short clips the fade-out's
+                # cleanup cannot delete the fade-in it overlaps.
                 if position == "Entire Clip" and action in [MenuVolume.FADE_IN_OUT_FAST, MenuVolume.FADE_IN_OUT_SLOW]:
-                    if action == MenuVolume.FADE_IN_OUT_FAST:
-                        self.Volume_Triggered(MenuVolume.FADE_IN_FAST, clip_ids, "Start of Clip", transaction_id=tid)
-                        self.Volume_Triggered(MenuVolume.FADE_OUT_FAST, clip_ids, "End of Clip", transaction_id=tid)
-                    else:
-                        self.Volume_Triggered(MenuVolume.FADE_IN_SLOW, clip_ids, "Start of Clip", transaction_id=tid)
-                        self.Volume_Triggered(MenuVolume.FADE_OUT_SLOW, clip_ids, "End of Clip", transaction_id=tid)
-                    return
+                    in_out_seconds = fast_seconds if action == MenuVolume.FADE_IN_OUT_FAST else slow_seconds
+                    clip_frames = max(0.0, end_of_clip - start_of_clip)
+                    fade_frames = min(in_out_seconds * fps_float, clip_frames / 3.0)
+                    cleanup_end = min(start_of_clip + zone_frames, end_of_clip)
+                    cleanup_start = max(start_of_clip, end_of_clip - zone_frames)
+                    plateau = curve_plateau(clip.data.get('volume'), start_of_clip, end_of_clip, default=1.0)
+                    self._remove_keypoints_in_range(clip.data['volume'], start_of_clip, cleanup_end)
+                    self._remove_keypoints_in_range(clip.data['volume'], cleanup_start, end_of_clip)
+                    for x, y in ((start_of_clip, 0.0), (start_of_clip + fade_frames, plateau),
+                                 (end_of_clip - fade_frames, plateau), (end_of_clip, 0.0)):
+                        self.AddPoint(clip.data['volume'], json.loads(openshot.Point(x, y, openshot.BEZIER).Json()))
 
-                if action == MenuVolume.NONE:
+                elif action == MenuVolume.NONE:
                     clip.data['volume'] = {"Points": [json.loads(openshot.Point(1, 1.0, openshot.BEZIER).Json())]}
 
                 elif action == MenuVolume.LEVEL:
@@ -4390,7 +3858,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     clip.data['volume'] = {"Points": [json.loads(openshot.Point(1, float(level) / 100.0, openshot.BEZIER).Json())]}
 
                 elif action in [MenuVolume.FADE_IN_FAST, MenuVolume.FADE_IN_SLOW]:
-                    fade_in_zone_end = min(start_of_clip + (3.0 * fps_float), end_of_clip)
+                    fade_in_zone_end = min(start_of_clip + zone_frames, end_of_clip)
                     c = self.window.timeline_sync.timeline.GetClip(clip_id)
                     target_vol = c.volume.GetValue(int(round(fade_in_zone_end))) if c else 1.0
                     self._remove_keypoints_in_range(clip.data['volume'], start_of_clip, fade_in_zone_end)
@@ -4398,7 +3866,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     self.AddPoint(clip.data['volume'], json.loads(openshot.Point(end_animation, target_vol, openshot.BEZIER).Json()))
 
                 elif action in [MenuVolume.FADE_OUT_FAST, MenuVolume.FADE_OUT_SLOW]:
-                    fade_out_zone_start = max(1.0, end_of_clip - (3.0 * fps_float))
+                    fade_out_zone_start = max(1.0, end_of_clip - zone_frames)
                     c = self.window.timeline_sync.timeline.GetClip(clip_id)
                     source_vol = c.volume.GetValue(int(round(fade_out_zone_start))) if c else 1.0
                     self._remove_keypoints_in_range(clip.data['volume'], fade_out_zone_start, end_of_clip)
@@ -4417,6 +3885,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             if not transaction_id:
                 get_app().updates.transaction_id = None
 
+    @_one_undo_step
     def Rotate_Triggered(self, action, clip_ids, position="Start of Clip"):
         """Callback for rotate context menus"""
         log.debug(action)
@@ -4457,16 +3926,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Save changes
             self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
 
+    @_one_undo_step
     def No_Transform_Triggered(self, clip_ids):
         """Reset rotation, crop, and layout for all selected clips in a single undo step."""
-        tid = self.get_uuid()
-        get_app().updates.transaction_id = tid
-        try:
-            self.Rotate_Triggered(MenuRotate.NONE, clip_ids)
-            self.Crop_Triggered(clip_ids, 'none')
-            self.Layout_Triggered(MenuLayout.NONE, clip_ids)
-        finally:
-            get_app().updates.transaction_id = None
+        self.Rotate_Triggered(MenuRotate.NONE, clip_ids)
+        self.Crop_Triggered(clip_ids, 'none')
+        self.Layout_Triggered(MenuLayout.NONE, clip_ids)
 
     def Time_Triggered(self, action, clip_ids, speed="1X", playhead_position=0.0):
         """Callback for time context menus"""
@@ -4476,7 +3941,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
         clips_with_waveforms = []
-        transaction_id = self.get_uuid()
+        transaction_id = get_app().updates.transaction_id or self.get_uuid()
 
         # Loop through each selected clip
         for clip_id in clip_ids:
@@ -4567,8 +4032,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     self.AddPoint(clip.data['scale_y'], json.loads(p1.Json()))
 
             else:
+                # Reverse is a toggle: second Reverse clears remapping (Reset),
+                # instead of leaving a forward Y≈X curve that still looked "edited".
+                effective_time_action = action
+                if action == MenuTime.REVERSE and time_curve_is_reversed(clip.data.get("time")):
+                    effective_time_action = MenuTime.NONE
 
-                if action == MenuTime.NONE:
+                if effective_time_action == MenuTime.NONE:
                     # RESET TIME
                     reset_repeat(clip)
                     reader = clip.data.get("reader", {}) or {}
@@ -4616,7 +4086,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     # Clear the time curve (default identity point)
                     clip.data["time"] = {"Points": [{"co": {"X": 1, "Y": 1}, "interpolation": openshot.LINEAR}]}
 
-                elif action == MenuTime.REVERSE:
+                elif effective_time_action == MenuTime.REVERSE:
                     start_sec = float(clip.data.get("start", 0.0))
                     try:
                         target_end_sec = float(clip.data.get("end", start_sec))
@@ -4645,18 +4115,25 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     original_duration = float(clip.data["end"]) - float(clip.data["start"])
                     new_duration = original_duration / speed_factor
                     new_end_time = float(clip.data["start"]) + new_duration
-                    direction = 1 if action == MenuTime.FORWARD else -1
+                    direction = 1 if effective_time_action == MenuTime.FORWARD else -1
 
                     retime_clip(clip, new_end_time, clip.data.get("position"), direction)
 
-            # Save changes with history
-            self.update_clip_data(
-                clip.data,
-                only_basic_props=False,
-                ignore_reader=True,
-                transaction_id=transaction_id,
-            )
-            get_app().updates.apply_last_action_to_history(original_clip_data)
+            # Save with ignore_history so apply_last_action_to_history can
+            # attach the pre-reverse snapshot (same pattern as keyframe drag).
+            updates = get_app().updates
+            prev_ignore = updates.ignore_history
+            updates.ignore_history = True
+            try:
+                self.update_clip_data(
+                    clip.data,
+                    only_basic_props=False,
+                    ignore_reader=True,
+                    transaction_id=transaction_id,
+                )
+                updates.apply_last_action_to_history(original_clip_data)
+            finally:
+                updates.ignore_history = prev_ignore
 
         # Update waveforms of all clips that have them
         if clips_with_waveforms:
@@ -4666,7 +4143,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
         clips_with_waveforms = []
-        transaction_id = self.get_uuid()
+        transaction_id = get_app().updates.transaction_id or self.get_uuid()
         for clip_id in clip_ids:
             clip = Clip.get(id=clip_id)
             if not clip:
@@ -4832,15 +4309,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 continue
 
             # Reverse transition keyframes
-            tran_data_copy = json.loads(json.dumps(tran.data))
-            fps = get_app().project.get("fps")
-            fps_float = float(fps["num"]) / float(fps["den"])
-            duration = tran.data.get("end", 0.0) - tran.data.get("start", 0.0)
-            total_frames = round(duration * fps_float)
-
-            for prop in ("brightness", "contrast"):
-                if prop in tran_data_copy:
-                    self._reverse_keyframes(tran_data_copy[prop], total_frames)
+            tran_data_copy = transition_ops.reverse_transition_data(json.loads(json.dumps(tran.data)))
 
             # Update in-memory data and persist changes
             tran.data = tran_data_copy
@@ -5532,8 +5001,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         drop_tid = None
 
         # Get FPS and scaling information
-        fps_float = float(get_app().project.get("fps")["num"]) / float(get_app().project.get("fps")["den"])
-        snap_to_grid = lambda t: round(t * fps_float) / fps_float
+        fps = project_fps_fraction()
+        fps_float = float(fps)
+        snap_to_grid = lambda t, _fps=fps: ft.snap(float(t or 0.0), _fps)
 
         # Handle text-based mime data (clips or transitions)
         mime = event.mimeData()
@@ -5623,6 +5093,22 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         event.accept()
 
     # Add Clip
+    def _waveform_new_audio_clip(self, new_clip, transaction_id):
+        """Generate waveform data by default for an audio-only clip just added.
+
+        Requested under the caller's transaction: the waveform is saved later, from
+        the worker, and under a transaction of its own it was a separate undo step,
+        so the first Ctrl+Z after placing music or narration seemed to do nothing.
+        """
+        reader = new_clip.get("reader", {}) if isinstance(new_clip.get("reader"), dict) else {}
+        has_video = reader.get("has_video")
+        has_video = True if has_video is None else bool(has_video)
+        has_audio = reader.get("has_audio")
+        has_audio = True if has_audio is None else bool(has_audio)
+        clip_id = new_clip.get("id")
+        if has_audio and not has_video and clip_id:
+            self.Show_Waveform_Triggered([clip_id], transaction_id=transaction_id)
+
     def addClip(
         self,
         file_id,
@@ -5643,8 +5129,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         file_path = file.absolute_path()
 
         # Get FPS and frame precision
-        fps_float = float(get_app().project.get("fps")["num"]) / float(get_app().project.get("fps")["den"])
-        snap_to_grid = lambda t: round(t * fps_float) / fps_float
+        fps = project_fps_fraction()
+        fps_float = float(fps)
+        snap_to_grid = lambda t, _fps=fps: ft.snap(float(t or 0.0), _fps)
 
         # Create a new Clip object with the file path
         c = openshot.Clip(file_path)
@@ -5698,24 +5185,25 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 end_sec = float(end_override)
             except (TypeError, ValueError):
                 end_sec = start_sec
-            end_sec = snap_to_grid(end_sec)
+            _pos, start_sec, end_sec = ft.quantize_span(0.0, start_sec, end_sec, fps)
+            new_clip["start"] = start_sec
             duration_sec = max(0.0, end_sec - start_sec)
         else:
             if duration_sec <= 0.0:
-                duration_sec = 1.0 / fps_float
-            duration_frames = max(1, int(round(duration_sec * fps_float)))
-            duration_sec = duration_frames / fps_float
+                duration_sec = ft.to_seconds(1, fps)
+            duration_frames = max(1, ft.duration_frames(0.0, duration_sec, fps))
+            duration_sec = ft.to_seconds(duration_frames, fps)
             end_sec = start_sec + duration_sec
 
         if duration_sec <= 0.0:
-            duration_sec = 1.0 / fps_float
+            duration_sec = ft.to_seconds(1, fps)
             end_sec = start_sec + duration_sec
 
         new_clip["duration"] = duration_sec
         new_clip["end"] = end_sec
 
-        # Use the passed position and track directly
-        new_clip["position"] = position.x()
+        # Quantize drop position — pixel coords are never frame-aligned.
+        new_clip["position"] = snap_to_grid(position.x())
         new_clip["layer"] = track
         if auto_transition:
             new_clip["_auto_transition"] = True
@@ -5729,17 +5217,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Track the added clip
         self.item_ids.append(new_clip.get('id'))
 
-        # Generate waveform data by default for audio-only clips.
-        reader = new_clip.get("reader", {}) if isinstance(new_clip.get("reader"), dict) else {}
-        has_video = reader.get("has_video")
-        has_video = True if has_video is None else bool(has_video)
-        has_audio = reader.get("has_audio")
-        has_audio = True if has_audio is None else bool(has_audio)
-        clip_id = new_clip.get("id")
-        if has_audio and not has_video and clip_id:
-            # The file/clip waveform saves land later from a worker thread.
-            # Tag them with the insert's transaction: one drop, one undo step.
-            self.Show_Waveform_Triggered([clip_id], transaction_id=tid)
+        self._waveform_new_audio_clip(new_clip, tid)
 
         # Trigger manual move event to initialize UI snapping
         if call_manual_move:
@@ -5789,9 +5267,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         defer_reader=False,
     ):
         # Get FPS from project
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
-        snap_to_grid = lambda t: round(t * fps_float) / fps_float
+        fps = project_fps_fraction()
+        fps_float = float(fps)
+        snap_to_grid = lambda t, _fps=fps: ft.snap(float(t or 0.0), _fps)
         duration = snap_to_grid(get_app().get_settings().get("default-transition-length"))
         file_path = os.path.normpath(str(file_path))
 
@@ -5803,28 +5281,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if not isinstance(reader_json, dict):
             reader_json = {"path": file_path}
 
-        # Create Keyframes for brightness and contrast
-        brightness = openshot.Keyframe()
-        brightness.AddPoint(1, 1.0, openshot.BEZIER)
-        brightness.AddPoint(round(duration * fps_float) + 1, -1.0, openshot.BEZIER)
-
-        contrast = openshot.Keyframe(3.0)
-
-        # Create transition dictionary
-        transition_data = {
-            "id": get_app().project.generate_id(),
-            "layer": track,
-            "title": "Transition",
-            "type": "Mask",
-            "position": snap_to_grid(position.x()),
-            "start": 0,
-            "end": duration,
-            "resource": file_path,
-            "brightness": json.loads(brightness.Json()),
-            "contrast": json.loads(contrast.Json()),
-            "reader": deepcopy(reader_json),
-            "replace_image": False
-        }
+        # Create transition dictionary (brightness 1 -> -1, contrast 3)
+        transition_data = transition_ops.new_mask_transition(
+            get_app().project.generate_id(), reader_json, position=snap_to_grid(position.x()),
+            layer=track, duration=duration, fps_float=fps_float, resource=file_path)
 
         # Default transition to fade-in on clip left edge, fade-out on right edge.
         self._auto_orient_transition_keyframes(transition_data)

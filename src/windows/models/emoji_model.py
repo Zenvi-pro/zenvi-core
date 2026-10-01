@@ -32,7 +32,7 @@ from qt_api import QStandardItemModel, QStandardItem, QIcon
 from qt_api import QMessageBox
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
-from classes import info
+from classes import emoji_catalog, info
 from classes.logger import log
 from classes.app import get_app
 
@@ -82,101 +82,79 @@ class EmojisModel(QObject):
         # Add Headers
         self.model.setHorizontalHeaderLabels([_("Name")])
 
-        # Get emoji metadata
-        emoji_metadata_path = os.path.join(info.PATH, "emojis", "data", "openmoji-optimized.json")
-        with open(emoji_metadata_path, 'r', encoding="utf-8") as f:
-            emoji_lookup = json.load(f)
+        # Every emoji the dock lists (bundled OpenMoji + the user's folder), shared with the emoji tools
+        for entry in emoji_catalog.entries():
+            path = entry.path
+            filename = os.path.basename(path)
+            fileBaseName = entry.code
+            emoji_name = _(entry.name)
+            emoji_group_name = _(entry.group_name)
+            emoji_group_id = entry.group
+            emoji_group_tuple = (emoji_group_name, emoji_group_id)
 
-        # get a list of files in the OpenShot /emojis directory
-        emojis_dir = os.path.join(info.PATH, "emojis", "color", "svg")
-        emoji_paths = [{"type": "common", "dir": emojis_dir, "files": os.listdir(emojis_dir)}, ]
+            # Track unique emoji groups
+            if emoji_group_tuple not in self.emoji_groups:
+                self.emoji_groups.append(emoji_group_tuple)
 
-        # Add optional user-defined transitions folder
-        if os.path.exists(info.EMOJIS_PATH) and os.listdir(info.EMOJIS_PATH):
-            emoji_paths.append({"type": "user", "dir": info.EMOJIS_PATH, "files": os.listdir(info.EMOJIS_PATH)})
+            # Check for thumbnail path (in build-in cache)
+            thumb_path = os.path.join(info.IMAGES_PATH, "cache",  "{}.png".format(fileBaseName))
 
-        for group in emoji_paths:
-            dir = group["dir"]
-            files = group["files"]
+            # Check built-in cache (if not found)
+            if not os.path.exists(thumb_path):
+                # Check user folder cache
+                thumb_path = os.path.join(info.CACHE_PATH, "{}.png".format(fileBaseName))
 
-            for filename in sorted(files):
-                path = os.path.join(dir, filename)
-                fileBaseName = os.path.splitext(filename)[0]
+            # Generate thumbnail (if needed)
+            if not os.path.exists(thumb_path):
 
-                # Skip hidden files (such as .DS_Store, etc...)
-                if filename[0] == "." or "thumbs.db" in filename.lower():
+                try:
+                    # Reload this reader
+                    clip = openshot.Clip(path)
+                    reader = clip.Reader()
+
+                    # Open reader
+                    reader.Open()
+
+                    # Save thumbnail
+                    reader.GetFrame(0).Thumbnail(
+                        thumb_path, 75, 75,
+                        os.path.join(info.IMAGES_PATH, "mask.png"),
+                        "", "#000", True, "png", 85
+                    )
+                    reader.Close()
+                    clip.Close()
+
+                except Exception:
+                    # Handle exception
+                    log.info('Invalid emoji image file: %s' % filename)
+                    msg = QMessageBox()
+                    msg.setText(_("{} is not a valid image file.".format(filename)))
+                    msg.exec_()
                     continue
 
-                # get name of transition
-                emoji = emoji_lookup.get(fileBaseName, {})
-                emoji_name = _(emoji.get("annotation", fileBaseName).capitalize())
-                emoji_group_name = _(emoji.get("group", "user").split('-')[0].capitalize())
-                emoji_group_id = emoji.get("group", "user")
-                emoji_group_tuple = (emoji_group_name, emoji_group_id)
+            row = []
 
-                # Track unique emoji groups
-                if emoji_group_tuple not in self.emoji_groups:
-                    self.emoji_groups.append(emoji_group_tuple)
+            # Set emoji data
+            col = QStandardItem("Name")
+            col.setIcon(QIcon(thumb_path))
+            col.setText(emoji_name)
+            col.setToolTip(emoji_name)
+            col.setData(path)
+            col.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled)
+            row.append(col)
 
-                # Check for thumbnail path (in build-in cache)
-                thumb_path = os.path.join(info.IMAGES_PATH, "cache",  "{}.png".format(fileBaseName))
+            # Append filterable group name
+            col = QStandardItem(emoji_group_name)
+            row.append(col)
 
-                # Check built-in cache (if not found)
-                if not os.path.exists(thumb_path):
-                    # Check user folder cache
-                    thumb_path = os.path.join(info.CACHE_PATH, "{}.png".format(fileBaseName))
+            # Append filterable group id
+            col = QStandardItem(emoji_group_id)
+            row.append(col)
 
-                # Generate thumbnail (if needed)
-                if not os.path.exists(thumb_path):
-
-                    try:
-                        # Reload this reader
-                        clip = openshot.Clip(path)
-                        reader = clip.Reader()
-
-                        # Open reader
-                        reader.Open()
-
-                        # Save thumbnail
-                        reader.GetFrame(0).Thumbnail(
-                            thumb_path, 75, 75,
-                            os.path.join(info.IMAGES_PATH, "mask.png"),
-                            "", "#000", True, "png", 85
-                        )
-                        reader.Close()
-                        clip.Close()
-
-                    except Exception:
-                        # Handle exception
-                        log.info('Invalid emoji image file: %s' % filename)
-                        msg = QMessageBox()
-                        msg.setText(_("{} is not a valid image file.".format(filename)))
-                        msg.exec_()
-                        continue
-
-                row = []
-
-                # Set emoji data
-                col = QStandardItem("Name")
-                col.setIcon(QIcon(thumb_path))
-                col.setText(emoji_name)
-                col.setToolTip(emoji_name)
-                col.setData(path)
-                col.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled)
-                row.append(col)
-
-                # Append filterable group name
-                col = QStandardItem(emoji_group_name)
-                row.append(col)
-
-                # Append filterable group id
-                col = QStandardItem(emoji_group_id)
-                row.append(col)
-
-                # Append ROW to MODEL (if does not already exist in model)
-                if path not in self.model_paths:
-                    self.model.appendRow(row)
-                    self.model_paths[path] = path
+            # Append ROW to MODEL (if does not already exist in model)
+            if path not in self.model_paths:
+                self.model.appendRow(row)
+                self.model_paths[path] = path
         self.ModelRefreshed.emit()
 
     def set_text_filter(self, text):
