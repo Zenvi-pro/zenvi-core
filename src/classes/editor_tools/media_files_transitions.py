@@ -869,14 +869,19 @@ def add_transitions_between_clips(track="", timeline_clip_ids=None, transition="
             if _retimed(a.data) or _retimed(b.data):
                 skipped.append({"join": label, "reason": "speed-changed clip"})
                 continue
-            if _clip_media_length(a.data) - end[a.id] < half - EPS or start[b.id] < half - EPS:
+            # The cut sits mid-gap; a plays on past it and b starts earlier, each by its
+            # spare media, so both keep their frames at the same timeline times.
+            cut = a_end + max(0.0, gap) / 2
+            extend_a = cut + half - a_end
+            # b's new start lands on the frame grid, so position and in-point move together
+            pull_b = pos[b.id] - snap_seconds(cut - half)
+            if _clip_media_length(a.data) - end[a.id] < extend_a - EPS or start[b.id] < pull_b - EPS:
                 skipped.append({"join": label, "reason": "not enough spare media around the cut"})
                 continue
-            cut = a_end if abs(gap) <= EPS else (a_end + pos[b.id]) / 2
-            end[a.id] += cut - a_end + half
-            pos[b.id] -= (pos[b.id] - cut) + half
-            start[b.id] -= half
-            joins.append({"a": a, "b": b, "position": cut - half, "duration": d, "replaces": on_join})
+            end[a.id] += extend_a
+            pos[b.id] -= pull_b
+            start[b.id] -= pull_b
+            joins.append({"a": a, "b": b, "position": pos[b.id], "duration": d, "replaces": on_join})
             continue
         # ripple: pull b and everything after it earlier so the overlap is d
         shift = -(d + gap)

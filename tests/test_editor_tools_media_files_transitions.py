@@ -344,3 +344,17 @@ def test_flip_wipe_side_keeps_the_clip_order(tl):
     assert row["order"] == "later_first"
     assert tl.call("update_transition_tool", transition_ids=[t1], flip_wipe_side=True,
                    invert_mask=False).startswith("Error")
+
+
+def test_handles_across_a_small_gap_keep_both_clips_in_sync(tl):
+    f = tl.add_file("video", duration=30.0)
+    a = tl.add_clip(f, position=0.0, start=2.0, end=7.0)       # 0-5
+    b = tl.add_clip(f, position=5.04, start=10.0, end=15.0)    # 5.04-10.04 (tiny gap)
+    before_b_offset = 5.04 - 10.0                               # timeline - source
+    _receipt(tl.call("add_transitions_between_clips_tool", track="1", method="handles", duration_seconds=1.0))
+    ca, cb = tl.clip(a), tl.clip(b)
+    assert cb["position"] - cb["start"] == pytest.approx(before_b_offset, abs=1e-6)
+    assert cb["position"] + (cb["end"] - cb["start"]) == pytest.approx(10.04)
+    assert ca["position"] == 0.0 and ca["start"] == 2.0
+    overlap = (ca["position"] + ca["end"] - ca["start"]) - cb["position"]
+    assert overlap == pytest.approx(1.0, abs=1 / 30)
