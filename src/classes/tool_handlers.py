@@ -9847,7 +9847,14 @@ def match_color_to_reference(
         action = ca.match_grade_action(sub_effect, ref_effect)
         grain_action = ca.match_grain_action(sub_grain, ref_grain)
         hints = payload.get("hints") or []
-        scope_patch = ca.hints_to_color_patch(hints)
+        # Scope hints are nudges from where the subject is now: apply them as
+        # *_delta. As absolute knobs they overwrote a shared grade (a +0.03
+        # warmth hint set temperature 0.18 to 0.03, i.e. much cooler).
+        scope_patch = {
+            f"{key}_delta": value
+            for key, value in ca.hints_to_color_patch(hints).items()
+            if f"{key}_delta" in ca.DELTA_KEYS
+        }
         before_jpeg = payload.get("preview_jpeg") or ""
         ref_jpeg = (
             (payload.get("reference") or {}).get("preview_jpeg")

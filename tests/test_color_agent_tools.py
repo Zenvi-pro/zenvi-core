@@ -511,7 +511,7 @@ def test_match_color_dry_run_builds_patch_without_apply(monkeypatch):
         )
     )
     assert dry["applied"] is False
-    assert dry["proposed_patch"]["exposure"] == pytest.approx(0.16)
+    assert dry["proposed_patch"]["exposure_delta"] == pytest.approx(0.16)
     assert writes == []
 
     live = json.loads(
@@ -894,3 +894,35 @@ def test_match_refuses_a_missing_reference_instead_of_stripping_the_subject(monk
     assert out.startswith("Error:") and "typo" in out
     assert writes == []
     assert clips["sub"].data["effects"] == [grade, grain]
+
+
+def test_match_scope_nudge_moves_from_a_shared_grade(monkeypatch):
+    """Same grade on both clips → scope hints nudge the subject's knobs; they
+    must not replace them (temperature 0.18 + 0.03 is 0.21, not 0.03)."""
+    from classes import color_agent as ca
+    from classes import tool_handlers as th
+
+    def warm():
+        return merge_color_grade(blank_color_grade("cg"), {"temperature": 0.18})
+
+    clips = {"sub": _MatchClip("sub", [warm()]), "ref": _MatchClip("ref", [warm()])}
+    inspect_payload = {
+        "ok": True,
+        "atFrame": 1,
+        "scopes": {"present": True},
+        "reference": {"scopes": {"present": True}, "film_grain": {"present": False}},
+        "film_grain": {"present": False},
+        "gap": {"warm_cool": 0.05},
+        "hints": [{"temperature": 0.03, "reason": "match warm/cool balance"}],
+        "grades_differ": False,
+        "grain_differ": False,
+        "preview_jpeg": "",
+    }
+    writes = _match_env(monkeypatch, clips, inspect_payload)
+
+    out = json.loads(th.match_color_to_reference(clipId="sub", reference="ref"))
+    assert out["match_mode"] == "scopes"
+    assert out["proposed_patch"] == {"temperature_delta": 0.03}
+    assert len(writes) == 1
+    grade = ca.find_color_grade(clips["sub"].data["effects"])
+    assert scalar_y(grade, "temperature") == pytest.approx(0.21)
