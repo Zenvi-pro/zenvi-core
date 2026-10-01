@@ -3,15 +3,29 @@
  * Option 2 (plain compatible CSS): flex with -webkit- prefix, margins instead of gap,
  * no grid, no color-mix / @property / conic-gradient (use rgba + simple keyframes).
  * Theme colours still come from chat.js setThemeColors(); this file supplies structure.
+ *
+ * This build is WebKit 602 (Safari 10). It has flexbox and var(), but NOT:
+ * gap, inset, grid, min()/max()/clamp(), color-mix, :where()/:is(), ::placeholder.
+ * Never put !important on `display` here: it beats the inline display:none the
+ * page uses to hide panels (#141).
  */
+
+/* Tailwind's button reset sits in a rule with :where(), which this WebKit drops whole. */
+button {
+    background-color: transparent;
+    background-image: none;
+}
+[hidden] {
+    display: none;
+}
 
 html[data-zenvi-webkit="1"] body {
     margin: 0;
     padding: 0;
-    /* Base colours — overridden by inline theme application */
-    background: #0d0d0d !important;
-    color: #d4d4d4 !important;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    /* --chat-wk-bg is set by chat.js applyZenviWebKitInlineTheme() */
+    background: var(--chat-wk-bg, #0d0d0d) !important;
+    color: var(--chat-text, #d4d4d4) !important;
+    font-family: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
     font-size: 13px;
     height: 100%;
     overflow: hidden;
@@ -28,8 +42,26 @@ html[data-zenvi-webkit="1"] .chat-container {
     -webkit-flex-direction: column;
     flex-direction: column;
     height: 100%;
-    min-height: 100%;
+    min-height: 0;
     position: relative;
+}
+
+/* ui-sans-serif / system-ui / ui-monospace resolve to Arial / Courier New here. */
+html[data-zenvi-webkit="1"] .font-sans {
+    font-family: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
+}
+html[data-zenvi-webkit="1"] .font-mono,
+html[data-zenvi-webkit="1"] code,
+html[data-zenvi-webkit="1"] pre,
+html[data-zenvi-webkit="1"] .chat-tool-body,
+html[data-zenvi-webkit="1"] .chat-command-prefix,
+html[data-zenvi-webkit="1"] .chat-thought-badge {
+    font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+}
+html[data-zenvi-webkit="1"] textarea::-webkit-input-placeholder,
+html[data-zenvi-webkit="1"] input::-webkit-input-placeholder {
+    color: var(--chat-placeholder, #6b7280);
+    opacity: 1;
 }
 
 /* Tab bar */
@@ -44,7 +76,21 @@ html[data-zenvi-webkit="1"] #chat-tab-bar {
     flex-shrink: 0;
     padding: 6px 8px 0 8px;
     overflow-x: auto;
+    overflow-y: hidden;
     white-space: nowrap;
+    /* One flat surface with the body; chat.js paints this strip --chat-bg inline. */
+    background: transparent !important;
+}
+/* Tabs shrink before they scroll, and the strip scrolls without a bar under it. */
+html[data-zenvi-webkit="1"] #chat-tab-bar::-webkit-scrollbar {
+    display: none;
+}
+/* History / new-chat stay pinned to the right edge while tabs scroll under them. */
+html[data-zenvi-webkit="1"] #chat-tab-history,
+html[data-zenvi-webkit="1"] #chat-tab-add {
+    position: -webkit-sticky;
+    z-index: 2;
+    background: var(--chat-wk-bg, #0d0d0d) !important;
 }
 html[data-zenvi-webkit="1"] #chat-tab-bar > * {
     margin-right: 4px;
@@ -52,15 +98,29 @@ html[data-zenvi-webkit="1"] #chat-tab-bar > * {
 html[data-zenvi-webkit="1"] #chat-tab-bar > *:last-child {
     margin-right: 0;
 }
+/* Butted together, with the bar's right padding covered, so no tab shows through. */
+html[data-zenvi-webkit="1"] #chat-tab-history {
+    right: 24px;
+    margin-right: 0;
+}
+html[data-zenvi-webkit="1"] #chat-tab-add {
+    right: 0;
+    box-shadow: 8px 0 0 var(--chat-wk-bg, #0d0d0d);
+}
 
 /* Messages — flex-1 scroll (0% basis so WebKit gives remaining height reliably) */
 html[data-zenvi-webkit="1"] #chat-messages {
     -webkit-flex: 1 1 0% !important;
     flex: 1 1 0% !important;
-    min-height: 120px;
+    /* A fixed minimum pushed the composer out of a short dock. */
+    min-height: 0;
     overflow-x: hidden;
     overflow-y: auto;
-    background: #0d0d0d !important;
+    background: transparent !important;
+}
+/* Preamble card: index.html paints it #0d0d0d inline. */
+html[data-zenvi-webkit="1"] .chat-container > .flex-shrink-0.mt-2 {
+    background: transparent !important;
 }
 
 /* Bottom toolbar rows: use margin, not gap */
@@ -74,11 +134,31 @@ html[data-zenvi-webkit="1"] .chat-bottom-left {
 }
 html[data-zenvi-webkit="1"] .chat-bottom-left > * {
     margin-right: 4px;
+    -webkit-flex-shrink: 0;
+    flex-shrink: 0;
+}
+/* Narrow dock: the model pill gives up width (label ellipsises) so the send
+   button is never pushed past the card edge. */
+html[data-zenvi-webkit="1"] .chat-bottom-left {
+    -webkit-flex: 1 1 auto;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+html[data-zenvi-webkit="1"] .chat-bottom-left > .chat-model-trigger {
+    -webkit-flex: 0 1 auto;
+    flex: 0 1 auto;
+    min-width: 62px;
+    overflow: hidden;
+}
+html[data-zenvi-webkit="1"] #chat-model-label {
+    -webkit-flex: 0 1 auto;
+    flex: 0 1 auto;
+    min-width: 0;
 }
 
 html[data-zenvi-webkit="1"] .flex.items-center.gap-1\.5 {
-    display: -webkit-flex !important;
-    display: flex !important;
+    -webkit-flex-shrink: 0;
+    flex-shrink: 0;
     -webkit-align-items: center;
     align-items: center;
 }
@@ -91,8 +171,31 @@ html[data-zenvi-webkit="1"] .flex.items-center.gap-1\.5 > *:first-child {
 
 /* Command palette: avoid CSS grid */
 html[data-zenvi-webkit="1"] .chat-command-item {
-    display: block !important;
+    display: block;
     width: 100%;
+}
+html[data-zenvi-webkit="1"] .chat-command-palette {
+    overflow-y: auto;
+}
+html[data-zenvi-webkit="1"] .chat-command-item > span {
+    display: block;
+    margin-bottom: 2px;
+}
+html[data-zenvi-webkit="1"] .chat-mention-item {
+    display: -webkit-flex;
+    display: flex;
+    -webkit-align-items: center;
+    align-items: center;
+}
+html[data-zenvi-webkit="1"] .chat-mention-kind {
+    -webkit-flex-shrink: 0;
+    flex-shrink: 0;
+    margin-right: 8px;
+    padding-top: 0;
+}
+html[data-zenvi-webkit="1"] .chat-mention-item:hover,
+html[data-zenvi-webkit="1"] .chat-mention-item.active {
+    background: rgba(77, 156, 246, 0.14);
 }
 
 html[data-zenvi-webkit="1"] .chat-command-item.active {
@@ -118,9 +221,23 @@ html[data-zenvi-webkit="1"] .chat-message {
 
 /* Glow: WebKit-safe pulse (no conic-gradient / @property) */
 html[data-zenvi-webkit="1"] .chat-input-glow-border {
+    /* inset: -2px in chat.css is dropped here, leaving the border zero-sized */
+    top: -1px;
+    right: -1px;
+    bottom: -1px;
+    left: -1px;
     background: transparent !important;
     border: 1px solid rgba(77, 156, 246, 0.35);
-    opacity: 0.55;
+}
+html[data-zenvi-webkit="1"] .chat-input-glow-wrap.glow-active .chat-input-glow-inner {
+    box-shadow: inset 0 0 0 1px rgba(77, 156, 246, 0.4);
+}
+/* The "/" and "@" palettes are mounted inside the card and open upwards out of it. */
+html[data-zenvi-webkit="1"] .chat-input-glow-inner {
+    overflow: visible;
+}
+html[data-zenvi-webkit="1"] .chat-input-row .border-t {
+    border-radius: 0 0 9px 9px;
 }
 
 html[data-zenvi-webkit="1"] .chat-input-glow-wrap.glow-active .chat-input-glow-border {
@@ -150,8 +267,8 @@ html[data-zenvi-webkit="1"] .chat-input-glow-wrap.glow-active .chat-input-glow-b
 
 /* Flex utility helpers used in index.html */
 html[data-zenvi-webkit="1"] .flex {
-    display: -webkit-flex !important;
-    display: flex !important;
+    display: -webkit-flex;
+    display: flex;
 }
 html[data-zenvi-webkit="1"] .flex-col {
     -webkit-flex-direction: column !important;
@@ -202,9 +319,8 @@ html[data-zenvi-webkit="1"] .chat-model-menu {
 }
 
 html[data-zenvi-webkit="1"] .chat-model-option {
-    display: -webkit-flex !important;
-    display: flex !important;
-    gap: 0 !important;
+    display: -webkit-flex;
+    display: flex;
     -webkit-align-items: center;
     align-items: center;
 }
@@ -274,9 +390,28 @@ html[data-zenvi-webkit="1"] .chat-tab {
     display: inline-flex;
     -webkit-align-items: center;
     align-items: center;
-    margin-right: 6px;
+    -webkit-flex: 0 1 auto;
+    flex: 0 1 auto;
+    min-width: 104px;
+    max-width: 180px;
+    overflow: hidden;
     -webkit-transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
     transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+html[data-zenvi-webkit="1"] .chat-tab > * + * {
+    margin-left: 6px;
+}
+/* align-items: center is not honoured inside a <button> flex container here. */
+html[data-zenvi-webkit="1"] .chat-tab-processing,
+html[data-zenvi-webkit="1"] .chat-tab-badge {
+    margin-top: 6px;
+}
+html[data-zenvi-webkit="1"] .chat-tab-title {
+    -webkit-flex: 1 1 auto;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* Activity row icon spin (matches .activity-icon svg in chat.css) */
@@ -312,4 +447,72 @@ html[data-zenvi-webkit="1"] .chat-input-wrapper {
 html[data-zenvi-webkit="1"] #chat-input {
     position: relative;
     z-index: 2;
+}
+
+/* ── gap → margin for the remaining flex rows ─────────────────────────── */
+html[data-zenvi-webkit="1"] .chat-model-trigger > * + *,
+html[data-zenvi-webkit="1"] .chat-thinking-header > * + *,
+html[data-zenvi-webkit="1"] .chat-activity-step > * + *,
+html[data-zenvi-webkit="1"] .chat-attach-chip > * + *,
+html[data-zenvi-webkit="1"] .chat-plan-chip-actions > * + * {
+    margin-left: 6px;
+}
+html[data-zenvi-webkit="1"] .chat-tool-header > * + * {
+    margin-left: 7px;
+}
+html[data-zenvi-webkit="1"] .chat-mode-toggle {
+    padding: 2px;
+}
+html[data-zenvi-webkit="1"] .chat-mode-btn + .chat-mode-btn {
+    margin-left: 2px;
+}
+html[data-zenvi-webkit="1"] .chat-gap-log-entry-actions > * + * {
+    margin-left: 4px;
+}
+html[data-zenvi-webkit="1"] .chat-plan-questions-actions > * + * {
+    margin-left: 8px;
+}
+html[data-zenvi-webkit="1"] .chat-activity-log > * + * {
+    margin-top: 4px;
+}
+html[data-zenvi-webkit="1"] .chat-gap-log-list > * + * {
+    margin-top: 6px;
+}
+/* Wrapping rows: space each item instead of the row. */
+html[data-zenvi-webkit="1"] .chat-attach-chip,
+html[data-zenvi-webkit="1"] .chat-plan-option-btn {
+    margin: 0 6px 6px 0;
+}
+html[data-zenvi-webkit="1"] .chat-plan-question-options {
+    margin-bottom: 0;
+}
+html[data-zenvi-webkit="1"] .chat-plan-chip-inner > * {
+    margin-right: 8px;
+}
+html[data-zenvi-webkit="1"] .chat-plan-chip-inner > .chat-plan-chip-actions {
+    margin-right: 0;
+}
+
+/* ── Overlays (history, tool gaps): inset / min() are dropped here ────── */
+html[data-zenvi-webkit="1"] .chat-gap-log-overlay {
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+}
+html[data-zenvi-webkit="1"] .chat-gap-log-panel {
+    width: 92%;
+    max-width: 360px;
+}
+
+/* A press must not shrink the target out from under the pointer: the release
+   then lands outside it and this WebKit drops the click. */
+html[data-zenvi-webkit="1"] #chat-tab-history:active,
+html[data-zenvi-webkit="1"] #chat-tab-add:active,
+html[data-zenvi-webkit="1"] #chat-gap-log-btn:active,
+html[data-zenvi-webkit="1"] .chat-tab-close:active,
+html[data-zenvi-webkit="1"] .chat-model-trigger:active,
+html[data-zenvi-webkit="1"] .chat-send-circle:active:not(:disabled) {
+    -webkit-transform: none;
+    transform: none;
 }
