@@ -9,7 +9,16 @@ from classes.agent_tools.effects import add_effect
 from classes.agent_tools.inspect import inspect_media, inspect_timeline
 from classes.agent_tools.keyframes import set_keyframes
 from classes.agent_tools.project_settings import set_project_setting
+from classes.agent_tools.speech_extra import (
+    add_captions,
+    detect_beats_tool_handler,
+    diarize_media,
+    export_captions,
+    remove_silence,
+    search_media_local,
+)
 from classes.agent_tools.titles import add_title
+from classes.agent_tools.transcript import get_transcript, remove_words, transcribe_media
 
 PHASE3_HANDLERS = {
     "add_effect_tool": add_effect,
@@ -23,6 +32,18 @@ PHASE4_HANDLERS = {
     "inspect_media_tool": inspect_media,
 }
 
+PHASE5_HANDLERS = {
+    "get_transcript_tool": get_transcript,
+    "remove_words_tool": remove_words,
+    "transcribe_media_tool": transcribe_media,
+    "remove_silence_tool": remove_silence,
+    "add_captions_tool": add_captions,
+    "export_captions_tool": export_captions,
+    "detect_beats_tool": detect_beats_tool_handler,
+    "diarize_media_tool": diarize_media,
+    "search_media_local_tool": search_media_local,
+}
+
 PHASE3_DISPLAY_LABELS = {
     "add_effect_tool": "Add effect",
     "add_title_tool": "Add title",
@@ -33,4 +54,16 @@ PHASE3_DISPLAY_LABELS = {
 PHASE4_DISPLAY_LABELS = {
     "inspect_timeline_tool": "Inspect timeline",
     "inspect_media_tool": "Inspect media",
+}
+
+PHASE5_DISPLAY_LABELS = {
+    "get_transcript_tool": "Get transcript",
+    "remove_words_tool": "Remove words",
+    "transcribe_media_tool": "Transcribe media",
+    "remove_silence_tool": "Remove silence",
+    "add_captions_tool": "Add captions",
+    "export_captions_tool": "Export captions",
+    "detect_beats_tool": "Detect beats",
+    "diarize_media_tool": "Diarize speakers",
+    "search_media_local_tool": "Search media (local)",
 }

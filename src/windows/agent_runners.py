@@ -506,14 +506,34 @@ def _claude_is_registered() -> bool:
     which would misreport a real registration as absent. Reading the config
     file is instant and has no such race.
     """
+    return _claude_entry() is not None or _claude_is_registered_via_cli()
+
+
+def _claude_entry() -> dict | None:
+    """Return the ``zenvi`` mcpServers entry from ``~/.claude.json``, or None."""
     try:
         with open(_claude_config_path(), "r", encoding="utf-8") as fh:
             data = json.load(fh)
-        if "zenvi" in (data.get("mcpServers") or {}):
-            return True
+        entry = (data.get("mcpServers") or {}).get("zenvi")
+        return entry if isinstance(entry, dict) else None
     except Exception:
-        pass
-    return _claude_is_registered_via_cli()
+        return None
+
+
+def _claude_registration_matches(port: int, token: str) -> bool:
+    """True when Claude already points at this live MCP URL + bearer token."""
+    entry = _claude_entry()
+    if not entry:
+        return False
+    want_url = "http://127.0.0.1:%d/mcp" % port
+    url = str(entry.get("url") or entry.get("serverUrl") or "").rstrip("/")
+    if url != want_url.rstrip("/"):
+        return False
+    headers = entry.get("headers") or {}
+    if not isinstance(headers, dict):
+        return False
+    auth = str(headers.get("Authorization") or headers.get("authorization") or "")
+    return auth.strip() == ("Bearer %s" % token)
 
 
 def _claude_is_registered_via_cli() -> bool:
@@ -574,6 +594,22 @@ def register_claude(port: int, token: str):
         return False, (result.stderr or result.stdout or "claude mcp add failed").strip()
     except Exception as e:
         return False, str(e)
+
+
+def ensure_claude_registered(port: int, token: str):
+    """Auto-wire Claude Code to the live Zenvi MCP when the CLI is installed.
+
+    Skips ``mcp remove``/``add`` when the existing user-scope entry already
+    matches this port + token (Palmier-style: app up ⇒ Claude can call tools).
+
+    Returns ``(ok, message, changed)``.
+    """
+    if not _which_cli("claude"):
+        return False, "Claude Code CLI not found on PATH.", False
+    if _claude_registration_matches(port, token):
+        return True, "Claude Code already connected to Zenvi MCP.", False
+    ok, message = register_claude(port, token)
+    return ok, message, bool(ok)
 
 
 _CODEX_SECTION_HEADER = "[mcp_servers.zenvi_editor]"
