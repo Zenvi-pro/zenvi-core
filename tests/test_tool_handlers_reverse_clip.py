@@ -23,11 +23,31 @@ from classes import tool_handlers  # noqa: E402
 from classes.clip_resolver import ResolveResult  # noqa: E402
 
 
-def _clip(clip_id="c1"):
+_FORWARD = {"Points": [{"co": {"X": 1, "Y": 1}}]}
+_REVERSED = {"Points": [{"co": {"X": 1, "Y": 300}}, {"co": {"X": 300, "Y": 1}}]}
+
+
+def _clip(clip_id="c1", time=None):
     c = MagicMock()
     c.id = clip_id
-    c.data = {"id": clip_id, "title": "Clip", "position": 0.0, "start": 0.0, "end": 10.0}
+    c.data = {"id": clip_id, "title": "Clip", "position": 0.0, "start": 0.0, "end": 10.0,
+              "time": time if time is not None else _FORWARD}
     return c
+
+
+def _run(clip, **kwargs):
+    """reverse_clip with the clip resolved and the GUI-thread hop run inline."""
+    timeline = MagicMock()
+    app = MagicMock()
+    app.window.timeline = timeline
+    with patch.object(tool_handlers, "_get_app", return_value=app), \
+            patch.object(tool_handlers, "_resolve_timeline_clip_for_tool",
+                         return_value=ResolveResult(ok=True, clip=clip)), \
+            patch.object(tool_handlers, "_run_on_main_thread",
+                         side_effect=lambda fn, *a, **k: fn()), \
+            patch("classes.query.Clip.get", return_value=clip):
+        out = tool_handlers.reverse_clip(timeline_clip_id=clip.id, **kwargs)
+    return out, timeline
 
 
 def test_registered():
@@ -52,20 +72,7 @@ def test_bad_mode_errors_without_resolve():
 
 
 def test_reverse_calls_time_triggered():
-    clip = _clip("c9")
-    timeline = MagicMock()
-    app = MagicMock()
-    app.window.timeline = timeline
-
-    with patch.object(tool_handlers, "_get_app", return_value=app):
-        with patch.object(
-            tool_handlers,
-            "_resolve_timeline_clip_for_tool",
-            return_value=ResolveResult(ok=True, clip=clip),
-        ):
-            with patch.object(tool_handlers, "_run_on_main_thread", side_effect=lambda fn, *a, **k: fn()):
-                out = tool_handlers.reverse_clip(timeline_clip_id="c9", mode="reverse")
-
+    out, timeline = _run(_clip("c9"), mode="reverse")
     assert out.startswith("Reversed timeline_clip_id=c9")
     timeline.Time_Triggered.assert_called_once()
     args = timeline.Time_Triggered.call_args[0]
@@ -74,19 +81,19 @@ def test_reverse_calls_time_triggered():
 
 
 def test_reset_mode_uses_none():
-    clip = _clip("c2")
-    timeline = MagicMock()
-    app = MagicMock()
-    app.window.timeline = timeline
-
-    with patch.object(tool_handlers, "_get_app", return_value=app):
-        with patch.object(
-            tool_handlers,
-            "_resolve_timeline_clip_for_tool",
-            return_value=ResolveResult(ok=True, clip=clip),
-        ):
-            with patch.object(tool_handlers, "_run_on_main_thread", side_effect=lambda fn, *a, **k: fn()):
-                out = tool_handlers.reverse_clip(timeline_clip_id="c2", mode="reset")
-
+    out, timeline = _run(_clip("c2", time=_REVERSED), mode="reset")
     assert "Reset time on timeline_clip_id=c2" in out
     assert timeline.Time_Triggered.call_args[0][0].name == "NONE"
+
+
+def test_reversing_a_reversed_clip_changes_nothing():
+    """Timeline > Speed > Reverse toggles; the tool's "reverse" must not play it forward."""
+    out, timeline = _run(_clip("c3", time=_REVERSED), mode="reverse")
+    assert "already reversed" in out
+    timeline.Time_Triggered.assert_not_called()
+
+
+def test_resetting_a_forward_clip_changes_nothing():
+    out, timeline = _run(_clip("c4"), mode="reset")
+    assert "already plays forward" in out
+    timeline.Time_Triggered.assert_not_called()

@@ -2899,12 +2899,28 @@ def reverse_clip(
         result_box = [None]
 
         def _do_reverse():
+            from classes.query import Clip
+            from windows.views.retime import time_curve_is_reversed
             from windows.views.timeline_backend.enums import MenuTime
 
             app = _get_app()
             timeline = getattr(app.window, "timeline", None)
             if timeline is None or not hasattr(timeline, "Time_Triggered"):
                 result_box[0] = "Error: Timeline view is not available."
+                return
+            clip = Clip.get(id=clip_id)
+            if clip is None:
+                result_box[0] = f"Error: timeline_clip_id={clip_id} is no longer on the timeline."
+                return
+            # Timeline > Speed > Reverse toggles, so asking a reversed clip to
+            # reverse would play it forward again; a no-op must not add an undo step.
+            time_data = clip.data.get("time")
+            points = time_data.get("Points") if isinstance(time_data, dict) else None
+            if menu_action_name == "REVERSE" and time_curve_is_reversed(time_data):
+                result_box[0] = f"timeline_clip_id={clip_id} is already reversed; nothing changed."
+                return
+            if menu_action_name == "NONE" and (not isinstance(points, list) or len(points) <= 1):
+                result_box[0] = f"timeline_clip_id={clip_id} already plays forward at 1x; nothing changed."
                 return
             menu_action = getattr(MenuTime, menu_action_name)
             timeline.Time_Triggered(menu_action, [clip_id], "1X")

@@ -308,3 +308,62 @@ def test_a_smart_rendered_export_reports_progress_the_dialog_can_format(monkeypa
     title, start, end, current, fmt = frames[-1]
     assert (fmt % ((current - start) / (end - start) * 100)).strip() == "100.0%"
     assert finished == [True]
+
+
+# --- the ffmpeg "normalize" spans (617fb751e) ---------------------------------
+
+def test_an_export_codec_smart_render_cannot_produce_is_never_copied(untouched):
+    """A ProRes (or VP9, MPEG-4) export of an untouched H.264 clip used to count
+    as a match, because every non-HEVC export codec was treated as H.264."""
+    for codec in ("prores_ks", "libvpx-vp9", "mpeg4"):
+        reasons = clip_smart_render_reasons(
+            untouched, export_width=576, export_height=1024, export_fps=25.0,
+            export_vcodec=codec, export_audio=_AUDIO)
+        assert "export-codec-not-copyable" in reasons, codec
+    assert "export-codec-not-copyable" not in _reasons(untouched)
+
+
+def test_a_source_without_audio_cannot_fill_the_exports_audio(untouched):
+    untouched["reader"]["has_audio"] = False
+    assert "no-source-audio" in _reasons(untouched)
+    assert "no-source-audio" not in _reasons(untouched, audio=None)
+
+
+def test_normalize_only_where_ffmpeg_draws_what_libopenshot_would(untouched):
+    stretched = copy.deepcopy(untouched)
+    stretched["scale"] = 2  # SCALE_STRETCH
+    span = smart_render.SmartRenderSpan(
+        kind="encode", start_frame=1, end_frame=300, clip=stretched,
+        reasons=("resolution-mismatch",))
+    assert smart_render._promote_normalize_spans([span])[0].kind == "encode"
+    fitted = smart_render.SmartRenderSpan(
+        kind="encode", start_frame=1, end_frame=300, clip=untouched,
+        reasons=("resolution-mismatch",))
+    assert smart_render._promote_normalize_spans([fitted])[0].kind == "normalize"
+
+
+def test_normalize_audio_follows_the_export_settings():
+    args = smart_render._ffmpeg_audio_args(
+        {"acodec": "libmp3lame", "audio_bitrate": 128000, "sample_rate": 44100, "channels": 1})
+    assert args == ["-c:a", "libmp3lame", "-b:a", "128000", "-ar", "44100", "-ac", "1"]
+
+
+@_needs_ffmpeg
+def test_a_normalized_segment_has_the_export_format(tmp_path, untouched):
+    source = tmp_path / "src.mp4"
+    _make_source(source, seconds=2)
+    clip = _clip_for(source, untouched)
+    out = tmp_path / "seg.mp4"
+    assert smart_render._transcode_span_to_export(
+        clip, start_frame=1, end_frame=50, fps=25.0, output_path=str(out),
+        export_width=640, export_height=480, export_fps=25.0, export_vcodec="libx264",
+        video_bitrate=400000, include_audio=True,
+        audio_settings={"acodec": "aac", "audio_bitrate": 96000, "sample_rate": 44100, "channels": 1})
+    streams = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries",
+         "stream=codec_type,codec_name,width,height,sample_rate,channels", "-of", "json", str(out)],
+        capture_output=True, text=True, check=True).stdout
+    info = {s["codec_type"]: s for s in json.loads(streams)["streams"]}
+    assert (info["video"]["codec_name"], info["video"]["width"], info["video"]["height"]) == ("h264", 640, 480)
+    assert (info["audio"]["codec_name"], info["audio"]["sample_rate"], info["audio"]["channels"]) == ("aac", "44100", 1)
+    assert smart_render._video_frame_count(str(out)) == 50

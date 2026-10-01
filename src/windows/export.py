@@ -1287,7 +1287,9 @@ class Export(QDialog):
                         self.ExportFrame.emit(title, _sf, _ef, frame, "%4.1f%% ")
                     except Exception:
                         pass
-                    if QApplication is not None:
+                    # Dialog only: a headless export must not pump the GUI
+                    # (queued agent calls would run in the middle of it).
+                    if QApplication is not None and not getattr(self, "_headless", False):
                         QApplication.processEvents()
 
                 def _encode_smart_span(span_start, span_end, out_path):
@@ -1383,7 +1385,7 @@ class Export(QDialog):
                             exc_info=True,
                         )
                     self._complete_export_success(export_file_path)
-                    if QApplication is not None:
+                    if QApplication is not None and not getattr(self, "_headless", False):
                         QApplication.processEvents()
                     return
 

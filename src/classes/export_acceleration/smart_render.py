@@ -236,6 +236,16 @@ def _crop_is_active(clip: dict) -> bool:
     return False
 
 
+def _export_video_family(export_vcodec: str) -> Optional[str]:
+    """"h264" / "hevc" for an export codec smart render can match, else None."""
+    name = (export_vcodec or "libx264").lower()
+    if "265" in name or "hevc" in name:
+        return "hevc"
+    if "264" in name or "avc" in name:
+        return "h264"
+    return None
+
+
 def _audio_family(codec: str) -> str:
     name = (codec or "").lower()
     for family in ("aac", "mp3", "ac3", "opus", "vorbis", "flac"):
@@ -346,10 +356,12 @@ def clip_format_reasons(
             reasons.append("fps-mismatch")
 
     vcodec = (reader.get("vcodec") or reader.get("video_codec") or "").lower()
-    export_family = "h264"
-    if "265" in export_vcodec or "hevc" in export_vcodec:
-        export_family = "hevc"
-    if vcodec:
+    export_family = _export_video_family(export_vcodec)
+    if export_family is None:
+        # ProRes, VP9, MPEG-4...: neither a copy nor the H.264/HEVC normalize
+        # can produce what the user asked for.
+        reasons.append("export-codec-not-copyable")
+    elif vcodec:
         if export_family == "h264" and not any(t in vcodec for t in ("h264", "avc", "x264")):
             reasons.append("codec-mismatch")
         if export_family == "hevc" and not any(t in vcodec for t in ("hevc", "h265", "x265", "hvc1")):
@@ -366,7 +378,9 @@ def clip_format_reasons(
         reasons.append("pixel-format-mismatch")
 
     # The copy keeps the source audio as it is, so it must already be what
-    # the export asks for.
+    # the export asks for, and a source without audio has none to give.
+    if isinstance(export_audio, dict) and reader.get("has_audio") is False:
+        reasons.append("no-source-audio")
     if isinstance(export_audio, dict) and reader.get("has_audio"):
         try:
             same_audio = (
@@ -549,6 +563,16 @@ _NORMALIZE_OK_REASONS = frozenset({
 })
 
 
+def _fits_like_libopenshot(clip: dict) -> bool:
+    """True when ffmpeg's scale-to-fit + centred pad is how libopenshot draws the clip.
+
+    Defaults: scale SCALE_FIT (1), gravity GRAVITY_CENTER (4), anchor ANCHOR_CANVAS (0).
+    """
+    return (clip.get("scale", 1) in (1, None)
+            and clip.get("gravity", 4) in (4, None)
+            and clip.get("anchor", 0) in (0, None))
+
+
 def _promote_normalize_spans(spans: list[SmartRenderSpan]) -> list[SmartRenderSpan]:
     """Turn format-only encode spans into ffmpeg normalize spans."""
     out: list[SmartRenderSpan] = []
@@ -558,6 +582,7 @@ def _promote_normalize_spans(spans: list[SmartRenderSpan]) -> list[SmartRenderSp
             and span.clip is not None
             and span.reasons
             and set(span.reasons) <= _NORMALIZE_OK_REASONS
+            and ("resolution-mismatch" not in span.reasons or _fits_like_libopenshot(span.clip))
         ):
             out.append(
                 SmartRenderSpan(
@@ -685,6 +710,22 @@ def _ffmpeg_rate_args(video_bitrate: Any) -> list[str]:
     return ["-crf", "20"]
 
 
+def _ffmpeg_audio_args(audio_settings: Any) -> list[str]:
+    audio = audio_settings if isinstance(audio_settings, dict) else {}
+    try:
+        bitrate = int(audio.get("audio_bitrate") or 192000)
+        sample_rate = int(audio.get("sample_rate") or 48000)
+        channels = int(audio.get("channels") or 2)
+    except (TypeError, ValueError):
+        bitrate, sample_rate, channels = 192000, 48000, 2
+    return [
+        "-c:a", str(audio.get("acodec") or "aac"),
+        "-b:a", str(bitrate),
+        "-ar", str(sample_rate),
+        "-ac", str(channels),
+    ]
+
+
 def _transcode_span_to_export(
     clip: dict,
     *,
@@ -698,6 +739,7 @@ def _transcode_span_to_export(
     export_vcodec: str,
     video_bitrate: Any = None,
     include_audio: bool = True,
+    audio_settings: Any = None,
     progress_cb: Optional[Callable[[int], None]] = None,
     cancel_cb: Optional[Callable[[], bool]] = None,
 ) -> bool:
@@ -726,7 +768,9 @@ def _transcode_span_to_export(
         "-pix_fmt", "yuv420p",
     ]
     if include_audio:
-        cmd.extend(["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"])
+        # The segments are concatenated with the ones libopenshot encodes, so
+        # the audio must be the export's: codec, bitrate, rate and channels.
+        cmd.extend(_ffmpeg_audio_args(audio_settings))
     else:
         cmd.append("-an")
     cmd.extend(["-movflags", "+faststart", output_path])
@@ -1006,9 +1050,10 @@ def try_smart_render_export(
                     export_vcodec=export_vcodec,
                     video_bitrate=video_settings.get("video_bitrate"),
                     include_audio=include_audio,
+                    audio_settings=audio_settings,
                     progress_cb=progress_cb,
                     cancel_cb=cancel_cb,
-                )
+                ) and _has_frames(out, span.end_frame - span.start_frame + 1)
                 if not ok and encode_span is not None:
                     ok = encode_span(span.start_frame, span.end_frame, out)
             else:
