@@ -196,6 +196,77 @@ def with_software_decode_fallback(on_fallback: Optional[Callable[[Exception], No
             pass
 
 
+# A hardware decoder can pass the probe and still be far slower than software on
+# the user's media (D3D11 on an H.264 phone clip: 6.2 s to the first frame against
+# 0.06 s). Below the first threshold nothing is checked; above it software has to
+# be this many times faster before hardware decode is switched off.
+SLOW_FIRST_FRAME_SECONDS = 1.0
+SOFTWARE_SPEEDUP_TO_SWITCH = 5.0
+
+
+def _time_software_first_frame(source_path: str) -> float:
+    """Seconds to open *source_path* and decode its first frame in software."""
+    import time
+
+    import openshot
+
+    with with_software_decode_fallback():
+        started = time.perf_counter()
+        clip = openshot.Clip(source_path)
+        reader = clip.Reader()
+        try:
+            reader.Open()
+            reader.GetFrame(1)
+        finally:
+            reader.Close()
+            clip.Close()
+        return time.perf_counter() - started
+
+
+def disable_hardware_decode_if_slower(
+    source_path: str,
+    hardware_seconds: float,
+    settings_store=None,
+    *,
+    time_software: Optional[Callable[[str], float]] = None,
+) -> bool:
+    """Switch to software decode when it is much faster on *source_path*.
+
+    *hardware_seconds* is how long opening the file and decoding one frame just
+    took. Returns True when hardware decode was switched off (for readers opened
+    from now on, and in *settings_store* for the next launch).
+    """
+    if hardware_seconds < SLOW_FIRST_FRAME_SECONDS:
+        return False
+    try:
+        import openshot
+
+        lib = openshot.Settings.Instance()
+        decoder = int(lib.HARDWARE_DECODER)
+    except Exception:
+        return False
+    if decoder == HW_NONE:
+        return False
+    try:
+        software_seconds = (time_software or _time_software_first_frame)(source_path)
+    except Exception as exc:
+        log.debug("Software decode timing failed for %s: %s", source_path, exc)
+        return False
+    if software_seconds * SOFTWARE_SPEEDUP_TO_SWITCH > hardware_seconds:
+        return False
+    lib.HARDWARE_DECODER = HW_NONE
+    if settings_store is not None:
+        try:
+            settings_store.set("hw-decoder", str(HW_NONE))
+        except Exception:
+            log.debug("Could not store hw-decoder", exc_info=True)
+    log.warning(
+        "Hardware decode (decoder=%s) took %.1fs on %s; software takes %.2fs. Switched to software decode.",
+        decoder, hardware_seconds, source_path, software_seconds,
+    )
+    return True
+
+
 def force_software_decode() -> int:
     """Set HARDWARE_DECODER to software and return the previous value."""
     try:
