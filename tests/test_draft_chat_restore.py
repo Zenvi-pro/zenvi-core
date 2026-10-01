@@ -15,6 +15,7 @@ from main_window.py's source.
 import ast
 import os
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -87,6 +88,17 @@ def test_building_the_chat_dock_at_launch_keeps_the_crashed_draft_key(store, mon
     messages = store.load_messages(session["session_id"])
     assert [m["content"] for m in messages] == ["trim the intro"]
 
+    # The handoff itself: the dock drops its empty bucket for the crashed one
+    # and reopens that conversation.
+    chat = MagicMock(_sessions={}, _history_key=key, _use_web_ui=True)
+    chat._make_worker.return_value = (None, None)
+    chat._restorable_sessions = lambda legacy: AIChatWindow._restorable_sessions(chat, legacy)
+    chat._pick_active_sid = lambda legacy=None: AIChatWindow._pick_active_sid(chat, legacy)
+    AIChatWindow.restore_draft(chat, settings.get("restore_draft_history_key"))
+    assert chat._history_key == "draft:crashed"
+    assert list(chat._sessions) == ["s-crashed"]
+    assert chat._active_sid == "s-crashed"
+
 
 def _untitled_app(saved):
     project = SimpleNamespace(
@@ -132,6 +144,7 @@ def test_the_indexing_flush_records_the_draft_key_with_the_backup(monkeypatch, t
         "flush_project_to_disk",
         get_app=lambda: _untitled_app(saved),
         log=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
+        headless=SimpleNamespace(is_active=lambda: False),
     )
 
     flush_project_to_disk(_window(settings, "draft:this-window"))
