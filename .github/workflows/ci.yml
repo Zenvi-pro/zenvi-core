@@ -41,6 +41,8 @@ jobs:
     # The apt/PPA install has hung for hours; fail it instead of holding the PR.
     timeout-minutes: 30
     strategy:
+      # One OS timing out must not cancel the other's result.
+      fail-fast: false
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04]
     defaults:
