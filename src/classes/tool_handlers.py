@@ -22,6 +22,7 @@ import tempfile
 import threading
 import uuid as uuid_module
 from collections import Counter
+from time import monotonic as _monotonic
 from typing import Optional
 
 from classes.ffmpeg_cli import run_ffmpeg
@@ -90,14 +91,8 @@ if pyqtSignal is not None:
             self._dispatch.connect(self._on_dispatch)
 
         @pyqtSlot(object)
-        def _on_dispatch(self, payload):
-            func, args, result_box, error_box, done = payload
-            try:
-                result_box[0] = func(*args)
-            except Exception as exc:
-                error_box[0] = exc
-            finally:
-                done.set()
+        def _on_dispatch(self, job):
+            job.run()
 
 else:
 
@@ -172,7 +167,121 @@ class MainThreadTimeout(TimeoutError):
     editor is wedged" apart from an ordinary tool error: read-only tools keep
     answering from the worker thread even when the GUI thread is stuck, so this
     is the only signal that the event loop has stopped draining.
+
+    The call is withdrawn before this is raised, so it can never run later
+    behind the caller's back -- where a retry would apply the edit twice.
     """
+
+
+class MainThreadStillRunning(MainThreadTimeout):
+    """A marshalled call started on the GUI thread but outlived the wait.
+
+    Too late to withdraw: it will finish on its own, so the caller must not
+    retry it.  ``job_id`` identifies it to wait_for_main_thread_job().
+    """
+
+    def __init__(self, message, job_id):
+        super().__init__(message)
+        self.job_id = job_id
+
+
+class _MainThreadJob:
+    """One call marshalled onto the GUI thread.
+
+    The GUI thread claims the job before running it, and a caller whose wait
+    ran out withdraws it; both go through one lock, so a timed-out call has
+    either not run and never will, or is known to be running.
+    """
+
+    PENDING = "pending"
+    RUNNING = "running"
+    DONE = "done"
+    WITHDRAWN = "withdrawn"
+
+    def __init__(self, func, args):
+        self._func = func
+        self._args = args
+        self._lock = threading.Lock()
+        self.state = self.PENDING
+        self.result = None
+        self.error = None
+        self.done = threading.Event()
+        self.started_at = None
+        self.finished_at = None
+        self.late_id = None
+
+    def run(self):
+        """GUI-thread side: run the call, unless its caller already withdrew it."""
+        with self._lock:
+            if self.state != self.PENDING:
+                return
+            self.state = self.RUNNING
+            self.started_at = _monotonic()
+        try:
+            self.result = self._func(*self._args)
+        except Exception as exc:
+            self.error = exc
+        finally:
+            with self._lock:
+                self.state = self.DONE
+                self.finished_at = _monotonic()
+                late_id = self.late_id
+            self.done.set()
+            if late_id:
+                log.info(
+                    "Main-thread job %s finished after %.1fs, past its caller's wait",
+                    late_id, self.finished_at - self.started_at,
+                )
+
+    def withdraw(self):
+        """Caller side, once its wait ran out: cancel the call if it has not
+        started.  Returns the state the job is left in."""
+        with self._lock:
+            if self.state == self.PENDING:
+                self.state = self.WITHDRAWN
+            return self.state
+
+
+# Calls still running when their caller stopped waiting, by job id, so a later
+# wait_for_main_thread_job() can report how they ended.  Oldest dropped first.
+_LATE_JOBS_MAX = 32
+_late_jobs = {}
+_late_jobs_lock = threading.Lock()
+
+
+def _remember_late_job(job) -> str:
+    job_id = uuid_module.uuid4().hex[:12]
+    with _late_jobs_lock:
+        _late_jobs[job_id] = job
+        while len(_late_jobs) > _LATE_JOBS_MAX:
+            _late_jobs.pop(next(iter(_late_jobs)))
+    with job._lock:
+        job.late_id = job_id
+    return job_id
+
+
+def wait_for_main_thread_job(job_id, timeout) -> dict:
+    """Wait up to *timeout* seconds for a call that outlived its caller's wait.
+
+    Blocks on the job's own completion event, never on the GUI thread, so it is
+    safe to call while that thread is still busy.  Returns ``{"state": ...}``:
+    "unknown" (no such job this session), "running" (with ``seconds`` so far),
+    or "done" (with ``result``, ``error`` and ``seconds`` it ran for).
+    """
+    with _late_jobs_lock:
+        job = _late_jobs.get(str(job_id or "").strip())
+    if job is None:
+        return {"state": "unknown"}
+    job.done.wait(timeout=max(0.0, float(timeout)))
+    with job._lock:
+        if job.state != job.DONE:
+            return {"state": "running", "seconds": _monotonic() - job.started_at}
+        return {
+            "state": "done",
+            "result": job.result,
+            "error": job.error,
+            "seconds": job.finished_at - job.started_at,
+        }
 
 
 def _run_on_main_thread(func, *args, timeout=None):
@@ -216,26 +325,44 @@ def _run_on_main_thread(func, *args, timeout=None):
         finally:
             app.updates.transaction_id = previous
 
-    result_box = [None]
-    error_box = [None]
-    done = threading.Event()
-
+    job = _MainThreadJob(_with_caller_transaction, args)
     dispatcher = _get_dispatcher()
-    dispatcher._dispatch.emit(
-        (_with_caller_transaction, args, result_box, error_box, done)
-    )
+    dispatcher._dispatch.emit(job)
 
-    if not done.wait(timeout=timeout):
-        raise MainThreadTimeout(
-            f"MAIN_THREAD_TIMEOUT: the Qt GUI thread did not respond within "
-            f"{timeout}s. The editor is up but its event loop is not draining "
-            f"(a modal dialog, or startup never finished). Read-only tools "
-            f"still work; call mcp_health_tool to confirm."
-        )
+    if not job.done.wait(timeout=timeout):
+        # Left queued, the call would still run whenever the GUI thread drains,
+        # after the caller had reported failure -- and the agent's retry would
+        # then apply the same edit twice.  Withdraw it, or say it is running.
+        state = job.withdraw()
+        if state == job.WITHDRAWN:
+            log.warning("Main-thread call withdrawn: not started within %ss", timeout)
+            raise MainThreadTimeout(
+                f"MAIN_THREAD_TIMEOUT: the Qt GUI thread did not respond within "
+                f"{timeout}s. The call was withdrawn before it started and will "
+                f"not run later. The editor is up but its event loop is not "
+                f"draining (a modal dialog, or startup never finished). "
+                f"Read-only tools still work; call mcp_health_tool to confirm."
+            )
+        if state == job.RUNNING:
+            job_id = _remember_late_job(job)
+            log.warning(
+                "Main-thread call still running after %ss; tracking it as job %s",
+                timeout, job_id,
+            )
+            raise MainThreadStillRunning(
+                f"MAIN_THREAD_STILL_RUNNING: this call started on the Qt GUI "
+                f"thread but was still running after {timeout}s (job_id="
+                f"{job_id}). Do NOT retry it: it will finish on its own, and a "
+                f"retry would apply the edit twice. Call "
+                f"wait_for_editor_job_tool(job_id=\"{job_id}\") to wait for its "
+                f"outcome, or check get_timeline_state_tool once it has finished.",
+                job_id,
+            )
+        # DONE: it finished between the wait running out and the withdrawal.
 
-    if error_box[0] is not None:
-        raise error_box[0]
-    return result_box[0]
+    if job.error is not None:
+        raise job.error
+    return job.result
 
 
 def _audio_role_of(clip_data, file_data, ctx=None) -> str:
@@ -6998,10 +7125,9 @@ def resummarize_project_file(file_id: str = "", **kwargs) -> str:
                 log.warning("resummarize_project_file: failed to start summarize: %s", exc)
 
         try:
+            # Fire and forget: nothing waits on this job, so nothing withdraws it.
             dispatcher = _get_dispatcher()
-            dispatcher._dispatch.emit(
-                (_kick_off_summarize, (), [None], [None], threading.Event())
-            )
+            dispatcher._dispatch.emit(_MainThreadJob(_kick_off_summarize, ()))
         except Exception:
             _kick_off_summarize()
 
