@@ -58,6 +58,11 @@ def export_mod(monkeypatch):
     return mod
 
 
+@pytest.fixture
+def out(tmp_path):
+    return str(tmp_path / "out.mp4")
+
+
 def _writers(monkeypatch, export_mod, *outcomes):
     """FFmpegWriter that fails or works per attempt, in order."""
     fake_openshot = MagicMock()
@@ -116,12 +121,12 @@ _AUDIO = {"acodec": "aac", "sample_rate": 48000, "channels": 2,
           "channel_layout": 3, "audio_bitrate": 192000}
 
 
-def test_a_failed_export_keeps_the_dialog_able_to_export(monkeypatch, export_mod):
+def test_a_failed_export_keeps_the_dialog_able_to_export(monkeypatch, export_mod, out):
     made = _writers(monkeypatch, export_mod, RuntimeError("Could not open video codec"), "ok")
     dlg = _dialog(export_mod)
     cache_thread, timeline = dlg.cache_thread, dlg.timeline
 
-    dlg.run_export("/tmp/out.mp4", _video(), _AUDIO, "Video Only")
+    dlg.run_export(out, _video(), _AUDIO, "Video Only")
 
     assert dlg.errors, "the failure is shown in the dialog"
     assert dlg.cache_thread is cache_thread, "the cache thread survives a failed attempt"
@@ -130,60 +135,60 @@ def test_a_failed_export_keeps_the_dialog_able_to_export(monkeypatch, export_mod
 
     # The user fixes the settings and clicks Export Video again.
     dlg.exporting = True
-    dlg.run_export("/tmp/out.mp4", _video(), _AUDIO, "Video Only")
+    dlg.run_export(out, _video(), _AUDIO, "Video Only")
 
     assert len(dlg.errors) == 1, "the second attempt must not fail on a torn-down dialog"
     assert len(made) == 2
     assert cache_thread.StartThread.call_count == 2
     cache_thread.Reader.assert_any_call(timeline)
-    dlg.ExportEnded.emit.assert_called_once_with("/tmp/out.mp4")
+    dlg.ExportEnded.emit.assert_called_once_with(out)
     assert dlg.finished == [True]
     # Everything is torn down exactly once, after the export that worked.
     assert timeline.Close.call_count == 1
     assert dlg.cache_thread is None
 
 
-def test_a_retry_drops_frames_cached_by_the_failed_attempt(monkeypatch, export_mod):
+def test_a_retry_drops_frames_cached_by_the_failed_attempt(monkeypatch, export_mod, out):
     _writers(monkeypatch, export_mod, RuntimeError("Could not open video codec"), "ok")
     dlg = _dialog(export_mod)
-    dlg.run_export("/tmp/out.mp4", _video(), _AUDIO, "Video Only")
+    dlg.run_export(out, _video(), _AUDIO, "Video Only")
     dlg.timeline.ClearAllCache.assert_not_called()
 
     dlg.exporting = True
-    dlg.run_export("/tmp/out.mp4", _video(width=1280, height=720), _AUDIO, "Video Only")
+    dlg.run_export(out, _video(width=1280, height=720), _AUDIO, "Video Only")
     # Once for the retry, once in the final teardown.
     assert dlg.timeline.ClearAllCache.call_count == 2
 
 
-def test_a_retry_at_another_fps_rescales_the_original_keyframes(monkeypatch, export_mod):
+def test_a_retry_at_another_fps_rescales_the_original_keyframes(monkeypatch, export_mod, out):
     """The failed attempt left self.project scaled for 60 fps; rescaling that
     again for the retry used to scale the keyframes twice."""
     _writers(monkeypatch, export_mod, RuntimeError("Could not open video codec"), "ok")
     dlg = _dialog(export_mod)
 
-    dlg.run_export("/tmp/out.mp4", _video(fps={"num": 60, "den": 1}), _AUDIO, "Video Only")
+    dlg.run_export(out, _video(fps={"num": 60, "den": 1}), _AUDIO, "Video Only")
     assert dlg.project._data["keyframes_scaled_by"] == 2.0
 
     dlg.exporting = True
-    dlg.run_export("/tmp/out.mp4", _video(fps={"num": 60, "den": 1}), _AUDIO, "Video Only")
+    dlg.run_export(out, _video(fps={"num": 60, "den": 1}), _AUDIO, "Video Only")
     assert dlg.project._data["keyframes_scaled_by"] == 2.0, "scaled once, not 2 x 2"
 
 
-def test_a_successful_export_still_cleans_up_once(monkeypatch, export_mod):
+def test_a_successful_export_still_cleans_up_once(monkeypatch, export_mod, out):
     _writers(monkeypatch, export_mod, "ok")
     dlg = _dialog(export_mod)
-    dlg.run_export("/tmp/out.mp4", _video(), _AUDIO, "Video Only")
+    dlg.run_export(out, _video(), _AUDIO, "Video Only")
     assert dlg.timeline.Close.call_count == 1
     dlg._cleanup_export_resources()  # e.g. reject() when the user closes the dialog
     assert dlg.timeline.Close.call_count == 1
 
 
-def test_a_failed_headless_export_tears_down(monkeypatch, export_mod):
+def test_a_failed_headless_export_tears_down(monkeypatch, export_mod, out):
     """Headless exports throw their Export object away, so nothing is kept."""
     _writers(monkeypatch, export_mod, RuntimeError("Could not open video codec"))
     dlg = _dialog(export_mod)
     dlg._headless = True
     with pytest.raises(RuntimeError):
-        dlg.run_export("/tmp/out.mp4", _video(), _AUDIO, "Video Only")
+        dlg.run_export(out, _video(), _AUDIO, "Video Only")
     assert dlg.timeline.Close.call_count == 1
     assert dlg.cache_thread is None
