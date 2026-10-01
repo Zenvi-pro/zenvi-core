@@ -2855,6 +2855,83 @@ def slice_clip_at_playhead(**_kw) -> str:
         return f"Error: {e}"
 
 
+def reverse_clip(
+    timeline_clip_id="",
+    clip_query="",
+    track="",
+    occurrence="0",
+    mode="reverse",
+    **_kw,
+) -> str:
+    """Reverse a timeline clip (or reset time remapping).
+
+    Same as Timeline → Speed → Reverse / Reset. mode='reverse' plays backward;
+    mode='reset' clears reverse/speed time curves back to forward 1x.
+    Resolve with timeline_clip_id or clip_query (+ track/occurrence if needed).
+    """
+    action = str(mode or "reverse").strip().lower()
+    if action in ("reverse", "backward", "backwards"):
+        menu_action_name = "REVERSE"
+        done = "Reversed"
+    elif action in ("reset", "none", "forward", "unreverse"):
+        menu_action_name = "NONE"
+        done = "Reset time on"
+    else:
+        return "Error: mode must be 'reverse' or 'reset'."
+
+    if not str(timeline_clip_id or "").strip() and not str(clip_query or "").strip():
+        return "Error: reverse_clip_tool requires timeline_clip_id or clip_query."
+
+    try:
+        resolved = _resolve_timeline_clip_for_tool(
+            timeline_clip_id=timeline_clip_id,
+            clip_query=clip_query,
+            track=track,
+            occurrence=occurrence,
+        )
+        if not resolved.ok or not resolved.clip:
+            return resolved.error or "Error: Could not resolve timeline clip."
+
+        clip_id = str(getattr(resolved.clip, "id", "") or "")
+        if not clip_id:
+            return "Error: Resolved clip has no id."
+
+        result_box = [None]
+
+        def _do_reverse():
+            from classes.query import Clip
+            from windows.views.retime import time_curve_is_reversed
+            from windows.views.timeline_backend.enums import MenuTime
+
+            app = _get_app()
+            timeline = getattr(app.window, "timeline", None)
+            if timeline is None or not hasattr(timeline, "Time_Triggered"):
+                result_box[0] = "Error: Timeline view is not available."
+                return
+            clip = Clip.get(id=clip_id)
+            if clip is None:
+                result_box[0] = f"Error: timeline_clip_id={clip_id} is no longer on the timeline."
+                return
+            # Timeline > Speed > Reverse toggles, so asking a reversed clip to
+            # reverse would play it forward again; a no-op must not add an undo step.
+            time_data = clip.data.get("time")
+            points = time_data.get("Points") if isinstance(time_data, dict) else None
+            if menu_action_name == "REVERSE" and time_curve_is_reversed(time_data):
+                result_box[0] = f"timeline_clip_id={clip_id} is already reversed; nothing changed."
+                return
+            if menu_action_name == "NONE" and (not isinstance(points, list) or len(points) <= 1):
+                result_box[0] = f"timeline_clip_id={clip_id} already plays forward at 1x; nothing changed."
+                return
+            menu_action = getattr(MenuTime, menu_action_name)
+            timeline.Time_Triggered(menu_action, [clip_id], "1X")
+            result_box[0] = f"{done} timeline_clip_id={clip_id}."
+
+        _run_on_main_thread(_do_reverse)
+        return result_box[0] or f"{done} timeline_clip_id={clip_id}."
+    except Exception as e:
+        return f"Error: {e}"
+
+
 # ---------------------------------------------------------------------------
 # Search (project-wide video index + in-clip scenes)
 # ---------------------------------------------------------------------------
@@ -9144,6 +9221,7 @@ AGENT_TOOL_HANDLERS = {
     "add_clip_to_timeline_tool": add_clip_to_timeline,
     "import_video_url_and_add_to_timeline_tool": import_video_url_and_add_to_timeline,
     "slice_clip_at_playhead_tool": slice_clip_at_playhead,
+    "reverse_clip_tool": reverse_clip,
     # Search / slice / modify (tag-query resolved)
     "search_clips_tool": search_clips,
     "search_clip_scenes_tool": search_clip_scenes,
@@ -9215,6 +9293,7 @@ TOOL_DISPLAY_LABELS = {
     "add_clip_to_timeline_tool": "Add clip to timeline",
     "import_video_url_and_add_to_timeline_tool": "Import video to timeline",
     "slice_clip_at_playhead_tool": "Slice clip at playhead",
+    "reverse_clip_tool": "Reverse clip",
     "search_clips_tool": "Search project index",
     "search_clip_scenes_tool": "Search clip scenes",
     "get_project_catalog_tool": "Read project catalog",
