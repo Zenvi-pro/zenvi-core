@@ -268,7 +268,7 @@ def test_every_cli_backend_comes_from_the_runner_registry(qapp):
     from windows.ai_chat_ui import BACKENDS
 
     assert [b["id"] for b in BACKENDS] == ["zenvi", "claude_code", "codex", "cursor_cli",
-                                           "opencode"]
+                                           "opencode", "hermes"]
     for row in BACKENDS[1:]:
         runner = CLI_RUNNERS[row["id"]]
         assert row == {"id": runner.BACKEND_ID, "name": runner.DISPLAY_NAME,
@@ -356,6 +356,29 @@ def test_connecting_an_agent_does_not_select_it(qapp):
     assert panel._rows[CODEX].word.text() == "connected"
     assert panel._rows[CODEX].property("selected") is False
     assert panel._rows[CLAUDE].property("selected") is True
+
+
+def test_hermes_row_follows_install_and_connect_status(qapp):
+    """Hermes is a selectable backend with the same status dots as Codex."""
+    from windows.ai_chat_ui import BACKENDS
+
+    assert any(b["id"] == "hermes" and b["name"] == "Hermes" for b in BACKENDS)
+
+    connected = {"hermes": {"installed": True, "registered": True,
+                            "version": "Hermes Agent v0.15.2 (2026.5.29.2)\nProject: /x"}}
+    panel = _panel(FakeChat(connected, active="hermes"))
+    assert panel._rows["hermes"].word.text() == "connected"
+    assert "v0.15.2" in panel._rows["hermes"].desc.text()
+    assert "chat panel" in panel.footer.text(), "Hermes always offers CLI default"
+
+    missing = {"hermes": {"installed": False, "version": None, "registered": False}}
+    panel = _panel(FakeChat(missing))
+    assert panel._rows["hermes"].word.text() == "not installed"
+    assert "hermes" in panel._rows["hermes"].desc.text()
+
+    unregistered = {"hermes": {"installed": True, "version": "0.15.2", "registered": False}}
+    panel = _panel(FakeChat(unregistered))
+    assert panel._rows["hermes"].word.text() == "not connected"
 
 
 def test_selected_row_tracks_the_active_backend(qapp):
