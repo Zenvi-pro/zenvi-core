@@ -7,8 +7,8 @@ import logging
 log = logging.getLogger("windows.index_panel")
 
 try:
-    from PyQt5.QtCore import Qt
-    from PyQt5.QtWidgets import (
+    from qt_api import Qt
+    from qt_api import (
         QDockWidget,
         QHBoxLayout,
         QLabel,
