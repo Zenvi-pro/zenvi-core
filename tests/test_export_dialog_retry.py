@@ -84,6 +84,7 @@ def _dialog(export_mod):
         _cleanup_export_resources = Export._cleanup_export_resources
         _end_export_attempt = Export._end_export_attempt
         _reset_for_retry = Export._reset_for_retry
+        _complete_export_success = Export._complete_export_success
 
     dlg = _Dialog()
     dlg._headless = False
