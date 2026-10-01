@@ -879,9 +879,9 @@ def remove_words(
                 "Error: transcriptGeneration must be an integer.",
             ).to_json()
         if want != int(record.generation):
-            # matches / fillerPreset recompute indices from the live record —
-            # refuse only when the agent pinned wordIndices to a stale ASR.
-            if wordIndices is not None and matches is None and not fillerPreset:
+            # matches / fillerPreset recompute indices from the live record.
+            # wordIndices win over both below, so stale ones always refuse.
+            if wordIndices is not None:
                 return ToolReceipt.refused(
                     "remove_words_tool",
                     "Error: transcriptGeneration mismatch — call get_transcript_tool again.",
