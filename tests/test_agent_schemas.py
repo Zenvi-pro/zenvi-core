@@ -280,3 +280,11 @@ def test_apply_transition_accepts_the_backend_call():
         "duration": "1.0", "placement": "between",
     }) is None
     assert validate_args("apply_transition_tool", {"transition": "fade"}) is not None
+
+
+def test_import_files_accepts_a_list_of_paths():
+    """The handler takes a list; the schema refused it before the handler ran."""
+    from classes.agent_tools.schema import normalize_args
+    args = {"paths": ["/media/a.mp4", "/media/b.mp4"]}
+    assert validate_args("import_files_tool", normalize_args("import_files_tool", args)) is None
+    assert validate_args("import_files_tool", {"paths": "/media/a.mp4,/media/b.mp4"}) is None

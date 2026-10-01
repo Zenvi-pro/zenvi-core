@@ -146,3 +146,15 @@ def test_parameter_refusals(blender, args, needle):
     out = blender.call("add_animated_title_tool", **args)
     assert out.startswith("Error") and needle in out, out
     assert blender.undo_steps_since_mark() == 0
+
+
+def test_a_silent_blender_is_stopped_at_the_timeout(tmp_path):
+    """Blender that stalls without printing a line must not outlive timeout_seconds."""
+    import time
+    stalled = tmp_path / "blender-stalled"
+    stalled.write_text("#!%s\nimport time\ntime.sleep(60)\n" % sys.executable)
+    stalled.chmod(stalled.stat().st_mode | stat.S_IEXEC)
+    began = time.monotonic()
+    with pytest.raises(TimeoutError):
+        blender_titles.render(str(stalled), str(tmp_path / "t.blend"), str(tmp_path / "t.py"), timeout=1)
+    assert time.monotonic() - began < 20

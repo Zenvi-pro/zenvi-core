@@ -245,13 +245,10 @@ class FileProperties(QDialog):
             self.txtFileName.setText(os.path.basename(new_path))
             reader_data = json.loads(clip.Reader().Json())
             media_type = "video" if seq_info else get_media_type(reader_data)
-            # Keep tags, AI metadata, sub-clip in/out and the proxy link of the file
-            self.file.data = project_files.relinked_file_data(self.file.data, reader_data, media_type)
-            fingerprint = media_fingerprint.fingerprint(new_path)
-            if fingerprint:
-                self.file.data["fingerprint"] = fingerprint
-            else:
-                self.file.data.pop("fingerprint", None)
+            # Keep tags, AI metadata and sub-clip in/out of the file (and its
+            # optimized preview, when the new media is the same content)
+            self.file.data = project_files.relinked_file_data(
+                self.file.data, reader_data, media_type, media_fingerprint.fingerprint(new_path))
 
             # Initialize start/end textboxes
             self.init_start_end_textboxes(self.file.data)

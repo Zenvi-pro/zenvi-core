@@ -96,8 +96,17 @@ def resolve_preset(name: str) -> dict:
                     "'TikTok', 'YouTube Shorts', 'GIF', 'MP3', 'WEBM', 'ProRes' (list_export_presets_tool lists all)")
 
 
+# Render threads that outlived their timeout, kept until they stop: a QThread
+# destroyed while it still runs aborts the app.
+_ABANDONED_JOBS: list = []
+
+
 def run_on_qthread(func, timeout_seconds: float = 6 * 60 * 60):
     """Run *func()* on a fresh QThread and wait for it; returns its result.
+
+    On a timeout the thread is asked to stop (a frame loop sees it through
+    render_interrupted()) and given a moment to, so the caller does not start
+    the next render over one that is still writing.
 
     Frame rendering (libopenshot readers, SVG/text through Qt) must not run on a
     plain ``threading.Thread`` such as the MCP worker: Qt's font cache mutex and
@@ -121,10 +130,26 @@ def run_on_qthread(func, timeout_seconds: float = 6 * 60 * 60):
     job = _Job()
     job.start()
     if not job.wait(int(timeout_seconds * 1000)):
+        job.requestInterruption()
+        if not job.wait(_INTERRUPT_GRACE_MS):
+            _ABANDONED_JOBS.append(job)
+            job.finished.connect(lambda: _ABANDONED_JOBS.remove(job) if job in _ABANDONED_JOBS else None)
         raise ToolError(f"the render did not finish within {int(timeout_seconds)} s")
     if job.error is not None:
         raise job.error
     return job.result
+
+
+_INTERRUPT_GRACE_MS = 10000
+
+
+def render_interrupted() -> bool:
+    """True on a run_on_qthread thread whose caller gave up waiting."""
+    QThread = th().QThread
+    try:
+        return QThread is not None and bool(QThread.currentThread().isInterruptionRequested())
+    except Exception:
+        return False
 
 
 def _codec_ok(codec: str) -> Optional[bool]:
@@ -375,6 +400,9 @@ def build_export_plan(preset="", quality="", export_type="auto", range_mode="", 
             if (container or "").strip():
                 out = f"{os.path.splitext(out)[0]}.{ext}"
             else:
+                if current_ext == "gif" and etype != "audio_only" and vcodec != "gif":
+                    raise ToolError(f"a .gif file needs the GIF preset ('{p['title']}' encodes {vcodec}): "
+                                    "pass preset='GIF', or another file extension")
                 vformat = ext = current_ext
     aspect_mismatch = abs(w / float(h) - project_rec["width"] / float(project_rec["height"])) > 0.01
     if aspect_mismatch and not any("re-frames every clip" in n for n in notes):
@@ -953,6 +981,8 @@ def export_files_to_folder(file_ids, folder=""):
                             reader = openshot.Clip(clip.data.get("path"))
                             reader.Open()
                             for frame in range(start_frame, end_frame + 1):
+                                if render_interrupted():
+                                    raise ToolError("the render was stopped")
                                 writer.WriteFrame(reader.GetFrame(frame))
                         except Exception:
                             if os.path.exists(out):

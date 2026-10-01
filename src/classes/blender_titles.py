@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
 from typing import Callable, List, Optional, Tuple
 
@@ -251,8 +253,27 @@ def render(command: str, blend_path: str, script_path: str, timeout: float,
     deadline = time.monotonic() + float(timeout)
     stdout = proc.stdout
     assert stdout is not None  # stdout=PIPE
-    try:
+    # readline() blocks while Blender prints nothing, so a reader thread feeds a
+    # queue and this loop checks the deadline whether or not a line arrived.
+    output: queue.Queue = queue.Queue()
+
+    def _read():
         for raw in iter(stdout.readline, b""):
+            output.put(raw)
+        output.put(None)
+
+    threading.Thread(target=_read, daemon=True).start()
+    try:
+        while True:
+            if time.monotonic() > deadline or (cancelled and cancelled()):
+                _stop(proc)
+                raise TimeoutError("Blender did not finish within %ss" % int(timeout))
+            try:
+                raw = output.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            if raw is None:
+                break
             line = raw.decode("utf-8", errors="ignore").rstrip()
             if line:
                 lines.append(line)
@@ -260,9 +281,6 @@ def render(command: str, blend_path: str, script_path: str, timeout: float,
                     del lines[:100]
             if SAVED_RE.search(line):
                 saved += 1
-            if time.monotonic() > deadline or (cancelled and cancelled()):
-                _stop(proc)
-                raise TimeoutError("Blender did not finish within %ss" % int(timeout))
         proc.wait(timeout=max(1.0, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
         _stop(proc)

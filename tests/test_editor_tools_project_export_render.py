@@ -149,6 +149,10 @@ def test_ranges_and_paths(studio):
     assert (plan["range"], plan["start_frame"], plan["end_frame"]) == ("custom", 61, 210)
     assert plan["path"] == os.path.expanduser("~/zenvi-test/reel.mp4")
     assert build_export_plan(output_path=str(studio.out_dir / "a.mov"))["vformat"] == "mov"
+    # A .gif path with an MP4 preset would hand the GIF muxer H.264/AAC.
+    with pytest.raises(ToolError, match="preset='GIF'"):
+        build_export_plan(output_path=str(studio.out_dir / "a.gif"))
+    assert build_export_plan(preset="GIF", output_path=str(studio.out_dir / "a.gif"))["vcodec"] == "gif"
     with pytest.raises(ToolError, match="before it starts"):
         build_export_plan(start=5, end=3)
     with pytest.raises(ToolError, match="after the last clip"):
@@ -320,3 +324,34 @@ def test_a_second_export_while_one_renders_does_nothing(editor):
         per._EXPORT_LOCK.release()
     assert out.startswith("Error") and "already running" in out and "did nothing" in out, out
     assert editor.undo_steps_since_mark() == 0
+
+
+def test_a_timed_out_render_thread_is_stopped_and_kept_alive(monkeypatch):
+    """A QThread destroyed while it still runs aborts the app, and a render left
+    writing would overlap the next file's."""
+    from classes.editor_tools import project_export_render as per
+    from classes.editor_tools._base import ToolError
+
+    made = []
+
+    class StuckThread:
+        def __init__(self):
+            self.interrupted = False
+            self.finished = MagicMock()
+            made.append(self)
+
+        def start(self):
+            pass
+
+        def wait(self, _ms):
+            return False
+
+        def requestInterruption(self):
+            self.interrupted = True
+
+    monkeypatch.setattr(per, "th", lambda: types.SimpleNamespace(QThread=StuckThread))
+    monkeypatch.setattr(per, "_ABANDONED_JOBS", [], raising=False)
+    with pytest.raises(ToolError, match="did not finish"):
+        per.run_on_qthread(lambda: None, timeout_seconds=0.01)
+    assert made[0].interrupted
+    assert per._ABANDONED_JOBS == [made[0]]

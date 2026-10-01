@@ -475,7 +475,8 @@ def _relinked(data, media_path, details):
     else:
         reader = _probe_reader(probe_path)
     media_type = "video" if details else get_media_type(reader)
-    new = project_files.relinked_file_data(data, reader, media_type)
+    fp = fingerprint(media_path) if not details else None
+    new = project_files.relinked_file_data(data, reader, media_type, fp)
     if details:
         # The sequence reader counts 25 fps; keep the frame rate the file had.
         num, den = _fps_parts(data)
@@ -485,11 +486,6 @@ def _relinked(data, media_path, details):
         if start is not None and end is not None:
             new["start"], new["end"] = start, min(end, new["duration"])
     old_fp = (data.get("fingerprint") or {}).get("sha256") if isinstance(data.get("fingerprint"), dict) else None
-    fp = fingerprint(media_path) if not details else None
-    if fp:
-        new["fingerprint"] = fp
-    else:
-        new.pop("fingerprint", None)
     same = None if not (old_fp and fp) else (old_fp == fp.get("sha256"))
     return new, same
 

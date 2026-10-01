@@ -62,10 +62,24 @@ def test_relinked_file_data_keeps_zenvi_keys_and_clamps():
     reader = {"path": "/new/a.mp4", "duration": 8.0, "width": 1920, "id": "READER"}
     new = pf.relinked_file_data(old, reader, "video")
     assert new["id"] == "F1" and new["path"] == "/new/a.mp4" and new["name"] == "Intro"
-    assert new["tags"] == "b-roll" and new["ai_metadata"] == {"analyzed": True} and new["proxy_reader"]
+    assert new["tags"] == "b-roll" and new["ai_metadata"] == {"analyzed": True}
     assert new["end"] == 8.0 and new["start"] == 2.0 and new["media_type"] == "video"
     gone = pf.relinked_file_data(dict(old, start=8.5, end=9.5), reader, "video")
     assert "start" not in gone and "end" not in gone
+
+
+def test_relink_keeps_the_optimized_preview_only_for_the_same_media():
+    """An optimized preview shows the media it was made from: relinking to other
+    footage must not keep playing the old one."""
+    old = {"id": "F1", "path": "/old/a.mp4", "duration": 10.0, "proxy_reader": {"path": "/p.mp4"},
+           "fingerprint": {"sha256": "aaa"}}
+    reader = {"path": "/new/a.mp4", "duration": 10.0}
+    moved = pf.relinked_file_data(old, reader, "video", fingerprint={"sha256": "aaa"})
+    assert moved["proxy_reader"] == {"path": "/p.mp4"} and moved["fingerprint"] == {"sha256": "aaa"}
+    other = pf.relinked_file_data(old, reader, "video", fingerprint={"sha256": "bbb"})
+    assert "proxy_reader" not in other and other["fingerprint"] == {"sha256": "bbb"}
+    unknown = pf.relinked_file_data(old, reader, "video")
+    assert "proxy_reader" not in unknown and "fingerprint" not in unknown
 
 
 def test_save_file_and_sync_clips_updates_clips_and_deletes_removed_keys(editor):

@@ -155,3 +155,32 @@ def test_mcp_live_call_returns_image_blocks():
     assert any(getattr(c, "type", None) == "image" for c in content)
     img = next(c for c in content if getattr(c, "type", None) == "image")
     assert base64.b64decode(img.data) == jpeg
+
+
+def test_read_only_calls_do_not_scan_the_timeline(monkeypatch):
+    """The before/after clip snapshot only feeds a mutation receipt."""
+    from classes.agent_tools import execute as ex
+
+    scans = []
+    monkeypatch.setattr(ex, "_snapshot_clips", lambda app: scans.append(1) or [])
+    handlers = {"list_files_tool": lambda **_kw: "0 files", "zoom_in_tool": lambda **_kw: "Zoomed in"}
+    ex.bind_runtime(
+        handlers=handlers,
+        read_only=frozenset({"list_files_tool"}),
+        background_safe=frozenset(),
+        ungrouped=frozenset({"list_files_tool"}),
+        main_thread_timeouts={},
+        get_app=lambda: types.SimpleNamespace(
+            updates=types.SimpleNamespace(actionHistory=[]),
+            project={},
+            thread=lambda: None,
+        ),
+        run_on_main_thread=lambda fn, timeout=30: fn(),
+        atomic=lambda app, fn: fn,
+        coerce_steps=lambda x: 1,
+        qthread=None,
+    )
+    ex.execute_tool("list_files_tool", {})
+    assert scans == []
+    ex.execute_tool("zoom_in_tool", {})
+    assert scans == [1]

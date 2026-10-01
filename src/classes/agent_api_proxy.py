@@ -287,7 +287,9 @@ def wait_for_editor_job_tool(job_id: str = "", timeout_seconds: int = 60) -> str
         return ("status=error job_id=%s ran_for=%.1fs\nThe call failed: %s"
                 % (jid, outcome["seconds"], outcome["error"]))
     text = "" if outcome["result"] is None else str(outcome["result"])
-    status = "error" if text.startswith("Error") else "done"
+    from classes.agent_tools.receipt import is_error_result
+    # A failed edit answers a JSON receipt, not only a string starting with Error.
+    status = "error" if text and is_error_result(text) else "done"
     return ("status=%s job_id=%s ran_for=%.1fs\n%s"
             % (status, jid, outcome["seconds"],
                text or "The call finished. Check get_timeline_state_tool to see "
@@ -417,7 +419,8 @@ def capture_editor_screenshot_tool(path: str = "", target: str = "window",
     Use it to review an edit the way a person would -- does the timeline show
     the new clip, did the preview change, what do the properties say. Works
     offscreen too (Qt renders the widgets itself; no screen-recording
-    permission involved). Returns the saved path and pixel size.
+    permission involved). path must be a new .png file: an existing file is
+    never replaced. Returns the saved path and pixel size.
     """
     import time
 
@@ -430,6 +433,11 @@ def capture_editor_screenshot_tool(path: str = "", target: str = "window",
     out = (path or "").strip() or os.path.join(
         info.USER_PATH, "screenshots", "editor-%s-%d.png" % (key, int(time.time() * 1000)))
     out = os.path.abspath(os.path.expanduser(out))
+    # The path comes from the agent: never let it replace a project or media file.
+    if not out.lower().endswith(".png"):
+        return "Error: path must end in .png."
+    if os.path.exists(out):
+        return "Error: %s already exists; pass a new path." % out
     try:
         width_cap = max(0, int(max_width))
     except (TypeError, ValueError):
@@ -448,16 +456,21 @@ def capture_editor_screenshot_tool(path: str = "", target: str = "window",
         if width_cap and pixmap.width() > width_cap:
             from qt_api import Qt
             pixmap = pixmap.scaledToWidth(width_cap, Qt.SmoothTransformation)
-        os.makedirs(os.path.dirname(out), exist_ok=True)
-        if not pixmap.save(out, "PNG"):
-            return "Error: could not write %s." % out
-        return "Saved %s screenshot: %s (%dx%d)" % (key, out, pixmap.width(), pixmap.height())
+        # A QImage can be written from any thread; the file I/O stays off this one.
+        return pixmap.toImage()
 
     try:
-        result = _run_on_main_thread(_grab, timeout=20)
+        image = _run_on_main_thread(_grab, timeout=20)
+        if image is None:
+            return "Error: screenshot failed: no result."
+        if isinstance(image, str):
+            return image
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        if not image.save(out, "PNG"):
+            return "Error: could not write %s." % out
     except Exception as exc:
         return "Error: screenshot failed: %s" % exc
-    return str(result) if result is not None else "Error: screenshot failed: no result."
+    return "Saved %s screenshot: %s (%dx%d)" % (key, out, image.width(), image.height())
 
 
 # Tools the in-app MCP server exposes on top of the editor tools. These are for

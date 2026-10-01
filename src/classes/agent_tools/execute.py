@@ -144,7 +144,8 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
     def _invoke() -> ToolOutput:
         app = _GET_APP()
         before_len = _history_len(app)
-        before_clips = _snapshot_clips(app)
+        # The before/after scan only feeds a mutation receipt: read-only calls skip it.
+        before_clips = None if tool_name in _READ_ONLY else _snapshot_clips(app)
         fps = Fr(30, 1)
         try:
             from classes.clip_utils import project_fps_fraction

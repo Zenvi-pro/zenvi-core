@@ -175,16 +175,27 @@ def set_in_out_frames(file_data, start_frame, end_frame):
     file_data["end"] = int(end_frame) / fps_float
 
 
-def relinked_file_data(old_data, reader_data, media_type):
+def relinked_file_data(old_data, reader_data, media_type, fingerprint=None):
     """The file record after pointing it at new media.
 
     The reader's keys (path, duration, size, fps, codecs...) replace the old ones;
-    everything Zenvi keeps on a file (name, tags, AI metadata, sub-clip in/out,
-    proxy link) is kept. In/out are clamped to the new media's duration.
+    everything Zenvi keeps on a file (name, tags, AI metadata, sub-clip in/out)
+    is kept. In/out are clamped to the new media's duration. *fingerprint* is the
+    new media's (classes.media_fingerprint), or None when it has none: the
+    optimized preview is kept only when it proves the media is the same content,
+    since preview playback would otherwise keep showing the old footage.
     """
     data = copy.deepcopy(old_data or {})
     data.update(copy.deepcopy(reader_data or {}))
     data["id"] = (old_data or {}).get("id", data.get("id"))
+    old_fp = (old_data or {}).get("fingerprint")
+    old_sha = old_fp.get("sha256") if isinstance(old_fp, dict) else None
+    if fingerprint:
+        data["fingerprint"] = fingerprint
+    else:
+        data.pop("fingerprint", None)
+    if not (old_sha and fingerprint and old_sha == fingerprint.get("sha256")):
+        data.pop("proxy_reader", None)
     if media_type:
         data["media_type"] = media_type
     duration = float(data.get("duration") or 0.0)
