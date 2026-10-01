@@ -2,6 +2,7 @@
 
 import os
 import sys
+import types
 from unittest.mock import MagicMock, patch
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -35,6 +36,13 @@ def _clip(clip_id="c1", time=None):
     return c
 
 
+def _query_module(clip):
+    """A classes.query whose Clip.get finds *clip* (other tests stub the real one)."""
+    module = types.ModuleType("classes.query")
+    module.Clip = types.SimpleNamespace(get=lambda **_k: clip)
+    return module
+
+
 def _run(clip, **kwargs):
     """reverse_clip with the clip resolved and the GUI-thread hop run inline."""
     timeline = MagicMock()
@@ -45,7 +53,7 @@ def _run(clip, **kwargs):
                          return_value=ResolveResult(ok=True, clip=clip)), \
             patch.object(tool_handlers, "_run_on_main_thread",
                          side_effect=lambda fn, *a, **k: fn()), \
-            patch("classes.query.Clip.get", return_value=clip):
+            patch.dict(sys.modules, {"classes.query": _query_module(clip)}):
         out = tool_handlers.reverse_clip(timeline_clip_id=clip.id, **kwargs)
     return out, timeline
 
