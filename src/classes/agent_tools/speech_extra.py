@@ -283,6 +283,7 @@ def add_captions(
             duration_seconds=str(dur),
             track=track,
             file_name=f"{caption_group}_{len(placed)}.svg",
+            raster=True,
         )
         pr = parse_receipt(result)
         if pr.get("status") in ("error", "refused"):

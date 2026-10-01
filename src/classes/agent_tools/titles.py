@@ -55,6 +55,31 @@ def _set_svg_text(xmldoc, text: str) -> None:
         node.appendChild(xmldoc.createTextNode(text if same_line else ""))
 
 
+def _rasterize_svg(svg_path: str, png_path: str, width: int, height: int) -> None:
+    """Render a title SVG to a transparent PNG (call on the GUI thread).
+
+    libopenshot renders SVG titles on its own, non-Qt threads. The first time
+    one of those threads lays out a new font, Qt warns from inside its font
+    database lock, PyQt's Python message handler then waits for the GIL, and
+    a GUI thread holding the GIL that needs a font deadlocks the app. A PNG
+    needs no fonts when libopenshot draws it.
+    """
+    from qt_api import QImage, QPainter, QSvgRenderer, Qt
+
+    renderer = QSvgRenderer(svg_path)
+    if not renderer.isValid():
+        raise ValueError(f"invalid title SVG: {svg_path}")
+    image = QImage(int(width), int(height), QImage.Format_ARGB32_Premultiplied)
+    image.fill(Qt.transparent)
+    painter = QPainter(image)
+    try:
+        renderer.render(painter)
+    finally:
+        painter.end()
+    if not image.save(png_path, "PNG"):
+        raise OSError(f"could not write {png_path}")
+
+
 def add_title(
     text: str = "",
     template: str = "",
@@ -129,17 +154,31 @@ def add_title(
     app = _get_app()
     file_id_box = [None]
     error_box = [None]
+    # Internal (add_captions): place a PNG render instead of the SVG, so
+    # libopenshot never lays out caption text on its own threads.
+    raster = bool(_kw.get("raster"))
+    media_path = os.path.splitext(dest)[0] + ".png" if raster else dest
 
     def _import():
         try:
             from classes.query import File
-            existing = File.get(path=dest)
+            existing = File.get(path=media_path)
             if existing:
                 file_id_box[0] = existing.id
                 return
+            if raster:
+                project = app.project
+                _rasterize_svg(
+                    dest, media_path,
+                    int(project.get("width") or 1920), int(project.get("height") or 1080),
+                )
+                os.remove(dest)
             win = app.window
-            win.files_model.add_files([dest], quiet=True, prevent_image_seq=True)
-            added = File.get(path=dest)
+            # Generated text: nothing for cloud indexing to learn, and it bills.
+            win.files_model.add_files(
+                [media_path], quiet=True, prevent_image_seq=True, skip_indexing=True,
+            )
+            added = File.get(path=media_path)
             file_id_box[0] = added.id if added else None
         except Exception as exc:
             error_box[0] = str(exc)
@@ -154,7 +193,7 @@ def add_title(
     if not file_id_box[0]:
         return ToolReceipt.error(
             "add_title_tool",
-            f"Error: could not import title into media bin: {dest}",
+            f"Error: could not import title into media bin: {media_path}",
         ).to_json()
 
     place = add_clip_to_timeline(
@@ -174,7 +213,7 @@ def add_title(
         f"at {pos:.3f}s for {dur:.3f}s. {place}",
         data={
             "text": body,
-            "path": dest,
+            "path": media_path,
             "file_id": file_id_box[0],
             "position_seconds": pos,
             "duration_seconds": dur,
