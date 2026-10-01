@@ -99,7 +99,13 @@ class ZenviBackendClient:
 
     @property
     def session(self):
-        """Lazy-create a requests.Session."""
+        """Lazy-create a requests.Session and keep its bearer token current.
+
+        Paid backend routes (/search, /generation/*, /research/*) reject any
+        request without ``Authorization: Bearer <jwt>``. The token is re-read
+        on every access so a refreshed or cleared login is picked up without
+        rebuilding the session.
+        """
         if self._session is None:
             try:
                 import requests
@@ -112,7 +118,16 @@ class ZenviBackendClient:
             except ImportError:
                 log.error("requests library is required for ZenviBackendClient")
                 raise
+        self._apply_bearer(self._session)
         return self._session
+
+    def _apply_bearer(self, session) -> None:
+        """Set or clear the Authorization header from the current login."""
+        token = self._auth_token()
+        if token:
+            session.headers["Authorization"] = f"Bearer {token}"
+        else:
+            session.headers.pop("Authorization", None)
 
     def auth_token(self) -> Optional[str]:
         """Current user JWT for backend usage/credits tracking."""
@@ -678,8 +693,9 @@ class ZenviBackendClient:
         video_id: Optional[str] = None,
         page_limit: Optional[int] = None,
         media_type: Optional[str] = None,
+        look_for: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Search for clips matching a query."""
+        """Search for clips matching a query. look_for: on_screen | spoken | None (both)."""
         try:
             effective_top_k = top_k
             if page_limit and page_limit > effective_top_k:
@@ -698,6 +714,8 @@ class ZenviBackendClient:
                 payload["page_limit"] = page_limit
             if media_type:
                 payload["media_type"] = media_type
+            if look_for:
+                payload["look_for"] = look_for
             r = self.session.post(f"{self.api_url}/search", json=payload, timeout=30)
             r.raise_for_status()
             return r.json()
@@ -760,6 +778,7 @@ class ZenviBackendClient:
             s.verify = False
             import urllib3
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        self._apply_bearer(s)
         return s
 
     def start_direct_indexing_job(

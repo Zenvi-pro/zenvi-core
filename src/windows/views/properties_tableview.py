@@ -50,7 +50,6 @@ from classes.logger import log
 from classes.app import get_app
 from classes import info
 from classes.query import Clip, Effect, Transition, File
-from classes.thumbnail import GetThumbPath
 
 from windows.models.properties_model import PropertiesModel
 from windows.color_picker import ColorPicker
@@ -2157,6 +2156,13 @@ class PropertiesTableView(QTableView):
         dialog.move(x, y)
 
 
+def _set_action_thumbnail(action, image):
+    """Swap a clip thumbnail from the thumbnail worker into a menu action."""
+    if isdeleted(action) or image is None or image.isNull():
+        return
+    action.setIcon(QIcon(QPixmap.fromImage(image)))
+
+
 class SelectionLabel(QFrame):
     """ The label to display selections """
 
@@ -2196,6 +2202,7 @@ class SelectionLabel(QFrame):
 
         # Add selections to menu, and switch to "wait"
         # cursor if things take too long
+        files_model = get_app().window.files_model
         cursor_set = False
         count = 0
         try:
@@ -2224,12 +2231,15 @@ class SelectionLabel(QFrame):
 
                     # Generate thumbnail for file (if needed)
                     media_type = file.data.get("media_type")
+                    thumbnail_frame = None
                     if media_type in ["video", "image"]:
-                        # Video thumbnail
+                        # Video thumbnail at the clip's start: the Project Files
+                        # icon first, then the exact frame from the thumbnail
+                        # worker (asking the server here blocks while it decodes)
                         fps = file.data["fps"]
                         fps_float = float(fps["num"]) / float(fps["den"])
                         thumbnail_frame = round(float(clip.data['start']) * fps_float) + 1
-                        thumb_icon = QIcon(GetThumbPath(file.id, thumbnail_frame))
+                        thumb_icon = files_model.thumbnail_icon(file.id) or QIcon()
                     else:
                         # Audio thumbnail
                         thumb_icon = QIcon(os.path.join(info.PATH, "images", "AudioThumbnail.svg"))
@@ -2237,6 +2247,10 @@ class SelectionLabel(QFrame):
                     action = menu.addAction(thumb_icon, item_name)
                     action.setData({'item_id': item_id, 'item_type': 'clip'})
                     action.triggered.connect(self.Action_Triggered)
+                    if thumbnail_frame is not None:
+                        files_model.request_thumbnail(
+                            "selection-menu:%s" % item_id, file.id, thumbnail_frame,
+                            on_ready=functools.partial(_set_action_thumbnail, action))
 
                     for effect_info in clip.data.get('effects', []):
                         effect = Effect.get(id=effect_info.get('id'))
