@@ -219,6 +219,13 @@ class AgentSelectorButton(QToolButton):
             chat.set_active_backend(backend_id)
         except Exception:
             log.error("Failed to switch agent backend to %s", backend_id, exc_info=True)
+        # Picking an agent means talking to it: bring the chat back if it was
+        # closed (its dock's ×, or the × on its last tab).
+        try:
+            chat.show()
+            chat.raise_()
+        except Exception:
+            log.debug("could not raise the chat dock", exc_info=True)
         # set_active_backend early-returns without notifying when the tab is
         # already on this backend, so re-sync to keep the label honest.
         self.sync_from_chat()
