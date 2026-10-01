@@ -39,6 +39,19 @@ load_zenvi_dotenv()
 _DEFAULT_BACKEND_URL = "https://api.zenvi.pro"
 
 
+def _refresh_credits_after_backend_billing() -> None:
+    """Repaint the credits badge after a request the backend bills itself.
+
+    /generation/video and /generation/morph deduct (or refund) before they
+    answer, so the balance is final by the time the request returns.
+    """
+    try:
+        from classes.credits_client import credits
+        credits.refresh_balance()
+    except Exception as exc:
+        log.debug("credits refresh after a backend-billed request failed: %s", exc)
+
+
 class ZenviBackendClient:
     """HTTP/WebSocket client for the Zenvi backend API."""
 
@@ -98,7 +111,13 @@ class ZenviBackendClient:
 
     @property
     def session(self):
-        """Lazy-create a requests.Session."""
+        """Lazy-create a requests.Session and keep its bearer token current.
+
+        Paid backend routes (/search, /generation/*, /research/*) reject any
+        request without ``Authorization: Bearer <jwt>``. The token is re-read
+        on every access so a refreshed or cleared login is picked up without
+        rebuilding the session.
+        """
         if self._session is None:
             try:
                 import requests
@@ -111,7 +130,16 @@ class ZenviBackendClient:
             except ImportError:
                 log.error("requests library is required for ZenviBackendClient")
                 raise
+        self._apply_bearer(self._session)
         return self._session
+
+    def _apply_bearer(self, session) -> None:
+        """Set or clear the Authorization header from the current login."""
+        token = self._auth_token()
+        if token:
+            session.headers["Authorization"] = f"Bearer {token}"
+        else:
+            session.headers.pop("Authorization", None)
 
     def auth_token(self) -> Optional[str]:
         """Current user JWT for backend usage/credits tracking."""
@@ -293,6 +321,44 @@ class ZenviBackendClient:
             log.error("Failed to list models: %s", e)
             return []
 
+    def fetch_model_catalog(self) -> Dict[str, Any]:
+        """The whole ``GET /models`` payload: ``models`` plus ``default_model_id``.
+
+        One round trip for callers that want both, instead of ``list_models``
+        followed by ``get_default_model_id`` hitting the endpoint twice.
+        Returns ``{}`` on any failure.
+        """
+        try:
+            r = self.session.get(f"{self.api_url}/models", timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            log.error("Failed to fetch model catalog: %s", e)
+            return {}
+
+    def list_cli_models(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Model-picker lineups for the CLI agent backends, keyed by backend id
+        (``claude_code``, ``codex``), from ``GET /models/cli``.
+
+        Built by the backend from each provider's live model list, so a new
+        release reaches the picker without a desktop update. Entries follow
+        the picker contract (id/name/featured/rank/tags/default) with bare
+        ids ready for the CLI's ``--model`` flag. ``{}`` on any failure, and
+        an older backend without the route answers the same way; callers keep
+        their built-in list in both cases.
+        """
+        try:
+            r = self.session.get(f"{self.api_url}/models/cli", timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            if not isinstance(data, dict):
+                return {}
+            return {k: v for k, v in data.items() if isinstance(v, list)}
+        except Exception as e:
+            log.debug("CLI model lineups unavailable: %s", e)
+            return {}
+
     def get_default_model_id(self) -> str:
         """Get the default model ID."""
         try:
@@ -353,6 +419,7 @@ class ZenviBackendClient:
         action: Optional[str] = None,
         plan_id: Optional[str] = None,
         on_plan_event: Optional[Callable] = None,
+        images: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[str]:
         """
         Send a chat message via WebSocket with tool delegation support.
@@ -360,6 +427,9 @@ class ZenviBackendClient:
         Each incoming ``tool_call`` is dispatched to its own worker thread so
         the agent can fan out N concurrent tool calls and we ack them as soon
         as each one finishes.  The recv loop never blocks on tool execution.
+
+        *images* (optional) are vision parts for the current turn only
+        (``[{name, mime_type, image_base64, ...}]``).
         """
         try:
             import websocket
@@ -404,6 +474,8 @@ class ZenviBackendClient:
                 payload_data["action"] = action
             if plan_id:
                 payload_data["plan_id"] = plan_id
+            if images:
+                payload_data["images"] = list(images)
             _ws_send({"type": "user_message", "data": payload_data})
 
             # Track outstanding tool worker threads so we can drain them
@@ -442,13 +514,20 @@ class ZenviBackendClient:
                         # reported to the user as done.
                         result = f"Error: tool execution failed: {exc}"
                     text = str(result) if result is not None else ""
-                    if text and not text.startswith("Error"):
+                    from classes.agent_tools.receipt import is_error_result, parse_receipt
+                    if text and not is_error_result(text):
                         last_tool_result_holder[0] = text
+                    # Backend classifies failures by an Error: prefix on `result`
+                    # (no separate error field). Success stays full receipt JSON.
+                    wire = text
+                    receipt = parse_receipt(text)
+                    if receipt and receipt.get("status") in ("error", "refused"):
+                        wire = str(receipt.get("summary") or text)
                     _ws_send({
                         "type": "tool_result",
                         "data": {
                             "call_id": call_data.get("call_id", ""),
-                            "result": text,
+                            "result": wire,
                         },
                     })
 
@@ -628,8 +707,9 @@ class ZenviBackendClient:
         video_id: Optional[str] = None,
         page_limit: Optional[int] = None,
         media_type: Optional[str] = None,
+        look_for: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Search for clips matching a query."""
+        """Search for clips matching a query. look_for: on_screen | spoken | None (both)."""
         try:
             effective_top_k = top_k
             if page_limit and page_limit > effective_top_k:
@@ -648,6 +728,8 @@ class ZenviBackendClient:
                 payload["page_limit"] = page_limit
             if media_type:
                 payload["media_type"] = media_type
+            if look_for:
+                payload["look_for"] = look_for
             r = self.session.post(f"{self.api_url}/search", json=payload, timeout=30)
             r.raise_for_status()
             return r.json()
@@ -710,6 +792,7 @@ class ZenviBackendClient:
             s.verify = False
             import urllib3
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        self._apply_bearer(s)
         return s
 
     def start_direct_indexing_job(
@@ -1024,6 +1107,8 @@ class ZenviBackendClient:
         except Exception as e:
             log.error("Video generation failed: %s", e)
             return {"error": str(e)}
+        finally:
+            _refresh_credits_after_backend_billing()
 
     def generate_tts(
         self,
@@ -1063,6 +1148,8 @@ class ZenviBackendClient:
         except Exception as e:
             log.error("Morph video generation failed: %s", e)
             return {"error": str(e)}
+        finally:
+            _refresh_credits_after_backend_billing()
 
     # ------------------------------------------------------------------
     # Indexing & Pegasus summarize (for files_model)

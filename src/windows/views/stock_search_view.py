@@ -15,9 +15,9 @@ download workers, result cards and async image loaders are reused as-is from
 
 from typing import Dict
 
-from PyQt5.QtCore import Qt, QSize, QThread, QThreadPool, QEvent, pyqtSlot
-from PyQt5.QtGui import QPixmap, QCursor
-from PyQt5.QtWidgets import (
+from qt_api import Qt, QSize, QThread, QThreadPool, QEvent, pyqtSlot
+from qt_api import QPixmap, QCursor
+from qt_api import (
     QWidget, QVBoxLayout, QScrollArea, QGridLayout, QLabel, QApplication,
 )
 

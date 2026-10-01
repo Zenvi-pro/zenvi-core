@@ -27,13 +27,12 @@
 
 import os
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QStandardItem, QStandardItemModel, QIcon
+from qt_api import Qt
+from qt_api import QStandardItem, QStandardItemModel, QIcon
 
 from classes import info
 from classes.logger import log
 from classes.app import get_app
-from classes.thumbnail import GetThumbPath
 
 
 class TimelineModel():
@@ -63,17 +62,10 @@ class TimelineModel():
             path, filename = os.path.split(file.data["path"])
             media_type = file.data.get("media_type")
 
-            # Generate thumbnail for file (if needed)
             if media_type in ["video", "image"]:
-                # Check for start and end attributes (optional)
-                thumbnail_frame = 1
-                if 'start' in file.data:
-                    fps = file.data["fps"]
-                    fps_float = float(fps["num"]) / float(fps["den"])
-                    thumbnail_frame = round(float(file.data['start']) * fps_float) + 1
-
-                # Get thumb path
-                thumb_icon = QIcon(GetThumbPath(file.id, thumbnail_frame))
+                # The icon Project Files shows (made off the GUI thread); asking
+                # the thumbnail server here would block until it decodes a frame
+                thumb_icon = app.window.files_model.thumbnail_icon(file.id) or QIcon()
             else:
                 # Audio file
                 thumb_icon = QIcon(os.path.join(info.PATH, "images", "AudioThumbnail.svg"))

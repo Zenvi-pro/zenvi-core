@@ -8,7 +8,7 @@
 
  @mainpage OpenShot Video Editor 2.0
 
- Welcome to the OpenShot Video Editor 2.0 PyQt5 documentation. OpenShot was developed to
+Welcome to the OpenShot Video Editor 2.0 Qt documentation. OpenShot was developed to
  make high-quality video editing and animation solutions freely available to the world. With a focus
  on stability, performance, and ease-of-use, we believe OpenShot is the best cross-platform,
  open-source video editing application in the world!
@@ -42,7 +42,6 @@
 
 import sys
 import os
-import argparse
 import json
 import logging
 from pathlib import Path
@@ -163,8 +162,15 @@ else:
     except Exception:
         pass
 
+# Ensure Qt plugin DLL dependencies are found on Windows packaged builds.
+if os.name == "nt":
+    _exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    _pyqt_dll_dir = os.path.join(_exe_dir, "lib", "PyQt5")
+    if os.path.isdir(_pyqt_dll_dir):
+        os.environ["PATH"] = _pyqt_dll_dir + os.pathsep + os.environ.get("PATH", "")
+
 try:
-    # This needs to be imported before PyQt5
+    # This needs to be imported before the Qt binding
     # To prevent some issues on AppImage build: wrapping/forcing older glibc versions
     import openshot
 except ImportError as _openshot_import_err:
@@ -178,7 +184,7 @@ except ImportError as _openshot_import_err:
     except ImportError:
         pass
 
-# Load user-configured UI scale before importing PyQt
+# Load user-configured UI scale before importing the Qt binding
 scale = 1.0
 logger = logging.getLogger(__name__)
 
@@ -212,8 +218,10 @@ try:
 except Exception as exc:
     logger.warning("Failed to select Qt platform plugin: %s", exc, exc_info=True)
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication
+from qt_api import QtCore, QtWidgets, QtWebEngineWidgets
+
+Qt = QtCore.Qt
+QApplication = QtWidgets.QApplication
 
 try:
     # This apparently has to be done before loading QtQuick
@@ -224,19 +232,9 @@ except Exception:
     pass
 
 try:
-    # QtWebEngineWidgets must be loaded prior to creating a QApplication
-    # But on systems with only WebKit, this will fail (and we ignore the failure)
-    from PyQt5 import QtWebEngineWidgets
-    WebEngineView = QtWebEngineWidgets.QWebEngineView
-except ImportError:
-    pass
-
-try:
-    # Manually set display scale factor rounding
-    # Use "PassThrough" for fractional sizes on Windows (i.e. 150%), although PassThrough
-    # introduces artifacts and issues on the Web-based timeline widget (i.e. no borders, not high DPI, etc...)
-    # TODO: Switch back to PassThrough when timeline widget is replaced with QWidget
-    os.environ['QT_SCALE_FACTOR_ROUNDING_POLICY'] = "Round"
+    # Round fractional display scales (e.g. Windows 125% -> 1.0). PassThrough renders
+    # the whole UI at 1.25x with soft, pixelated icons. A policy the user exported wins.
+    os.environ.setdefault('QT_SCALE_FACTOR_ROUNDING_POLICY', "Round")
 
     # Enable High-DPI resolutions
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
@@ -280,42 +278,8 @@ def main():
     global app
 
     # Configure argument handling for commandline launches
-    parser = argparse.ArgumentParser(description='OpenShot version ' + info.SETUP['version'])
-    parser.add_argument(
-        '-l', '--lang', action='store',
-        help='language code for interface (overrides '
-             'preferences and system environment)')
-    parser.add_argument(
-        '--list-languages', dest='list_languages',
-        action='store_true',
-        help='List all language codes supported by OpenShot')
-    parser.add_argument(
-        '--path', dest='py_path', action='append',
-        help='Additional locations to search for modules '
-             '(PYTHONPATH). Can be used multiple times.')
-    parser.add_argument(
-        '--test-models', dest='modeltest',
-        action='store_true',
-        help="Load Qt's QAbstractItemModelTester into data models "
-        '(requires Qt 5.11+)')
-    parser.add_argument(
-        '-b', '--web-backend', action='store',
-        choices=['auto', 'webkit', 'webengine', 'qwidget'], default='auto',
-        help="Web backend to use for Timeline")
-    parser.add_argument(
-        '-d', '--debug', action='store_true',
-        help='Enable debugging output')
-    parser.add_argument(
-        '--debug-file', action='store_true',
-        help='Debugging output (logfile only)')
-    parser.add_argument(
-        '--debug-console', action='store_true',
-        help='Debugging output (console only)')
-    parser.add_argument('-V', '--version', action='store_true')
-    parser.add_argument(
-        'remain', nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
-
-    args, extra_args = parser.parse_known_args()
+    from classes import launch_args
+    args, extra_args = launch_args.parse(sys.argv[1:], info.SETUP['version'])
 
     # Display version and exit (if requested)
     if args.version:
@@ -362,11 +326,41 @@ def main():
             print(f"Unsupported language '{args.lang}'! (See --list-languages)")
             sys.exit(-1)
 
+    if args.headless:
+        from classes import headless
+        from classes.logger import set_level_console
+        headless.activate()
+        if not (args.debug or args.debug_console):
+            # Keep stderr to the session's own lines, warnings and errors.
+            set_level_console(logging.WARNING)
+    else:
+        # Zenvi already open for this profile? Hand it the files and stop here.
+        from classes import single_instance
+        launch_paths = single_instance.launch_paths(
+            args.remain, args.project, project_exts=info.ALL_PROJECT_EXTS)
+        try:
+            outcome, detail = single_instance.hand_off(
+                single_instance.server_name(info.USER_PATH), launch_paths)
+        except Exception:
+            # Not being able to look must never stop Zenvi from starting.
+            logger.warning("Could not check for a running Zenvi", exc_info=True)
+            outcome, detail = single_instance.NOT_RUNNING, ""
+        if outcome == single_instance.DELIVERED:
+            print("Zenvi is already running; handed over %s" % (", ".join(launch_paths) or "focus"))
+            sys.exit(0)
+        if outcome != single_instance.NOT_RUNNING:
+            print("Zenvi is already running but did not take the request (%s): %s"
+                  % (outcome, detail), file=sys.stderr)
+            sys.exit(1)
+
     # Normal startup, print module path and lauch application
     print(f"Loaded modules from: {info.PATH}")
 
+    # Configure packaged CA certificates before optional network integrations start.
+    from classes import http_client, sentry
+    http_client.configure_ssl_environment()
+
     # Initialize sentry exception tracing
-    from classes import sentry
     sentry.init_tracing()
 
     # sentry_sdk's excepthook integration replaces sys.excepthook, so re-install
@@ -385,6 +379,9 @@ def main():
 
     argv = [sys.argv[0]]
     argv.extend(extra_args)
+    if args.project and not args.headless:
+        # Same as passing the project positionally.
+        argv.append(args.project)
     argv.extend(args.remain)
     try:
         app = OpenShotApp(argv)
@@ -410,6 +407,22 @@ def main():
     except AttributeError:
         pass
 
+    if args.headless:
+        from classes import headless
+        try:
+            exit_code = headless.run(app, args.project)
+        except Exception as exc:
+            _report_startup_failure("failed in headless mode")
+            headless.report("failed: %s: %s" % (type(exc).__name__, exc))
+            exit_code = headless.EXIT_FAILURE
+        sys.exit(exit_code)
+
+    # Later launches hand their files to this window, and external CLIs find
+    # its MCP server through ~/.openshot_qt/gui_mcp.json.
+    from classes import agent_mcp_server, mcp_discovery
+    app.start_instance_server()
+    agent_mcp_server.enable_discovery(mcp_discovery.GUI)
+
     # Launch GUI and start event loop.
     # MainWindow construction and the event loop are the two largest bodies of
     # code in the app; an exception escaping either used to end the process with
@@ -421,8 +434,12 @@ def main():
         sys.exit(1)
 
     if gui_ready:
+        # Qt6 bindings expose exec(); Qt5 bindings have both exec() and exec_().
+        exec_fn = getattr(app, "exec", None) or getattr(app, "exec_", None)
+        if exec_fn is None or not callable(exec_fn):
+            raise AttributeError("OpenShotApp has no exec_/exec method")
         try:
-            exit_code = app.exec_()
+            exit_code = exec_fn()
         except Exception:
             _report_startup_failure("failed inside the main event loop")
             exit_code = 1

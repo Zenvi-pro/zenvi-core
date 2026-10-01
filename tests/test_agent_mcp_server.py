@@ -23,16 +23,21 @@ import pytest
 from classes.agent_mcp_server import _build_input_schema
 
 
+def _require_fastmcp():
+    # mcp 2.x removed mcp.server.fastmcp; requirements pin mcp<2, but a system
+    # Python can still carry 2.x (or no mcp at all).
+    pytest.importorskip("mcp.server.fastmcp", reason="the server needs mcp>=1.28,<2 (requirements.txt)")
+
+
 # --- schema derivation (no server / no stubs needed) -----------------------
 
-def test_schema_is_permissive_for_kwargs_only():
+def test_schema_is_strict_for_kwargs_only():
     def handler(**kwargs):
         """List the media files in the current project bin."""
 
     schema = _build_input_schema(handler)
     assert schema["type"] == "object"
-    assert schema["additionalProperties"] is True
-    assert "properties" not in schema
+    assert schema["additionalProperties"] is False
 
 
 def test_schema_extracts_typed_params_and_required():
@@ -43,7 +48,7 @@ def test_schema_extracts_typed_params_and_required():
     assert set(schema["properties"]) == {"name", "label", "count"}
     assert schema["required"] == ["name"]
     assert schema["properties"]["count"]["type"] == "integer"
-    assert schema["additionalProperties"] is True  # has **kwargs
+    assert schema["additionalProperties"] is False
 
 
 # --- a stubbed tool layer so we don't need Qt/libopenshot ------------------
@@ -90,14 +95,16 @@ def test_iter_tool_defs(tool_stub):
     # ...and the MCP-only extras are advertised alongside them.
     assert set(_extra_tools()) <= set(defs)
 
-    assert defs["add_track_tool"]["inputSchema"]["properties"]["label"]["type"] == "string"
+    # Typed properties come from TOOL_SCHEMAS; add_track takes no arguments.
+    assert defs["watch_clip_window_tool"]["inputSchema"]["properties"]["query"]["type"] == "string"
+    assert defs["add_track_tool"]["inputSchema"]["properties"] == {}
     assert "media files" in defs["list_files_tool"]["description"]
 
 
 # --- transport: an MCP client can list + call tools ------------------------
 
 def test_server_lists_and_calls_tools(tool_stub):
-    pytest.importorskip("mcp")
+    _require_fastmcp()
     from classes.agent_mcp_server import ZenviMcpServer
 
     srv = ZenviMcpServer().start()
@@ -160,7 +167,7 @@ def test_server_instructions_tell_harnesses_to_watch_after_edits():
 
 
 def test_initialize_advertises_the_watch_instruction(tool_stub):
-    pytest.importorskip("mcp")
+    _require_fastmcp()
     from classes.agent_mcp_server import ZenviMcpServer
 
     srv = ZenviMcpServer().start()
@@ -190,6 +197,7 @@ def test_initialize_advertises_the_watch_instruction(tool_stub):
 
 
 def test_server_requires_bearer_token(tool_stub):
+    _require_fastmcp()
     from classes.agent_mcp_server import ZenviMcpServer
 
     srv = ZenviMcpServer().start()
@@ -262,6 +270,7 @@ def test_load_or_create_token_generates_when_missing(monkeypatch, tmp_path):
     assert os.path.exists(tmp_path / "nested" / "mcp_token")
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits; Windows guards the token with the profile ACL")
 def test_token_file_is_never_world_readable(monkeypatch, tmp_path):
     """The bearer token is the only thing stopping another local process from
     driving the editor. A plain open() applies the umask first, so the token

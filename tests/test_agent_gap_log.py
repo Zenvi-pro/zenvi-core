@@ -10,7 +10,10 @@ def gap_log(monkeypatch, tmp_path):
     return gl
 
 
-def test_classify_gap_flags_known_gap(gap_log):
+def test_classify_gap_flags_known_gap(gap_log, monkeypatch):
+    # With Phase 3 tools shipped, live rules self-retire. Simulate a missing
+    # tool to prove the classifier still fires when the registry lacks it.
+    monkeypatch.setattr(gap_log, "_tool_names", lambda: set())
     gap = gap_log.classify_gap("please change the project fps to 24")
     assert gap is not None
     assert "fps" in gap or "resolution" in gap

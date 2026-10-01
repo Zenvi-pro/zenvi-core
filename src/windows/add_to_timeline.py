@@ -31,15 +31,18 @@ import uuid
 from operator import itemgetter
 from random import shuffle, randint, uniform
 
-from PyQt5.QtWidgets import QDialog
-from PyQt5.QtGui import QIcon
+from qt_api import QDialog
+from qt_api import QIcon
 
 from classes import info, ui_util, time_parts
+from classes import frame_time as ft
+from classes.clip_utils import project_fps_fraction
 from classes.clip_placement import apply_audio_only_clip_overrides
 from classes.logger import log
 from classes.query import Clip, Transition
 from classes.app import get_app
 from classes.metrics import track_metric_screen
+from classes.clip_utils import apply_file_caption_to_clip
 from windows.views.add_to_timeline_treeview import TimelineTreeView
 
 import openshot
@@ -50,6 +53,38 @@ class AddToTimeline(QDialog):
     """ Add To timeline Dialog """
 
     ui_path = os.path.join(info.PATH, 'windows', 'ui', 'add-to-timeline.ui')
+
+    def _select_added_items(self, win, added_clip_ids):
+        """Select only the newly added clips, matching timeline drag/drop behavior."""
+        if not win or not added_clip_ids:
+            return
+
+        timeline_view = getattr(win, "timeline", None)
+        for idx, clip_id in enumerate(added_clip_ids):
+            if not clip_id:
+                continue
+            if timeline_view and hasattr(timeline_view, "AddSelectionJS"):
+                timeline_view.AddSelectionJS(str(clip_id), "clip", idx == 0)
+            else:
+                win.addSelection(str(clip_id), "clip", clear_existing=(idx == 0))
+
+        files_model = getattr(win, "files_model", None)
+        if files_model:
+            selection_model = getattr(files_model, "selection_model", None)
+            if selection_model:
+                selection_model.clearSelection()
+            list_selection_model = getattr(files_model, "list_selection_model", None)
+            if list_selection_model:
+                list_selection_model.clearSelection()
+
+        if timeline_view and hasattr(timeline_view, "setFocus"):
+            timeline_view.setFocus()
+        if timeline_view and hasattr(timeline_view, "geometry"):
+            timeline_geometry = getattr(timeline_view, "geometry", None)
+            if hasattr(timeline_geometry, "mark_dirty"):
+                timeline_geometry.mark_dirty()
+        if timeline_view and hasattr(timeline_view, "update"):
+            timeline_view.update()
 
     def btnMoveUpClicked(self, checked):
         """Callback for move up button click"""
@@ -178,14 +213,18 @@ class AddToTimeline(QDialog):
 
         # Init position
         position = start_position
+        added_clip_ids = []
 
         random_transition = False
         if transition_path == "random":
             random_transition = True
 
         # Get frames per second
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
+        fps = project_fps_fraction()
+        fps_float = float(fps)
+
+        # Track added clip IDs for auto-selection
+        added_clip_ids = []
 
         # Loop through each file (in the current order)
         for file in self.treeFiles.timeline_model.files:
@@ -204,7 +243,7 @@ class AddToTimeline(QDialog):
 
             # Append missing attributes to Clip JSON
             new_clip = json.loads(c.Json())
-            new_clip["position"] = position
+            new_clip["position"] = ft.snap(float(position), fps)
             new_clip["layer"] = track_num
             new_clip["file_id"] = file.id
             new_clip["title"] = file.data.get("name", filename)
@@ -222,6 +261,9 @@ class AddToTimeline(QDialog):
             # TODO: Determine why this even happens, as it shouldn't be possible
             if not new_clip.get("reader"):
                 continue  # Skip to next file
+
+            # If the source file has stored caption text, attach a Caption effect to this new clip.
+            apply_file_caption_to_clip(new_clip, file)
 
             # Check for optional start and end attributes
             start_time = 0
@@ -250,12 +292,12 @@ class AddToTimeline(QDialog):
                     new_clip["position"] = position
 
                 if fade_value in ['Fade In', 'Fade In & Out']:
-                    start = openshot.Point(round(start_time * fps_float) + 1, 0.0, openshot.BEZIER)
+                    start = openshot.Point(ft.keyframe_x(start_time, fps), 0.0, openshot.BEZIER)
                     start_object = json.loads(start.Json())
                     end = openshot.Point(
                         min(
-                            round((start_time + fade_length) * fps_float) + 1,
-                            round(end_time * fps_float) + 1
+                            ft.keyframe_x(start_time + fade_length, fps),
+                            ft.keyframe_x(end_time, fps)
                             ),
                         1.0,
                         openshot.BEZIER)
@@ -266,14 +308,14 @@ class AddToTimeline(QDialog):
                 if fade_value in ['Fade Out', 'Fade In & Out']:
                     start = openshot.Point(
                         max(
-                            round((end_time * fps_float) + 1) - (round(fade_length * fps_float) + 1),
-                            round(start_time * fps_float) + 1
+                            ft.keyframe_x(end_time - fade_length, fps),
+                            ft.keyframe_x(start_time, fps)
                             ),
                         1.0,
                         openshot.BEZIER)
                     start_object = json.loads(start.Json())
                     end = openshot.Point(
-                        round(end_time * fps_float) + 1,
+                        ft.keyframe_x(end_time, fps),
                         0.0,
                         openshot.BEZIER)
                     end_object = json.loads(end.Json())
@@ -314,9 +356,9 @@ class AddToTimeline(QDialog):
                     end_scale = 1.0
 
                 # Add keyframes
-                start = openshot.Point(round(start_time * fps_float) + 1, start_scale, openshot.BEZIER)
+                start = openshot.Point(ft.keyframe_x(start_time, fps), start_scale, openshot.BEZIER)
                 start_object = json.loads(start.Json())
-                end = openshot.Point(round(end_time * fps_float) + 1, end_scale, openshot.BEZIER)
+                end = openshot.Point(ft.keyframe_x(end_time, fps), end_scale, openshot.BEZIER)
                 end_object = json.loads(end.Json())
                 new_clip["gravity"] = openshot.GRAVITY_CENTER
                 new_clip["scale_x"]["Points"].append(start_object)
@@ -325,13 +367,13 @@ class AddToTimeline(QDialog):
                 new_clip["scale_y"]["Points"].append(end_object)
 
                 # Add keyframes
-                start_x = openshot.Point(round(start_time * fps_float) + 1, animate_start_x, openshot.BEZIER)
+                start_x = openshot.Point(ft.keyframe_x(start_time, fps), animate_start_x, openshot.BEZIER)
                 start_x_object = json.loads(start_x.Json())
-                end_x = openshot.Point(round(end_time * fps_float) + 1, animate_end_x, openshot.BEZIER)
+                end_x = openshot.Point(ft.keyframe_x(end_time, fps), animate_end_x, openshot.BEZIER)
                 end_x_object = json.loads(end_x.Json())
-                start_y = openshot.Point(round(start_time * fps_float) + 1, animate_start_y, openshot.BEZIER)
+                start_y = openshot.Point(ft.keyframe_x(start_time, fps), animate_start_y, openshot.BEZIER)
                 start_y_object = json.loads(start_y.Json())
-                end_y = openshot.Point(round(end_time * fps_float) + 1, animate_end_y, openshot.BEZIER)
+                end_y = openshot.Point(ft.keyframe_x(end_time, fps), animate_end_y, openshot.BEZIER)
                 end_y_object = json.loads(end_y.Json())
                 new_clip["gravity"] = openshot.GRAVITY_CENTER
                 new_clip["location_x"]["Points"].append(start_x_object)
@@ -386,12 +428,22 @@ class AddToTimeline(QDialog):
             # Save Clip
             clip.data = new_clip
             clip.save()
+            added_clip_ids.append(clip.data.get("id"))
 
             # Increment position by length of clip
             position += (end_time - start_time)
 
         # Clear transaction
         get_app().updates.transaction_id = None
+
+        # Ensure timeline extension behavior matches all other timeline add/move paths.
+        timeline_view = getattr(get_app().window, "timeline", None)
+        extend_timeline = getattr(timeline_view, "_extend_timeline_to_fit_items", None)
+        if callable(extend_timeline):
+            extend_timeline()
+
+        # Auto-select newly added clips, like timeline drag/drop does.
+        self._select_added_items(get_app().window, added_clip_ids)
 
         # Accept dialog
         super(AddToTimeline, self).accept()
@@ -445,7 +497,7 @@ class AddToTimeline(QDialog):
 
     def __init__(self, files=None, position=0.0):
         # Create dialog class
-        QDialog.__init__(self)
+        super().__init__()
 
         # Load UI from Designer
         ui_util.load_ui(self, self.ui_path)

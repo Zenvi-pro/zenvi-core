@@ -1,0 +1,233 @@
+{
+ "_source": "zenvi-backend main a511446: @tool stubs under core/tools/ whose names are desktop agent tools. Values are the stub annotation; a trailing ! marks a parameter without a default.",
+ "tools": {
+  "add_clip_to_timeline_tool": {
+   "duration_seconds": "str",
+   "end_seconds": "str",
+   "file_id": "str",
+   "full_file": "str",
+   "position_seconds": "str",
+   "query": "str",
+   "start_seconds": "str",
+   "track": "str"
+  },
+  "add_marker_tool": {},
+  "add_track_tool": {},
+  "analyze_timeline_audio_tool": {
+   "detail": "str",
+   "timeline_clip_id": "str",
+   "track": "str"
+  },
+  "apply_transition_tool": {
+   "clip1_id": "str!",
+   "clip2_id": "str",
+   "duration": "str",
+   "placement": "str",
+   "transition_name": "str"
+  },
+  "center_on_playhead_tool": {},
+  "delete_from_timeline_tool": {
+   "clip_query": "str",
+   "include_transitions": "bool",
+   "occurrence": "str",
+   "position_near": "Optional[float]",
+   "scope": "str",
+   "timeline_clip_id": "str",
+   "track": "str"
+  },
+  "duck_under_speech_tool": {
+   "attack_ms": "str",
+   "bed_clip_ids": "str",
+   "bed_query": "str",
+   "bed_track": "str",
+   "boost_speech_db": "str",
+   "dry_run": "str",
+   "duck_db": "str",
+   "pad_after_ms": "str",
+   "pad_before_ms": "str",
+   "release_ms": "str",
+   "speech_clip_ids": "str"
+  },
+  "export_video_tool": {
+   "output_path": "str",
+   "show_dialog": "str"
+  },
+  "fetch_motion_graphics_video_tool": {
+   "label": "str",
+   "render_job_id": "str",
+   "segment_urls": "Optional[list[str]]",
+   "supabase_path": "str",
+   "supabase_url": "str"
+  },
+  "generate_transition_clip_tool": {
+   "clip_a_id": "str",
+   "clip_a_query": "str",
+   "clip_b_id": "str",
+   "clip_b_query": "str",
+   "prompt_hint": "str"
+  },
+  "generate_tts_and_add_to_timeline_tool": {
+   "model": "str",
+   "position": "float",
+   "speed": "float",
+   "text": "str!",
+   "track": "int",
+   "voice": "str"
+  },
+  "generate_video_and_add_to_timeline_tool": {
+   "duration_seconds": "str",
+   "position_seconds": "str",
+   "prompt": "str!",
+   "track": "str"
+  },
+  "get_clips_with_full_metadata_tool": {
+   "detail_level": "str"
+  },
+  "get_export_settings_tool": {},
+  "get_file_info_tool": {
+   "file_id": "str!"
+  },
+  "get_project_catalog_tool": {},
+  "get_project_info_tool": {},
+  "get_timeline_placements_metadata_tool": {
+   "detail_level": "str"
+  },
+  "get_timeline_state_tool": {
+   "detail_level": "str"
+  },
+  "go_to_end_tool": {},
+  "go_to_start_tool": {},
+  "import_files_tool": {},
+  "import_stock_media_tool": {
+   "filename": "str",
+   "link": "str",
+   "local_path": "str",
+   "preview_url": "str",
+   "sound_id": "str",
+   "source": "str",
+   "video_id": "str"
+  },
+  "import_video_url_and_add_to_timeline_tool": {
+   "position_seconds": "str",
+   "track": "str",
+   "video_url": "str"
+  },
+  "list_clips_tool": {
+   "detail_level": "str",
+   "layer": "str"
+  },
+  "list_files_tool": {},
+  "list_layers_tool": {},
+  "list_markers_tool": {},
+  "list_transitions_tool": {
+   "category": "str"
+  },
+  "modify_clip_tool": {
+   "clip_query": "str",
+   "description": "str",
+   "duration_seconds": "str",
+   "fade_ms": "str",
+   "mode": "str",
+   "occurrence": "str",
+   "query": "str",
+   "timeline_clip_id": "str",
+   "track": "str"
+  },
+  "new_project_tool": {},
+  "open_project_tool": {
+   "file_path": "str!"
+  },
+  "place_motion_graphic_tool": {
+   "duration_seconds": "str",
+   "file_id": "str",
+   "layout_region": "str",
+   "mode": "str",
+   "position_seconds": "str",
+   "query": "str",
+   "track": "str"
+  },
+  "play_tool": {},
+  "propose_overlay_windows_tool": {
+   "beat_count": "str",
+   "prefer_transparent": "str"
+  },
+  "redo_tool": {
+   "steps": "int"
+  },
+  "reindex_project_file_tool": {
+   "file_id": "str!"
+  },
+  "resummarize_project_file_tool": {
+   "file_id": "str!"
+  },
+  "save_project_tool": {
+   "file_path": "str!"
+  },
+  "search_clip_scenes_tool": {
+   "clip_query": "str",
+   "occurrence": "str",
+   "position_near": "str",
+   "query": "str!",
+   "timeline_clip_id": "str",
+   "top_k": "str",
+   "track": "str"
+  },
+  "search_clips_tool": {
+   "look_for": "str",
+   "query": "str!",
+   "top_k": "int"
+  },
+  "search_transitions_tool": {
+   "query": "str!"
+  },
+  "set_clip_volume_tool": {
+   "clip_query": "str",
+   "end_seconds": "str",
+   "fade_ms": "str",
+   "level": "str",
+   "level_db": "str",
+   "mode": "str",
+   "occurrence": "str",
+   "start_seconds": "str",
+   "timeline_clip_id": "str",
+   "track": "str"
+  },
+  "set_export_setting_tool": {
+   "key": "str!",
+   "value": "str!"
+  },
+  "slice_clip_at_best_match_tool": {
+   "clip_query": "str",
+   "end_seconds": "str",
+   "occurrence": "str",
+   "query": "str!",
+   "start_seconds": "str",
+   "timeline_clip_id": "str",
+   "track": "str"
+  },
+  "slice_clip_at_playhead_tool": {},
+  "suggest_motion_graphics_placements_tool": {
+   "beat_count": "str",
+   "brief": "str"
+  },
+  "undo_tool": {
+   "steps": "int"
+  },
+  "wait_until_project_indexed_tool": {
+   "timeout_seconds": "str"
+  },
+  "watch_clip_tool": {
+   "file_path": "str"
+  },
+  "watch_clip_window_tool": {
+   "clip_query": "str",
+   "end": "str",
+   "query": "str",
+   "start": "str",
+   "timeline_clip_id": "str",
+   "track": "str"
+  },
+  "zoom_in_tool": {},
+  "zoom_out_tool": {}
+ }
+}

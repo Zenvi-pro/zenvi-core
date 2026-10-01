@@ -31,8 +31,10 @@ from urllib.parse import unquote, urlparse
 from xml.dom import minidom, Node
 
 import openshot
-from PyQt5.QtWidgets import QFileDialog
+from qt_api import QFileDialog
 
+from classes import frame_time as ft
+from fractions import Fraction
 from classes import info
 from classes.app import get_app
 from classes.logger import log
@@ -391,7 +393,7 @@ def import_xml():
                     thumb_path = os.path.join(info.THUMBNAIL_PATH, "%s.png" % file.data["id"])
                 else:
                     # Audio file
-                    thumb_path = os.path.join(info.PATH, "images", "AudioThumbnail.png")
+                    thumb_path = os.path.join(info.PATH, "images", "AudioThumbnail.svg")
 
                 # Create Clip object
                 clip = Clip()
@@ -408,6 +410,10 @@ def import_xml():
                 clip.data["title"] = clip_title
                 clip.data["layer"] = track_number
                 clip.data["image"] = thumb_path
+                fps = Fraction(int(fps_num), int(fps_den))
+                clip_position_value, clip_start_value, clip_end_value = ft.quantize_span(
+                    clip_position_value, clip_start_value, clip_end_value, fps
+                )
                 clip.data["position"] = clip_position_value
                 clip.data["start"] = clip_start_value
                 clip.data["end"] = clip_end_value

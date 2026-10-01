@@ -41,6 +41,7 @@
 # to the GUI thread (sys.excepthook also fires on QThread worker threads).
 
 import os
+import signal
 import sys
 import threading
 import traceback
@@ -257,8 +258,8 @@ def _should_show_dialog(tb_text):
 def _queue_dialog(summary, tb_text, blocking=False):
     """Show the error dialog on the GUI thread, if there is a GUI to show it on."""
     try:
-        from PyQt5.QtCore import QCoreApplication, QThread
-        from PyQt5.QtWidgets import QApplication
+        from qt_api import QCoreApplication, QThread
+        from qt_api import QApplication
     except Exception:
         return
 
@@ -320,7 +321,7 @@ def _is_headless_platform(app):
 def _show_dialog(summary, tb_text):
     """Non-fatal error dialog. Never raises, never exits the app."""
     try:
-        from PyQt5.QtWidgets import QApplication, QMessageBox
+        from qt_api import QApplication, QMessageBox
 
         if QApplication.instance() is None:
             return
@@ -530,6 +531,33 @@ def enable_faulthandler():
     except Exception:
         _faulthandler_stream = None
         return False
+
+
+def ignore_sigpipe():
+    """Make a write to a closed socket raise BrokenPipeError instead of ending the app.
+
+    Python ignores SIGPIPE at startup, but libopenshot's CrashHandler -- which
+    the first openshot.Timeline installs -- catches SIGPIPE and exit()s with
+    status 13. The editor serves local sockets (the thumbnail server, the
+    in-app MCP server), so one client resetting its connection took the whole
+    app down. Call this right after the first Timeline is created: libopenshot
+    installs its handlers once per process, so later Timelines and readers do
+    not undo it. Returns True when SIGPIPE is ignored; there is no SIGPIPE on
+    Windows.
+    """
+    sigpipe = getattr(signal, "SIGPIPE", None)
+    if sigpipe is None:
+        return False
+    try:
+        signal.signal(sigpipe, signal.SIG_IGN)
+    except (ValueError, OSError):
+        # signal.signal() only works on the main thread
+        log = _log()
+        if log is not None:
+            log.warning("Could not ignore SIGPIPE; a client resetting a local "
+                        "connection can end the app", exc_info=True)
+        return False
+    return True
 
 
 def install():
