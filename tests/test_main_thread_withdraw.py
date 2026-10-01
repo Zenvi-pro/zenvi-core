@@ -18,6 +18,7 @@ import pytest
 
 from classes import agent_api_proxy
 from classes import tool_handlers
+from classes.agent_tools.receipt import parse_receipt
 from classes.updates import UpdateManager
 
 
@@ -110,9 +111,12 @@ def test_a_timed_out_tool_call_leaves_history_untouched(monkeypatch):
 
     monkeypatch.setitem(tool_handlers.TOOL_HANDLERS, "add_track_tool", add_track)
 
-    out = tool_handlers.execute_tool("add_track_tool", {})
+    out = parse_receipt(tool_handlers.execute_tool("add_track_tool", {}))
 
-    assert out.startswith("Error: MAIN_THREAD_TIMEOUT")
+    # execute_tool returns a contract-3 receipt; the timeout is its error summary.
+    assert out["status"] == "error"
+    assert out["summary"].startswith("Error: MAIN_THREAD_TIMEOUT")
+    assert out["undoSteps"] == 0
     queued[0].run()
     assert calls == []
     assert app.updates.actionHistory == []
