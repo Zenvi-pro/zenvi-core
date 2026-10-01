@@ -141,11 +141,6 @@ class ZenviBackendClient:
         except Exception:
             return None
 
-    def _bearer(self) -> Dict[str, str]:
-        """``Authorization`` for backend routes that act on the signed-in user."""
-        token = self._auth_token()
-        return {"Authorization": f"Bearer {token}"} if token else {}
-
     def _multipart_headers(self, session) -> Dict[str, Optional[str]]:
         headers = {
             k: v for k, v in session.headers.items()
@@ -1087,11 +1082,7 @@ class ZenviBackendClient:
         """
         try:
             provider_key = kwargs.pop("provider_key", None)
-            # BYOK calls carry the Zenvi JWT: the backend gates /generation on the
-            # signed-in user. The managed path is left as it is: it still charges
-            # credits on the desktop after success, and the backend now bills it
-            # too, so authenticating it belongs with dropping that desktop charge.
-            headers = {PROVIDER_KEY_HEADER: provider_key, **self._bearer()} if provider_key else None
+            headers = {PROVIDER_KEY_HEADER: provider_key} if provider_key else None
             payload = {"prompt": prompt, "duration_seconds": duration_seconds}
             payload.update(kwargs)
             r = self.session.post(
@@ -1123,7 +1114,7 @@ class ZenviBackendClient:
         try:
             r = self.session.post(
                 f"{self.api_url}/generation/providers/{provider}/validate",
-                json={}, headers={PROVIDER_KEY_HEADER: key, **self._bearer()}, timeout=30,
+                json={}, headers={PROVIDER_KEY_HEADER: key}, timeout=30,
             )
             r.raise_for_status()
             data = r.json()

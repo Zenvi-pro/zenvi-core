@@ -155,6 +155,7 @@ def test_mask_shows_only_the_tail():
 
 def _fake_session(json_body):
     s = MagicMock()
+    s.headers = {}
     resp = MagicMock()
     resp.json.return_value = json_body
     s.post.return_value = resp
@@ -164,6 +165,8 @@ def _fake_session(json_body):
 def _client(session, token="jwt-1"):
     c = ZenviBackendClient.__new__(ZenviBackendClient)
     c.api_url = "http://x/api/v1"
+    if not isinstance(getattr(session, "headers", None), dict):
+        session.headers = {}
     c._session = session
     c._auth_token = lambda: token
     return c
@@ -173,8 +176,9 @@ def test_generate_video_sends_the_key_as_a_header_not_in_the_payload():
     c = _client(_fake_session({"video_url": "u"}))
     c.generate_video("ocean", duration_seconds=5, provider="higgsfield", provider_key=KEY)
     kwargs = c._session.post.call_args.kwargs
-    # The backend gates /generation on the signed-in user, so BYOK carries the JWT.
-    assert kwargs["headers"] == {"X-Zenvi-Provider-Key": KEY, "Authorization": "Bearer jwt-1"}
+    assert kwargs["headers"] == {"X-Zenvi-Provider-Key": KEY}
+    # The backend gates /generation on the signed-in user; the session carries the JWT.
+    assert c._session.headers["Authorization"] == "Bearer jwt-1"
     assert kwargs["json"]["provider"] == "higgsfield"
     assert "secret-456" not in json.dumps(kwargs["json"])
 
@@ -192,7 +196,8 @@ def test_validate_provider_key_posts_to_the_validate_route():
     assert c.validate_provider_key("higgsfield", KEY) == {"ok": True, "error": None}
     args, kwargs = c._session.post.call_args
     assert args[0] == "http://x/api/v1/generation/providers/higgsfield/validate"
-    assert kwargs["headers"] == {"X-Zenvi-Provider-Key": KEY, "Authorization": "Bearer jwt-1"}
+    assert kwargs["headers"] == {"X-Zenvi-Provider-Key": KEY}
+    assert c._session.headers["Authorization"] == "Bearer jwt-1"
 
 
 def _run_t2v(stored_key):
@@ -304,7 +309,7 @@ def test_validate_needs_zenvi_sign_in_and_says_so():
     c = _client(MagicMock(), token=None)
     c._session.post.return_value = _http_error(401, {"detail": "auth required"})
     out = c.validate_provider_key("higgsfield", KEY)
-    assert "Authorization" not in c._session.post.call_args.kwargs["headers"]
+    assert "Authorization" not in c._session.headers
     assert out == {"ok": False, "unverified": True, "error": "sign in to Zenvi first"}
 
 
