@@ -213,6 +213,15 @@ def test_safe_encoder_swaps_a_failing_hardware_encoder_for_software(monkeypatch,
     assert hw_encode.safe_video_encoder(codec) == software
 
 
+def test_safe_encoder_says_so_when_the_software_fallback_is_missing(monkeypatch):
+    _count_trials(monkeypatch, passes=False)
+    fake = types.SimpleNamespace(
+        FFmpegWriter=types.SimpleNamespace(IsValidCodec=lambda codec: codec != "libx265"))
+    monkeypatch.setitem(sys.modules, "openshot", fake)
+    with pytest.raises(RuntimeError, match="libx265"):
+        hw_encode.safe_video_encoder("hevc_vaapi")
+
+
 def test_safe_encoder_leaves_software_encoders_untried(monkeypatch):
     calls = _count_trials(monkeypatch, passes=False)
     assert hw_encode.safe_video_encoder("libx264") == "libx264"

@@ -186,6 +186,18 @@ def safe_video_encoder(
     if not is_hardware_encoder(codec) or encoder_passes_trial(codec, poll=poll):
         return codec
     fallback = software_fallback_encoder(codec)
+    try:
+        import openshot
+
+        fallback_exists = bool(openshot.FFmpegWriter.IsValidCodec(fallback))
+    except Exception:
+        fallback_exists = True  # cannot tell here; the writer will report it
+    if not fallback_exists:
+        raise RuntimeError(
+            "Hardware video encoder %s cannot encode on this system, and its "
+            "software equivalent %s is not available. Choose another video codec."
+            % (codec, fallback)
+        )
     log.warning(
         "Hardware video encoder %s cannot encode on this system; exporting with %s",
         codec, fallback,
