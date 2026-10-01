@@ -251,7 +251,7 @@ def _import_real_export_module(monkeypatch):
     return export_mod
 
 
-def _run_export_with(monkeypatch, vcodec, headless):
+def _run_export_with(monkeypatch, vcodec, headless, cancel_during_trial=False):
     """Run the real Export.run_export on a plain object; return (writer, notices)."""
     export_mod = _import_real_export_module(monkeypatch)
     writer = MagicMock()
@@ -259,8 +259,13 @@ def _run_export_with(monkeypatch, vcodec, headless):
     fake_openshot.FFmpegWriter.return_value = writer
     fake_openshot.FFmpegWriter.IsValidCodec.return_value = True
     monkeypatch.setattr(export_mod, "openshot", fake_openshot)
-    monkeypatch.setattr(export_mod, "safe_video_encoder",
-                        lambda codec, poll=None: "libx264" if "videotoolbox" in codec else codec)
+
+    def safe_encoder(codec, poll=None):
+        if cancel_during_trial:
+            job.exporting = False
+        return "libx264" if "videotoolbox" in codec else codec
+
+    monkeypatch.setattr(export_mod, "safe_video_encoder", safe_encoder)
     monkeypatch.setattr(export_mod, "get_app", lambda: MagicMock(
         _tr=lambda s: s, project=MagicMock(get=lambda *a, **k: {"num": 30, "den": 1})))
     monkeypatch.setattr(export_mod, "pause_window_auto_save", lambda: False)
@@ -274,6 +279,7 @@ def _run_export_with(monkeypatch, vcodec, headless):
         timeline=MagicMock(), project=MagicMock(), cache_thread=MagicMock(),
         ExportStarted=MagicMock(), ExportFrame=MagicMock(), ExportEnded=MagicMock(),
         _cleanup_export_resources=lambda: None, _show_export_finished=lambda: None,
+        _complete_export_success=writer.export_completed, enableControls=lambda: None,
         _present_encoder_fallback=lambda hw, sw: notices.append((hw, sw)),
     )
     video_settings = {
@@ -295,6 +301,14 @@ def test_dialog_export_with_a_failing_hardware_preset_uses_software_and_says_so(
     # The software GOP / B-frame tuning follows the codec actually used.
     options = [c[0][1:] for c in writer.SetOption.call_args_list]
     assert ("g", "48") in options
+
+
+def test_cancel_during_the_trial_stops_before_anything_is_written(monkeypatch):
+    writer, _ = _run_export_with(
+        monkeypatch, "h264_videotoolbox", headless=False, cancel_during_trial=True)
+    writer.Open.assert_not_called()
+    writer.WriteFrame.assert_not_called()
+    writer.export_completed.assert_not_called()
 
 
 def test_export_keeps_a_working_codec(monkeypatch):

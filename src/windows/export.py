@@ -70,10 +70,7 @@ try:
         PipelineCancelled,
         run_pipelined_export,
     )
-    from classes.export_acceleration.hw_encode import (
-        maybe_apply_hardware_bitrate,
-        safe_video_encoder,
-    )
+    from classes.export_acceleration.hw_encode import maybe_apply_hardware_bitrate
     from classes.export_acceleration.hw_decode import force_software_decode
     from classes.export_acceleration.smart_render import (
         analyze_smart_render_spans,
@@ -88,11 +85,16 @@ except Exception:  # pragma: no cover - import soft-fail for partial installs
     PipelineCancelled = Exception
     run_pipelined_export = None
     maybe_apply_hardware_bitrate = None
-    safe_video_encoder = None
     force_software_decode = None
     analyze_smart_render_spans = None
     decide_smart_render = None
     try_smart_render_export = None
+
+# On its own, so an unrelated acceleration import failing cannot skip the trial.
+try:
+    from classes.export_acceleration.hw_encode import safe_video_encoder
+except Exception:  # pragma: no cover
+    safe_video_encoder = None
 
 MAX_FPS_SPINBOX_VALUE = 2147483647
 
@@ -1440,6 +1442,14 @@ class Export(QDialog):
                     headless = getattr(self, "_headless", False)
                     safe_vc = safe_video_encoder(
                         vc, poll=None if headless else QCoreApplication.processEvents)
+                    if not headless and not self.exporting:
+                        # Cancelled while the trial ran: stop before the writer opens a file.
+                        if getattr(self, "_export_cancel_confirmed", False):
+                            self._export_cancel_confirmed = False
+                            super(Export, self).reject()
+                        else:
+                            self.enableControls()
+                        return
                     if safe_vc != vc:
                         self._present_encoder_fallback(vc, safe_vc)
                         vc = safe_vc
