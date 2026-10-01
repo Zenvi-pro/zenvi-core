@@ -39,6 +39,7 @@ from classes.waveform import get_audio_data
 from classes import info, updates
 from classes import openshot_rc  # noqa
 from classes.clip_utils import clamp_timing_to_media, clip_time_bounds
+from classes.keyframe_rules import default_keyframe_value, max_transform_multiple
 from classes.query import Clip, Transition, Effect, File
 from classes.logger import log
 from classes.app import get_app
@@ -491,24 +492,8 @@ class PropertiesModel(updates.UpdateInterface):
                         # Check for 0 keyframes (and use sane defaults instead of the 0.0 default value)
                         default_value = None
                         if not keyframe["Points"]:
-                            if property_key in ["alpha", "scale_x", "scale_y", "time", "volume"]:
-                                default_value = 1.0
-                            elif property_key in ["origin_x", "origin_y"]:
-                                default_value = 0.5
-                            elif property_key in ["location_x", "location_y", "rotation", "shear_x", "shear_y"]:
-                                default_value = 0.0
-                            elif property_key in ["has_audio", "has_video", "channel_filter", "channel_mapping"]:
-                                default_value = -1.0
-                            elif property_key in ["wave_color"]:
-                                if keyframe_index == 0:
-                                    # Red
-                                    default_value = 0.0
-                                elif keyframe_index == 1:
-                                    # Blue
-                                    default_value = 255.0
-                                elif keyframe_index == 2:
-                                    # Green
-                                    default_value = 123.0
+                            channel = ("red", "blue", "green")[keyframe_index] if property_type == "color" else None
+                            default_value = default_keyframe_value(property_key, channel)
                             if default_value is not None:
                                 keyframe["Points"].append({
                                     'co': {'X': self.frame_number, 'Y': default_value},
@@ -907,16 +892,9 @@ class PropertiesModel(updates.UpdateInterface):
 
                         # Protection from HUGE scale values
                         if property_key in ['scale_x', 'scale_y', 'shear_x', 'shear_y'] and value:
-                            width = get_app().project.get("width")
-                            height = get_app().project.get("height")
                             is_svg = clip_data.get("reader", {}).get("path", "").lower().endswith("svg")
-                            if is_svg:
-                                max_multiple = 15
-                            else:
-                                max_multiple = 50
-                            if width > 0 and height > 0:
-                                # Clamp the max scale based on project size
-                                max_multiple = round((2000 * max_multiple) / max(width, height))
+                            max_multiple = max_transform_multiple(
+                                get_app().project.get("width"), get_app().project.get("height"), is_svg)
 
                             # Apply the calculated max_multiple to value
                             value = max(min(value, max_multiple), -max_multiple)

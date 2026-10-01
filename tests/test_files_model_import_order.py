@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("PyQt5.QtCore")
+pytest.importorskip("openshot")  # the modules under test import it
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:

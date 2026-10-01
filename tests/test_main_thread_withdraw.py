@@ -272,3 +272,23 @@ def test_a_job_that_finished_cannot_be_withdrawn():
     assert withdrawn.withdraw() == withdrawn.WITHDRAWN
     withdrawn.run()
     assert ran == [1]
+
+
+def test_wait_for_editor_job_tool_reports_a_failed_receipt_as_an_error(monkeypatch):
+    """A late edit that failed answers a JSON receipt, not a string starting with Error."""
+    from classes.agent_tools.receipt import ToolReceipt
+
+    gui = _SlowGuiThread()
+    _marshal_through(monkeypatch, gui.deliver)
+
+    def failing_edit():
+        gui.started.set()
+        gui.release.wait(5)
+        return ToolReceipt.error("add_clip_to_timeline_tool", "no such file").to_json()
+
+    with pytest.raises(tool_handlers.MainThreadStillRunning) as exc:
+        tool_handlers._run_on_main_thread(failing_edit, timeout=0.05)
+    gui.join()
+
+    done = agent_api_proxy.wait_for_editor_job_tool(job_id=exc.value.job_id, timeout_seconds=5)
+    assert done.startswith("status=error job_id=%s" % exc.value.job_id)
