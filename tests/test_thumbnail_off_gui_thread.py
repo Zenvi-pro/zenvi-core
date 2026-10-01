@@ -216,6 +216,23 @@ def test_worker_passes_the_retry_budget_to_get_thumb_path(monkeypatch):
     assert calls == [("F1", 7, {"attempts": 3}), ("F2", 1, {"clear_cache": True, "attempts": 3})]
 
 
+def test_worker_stops_after_its_current_job(monkeypatch):
+    module = _load_worker_module()
+    worker = module._ThumbnailWorker(max_pending=None)
+    done = []
+
+    def slow_job(file_id, frame, **kwargs):
+        done.append(file_id)
+        worker.stop()  # the app quits while this thumbnail is being made
+        return module.QImage(), ""
+
+    monkeypatch.setattr(module, "load_thumbnail_image", slow_job)
+    worker.enqueue_batch(_jobs(("F1", "F1", 1, 0, False), ("F2", "F2", 1, 0, False)))
+    worker._process_next()
+
+    assert done == ["F1"]
+
+
 # ------------------------------------------------------- reset client, SIGPIPE
 
 @pytest.fixture

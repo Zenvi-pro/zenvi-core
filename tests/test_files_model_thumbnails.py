@@ -186,6 +186,63 @@ def test_file_updated_regenerates_off_the_gui_thread_and_keeps_the_current_icon(
     assert _is_red(item.icon())
 
 
+QUIT_WHILE_DECODING = r"""
+import importlib.util, os, sys, threading, time, types
+sys.path.insert(0, os.environ["ZENVI_SRC"])
+sys.modules.setdefault("openshot", types.ModuleType("openshot"))  # no decoding here
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+import qt_api
+from qt_api import QApplication, QTimer
+app = QApplication([])
+spec = importlib.util.spec_from_file_location(
+    "thumbnails", os.path.join(os.environ["ZENVI_SRC"], "windows/views/timeline_backend/qwidget/thumbnails.py"))
+thumbnails = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(thumbnails)
+
+started = threading.Event()
+def still_decoding(file_id, frame, **kwargs):
+    started.set()
+    time.sleep(30)  # the thumbnail server is still decoding when the user quits
+    return ""
+thumbnails.GetThumbPath = still_decoding
+thumbnails.existing_thumb_path = lambda *a, **k: ""
+thumbnails.prewarmed_thumb_path = lambda *a, **k: ""
+
+manager = thumbnails.TimelineThumbnailManager(max_pending=None)
+manager.request_thumbnail("F1", "F1", 1, 0)
+manager.request_thumbnail("F2", "F2", 1, 0)
+
+def quit_once_stuck():
+    if not started.is_set():
+        QTimer.singleShot(50, quit_once_stuck)
+        return
+    t0 = time.monotonic()
+    manager.shutdown()
+    print("shutdown_s=%.1f" % (time.monotonic() - t0), flush=True)
+    app.quit()
+
+QTimer.singleShot(0, quit_once_stuck)
+app.exec_()
+sys.exit(0)
+"""
+
+
+def test_quitting_while_a_thumbnail_is_still_decoding_exits_cleanly(qapp):
+    # The UI no longer freezes during a slow thumbnail, so the user can quit
+    # in the middle of one. Destroying the still-running worker QThread used
+    # to abort the process at exit (status 134).
+    import subprocess
+
+    proc = subprocess.run([sys.executable, "-c", QUIT_WHILE_DECODING],
+                          env=dict(os.environ, ZENVI_SRC=str(SRC)),
+                          capture_output=True, text=True, timeout=120)
+
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    assert "Destroyed while thread is still running" not in proc.stderr
+    assert "shutdown_s=" in proc.stdout
+    assert float(proc.stdout.split("shutdown_s=")[1].split()[0]) < 5
+
+
 def test_other_views_get_their_thumbnail_on_the_gui_thread(files):
     main_thread = threading.get_ident()
     got = []

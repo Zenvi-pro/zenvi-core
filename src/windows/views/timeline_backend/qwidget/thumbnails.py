@@ -28,7 +28,7 @@
 from collections import OrderedDict, deque
 
 from qt_api import QObject, QThread, QTimer, pyqtSignal, pyqtSlot
-from qt_api import QImage
+from qt_api import QImage, release_to_cpp
 
 from classes.logger import log
 from classes.thumbnail import GetThumbPath, RoundFrameToThumbnailGrid, resolve_thumbnail_path
@@ -146,6 +146,12 @@ class _ThumbnailWorker(QObject):
         self._processing = False
         self._current_generation = 0
         self._drain_scheduled = False
+        self._stopping = False
+
+    def stop(self):
+        """Stop after the current job (call from any thread; queued slots
+        cannot reach a worker that is busy with a slow thumbnail)."""
+        self._stopping = True
 
     @pyqtSlot(object)
     def enqueue_batch(self, jobs):
@@ -200,7 +206,7 @@ class _ThumbnailWorker(QObject):
             return
         self._processing = True
         try:
-            while self._queue:
+            while self._queue and not self._stopping:
                 clip_id, file_id, frame, generation, clear_cache = self._queue.popleft()
                 if generation < self._current_generation:
                     continue
@@ -294,6 +300,7 @@ class TimelineThumbnailManager(QObject):
         if self._thread is None:
             return
         self.clear_pending()
+        self._worker.stop()
         was_running = self._thread.isRunning()
         if was_running:
             name = self._thread.objectName()
@@ -306,7 +313,16 @@ class TimelineThumbnailManager(QObject):
                 self._thread.isRunning(),
             )
             if not stopped:
-                log.warning("Thumbnail thread %s did not stop within 2 seconds", name)
+                # Still inside a job (a thumbnail the server is decoding) that
+                # cannot be interrupted. Destroying a running QThread aborts the
+                # process, so leave the thread and its worker to process exit.
+                log.warning("Thumbnail thread %s did not stop within 2 seconds; "
+                            "leaving it to process exit", name)
+                self._thread.setParent(None)
+                release_to_cpp(self._thread)
+                release_to_cpp(self._worker)
+                self._thread = None
+                return
         self._worker.deleteLater()
         self._thread.deleteLater()
         self._thread = None

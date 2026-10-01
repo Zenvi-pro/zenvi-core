@@ -516,10 +516,10 @@ class FilesModel(QObject, updates.UpdateInterface):
     def request_thumbnail(self, slot, file_id, frame, on_ready=None, clear_cache=False):
         """Load (or make) one thumbnail on the thumbnail worker, never the GUI thread.
 
-        *slot* keys the request: repeat requests for the same slot and frame
-        share one job. Project Files rows use the file id; other views pass
-        their own key. on_ready(image) runs on the GUI thread with a QImage
-        (null when no thumbnail could be made).
+        Call it on the GUI thread. *slot* keys the request: repeat requests
+        for the same slot and frame share one job. Project Files rows use the
+        file id; other views pass their own key. on_ready(image) runs on the
+        GUI thread with a QImage (null when no thumbnail could be made).
         """
         slot, frame = str(slot or ""), int(frame or 0)
         if on_ready is not None:
