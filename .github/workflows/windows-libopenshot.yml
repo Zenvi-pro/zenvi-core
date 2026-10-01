@@ -1,0 +1,61 @@
+# Builds libopenshot the way the Windows release job does (MSYS2 UCRT64) and checks
+# that the result imports and has the OpenCV effects. The release workflow only runs
+# on version tags, so without this a toolchain change in MSYS2 (a new FFmpeg or
+# OpenCV major) is first seen while cutting a release.
+name: Windows libopenshot build
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - installer/ci-win-msys-libopenshot.sh
+      - installer/ci-win-msys-packages.sh
+      - installer/patch-libopenshot-ffmpeg.py
+      - installer/mac-patches/**
+      - .github/workflows/windows-libopenshot.yml
+      - .github/workflows/release.yml
+
+jobs:
+  libopenshot:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+
+      - name: Harden pacman downloads
+        shell: msys2 {0}
+        run: bash installer/ci-win-msys-packages.sh harden
+
+      # As in the release job: the msys2-runtime upgrade kills the shell, so the
+      # update takes two passes that are allowed to fail.
+      - name: Update MSYS2 (pass 1)
+        continue-on-error: true
+        shell: msys2 {0}
+        run: pacman -Syuu --noconfirm --disable-download-timeout
+
+      - name: Update MSYS2 (pass 2)
+        continue-on-error: true
+        shell: msys2 {0}
+        run: pacman -Syuu --noconfirm --disable-download-timeout
+
+      - name: Install MSYS2 packages
+        shell: msys2 {0}
+        run: bash installer/ci-win-msys-packages.sh install
+
+      - name: Build unittest-cpp, libopenshot-audio, libopenshot
+        shell: msys2 {0}
+        env:
+          MSYSTEM: UCRT64
+        run: bash installer/ci-win-msys-libopenshot.sh
+
+      - name: Verify the bindings load and have the OpenCV effects
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          export PATH="/ucrt64/bin:$PATH"
+          export PYTHONPATH="${GITHUB_WORKSPACE}/.ci-deps/openshot-bundle"
+          /ucrt64/bin/python.exe -u installer/verify_openshot_bundle.py

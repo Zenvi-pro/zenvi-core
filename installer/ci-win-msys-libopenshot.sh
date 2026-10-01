@@ -5,7 +5,8 @@
 #   LIBOPENSHOT_TAG        libopenshot tag        (default: v1.0.0)
 #   LIBOPENSHOT_AUDIO_TAG  libopenshot-audio tag  (default: $LIBOPENSHOT_TAG)
 #   ZENVI_OPENCV           ON|OFF, OpenCV effects (Tracker, Object Detector,
-#                          Stabilizer) via mingw-w64-ucrt-x86_64-opencv (default: ON)
+#                          Stabilizer) via mingw-w64-ucrt-x86_64-opencv (default: ON).
+#                          ON fails the build when libopenshot ends up without them.
 set -euo pipefail
 export PATH="/ucrt64/bin:$PATH"
 
@@ -77,6 +78,11 @@ find "${LOS}" \( -name "CMakeLists.txt" -o -name "*.cmake" \) -print0 | \
     sed -i 's/ avresample//g' "$f"
   done || true
 
+# MSYS2 ships OpenCV 5; libopenshot asks for find_package(OpenCV 4), which rejects
+# it and silently turns the OpenCV effects off. The modules it links (core, video,
+# highgui, dnn, tracking with tracking_legacy.hpp) are all in OpenCV 5.
+sed -i 's/find_package(OpenCV 4)/find_package(OpenCV)/' "${LOS}/src/CMakeLists.txt"
+
 # FFmpeg 7/8: FF_PROFILE_*, side-data, and FFmpeg 8 AVCodec field removal
 # (supported_samplerates / ch_layouts / sample_fmts / pix_fmts).
 python3 "${GITHUB_WORKSPACE}/installer/patch-libopenshot-ffmpeg.py" "${LOS}"
@@ -95,6 +101,10 @@ cmake -S "${LOS}" -B "${LOS}/build" \
   -DENABLE_MAGICK=OFF \
   -DUSE_QT6=OFF \
   -DPython3_EXECUTABLE=/ucrt64/bin/python.exe
+if [[ "${ZENVI_OPENCV}" == "ON" ]] && ! grep -q '^HAVE_OPENCV:BOOL=TRUE' "${LOS}/build/CMakeCache.txt"; then
+  echo "::error::ZENVI_OPENCV=ON but libopenshot configured without OpenCV (Tracker / Object Detector / Stabilizer). See the OpenCV lines in the configure output above."
+  exit 1
+fi
 mkdir -p "${LOS}/build/tests"
 cmake --build "${LOS}/build" --parallel "$(nproc)"
 cmake --install "${LOS}/build"
@@ -217,17 +227,16 @@ if [[ ! -f "${BUNDLE}/ffmpeg.exe" ]]; then
 fi
 
 # OpenCV runtime arrives through the PE dependency walk above (libopenshot.dll
-# imports libopencv_core/video/dnn/tracking). Warn loudly if it is missing, so a
-# silently OpenCV-less build (find_package(OpenCV 4) not found) is visible.
+# imports libopencv_core/video/dnn/tracking).
 if [[ "${ZENVI_OPENCV}" == "ON" ]]; then
   shopt -s nullglob
   _ocv=( "${BUNDLE}"/libopencv_*.dll )
   shopt -u nullglob
   if [[ ${#_ocv[@]} -eq 0 ]]; then
-    echo "::warning::ZENVI_OPENCV=ON but no libopencv_*.dll in the bundle — libopenshot was built without OpenCV (Tracker / Object Detector / Stabilizer unavailable). Check mingw-w64-ucrt-x86_64-opencv and -protobuf are installed."
-  else
-    echo "Bundled ${#_ocv[@]} OpenCV DLL(s)"
+    echo "::error::ZENVI_OPENCV=ON but no libopencv_*.dll in the bundle: the OpenCV effects would fail to load on a clean PC."
+    exit 1
   fi
+  echo "Bundled ${#_ocv[@]} OpenCV DLL(s)"
 fi
 
 ls -la "${BUNDLE}"
