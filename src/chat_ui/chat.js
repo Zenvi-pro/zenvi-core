@@ -2411,7 +2411,7 @@
     }
 
     // Empty state (calm, not an error) shown instead of messages when the active
-    // tab's backend is a CLI agent that's missing or not yet connected.
+    // tab's backend is a CLI agent that's missing, signed out, or not yet connected.
     function updateCliEmptyState() {
         if (!cliEmptyStateEl || !messagesEl || !backendSelect) return;
         var id = backendSelect.value;
@@ -2430,6 +2430,31 @@
             ) + '</div>';
             cliEmptyStateEl.style.display = 'flex';
             messagesEl.style.display = 'none';
+            return;
+        }
+        // Claude Code Anthropic login (before MCP Connect).
+        if (id === 'claude_code' && info.logged_in === false) {
+            cliEmptyStateEl.style.display = 'flex';
+            messagesEl.style.display = 'none';
+            if (cliEmptyStateEl.getAttribute('data-connect-for') === id + ':auth') return;
+            cliEmptyStateEl.setAttribute('data-connect-for', id + ':auth');
+            cliEmptyStateEl.innerHTML =
+                '<div class="chat-cli-connect-msg">' + escapeHtml(findBackendName(id)) +
+                ' needs you to sign in again.</div>' +
+                '<button type="button" id="chat-cli-connect-btn" class="chat-cli-connect-btn">Sign in to Claude</button>' +
+                '<div id="chat-cli-connect-status" class="chat-cli-connect-status"></div>';
+            var authBtn = document.getElementById('chat-cli-connect-btn');
+            if (authBtn) {
+                authBtn.addEventListener('click', function () {
+                    authBtn.disabled = true;
+                    authBtn.textContent = 'Opening browser…';
+                    var statusEl = document.getElementById('chat-cli-connect-status');
+                    if (statusEl) { statusEl.textContent = ''; statusEl.className = 'chat-cli-connect-status'; }
+                    getBridge(function (bridge) {
+                        if (bridge && bridge.signInCli) bridge.signInCli(id);
+                    });
+                });
+            }
             return;
         }
         if (!info.registered) {
@@ -2466,6 +2491,55 @@
         cliEmptyStateEl.style.display = 'none';
         messagesEl.style.display = '';
     }
+
+    window.showCliAuthRecovery = function (backendId, message) {
+        if (!messagesEl) return;
+        var existing = document.getElementById('chat-cli-auth-recovery');
+        if (existing) existing.remove();
+        var card = document.createElement('div');
+        card.id = 'chat-cli-auth-recovery';
+        card.className = 'chat-cli-auth-recovery';
+        card.innerHTML =
+            '<div class="chat-cli-connect-msg">' + escapeHtml(message ||
+                'Claude Code needs you to sign in again. Your last request was not run.') +
+            '</div>' +
+            '<button type="button" id="chat-cli-auth-btn" class="chat-cli-connect-btn">Sign in to Claude</button>' +
+            '<div id="chat-cli-auth-status" class="chat-cli-connect-status"></div>';
+        messagesEl.appendChild(card);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+        var btn = document.getElementById('chat-cli-auth-btn');
+        if (btn) {
+            btn.addEventListener('click', function () {
+                btn.disabled = true;
+                btn.textContent = 'Opening browser…';
+                var statusEl = document.getElementById('chat-cli-auth-status');
+                if (statusEl) { statusEl.textContent = ''; statusEl.className = 'chat-cli-connect-status'; }
+                getBridge(function (bridge) {
+                    if (bridge && bridge.signInCli) bridge.signInCli(backendId || 'claude_code');
+                });
+            });
+        }
+    };
+
+    window.onCliAuthResult = function (backendId, ok, message) {
+        var statusEl = document.getElementById('chat-cli-auth-status') ||
+            document.getElementById('chat-cli-connect-status');
+        var btn = document.getElementById('chat-cli-auth-btn') ||
+            document.getElementById('chat-cli-connect-btn');
+        if (statusEl) {
+            statusEl.textContent = message || (ok ? 'Signed in. Retrying…' : 'Sign-in failed.');
+            statusEl.className = 'chat-cli-connect-status ' + (ok ? 'ok' : 'error');
+        }
+        if (btn && !ok) {
+            btn.disabled = false;
+            btn.textContent = 'Sign in to Claude';
+        }
+        if (ok) {
+            var card = document.getElementById('chat-cli-auth-recovery');
+            if (card) card.remove();
+            if (cliEmptyStateEl) cliEmptyStateEl.removeAttribute('data-connect-for');
+        }
+    };
 
     window.setCliStatus = function (statusJson) {
         try { cliStatus = JSON.parse(statusJson) || {}; } catch (e) { cliStatus = {}; }
