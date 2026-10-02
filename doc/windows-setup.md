@@ -41,7 +41,9 @@ Qt WebEngine (used by Director, plan review, and the chat UI panels) is not avai
       mingw64/mingw-w64-x86_64-python-pyqt5 \
       mingw64/mingw-w64-x86_64-python-pip \
       mingw64/mingw-w64-x86_64-python-pyzmq \
-      mingw64/mingw-w64-x86_64-rust
+      mingw64/mingw-w64-x86_64-rust \
+      mingw-w64-x86_64-opencv \
+      mingw-w64-x86_64-protobuf
 
     pip3 install httplib2 tinys3 github3.py==0.9.6 requests --break-system-packages
     ```
@@ -87,11 +89,18 @@ Qt WebEngine (used by Director, plan review, and the chat UI panels) is not avai
 8. Build libopenshot into MinGW's `/mingw64`:
 
     ```sh
+    # zenvi-core first: it carries the libopenshot patch used below.
+    git clone https://github.com/Zenvi-pro/zenvi-core.git
     git clone https://github.com/OpenShot/libopenshot.git
-    cd libopenshot && mkdir build && cd build
+    cd libopenshot
+    # MSYS2 ships OpenCV 5; libopenshot asks for OpenCV 4 and would build without
+    # the Stabilizer, Tracker and Object Detector effects.
+    python ~/zenvi-core/installer/patch-libopenshot-opencv5.py .
+    mkdir build && cd build
     cmake -G "MSYS Makefiles" -DCMAKE_MAKE_PROGRAM=mingw32-make \
       -DCMAKE_INSTALL_PREFIX:PATH=/mingw64 \
       -DDISABLE_TESTS=1 \
+      -DENABLE_OPENCV=ON \
       -DCMAKE_CXX_FLAGS="-include cstdint" ../
     make
     make install
@@ -104,11 +113,10 @@ Qt WebEngine (used by Director, plan review, and the chat UI panels) is not avai
     pacman -S --needed mingw64/mingw-w64-x86_64-python-cx-freeze mingw64/mingw-w64-x86_64-python-lief
     ```
 
-10. Clone zenvi-core, install PyQt5, cffi, zstandard, and Qt WebKit via pacman, then set up the venv:
+10. In zenvi-core (cloned in step 8), install PyQt5, cffi, zstandard, and Qt WebKit via pacman, then set up the venv:
 
     ```sh
-    git clone https://github.com/Zenvi-pro/zenvi-core.git
-    cd zenvi-core
+    cd ~/zenvi-core
 
     pacman -S --needed \
       mingw-w64-x86_64-python-pyqt5 \
@@ -137,7 +145,11 @@ Fresh MSYS2 installs: `pacman -Syu` can close the window mid-run before step 1 f
 
 `pip` can fail compiling `cryptography` and `rpds-py` from `requirements-noqt.txt`; install `mingw-w64-x86_64-python-cryptography` and `mingw-w64-x86_64-python-rpds-py` via pacman instead.
 
-On an existing MSYS2 install, `pacman -Syu` does a full system upgrade that can break an existing libopenshot build; install only the needed packages instead.
+On an existing MSYS2 install, `pacman -Syu` does a full system upgrade (new FFmpeg, new GCC), after which an existing libopenshot build no longer loads. `run-win.ps1` installs only the packages it needs and rebuilds libopenshot and libopenshot-audio when the existing build stops importing.
+
+The exception is an install older than MSYS2's current GCC major version (GCC 15 packages while MSYS2 builds with GCC 16). Single packages cannot be added to it: anything built since pulls in the new `gcc-libs`, and C++ programs built against the old one (cmake, Qt, libopenshot) then exit without a message. `run-win.ps1` stops with an error in that case. Run `pacman -Syu` until it reports nothing to do, then run the script again.
+
+Stabilizer, Tracker and Object Detector need libopenshot built with OpenCV. To check a build: `PYTHONPATH=~/libopenshot/build/bindings/python python installer/verify_openshot_bundle.py` lists the effects and fails when those three are missing.
 
 MSYS2's default path, `C:\msys64`, is hardcoded in a few places, so adjust manually if yours differs.
 
