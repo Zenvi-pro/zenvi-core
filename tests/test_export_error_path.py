@@ -290,3 +290,50 @@ def test_reject_after_successful_export_does_not_double_cleanup(monkeypatch):
 
     assert dlg.timeline.Close.call_count == 1, "reject() must not re-close the timeline"
     assert dlg.timeline.ClearAllCache.call_count == 1, "reject() must not re-clear the cache"
+
+
+def test_headless_run_export_leaves_widgets_and_the_auto_save_timer_alone(monkeypatch):
+    """An assistant export runs on a worker thread, where Qt widgets and timers
+    must not be touched; the editor stays in use, so auto-save keeps running."""
+    dlg = _base_dlg(monkeypatch)
+    dlg._headless = True
+    dlg.progressExportVideo = MagicMock()
+    dlg.cboSimpleVideoProfile = MagicMock()
+    dlg.cboSimpleVideoProfile.currentData.side_effect = AssertionError("read a widget off the GUI thread")
+    paused = []
+    monkeypatch.setattr("windows.export.pause_window_auto_save", lambda: paused.append(True) or True)
+    pumped = []
+    monkeypatch.setattr("windows.export.QCoreApplication.processEvents", lambda *a: pumped.append(True))
+
+    writer = MagicMock()
+    ffwriter_cls = MagicMock(return_value=writer)
+    ffwriter_cls.IsValidCodec = MagicMock(return_value=True)
+    monkeypatch.setattr("windows.export.openshot.FFmpegWriter", ffwriter_cls)
+
+    # 60 fps from a 30 fps project: the rescale branch must not read the dialog's combo box.
+    dlg.run_export("/tmp/out.mp4", _video_settings(fps={"num": 60, "den": 1}), _audio_settings(), "Video & Audio")
+
+    assert writer.WriteFrame.call_count == 2
+    assert paused == []
+    assert pumped == []
+    assert dlg.progressExportVideo.method_calls == []
+
+
+def test_headless_export_cancelled_during_the_encoder_trial_never_opens_the_writer(monkeypatch):
+    dlg = _base_dlg(monkeypatch)
+    dlg._headless = True
+
+    def cancelled_meanwhile(codec, poll=None):
+        dlg.exporting = False
+        return codec
+
+    monkeypatch.setattr("windows.export.safe_video_encoder", cancelled_meanwhile)
+    writer = MagicMock()
+    ffwriter_cls = MagicMock(return_value=writer)
+    ffwriter_cls.IsValidCodec = MagicMock(return_value=True)
+    monkeypatch.setattr("windows.export.openshot.FFmpegWriter", ffwriter_cls)
+
+    dlg.run_export("/tmp/out.mp4", _video_settings(), _audio_settings(), "Video & Audio")
+
+    writer.Open.assert_not_called()
+    writer.WriteFrame.assert_not_called()

@@ -31,6 +31,7 @@ import os
 import time
 import tempfile
 import math
+from contextlib import contextmanager
 
 import openshot
 
@@ -55,7 +56,7 @@ from classes.logger import log
 from classes.app import get_app
 from classes.metrics import track_metric_screen, track_metric_error
 from classes.query import File
-from classes.qt_main_thread import invoke_on_gui
+from classes.qt_main_thread import call_on_gui, invoke_on_gui
 
 import json
 
@@ -1182,15 +1183,19 @@ class Export(QDialog):
         if video_bitrate_text is None:
             video_bitrate_text = ""
 
+        # A headless export runs on a worker thread while the editor stays in
+        # use: no widget, timer or event pump may be touched from here.
+        headless = getattr(self, "_headless", False)
+
         # Progress bar if present
-        if hasattr(self, 'progressExportVideo') and self.progressExportVideo is not None:
+        if not headless and hasattr(self, 'progressExportVideo') and self.progressExportVideo is not None:
             self.progressExportVideo.setMinimum(int(video_settings.get("start_frame")))
             self.progressExportVideo.setMaximum(int(video_settings.get("end_frame")))
             self.progressExportVideo.setValue(int(video_settings.get("start_frame")))
 
         owns_pause = not getattr(self, "_auto_save_paused", False)
         if owns_pause:
-            self._auto_save_was_active = pause_window_auto_save()
+            self._auto_save_was_active = False if headless else pause_window_auto_save()
             self._auto_save_paused = True
             # Reset per-export-attempt guards. Only the top-level call (not
             # the audio-codec-failure retry recursion below) should do this,
@@ -1236,7 +1241,8 @@ class Export(QDialog):
                     self.project.rescale_keyframes(export_fps_factor)
                     self._fps_rescaled = True
                 path_to_use = profile_path_for_rescale
-                if not path_to_use and hasattr(self, 'cboSimpleVideoProfile') and self.cboSimpleVideoProfile is not None:
+                if (not path_to_use and not headless
+                        and hasattr(self, 'cboSimpleVideoProfile') and self.cboSimpleVideoProfile is not None):
                     path_to_use = self.cboSimpleVideoProfile.currentData()
                 if not path_to_use:
                     # Resolve from project profile name
@@ -1473,8 +1479,10 @@ class Export(QDialog):
                     headless = getattr(self, "_headless", False)
                     safe_vc = safe_video_encoder(
                         vc, poll=None if headless else QCoreApplication.processEvents)
-                    if not headless and not self.exporting:
+                    if not self.exporting:
                         # Cancelled while the trial ran: stop before the writer opens a file.
+                        if headless:
+                            return
                         if getattr(self, "_export_cancel_confirmed", False):
                             self._export_cancel_confirmed = False
                             super(Export, self).reject()
@@ -1702,7 +1710,8 @@ class Export(QDialog):
                         )
                         # Serial path still runs on the UI thread for the dialog;
                         # processEvents keeps the cancel button alive.
-                        QCoreApplication.processEvents()
+                        if not headless:
+                            QCoreApplication.processEvents()
 
                     max_frame = frame
                     try:
@@ -2357,10 +2366,57 @@ def get_default_export_settings():
     return video_settings, audio_settings, export_type, default_path
 
 
+# Headless (assistant) exports in flight. They encode on a worker thread, so the
+# editor can be closed, or the tool call can time out, while one is still running.
+_headless_exports = []
+# Building the Export (loading its UI, opening the export timeline) waits for the GUI thread.
+_HEADLESS_SETUP_TIMEOUT = 120
+
+
+def cancel_headless_exports(wait_seconds=0):
+    """Ask running headless exports to stop and wait up to *wait_seconds* for them.
+
+    Returns True once none is left. Safe on the GUI thread: a cancelled export
+    winds down without it.
+    """
+    for win in list(_headless_exports):
+        win.exporting = False
+    deadline = time.time() + wait_seconds
+    while _headless_exports and time.time() < deadline:
+        time.sleep(0.05)
+    return not _headless_exports
+
+
+@contextmanager
+def _headless_export():
+    """An Export for a headless render: built on the GUI thread (it is a QDialog)
+    and deleted there, whichever thread runs the encode."""
+    def _make():
+        # Shutdown cancels the exports registered here, from this same thread:
+        # one that registers later would encode while libopenshot is torn down.
+        if getattr(getattr(get_app(), "window", None), "shutting_down", False) is True:
+            raise RuntimeError("the editor is closing")
+        win = Export()
+        win.exporting = True
+        win._headless = True
+        _headless_exports.append(win)
+        return win
+
+    win = call_on_gui(_make, timeout=_HEADLESS_SETUP_TIMEOUT)
+    try:
+        yield win
+    finally:
+        _headless_exports.remove(win)
+        win.deleteLater()
+
+
 def export_video_headless(export_file_path, video_settings=None, audio_settings=None, export_type=None,
                           video_bitrate_text=None, profile_path_for_rescale=None):
     """
-    Run export without showing the dialog. Call from main thread.
+    Run export without showing the dialog. Call from a worker thread (a QThread, see
+    editor_tools.project_export_render.run_on_qthread): the encode runs on the caller's
+    thread and only the Export object is built on the GUI thread, so the editor stays
+    responsive. Called on the GUI thread it still works, and blocks it for the whole render.
     If video_settings, audio_settings, or export_type is None, use default/last-used from project.
     video_bitrate_text is the rate as the dialog shows it ("23 crf", "8 Mb/s"); when omitted it
     comes from a string video_bitrate, so crf/cqp/qp presets encode in quality mode (they were
@@ -2402,63 +2458,61 @@ def export_video_headless(export_file_path, video_settings=None, audio_settings=
     if File.get(path=export_file_path):
         return _("Output path is an input file. Choose a different path.")
 
-    win = Export()
-    win.exporting = True
-    win._headless = True
-    # Audio is kept rather than pre-emptively stripped: an unattended export is
-    # verified by its transcript, so a silent file fails the check. A genuinely
-    # failing audio codec is still retried as Video Only below.
-    try:
-        max_frame = win.timeline.GetMaxFrame()
-        if use_default_range and max_frame:
-            # The project's stored range is frequently a stale default (e.g. 300
-            # frames) that would silently truncate the export to a few seconds,
-            # so fit it to the timeline we are actually exporting.
-            video_settings = dict(video_settings)
-            video_settings["start_frame"] = 1
-            video_settings["end_frame"] = max_frame
-        elif not video_settings.get("end_frame") or video_settings.get("end_frame") < video_settings.get("start_frame", 1):
-            video_settings["end_frame"] = max_frame
-        if video_settings.get("start_frame", 1) >= video_settings["end_frame"]:
-            return _("Invalid range of frames to export.")
-    except Exception:
-        pass
-    try:
-        win.run_export(
-            export_file_path,
-            video_settings,
-            audio_settings,
-            export_type,
-            video_bitrate_text=video_bitrate_text,
-            profile_path_for_rescale=profile_path_for_rescale,
-        )
-    except Exception as e:
-        err = str(e)
-        err_lower = err.lower()
-        # If opening the audio codec failed, retry with Video Only so the user still gets a video file.
-        audio_codec_failed = (
-            "audio codec" in err_lower or "open audio codec" in err_lower or "could not open" in err_lower and "audio" in err_lower
-        )
-        if audio_codec_failed and export_type in [_("Video & Audio"), _("Audio Only")]:
+    with _headless_export() as win:
+        # Audio is kept rather than pre-emptively stripped: an unattended export is
+        # verified by its transcript, so a silent file fails the check. A genuinely
+        # failing audio codec is still retried as Video Only below.
+        try:
+            max_frame = win.timeline.GetMaxFrame()
+            if use_default_range and max_frame:
+                # The project's stored range is frequently a stale default (e.g. 300
+                # frames) that would silently truncate the export to a few seconds,
+                # so fit it to the timeline we are actually exporting.
+                video_settings = dict(video_settings)
+                video_settings["start_frame"] = 1
+                video_settings["end_frame"] = max_frame
+            elif not video_settings.get("end_frame") or video_settings.get("end_frame") < video_settings.get("start_frame", 1):
+                video_settings["end_frame"] = max_frame
+            if video_settings.get("start_frame", 1) >= video_settings["end_frame"]:
+                return _("Invalid range of frames to export.")
+        except Exception:
+            pass
+        try:
+            win.run_export(
+                export_file_path,
+                video_settings,
+                audio_settings,
+                export_type,
+                video_bitrate_text=video_bitrate_text,
+                profile_path_for_rescale=profile_path_for_rescale,
+            )
+        except Exception as e:
+            err = str(e)
+            err_lower = err.lower()
+            # If opening the audio codec failed, retry with Video Only so the user still gets a video file.
+            audio_codec_failed = (
+                "audio codec" in err_lower or "open audio codec" in err_lower or "could not open" in err_lower and "audio" in err_lower
+            )
+            if not (audio_codec_failed and export_type in [_("Video & Audio"), _("Audio Only")]):
+                return err
             log.info("Headless export: audio codec failed (%s), retrying as Video Only", err.strip())
             try:
-                win2 = Export()
-                win2.exporting = True
-                win2._headless = True
-                max_frame = win2.timeline.GetMaxFrame()
-                if not video_settings.get("end_frame") or video_settings["end_frame"] < video_settings.get("start_frame", 1):
-                    video_settings = dict(video_settings)
-                    video_settings["end_frame"] = max_frame
-                win2.run_export(
-                    export_file_path,
-                    video_settings,
-                    audio_settings,
-                    _("Video Only"),
-                    video_bitrate_text=video_bitrate_text,
-                    profile_path_for_rescale=profile_path_for_rescale,
-                )
+                with _headless_export() as win2:
+                    max_frame = win2.timeline.GetMaxFrame()
+                    if not video_settings.get("end_frame") or video_settings["end_frame"] < video_settings.get("start_frame", 1):
+                        video_settings = dict(video_settings)
+                        video_settings["end_frame"] = max_frame
+                    win2.run_export(
+                        export_file_path,
+                        video_settings,
+                        audio_settings,
+                        _("Video Only"),
+                        video_bitrate_text=video_bitrate_text,
+                        profile_path_for_rescale=profile_path_for_rescale,
+                    )
             except Exception:
                 return err
-            return None
-        return err
+        if not win.exporting:
+            # cancel_headless_exports(): the file on disk is incomplete.
+            return _("The export was cancelled.")
     return None
