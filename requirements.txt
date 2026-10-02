@@ -46,3 +46,6 @@ uvicorn>=0.30
 
 # Error reporting
 sentry-sdk
+
+# Web / YouTube ingest for Assistant + MCP (pinned release, not a git fork).
+yt-dlp>=2024.8.6,<2027

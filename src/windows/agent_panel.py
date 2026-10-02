@@ -378,6 +378,11 @@ class AgentPanel(QFrame):
                     % binary)
 
         version = _format_version(detected.get("version"))
+        if backend_id == "claude_code" and detected.get("logged_in") is False:
+            return (COLOR_PARTIAL, self._tr("needs sign-in"), version,
+                    (self._tr("Sign in"), True), False,
+                    self._tr("%s's Anthropic login expired. Sign in again to continue.")
+                    % name)
         if not detected.get("registered"):
             return (COLOR_PARTIAL, self._tr("not connected"), version,
                     (self._tr("Connect"), True), False,
@@ -461,6 +466,26 @@ class AgentPanel(QFrame):
     def _on_connect_requested(self, backend_id):
         chat = self._chat()
         if chat is None:
+            return
+        # Sign-in is Anthropic OAuth; Connect is MCP registration — do not mix.
+        status = {}
+        try:
+            status = chat.cli_status() or {}
+        except Exception:
+            pass
+        if backend_id == "claude_code" and (
+            status.get("claude_code") or {}
+        ).get("logged_in") is False:
+            self._connecting = backend_id
+            self._connect_error.pop(backend_id, None)
+            self.refresh()
+            # Login can take several minutes in the browser.
+            self._connect_timer.start(max(CONNECT_TIMEOUT_MS, 6 * 60 * 1000))
+            try:
+                chat._sign_in_cli(backend_id)
+            except Exception:
+                log.error("Failed to start Claude sign-in for %s", backend_id, exc_info=True)
+                self.on_connect_result(backend_id, False, self._tr("Could not start sign-in."))
             return
         self._connecting = backend_id
         self._connect_error.pop(backend_id, None)
