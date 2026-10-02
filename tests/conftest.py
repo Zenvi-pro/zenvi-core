@@ -140,6 +140,20 @@ class _StubQtApiModule(_StubQtModule):
         return value
 
 
+class _SkipWithoutLibopenshot(importlib.abc.MetaPathFinder):
+    """Real-Qt run without libopenshot: skip the test module that imports it.
+
+    The real-qt-tests CI job has PyQt5 from pip and no libopenshot. A test file
+    that reaches ``import openshot`` (often through src/) without its own
+    importorskip was a collection error there, which failed the whole job.
+    """
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "openshot":
+            pytest.skip("needs libopenshot", allow_module_level=True)
+        return None
+
+
 class _StubPyQt5Finder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     """Resolve any not-yet-stubbed ``PyQt5.*`` import to a MagicMock module.
 
@@ -183,6 +197,8 @@ def _install_stubs():
             raise RuntimeError(
                 "ZENVI_REAL_QT=1 but PyQt5 is not installed in this environment"
             )
+        if importlib.util.find_spec("openshot") is None:
+            sys.meta_path.insert(0, _SkipWithoutLibopenshot())
         return False
 
     pyqt5 = types.ModuleType("PyQt5")
