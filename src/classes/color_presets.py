@@ -18,6 +18,11 @@ COLOR_PRESET_SUNNY = "sunny"
 COLOR_PRESET_GLOOMY = "gloomy"
 COLOR_PRESET_BOOST_COLOR = "boost_color"
 
+# libopenshot enum values (openshot.LINEAR / openshot.AUTO); the fallbacks keep
+# these payload helpers usable where libopenshot is not loaded (headless tests).
+_LINEAR = getattr(openshot, "LINEAR", 1)
+_HANDLE_AUTO = getattr(openshot, "AUTO", 0)
+
 
 def default_curve_data():
     return {
@@ -72,8 +77,8 @@ def _curve_node(node_id, x_value, y_value):
         "left_handle_y": _constant_property(1.0),
         "right_handle_x": _constant_property(0.5),
         "right_handle_y": _constant_property(0.0),
-        "interpolation": int(openshot.LINEAR),
-        "handle_type": int(openshot.AUTO),
+        "interpolation": int(_LINEAR),
+        "handle_type": int(_HANDLE_AUTO),
     }
 
 
@@ -98,8 +103,9 @@ def _wheel_entry(color="#ffffff", amount=0.0, luma=0.0):
     }
 
 
-def _set_curve(effect_json, key, points, enabled=True):
-    effect_json[key] = {
+def curve_data(points, enabled=True):
+    """A Color Grade curve from [{"x", "y"}...] points (0-1), linear between nodes."""
+    return {
         "enabled": _constant_property(1.0 if enabled else 0.0),
         "nodes": [
             _curve_node(index, point["x"], point["y"])
@@ -108,7 +114,17 @@ def _set_curve(effect_json, key, points, enabled=True):
     }
 
 
-def apply_color_grade_preset(effect_json, preset_name):
+def wheel_entry(color="#ffffff", amount=0.0, luma=0.0):
+    """One Color Grade wheel (global/shadows/midtones/highlights): tint color, amount 0-1, luma -1..1."""
+    return _wheel_entry(color, amount, luma)
+
+
+def _set_curve(effect_json, key, points, enabled=True):
+    effect_json[key] = curve_data(points, enabled)
+
+
+def neutral_color_grade(effect_json):
+    """A copy of *effect_json* with every Color Grade control back at neutral (no LUT, flat curves)."""
     payload = copy.deepcopy(effect_json or {})
 
     for key, value in (
@@ -131,6 +147,11 @@ def apply_color_grade_preset(effect_json, preset_name):
     payload["curve_red"] = default_curve_data()
     payload["curve_green"] = default_curve_data()
     payload["curve_blue"] = default_curve_data()
+    return payload
+
+
+def apply_color_grade_preset(effect_json, preset_name):
+    payload = neutral_color_grade(effect_json)
 
     if preset_name == COLOR_PRESET_AUTO_CONTRAST:
         _set_scalar(payload, "contrast", 0.18)

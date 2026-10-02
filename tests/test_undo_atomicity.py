@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 
 from classes import tool_handlers
 from classes import updates as updates_module
+from classes.agent_tools.receipt import is_error_result, parse_receipt
 from classes.update_queue import UpdateQueue, UpdatesRouter
 from classes.updates import UpdateManager
 
@@ -124,7 +125,10 @@ def test_a_multi_mutation_tool_call_is_one_undo_step():
 
     with _driving(app), \
          _register("place_motion_graphic_tool", _place):
-        assert tool_handlers.execute_tool("place_motion_graphic_tool", {}) == "placed"
+        out = tool_handlers.execute_tool("place_motion_graphic_tool", {})
+    receipt = parse_receipt(out)
+    assert receipt is not None
+    assert receipt["summary"] == "placed"
 
     assert len(manager.actionHistory) == 3
     assert len(_transactions(manager)) == 1, (
@@ -149,7 +153,7 @@ def test_one_undo_reverses_the_whole_tool_call():
         assert _ids(store) == ["existing", "mg"]
         out = tool_handlers.execute_tool("undo_tool", {})
 
-    assert not out.startswith("Error:"), out
+    assert not is_error_result(out), out
     assert _ids(store) == ["existing"], "one undo must remove the placed clip"
     assert manager.actionHistory == []
 
@@ -208,7 +212,10 @@ def test_a_handler_opening_its_own_transaction_joins_the_call_group():
 
     with _driving(app), \
          _register("generate_video_and_add_to_timeline_tool", _composite):
-        tool_handlers.execute_tool("generate_video_and_add_to_timeline_tool", {})
+        tool_handlers.execute_tool(
+            "generate_video_and_add_to_timeline_tool",
+            {"prompt": "test"},
+        )
 
     assert len(_transactions(manager)) == 1
 
@@ -276,7 +283,7 @@ def test_undo_reports_an_error_when_the_timeline_did_not_change():
     with _driving(app):
         out = tool_handlers.execute_tool("undo_tool", {})
 
-    assert out.startswith("Error:"), out
+    assert is_error_result(out), out
     assert "did not change" in out
     assert _ids(store) == ["stuck"]
 
@@ -292,7 +299,7 @@ def test_undo_of_a_non_clip_action_is_not_reported_as_a_failure():
     with _driving(app):
         out = tool_handlers.execute_tool("undo_tool", {})
 
-    assert not out.startswith("Error:"), out
+    assert not is_error_result(out), out
     assert "Undid 1 action" in out
 
 

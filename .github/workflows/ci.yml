@@ -36,9 +36,43 @@ jobs:
     - name: Pyright
       run: pyright
 
+  # tests/ files that ask for a real PyQt5 (pytest.importorskip("PyQt5...")).
+  # unit-tests stubs Qt, so conftest ignores them there, and pytest-suite runs
+  # without ZENVI_REAL_QT, so they never ran in CI. PyQt5 wheel, offscreen
+  # platform, no libopenshot: files that need it skip themselves.
+  real-qt-tests:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+        cache: pip
+        cache-dependency-path: |
+          requirements-dev.txt
+          requirements-noqt.txt
+
+    - name: Install dependencies
+      run: pip install -r requirements-dev.txt "PyQt5>=5.15,<5.16"
+
+    - name: Run real-Qt tests
+      env:
+        ZENVI_REAL_QT: "1"
+        QT_QPA_PLATFORM: offscreen
+      run: |
+        mapfile -t files < <(grep -l -E "importorskip\(\s*[\"']PyQt5" tests/test_*.py)
+        pytest "${files[@]}" -q -rs
+
   build:
     runs-on: ${{ matrix.os }}
+    # The apt/PPA install has hung for hours; fail it instead of holding the PR.
+    timeout-minutes: 30
     strategy:
+      # One OS timing out must not cancel the other's result.
+      fail-fast: false
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04]
     defaults:
@@ -76,6 +110,8 @@ jobs:
     # Stale tests should be fixed or explicitly pytest.mark.skip'd rather
     # than silently ignored.
     runs-on: ubuntu-24.04
+    # The apt/PPA install has hung for hours; fail it instead of holding the PR.
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash
@@ -99,6 +135,9 @@ jobs:
       run: |
         # Hard-gate on the export-acceleration suite (new in this plan).
         xvfb-run -a python3 -m pytest tests/test_export_acceleration.py -q --tb=short
+        # Real-Qt test that imports the main window, so it needs the libopenshot
+        # this job installs (the real-qt-tests job has none and skips it).
+        ZENVI_REAL_QT=1 xvfb-run -a python3 -m pytest tests/test_undo_action_routing.py -q --tb=short
         # Broader suite: continue reporting while stale tests are triaged.
         # Remove continue-on-error once Phase 0 triage makes this green.
         xvfb-run -a python3 -m pytest tests/ -q --tb=line \

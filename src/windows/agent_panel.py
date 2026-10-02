@@ -26,6 +26,7 @@ from qt_api import (
 )
 
 from classes.logger import log
+from windows.agent_runners import CLI_RUNNERS
 
 
 PANEL_WIDTH = 340        # 320 crowds "Zenvi Assistant" against "● not connected"
@@ -56,7 +57,7 @@ COLOR_READY = "#22c55e"     # installed and registered with Zenvi's MCP server
 COLOR_PARTIAL = "#f59e0b"   # installed, not connected yet
 COLOR_MISSING = "#6b7280"   # not installed / not probed yet
 
-CLI_BINARIES = {"claude_code": "claude", "codex": "codex"}
+CLI_BINARIES = {backend: runner.CLI_NAME for backend, runner in CLI_RUNNERS.items()}
 
 _TOOL_COUNT = None
 
@@ -335,6 +336,15 @@ class AgentPanel(QFrame):
     def _chat(self):
         return getattr(self.window, "dockAIChat", None)
 
+    def _has_models(self, backend_id):
+        """Whether the chat's model pill offers anything for *backend_id*."""
+        try:
+            from windows.agent_runners import models_for_backend
+            return bool(models_for_backend(backend_id))
+        except Exception:
+            log.debug("model lineup unavailable", exc_info=True)
+            return False
+
     def _state_for(self, backend_id, detected):
         """(color, word, desc, connect, danger, tooltip) for one backend."""
         if backend_id not in CLI_BINARIES:
@@ -410,8 +420,8 @@ class AgentPanel(QFrame):
                     backend_id, status.get(backend_id))
                 row.set_state(backend_id == active, color, word, desc, connect, danger, tip)
 
-            if active == "codex":
-                self.footer.setText(self._tr("Codex uses the model from its own config"))
+            if active in CLI_BINARIES and not self._has_models(active):
+                self.footer.setText(self._tr("This agent uses the model from its own config"))
             else:
                 self.footer.setText(self._tr("Model is set in the chat panel  →"))
         finally:
@@ -501,8 +511,9 @@ class AgentPanel(QFrame):
                 # user to export a token; that cannot fit one line, so point at
                 # the chat panel, which shows it in full.
                 extra = "\n" in (message or "")
+                # Connecting is not choosing: the radio stays where it was.
                 row.set_state(
-                    True, COLOR_READY, self._tr("connected"),
+                    bool(row.property("selected")), COLOR_READY, self._tr("connected"),
                     self._tr("Connected — one more step, see the chat panel") if extra
                     else self._tr("Connected — verifying…"),
                     None, False, message or "",

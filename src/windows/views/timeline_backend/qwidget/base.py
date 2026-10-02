@@ -49,6 +49,7 @@ from qt_api import (
 from qt_api import QtCore
 from qt_api import (
     QPainter,
+    QPen,
     QCursor,
     QIcon,
     QColor,
@@ -155,6 +156,11 @@ class TimelineWidgetBase(QWidget):
         self.new_item = None
         self.item_type = None
         self.setAcceptDrops(True)
+        # Reachable with Tab and by clicking, like the other panels. Edit
+        # shortcuts route by keyboard focus, and a click here must take it
+        # away from the chat. Timeline shortcuts stay window-wide.
+        self.setFocusPolicy(Qt.StrongFocus)
+        self._keyboard_focus = False
 
         # Translate object
         _ = get_app()._tr
@@ -784,7 +790,23 @@ class TimelineWidgetBase(QWidget):
 
     def _snap_time(self, seconds):
         """Snap a time in seconds to the nearest frame boundary."""
-        return round(seconds * self.fps_float) / self.fps_float
+        from classes import frame_time as ft
+        from classes.clip_utils import project_fps_fraction
+        try:
+            fps = project_fps_fraction()
+        except Exception:
+            fps = float(self.fps_float or 30.0) or 30.0
+        return ft.snap(float(seconds or 0.0), fps)
+
+    def _quantize_span(self, position, start, end):
+        """Quantize position/start/end preserving duration in frames."""
+        from classes import frame_time as ft
+        from classes.clip_utils import project_fps_fraction
+        try:
+            fps = project_fps_fraction()
+        except Exception:
+            fps = float(self.fps_float or 30.0) or 30.0
+        return ft.quantize_span(float(position or 0.0), float(start or 0.0), float(end or 0.0), fps)
 
     def _seconds_from_x(self, x_pos):
         """Convert an x position in widget coordinates to timeline seconds."""
@@ -1135,6 +1157,7 @@ class TimelineWidgetBase(QWidget):
             self.playhead_painter.paint(painter)
             self.ruler_painter.paint_overlay(painter)
             self.scrollbar_painter.paint(painter)
+            self._paint_focus_ring(painter)
         finally:
             if painter.isActive():
                 painter.end()
@@ -1142,6 +1165,28 @@ class TimelineWidgetBase(QWidget):
             if self._repaint_after_paint:
                 self._repaint_after_paint = False
                 QTimer.singleShot(0, self.update)
+
+    def _paint_focus_ring(self, painter):
+        """Outline the timeline while it has keyboard focus from Tab (not a click)."""
+        if not (self._keyboard_focus and self.hasFocus()):
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, False)
+        painter.setPen(QPen(QColor("#4d9cf6"), 2))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(QRectF(self.rect()).adjusted(1, 1, -1, -1))
+        painter.restore()
+
+    def focusInEvent(self, event):
+        self._keyboard_focus = event.reason() in (
+            Qt.TabFocusReason, Qt.BacktabFocusReason, Qt.ShortcutFocusReason)
+        super().focusInEvent(event)
+        self.update()
+
+    def focusOutEvent(self, event):
+        self._keyboard_focus = False
+        super().focusOutEvent(event)
+        self.update()
 
     def _paint_drag_preview(self, painter):
         """Paint transient drag previews without inserting real timeline items."""
@@ -2629,40 +2674,40 @@ class TimelineWidgetBase(QWidget):
         self._keyframes_dirty = True
         self.update()
 
+    @staticmethod
+    def _timeline_items():
+        """Every transition and clip in the project as (object, type).
+
+        Not the laid-out geometry: that only holds the items in (or near) the
+        visible part of the timeline, so selecting from it missed clips on
+        tracks scrolled out of view.
+        """
+        return ([(t, "transition") for t in Transition.filter()]
+                + [(c, "clip") for c in Clip.filter()])
+
     def select_all_items(self):
-        """Select all clips and transitions currently laid out on the timeline."""
-        self.geometry.ensure()
+        """Select every clip and transition on the timeline (Ctrl+A)."""
         self.win.clearSelections()
-        for _rect, item, _selected, item_type in self.geometry.iter_items(viewport=False):
-            item_id = getattr(item, "id", None)
-            if item_id is None:
-                continue
-            self._select_timeline_item(item_id, item_type, False)
+        for item, item_type in self._timeline_items():
+            self._select_timeline_item(item.id, item_type, False)
 
     def selectRipple(self, item_id, item_type):
         """Select the item and everything to its right on the same layer."""
         if not item_id or not item_type:
             return
-        self.geometry.ensure()
-        target = None
-        target_layer = None
-        target_pos = None
-        for _rect, obj, _sel, typ in self.geometry.iter_items(viewport=False):
-            if typ == item_type and str(getattr(obj, "id", "")) == str(item_id):
-                data = getattr(obj, "data", {}) or {}
-                target = obj
-                target_layer = data.get("layer")
-                try:
-                    target_pos = float(data.get("position"))
-                except (TypeError, ValueError):
-                    target_pos = None
-                break
-        if target is None or target_layer is None or target_pos is None:
+        items = self._timeline_items()
+        target = next((obj for obj, typ in items
+                       if typ == item_type and str(obj.id) == str(item_id)), None)
+        data = getattr(target, "data", None) or {}
+        target_layer = data.get("layer")
+        try:
+            target_pos = float(data.get("position"))
+        except (TypeError, ValueError):
             return
-        for _rect, obj, _sel, typ in self.geometry.iter_items(viewport=False):
-            if typ not in ("clip", "transition"):
-                continue
-            data = getattr(obj, "data", {}) or {}
+        if target is None or target_layer is None:
+            return
+        for obj, typ in items:
+            data = getattr(obj, "data", None) or {}
             if data.get("layer") != target_layer:
                 continue
             try:
@@ -2670,7 +2715,7 @@ class TimelineWidgetBase(QWidget):
             except (TypeError, ValueError):
                 continue
             if obj_pos >= target_pos:
-                self._select_timeline_item(getattr(obj, "id", None), typ, False)
+                self._select_timeline_item(obj.id, typ, False)
 
     def clear_all_selections(self):
         """Clear all timeline selections and keyframe highlights."""

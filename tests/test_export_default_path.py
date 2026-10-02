@@ -68,6 +68,7 @@ def test_get_downloads_path_rejects_missing_qt_dir(monkeypatch, tmp_path):
 
 def _export_store(export_type=1, export_path="", project_path=""):
     pytest.importorskip("PyQt5.QtWidgets")
+    pytest.importorskip("openshot")  # classes.settings imports it
     from classes.settings import SettingStore
 
     store = SettingStore()
@@ -118,6 +119,7 @@ def _write_settings(path, items):
 
 def test_load_migrates_project_folder_default(tmp_path, monkeypatch):
     pytest.importorskip("PyQt5.QtWidgets")
+    pytest.importorskip("openshot")  # classes.settings imports it
     from classes import info
     from classes.settings import SettingStore
 
@@ -150,6 +152,7 @@ def test_load_migrates_project_folder_default(tmp_path, monkeypatch):
 
 def test_load_keeps_project_folder_after_migration_flag(tmp_path, monkeypatch):
     pytest.importorskip("PyQt5.QtWidgets")
+    pytest.importorskip("openshot")  # classes.settings imports it
     from classes import info
     from classes.settings import SettingStore
 
