@@ -1877,6 +1877,25 @@ def _import_truthy(value, default=False) -> bool:
     return text in ("1", "true", "yes", "y", "on")
 
 
+def _tool_flag(*values, default=False) -> bool:
+    """First explicitly provided bool/string wins; empty values are skipped.
+
+    Defaults like dry_run="false" must not shadow camelCase aliases (dryRun).
+    Pass aliases before snake_case defaults, or use empty-string defaults.
+    """
+    for value in values:
+        if value is None or value == "":
+            continue
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in ("1", "true", "yes", "y", "on"):
+            return True
+        if text in ("0", "false", "no", "n", "off"):
+            return False
+    return default
+
+
 def _allowed_exts_for_media_types(media_types) -> frozenset:
     """Extension set for dir/glob filtering. Default = all editor media."""
     text = str(media_types if media_types is not None else "all").strip().lower()
@@ -5988,8 +6007,8 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
                 "Error: that is a YouTube page URL, not a direct video file. "
                 "Use ingest_web_video_tool(url=..., intent=\"timeline\") instead."
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        return f"Error: could not classify video URL: {exc}"
 
     # Check the target track before downloading anything.
     if track and str(track).strip():
@@ -6370,9 +6389,23 @@ def _ingest_web_video_impl(
         except wvi.WebVideoIngestError as exc:
             return _ingest_web_video_fail(str(exc), url=raw_url, intent=intent_norm)
         if place_flag or intent_norm == "timeline":
-            return import_video_url_and_add_to_timeline(
+            placed_msg = import_video_url_and_add_to_timeline(
                 video_url=raw_url, track=track, position_seconds=position_seconds, **_kw
             )
+            placed_text = str(placed_msg or "")
+            if placed_text.startswith("Error:"):
+                return _ingest_web_video_fail(placed_text, url=raw_url, intent=intent_norm)
+            return json.dumps({
+                "ok": True,
+                "intent": intent_norm,
+                "placed": True,
+                "url": raw_url,
+                "message": placed_text,
+                "next": "Direct media URL imported and placed on the timeline.",
+                "product_note": (
+                    "User-initiated local import. Do not re-upload the original as your own."
+                ),
+            })
         # Import only: download then import without place.
         # Fall through to yt-dlp for page URLs; for direct files use urllib path.
         try:
@@ -6440,6 +6473,7 @@ def _ingest_web_video_impl(
         return _ingest_web_video_fail("Downloaded OK but could not find the new media-bin file id.", url=raw_url, intent=intent_norm)
 
     # Tag as web reference for recreate / colour.
+    tag_warning = ""
     try:
         tags = f.data.get("tags") if isinstance(f.data, dict) else None
         if isinstance(tags, str):
@@ -6463,7 +6497,14 @@ def _ingest_web_video_impl(
 
         _run_on_main_thread(_save_tags)
     except Exception as tag_err:
-        log.debug("ingest_web_video tag failed: %s", tag_err)
+        log.warning("ingest_web_video tag failed: %s", tag_err)
+        tag_warning = f"Could not save media tags/title: {tag_err}"
+        if intent_norm == "recreate":
+            return _ingest_web_video_fail(
+                f"Imported as {file_id} but failed to mark reference_only: {tag_err}",
+                url=raw_url,
+                intent=intent_norm,
+            )
 
     placement = ""
     placed = False
@@ -6498,7 +6539,7 @@ def _ingest_web_video_impl(
         )
 
     result = {
-        "ok": True,
+        "ok": (not place_flag) or placed,
         "intent": intent_norm,
         "file_id": file_id,
         "placed": placed,
@@ -6517,6 +6558,14 @@ def _ingest_web_video_impl(
         "product_note": meta.get("product_note"),
         "undo": "one step",
     }
+    if tag_warning:
+        result["warnings"] = [tag_warning]
+    if place_flag and not placed:
+        result["error"] = placement or "Timeline placement failed after import."
+        result["message"] = (
+            f"Imported to media bin as file_id={file_id}, but timeline placement failed."
+        )
+        result["next"] = f"Place with add_clip_to_timeline_tool(file_id=\"{file_id}\")."
     return json.dumps(result)
 
 
@@ -9898,13 +9947,13 @@ def _write_clip_effects(clip_obj, effects):
 
 
 def _selected_timeline_clip_ids():
-    """Clip ids currently selected in the editor (empty if none / unavailable)."""
-    try:
-        window = _get_app().window
-        selected = list(getattr(window, "selected_clips", None) or [])
-        return [str(cid) for cid in selected if cid]
-    except Exception:
-        return []
+    """Clip ids currently selected in the editor (empty if none / unavailable).
+
+    Raises on read failure so callers do not silently retarget to the playhead.
+    """
+    window = _get_app().window
+    selected = list(getattr(window, "selected_clips", None) or [])
+    return [str(cid) for cid in selected if cid]
 
 
 def _clip_is_audio_only(clip) -> bool:
@@ -9915,18 +9964,19 @@ def _clip_is_audio_only(clip) -> bool:
 
 
 def _all_timeline_clip_ids():
-    """Every timeline clip id that has a picture (stable order from project)."""
-    try:
-        from classes.query import Clip
+    """Every timeline clip id that has a picture (stable order from project).
 
-        out = []
-        for clip in Clip.filter() or []:
-            cid = str(getattr(clip, "id", "") or "").strip()
-            if cid and cid not in out and not _clip_is_audio_only(clip):
-                out.append(cid)
-        return out
-    except Exception:
-        return []
+    Raises on Clip.query failure so all-clips tools do not pretend the timeline
+    is empty.
+    """
+    from classes.query import Clip
+
+    out = []
+    for clip in Clip.filter() or []:
+        cid = str(getattr(clip, "id", "") or "").strip()
+        if cid and cid not in out and not _clip_is_audio_only(clip):
+            out.append(cid)
+    return out
 
 
 def _playhead_timeline_clip_ids():
@@ -9992,7 +10042,10 @@ def _resolve_color_target_ids(
     if want_all:
         return _all_timeline_clip_ids()
 
-    selected = _selected_timeline_clip_ids()
+    try:
+        selected = _selected_timeline_clip_ids()
+    except Exception as exc:
+        raise RuntimeError(f"Could not read selected clips: {exc}") from exc
     if selected:
         return selected
     under_playhead = _playhead_timeline_clip_ids()
@@ -10091,7 +10144,7 @@ def apply_color(
     redCurve="",
     greenCurve="",
     blueCurve="",
-    all_clips="false",
+    all_clips="",
     **kwargs,
 ) -> str:
     """Merge ColorGrade knobs/curves/wheels/LUT onto timeline clip(s); one undo.
@@ -10107,9 +10160,7 @@ def apply_color(
     try:
         from classes import color_agent as ca
 
-        all_flag = str(all_clips or kwargs.get("allClips", "") or "").strip().lower() in (
-            "1", "true", "yes", "on",
-        )
+        all_flag = _tool_flag(kwargs.get("allClips"), all_clips, kwargs.get("all_clips"), default=False)
         ids = _resolve_color_target_ids(
             clip_ids=clip_ids,
             clipIds=clipIds,
@@ -10499,10 +10550,15 @@ def _render_clip_isolated(
         jpeg = _frame_to_jpeg_b64(frame) if with_jpeg else ""
         return {"scopes": scopes, "preview_jpeg": jpeg, "local_frame": int(local_frame)}
     except Exception as exc:
-        fallback = _measure_frame_scopes(timeline_frame)
-        fallback["isolated"] = False
-        fallback["warning"] = f"isolated render failed ({exc}); used composited timeline"
-        return {"scopes": fallback, "preview_jpeg": "", "local_frame": 0}
+        return {
+            "scopes": {
+                "present": False,
+                "isolated": False,
+                "error": f"isolated render failed: {exc}",
+            },
+            "preview_jpeg": "",
+            "local_frame": 0,
+        }
     finally:
         if temp is not None:
             try:
@@ -10903,7 +10959,7 @@ def apply_look(
     stack_grain="",
     grainPreset="",
     grain_preset="",
-    all_clips="false",
+    all_clips="",
     **_kw,
 ) -> str:
     """Apply a Look preset, LUT, or Film Grain to clip(s); one undo.
@@ -10918,9 +10974,7 @@ def apply_look(
     try:
         from classes import color_agent as ca
 
-        all_flag = str(all_clips or _kw.get("allClips", "") or "").strip().lower() in (
-            "1", "true", "yes", "on",
-        )
+        all_flag = _tool_flag(_kw.get("allClips"), all_clips, _kw.get("all_clips"), default=False)
         ids = _resolve_color_target_ids(
             clip_ids=clip_ids,
             clipIds=clipIds,
@@ -11096,10 +11150,18 @@ def apply_look(
                             i for i, e in enumerate(effects) if is_film_grain_effect(e)
                         ]
                         if gid == FILM_GRAIN_PRESET_NONE:
-                            effects = [
-                                e for e in effects if not is_film_grain_effect(e)
-                            ]
-                            receipt["grain"] = "none"
+                            if grain_indexes:
+                                effects = [
+                                    e for e in effects if not is_film_grain_effect(e)
+                                ]
+                                receipt["grain"] = "none"
+                            else:
+                                # No FilmGrain present — skip write unless colour also changed.
+                                receipt["grain"] = "none"
+                                if receipt.get("status") is None:
+                                    receipt["status"] = "noop"
+                                    receipts.append(receipt)
+                                    continue
                         else:
                             source = (
                                 effects[grain_indexes[0]]
@@ -11197,8 +11259,8 @@ def match_color_to_reference(
     referenceClipId="",
     referenceFileId="",
     referenceImagePath="",
-    all_clips="false",
-    dry_run="false",
+    all_clips="",
+    dry_run="",
     dryRun="",
     max_iterations="",
     **_kw,
@@ -11223,9 +11285,7 @@ def match_color_to_reference(
         except ImportError:  # headless stubs may omit File
             File = None
 
-        all_flag = str(all_clips or _kw.get("allClips", "") or "").strip().lower() in (
-            "1", "true", "yes", "on",
-        )
+        all_flag = _tool_flag(_kw.get("allClips"), all_clips, _kw.get("all_clips"), default=False)
         ids = _resolve_color_target_ids(
             clip_ids=clip_ids or clip_id or clipId,
             clipIds=clipIds or clipId or clip_id,
@@ -11255,7 +11315,7 @@ def match_color_to_reference(
         if ref_file_id and File is None:
             return "Error: media-bin File lookup unavailable in this environment."
 
-        dry = str(dry_run or dryRun or "").strip().lower() in ("1", "true", "yes", "on")
+        dry = _tool_flag(dryRun, dry_run, _kw.get("dry_run"), default=False)
         try:
             max_iters = int(max_iterations or _kw.get("maxIterations") or 5)
         except (TypeError, ValueError):
@@ -11442,15 +11502,36 @@ def match_color_to_reference(
                     effects = list(
                         (clip_obj.data if isinstance(clip_obj.data, dict) else {}).get("effects") or []
                     )
-                    if color_mode == "reset":
+                    # Per-subject grade/grain on the first pass so batch match
+                    # does not reuse the primary clip's decision for everyone.
+                    cid_color_mode = color_mode
+                    cid_paste = paste_color
+                    cid_grain = grain_act
+                    if first_pass and ref_clip_id:
+                        sub_e = ca.find_color_grade(effects)
+                        sub_g = ca.find_film_grain(effects)
+                        g_act = ca.match_grade_action(sub_e, ref_effect)
+                        cid_grain = ca.match_grain_action(sub_g, ref_grain)
+                        if g_act.get("mode") == "reset":
+                            cid_color_mode = "reset"
+                            cid_paste = None
+                        elif g_act.get("mode") == "paste":
+                            cid_color_mode = "paste"
+                            cid_paste = g_act.get("color")
+                        elif color_mode == "patch":
+                            cid_color_mode = "patch"
+                        else:
+                            cid_color_mode = "noop"
+
+                    if cid_color_mode == "reset":
                         effects = [e for e in effects if not ca.is_color_grade_effect(e)]
-                    elif color_mode == "paste" and paste_color:
+                    elif cid_color_mode == "paste" and cid_paste:
                         existing = ca.find_color_grade(effects)
                         if existing is None:
                             effect = ca.create_color_grade_effect_json(app.project.generate_id)
                             effects.append(effect)
                             existing = effect
-                        merged = ca.merge_color_grade(existing, {"color": paste_color})
+                        merged = ca.merge_color_grade(existing, {"color": cid_paste})
                         new_effects = []
                         replaced = False
                         for effect in effects:
@@ -11463,7 +11544,7 @@ def match_color_to_reference(
                         if not replaced:
                             new_effects.append(merged)
                         effects = new_effects
-                    elif patch:
+                    elif cid_color_mode == "patch" and patch:
                         existing = ca.find_color_grade(effects)
                         if existing is None:
                             effect = ca.create_color_grade_effect_json(app.project.generate_id)
@@ -11495,10 +11576,10 @@ def match_color_to_reference(
                             new_effects.append(merged)
                         effects = new_effects
 
-                    if first_pass and grain_act.get("mode") == "reset":
+                    if first_pass and cid_grain.get("mode") == "reset":
                         effects = [e for e in effects if not _is_grain(e)]
-                    elif first_pass and grain_act.get("mode") == "paste":
-                        paste_g = grain_act.get("grain") or {}
+                    elif first_pass and cid_grain.get("mode") == "paste":
+                        paste_g = cid_grain.get("grain") or {}
                         grain_indexes = [i for i, e in enumerate(effects) if _is_grain(e)]
                         new_g = copy.deepcopy(paste_g) if isinstance(paste_g, dict) else {}
                         new_g["class_name"] = "FilmGrain"

@@ -1171,3 +1171,39 @@ def test_resolve_relative_deltas_clamps_temperature_to_unit_range():
     base = blank_color_grade("cg")
     out = resolve_relative_deltas(base, {"temperature_delta": 5.0})
     assert out["temperature"] == pytest.approx(1.0)
+
+
+def test_tool_flag_prefers_camelcase_alias():
+    from classes.tool_handlers import _tool_flag
+
+    assert _tool_flag("true", "false", default=False) is True
+    assert _tool_flag("", "false", default=False) is False
+    assert _tool_flag(True, "false", default=False) is True
+    assert _tool_flag(None, None, default=True) is True
+
+
+def test_grades_differ_when_only_wheels_change():
+    from classes.color_agent import blank_color_grade, grades_meaningfully_differ, summarize_color_grade
+
+    a = summarize_color_grade(blank_color_grade("a"))
+    b_effect = blank_color_grade("b")
+    b_effect["wheels"] = {
+        "enabled_keyframes": {"Points": []},
+        "global": {"color": "#224466", "amount": 0.3, "luma": 0.0},
+        "shadows": {"color": "#ffffff", "amount": 0.0, "luma": 0.0},
+        "midtones": {"color": "#ffffff", "amount": 0.0, "luma": 0.0},
+        "highlights": {"color": "#ffffff", "amount": 0.0, "luma": 0.0},
+    }
+    b = summarize_color_grade(b_effect)
+    assert grades_meaningfully_differ(a, b) is True
+
+
+def test_apply_look_grain_none_without_grain_is_noop(monkeypatch):
+    from classes import tool_handlers as th
+
+    clips = {"c1": _MatchClip("c1", [])}
+    writes = _grade_env(monkeypatch, clips)
+    out = json.loads(th.apply_look(clipIds="c1", lookId="grain:none"))
+    assert out["ok"] is True
+    assert out["clips"][0]["status"] == "noop"
+    assert writes == []

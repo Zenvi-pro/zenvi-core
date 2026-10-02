@@ -357,7 +357,14 @@ def create_color_grade_effect_json(generate_id) -> dict:
     """Create a ColorGrade via libopenshot when available; else blank stub."""
     try:
         import openshot
+    except ImportError:
+        return blank_color_grade(generate_id() if callable(generate_id) else "")
 
+    # Headless unit tests install a MagicMock openshot module.
+    if type(openshot).__name__ == "MagicMock" or not hasattr(openshot, "EffectInfo"):
+        return blank_color_grade(generate_id() if callable(generate_id) else "")
+
+    try:
         effect = openshot.EffectInfo().CreateEffect(COLOR_GRADE_CLASS_NAME)
         if effect is None:
             raise RuntimeError("CreateEffect returned None")
@@ -367,8 +374,8 @@ def create_color_grade_effect_json(generate_id) -> dict:
         if not payload.get("id"):
             payload["id"] = effect_id
         return payload
-    except Exception:
-        return blank_color_grade(generate_id() if callable(generate_id) else "")
+    except Exception as exc:
+        raise RuntimeError(f"Could not create ColorGrade effect: {exc}") from exc
 
 
 def parse_clip_ids(
@@ -625,10 +632,33 @@ def summarize_color_grade(effect_json: Optional[dict]) -> dict:
         "present": True,
         "id": effect_json.get("id"),
         "lut_path": effect_json.get("lut_path") or "",
+        "wheels": effect_json.get("wheels") or {},
+        "curve_all": effect_json.get("curve_all") or {},
+        "curve_red": effect_json.get("curve_red") or {},
+        "curve_green": effect_json.get("curve_green") or {},
+        "curve_blue": effect_json.get("curve_blue") or {},
     }
     for key in SCALAR_KEYS:
         summary[key] = scalar_y(effect_json, key)
     return summary
+
+
+def _grade_structure_fingerprint(payload: dict) -> str:
+    """Stable JSON for wheels/curves so paste decisions see non-scalar diffs."""
+    try:
+        return json.dumps(
+            {
+                "wheels": payload.get("wheels") or {},
+                "curve_all": payload.get("curve_all") or {},
+                "curve_red": payload.get("curve_red") or {},
+                "curve_green": payload.get("curve_green") or {},
+                "curve_blue": payload.get("curve_blue") or {},
+            },
+            sort_keys=True,
+            default=str,
+        )
+    except (TypeError, ValueError):
+        return ""
 
 
 def grades_meaningfully_differ(
@@ -637,7 +667,7 @@ def grades_meaningfully_differ(
     *,
     eps: float = 0.02,
 ) -> bool:
-    """True when ColorGrade knobs/LUT differ enough that a copy/reset is needed."""
+    """True when ColorGrade knobs/LUT/wheels/curves differ enough to copy/reset."""
     sub = subject if isinstance(subject, dict) else {}
     ref = reference if isinstance(reference, dict) else {}
     if bool(sub.get("present")) != bool(ref.get("present")):
@@ -654,6 +684,8 @@ def grades_meaningfully_differ(
             continue
         if abs(a - b) >= eps:
             return True
+    if _grade_structure_fingerprint(sub) != _grade_structure_fingerprint(ref):
+        return True
     return False
 
 
@@ -1482,10 +1514,11 @@ def resolve_lut_filesystem_path(
     if os.path.isabs(raw) and os.path.isfile(raw):
         return raw
     candidates = []
-    if colors_path:
-        candidates.append(os.path.join(colors_path, raw))
+    # Prefer a user LUT over a bundled file with the same relative path.
     if user_colors_path:
         candidates.append(os.path.join(user_colors_path, raw))
+    if colors_path:
+        candidates.append(os.path.join(colors_path, raw))
     candidates.append(raw)
     for path in candidates:
         if path and os.path.isfile(path):
@@ -1496,70 +1529,15 @@ def resolve_lut_filesystem_path(
 
 
 def apply_soft_color_preset(effect_json: dict, preset_name: str) -> dict:
-    """Apply a soft ColorGrade Look preset (same numbers as color_presets.py).
-
-    Implemented here so agent tools do not require a real libopenshot import
-    just to build the payload (headless tests + validate-before-undo).
-    """
+    """Apply a soft ColorGrade Look preset via color_presets (single source of truth)."""
     name = str(preset_name or "").strip().lower()
     if name == "reset":
         raise ValueError("reset removes ColorGrade; do not call apply_soft_color_preset")
     if name not in LOOK_PRESET_IDS:
         raise ValueError(f"Unknown color preset: {preset_name}")
+    from classes import color_presets as cp
 
-    payload = copy.deepcopy(effect_json or {})
-    payload["class_name"] = COLOR_GRADE_CLASS_NAME
-    for key, value in SCALAR_DEFAULTS.items():
-        set_scalar(payload, key, value)
-    payload["lut_path"] = ""
-    payload["wheels"] = default_wheels_data()
-    payload["curve_all"] = default_curve_data()
-    payload["curve_red"] = default_curve_data()
-    payload["curve_green"] = default_curve_data()
-    payload["curve_blue"] = default_curve_data()
-
-    if name == "auto_contrast":
-        set_scalar(payload, "contrast", 0.18)
-        set_scalar(payload, "highlights", -0.08)
-        set_scalar(payload, "shadows", 0.08)
-        set_scalar(payload, "vibrance", 0.06)
-        payload["curve_all"] = points_to_curve(
-            [[0.0, 0.0], [0.25, 0.22], [0.75, 0.80], [1.0, 1.0]]
-        )
-    elif name == "lift_shadows":
-        set_scalar(payload, "exposure", 0.08)
-        set_scalar(payload, "contrast", -0.03)
-        set_scalar(payload, "highlights", -0.05)
-        set_scalar(payload, "shadows", 0.22)
-        payload["curve_all"] = points_to_curve(
-            [[0.0, 0.06], [0.35, 0.40], [1.0, 1.0]]
-        )
-    elif name == "warm_up":
-        set_scalar(payload, "temperature", 0.18)
-        set_scalar(payload, "tint", 0.03)
-        set_scalar(payload, "vibrance", 0.10)
-        set_scalar(payload, "saturation", 1.08)
-    elif name == "sunny":
-        # Mild daylight wash. Outdoor clips already have sun — keep this soft.
-        # "A bit sunnier" should use temperature_delta/exposure_delta, not this.
-        set_scalar(payload, "temperature", 0.12)
-        set_scalar(payload, "tint", 0.02)
-        set_scalar(payload, "exposure", 0.05)
-        set_scalar(payload, "contrast", 0.04)
-        set_scalar(payload, "saturation", 1.08)
-        set_scalar(payload, "vibrance", 0.08)
-    elif name == "gloomy":
-        set_scalar(payload, "temperature", -0.10)
-        set_scalar(payload, "exposure", -0.08)
-        set_scalar(payload, "contrast", 0.06)
-        set_scalar(payload, "highlights", -0.08)
-        set_scalar(payload, "saturation", 0.88)
-        set_scalar(payload, "vibrance", -0.04)
-    elif name == "boost_color":
-        set_scalar(payload, "contrast", 0.08)
-        set_scalar(payload, "saturation", 1.18)
-        set_scalar(payload, "vibrance", 0.22)
-        payload["curve_all"] = points_to_curve(
-            [[0.0, 0.0], [0.20, 0.16], [0.80, 0.86], [1.0, 1.0]]
-        )
+    payload = cp.apply_color_grade_preset(effect_json, name)
+    if not payload.get("class_name"):
+        payload["class_name"] = COLOR_GRADE_CLASS_NAME
     return payload
