@@ -1,0 +1,9466 @@
+{
+"AnalogTape": {
+"info": {
+"class_name": "AnalogTape",
+"description": "Vintage home video wobble, bleed, and grain.",
+"has_audio": false,
+"has_video": true,
+"name": "Analog Tape"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"bleed": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Bleed",
+"readonly": false,
+"type": "float"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"noise": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Noise",
+"readonly": false,
+"type": "float"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"seed_offset": {
+"choices": [],
+"keyframe": false,
+"max": 1000.0,
+"min": 0.0,
+"name": "Seed Offset",
+"readonly": false,
+"type": "int"
+},
+"softness": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Softness",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"static_bands": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Static Bands",
+"readonly": false,
+"type": "float"
+},
+"stripe": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Stripe",
+"readonly": false,
+"type": "float"
+},
+"tracking": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Tracking",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"AudioVisualization": {
+"info": {
+"class_name": "AudioVisualization",
+"description": "Render waveform, spectrum, and other transparent audio visualizations.",
+"has_audio": false,
+"has_video": true,
+"name": "Audio Visualization"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"background": {
+"choices": [
+{
+"name": "Transparent",
+"value": 0
+},
+{
+"name": "Solid",
+"value": 1
+},
+{
+"name": "Fade",
+"value": 2
+},
+{
+"name": "Gradient",
+"value": 3
+},
+{
+"name": "Source",
+"value": 4
+}
+],
+"keyframe": false,
+"max": 4.0,
+"min": 0.0,
+"name": "Background",
+"readonly": false,
+"type": "int"
+},
+"channel_layout": {
+"choices": [
+{
+"name": "Auto",
+"value": 0
+},
+{
+"name": "Combined",
+"value": 1
+},
+{
+"name": "Split",
+"value": 2
+},
+{
+"name": "Overlay",
+"value": 3
+}
+],
+"keyframe": false,
+"max": 3.0,
+"min": 0.0,
+"name": "Channel Layout",
+"readonly": false,
+"type": "int"
+},
+"color": {
+"choices": [],
+"keyframe": true,
+"max": 255.0,
+"min": 0.0,
+"name": "Color",
+"readonly": false,
+"type": "color"
+},
+"color_mode": {
+"choices": [
+{
+"name": "Seed",
+"value": 0
+},
+{
+"name": "Rainbow",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Color Mode",
+"readonly": false,
+"type": "int"
+},
+"color_spread": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Color Spread",
+"readonly": false,
+"type": "float"
+},
+"detail": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Detail",
+"readonly": false,
+"type": "float"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"frequency_high": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "High Frequency",
+"readonly": false,
+"type": "float"
+},
+"frequency_low": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Low Frequency",
+"readonly": false,
+"type": "float"
+},
+"glow": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Glow",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"intensity": {
+"choices": [],
+"keyframe": true,
+"max": 10.0,
+"min": 0.0,
+"name": "Intensity",
+"readonly": false,
+"type": "float"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"smoothing": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Smoothing",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"style": {
+"choices": [
+{
+"name": "Clean",
+"value": 0
+},
+{
+"name": "Soft",
+"value": 1
+},
+{
+"name": "Neon",
+"value": 2
+},
+{
+"name": "Minimal",
+"value": 3
+}
+],
+"keyframe": false,
+"max": 3.0,
+"min": 0.0,
+"name": "Style",
+"readonly": false,
+"type": "int"
+},
+"visualization_type": {
+"choices": [
+{
+"name": "Waveform",
+"value": 0
+},
+{
+"name": "Filled Waveform",
+"value": 1
+},
+{
+"name": "Bars",
+"value": 2
+},
+{
+"name": "Radial",
+"value": 3
+},
+{
+"name": "Radial Bars",
+"value": 8
+},
+{
+"name": "Spectrum",
+"value": 4
+},
+{
+"name": "Phase Scope",
+"value": 5
+},
+{
+"name": "Particles",
+"value": 6
+},
+{
+"name": "VU Meter",
+"value": 7
+}
+],
+"keyframe": false,
+"max": 8.0,
+"min": 0.0,
+"name": "Visualization",
+"readonly": false,
+"type": "int"
+}
+}
+},
+"Bars": {
+"info": {
+"class_name": "Bars",
+"description": "Add colored bars around your video.",
+"has_audio": false,
+"has_video": true,
+"name": "Bars"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"bottom": {
+"choices": [],
+"keyframe": true,
+"max": 0.5,
+"min": 0.0,
+"name": "Margin: Bottom",
+"readonly": false,
+"type": "float"
+},
+"color": {
+"choices": [],
+"keyframe": true,
+"max": 255.0,
+"min": 0.0,
+"name": "Bar Color",
+"readonly": false,
+"type": "color"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"left": {
+"choices": [],
+"keyframe": true,
+"max": 0.5,
+"min": 0.0,
+"name": "Margin: Left",
+"readonly": false,
+"type": "float"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"right": {
+"choices": [],
+"keyframe": true,
+"max": 0.5,
+"min": 0.0,
+"name": "Margin: Right",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"top": {
+"choices": [],
+"keyframe": true,
+"max": 0.5,
+"min": 0.0,
+"name": "Margin: Top",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"BeatSync": {
+"info": {
+"class_name": "BeatSync",
+"description": "Generates an audio-reactive color flash layer, synchronized to the beat.",
+"has_audio": false,
+"has_video": true,
+"name": "Beat Sync"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"attack_ms": {
+"choices": [],
+"keyframe": true,
+"max": 500.0,
+"min": 1.0,
+"name": "Attack (ms)",
+"readonly": false,
+"type": "float"
+},
+"decay_ms": {
+"choices": [],
+"keyframe": true,
+"max": 2000.0,
+"min": 1.0,
+"name": "Decay (ms)",
+"readonly": false,
+"type": "float"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"frequency_high": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "High Frequency",
+"readonly": false,
+"type": "float"
+},
+"frequency_low": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Low Frequency",
+"readonly": false,
+"type": "float"
+},
+"high_color": {
+"choices": [],
+"keyframe": true,
+"max": 255.0,
+"min": 0.0,
+"name": "High Color",
+"readonly": false,
+"type": "color"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"intensity": {
+"choices": [],
+"keyframe": true,
+"max": 10.0,
+"min": 0.0,
+"name": "Intensity",
+"readonly": false,
+"type": "float"
+},
+"invert": {
+"choices": [
+{
+"name": "No",
+"value": 0
+},
+{
+"name": "Yes",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Invert",
+"readonly": false,
+"type": "int"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"low_color": {
+"choices": [],
+"keyframe": true,
+"max": 255.0,
+"min": 0.0,
+"name": "Low Color",
+"readonly": false,
+"type": "color"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"response_curve": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Response Curve",
+"readonly": false,
+"type": "colorgrade_curve"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"threshold": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Threshold",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Blur": {
+"info": {
+"class_name": "Blur",
+"description": "Adjust the blur of the frame's image.",
+"has_audio": false,
+"has_video": true,
+"name": "Blur"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"bottom": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Margin: Bottom",
+"readonly": false,
+"type": "float"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"horizontal_radius": {
+"choices": [],
+"keyframe": true,
+"max": 100.0,
+"min": 0.0,
+"name": "Horizontal Radius",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"iterations": {
+"choices": [],
+"keyframe": true,
+"max": 100.0,
+"min": 0.0,
+"name": "Iterations",
+"readonly": false,
+"type": "float"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"left": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Margin: Left",
+"readonly": false,
+"type": "float"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_mode": {
+"choices": [
+{
+"name": "Limit to Mask",
+"value": 0
+},
+{
+"name": "Vary Strength",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask Mode",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"right": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Margin: Right",
+"readonly": false,
+"type": "float"
+},
+"sigma": {
+"choices": [],
+"keyframe": true,
+"max": 100.0,
+"min": 0.0,
+"name": "Sigma",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"top": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Margin: Top",
+"readonly": false,
+"type": "float"
+},
+"vertical_radius": {
+"choices": [],
+"keyframe": true,
+"max": 100.0,
+"min": 0.0,
+"name": "Vertical Radius",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Brightness": {
+"info": {
+"class_name": "Brightness",
+"description": "Adjust the brightness and contrast of the frame's image.",
+"has_audio": false,
+"has_video": true,
+"name": "Brightness & Contrast"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"brightness": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Brightness",
+"readonly": false,
+"type": "float"
+},
+"contrast": {
+"choices": [],
+"keyframe": true,
+"max": 128.0,
+"min": -128.0,
+"name": "Contrast",
+"readonly": false,
+"type": "float"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_mode": {
+"choices": [
+{
+"name": "Limit to Mask",
+"value": 0
+},
+{
+"name": "Vary Strength",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask Mode",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Caption": {
+"info": {
+"class_name": "Caption",
+"description": "Add text captions on top of your video.",
+"has_audio": false,
+"has_video": true,
+"name": "Caption"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"background": {
+"choices": [],
+"keyframe": true,
+"max": 255.0,
+"min": 0.0,
+"name": "Background",
+"readonly": false,
+"type": "color"
+},
+"background_alpha": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Background Alpha",
+"readonly": false,
+"type": "float"
+},
+"background_corner": {
+"choices": [],
+"keyframe": true,
+"max": 60.0,
+"min": 0.0,
+"name": "Background Corner Radius",
+"readonly": false,
+"type": "float"
+},
+"background_padding": {
+"choices": [],
+"keyframe": true,
+"max": 60.0,
+"min": 0.0,
+"name": "Background Padding",
+"readonly": false,
+"type": "float"
+},
+"bottom": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Margin: Bottom",
+"readonly": false,
+"type": "float"
+},
+"caption_font": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Font",
+"readonly": false,
+"type": "font"
+},
+"caption_text": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Captions",
+"readonly": false,
+"type": "caption"
+},
+"color": {
+"choices": [],
+"keyframe": true,
+"max": 255.0,
+"min": 0.0,
+"name": "Color",
+"readonly": false,
+"type": "color"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"fade_in": {
+"choices": [],
+"keyframe": true,
+"max": 3.0,
+"min": 0.0,
+"name": "Fade In (Seconds)",
+"readonly": false,
+"type": "float"
+},
+"fade_out": {
+"choices": [],
+"keyframe": true,
+"max": 3.0,
+"min": 0.0,
+"name": "Fade Out (Seconds)",
+"readonly": false,
+"type": "float"
+},
+"font_alpha": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Font Alpha",
+"readonly": false,
+"type": "float"
+},
+"font_size": {
+"choices": [],
+"keyframe": true,
+"max": 200.0,
+"min": 0.0,
+"name": "Font Size",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"left": {
+"choices": [],
+"keyframe": true,
+"max": 0.5,
+"min": 0.0,
+"name": "Margin: Left",
+"readonly": false,
+"type": "float"
+},
+"line_spacing": {
+"choices": [],
+"keyframe": true,
+"max": 5.0,
+"min": 0.0,
+"name": "Line Spacing",
+"readonly": false,
+"type": "float"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"right": {
+"choices": [],
+"keyframe": true,
+"max": 0.5,
+"min": 0.0,
+"name": "Margin: Right",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"stroke": {
+"choices": [],
+"keyframe": true,
+"max": 255.0,
+"min": 0.0,
+"name": "Border",
+"readonly": false,
+"type": "color"
+},
+"stroke_width": {
+"choices": [],
+"keyframe": true,
+"max": 10.0,
+"min": 0.0,
+"name": "Stroke Width",
+"readonly": false,
+"type": "float"
+},
+"top": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Margin: Top",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"ChromaKey": {
+"info": {
+"class_name": "ChromaKey",
+"description": "Replaces the color (or chroma) of the frame with transparency (i.e. keys out the color).",
+"has_audio": false,
+"has_video": true,
+"name": "Chroma Key (Greenscreen)"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"color": {
+"choices": [],
+"keyframe": false,
+"max": 255.0,
+"min": 0.0,
+"name": "Key Color",
+"readonly": false,
+"type": "color"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"fuzz": {
+"choices": [],
+"keyframe": true,
+"max": 125.0,
+"min": 0.0,
+"name": "Threshold",
+"readonly": false,
+"type": "float"
+},
+"halo": {
+"choices": [],
+"keyframe": true,
+"max": 125.0,
+"min": 0.0,
+"name": "Halo",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"keymethod": {
+"choices": [
+{
+"name": "Basic keying",
+"value": 0
+},
+{
+"name": "Basic keying (soft)",
+"value": 11
+},
+{
+"name": "HSV/HSL hue",
+"value": 1
+},
+{
+"name": "HSV saturation",
+"value": 2
+},
+{
+"name": "HSL saturation",
+"value": 3
+},
+{
+"name": "HSV value",
+"value": 4
+},
+{
+"name": "HSL luminance",
+"value": 5
+},
+{
+"name": "LCH luminosity",
+"value": 6
+},
+{
+"name": "LCH chroma",
+"value": 7
+},
+{
+"name": "LCH hue",
+"value": 8
+},
+{
+"name": "CIE Distance",
+"value": 9
+},
+{
+"name": "Cb,Cr vector",
+"value": 10
+}
+],
+"keyframe": false,
+"max": 11.0,
+"min": 0.0,
+"name": "Key Method",
+"readonly": false,
+"type": "int"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"ColorGrade": {
+"info": {
+"class_name": "ColorGrade",
+"description": "Unified color grading effect with curves, wheels and LUT support.",
+"has_audio": false,
+"has_video": true,
+"name": "Color Grade"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"contrast": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Contrast",
+"readonly": false,
+"type": "float"
+},
+"curve_all": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Curve: All",
+"readonly": false,
+"type": "colorgrade_curve"
+},
+"curve_blue": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Curve: Blue",
+"readonly": false,
+"type": "colorgrade_curve"
+},
+"curve_green": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Curve: Green",
+"readonly": false,
+"type": "colorgrade_curve"
+},
+"curve_red": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Curve: Red",
+"readonly": false,
+"type": "colorgrade_curve"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"exposure": {
+"choices": [],
+"keyframe": true,
+"max": 2.0,
+"min": -2.0,
+"name": "Exposure",
+"readonly": false,
+"type": "float"
+},
+"highlights": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Highlights",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"lut_intensity": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "LUT Intensity",
+"readonly": false,
+"type": "float"
+},
+"lut_path": {
+"choices": [],
+"keyframe": false,
+"max": 0.0,
+"min": 0.0,
+"name": "LUT File",
+"readonly": false,
+"type": "string"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"mix": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Mix",
+"readonly": false,
+"type": "float"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"saturation": {
+"choices": [],
+"keyframe": true,
+"max": 4.0,
+"min": 0.0,
+"name": "Saturation",
+"readonly": false,
+"type": "float"
+},
+"shadows": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Shadows",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"temperature": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Temperature",
+"readonly": false,
+"type": "float"
+},
+"tint": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Tint",
+"readonly": false,
+"type": "float"
+},
+"vibrance": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Vibrance",
+"readonly": false,
+"type": "float"
+},
+"wheels": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Color Wheels",
+"readonly": false,
+"type": "colorgrade_wheels"
+}
+}
+},
+"ColorMap": {
+"info": {
+"class_name": "ColorMap",
+"description": "Adjust colors using 3D LUT lookup tables (.cube format)",
+"has_audio": false,
+"has_video": true,
+"name": "Color Map / Lookup"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"intensity": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Overall Intensity",
+"readonly": false,
+"type": "float"
+},
+"intensity_b": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Blue Intensity",
+"readonly": false,
+"type": "float"
+},
+"intensity_g": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Green Intensity",
+"readonly": false,
+"type": "float"
+},
+"intensity_r": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Red Intensity",
+"readonly": false,
+"type": "float"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"lut_path": {
+"choices": [],
+"keyframe": false,
+"max": 0.0,
+"min": 0.0,
+"name": "LUT File",
+"readonly": false,
+"type": "string"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"ColorShift": {
+"info": {
+"class_name": "ColorShift",
+"description": "Shift the colors of an image up, down, left, and right (with infinite wrapping).",
+"has_audio": false,
+"has_video": true,
+"name": "Color Shift"
+},
+"properties": {
+"alpha_x": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Alpha X Shift",
+"readonly": false,
+"type": "float"
+},
+"alpha_y": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Alpha Y Shift",
+"readonly": false,
+"type": "float"
+},
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"blue_x": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Blue X Shift",
+"readonly": false,
+"type": "float"
+},
+"blue_y": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Blue Y Shift",
+"readonly": false,
+"type": "float"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"green_x": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Green X Shift",
+"readonly": false,
+"type": "float"
+},
+"green_y": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Green Y Shift",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"red_x": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Red X Shift",
+"readonly": false,
+"type": "float"
+},
+"red_y": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Red Y Shift",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Compressor": {
+"info": {
+"class_name": "Compressor",
+"description": "Reduce the volume of loud sounds or amplify quiet sounds.",
+"has_audio": true,
+"has_video": false,
+"name": "Compressor"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"attack": {
+"choices": [],
+"keyframe": true,
+"max": 100.0,
+"min": 0.10000000149011612,
+"name": "Attack (ms)",
+"readonly": false,
+"type": "float"
+},
+"bypass": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Bypass",
+"readonly": false,
+"type": "bool"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"makeup_gain": {
+"choices": [],
+"keyframe": true,
+"max": 12.0,
+"min": -12.0,
+"name": "Makeup gain (dB)",
+"readonly": false,
+"type": "float"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"ratio": {
+"choices": [],
+"keyframe": true,
+"max": 100.0,
+"min": 1.0,
+"name": "Ratio",
+"readonly": false,
+"type": "float"
+},
+"release": {
+"choices": [],
+"keyframe": true,
+"max": 1000.0,
+"min": 10.0,
+"name": "Release (ms)",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"threshold": {
+"choices": [],
+"keyframe": true,
+"max": 0.0,
+"min": -60.0,
+"name": "Threshold (dB)",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Crop": {
+"info": {
+"class_name": "Crop",
+"description": "Crop out any part of your video.",
+"has_audio": false,
+"has_video": true,
+"name": "Crop"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"bottom": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Margin: Bottom",
+"readonly": false,
+"type": "float"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"left": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Margin: Left",
+"readonly": false,
+"type": "float"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"resize": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Resize Image",
+"readonly": false,
+"type": "int"
+},
+"right": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Margin: Right",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"top": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Margin: Top",
+"readonly": false,
+"type": "float"
+},
+"x": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "X Offset",
+"readonly": false,
+"type": "float"
+},
+"y": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Y Offset",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Deinterlace": {
+"info": {
+"class_name": "Deinterlace",
+"description": "Remove interlacing from a video (i.e. even or odd horizontal lines)",
+"has_audio": false,
+"has_video": true,
+"name": "Deinterlace"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"isOdd": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Is Odd Frame",
+"readonly": false,
+"type": "bool"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Delay": {
+"info": {
+"class_name": "Delay",
+"description": "Adjust the synchronism between the audio and video track.",
+"has_audio": true,
+"has_video": false,
+"name": "Delay"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"delay_time": {
+"choices": [],
+"keyframe": true,
+"max": 5.0,
+"min": 0.0,
+"name": "Delay Time",
+"readonly": false,
+"type": "float"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"DenoiseImage": {
+"info": {
+"class_name": "DenoiseImage",
+"description": "Reduces visible grain and color speckles in video frames.",
+"has_audio": false,
+"has_video": true,
+"name": "Denoise Image"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"color_noise": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Color Noise",
+"readonly": false,
+"type": "float"
+},
+"detail": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Detail",
+"readonly": false,
+"type": "float"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"motion_safety": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Motion Safety",
+"readonly": false,
+"type": "float"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"response_curve": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Response Curve",
+"readonly": false,
+"type": "colorgrade_curve"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"strength": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Strength",
+"readonly": false,
+"type": "float"
+},
+"temporal": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Temporal",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Displace": {
+"info": {
+"class_name": "Displace",
+"description": "Use a grayscale image or video to warp the frame in the horizontal and vertical directions.",
+"has_audio": false,
+"has_video": true,
+"name": "Displacement Map"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"brightness": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Brightness",
+"readonly": false,
+"type": "float"
+},
+"contrast": {
+"choices": [],
+"keyframe": true,
+"max": 20.0,
+"min": 0.0,
+"name": "Contrast",
+"readonly": false,
+"type": "float"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"horizontal": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Horizontal",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Map: Invert",
+"readonly": false,
+"type": "int"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"map_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Map: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"replace_image": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Replace Image",
+"readonly": false,
+"type": "int"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"strength": {
+"choices": [],
+"keyframe": true,
+"max": 3.0,
+"min": 0.0,
+"name": "Strength",
+"readonly": false,
+"type": "float"
+},
+"vertical": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Vertical",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Distortion": {
+"info": {
+"class_name": "Distortion",
+"description": "Alter the audio by clipping the signal.",
+"has_audio": true,
+"has_video": false,
+"name": "Distortion"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"distortion_type": {
+"choices": [
+{
+"name": "Hard Clipping",
+"value": 0
+},
+{
+"name": "Soft Clipping",
+"value": 1
+},
+{
+"name": "Exponential",
+"value": 2
+},
+{
+"name": "Full Wave Rectifier",
+"value": 3
+},
+{
+"name": "Half Wave Rectifier",
+"value": 4
+}
+],
+"keyframe": false,
+"max": 3.0,
+"min": 0.0,
+"name": "Distortion Type",
+"readonly": false,
+"type": "int"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"input_gain": {
+"choices": [],
+"keyframe": true,
+"max": 24.0,
+"min": -24.0,
+"name": "Input Gain (dB)",
+"readonly": false,
+"type": "int"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"output_gain": {
+"choices": [],
+"keyframe": true,
+"max": 24.0,
+"min": -24.0,
+"name": "Output Gain (dB)",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"tone": {
+"choices": [],
+"keyframe": true,
+"max": 24.0,
+"min": -24.0,
+"name": "Tone (dB)",
+"readonly": false,
+"type": "int"
+}
+}
+},
+"Echo": {
+"info": {
+"class_name": "Echo",
+"description": "Reflection of sound with a delay after the direct sound.",
+"has_audio": true,
+"has_video": false,
+"name": "Echo"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"echo_time": {
+"choices": [],
+"keyframe": true,
+"max": 5.0,
+"min": 0.0,
+"name": "Time",
+"readonly": false,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"feedback": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Feedback",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mix": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Mix",
+"readonly": false,
+"type": "float"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Expander": {
+"info": {
+"class_name": "Expander",
+"description": "Louder parts of audio becomes relatively louder and quieter parts becomes quieter.",
+"has_audio": true,
+"has_video": false,
+"name": "Expander"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"attack": {
+"choices": [],
+"keyframe": true,
+"max": 100.0,
+"min": 0.10000000149011612,
+"name": "Attack (ms)",
+"readonly": false,
+"type": "float"
+},
+"bypass": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Bypass",
+"readonly": false,
+"type": "bool"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"makeup_gain": {
+"choices": [],
+"keyframe": true,
+"max": 12.0,
+"min": -12.0,
+"name": "Makeup gain (dB)",
+"readonly": false,
+"type": "float"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"ratio": {
+"choices": [],
+"keyframe": true,
+"max": 100.0,
+"min": 1.0,
+"name": "Ratio",
+"readonly": false,
+"type": "float"
+},
+"release": {
+"choices": [],
+"keyframe": true,
+"max": 1000.0,
+"min": 10.0,
+"name": "Release (ms)",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"threshold": {
+"choices": [],
+"keyframe": true,
+"max": 0.0,
+"min": -60.0,
+"name": "Threshold (dB)",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"FilmGrain": {
+"info": {
+"class_name": "FilmGrain",
+"description": "Film-inspired grain texture with tonal, color, and temporal controls.",
+"has_audio": false,
+"has_video": true,
+"name": "Film Grain"
+},
+"properties": {
+"amount": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Amount",
+"readonly": false,
+"type": "float"
+},
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"clump": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Clump",
+"readonly": false,
+"type": "float"
+},
+"coherence": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Coherence",
+"readonly": false,
+"type": "float"
+},
+"color_amount": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Color Amount",
+"readonly": false,
+"type": "float"
+},
+"color_variation": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Color Variation",
+"readonly": false,
+"type": "float"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"evolution": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Evolution",
+"readonly": false,
+"type": "float"
+},
+"highlights": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Highlights",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"midtones": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Midtones",
+"readonly": false,
+"type": "float"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"seed": {
+"choices": [],
+"keyframe": false,
+"max": 1000000.0,
+"min": 0.0,
+"name": "Seed",
+"readonly": false,
+"type": "int"
+},
+"shadows": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Shadows",
+"readonly": false,
+"type": "float"
+},
+"size": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Size",
+"readonly": false,
+"type": "float"
+},
+"softness": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Softness",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Glow": {
+"info": {
+"class_name": "Glow",
+"description": "Add an outer or inner glow based on visible pixels.",
+"has_audio": false,
+"has_video": true,
+"name": "Glow"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"blur_radius": {
+"choices": [],
+"keyframe": true,
+"max": 100.0,
+"min": 0.0,
+"name": "Blur Radius",
+"readonly": false,
+"type": "float"
+},
+"color": {
+"choices": [],
+"keyframe": true,
+"max": 255.0,
+"min": 0.0,
+"name": "Color",
+"readonly": false,
+"type": "color"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"mode": {
+"choices": [
+{
+"name": "Outer",
+"value": 0
+},
+{
+"name": "Inner",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mode",
+"readonly": false,
+"type": "int"
+},
+"opacity": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Opacity",
+"readonly": false,
+"type": "float"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"spread": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Spread",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Hue": {
+"info": {
+"class_name": "Hue",
+"description": "Adjust the hue / color of the frame's image.",
+"has_audio": false,
+"has_video": true,
+"name": "Hue"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"hue": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Hue",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_mode": {
+"choices": [
+{
+"name": "Limit to Mask",
+"value": 0
+},
+{
+"name": "Vary Strength",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask Mode",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"LensFlare": {
+"info": {
+"class_name": "LensFlare",
+"description": "Simulate sunlight hitting a lens with flares and spectral colors.",
+"has_audio": false,
+"has_video": true,
+"name": "Lens Flare"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"brightness": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Brightness",
+"readonly": false,
+"type": "float"
+},
+"color": {
+"choices": [],
+"keyframe": true,
+"max": 255.0,
+"min": 0.0,
+"name": "Tint Color",
+"readonly": false,
+"type": "color"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"size": {
+"choices": [],
+"keyframe": true,
+"max": 3.0,
+"min": 0.10000000149011612,
+"name": "Size",
+"readonly": false,
+"type": "float"
+},
+"spread": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Spread",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"x": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "X",
+"readonly": false,
+"type": "float"
+},
+"y": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Y",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Mask": {
+"info": {
+"class_name": "Mask",
+"description": "Uses a grayscale mask image to gradually wipe / transition between 2 images.",
+"has_audio": false,
+"has_video": true,
+"name": "Alpha Mask / Wipe Transition"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"brightness": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": -1.0,
+"name": "Brightness",
+"readonly": false,
+"type": "float"
+},
+"contrast": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Contrast",
+"readonly": false,
+"type": "float"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"fade_audio_hint": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Fade Audio",
+"readonly": false,
+"type": "int"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"replace_image": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Replace Image",
+"readonly": false,
+"type": "int"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Negate": {
+"info": {
+"class_name": "Negate",
+"description": "Negates the colors, producing a negative of the image.",
+"has_audio": false,
+"has_video": true,
+"name": "Negative"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Noise": {
+"info": {
+"class_name": "Noise",
+"description": "Random signal having equal intensity at different frequencies.",
+"has_audio": true,
+"has_video": false,
+"name": "Noise"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"level": {
+"choices": [],
+"keyframe": true,
+"max": 100.0,
+"min": 0.0,
+"name": "Level",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"ObjectDetection": {
+"info": {
+"class_name": "ObjectDetection",
+"description": "Detect objects through the video.",
+"has_audio": false,
+"has_video": true,
+"name": "Object Detector"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"class_filter": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Class Filter",
+"readonly": false,
+"type": "string"
+},
+"confidence_threshold": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Confidence Threshold",
+"readonly": false,
+"type": "float"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"selected_object_index": {
+"choices": [],
+"keyframe": false,
+"max": 200.0,
+"min": -1.0,
+"name": "Selected Object",
+"readonly": false,
+"type": "int"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"ObjectMask": {
+"info": {
+"class_name": "ObjectMask",
+"description": "Create and draw a segmentation mask for a prompted object.",
+"has_audio": false,
+"has_video": true,
+"name": "Object Mask"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"draw_mask": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Draw Mask",
+"readonly": false,
+"type": "int"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_alpha": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask Alpha",
+"readonly": false,
+"type": "float"
+},
+"mask_color": {
+"choices": [],
+"keyframe": false,
+"max": 255.0,
+"min": 0.0,
+"name": "Mask Color",
+"readonly": false,
+"type": "color"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"protobuf_data_path": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Object Mask Data",
+"readonly": false,
+"type": "string"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"stroke_alpha": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Stroke Alpha",
+"readonly": false,
+"type": "float"
+},
+"stroke_color": {
+"choices": [],
+"keyframe": false,
+"max": 255.0,
+"min": 0.0,
+"name": "Stroke Color",
+"readonly": false,
+"type": "color"
+},
+"stroke_width": {
+"choices": [],
+"keyframe": true,
+"max": 50.0,
+"min": 0.0,
+"name": "Stroke Width",
+"readonly": false,
+"type": "int"
+}
+}
+},
+"Outline": {
+"info": {
+"class_name": "Outline",
+"description": "Add outline around any image or text.",
+"has_audio": false,
+"has_video": true,
+"name": "Outline"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"color": {
+"choices": [],
+"keyframe": true,
+"max": 255.0,
+"min": 0.0,
+"name": "Key Color",
+"readonly": false,
+"type": "color"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"width": {
+"choices": [],
+"keyframe": true,
+"max": 100.0,
+"min": 0.0,
+"name": "Width",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"ParametricEQ": {
+"info": {
+"class_name": "ParametricEQ",
+"description": "Filter that allows you to adjust the volume level of a frequency in the audio track.",
+"has_audio": true,
+"has_video": false,
+"name": "Parametric EQ"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"filter_type": {
+"choices": [
+{
+"name": "Low Pass",
+"value": 0
+},
+{
+"name": "High Pass",
+"value": 1
+},
+{
+"name": "Low Shelf",
+"value": 2
+},
+{
+"name": "High Shelf",
+"value": 3
+},
+{
+"name": "Band Pass",
+"value": 4
+},
+{
+"name": "Band Stop",
+"value": 5
+},
+{
+"name": "Peaking Notch",
+"value": 6
+}
+],
+"keyframe": false,
+"max": 3.0,
+"min": 0.0,
+"name": "Filter Type",
+"readonly": false,
+"type": "int"
+},
+"frequency": {
+"choices": [],
+"keyframe": true,
+"max": 20000.0,
+"min": 20.0,
+"name": "Frequency (Hz)",
+"readonly": false,
+"type": "int"
+},
+"gain": {
+"choices": [],
+"keyframe": true,
+"max": 24.0,
+"min": -24.0,
+"name": "Gain (dB)",
+"readonly": false,
+"type": "int"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"q_factor": {
+"choices": [],
+"keyframe": true,
+"max": 20.0,
+"min": 0.0,
+"name": "Q Factor",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Pixelate": {
+"info": {
+"class_name": "Pixelate",
+"description": "Pixelate (increase or decrease) the number of visible pixels.",
+"has_audio": false,
+"has_video": true,
+"name": "Pixelate"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"bottom": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Margin: Bottom",
+"readonly": false,
+"type": "float"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"left": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Margin: Left",
+"readonly": false,
+"type": "float"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_mode": {
+"choices": [
+{
+"name": "Limit to Mask",
+"value": 0
+},
+{
+"name": "Vary Strength",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask Mode",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"pixelization": {
+"choices": [],
+"keyframe": true,
+"max": 0.9998999834060669,
+"min": 0.0,
+"name": "Pixelization",
+"readonly": false,
+"type": "float"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"right": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Margin: Right",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"top": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Margin: Top",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Robotization": {
+"info": {
+"class_name": "Robotization",
+"description": "Transform the voice present in an audio track into a robotic voice effect.",
+"has_audio": true,
+"has_video": false,
+"name": "Robotization"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"fft_size": {
+"choices": [
+{
+"name": "128",
+"value": 2
+},
+{
+"name": "256",
+"value": 3
+},
+{
+"name": "512",
+"value": 4
+},
+{
+"name": "1024",
+"value": 5
+},
+{
+"name": "2048",
+"value": 6
+}
+],
+"keyframe": false,
+"max": 8.0,
+"min": 0.0,
+"name": "FFT Size",
+"readonly": false,
+"type": "int"
+},
+"hop_size": {
+"choices": [
+{
+"name": "1/2",
+"value": 0
+},
+{
+"name": "1/4",
+"value": 1
+},
+{
+"name": "1/8",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Hop Size",
+"readonly": false,
+"type": "int"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"window_type": {
+"choices": [
+{
+"name": "Rectangular",
+"value": 0
+},
+{
+"name": "Bart Lett",
+"value": 1
+},
+{
+"name": "Hann",
+"value": 2
+},
+{
+"name": "Hamming",
+"value": 3
+}
+],
+"keyframe": false,
+"max": 3.0,
+"min": 0.0,
+"name": "Window Type",
+"readonly": false,
+"type": "int"
+}
+}
+},
+"Saturation": {
+"info": {
+"class_name": "Saturation",
+"description": "Adjust the color saturation.",
+"has_audio": false,
+"has_video": true,
+"name": "Color Saturation"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_mode": {
+"choices": [
+{
+"name": "Limit to Mask",
+"value": 0
+},
+{
+"name": "Vary Strength",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask Mode",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"saturation": {
+"choices": [],
+"keyframe": true,
+"max": 4.0,
+"min": 0.0,
+"name": "Saturation",
+"readonly": false,
+"type": "float"
+},
+"saturation_B": {
+"choices": [],
+"keyframe": true,
+"max": 4.0,
+"min": 0.0,
+"name": "Saturation (Blue)",
+"readonly": false,
+"type": "float"
+},
+"saturation_G": {
+"choices": [],
+"keyframe": true,
+"max": 4.0,
+"min": 0.0,
+"name": "Saturation (Green)",
+"readonly": false,
+"type": "float"
+},
+"saturation_R": {
+"choices": [],
+"keyframe": true,
+"max": 4.0,
+"min": 0.0,
+"name": "Saturation (Red)",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Shadow": {
+"info": {
+"class_name": "Shadow",
+"description": "Add a soft drop shadow based on visible pixels.",
+"has_audio": false,
+"has_video": true,
+"name": "Shadow"
+},
+"properties": {
+"angle": {
+"choices": [],
+"keyframe": true,
+"max": 360.0,
+"min": -360.0,
+"name": "Angle",
+"readonly": false,
+"type": "float"
+},
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"blur_radius": {
+"choices": [],
+"keyframe": true,
+"max": 100.0,
+"min": 0.0,
+"name": "Blur Radius",
+"readonly": false,
+"type": "float"
+},
+"color": {
+"choices": [],
+"keyframe": true,
+"max": 255.0,
+"min": 0.0,
+"name": "Color",
+"readonly": false,
+"type": "color"
+},
+"distance": {
+"choices": [],
+"keyframe": true,
+"max": 500.0,
+"min": -500.0,
+"name": "Distance",
+"readonly": false,
+"type": "float"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"opacity": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Opacity",
+"readonly": false,
+"type": "float"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"spread": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Spread",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Sharpen": {
+"info": {
+"class_name": "Sharpen",
+"description": "Boost edge contrast to make video details look crisper.",
+"has_audio": false,
+"has_video": true,
+"name": "Sharpen"
+},
+"properties": {
+"amount": {
+"choices": [],
+"keyframe": true,
+"max": 40.0,
+"min": 0.0,
+"name": "Amount",
+"readonly": false,
+"type": "float"
+},
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"channel": {
+"choices": [
+{
+"name": "All",
+"value": 0
+},
+{
+"name": "Luma",
+"value": 1
+},
+{
+"name": "Chroma",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Channel",
+"readonly": false,
+"type": "int"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_mode": {
+"choices": [
+{
+"name": "Limit to Mask",
+"value": 0
+},
+{
+"name": "Vary Strength",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask Mode",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"mode": {
+"choices": [
+{
+"name": "UnsharpMask",
+"value": 0
+},
+{
+"name": "HighPassBlend",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"radius": {
+"choices": [],
+"keyframe": true,
+"max": 10.0,
+"min": 0.0,
+"name": "Radius",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"threshold": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Threshold",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Shift": {
+"info": {
+"class_name": "Shift",
+"description": "Shift the image up, down, left, and right (with infinite wrapping).",
+"has_audio": false,
+"has_video": true,
+"name": "Shift"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"x": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "X Shift",
+"readonly": false,
+"type": "float"
+},
+"y": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": -1.0,
+"name": "Y Shift",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"SphericalProjection": {
+"info": {
+"class_name": "SphericalProjection",
+"description": "Flatten and reproject 360\u00b0 or fisheye inputs into a rectilinear view with yaw, pitch, roll, and FOV. Supports Equirect and multiple fisheye lens models.",
+"has_audio": false,
+"has_video": true,
+"name": "Spherical Projection"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"fov": {
+"choices": [],
+"keyframe": true,
+"max": 179.0,
+"min": 0.0,
+"name": "Out FOV",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"in_fov": {
+"choices": [],
+"keyframe": true,
+"max": 360.0,
+"min": 1.0,
+"name": "In FOV",
+"readonly": false,
+"type": "float"
+},
+"input_model": {
+"choices": [
+{
+"name": "Equirectangular (Panorama)",
+"value": 0
+},
+{
+"name": "Fisheye: Equidistant",
+"value": 1
+},
+{
+"name": "Fisheye: Equisolid",
+"value": 2
+},
+{
+"name": "Fisheye: Stereographic",
+"value": 3
+},
+{
+"name": "Fisheye: Orthographic",
+"value": 4
+}
+],
+"keyframe": false,
+"max": 4.0,
+"min": 0.0,
+"name": "Input Model",
+"readonly": false,
+"type": "int"
+},
+"interpolation": {
+"choices": [
+{
+"name": "Nearest",
+"value": 0
+},
+{
+"name": "Bilinear",
+"value": 1
+},
+{
+"name": "Bicubic",
+"value": 2
+},
+{
+"name": "Auto",
+"value": 3
+}
+],
+"keyframe": false,
+"max": 3.0,
+"min": 0.0,
+"name": "Interpolation",
+"readonly": false,
+"type": "int"
+},
+"invert": {
+"choices": [
+{
+"name": "Normal",
+"value": 0
+},
+{
+"name": "Invert",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Invert View",
+"readonly": false,
+"type": "int"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"pitch": {
+"choices": [],
+"keyframe": true,
+"max": 180.0,
+"min": -180.0,
+"name": "Pitch",
+"readonly": false,
+"type": "float"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"projection_mode": {
+"choices": [
+{
+"name": "Sphere",
+"value": 0
+},
+{
+"name": "Hemisphere",
+"value": 1
+},
+{
+"name": "Fisheye: Equidistant",
+"value": 2
+},
+{
+"name": "Fisheye: Equisolid",
+"value": 3
+},
+{
+"name": "Fisheye: Stereographic",
+"value": 4
+},
+{
+"name": "Fisheye: Orthographic",
+"value": 5
+}
+],
+"keyframe": false,
+"max": 5.0,
+"min": 0.0,
+"name": "Projection Mode",
+"readonly": false,
+"type": "int"
+},
+"roll": {
+"choices": [],
+"keyframe": true,
+"max": 180.0,
+"min": -180.0,
+"name": "Roll",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"yaw": {
+"choices": [],
+"keyframe": true,
+"max": 180.0,
+"min": -180.0,
+"name": "Yaw",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Stabilizer": {
+"info": {
+"class_name": "Stabilizer",
+"description": "Stabilize video clip to remove undesired shaking and jitter.",
+"has_audio": false,
+"has_video": true,
+"name": "Stabilizer"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"zoom": {
+"choices": [],
+"keyframe": true,
+"max": 2.0,
+"min": 0.0,
+"name": "Zoom",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Timer": {
+"info": {
+"class_name": "Timer",
+"description": "Render a styled count up, count down, clock, timecode, or frame number overlay.",
+"has_audio": false,
+"has_video": true,
+"name": "Timer"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"background": {
+"choices": [],
+"keyframe": true,
+"max": 255.0,
+"min": 0.0,
+"name": "Background Color",
+"readonly": false,
+"type": "color"
+},
+"background_alpha": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Background Alpha",
+"readonly": false,
+"type": "float"
+},
+"background_corner": {
+"choices": [],
+"keyframe": true,
+"max": 100.0,
+"min": 0.0,
+"name": "Background Corner Radius",
+"readonly": false,
+"type": "float"
+},
+"background_padding": {
+"choices": [],
+"keyframe": true,
+"max": 100.0,
+"min": 0.0,
+"name": "Background Padding",
+"readonly": false,
+"type": "float"
+},
+"clamp": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Clamp at Zero",
+"readonly": false,
+"type": "int"
+},
+"color": {
+"choices": [],
+"keyframe": true,
+"max": 255.0,
+"min": 0.0,
+"name": "Text Color",
+"readonly": false,
+"type": "color"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"end_time": {
+"choices": [],
+"keyframe": true,
+"max": 86400.0,
+"min": 0.0,
+"name": "Countdown Duration",
+"readonly": false,
+"type": "float"
+},
+"font_alpha": {
+"choices": [],
+"keyframe": true,
+"max": 1.0,
+"min": 0.0,
+"name": "Font Alpha",
+"readonly": false,
+"type": "float"
+},
+"font_name": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Font",
+"readonly": false,
+"type": "font"
+},
+"font_size": {
+"choices": [],
+"keyframe": true,
+"max": 300.0,
+"min": 1.0,
+"name": "Font Size",
+"readonly": false,
+"type": "float"
+},
+"format": {
+"choices": [
+{
+"name": "MM:SS",
+"value": 0
+},
+{
+"name": "HH:MM:SS",
+"value": 1
+},
+{
+"name": "HH:MM:SS.mmm",
+"value": 2
+},
+{
+"name": "Timecode",
+"value": 3
+},
+{
+"name": "Frames",
+"value": 4
+}
+],
+"keyframe": false,
+"max": 4.0,
+"min": 0.0,
+"name": "Format",
+"readonly": false,
+"type": "int"
+},
+"gravity": {
+"choices": [
+{
+"name": "Top Left",
+"value": 0
+},
+{
+"name": "Top Center",
+"value": 1
+},
+{
+"name": "Top Right",
+"value": 2
+},
+{
+"name": "Left",
+"value": 3
+},
+{
+"name": "Center",
+"value": 4
+},
+{
+"name": "Right",
+"value": 5
+},
+{
+"name": "Bottom Left",
+"value": 6
+},
+{
+"name": "Bottom Center",
+"value": 7
+},
+{
+"name": "Bottom Right",
+"value": 8
+}
+],
+"keyframe": false,
+"max": 8.0,
+"min": 0.0,
+"name": "Gravity",
+"readonly": false,
+"type": "int"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"mode": {
+"choices": [
+{
+"name": "Count Up",
+"value": 0
+},
+{
+"name": "Count Down",
+"value": 1
+},
+{
+"name": "Clock",
+"value": 2
+},
+{
+"name": "Timecode",
+"value": 3
+},
+{
+"name": "Frame Number",
+"value": 4
+}
+],
+"keyframe": false,
+"max": 4.0,
+"min": 0.0,
+"name": "Mode",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"prefix": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Prefix",
+"readonly": false,
+"type": "string"
+},
+"show_background": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Show Background",
+"readonly": false,
+"type": "int"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"start_time": {
+"choices": [],
+"keyframe": true,
+"max": 86400.0,
+"min": -86400.0,
+"name": "Start Time",
+"readonly": false,
+"type": "float"
+},
+"stroke": {
+"choices": [],
+"keyframe": true,
+"max": 255.0,
+"min": 0.0,
+"name": "Stroke Color",
+"readonly": false,
+"type": "color"
+},
+"stroke_width": {
+"choices": [],
+"keyframe": true,
+"max": 20.0,
+"min": 0.0,
+"name": "Stroke Width",
+"readonly": false,
+"type": "float"
+},
+"suffix": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Suffix",
+"readonly": false,
+"type": "string"
+},
+"time_source": {
+"choices": [
+{
+"name": "Clip Time",
+"value": 0
+},
+{
+"name": "Source Time",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Time Source",
+"readonly": false,
+"type": "int"
+},
+"x_offset": {
+"choices": [],
+"keyframe": true,
+"max": 100.0,
+"min": -100.0,
+"name": "X Offset (%)",
+"readonly": false,
+"type": "float"
+},
+"y_offset": {
+"choices": [],
+"keyframe": true,
+"max": 100.0,
+"min": -100.0,
+"name": "Y Offset (%)",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Tracker": {
+"info": {
+"class_name": "Tracker",
+"description": "Track the selected bounding box through the video.",
+"has_audio": false,
+"has_video": true,
+"name": "Tracker"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"objects": {},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Wave": {
+"info": {
+"class_name": "Wave",
+"description": "Distort the frame's image into a wave pattern.",
+"has_audio": false,
+"has_video": true,
+"name": "Wave"
+},
+"properties": {
+"amplitude": {
+"choices": [],
+"keyframe": true,
+"max": 5.0,
+"min": 0.0,
+"name": "Amplitude",
+"readonly": false,
+"type": "float"
+},
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"mask_invert": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Invert",
+"readonly": false,
+"type": "int"
+},
+"mask_loop_mode": {
+"choices": [
+{
+"name": "Play Once",
+"value": 0
+},
+{
+"name": "Repeat",
+"value": 1
+},
+{
+"name": "Ping-Pong",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Mask: Loop",
+"readonly": false,
+"type": "int"
+},
+"mask_reader": {
+"choices": [],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Source",
+"readonly": false,
+"type": "reader"
+},
+"mask_source_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Mask: Effect Source",
+"readonly": false,
+"type": "string"
+},
+"mask_time_mode": {
+"choices": [
+{
+"name": "Timeline",
+"value": 0
+},
+{
+"name": "Source FPS",
+"value": 1
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Mask: Time Mode",
+"readonly": false,
+"type": "int"
+},
+"multiplier": {
+"choices": [],
+"keyframe": true,
+"max": 10.0,
+"min": 0.0,
+"name": "Multiplier",
+"readonly": false,
+"type": "float"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"shift_x": {
+"choices": [],
+"keyframe": true,
+"max": 1000.0,
+"min": 0.0,
+"name": "X Shift",
+"readonly": false,
+"type": "float"
+},
+"speed_y": {
+"choices": [],
+"keyframe": true,
+"max": 300.0,
+"min": 0.0,
+"name": "Vertical speed",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"wavelength": {
+"choices": [],
+"keyframe": true,
+"max": 3.0,
+"min": 0.0,
+"name": "Wave length",
+"readonly": false,
+"type": "float"
+}
+}
+},
+"Whisperization": {
+"info": {
+"class_name": "Whisperization",
+"description": "Transform the voice present in an audio track into a whispering voice effect.",
+"has_audio": true,
+"has_video": false,
+"name": "Whisperization"
+},
+"properties": {
+"apply_before_clip": {
+"choices": [
+{
+"name": "Yes",
+"value": 1
+},
+{
+"name": "No",
+"value": 0
+}
+],
+"keyframe": false,
+"max": 1.0,
+"min": 0.0,
+"name": "Apply to Source",
+"readonly": false,
+"type": "int"
+},
+"duration": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Duration",
+"readonly": true,
+"type": "float"
+},
+"end": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "End",
+"readonly": false,
+"type": "float"
+},
+"fft_size": {
+"choices": [
+{
+"name": "128",
+"value": 2
+},
+{
+"name": "256",
+"value": 3
+},
+{
+"name": "512",
+"value": 4
+},
+{
+"name": "1024",
+"value": 5
+},
+{
+"name": "2048",
+"value": 6
+}
+],
+"keyframe": false,
+"max": 8.0,
+"min": 0.0,
+"name": "FFT Size",
+"readonly": false,
+"type": "int"
+},
+"hop_size": {
+"choices": [
+{
+"name": "1/2",
+"value": 0
+},
+{
+"name": "1/4",
+"value": 1
+},
+{
+"name": "1/8",
+"value": 2
+}
+],
+"keyframe": false,
+"max": 2.0,
+"min": 0.0,
+"name": "Hop Size",
+"readonly": false,
+"type": "int"
+},
+"id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "ID",
+"readonly": true,
+"type": "string"
+},
+"layer": {
+"choices": [],
+"keyframe": false,
+"max": 20.0,
+"min": 0.0,
+"name": "Track",
+"readonly": false,
+"type": "int"
+},
+"parent_effect_id": {
+"choices": [],
+"keyframe": false,
+"max": -1.0,
+"min": -1.0,
+"name": "Parent",
+"readonly": false,
+"type": "string"
+},
+"position": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Position",
+"readonly": false,
+"type": "float"
+},
+"start": {
+"choices": [],
+"keyframe": false,
+"max": 5184000.0,
+"min": 0.0,
+"name": "Start",
+"readonly": false,
+"type": "float"
+},
+"window_type": {
+"choices": [
+{
+"name": "Rectangular",
+"value": 0
+},
+{
+"name": "Bart Lett",
+"value": 1
+},
+{
+"name": "Hann",
+"value": 2
+},
+{
+"name": "Hamming",
+"value": 3
+}
+],
+"keyframe": false,
+"max": 3.0,
+"min": 0.0,
+"name": "Window Type",
+"readonly": false,
+"type": "int"
+}
+}
+}
+}

@@ -637,15 +637,16 @@ class GenerationService(QObject):
             text_value = str(text_value or "").strip().lower()
             return text_value in ("__openshot_lyrics__", "{{openshot_lyrics}}", "$openshot_lyrics")
 
-        def _replace_prompt_placeholders(text_value):
+        def _replace_prompt_placeholders(text_value, replacement=None):
             text_value = str(text_value or "")
             if not text_value:
                 return text_value
+            replacement = prompt_text if replacement is None else replacement
             return (
                 text_value
-                .replace("__openshot_prompt__", prompt_text)
-                .replace("{{openshot_prompt}}", prompt_text)
-                .replace("$openshot_prompt", prompt_text)
+                .replace("__openshot_prompt__", replacement)
+                .replace("{{openshot_prompt}}", replacement)
+                .replace("$openshot_prompt", replacement)
             )
 
         def _replace_lyrics_placeholders(text_value):
@@ -805,7 +806,12 @@ class GenerationService(QObject):
                         applied_prompt = True
                         prompt_value = replaced_prompt
                 if isinstance(tags_value, str):
-                    replaced_tags = _replace_prompt_placeholders(tags_value)
+                    # Music tags get the style part only; the "Lyrics:" block
+                    # goes to the lyrics input below.
+                    replaced_tags = _replace_prompt_placeholders(
+                        tags_value,
+                        music_prompt_text if template_id == "txt2music-ace-step" else None,
+                    )
                     if replaced_tags != tags_value:
                         inputs["tags"] = replaced_tags
                         applied_prompt = True
@@ -1206,7 +1212,12 @@ class GenerationService(QObject):
             return
 
         if status == "completed":
+            before = {f.id for f in File.filter()}
             result = self._import_generation_outputs(job)
+            # Remember what the job produced (imported outputs and scene split
+            # files) so the jobs list can hand the new file ids to the next step.
+            job["imported_file_ids"] = [f.id for f in File.filter() if f.id not in before]
+            job["result"] = {k: v for k, v in (result or {}).items() if isinstance(v, (bool, int, float, str))}
             imported = int(result.get("imported", 0))
             caption_saved = bool(result.get("caption_saved", False))
             scenes_labeled = int(result.get("scenes_labeled", 0))
@@ -1242,6 +1253,11 @@ class GenerationService(QObject):
 
         if status == "failed":
             error_text = ComfyClient.summarize_error_text(job.get("error") or "ComfyUI generation failed.")
+            if job.get("origin") == "agent":
+                # Queued by an assistant tool: the jobs tool reports the error.
+                # A modal box would stop an unattended session until dismissed.
+                self.win.statusBar.showMessage("Generation failed: {}".format(error_text[:160]), 8000)
+                return
             self.win.statusBar.showMessage("Generation failed", 5000)
             QMessageBox.warning(self.win, "Generation Failed", error_text)
 
