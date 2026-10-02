@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 
 pytest.importorskip("PyQt5.QtCore")
+pytest.importorskip("openshot")
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:

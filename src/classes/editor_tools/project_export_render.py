@@ -7,10 +7,11 @@ bits-per-pixel rule), applies Advanced-tab overrides, then renders through the
 editor's headless export path (``windows.export.export_video_headless``) with an
 explicit frame range. It never opens a dialog.
 
-The encode runs on the GUI thread (``export_video_headless`` builds an Export
-dialog object and PR #151 keeps the render there for macOS stability), so the
-editor is busy while it renders; everything else (preset parsing, path and codec
-checks, verification) happens on the calling worker thread.
+The encode runs on its own QThread (``run_on_qthread``), so the editor stays
+responsive while it renders; ``export_video_headless`` builds its Export dialog
+object on the GUI thread and touches no widget after that (off-thread widget
+access is what crashed macOS before PR #151). Everything else (preset parsing,
+path and codec checks, verification) happens on the calling worker thread.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from classes.editor_tools._base import (
 )
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.project_export import CHANNEL_LAYOUTS, normalize_path, project_path, window
+from classes.qt_main_thread import is_gui_thread
 
 _TYPE_LABELS = {"video_audio": "Video & Audio", "video_only": "Video Only", "audio_only": "Audio Only",
                 "image_sequence": "Image Sequence"}
@@ -569,8 +571,8 @@ def export_video(preset="", quality="", export_type="auto", range="", start=0, e
     overrides (size, fps, codecs, bitrates, sample rate, channels, container).
     Range: the whole timeline (first to last clip), the selected clips, or
     start/end seconds. Never opens a dialog unless show_dialog=true; refuses to
-    overwrite unless overwrite=true. Waits for the render (the editor is busy
-    meanwhile) and returns the file path, size, format and range. For social
+    overwrite unless overwrite=true. Waits for the render (the editor stays
+    usable meanwhile) and returns the file path, size, format and range. For social
     vertical formats, switch the project first with set_project_profile_tool
     (reframe='fill'), otherwise landscape footage renders with bars.
     Example: {"preset": "Instagram Reels", "start": 0, "end": 5}
@@ -587,13 +589,25 @@ def export_video(preset="", quality="", export_type="auto", range="", start=0, e
                                     video_bitrate, audio_bitrate, sample_rate, channels, interlaced,
                                     image_format, overwrite, show_dialog)
     finally:
-        _RUNNING_EXPORT.clear()
-        _EXPORT_LOCK.release()
+        if not _RUNNING_EXPORT.get("draining"):
+            _release_export_lock()
 
 
-# One render at a time: the render runs on the GUI thread for minutes, and a
-# second call (an agent retrying after its own call timed out) would queue
-# behind it and then re-render over the same file.
+def _release_export_lock():
+    _RUNNING_EXPORT.clear()
+    _EXPORT_LOCK.release()
+
+
+def _release_export_lock_when_stopped():
+    """Hold the export lock until a timed-out render has really stopped encoding."""
+    from windows.export import cancel_headless_exports
+    while not cancel_headless_exports(wait_seconds=60):
+        pass
+    _release_export_lock()
+
+
+# One render at a time: a render takes minutes, and a second call (an agent
+# retrying after its own call timed out) would re-render over the same file.
 _EXPORT_LOCK = threading.Lock()
 _RUNNING_EXPORT: dict = {}
 
@@ -642,9 +656,18 @@ def _export_video_locked(preset, quality, export_type, range, start, end, output
                                      profile_path_for_rescale=plan["profile_path"] if fps_differs else None)
 
     try:
-        err = on_main(_render, timeout=th()._EXPORT_MAIN_THREAD_TIMEOUT)
-    except th().MainThreadTimeout as exc:
-        raise ToolError(f"the render did not finish in time: {exc}") from exc
+        # Off the GUI thread, so the editor is not frozen for the whole render. A caller
+        # already on it renders inline: a QThread would wait for a dialog only this thread can build.
+        err = _render() if th().QThread is not None and is_gui_thread() else run_on_qthread(_render)
+    except ToolError:
+        # Timed out: stop the render, or it would write over the next export of this file.
+        from windows.export import cancel_headless_exports
+        if not cancel_headless_exports(wait_seconds=_INTERRUPT_GRACE_MS / 1000):
+            # Still encoding: the lock stays held until it stops, so a retry cannot overlap it.
+            _RUNNING_EXPORT["draining"] = True
+            threading.Thread(target=_release_export_lock_when_stopped, name="zenvi-export-drain",
+                             daemon=True).start()
+        raise
     except Exception as exc:
         raise ToolError(f"export failed: {exc}") from exc
     if err:

@@ -351,6 +351,146 @@ def _agent_bash_prompt():
     )
 
 
+def _claude_code_system_prompt():
+    """Append-system-prompt for Claude Code: editor fast-path + bash recipes."""
+    return (
+        "Zenvi editor (zenvi-editor MCP):\n"
+        "- Drive the open project with zenvi-editor MCP tools for editor actions.\n"
+        "- YouTube / youtu.be / similar URL: ONE call to ingest_web_video_tool "
+        "with url + intent. Add/place on timeline → intent=timeline. "
+        "Colour/look/grade → intent=reference (Imports only). "
+        "Recreate → intent=recreate.\n"
+        "- Do NOT ToolSearch, list_files, get_timeline_state_tool, "
+        "import_files_tool, or import_video_url_and_add_to_timeline_tool "
+        "before ingest for a bare YouTube/web video URL.\n"
+        "- If status=running, call ingest_web_video_tool(job_id=...) again — "
+        "each call waits until done or ~45s. A client timeout is not failure; "
+        "keep calling the same job_id. Do not abandon it for Import.\n"
+        "- On ok=false / status=failed: quote the short reason once and stop. "
+        "Do not start a second download of the same URL in that turn.\n"
+        "- After a successful ingest+place: one short sentence. "
+        "Do NOT call watch_clip_window_tool unless the user asked to check "
+        "the picture.\n"
+        "\n"
+        + _agent_bash_prompt()
+    )
+
+
+# Stable sentinel returned by ClaudeCodeRunner._ensure_ready when signed out.
+CLI_AUTH_REQUIRED = "CLI_AUTH_REQUIRED"
+
+
+def is_cli_auth_error(text: str) -> bool:
+    """True when CLI output means Anthropic/Claude login is missing or expired."""
+    low = str(text or "").strip().lower()
+    if not low:
+        return False
+    if low.strip() == CLI_AUTH_REQUIRED.lower():
+        return True
+    needles = (
+        "oauth session expired",
+        "failed to authenticate",
+        "not logged in",
+        "please run /login",
+        "please run claude auth login",
+        "authentication_error",
+        "could not be refreshed",
+        "auth login",
+    )
+    return any(n in low for n in needles)
+
+
+def claude_auth_status() -> dict | None:
+    """Run ``claude auth status``; return parsed JSON or None on failure."""
+    cli = _which_cli("claude")
+    if not cli:
+        return None
+    try:
+        result = subprocess.run(
+            [cli, "auth", "status"],
+            capture_output=True, text=True, timeout=8,
+            env=_cli_child_env(),
+        )
+    except Exception:
+        return None
+    raw = (result.stdout or result.stderr or "").strip()
+    if not raw:
+        return None
+    # Prefer a JSON object line; some versions wrap prose around it.
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    for line in raw.splitlines():
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
+def claude_is_logged_in() -> bool | None:
+    """True/False from auth status; None if the probe could not run."""
+    status = claude_auth_status()
+    if not isinstance(status, dict):
+        return None
+    if "loggedIn" in status:
+        return bool(status.get("loggedIn"))
+    # Older shapes
+    if "logged_in" in status:
+        return bool(status.get("logged_in"))
+    return None
+
+
+def start_claude_auth_login() -> tuple[bool, str]:
+    """Launch ``claude auth login`` (opens the browser). Returns (ok, message)."""
+    cli = _which_cli("claude")
+    if not cli:
+        return False, "Claude Code CLI not found on PATH."
+    try:
+        proc = subprocess.Popen(
+            [cli, "auth", "login"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            env=_cli_child_env(),
+            start_new_session=True,
+        )
+    except Exception as e:
+        return False, "Could not start Claude sign-in: %s" % e
+    # Poll until logged in or the login process exits / times out (~5 min).
+    deadline = time.time() + 300
+    while time.time() < deadline:
+        logged = claude_is_logged_in()
+        if logged is True:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            return True, "Signed in to Claude."
+        if proc.poll() is not None:
+            if claude_is_logged_in() is True:
+                return True, "Signed in to Claude."
+            err = ""
+            try:
+                err = (proc.stderr.read() or b"").decode("utf-8", "replace").strip()
+            except Exception:
+                pass
+            return False, err or (
+                "Sign-in did not finish. Complete it in the browser, then try again."
+            )
+        time.sleep(1.5)
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+    if claude_is_logged_in() is True:
+        return True, "Signed in to Claude."
+    return False, "Sign-in timed out. Finish in the browser, then try again."
+
+
 def _cli_child_env(extra=None):
     """Environment for a Windows-native Claude/Codex subprocess.
 
@@ -463,10 +603,15 @@ def detect_cli(binary_name: str) -> dict:
     Runs synchronously with short timeouts; callers on the GUI thread must
     offload this to a background thread (see ``AIChatWindow``'s detection
     worker) rather than call it directly.
+
+    For ``claude``, also reports ``logged_in`` (True/False/None).
     """
     cli = _which_cli(binary_name)
     if not cli:
-        return {"installed": False, "version": None, "registered": False}
+        out = {"installed": False, "version": None, "registered": False}
+        if binary_name == "claude":
+            out["logged_in"] = None
+        return out
     version = None
     try:
         result = subprocess.run(
@@ -475,7 +620,14 @@ def detect_cli(binary_name: str) -> dict:
         version = (result.stdout or result.stderr or "").strip() or None
     except Exception:
         version = None
-    return {"installed": True, "version": version, "registered": _is_registered(binary_name)}
+    out = {
+        "installed": True,
+        "version": version,
+        "registered": _is_registered(binary_name),
+    }
+    if binary_name == "claude":
+        out["logged_in"] = claude_is_logged_in()
+    return out
 
 
 def _is_registered(binary_name: str) -> bool:
@@ -1123,6 +1275,9 @@ class BaseAgentRunner(QObject):
     # Identical to AIChatWorker so the existing AIChatWindow slots connect 1:1.
     response_ready = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
+    # Claude Code only today: Anthropic OAuth missing/expired. Chat shows a
+    # Sign-in card instead of a raw CLI dump. Payload is a short reason.
+    auth_required = pyqtSignal(str)
     token_received = pyqtSignal(str)
     tool_started = pyqtSignal(str, str, str)   # call_id, tool_name, args_json
     tool_log = pyqtSignal(str, str)            # call_id, line
@@ -1322,7 +1477,10 @@ class BaseAgentRunner(QObject):
 
         ready_err = self._ensure_ready()
         if ready_err:
-            self._emit_error(ready_err)
+            if ready_err == CLI_AUTH_REQUIRED or is_cli_auth_error(ready_err):
+                self._emit_auth_required(ready_err)
+            else:
+                self._emit_error(ready_err)
             return
 
         try:
@@ -1426,9 +1584,26 @@ class BaseAgentRunner(QObject):
         if not self._aborted:
             self.response_ready.emit(text or "")
 
-    def _emit_error(self, text: str):
+    def _emit_auth_required(self, text: str = ""):
+        self._responded = True
         if not self._aborted:
-            self.error_occurred.emit(text or "Unknown error.")
+            self.auth_required.emit(
+                text or "Claude Code needs you to sign in again."
+            )
+
+    def _emit_error(self, text: str):
+        if self._aborted:
+            return
+        blob = text or "Unknown error."
+        # Claude OAuth recovery only — Codex/Cursor "authenticate" errors
+        # must not open the Claude Sign-in card.
+        if self.BACKEND_ID == BACKEND_CLAUDE and (
+            is_cli_auth_error(blob)
+            or any(is_cli_auth_error(line) for line in self._stderr_tail)
+        ):
+            self._emit_auth_required(blob)
+            return
+        self.error_occurred.emit(blob)
 
     # -- model selection ---------------------------------------------------
     def _coerce_model(self, model_id: str) -> str:
@@ -1508,6 +1683,12 @@ class ClaudeCodeRunner(BaseAgentRunner):
         self._open_blocks: dict = {}   # stream_event block index -> {"kind","call_id"}
         self._think_seq = 0
 
+    def _ensure_ready(self):
+        logged = claude_is_logged_in()
+        if logged is False:
+            return CLI_AUTH_REQUIRED
+        return None
+
     def _build_argv(self, text: str):
         cfg = _write_claude_mcp_config(self._server)
         argv = [
@@ -1518,7 +1699,7 @@ class ClaudeCodeRunner(BaseAgentRunner):
             # the app ΓÇö there is no terminal to answer a permission prompt, so
             # a prompt would just hang the turn until it times out.
             "--dangerously-skip-permissions",
-            "--append-system-prompt", _agent_bash_prompt(),
+            "--append-system-prompt", _claude_code_system_prompt(),
         ]
         argv += _add_dir_args()
         if self._model_id:

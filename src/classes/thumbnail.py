@@ -348,11 +348,23 @@ def _frame_thumbnail(frame, thumb_path, thumb_width, thumb_height, mask, overlay
     frame.Thumbnail(*args)
 
 
+def _check_hardware_decode_speed(source_path, seconds):
+    """Hand a thumbnail's decode time to the hardware-decode guard (never raises)."""
+    try:
+        from classes.app import get_app
+        from classes.export_acceleration.hw_decode import disable_hardware_decode_if_slower
+
+        disable_hardware_decode_if_slower(source_path, seconds, get_app().get_settings())
+    except Exception:
+        log.debug("Hardware decode speed check failed", exc_info=True)
+
+
 def _render_with_reader(source_path, source_frame, inspect_reader, thumb_path,
                         thumb_width, thumb_height, mask, overlay):
     """Render one frame of *source_path* to *thumb_path*; True when the file exists."""
     reader = None
     owner = None
+    started = time.perf_counter()
     try:
         reader, owner = _create_thumbnail_reader(source_path, inspect_reader)
         if not reader:
@@ -365,8 +377,11 @@ def _render_with_reader(source_path, source_frame, inspect_reader, thumb_path,
         reader.Open()
 
         rotate = _reader_rotation(reader, source_path)
+        frame = reader.GetFrame(source_frame)
+        # The first decode of this media: is the hardware decoder slower than software on it?
+        _check_hardware_decode_speed(source_path, time.perf_counter() - started)
         _frame_thumbnail(
-            reader.GetFrame(source_frame),
+            frame,
             thumb_path,
             thumb_width,
             thumb_height,

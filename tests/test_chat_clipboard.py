@@ -79,9 +79,13 @@ def test_edit_shortcut_name_maps_standard_keys():
     assert edit_shortcut_name(_FakeEvent(QKeySequence.Cut)) == "cut"
     assert edit_shortcut_name(_FakeEvent(QKeySequence.Paste)) == "paste"
     assert edit_shortcut_name(_FakeEvent(QKeySequence.SelectAll)) == "selectAll"
-    assert edit_shortcut_name(_FakeEvent(QKeySequence.Undo)) is None
+    # Undo/Redo are chat edit keys too since #173 (attachment chips, then text).
+    assert edit_shortcut_name(_FakeEvent(QKeySequence.Undo)) == "undo"
+    assert edit_shortcut_name(_FakeEvent(QKeySequence.Redo)) == "redo"
+    assert edit_shortcut_name(_FakeEvent(QKeySequence.Save)) is None
     assert is_edit_shortcut(_FakeEvent(QKeySequence.Copy)) is True
-    assert is_edit_shortcut(_FakeEvent(QKeySequence.Undo)) is False
+    assert is_edit_shortcut(_FakeEvent(QKeySequence.Undo)) is True
+    assert is_edit_shortcut(_FakeEvent(QKeySequence.Save)) is False
     assert is_edit_shortcut(None) is False
     assert is_edit_shortcut(object()) is False
 

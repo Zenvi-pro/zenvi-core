@@ -37,6 +37,8 @@ from classes.zenvi_env import load_zenvi_dotenv
 load_zenvi_dotenv()
 
 _DEFAULT_BACKEND_URL = "https://api.zenvi.pro"
+PROVIDER_KEY_HEADER = "X-Zenvi-Provider-Key"
+_UNVERIFIED_KEY_TRANSPORT = "Your own provider key is only sent to a verified HTTPS Zenvi backend."
 
 
 def _refresh_credits_after_backend_billing() -> None:
@@ -1103,23 +1105,85 @@ class ZenviBackendClient:
     # ------------------------------------------------------------------
     # Video Generation
     # ------------------------------------------------------------------
+    def _provider_key_transport_ok(self) -> bool:
+        """Verified HTTPS, or a loopback dev backend where the key never leaves the machine."""
+        from urllib.parse import urlparse
+
+        if self._ssl_verify and self.base_url.startswith("https://"):
+            return True
+        return urlparse(self.base_url).hostname in ("localhost", "127.0.0.1", "::1")
+
     def generate_video(self, prompt: str, duration_seconds: int = 5, **kwargs) -> Dict[str, Any]:
         """Generate a video from a text prompt (Kling O1 Pro via Runware).
 
         Supported kwargs: mode, frame_images_paths, seed_video_file_id,
-                          keep_original_sound, width, height, input_video_url.
+                          keep_original_sound, width, height, input_video_url,
+                          provider. ``provider_key`` (BYOK) travels as a header only.
         """
         try:
+            provider_key = kwargs.pop("provider_key", None)
+            if provider_key and not self._provider_key_transport_ok():
+                return {"error": _UNVERIFIED_KEY_TRANSPORT}
+            headers = {PROVIDER_KEY_HEADER: provider_key} if provider_key else None
             payload = {"prompt": prompt, "duration_seconds": duration_seconds}
             payload.update(kwargs)
-            r = self.session.post(f"{self.api_url}/generation/video", json=payload, timeout=600)
+            r = self.session.post(
+                f"{self.api_url}/generation/video", json=payload, headers=headers, timeout=600,
+            )
             r.raise_for_status()
-            return r.json()
+            data = r.json()
+            if not isinstance(data, dict):
+                return {"error": "Unexpected response from the Zenvi backend"}
+            if provider_key and data.get("error"):
+                from classes.provider_keys import redact
+                data["error"] = redact(str(data["error"]), provider_key)
+            return data
         except Exception as e:
-            log.error("Video generation failed: %s", e)
-            return {"error": str(e)}
+            from classes.provider_keys import redact
+            err = redact(str(e), provider_key or "")
+            log.error("Video generation failed: %s", err)
+            return {"error": err}
         finally:
             _refresh_credits_after_backend_billing()
+
+    def validate_provider_key(self, provider: str, key: str) -> Dict[str, Any]:
+        """Test a user's own provider key against the provider (write-only; never echoed).
+
+        ``{"ok", "error"}`` is the provider's verdict. When the request never got
+        that far (backend or network failure) the result also has ``unverified``.
+        """
+        import requests
+        from classes.provider_keys import redact
+
+        if not self._provider_key_transport_ok():
+            return {"ok": False, "unverified": True, "error": _UNVERIFIED_KEY_TRANSPORT}
+        try:
+            r = self.session.post(
+                f"{self.api_url}/generation/providers/{provider}/validate",
+                json={}, headers={PROVIDER_KEY_HEADER: key}, timeout=30,
+            )
+            r.raise_for_status()
+            data = r.json()
+            if not isinstance(data, dict):
+                return {"ok": False, "unverified": True, "error": "Unexpected response from the Zenvi backend"}
+            return data
+        except requests.HTTPError as e:
+            status = getattr(e.response, "status_code", "?")
+            if status == 401:
+                return {"ok": False, "unverified": True, "error": "sign in to Zenvi first"}
+            try:
+                body = e.response.json()
+                detail = body.get("error") or body.get("detail")
+            except Exception:
+                detail = None
+            msg = f"Zenvi backend returned {status}" + (f": {detail}" if detail else "")
+            return {"ok": False, "unverified": True, "error": redact(msg, key)}
+        except Exception as e:
+            log.error("Provider key validation failed for %s: %s", provider, type(e).__name__)
+            return {
+                "ok": False, "unverified": True,
+                "error": f"Could not reach the Zenvi backend ({type(e).__name__})",
+            }
 
     def generate_tts(
         self,

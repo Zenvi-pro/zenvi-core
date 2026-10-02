@@ -594,6 +594,11 @@ QComboBox:focus  { border-color: #4d9cf6; }
 /* ── Keyboard focus (TAB navigation; ported from OpenShot #5912, Zenvi palette) ── */
 QToolBar QToolButton:focus { background-color: #2e2e2e; border: 1px solid #4d9cf6; }
 QToolBar QToolButton:checked:focus { border: 1px solid #4d9cf6; }
+/* The main and timeline toolbars style their buttons by ID ("border: none"),
+   which outranks the generic rule above, so they need ID-scoped focus rules. */
+QToolBar#toolBar QToolButton:focus,
+QToolBar#timelineToolbar QToolButton:focus { background-color: #2e2e2e; border: 1px solid #4d9cf6; }
+QToolBar#timelineToolbar QToolButton:checked:focus { background-color: rgba(77, 156, 246, 0.18); }
 QPushButton:focus { border-color: #4d9cf6; }
 QCheckBox:focus { background-color: #2a2a2a; border-radius: 3px; }
 QTabBar:focus { outline: none; }

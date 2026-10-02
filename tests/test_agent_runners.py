@@ -86,7 +86,9 @@ def test_detect_cli_not_installed(monkeypatch):
 
     monkeypatch.setattr(ar.shutil, "which", lambda name: None)
     monkeypatch.setattr(ar, "_cli_install_dirs", lambda: [])
-    assert ar.detect_cli("claude") == {"installed": False, "version": None, "registered": False}
+    assert ar.detect_cli("claude") == {
+        "installed": False, "version": None, "registered": False, "logged_in": None,
+    }
 
 
 def test_detect_cli_installed_with_version(monkeypatch):
@@ -99,7 +101,10 @@ def test_detect_cli_installed_with_version(monkeypatch):
     monkeypatch.setattr(ar.shutil, "which", lambda name: "/usr/local/bin/" + name)
     monkeypatch.setattr(ar.subprocess, "run", lambda *a, **kw: _FakeResult())
     monkeypatch.setattr(ar, "_is_registered", lambda name: True)
-    assert ar.detect_cli("claude") == {"installed": True, "version": "1.2.3", "registered": True}
+    monkeypatch.setattr(ar, "claude_is_logged_in", lambda: True)
+    assert ar.detect_cli("claude") == {
+        "installed": True, "version": "1.2.3", "registered": True, "logged_in": True,
+    }
 
 
 def test_detect_cli_installed_version_check_fails(monkeypatch):
@@ -785,9 +790,9 @@ def test_agent_bash_prompt_covers_heic_and_zsh():
     assert "HEIC" in text
 
 
-def test_claude_argv_appends_bash_prompt(qapp, monkeypatch):
+def test_claude_argv_appends_system_prompt(qapp, monkeypatch):
     import windows.agent_runners as ar
-    from windows.agent_runners import ClaudeCodeRunner, _agent_bash_prompt
+    from windows.agent_runners import ClaudeCodeRunner, _claude_code_system_prompt
 
     monkeypatch.setattr(ar, "_write_claude_mcp_config", lambda server: "/tmp/cfg.json")
     runner = ClaudeCodeRunner()
@@ -795,7 +800,63 @@ def test_claude_argv_appends_bash_prompt(qapp, monkeypatch):
     runner._cli_session_id = "s7"
     argv = runner._build_argv("hi")
     assert "--append-system-prompt" in argv
-    assert argv[argv.index("--append-system-prompt") + 1] == _agent_bash_prompt()
+    prompt = argv[argv.index("--append-system-prompt") + 1]
+    assert prompt == _claude_code_system_prompt()
+    assert "ingest_web_video_tool" in prompt
+    assert "ToolSearch" in prompt
+    assert "watch_clip_window_tool" in prompt
+    assert "HEIC" in prompt
+
+
+def test_is_cli_auth_error_matches_oauth_strings():
+    from windows.agent_runners import CLI_AUTH_REQUIRED, is_cli_auth_error
+
+    assert is_cli_auth_error(
+        "Failed to authenticate: OAuth session expired and could not be refreshed"
+    )
+    assert is_cli_auth_error(CLI_AUTH_REQUIRED)
+    assert not is_cli_auth_error("MCP server not connected")
+    assert not is_cli_auth_error("")
+
+
+def test_claude_ensure_ready_blocks_when_signed_out(qapp, monkeypatch):
+    import windows.agent_runners as ar
+    from windows.agent_runners import CLI_AUTH_REQUIRED, ClaudeCodeRunner
+
+    monkeypatch.setattr(ar, "claude_is_logged_in", lambda: False)
+    runner = ClaudeCodeRunner()
+    assert runner._ensure_ready() == CLI_AUTH_REQUIRED
+    monkeypatch.setattr(ar, "claude_is_logged_in", lambda: True)
+    assert runner._ensure_ready() is None
+    monkeypatch.setattr(ar, "claude_is_logged_in", lambda: None)
+    assert runner._ensure_ready() is None
+
+
+def test_emit_error_routes_auth_to_auth_required(qapp):
+    from windows.agent_runners import ClaudeCodeRunner
+
+    runner = ClaudeCodeRunner()
+    events = []
+    runner.auth_required.connect(lambda t: events.append(("auth", t)))
+    runner.error_occurred.connect(lambda t: events.append(("error", t)))
+    runner._emit_error(
+        "Failed to authenticate: OAuth session expired and could not be refreshed"
+    )
+    assert events and events[0][0] == "auth"
+    assert not any(e[0] == "error" for e in events)
+
+
+def test_emit_error_codex_auth_stays_on_error_occurred(qapp):
+    """Codex authenticate failures must not open the Claude Sign-in card."""
+    from windows.agent_runners import CodexRunner
+
+    runner = CodexRunner()
+    events = []
+    runner.auth_required.connect(lambda t: events.append(("auth", t)))
+    runner.error_occurred.connect(lambda t: events.append(("error", t)))
+    runner._emit_error("Failed to authenticate: OAuth session expired")
+    assert events and events[0][0] == "error"
+    assert not any(e[0] == "auth" for e in events)
 
 
 def test_cli_child_env_sets_claude_code_shell_for_bash4(monkeypatch):

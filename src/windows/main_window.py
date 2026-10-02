@@ -289,6 +289,13 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Disable video caching
         openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
 
+        # An assistant export encodes on its own thread: stop it before
+        # libopenshot is torn down under it.
+        export_module = sys.modules.get("windows.export")
+        if export_module is not None and not export_module.cancel_headless_exports(wait_seconds=60):
+            # Not waited for indefinitely: an encoder stuck in one frame would keep the app from ever closing.
+            log.warning("An assistant export is still encoding after 60 s; shutting down anyway")
+
         # Stop AI chat thread early so its wait overlaps with the rest of shutdown
         if getattr(self, "dockAIChat", None):
             self.dockAIChat._stop_all_threads()
@@ -1510,20 +1517,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def actionUndo_trigger(self, checked=True):
         log.info('actionUndo_trigger')
-        from windows.chat_web_view import chat_owns_clipboard_keys, dispatch_chat_edit_action
-
-        chat = getattr(self, "dockAIChat", None)
-        view = getattr(chat, "_chat_view", None) if chat is not None else None
-        under_mouse = bool(view is not None and view.underMouse())
-        focus = QApplication.focusWidget()
-        # Prefer chat undo (attachments / web text) when the assistant owns
-        # focus. If chat has nothing to undo, fall through to the timeline —
-        # WebEngine often keeps hasFocus() after a toolbar Undo click, which
-        # used to swallow reverse/slice undos entirely.
-        if chat_owns_clipboard_keys(chat, focus, under_mouse):
-            if dispatch_chat_edit_action(chat, "undo", focus, under_mouse):
-                return
-
+        # Edit > Undo, the timeline toolbar and Ctrl/Cmd+Z outside the chat all
+        # undo the project. While the chat has keyboard focus it claims the key
+        # itself (ChatEditShortcutMixin: attachment chips, then page text), so
+        # this action never has to route to it.
         get_app().updates.undo()
 
         # Update the preview
@@ -1531,16 +1528,6 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def actionRedo_trigger(self, checked=True):
         log.info('actionRedo_trigger')
-        from windows.chat_web_view import chat_owns_clipboard_keys, dispatch_chat_edit_action
-
-        chat = getattr(self, "dockAIChat", None)
-        view = getattr(chat, "_chat_view", None) if chat is not None else None
-        under_mouse = bool(view is not None and view.underMouse())
-        focus = QApplication.focusWidget()
-        if chat_owns_clipboard_keys(chat, focus, under_mouse):
-            if dispatch_chat_edit_action(chat, "redo", focus, under_mouse):
-                return
-
         get_app().updates.redo()
 
         # Update the preview
@@ -4742,8 +4729,14 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             set_fixed = dock.setFixedHeight
             restore = lambda: (dock.setMinimumHeight(old_min), dock.setMaximumHeight(old_max))
         if current != size:
+            # Startup forces a dock again before its queued restore has run. Only the
+            # first call saw the real limits; a second restore would pin the dock.
+            pending = vars(self).setdefault("_pending_dock_extent_restores", {})
+            key = (dock, orientation)
+            if key not in pending:
+                pending[key] = restore
+                QTimer.singleShot(0, lambda: pending.pop(key)())
             set_fixed(size)
-            QTimer.singleShot(0, restore)
 
     def _apply_saved_dock_sizes(self):
         """Apply saved logical sizes for docks Qt state commonly drifts."""
@@ -5705,7 +5698,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             if tab_bar.count() == 0:
                 continue
             # Check if this tab bar contains dock titles
-            tabs = [tab_bar.tabText(i) for i in range(tab_bar.count())]
+            tabs = tabstops.tab_titles(tab_bar)
             if any(title in dock_titles for title in tabs):
                 tab_bar.currentChanged.connect(self._schedule_tab_order_update)
                 self._connected_dock_tab_bars.add(tab_bar)
@@ -5854,6 +5847,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.generation_queue.job_finished.connect(self._on_generation_job_finished)
         self._init_generation_actions()
         self._init_ai_tools_menu()
+        # File → Zenvi Cloud: push, open in the web editor, open a cloud project.
+        from windows.cloud_sync_ui import install_cloud_menu
+        self.cloud_sync = install_cloud_menu(self)
         self.refresh_comfy_availability_async()
 
         # Add window as watcher to receive undo/redo status updates
