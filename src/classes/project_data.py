@@ -391,6 +391,10 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         # Set default project ID
         self._data["id"] = self.generate_id()
 
+        # Zenvi Cloud link ({project_id, revision, pushed_at}); must exist for
+        # update_untracked(["zenvi_cloud"], ...). load() merges it into older files.
+        self._data.setdefault("zenvi_cloud", {})
+
     def get_profile(self, profile_desc=None, profile_key=None):
         """Attempt to find a specific profile"""
         profile = None
