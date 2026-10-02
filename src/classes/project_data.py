@@ -79,6 +79,9 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         # Track changes after save
         self.has_unsaved_changes = False
 
+        # Media paths the last load could not find (see check_if_paths_are_valid)
+        self.last_missing_media = []
+
         # Load default project data on creation
         self.new()
 
@@ -459,10 +462,15 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
         return profile
 
-    def load(self, file_path, clear_thumbnails=True):
-        """ Load project from file """
+    def load(self, file_path, clear_thumbnails=True, interactive=True):
+        """ Load project from file
+
+        interactive=False never opens the missing-media dialog: files that cannot
+        be relinked silently stay in place and are listed in last_missing_media.
+        """
 
         self.new()
+        self.last_missing_media = []
 
         if file_path:
             log.info("Loading project file: %s", file_path)
@@ -521,7 +529,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             self.has_unsaved_changes = False
 
             # Check if paths are all valid
-            self.check_if_paths_are_valid()
+            self.check_if_paths_are_valid(interactive=interactive)
 
             # Clear old thumbnails (never headless: the default folder belongs
             # to a desktop window that may be running alongside)
@@ -1494,11 +1502,13 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         s.set("recent_projects", recent_projects)
         s.save()
 
-    def check_if_paths_are_valid(self):
+    def check_if_paths_are_valid(self, interactive=True):
         """Check if all paths are valid, and prompt to update them if needed.
 
         Shows one dialog: skip all, or pick a single folder and fingerprint-match
         every missing file under it. Cancel keeps files and clips in place.
+        interactive=False behaves like "Skip all" without asking, after the
+        silent media-root relink.
         """
         app = get_app()
         settings = app.get_settings()
@@ -1576,7 +1586,11 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 missing_paths.append(p)
 
         total_missing = len(missing_paths)
+        self.last_missing_media = sorted(missing_paths)
         if total_missing == 0:
+            return
+        if not interactive:
+            log.info("Opening with %s missing file(s) without prompting", total_missing)
             return
 
         sample_names = [os.path.basename(p) for p in missing_paths[:5]]

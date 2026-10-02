@@ -1,0 +1,4 @@
+# Zenvi's libopenshot source patches are applied with `git apply` to upstream
+# checkouts, which use LF. Keep the patches LF on every platform: Windows runners
+# check text out as CRLF (core.autocrlf=true), and a CRLF patch does not apply.
+installer/mac-patches/*.patch text eol=lf

@@ -726,7 +726,7 @@
     "restart": false
   },
   {
-    "value": true,
+    "value": false,
     "title": "Prefer Hardware Encoder for Headless/Agent Export",
     "type": "bool",
     "category": "Performance",

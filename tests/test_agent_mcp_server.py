@@ -61,16 +61,11 @@ def tool_stub():
         """List the media files in the current project bin."""
         return "FIXTURE_FILES: a.mp4, b.wav"
 
-    def add_track(label="", **_kw):
-        """Add a new track to the timeline."""
-        return "added track %s" % label
-
     def watch_clip_window(query="", start="", end="", **_kw):
         """Vision-check a placed clip."""
         return "WATCH_RESULT query=%s" % query
 
-    th.AGENT_TOOL_HANDLERS = {"list_files_tool": list_files, "add_track_tool": add_track,
-                              "watch_clip_window_tool": watch_clip_window}
+    th.AGENT_TOOL_HANDLERS = {"list_files_tool": list_files, "watch_clip_window_tool": watch_clip_window}
     th.humanize_tool_name = lambda n: n
 
     def _execute(name, args):
@@ -100,14 +95,12 @@ def test_iter_tool_defs(tool_stub):
     defs = {d["name"]: d for d in iter_tool_defs()}
 
     # Editor tools are exactly what AGENT_TOOL_HANDLERS holds...
-    assert set(defs) - set(_extra_tools()) == {"list_files_tool", "add_track_tool",
-                                               "watch_clip_window_tool"}
+    assert set(defs) - set(_extra_tools()) == {"list_files_tool", "watch_clip_window_tool"}
     # ...and the MCP-only extras are advertised alongside them.
     assert set(_extra_tools()) <= set(defs)
 
-    # Typed properties come from TOOL_SCHEMAS; add_track takes no arguments.
+    # Typed properties come from TOOL_SCHEMAS (editor tools: their registry schema).
     assert defs["watch_clip_window_tool"]["inputSchema"]["properties"]["query"]["type"] == "string"
-    assert defs["add_track_tool"]["inputSchema"]["properties"] == {}
     assert "media files" in defs["list_files_tool"]["description"]
 
 
