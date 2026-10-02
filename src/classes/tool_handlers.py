@@ -6103,6 +6103,23 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
         return f"Error importing video from URL: {e}"
 
 
+def _byok_generation_kwargs():
+    """Route generation through the user's own Higgsfield key when one is stored (#60).
+
+    Returns (kwargs, error). BYOK calls bill the user's provider account, so Zenvi
+    credits are skipped. A stored key that cannot be read is an error, never a
+    silent fall-back to billed Zenvi generation.
+    """
+    from classes.provider_keys import KeyUnreadable, get_key
+
+    try:
+        key = get_key("higgsfield", strict=True)
+    except KeyUnreadable:
+        return {}, (
+            "Your Higgsfield key could not be read. Re-enter or remove it in "
+            "Preferences → AI → Integrations."
+        )
+    return ({"provider": "higgsfield", "provider_key": key} if key else {}), None
 def _ingest_web_video_fail(reason: str, *, url: str = "", intent: str = "") -> str:
     """Stable JSON failure — agents should report this briefly and stop, not cascade."""
     msg = str(reason or "Ingest failed.").strip()
@@ -6667,9 +6684,13 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
     try:
         from classes.credits_client import check_operation, credits
 
-        _, _, blocked = check_operation("video_generation", "video generation")
-        if blocked:
-            return _as_error(blocked)
+        byok, byok_err = _byok_generation_kwargs()
+        if byok_err:
+            return f"Error: {byok_err}"
+        if not byok:
+            _, _, blocked = check_operation("video_generation", "video generation")
+            if blocked:
+                return _as_error(blocked)
         from classes.api_client import get_backend_client
         client = get_backend_client()
         result = client.generate_video(
@@ -6678,6 +6699,7 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
             width=t2v_w,
             height=t2v_h,
             mode="t2v",
+            **byok,
         )
         video_url = result.get("video_url", "")
         err = result.get("error", "")
@@ -7416,9 +7438,13 @@ def generate_transition_clip(
 
             from classes.credits_client import check_operation
 
-            _, _, blocked = check_operation("morph_generation", "morph generation")
-            if blocked:
-                return _as_error(blocked)
+            byok, byok_err = _byok_generation_kwargs()
+            if byok_err:
+                return f"Error: {byok_err}"
+            if not byok:
+                _, _, blocked = check_operation("morph_generation", "morph generation")
+                if blocked:
+                    return _as_error(blocked)
 
             from classes.api_client import get_backend_client
             client = get_backend_client()
@@ -7438,6 +7464,7 @@ def generate_transition_clip(
                 duration_seconds=int(morph_duration),
                 frame_images_paths=frame_images_paths,
                 mode="frame_morph",
+                **byok,
             )
 
             video_url = result.get("video_url", "")

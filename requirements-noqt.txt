@@ -12,6 +12,10 @@ requests>=2.31
 websocket-client>=1.7
 python-dotenv>=1.0.1
 
+# OS keychain for bring-your-own provider keys (src/classes/provider_keys.py):
+# macOS Keychain, Windows Credential Manager, Secret Service on Linux.
+keyring>=25
+
 # In-app MCP server exposing editor tools to external agent CLIs.
 # Floor is the version this is tested against: the server needs
 # FastMCP(stateless_http=..., json_response=...) and

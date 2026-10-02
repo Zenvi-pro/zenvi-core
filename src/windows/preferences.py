@@ -510,6 +510,11 @@ class Preferences(QDialog):
                     # Add widget to layout
                     tabWidget.layout().addWidget(label)
 
+            if category == "AI" and filterFound:
+                integrations_btn = QPushButton(_("Integrations (use your own keys)..."))
+                integrations_btn.clicked.connect(self.open_integrations)
+                tabWidget.layout().addWidget(integrations_btn)
+
             # Add stretch to bottom of layout
             tabWidget.layout().addStretch()
 
@@ -519,6 +524,10 @@ class Preferences(QDialog):
         self.DeleteAllTabs(onlyInVisible=True)
 
         self._apply_tab_order()
+
+    def open_integrations(self):
+        from windows.integrations import IntegrationsDialog
+        IntegrationsDialog(self).exec_()
 
     def register_setting_widget(self, param, widget, label=None):
         """Store widget references and register dependency relationships."""

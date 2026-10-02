@@ -115,6 +115,8 @@ python_packages = ["os",
                    "zmq",
                    "webbrowser",
                    "json",
+                   # OS keychain for bring-your-own provider keys (all backends)
+                   "keyring",
                    # In-app MCP server for external agent CLIs (Claude Code, Codex)
                    "mcp",
                    "uvicorn",
