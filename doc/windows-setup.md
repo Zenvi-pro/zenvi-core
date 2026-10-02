@@ -89,6 +89,8 @@ Qt WebEngine (used by Director, plan review, and the chat UI panels) is not avai
 8. Build libopenshot into MinGW's `/mingw64`:
 
     ```sh
+    # zenvi-core first: it carries the libopenshot patch used below.
+    git clone https://github.com/Zenvi-pro/zenvi-core.git
     git clone https://github.com/OpenShot/libopenshot.git
     cd libopenshot
     # MSYS2 ships OpenCV 5; libopenshot asks for OpenCV 4 and would build without
@@ -111,11 +113,10 @@ Qt WebEngine (used by Director, plan review, and the chat UI panels) is not avai
     pacman -S --needed mingw64/mingw-w64-x86_64-python-cx-freeze mingw64/mingw-w64-x86_64-python-lief
     ```
 
-10. Clone zenvi-core, install PyQt5, cffi, zstandard, and Qt WebKit via pacman, then set up the venv:
+10. In zenvi-core (cloned in step 8), install PyQt5, cffi, zstandard, and Qt WebKit via pacman, then set up the venv:
 
     ```sh
-    git clone https://github.com/Zenvi-pro/zenvi-core.git
-    cd zenvi-core
+    cd ~/zenvi-core
 
     pacman -S --needed \
       mingw-w64-x86_64-python-pyqt5 \

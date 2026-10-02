@@ -28,6 +28,10 @@ OPENCV_INCLUDE = re.compile(r'^[ \t]*#include [<"]opencv2/[^>"\n]+[>"][ \t]*\n',
 def patch_cmake(src_dir: str) -> None:
     path = os.path.join(src_dir, "src", "CMakeLists.txt")
     text = open(path, encoding="utf-8").read()
+    if "$<TARGET_NAME_IF_EXISTS:opencv_geometry>" in text:
+        # A retried build runs this again on the same tree.
+        print("already patched", path)
+        return
     if "find_package(OpenCV 4)" not in text:
         sys.exit("patch-libopenshot-opencv5: find_package(OpenCV 4) not found in %s" % path)
     text = text.replace("find_package(OpenCV 4)", "find_package(OpenCV)")
@@ -47,6 +51,7 @@ def patch_sources(src_dir: str) -> None:
     for path in sorted(sources):
         text = open(path, encoding="utf-8").read()
         if "opencv2/geometry.hpp" in text:
+            patched += 1  # by an earlier run
             continue
         match = OPENCV_INCLUDE.search(text)
         if not match:

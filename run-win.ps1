@@ -294,8 +294,11 @@ if [ -z "$LIBOPENSHOT_OK" ]; then
     fi
 
     echo "libopenshot built and installed."
-    PYTHONPATH="$BINDINGS_DIR" /mingw64/bin/python.exe "$REPO_ROOT_UNIX/installer/verify_openshot_bundle.py" \
-        || echo "WARNING: libopenshot was built without the OpenCV effects (Stabilizer / Tracker / Object Detector)."
+    # Stop here rather than launch on bindings just found unusable.
+    if ! PYTHONPATH="$BINDINGS_DIR" /mingw64/bin/python.exe "$REPO_ROOT_UNIX/installer/verify_openshot_bundle.py"; then
+        echo "ERROR: the libopenshot just built does not load, or has no OpenCV effects (Stabilizer / Tracker / Object Detector). See the output above."
+        exit 1
+    fi
 else
     echo "libopenshot (including Python bindings) already built -- skipping."
 fi
