@@ -237,8 +237,7 @@ def test_t2v_with_own_higgsfield_key_skips_zenvi_credits():
 def test_t2v_without_own_key_keeps_managed_credits_path():
     out, client, check, charge = _run_t2v("")
     assert "provider" not in client.generate_video.call_args.kwargs
-    check.assert_called_once()
-    charge.assert_called_once()
+    check.assert_called_once()  # the backend bills the managed path itself
 
 
 def test_test_and_save_only_activates_a_key_the_provider_accepts(keychain):
@@ -433,8 +432,8 @@ def test_the_key_never_reaches_logs_tool_results_or_chat(keychain):
         logging.getLogger().removeHandler(records)
         zenvi_log.setLevel(old_level)
 
-    assert outputs[0].startswith("Error: Higgsfield API error 401")
-    assert outputs[1].startswith("Error: connection reset")
+    assert json.loads(outputs[0])["summary"].startswith("Error: Higgsfield API error 401")
+    assert json.loads(outputs[1])["summary"].startswith("Error: connection reset")
     assert records.lines, "the calls above must have logged something to check"
     for text in outputs + records.lines:
         for part in KEY_PARTS:

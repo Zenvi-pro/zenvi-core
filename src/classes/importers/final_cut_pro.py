@@ -33,6 +33,8 @@ from xml.dom import minidom, Node
 import openshot
 from qt_api import QFileDialog
 
+from classes import frame_time as ft
+from fractions import Fraction
 from classes import info
 from classes.app import get_app
 from classes.logger import log
@@ -249,8 +251,13 @@ def _xml_interp_to_point(value):
     return openshot.LINEAR
 
 
-def import_xml():
-    """Import final cut pro XML file"""
+def import_xml(file_path=None, prompt=True):
+    """Import final cut pro XML file
+
+    With no *file_path*, asks for one (File > Import Project > XML). prompt=False
+    never opens a dialog: missing media is skipped. Returns a summary dict
+    ({"track_numbers", "clip_ids", "missing"}), or None when nothing was chosen.
+    """
     app = get_app()
     _ = app._tr
 
@@ -261,18 +268,20 @@ def import_xml():
     project_width = app.project.get("width") or 1920
     project_height = app.project.get("height") or 1080
 
-    # Get XML path
-    recommended_path = app.project.current_filepath or ""
-    if not recommended_path:
-        recommended_path = info.HOME_PATH
-    else:
-        recommended_path = os.path.dirname(recommended_path)
-    file_path = QFileDialog.getOpenFileName(app.window, _("Import XML..."), recommended_path,
-                                            _("Final Cut Pro (*.xml)"), _("Final Cut Pro (*.xml)"))[0]
+    if file_path is None:
+        # Get XML path
+        recommended_path = app.project.current_filepath or ""
+        if not recommended_path:
+            recommended_path = info.HOME_PATH
+        else:
+            recommended_path = os.path.dirname(recommended_path)
+        file_path = QFileDialog.getOpenFileName(app.window, _("Import XML..."), recommended_path,
+                                                _("Final Cut Pro (*.xml)"), _("Final Cut Pro (*.xml)"))[0]
 
     if not file_path or not os.path.exists(file_path):
         # User canceled dialog
-        return
+        return None
+    summary = {"track_numbers": [], "clip_ids": [], "missing": []}
 
     # Parse XML file
     xmldoc = minidom.parse(file_path)
@@ -347,6 +356,7 @@ def import_xml():
                     track = Track()
                     track.data = {"number": track_number, "y": 0, "label": "XML Import %s" % track_index, "lock": is_locked}
                     track.save()
+                    summary["track_numbers"].append(track_number)
 
             # Loop through clips
             for clip_element in clips_on_track:
@@ -358,8 +368,10 @@ def import_xml():
                 if not clip_path:
                     continue
 
-                clip_path, is_modified, is_skipped = find_missing_file(clip_path)
+                original_clip_path = clip_path
+                clip_path, is_modified, is_skipped = find_missing_file(clip_path, prompt=prompt)
                 if is_skipped:
+                    summary["missing"].append(original_clip_path)
                     continue
 
                 # Check for this path in our existing project data
@@ -385,6 +397,8 @@ def import_xml():
                         file.save()
                     except Exception:
                         log.warning('Error building File object for %s' % clip_path, exc_info=1)
+                        summary["missing"].append(clip_path)
+                        continue
 
                 if (file.data["media_type"] == "video" or file.data["media_type"] == "image"):
                     # Determine thumb path
@@ -408,6 +422,10 @@ def import_xml():
                 clip.data["title"] = clip_title
                 clip.data["layer"] = track_number
                 clip.data["image"] = thumb_path
+                fps = Fraction(int(fps_num), int(fps_den))
+                clip_position_value, clip_start_value, clip_end_value = ft.quantize_span(
+                    clip_position_value, clip_start_value, clip_end_value, fps
+                )
                 clip.data["position"] = clip_position_value
                 clip.data["start"] = clip_start_value
                 clip.data["end"] = clip_end_value
@@ -582,6 +600,8 @@ def import_xml():
                     clip.data["volume"] = {"Points": volume_points}
                 # Save clip
                 clip.save()
+                if clip.id not in summary["clip_ids"]:
+                    summary["clip_ids"].append(clip.id)
 
                 if not is_audio_track_list and merge_key:
                     imported_clip_map[merge_key] = clip
@@ -592,3 +612,4 @@ def import_xml():
 
     # Free up DOM memory
     xmldoc.unlink()
+    return summary

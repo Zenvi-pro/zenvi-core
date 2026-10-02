@@ -43,7 +43,7 @@ from qt_api import QKeySequence, QIcon
 from classes import info, ui_util, tabstops
 from classes import openshot_rc  # noqa
 from classes.app import get_app
-from classes.settings import apply_openmp_settings, lib_default_thread_counts
+from classes.settings import apply_openmp_settings
 from classes.language import get_all_languages
 from classes.logger import log
 from classes.metrics import track_metric_screen
@@ -658,18 +658,8 @@ class Preferences(QDialog):
 
     def _get_thread_spinner_limits(self, setting_name):
         """Return UI bounds for thread-related preference spinners."""
-        omp_default, ff_default = lib_default_thread_counts()
-        if setting_name == "omp_threads_number":
-            default_value = int(omp_default)
-            min_value = 2
-        elif setting_name == "ff_threads_number":
-            default_value = int(ff_default)
-            min_value = 2
-        else:
-            return None
-
-        max_value = max(min_value, default_value * 3)
-        return min_value, max_value
+        from classes.preference_effects import thread_limits
+        return thread_limits(setting_name)
 
     def _apply_thread_settings(self):
         """Apply current thread preference values to libopenshot."""
@@ -693,23 +683,9 @@ class Preferences(QDialog):
         else:
             self.s.set(param["setting"], False)
 
-        # Trigger specific actions
-        if param["setting"] == "debug-mode":
-            # Update debug setting of timeline
-            log.info("Setting debug-mode to %s", state == Qt.Checked)
-            debug_enabled = (state == Qt.Checked)
-
-            # Enable / Disable logger
-            openshot.ZmqLogger.Instance().Enable(debug_enabled)
-
-        elif param["setting"] == "enable-auto-save":
-            # Toggle autosave
-            if (state == Qt.Checked):
-                # Start/Restart autosave timer
-                get_app().window.auto_save_timer.start()
-            else:
-                # Stop autosave timer
-                get_app().window.auto_save_timer.stop()
+        # Trigger specific actions (debug logger, autosave timer, ...)
+        from classes.preference_effects import apply_preference_side_effects
+        apply_preference_side_effects(param["setting"], state == Qt.Checked)
 
         # Check for restart
         self.check_for_restart(param)
@@ -723,34 +699,9 @@ class Preferences(QDialog):
         self.s.set(param["setting"], value)
         log.info(value)
 
-        if param["setting"] == "autosave-interval":
-            # Update autosave interval (# of minutes)
-            get_app().window.auto_save_timer.setInterval(int(value * 1000 * 60))
-
-        elif param["setting"] == "omp_threads_number":
-            lib_settings = openshot.Settings.Instance()
-            value = int(str(value))
-            min_value, max_value = self._get_thread_spinner_limits("omp_threads_number")
-            lib_settings.OMP_THREADS = max(min_value, min(value, max_value))
-            apply_openmp_settings(lib_settings)
-
-        elif param["setting"] == "ff_threads_number":
-            lib_settings = openshot.Settings.Instance()
-            value = int(str(value))
-            min_value, max_value = self._get_thread_spinner_limits("ff_threads_number")
-            lib_settings.FF_THREADS = max(min_value, min(value, max_value))
-
-        elif param["setting"] == "decode_hw_max_width":
-            openshot.Settings.Instance().DE_LIMIT_WIDTH_MAX = int(str(value))
-
-        elif param["setting"] == "decode_hw_max_height":
-            openshot.Settings.Instance().DE_LIMIT_HEIGHT_MAX = int(str(value))
-
-        # Apply cache settings (if needed)
-        if param["setting"] in ["cache-limit-mb", "cache-scale", "cache-quality",
-                                "cache-ahead-percent", "cache-preroll-min-frames",
-                                "cache-preroll-max-frames", "cache-max-frames"]:
-            get_app().window.InitCacheSettings()
+        # Autosave interval, thread counts, decoder limits, cache settings
+        from classes.preference_effects import apply_preference_side_effects
+        apply_preference_side_effects(param["setting"], value)
 
         # Check for restart
         self.check_for_restart(param)
@@ -889,27 +840,9 @@ class Preferences(QDialog):
         self.s.set(param["setting"], value)
         log.info(value)
 
-        # Apply cache settings (if needed)
-        if param["setting"] in ["cache-mode", "cache-image-format"]:
-            get_app().window.InitCacheSettings()
-
-        if param["setting"] == "hw-decoder":
-            # Set Hardware Decoder
-            openshot.Settings.Instance().HARDWARE_DECODER = int(value)
-
-        if param["setting"] == "graca_number_de":
-            openshot.Settings.Instance().HW_DE_DEVICE_SET = int(value)
-
-        if param["setting"] == "graca_number_en":
-            openshot.Settings.Instance().HW_EN_DEVICE_SET = int(value)
-
-        if param["setting"] == "theme":
-            # Apply selected theme to UI
-            if get_app().theme_manager:
-                get_app().theme_manager.apply_theme(value)
-
-        if param["setting"] == "timeline-thumbnail-style":
-            self._apply_timeline_thumbnail_style()
+        # Cache mode, hardware decoder/encoder, theme, thumbnail style
+        from classes.preference_effects import apply_preference_side_effects
+        apply_preference_side_effects(param["setting"], value)
 
         # Check for restart
         self.check_for_restart(param)

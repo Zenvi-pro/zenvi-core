@@ -40,6 +40,19 @@ _DEFAULT_BACKEND_URL = "https://api.zenvi.pro"
 PROVIDER_KEY_HEADER = "X-Zenvi-Provider-Key"
 
 
+def _refresh_credits_after_backend_billing() -> None:
+    """Repaint the credits badge after a request the backend bills itself.
+
+    /generation/video and /generation/morph deduct (or refund) before they
+    answer, so the balance is final by the time the request returns.
+    """
+    try:
+        from classes.credits_client import credits
+        credits.refresh_balance()
+    except Exception as exc:
+        log.debug("credits refresh after a backend-billed request failed: %s", exc)
+
+
 class ZenviBackendClient:
     """HTTP/WebSocket client for the Zenvi backend API."""
 
@@ -502,14 +515,32 @@ class ZenviBackendClient:
                         # reported to the user as done.
                         result = f"Error: tool execution failed: {exc}"
                     text = str(result) if result is not None else ""
-                    if text and not text.startswith("Error"):
+                    from classes.agent_tools.output import get_last_output, ws_images
+                    from classes.agent_tools.receipt import is_error_result, parse_receipt
+                    if text and not is_error_result(text):
                         last_tool_result_holder[0] = text
+                    # Backend classifies failures by an Error: prefix on `result`
+                    # (no separate error field). Success stays full receipt JSON.
+                    wire = text
+                    receipt = parse_receipt(text)
+                    if receipt and receipt.get("status") in ("error", "refused"):
+                        wire = str(receipt.get("summary") or text)
+                    payload = {
+                        "call_id": call_data.get("call_id", ""),
+                        "result": wire,
+                    }
+                    # Sidecar for Assistant vision (backend forwards when ready).
+                    try:
+                        last = get_last_output()
+                        if last is not None:
+                            images = ws_images(last)
+                            if images:
+                                payload["images"] = images
+                    except Exception:
+                        pass
                     _ws_send({
                         "type": "tool_result",
-                        "data": {
-                            "call_id": call_data.get("call_id", ""),
-                            "result": text,
-                        },
+                        "data": payload,
                     })
 
                 t = threading.Thread(target=_runner, daemon=True, name="zenvi-tool-worker")
@@ -1101,6 +1132,8 @@ class ZenviBackendClient:
             err = redact(str(e), provider_key or "")
             log.error("Video generation failed: %s", err)
             return {"error": err}
+        finally:
+            _refresh_credits_after_backend_billing()
 
     def validate_provider_key(self, provider: str, key: str) -> Dict[str, Any]:
         """Test a user's own provider key against the provider (write-only; never echoed).
@@ -1177,6 +1210,8 @@ class ZenviBackendClient:
         except Exception as e:
             log.error("Morph video generation failed: %s", e)
             return {"error": str(e)}
+        finally:
+            _refresh_credits_after_backend_billing()
 
     # ------------------------------------------------------------------
     # Indexing & Pegasus summarize (for files_model)

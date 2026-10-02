@@ -10,6 +10,7 @@ event schema.
 import json
 import os
 import sys
+import types
 
 import pytest
 
@@ -484,7 +485,7 @@ def test_claude_argv_omits_model_when_none_picked(qapp, monkeypatch):
 def test_models_for_backend_matches_the_picker_contract(qapp):
     """chat.js reads id/name off every entry and marks exactly one default."""
     from windows.agent_runners import (
-        BACKEND_CLAUDE, BACKEND_CODEX, models_for_backend,
+        BACKEND_CLAUDE, BACKEND_CODEX, BACKEND_CURSOR, models_for_backend,
     )
 
     claude = models_for_backend(BACKEND_CLAUDE)
@@ -494,6 +495,8 @@ def test_models_for_backend_matches_the_picker_contract(qapp):
     assert sum(1 for m in claude if m.get("default")) == 1
 
     assert models_for_backend(BACKEND_CODEX) == []
+    # Cursor's real list comes from the CLI; built in is only "CLI default".
+    assert [m["id"] for m in models_for_backend(BACKEND_CURSOR)] == ["cli-default"]
     assert models_for_backend("zenvi") == []
 
     # Callers mutate what they get (the JS bridge tags entries), so the
@@ -768,6 +771,13 @@ def test_agent_bash_prompt_covers_heic_and_zsh():
     from windows.agent_runners import _agent_bash_prompt
 
     text = _agent_bash_prompt()
+    assert "dry_run=true" in text
+    assert "import_files_tool" in text
+    assert "list_files_tool only lists" in text
+    assert "C:/Users/" in text or "/c/Users/" in text
+    assert "IMMEDIATELY" in text
+    assert "/mnt/c" in text
+    assert "Do NOT use Glob" in text or "do NOT use Glob" in text
     assert "sips" in text
     assert "filter_complex" in text
     assert "${!" in text
@@ -947,3 +957,1338 @@ def test_coerce_model_honours_the_live_lineup(qapp, clear_live_lineups):
     assert codex._coerce_model("gpt-5.3-codex") == "gpt-5.3-codex"
     # a Zenvi model id left over from a shared picker is still refused
     assert codex._coerce_model("openai/gpt-5.6-sol") == ""
+
+
+# cursor_stream.jsonl is a trimmed capture of cursor-agent 2026.09.18 running
+# `-p --output-format stream-json --stream-partial-output` against an MCP
+# server named zenvi-editor: one tool schema lookup, a successful and a failing
+# MCP call, and one of Cursor's own shell calls.
+_CURSOR_FIRST = ("I'll inspect the zenvi-editor tool schemas, then call "
+                 "`list_files_tool` and `add_clip_to_timeline_tool` as requested.")
+_CURSOR_LAST = "`city.mp4` could not be added because Track 1 is locked."
+
+
+def test_cursor_parser_emits_expected_signals(qapp):
+    from windows.agent_runners import CursorCliRunner
+    runner = CursorCliRunner()
+    runner._session_id = "s1"
+    events = _collect(runner)
+    _feed(runner, "cursor_stream.jsonl")
+
+    assert runner._cli_session_id == "cur-abc-123"
+    assert runner._cli_id_from_cli is True
+    started = [e[1] for e in events if e[0] == "tool_started" and e[1] != "thinking"]
+    assert started == ["look_up_tools", "list_files_tool", "add_clip_to_timeline_tool",
+                       "run_shell_command"]
+    assert any(e[0] == "tool_started" and e[1] == "thinking" for e in events)
+    # Every block that opened is closed, thinking included.
+    opened = [e[2] for e in events if e[0] == "tool_started"]
+    closed = [e[1] for e in events if e[0] == "tool_completed"]
+    assert sorted(opened) == sorted(closed)
+    names = {e[2]: e[1] for e in events if e[0] == "tool_started"}
+    by_name = {names[e[1]]: (e[2], e[3]) for e in events if e[0] == "tool_completed"}
+    assert by_name["list_files_tool"][0] is True
+    assert "FIXTURE" in by_name["list_files_tool"][1]
+    # An MCP tool that raised still arrives as "success" with isError.
+    assert by_name["add_clip_to_timeline_tool"] == (
+        False, "Error executing tool add_clip_to_timeline_tool: Track 1 is locked")
+    assert by_name["run_shell_command"] == (True, "beach.mp4\ncity.mp4\n")
+    assert by_name["look_up_tools"][0] is True
+
+    # Every message streams exactly once: the CLI's whole-message repeat
+    # after the deltas is not shown a second time.
+    tokens = "".join(e[1] for e in events if e[0] == "token")
+    assert tokens == _CURSOR_FIRST + _CURSOR_LAST
+    # The reply keeps the messages apart, the way the chat committed them.
+    replies = [e[1] for e in events if e[0] == "response_ready"]
+    assert replies == [_CURSOR_FIRST + "\n\n" + _CURSOR_LAST]
+    assert not any(e[0] == "error" for e in events)
+
+
+def test_cursor_mcp_tool_args_are_the_tools_own(qapp):
+    from windows.agent_runners import CursorCliRunner
+    runner = CursorCliRunner()
+    seen = []
+    runner.tool_started.connect(lambda c, n, a: seen.append((n, json.loads(a))))
+    _feed(runner, "cursor_stream.jsonl")
+
+    args = dict(seen)
+    assert args["add_clip_to_timeline_tool"] == {"file_name": "city.mp4", "position_seconds": 0}
+    assert args["list_files_tool"] == {}
+    # Cursor's own tools show what they work on, not the CLI's bookkeeping.
+    assert args["run_shell_command"] == {"command": "ls"}
+    assert args["look_up_tools"] == {"server": "zenvi-editor"}
+
+
+def test_cursor_native_tools_are_not_labelled_as_motion_graphics(qapp):
+    """Bare read/edit/glob/grep are the Zenvi harness's motion-graphics tools."""
+    from classes.tool_handlers import humanize_tool_name
+    from windows.agent_runners import _CURSOR_TOOL_NAMES, _cursor_tool_start
+
+    for kind in ("read", "edit", "write", "glob", "grep", "shell", "delete", "ls"):
+        name, _ = _cursor_tool_start(kind, {"args": {"path": "a.txt"}})
+        assert name == _CURSOR_TOOL_NAMES[kind]
+        assert "motion graphic" not in humanize_tool_name(name).lower(), kind
+    assert _cursor_tool_start("webSearch", {"args": {"query": "x"}}) == ("web_search", {"query": "x"})
+
+
+@pytest.mark.parametrize("result,expected", [
+    (None, (True, "")),
+    ({"success": {"content": [{"text": {"text": "a"}}, {"text": {"text": "b"}}],
+                  "isError": False}}, (True, "a\nb")),
+    ({"success": {"content": "plain"}}, (True, "plain")),
+    ({"success": {"exitCode": 2, "stdout": "", "stderr": "no such file",
+                  "interleavedOutput": "no such file"}}, (False, "no such file")),
+    ({"spawnError": {"command": "", "error": "no exit status"}}, (False, "no exit status")),
+    ({"error": {"error": "Path does not exist: /x"}}, (False, "Path does not exist: /x")),
+    ({"rejected": {"reason": "denied"}, "isBackground": False}, (False, "denied")),
+    ({"error": "boom"}, (False, "boom")),
+    ({"isBackground": False}, (True, "")),
+])
+def test_cursor_tool_result_reads_success_and_every_failure_shape(result, expected):
+    from windows.agent_runners import _cursor_tool_result
+    assert _cursor_tool_result(result) == expected
+
+
+def test_cursor_reply_without_partial_output_is_not_dropped(qapp):
+    """A message that never streamed as deltas is shown, not taken for a repeat."""
+    from windows.agent_runners import CursorCliRunner
+    runner = CursorCliRunner()
+    events = _collect(runner)
+    for ev in (
+        {"type": "system", "subtype": "init", "session_id": "c1"},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "Done."}]}},
+        {"type": "result", "subtype": "success", "is_error": False, "result": "Done."},
+    ):
+        runner._handle_event(ev)
+    assert [e[1] for e in events if e[0] == "token"] == ["Done."]
+    assert [e[1] for e in events if e[0] == "response_ready"] == ["Done."]
+
+
+def test_cursor_new_turn_forgets_the_last_turns_prose(qapp):
+    from windows.agent_runners import CursorCliRunner
+    runner = CursorCliRunner()
+    events = _collect(runner)
+    _feed(runner, "cursor_stream.jsonl")
+    runner._final_text = ""   # run_request resets this per turn
+    for ev in (
+        {"type": "system", "subtype": "init", "session_id": "cur-abc-123"},
+        {"type": "assistant", "timestamp_ms": 1,
+         "message": {"content": [{"type": "text", "text": "Second turn."}]}},
+        {"type": "result", "subtype": "success", "is_error": False, "result": "Second turn."},
+    ):
+        runner._handle_event(ev)
+    assert [e[1] for e in events if e[0] == "response_ready"][-1] == "Second turn."
+
+
+def test_cursor_runner_takes_models_from_its_own_lineup(qapp, clear_live_lineups):
+    """_coerce_model looks the lineup up by BACKEND_ID; without it no Cursor
+    model could ever reach --model."""
+    from windows.agent_runners import BACKEND_CURSOR, CursorCliRunner, set_live_lineups
+
+    runner = CursorCliRunner()
+    assert runner.BACKEND_ID == BACKEND_CURSOR
+    set_live_lineups({BACKEND_CURSOR: [{"id": "composer-2.5", "name": "Composer 2.5"}]})
+    assert runner._coerce_model("composer-2.5") == "composer-2.5"
+    assert runner._coerce_model("claude-opus-5") == "", "another backend's model is dropped"
+
+
+def test_cursor_argv_is_headless_and_hides_model(qapp, monkeypatch):
+    import windows.agent_runners as ar
+    from windows.agent_runners import CursorCliRunner
+
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: ["--add-dir", "C:/footage"])
+    runner = CursorCliRunner()
+    runner._cli_path = r"C:\cursor-agent\cursor-agent.cmd"
+    runner._cli_cwd = r"C:\proj"
+    runner._cli_session_id = "cur-abc-123"
+    runner._cli_started = True
+    runner._cli_id_from_cli = True
+    argv = runner._build_argv("make a cut")
+    assert argv[0] == runner._cli_path
+    assert "-p" in argv
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert "--stream-partial-output" in argv
+    assert "--force" in argv
+    assert "--trust" in argv
+    # Not approved yet (no _ensure_ready ran): every server would be, as before.
+    assert "--approve-mcps" in argv
+    assert argv[argv.index("--workspace") + 1] == r"C:\proj"
+    assert argv[argv.index("--resume") + 1] == "cur-abc-123"
+    assert argv[argv.index("--add-dir") + 1] == "C:/footage"
+    assert argv[-1] == "make a cut"
+    assert "--model" not in argv
+    assert [m["id"] for m in runner.MODELS] == ["cli-default"]
+
+    runner._mcp_approved = True   # zenvi-editor alone was approved
+    assert "--approve-mcps" not in runner._build_argv("make a cut")
+
+
+def _cursor_home(monkeypatch, tmp_path, which=None):
+    import windows.agent_runners as ar
+    monkeypatch.setattr(ar.shutil, "which", which or (lambda name: None))
+    monkeypatch.setattr(ar, "_resolved_home", lambda: str(tmp_path))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
+    return ar
+
+
+def _cursor_version(tmp_path, version="2026.09.18-9a7762b"):
+    """What the macOS/Linux installer lays down under ~/.local/share."""
+    exe = tmp_path / ".local" / "share" / "cursor-agent" / "versions" / version / "cursor-agent"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    return exe
+
+
+def test_which_cursor_cli_prefers_cursor_install_over_other_agent(monkeypatch, tmp_path):
+    """Windows: the installer's own folder wins over some other `agent` on PATH."""
+    install = tmp_path / "AppData" / "Local" / "cursor-agent"
+    install.mkdir(parents=True)
+    exe = install / "cursor-agent.cmd"
+    exe.write_text("@echo off\n")
+    grok = tmp_path / "grok" / "agent.exe"
+    grok.parent.mkdir()
+    grok.write_bytes(b"")
+
+    ar = _cursor_home(monkeypatch, tmp_path,
+                      lambda name: str(grok) if name.startswith("agent") else None)
+    assert ar._which_cli("cursor-agent") == str(exe)
+
+
+def test_which_cursor_cli_ignores_an_unrelated_agent_in_local_bin(monkeypatch, tmp_path):
+    other = tmp_path / ".local" / "bin" / "agent"
+    other.parent.mkdir(parents=True)
+    other.write_text("#!/bin/sh\necho not cursor\n")
+    other.chmod(0o755)
+
+    ar = _cursor_home(monkeypatch, tmp_path)
+    assert ar._which_cli("cursor-agent") is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_which_cursor_cli_accepts_an_agent_link_into_a_cursor_install(monkeypatch, tmp_path):
+    """The installer's ~/.local/bin/agent is a symlink into versions/; with the
+    cursor-agent link removed that alias is still Cursor's."""
+    exe = _cursor_version(tmp_path)
+    link = tmp_path / ".local" / "bin" / "agent"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(exe)
+
+    ar = _cursor_home(monkeypatch, tmp_path)
+    assert ar._which_cli("cursor-agent") == str(link)
+    # ...and the same alias found on PATH is trusted for the same reason.
+    ar = _cursor_home(monkeypatch, tmp_path,
+                      lambda name: str(link) if name == "agent" else None)
+    assert ar._which_cli("cursor-agent") == str(link)
+
+
+def test_which_cursor_cli_ignores_an_unrelated_agent_on_path(monkeypatch, tmp_path):
+    grok = tmp_path / "bin" / "agent"
+    grok.parent.mkdir()
+    grok.write_text("#!/bin/sh\n")
+    ar = _cursor_home(monkeypatch, tmp_path,
+                      lambda name: str(grok) if name.startswith("agent") else None)
+    assert ar._which_cli("cursor-agent") is None
+
+
+def test_which_cursor_cli_falls_back_to_the_newest_installed_version(monkeypatch, tmp_path):
+    _cursor_version(tmp_path, "2026.09.02-c22c1a3")
+    newest = _cursor_version(tmp_path, "2026.09.18-9a7762b")
+    ar = _cursor_home(monkeypatch, tmp_path)
+    assert ar._which_cli("cursor-agent") == str(newest)
+
+
+def test_register_cursor_writes_bearer_and_updates_port(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text(json.dumps({
+        "mcpServers": {
+            "other": {"command": "npx", "args": ["something"]},
+            "zenvi-editor": {
+                "url": "http://127.0.0.1:9999/mcp",
+                "headers": {"Authorization": "Bearer old"},
+            },
+        }
+    }))
+    monkeypatch.setattr(ar, "_cursor_mcp_path", lambda: str(cfg))
+
+    ok, message = ar.register_cursor(7434, "tok123")
+    assert ok is True
+    assert "Connected" in message
+
+    data = json.loads(cfg.read_text())
+    server = data["mcpServers"]["zenvi-editor"]
+    assert server["url"] == "http://127.0.0.1:7434/mcp"
+    # The token is named, not stored: cursor-agent expands ${env:...}.
+    assert server["headers"]["Authorization"] == "Bearer ${env:ZENVI_MCP_TOKEN}"
+    assert "tok123" not in cfg.read_text()
+    assert "export ZENVI_MCP_TOKEN=tok123" in message
+    assert data["mcpServers"]["other"]["command"] == "npx"
+    assert (tmp_path / "mcp.json.zenvi-backup").exists()
+    assert ar._cursor_is_registered() is True
+
+
+def test_register_cursor_refuses_invalid_json(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    cfg = tmp_path / "mcp.json"
+    original = "{not json"
+    cfg.write_text(original)
+    monkeypatch.setattr(ar, "_cursor_mcp_path", lambda: str(cfg))
+
+    ok, message = ar.register_cursor(7434, "tok123")
+    assert ok is False
+    assert cfg.read_text() == original
+
+
+def test_register_cursor_leaves_a_users_own_zenvi_server_alone(monkeypatch, tmp_path):
+    """Only zenvi-editor is Zenvi's; a server the user called "zenvi" is theirs."""
+    import windows.agent_runners as ar
+
+    cfg = tmp_path / "mcp.json"
+    theirs = {"command": "node", "args": ["my-zenvi-scripts.js"]}
+    cfg.write_text(json.dumps({"mcpServers": {"zenvi": theirs}}))
+    monkeypatch.setattr(ar, "_cursor_mcp_path", lambda: str(cfg))
+
+    assert ar._cursor_is_registered() is False, "their server is not our registration"
+    ok, _ = ar.register_cursor(7434, "tok123")
+    servers = json.loads(cfg.read_text())["mcpServers"]
+    assert ok is True
+    assert servers["zenvi"] == theirs
+    assert servers["zenvi-editor"]["url"] == "http://127.0.0.1:7434/mcp"
+
+
+def test_register_cursor_does_not_rewrite_a_current_entry(monkeypatch, tmp_path):
+    """The runner re-checks before every turn; that must not churn the file
+    the Cursor editor watches, or overwrite the backup of the user's own."""
+    import windows.agent_runners as ar
+
+    cfg = tmp_path / "mcp.json"
+    users = json.dumps({"mcpServers": {"other": {"url": "https://example.com/mcp"}}})
+    cfg.write_text(users)
+    monkeypatch.setattr(ar, "_cursor_mcp_path", lambda: str(cfg))
+
+    assert ar.register_cursor(7434, "tok123")[0] is True
+    written = cfg.read_text()
+    os.utime(cfg, (1, 1))
+    assert ar.register_cursor(7434, "tok123")[0] is True
+    assert cfg.read_text() == written and cfg.stat().st_mtime == 1
+    assert (tmp_path / "mcp.json.zenvi-backup").read_text() == users
+    assert not (tmp_path / "mcp.json.zenvi-tmp").exists()
+    # A moved port is still picked up, and the backup stays the user's file.
+    assert ar.register_cursor(7435, "tok123")[0] is True
+    assert json.loads(cfg.read_text())["mcpServers"]["zenvi-editor"]["url"].endswith(":7435/mcp")
+    assert (tmp_path / "mcp.json.zenvi-backup").read_text() == users
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_register_cursor_never_leaves_other_servers_secrets_world_readable(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text(json.dumps({"mcpServers": {"discord": {"env": {"DISCORD_TOKEN": "s3cret"}}}}))
+    cfg.chmod(0o600)
+    monkeypatch.setattr(ar, "_cursor_mcp_path", lambda: str(cfg))
+    old = os.umask(0o022)
+    try:
+        assert ar.register_cursor(7434, "tok123")[0] is True
+    finally:
+        os.umask(old)
+    assert cfg.stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "mcp.json.zenvi-backup").stat().st_mode & 0o777 == 0o600
+
+    fresh = tmp_path / "new" / ".cursor" / "mcp.json"
+    monkeypatch.setattr(ar, "_cursor_mcp_path", lambda: str(fresh))
+    assert ar.register_cursor(7434, "tok123")[0] is True
+    assert fresh.stat().st_mode & 0o777 == 0o600, "the bearer token is in there too"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_register_cursor_updates_a_symlinked_config_through_the_link(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    target = tmp_path / "dotfiles" / "cursor-mcp.json"
+    target.parent.mkdir()
+    target.write_text(json.dumps({"mcpServers": {}}))
+    link = tmp_path / ".cursor" / "mcp.json"
+    link.parent.mkdir()
+    link.symlink_to(target)
+    monkeypatch.setattr(ar, "_cursor_mcp_path", lambda: str(link))
+
+    assert ar.register_cursor(7434, "tok123")[0] is True
+    assert link.is_symlink()
+    assert "zenvi-editor" in json.loads(target.read_text())["mcpServers"]
+
+
+def test_register_cursor_refuses_a_non_object_server_table(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    cfg = tmp_path / "mcp.json"
+    original = json.dumps({"mcpServers": ["not", "a", "table"]})
+    cfg.write_text(original)
+    monkeypatch.setattr(ar, "_cursor_mcp_path", lambda: str(cfg))
+    ok, message = ar.register_cursor(7434, "tok123")
+    assert ok is False and "not touching" in message
+    assert cfg.read_text() == original
+
+
+# ── Cursor model lineup (asked of the CLI) ────────────────────────────────
+
+@pytest.fixture
+def fresh_cursor_lineup(monkeypatch):
+    import windows.agent_runners as ar
+    monkeypatch.setattr(ar, "_cli_lineups", {})
+    monkeypatch.setattr(ar, "_cli_models_read", {})
+    ar.set_live_lineups({})
+    yield ar
+    ar.set_live_lineups({})
+
+
+def test_parse_cursor_models_reads_the_real_listing():
+    """cursor_models.txt is trimmed `cursor-agent models` output (2026.09.18)."""
+    from windows.agent_runners import parse_cursor_models
+
+    with open(os.path.join(_FIX, "cursor_models.txt"), encoding="utf-8") as fh:
+        rows = parse_cursor_models(fh.read())
+
+    assert [r["id"] for r in rows] == [
+        "cli-default",
+        "auto", "gpt-5.3-codex", "composer-2.5", "claude-opus-5-thinking-high",
+        "claude-fable-5-thinking-high", "gemini-3.7-flash-high", "grok-4.7-low-fast",
+        "claude-opus-5-5-high", "kimi-k2.7-code",
+    ]
+    # Preselected, and says what the CLI resolves it to.
+    assert rows[0] == {"id": "cli-default", "name": "CLI default", "rank": 0,
+                       "featured": True, "default": True, "tags": ["Auto"]}
+    assert [r["id"] for r in rows if r["featured"]] == ["cli-default"], "search reaches the rest"
+    assert not any(r.get("default") for r in rows[1:])
+    names = {r["id"]: r["name"] for r in rows}
+    assert names["auto"] == "Auto"                                   # flags stripped
+    assert names["grok-4.7-low-fast"] == "Grok 4.7 Low Fast"        # zero-width spaces gone
+    assert names["claude-fable-5-thinking-high"].endswith("(NO ZDR)")  # not a flag
+    assert [r["rank"] for r in rows] == list(range(len(rows)))      # the CLI's order
+
+
+def test_parse_cursor_models_prefers_the_model_the_cli_is_set_to():
+    from windows.agent_runners import parse_cursor_models
+
+    rows = parse_cursor_models(
+        "\x1b[1mAvailable models\x1b[0m\n\nauto - Auto (default)\n"
+        "composer-2.5 - Composer 2.5 (current)\ncomposer-2.5 - duplicate\n")
+    assert [r["id"] for r in rows] == ["cli-default", "auto", "composer-2.5"]
+    assert rows[0]["tags"] == ["Composer 2.5"], "what the CLI is set to, not Cursor's pick"
+    assert parse_cursor_models("Error: not logged in\n") == []
+
+
+def test_cursor_lineup_is_read_once_per_cli_version_and_kept_on_failure(
+        fresh_cursor_lineup, monkeypatch):
+    ar = fresh_cursor_lineup
+    calls = []
+    answers = [[{"id": "auto", "name": "Auto", "default": True}], []]
+    monkeypatch.setattr(ar, "_which_cursor_cli", lambda: "/bin/cursor-agent")
+    monkeypatch.setattr(ar.CursorCliRunner, "list_models",
+                        staticmethod(lambda cli: calls.append(cli) or answers.pop(0)))
+
+    assert ar.refresh_cli_models(ar.BACKEND_CURSOR, "2026.09.18") is True
+    assert [m["id"] for m in ar.models_for_backend(ar.BACKEND_CURSOR)] == ["auto"]
+    # Detection runs every minute; the CLI is not asked again until it is due.
+    assert ar.refresh_cli_models(ar.BACKEND_CURSOR, "2026.09.18") is False
+    assert calls == ["/bin/cursor-agent"]
+    # An update is due at once. This read fails, and the list stays.
+    assert ar.refresh_cli_models(ar.BACKEND_CURSOR, "2026.09.28") is False
+    assert len(calls) == 2
+    assert [m["id"] for m in ar.models_for_backend(ar.BACKEND_CURSOR)] == ["auto"]
+
+
+def test_cursor_lineup_reaches_the_model_flag(qapp, fresh_cursor_lineup, monkeypatch):
+    ar = fresh_cursor_lineup
+    ar.set_cli_lineup(ar.BACKEND_CURSOR, [
+        {"id": "auto", "name": "Auto", "default": True},
+        {"id": "claude-opus-5-5-high", "name": "Claude Opus 5.5 1M High"},
+    ])
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: [])
+    runner = ar.CursorCliRunner()
+    runner._cli_cwd = "/proj"
+    runner._model_id = runner._coerce_model("claude-opus-5-5-high")
+    argv = runner._build_argv("hi")
+    assert argv[argv.index("--model") + 1] == "claude-opus-5-5-high"
+    assert runner._coerce_model("claude-opus-5") == "", "not one of Cursor's ids"
+    # "CLI default" leaves the choice to the CLI's own config.
+    runner._model_id = runner._coerce_model("cli-default")
+    assert runner._model_id == "" and "--model" not in runner._build_argv("hi")
+    # The backend's lineup, when it serves one, still wins (#202).
+    ar.set_live_lineups({ar.BACKEND_CURSOR: [{"id": "composer-2.5", "name": "Composer"}]})
+    assert [m["id"] for m in ar.models_for_backend(ar.BACKEND_CURSOR)] == ["composer-2.5"]
+
+
+# ── Cursor: approve zenvi-editor alone, token from the environment ────────
+
+@pytest.fixture
+def fresh_approvals(monkeypatch):
+    import windows.agent_runners as ar
+    monkeypatch.setattr(ar, "_cursor_approved", set())
+    return ar
+
+
+def _ran(calls, stdout, returncode=0):
+    def run(argv, **kw):
+        calls.append((argv, kw))
+        return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+    return run
+
+
+def test_cursor_approves_only_zenvi_editor_once_per_workspace(fresh_approvals, monkeypatch):
+    ar = fresh_approvals
+    calls = []
+    monkeypatch.setattr(ar.subprocess, "run",
+                        _ran(calls, "✓ Enabled and approved MCP server: zenvi-editor\n"))
+    env = {"ZENVI_MCP_TOKEN": "tok"}
+    assert ar._approve_cursor_mcp("/bin/cursor-agent", "/proj", env, "http://127.0.0.1:7434/mcp")
+    argv, kw = calls[0]
+    assert argv == ["/bin/cursor-agent", "mcp", "enable", "zenvi-editor"]
+    # Approvals are per workspace and hash the expanded header: same cwd, token in env.
+    assert kw["cwd"] == "/proj" and kw["env"]["ZENVI_MCP_TOKEN"] == "tok"
+
+    assert ar._approve_cursor_mcp("/bin/cursor-agent", "/proj", env, "http://127.0.0.1:7434/mcp")
+    assert len(calls) == 1, "approved once per session"
+    ar._approve_cursor_mcp("/bin/cursor-agent", "/proj", env, "http://127.0.0.1:7435/mcp")
+    ar._approve_cursor_mcp("/bin/cursor-agent", "/other", env, "http://127.0.0.1:7435/mcp")
+    assert len(calls) == 3, "a moved port or another project needs its own approval"
+
+
+@pytest.mark.parametrize("stdout,returncode", [
+    ("MCP server 'zenvi-editor' not found in configuration\n", 0),   # exits 0 anyway
+    ("error: unknown command 'enable'\n", 1),
+])
+def test_cursor_approval_that_did_not_take_reports_false(fresh_approvals, monkeypatch,
+                                                         stdout, returncode):
+    ar = fresh_approvals
+    calls = []
+    monkeypatch.setattr(ar.subprocess, "run", _ran(calls, stdout, returncode))
+    assert ar._approve_cursor_mcp("cursor-agent", "/proj", {}, "u") is False
+    assert ar._approve_cursor_mcp("cursor-agent", "/proj", {}, "u") is False
+    assert len(calls) == 2, "a failure is not cached"
+
+
+def test_cursor_turn_carries_the_token_and_approves_before_launch(qapp, monkeypatch):
+    import windows.agent_runners as ar
+    seen = {}
+    monkeypatch.setattr(ar, "register_cursor", lambda port, token: (True, "ok"))
+
+    def approve(cli, cwd, env, url):
+        seen.update(cli=cli, cwd=cwd, token=env.get("ZENVI_MCP_TOKEN"), url=url)
+        return True
+    monkeypatch.setattr(ar, "_approve_cursor_mcp", approve)
+    runner = ar.CursorCliRunner()
+    runner._server = types.SimpleNamespace(port=7434, token="tok",
+                                           url=lambda: "http://127.0.0.1:7434/mcp")
+    runner._cli_path = "/bin/cursor-agent"
+    runner._cli_cwd = "/proj"
+
+    assert runner._ensure_ready() is None
+    assert seen == {"cli": "/bin/cursor-agent", "cwd": "/proj", "token": "tok",
+                    "url": "http://127.0.0.1:7434/mcp"}
+    assert runner._build_env()["ZENVI_MCP_TOKEN"] == "tok"
+    assert "--approve-mcps" not in runner._build_argv("hi")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="process groups are POSIX")
+def test_cursor_turn_leaves_nothing_running_after_the_cli_exits(qapp, monkeypatch, tmp_path):
+    """cursor-agent exits without stopping the MCP servers it started; seen in
+    the app as one orphaned stdio server per finished turn."""
+    import signal as _signal
+    import time
+    import windows.agent_runners as ar
+
+    pidfile = tmp_path / "child.pid"
+    cli = (
+        "import json, subprocess, sys\n"
+        # Its stdio goes to the CLI, not to us, as an MCP server's does.
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],"
+        " stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        "open(%r, 'w').write(str(child.pid))\n"
+        "print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,"
+        " 'result': 'done'}), flush=True)\n" % str(pidfile)
+    )
+
+    class _FakeServer:
+        token, port = "tok", 1
+
+        def start(self):
+            return self
+
+        def url(self):
+            return "http://127.0.0.1:1/mcp"
+
+    monkeypatch.setattr("classes.agent_mcp_server.get_mcp_server", lambda: _FakeServer())
+    monkeypatch.setattr(ar, "_which_cli", lambda name: sys.executable)
+    monkeypatch.setattr(ar.CursorCliRunner, "_ensure_ready", lambda self: None)
+    monkeypatch.setattr(ar.CursorCliRunner, "_build_argv",
+                        lambda self, text: [sys.executable, "-c", cli])
+    monkeypatch.setattr(ar, "_project_cwd", lambda: str(tmp_path))
+
+    runner = ar.CursorCliRunner()
+    replies = []
+    runner.response_ready.connect(replies.append)
+    runner.run_request("hi", "")
+
+    assert replies == ["done"]
+    child = int(pidfile.read_text())
+    for _ in range(50):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        try:
+            os.waitpid(child, os.WNOHANG)   # not ours to reap; ignore
+        except ChildProcessError:
+            pass
+        time.sleep(0.1)
+    else:
+        os.kill(child, _signal.SIGKILL)
+        pytest.fail("the CLI's child outlived the turn")
+
+
+def test_other_clis_keep_their_children(qapp):
+    """Only Cursor reaps: Claude Code and Codex behave as before."""
+    from windows.agent_runners import ClaudeCodeRunner, CodexRunner, CursorCliRunner
+    assert CursorCliRunner.REAP_ON_EXIT is True
+    assert ClaudeCodeRunner.REAP_ON_EXIT is False and CodexRunner.REAP_ON_EXIT is False
+
+
+def test_a_failed_cursor_model_read_is_retried_soon(fresh_cursor_lineup, monkeypatch):
+    """Seen in the app: logged out at startup, the list stayed empty for the
+    full 15 minutes after the user signed in."""
+    ar = fresh_cursor_lineup
+    clock = [1000.0]
+    answers = [[], [{"id": "auto", "name": "Auto"}]]
+    calls = []
+    monkeypatch.setattr(ar.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(ar, "_which_cursor_cli", lambda: "/bin/cursor-agent")
+    monkeypatch.setattr(ar.CursorCliRunner, "list_models",
+                        staticmethod(lambda cli: calls.append(cli) or answers.pop(0)))
+
+    assert ar.refresh_cli_models(ar.BACKEND_CURSOR, "v1") is False          # logged out
+    clock[0] += 30
+    assert ar.refresh_cli_models(ar.BACKEND_CURSOR, "v1") is False and len(calls) == 1
+    clock[0] += 30                                           # next detection
+    assert ar.refresh_cli_models(ar.BACKEND_CURSOR, "v1") is True and len(calls) == 2
+    clock[0] += 120                                          # a success holds
+    assert ar.refresh_cli_models(ar.BACKEND_CURSOR, "v1") is False and len(calls) == 2
+
+
+# ── OpenCode ────────────────────────────────────────────────────────────────
+
+class _OpenCodeServer:
+    token = "tok"
+
+    def start(self):
+        return self
+
+    def url(self):
+        return "http://127.0.0.1:7434/mcp"
+
+
+def test_opencode_parser_emits_expected_signals(qapp):
+    """opencode_stream.jsonl is a real ``opencode run --format json`` capture
+    (a resumed two-turn session with a failed read), with the first tool call
+    renamed to an editor MCP tool."""
+    from windows.agent_runners import OpenCodeRunner
+    runner = OpenCodeRunner()
+    runner._session_id = "s1"
+    sessions = []
+    runner.cli_session_changed.connect(lambda ui, cli, started, cwd: sessions.append(cli))
+    events = _collect(runner)
+    _feed(runner, "opencode_stream.jsonl")
+
+    # OpenCode mints its own id; it is captured once for --session resume.
+    assert runner._cli_session_id == "ses_f2b3f9489ffelMwif35FMOUI5P"
+    assert runner._cli_id_from_cli
+    assert sessions == ["ses_f2b3f9489ffelMwif35FMOUI5P"]
+
+    started = [e for e in events if e[0] == "tool_started"]
+    assert started[0][1] == "list_files_tool", "server prefix stripped"
+    done = {e[1]: e for e in events if e[0] == "tool_completed"}
+    assert done[started[0][2]][2:] == (True, "FIXTURE: 3 files")
+    # OpenCode's own "read" is renamed so it is not labelled a motion-graphics step.
+    read_call = next(e for e in started if e[1] == "read_file")
+    assert done[read_call[2]][2] is False
+    assert "File not found" in done[read_call[2]][3]
+    # Reasoning is surfaced as a collapsible "thinking" block.
+    assert any(e[1] == "thinking" for e in started)
+    # Every text part streams, and all of them make up the final answer.
+    assert [e[1] for e in events if e[0] == "token"][0] == "There are 3 files."
+    assert runner._final_text.startswith("There are 3 files.\n\n")
+    assert "zenvi-ok" in runner._final_text
+
+
+def test_opencode_error_event_becomes_the_reported_error(qapp):
+    from windows.agent_runners import OpenCodeRunner
+    runner = OpenCodeRunner()
+    runner._handle_event({"type": "error", "sessionID": "ses_x", "error": {
+        "name": "UnknownError", "data": {"message": "Unexpected server error."}}})
+    assert runner._last_error == "Unexpected server error."
+
+
+def test_opencode_argv_runs_headless_and_resumes_only_a_real_session(qapp, monkeypatch):
+    from windows.agent_runners import OpenCodeRunner
+
+    import classes.file_drop as file_drop
+    monkeypatch.setattr(file_drop, "media_add_dirs", lambda home=None: [])
+    runner = OpenCodeRunner()
+    runner._server = _OpenCodeServer()
+    runner._cli_session_id = "placeholder-from-the-ui"
+    argv = runner._build_argv("hi")
+    assert argv[1] == "run" and argv[-1] == "hi"
+    assert argv[argv.index("--format") + 1] == "json"
+    assert "--auto" in argv, "no terminal to answer a permission prompt"
+    assert "--session" not in argv, "OpenCode rejects ids it did not mint"
+
+    runner._cli_started = True
+    runner._cli_session_id = "ses_real"
+    runner._cli_id_from_cli = True
+    argv = runner._build_argv("again")
+    assert argv[argv.index("--session") + 1] == "ses_real"
+
+
+def test_opencode_env_points_at_a_scoped_config_with_the_editor_server(
+        qapp, monkeypatch, tmp_path):
+    """A scoped OPENCODE_CONFIG is merged over the user's own config, so their
+    other MCP servers keep working; the token never lands in the file."""
+    from classes import info
+    from windows.agent_runners import OpenCodeRunner
+
+    monkeypatch.setattr(info, "USER_PATH", str(tmp_path))
+    runner = OpenCodeRunner()
+    runner._server = _OpenCodeServer()
+    env = runner._build_env()
+
+    assert env["ZENVI_MCP_TOKEN"] == "tok"
+    with open(env["OPENCODE_CONFIG"], encoding="utf-8") as fh:
+        text = fh.read()
+    entry = json.loads(text)["mcp"]["zenvi_editor"]
+    assert entry["type"] == "remote"
+    assert entry["url"] == "http://127.0.0.1:7434/mcp"
+    assert entry["headers"]["Authorization"] == "Bearer {env:ZENVI_MCP_TOKEN}"
+    assert entry["enabled"] is True
+    assert "tok" not in text.replace("{env:ZENVI_MCP_TOKEN}", "")
+
+
+def test_opencode_run_request_closes_stdin(qapp, monkeypatch, tmp_path):
+    """``opencode run`` waits on an inherited stdin forever; it must get EOF."""
+    import windows.agent_runners as ar
+    from windows.agent_runners import OpenCodeRunner
+
+    monkeypatch.setattr("classes.agent_mcp_server.get_mcp_server", lambda: _OpenCodeServer())
+    monkeypatch.setattr(ar, "_which_cli", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(ar, "_project_cwd", lambda: str(tmp_path))
+    monkeypatch.setattr(OpenCodeRunner, "_build_env", lambda self: dict(os.environ))
+    monkeypatch.setattr(OpenCodeRunner, "_build_argv", lambda self, text: [
+        sys.executable, "-c",
+        "import sys, json; sys.stdin.read(); print(json.dumps({'type': 'text', "
+        "'sessionID': 'ses_1', 'part': {'type': 'text', 'text': 'done'}}))"])
+
+    runner = OpenCodeRunner()
+    runner._session_id = "s7"
+    events = _collect(runner)
+    runner.run_request("hello", "")
+    assert ("response_ready", "done") in events
+
+
+def test_opencode_is_registered_reads_json_and_jsonc(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_opencode_config_dir", lambda: str(tmp_path))
+    assert ar._is_registered("opencode") is False
+    (tmp_path / "opencode.jsonc").write_text(
+        '{\n  // mine\n  "mcp": {"zenvi_editor": {"type": "remote"}}\n}\n')
+    assert ar._is_registered("opencode") is True
+
+
+def test_register_opencode_creates_new_file(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_opencode_config_dir", lambda: str(tmp_path / "opencode"))
+    ok, message = ar.register_opencode(7434, "tok123")
+    assert ok is True
+    assert "ZENVI_MCP_TOKEN=tok123" in message
+
+    data = json.loads((tmp_path / "opencode" / "opencode.json").read_text())
+    entry = data["mcp"]["zenvi_editor"]
+    assert entry["url"] == "http://127.0.0.1:7434/mcp"
+    assert entry["headers"]["Authorization"] == "Bearer {env:ZENVI_MCP_TOKEN}"
+    assert ar._is_registered("opencode") is True
+
+
+def test_register_opencode_keeps_other_servers_and_updates_stale_port(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    cfg = tmp_path / "opencode.json"
+    cfg.write_text(json.dumps({
+        "$schema": "https://opencode.ai/config.json",
+        "model": "anthropic/claude-sonnet-5",
+        "mcp": {
+            "playwright": {"type": "local", "command": ["npx", "@playwright/mcp"]},
+            "zenvi_editor": {"type": "remote", "url": "http://127.0.0.1:9999/mcp"},
+        },
+    }))
+    monkeypatch.setattr(ar, "_opencode_config_dir", lambda: str(tmp_path))
+
+    ok, _ = ar.register_opencode(7434, "tok123")
+    assert ok is True
+    data = json.loads(cfg.read_text())
+    assert data["mcp"]["zenvi_editor"]["url"] == "http://127.0.0.1:7434/mcp"
+    assert data["mcp"]["playwright"]["command"] == ["npx", "@playwright/mcp"]
+    assert data["model"] == "anthropic/claude-sonnet-5"
+    assert (tmp_path / "opencode.json.zenvi-backup").exists()
+
+
+def test_register_opencode_refuses_to_touch_invalid_json(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    cfg = tmp_path / "opencode.json"
+    original = '{"mcp": {  // a comment is not JSON'
+    cfg.write_text(original)
+    monkeypatch.setattr(ar, "_opencode_config_dir", lambda: str(tmp_path))
+
+    ok, _ = ar.register_opencode(7434, "tok123")
+    assert ok is False
+    assert cfg.read_text() == original
+
+
+def test_which_cli_finds_opencode_outside_path(monkeypatch, tmp_path):
+    """A GUI-launched editor often has a trimmed PATH: find OpenCode in its
+    official installer dir and in an nvm-windows node folder."""
+    import windows.agent_runners as ar
+
+    name = "opencode.exe" if os.name == "nt" else "opencode"
+    monkeypatch.setattr(ar.shutil, "which", lambda n: None)
+    monkeypatch.setattr(ar, "_resolved_home", lambda: str(tmp_path / "home"))
+    monkeypatch.delenv("APPDATA", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+
+    nvm = tmp_path / "nvm4w" / "nodejs"
+    nvm.mkdir(parents=True)
+    (nvm / name).write_bytes(b"")
+    monkeypatch.setenv("NVM_SYMLINK", str(nvm))
+    assert ar._which_cli("opencode") == str(nvm / name)
+
+    official = tmp_path / "home" / ".opencode" / "bin"
+    official.mkdir(parents=True)
+    (official / name).write_bytes(b"")
+    assert ar._which_cli("opencode") == str(official / name)
+
+
+def test_opencode_argv_skips_the_npm_cmd_shim(qapp, monkeypatch, tmp_path):
+    """npm's ``opencode.cmd`` would pass the prompt through cmd.exe, which
+    mangles quotes, ``&`` and ``%``; run the native binary it wraps instead."""
+    from windows.agent_runners import OpenCodeRunner
+
+    import classes.file_drop as file_drop
+    monkeypatch.setattr(file_drop, "media_add_dirs", lambda home=None: [])
+    shim = tmp_path / "opencode.cmd"
+    shim.write_text("@echo off\n")
+    native = tmp_path / "node_modules" / "opencode-ai" / "bin" / "opencode.exe"
+    native.parent.mkdir(parents=True)
+    native.write_bytes(b"")
+
+    runner = OpenCodeRunner()
+    runner._cli_path = str(shim)
+    assert runner._build_argv('say "a & b" 100%')[0] == str(native)
+
+    native.unlink()
+    assert runner._build_argv("hi")[0] == str(shim)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="npm's sh shim only shadows on Windows")
+def test_which_cli_prefers_a_windows_launcher_over_npms_sh_shim(monkeypatch, tmp_path):
+    """npm drops an extension-less sh script next to ``opencode.cmd``; Windows
+    cannot launch it (WinError 193)."""
+    import windows.agent_runners as ar
+
+    (tmp_path / "opencode").write_text("#!/bin/sh\n")
+    (tmp_path / "opencode.cmd").write_text("@echo off\n")
+    monkeypatch.setattr(ar.shutil, "which", lambda n: None)
+    monkeypatch.setattr(ar, "_cli_install_dirs", lambda: [str(tmp_path)])
+    assert ar._which_cli("opencode") == str(tmp_path / "opencode.cmd")
+
+
+# opencode_mcp_turn.jsonl: opencode 1.18.32 `run --format json` against an
+# MCP server named zenvi_editor, one call that worked and one that raised.
+def test_opencode_mcp_turn_maps_tools_and_failures(qapp):
+    from windows.agent_runners import OpenCodeRunner
+    runner = OpenCodeRunner()
+    events = _collect(runner)
+    _feed(runner, "opencode_mcp_turn.jsonl")
+
+    names = {e[2]: e[1] for e in events if e[0] == "tool_started"}
+    done = {names[e[1]]: (e[2], e[3]) for e in events if e[0] == "tool_completed"}
+    assert done["list_files_tool"][0] is True and "city.mp4" in done["list_files_tool"][1]
+    assert done["add_clip_to_timeline_tool"] == (
+        False, "Error executing tool add_clip_to_timeline_tool: Track 1 is locked")
+    # Two text parts with a tool between them: the separator streams too.
+    tokens = [e[1] for e in events if e[0] == "token"]
+    assert tokens[0] == "I'll list the files first." and tokens[1] == "\n\n"
+    assert runner._final_text == "".join(tokens)
+
+
+def test_opencode_native_tools_are_not_labelled_as_motion_graphics(qapp):
+    """The Zenvi Assistant harness is OpenCode, so its bare tool names carry
+    motion-graphics labels in humanize_tool_name."""
+    from classes.tool_handlers import humanize_tool_name
+    from windows.agent_runners import OpenCodeRunner
+
+    runner = OpenCodeRunner()
+    seen = []
+    runner.tool_started.connect(lambda c, n, a: seen.append(n))
+    for i, tool in enumerate(("bash", "read", "edit", "write", "glob", "grep", "list", "webfetch")):
+        runner._handle_event({"type": "tool_use", "sessionID": "ses_1", "part": {
+            "tool": tool, "callID": "c%d" % i, "state": {"status": "completed", "input": {}}}})
+    assert seen[:7] == ["run_shell_command", "read_file", "edit_file", "write_file",
+                        "find_files", "search_files", "list_directory"]
+    for name in seen:
+        assert "motion graphic" not in humanize_tool_name(name).lower(), name
+
+
+def test_parse_opencode_models_reads_the_real_listing():
+    """opencode_models.txt is `opencode models` with no provider signed in."""
+    from windows.agent_runners import parse_opencode_models
+
+    with open(os.path.join(_FIX, "opencode_models.txt"),
+              encoding="utf-8") as fh:
+        rows = parse_opencode_models(fh.read())
+    assert rows[0]["id"] == "cli-default" and rows[0]["default"] is True
+    assert [r["id"] for r in rows[1:3]] == ["opencode/big-pickle",
+                                           "opencode/ling-3.0-flash-fin-free"]
+    assert rows[1]["name"] == "big-pickle" and rows[1]["provider"] == "opencode"
+    assert [r["id"] for r in rows if r.get("featured")] == ["cli-default"]
+    assert parse_opencode_models("Error: something\n") == []
+
+
+def test_opencode_model_pill_lists_what_the_cli_reports(qapp, fresh_cursor_lineup, monkeypatch):
+    ar = fresh_cursor_lineup
+    monkeypatch.setattr(ar, "_which_cli", lambda name: "/bin/" + name)
+    monkeypatch.setattr(ar.OpenCodeRunner, "list_models", staticmethod(
+        lambda cli: ar.parse_opencode_models("anthropic/claude-sonnet-5\nopencode/big-pickle\n")))
+    assert ar.refresh_cli_models(ar.BACKEND_OPENCODE, "1.18.32") is True
+    ids = [m["id"] for m in ar.models_for_backend(ar.BACKEND_OPENCODE)]
+    assert ids == ["cli-default", "anthropic/claude-sonnet-5", "opencode/big-pickle"]
+
+    runner = ar.OpenCodeRunner()
+    assert runner._coerce_model("opencode/big-pickle") == "opencode/big-pickle"
+    runner._model_id = runner._coerce_model("cli-default")
+    assert "--model" not in runner._build_argv("hi")
+    runner._model_id = "anthropic/claude-sonnet-5"
+    argv = runner._build_argv("hi")
+    assert argv[argv.index("--model") + 1] == "anthropic/claude-sonnet-5"
+
+
+def test_register_opencode_does_not_rewrite_a_current_entry(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    cfg = tmp_path / "opencode.json"
+    users = json.dumps({"provider": {"x": {"options": {"apiKey": "sk-secret"}}}})
+    cfg.write_text(users)
+    monkeypatch.setattr(ar, "_opencode_config_dir", lambda: str(tmp_path))
+
+    assert ar.register_opencode(7434, "tok")[0] is True
+    written = cfg.read_text()
+    os.utime(cfg, (1, 1))
+    assert ar.register_opencode(7434, "tok")[0] is True
+    assert cfg.read_text() == written and cfg.stat().st_mtime == 1
+    assert ar.register_opencode(7435, "tok")[0] is True     # moved port
+    assert (tmp_path / "opencode.json.zenvi-backup").read_text() == users, "first backup kept"
+    assert not (tmp_path / "opencode.json.zenvi-tmp").exists()
+    assert "tok" not in cfg.read_text().replace("{env:ZENVI_MCP_TOKEN}", "")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_register_opencode_never_leaves_provider_keys_world_readable(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    cfg = tmp_path / "opencode.json"
+    cfg.write_text(json.dumps({"provider": {"x": {"options": {"apiKey": "sk-secret"}}}}))
+    cfg.chmod(0o600)
+    monkeypatch.setattr(ar, "_opencode_config_dir", lambda: str(tmp_path))
+    old = os.umask(0o022)
+    try:
+        assert ar.register_opencode(7434, "tok")[0] is True
+    finally:
+        os.umask(old)
+    assert cfg.stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "opencode.json.zenvi-backup").stat().st_mode & 0o777 == 0o600
+
+
+# ── Hermes (ACP over stdio) ─────────────────────────────────────────────────
+
+class _HermesServer:
+    token = "tok"
+    port = 7434
+
+    def start(self):
+        return self
+
+    def url(self):
+        return "http://127.0.0.1:7434/mcp"
+
+
+class _Pipe:
+    def __init__(self):
+        self.lines = []
+        self.closed = False
+
+    def write(self, data):
+        self.lines.extend(l for l in data.splitlines() if l.strip())
+
+    def flush(self):
+        pass
+
+    def close(self):
+        self.closed = True
+
+
+class _HermesProc:
+    def __init__(self):
+        self.stdin = _Pipe()
+
+    def poll(self):
+        return None
+
+
+def _hermes(text="hi", resume_id=""):
+    from windows.agent_runners import HermesRunner
+    runner = HermesRunner()
+    runner._session_id = "ui-1"
+    runner._server = _HermesServer()
+    runner._cli_cwd = "/proj"
+    if resume_id:
+        runner._cli_started = True
+        runner._cli_id_from_cli = True
+        runner._cli_session_id = resume_id
+    runner._proc = _HermesProc()
+    runner._after_launch(text)
+    return runner
+
+
+def _sent(runner):
+    return [json.loads(l) for l in runner._proc.stdin.lines]
+
+
+def test_hermes_parser_drives_a_new_acp_session(qapp):
+    """hermes_acp_stream.jsonl mirrors a real ``hermes acp`` (v0.15.2) turn
+    against the in-app MCP server: initialize -> session/new -> prompt."""
+    runner = _hermes("count the files")
+    sessions = []
+    runner.cli_session_changed.connect(lambda ui, cli, started, cwd: sessions.append(cli))
+    events = _collect(runner)
+    _feed(runner, "hermes_acp_stream.jsonl")
+
+    sent = _sent(runner)
+    assert [m["method"] for m in sent] == ["initialize", "session/new", "session/prompt"]
+    new = sent[1]["params"]
+    assert new["cwd"] == "/proj"
+    assert new["mcpServers"] == [{
+        "type": "http", "name": "zenvi_editor", "url": "http://127.0.0.1:7434/mcp",
+        "headers": [{"name": "Authorization", "value": "Bearer tok"}],
+    }]
+    prompt = sent[2]["params"]
+    assert prompt["sessionId"] == "fixture-hermes-session-1"
+    assert prompt["prompt"] == [{"type": "text", "text": "count the files"}]
+
+    # Hermes mints the id; it is kept for the next turn's session/load.
+    assert runner._cli_session_id == "fixture-hermes-session-1"
+    assert runner._cli_id_from_cli
+    assert sessions == ["fixture-hermes-session-1"]
+
+    started = [e for e in events if e[0] == "tool_started"]
+    # Hermes' own "read" is renamed so it is not labelled a motion-graphics step.
+    assert [e[1] for e in started] == ["list_files_tool", "terminal", "read_file"]
+    done = {e[1]: e for e in events if e[0] == "tool_completed"}
+    assert done["tc-list"][2] is True and "FIXTURE: 3 files" in done["tc-list"][3]
+    assert done["tc-read"][2] is False and "File not found" in done["tc-read"][3]
+
+    text = ("I'll list the files and run the command."
+            "There are **3 files** and the shell printed `zenvi-ok`.")
+    assert "".join(e[1] for e in events if e[0] == "token") == text
+    # The reply keeps the prose before and after the tools apart, as the chat
+    # committed it (#200).
+    assert events[-1] == ("response_ready", text.replace("command.There", "command.\n\nThere"))
+    # End of turn: stdin closes so ``hermes acp`` exits and the read loop ends.
+    assert runner._proc.stdin.closed
+
+
+def test_hermes_resumes_with_session_load_and_hides_the_replay(qapp):
+    runner = _hermes("again", resume_id="ses-old")
+    events = _collect(runner)
+
+    runner._handle_event({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": 1}})
+    load = _sent(runner)[-1]
+    assert load["method"] == "session/load"
+    assert load["params"]["sessionId"] == "ses-old"
+    assert load["params"]["mcpServers"][0]["name"] == "zenvi_editor"
+
+    # session/load replays the old transcript before it answers.
+    runner._handle_event({"jsonrpc": "2.0", "method": "session/update", "params": {
+        "sessionId": "ses-old", "update": {"sessionUpdate": "agent_message_chunk",
+                                           "content": {"type": "text", "text": "OLD"}}}})
+    runner._handle_event({"jsonrpc": "2.0", "id": load["id"], "result": {"models": {}}})
+    prompt = _sent(runner)[-1]
+    assert prompt["method"] == "session/prompt"
+    assert prompt["params"]["sessionId"] == "ses-old"
+    assert not [e for e in events if e[0] == "token"], "replayed history must not re-render"
+
+
+def test_hermes_starts_fresh_when_load_does_not_know_the_session(qapp):
+    """Hermes answers session/load for an unknown id with an empty result."""
+    runner = _hermes("hello", resume_id="gone")
+
+    runner._handle_event({"jsonrpc": "2.0", "id": 1, "result": {}})
+    load_id = _sent(runner)[-1]["id"]
+    runner._handle_event({"jsonrpc": "2.0", "id": load_id, "result": {}})
+    new = _sent(runner)[-1]
+    assert new["method"] == "session/new"
+    runner._handle_event({"jsonrpc": "2.0", "id": new["id"], "result": {"sessionId": "ses-new"}})
+    prompt = _sent(runner)[-1]
+    assert prompt["method"] == "session/prompt"
+    assert prompt["params"]["sessionId"] == "ses-new"
+    assert runner._cli_session_id == "ses-new"
+
+
+def test_hermes_starts_fresh_when_load_fails_outright(qapp):
+    runner = _hermes("hello", resume_id="gone")
+    runner._handle_event({"jsonrpc": "2.0", "id": 1, "result": {}})
+    load_id = _sent(runner)[-1]["id"]
+    runner._handle_event({"jsonrpc": "2.0", "id": load_id, "error": {
+        "code": -32002, "message": "Resource not found"}})
+    assert _sent(runner)[-1]["method"] == "session/new"
+    assert not runner._last_error
+    assert not runner._proc.stdin.closed
+
+
+def test_hermes_env_carries_the_token_its_config_entry_reads(qapp):
+    """Connect writes ``Bearer ${ZENVI_MCP_TOKEN}`` into config.yaml, which
+    ``hermes acp`` also loads; without the variable that entry gets a 401."""
+    from windows.agent_runners import HermesRunner
+    runner = HermesRunner()
+    runner._server = _HermesServer()
+    assert runner._build_env()["ZENVI_MCP_TOKEN"] == "tok"
+
+
+def test_hermes_answers_agent_requests_so_a_turn_never_hangs(qapp):
+    """No one can click a permission dialog; other client calls get an error."""
+    runner = _hermes()
+    runner._handle_event({"jsonrpc": "2.0", "id": 7, "method": "session/request_permission",
+                          "params": {"sessionId": "s", "options": [
+                              {"optionId": "deny", "kind": "reject_once", "name": "Deny"},
+                              {"optionId": "allow_once", "kind": "allow_once", "name": "Allow once"}]}})
+    reply = _sent(runner)[-1]
+    assert reply["id"] == 7
+    assert reply["result"] == {"outcome": {"outcome": "selected", "optionId": "allow_once"}}
+
+    runner._handle_event({"jsonrpc": "2.0", "id": 8, "method": "fs/read_text_file", "params": {}})
+    reply = _sent(runner)[-1]
+    assert reply["id"] == 8 and reply["error"]["code"] == -32601
+
+
+def test_hermes_setup_error_is_reported_and_ends_the_run(qapp):
+    runner = _hermes()
+    runner._handle_event({"jsonrpc": "2.0", "id": 1, "result": {}})
+    runner._handle_event({"jsonrpc": "2.0", "id": 2, "error": {
+        "code": -32603, "message": "Internal error", "data": {
+            "details": "No LLM provider configured. Run `hermes model` to select a provider."}}})
+    assert "No LLM provider configured" in runner._last_error
+    assert runner._proc.stdin.closed
+
+
+def test_hermes_thoughts_become_one_thinking_block(qapp):
+    runner = _hermes()
+    events = _collect(runner)
+    runner._handle_event({"jsonrpc": "2.0", "id": 1, "result": {}})
+    runner._handle_event({"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "s"}})
+
+    def update(kind, text):
+        runner._handle_event({"jsonrpc": "2.0", "method": "session/update", "params": {
+            "sessionId": "s", "update": {"sessionUpdate": kind,
+                                         "content": {"type": "text", "text": text}}}})
+
+    update("agent_thought_chunk", "let me ")
+    update("agent_thought_chunk", "think")
+    update("agent_message_chunk", "Done.")
+    assert [e[0] for e in events] == [
+        "tool_started", "tool_log", "tool_log", "tool_completed", "token"]
+    assert events[0][1] == "thinking"
+
+
+def test_hermes_run_request_talks_acp_over_stdin_and_exits(qapp, monkeypatch, tmp_path):
+    """End to end against a stand-in ``hermes acp`` that only exits once its
+    stdin closes, like the real one."""
+    import windows.agent_runners as ar
+    from windows.agent_runners import HermesRunner
+
+    fake = tmp_path / "fake_hermes.py"
+    fake.write_text(
+        "import json, sys\n"
+        "def out(m):\n"
+        "    sys.stdout.write(json.dumps(m) + '\\n'); sys.stdout.flush()\n"
+        "for line in sys.stdin:\n"
+        "    m = json.loads(line)\n"
+        "    if m.get('method') == 'initialize':\n"
+        "        out({'jsonrpc': '2.0', 'id': m['id'], 'result': {'protocolVersion': 1}})\n"
+        "    elif m.get('method') == 'session/new':\n"
+        "        out({'jsonrpc': '2.0', 'id': m['id'], 'result': {'sessionId': 'ses-1'}})\n"
+        "    elif m.get('method') == 'session/prompt':\n"
+        "        out({'jsonrpc': '2.0', 'method': 'session/update', 'params': {'sessionId': 'ses-1',\n"
+        "             'update': {'sessionUpdate': 'agent_message_chunk',\n"
+        "                        'content': {'type': 'text', 'text': 'done'}}}})\n"
+        "        out({'jsonrpc': '2.0', 'id': m['id'], 'result': {'stopReason': 'end_turn'}})\n"
+    )
+    monkeypatch.setattr("classes.agent_mcp_server.get_mcp_server", lambda: _HermesServer())
+    monkeypatch.setattr(ar, "_which_cli", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(ar, "_project_cwd", lambda: str(tmp_path))
+    monkeypatch.setattr(HermesRunner, "_build_env", lambda self: dict(os.environ))
+    monkeypatch.setattr(HermesRunner, "_build_argv",
+                        lambda self, text: [sys.executable, str(fake)])
+
+    runner = HermesRunner()
+    runner._session_id = "s9"
+    events = _collect(runner)
+    runner.run_request("hello", "")
+    assert ("response_ready", "done") in events
+    assert runner._proc.returncode == 0
+    assert runner._cli_session_id == "ses-1"
+
+
+def test_hermes_argv_runs_the_acp_adapter(qapp):
+    from windows.agent_runners import HermesRunner
+    runner = HermesRunner()
+    runner._cli_path = "/usr/bin/hermes"
+    argv = runner._build_argv("hi")
+    assert argv[:2] == ["/usr/bin/hermes", "acp"]
+    assert "hi" not in argv, "the prompt travels over ACP, not argv"
+
+
+def test_hermes_is_registered_reads_its_config_yaml(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert ar._is_registered("hermes") is False
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  provider: anthropic\n  zenvi_editor: nope\n")
+    assert ar._is_registered("hermes") is False, "only an mcp_servers entry counts"
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  provider: anthropic\nmcp_servers:\n  other:\n    command: npx\n"
+        "  zenvi_editor:\n    url: http://127.0.0.1:7434/mcp\n")
+    assert ar._is_registered("hermes") is True
+
+
+def test_register_hermes_writes_url_and_token_header_via_the_cli(monkeypatch):
+    import windows.agent_runners as ar
+
+    calls = []
+
+    class _Done:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    envs = []
+    monkeypatch.setattr(ar, "_which_cli", lambda name: "/usr/bin/hermes")
+    monkeypatch.setattr(ar, "_cli_child_env", lambda extra=None: {"USERPROFILE": "/resolved"})
+    monkeypatch.setattr(ar.subprocess, "run",
+                        lambda argv, **kw: calls.append(argv) or envs.append(kw.get("env")) or _Done())
+    ok, message = ar.register_hermes(7434, "tok123")
+    assert ok is True
+    # Same home as the runner and the "connected" check, not the GUI's.
+    assert envs == [{"USERPROFILE": "/resolved"}] * 2
+    assert ["/usr/bin/hermes", "config", "set", "mcp_servers.zenvi_editor.url",
+            "http://127.0.0.1:7434/mcp"] in calls
+    assert ["/usr/bin/hermes", "config", "set",
+            "mcp_servers.zenvi_editor.headers.Authorization",
+            "Bearer ${ZENVI_MCP_TOKEN}"] in calls
+    assert "ZENVI_MCP_TOKEN=tok123" in message
+    assert not any("tok123" in " ".join(c) for c in calls), "token stays out of the file"
+
+    _Done.returncode = 1
+    _Done.stderr = "config.yaml is not valid YAML"
+    ok, message = ar.register_hermes(7434, "tok123")
+    assert ok is False and "not valid YAML" in message
+
+
+# hermes_acp_v019_turn.jsonl: hermes-agent 0.19.0 `acp` against an MCP server
+# named zenvi_editor (the answers to initialize, session/new, session/prompt).
+def test_hermes_019_names_editor_tools_and_sees_a_failure_inside_completed(qapp):
+    runner = _hermes("list, then add the shorter clip")
+    events = _collect(runner)
+    _feed(runner, "hermes_acp_v019_turn.jsonl")
+
+    names = {e[2]: e[1] for e in events if e[0] == "tool_started"}
+    assert sorted(names.values()) == ["add_clip_to_timeline_tool", "list_files_tool"]
+    done = {names[e[1]]: (e[2], e[3]) for e in events if e[0] == "tool_completed"}
+    # The untrusted-content wrapper and its warning are gone; the payload stays.
+    assert done["list_files_tool"][0] is True
+    assert done["list_files_tool"][1].startswith('[{"name": "beach.mp4"')
+    # Hermes reports a tool that raised as "completed"; the error is in the body.
+    assert done["add_clip_to_timeline_tool"] == (
+        False, "Error executing tool add_clip_to_timeline_tool: Track 1 is locked")
+    assert events[-1][0] == "response_ready" and "Track 1 is locked" in events[-1][1]
+    assert runner._proc.stdin.closed
+
+
+@pytest.mark.parametrize("title,name", [
+    ("mcp__zenvi_editor__list_files_tool", "list_files_tool"),
+    ("mcp_zenvi_editor_list_files_tool", "list_files_tool"),       # Hermes 0.15
+    ("python: import json", "python"),
+    ("read: notes.txt", "read_file"),
+    ("terminal: ls -la", "terminal"),
+    (None, "tool"),
+])
+def test_hermes_tool_names(title, name):
+    from classes.tool_handlers import humanize_tool_name
+    from windows.agent_runners import _hermes_tool_name
+    assert _hermes_tool_name(title) == name
+    assert "motion graphic" not in humanize_tool_name(name).lower()
+
+
+def test_only_hermes_keeps_stdin_open(qapp):
+    """Every other CLI gets no stdin (``opencode run`` blocks on one)."""
+    import subprocess
+    from windows.agent_runners import CLI_RUNNERS, HermesRunner
+    for backend, runner in CLI_RUNNERS.items():
+        expected = subprocess.PIPE if runner is HermesRunner else subprocess.DEVNULL
+        assert runner.STDIN == expected, backend
+
+
+def test_hermes_offers_cli_default_and_drops_other_models(qapp):
+    from windows.agent_runners import BACKEND_HERMES, HermesRunner, models_for_backend
+    assert [m["id"] for m in models_for_backend(BACKEND_HERMES)] == ["cli-default"]
+    runner = HermesRunner()
+    assert runner.BACKEND_ID == BACKEND_HERMES
+    assert runner._coerce_model("cli-default") == ""
+    assert runner._coerce_model("claude-opus-5") == ""
+
+
+def test_register_hermes_decodes_its_output_as_utf8(monkeypatch):
+    """Seen in the app: Connect failed with "'ascii' codec can't decode byte
+    0xe2". Hermes prints "✓ Set ...", and text=True follows a GUI app's empty
+    locale."""
+    import windows.agent_runners as ar
+
+    calls = []
+
+    def run(argv, **kw):
+        calls.append((argv, kw))
+        return types.SimpleNamespace(returncode=0, stdout="✓ Set", stderr="")
+
+    monkeypatch.setattr(ar.subprocess, "run", run)
+    monkeypatch.setattr(ar, "_which_cli", lambda name: "/bin/hermes")
+    ok, message = ar.register_hermes(7434, "tok")
+    assert ok is True and "ZENVI_MCP_TOKEN=tok" in message
+    assert [c[0][2:4] for c in calls] == [
+        ["set", "mcp_servers.zenvi_editor.url"],
+        ["set", "mcp_servers.zenvi_editor.headers.Authorization"]]
+    assert calls[1][0][4] == "Bearer ${ZENVI_MCP_TOKEN}", "the token is not written"
+    for _, kw in calls:
+        assert kw.get("encoding") == "utf-8" and kw.get("errors") == "replace"
+        assert "text" not in kw
