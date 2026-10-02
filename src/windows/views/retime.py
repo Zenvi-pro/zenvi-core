@@ -89,18 +89,14 @@ def _iterate_keyframe_lists(value):
 
 
 def _scale_points(points, start_x, new_end_x, scale):
-    """Scale keyframe X offsets from start_x; first keyframe never moves."""
+    """Scale keyframe X offsets from start_x; first keyframe never moves.
+
+    Every point scales proportionally, including the last one: a keyframe
+    that sat at the old end lands on new_end_x through the scale itself, and
+    one mid-clip must stay mid-clip (a fade must not stretch to the end).
+    """
     if not isinstance(points, list):
         return
-    last_original_x = None
-    for point in points:
-        co = point.get("co", {})
-        x = co.get("X")
-        if x is None:
-            continue
-        if last_original_x is None or x > last_original_x:
-            last_original_x = x
-
     for point in points:
         if not isinstance(point, dict):
             continue
@@ -110,16 +106,31 @@ def _scale_points(points, start_x, new_end_x, scale):
         x = co.get("X")
         if x is None or x < start_x:
             continue
-        # Absorb rounding in the last keyframe so the end lands exactly.
-        if last_original_x is not None and x == last_original_x:
-            nx = new_end_x
-        else:
-            nx = start_x + ft.round_half_up((x - start_x) * scale)
+        nx = start_x + ft.round_half_up((x - start_x) * scale)
         if nx < start_x:
             nx = start_x
         elif nx > new_end_x:
             nx = new_end_x
         co["X"] = int(nx)
+
+
+def time_curve_is_reversed(time_data) -> bool:
+    """True when clip.time maps forward X to decreasing Y (playback is reversed)."""
+    if not isinstance(time_data, dict):
+        return False
+    points = time_data.get("Points")
+    if not isinstance(points, list) or len(points) < 2:
+        return False
+    try:
+        ordered = sorted(
+            points,
+            key=lambda point: float((point.get("co") or {}).get("X", 0)),
+        )
+        first_y = float((ordered[0].get("co") or {}).get("Y", 0))
+        last_y = float((ordered[-1].get("co") or {}).get("Y", 0))
+    except (TypeError, ValueError, AttributeError):
+        return False
+    return first_y > last_y + 1e-6
 
 
 def _reverse_time_points(points):

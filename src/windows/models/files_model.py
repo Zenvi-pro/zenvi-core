@@ -28,13 +28,12 @@
 
 import os
 import json
-import re
 import glob
 import functools
 import uuid
 
 from qt_api import (
-    QMimeData, Qt, QUrl, pyqtSignal, QEventLoop, QObject, QThread, QTimer,
+    QMimeData, Qt, QUrl, pyqtSignal, pyqtSlot, QEventLoop, QObject, QThread, QTimer,
     QSortFilterProxyModel, QItemSelectionModel, QItemSelection, QPersistentModelIndex, QModelIndex
 )
 from qt_api import (
@@ -48,7 +47,6 @@ from classes.query import File
 from classes.logger import log
 from classes.app import get_app
 from classes.file_drop import local_path_from_url
-from classes.thumbnail import GetThumbPath
 from classes.api_client import get_backend_client
 
 import openshot
@@ -474,54 +472,110 @@ class FilesModel(QObject, updates.UpdateInterface):
     indexingProgress = pyqtSignal(str, str, int)  # file_id, phase, percent
     PLACEHOLDER_PREFIX = "__genjob__:"
     PROJECT_FILE_THUMB_ATTEMPTS = 3
+    _pending_icon = None
 
-    def _thumbnail_source_for_file(self, file, clear_cache=False):
-        """Return the thumbnail/artwork source path and display name for a file."""
+    @staticmethod
+    def _thumbnail_frame_for_file(file):
+        """Frame a file's Project Files thumbnail shows (its trimmed start)."""
+        thumbnail_frame = 1
+        if 'start' in file.data:
+            fps = file.data["fps"]
+            fps_float = float(fps["num"]) / float(fps["den"])
+            thumbnail_frame = round(float(file.data['start']) * fps_float) + 1
+        return thumbnail_frame
+
+    @classmethod
+    def _pending_thumbnail_icon(cls):
+        """Placeholder shown until a file's thumbnail arrives from the worker."""
+        if cls._pending_icon is None:
+            cls._pending_icon = QIcon(os.path.join(info.IMAGES_PATH, "ThumbnailPending.svg"))
+        return cls._pending_icon
+
+    def _project_file_icon_for_file(self, file):
+        """Icon, display name and media type for a new Project Files row.
+
+        Video and image thumbnails are made on the thumbnail worker -- one
+        frame of long-GOP media can take a minute to decode -- so the row shows
+        a placeholder until _on_thumbnail_ready swaps the real one in.
+        """
         path, filename = os.path.split(file.data["path"])
         name = file.data.get("name", filename)
         media_type = file.data.get("media_type")
 
         if media_type in ["video", "image"]:
-            thumbnail_frame = 1
-            if 'start' in file.data:
-                fps = file.data["fps"]
-                fps_float = float(fps["num"]) / float(fps["den"])
-                thumbnail_frame = round(float(file.data['start']) * fps_float) + 1
-            thumb_source = GetThumbPath(
-                file.id,
-                thumbnail_frame,
-                clear_cache=clear_cache,
-                attempts=self.PROJECT_FILE_THUMB_ATTEMPTS,
-            )
-        else:
-            thumb_source = os.path.join(info.PATH, "images", "AudioThumbnail.svg")
+            self._request_file_thumbnail(file)
+            return self._pending_thumbnail_icon(), name, media_type
+        return QIcon(os.path.join(info.PATH, "images", "AudioThumbnail.svg")), name, media_type
 
-        return thumb_source, name, media_type
+    def _request_file_thumbnail(self, file, clear_cache=False):
+        """Queue a file's Project Files thumbnail on the thumbnail worker."""
+        self.request_thumbnail(file.id, file.id, self._thumbnail_frame_for_file(file),
+                               clear_cache=clear_cache)
 
-    def _project_file_icon_for_file(self, file):
-        thumb_source, name, media_type = self._thumbnail_source_for_file(file)
-        return self._thumbnail_icon(thumb_source, media_type), name, media_type
+    def request_thumbnail(self, slot, file_id, frame, on_ready=None, clear_cache=False):
+        """Load (or make) one thumbnail on the thumbnail worker, never the GUI thread.
 
-    def _thumbnail_icon(self, thumb_source, media_type):
-        """Icon for a thumbnail source; video/image thumbs reload from disk bytes."""
-        if media_type in ["video", "image"]:
-            return self._icon_from_thumbnail_source(thumb_source)
-        return QIcon(thumb_source)
-
-    @staticmethod
-    def _icon_from_thumbnail_source(thumb_source):
-        """Create an icon from freshly loaded thumbnail bytes when possible.
-
-        QIcon(path) caches by file name, so a thumbnail regenerated on disk
-        (e.g. after Optimize Preview pre-warms it) would keep showing the old
-        image; loading through QPixmap always reads the current bytes.
+        Call it on the GUI thread. *slot* keys the request: repeat requests
+        for the same slot and frame share one job. Project Files rows use the
+        file id; other views pass their own key. on_ready(image) runs on the
+        GUI thread with a QImage (null when no thumbnail could be made).
         """
-        thumb_source = str(thumb_source or "")
-        if thumb_source:
-            pixmap = QPixmap()
-            if pixmap.load(thumb_source) and not pixmap.isNull():
-                return QIcon(pixmap)
-        return QIcon(thumb_source)
+        slot, frame = str(slot or ""), int(frame or 0)
+        if on_ready is not None:
+            self._thumbnail_callbacks.setdefault((slot, frame), []).append(on_ready)
+        self.thumbnails.request_thumbnail(slot, file_id, frame, self._thumbnail_generation,
+                                          clear_cache=clear_cache)
+
+    @pyqtSlot(str, int, object, int)
+    def _on_thumbnail_ready(self, slot, frame, image, generation):
+        """A thumbnail finished on the worker (GUI thread): update its row and callers."""
+        if generation != self._thumbnail_generation:
+            return  # requested for a project that is no longer loaded
+        for on_ready in self._thumbnail_callbacks.pop((slot, frame), []):
+            try:
+                on_ready(image)
+            except Exception:
+                log.warning("Thumbnail callback failed for %s frame %s", slot, frame, exc_info=1)
+
+        id_index = self.model_ids.get(slot)
+        if id_index is None or not id_index.isValid():
+            return
+        file = File.get(id=slot)
+        if not file or frame != self._thumbnail_frame_for_file(file):
+            return  # the file's start moved; the thumbnail for the new frame is queued
+        if image is None or image.isNull():
+            log.warning("No thumbnail for file %s frame %s; keeping the placeholder", slot, frame)
+            return
+        item = self.model.itemFromIndex(id_index.sibling(id_index.row(), 0))
+        if item is None:
+            return
+        # The icon change is not a name/tags edit: the views save the file and
+        # emit FileUpdated on itemChanged unless ignore_updates is set, which
+        # would add an undo step and regenerate this thumbnail again.
+        was_ignoring = self.ignore_updates
+        self.ignore_updates = True
+        try:
+            # From the worker's fresh read of the file: QIcon(path) caches by
+            # file name and would keep showing a regenerated thumbnail's old image.
+            item.setIcon(QIcon(QPixmap.fromImage(image)))
+        finally:
+            self.ignore_updates = was_ignoring
+
+    def thumbnail_icon(self, file_id):
+        """The icon Project Files shows for a file (its placeholder until the
+        thumbnail is ready), for views that must not wait on the thumbnail
+        server. None when the file has no row."""
+        id_index = self.model_ids.get(str(file_id or ""))
+        if id_index is None or not id_index.isValid():
+            return None
+        item = self.model.itemFromIndex(id_index.sibling(id_index.row(), 0))
+        return item.icon() if item is not None else None
+
+    def _stop_thumbnail_worker(self):
+        """Called at window close / app quit: stop the thumbnail worker thread."""
+        self._thumbnail_callbacks.clear()
+        if self.thumbnails is not None:
+            self.thumbnails.shutdown()
 
     def _proxy_service(self):
         """The window's Optimize Preview service (None before the window creates it)."""
@@ -550,7 +604,12 @@ class FilesModel(QObject, updates.UpdateInterface):
         file_obj = File.get(id=file_id)
         if file_obj:
             path, filename = os.path.split(file_obj.data["path"])
-            self.model.item(row, 0).setToolTip(self._tooltip_for_file(file_obj, filename))
+            previous_ignore = self.ignore_updates
+            self.ignore_updates = True     # a repaint, not a user edit of the row
+            try:
+                self.model.item(row, 0).setToolTip(self._tooltip_for_file(file_obj, filename))
+            finally:
+                self.ignore_updates = previous_ignore
         left = self.model.index(row, 0)
         right = self.model.index(row, self.model.columnCount() - 1)
         self.model.dataChanged.emit(left, right, [Qt.DisplayRole, Qt.ToolTipRole])
@@ -577,9 +636,23 @@ class FilesModel(QObject, updates.UpdateInterface):
                 self.update_model(clear=True, progressive_ui=False)
 
     def update_model(self, clear=True, delete_file_id=None, update_file_id=None, progressive_ui=True):
+        # Programmatic cell changes must never be read back as user edits. A save made
+        # while a refresh is running re-enters this method; restoring the caller's flag
+        # (rather than clearing it) keeps the outer refresh protected, and an early
+        # return can no longer leave the flag stuck on.
+        previous_ignore = self.ignore_updates
+        try:
+            return self._update_model(clear=clear, delete_file_id=delete_file_id,
+                                      update_file_id=update_file_id, progressive_ui=progressive_ui)
+        finally:
+            self.ignore_updates = previous_ignore
+
+    def _update_model(self, clear=True, delete_file_id=None, update_file_id=None, progressive_ui=True):
         log.debug("updating files model.")
         app = get_app()
 
+        # update_model restores the caller's flag on every return path.
+        previous_ignore = self.ignore_updates
         self.ignore_updates = True
 
         # Translations
@@ -618,6 +691,13 @@ class FilesModel(QObject, updates.UpdateInterface):
                 if f.data.get("tags") != self.model.item(row_num, 2).text():
                     self.model.item(row_num, 2).setText(f.data.get("tags"))
                 path, filename = os.path.split(f.data["path"])
+                # Keep the shown name current: the rename handler reads it back.
+                name = f.data.get("name", filename)
+                for col in (0, 1):
+                    item = self.model.item(row_num, col)
+                    if item.text() != name:
+                        item.setText(name)
+                        item.setAccessibleText(name)
                 self.model.item(row_num, 0).setToolTip(self._tooltip_for_file(f, filename))
 
         # Clear all items
@@ -625,6 +705,9 @@ class FilesModel(QObject, updates.UpdateInterface):
             self.model_ids = {}
             self.model.clear()
             self._status_cache.clear()
+            # Thumbnails still queued for the old rows are no longer wanted
+            self._thumbnail_generation += 1
+            self._thumbnail_callbacks.clear()
 
         # Add Headers (all 6 columns - last 3 are hidden but must exist for proper layout)
         self.model.setHorizontalHeaderLabels([
@@ -703,7 +786,7 @@ class FilesModel(QObject, updates.UpdateInterface):
             if progressive_ui:
                 get_app().window.resize_contents()
 
-        self.ignore_updates = False
+        self.ignore_updates = previous_ignore
 
         # Single refresh after bulk updates (i.e. opening a project)
         if not progressive_ui:
@@ -1110,6 +1193,7 @@ class FilesModel(QObject, updates.UpdateInterface):
 
     def get_image_sequence_details(self, file_path):
         """Inspect a file path and determine if this is an image sequence"""
+        from classes.project_files import detect_image_sequence
 
         # Get just the file name
         (dirName, fileName) = os.path.split(file_path)
@@ -1118,35 +1202,9 @@ class FilesModel(QObject, updates.UpdateInterface):
         if dirName in self.ignore_image_sequence_paths:
             return None
 
-        extensions = ["png", "jpg", "jpeg", "tif", "svg"]
-        match = re.findall(r"(.*[^\d])?(0*)(\d+)\.(%s)" % "|".join(extensions), fileName, re.I)
-
-        if not match:
-            # File name does not match an image sequence
-            return None
-
-        # Get the parts of image name
-        base_name = match[0][0]
-        fixlen = match[0][1] > ""
-        number = int(match[0][2])
-        digits = len(match[0][1] + match[0][2])
-        extension = match[0][3]
-
-        full_base_name = os.path.join(dirName, base_name)
-
-        # Check for images which the file names have the different length
-        fixlen = fixlen or not (
-            glob.glob("%s%s.%s" % (full_base_name, "[0-9]" * (digits + 1), extension))
-            or glob.glob("%s%s.%s" % (full_base_name, "[0-9]" * ((digits - 1) if digits > 1 else 3), extension))
-        )
-
-        # Check for previous or next image
-        for x in range(max(0, number - 100), min(number + 101, 50000)):
-            if x != number and os.path.exists(
-               "%s%s.%s" % (full_base_name, str(x).rjust(digits, "0") if fixlen else str(x), extension)):
-                break  # found one!
-        else:
-            # We didn't discover an image sequence
+        parameters = detect_image_sequence(file_path)
+        if not parameters:
+            # File name does not match an image sequence (or has no neighbouring frames)
             return None
 
         # Found a sequence, ignore this path (no matter what the user answers)
@@ -1160,24 +1218,7 @@ class FilesModel(QObject, updates.UpdateInterface):
             # User said no, don't import as a sequence
             return None
 
-        # generate file glob pattern (for this image sequence)
-        if not fixlen:
-            zero_pattern = "%d"
-        else:
-            zero_pattern = "%%0%sd" % digits
-        pattern = "%s%s.%s" % (base_name, zero_pattern, extension)
-        new_file_path = os.path.join(dirName, pattern)
-
         # Yes, import image sequence
-        parameters = {
-            "folder_path": dirName,
-            "base_name": base_name,
-            "fixlen": fixlen,
-            "digits": digits,
-            "extension": extension,
-            "pattern": pattern,
-            "path": new_file_path
-        }
         return parameters
 
     def process_urls(self, qurl_list, import_quietly=False, prevent_image_seq=False,
@@ -1243,12 +1284,22 @@ class FilesModel(QObject, updates.UpdateInterface):
 
     def update_file_thumbnail(self, file_id):
         """Update/re-generate the thumbnail of a specific file"""
+        previous_ignore = self.ignore_updates
+        try:
+            self._update_file_thumbnail(file_id)
+        finally:
+            self.ignore_updates = previous_ignore
+
+    def _update_file_thumbnail(self, file_id):
         self._status_cache.pop(str(file_id), None)
         file = File.get(id=file_id)
+        if not file:
+            return
         path, filename = os.path.split(file.data["path"])
         name = file.data.get("name", filename)
 
         # Refresh thumbnail for updated file
+        previous_ignore = self.ignore_updates
         self.ignore_updates = True
         m = self.model
 
@@ -1258,13 +1309,14 @@ class FilesModel(QObject, updates.UpdateInterface):
             if not id_index.isValid():
                 return
 
-            thumb_source, _, media_type = self._thumbnail_source_for_file(file, clear_cache=True)
-            thumb_icon = self._thumbnail_icon(thumb_source, media_type)
-
-            # Update thumb for file
+            # Update thumb for file: video/image thumbnails are regenerated on
+            # the worker and keep their current icon until the new one arrives
             thumb_index = id_index.sibling(id_index.row(), 0)
             item = m.itemFromIndex(thumb_index)
-            item.setIcon(thumb_icon)
+            if file.data.get("media_type") in ["video", "image"]:
+                self._request_file_thumbnail(file, clear_cache=True)
+            else:
+                item.setIcon(QIcon(os.path.join(info.PATH, "images", "AudioThumbnail.svg")))
             item.setText(name)
             item.setToolTip(name)
             item.setAccessibleText(name)
@@ -1278,7 +1330,7 @@ class FilesModel(QObject, updates.UpdateInterface):
             # Emit signal when model is updated
             self.ModelRefreshed.emit()
 
-        self.ignore_updates = False
+        self.ignore_updates = previous_ignore
 
     def selected_file_ids(self):
         """ Get a list of file IDs for all selected files """
@@ -1333,12 +1385,16 @@ class FilesModel(QObject, updates.UpdateInterface):
 
     def value_updated(self, item):
         """ Table cell change event - when tags are updated on a file"""
-        if item.column() == 2:
-            # Get updated tag value
+        # Only user edits: the model's own refreshes (a file saved by a tool, a tag
+        # change, undo/redo) must not be written back -- into whichever file is selected.
+        if self.ignore_updates or item.column() != 2:
+            return
+        id_item = self.model.item(item.row(), 5)
+        f = File.get(id=id_item.text()) if id_item else None
+        if f:
             tags_value = item.data(0)
-            f = self.current_file()
-            if f:
-                # Save tags to file object
+            if f.data.get("tags", "") != tags_value:
+                # Save tags to the edited row's file
                 f.data["tags"] = tags_value
                 f.save()
 
@@ -1400,6 +1456,9 @@ class FilesModel(QObject, updates.UpdateInterface):
         self._indexing_queue = []  # (file_id, summarize_only) waiting for a worker slot
         self._indexing_progress = {}
         self._status_cache = {}
+        self.thumbnails = None  # thumbnail worker, created below
+        self._thumbnail_generation = 0  # bumped when the rows are rebuilt
+        self._thumbnail_callbacks = {}  # (slot, frame) -> [on_ready(QImage)]
 
         # Stop any running indexing threads cleanly when the app quits
         try:
@@ -1447,6 +1506,15 @@ class FilesModel(QObject, updates.UpdateInterface):
 
         # Call init for superclass QObject
         super().__init__(*args)
+
+        # Thumbnails are made off the GUI thread by the batched worker the
+        # native timeline uses, with its results delivered back queued
+        from windows.views.timeline_backend.qwidget.thumbnails import TimelineThumbnailManager
+        self.thumbnails = TimelineThumbnailManager(
+            self, max_pending=None, attempts=self.PROJECT_FILE_THUMB_ATTEMPTS,
+            thread_name="project_files_thumbnail")
+        self.thumbnails.thumbnail_ready.connect(self._on_thumbnail_ready, type=Qt.QueuedConnection)
+        app.aboutToQuit.connect(self._stop_thumbnail_worker)
 
         # Attempt to load model testing interface, if requested
         # (will only succeed with Qt 5.11+)

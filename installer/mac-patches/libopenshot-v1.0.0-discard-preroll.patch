@@ -1,0 +1,108 @@
+Start stream-copy trimmed MP4/MOV clips at their first shown frame (Zenvi)
+
+Symptom (libopenshot v1.0.0; unchanged in v1.0.1 and develop 0fbacca9):
+GetFrame(1) of a stream-copy trimmed MP4 (`ffmpeg -ss X -i in -c copy`, a
+phone "trim" that does not re-encode) decodes the whole file, takes 18-75 s
+on a long clip, and returns a black, silent frame.
+
+Cause: a stream copy has to start at the keyframe before the cut, so the
+file carries an edit list that hides the pre-roll between that keyframe and
+the cut. FFmpeg's mov demuxer still returns the pre-roll packets (the decoder
+needs them as references) but flags them AV_PKT_FLAG_DISCARD, and the decoder
+never outputs a picture for them. UpdatePTSOffset() anchored the timestamp
+origin on the first packet, discard flag or not, so frames 1..N mapped to
+pictures that never arrive. In 1.0 the image fallbacks refuse a "future"
+picture and CheckWorkingFrames() skips a frame without an image until EOF,
+while ProcessVideoPacket() re-adds the requested frame on every packet. So
+frame 1 waits for the end of the file and is then filled with black. The
+whole clip also plays late by the pre-roll length, and its last frames fall
+past video_length.
+
+Fix:
+1. UpdatePTSOffset() skips discard packets when it picks the timestamp
+   origin. After a skipped video pre-roll it anchors on the stream's
+   start_time, the first picture shown: with B-frames, the first kept packet
+   in decode order can be a later picture. Frame 1 is then the first picture
+   ffmpeg and QuickTime show. Audio and video still share one offset, so A/V
+   sync is unchanged. Files without discard packets take the old path.
+2. Safety net in CheckWorkingFrames(): when nothing has been finalized since
+   the last open or seek, both streams are past a frame that has no image,
+   and the first decoded picture comes later, that frame takes the earliest
+   decoded picture instead of waiting for EOF. This covers leading gaps that
+   carry no discard flag.
+
+Behaviour change: such clips now start where QuickTime starts them. Under
+libopenshot 0.5.0 they started late by the audio pre-roll (about 1 s for an
+ffmpeg trim) behind a held first picture, so a project edited with 0.5.0
+sees that clip's content about that much earlier.
+
+Upstream: not fixed in v1.0.1 or develop 0fbacca9. Drop this patch when
+moving to a libopenshot tag where GetFrame(1) of a stream-copy trim returns
+the first shown picture quickly (installer/mac-patches/README.md).
+
+diff --git a/src/FFmpegReader.cpp b/src/FFmpegReader.cpp
+index fc39431..754f146 100644
+--- a/src/FFmpegReader.cpp
++++ b/src/FFmpegReader.cpp
+@@ -2574,6 +2574,7 @@ void FFmpegReader::UpdatePTSOffset() {
+ 		// Mark as checked
+ 		has_audio_pts = true;
+ 	}
++	bool skipped_video_preroll = false;
+ 
+ 	// Loop through the stream (until a packet from all streams is found)
+ 	while (!has_video_pts || !has_audio_pts) {
+@@ -2582,11 +2583,29 @@ void FFmpegReader::UpdatePTSOffset() {
+ 			// Break loop when no more packets found
+ 			break;
+ 
++		// Skip packets the demuxer marked for discard, such as the edit-list
++		// pre-roll of a stream-copy trimmed MP4/MOV. The decoder never outputs
++		// them, so anchoring on their PTS maps the first frames to pictures that
++		// never arrive.
++		if (packet->flags & AV_PKT_FLAG_DISCARD) {
++			if (packet->stream_index == videoStream)
++				skipped_video_preroll = true;
++			continue;
++		}
++
+ 		// Get PTS of this packet
+ 		int64_t pts = GetPacketPTS();
+ 
+ 		// Video packet
+ 		if (!has_video_pts && packet->stream_index == videoStream) {
++			// After a skipped pre-roll, the first kept packet in decode order can be
++			// a reference frame that B-frames are shown before. The demuxer's start
++			// time is the first shown picture, where ffmpeg and QuickTime start.
++			const int64_t first_shown_pts = pFormatCtx->streams[videoStream]->start_time;
++			if (skipped_video_preroll && first_shown_pts != AV_NOPTS_VALUE && first_shown_pts < pts
++				&& (pts - first_shown_pts) * info.video_timebase.ToDouble() <= 1.0)
++				pts = first_shown_pts;
++
+ 			// Get the video packet start time (in seconds)
+ 			video_pts_offset_seconds = 0.0 - (pts * info.video_timebase.ToDouble());
+ 
+@@ -2949,6 +2968,23 @@ void FFmpegReader::CheckWorkingFrames(int64_t requested_frame) {
+ 				}
+ 			}
+ 
++			// Leading gap: nothing has been finalized since the last open/seek, so
++			// there is no earlier image, and the first decoded picture comes after
++			// this frame. Use the earliest decoded picture; otherwise this frame is
++			// skipped until EOF, which decodes the whole file and then adds black.
++			if (!f->has_image_data && is_video_ready && is_audio_ready && !last_final_video_frame) {
++				std::shared_ptr<Frame> first_image_frame;
++				for (const auto &working_frame : working_frames) {
++					if (working_frame && working_frame->number > f->number && working_frame->has_image_data
++						&& (!first_image_frame || working_frame->number < first_image_frame->number)) {
++						first_image_frame = working_frame;
++					}
++				}
++				if (first_image_frame) {
++					f->AddImage(std::make_shared<QImage>(first_image_frame->GetImage()->copy()));
++				}
++			}
++
+ 			// Do not finalize non-EOF video frames without decoded image data.
+ 			// This prevents repeated previous-frame fallbacks being cached as real frames.
+ 			if (!f->has_image_data) {
