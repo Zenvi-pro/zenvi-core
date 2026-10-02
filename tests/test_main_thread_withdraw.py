@@ -240,7 +240,7 @@ def test_resummarize_still_starts_its_summarize_on_the_gui_thread(monkeypatch):
         thread.join(5)
 
     assert out.startswith("Summarize started for file f1")
-    app.window.files_model._index_file_async.assert_called_once_with("f1", summarize_only=True)
+    app.window.files_model._index_file_async.assert_called_once_with("f1", force=True)
 
 
 # --------------------------------------------------------------------------
