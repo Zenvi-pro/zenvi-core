@@ -380,6 +380,9 @@ def _headless_export_env(monkeypatch, stored_settings, max_frame, export_type):
             captured["video_settings"] = dict(video_settings)
             captured["export_type"] = et
 
+        def deleteLater(self):
+            pass
+
     _Win.timeline.GetMaxFrame.return_value = max_frame
 
     fake_app = MagicMock(_tr=lambda s: s)

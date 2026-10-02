@@ -1,13 +1,11 @@
 """export_video_tool must not hit the default 30s main-thread dispatch wait.
 
-run_export() is synchronous on the GUI thread and can legitimately take
-minutes to hours for a real project. After the MCP-harness merge,
-export_video_tool is BACKGROUND_SAFE so execute_tool() does not wrap it
-in the 30s dispatcher; export_video() marshals the encode itself with
-_EXPORT_MAIN_THREAD_TIMEOUT (6 hours). These tests cover both the
-dispatch wiring (right tool -> right timeout) and the real cross-thread
-timeout mechanics (using small durations standing in for the real 30s /
-6h, so the tests stay fast).
+A render can legitimately take minutes to hours for a real project.
+export_video_tool is BACKGROUND_SAFE so execute_tool() does not wrap it in
+the 30s dispatcher, and export_video() renders on its own QThread rather
+than on the GUI thread. These tests cover both the dispatch wiring and the
+real cross-thread timeout mechanics (using small durations standing in for
+the real 30s / 6h, so the tests stay fast).
 """
 
 from __future__ import annotations
@@ -49,27 +47,36 @@ def _force_background_thread(monkeypatch):
     monkeypatch.setattr(th, "QThread", _QThreadStub)
 
 
-def test_export_video_marshals_itself_with_the_extended_timeout(monkeypatch):
-    """execute_tool skips the 30s wrap (BACKGROUND_SAFE); export_video_tool
-    passes the 6-hour ceiling into _run_on_main_thread for the render."""
+def test_export_video_renders_outside_the_main_thread_dispatcher(monkeypatch):
+    """execute_tool skips the 30s wrap (BACKGROUND_SAFE), and export_video_tool
+    does not put the render on the GUI thread itself either: the editor would
+    be frozen for the whole encode."""
     from classes.editor_tools import project_export_render as render
 
     assert "export_video_tool" in th.BACKGROUND_SAFE_TOOLS
-    assert th._EXPORT_MAIN_THREAD_TIMEOUT == 6 * 60 * 60
 
     _force_background_thread(monkeypatch)
-    seen_timeouts = []
+    on_gui_thread = []
 
     def fake_run_on_main_thread(func, *args, timeout=30):
-        seen_timeouts.append(timeout)
-        return func(*args)
+        on_gui_thread.append(True)
+        try:
+            return func(*args)
+        finally:
+            on_gui_thread.pop()
 
     monkeypatch.setattr(th, "_run_on_main_thread", fake_run_on_main_thread)
 
     out_file = "/tmp/zenvi-export-timeout-test.mp4"
     export_mod = types.ModuleType("windows.export")
-    export_mod.export_video_headless = MagicMock(
-        side_effect=lambda path, *a, **k: open(path, "wb").write(b"\x00" * 8))
+    rendered_on_gui_thread = []
+
+    def fake_headless(path, *a, **k):
+        rendered_on_gui_thread.append(bool(on_gui_thread))
+        with open(path, "wb") as fh:
+            fh.write(b"\x00" * 8)
+
+    export_mod.export_video_headless = fake_headless
     monkeypatch.setitem(sys.modules, "windows.export", export_mod)
     monkeypatch.setattr(render, "build_export_plan", lambda *a, **k: {
         "path": out_file, "export_type": "video_audio", "vformat": "mp4", "vcodec": "libx264", "acodec": "aac",
@@ -86,8 +93,8 @@ def test_export_video_marshals_itself_with_the_extended_timeout(monkeypatch):
             os.remove(out_file)
 
     assert "Error" not in result, result
-    assert 6 * 60 * 60 in seen_timeouts, (
-        "export_video_tool must render with the extended timeout, not the 30s default"
+    assert rendered_on_gui_thread == [False], (
+        "export_video_tool must not render on the GUI thread"
     )
 
 
