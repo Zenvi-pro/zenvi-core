@@ -149,7 +149,8 @@ def test_a_failed_stock_download_is_not_charged(monkeypatch, charges, source):
     client = _StockClient({"local_path": "", "error": "HTTP 404"})
     monkeypatch.setattr(api_client, "get_backend_client", lambda: client)
 
-    assert "download error" in _download(source)
+    out = _download(source)
+    assert out.startswith("Error") and "HTTP 404" in out  # failures read as failures to the agent
     assert charges == []
 
 
@@ -159,7 +160,7 @@ def test_a_blocked_stock_download_neither_downloads_nor_charges(monkeypatch, cha
     client = _StockClient({"local_path": "/tmp/stock.mp4"})
     monkeypatch.setattr(api_client, "get_backend_client", lambda: client)
 
-    assert _download(source) == "Insufficient credits"
+    assert _download(source) == "Error: Insufficient credits"
     assert client.downloads == 0
     assert charges == []
 
@@ -192,7 +193,7 @@ def test_a_reindex_is_charged_once_for_the_clip_duration(monkeypatch, charges):
 def test_a_failed_reindex_is_not_charged(monkeypatch, charges):
     out, _ = _reindex(monkeypatch, result={"success": False, "error": "boom"})
 
-    assert out == "Re-indexing failed: boom"
+    assert out == "Error: Re-indexing failed: boom"
     assert charges == []
 
 

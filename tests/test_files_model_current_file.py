@@ -7,6 +7,7 @@ import pytest
 # The files model subclasses QThread at import time, so this needs real Qt
 # (ZENVI_REAL_QT=1); the stubbed suite auto-ignores importorskip files.
 pytest.importorskip("PyQt5.QtWidgets")
+pytest.importorskip("openshot")  # the modules under test import it
 
 from windows.models.files_model import FilesModel  # noqa: E402
 
@@ -21,12 +22,18 @@ def _index(file_id, valid=True):
 
 
 def _model(selected, current):
-    return SimpleNamespace(
+    model = SimpleNamespace(
+        PLACEHOLDER_PREFIX=FilesModel.PLACEHOLDER_PREFIX,
         selection_model=SimpleNamespace(
             selectedRows=lambda _col: [_index(file_id) for file_id in selected],
             currentIndex=lambda: current,
-        )
+        ),
     )
+    # Real helper (ComfyUI generation rows, #210), bound to the fake model.
+    model._is_generation_placeholder = (
+        lambda file_id: FilesModel._is_generation_placeholder(model, file_id)
+    )
+    return model
 
 
 def test_current_file_id_prefers_current_when_it_is_selected():
@@ -48,4 +55,9 @@ def test_current_file_id_falls_back_to_current_without_selection():
 
 def test_current_file_id_none_without_selection_or_current():
     model = _model([], _index(None, valid=False))
+    assert FilesModel.current_file_id(model) is None
+
+
+def test_current_file_id_skips_a_generation_placeholder_row():
+    model = _model([], _index(FilesModel.PLACEHOLDER_PREFIX + "job-1"))
     assert FilesModel.current_file_id(model) is None

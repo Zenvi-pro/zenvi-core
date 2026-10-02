@@ -26,14 +26,13 @@
  """
 
 import os
-import fnmatch
 
 from qt_api import Qt, QObject, QMimeData, QSortFilterProxyModel, QItemSelectionModel
 from qt_api import QStandardItemModel, QStandardItem, QIcon
 from qt_api import QMessageBox
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
-from classes import info
+from classes import info, title_svg
 from classes.logger import log
 from classes.app import get_app
 
@@ -90,44 +89,13 @@ class TitlesModel(QObject):
         # Add Headers
         self.model.setHorizontalHeaderLabels([_("Name")])
 
-        # get a list of files in the OpenShot package directory
-        titles_dir = os.path.join(info.PATH, "titles")
-        titles_list = [
-            os.path.join(titles_dir, filename)
-            for filename in sorted(os.listdir(titles_dir))
-            ]
-        # Add user-defined titles (if any)
-        titles_list.extend([
-            os.path.join(info.USER_TITLES_PATH, filename)
-            for filename in sorted(os.listdir(info.USER_TITLES_PATH))
-            if fnmatch.fnmatch(filename, '*.svg')
-            ])
-
-        for path in sorted(titles_list):
+        # Bundled templates + the user's templates (shared with the agent tools)
+        for path in title_svg.template_paths():
             filename = os.path.basename(path)
             fileBaseName = os.path.splitext(filename)[0]
 
-            # Skip hidden files (such as .DS_Store, etc...)
-            if (filename[0] == "."
-               or "thumbs.db" in filename.lower()
-               or filename.lower() == "temp.svg"):
-                continue
-
-            # split the name into parts (looking for a number)
-            suffix_number = None
-            name_parts = fileBaseName.split("_")
-            if name_parts[-1].isdigit():
-                suffix_number = name_parts[-1]
-
-            # get name of title template
-            title_name = fileBaseName.replace("_", " ").capitalize()
-
-            # replace suffix number with placeholder (if any)
-            if suffix_number:
-                title_name = title_name.replace(suffix_number, "%s")
-                title_name = self.app._tr(title_name) % suffix_number
-            else:
-                title_name = self.app._tr(title_name)
+            # get name of title template ("Gray_Box_4" -> "Gray box 4", translated)
+            title_name = title_svg.template_display_name(path, self.app._tr)
 
             # Check for thumbnail path (in build-in cache)
             thumb_path = os.path.join(info.IMAGES_PATH, "cache", "{}.png".format(fileBaseName))

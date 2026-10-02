@@ -250,6 +250,15 @@ def test_no_transaction_id_leaves_an_outer_transaction_alone():
     assert updates.transaction_id == "outer"
 
 
+def test_the_in_flight_transaction_id_is_joined_not_cleared():
+    """Time_Triggered joins an agent tool's group and hands that id back in;
+    clearing it would split the tool call into several undo steps."""
+    updates = type("U", (), {"transaction_id": "outer"})()
+    with bridge_guard.slot_transaction(updates, "outer"):
+        assert updates.transaction_id == "outer"
+    assert updates.transaction_id == "outer"
+
+
 def test_submit_plan_answers_restores_session_state_when_dispatch_fails():
     """Otherwise Skip/Submit silently stops working for the rest of the session."""
     from windows.ai_chat_ui import ChatBridge

@@ -205,10 +205,15 @@ def ken_burns_keyframes(
     zoom = max(float(zoom), _scale_for_safe_location(canvas, base, target_pan))
 
     start_scale, end_scale = (1.0, zoom) if zoom_in else (zoom, 1.0)
-    start_safe = min(_safe_location(canvas, base, start_scale) * 0.82, max_pan)
-    end_safe = min(_safe_location(canvas, base, end_scale) * 0.82, max_pan)
-    start_magnitude = max(start_safe, target_pan if start_safe else 0.0)
-    end_magnitude = max(end_safe, target_pan if end_safe else 0.0)
+    start_room = _safe_location(canvas, base, start_scale)
+    end_room = _safe_location(canvas, base, end_scale)
+    start_safe = min(start_room * 0.82, max_pan)
+    end_safe = min(end_room * 0.82, max_pan)
+    # Prefer at least target_pan of drift, but never past the crop edge: at the
+    # un-zoomed end (scale 1.0) a 3:2 photo in 16:9 only has ~0.085 of room, and
+    # forcing 0.10 there showed a black bar along the frame edge.
+    start_magnitude = min(max(start_safe, target_pan if start_safe else 0.0), start_room * 0.995)
+    end_magnitude = min(max(end_safe, target_pan if end_safe else 0.0), end_room * 0.995)
     start_mag = _pan_endpoints(direction, min(start_magnitude, max_pan))[0]
     end_mag = _pan_endpoints(direction, min(end_magnitude, max_pan))[1]
 
