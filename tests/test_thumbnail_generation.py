@@ -104,6 +104,20 @@ def test_retries_with_eager_inspection_when_quick_reader_fails(fake_openshot):
     assert second.frame.calls[0][-1] == fake_openshot.SCALE_CROP
 
 
+def test_thumbnail_decode_time_is_checked_against_software(fake_openshot, monkeypatch):
+    """A thumbnail is the first decode of imported media: where a hardware decoder
+    that is slower than software on that media gets noticed."""
+    _install_create_reader(fake_openshot, [_Reader()])
+    ticks = iter([10.0, 16.2])
+    monkeypatch.setattr(thumbnail.time, "perf_counter", lambda: next(ticks))
+    seen = []
+    monkeypatch.setattr(thumbnail, "_check_hardware_decode_speed", lambda path, seconds: seen.append((path, seconds)))
+
+    thumbnail.GenerateThumbnail("phone.mp4", "/tmp/thumb.png", 1, 20, 20, None, None)
+
+    assert seen == [("phone.mp4", pytest.approx(6.2))]
+
+
 def test_renders_svg_placeholder_when_source_cannot_open(fake_openshot):
     failing = [_Reader(open_error=RuntimeError("missing source")) for _ in range(2)]
     placeholder = _Reader()
