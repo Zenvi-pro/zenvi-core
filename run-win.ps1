@@ -97,6 +97,23 @@ echo "--- [1/6] Syncing MSYS2 package databases and installing packages ---"
 # shell close); `-S --needed` then installs/updates only the packages below
 # to their currently-synced versions and leaves everything else alone.
 pacman -Sy --noconfirm
+
+# The one case where "only the packages below" cannot work: an install from before
+# MSYS2's current GCC major. Packages built since (OpenCV, protobuf, ...) pull in
+# the new gcc-libs, and every C++ program built against the old one -- cmake, Qt,
+# an existing libopenshot -- then fails to start, without a message. Only a full
+# upgrade is consistent, so stop here instead of half-upgrading.
+installed_gcc="$(pacman -Q mingw-w64-x86_64-gcc-libs 2>/dev/null | awk '{print $2}')"
+repo_gcc="$(pacman -Si mingw-w64-x86_64-gcc-libs 2>/dev/null | awk '/^Version/ {print $3}')"
+if [ -n "$installed_gcc" ] && [ -n "$repo_gcc" ] && [ "${installed_gcc%%.*}" != "${repo_gcc%%.*}" ]; then
+    echo "ERROR: this MSYS2 install has GCC ${installed_gcc%%.*} packages; MSYS2 now builds with GCC ${repo_gcc%%.*}."
+    echo "       Mixing the two breaks C++ programs (cmake and Qt exit silently)."
+    echo "       In the MSYS2 MinGW64 shell run 'pacman -Syu' until it reports nothing to do"
+    echo "       (the first run closes the window; open it again), then re-run this script."
+    echo "       libopenshot and libopenshot-audio are rebuilt automatically afterwards."
+    exit 1
+fi
+
 pacman -S --needed --noconfirm --disable-download-timeout \
     mingw-w64-x86_64-python-cryptography \
     mingw-w64-x86_64-python-rpds-py \
@@ -117,7 +134,9 @@ pacman -S --needed --noconfirm --disable-download-timeout \
     mingw-w64-x86_64-python-zstandard \
     mingw-w64-x86_64-qtwebkit \
     mingw-w64-x86_64-libffi \
-    mingw-w64-x86_64-gcc
+    mingw-w64-x86_64-gcc \
+    mingw-w64-x86_64-opencv \
+    mingw-w64-x86_64-protobuf
 
 pip3 install --break-system-packages httplib2 tinys3 github3.py==0.9.6 requests
 
@@ -138,6 +157,33 @@ else
 fi
 export UNITTEST_DIR="${MSYS2_ROOT_WIN}\usr"
 
+# Is the libopenshot already built here usable? It has to import (a build from
+# before a toolchain or FFmpeg upgrade no longer loads) and have the OpenCV
+# effects (Stabilizer, Tracker, Object Detector). If not, it is rebuilt -- and
+# libopenshot-audio with it when the old build no longer loads.
+LIBOPENSHOT_SRC="$DEPS_DIR/libopenshot"
+BINDINGS_DIR="$LIBOPENSHOT_SRC/build/bindings/python"
+PREROLL_PATCH="$REPO_ROOT_UNIX/installer/mac-patches/libopenshot-v1.0.0-discard-preroll.patch"
+LIBOPENSHOT_OK=""
+REBUILD_AUDIO=""
+if find "$BINDINGS_DIR" -iname 'openshot.py' 2>/dev/null | grep -q .; then
+    if PYTHONPATH="$BINDINGS_DIR" /mingw64/bin/python.exe "$REPO_ROOT_UNIX/installer/verify_openshot_bundle.py"; then
+        LIBOPENSHOT_OK=1
+    elif ! PYTHONPATH="$BINDINGS_DIR" /mingw64/bin/python.exe -c "import openshot" 2>/dev/null; then
+        echo "The existing libopenshot build no longer loads -- rebuilding it and libopenshot-audio."
+        REBUILD_AUDIO=1
+    else
+        echo "The existing libopenshot build has no OpenCV effects -- rebuilding it."
+    fi
+    # A Zenvi source patch that still applies cleanly to the checkout has not
+    # been built in yet.
+    if [ -n "$LIBOPENSHOT_OK" ] &&
+        git -C "$LIBOPENSHOT_SRC" apply --check --whitespace=nowarn "$PREROLL_PATCH" 2>/dev/null; then
+        echo "The existing libopenshot build predates a Zenvi source patch -- rebuilding it."
+        LIBOPENSHOT_OK=""
+    fi
+fi
+
 echo ""
 echo "--- [3/6] libopenshot-audio ---"
 # Was checking for a file literally named 'libopenshot-audio*' directly under
@@ -145,8 +191,9 @@ echo "--- [3/6] libopenshot-audio ---"
 # are the headers under /usr/include/libopenshot-audio/ and the lib under
 # /usr/lib/. That mismatch meant this check never matched, so the build (and
 # `make install`, silently overwriting any existing install) ran every time.
-if ! find /usr/include /usr/lib -maxdepth 2 -iname '*openshot-audio*' 2>/dev/null | grep -q .; then
+if [ -n "$REBUILD_AUDIO" ] || ! find /usr/include /usr/lib -maxdepth 2 -iname '*openshot-audio*' 2>/dev/null | grep -q .; then
     cd "$DEPS_DIR"
+    [ -z "$REBUILD_AUDIO" ] || rm -rf libopenshot-audio/build
     [ -d libopenshot-audio ] || git clone https://github.com/OpenShot/libopenshot-audio.git
     cd libopenshot-audio
 
@@ -192,16 +239,7 @@ pacman -S --needed --noconfirm mingw64/mingw-w64-x86_64-qt5-svg mingw64/mingw-w6
 
 echo ""
 echo "--- [5/6] libopenshot ---"
-LIBOPENSHOT_SRC="$DEPS_DIR/libopenshot"
-BINDINGS_DIR="$LIBOPENSHOT_SRC/build/bindings/python"
-# Check for the actual compiled module, not just the directory -- the
-# directory can exist (with only CMake's own build files in it) even when
-# the bindings subdirectory was never actually built.
-# Also rebuild when an existing build predates a Zenvi source patch: a patch
-# that still applies cleanly to the checkout has not been built in yet.
-PREROLL_PATCH="$REPO_ROOT_UNIX/installer/mac-patches/libopenshot-v1.0.0-discard-preroll.patch"
-if ! find "$BINDINGS_DIR" -iname 'openshot.py' 2>/dev/null | grep -q . ||
-    git -C "$LIBOPENSHOT_SRC" apply --check --whitespace=nowarn "$PREROLL_PATCH" 2>/dev/null; then
+if [ -z "$LIBOPENSHOT_OK" ]; then
     cd "$DEPS_DIR"
     [ -d libopenshot ] || git clone https://github.com/OpenShot/libopenshot.git
     cd libopenshot
@@ -224,6 +262,12 @@ if ! find "$BINDINGS_DIR" -iname 'openshot.py' 2>/dev/null | grep -q . ||
         echo "WARNING: could not download the FFmpeg 7+ compatibility patch -- build may fail on newer FFmpeg."
     fi
 
+    # MSYS2 ships OpenCV 5; libopenshot asks for OpenCV 4 and would silently
+    # build without the OpenCV effects (same patch as the release build).
+    if grep -q 'find_package(OpenCV 4)' src/CMakeLists.txt; then
+        /mingw64/bin/python.exe "$REPO_ROOT_UNIX/installer/patch-libopenshot-opencv5.py" .
+    fi
+
     # Zenvi source fix, not yet upstream: without it the first frame of a
     # stream-copy trimmed MP4 decodes the whole file and comes back black.
     # Written against v1.0.0; it also applies to the default branch built here.
@@ -235,6 +279,7 @@ if ! find "$BINDINGS_DIR" -iname 'openshot.py' 2>/dev/null | grep -q . ||
     cmake -G "MSYS Makefiles" -DCMAKE_MAKE_PROGRAM=mingw32-make \
         -DCMAKE_INSTALL_PREFIX:PATH=/mingw64 \
         -DDISABLE_TESTS=1 \
+        -DENABLE_OPENCV=ON \
         -DCMAKE_CXX_FLAGS="-include cstdint" ../
     make
     make install
@@ -249,6 +294,11 @@ if ! find "$BINDINGS_DIR" -iname 'openshot.py' 2>/dev/null | grep -q . ||
     fi
 
     echo "libopenshot built and installed."
+    # Stop here rather than launch on bindings just found unusable.
+    if ! PYTHONPATH="$BINDINGS_DIR" /mingw64/bin/python.exe "$REPO_ROOT_UNIX/installer/verify_openshot_bundle.py"; then
+        echo "ERROR: the libopenshot just built does not load, or has no OpenCV effects (Stabilizer / Tracker / Object Detector). See the output above."
+        exit 1
+    fi
 else
     echo "libopenshot (including Python bindings) already built -- skipping."
 fi
