@@ -65,3 +65,6 @@ certifi
 chardet
 urllib3
 sentry-sdk
+
+# Web / YouTube ingest for Assistant + MCP (pinned release, not a git fork).
+yt-dlp>=2024.8.6,<2027
