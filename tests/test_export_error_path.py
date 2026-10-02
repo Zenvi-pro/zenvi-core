@@ -317,3 +317,23 @@ def test_headless_run_export_leaves_widgets_and_the_auto_save_timer_alone(monkey
     assert paused == []
     assert pumped == []
     assert dlg.progressExportVideo.method_calls == []
+
+
+def test_headless_export_cancelled_during_the_encoder_trial_never_opens_the_writer(monkeypatch):
+    dlg = _base_dlg(monkeypatch)
+    dlg._headless = True
+
+    def cancelled_meanwhile(codec, poll=None):
+        dlg.exporting = False
+        return codec
+
+    monkeypatch.setattr("windows.export.safe_video_encoder", cancelled_meanwhile)
+    writer = MagicMock()
+    ffwriter_cls = MagicMock(return_value=writer)
+    ffwriter_cls.IsValidCodec = MagicMock(return_value=True)
+    monkeypatch.setattr("windows.export.openshot.FFmpegWriter", ffwriter_cls)
+
+    dlg.run_export("/tmp/out.mp4", _video_settings(), _audio_settings(), "Video & Audio")
+
+    writer.Open.assert_not_called()
+    writer.WriteFrame.assert_not_called()

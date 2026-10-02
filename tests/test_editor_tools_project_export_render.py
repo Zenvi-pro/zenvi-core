@@ -207,9 +207,36 @@ def test_a_render_that_times_out_is_cancelled(studio, monkeypatch):
 
     monkeypatch.setattr(render, "run_on_qthread", timed_out)
     cancelled = []
-    sys.modules["windows.export"].cancel_headless_exports = lambda *a, **k: cancelled.append(True)
+    sys.modules["windows.export"].cancel_headless_exports = lambda *a, **k: cancelled.append(True) or True
     out = studio.call("export_video_tool", file_name="slow")
     assert out.startswith("Error") and "did not finish" in out and cancelled == [True]
+    assert not render._EXPORT_LOCK.locked()
+
+
+def test_a_timed_out_render_keeps_the_export_lock_until_it_stops(studio, monkeypatch):
+    """Cancelling only asks: until the encode really stops, a retry must not write the same file."""
+    import threading
+    import time
+    from classes.editor_tools import project_export_render as render
+    from classes.editor_tools._base import ToolError
+
+    def timed_out(func, *a):
+        raise ToolError("the render did not finish within 1 s")
+
+    monkeypatch.setattr(render, "run_on_qthread", timed_out)
+    stopped = threading.Event()
+    sys.modules["windows.export"].cancel_headless_exports = lambda *a, **k: time.sleep(0.01) or stopped.is_set()
+    out = studio.call("export_video_tool", file_name="slow")
+    assert out.startswith("Error") and "did not finish" in out
+    try:
+        out = studio.call("export_video_tool", file_name="retry")
+        assert out.startswith("Error") and "already running" in out
+    finally:
+        stopped.set()
+    deadline = time.time() + 5
+    while render._EXPORT_LOCK.locked() and time.time() < deadline:
+        time.sleep(0.01)
+    assert not render._EXPORT_LOCK.locked()
 
 
 def test_export_audio_gif_and_sequence_renders(studio):

@@ -113,3 +113,15 @@ def test_cancelling_stops_the_render_and_is_reported_as_a_failure(headless, monk
     assert not worker.is_alive()
     assert isinstance(box["result"], str) and "cancel" in box["result"].lower()
     assert export._headless_exports == []
+
+
+def test_no_export_starts_once_the_editor_is_closing(headless, monkeypatch):
+    """Shutdown cancels the exports it can see; one whose setup was still queued must not start after it."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(export, "get_app", lambda: SimpleNamespace(window=SimpleNamespace(shutting_down=True)))
+    worker, box = _export_on_a_worker(headless)
+    _pump(lambda: not worker.is_alive())
+
+    assert isinstance(box["result"], RuntimeError)
+    assert made == [] and export._headless_exports == []

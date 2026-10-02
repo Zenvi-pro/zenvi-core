@@ -589,8 +589,21 @@ def export_video(preset="", quality="", export_type="auto", range="", start=0, e
                                     video_bitrate, audio_bitrate, sample_rate, channels, interlaced,
                                     image_format, overwrite, show_dialog)
     finally:
-        _RUNNING_EXPORT.clear()
-        _EXPORT_LOCK.release()
+        if not _RUNNING_EXPORT.get("draining"):
+            _release_export_lock()
+
+
+def _release_export_lock():
+    _RUNNING_EXPORT.clear()
+    _EXPORT_LOCK.release()
+
+
+def _release_export_lock_when_stopped():
+    """Hold the export lock until a timed-out render has really stopped encoding."""
+    from windows.export import cancel_headless_exports
+    while not cancel_headless_exports(wait_seconds=60):
+        pass
+    _release_export_lock()
 
 
 # One render at a time: a render takes minutes, and a second call (an agent
@@ -649,7 +662,11 @@ def _export_video_locked(preset, quality, export_type, range, start, end, output
     except ToolError:
         # Timed out: stop the render, or it would write over the next export of this file.
         from windows.export import cancel_headless_exports
-        cancel_headless_exports()
+        if not cancel_headless_exports(wait_seconds=_INTERRUPT_GRACE_MS / 1000):
+            # Still encoding: the lock stays held until it stops, so a retry cannot overlap it.
+            _RUNNING_EXPORT["draining"] = True
+            threading.Thread(target=_release_export_lock_when_stopped, name="zenvi-export-drain",
+                             daemon=True).start()
         raise
     except Exception as exc:
         raise ToolError(f"export failed: {exc}") from exc

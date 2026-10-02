@@ -292,8 +292,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # An assistant export encodes on its own thread: stop it before
         # libopenshot is torn down under it.
         export_module = sys.modules.get("windows.export")
-        if export_module is not None:
-            export_module.cancel_headless_exports(wait_seconds=15)
+        if export_module is not None and not export_module.cancel_headless_exports(wait_seconds=60):
+            # Not waited for indefinitely: an encoder stuck in one frame would keep the app from ever closing.
+            log.warning("An assistant export is still encoding after 60 s; shutting down anyway")
 
         # Stop AI chat thread early so its wait overlaps with the rest of shutdown
         if getattr(self, "dockAIChat", None):

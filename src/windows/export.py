@@ -1479,8 +1479,10 @@ class Export(QDialog):
                     headless = getattr(self, "_headless", False)
                     safe_vc = safe_video_encoder(
                         vc, poll=None if headless else QCoreApplication.processEvents)
-                    if not headless and not self.exporting:
+                    if not self.exporting:
                         # Cancelled while the trial ran: stop before the writer opens a file.
+                        if headless:
+                            return
                         if getattr(self, "_export_cancel_confirmed", False):
                             self._export_cancel_confirmed = False
                             super(Export, self).reject()
@@ -2390,13 +2392,17 @@ def _headless_export():
     """An Export for a headless render: built on the GUI thread (it is a QDialog)
     and deleted there, whichever thread runs the encode."""
     def _make():
+        # Shutdown cancels the exports registered here, from this same thread:
+        # one that registers later would encode while libopenshot is torn down.
+        if getattr(getattr(get_app(), "window", None), "shutting_down", False) is True:
+            raise RuntimeError("the editor is closing")
         win = Export()
         win.exporting = True
         win._headless = True
+        _headless_exports.append(win)
         return win
 
     win = call_on_gui(_make, timeout=_HEADLESS_SETUP_TIMEOUT)
-    _headless_exports.append(win)
     try:
         yield win
     finally:
