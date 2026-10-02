@@ -289,6 +289,12 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Disable video caching
         openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
 
+        # An assistant export encodes on its own thread: stop it before
+        # libopenshot is torn down under it.
+        export_module = sys.modules.get("windows.export")
+        if export_module is not None:
+            export_module.cancel_headless_exports(wait_seconds=15)
+
         # Stop AI chat thread early so its wait overlaps with the rest of shutdown
         if getattr(self, "dockAIChat", None):
             self.dockAIChat._stop_all_threads()
