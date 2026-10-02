@@ -31,6 +31,14 @@ SCALAR_DEFAULTS = {
 
 SCALAR_KEYS = tuple(SCALAR_DEFAULTS.keys())
 
+# Clamp ranges after resolving *_delta. Neutral-zero knobs use [-1, 1];
+# saturation / mix / lut_intensity use their ColorGrade ranges (sat 0…2).
+_SCALAR_BOUNDS = {
+    "saturation": (0.0, 2.0),
+    "mix": (0.0, 1.0),
+    "lut_intensity": (0.0, 1.0),
+}
+
 # Agent-facing aliases → ColorGrade keys
 SCALAR_ALIASES = {
     "temp": "temperature",
@@ -467,7 +475,8 @@ def resolve_relative_deltas(effect_json: dict, patch: dict) -> dict:
         cur = scalar_y(effect_json or {}, target)
         if cur is None:
             cur = float(SCALAR_DEFAULTS.get(target, 0.0))
-        out[target] = max(-1.0, min(1.0, float(cur) + delta))
+        lo, hi = _SCALAR_BOUNDS.get(target, (-1.0, 1.0))
+        out[target] = max(lo, min(hi, float(cur) + delta))
     return out
 
 
@@ -542,6 +551,16 @@ def merge_color_grade(effect_json: dict, patch: dict) -> dict:
     if not is_color_grade_effect(payload):
         payload["class_name"] = COLOR_GRADE_CLASS_NAME
     patch = resolve_relative_deltas(payload, patch)
+    # Deltas resolve after the first validate; re-check absolute saturation.
+    sat = patch.get("saturation")
+    if sat is not None and sat != "":
+        value = _coerce_float(sat, "saturation")
+        if value < 0.5:
+            raise ValueError(
+                "saturation neutral is 1.0 (not 0). Values below 0.5 look grey. "
+                "For more color use ~1.1–1.3, or apply_look_tool lookId='sunny' / "
+                "'boost_color'. For less color use ~0.7–0.9, never 0.2."
+            )
 
     # Full paste replaces color-bearing fields but keeps id/order.
     color_obj = patch.get("color")

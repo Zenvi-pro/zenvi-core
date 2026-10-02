@@ -3383,8 +3383,12 @@ class AIChatWindow(QDockWidget):
         if action == "chat" and shown:
             self._add_user_msg(shown)
         if action == "chat" and (cmd or text):
-            # Raw text for Sign-in → auto-retry after Claude OAuth recovery.
-            sess["last_user_text"] = (cmd or text or "").strip()
+            # Payload + model for Sign-in → auto-retry after Claude OAuth.
+            sess["last_user_text"] = (text or cmd or "").strip()
+            sess["last_user_display"] = (shown or "").strip()
+            sess["last_user_command"] = (cmd or "").strip()
+            sess["last_user_model_id"] = model_id or ""
+            sess["last_user_images"] = list(images or []) if images else []
         if action == "chat" and cmd and self._try_local_command(cmd):
             return True
         if action == "chat" and cmd:
@@ -4213,7 +4217,17 @@ class AIChatWindow(QDockWidget):
             self._reset_turn_segments(sess)
             pending = (sess.get("last_user_text") or "").strip()
             if pending:
-                sess["pending_retry_text"] = pending
+                # Bind retry to this session (payload may include attachments).
+                sess["pending_retry"] = {
+                    "text": pending,
+                    "display": sess.get("last_user_display") or "",
+                    "command": sess.get("last_user_command") or pending,
+                    "model_id": sess.get("last_user_model_id") or "",
+                    "images": list(sess.get("last_user_images") or []),
+                    "generation": sess.get("retry_generation", 0),
+                }
+                sess["pending_retry_text"] = pending  # back-compat
+                sess["pending_retry_sid"] = sid
         if sid != self._active_sid:
             return
         if self._user_cancelled:
@@ -4252,6 +4266,9 @@ class AIChatWindow(QDockWidget):
                 )
             return
 
+        # Capture the initiating session so a tab switch cannot steal the retry.
+        sign_in_sid = self._active_sid or ""
+
         def run():
             try:
                 from windows.agent_runners import start_claude_auth_login
@@ -4262,12 +4279,13 @@ class AIChatWindow(QDockWidget):
             QMetaObject.invokeMethod(
                 self, "_on_sign_in_result", Qt.QueuedConnection,
                 Q_ARG(str, backend_id), Q_ARG(bool, ok), Q_ARG(str, message or ""),
+                Q_ARG(str, sign_in_sid),
             )
 
         threading.Thread(target=run, daemon=True, name="cli-signin").start()
 
-    @pyqtSlot(str, bool, str)
-    def _on_sign_in_result(self, backend_id: str, ok: bool, message: str):
+    @pyqtSlot(str, bool, str, str)
+    def _on_sign_in_result(self, backend_id: str, ok: bool, message: str, session_id: str = ""):
         if self._use_web_ui:
             self._run_js(
                 "if(window.onCliAuthResult) onCliAuthResult(%s, %s, %s);"
@@ -4278,19 +4296,34 @@ class AIChatWindow(QDockWidget):
         self._detect_clis()
         if not ok:
             return
-        sess = self._active_session()
+        sid = session_id or self._active_sid
+        sess = self._sessions.get(sid) if sid else None
         if not sess or sess.get("backend") != BACKEND_CLAUDE:
             return
-        pending = (sess.pop("pending_retry_text", None) or "").strip()
-        if not pending or self.is_processing:
+        pending = sess.pop("pending_retry", None)
+        sess.pop("pending_retry_text", None)
+        sess.pop("pending_retry_sid", None)
+        if not isinstance(pending, dict):
             return
-        model_id = ""
-        if hasattr(self, "model_combo") and self.model_combo:
-            model_id = self.model_combo.currentData() or ""
-        # Avoid duplicating the user bubble — retry silently with the same text.
-        self._dispatch_user_message(
-            pending, model_id, display_text="", command_text=pending,
-        )
+        # Cleared chats bump retry_generation so a stale pending request dies.
+        if pending.get("generation", 0) != sess.get("retry_generation", 0):
+            return
+        text = (pending.get("text") or "").strip()
+        if not text or self.is_processing:
+            return
+        # Avoid duplicating the user bubble — retry silently with the same payload.
+        prev_sid = self._active_sid
+        self._active_sid = sid
+        try:
+            self._dispatch_user_message(
+                text,
+                pending.get("model_id") or "",
+                display_text="",
+                command_text=pending.get("command") or text,
+                images=pending.get("images") or None,
+            )
+        finally:
+            self._active_sid = prev_sid
 
     def clear_chat(self):
         reply = QMessageBox.question(
@@ -4306,6 +4339,16 @@ class AIChatWindow(QDockWidget):
                 sess["first_prompt_summary"] = None
                 sess["unread"] = False
                 sess["attachments"] = []
+                # Invalidate any in-flight Claude Sign-in retry for this chat.
+                sess["retry_generation"] = int(sess.get("retry_generation") or 0) + 1
+                sess.pop("pending_retry", None)
+                sess.pop("pending_retry_text", None)
+                sess.pop("pending_retry_sid", None)
+                sess.pop("last_user_text", None)
+                sess.pop("last_user_display", None)
+                sess.pop("last_user_command", None)
+                sess.pop("last_user_model_id", None)
+                sess.pop("last_user_images", None)
                 self._clear_attachment_undo()
                 from classes import chat_history
                 chat_history.clear_session_messages(self._active_sid)

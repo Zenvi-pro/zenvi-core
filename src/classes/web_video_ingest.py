@@ -7,10 +7,12 @@ media bin. Not a scrape-without-download path — frames require a fetch.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import re
 import shutil
+import socket
 import time
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -54,6 +56,86 @@ def is_probable_web_video_url(url: str) -> bool:
         return False
     if not parsed.netloc:
         return False
+    return True
+
+
+def assert_public_http_url(url: str) -> None:
+    """Reject loopback / link-local / private destinations (SSRF).
+
+    Resolves the hostname and refuses any non-public address before outbound
+    fetch (yt-dlp or urllib). Raises WebVideoIngestError on refusal.
+    """
+    if not is_probable_web_video_url(url):
+        raise WebVideoIngestError(
+            "URL must be http(s). Local paths use import_files_tool; "
+            "direct MP4s may use import_video_url_and_add_to_timeline_tool."
+        )
+    host = (urlparse(str(url).strip()).hostname or "").strip()
+    if not host:
+        raise WebVideoIngestError("URL host is missing.")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as exc:
+        raise WebVideoIngestError(f"Could not resolve host {host!r}.") from exc
+    if not infos:
+        raise WebVideoIngestError(f"Could not resolve host {host!r}.")
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            raise WebVideoIngestError(
+                "That URL points at a private or local network address, "
+                "which cannot be fetched."
+            )
+
+
+def requested_height_for_intent(intent: str) -> int:
+    return 1080 if normalize_intent(intent) == "timeline" else 720
+
+
+def cache_satisfies_request(
+    meta: dict[str, Any],
+    *,
+    intent: str,
+    write_subs: bool,
+) -> bool:
+    """True when a cached download is good enough for this request."""
+    if not isinstance(meta, dict):
+        return False
+    want_h = requested_height_for_intent(intent)
+    try:
+        have_h = int(meta.get("height") or 0)
+    except (TypeError, ValueError):
+        have_h = 0
+    if have_h and have_h < want_h:
+        return False
+    # Unknown height: only reuse for the same-or-lower intent height that
+    # originally wrote the cache (stored as requested_height).
+    if not have_h:
+        try:
+            stored = int(meta.get("requested_height") or 0)
+        except (TypeError, ValueError):
+            stored = 0
+        if stored and stored < want_h:
+            return False
+    need_subs = bool(write_subs) or normalize_intent(intent) in ("reference", "recreate")
+    if need_subs:
+        subs = meta.get("subtitle_paths") or []
+        if not isinstance(subs, list) or not subs:
+            # Allow reuse when the prior fetch already tried for subs
+            # (write_subs_requested) even if none existed on the site.
+            if not meta.get("write_subs_requested"):
+                return False
     return True
 
 
@@ -158,7 +240,7 @@ def format_selector_for_intent(intent: str, *, has_ffmpeg: bool = True) -> str:
     Without ffmpeg, avoid video+audio merge formats (progressive single file only).
     """
     intent = normalize_intent(intent)
-    height = 1080 if intent == "timeline" else 720
+    height = requested_height_for_intent(intent)
     if not has_ffmpeg:
         # Single-file progressive formats — no merge step.
         return (
@@ -319,11 +401,7 @@ def download_web_video(
     ``ydl_factory`` is optional for tests: callable(opts) -> context manager
     with extract_info(url, download=True).
     """
-    if not is_probable_web_video_url(url):
-        raise WebVideoIngestError(
-            "URL must be http(s). Local paths use import_files_tool; "
-            "direct MP4s may use import_video_url_and_add_to_timeline_tool."
-        )
+    assert_public_http_url(url)
     intent = normalize_intent(intent)
     os.makedirs(cache_dir, exist_ok=True)
 
@@ -331,8 +409,9 @@ def download_web_video(
     if cool:
         raise WebVideoIngestError(cool)
 
+    want_subs = bool(write_subs) or intent in ("reference", "recreate")
     cached = load_cached_download(cache_dir)
-    if cached:
+    if cached and cache_satisfies_request(cached, intent=intent, write_subs=want_subs):
         cached["intent"] = intent
         cached["url"] = str(url).strip()
         return cached
@@ -355,7 +434,7 @@ def download_web_video(
     if has_ffmpeg:
         opts["merge_output_format"] = "mp4"
         opts["prefer_ffmpeg"] = True
-    if write_subs or intent in ("reference", "recreate"):
+    if want_subs:
         opts.update({
             "writesubtitles": True,
             "writeautomaticsub": True,
@@ -420,6 +499,8 @@ def download_web_video(
         "duration_seconds": _safe_float(info.get("duration")),
         "width": info.get("width"),
         "height": info.get("height"),
+        "requested_height": requested_height_for_intent(intent),
+        "write_subs_requested": bool(want_subs),
         "video_path": os.path.abspath(video_path),
         "subtitle_paths": subs,
         "webpage_url": str(info.get("webpage_url") or url).strip(),

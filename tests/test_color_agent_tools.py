@@ -13,6 +13,7 @@ from classes.color_agent import (
     merge_color_grade,
     parse_clip_ids,
     reference_gap_hints,
+    resolve_relative_deltas,
     scalar_y,
     summarize_color_grade,
     summarize_scope_video,
@@ -1020,6 +1021,10 @@ def _grade_env(monkeypatch, clips):
             def generate_id():
                 return "effx"
 
+            @staticmethod
+            def get(key, default=None):
+                return {"layers": []}.get(key, default)
+
     monkeypatch.setattr(th, "_get_app", lambda: FakeApp())
     monkeypatch.setattr(th, "QThread", None)
 
@@ -1032,6 +1037,48 @@ def _grade_env(monkeypatch, clips):
     fake_query.Clip = ClipProxy
     monkeypatch.setitem(sys.modules, "classes.query", fake_query)
     return writes
+
+
+def test_apply_color_skips_locked_tracks(monkeypatch):
+    from classes import tool_handlers as th
+
+    unlocked = _MatchClip("ok", [])
+    unlocked.data["layer"] = 1
+    locked = _MatchClip("locked", [])
+    locked.data["layer"] = 2
+    clips = {"ok": unlocked, "locked": locked}
+    _grade_env(monkeypatch, clips)
+
+    class FakeApp:
+        class updates:
+            transaction_id = None
+
+        class window:
+            class refreshFrameSignal:
+                @staticmethod
+                def emit():
+                    return None
+
+        class project:
+            @staticmethod
+            def generate_id():
+                return "effx"
+
+            @staticmethod
+            def get(key, default=None):
+                return {
+                    "layers": [
+                        {"number": 1, "lock": False},
+                        {"number": 2, "lock": True},
+                    ]
+                }.get(key, default)
+
+    monkeypatch.setattr(th, "_get_app", lambda: FakeApp())
+    out = json.loads(th.apply_color(clipIds="ok,locked", exposure=0.1))
+    assert out["ok"] is True
+    assert any(c["timeline_clip_id"] == "ok" for c in out["clips"])
+    assert all(c["timeline_clip_id"] != "locked" for c in out["clips"])
+    assert any("locked" in w and "track locked" in w for w in out["warnings"])
 
 
 def test_apply_color_resolves_lut_ids_to_the_bundled_file(monkeypatch):
@@ -1109,3 +1156,18 @@ def test_lut_look_mix_sets_lut_strength_not_the_grade_mix(monkeypatch):
     assert scalar_y(grade, "mix") == pytest.approx(1.0)
     assert scalar_y(grade, "temperature") == pytest.approx(0.08)
     assert grade["lut_path"].endswith("warm_cinema.cube")
+
+
+def test_resolve_relative_deltas_allows_saturation_above_one():
+    """saturation neutral is 1.0; a positive delta must not clamp to [-1, 1]."""
+    base = blank_color_grade("cg")
+    out = resolve_relative_deltas(base, {"saturation_delta": 0.2})
+    assert out["saturation"] == pytest.approx(1.2)
+    merged = merge_color_grade(base, {"saturation_delta": 0.18})
+    assert scalar_y(merged, "saturation") == pytest.approx(1.18)
+
+
+def test_resolve_relative_deltas_clamps_temperature_to_unit_range():
+    base = blank_color_grade("cg")
+    out = resolve_relative_deltas(base, {"temperature_delta": 5.0})
+    assert out["temperature"] == pytest.approx(1.0)

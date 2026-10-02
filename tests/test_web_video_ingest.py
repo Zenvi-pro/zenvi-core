@@ -10,6 +10,8 @@ import pytest
 
 from classes.web_video_ingest import (
     WebVideoIngestError,
+    assert_public_http_url,
+    cache_satisfies_request,
     check_rate_limit_cooldown,
     download_web_video,
     format_selector_for_intent,
@@ -479,3 +481,90 @@ def test_server_instructions_mention_ingest_job_poll():
     assert "timed out" in text or "timeout" in text
     assert "45s" in text or "waits until" in text
     assert "every ~15s" not in text
+
+
+def test_assert_public_http_url_rejects_loopback(monkeypatch):
+    import socket
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))],
+    )
+    with pytest.raises(WebVideoIngestError, match="private or local"):
+        assert_public_http_url("https://evil.example/video.mp4")
+
+
+def test_assert_public_http_url_rejects_private_ip(monkeypatch):
+    import socket
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.8", 0))],
+    )
+    with pytest.raises(WebVideoIngestError, match="private or local"):
+        assert_public_http_url("http://internal.corp/clip.mp4")
+
+
+def test_cache_satisfies_request_rejects_low_height_and_missing_subs():
+    low = {"height": 720, "requested_height": 720, "subtitle_paths": [], "write_subs_requested": False}
+    assert cache_satisfies_request(low, intent="reference", write_subs=False) is False
+    assert cache_satisfies_request(low, intent="timeline", write_subs=False) is False
+    hi = {"height": 1080, "requested_height": 1080, "subtitle_paths": ["/a.vtt"], "write_subs_requested": True}
+    assert cache_satisfies_request(hi, intent="timeline", write_subs=False) is True
+    assert cache_satisfies_request(hi, intent="reference", write_subs=True) is True
+    tried = {"height": 720, "requested_height": 720, "subtitle_paths": [], "write_subs_requested": True}
+    assert cache_satisfies_request(tried, intent="reference", write_subs=True) is True
+
+
+def test_download_skips_cache_when_height_too_low(tmp_path, monkeypatch):
+    import classes.web_video_ingest as wvi
+
+    cache = tmp_path / "dl"
+    cache.mkdir()
+    media = cache / "media.mp4"
+    media.write_bytes(b"x")
+    (cache / "ingest.json").write_text(json.dumps({
+        "video_path": str(media),
+        "title": "Low",
+        "id": "h1",
+        "is_youtube": True,
+        "height": 720,
+        "requested_height": 720,
+        "write_subs_requested": False,
+        "subtitle_paths": [],
+    }))
+    calls = {"n": 0}
+
+    @contextmanager
+    def _ydl(opts):
+        calls["n"] += 1
+
+        class _Y:
+            def extract_info(self, url, download=True):
+                return {
+                    "id": "h1",
+                    "title": "Fresh",
+                    "ext": "mp4",
+                    "duration": 1,
+                    "width": 1920,
+                    "height": 1080,
+                    "webpage_url": url,
+                    "requested_downloads": [{"filepath": str(media)}],
+                }
+
+        yield _Y()
+
+    monkeypatch.setattr(wvi, "assert_public_http_url", lambda url: None)
+    monkeypatch.setattr(wvi, "ffmpeg_available", lambda: True)
+    meta = download_web_video(
+        "https://www.youtube.com/watch?v=h1",
+        cache_dir=str(cache),
+        intent="timeline",
+        ydl_factory=_ydl,
+    )
+    assert calls["n"] == 1
+    assert meta.get("from_cache") is not True
+    assert meta["height"] == 1080
+    assert meta["requested_height"] == 1080

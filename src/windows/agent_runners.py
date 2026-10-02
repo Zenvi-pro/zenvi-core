@@ -1595,9 +1595,11 @@ class BaseAgentRunner(QObject):
         if self._aborted:
             return
         blob = text or "Unknown error."
-        # Also classify stderr tails when the CLI died mid-auth.
-        if is_cli_auth_error(blob) or any(
-            is_cli_auth_error(line) for line in self._stderr_tail
+        # Claude OAuth recovery only — Codex/Cursor "authenticate" errors
+        # must not open the Claude Sign-in card.
+        if self.BACKEND_ID == BACKEND_CLAUDE and (
+            is_cli_auth_error(blob)
+            or any(is_cli_auth_error(line) for line in self._stderr_tail)
         ):
             self._emit_auth_required(blob)
             return

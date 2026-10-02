@@ -1487,7 +1487,14 @@ def redo(steps=1, **_kw) -> str:
 
 def _locked_track_error(app, layer_num):
     """Return an error string if *layer_num* is a locked track, else ''."""
-    layers_out = app.project.get("layers") or []
+    project = getattr(app, "project", None)
+    get = getattr(project, "get", None)
+    if callable(get):
+        layers_out = get("layers") or []
+    elif isinstance(project, dict):
+        layers_out = project.get("layers") or []
+    else:
+        layers_out = []
     track_lbl = format_track_label_for_llm(layer_num, layers_out)
     for L in layers_out:
         try:
@@ -6358,6 +6365,10 @@ def _ingest_web_video_impl(
     # Direct file URL (mp4/mov/…) — keep existing Manim path; do not force yt-dlp.
     lower = raw_url.split("?")[0].lower()
     if any(lower.endswith(ext) for ext in (".mp4", ".mov", ".webm", ".mkv", ".avi")):
+        try:
+            wvi.assert_public_http_url(raw_url)
+        except wvi.WebVideoIngestError as exc:
+            return _ingest_web_video_fail(str(exc), url=raw_url, intent=intent_norm)
         if place_flag or intent_norm == "timeline":
             return import_video_url_and_add_to_timeline(
                 video_url=raw_url, track=track, position_seconds=position_seconds, **_kw
@@ -6442,11 +6453,15 @@ def _ingest_web_video_impl(
                 tag_list.append(tag)
         if intent_norm == "recreate" and "reference_only" not in tag_list:
             tag_list.append("reference_only")
-        f.data["tags"] = ", ".join(tag_list)
-        title = meta.get("title") or ""
-        if title and isinstance(f.data, dict):
-            f.data["name"] = title[:120]
-        f.save()
+
+        def _save_tags():
+            f.data["tags"] = ", ".join(tag_list)
+            title = meta.get("title") or ""
+            if title and isinstance(f.data, dict):
+                f.data["name"] = title[:120]
+            f.save()
+
+        _run_on_main_thread(_save_tags)
     except Exception as tag_err:
         log.debug("ingest_web_video tag failed: %s", tag_err)
 
@@ -9998,6 +10013,28 @@ def _color_target_error(action: str) -> str:
     )
 
 
+def _filter_unlocked_color_clip_ids(app, ids, warnings):
+    """Drop locked-track clips before opening a colour undo group."""
+    from classes.query import Clip
+
+    kept = []
+    for cid in ids:
+        clip_obj = Clip.get(id=cid)
+        if not clip_obj:
+            warnings.append(f"clip {cid} not found")
+            continue
+        data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
+        try:
+            layer = int(data.get("layer") or 0)
+        except (TypeError, ValueError):
+            layer = 0
+        if _locked_track_error(app, layer):
+            warnings.append(f"clip {cid}: track locked — skipped")
+            continue
+        kept.append(cid)
+    return kept
+
+
 def _resolve_lut_file(raw) -> str:
     """Absolute path of an existing .cube for a LUT id, bundled path or file.
 
@@ -10146,13 +10183,23 @@ def apply_color(
         warnings = []
         error_box = [None]
 
+        def _filter_ids():
+            return _filter_unlocked_color_clip_ids(app, ids, warnings)
+
+        if QThread is not None and QThread.currentThread() is not app.thread():
+            ids = _run_on_main_thread(_filter_ids)
+        else:
+            ids = _filter_ids()
+        if not ids:
+            if warnings:
+                return "Error: " + "; ".join(warnings)
+            return _color_target_error("apply_color")
+
         def _do_apply():
             from classes.query import Clip as _Clip
 
-            tid = _new_transaction_id()
-            app.updates.transaction_id = tid
             changed = 0
-            try:
+            with _transaction(app):
                 for cid in ids:
                     clip_obj = _Clip.get(id=cid)
                     if not clip_obj:
@@ -10208,8 +10255,6 @@ def apply_color(
                     })
                 if changed == 0 and not receipts:
                     error_box[0] = "Error: no matching timeline clips."
-            finally:
-                app.updates.transaction_id = None
             try:
                 app.window.refreshFrameSignal.emit()
             except Exception:
@@ -10533,14 +10578,14 @@ def _profile_clip_dense(
     local_frames = _sample_local_frames(duration, fps_float, n)
     scopes = []
     jpegs = []
-    # Map local frame → fake timeline_frame for _render_clip_isolated:
-    # with position=0 solo timeline, timeline_frame == local_frame.
+    # Solo timeline uses position=0; keep original clip_data intact for callers.
+    solo_data = dict(clip_data, position=0.0)
     for i, local_frame in enumerate(local_frames):
         want_jpeg = with_jpegs and (
             i == 0 or i == len(local_frames) // 2 or i == len(local_frames) - 1
         )
         rendered = _render_clip_isolated(
-            clip_data, int(local_frame), fps_float, with_jpeg=want_jpeg
+            solo_data, int(local_frame), fps_float, with_jpeg=want_jpeg
         )
         sc = rendered.get("scopes") or {"present": False}
         if sc.get("present"):
@@ -10797,7 +10842,6 @@ def inspect_color(
                     "color": rgrade,
                     "film_grain": rgrain,
                     "scopes": ref_scopes,
-                    "preview_jpeg": ref_rendered.get("preview_jpeg") or "",
                 }
                 result["reference_preview_jpeg"] = ref_rendered.get("preview_jpeg") or ""
                 result.update(ca.reference_gap_hints(scopes, ref_scopes))
@@ -10944,13 +10988,23 @@ def apply_look(
         warnings = []
         error_box = [None]
 
+        def _filter_ids():
+            return _filter_unlocked_color_clip_ids(app, ids, warnings)
+
+        if QThread is not None and QThread.currentThread() is not app.thread():
+            ids = _run_on_main_thread(_filter_ids)
+        else:
+            ids = _filter_ids()
+        if not ids:
+            if warnings:
+                return "Error: " + "; ".join(warnings)
+            return _color_target_error("apply_look")
+
         def _do_look():
             from classes.query import Clip as _Clip
 
-            tid = _new_transaction_id()
-            app.updates.transaction_id = tid
             changed = 0
-            try:
+            with _transaction(app):
                 for cid in ids:
                     clip_obj = _Clip.get(id=cid)
                     if not clip_obj:
@@ -11075,8 +11129,6 @@ def apply_look(
                     receipts.append(receipt)
                 if changed == 0 and not receipts:
                     error_box[0] = "Error: no matching timeline clips."
-            finally:
-                app.updates.transaction_id = None
             try:
                 app.window.refreshFrameSignal.emit()
             except Exception:
@@ -11118,7 +11170,7 @@ def apply_look(
                 hi_f = 0.0
             result["nuke_risk"] = bool(hi_f >= 0.12)
             # Attach synthetic vibe goal distance when lookId known.
-            look_used = receipts[0].get("look_id") or receipts[0].get("lookId")
+            look_used = receipts[0].get("look")
             goal = ca.target_profile_for_look(str(look_used or ""))
             if goal and after_scopes.get("present"):
                 after_prof = ca.build_look_profile(after_scopes)
@@ -11194,8 +11246,12 @@ def match_color_to_reference(
                 "Error: match_color_to_reference requires referenceClipId, "
                 "referenceFileId, or referenceImagePath."
             )
-        if ref_clip_id and ref_clip_id in ids and len(ids) == 1:
-            return "Error: subject and reference are the same clip."
+        if ref_clip_id and ref_clip_id in ids:
+            if len(ids) == 1:
+                return "Error: subject and reference are the same clip."
+            ids = [cid for cid in ids if cid != ref_clip_id]
+        if not ids:
+            return _color_target_error("match_color_to_reference")
         if ref_file_id and File is None:
             return "Error: media-bin File lookup unavailable in this environment."
 
@@ -11212,6 +11268,20 @@ def match_color_to_reference(
             fps_float = float(fps.get("num", 30)) / float(fps.get("den", 1) or 1)
         except (TypeError, ValueError, ZeroDivisionError):
             fps_float = 30.0
+
+        match_warnings = []
+
+        def _filter_ids():
+            return _filter_unlocked_color_clip_ids(app, ids, match_warnings)
+
+        if QThread is not None and QThread.currentThread() is not app.thread():
+            ids = _run_on_main_thread(_filter_ids)
+        else:
+            ids = _filter_ids()
+        if not ids:
+            if match_warnings:
+                return "Error: " + "; ".join(match_warnings)
+            return _color_target_error("match_color_to_reference")
 
         def _load_clip(cid):
             clip_obj = Clip.get(id=cid)
@@ -11323,7 +11393,6 @@ def match_color_to_reference(
             "reference_profile": ref_profile,
             "before_preview_jpeg": before_pack.get("preview_jpeg") or "",
             "reference_preview_jpeg": ref_pack.get("preview_jpeg") or "",
-            "subject_preview_jpeg": before_pack.get("preview_jpeg") or "",
             "outdoor_bright": outdoor,
             "vision": (
                 "Compare BEFORE vs REFERENCE vs AFTER. Match iterates until "
@@ -11456,9 +11525,7 @@ def match_color_to_reference(
                 pass
 
         # Open one transaction for the whole closed loop.
-        tid = _new_transaction_id()
-        app.updates.transaction_id = tid
-        try:
+        with _transaction(app):
             for it in range(max_iters):
                 color_mode = (
                     "reset" if do_reset and it == 0
@@ -11512,8 +11579,6 @@ def match_color_to_reference(
                 if not current_patch:
                     break
                 before_profile = after_profile  # next assess uses latest as before
-        finally:
-            app.updates.transaction_id = None
 
         if error_box[0]:
             return error_box[0]

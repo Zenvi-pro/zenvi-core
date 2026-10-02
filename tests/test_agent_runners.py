@@ -846,6 +846,19 @@ def test_emit_error_routes_auth_to_auth_required(qapp):
     assert not any(e[0] == "error" for e in events)
 
 
+def test_emit_error_codex_auth_stays_on_error_occurred(qapp):
+    """Codex authenticate failures must not open the Claude Sign-in card."""
+    from windows.agent_runners import CodexRunner
+
+    runner = CodexRunner()
+    events = []
+    runner.auth_required.connect(lambda t: events.append(("auth", t)))
+    runner.error_occurred.connect(lambda t: events.append(("error", t)))
+    runner._emit_error("Failed to authenticate: OAuth session expired")
+    assert events and events[0][0] == "error"
+    assert not any(e[0] == "auth" for e in events)
+
+
 def test_cli_child_env_sets_claude_code_shell_for_bash4(monkeypatch):
     import windows.agent_runners as ar
 
