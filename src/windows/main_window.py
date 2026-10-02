@@ -5847,6 +5847,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.generation_queue.job_finished.connect(self._on_generation_job_finished)
         self._init_generation_actions()
         self._init_ai_tools_menu()
+        # File → Zenvi Cloud: push, open in the web editor, open a cloud project.
+        from windows.cloud_sync_ui import install_cloud_menu
+        self.cloud_sync = install_cloud_menu(self)
         self.refresh_comfy_availability_async()
 
         # Add window as watcher to receive undo/redo status updates
