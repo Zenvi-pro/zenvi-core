@@ -162,9 +162,11 @@ def _fake_session(json_body):
     return s
 
 
-def _client(session, token="jwt-1"):
+def _client(session, token="jwt-1", base_url="https://x", ssl_verify=True):
     c = ZenviBackendClient.__new__(ZenviBackendClient)
-    c.api_url = "http://x/api/v1"
+    c.base_url = base_url
+    c.api_url = f"{base_url}/api/v1"
+    c._ssl_verify = ssl_verify
     if not isinstance(getattr(session, "headers", None), dict):
         session.headers = {}
     c._session = session
@@ -183,6 +185,25 @@ def test_generate_video_sends_the_key_as_a_header_not_in_the_payload():
     assert "secret-456" not in json.dumps(kwargs["json"])
 
 
+@pytest.mark.parametrize("base_url,ssl_verify", [
+    ("https://staging.example", False),   # self-signed: verification off
+    ("http://staging.example", False),
+])
+def test_the_key_is_never_sent_over_unverified_transport(base_url, ssl_verify):
+    c = _client(_fake_session({"video_url": "u"}), base_url=base_url, ssl_verify=ssl_verify)
+    out = c.generate_video("ocean", provider="higgsfield", provider_key=KEY)
+    assert "verified HTTPS" in out["error"]
+    out = c.validate_provider_key("higgsfield", KEY)
+    assert out["ok"] is False and out["unverified"] is True and "verified HTTPS" in out["error"]
+    c._session.post.assert_not_called()
+
+
+def test_the_key_may_go_to_a_loopback_dev_backend():
+    c = _client(_fake_session({"video_url": "u"}), base_url="http://localhost:8500", ssl_verify=False)
+    c.generate_video("ocean", provider="higgsfield", provider_key=KEY)
+    assert c._session.post.call_args.kwargs["headers"] == {"X-Zenvi-Provider-Key": KEY}
+
+
 def test_managed_generate_video_sends_no_provider_key():
     c = _client(_fake_session({"video_url": "u"}))
     c.generate_video("ocean", duration_seconds=5, mode="t2v")
@@ -195,7 +216,7 @@ def test_validate_provider_key_posts_to_the_validate_route():
     c = _client(_fake_session({"ok": True, "error": None}))
     assert c.validate_provider_key("higgsfield", KEY) == {"ok": True, "error": None}
     args, kwargs = c._session.post.call_args
-    assert args[0] == "http://x/api/v1/generation/providers/higgsfield/validate"
+    assert args[0] == "https://x/api/v1/generation/providers/higgsfield/validate"
     assert kwargs["headers"] == {"X-Zenvi-Provider-Key": KEY}
     assert c._session.headers["Authorization"] == "Bearer jwt-1"
 

@@ -38,6 +38,7 @@ load_zenvi_dotenv()
 
 _DEFAULT_BACKEND_URL = "https://api.zenvi.pro"
 PROVIDER_KEY_HEADER = "X-Zenvi-Provider-Key"
+_UNVERIFIED_KEY_TRANSPORT = "Your own provider key is only sent to a verified HTTPS Zenvi backend."
 
 
 def _refresh_credits_after_backend_billing() -> None:
@@ -1104,6 +1105,14 @@ class ZenviBackendClient:
     # ------------------------------------------------------------------
     # Video Generation
     # ------------------------------------------------------------------
+    def _provider_key_transport_ok(self) -> bool:
+        """Verified HTTPS, or a loopback dev backend where the key never leaves the machine."""
+        from urllib.parse import urlparse
+
+        if self._ssl_verify and self.base_url.startswith("https://"):
+            return True
+        return urlparse(self.base_url).hostname in ("localhost", "127.0.0.1", "::1")
+
     def generate_video(self, prompt: str, duration_seconds: int = 5, **kwargs) -> Dict[str, Any]:
         """Generate a video from a text prompt (Kling O1 Pro via Runware).
 
@@ -1113,6 +1122,8 @@ class ZenviBackendClient:
         """
         try:
             provider_key = kwargs.pop("provider_key", None)
+            if provider_key and not self._provider_key_transport_ok():
+                return {"error": _UNVERIFIED_KEY_TRANSPORT}
             headers = {PROVIDER_KEY_HEADER: provider_key} if provider_key else None
             payload = {"prompt": prompt, "duration_seconds": duration_seconds}
             payload.update(kwargs)
@@ -1144,6 +1155,8 @@ class ZenviBackendClient:
         import requests
         from classes.provider_keys import redact
 
+        if not self._provider_key_transport_ok():
+            return {"ok": False, "unverified": True, "error": _UNVERIFIED_KEY_TRANSPORT}
         try:
             r = self.session.post(
                 f"{self.api_url}/generation/providers/{provider}/validate",
