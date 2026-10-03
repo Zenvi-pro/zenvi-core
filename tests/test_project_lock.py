@@ -233,5 +233,8 @@ def test_open_anyway_only_covers_the_project_it_was_given_for(tmp_path):
         assert project_lock.may_save(a) == (True, None)
         assert project_lock.claim(b)[0]  # the user moved on to another project
         assert project_lock.may_save(a)[0] is False
+        project_lock.override(a)
+        project_lock.release()  # File > New Project
+        assert project_lock.may_save(a)[0] is False
     finally:
         other.unlock()

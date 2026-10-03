@@ -96,6 +96,7 @@ def may_save(path):
 def release():
     with _mutex:
         _release_locked()
+        _overridden.clear()
 
 
 def _release_locked():
