@@ -119,8 +119,11 @@ def _deviates_from_identity(obj: Any, identity: float) -> bool:
 
 
 
-def _time_curve_is_identity(obj: Any) -> bool:
-    """True when clip.time is a no-op (forward 1x), including post-double-reverse."""
+def _time_curve_is_identity(obj: Any, tolerance: float = 1.0) -> bool:
+    """True when clip.time is a no-op (forward 1x), including post-double-reverse.
+
+    *tolerance* is how many frames a point may sit off the 1:1 line.
+    """
     if obj is None:
         return True
     if isinstance(obj, str):
@@ -146,13 +149,13 @@ def _time_curve_is_identity(obj: Any) -> bool:
         return False
     if len(coords) == 1:
         x, y = coords[0]
-        return abs(y - 1.0) <= 1e-3 or abs(y - x) <= 1.0 + 1e-6
+        return abs(y - 1.0) <= 1e-3 or abs(y - x) <= tolerance + 1e-6
     coords.sort(key=lambda pair: pair[0])
     for index in range(1, len(coords)):
         if coords[index][1] + 1e-6 < coords[index - 1][1]:
             return False  # reverse / rewind
     for x, y in coords:
-        if abs(y - x) > 1.0 + 1e-6:
+        if abs(y - x) > tolerance + 1e-6:
             return False
     return True
 
@@ -201,8 +204,12 @@ def _is_identity_color_grade(effect: dict) -> bool:
     return True
 
 
+_LINEAR = 1  # openshot.LINEAR (Point.h InterpolationType)
+
+
 def _curve_is_identity(curve: Any) -> bool:
-    """True for a missing, disabled, or passthrough (0,0)-(1,1) Color Grade curve."""
+    """True for a missing, disabled, or passthrough Color Grade curve: a straight
+    (LINEAR) line from (0,0) to (1,1)."""
     if not curve:
         return True
     if not isinstance(curve, dict):
@@ -211,15 +218,22 @@ def _curve_is_identity(curve: Any) -> bool:
         return True
     try:
         if "nodes" in curve:
-            coords = [(_keyframe_y(n.get("x"), None), _keyframe_y(n.get("y"), None))
-                      for n in curve.get("nodes") or []]
+            points = curve.get("nodes") or []
+            coords = [(_keyframe_y(n.get("x"), None), _keyframe_y(n.get("y"), None)) for n in points]
         else:
+            points = curve.get("Points") or curve.get("points") or []
             coords = [(float((p.get("co") or {}).get("X")), float((p.get("co") or {}).get("Y")))
-                      for p in curve.get("Points") or curve.get("points") or []]
+                      for p in points]
+        # Bezier handles bend the segment and CONSTANT steps it. A point that
+        # does not say is not known to be straight (libopenshot's Point
+        # defaults to BEZIER).
+        straight = all(p.get("interpolation") == _LINEAR for p in points)
     except (AttributeError, TypeError, ValueError):
         return False
     if not coords:
         return True
+    if not straight:
+        return False
     # Anything but the two passthrough end points reshapes the tone curve.
     if len(coords) != 2 or any(x is None or y is None for x, y in coords):
         return False

@@ -47,7 +47,10 @@ case "$(uname -s)" in
     # No libstdc++ / libgcc / winpthread DLLs next to it.
     flags+=(-DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++") ;;
   Darwin)
-    flags+=(-DCMAKE_OSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}") ;;
+    flags+=(-DCMAKE_OSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}")
+    # The app's architecture, not the build host's (the x86_64 app is built
+    # on an Apple Silicon runner).
+    [[ -z "${WHISPER_ARCH:-}" ]] || flags+=(-DCMAKE_OSX_ARCHITECTURES="$WHISPER_ARCH") ;;
 esac
 if command -v ninja >/dev/null; then
   generator=(-G Ninja)
@@ -59,6 +62,10 @@ fi
 cmake -S "$work" -B "$work/build" "${generator[@]}" "${flags[@]}"
 cmake --build "$work/build" --target whisper-cli -j
 cp "$work/build/bin/$exe" "$dest/$exe"
+if [[ "$(uname -s)" == Darwin && -n "${WHISPER_ARCH:-}" ]]; then
+  lipo -archs "$dest/$exe" | grep -qw "$WHISPER_ARCH" \
+    || { echo "ERROR: $dest/$exe is $(lipo -archs "$dest/$exe"), not $WHISPER_ARCH" >&2; exit 1; }
+fi
 
 sha256() {  # sha256sum on Linux / MSYS2, shasum on macOS
   if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1

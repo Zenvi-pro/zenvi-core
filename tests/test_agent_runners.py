@@ -2277,12 +2277,13 @@ def test_hermes_tool_names(title, name):
     assert "motion graphic" not in humanize_tool_name(name).lower()
 
 
-def test_only_hermes_keeps_stdin_open(qapp):
-    """Every other CLI gets no stdin (``opencode run`` blocks on one)."""
+def test_only_stdin_protocols_keep_stdin_open(qapp):
+    """Hermes (ACP) and Codex (the prompt) write to stdin; every other CLI gets
+    none (``opencode run`` blocks on one)."""
     import subprocess
-    from windows.agent_runners import CLI_RUNNERS, HermesRunner
+    from windows.agent_runners import CLI_RUNNERS, CodexRunner, HermesRunner
     for backend, runner in CLI_RUNNERS.items():
-        expected = subprocess.PIPE if runner is HermesRunner else subprocess.DEVNULL
+        expected = subprocess.PIPE if runner in (HermesRunner, CodexRunner) else subprocess.DEVNULL
         assert runner.STDIN == expected, backend
 
 
@@ -2326,14 +2327,15 @@ def test_codex_sends_the_import_guidance_once_per_session(qapp):
 
     runner = CodexRunner()
     guidance = _agent_import_prompt()
-    first = runner._build_argv("cut the intro")
-    assert first[-1].startswith(guidance) and first[-1].endswith("cut the intro")
+    runner._build_argv("cut the intro")
+    first = runner._stdin_prompt
+    assert first.startswith(guidance) and first.endswith("cut the intro")
 
     runner._cli_started = True
     runner._cli_id_from_cli = True
     runner._cli_session_id = "thread-1"
     resumed = runner._build_argv("now add music")
-    assert "resume" in resumed and resumed[-1] == "now add music"
+    assert "resume" in resumed and runner._stdin_prompt == "now add music"
 
 
 # --- review follow-ups (PR #216) -------------------------------------------
@@ -2400,3 +2402,39 @@ def test_connect_token_instructions_match_the_users_shell(qapp, monkeypatch, pla
     assert expected in text
     if platform == "win32":
         assert "export" not in text and "set ZENVI_MCP_TOKEN=tok123" in text
+
+
+def test_codex_prompt_goes_through_stdin_not_argv(qapp):
+    """PR #275 review: argv is readable by every local process; the prompt is
+    written to the CLI's stdin instead, on the first turn and on a resume."""
+    import io
+    import subprocess
+
+    from windows.agent_runners import CodexRunner
+
+    class _Server:
+        token = "tok"
+
+        def url(self):
+            return "http://127.0.0.1:7434/mcp"
+
+    class _Stdin(io.StringIO):
+        def close(self):
+            self.sent = self.getvalue()
+            super().close()
+
+    assert CodexRunner.STDIN == subprocess.PIPE
+    runner = CodexRunner()
+    runner._server = _Server()
+    for resumed in (False, True):
+        if resumed:
+            runner._cli_started = runner._cli_id_from_cli = True
+            runner._cli_session_id = "thread-1"
+        argv = runner._build_argv("my private prompt")
+        assert argv[-1] == "-" and not any("private" in a for a in argv)
+        assert ("resume" in argv) is resumed
+        runner._proc = type("P", (), {"stdin": _Stdin()})()
+        runner._after_launch("my private prompt")
+        assert runner._proc.stdin.closed and runner._proc.stdin.sent.endswith("my private prompt")
+        # Import steering only on the first turn; the thread keeps it.
+        assert (runner._proc.stdin.sent == "my private prompt") is resumed

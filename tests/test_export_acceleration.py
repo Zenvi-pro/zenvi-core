@@ -778,3 +778,31 @@ def test_decide_half_reversed_format_mismatch_uses_normalize_partial(tmp_path):
     assert decision.mode == "partial", (decision.mode, decision.detail, decision.reason_counts)
     assert any(s.kind == "normalize" for s in decision.spans)
     assert any(s.kind == "encode" and "speed-change" in s.reasons for s in decision.spans)
+
+
+def test_parked_timelines_are_closed_once_their_compositor_has_exited():
+    """PR #275 review: a timeline parked after a stuck cancel was kept (with
+    its caches) until the process exited."""
+    import threading
+    import types
+
+    from classes.export_acceleration import export_pipeline
+
+    release = threading.Event()
+    busy = threading.Thread(target=release.wait, daemon=True)
+    busy.start()
+    done = threading.Thread(target=lambda: None)
+    done.start()
+    done.join()
+    closed = []
+    still_busy = types.SimpleNamespace(Close=lambda: closed.append("busy"))
+    finished = types.SimpleNamespace(Close=lambda: closed.append("finished"))
+    export_pipeline._BUSY_TIMELINES[:] = [(busy, still_busy, []), (done, finished, [])]
+    try:
+        export_pipeline._reap_busy_timelines()
+        assert closed == ["finished"]
+        assert [entry[1] for entry in export_pipeline._BUSY_TIMELINES] == [still_busy]
+    finally:
+        release.set()
+        busy.join()
+        export_pipeline._BUSY_TIMELINES[:] = []

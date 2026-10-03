@@ -473,6 +473,8 @@ jobs:
           pip3 install pyobjc-framework-Cocoa 2>/dev/null || true
 
       - name: Bundle local transcription (whisper.cpp + base model)
+        env:
+          WHISPER_ARCH: ${{ matrix.arch }}
         run: bash installer/build-whisper-cli.sh
 
       - name: Freeze with cx_Freeze

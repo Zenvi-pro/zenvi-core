@@ -1145,6 +1145,14 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         except Exception as ex:
             log.error("Couldn't open project %s.", file_path, exc_info=1)
+            still_open = app.project.current_filepath
+            if still_open != file_path:
+                # The lock went to the project that failed to load; the one
+                # still open must not be left for another session to take.
+                if still_open:
+                    project_lock.claim(still_open)
+                else:
+                    project_lock.release()
             if not interactive:
                 app.restoreOverrideCursor()
                 raise

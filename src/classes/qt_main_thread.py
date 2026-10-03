@@ -66,6 +66,28 @@ def _get_dispatcher():
         return d
 
 
+# run_off_gui keeps the editor painting by pumping events, and a queued GUI
+# call is an event: an agent tool's edit would run in the middle of the GUI
+# flow that is waiting (and that may hold a snapshot of the project). Calls
+# from other threads are held until no run_off_gui is waiting; its own worker's
+# calls run at once (it is what the GUI thread waits for).
+_off_gui_waits = []     # one entry per run_off_gui in progress (GUI thread only)
+_off_gui_workers = set()
+_held_calls = []        # GUI thread only
+
+
+def _gated(call):
+    sender = threading.get_ident()
+
+    def _run():
+        if _off_gui_waits and sender not in _off_gui_workers:
+            _held_calls.append(_run)
+        else:
+            call()
+
+    return _run
+
+
 def is_gui_thread():
     """True when there is no Qt app, or we are already on its thread."""
     if QThread is None or QCoreApplication is None:
@@ -99,7 +121,7 @@ def invoke_on_gui(func, *args, context=None, defer=False, **kwargs):
     if QCoreApplication is None or QCoreApplication.instance() is None:
         return _call()
 
-    _get_dispatcher()._dispatch.emit(_call)
+    _get_dispatcher()._dispatch.emit(_gated(_call))
     return None
 
 
@@ -127,7 +149,7 @@ def call_on_gui(func, *args, timeout=30, context=None, **kwargs):
         finally:
             done.set()
 
-    _get_dispatcher()._dispatch.emit(_call)
+    _get_dispatcher()._dispatch.emit(_gated(_call))
     if not done.wait(timeout=timeout):
         raise TimeoutError("GUI-thread call did not finish within %ss" % timeout)
     if error_box[0] is not None:
@@ -150,7 +172,9 @@ def run_off_gui(func, *args, **kwargs):
 
     Called on the GUI thread, this keeps the editor painting (without taking
     clicks or keys) until *func* finishes, for file I/O a synchronous GUI flow
-    has to wait for. Anywhere else *func* simply runs inline.
+    has to wait for. GUI calls other threads queue meanwhile (agent tools) run
+    once the GUI flow is back in the event loop. Anywhere else *func* simply
+    runs inline.
     """
     try:
         on_gui = QCoreApplication is not None and is_gui_thread()
@@ -161,14 +185,28 @@ def run_off_gui(func, *args, **kwargs):
     box = {}
 
     def _run():
+        ident = threading.get_ident()
+        _off_gui_workers.add(ident)
         try:
             box["result"] = func(*args, **kwargs)
         except BaseException as exc:
             box["error"] = exc
+        finally:
+            _off_gui_workers.discard(ident)
 
-    running = _start_worker(_run)
-    while running():
-        _pump_events()
+    _off_gui_waits.append(func)
+    try:
+        running = _start_worker(_run)
+        while running():
+            _pump_events()
+    finally:
+        _off_gui_waits.pop()
+        if not _off_gui_waits and _held_calls:
+            held, _held_calls[:] = list(_held_calls), []
+            for call in held:
+                # From the event loop (after the caller's GUI flow), and gated
+                # again: a later run_off_gui pumps timers too.
+                QTimer.singleShot(0, call)
     if "error" in box:
         raise box["error"]
     return box.get("result")

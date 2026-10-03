@@ -380,7 +380,12 @@ def import_xml(file_path=None, prompt=True):
                 file = File.get(path=clip_path)
 
                 # Open the media in libopenshot (off the GUI thread, once per import)
-                clip_json, reader_json = probe_clip(clip_path, probes, openshot)
+                try:
+                    clip_json, reader_json = probe_clip(clip_path, probes, openshot)
+                except Exception:
+                    log.warning("Could not open %s" % clip_path, exc_info=1)
+                    summary["missing"].append(clip_path)
+                    continue
 
                 if not file:
                     # Get the JSON for the clip's internal reader

@@ -419,3 +419,22 @@ def test_search_media_local_only_returns_the_open_projects_media(tmp_path):
         receipt = parse_receipt(search_media_local(query="harbor", top_k=5))
     assert [h["fileId"] for h in receipt["data"]["hits"]] == ["f1"]
     reset_visual_index_for_tests(None)
+
+
+def test_visual_index_follows_a_file_id_to_its_new_path(tmp_path):
+    """PR #275 review: a copied project keeps its file ids; a hit for one must
+    not come back with the other project's path."""
+    import os
+
+    idx = VisualIndex(root=str(tmp_path / "idx"))
+    first = tmp_path / "a" / "shot.bin"
+    second = tmp_path / "b" / "shot.bin"
+    for path in (first, second):
+        path.parent.mkdir()
+        path.write_bytes(b"harbor at dusk")
+    st = first.stat()
+    os.utime(second, ns=(st.st_atime_ns, st.st_mtime_ns))
+    idx.upsert_file("f1", str(first))
+    entry = idx.upsert_file("f1", str(second))
+    assert entry.path == os.path.abspath(str(second))
+    assert [h["path"] for h in idx.search("harbor", file_ids={"f1"})] == [os.path.abspath(str(second))]

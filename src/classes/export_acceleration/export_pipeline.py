@@ -37,6 +37,19 @@ class _CompositedFrame:
     frame_obj: Any
 
 
+def _reap_busy_timelines() -> None:
+    """Close timelines parked by a stuck cancel whose compositor has since exited."""
+    for entry in list(_BUSY_TIMELINES):
+        thread, tl, _keep_alive = entry
+        if thread.is_alive():
+            continue
+        _BUSY_TIMELINES.remove(entry)
+        try:
+            tl.Close()
+        except Exception:
+            log.debug("Failed closing parked export timeline", exc_info=True)
+
+
 def _clone_timeline(project_data: dict, video_settings: dict, audio_settings: dict, cache_bytes: int):
     """Build an export Timeline owned entirely by the calling thread."""
     import openshot
@@ -123,6 +136,7 @@ def run_pipelined_export(
     if end_frame < start_frame:
         raise ValueError("end_frame must be >= start_frame")
 
+    _reap_busy_timelines()
     total_frames = end_frame - start_frame + 1
     pending: queue.Queue = queue.Queue(maxsize=profile.max_pending_frames)
     error_box: list[BaseException] = []
@@ -277,7 +291,7 @@ def run_pipelined_export(
             continue
         if composite_threads[i].is_alive():
             # Still inside GetFrame: closing would free native state under it.
-            # ponytail: parked for the process lifetime; one leak per stuck cancel.
+            # Parked until a later export finds the thread gone (_reap_busy_timelines).
             log.warning("Export compositor %s still busy after cancel; leaving its timeline open", i)
             _BUSY_TIMELINES.append((composite_threads[i], tl, keep_alive))
             continue

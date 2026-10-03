@@ -1617,12 +1617,23 @@ class CodexRunner(BaseAgentRunner):
         "local_shell_call", "web_search",
     }
     _MSG_ITEM_TYPES = {"assistant_message", "agent_message", "message"}
+    # The prompt goes in through stdin ("-"), not argv: any local process can
+    # read another's command line.
+    STDIN = subprocess.PIPE
 
     def _build_env(self):
         extra = {}
         if self._server is not None and self._server.token:
             extra["ZENVI_MCP_TOKEN"] = self._server.token
         return _cli_child_env(extra)
+
+    def _after_launch(self, text: str):
+        try:
+            self._proc.stdin.write(self._stdin_prompt)
+            self._proc.stdin.close()
+        except Exception:
+            # Codex already exited; the base read loop reports its output.
+            log.debug("codex stdin write failed", exc_info=True)
 
     def _build_argv(self, text: str):
         url = self._server.url() if self._server else ""
@@ -1640,11 +1651,12 @@ class CodexRunner(BaseAgentRunner):
         cli = self._cli_path or self.CLI_NAME
         if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
             # The thread already holds the steering from its first turn.
-            return [cli, "exec", "resume", self._cli_session_id, *common, text or ""]
+            self._stdin_prompt = text or ""
+            return [cli, "exec", "resume", self._cli_session_id, *common, "-"]
         # Codex has no --append-system-prompt; prefix import steering so it
         # does not Glob /mnt/c the way Claude did before the Claude prompt fix.
-        steered = _agent_import_prompt() + "\n\n" + (text or "")
-        return [cli, "exec", *common, steered]
+        self._stdin_prompt = _agent_import_prompt() + "\n\n" + (text or "")
+        return [cli, "exec", *common, "-"]
 
     def _handle_event(self, ev: dict):
         etype = ev.get("type")

@@ -404,6 +404,15 @@ def test_a_neutral_color_grade_does_not_block_the_copy(untouched):
     # The legacy Points form with two non-identity points.
     _grade(curve_red={"Points": [{"co": {"X": 0.0, "Y": 0.0}}, {"co": {"X": 1.0, "Y": 0.6}}]}),
     _grade(curve_blue=_nodes((0, 0), (0.5, 0.7), (1, 1))),
+    # The passthrough end points, but Bezier / constant segments between them
+    # (PR #275 review): handles bend the line, a constant node steps it.
+    _grade(curve_all={"enabled": _kf(1.0), "nodes": [
+        {"id": 0, "x": _kf(0), "y": _kf(0), "interpolation": 0},
+        {"id": 1, "x": _kf(1), "y": _kf(1), "interpolation": 0}]}),
+    _grade(curve_all={"enabled": _kf(1.0), "nodes": [
+        {"id": 0, "x": _kf(0), "y": _kf(0), "interpolation": 1},
+        {"id": 1, "x": _kf(1), "y": _kf(1), "interpolation": 2}]}),
+    _grade(curve_red={"Points": [{"co": {"X": 0.0, "Y": 0.0}}, {"co": {"X": 1.0, "Y": 1.0}}]}),
     _grade(wheels={"shadows": {"amount": 0.4, "luma": 0.0}}),
     _grade(wheels={"highlights": {"amount": 0.0, "luma": 0.0, "luma_keyframes": _kf(0.3)}}),
 ])

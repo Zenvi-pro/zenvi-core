@@ -179,7 +179,7 @@ def _cache_model_id(engine: str, model_id: str) -> str:
         return APPLE_MODEL_ID
     from classes.speech import whisper_cpp
     if whisper_cpp.available():
-        return whisper_cpp.MODEL_ID  # one bundled model, whatever was asked for
+        return whisper_cpp.model_id()  # the model it runs, whatever was asked for
     return (model_id or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
 
 

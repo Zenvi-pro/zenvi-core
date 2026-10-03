@@ -288,7 +288,7 @@ def test_agent_runners_prompt_source_steers_windows_import():
     assert "individual file paths" in text
     assert "_agent_import_prompt" in text
     # Codex must receive the same steering (no --append-system-prompt).
-    assert "steered = _agent_import_prompt()" in text
+    assert "self._stdin_prompt = _agent_import_prompt()" in text
 
 
 def test_import_files_downloads_alias_and_videos_only(monkeypatch, tmp_path):
