@@ -42,6 +42,7 @@ from classes.image_types import get_media_type
 from classes.path_utils import absolute_path_from_export, absolute_media_path
 from classes.query import Clip, Track, File
 from windows.views.find_file import find_missing_file
+from classes.importers.media_probe import probe_clip
 
 
 def _pathurl_to_path(path_url, base_folder):
@@ -282,9 +283,11 @@ def import_xml(file_path=None, prompt=True):
         # User canceled dialog
         return None
     summary = {"track_numbers": [], "clip_ids": [], "missing": []}
+    probes = {}
 
-    # Parse XML file
-    xmldoc = minidom.parse(file_path)
+    # Parse XML file (off the GUI thread: a large export takes a while)
+    from classes.qt_main_thread import run_off_gui
+    xmldoc = run_off_gui(minidom.parse, file_path)
     xml_folder = os.path.dirname(os.path.abspath(file_path))
 
     # Build lookup for shared <file> nodes
@@ -377,14 +380,15 @@ def import_xml(file_path=None, prompt=True):
                 # Check for this path in our existing project data
                 file = File.get(path=clip_path)
 
-                # Load filepath in libopenshot clip object (which will try multiple readers to open it)
-                clip_obj = openshot.Clip(clip_path)
+                # Open the media in libopenshot (off the GUI thread, once per import)
+                clip_json, reader_json = probe_clip(clip_path, probes, openshot)
 
                 if not file:
                     # Get the JSON for the clip's internal reader
                     try:
-                        reader = clip_obj.Reader()
-                        file_data = json.loads(reader.Json())
+                        if reader_json is None:
+                            raise ValueError("no reader for %s" % clip_path)
+                        file_data = reader_json
 
                         # Determine media type
                         file_data["media_type"] = get_media_type(file_data)
@@ -413,7 +417,7 @@ def import_xml(file_path=None, prompt=True):
                 clip_end_value = _float_value(clip_element.getElementsByTagName("out"), 0.0) / fps_float
                 clip_position_value = _float_value(clip_element.getElementsByTagName("start"), 0.0) / fps_float
 
-                clip.data = json.loads(clip_obj.Json())
+                clip.data = clip_json
                 clip.data["file_id"] = file.id
                 clip_name_nodes = clip_element.getElementsByTagName("name")
                 clip_title = _node_text_content(clip_name_nodes[0]) if clip_name_nodes else None
