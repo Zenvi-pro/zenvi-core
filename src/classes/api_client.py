@@ -1268,6 +1268,48 @@ class ZenviBackendClient:
             meta["error"] = str(exc)
             return meta
 
+    def restore_index(
+        self,
+        ai_metadata: Dict[str, Any],
+        *,
+        file_id: str,
+        project_id: str,
+        index_name: str,
+        filename: str = "",
+        media_type: str = "video",
+        duration_sec: float = 0.0,
+        session=None,
+    ) -> Dict[str, Any]:
+        """Search-index an already-finished analysis under a new file/project (no re-analysis).
+
+        Returns ``{"success": True}`` or ``{"success": False, "error": ..., "unsupported": bool}``.
+        ``unsupported`` is set when the backend has no such route (an older server): the caller
+        then indexes normally instead of treating it as a failure.
+        """
+        payload = {
+            "file_id": str(file_id or ""),
+            "project_id": str(project_id or ""),
+            "index_name": str(index_name or ""),
+            "filename": str(filename or ""),
+            "media_type": str(media_type or "video"),
+            "duration_sec": float(duration_sec or 0.0),
+            "ai_metadata": ai_metadata,
+        }
+        try:
+            s = session or self.session
+            r = s.post(f"{self.api_url}/indexing/restore", json=payload, timeout=180)
+            if r.status_code in (404, 405):
+                return {"success": False, "unsupported": True, "error": "backend has no /indexing/restore"}
+            r.raise_for_status()
+            data = r.json() if isinstance(r.json(), dict) else {}
+            if data.get("success"):
+                return {"success": True, "video_id": data.get("video_id") or file_id,
+                        "index_id": data.get("index_id") or index_name}
+            return {"success": False, "unsupported": False, "error": data.get("error") or "restore failed"}
+        except Exception as exc:
+            log.warning("restore_index failed: %s", exc)
+            return {"success": False, "unsupported": False, "error": str(exc)}
+
     def is_indexing_configured(self) -> bool:
         """Check whether the backend has video indexing configured."""
         try:

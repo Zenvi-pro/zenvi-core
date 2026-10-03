@@ -16,6 +16,9 @@ SUCCESS = "success"
 FAILED = "failed"
 SKIPPED = "skipped"
 
+# ``skip_code`` values the indexing worker records next to ``skip_reason``.
+SKIP_SIGNIN = "signin"
+
 PHASE_LABELS = {
     "uploading": "Uploading for search…",
     "indexing": "Indexing for search…",
@@ -89,6 +92,12 @@ def derive_indexing_status(
         )
 
     skip_reason = str(meta.get("skip_reason") or "").strip()
+    if str(meta.get("skip_code") or "") == SKIP_SIGNIN:
+        # Not a failure: cloud indexing waits for a signed-in user and resumes by itself.
+        return IndexingStatus(
+            SKIPPED, "Sign in to index",
+            skip_reason or "Sign in to Zenvi to index this file for search",
+        )
     if skip_reason or block_status == "skipped":
         tooltip = skip_reason or str(block.get("error") or "").strip() or "Indexing skipped"
         return IndexingStatus(SKIPPED, "Indexing skipped", tooltip)

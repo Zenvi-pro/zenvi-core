@@ -83,6 +83,22 @@ class AuthManager:
         self._session: dict | None = None
         self._cancelled = False
         self._poll_thread: threading.Thread | None = None
+        self._session_listeners: list = []
+
+    def add_session_listener(self, callback) -> None:
+        """Call *callback()* (on whichever thread saved it) after a session is saved.
+
+        Used to resume work that waited for a signed-in user. Keep it fast and thread-safe,
+        for example emitting a Qt signal.
+        """
+        if callback not in self._session_listeners:
+            self._session_listeners.append(callback)
+
+    def remove_session_listener(self, callback) -> None:
+        try:
+            self._session_listeners.remove(callback)
+        except ValueError:
+            pass
 
     # ── HTTP helpers ───────────────────────────────────────────────────────────
 
@@ -120,6 +136,12 @@ class AuthManager:
             log.info("Zenvi session saved for user: %s", session.get("user_email", "?"))
         except Exception as exc:
             log.error("Could not save Zenvi auth session: %s", exc)
+            return
+        for callback in list(self._session_listeners):
+            try:
+                callback()
+            except Exception as exc:  # a dead listener must never break sign-in
+                log.debug("Session listener failed: %s", exc)
 
     def clear_session(self) -> None:
         try:

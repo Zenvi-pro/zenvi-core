@@ -177,3 +177,25 @@ def test_persisted_running_block_with_live_progress_is_still_running():
         {"index": {"status": "indexing"}}, progress={"phase": "indexing", "percent": -1}
     )
     assert st.state == RUNNING
+
+
+def test_signed_out_skip_reads_as_a_sign_in_prompt_not_a_failure():
+    st = derive_indexing_status({"skip_code": "signin", "skip_reason": "Sign in to index"})
+    assert st.state == SKIPPED
+    assert st.label == "Sign in to index"
+
+
+def test_signed_out_skip_without_a_reason_still_explains_itself():
+    st = derive_indexing_status({"skip_code": "signin"})
+    assert st.state == SKIPPED and "Sign in" in st.tooltip
+
+
+def test_a_running_index_beats_a_stale_sign_in_skip():
+    st = derive_indexing_status({"skip_code": "signin"}, is_active=True)
+    assert st.state == RUNNING
+
+
+def test_other_skips_keep_their_own_label():
+    st = derive_indexing_status({"skip_reason": "Clip exceeds the 30-minute limit."})
+    assert st.state == SKIPPED and st.label == "Indexing skipped"
+
