@@ -477,9 +477,25 @@ jobs:
           WHISPER_ARCH: ${{ matrix.arch }}
         run: bash installer/build-whisper-cli.sh
 
+      # The app only carries libopenshot's libav* dylibs; indexing, audio extraction and
+      # thumbnails run the ffmpeg CLI, so ship a self-contained one (freeze.py copies it).
+      - name: Build the ffmpeg CLI for the app (static, libx264)
+        env:
+          FFMPEG_ARCH: ${{ matrix.arch }}
+        run: bash installer/build-ffmpeg-cli.sh
+
       - name: Freeze with cx_Freeze
         run: |
           python3 freeze.py build --git-branch=production
+
+      - name: Verify the ffmpeg CLI and numpy are in the frozen app
+        run: |
+          for f in ffmpeg ffprobe; do
+            found="$(find build -path '*/lib/*' -maxdepth 4 -name "$f" -type f -not -path 'build/ffmpeg-*' | head -1)"
+            [ -n "$found" ] || { echo "::error::$f is missing from the frozen app"; exit 1; }
+          done
+          [ -d "$(find build -maxdepth 3 -type d -path '*/lib/numpy' | head -1)" ] \
+            || { echo "::error::numpy is missing from the frozen app"; exit 1; }
 
       - name: Verify local transcription is in the frozen app
         run: |
