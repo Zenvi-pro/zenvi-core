@@ -76,13 +76,18 @@ _off_gui_workers = set()
 _held_calls = []        # GUI thread only
 
 
-def _gated(call):
+def _gated(call, held=None):
+    """*held* (an Event) is set while the call is parked, for a caller that waits."""
     sender = threading.get_ident()
 
     def _run():
         if _off_gui_waits and sender not in _off_gui_workers:
+            if held is not None:
+                held.set()
             _held_calls.append(_run)
         else:
+            if held is not None:
+                held.clear()
             call()
 
     return _run
@@ -149,9 +154,13 @@ def call_on_gui(func, *args, timeout=30, context=None, **kwargs):
         finally:
             done.set()
 
-    _get_dispatcher()._dispatch.emit(_gated(_call))
-    if not done.wait(timeout=timeout):
-        raise TimeoutError("GUI-thread call did not finish within %ss" % timeout)
+    held = threading.Event()
+    _get_dispatcher()._dispatch.emit(_gated(_call, held))
+    while not done.wait(timeout=timeout):
+        # Parked behind run_off_gui: it will run, so reporting a timeout now
+        # would have the caller retry something that still happens.
+        if not held.is_set():
+            raise TimeoutError("GUI-thread call did not finish within %ss" % timeout)
     if error_box[0] is not None:
         raise error_box[0]
     return result_box[0]

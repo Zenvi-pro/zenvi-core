@@ -2409,6 +2409,7 @@ def test_codex_prompt_goes_through_stdin_not_argv(qapp):
     written to the CLI's stdin instead, on the first turn and on a resume."""
     import io
     import subprocess
+    import time
 
     from windows.agent_runners import CodexRunner
 
@@ -2435,6 +2436,9 @@ def test_codex_prompt_goes_through_stdin_not_argv(qapp):
         assert ("resume" in argv) is resumed
         runner._proc = type("P", (), {"stdin": _Stdin()})()
         runner._after_launch("my private prompt")
+        deadline = time.time() + 5  # written on a helper thread
+        while not runner._proc.stdin.closed and time.time() < deadline:
+            time.sleep(0.01)
         assert runner._proc.stdin.closed and runner._proc.stdin.sent.endswith("my private prompt")
         # Import steering only on the first turn; the thread keeps it.
         assert (runner._proc.stdin.sent == "my private prompt") is resumed

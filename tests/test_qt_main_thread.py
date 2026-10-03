@@ -102,3 +102,28 @@ def test_run_off_gui_holds_other_threads_gui_calls_until_it_is_done(qapp):
         qapp.processEvents()
         time.sleep(0.01)
     assert events == ["worker done", "returned", "agent tool"]
+
+
+def test_a_held_call_on_gui_waits_instead_of_timing_out(qapp):
+    """A blocking GUI call held behind run_off_gui must not report a timeout
+    and then run anyway: it waits, runs once, and returns its result."""
+    results, ran = [], []
+
+    def agent():
+        try:
+            results.append(call_on_gui(lambda: ran.append(1) or "done", timeout=0.05))
+        except Exception as exc:
+            results.append(exc)
+
+    thread = threading.Thread(target=agent)
+
+    def work():
+        thread.start()
+        time.sleep(0.4)
+
+    run_off_gui(work)
+    deadline = time.time() + 2
+    while thread.is_alive() and time.time() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    assert results == ["done"] and ran == [1]

@@ -384,7 +384,7 @@ def import_xml(file_path=None, prompt=True):
                     clip_json, reader_json = probe_clip(clip_path, probes, openshot)
                 except Exception:
                     log.warning("Could not open %s" % clip_path, exc_info=1)
-                    summary["missing"].append(clip_path)
+                    summary["missing"].append(original_clip_path)
                     continue
 
                 if not file:
