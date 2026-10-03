@@ -75,7 +75,7 @@ SERVER_INSTRUCTIONS = (
     "engine=apple to pin. Tighten pacing with remove_silence_tool "
     "first, then remove_words_tool (pass transcriptGeneration; fillerPreset "
     "um_uh is allowed). After cuts, call get_transcript_tool again — stale "
-    "indices are refused. add_captions_tool burns timed dialogue; "
+    "indices are refused. add_captions_tool adds animated word-timed captions over a clip (HyperFrames styles; list_captions_tool names them); "
     "export_captions_tool writes SRT/VTT. diarize_media_tool labels speakers "
     "offline. detect_beats_tool finds music beats. search_media_local_tool is "
     "on-device visual search; search_clips_tool remains the cloud TwelveLabs tier."

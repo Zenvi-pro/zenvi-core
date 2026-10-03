@@ -7,7 +7,7 @@ font and colours are written, naming) are shared with the Title Editor dialog
 through ``classes.title_svg``.
 
 This module holds the SVG title tools; the sibling modules register the rest:
-``titles_text_captions`` (Caption effect), ``titles_text_overlays`` (Timer,
+``titles_text_captions`` (HyperFrames caption overlays), ``titles_text_overlays`` (Timer,
 emoji) and ``titles_text_animated`` (Blender).
 """
 
@@ -546,7 +546,7 @@ def _svg_file(file_obj):
         raise ToolError(f"{data.get('name') or os.path.basename(str(data.get('path') or ''))!r} is not a title "
                         "(only .svg titles can be edited)")
     if data.get("zenvi_role") == OVERLAY_ROLE:
-        raise ToolError("that clip is a caption/timer overlay; use edit_captions_tool or add_timer_tool")
+        raise ToolError("that clip is a timer overlay, not a title; use add_timer_tool")
     return file_obj
 
 

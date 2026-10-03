@@ -275,3 +275,27 @@ def test_a_failed_placement_removes_the_track_it_created():
         track_cls = sys.modules["classes.query"].Track
     assert out.startswith("Error")
     track_cls.return_value.delete.assert_called_once()
+
+
+def test_placement_joins_the_undo_step_of_the_tool_that_called_it():
+    """add_captions places two overlays; each minting its own transaction made that several undo steps."""
+    f = _file(transparent=True)
+    app = _layers_app()
+    app.updates.transaction_id = "caller-step"
+    patches = _patch_place(f, [], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        th.place_motion_graphic(file_id="F1", position_seconds="0", duration_seconds="240", mode="overlay",
+                                max_duration_seconds=240)
+    assert add_clip.call_args.kwargs["transaction_id"] == "caller-step"
+    assert add_clip.call_args.kwargs["duration_seconds"] == "240.0"        # not cut to the 60 s default
+
+
+def test_a_graphic_is_still_capped_at_a_minute_by_default():
+    f = _file(transparent=True)
+    app = _layers_app()
+    app.updates.transaction_id = None
+    patches = _patch_place(f, [], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        th.place_motion_graphic(file_id="F1", position_seconds="0", duration_seconds="240", mode="overlay")
+    assert add_clip.call_args.kwargs["duration_seconds"] == "60.0"
+    assert add_clip.call_args.kwargs["transaction_id"]
