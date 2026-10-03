@@ -9,6 +9,7 @@ model in ``<app>/whisper/``. A source checkout finds them through
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -89,9 +90,23 @@ def available() -> bool:
 
 
 def model_id() -> str:
-    """Transcript-cache identity of the model in use (ZENVI_WHISPER_MODEL can pick another)."""
-    name = os.path.basename(model_path())
-    return MODEL_ID if name in ("", MODEL_FILE) else "whisper.cpp-" + os.path.splitext(name)[0]
+    """Transcript-cache identity of the model in use.
+
+    The bundled model (checksummed at build time) is MODEL_ID; any other file
+    (ZENVI_WHISPER_MODEL, the profile folder) is identified by its name, path,
+    size and modification time, so a different or replaced model never reuses
+    another model's transcripts.
+    """
+    path = model_path()
+    if not path or os.path.abspath(path) == os.path.abspath(os.path.join(_bundle_dir(), MODEL_FILE)):
+        return MODEL_ID
+    try:
+        st = os.stat(path)
+        stamp = "%s|%d|%d" % (os.path.normcase(os.path.abspath(path)), st.st_size, st.st_mtime_ns)
+    except OSError:
+        stamp = os.path.normcase(os.path.abspath(path))
+    return "whisper.cpp-%s-%s" % (os.path.splitext(os.path.basename(path))[0],
+                                  hashlib.sha1(stamp.encode("utf-8")).hexdigest()[:8])
 
 
 def _time_limit(wav_path: str) -> float:

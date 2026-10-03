@@ -112,6 +112,20 @@ _DEFAULT_WINDOW_STATE = (
 )
 
 
+def _report_media_left_out(parent, summary):
+    """Say which sources an EDL / XML import skipped (not found, or unreadable)."""
+    left_out = sorted(set((summary or {}).get("missing") or []))
+    if not left_out:
+        return
+    _ = get_app()._tr
+    listed = "\n".join(left_out[:10])
+    if len(left_out) > 10:
+        listed += "\n..."
+    QMessageBox.warning(
+        parent, _("Import"),
+        _("These media files could not be opened and their clips were left out:") + "\n\n" + listed)
+
+
 class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     """ This class contains the logic for the main window widget """
 
@@ -1583,11 +1597,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def actionImportEDL_trigger(self, checked=True):
         """Import EDL File"""
-        import_edl()
+        _report_media_left_out(self, import_edl())
 
     def actionImportFCPXML_trigger(self, checked=True):
         """Import XML (Final Cut Pro) File"""
-        import_xml()
+        _report_media_left_out(self, import_xml())
 
     def actionUndo_trigger(self, checked=True):
         log.info('actionUndo_trigger')
