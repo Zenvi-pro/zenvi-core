@@ -21,6 +21,7 @@ install() {
   pkgs=(
     base-devel
     git
+    curl
     mingw-w64-ucrt-x86_64-toolchain
     mingw-w64-ucrt-x86_64-ffmpeg
     mingw-w64-ucrt-x86_64-swig

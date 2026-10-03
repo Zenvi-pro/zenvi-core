@@ -1388,6 +1388,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         try:
             copied, skipped, errors, moves = run_off_gui(
                 copy_media_into_project, files, project.current_filepath, app_root=_info.PATH)
+        except Exception as ex:
+            # Re-raised here from the worker: report it, do not crash the editor.
+            log.error("Collect Media failed", exc_info=1)
+            QMessageBox.warning(self, _("Collect Media"), str(ex))
+            return
         finally:
             app.restoreOverrideCursor()
         repoint_media(project._data.get("files") or [], project._data.get("clips") or [],
@@ -1442,6 +1447,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         app.setOverrideCursor(QCursor(Qt.WaitCursor))
         try:
             removed, kept, errors = run_off_gui(_work)
+        except Exception as ex:
+            log.error("Reclaim Space failed", exc_info=1)
+            QMessageBox.warning(self, _("Reclaim Space"), str(ex))
+            return
         finally:
             app.restoreOverrideCursor()
         QMessageBox.information(

@@ -24,6 +24,7 @@ from classes.speech.runtime import CancelToken
 log = logging.getLogger("speech.whisper_cpp")
 
 MODEL_FILE = "ggml-base-q5_1.bin"
+VAD_FILE = "ggml-silero-v5.1.2.bin"
 MODEL_ID = "whisper.cpp-base-q5_1"
 _CLI_NAMES = ("whisper-cli.exe", "whisper-cli") if sys.platform == "win32" else ("whisper-cli",)
 
@@ -48,14 +49,38 @@ def cli_path() -> str:
     return ""
 
 
-def model_path() -> str:
+def _find(env_name: str, file_name: str) -> str:
     from classes import info
-    for candidate in (os.environ.get("ZENVI_WHISPER_MODEL", ""),
-                      os.path.join(_bundle_dir(), MODEL_FILE),
-                      os.path.join(info.USER_PATH, "whisper", MODEL_FILE)):
+    for candidate in (os.environ.get(env_name, ""),
+                      os.path.join(_bundle_dir(), file_name),
+                      os.path.join(info.USER_PATH, "whisper", file_name)):
         if candidate and os.path.isfile(candidate):
             return candidate
     return ""
+
+
+def model_path() -> str:
+    return _find("ZENVI_WHISPER_MODEL", MODEL_FILE)
+
+
+def vad_path() -> str:
+    """The Silero VAD model; optional, but without it words are timed into silence."""
+    return _find("ZENVI_WHISPER_VAD", VAD_FILE)
+
+
+def words_from_cli_json(data: dict, language: Optional[str]) -> tuple[list[Word], str]:
+    """Words and the detected language from whisper-cli's ``-oj`` output."""
+    words = []
+    for seg in data.get("transcription") or []:
+        text = str(seg.get("text") or "").strip()
+        # Empty segments and markers such as [BLANK_AUDIO] are not words.
+        if not text or (text.startswith("[") and text.endswith("]")):
+            continue
+        offsets = seg.get("offsets") or {}
+        words.append(Word(text, float(offsets.get("from", 0)) / 1000.0,
+                          float(offsets.get("to", 0)) / 1000.0))
+    detected = str((data.get("result") or {}).get("language") or language or "auto")
+    return words, detected
 
 
 def available() -> bool:
@@ -80,9 +105,15 @@ class WhisperCppTranscriber:
             cmd = [
                 cli, "-m", model, "-f", wav_path, "-l", language or "auto",
                 # One segment per word: the word timings the transcript tools edit with.
-                "-ml", "1", "-sow", "-oj", "-of", out_base, "-np",
+                # (No -np: it also silences whisper's own error messages.)
+                "-ml", "1", "-sow", "-oj", "-of", out_base,
                 "-t", str(max(1, min(8, (os.cpu_count() or 4) - 1))),
             ]
+            vad = vad_path()
+            if vad:
+                # Speech only: otherwise words are timed into the silence around
+                # them, and silence itself comes back as hallucinated words.
+                cmd += ["--vad", "-vm", vad]
             kwargs = {}
             if sys.platform == "win32":
                 kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
@@ -105,14 +136,4 @@ class WhisperCppTranscriber:
                 raise RuntimeError("whisper.cpp failed (exit %s): %s" % (proc.returncode, tail))
             with open(out_base + ".json", "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-        words = []
-        for seg in data.get("transcription") or []:
-            text = str(seg.get("text") or "").strip()
-            # Empty segments and markers such as [BLANK_AUDIO] are not words.
-            if not text or (text.startswith("[") and text.endswith("]")):
-                continue
-            offsets = seg.get("offsets") or {}
-            words.append(Word(text, float(offsets.get("from", 0)) / 1000.0,
-                              float(offsets.get("to", 0)) / 1000.0))
-        detected = str((data.get("result") or {}).get("language") or language or "auto")
-        return words, detected
+        return words_from_cli_json(data, language)

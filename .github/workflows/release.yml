@@ -113,6 +113,15 @@ jobs:
       - name: Freeze with cx_Freeze
         run: python3 freeze.py build --git-branch=production
 
+      - name: Verify local transcription is in the frozen app
+        run: |
+          # freeze.py ships src/whisper only because it copies all of src/:
+          # fail here if the engine or its models did not reach the app.
+          for f in ggml-base-q5_1.bin ggml-silero-v5.1.2.bin whisper-cli; do
+            found="$(find build -path '*/whisper/*' -not -path 'build/whisper.cpp/*' -name "$f" -type f | head -1)"
+            [ -n "$found" ] || { echo "::error::$f is missing from the frozen app"; exit 1; }
+          done
+
       - name: Smoke test frozen zenvi
         run: |
           FROZEN_DIR=$(find build -maxdepth 1 -type d -name 'exe.linux-*' | head -1)
@@ -469,6 +478,15 @@ jobs:
       - name: Freeze with cx_Freeze
         run: |
           python3 freeze.py build --git-branch=production
+
+      - name: Verify local transcription is in the frozen app
+        run: |
+          # freeze.py ships src/whisper only because it copies all of src/:
+          # fail here if the engine or its models did not reach the app.
+          for f in ggml-base-q5_1.bin ggml-silero-v5.1.2.bin whisper-cli; do
+            found="$(find build -path '*/whisper/*' -not -path 'build/whisper.cpp/*' -name "$f" -type f | head -1)"
+            [ -n "$found" ] || { echo "::error::$f is missing from the frozen app"; exit 1; }
+          done
 
       # Fix OpenSSL dylib mismatch (arm64 only).
       # cx_Freeze may bundle libssl.3.dylib from the Python toolchain (OpenSSL 3.2+)
@@ -1197,6 +1215,17 @@ jobs:
           export PATH="/ucrt64/bin:$PATH"
           cd "${GITHUB_WORKSPACE}"
           ./.venv/bin/python freeze.py build --git-branch=production
+
+      - name: Verify local transcription is in the frozen app
+        shell: msys2 {0}
+        run: |
+          cd "${GITHUB_WORKSPACE}"
+          # freeze.py ships src/whisper only because it copies all of src/:
+          # fail here if the engine or its models did not reach the app.
+          for f in ggml-base-q5_1.bin ggml-silero-v5.1.2.bin whisper-cli.exe; do
+            found="$(find build -path '*/whisper/*' -not -path 'build/whisper.cpp/*' -name "$f" -type f | head -1)"
+            [ -n "$found" ] || { echo "::error::$f is missing from the frozen app"; exit 1; }
+          done
 
       - name: Verify production env present in frozen build (Supabase)
         shell: powershell

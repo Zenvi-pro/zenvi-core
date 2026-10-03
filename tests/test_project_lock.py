@@ -6,14 +6,12 @@ the later save silently replaced the other session's changes.
 
 import sys
 from unittest.mock import MagicMock
-from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _qt_support import skip_without_pyqt5  # noqa: E402
-
-skip_without_pyqt5()
+# Real Qt (QLockFile): conftest keeps this file out of the stubbed suite; the
+# real-qt-tests job runs it, and pytest-suite adds the main-window tests.
+pytest.importorskip("PyQt5.QtCore")
 
 from PyQt5.QtCore import QLockFile  # noqa: E402
 
