@@ -382,7 +382,8 @@ def test_normalize_agent_fs_path_windows_file_urls(monkeypatch, url, expected):
     monkeypatch.setattr(fd.os.path, "exists", lambda p: False)
     monkeypatch.setattr(fd.os.path, "isabs", lambda p: True)
     monkeypatch.setattr(fd.os.path, "abspath", lambda p: p)
-    assert fd.normalize_agent_fs_path(url) == expected
+    # On a real Windows host the result is also normpath'd (backslashes).
+    assert os.path.normpath(fd.normalize_agent_fs_path(url)) == os.path.normpath(expected)
 
 
 def test_a_glob_honours_media_types(monkeypatch, tmp_path):

@@ -628,8 +628,11 @@ def _export_video_locked(preset, quality, export_type, range, start, end, output
                              profile, width, height, fps, container, video_codec, audio_codec,
                              video_bitrate, audio_bitrate, sample_rate, channels, interlaced, image_format)
     path = plan["path"]
+    from classes.path_utils import comparable_media_path
     from classes.query import File
-    if File.get(path=path):
+    # Normalized: the same file can be spelled differently (drive, slashes, case).
+    target = comparable_media_path(path)
+    if any(comparable_media_path(f.data.get("path")) == target for f in File.filter()):
         raise ToolError(f"{path} is one of the project's input files; choose a different name")
     if plan["export_type"] == "image_sequence":
         pattern = re.sub(r"%0?\d*d", "*", path)
