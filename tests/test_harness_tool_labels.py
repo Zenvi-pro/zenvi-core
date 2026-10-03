@@ -2,8 +2,8 @@
 
 The assistant now runs on an OpenCode harness, which brings its own tool names
 into the transcript: ``task`` when the orchestrator hands work to a specialist,
-and ``bash``/``edit``/``write`` when the motion-graphics agent works on
-``session/draft.html`` in its sandbox. Those names reach ``humanize_tool_name``
+and ``bash``/``edit``/``write`` when a refused call or a CLI chat backend's own
+tool lands in the transcript. Those names reach ``humanize_tool_name``
 like any other, and its fallback would title them "Task", "Bash" and "Edit" --
 which is the coding runtime leaking into a video editor's chat.
 
@@ -22,14 +22,12 @@ class TestHarnessToolsReadAsProductWork(unittest.TestCase):
         self.assertNotEqual(label, "Task")
         self.assertIn("specialist", label.lower())
 
-    def test_sandbox_file_work_is_described_as_motion_graphics_work(self):
+    def test_shell_and_file_tools_are_described_in_plain_language(self):
         for name in ("bash", "edit", "write"):
             with self.subTest(tool=name):
-                label = humanize_tool_name(name)
-                self.assertNotEqual(label, name.capitalize())
-                self.assertIn("motion graphic", label.lower())
+                self.assertNotEqual(humanize_tool_name(name), name.capitalize())
 
-    def test_sandbox_reads_are_labelled(self):
+    def test_file_reads_are_labelled(self):
         for name in ("read", "glob", "grep"):
             with self.subTest(tool=name):
                 self.assertNotEqual(humanize_tool_name(name), name.capitalize())
@@ -88,10 +86,8 @@ class TestZenviLabelsAreUnchanged(unittest.TestCase):
         self.assertEqual(humanize_tool_name("stock_video"), _expected("stock_video"))
 
     def test_motion_graphics_labels_survive(self):
-        self.assertEqual(
-            humanize_tool_name("publish_session_draft_tool"), "Publish motion graphic"
-        )
-        self.assertEqual(humanize_tool_name("lint_session_draft_tool"), "Lint draft")
+        self.assertEqual(humanize_tool_name("render_motion_graphic_tool"), "Render motion graphic")
+        self.assertEqual(humanize_tool_name("hyperframes_run_tool"), "Run HyperFrames")
 
     def test_placement_tool_still_has_a_label(self):
         label = humanize_tool_name("place_motion_graphic_tool")
@@ -124,8 +120,7 @@ class TestHarnessKeysCannotShadowAZenviTool(unittest.TestCase):
     def test_no_harness_key_is_a_backend_workflow(self):
         workflows = {
             "video_gen", "stock_video", "stock_music", "clip_edit", "ai_morph",
-            "tts", "product_demo", "product_launch", "place_moment",
-            "slice_moment", "motion_graphics",
+            "tts", "place_moment", "slice_moment",
         }
         self.assertEqual(self.HARNESS_KEYS & workflows, set())
 

@@ -259,13 +259,4 @@ def test_import_video_url_placement_failure_is_an_error(editor, monkeypatch, tmp
     assert out.startswith("Error: Video imported (file_id=") and "Do NOT download it again" in out
 
 
-# --- HyperFrames partial import ------------------------------------------------------------------------
 
-def test_partial_motion_graphics_import_is_an_error(editor, monkeypatch):
-    monkeypatch.setattr(th, "_MG_IMPORTED_URLS", {})
-    results = iter([("F1", 1.0, None, False, "yuv420p"), (None, 0.0, "HTTP 500", False, "")])
-    monkeypatch.setattr(th, "_download_and_import_one", lambda url, label="", job_transparent=None: next(results))
-    out = th.fetch_motion_graphics_video(segment_urls=["https://x/segment_01.mp4", "https://x/segment_02.mp4"],
-                                         label="Launch title")
-    assert out.startswith("Error: Imported only 1/2 motion segments; 1 failed.")
-    assert "HTTP 500" in out

@@ -136,6 +136,7 @@ CAPABILITIES = [
     ("ai.video_generation", "ai-generation", "generate_video/modify_clip/generate_transition_clip tools", "AI video generation/edit/morph that replaces (not stacks on) the originals and reports failures as errors"),
     ("ai.search", "ai-generation", "search_clips/search_clip_scenes/slice_clip_at_best_match", "Semantic search tools without crashes; failures reported as errors"),
     ("ai.stock_media", "ai-generation", "Stock search in Project Files", "Pexels/Freesound import (existing tools) with errors reported as errors"),
+    ("ai.hyperframes", "ai-generation", "HyperFrames motion graphics, product demos and captions", "Author, check and render HTML compositions with the local HyperFrames CLI and its skills; import the render from disk"),
     ("recording.prepare", "ai-generation", "View > Recording View / Clip > Audio > Record", "Open and configure the Recording dock (sources mic/screen/webcam, devices, track, start time); starting capture stays a human action"),
 ]
 
