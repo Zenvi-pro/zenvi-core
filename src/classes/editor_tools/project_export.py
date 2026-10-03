@@ -687,6 +687,8 @@ def export_project_file(format="fcpxml", file_path="", overwrite=False):
 # ---------------------------------------------------------------------------
 
 def _media_changes(before_files, after_files, before_clips, after_clips):
+    # Diffs exactly the fields media_collect.repoint_media writes (file path /
+    # original_path, clip reader path); a new field there needs adding here.
     by_id = {f.get("id"): f for f in before_files}
     file_changes = []
     for f in after_files:

@@ -21,6 +21,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from typing import Optional
 
 from classes.editor_tools._base import (
@@ -1028,7 +1029,8 @@ def export_files_to_folder(file_ids, folder=""):
                         # only once complete: Close() can still write after a
                         # failure, and a file at *out* is skipped next time.
                         stem, ext = os.path.splitext(out)
-                        staged = stem + ".partial" + ext
+                        # Unique, so two exports of the same file never share it.
+                        staged = "%s.partial-%s%s" % (stem, uuid.uuid4().hex[:8], ext)
                         writer = openshot.FFmpegWriter(staged)
                         reader = None
                         try:

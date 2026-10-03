@@ -1378,28 +1378,28 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         import copy
         from classes import info as _info
         from classes.media_collect import copy_media_into_project, repoint_media
+        from classes.qt_main_thread import run_off_gui
 
-        # Copying can take minutes: do it on a snapshot, off the GUI thread.
+        # Copying can take minutes: on a worker, against a snapshot. The editor
+        # keeps painting but takes no input meanwhile, so the project cannot be
+        # edited, closed or swapped under the operation.
         files = copy.deepcopy(project._data.get("files") or [])
-        project_path = project.current_filepath
-
-        def _finish(copied, skipped, errors, moves):
-            repoint_media(project._data.get("files") or [], project._data.get("clips") or [],
-                          moves, keep_original=True)
-            if moves:
-                project.has_unsaved_changes = True
-            QMessageBox.information(
-                self,
-                _("Collect Media"),
-                _("Copied %(copied)d file(s). Skipped %(skipped)d. Errors: %(errors)d.")
-                % {"copied": len(copied), "skipped": len(skipped), "errors": len(errors)},
-            )
-
-        def _work():
-            result = copy_media_into_project(files, project_path, app_root=_info.PATH)
-            invoke_on_gui(_finish, *result, context=self)
-
-        threading.Thread(target=_work, name="zenvi-collect-media", daemon=True).start()
+        app.setOverrideCursor(QCursor(Qt.WaitCursor))
+        try:
+            copied, skipped, errors, moves = run_off_gui(
+                copy_media_into_project, files, project.current_filepath, app_root=_info.PATH)
+        finally:
+            app.restoreOverrideCursor()
+        repoint_media(project._data.get("files") or [], project._data.get("clips") or [],
+                      moves, keep_original=True)
+        if moves:
+            project.has_unsaved_changes = True
+        QMessageBox.information(
+            self,
+            _("Collect Media"),
+            _("Copied %(copied)d file(s). Skipped %(skipped)d. Errors: %(errors)d.")
+            % {"copied": len(copied), "skipped": len(skipped), "errors": len(errors)},
+        )
 
     def actionReclaimMedia_trigger(self, checked=True):
         """Remove asset copies that still have a matching original on disk."""
@@ -1415,24 +1415,17 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             return
         import copy
         from classes.media_collect import commit_reclaim, find_reclaimable_media, repoint_media
-        from classes.qt_main_thread import call_on_gui
+        from classes.qt_main_thread import call_on_gui, run_off_gui
 
-        # Full-file hashing and deletes run off the GUI thread; only the
-        # in-memory path rewrite runs on it.
+        # Full-file hashing, the save and the deletes run on a worker; only the
+        # in-memory path rewrite runs on the GUI thread. No input is taken
+        # meanwhile (see Collect), so what was hashed is what gets deleted.
         files = copy.deepcopy(project._data.get("files") or [])
         project_path = project.current_filepath
 
         def _repoint(moves):
             call_on_gui(lambda: repoint_media(
                 project._data.get("files") or [], project._data.get("clips") or [], moves))
-
-        def _show(removed, kept, errors):
-            QMessageBox.information(
-                self,
-                _("Reclaim Space"),
-                _("Removed %(removed)d duplicate(s). Kept %(kept)d. Errors: %(errors)d.")
-                % {"removed": len(removed), "kept": len(kept), "errors": len(errors)},
-            )
 
         def _work():
             moves, kept, errors = find_reclaimable_media(files, project_path)
@@ -1444,9 +1437,19 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             )
             if commit_errors and not removed:
                 kept.extend(dest for _fid, dest, _orig in moves)
-            invoke_on_gui(_show, removed, kept, errors + commit_errors, context=self)
+            return removed, kept, errors + commit_errors
 
-        threading.Thread(target=_work, name="zenvi-reclaim-media", daemon=True).start()
+        app.setOverrideCursor(QCursor(Qt.WaitCursor))
+        try:
+            removed, kept, errors = run_off_gui(_work)
+        finally:
+            app.restoreOverrideCursor()
+        QMessageBox.information(
+            self,
+            _("Reclaim Space"),
+            _("Removed %(removed)d duplicate(s). Kept %(kept)d. Errors: %(errors)d.")
+            % {"removed": len(removed), "kept": len(kept), "errors": len(errors)},
+        )
 
     def actionImportFiles_trigger(self):
         app = get_app()
