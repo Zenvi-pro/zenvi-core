@@ -61,6 +61,8 @@ CLI_SUBCOMMANDS = frozenset({
     "docs", "doctor", "transcribe", "remove-background",
 })
 SCRIPT_PROGRAMS = ("node", "bash")
+FILTER_PROGRAMS = ("ffmpeg", "ffprobe")
+_FILE_FED_OPTIONS = ("-filter_script", "-filter_complex_script", "-/", "-safe")   # paths we never see
 
 MAX_OUTPUT_CHARS = 12000
 DEFAULT_TIMEOUT = 900
@@ -69,6 +71,7 @@ INSTALL_TIMEOUT = 1800
 _PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 _DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_FILTER_SPLIT_RE = re.compile(r"""[=:,;'"\[\]\s]+""")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
 
@@ -98,7 +101,11 @@ def project_dir(project: str) -> str:
     if not _PROJECT_RE.match(name):
         raise HyperframesError(
             "project must be a short lowercase name (a-z, 0-9, '-' or '_'), e.g. 'intro-title'; got %r" % project)
-    return os.path.join(home(), "projects", name)
+    root = os.path.join(home(), "projects", name)
+    expected = os.path.join(os.path.realpath(home()), "projects", name)
+    if os.path.normcase(os.path.realpath(root)) != os.path.normcase(expected):      # a link to somewhere else
+        raise HyperframesError("project folder %r resolves outside Zenvi's projects folder" % name)
+    return root
 
 
 def _inside(path: str, root: str) -> bool:
@@ -459,9 +466,15 @@ def check_command(project: str, program: str, args: Iterable[str], inputs: Itera
                                    "%r is not one" % (program, sub))
         out[0] = script
     for arg in args[1:] if program in SCRIPT_PROGRAMS else args:
+        if program in FILTER_PROGRAMS and arg.startswith(_FILE_FED_OPTIONS):
+            raise HyperframesError("%s option %r reads its value from a file and is not available here; "
+                                   "pass the filter graph inline" % (program, arg))
         value = arg.split("=", 1)[1] if arg.startswith("-") and "=" in arg else arg
         if value and not value.startswith("-"):
             _check_value(project, program, sub, value, inputs)
+            if program in FILTER_PROGRAMS and not _is_absolute(value):
+                for piece in _FILTER_SPLIT_RE.split(value):     # paths inside a filter graph (movie=, subtitles=)
+                    _check_value(project, program, sub, piece, inputs)
     return out
 
 

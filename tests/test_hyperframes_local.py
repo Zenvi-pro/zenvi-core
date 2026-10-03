@@ -39,6 +39,20 @@ def test_paths_stay_inside_the_project_or_the_skills(home):
             hf.resolve_path("demo", bad)
 
 
+def test_a_project_folder_linked_elsewhere_is_refused(home, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (home / "projects").mkdir()
+    try:
+        os.symlink(str(outside), str(home / "projects" / "demo"), target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are not available here")
+    for call in (lambda: hf.resolve_path("demo", "index.html"),
+                 lambda: hf.check_command("demo", "hyperframes", ["lint", "."])):
+        with pytest.raises(hf.HyperframesError):
+            call()
+
+
 def test_skills_are_read_only(home):
     with pytest.raises(hf.HyperframesError):
         hf.resolve_path("demo", "skills/embedded-captions/SKILL.md", writable=True)
@@ -85,6 +99,22 @@ def test_arguments_cannot_reach_outside_the_project(home, tmp_path):
     ):
         with pytest.raises(hf.HyperframesError):
             hf.check_command("demo", "ffmpeg", args, inputs=[str(media)])
+    hf.check_command("demo", "ffmpeg", ["-f", "lavfi", "-i", "color=c=0x445566:s=1920x1080", "-ss", "00:00:01",
+                                        "-i", "out.webm", "-filter_complex", "[0][1]overlay,scale=400:-1",
+                                        "-vf", "subtitles=subs/a.srt", "frame.png"])
+    outside = str(tmp_path / "elsewhere.mp4").replace(os.sep, "/")
+    for value in ("movie=" + outside, "amovie=" + outside + "[a]", "[0]scale=2:2[v];movie='" + outside + "'[m]",
+                  "subtitles=../../subs.srt", "movie=https://evil.example/x.mp4"):
+        with pytest.raises(hf.HyperframesError):          # paths hidden inside a filter graph
+            hf.check_command("demo", "ffmpeg", ["-f", "lavfi", "-i", value, "out.mp4"], inputs=[str(media)])
+        with pytest.raises(hf.HyperframesError):
+            hf.check_command("demo", "ffprobe", ["-f", "lavfi", value], inputs=[str(media)])
+    for args in (["-i", "a.mp4", "-filter_complex_script", "graph.txt", "o.mp4"],
+                 ["-i", "a.mp4", "-filter_script:v", "graph.txt", "o.mp4"],
+                 ["-i", "a.mp4", "-/filter_complex", "graph.txt", "o.mp4"],
+                 ["-f", "concat", "-safe", "0", "-i", "list.txt", "o.mp4"]):
+        with pytest.raises(hf.HyperframesError):          # options whose file contents could name any path
+            hf.check_command("demo", "ffmpeg", args)
     with pytest.raises(hf.HyperframesError):                      # URLs are for capture only
         hf.check_command("demo", "hyperframes", ["render", "https://example.com"])
 
