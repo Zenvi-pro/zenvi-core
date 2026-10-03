@@ -16,6 +16,7 @@
 """
 
 import json as _json
+import os
 import logging
 from urllib.parse import urlsplit
 
@@ -25,6 +26,25 @@ log = logging.getLogger(__name__)
 ALLOWED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 REQUEST_TIMEOUT = 30          # seconds
 MAX_RESPONSE_CHARS = 12_000   # keep a huge payload from swamping the agent's context
+
+# Deny-by-default: only routes the editor itself uses. Anything else (account,
+# billing, admin, arbitrary auth) is refused even on the configured host.
+ALLOWED_PATH_PREFIXES = (
+    "/api/v1/models",
+    "/api/v1/chat/",
+    "/api/v1/indexing/",
+    "/api/v1/credits",
+    "/api/v1/projects",
+    "/api/v1/usage",
+)
+
+
+def _path_allowed(path_only: str) -> bool:
+    for prefix in ALLOWED_PATH_PREFIXES:
+        base = prefix.rstrip("/")
+        if path_only == base or path_only.startswith(base + "/"):
+            return True
+    return False
 
 
 def _backend_url() -> str:
@@ -76,6 +96,14 @@ def zenvi_api_request(method: str = "GET", path: str = "", body: str = "",
     if not target.startswith("/"):
         target = "/" + target
 
+    path_only = urlsplit(target).path or target.split("?", 1)[0]
+    if not _path_allowed(path_only):
+        return (
+            "Error: path %r is not allowed. zenvi_api_request can only call "
+            "chat, models, indexing, credits, projects, or usage routes."
+            % path_only
+        )
+
     params = None
     if query:
         try:
@@ -119,9 +147,342 @@ def zenvi_api_request(method: str = "GET", path: str = "", body: str = "",
     return "HTTP %s %s %s\n%s" % (response.status_code, verb, target, text)
 
 
+# ---------------------------------------------------------------------------
+# Harness tools (#150)
+#
+# A scheduled routine cannot click: no file picker, no chat dock, no Cancel
+# button. These tools give such a run the pieces it is otherwise missing — a
+# liveness probe, a way to wait out an edit that outlived its tool call, a way
+# to prompt the native assistant, and log pointers for when something hangs.
+# They live here rather than in AGENT_TOOL_HANDLERS
+# because the MCP server calls extras straight on a worker thread instead of
+# marshalling them to the Qt GUI thread, which is exactly what a probe for a
+# wedged GUI thread needs.
+# ---------------------------------------------------------------------------
+
+ASSISTANT_TURN_TIMEOUT = 900   # seconds; matches the backend's tool-call budget
+
+
+def _core_log_paths() -> list:
+    """(label, path) for every log an unattended run may need to read back."""
+    from classes import info
+
+    user = info.USER_PATH
+    return [
+        ("core+assistant", os.path.join(user, "openshot-qt.log")),
+        ("assistant gaps", os.path.join(user, "agent_tool_gaps.jsonl")),
+        ("crash", os.path.join(user, "crash.log")),
+        ("faulthandler", os.path.join(user, "faulthandler.log")),
+        ("libopenshot", os.path.join(user, "libopenshot.log")),
+    ]
+
+
+def get_log_paths_tool() -> str:
+    """Report where Zenvi's logs live, for diagnosing a hung or failed harness run.
+
+    Lists the editor log files with their size and last-modified time. The native
+    assistant has no separate log — its chat and tool activity is written into
+    openshot-qt.log. The backend logs to stdout only, so its output lives in the
+    terminal that started it; per-session agent traces are on disk under the
+    backend's logs/agent_traces/<session_id>.jsonl.
+    """
+    import time
+
+    lines = []
+    for label, path in _core_log_paths():
+        try:
+            st = os.stat(path)
+            when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st.st_mtime))
+            lines.append("%-16s %s (%d bytes, modified %s)"
+                         % (label, path, st.st_size, when))
+        except OSError:
+            lines.append("%-16s %s (not present)" % (label, path))
+
+    try:
+        backend = _backend_url()
+    except Exception:
+        backend = "(unknown)"
+    lines.append("%-16s %s - logs to stdout only; agent traces at "
+                 "logs/agent_traces/<session_id>.jsonl, also readable via "
+                 "GET /api/v1/chat/sessions/{session_id}/trace"
+                 % ("backend", backend))
+    return "\n".join(lines)
+
+
+def mcp_health_tool(main_thread_timeout_seconds: int = 5) -> str:
+    """Check that the editor is up AND its Qt main thread is still alive.
+
+    Read-only tools keep answering from a worker thread even when the GUI thread
+    is wedged, so "MCP responds" is not proof the editor works. This runs a no-op
+    on the main thread and reports whether it came back. If main_thread_alive is
+    false, mutating tools (import, export, timeline edits) will time out — stop
+    and collect the logs from get_log_paths_tool rather than retrying.
+    """
+    import time
+
+    try:
+        budget = max(1, int(main_thread_timeout_seconds))
+    except Exception:
+        budget = 5
+
+    parts = []
+    try:
+        from classes.agent_mcp_server import get_mcp_server
+        srv = get_mcp_server()
+        parts.append("mcp_port=%s" % (srv.port if srv.port else "not-started"))
+    except Exception as exc:
+        parts.append("mcp_port=error(%s)" % exc)
+
+    try:
+        from classes.agent_mcp_server import iter_tool_defs
+        parts.append("tools=%d" % len(iter_tool_defs()))
+    except Exception as exc:
+        parts.append("tools=error(%s)" % exc)
+
+    try:
+        from classes.tool_handlers import _run_on_main_thread
+        started = time.time()
+        _run_on_main_thread(lambda: True, timeout=budget)
+        parts.append("main_thread_alive=true")
+        parts.append("main_thread_latency_ms=%d" % ((time.time() - started) * 1000))
+    except Exception as exc:
+        parts.append("main_thread_alive=false")
+        parts.append("main_thread_error=%s" % exc)
+
+    return " ".join(parts)
+
+
+def wait_for_editor_job_tool(job_id: str = "", timeout_seconds: int = 60) -> str:
+    """Wait for an edit that was still running when its tool call stopped waiting.
+
+    A tool that answered MAIN_THREAD_STILL_RUNNING had already started its edit on
+    the Qt GUI thread, and the edit finishes on its own: retrying the tool would
+    apply it twice. Pass the job_id from that error. This waits up to
+    timeout_seconds (default 60, max 600) without touching the GUI thread, then
+    reports status=done with the call's result, status=error, status=running if
+    it is still going (call again to keep waiting), or status=unknown.
+    """
+    from classes.tool_handlers import wait_for_main_thread_job
+
+    jid = str(job_id or "").strip()
+    if not jid:
+        return ("Error: 'job_id' is required -- copy it from the "
+                "MAIN_THREAD_STILL_RUNNING error.")
+    try:
+        budget = min(600, max(0, int(timeout_seconds)))
+    except Exception:
+        budget = 60
+
+    outcome = wait_for_main_thread_job(jid, budget)
+    if outcome["state"] == "unknown":
+        return ("status=unknown job_id=%s\nNo editor call with that id is tracked "
+                "in this session. Check get_timeline_state_tool for the current "
+                "state before editing again." % jid)
+    if outcome["state"] == "running":
+        return ("status=running job_id=%s running_for=%ds\nStill running on the "
+                "editor's GUI thread. Do not retry the original call; call "
+                "wait_for_editor_job_tool again to keep waiting."
+                % (jid, outcome["seconds"]))
+    if outcome["error"] is not None:
+        return ("status=error job_id=%s ran_for=%.1fs\nThe call failed: %s"
+                % (jid, outcome["seconds"], outcome["error"]))
+    text = "" if outcome["result"] is None else str(outcome["result"])
+    from classes.agent_tools.receipt import is_error_result
+    # A failed edit answers a JSON receipt, not only a string starting with Error.
+    status = "error" if text and is_error_result(text) else "done"
+    return ("status=%s job_id=%s ran_for=%.1fs\n%s"
+            % (status, jid, outcome["seconds"],
+               text or "The call finished. Check get_timeline_state_tool to see "
+                       "its effect."))
+
+
+def send_assistant_prompt_tool(message: str = "", session_id: str = "",
+                               timeout_seconds: int = ASSISTANT_TURN_TIMEOUT) -> str:
+    """Send a prompt to Zenvi's own assistant and wait for the whole turn to finish.
+
+    This is how an unattended run reaches the assistant that would normally be
+    driven from the chat dock: it edits the timeline through the same editor
+    tools. Returns the assistant's final reply and the session_id, so a follow-up
+    prompt can continue the same conversation. If the turn is still running after
+    timeout_seconds (default 900) it is cancelled and reported as status=timeout
+    rather than left running.
+    """
+    import threading
+    import uuid
+
+    text = (message or "").strip()
+    if not text:
+        return "Error: 'message' is required — the prompt to send to the assistant."
+
+    try:
+        budget = max(1, int(timeout_seconds))
+    except Exception:
+        budget = ASSISTANT_TURN_TIMEOUT
+
+    token = _access_token()
+    if not token:
+        return ("Error: not signed in to Zenvi. Ask the user to sign in from the "
+                "app, then try again.")
+
+    sid = (session_id or "").strip() or str(uuid.uuid4())
+
+    # A private client: cancel_current_request() closes every socket on the
+    # client it is called on, so sharing the app's singleton would tear down a
+    # live chat turn in the dock whenever a harness run timed out.
+    from classes.api_client import ZenviBackendClient
+    client = ZenviBackendClient()
+
+    final = {"text": None, "session_id": sid, "error": None}
+
+    def _on_response(response_text, response_session_id=""):
+        final["text"] = response_text
+        if response_session_id:
+            final["session_id"] = response_session_id
+
+    def _on_error(error_message):
+        final["error"] = error_message
+
+    def _on_tool_call(tool_name, tool_args, call_id=""):
+        # Without this the client acks every tool call with "no tool handler"
+        # and the assistant cannot touch the timeline at all.
+        from classes.tool_handlers import execute_tool
+        args = dict(tool_args or {})
+        args["chat_session_id"] = final["session_id"]
+        try:
+            return execute_tool(tool_name, args)
+        except Exception as exc:
+            log.warning("assistant tool %s failed: %s", tool_name, exc)
+            return "Error: %s" % exc
+
+    def _run():
+        try:
+            result = client.send_message_ws(
+                message=text,
+                session_id=sid,
+                auth_token=token,
+                agent_mode="agent",
+                action="chat",
+                on_response=_on_response,
+                on_error=_on_error,
+                on_tool_call=_on_tool_call,
+            )
+            # send_message_ws can return None even after a clean 'done', so the
+            # on_response text is the authoritative answer.
+            if final["text"] is None and result:
+                final["text"] = result
+        except Exception as exc:
+            final["error"] = str(exc)
+
+    worker = threading.Thread(target=_run, name="zenvi-mcp-assistant", daemon=True)
+    worker.start()
+    worker.join(budget)
+
+    if worker.is_alive():
+        try:
+            client.cancel_current_request()
+        except Exception as exc:
+            log.warning("cancelling assistant turn failed: %s", exc)
+        return ("status=timeout session_id=%s\nThe assistant turn did not finish "
+                "within %ss and was cancelled. Logs:\n%s"
+                % (final["session_id"], budget, get_log_paths_tool()))
+
+    if final["error"] and final["text"] is None:
+        return "status=error session_id=%s\n%s" % (final["session_id"], final["error"])
+
+    return "status=complete session_id=%s\n\n%s" % (
+        final["session_id"], final["text"] or "(the assistant returned no text)")
+
+
+_SCREENSHOT_TARGETS = {
+    "window": None,
+    "timeline": "dockTimeline",
+    "preview": "dockVideo",
+    "properties": "dockProperties",
+    "files": "dockFiles",
+    "effects": "dockEffects",
+    "transitions": "dockTransitions",
+    "captions": "dockCaptionEditor",
+    "chat": "dockAIChat",
+    "recording": "dockAudioRecording",
+    "histogram": "dockHistogram",
+    "waveform": "dockLumaWaveform",
+    "vectorscope": "dockVectorscope",
+}
+
+
+def capture_editor_screenshot_tool(path: str = "", target: str = "window",
+                                   max_width: int = 1600) -> str:
+    """Save a PNG of the editor as it looks right now: the whole window or one panel.
+
+    target: window (default), timeline, preview, properties, files, effects,
+    transitions, captions, chat, recording, histogram, waveform, vectorscope.
+    Use it to review an edit the way a person would -- does the timeline show
+    the new clip, did the preview change, what do the properties say. Works
+    offscreen too (Qt renders the widgets itself; no screen-recording
+    permission involved). path must be a new .png file: an existing file is
+    never replaced. Returns the saved path and pixel size.
+    """
+    import time
+
+    from classes import info
+    from classes.tool_handlers import _get_app, _run_on_main_thread
+
+    key = (target or "window").strip().lower()
+    if key not in _SCREENSHOT_TARGETS:
+        return "Error: target must be one of %s." % ", ".join(sorted(_SCREENSHOT_TARGETS))
+    out = (path or "").strip() or os.path.join(
+        info.USER_PATH, "screenshots", "editor-%s-%d.png" % (key, int(time.time() * 1000)))
+    out = os.path.abspath(os.path.expanduser(out))
+    # The path comes from the agent: never let it replace a project or media file.
+    if not out.lower().endswith(".png"):
+        return "Error: path must end in .png."
+    if os.path.exists(out):
+        return "Error: %s already exists; pass a new path." % out
+    try:
+        width_cap = max(0, int(max_width))
+    except (TypeError, ValueError):
+        width_cap = 1600
+
+    def _grab():
+        win = _get_app().window
+        attr = _SCREENSHOT_TARGETS[key]
+        widget = win if attr is None else getattr(win, attr, None)
+        if widget is None:
+            return "Error: the %s panel does not exist in this editor." % key
+        if not widget.isVisible():
+            return ("Error: the %s panel is hidden. Show it first (View > Docks), or "
+                    "grab the window." % key)
+        pixmap = widget.grab()
+        if width_cap and pixmap.width() > width_cap:
+            from qt_api import Qt
+            pixmap = pixmap.scaledToWidth(width_cap, Qt.SmoothTransformation)
+        # A QImage can be written from any thread; the file I/O stays off this one.
+        return pixmap.toImage()
+
+    try:
+        image = _run_on_main_thread(_grab, timeout=20)
+        if image is None:
+            return "Error: screenshot failed: no result."
+        if isinstance(image, str):
+            return image
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        if not image.save(out, "PNG"):
+            return "Error: could not write %s." % out
+    except Exception as exc:
+        return "Error: screenshot failed: %s" % exc
+    return "Saved %s screenshot: %s (%dx%d)" % (key, out, image.width(), image.height())
+
+
 # Tools the in-app MCP server exposes on top of the editor tools. These are for
 # external agent CLIs only — the built-in assistant runs inside the backend
-# this proxies to, so it has no use for them.
+# this proxies to, so it has no use for them (and must not be able to prompt
+# itself, which is why send_assistant_prompt_tool is here and not in
+# AGENT_TOOL_HANDLERS).
 MCP_EXTRA_TOOLS = {
     "zenvi_api_request": zenvi_api_request,
+    "send_assistant_prompt_tool": send_assistant_prompt_tool,
+    "mcp_health_tool": mcp_health_tool,
+    "wait_for_editor_job_tool": wait_for_editor_job_tool,
+    "get_log_paths_tool": get_log_paths_tool,
+    "capture_editor_screenshot_tool": capture_editor_screenshot_tool,
 }

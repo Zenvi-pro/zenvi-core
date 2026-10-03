@@ -25,19 +25,97 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
+import math
 import threading
+import uuid
 from functools import partial
+
+import openshot
+
 from classes.app import get_app
 from classes.logger import log
 from classes.query import File, Clip
 from classes.clip_utils import project_fps_fraction, video_length_to_project_frames
-from PyQt5.QtGui import QCursor
-from PyQt5.QtCore import Qt
-import openshot
-import uuid
 
-# resolution of audio waveform
-SAMPLES_PER_SECOND = 20
+# Waveform resolution. Older projects did not store their density and used the
+# original 20 Hz extraction rate. New v2 waveforms default to 200 Hz.
+LEGACY_SAMPLES_PER_SECOND = 20
+DEFAULT_SAMPLES_PER_SECOND = 200
+SAMPLES_PER_SECOND = DEFAULT_SAMPLES_PER_SECOND
+
+# Waveform formats stored in project UI data. Projects created before waveform
+# formats were introduced have no marker, and must retain their original
+# normalized, linear display behavior.
+LEGACY_WAVEFORM_FORMAT = "normalized_peak_v1"
+ABSOLUTE_WAVEFORM_FORMAT = "absolute_peak_v2"
+WAVEFORM_FORMAT_KEY = "audio_data_format"
+WAVEFORM_RMS_KEY = "audio_data_rms"
+WAVEFORM_RATE_KEY = "audio_data_rate"
+
+# Expand quiet absolute samples without normalizing clips independently. A
+# square-root curve keeps the noise floor thin while making normal speech easy
+# to edit. A small lookup table avoids power calculations in the paint loop.
+WAVEFORM_DISPLAY_EXPONENT = 0.5
+WAVEFORM_DISPLAY_LUT_SIZE = 4096
+
+
+def _build_waveform_display_lut():
+    values = []
+    for index in range(WAVEFORM_DISPLAY_LUT_SIZE):
+        amplitude = index / float(WAVEFORM_DISPLAY_LUT_SIZE - 1)
+        values.append(amplitude ** WAVEFORM_DISPLAY_EXPONENT)
+    return tuple(values)
+
+
+WAVEFORM_DISPLAY_LUT = _build_waveform_display_lut()
+
+
+def waveform_data_format(ui_data):
+    """Return the stored waveform format, defaulting old projects to legacy."""
+    if not isinstance(ui_data, dict):
+        return LEGACY_WAVEFORM_FORMAT
+    return ui_data.get(WAVEFORM_FORMAT_KEY) or LEGACY_WAVEFORM_FORMAT
+
+
+def waveform_sample_rate(ui_data):
+    """Return stored waveform density, defaulting older data to 20 Hz."""
+    if not isinstance(ui_data, dict):
+        return LEGACY_SAMPLES_PER_SECOND
+    try:
+        rate = int(ui_data.get(WAVEFORM_RATE_KEY) or LEGACY_SAMPLES_PER_SECOND)
+    except (TypeError, ValueError):
+        rate = LEGACY_SAMPLES_PER_SECOND
+    return rate if rate > 0 else LEGACY_SAMPLES_PER_SECOND
+
+
+def configured_waveform_sample_rate():
+    """Return the preferred density for newly generated waveform data."""
+    try:
+        settings = get_app().get_settings()
+        rate = int(settings.get("timeline-waveform-samples-per-second"))
+    except (AttributeError, TypeError, ValueError):
+        rate = DEFAULT_SAMPLES_PER_SECOND
+    return max(20, min(1000, rate))
+
+
+def waveform_display_amplitude(amplitude, data_format):
+    """Map a stored amplitude to display height without per-clip normalization."""
+    try:
+        amplitude = abs(float(amplitude))
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(amplitude):
+        return 0.0
+    if data_format != ABSOLUTE_WAVEFORM_FORMAT:
+        return amplitude
+    if amplitude <= 0.0:
+        return 0.0
+    index = min(
+        WAVEFORM_DISPLAY_LUT_SIZE - 1,
+        int(amplitude * (WAVEFORM_DISPLAY_LUT_SIZE - 1)),
+    )
+    return WAVEFORM_DISPLAY_LUT[index]
+
 
 TIME_CURVE_RETRY_DELAY = 0.05
 TIME_CURVE_MAX_RETRIES = 5
@@ -104,10 +182,37 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
         """
         # Ensure that UI attribute exists
         file_data = file.data
-        file_audio_data = file_data.get("ui", {}).get("audio_data", [])
+        file_ui_data = file_data.get("ui", {})
+        file_audio_data = file_ui_data.get("audio_data", [])
+        # Hydrate from fingerprint cache when project JSON only has a marker.
+        # Cached waveforms are always all-channel (channel=-1); specific channels
+        # must still extract so Separate Audio / channel filters stay correct.
+        if file_audio_data == ["__cached__"]:
+            if channel != -1:
+                file_audio_data = []
+            else:
+                try:
+                    from classes.media_cache import load_waveform
+                    cached = load_waveform(file_data.get("fingerprint"))
+                    if cached and isinstance(cached.get("audio_data"), list):
+                        cached_rms = cached.get(WAVEFORM_RMS_KEY)
+                        return (
+                            cached["audio_data"],
+                            cached_rms if isinstance(cached_rms, list) else [],
+                            waveform_data_format(cached),
+                            waveform_sample_rate(cached),
+                        )
+                except Exception:
+                    log.debug("Could not hydrate cached waveform", exc_info=1)
+                file_audio_data = []
         if file_audio_data and channel == -1:
             log.info("Audio Data already retrieved (or being retrieved).")
-            return
+            return (
+                file_audio_data,
+                file_ui_data.get(WAVEFORM_RMS_KEY, []),
+                waveform_data_format(file_ui_data),
+                waveform_sample_rate(file_ui_data),
+            )
 
         # Open file and access audio data (if audio data is found, otherwise return)
         temp_clip = openshot.Clip(file_data["path"])
@@ -115,31 +220,43 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
             log.info(f"file: {file_data['path']} has no audio_data. Skipping")
             return
 
-        # Show waiting cursor
-        get_app().setOverrideCursor(QCursor(Qt.WaitCursor))
+        # Show waiting cursor on the GUI thread
+        get_app().window.WaitCursorSignal.emit(True)
+        try:
+            # Extract peak and RMS waveform envelopes for all channels.
+            waveformer = openshot.AudioWaveformer(temp_clip.Reader())
+            sample_rate = configured_waveform_sample_rate()
+            file_audio_data = waveformer.ExtractSamples(channel, sample_rate, False)
+            samples_vectors = file_audio_data.vectors()
+            max_samples_vector = samples_vectors[0]  # max sample value dataset
+            rms_samples_vector = samples_vectors[1]  # average RMS sample value dataset
 
-        # Extract audio waveform data (for all channels)
-        # Use max RMS (root mean squared) value for each sample
-        # NOTE: we also have the average RMS value calculated, although we do
-        # not use it yet
-        waveformer = openshot.AudioWaveformer(temp_clip.Reader())
-        file_audio_data = waveformer.ExtractSamples(channel, SAMPLES_PER_SECOND, True)
-        samples_vectors = file_audio_data.vectors()
-        max_samples_vector = samples_vectors[0]  # max sample value dataset
-        rms_samples_vector = samples_vectors[1]  # average RMS sample value dataset
+            # Clear data
+            file_audio_data.clear()
 
-        # Clear data
-        file_audio_data.clear()
+            # Update file with audio data (only if all channels requested)
+            if channel == -1:
+                get_app().window.timeline.fileAudioDataReady.emit(
+                    file.id,
+                    {"ui": {
+                        "audio_data": max_samples_vector,
+                        WAVEFORM_RMS_KEY: rms_samples_vector,
+                        WAVEFORM_FORMAT_KEY: ABSOLUTE_WAVEFORM_FORMAT,
+                        WAVEFORM_RATE_KEY: sample_rate,
+                    }},
+                    tid,
+                )
 
-        # Update file with audio data (only if all channels requested)
-        if channel == -1:
-            get_app().window.timeline.fileAudioDataReady.emit(file.id, {"ui": {"audio_data": max_samples_vector}}, tid)
-
-        # Restore cursor
-        get_app().restoreOverrideCursor()
-
-        # Return audio sample dataset
-        return max_samples_vector
+            # Return audio sample dataset
+            return (
+                max_samples_vector,
+                rms_samples_vector,
+                ABSOLUTE_WAVEFORM_FORMAT,
+                sample_rate,
+            )
+        finally:
+            # Restore cursor on the GUI thread even if extraction fails
+            get_app().window.WaitCursorSignal.emit(False)
 
     # Get file query object
     file = File.get(id=file_id)
@@ -158,12 +275,18 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
     # If the file doesn't have audio data, generate it.
     # A pending audio_data process will have audio_data == [-999]
     file_audio_data = file.data.get("ui", {}).get("audio_data", [])
+    file_ui_data = file.data.get("ui", {})
+    file_audio_rms = file_ui_data.get(WAVEFORM_RMS_KEY, [])
+    file_audio_format = waveform_data_format(file_ui_data)
+    file_audio_rate = waveform_sample_rate(file_ui_data)
     if not file_audio_data:
         log.debug("Generating audio data for file %s" % file.id)
         # Save empty 'audio_data' property before we get audio samples
         get_app().window.timeline.fileAudioDataReady.emit(file.id, {"ui": {"audio_data": None}}, tid)
         # Generate audio data for a specific file
-        file_audio_data = getAudioData(file, tid=tid)
+        waveform_result = getAudioData(file, tid=tid)
+        if waveform_result:
+            file_audio_data, file_audio_rms, file_audio_format, file_audio_rate = waveform_result
 
     if not file_audio_data:
         log.info("No audio data found. Aborting")
@@ -209,49 +332,15 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
                 )
                 continue
 
-        if time_point_count > 1:
-            # When time curves are present, generate waveform data from the clip instance itself
-            _waveform_retry_counts.pop(clip.id, None)
-            clip_audio_data = []
-            channel = channel_filter if channel_filter != -1 else -1
-            try:
-                waveformer = openshot.AudioWaveformer(clip_instance)
-                clip_wave_data = waveformer.ExtractSamples(
-                    channel, SAMPLES_PER_SECOND, True
-                )
-                sample_vectors = clip_wave_data.vectors()
-                if sample_vectors:
-                    clip_audio_data = list(sample_vectors[0])
-                clip_wave_data.clear()
-            except Exception:
-                log.error(
-                    "Error generating clip waveform data for clip %s", clip.id, exc_info=1
-                )
-
-            if clip_audio_data:
-                get_app().window.timeline.clipAudioDataReady.emit(
-                    clip.id, {"ui": {"audio_data": clip_audio_data}}, tid
-                )
-                continue
-
-            reason = "time curve waveform empty"
-            if _schedule_waveform_retry(file_id, clip.id, tid, reason):
-                log.debug(
-                    "Clip %s waveform generation empty; retry scheduled", clip.id
-                )
-                continue
-
-            log.warning(
-                "Clip %s waveform generation failed after retries; leaving waveform unchanged",
-                clip.id,
-            )
-            continue
-
         _waveform_retry_counts.pop(clip.id, None)
 
         if channel_filter != -1:
             # Some kind of filtering is happening, so we need to re-generate waveform data for this clip
-            file_audio_data = getAudioData(file, channel_filter, tid=tid)
+            waveform_result = getAudioData(file, channel_filter, tid=tid)
+            if waveform_result:
+                file_audio_data, file_audio_rms, file_audio_format, file_audio_rate = waveform_result
+            else:
+                file_audio_data = None
 
         # Get File's audio data (since it has changed)
         if not file_audio_data:
@@ -265,6 +354,7 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
 
         # Loop through samples from the file, applying this clip's volume curve
         clip_audio_data = []
+        clip_audio_rms = []
         info = clip_instance.info
         proj_fraction = project_fps_fraction()
         num_frames = video_length_to_project_frames(
@@ -283,7 +373,7 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
         # Determine best guess # of samples (based on duration)
         # We don't want to use the len(file_audio_data) due to padding at EOF
         # from libopenshot
-        sample_count = round(clip_instance.info.duration * SAMPLES_PER_SECOND)
+        sample_count = round(clip_instance.info.duration * file_audio_rate)
 
         if not num_frames or not sample_count:
             log.debug(
@@ -297,6 +387,7 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
         # Loop through file samples and adjust time/volume values
         # Copy adjusted samples into clip data
         file_data_len = len(file_audio_data)
+        file_rms_len = len(file_audio_rms) if isinstance(file_audio_rms, (list, tuple)) else 0
         if not file_data_len:
             log.debug(
                 "File audio data is empty for clip %s, skipping waveform generation",
@@ -317,8 +408,49 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
             if file_data_len:
                 source_index = min(source_index, file_data_len - 1)
             clip_audio_data.append(file_audio_data[source_index] * volume)
+            if file_rms_len:
+                rms_index = min(source_index, file_rms_len - 1)
+                clip_audio_rms.append(file_audio_rms[rms_index] * abs(volume))
 
         # Save this data to the clip object
         get_app().window.timeline.clipAudioDataReady.emit(
-            clip.id, {"ui": {"audio_data": clip_audio_data}}, tid
+            clip.id,
+            {"ui": {
+                "audio_data": clip_audio_data,
+                WAVEFORM_RMS_KEY: clip_audio_rms,
+                WAVEFORM_FORMAT_KEY: file_audio_format,
+                WAVEFORM_RATE_KEY: file_audio_rate,
+            }},
+            tid,
         )
+
+
+def clear_waveform_data():
+    """Drop cached waveform data from every file and clip (Edit > Clear > Waveform).
+
+    One undo step; joins the caller's transaction. Returns (files_cleared, clips_cleared).
+    """
+    from classes import app as app_module
+    from classes.updates import nested_transaction
+
+    ui_keys = ("audio_data_format", "audio_data_rms", "audio_data_rate")
+    cleared_files = cleared_clips = 0
+    with nested_transaction(app_module.get_app().updates):
+        for file in File.filter():
+            if "audio_data" in file.data.get("ui", {}):
+                log.debug("File %s has audio data. Deleting it.", file.id)
+                del file.data["ui"]["audio_data"]
+                for key in ui_keys:
+                    file.data["ui"].pop(key, None)
+                file.save()
+                cleared_files += 1
+
+        for clip in Clip.filter():
+            if "audio_data" in clip.data.get("ui", {}):
+                log.debug("Clip %s has audio data. Deleting it.", clip.id)
+                del clip.data["ui"]["audio_data"]
+                for key in ui_keys:
+                    clip.data["ui"].pop(key, None)
+                clip.save()
+                cleared_clips += 1
+    return cleared_files, cleared_clips

@@ -62,9 +62,9 @@ def test_propose_overlay_windows_no_copy_fields():
 
     fake_mod = MagicMock()
     fake_mod.enumerate_timeline_contexts.return_value = [ctx, ctx2]
-    sys.modules["classes.timeline_clip_context"] = fake_mod
-
-    with _layers_patch() as app:
+    with patch.dict(
+        sys.modules, {"classes.timeline_clip_context": fake_mod}
+    ), _layers_patch() as app:
         app.return_value.project.get.return_value = [
             {"number": 1000000},
             {"number": 2000000},
@@ -138,9 +138,9 @@ def test_propose_continuous_footage_no_late_dump():
     )
     fake_mod = MagicMock()
     fake_mod.enumerate_timeline_contexts.return_value = [ctx, ctx2]
-    sys.modules["classes.timeline_clip_context"] = fake_mod
-
-    with _layers_patch() as app:
+    with patch.dict(
+        sys.modules, {"classes.timeline_clip_context": fake_mod}
+    ), _layers_patch() as app:
         app.return_value.project.get.return_value = [{"number": 1000000}, {"number": 3000000}]
         data = json.loads(th.propose_overlay_windows(beat_count="4"))
 
@@ -174,9 +174,9 @@ def test_propose_prefers_wide_over_face_window():
     )
     fake_mod = MagicMock()
     fake_mod.enumerate_timeline_contexts.return_value = [ctx_wide]
-    sys.modules["classes.timeline_clip_context"] = fake_mod
-
-    with _layers_patch() as app:
+    with patch.dict(
+        sys.modules, {"classes.timeline_clip_context": fake_mod}
+    ), _layers_patch() as app:
         app.return_value.project.get.return_value = [{"number": 1000000}, {"number": 3000000}]
         data = json.loads(th.propose_overlay_windows(beat_count="2"))
 
@@ -188,9 +188,9 @@ def test_propose_prefers_wide_over_face_window():
 def test_propose_empty_timeline_spaced():
     fake_mod = MagicMock()
     fake_mod.enumerate_timeline_contexts.return_value = []
-    sys.modules["classes.timeline_clip_context"] = fake_mod
-
-    with _layers_patch() as app:
+    with patch.dict(
+        sys.modules, {"classes.timeline_clip_context": fake_mod}
+    ), _layers_patch() as app:
         app.return_value.project.get.return_value = [{"number": 1000000}]
         data = json.loads(th.propose_overlay_windows(beat_count="3"))
 

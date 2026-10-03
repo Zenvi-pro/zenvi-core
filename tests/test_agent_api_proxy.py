@@ -71,6 +71,20 @@ def test_requires_a_path(sent):
     assert sent == []
 
 
+def test_refuses_paths_outside_the_allowlist(sent):
+    for hostile in (
+        "/admin",
+        "/api/v1/account",
+        "/api/v1/billing/charge",
+        "/api/v2/models",
+        "/health",
+    ):
+        result = proxy.zenvi_api_request("GET", hostile)
+        assert result.startswith("Error:"), hostile
+        assert "not allowed" in result
+    assert sent == []
+
+
 def test_reports_a_signed_out_user_instead_of_calling_anonymously(monkeypatch):
     monkeypatch.setattr(proxy, "_backend_url", lambda: BASE)
     monkeypatch.setattr(proxy, "_access_token", lambda: None)
@@ -97,7 +111,7 @@ def test_sends_the_users_token_and_normalises_the_path(sent):
 
 
 def test_passes_body_and_query_through_as_json(sent):
-    proxy.zenvi_api_request("POST", "/api/v1/thing",
+    proxy.zenvi_api_request("POST", "/api/v1/chat/send",
                             body='{"name": "demo"}', query='{"limit": 10}')
     call = sent[0]
     assert call["json"] == {"name": "demo"}
@@ -125,7 +139,7 @@ def test_a_huge_response_is_truncated(monkeypatch):
         "request": staticmethod(lambda *a, **k: FakeResponse(200, big))})
     monkeypatch.setitem(sys.modules, "requests", fake)
 
-    result = proxy.zenvi_api_request("GET", "/api/v1/big")
+    result = proxy.zenvi_api_request("GET", "/api/v1/models")
     assert "truncated" in result
     assert len(result) < proxy.MAX_RESPONSE_CHARS * 2
 
@@ -167,3 +181,67 @@ def test_extra_tools_do_not_leak_into_the_built_in_assistant():
     from classes.agent_api_proxy import MCP_EXTRA_TOOLS
 
     assert not (set(MCP_EXTRA_TOOLS) & set(AGENT_TOOL_HANDLERS))
+
+
+# --- capture_editor_screenshot_tool -------------------------------------------
+
+class _FakeImage:
+    def __init__(self, state):
+        self._state = state
+
+    def width(self):
+        return 800
+
+    def height(self):
+        return 600
+
+    def save(self, path, fmt):
+        self._state["saved_on_gui"] = self._state["on_gui"]
+        with open(path, "wb") as fh:
+            fh.write(b"png")
+        return True
+
+
+@pytest.fixture
+def editor_window(monkeypatch):
+    """A window whose grab() works, and a GUI thread that records what ran on it."""
+    from types import SimpleNamespace
+    from classes import tool_handlers
+
+    state = {"on_gui": False, "saved_on_gui": None, "grabs": 0}
+
+    def grab():
+        state["grabs"] += 1
+        return SimpleNamespace(width=lambda: 800, toImage=lambda: _FakeImage(state))
+
+    window = SimpleNamespace(isVisible=lambda: True, grab=grab)
+
+    def on_main(fn, *args, timeout=30):
+        state["on_gui"] = True
+        try:
+            return fn(*args)
+        finally:
+            state["on_gui"] = False
+
+    monkeypatch.setattr(tool_handlers, "_get_app", lambda: SimpleNamespace(window=window))
+    monkeypatch.setattr(tool_handlers, "_run_on_main_thread", on_main)
+    return state
+
+
+def test_screenshot_is_written_off_the_gui_thread(editor_window, tmp_path):
+    out = tmp_path / "shots" / "now.png"
+    result = proxy.capture_editor_screenshot_tool(path=str(out))
+    assert result.startswith("Saved window screenshot") and "800x600" in result
+    assert out.read_bytes() == b"png"
+    assert editor_window["saved_on_gui"] is False
+
+
+def test_screenshot_never_replaces_an_existing_file(editor_window, tmp_path):
+    for target in (tmp_path / "cut.zvn", tmp_path / "taken.png"):
+        target.write_text("{}", encoding="utf-8")
+        result = proxy.capture_editor_screenshot_tool(path=str(target))
+        assert result.startswith("Error:")
+        assert target.read_text(encoding="utf-8") == "{}"
+    assert proxy.capture_editor_screenshot_tool(path=str(tmp_path / "new.osp")).startswith("Error:")
+    assert not (tmp_path / "new.osp").exists()
+    assert editor_window["grabs"] == 0

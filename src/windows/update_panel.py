@@ -17,8 +17,8 @@
 
 import webbrowser
 
-from PyQt5.QtCore import Qt, QSize, QPoint
-from PyQt5.QtWidgets import (
+from qt_api import Qt, QSize, QPoint
+from qt_api import (
     QFrame, QLabel, QPushButton, QProgressBar, QHBoxLayout, QVBoxLayout,
 )
 

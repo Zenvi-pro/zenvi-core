@@ -17,10 +17,10 @@
 
 import os
 
-from PyQt5.QtCore import Qt, QSize, QTimer, QRectF
-from PyQt5.QtGui import QColor, QIcon, QPainter, QPainterPath, QPixmap
-from PyQt5.QtSvg import QSvgRenderer
-from PyQt5.QtWidgets import QApplication, QToolButton
+from qt_api import Qt, QSize, QTimer, QRectF
+from qt_api import QColor, QIcon, QPainter, QPainterPath, QPixmap
+from qt_api import QSvgRenderer
+from qt_api import QApplication, QToolButton
 
 from classes import info
 from classes.logger import log

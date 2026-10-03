@@ -28,17 +28,24 @@ import copy
 import math
 import threading
 
-from PyQt5.QtCore import (
-    Qt, QCoreApplication, QRectF, QTimer, QSize, QThread, pyqtSignal
+from qt_api import (
+    Qt, QCoreApplication, QRectF, QTimer, QSize, QThread, pyqtSignal, QPointF
 )
-from PyQt5.QtGui import (
-    QPainter, QColor, QPen, QBrush, QCursor, QPainterPath, QIcon
+from qt_api import modifiers_has
+from qt_api import (
+    QPainter, QColor, QPen, QBrush, QCursor, QPainterPath, QIcon, QPalette
 )
-from PyQt5.QtWidgets import QSizePolicy, QWidget
+from qt_api import QSizePolicy, QWidget
 
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
 from classes import updates
+
+
+def _event_posf(event):
+    if hasattr(event, "position"):
+        return event.position()
+    return QPointF(event.pos())
 from classes.app import get_app
 from classes.query import Clip, Track, Transition, Marker
 from classes.logger import log
@@ -105,6 +112,9 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
 
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):
+        from qt_api import isdeleted
+        if isdeleted(self):
+            return
         # Ignore changes that don't affect this
         if (action and len(action.key) >= 1 and action.key[0].lower() in ["files", "history", "profile"]) or self.ignore_updates:
             return
@@ -203,7 +213,10 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform | QPainter.TextAntialiasing, True)
 
         # Fill the whole widget with the solid color (background solid color)
-        background_color = self.palette().color(self.palette().Base)
+        base_role = getattr(QPalette, "Base", None)
+        if base_role is None:
+            base_role = QPalette.ColorRole.Base
+        background_color = self.palette().color(base_role)
         painter.fillRect(event.rect(), background_color)
 
         # Create pens / colors
@@ -331,17 +344,18 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         event.accept()
         self.mouse_pressed = True
         self.mouse_dragging = False
-        self.mouse_position = event.pos().x()
+        self.mouse_position = _event_posf(event).x()
         self.scrollbar_position_previous = list(self.scrollbar_position)  # copy, don't alias
 
     def mouseReleaseEvent(self, event):
         """Capture mouse release event"""
         event.accept()
+        posf = _event_posf(event)
 
         # Handle the case where no dragging occurred (single click)
-        if not self.mouse_dragging and not self.scroll_bar_rect.contains(event.pos()):
+        if not self.mouse_dragging and not self.scroll_bar_rect.contains(posf):
             # Center the scroll region at the click position (if outside the selection)
-            click_pos = event.pos().x() / self.width()
+            click_pos = posf.x() / self.width()
             selection_width = self.scrollbar_position[1] - self.scrollbar_position[0]
             half_width = selection_width / 2
 
@@ -400,9 +414,10 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
     def mouseMoveEvent(self, event):
         """Capture mouse events"""
         event.accept()
+        posf = _event_posf(event)
 
         # Get current mouse position
-        mouse_pos = event.pos().x()
+        mouse_pos = posf.x()
         if mouse_pos < 0:
             mouse_pos = 0
         elif mouse_pos > self.width():
@@ -411,11 +426,11 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         # Set cursor (based on current mouse position)
         drag_threshold = 5
         if not self.mouse_dragging:
-            if self.left_handle_rect.contains(event.pos()):
+            if self.left_handle_rect.contains(posf):
                 self.setCursor(self.cursors.get('resize_x'))
-            elif self.right_handle_rect.contains(event.pos()):
+            elif self.right_handle_rect.contains(posf):
                 self.setCursor(self.cursors.get('resize_x'))
-            elif self.scroll_bar_rect.contains(event.pos()):
+            elif self.scroll_bar_rect.contains(posf):
                 self.setCursor(self.cursors.get('move'))
             else:
                 self.setCursor(Qt.ArrowCursor)
@@ -423,11 +438,11 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         # Detect dragging (only if the user clicked and started dragging beyond the threshold)
         if self.mouse_pressed and not self.mouse_dragging:
             self.mouse_dragging = True
-            if self.left_handle_rect.contains(event.pos()):
+            if self.left_handle_rect.contains(posf):
                 self.left_handle_dragging = True
-            elif self.right_handle_rect.contains(event.pos()):
+            elif self.right_handle_rect.contains(posf):
                 self.right_handle_dragging = True
-            elif self.scroll_bar_rect.contains(event.pos()):
+            elif self.scroll_bar_rect.contains(posf):
                 self.scroll_bar_dragging = True
             elif abs(self.mouse_position - mouse_pos) > drag_threshold:
                 # If clicking outside the current selection, initiate drag to create a new selection
@@ -443,7 +458,7 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
                 new_left_pos = self.scrollbar_position_previous[0] - delta
                 is_left = True
 
-                if int(QCoreApplication.instance().keyboardModifiers() & Qt.ShiftModifier) > 0:
+                if modifiers_has(QCoreApplication.instance().keyboardModifiers(), Qt.ShiftModifier):
                     # SHIFT key pressed, move both handles
                     if (self.scrollbar_position_previous[1] + delta) - new_left_pos > self.min_distance:
                         new_right_pos = self.scrollbar_position_previous[1] + delta
@@ -466,7 +481,7 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
                 new_right_pos = self.scrollbar_position_previous[1] - delta
                 is_left = False
 
-                if int(QCoreApplication.instance().keyboardModifiers() & Qt.ShiftModifier) > 0:
+                if modifiers_has(QCoreApplication.instance().keyboardModifiers(), Qt.ShiftModifier):
                     # SHIFT key pressed, move both handles
                     if new_right_pos - (self.scrollbar_position_previous[0] + delta) > self.min_distance:
                         new_left_pos = self.scrollbar_position_previous[0] + delta
@@ -574,8 +589,8 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
     def wheelEvent(self, event):
         event.accept()
 
-        # Repaint widget on zoom
-        self.repaint()
+        # Use async repaint to avoid recursive paint on some Qt/Windows paths.
+        self.update()
 
     def setZoomFactor(self, zoom_factor, center=False, emit=True):
         """Set the current zoom factor (do not clamp width here — backend owns authoritative geometry)."""
@@ -585,8 +600,8 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         if center:
             get_app().window.TimelineCenter.emit()
 
-        # Force re-paint
-        self.repaint()
+        # Force re-paint asynchronously
+        self.update()
 
     def zoomIn(self):
         """Zoom into timeline"""
@@ -627,25 +642,25 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         # Disable auto center
         self.is_auto_center = False
 
-        # Force re-paint
-        self.repaint()
+        # Force re-paint asynchronously
+        self.update()
 
     def handle_selection(self):
         # Force recalculation of clips and repaint
         self.changed(None)
-        self.repaint()
+        self.update()
 
     def timeline_resized(self):
         # Force recalculation of clips and repaint
-        self.repaint()
+        self.update()
         self.delayed_resize_timer.start()
 
     def update_playhead_pos(self, currentFrame):
         """Callback when position is changed"""
         self.current_frame = currentFrame
 
-        # Force re-paint
-        self.repaint()
+        # Force re-paint asynchronously
+        self.update()
 
     def handle_play(self):
         """Callback when play button is clicked"""
@@ -662,12 +677,12 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
             # Force recalculation and repaint
             self.ignore_updates = ignore
             self.changed(None)
-            self.repaint()
+            self.update()
         self.ignore_updates = ignore
 
     def __init__(self, *args):
         # Invoke parent init
-        QWidget.__init__(self, *args)
+        super().__init__(*args)
 
         # Translate object
         _ = get_app()._tr

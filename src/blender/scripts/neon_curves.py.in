@@ -115,26 +115,43 @@ else:
 text_object.font = font
 
 # Change the material settings (color, alpha, etc...)
-material_object = bpy.data.materials["Material.title"]
-material_object.diffuse_color = params["diffuse_color"]
-material_object.node_tree.nodes[1].inputs[0].default_value = params["diffuse_color"]
-material_object.node_tree.nodes[1].inputs[1].default_value = params["strength"]
+set_material_color("Material.title", params["diffuse_color"], emission_strength=params["strength"])
 
 # Change line colors
-material_object = bpy.data.materials["Material.line1"]
-material_object.node_tree.nodes[1].inputs[0].default_value = params["line1_diffuse_color"]
-
-material_object = bpy.data.materials["Material.line2"]
-material_object.node_tree.nodes[1].inputs[0].default_value = params["line2_diffuse_color"]
-
-material_object = bpy.data.materials["Material.line3"]
-material_object.node_tree.nodes[1].inputs[0].default_value = params["line3_diffuse_color"]
-
-material_object = bpy.data.materials["Material.line4"]
-material_object.node_tree.nodes[1].inputs[0].default_value = params["line4_diffuse_color"]
+set_material_color("Material.line1", params["line1_diffuse_color"])
+set_material_color("Material.line2", params["line2_diffuse_color"])
+set_material_color("Material.line3", params["line3_diffuse_color"])
+set_material_color("Material.line4", params["line4_diffuse_color"])
 
 # Change glare type
-bpy.data.scenes[0].node_tree.nodes["Glare"].glare_type = params["glare_type"]
+def _apply_glare_type(node):
+    if hasattr(node, "glare_type"):
+        node.glare_type = params["glare_type"]
+        return True
+    if hasattr(node, "inputs") and len(node.inputs) > 1 and hasattr(node.inputs[1], "default_value"):
+        node.inputs[1].default_value = params["glare_type"]
+        return True
+    return False
+
+def _set_glare_type(node_tree):
+    if not node_tree:
+        return False
+    glare_node = node_tree.nodes.get("Glare")
+    if glare_node:
+        return _apply_glare_type(glare_node)
+    for node in node_tree.nodes:
+        if node.type == 'GLARE':
+            return _apply_glare_type(node)
+        if node.type == 'GROUP' and getattr(node, "node_tree", None):
+            if _set_glare_type(node.node_tree):
+                return True
+    return False
+
+scene_tree = getattr(bpy.data.scenes[0], "node_tree", None)
+if not _set_glare_type(scene_tree):
+    for node_group in bpy.data.node_groups:
+        if _set_glare_type(node_group):
+            break
 
 # Set the render options.  It is important that these are set
 # to the same values as the current OpenShot project.  These

@@ -32,15 +32,19 @@ import os
 import platform
 import traceback
 import json
+import logging
 
-from PyQt5.QtCore import (
-    PYQT_VERSION_STR,
+from qt_api import (
+    QT_API,
     QT_VERSION_STR,
-    pyqtSlot,
+    BINDING_VERSION_STR,
+    Slot,
     qInstallMessageHandler,
+    QLoggingCategory,
     QtMsgType,
 )
-from PyQt5.QtWidgets import QApplication, QMessageBox
+from qt_api import QApplication, QEvent, QMessageBox, QTimer
+from qt_api import request_android_storage_permission_if_needed
 
 _QT_MSG_PREFIXES = {
     QtMsgType.QtDebugMsg: "debug",
@@ -51,9 +55,33 @@ _QT_MSG_PREFIXES = {
 }
 
 
+def _install_qt_message_handler():
+    """Install the Qt message handler, with warnings filtered out inside Qt.
+
+    The handler is Python: it runs on the thread that emitted the message and
+    needs the GIL. Qt emits font warnings ("OpenType support missing for ...",
+    "QObject::startTimer: Timers can only be used with threads started with
+    QThread") while holding its font-database lock, on whichever thread is
+    drawing text -- a title's SVG thumbnail, the preview player drawing a
+    Caption. When the GUI thread is measuring text at that moment it holds the
+    GIL and waits for that lock, the other thread holds the lock and waits for
+    the GIL, and the editor freezes for good.
+
+    So default-category warnings are dropped by Qt before any handler runs.
+    Critical and fatal messages still reach the handler. For debugging,
+    QT_LOGGING_RULES="default.warning=true" in the environment brings them back.
+    """
+    QLoggingCategory.setFilterRules("default.warning=false")
+    qInstallMessageHandler(_qt_message_handler)
+
+
 def _qt_message_handler(msg_type, context, message):
     """Filter out known noisy Qt warnings (e.g. QWebChannel property notify signals)."""
     if "has no notify signal" in message and "value updates in HTML will be broken" in message:
+        return
+    # The offscreen platform (launch.py --headless) says this on every dock
+    # layout change; it means nothing without a screen.
+    if "does not support propagateSizeHints" in message:
         return
     prefix = _QT_MSG_PREFIXES.get(msg_type, "debug")
 
@@ -70,6 +98,12 @@ def _qt_message_handler(msg_type, context, message):
             _log.error("Qt %s: %s%s", prefix, message, location)
         except Exception:
             pass
+
+    try:
+        from classes import crash_handler
+        crash_handler.report_qt_thread_warning(message)
+    except Exception:
+        pass
 
     # Forward all other messages to stderr like Qt's default handler
     if sys.stderr is not None:
@@ -88,7 +122,7 @@ def _install_windows_qfiledialog_workaround():
     """Avoid native IFileOpenDialog COM on MSYS2/MinGW (HRESULT 0x80040155)."""
     if sys.platform != "win32":
         return
-    from PyQt5.QtWidgets import QFileDialog
+    from qt_api import QFileDialog
 
     _FLAG = QFileDialog.DontUseNativeDialog
 
@@ -164,10 +198,15 @@ class StartupError:
 
     def show(self):
         """Display the stored error message"""
-        # An unrecognised level must not KeyError on the way to telling the user
-        # something already went wrong.
-        box_call = self.levels.get(self.level, QMessageBox.critical)
-        box_call(None, self.title, self.message)
+        from classes import headless
+        if headless.is_active():
+            # Nobody can dismiss a message box in a headless session.
+            headless.report("%s: %s" % (self.title, headless.plain_text(self.message)))
+        else:
+            # An unrecognised level must not KeyError on the way to telling the
+            # user something already went wrong.
+            box_call = self.levels.get(self.level, QMessageBox.critical)
+            box_call(None, self.title, self.message)
         if self.level == "error":
             # Non-zero on purpose: a bare sys.exit() reports success, and this
             # SystemExit propagates out through show_errors() past launch.py's
@@ -207,12 +246,15 @@ class OpenShotApp(QApplication):
             if self.mode != "unittest":
                 reroute_output()
 
-            # Suppress noisy QWebChannel warnings (TimelineView properties without notify signals)
-            qInstallMessageHandler(_qt_message_handler)
+            _install_qt_message_handler()
 
         except ImportError as ex:
             tb = traceback.format_exc()
-            log.error('OpenShotApp::Import Error', exc_info=1)
+            try:
+                log.error('OpenShotApp::Import Error', exc_info=1)
+            except Exception:
+                logging.getLogger(__name__).error(
+                    'OpenShotApp::Import Error', exc_info=True)
             diag_hint = ""
             try:
                 from classes.openshot_import_diag import write_openshot_import_diagnostic
@@ -266,12 +308,23 @@ class OpenShotApp(QApplication):
 
         # Log some basic system info
         self.log = log
+        # Clear any stale override cursor (can suppress widget cursors in some Qt bindings)
+        try:
+            while QApplication.overrideCursor():
+                QApplication.restoreOverrideCursor()
+        except Exception as exc:
+            log.debug("Failed to clear stale override cursor: %s", exc, exc_info=True)
         self.show_environment(info, openshot)
         if self.mode != "unittest":
             self.check_libopenshot_version(info, openshot)
 
         # Init data objects
+        from classes import headless
+        self.headless = headless.is_active()
         self.settings = settings.SettingStore(parent=self)
+        # A headless session uses the user's preferences but leaves the file to
+        # the desktop window (see classes.headless).
+        self.settings.read_only = self.headless
         self.settings.load()
         self.apply_timeline_backend_preference()
         self.project = project_data.ProjectDataStore()
@@ -299,9 +352,60 @@ class OpenShotApp(QApplication):
         # Empty window
         self.window = None
 
+        # Files other launches (or macOS Open With) asked us to open; held
+        # until the main window is up.
+        self._external_requests = []
+        self._external_paths_ready = False
+        self.instance_server = None
+
         # Instantiate Theme Manager (Singleton)
         from themes.manager import ThemeManager
         self.theme_manager = ThemeManager(self)
+
+    def notify(self, receiver, event):
+        """Keep a Python exception in a Qt event from tearing down the process."""
+        from classes import crash_handler
+        return crash_handler.notify_with_guard(super().notify, receiver, event)
+
+    def event(self, event):
+        """macOS hands files to a running (or launching) bundle as FileOpen
+        events -- ``open -a Zenvi cut.zvn``, Finder's Open With."""
+        if event.type() == QEvent.FileOpen:
+            path = event.file()
+            if path and not getattr(self, "headless", False):
+                self.open_external_paths([path])
+            return True
+        return super().event(event)
+
+    def start_instance_server(self):
+        """Listen for later launches' files (the desktop window only)."""
+        from classes import single_instance
+        try:
+            server = single_instance.InstanceServer(
+                single_instance.server_name(self.info.USER_PATH), self.open_external_paths,
+                parent=self)
+            if server.listen():
+                self.instance_server = server
+                # A quitting window takes no more files (and removes its socket).
+                self.aboutToQuit.connect(server.close)
+        except Exception:
+            # Later launches then start their own window, as before.
+            self.log.warning("Not listening for other launches", exc_info=True)
+
+    def open_external_paths(self, paths):
+        """Open files another launch handed over, once the main window is up.
+        An empty list only brings the window to the front."""
+        self._external_requests.append(list(paths))
+        if self._external_paths_ready:
+            self._deliver_external_paths()
+
+    def _deliver_external_paths(self):
+        requests, self._external_requests = self._external_requests, []
+        window = getattr(self, "window", None)
+        if window is None:
+            return
+        for paths in requests:
+            window.open_external_paths(paths)
 
     def show_environment(self, info, openshot):
         log = self.log
@@ -316,8 +420,7 @@ class OpenShotApp(QApplication):
             log.info("processor: %s" % platform.processor())
             log.info("machine: %s" % platform.machine())
             log.info("python version: %s" % platform.python_version())
-            log.info("qt5 version: %s" % QT_VERSION_STR)
-            log.info("pyqt5 version: %s" % PYQT_VERSION_STR)
+            log.info("qt binding: %s (Qt %s, binding %s)" % (QT_API, QT_VERSION_STR, BINDING_VERSION_STR))
 
             # Look for frozen version info
             version_path = os.path.join(info.PATH, "settings", "version.json")
@@ -366,7 +469,7 @@ class OpenShotApp(QApplication):
 
         if use_qwidget:
             self.info.WEB_BACKEND = "qwidget"
-            self.log.info("Experimental timeline enabled via preferences; using QWidget backend.")
+            self.log.info("Native timeline enabled via preferences; using QWidget backend.")
 
     def gui(self):
         """
@@ -434,25 +537,46 @@ class OpenShotApp(QApplication):
         self.aboutToQuit.connect(self.cleanup)
 
         # Show auth dialog if user is not signed in (keep main window hidden from taskbar until then).
+        # A headless session checked the stored session before building the
+        # window, and has no one to show a dialog to.
         from classes.auth_manager import AuthManager
         auth = AuthManager.instance()
-        if not auth.is_authenticated():
+        if not self.headless and not auth.is_authenticated():
             self.window.hide()
             from windows.login_window import LoginWindow
             login_dlg = LoginWindow(parent=None)
             result = login_dlg.exec_()
             # If user cancelled auth, quit the application
             if result != LoginWindow.Accepted:
-                log.info("Auth cancelled by user — exiting.")
+                log.info("Auth cancelled by user ΓÇö exiting.")
                 self.window.close()
                 return False
+            # The chat dock's first credits fetch ran signed out; fetch now
+            # instead of leaving the badge on its placeholder for 60 s.
+            if getattr(self.window, "dockAIChat", None):
+                self.window.dockAIChat.refresh_credits_for_account()
 
         # Show main window (Win32 HWND icon needed when host is python.exe on Windows).
+        # Headless, it is shown on the offscreen platform: laid out and painted
+        # exactly as on screen, but never displayed.
         self.window.show()
+        if self.headless:
+            # classes.headless opens --project itself; no session restore.
+            return True
         try:
             info.schedule_application_icon(self.window)
         except Exception:
             pass
+
+        # On Android, prompt for All Files Access once the window is visible so
+        # the permission is in place before the user first taps Import Files.
+        QTimer.singleShot(500, request_android_storage_permission_if_needed)
+
+        # Files later launches hand over are opened from here on, after
+        # startup's own project (below) is in place.
+        self._external_paths_ready = True
+        if self._external_requests:
+            QTimer.singleShot(0, self._deliver_external_paths)
 
         args = self.args
         if len(args) < 2:
@@ -512,7 +636,7 @@ class OpenShotApp(QApplication):
     def _tr(self, message):
         return self.translate("", message)
 
-    @pyqtSlot()
+    @Slot()
     def cleanup(self):
         """aboutToQuit signal handler for application exit"""
         # faulthandler on Windows reports benign COM teardown (0x80010108) as "fatal" during late exit.
@@ -534,7 +658,11 @@ class OpenShotApp(QApplication):
             pass
 
         self.log.debug("Saving settings in app.cleanup")
-
+        if getattr(self, "window", None):
+            try:
+                self.window._shutdown()
+            except Exception:
+                self.log.warning("Window shutdown raised during app cleanup.", exc_info=1)
         try:
             self.settings.save()
         except Exception:

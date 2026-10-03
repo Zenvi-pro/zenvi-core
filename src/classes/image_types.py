@@ -101,3 +101,19 @@ def get_media_type(file_object):
     else:
         # If none set, just assume video
         return "video"
+
+
+def is_audio_only_media(file_object):
+    """True when a file should never composite video (music, SFX, voice-over).
+
+    Extension first: libopenshot reports has_video=True for MP3s carrying cover
+    art, and such a clip paints an opaque frame over every lower layer.
+    """
+    if not isinstance(file_object, dict):
+        return False
+    if is_audio_path(file_object.get("path") or ""):
+        return True
+    media_type = str(file_object.get("media_type") or "").strip().lower()
+    if media_type:
+        return media_type == "audio"
+    return bool(file_object.get("has_audio")) and not file_object.get("has_video")

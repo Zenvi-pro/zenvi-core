@@ -25,20 +25,22 @@ You should have received a copy of the GNU General Public License
 along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-import json
 import os
 import re
 from operator import itemgetter
 
 import openshot
-from PyQt5.QtWidgets import QFileDialog
+from qt_api import QFileDialog
 
 from classes import info
 from classes.app import get_app
 from classes.logger import log
 from classes.image_types import get_media_type
+from classes.importers.media_probe import probe_clip
 from classes.path_utils import absolute_path_from_export
 from classes.query import Clip, Track, File
+from classes import frame_time as ft
+from fractions import Fraction
 from classes.time_parts import timecodeToSeconds
 from windows.views.find_file import find_missing_file
 
@@ -61,6 +63,17 @@ param_regexes = [
 ]
 fcm_regex = re.compile(r"FCM:[ ]+(.*)")
 
+
+
+def _snap_clip_timing(clip, fps_num, fps_den):
+    fps = Fraction(int(fps_num), int(fps_den))
+    pos = float(clip.data.get("position", 0.0) or 0.0)
+    start = float(clip.data.get("start", 0.0) or 0.0)
+    end = float(clip.data.get("end", 0.0) or 0.0)
+    pos, start, end = ft.quantize_span(pos, start, end, fps)
+    clip.data["position"] = pos
+    clip.data["start"] = start
+    clip.data["end"] = end
 
 def _interp_from_name(name):
     n = (str(name) if name is not None else "").strip().lower()
@@ -97,8 +110,13 @@ def _db_to_volume(db_value):
     return max(0.0, min(1.0, linear))
 
 
-def create_clip(context, track):
-    """Create a new clip based on this context dict"""
+def create_clip(context, track, prompt=True, missing=None, probes=None):
+    """Create a new clip based on this context dict
+
+    prompt=False skips media that cannot be found instead of asking the user;
+    skipped paths are appended to *missing*. *probes* caches probed media for
+    one import (see media_probe.probe_clip). Returns the new Clip or None.
+    """
     app = get_app()
     _ = app._tr
 
@@ -111,9 +129,11 @@ def create_clip(context, track):
     clip_path_value = clip_path_value or ""
 
     # Get clip path (and prompt user if path not found)
-    clip_path, is_modified, is_skipped = find_missing_file(clip_path_value)
+    clip_path, is_modified, is_skipped = find_missing_file(clip_path_value, prompt=prompt)
     if is_skipped:
-        return
+        if missing is not None and clip_path_value:
+            missing.append(clip_path_value)
+        return None
 
     # Get component contexts
     video_ctx = context.get("video_ctx", {})
@@ -127,14 +147,21 @@ def create_clip(context, track):
     # Check for this path in our existing project data
     file = File.get(path=clip_path)
 
-    # Load filepath in libopenshot clip object (which will try multiple readers to open it)
-    clip_obj = openshot.Clip(clip_path)
+    # Open the media in libopenshot (off the GUI thread, once per import)
+    try:
+        clip_json, reader_json = probe_clip(clip_path, probes if probes is not None else {}, openshot)
+    except Exception:
+        log.warning("Could not open %s" % clip_path, exc_info=1)
+        if missing is not None:
+            missing.append(clip_path)
+        return None
 
     if not file:
         # Get the JSON for the clip's internal reader
         try:
-            reader = clip_obj.Reader()
-            file_data = json.loads(reader.Json())
+            if reader_json is None:
+                raise ValueError("no reader for %s" % clip_path)
+            file_data = reader_json
 
             # Determine media type
             file_data["media_type"] = get_media_type(file_data)
@@ -147,21 +174,25 @@ def create_clip(context, track):
             file.save()
         except Exception:
             log.warning("Error building File object for %s" % clip_path, exc_info=1)
+            if missing is not None:
+                missing.append(clip_path)
+            return None
 
     if file.data["media_type"] == "video" or file.data["media_type"] == "image":
         # Determine thumb path
         thumb_path = os.path.join(info.THUMBNAIL_PATH, "%s.png" % file.data["id"])
     else:
         # Audio file
-        thumb_path = os.path.join(info.PATH, "images", "AudioThumbnail.png")
+        thumb_path = os.path.join(info.PATH, "images", "AudioThumbnail.svg")
 
     # Create Clip object
     clip = Clip()
-    clip.data = json.loads(clip_obj.Json())
+    clip.data = clip_json
     clip.data["file_id"] = file.id
     clip_title = context.get("clip_title") or os.path.basename(clip_path_value) or clip_path_value
     clip.data["title"] = clip_title
     clip.data["layer"] = track.data.get("number", 1000000)
+    clip.data["image"] = thumb_path
     reel_name = (video_ctx or audio_ctx).get("reel") if (video_ctx or audio_ctx) else None
     if not reel_name and audio_ctx_list:
         reel_name = audio_ctx_list[0].get("reel")
@@ -280,28 +311,45 @@ def create_clip(context, track):
                 )
 
     # Save clip
+    _snap_clip_timing(clip, fps_num, fps_den)
+
     clip.save()
+    return clip
 
 
-def import_edl():
-    """Import EDL File"""
+def import_edl(file_path=None, prompt=True):
+    """Import EDL File
+
+    With no *file_path*, asks for one (File > Import Project > EDL). prompt=False
+    never opens a dialog: missing media is skipped. Returns a summary dict
+    ({"track_number", "clip_ids", "missing"}), or None when nothing was chosen.
+    """
     app = get_app()
     _ = app._tr
 
-    # Get EDL path
-    recommended_path = app.project.current_filepath or ""
-    if not recommended_path:
-        recommended_path = info.HOME_PATH
-    else:
-        recommended_path = os.path.dirname(recommended_path)
-    file_path = QFileDialog.getOpenFileName(
-        app.window,
-        _("Import EDL..."),
-        recommended_path,
-        _("Edit Decision List (*.edl)"),
-        _("Edit Decision List (*.edl)"),
-    )[0]
-    if os.path.exists(file_path):
+    if file_path is None:
+        # Get EDL path
+        recommended_path = app.project.current_filepath or ""
+        if not recommended_path:
+            recommended_path = info.HOME_PATH
+        else:
+            recommended_path = os.path.dirname(recommended_path)
+        file_path = QFileDialog.getOpenFileName(
+            app.window,
+            _("Import EDL..."),
+            recommended_path,
+            _("Edit Decision List (*.edl)"),
+            _("Edit Decision List (*.edl)"),
+        )[0]
+    summary = {"track_number": None, "clip_ids": [], "missing": []}
+    probes = {}
+
+    def _commit(ctx, trk):
+        new_clip = create_clip(ctx, trk, prompt=prompt, missing=summary["missing"], probes=probes)
+        if new_clip is not None:
+            summary["clip_ids"].append(new_clip.id)
+
+    if file_path and os.path.exists(file_path):
         context = {"audio_ctx": []}
         current_clip_index = ""
         edl_folder = os.path.dirname(os.path.abspath(file_path))
@@ -316,6 +364,7 @@ def import_edl():
         track = Track()
         track.data = {"number": track_number, "y": 0, "label": "EDL Import", "lock": False}
         track.save()
+        summary["track_number"] = track_number
 
         # Open EDL file
         with open(file_path, "r") as f:
@@ -339,7 +388,7 @@ def import_edl():
                             current_clip_index = edit_index
                         if current_clip_index != edit_index:
                             # clip changed, time to commit previous context
-                            create_clip(context, track)
+                            _commit(context, track)
 
                             # reset context
                             current_clip_index = edit_index
@@ -411,10 +460,12 @@ def import_edl():
                     context["fcm"] = r   # NON-DROP FRAME
 
             # Final edit needs committing
-            create_clip(context, track)
+            _commit(context, track)
 
             # Update the preview and reselect current frame in properties
             app.window.refreshFrameSignal.emit()
             app.window.propertyTableView.select_frame(
                 app.window.preview_thread.player.Position()
             )
+        return summary
+    return None

@@ -1,0 +1,7 @@
+# Phase 5 — portable on-device speech / ML (optional install)
+# pip install -r requirements-speech.txt
+#
+# faster-whisper pulls CTranslate2; onnxruntime is shared by VAD / diarize / embeds.
+
+faster-whisper>=1.0.3
+onnxruntime>=1.17.0

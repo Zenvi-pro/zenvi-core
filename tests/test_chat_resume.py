@@ -10,7 +10,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-pytest.importorskip("PyQt5.QtCore")
+from _qt_support import skip_without_pyqt5  # noqa: E402
+
+skip_without_pyqt5()
 from PyQt5.QtWidgets import QApplication  # noqa: E402
 
 
@@ -100,6 +102,54 @@ def test_codex_ignores_an_empty_thread_id(codex):
     codex._handle_event({"type": "thread.started"})
     assert codex._cli_id_from_cli is False
     assert codex._cli_session_id == "seeded"
+
+
+# ---------------------------------------------------------------------------
+# Cursor CLI: mints its chat id and reports it in the init event
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def cursor(qapp):
+    from windows.agent_runners import CursorCliRunner
+    runner = CursorCliRunner()
+    runner._session_id = "tab-1"
+    runner._cli_cwd = "/proj"
+    return runner
+
+
+def test_cursor_first_turn_starts_a_new_chat(cursor):
+    cursor._cli_session_id = "seeded-uuid"
+    assert "--resume" not in cursor._build_argv("hello")
+
+
+def test_cursor_does_not_resume_a_seeded_placeholder(cursor):
+    """Stop before init leaves only our placeholder; that is not a Cursor chat."""
+    cursor._cli_session_id = "seeded-uuid"
+    cursor._cli_started = True
+    assert "--resume" not in cursor._build_argv("next message")
+
+
+def test_cursor_learns_its_chat_id_reports_it_and_resumes_it(cursor):
+    seen = []
+    cursor.cli_session_changed.connect(
+        lambda sid, cli, started, cwd: seen.append((sid, cli, started, cwd))
+    )
+    cursor._cli_started = True
+    cursor._handle_event({"type": "system", "subtype": "init", "session_id": "chat-9"})
+
+    assert cursor._cli_session_id == "chat-9"
+    assert seen and seen[-1][:2] == ("tab-1", "chat-9")
+    argv = cursor._build_argv("and then?")
+    assert argv[argv.index("--resume") + 1] == "chat-9"
+
+
+def test_a_restored_cursor_tab_resumes(cursor):
+    """What _make_worker seeds from the stored row must be enough to resume."""
+    cursor._cli_session_id = "chat-from-disk"
+    cursor._cli_started = True
+    cursor._cli_id_from_cli = True
+    argv = cursor._build_argv("continue")
+    assert argv[argv.index("--resume") + 1] == "chat-from-disk"
 
 
 # ---------------------------------------------------------------------------
@@ -323,13 +373,13 @@ def _message_window(window_cls, sid="s1"):
 def test_the_message_sink_persists_every_role(window_cls, keyed_store):
     win = _message_window(window_cls)
     win._add_user_msg("trim the first clip")
-    win._add_assistant_msg("Thinking...\nDone — trimmed it.")
+    win._add_assistant_msg("Thinking...\nDone ΓÇö trimmed it.")
     win._add_system_msg("Error: backend unreachable")
 
     stored = [(m["role"], m["content"]) for m in keyed_store.load_messages("s1")]
     assert stored == [
         ("user", "trim the first clip"),
-        ("assistant", "Done — trimmed it."),   # thinking header stripped
+        ("assistant", "Done ΓÇö trimmed it."),   # thinking header stripped
         ("system", "Error: backend unreachable"),
     ]
 
@@ -355,10 +405,46 @@ class _ReloadWindow(_StubWindow):
         super().__init__(window_cls, project_id=project_id)
         self._sessions = {sid: {"messages": []} for sid in sessions}
         self._history_key = history_key
+        self._active_sid = next(iter(self._sessions), "")
+        self._use_web_ui = False
+        self._first_prompt_summary = None
+        self.is_processing = False
+        self._history_restore_started = False
         self.saved = []
 
     def _save_chat_sessions_store(self, project_path=None):
         self.saved.append(project_path)
+
+    def _shutdown_worker(self, *a, **k):
+        pass
+
+    def _make_worker(self, session_id, backend, restore=None):
+        return MagicMock(), MagicMock()
+
+    def _persist_session(self, *a, **k):
+        pass
+
+    def _create_initial_session(self):
+        self._sessions["fresh"] = {"title": "New Chat", "messages": []}
+        self._active_sid = "fresh"
+
+    def _update_preamble(self):
+        pass
+
+    def _render_active_session_widget(self):
+        pass
+
+    def _rebuild_widget_tabs(self):
+        pass
+
+    def _start_restore_chat_histories_async(self):
+        pass
+
+    def _pick_active_sid(self, legacy_store=None):
+        return self._cls._pick_active_sid(self, legacy_store)
+
+    def _restorable_sessions(self, store):
+        return self._cls._restorable_sessions(self, store)
 
     def reload(self, path):
         return self._cls.reload_for_project(self, path)
@@ -413,6 +499,57 @@ def test_a_plain_resave_of_the_same_project_is_a_no_op(window_cls, keyed_store, 
     assert win.saved == []          # returned before doing any work
 
 
+def test_opening_an_existing_project_from_untitled_restores_its_open_chats(
+    window_cls, keyed_store, tmp_path
+):
+    """Launch is always untitled; FileΓåÆOpen must bring back that project's tabs.
+
+    Rekeying the empty draft into the project used to make liveΓê⌐stored match,
+    so restore was skipped and the user got a blank New Chat instead.
+    """
+    path = tmp_path / "a.zvn"
+    path.write_text("{}")
+    keyed_store.upsert_session("old", "ABCDEF1234", project_path=str(path), title="Edit cut")
+    keyed_store.record_message("old", "user", "keep this")
+    keyed_store.set_active_session("ABCDEF1234", "old")
+
+    draft = keyed_store.new_draft_key()
+    keyed_store.upsert_session("untitled-tab", draft)
+    win = _ReloadWindow(
+        window_cls, project_id="ABCDEF1234",
+        sessions=["untitled-tab"], history_key=draft,
+    )
+    win.reload(str(path))
+
+    assert set(win._sessions) == {"old"}
+    assert win._active_sid == "old"
+    assert win._history_key == "ABCDEF1234"
+    assert keyed_store.load_sessions(draft) == []
+    assert [m["content"] for m in keyed_store.load_messages("old")] == ["keep this"]
+
+
+def test_opening_a_project_does_not_absorb_an_untitled_conversation(
+    window_cls, keyed_store, tmp_path
+):
+    path = tmp_path / "a.zvn"
+    path.write_text("{}")
+    keyed_store.upsert_session("old", "ABCDEF1234", project_path=str(path), title="Saved")
+    keyed_store.record_message("old", "user", "project chat")
+
+    draft = keyed_store.new_draft_key()
+    keyed_store.upsert_session("draft-tab", draft)
+    keyed_store.record_message("draft-tab", "user", "typed on untitled")
+    win = _ReloadWindow(
+        window_cls, project_id="ABCDEF1234",
+        sessions=["draft-tab"], history_key=draft,
+    )
+    win.reload(str(path))
+
+    assert set(win._sessions) == {"old"}
+    assert [m["content"] for m in keyed_store.load_messages("draft-tab")] == ["typed on untitled"]
+    assert [s["session_id"] for s in keyed_store.load_sessions("ABCDEF1234")] == ["old"]
+
+
 def test_starting_a_new_project_bins_an_unused_draft(window_cls, keyed_store):
     draft = keyed_store.new_draft_key()
     keyed_store.upsert_session("s1", draft)
@@ -441,3 +578,299 @@ def test_quitting_an_untitled_project_leaves_nothing_behind(window_cls, keyed_st
 
     window_cls._stop_all_threads(W())
     assert keyed_store.load_sessions(draft) == []
+
+
+def test_closed_session_list_omits_open_tabs(window_cls, keyed_store):
+    keyed_store.upsert_session("open", "P1", title="Live")
+    keyed_store.record_message("open", "user", "still here")
+    keyed_store.upsert_session("closed", "P1", title="Yesterday")
+    keyed_store.record_message("closed", "user", "old")
+    keyed_store.mark_session_closed("closed")
+
+    class W:
+        _history_key = "P1"
+        _sessions = {"open": {}}
+
+    rows = window_cls._closed_session_list(W())
+    assert [r["id"] for r in rows] == ["closed"]
+    assert rows[0]["title"] == "Yesterday"
+
+
+def test_reopen_closed_session_restores_the_tab(window_cls, keyed_store):
+    keyed_store.upsert_session("s1", "P1", title="Bring me back", backend="zenvi")
+    keyed_store.record_message("s1", "user", "hello")
+    keyed_store.mark_session_closed("s1")
+
+    rendered = []
+
+    class W:
+        _history_key = "P1"
+        _sessions = {"live": {}}
+        _active_sid = "live"
+        _use_web_ui = False
+        _first_prompt_summary = None
+        is_processing = False
+
+        def _make_worker(self, session_id, backend, restore=None):
+            return MagicMock(), MagicMock()
+
+        def _persist_session(self, session_id, **fields):
+            pass
+
+        def _local_history_items(self, session_id):
+            return [{
+                "role": "user",
+                "html_body": "<p>hello</p>",
+                "is_assistant": False,
+                "content": "hello",
+            }]
+
+        def _notify_agent_selector(self):
+            pass
+
+        def _update_preamble(self):
+            pass
+
+        def _render_active_session_widget(self):
+            rendered.append(self._active_sid)
+
+        def _sync_widget_backend_combo(self):
+            pass
+
+        def _rebuild_widget_tabs(self):
+            pass
+
+        def _save_chat_sessions_store(self, project_path=None):
+            pass
+
+        def _switch_session(self, session_id):
+            self._active_sid = session_id
+
+    win = W()
+    window_cls._reopen_closed_session(win, "s1")
+    assert "s1" in win._sessions
+    assert win._active_sid == "s1"
+    assert win._sessions["s1"]["title"] == "Bring me back"
+    assert keyed_store.load_sessions("P1", include_closed=False)
+    assert rendered == ["s1"]
+
+
+# ---------------------------------------------------------------------------
+# Closing the last tab closes the dock
+# ---------------------------------------------------------------------------
+
+class _ClosableWindow:
+    """Just enough of AIChatWindow for _close_session."""
+
+    _history_key = "P1"
+    _use_web_ui = False
+
+    def __init__(self, sessions, active):
+        self._sessions = sessions
+        self._active_sid = active
+        self.hidden = 0
+        self.created = []
+
+    def _shutdown_worker(self, worker, thread, wait_ms=0):
+        pass
+
+    def _create_session(self, model_id="", backend="zenvi"):
+        self.created.append(backend)
+        self._sessions["fresh"] = {"messages": [], "backend": backend}
+        self._active_sid = "fresh"
+
+    def _switch_session(self, session_id):
+        self._active_sid = session_id
+
+    def _rebuild_widget_tabs(self):
+        pass
+
+    def _save_chat_sessions_store(self, project_path=None):
+        pass
+
+    def hide(self):
+        self.hidden += 1
+
+
+def test_closing_the_last_tab_hides_the_dock_and_leaves_a_fresh_chat(window_cls, keyed_store):
+    keyed_store.upsert_session("s1", "P1", title="Only chat", backend="zenvi")
+    keyed_store.record_message("s1", "user", "hello")
+    win = _ClosableWindow(
+        {"s1": {"messages": [("user", "<p>hello</p>", False)], "backend": "zenvi"}}, "s1")
+
+    window_cls._close_session(win, "s1")
+
+    assert win.hidden == 1
+    # The dock is never left without a tab, and the closed chat is in history.
+    assert list(win._sessions) == ["fresh"]
+    assert win._active_sid == "fresh"
+    assert [r["session_id"] for r in keyed_store.load_closed_sessions("P1")] == ["s1"]
+
+
+@pytest.mark.parametrize("messages", [
+    [],
+    # What a fresh tab really holds: the welcome banner _create_session adds.
+    [("system", "<p>New session started. Ask anything about your project.</p>", False)],
+])
+def test_closing_an_empty_last_tab_just_hides_the_dock(window_cls, keyed_store, messages):
+    keyed_store.upsert_session("s1", "P1", title="New Chat", backend="zenvi")
+    win = _ClosableWindow({"s1": {"messages": messages, "backend": "zenvi"}}, "s1")
+
+    window_cls._close_session(win, "s1")
+
+    assert win.hidden == 1
+    assert list(win._sessions) == ["s1"]
+    assert win.created == []
+    assert keyed_store.load_sessions("P1", include_closed=False)
+
+
+class _NewTabWindow:
+    """Just enough of AIChatWindow for the real _create_session."""
+
+    _use_web_ui = True
+
+    def __init__(self, window_cls):
+        self._active_session = types.MethodType(window_cls._active_session, self)
+        self._session_attachments = types.MethodType(window_cls._session_attachments, self)
+        self._clear_attachment_undo = types.MethodType(window_cls._clear_attachment_undo, self)
+        self._push_attachments_to_js = types.MethodType(window_cls._push_attachments_to_js, self)
+        self._sessions = {"s1": {"messages": [], "attachments": [{"id": "a1", "name": "clip.mp4"}]}}
+        self._active_sid = "s1"
+        self._attachment_undo_stack = [[]]
+        self.js = []
+
+    def _make_worker(self, session_id, backend="zenvi", restore=None):
+        return None, None
+
+    def _persist_session(self, session_id, **fields):
+        pass
+
+    def _notify_agent_selector(self):
+        pass
+
+    def _push_models_for_backend(self, backend=None):
+        pass
+
+    def _push_tabs_to_js(self):
+        pass
+
+    def _update_preamble(self):
+        pass
+
+    def _add_chrome_msg(self, text):
+        pass
+
+    def _save_chat_sessions_store(self, project_path=None):
+        pass
+
+    def _run_js(self, code):
+        self.js.append(code)
+
+
+def test_a_new_tab_does_not_show_the_previous_tabs_attachments(window_cls):
+    """Also the fresh chat that replaces a closed last tab: chips left in the
+    composer would look attached but not be sent with the next prompt."""
+    win = _NewTabWindow(window_cls)
+
+    window_cls._create_session(win)
+
+    assert win._active_sid != "s1"
+    pushes = [c for c in win.js if "setChatAttachments" in c]
+    assert pushes and pushes[-1].endswith("setChatAttachments([]);")
+    assert win._attachment_undo_stack == []
+    assert win._sessions["s1"]["attachments"]  # the old tab keeps its own
+
+
+def test_closing_one_of_several_tabs_keeps_the_dock_open(window_cls, keyed_store):
+    win = _ClosableWindow(
+        {"s1": {"messages": [], "backend": "zenvi"}, "s2": {"messages": [], "backend": "zenvi"}}, "s1")
+
+    window_cls._close_session(win, "s1")
+
+    assert win.hidden == 0
+    assert list(win._sessions) == ["s2"]
+    assert win._active_sid == "s2"
+
+
+# ---------------------------------------------------------------------------
+# Switching a tab's backend: each CLI only ever resumes its own conversation
+# ---------------------------------------------------------------------------
+
+class _SwitchWindow:
+    """Just enough of AIChatWindow for _set_session_backend."""
+
+    _use_web_ui = False
+    is_processing = False
+    _history_key = "P1"
+
+    def __init__(self, backend, worker):
+        self._active_sid = "tab-1"
+        self._sessions = {"tab-1": {"backend": backend, "worker": worker, "thread": None}}
+        self.restores = []
+        self.persisted = []
+
+    def _make_worker(self, session_id, backend, restore=None):
+        self.restores.append((backend, restore))
+        return types.SimpleNamespace(_cli_started=False, _cli_session_id="", _cli_cwd=""), None
+
+    def _persist_session(self, session_id, **fields):
+        self.persisted.append(fields)
+
+    def _set_processing_ui(self, busy):
+        pass
+
+    def _push_models_for_backend(self, backend=None):
+        pass
+
+    def _sync_widget_backend_combo(self):
+        pass
+
+    def _notify_agent_selector(self):
+        pass
+
+    def _save_chat_sessions_store(self, project_path=None):
+        pass
+
+
+def _cli_worker(sid, cwd="/proj"):
+    return types.SimpleNamespace(_cli_started=True, _cli_session_id=sid, _cli_cwd=cwd,
+                                 _stopping=False, cancel=lambda: None)
+
+
+def test_switching_backends_never_hands_one_cli_anothers_conversation(window_cls, keyed_store):
+    """claude --resume <a Cursor chat id> fails every turn after the switch."""
+    # What the tab's row holds after a Cursor turn.
+    keyed_store.upsert_session("tab-1", "P1", backend="cursor_cli",
+                               cli_session_id="cursor-chat-9", cli_started=True, cli_cwd="/proj")
+    win = _SwitchWindow("cursor_cli", _cli_worker("cursor-chat-9"))
+    window_cls._set_session_backend(win, "tab-1", "claude_code")
+
+    assert win.restores == [("claude_code", None)]
+    # ...and the stored row forgets it too, or a restart would do the same.
+    assert win.persisted[-1] == {"backend": "claude_code", "cli_session_id": "",
+                                 "cli_started": False, "cli_cwd": ""}
+
+
+def test_switching_back_resumes_the_conversation_that_backend_left(window_cls):
+    win = _SwitchWindow("claude_code", _cli_worker("claude-conv-1", "/p"))
+    window_cls._set_session_backend(win, "tab-1", "cursor_cli")
+    sess = win._sessions["tab-1"]
+    sess["worker"] = _cli_worker("cursor-chat-9", "/p")   # a Cursor turn ran
+
+    window_cls._set_session_backend(win, "tab-1", "claude_code")
+    claude = {"cli_session_id": "claude-conv-1", "cli_started": True, "cli_cwd": "/p"}
+    assert win.restores[-1] == ("claude_code", claude)
+    assert win.persisted[-1] == dict(backend="claude_code", **claude)
+
+    sess["worker"] = _cli_worker("claude-conv-1", "/p")
+    window_cls._set_session_backend(win, "tab-1", "cursor_cli")
+    assert win.restores[-1][1]["cli_session_id"] == "cursor-chat-9"
+
+
+def test_a_backend_that_never_started_a_conversation_parks_nothing(window_cls):
+    idle = types.SimpleNamespace(_cli_started=False, _cli_session_id="seeded",
+                                 _stopping=False, cancel=lambda: None)
+    win = _SwitchWindow("codex", idle)
+    window_cls._set_session_backend(win, "tab-1", "claude_code")
+    window_cls._set_session_backend(win, "tab-1", "codex")
+    assert win.restores[-1] == ("codex", None)

@@ -34,6 +34,13 @@ from classes.tool_handlers import (  # noqa: E402
 )
 import classes.tool_handlers as th  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _fresh_import_dedupe(monkeypatch):
+    """The fetch dedupe is process-global; another module's import of the same
+    URL made these tests answer "Already imported" instead of fetching."""
+    monkeypatch.setattr(th, "_MG_IMPORTED_URLS", {})
+
 from motion_graphics.build_vp9 import (  # noqa: E402
     build_vp9_alpha_overlay,
     build_vp9_opaque_plate,
@@ -44,6 +51,14 @@ from motion_graphics.build_vp9 import (  # noqa: E402
 
 # tool_handlers calls bare "ffmpeg"/"ffprobe" — ensure MSYS bins resolve under Windows pytest.
 ensure_ffmpeg_on_path()
+
+
+@pytest.fixture(autouse=True)
+def _clear_mg_import_cache():
+    """fetch_motion_graphics_video caches URLs in a module global; reset per test."""
+    th._MG_IMPORTED_URLS.clear()
+    yield
+    th._MG_IMPORTED_URLS.clear()
 
 
 def _ffmpeg_available():
@@ -60,13 +75,20 @@ requires_ffmpeg = pytest.mark.skipif(
 )
 
 
-def test_import_generated_video_calls_add_files_with_skip_indexing():
+@pytest.fixture(autouse=True)
+def _clear_mg_import_cache():
+    th._MG_IMPORTED_URLS.clear()
+    yield
+    th._MG_IMPORTED_URLS.clear()
+
+
+def test_import_generated_video_calls_add_files_with_skip_indexing(monkeypatch):
     """MG/AI import must not enqueue Gemini indexing."""
     fake_file = SimpleNamespace(id="F1", data={}, absolute_path=lambda: "/tmp/out.mp4")
     fake_query = MagicMock()
     fake_query.File.get.return_value = fake_file
     fake_query.File.filter.return_value = []
-    sys.modules["classes.query"] = fake_query
+    monkeypatch.setitem(sys.modules, "classes.query", fake_query)
 
     with patch.object(th, "_output_path_for_generated_video", return_value="/tmp/out.mp4"), patch.object(
         th, "_canonical_media_path", side_effect=lambda p: p
