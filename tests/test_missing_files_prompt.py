@@ -143,8 +143,17 @@ def test_locating_a_folder_scans_it_off_the_gui_thread(monkeypatch, tmp_path):
     found.mkdir()
     (found / "a_roll.mp4").write_bytes(b"x")
     gone = str(tmp_path / "gone" / "a_roll.mp4")
-    files = [{"id": "f1", "path": gone}]
-    clips = [{"id": "c1", "file_id": "f1", "reader": {"path": gone}}]
+    writers = []
+
+    class _Recorded(dict):
+        """Project data that notes which thread writes it."""
+
+        def __setitem__(self, key, value):
+            writers.append(threading.current_thread())
+            super().__setitem__(key, value)
+
+    files = [_Recorded(id="f1", path=gone)]
+    clips = [{"id": "c1", "file_id": "f1", "reader": _Recorded(path=gone)}]
 
     scan_threads = []
     real_walk = pd.os.walk
@@ -196,6 +205,9 @@ def test_locating_a_folder_scans_it_off_the_gui_thread(monkeypatch, tmp_path):
     store.check_if_paths_are_valid()
 
     assert scan_threads and threading.main_thread() not in scan_threads
+    # ...but the project is only written on the calling (GUI) thread: timers
+    # keep running during the scan and must never see a half-relinked project.
+    assert writers and set(writers) == {threading.main_thread()}
     relinked = str(found / "a_roll.mp4")
     assert files[0]["path"] == relinked
     assert clips[0]["reader"]["path"] == relinked

@@ -1639,18 +1639,17 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             log.info("Locate folder cancelled; leaving %s missing file(s) in place", total_missing)
             return
 
-        # Fingerprinting and walking a large or slow folder takes a while; do
-        # it off the GUI thread (load still waits, the editor keeps painting).
-        relinked = []
-
-        def _relink_from_folder():
+        # Fingerprinting and walking a large or slow folder takes a while: the
+        # worker only reads and returns a plan, and the project is written
+        # here on the calling thread (timers keep running during the scan and
+        # must never see, or autosave, a half-relinked project).
+        def _plan_relinks():
             wanted = set()
             for file, _path in missing_files:
                 fp = file.get("fingerprint")
                 if isinstance(fp, dict) and fp.get("sha256"):
                     wanted.add(fp["sha256"])
             index = scan_folder_for_fingerprints(folder, wanted=wanted or None)
-            remember_media_root(folder)
 
             # Also match by basename when fingerprint is missing (legacy projects).
             basename_hits = {}
@@ -1675,45 +1674,56 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                     return hit
                 return None
 
+            file_plan = []   # (file, old path, new path, fingerprint to stamp or None)
+            new_path_of = {}
             for file, path in missing_files:
                 hit = _relink(path, file.get("fingerprint"))
                 if hit:
-                    file["path"] = hit
-                    if not file.get("fingerprint"):
-                        stamped = fingerprint(hit)
-                        if stamped:
-                            file["fingerprint"] = stamped
-                    relinked.append(hit)
-                    log.info("Relinked missing file: %s -> %s", path, hit)
+                    stamp = None if file.get("fingerprint") else fingerprint(hit)
+                    file_plan.append((file, path, hit, stamp))
+                    new_path_of[id(file)] = hit
 
-            # Build file_id -> path map after file relinks.
-            file_paths_by_id = {
-                f.get("id"): f.get("path")
-                for f in (self._data.get("files") or [])
-                if f.get("id") and f.get("path") and os.path.exists(f.get("path"))
-            }
-            file_fp_by_id = {
-                f.get("id"): f.get("fingerprint")
-                for f in (self._data.get("files") or [])
-                if f.get("id") and isinstance(f.get("fingerprint"), dict)
-            }
+            # file_id -> path as it will be once the file relinks are applied.
+            file_paths_by_id = {}
+            file_fp_by_id = {}
+            for f in (self._data.get("files") or []):
+                fid = f.get("id")
+                if not fid:
+                    continue
+                path = new_path_of.get(id(f), f.get("path"))
+                if path and os.path.exists(path):
+                    file_paths_by_id[fid] = path
+                if isinstance(f.get("fingerprint"), dict):
+                    file_fp_by_id[fid] = f.get("fingerprint")
 
+            clip_plan = []   # (clip, old path, new path, matched through its file?)
             for clip, path in missing_clips:
                 file_id = clip.get("file_id")
                 if file_id and file_id in file_paths_by_id:
-                    clip.setdefault("reader", {})["path"] = file_paths_by_id[file_id]
-                    log.info("Relinked missing clip via file_id: %s", file_paths_by_id[file_id])
+                    clip_plan.append((clip, path, file_paths_by_id[file_id], True))
                     continue
                 hit = _relink(path, file_fp_by_id.get(file_id))
                 if hit:
-                    clip.setdefault("reader", {})["path"] = hit
-                    log.info("Relinked missing clip: %s -> %s", path, hit)
+                    clip_plan.append((clip, path, hit, False))
+            return file_plan, clip_plan
 
         from classes.qt_main_thread import run_off_gui
 
-        run_off_gui(_relink_from_folder)
-        if settings and relinked:
-            settings.setDefaultPath(settings.actionType.IMPORT, relinked[-1])
+        file_plan, clip_plan = run_off_gui(_plan_relinks)
+        remember_media_root(folder)
+        for file, path, hit, stamp in file_plan:
+            file["path"] = hit
+            if stamp:
+                file["fingerprint"] = stamp
+            log.info("Relinked missing file: %s -> %s", path, hit)
+        for clip, path, hit, via_file in clip_plan:
+            clip.setdefault("reader", {})["path"] = hit
+            if via_file:
+                log.info("Relinked missing clip via file_id: %s", hit)
+            else:
+                log.info("Relinked missing clip: %s -> %s", path, hit)
+        if settings and file_plan:
+            settings.setDefaultPath(settings.actionType.IMPORT, file_plan[-1][2])
 
     def changed(self, action):
         """ This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface) """
