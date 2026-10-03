@@ -141,6 +141,9 @@ def _whisper_transcriber(model_id: str = DEFAULT_MODEL_ID) -> Transcriber:
     """The bundled whisper.cpp when present (every release), else faster-whisper."""
     from classes.speech import whisper_cpp
     if whisper_cpp.available():
+        if model_id and model_id != DEFAULT_MODEL_ID:
+            log.info("modelId %s ignored: the bundled whisper.cpp engine has one model (%s)",
+                     model_id, whisper_cpp.MODEL_ID)
         return whisper_cpp.WhisperCppTranscriber()
     return FasterWhisperTranscriber(model_id=model_id or DEFAULT_MODEL_ID)
 

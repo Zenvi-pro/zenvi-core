@@ -25,7 +25,10 @@ if os.environ.get("FAKE_WHISPER_SLEEP"):
     import time
     time.sleep(30)
 if os.environ.get("FAKE_WHISPER_FAIL"):
-    sys.stderr.write("whisper_init_from_file: failed to load model\n")
+    # What whisper-cli v1.9.4 really prints for a bad model.
+    sys.stderr.write("whisper_model_load: invalid model data (bad magic)\n"
+                     "whisper_init_with_params_no_state: failed to load model\n"
+                     "error: failed to initialize whisper context\n")
     sys.exit(3)
 segments = [
     {"offsets": {"from": 0, "to": 220}, "text": ""},
@@ -54,10 +57,12 @@ def fake_cli(tmp_path, monkeypatch):
         cli.write_text("#!%s\n" % sys.executable + FAKE_CLI)
         cli.chmod(0o755)
     (bundle / whisper_cpp.MODEL_FILE).write_bytes(b"ggml")
+    (bundle / whisper_cpp.VAD_FILE).write_bytes(b"vad")
     monkeypatch.setattr(info, "PATH", str(tmp_path / "app"))
     monkeypatch.setattr(whisper_cpp, "_CLI_NAMES", (cli.name,))
     monkeypatch.delenv("ZENVI_WHISPER_CLI", raising=False)
     monkeypatch.delenv("ZENVI_WHISPER_MODEL", raising=False)
+    monkeypatch.delenv("ZENVI_WHISPER_VAD", raising=False)
     args_file = tmp_path / "args.json"
     monkeypatch.setenv("FAKE_WHISPER_ARGS", str(args_file))
     return args_file
@@ -75,6 +80,23 @@ def test_the_bundled_engine_gives_word_timestamps(fake_cli, tmp_path):
     assert args[args.index("-l") + 1] == "auto"
     assert args[args.index("-m") + 1].endswith(whisper_cpp.MODEL_FILE)
     assert "-sow" in args  # one segment per word
+    # Voice activity detection: without it words are timed into silence and
+    # silence is "transcribed" (hallucinated words the user could then edit).
+    assert "--vad" in args and args[args.index("-vm") + 1].endswith(whisper_cpp.VAD_FILE)
+    assert "-np" not in args, "-np also silences whisper's own error messages"
+
+
+def test_real_whisper_cli_output_parses_into_words():
+    """tests/fixtures/whisper_cli_output.json is real v1.9.4 output: 6 s of
+    silence, the JFK sample, 6 s of silence."""
+    path = os.path.join(os.path.dirname(__file__), "fixtures", "whisper_cli_output.json")
+    with open(path, encoding="utf-8") as fh:
+        words, language = whisper_cpp.words_from_cli_json(json.load(fh), None)
+    assert language == "en"
+    assert [w.text for w in words][:4] == ["And", "so,", "my", "fellow"] and words[-1].text == "country."
+    assert 6.0 < words[0].startSec < 7.0, "speech starts after the 6 s of silence"
+    assert all(w.text and w.endSec >= w.startSec for w in words)
+    assert [w.startSec for w in words] == sorted(w.startSec for w in words)
 
 
 def test_a_requested_language_is_passed_and_failures_are_reported(fake_cli, tmp_path, monkeypatch):

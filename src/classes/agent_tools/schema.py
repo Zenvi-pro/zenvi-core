@@ -472,7 +472,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "file_id": _str(description="Alias for fileId."),
         "trackIndex": _int(minimum=0, description="UI track index; omit for all clips."),
         "language": _str(description="BCP-47 / whisper code, or 'auto'."),
-        "modelId": _str(description="e.g. faster-whisper-base (whisper path only)."),
+        "modelId": _str(description="faster-whisper model, e.g. faster-whisper-base; ignored by the bundled whisper.cpp engine (one model)."),
         "force": _bool(description="Ignore cache and re-run ASR."),
         "engine": _str(
             description="auto|apple|whisper. auto=Apple SpeechAnalyzer on macOS 26+ when helper is present, else Whisper. Windows always Whisper.",
@@ -488,7 +488,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "fileId": _str(description="Media-bin file id."),
         "file_id": _str(description="Alias for fileId."),
         "language": _str(description="BCP-47 / whisper code, or 'auto'."),
-        "modelId": _str(description="e.g. faster-whisper-base"),
+        "modelId": _str(description="faster-whisper model, e.g. faster-whisper-base; ignored by the bundled whisper.cpp engine."),
         "force": _bool(description="Ignore cache and re-run ASR."),
         "engine": _str(description="auto|apple|whisper"),
     }),
