@@ -617,20 +617,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         ),
     }),
 
-    "add_captions_tool": _obj({
-        "clipId": _str(),
-        "timeline_clip_id": _str(description="Alias for clipId."),
-        "trackIndex": _int(minimum=0),
-        "maxWords": _int(minimum=1, maximum=24),
-        "maxChars": _int(minimum=8, maximum=120),
-        "language": _str(),
-        "modelId": _str(),
-        "engine": _str(
-            description="auto|apple|whisper — same on-device ASR as get_transcript_tool (never cloud).",
-        ),
-        "srtPath": _str(description="Import SRT/VTT instead of transcribing."),
-    }),
-
     "export_captions_tool": _obj({
         "path": _str(description="Destination .srt or .vtt path."),
         "format": _str(description="srt or vtt."),

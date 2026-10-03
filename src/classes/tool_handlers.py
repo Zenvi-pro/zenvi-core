@@ -8313,7 +8313,14 @@ def place_motion_graphic(
                 )
             except (TypeError, ValueError):
                 dur = 3.0
-        dur = max(0.5, min(dur, 60.0))
+        # 60 s guards a runaway graphic; a caller that covers a whole clip (captions) raises it.
+        try:
+            longest = float(_kw.get("max_duration_seconds") or 60.0)
+        except (TypeError, ValueError):
+            longest = 60.0
+        if not 0 < longest < float("inf"):              # negative, NaN or infinite
+            longest = 60.0
+        dur = max(0.5, min(dur, longest))
 
         app = _get_app()
         layers = app.project.get("layers") or []
@@ -8443,7 +8450,8 @@ def place_motion_graphic(
 
         # Ripple + metadata stamp + placement are one user action, so they
         # share a transaction id and undo as a single step.
-        _composite_tid = _new_transaction_id()
+        # ...and join the caller's undo step when a tool is already inside one.
+        _composite_tid = getattr(app.updates, "transaction_id", None) or _new_transaction_id()
         _run_on_main_thread(_atomic(app, _ripple_and_stamp, tid=_composite_tid))
         # add_clip marshals Qt mutations itself
         result = add_clip_to_timeline(
@@ -11389,9 +11397,8 @@ AGENT_TOOL_HANDLERS = {
 from classes.editor_tools import REGISTRY as _EDITOR_TOOL_SPECS  # noqa: E402
 from classes.agent_tools.schema import TOOL_SCHEMAS as _TOOL_SCHEMAS  # noqa: E402
 
-# #183's add_effect / add_title / set_keyframes / set_project_setting and #220's
-# add_captions are served by the editor tools of the same names, whose arguments
-# are a superset of theirs.
+# #183's add_effect / add_title / set_keyframes / set_project_setting are served by the
+# editor tools of the same names, whose arguments are a superset of theirs.
 for _phase_handlers in (PHASE3_HANDLERS, PHASE4_HANDLERS, PHASE5_HANDLERS):
     AGENT_TOOL_HANDLERS.update({name: func for name, func in _phase_handlers.items()
                                 if name not in _EDITOR_TOOL_SPECS})
