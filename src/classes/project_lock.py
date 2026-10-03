@@ -72,6 +72,8 @@ def claim(path):
             return True, None
         _release_locked()
         _held.update(key=key, lock=lock)
+        # "Open anyway" was for the project open then, not for this path forever.
+        _overridden.clear()
         return True, None
 
 
@@ -79,6 +81,7 @@ def override(path):
     """The user opens *path* anyway: their saves to it are their choice."""
     with _mutex:
         _release_locked()
+        _overridden.clear()
         _overridden.add(_key(path))
 
 
