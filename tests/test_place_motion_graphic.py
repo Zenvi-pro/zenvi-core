@@ -194,3 +194,84 @@ def test_overlay_places_transparent_on_high_track():
     assert "mg_place mode=overlay" in out
     assert add_clip.call_args.kwargs["track"] == "3000000"
     assert "lower" in add_clip.call_args.kwargs["query"]
+
+
+def test_overlay_goes_above_footage_on_the_top_track():
+    """Footage on the top track during the window: the overlay gets a new track above it, not the same one."""
+    f = _file(transparent=True)
+    app = _layers_app()
+    patches = _patch_place(f, [_clip("C1", 3000000, 0.0, end=15.0)], app)
+    with patches[0], patches[1] as mods, patches[2] as add_clip, patches[3]:
+        out = th.place_motion_graphic(file_id="F1", position_seconds="1.0", duration_seconds="4.0",
+                                      mode="overlay")
+        track_cls = sys.modules["classes.query"].Track
+    assert not out.startswith("Error:")
+    assert add_clip.call_args.kwargs["track"] == "4000000"
+    assert track_cls.return_value.data["number"] == 4000000
+    track_cls.return_value.save.assert_called_once()
+
+
+def test_overlay_reuses_a_free_track_above_the_footage():
+    f = _file(transparent=True)
+    app = _layers_app()
+    clips = [_clip("C1", 2000000, 0.0, end=15.0), _clip("C2", 3000000, 40.0, end=5.0)]
+    patches = _patch_place(f, clips, app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        out = th.place_motion_graphic(file_id="F1", position_seconds="1.0", duration_seconds="4.0",
+                                      mode="overlay")
+        track_cls = sys.modules["classes.query"].Track
+    assert not out.startswith("Error:")
+    assert add_clip.call_args.kwargs["track"] == "3000000"
+    track_cls.return_value.save.assert_not_called()
+
+
+def test_overlay_asked_onto_the_footage_track_still_goes_above_it():
+    """The assistant names the top track by habit; that must not put the overlay in the footage's lane."""
+    f = _file(transparent=True)
+    app = _layers_app()
+    patches = _patch_place(f, [_clip("C1", 3000000, 0.0, end=15.0)], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        out = th.place_motion_graphic(file_id="F1", position_seconds="0", duration_seconds="5.0",
+                                      mode="overlay", track="3000000")
+    assert not out.startswith("Error:")
+    assert add_clip.call_args.kwargs["track"] == "4000000"
+
+
+def test_music_above_the_picture_neither_forces_a_new_track_nor_shares_its_lane():
+    f = _file(transparent=True)
+    app = _layers_app()
+    music = SimpleNamespace(data={"id": "A1", "layer": 3000000, "position": 0.0, "start": 0.0, "end": 60.0,
+                                  "reader": {"has_video": False, "has_audio": True}})
+    patches = _patch_place(f, [_clip("C1", 1000000, 0.0, end=15.0), music], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        out = th.place_motion_graphic(file_id="F1", position_seconds="1.0", duration_seconds="4.0",
+                                      mode="overlay")
+        track_cls = sys.modules["classes.query"].Track
+    assert not out.startswith("Error:")
+    assert add_clip.call_args.kwargs["track"] == "2000000"       # free, above the picture, not the music's lane
+    track_cls.return_value.save.assert_not_called()
+
+
+def test_overlay_skips_a_locked_track():
+    f = _file(transparent=True)
+    app = MagicMock()
+    app.project.get.return_value = [{"number": 1000000}, {"number": 2000000},
+                                    {"number": 3000000, "lock": True}]
+    patches = _patch_place(f, [_clip("C1", 2000000, 0.0, end=15.0)], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        out = th.place_motion_graphic(file_id="F1", position_seconds="1.0", duration_seconds="4.0",
+                                      mode="overlay")
+    assert not out.startswith("Error:")
+    assert add_clip.call_args.kwargs["track"] == "4000000"       # a new lane above the locked one
+
+
+def test_a_failed_placement_removes_the_track_it_created():
+    f = _file(transparent=True)
+    app = _layers_app()
+    patches = _patch_place(f, [_clip("C1", 3000000, 0.0, end=15.0)], app, add_clip_return="Error: no such file")
+    with patches[0], patches[1], patches[2], patches[3]:
+        out = th.place_motion_graphic(file_id="F1", position_seconds="1.0", duration_seconds="4.0",
+                                      mode="overlay")
+        track_cls = sys.modules["classes.query"].Track
+    assert out.startswith("Error")
+    track_cls.return_value.delete.assert_called_once()
