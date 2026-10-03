@@ -10,7 +10,6 @@ from classes.agent_tools.inspect import inspect_media, inspect_timeline
 from classes.agent_tools.keyframes import set_keyframes
 from classes.agent_tools.project_settings import set_project_setting
 from classes.agent_tools.speech_extra import (
-    add_captions,
     detect_beats_tool_handler,
     diarize_media,
     export_captions,
@@ -37,7 +36,6 @@ PHASE5_HANDLERS = {
     "remove_words_tool": remove_words,
     "transcribe_media_tool": transcribe_media,
     "remove_silence_tool": remove_silence,
-    "add_captions_tool": add_captions,
     "export_captions_tool": export_captions,
     "detect_beats_tool": detect_beats_tool_handler,
     "diarize_media_tool": diarize_media,
@@ -61,7 +59,6 @@ PHASE5_DISPLAY_LABELS = {
     "remove_words_tool": "Remove words",
     "transcribe_media_tool": "Transcribe media",
     "remove_silence_tool": "Remove silence",
-    "add_captions_tool": "Add captions",
     "export_captions_tool": "Export captions",
     "detect_beats_tool": "Detect beats",
     "diarize_media_tool": "Diarize speakers",

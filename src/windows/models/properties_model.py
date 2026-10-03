@@ -1253,9 +1253,6 @@ class PropertiesModel(updates.UpdateInterface):
 
             # Append ROW to MODEL (if does not already exist in model)
             self.model.appendRow(row)
-            if type == "caption":
-                # Load caption editor after both label/value cells exist.
-                get_app().window.CaptionTextLoaded.emit(memo, row)
 
         elif name in self.items and self.items[name]["row"]:
             # Update the value of the existing model
@@ -1351,9 +1348,6 @@ class PropertiesModel(updates.UpdateInterface):
 
             # Update helper dictionary
             row.append(col)
-            if type == "caption":
-                # Keep the editor enabled and synchronized on property refreshes.
-                get_app().window.CaptionTextLoaded.emit(memo, row)
 
         # Keep track of items in a dictionary (for quick look up)
         self.items[name] = {"row": row, "property": property}
@@ -1445,9 +1439,6 @@ class PropertiesModel(updates.UpdateInterface):
 
                     # Add Headers
                     self.model.setHorizontalHeaderLabels([_("Property"), _("Value")])
-
-                    # Clear caption editor
-                    get_app().window.CaptionTextLoaded.emit("", None)
 
                 # Loop through properties, and build/update the model
                 for property in all_properties.items():
