@@ -132,3 +132,43 @@ def test_fcp_xml_probes_each_source_once_off_the_gui_thread(tmp_path, probes, im
     assert len(summary["clip_ids"]) == 3
     assert [p for p, _t in probes] == [str(media)]
     assert probes[0][1] is not threading.main_thread()
+
+
+def test_one_unreadable_source_does_not_end_the_import(tmp_path, probes, importers, monkeypatch):
+    """PR #275 review: a source libopenshot cannot open raised out of the
+    import; it is skipped and reported, like media that is missing."""
+    edl_importer, fcp_importer = importers
+    good = tmp_path / "clip.mp4"
+    good.write_bytes(b"x")
+    bad = tmp_path / "broken.mp4"
+    bad.write_bytes(b"x")
+
+    for module in (edl_importer, fcp_importer):
+        real = module.openshot.Clip
+
+        def clip(path, real=real):
+            if path == str(bad):
+                raise RuntimeError("Invalid file: %s" % path)
+            return real(path)
+
+        monkeypatch.setattr(module.openshot, "Clip", clip)
+
+    edl = tmp_path / "cut.edl"
+    edl.write_text(
+        "TITLE: Cut\nFCM: NON-DROP FRAME\n\n"
+        "001  AX       V     C        00:00:00:00 00:00:01:00 00:00:00:00 00:00:01:00\n"
+        "* SOURCE FILE: broken.mp4\n"
+        + _edl_row(2, "00:00:02:00", "00:00:03:00", "00:00:01:00", "00:00:02:00"),
+        encoding="utf-8")
+    summary = edl_importer.import_edl(str(edl), prompt=False)
+    assert len(summary["clip_ids"]) == 1 and summary["missing"] == [str(bad)]
+
+    items = "".join(
+        '<clipitem id="c%d"><name>c%d</name><start>%d</start><end>%d</end><in>0</in><out>24</out>'
+        '<file id="f%d"><pathurl>%s</pathurl></file></clipitem>' % (i, i, i * 24, i * 24 + 24, i, path)
+        for i, path in enumerate((bad, good)))
+    xml = tmp_path / "cut.xml"
+    xml.write_text('<?xml version="1.0"?><xmeml version="4"><sequence><media><video><track>'
+                   + items + '</track></video></media></sequence></xmeml>', encoding="utf-8")
+    summary = fcp_importer.import_xml(str(xml), prompt=False)
+    assert len(summary["clip_ids"]) == 1 and summary["missing"] == [str(bad)]

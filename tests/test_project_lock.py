@@ -172,3 +172,29 @@ def test_the_desktop_asks_before_opening_a_project_in_use(tmp_path, monkeypatch,
         assert project_lock.may_save(str(cut))[0] is opens
     finally:
         other.unlock()
+
+
+def test_a_failed_open_gives_the_lock_back_to_the_project_still_open(tmp_path, monkeypatch):
+    """PR #275 review: the lock moved to the project that failed to load, so
+    another session could open (and overwrite) the one still on screen."""
+    from classes import headless
+
+    main_window, app, win = _main_window(monkeypatch)
+    monkeypatch.setattr(headless, "is_active", lambda: False)
+    monkeypatch.setattr(main_window, "QCursor", MagicMock())
+    monkeypatch.setattr(main_window.QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+    current = tmp_path / "current.zvn"
+    broken = tmp_path / "broken.zvn"
+    for path in (current, broken):
+        path.write_text("{}")
+    app.project.current_filepath = str(current)
+    assert project_lock.claim(str(current))[0]
+    app.project.load.side_effect = ValueError("not a project")
+
+    main_window.MainWindow.open_project(win, str(broken))
+
+    app.project.load.assert_called_once()
+    _other_session_holds(str(broken)).unlock()  # free again
+    lock = QLockFile(project_lock.lock_path(str(current)))
+    lock.setStaleLockTime(0)
+    assert not lock.tryLock(0), "the project still open lost its lock"

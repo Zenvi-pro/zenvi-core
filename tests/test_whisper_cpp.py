@@ -151,3 +151,37 @@ def test_the_real_binary_transcribes_speech():
     text = " ".join(w.text for w in words).lower()
     assert language == "en" and "americans" in text and "country" in text
     assert all(w.endSec >= w.startSec for w in words)
+
+
+def test_another_model_gets_its_own_cache_key(fake_cli, tmp_path, monkeypatch):
+    """PR #275 review: ZENVI_WHISPER_MODEL=<other model> returned the transcript
+    the bundled model had cached."""
+    other = tmp_path / "ggml-small.bin"
+    other.write_bytes(b"ggml")
+    monkeypatch.setenv("ZENVI_WHISPER_MODEL", str(other))
+    assert asr._cache_model_id("whisper", asr.DEFAULT_MODEL_ID) == "whisper.cpp-ggml-small"
+    assert whisper_cpp.WhisperCppTranscriber().model_id == "whisper.cpp-ggml-small"
+
+
+def test_a_stuck_whisper_cli_is_killed_at_the_time_limit(fake_cli, tmp_path, monkeypatch):
+    """PR #275 review: a hung child held the one inference slot forever."""
+    import time
+
+    wav = tmp_path / "a.wav"
+    wav.write_bytes(b"RIFF")
+    monkeypatch.setenv("FAKE_WHISPER_SLEEP", "1")
+    monkeypatch.setattr(whisper_cpp, "_time_limit", lambda wav_path: 1.0)
+    began = time.monotonic()
+    with pytest.raises(RuntimeError, match="did not finish"):
+        whisper_cpp.WhisperCppTranscriber().transcribe(str(wav), language=None, token=CancelToken())
+    assert time.monotonic() - began < 10
+
+
+def test_the_time_limit_grows_with_the_audio(tmp_path):
+    short = tmp_path / "short.wav"
+    short.write_bytes(b"x" * 32000)  # 1 s of 16 kHz mono 16-bit
+    hour = tmp_path / "hour.wav"
+    with open(hour, "wb") as fh:
+        fh.truncate(32000 * 3600)
+    assert whisper_cpp._time_limit(str(short)) == 600
+    assert whisper_cpp._time_limit(str(hour)) == 4 * 3600

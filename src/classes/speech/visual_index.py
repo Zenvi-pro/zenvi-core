@@ -180,6 +180,7 @@ class VisualIndex:
             existing = self._entries.get(key)
             if (
                 existing
+                and existing.path == os.path.abspath(path)
                 and existing.size == st.st_size
                 and existing.mtimeNs == mtime_ns
             ):

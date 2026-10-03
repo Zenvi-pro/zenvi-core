@@ -939,6 +939,11 @@ def test_is_retimed_reads_speed_and_time_curves():
     assert not is_retimed({"time": {"Points": [{"co": {"X": 1.0, "Y": 1.0}}]}})
     assert is_retimed({"speed": 0.5})
     assert is_retimed({"time": {"Points": [{"co": {"X": 1.0, "Y": 1.0}}, {"co": {"X": 31.0, "Y": 61.0}}]}})
+    assert not is_retimed({"time": {"Points": [{"co": {"X": 1.0, "Y": 1.0}}, {"co": {"X": 31.0, "Y": 31.0}}]}})
+    # PR #275 review: a one-frame hold is within smart render's tolerance, but
+    # it shifts every later word by a frame.
+    assert is_retimed({"time": {"Points": [
+        {"co": {"X": 1.0, "Y": 1.0}}, {"co": {"X": 2.0, "Y": 1.0}}, {"co": {"X": 3.0, "Y": 2.0}}]}})
 
 
 def test_an_explicit_language_never_reuses_another_languages_transcript(tmp_cache, tmp_path):

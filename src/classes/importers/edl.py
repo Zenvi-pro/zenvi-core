@@ -148,7 +148,13 @@ def create_clip(context, track, prompt=True, missing=None, probes=None):
     file = File.get(path=clip_path)
 
     # Open the media in libopenshot (off the GUI thread, once per import)
-    clip_json, reader_json = probe_clip(clip_path, probes if probes is not None else {}, openshot)
+    try:
+        clip_json, reader_json = probe_clip(clip_path, probes if probes is not None else {}, openshot)
+    except Exception:
+        log.warning("Could not open %s" % clip_path, exc_info=1)
+        if missing is not None:
+            missing.append(clip_path)
+        return None
 
     if not file:
         # Get the JSON for the clip's internal reader

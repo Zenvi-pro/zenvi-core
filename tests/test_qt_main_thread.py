@@ -79,3 +79,26 @@ def test_run_off_gui_keeps_the_gui_thread_serving_events(qapp):
     assert fired == [True]  # the timer ran while the worker was busy
     with pytest.raises(ValueError):
         run_off_gui(lambda: (_ for _ in ()).throw(ValueError("boom")))
+
+
+def test_run_off_gui_holds_other_threads_gui_calls_until_it_is_done(qapp):
+    """PR #275 review: an agent tool's queued GUI call ran inside the wait, so
+    it could edit the project a Collect Media / import was working on."""
+    events = []
+
+    def work():
+        agent = threading.Thread(target=lambda: invoke_on_gui(events.append, "agent tool"))
+        agent.start()
+        agent.join()
+        # The worker's own GUI calls must still run (or the two would deadlock).
+        assert call_on_gui(lambda: "own", timeout=5) == "own"
+        time.sleep(0.2)
+        events.append("worker done")
+
+    run_off_gui(work)
+    events.append("returned")
+    deadline = time.time() + 2
+    while "agent tool" not in events and time.time() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    assert events == ["worker done", "returned", "agent tool"]

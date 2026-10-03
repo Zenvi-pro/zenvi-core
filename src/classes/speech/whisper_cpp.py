@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Optional
 
 from classes.speech.cache import Word
@@ -87,8 +88,25 @@ def available() -> bool:
     return bool(cli_path() and model_path())
 
 
+def model_id() -> str:
+    """Transcript-cache identity of the model in use (ZENVI_WHISPER_MODEL can pick another)."""
+    name = os.path.basename(model_path())
+    return MODEL_ID if name in ("", MODEL_FILE) else "whisper.cpp-" + os.path.splitext(name)[0]
+
+
+def _time_limit(wav_path: str) -> float:
+    """Seconds whisper-cli may run: 4x the audio (16 kHz mono 16-bit), at least 10 minutes."""
+    try:
+        audio_seconds = os.path.getsize(wav_path) / 32000.0
+    except OSError:
+        audio_seconds = 0.0
+    return max(600.0, 4.0 * audio_seconds)
+
+
 class WhisperCppTranscriber:
-    model_id = MODEL_ID
+    @property
+    def model_id(self) -> str:
+        return model_id()
 
     def transcribe(
         self,
@@ -122,6 +140,8 @@ class WhisperCppTranscriber:
                 kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
             proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                     encoding="utf-8", errors="replace", **kwargs)
+            limit = _time_limit(wav_path)
+            deadline = time.monotonic() + limit
             try:
                 while True:
                     try:
@@ -129,6 +149,10 @@ class WhisperCppTranscriber:
                         break
                     except subprocess.TimeoutExpired:
                         token.raise_if_cancelled()  # killed below
+                        if time.monotonic() > deadline:
+                            # It holds the one inference slot: never wait forever.
+                            raise RuntimeError(
+                                "whisper.cpp did not finish within %d s" % limit) from None
             except BaseException:
                 if proc.poll() is None:
                     proc.kill()

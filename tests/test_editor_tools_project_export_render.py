@@ -340,6 +340,23 @@ def test_save_frame_image(studio, monkeypatch):
     assert studio.call("save_frame_image_tool", time=1, file_path=str(studio.out_dir / "x.png")).startswith("Error")
     assert studio.undo_steps_since_mark() == 0
 
+    # PR #275 review: a render that outlives its timeout must not publish its
+    # frame after the tool already reported the failure.
+    monkeypatch.setattr(eca, "render_frame", fake_render)
+    late = []
+
+    def timed_out(func, *a, **k):
+        late.append(func)
+        raise render.ToolError("the render did not finish within 120 s")
+
+    monkeypatch.setattr(render, "run_on_qthread", timed_out)
+    target = studio.out_dir / "late.png"
+    assert studio.call("save_frame_image_tool", time=1, file_path=str(target)).startswith("Error")
+    monkeypatch.setattr(render, "render_interrupted", lambda: True)
+    assert late[0]() is False
+    assert not target.exists()
+    assert [n for n in os.listdir(str(studio.out_dir)) if "late" in n] == []
+
 
 def test_export_files_to_folder(studio, tmp_path, monkeypatch):
     src = tmp_path / "shot.mp4"

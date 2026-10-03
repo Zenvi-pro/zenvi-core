@@ -937,25 +937,28 @@ def save_frame_image(time=-1, file_path="", overwrite=False):
     def _render():
         # A private full-size timeline on a QThread: the GUI thread (and the
         # preview timeline File > Save Current Frame borrows) stay untouched.
-        rendered = render_frame(None, frame_to_seconds(frame))
         try:
-            rendered.frame.Save(staged, 1.0, fmt)
+            rendered = render_frame(None, frame_to_seconds(frame))
+            try:
+                rendered.frame.Save(staged, 1.0, fmt)
+            finally:
+                rendered.close()
+            # Timed out: the tool already reported the failure, so publish nothing.
+            if render_interrupted() or not os.path.isfile(staged):
+                return False
+            os.replace(staged, path)
+            return True
         finally:
-            rendered.close()
-        if not os.path.isfile(staged):
-            return False
-        os.replace(staged, path)
-        return True
+            try:
+                os.remove(staged)
+            except OSError:
+                pass
 
-    # Staged, so a failed render never passes for an older file at *path*.
-    staged = os.path.join(os.path.dirname(path), ".%s.partial" % os.path.basename(path))
-    try:
-        saved = run_on_qthread(_render, timeout_seconds=120)
-    finally:
-        try:
-            os.remove(staged)  # a timed-out render thread may still own it
-        except OSError:
-            pass
+    # Staged, so a failed render never passes for an older file at *path*; its
+    # own name per call, so a render that timed out cannot touch a retry's file.
+    staged = os.path.join(os.path.dirname(path),
+                          ".%s.%s.partial" % (os.path.basename(path), uuid.uuid4().hex[:8]))
+    saved = run_on_qthread(_render, timeout_seconds=120)
     if not saved or not os.path.isfile(path):
         raise ToolError(f"the frame could not be saved to {path}")
     proj = get_app().project
