@@ -554,7 +554,7 @@ def test_add_clips_paints_stills_and_transitions_on_the_gui_thread(ed, monkeypat
     painted = [(name, arg) for name, arg in hopped if name in ("clip_json", "transition_reader_json")]
     assert ("clip_json", os.path.abspath("/media/sample_image.jpg")) in painted  # resolved media path
     assert any(name == "transition_reader_json" and arg.endswith("fade.svg") for name, arg in painted)
-    assert ("clip_json", "/media/sample_video.mp4") not in painted
+    assert ("clip_json", os.path.abspath("/media/sample_video.mp4")) not in painted
 
 
 def test_background_tools_wait_long_enough_for_each_hop(ed, monkeypatch):
