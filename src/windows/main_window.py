@@ -1349,21 +1349,31 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 _("Save the project first, then collect media into it."),
             )
             return
+        import copy
         from classes import info as _info
-        from classes.media_collect import collect_media_into_project
+        from classes.media_collect import copy_media_into_project, repoint_media
 
-        files = project._data.get("files") or []
-        clips = project._data.get("clips") or []
-        copied, skipped, errors = collect_media_into_project(
-            files, clips, project.current_filepath, app_root=_info.PATH
-        )
-        project.has_unsaved_changes = True
-        QMessageBox.information(
-            self,
-            _("Collect Media"),
-            _("Copied %(copied)d file(s). Skipped %(skipped)d. Errors: %(errors)d.")
-            % {"copied": len(copied), "skipped": len(skipped), "errors": len(errors)},
-        )
+        # Copying can take minutes: do it on a snapshot, off the GUI thread.
+        files = copy.deepcopy(project._data.get("files") or [])
+        project_path = project.current_filepath
+
+        def _finish(copied, skipped, errors, moves):
+            repoint_media(project._data.get("files") or [], project._data.get("clips") or [],
+                          moves, keep_original=True)
+            if moves:
+                project.has_unsaved_changes = True
+            QMessageBox.information(
+                self,
+                _("Collect Media"),
+                _("Copied %(copied)d file(s). Skipped %(skipped)d. Errors: %(errors)d.")
+                % {"copied": len(copied), "skipped": len(skipped), "errors": len(errors)},
+            )
+
+        def _work():
+            result = copy_media_into_project(files, project_path, app_root=_info.PATH)
+            invoke_on_gui(_finish, *result, context=self)
+
+        threading.Thread(target=_work, name="zenvi-collect-media", daemon=True).start()
 
     def actionReclaimMedia_trigger(self, checked=True):
         """Remove asset copies that still have a matching original on disk."""
@@ -1377,21 +1387,40 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 _("Save the project first."),
             )
             return
-        from classes.media_collect import reclaim_unused_asset_media
+        import copy
+        from classes.media_collect import commit_reclaim, find_reclaimable_media, repoint_media
+        from classes.qt_main_thread import call_on_gui
 
-        files = project._data.get("files") or []
-        clips = project._data.get("clips") or []
-        removed, kept, errors = reclaim_unused_asset_media(
-            files, clips, project.current_filepath
-        )
-        if removed:
-            project.has_unsaved_changes = True
-        QMessageBox.information(
-            self,
-            _("Reclaim Space"),
-            _("Removed %(removed)d duplicate(s). Kept %(kept)d. Errors: %(errors)d.")
-            % {"removed": len(removed), "kept": len(kept), "errors": len(errors)},
-        )
+        # Full-file hashing and deletes run off the GUI thread; only the
+        # in-memory path rewrite runs on it.
+        files = copy.deepcopy(project._data.get("files") or [])
+        project_path = project.current_filepath
+
+        def _repoint(moves):
+            call_on_gui(lambda: repoint_media(
+                project._data.get("files") or [], project._data.get("clips") or [], moves))
+
+        def _show(removed, kept, errors):
+            QMessageBox.information(
+                self,
+                _("Reclaim Space"),
+                _("Removed %(removed)d duplicate(s). Kept %(kept)d. Errors: %(errors)d.")
+                % {"removed": len(removed), "kept": len(kept), "errors": len(errors)},
+            )
+
+        def _work():
+            moves, kept, errors = find_reclaimable_media(files, project_path)
+            # Saved before any copy is deleted, so the file on disk never
+            # references removed media (closing with "Don't Save" stays safe).
+            removed, commit_errors = commit_reclaim(
+                moves, _repoint,
+                lambda: self.save_project(project_path, raise_errors=True),
+            )
+            if commit_errors and not removed:
+                kept.extend(dest for _fid, dest, _orig in moves)
+            invoke_on_gui(_show, removed, kept, errors + commit_errors, context=self)
+
+        threading.Thread(target=_work, name="zenvi-reclaim-media", daemon=True).start()
 
     def actionImportFiles_trigger(self):
         app = get_app()

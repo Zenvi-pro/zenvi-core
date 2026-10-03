@@ -400,3 +400,22 @@ def test_audio_mix_speech_windows_best_prefers_cues():
     windows, src = am.speech_windows_best(clip, meta, media_path="")
     assert src == "transcript_cues"
     assert windows
+
+
+def test_search_media_local_only_returns_the_open_projects_media(tmp_path):
+    """Review #216: the shared index returned another project's files and paths."""
+    idx = VisualIndex(root=str(tmp_path / "idx"))
+    reset_visual_index_for_tests(idx)
+    other = tmp_path / "other_project_secret.bin"
+    other.write_bytes(b"harbor sunset frame")
+    idx.upsert_file("OTHER", str(other))
+    mine = tmp_path / "shot.bin"
+    mine.write_bytes(b"harbor at dusk")
+    project = {"files": [{"id": "f1", "path": str(mine)}], "clips": [], "fps": {"num": 30, "den": 1}}
+    with patch("classes.app.get_app", return_value=MagicMock()), \
+         patch("classes.agent_tools.inspect_render.snapshot_project", return_value=project), \
+         patch("classes.query.File.filter", return_value=[]):
+        from classes.agent_tools.speech_extra import search_media_local
+        receipt = parse_receipt(search_media_local(query="harbor", top_k=5))
+    assert [h["fileId"] for h in receipt["data"]["hits"]] == ["f1"]
+    reset_visual_index_for_tests(None)

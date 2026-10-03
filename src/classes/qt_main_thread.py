@@ -133,3 +133,40 @@ def call_on_gui(func, *args, timeout=30, context=None, **kwargs):
     if error_box[0] is not None:
         raise error_box[0]
     return result_box[0]
+
+
+def _pump_events():
+    """Repaint and serve timers/sockets, but hold user input until the work is done."""
+    try:
+        from qt_api import QEventLoop
+
+        QCoreApplication.processEvents(QEventLoop.ExcludeUserInputEvents, 50)
+    except Exception:
+        pass  # no usable event loop (stubbed Qt in tests); the join still waits
+
+
+def run_off_gui(func, *args, **kwargs):
+    """Run *func* on a worker thread and return its result.
+
+    Called on the GUI thread, this keeps the editor painting (without taking
+    clicks or keys) until *func* finishes, for file I/O a synchronous GUI flow
+    has to wait for. Anywhere else *func* simply runs inline.
+    """
+    if not is_gui_thread() or QCoreApplication is None:
+        return func(*args, **kwargs)
+    box = {}
+
+    def _run():
+        try:
+            box["result"] = func(*args, **kwargs)
+        except BaseException as exc:
+            box["error"] = exc
+
+    worker = threading.Thread(target=_run, name="zenvi-off-gui", daemon=True)
+    worker.start()
+    while worker.is_alive():
+        _pump_events()
+        worker.join(0.02)
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")

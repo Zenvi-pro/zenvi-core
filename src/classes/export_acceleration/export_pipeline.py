@@ -23,6 +23,10 @@ from classes.export_acceleration.export_tuning import (
 from classes.logger import log
 
 
+# Timelines (and their caches) a compositor was still using when export returned.
+_BUSY_TIMELINES: list = []
+
+
 class PipelineCancelled(Exception):
     """Raised when export is cancelled mid-flight."""
 
@@ -270,6 +274,12 @@ def run_pipelined_export(
     # Close cloned timelines (not the caller's existing_timeline)
     for i, tl in enumerate(timelines):
         if existing_timeline is not None and tl is existing_timeline:
+            continue
+        if composite_threads[i].is_alive():
+            # Still inside GetFrame: closing would free native state under it.
+            # ponytail: parked for the process lifetime; one leak per stuck cancel.
+            log.warning("Export compositor %s still busy after cancel; leaving its timeline open", i)
+            _BUSY_TIMELINES.append((composite_threads[i], tl, keep_alive))
             continue
         try:
             tl.Close()

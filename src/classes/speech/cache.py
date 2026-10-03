@@ -209,11 +209,20 @@ class TranscriptCache:
         prefix = _identity_prefix(abspath, size, mtime_ns, model_id)
         candidates: list[TranscriptRecord] = []
 
+        def _base(lang) -> str:
+            return str(lang or "").split("-")[0].split("_")[0].lower()
+
         def _consider(rec: Optional[TranscriptRecord]) -> None:
             if rec is None:
                 return
             if not self._record_matches_identity(
                 rec, abspath=abspath, size=size, mtime_ns=mtime_ns, model_id=model_id,
+            ):
+                return
+            # An explicit language only shares a record in that language
+            # (en-CA ~ en): another language's words would skip ASR wrongly.
+            if prefer != "auto" and _base(prefer) not in (
+                _base(rec.language), _base(rec.requestLanguage),
             ):
                 return
             candidates.append(rec)

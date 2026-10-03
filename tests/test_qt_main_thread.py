@@ -13,7 +13,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from classes.qt_main_thread import call_on_gui, invoke_on_gui, is_gui_thread  # noqa: E402
+from classes.qt_main_thread import call_on_gui, invoke_on_gui, is_gui_thread, run_off_gui  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -62,3 +62,20 @@ def test_invoke_on_gui_from_a_worker_runs_on_the_app_thread(qapp):
         time.sleep(0.01)
 
     assert seen == [True]
+
+
+def test_run_off_gui_keeps_the_gui_thread_serving_events(qapp):
+    from PyQt5.QtCore import QTimer
+
+    fired = []
+    QTimer.singleShot(0, lambda: fired.append(True))
+
+    def work():
+        time.sleep(0.2)
+        return threading.current_thread()
+
+    worker = run_off_gui(work)
+    assert worker is not threading.main_thread()
+    assert fired == [True]  # the timer ran while the worker was busy
+    with pytest.raises(ValueError):
+        run_off_gui(lambda: (_ for _ in ()).throw(ValueError("boom")))

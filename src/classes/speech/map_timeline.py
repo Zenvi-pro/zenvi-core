@@ -33,6 +33,13 @@ def clip_speed(clip: dict) -> float:
     return 1.0
 
 
+def is_retimed(clip: dict) -> bool:
+    """True when the clip plays at another speed or through a time curve."""
+    from classes.export_acceleration.smart_render import _time_curve_is_identity
+
+    return abs(clip_speed(clip) - 1.0) > 1e-9 or not _time_curve_is_identity(clip.get("time"))
+
+
 def source_to_timeline_sec(
     source_sec: float,
     *,

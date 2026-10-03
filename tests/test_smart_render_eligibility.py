@@ -367,3 +367,68 @@ def test_a_normalized_segment_has_the_export_format(tmp_path, untouched):
     assert (info["video"]["codec_name"], info["video"]["width"], info["video"]["height"]) == ("h264", 640, 480)
     assert (info["audio"]["codec_name"], info["audio"]["sample_rate"], info["audio"]["channels"]) == ("aac", "44100", 1)
     assert smart_render._video_frame_count(str(out)) == 50
+
+
+# --- review follow-ups (PR #216) ----------------------------------------------
+
+def test_unknown_source_dimensions_are_never_copied(untouched):
+    # Without the source size, a crop/stretch scale mode cannot be ruled out.
+    untouched["reader"].pop("width", None)
+    untouched["reader"].pop("height", None)
+    untouched.pop("width", None)
+    untouched.pop("height", None)
+    assert "resolution-unknown" in _reasons(untouched)
+
+
+def _grade(**fields):
+    effect = {"class_name": "ColorGrade", "lut_path": ""}
+    effect.update(fields)
+    return effect
+
+
+def _nodes(*points):
+    return {"enabled": _kf(1.0), "nodes": [
+        {"id": i, "x": _kf(x), "y": _kf(y), "interpolation": 1} for i, (x, y) in enumerate(points)]}
+
+
+def test_a_neutral_color_grade_does_not_block_the_copy(untouched):
+    untouched["effects"] = [_grade(
+        curve_all=_nodes((0, 0), (1, 1)),
+        wheels={"global": {"amount": 0.0, "luma": 0.0, "amount_keyframes": _kf(0.0)}})]
+    assert "has-effects" not in _reasons(untouched)
+
+
+@pytest.mark.parametrize("effect", [
+    # Two nodes, but not the passthrough line: a lifted black point.
+    _grade(curve_all=_nodes((0, 0.2), (1, 1))),
+    # The legacy Points form with two non-identity points.
+    _grade(curve_red={"Points": [{"co": {"X": 0.0, "Y": 0.0}}, {"co": {"X": 1.0, "Y": 0.6}}]}),
+    _grade(curve_blue=_nodes((0, 0), (0.5, 0.7), (1, 1))),
+    _grade(wheels={"shadows": {"amount": 0.4, "luma": 0.0}}),
+    _grade(wheels={"highlights": {"amount": 0.0, "luma": 0.0, "luma_keyframes": _kf(0.3)}}),
+])
+def test_a_real_color_grade_is_encoded(untouched, effect):
+    untouched["effects"] = [effect]
+    assert "has-effects" in _reasons(untouched)
+
+
+def _container(path):
+    return subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=format_name", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True, check=True).stdout.strip()
+
+
+@_needs_ffmpeg
+def test_a_single_copy_segment_is_written_in_the_requested_container(tmp_path, untouched):
+    source = tmp_path / "src.mp4"
+    _make_source(source)
+    mov = tmp_path / "out.mov"
+    assert _export(_clip_for(source, untouched), mov, _AUDIO)
+    # mov and mp4 share a demuxer name; the brand tells them apart.
+    brand = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format_tags=major_brand", "-of", "csv=p=0", str(mov)],
+        capture_output=True, text=True, check=True).stdout.strip()
+    assert brand == "qt", brand
+    mkv = tmp_path / "out.mkv"
+    assert _export(_clip_for(source, untouched), mkv, _AUDIO)
+    assert "matroska" in _container(mkv)

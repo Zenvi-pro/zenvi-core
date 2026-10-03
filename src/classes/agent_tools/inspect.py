@@ -33,6 +33,18 @@ def _find_clip(project_data: dict, clip_id: str) -> Optional[dict]:
     return None
 
 
+def _range_error(sf: int, ef: int, total: int):
+    """A refusal when frames [sf, ef) are not all inside the project, else None."""
+    from classes.agent_tools.receipt import ToolReceipt
+
+    if sf < 0 or (total > 0 and ef > total):
+        return ToolReceipt.refused(
+            "inspect_timeline_tool",
+            f"Error: frames [{sf}, {ef}) out of range [0, {total}).",
+        )
+    return None
+
+
 def inspect_timeline(
     startFrame=None,
     endFrame=None,
@@ -127,6 +139,8 @@ def inspect_timeline(
             return ToolReceipt.refused(
                 "inspect_timeline_tool", "Error: endFrame must be greater than startFrame.",
             )
+        if (out_of_range := _range_error(sf, ef, total)) is not None:
+            return out_of_range
         frames_0 = mid_bin_frames(sf, ef, min(36, max(6, ef - sf)))
     elif endFrame is None or int(endFrame or 0) == 0:
         sf = int(startFrame)
@@ -142,6 +156,8 @@ def inspect_timeline(
             return ToolReceipt.refused(
                 "inspect_timeline_tool", "Error: endFrame must be greater than startFrame.",
             )
+        if (out_of_range := _range_error(sf, ef, total)) is not None:
+            return out_of_range
         frames_0 = mid_bin_frames(sf, ef, max_n)
 
     try:

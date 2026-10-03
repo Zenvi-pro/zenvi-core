@@ -1635,71 +1635,81 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             log.info("Locate folder cancelled; leaving %s missing file(s) in place", total_missing)
             return
 
-        wanted = set()
-        for file, _path in missing_files:
-            fp = file.get("fingerprint")
-            if isinstance(fp, dict) and fp.get("sha256"):
-                wanted.add(fp["sha256"])
-        index = scan_folder_for_fingerprints(folder, wanted=wanted or None)
-        remember_media_root(folder)
+        # Fingerprinting and walking a large or slow folder takes a while; do
+        # it off the GUI thread (load still waits, the editor keeps painting).
+        relinked = []
 
-        # Also match by basename when fingerprint is missing (legacy projects).
-        basename_hits = {}
-        for root, _dirs, names in os.walk(folder):
-            for name in names:
-                if name not in basename_hits:
-                    basename_hits[name] = os.path.join(root, name)
-
-        def _relink(path, fp):
-            if isinstance(fp, dict) and fp.get("sha256") and fp["sha256"] in index:
-                return index[fp["sha256"]]
-            base = os.path.basename(path or "")
-            if base in basename_hits:
-                hit = basename_hits[base]
-                # Basename-only matching is legacy fallback; when a fingerprint
-                # exists, require a digest match so duplicate names cannot swap media.
+        def _relink_from_folder():
+            wanted = set()
+            for file, _path in missing_files:
+                fp = file.get("fingerprint")
                 if isinstance(fp, dict) and fp.get("sha256"):
-                    stamped = fingerprint(hit)
-                    if stamped and stamped.get("sha256") == fp["sha256"]:
-                        return hit
-                    return None
-                return hit
-            return None
+                    wanted.add(fp["sha256"])
+            index = scan_folder_for_fingerprints(folder, wanted=wanted or None)
+            remember_media_root(folder)
 
-        for file, path in missing_files:
-            hit = _relink(path, file.get("fingerprint"))
-            if hit:
-                file["path"] = hit
-                if not file.get("fingerprint"):
-                    stamped = fingerprint(hit)
-                    if stamped:
-                        file["fingerprint"] = stamped
-                if settings:
-                    settings.setDefaultPath(settings.actionType.IMPORT, hit)
-                log.info("Relinked missing file: %s -> %s", path, hit)
+            # Also match by basename when fingerprint is missing (legacy projects).
+            basename_hits = {}
+            for root, _dirs, names in os.walk(folder):
+                for name in names:
+                    if name not in basename_hits:
+                        basename_hits[name] = os.path.join(root, name)
 
-        # Build file_id -> path map after file relinks.
-        file_paths_by_id = {
-            f.get("id"): f.get("path")
-            for f in (self._data.get("files") or [])
-            if f.get("id") and f.get("path") and os.path.exists(f.get("path"))
-        }
-        file_fp_by_id = {
-            f.get("id"): f.get("fingerprint")
-            for f in (self._data.get("files") or [])
-            if f.get("id") and isinstance(f.get("fingerprint"), dict)
-        }
+            def _relink(path, fp):
+                if isinstance(fp, dict) and fp.get("sha256") and fp["sha256"] in index:
+                    return index[fp["sha256"]]
+                base = os.path.basename(path or "")
+                if base in basename_hits:
+                    hit = basename_hits[base]
+                    # Basename-only matching is legacy fallback; when a fingerprint
+                    # exists, require a digest match so duplicate names cannot swap media.
+                    if isinstance(fp, dict) and fp.get("sha256"):
+                        stamped = fingerprint(hit)
+                        if stamped and stamped.get("sha256") == fp["sha256"]:
+                            return hit
+                        return None
+                    return hit
+                return None
 
-        for clip, path in missing_clips:
-            file_id = clip.get("file_id")
-            if file_id and file_id in file_paths_by_id:
-                clip.setdefault("reader", {})["path"] = file_paths_by_id[file_id]
-                log.info("Relinked missing clip via file_id: %s", file_paths_by_id[file_id])
-                continue
-            hit = _relink(path, file_fp_by_id.get(file_id))
-            if hit:
-                clip.setdefault("reader", {})["path"] = hit
-                log.info("Relinked missing clip: %s -> %s", path, hit)
+            for file, path in missing_files:
+                hit = _relink(path, file.get("fingerprint"))
+                if hit:
+                    file["path"] = hit
+                    if not file.get("fingerprint"):
+                        stamped = fingerprint(hit)
+                        if stamped:
+                            file["fingerprint"] = stamped
+                    relinked.append(hit)
+                    log.info("Relinked missing file: %s -> %s", path, hit)
+
+            # Build file_id -> path map after file relinks.
+            file_paths_by_id = {
+                f.get("id"): f.get("path")
+                for f in (self._data.get("files") or [])
+                if f.get("id") and f.get("path") and os.path.exists(f.get("path"))
+            }
+            file_fp_by_id = {
+                f.get("id"): f.get("fingerprint")
+                for f in (self._data.get("files") or [])
+                if f.get("id") and isinstance(f.get("fingerprint"), dict)
+            }
+
+            for clip, path in missing_clips:
+                file_id = clip.get("file_id")
+                if file_id and file_id in file_paths_by_id:
+                    clip.setdefault("reader", {})["path"] = file_paths_by_id[file_id]
+                    log.info("Relinked missing clip via file_id: %s", file_paths_by_id[file_id])
+                    continue
+                hit = _relink(path, file_fp_by_id.get(file_id))
+                if hit:
+                    clip.setdefault("reader", {})["path"] = hit
+                    log.info("Relinked missing clip: %s -> %s", path, hit)
+
+        from classes.qt_main_thread import run_off_gui
+
+        run_off_gui(_relink_from_folder)
+        if settings and relinked:
+            settings.setDefaultPath(settings.actionType.IMPORT, relinked[-1])
 
     def changed(self, action):
         """ This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface) """
