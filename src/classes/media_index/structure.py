@@ -344,11 +344,13 @@ class Cancelled(Exception):
     """Raised inside the analysis loop when the caller asked to stop."""
 
 
-def _frames(path: str, width: int, height: int, should_cancel: Optional[Callable[[], bool]]
-            ) -> Iterator[np.ndarray]:
+def _frames(path: str, width: int, height: int, should_cancel: Optional[Callable[[], bool]],
+            still: bool = False) -> Iterator[np.ndarray]:
+    # A still image is one frame with no duration: the fps filter would drop it, so ask for it directly.
+    rate = "" if still else f"fps={S.ANALYSIS_FPS:g},"
     cmd = ["ffmpeg", "-nostdin", "-v", "error", "-i", path, "-map", "0:v:0", "-an", "-sn", "-dn",
-           "-vf", f"fps={S.ANALYSIS_FPS:g},scale={width}:{height}:flags=area,format=rgb24",
-           "-f", "rawvideo", "-"]
+           "-vf", f"{rate}scale={width}:{height}:flags=area,format=rgb24"]
+    cmd += (["-frames:v", "1"] if still else []) + ["-f", "rawvideo", "-"]
     proc = popen_ffmpeg(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=width * height * 3 * 4)
     size = width * height * 3
     try:
@@ -393,6 +395,7 @@ def analyze_structure(
     width, height = size
     fps = S.ANALYSIS_FPS
     duration = float(probe.get("duration") or 0.0)
+    still = duration <= 0.0      # an image: one frame, no cuts, no motion
 
     detector = CutDetector()
     boundaries: List[Dict[str, Any]] = []
@@ -418,7 +421,7 @@ def analyze_structure(
                 boundaries.append({"t": round(centre, 3), "kind": "fade", "score": 1.0})
             black_run_start = None
 
-    for idx, rgb in enumerate(_frames(path, width, height, should_cancel)):
+    for idx, rgb in enumerate(_frames(path, width, height, should_cancel, still=still)):
         frames_seen = idx + 1
         gray = rgb_to_gray(rgb)
         hist = gray_hist32(gray)
@@ -503,6 +506,11 @@ def analyze_structure(
         boundaries.append({"t": round(centre, 3), "kind": "dissolve",
                            "score": round(1.0 - float(np.min([c[1] for c in r])), 3)})
 
+    if still:
+        if on_progress is not None:
+            on_progress(1.0)
+        return {"frames": frames_seen, "still": True, "analysis": {"fps": fps, "width": width, "height": height},
+                "boundaries": [], "shots": []}
     total = duration if duration > 0 else frames_seen / fps
     merged = merge_boundaries(boundaries, total)
     shots = build_shots(merged, total)
