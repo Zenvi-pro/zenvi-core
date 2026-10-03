@@ -221,3 +221,17 @@ def test_a_failed_open_never_keeps_the_failed_projects_lock(tmp_path, monkeypatc
         _other_session_holds(str(broken)).unlock()  # free again
     finally:
         other.unlock()
+
+
+def test_open_anyway_only_covers_the_project_it_was_given_for(tmp_path):
+    """PR #216 review: the consent outlived the project, so a later Save As
+    onto that path overwrote the other session without a check."""
+    a, b = str(tmp_path / "a.zvn"), str(tmp_path / "b.zvn")
+    other = _other_session_holds(a)
+    try:
+        project_lock.override(a)
+        assert project_lock.may_save(a) == (True, None)
+        assert project_lock.claim(b)[0]  # the user moved on to another project
+        assert project_lock.may_save(a)[0] is False
+    finally:
+        other.unlock()
