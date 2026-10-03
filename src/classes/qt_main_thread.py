@@ -152,7 +152,11 @@ def run_off_gui(func, *args, **kwargs):
     clicks or keys) until *func* finishes, for file I/O a synchronous GUI flow
     has to wait for. Anywhere else *func* simply runs inline.
     """
-    if not is_gui_thread() or QCoreApplication is None:
+    try:
+        on_gui = QCoreApplication is not None and is_gui_thread()
+    except Exception:
+        on_gui = False  # no usable Qt (stubbed in tests): nothing to keep responsive
+    if not on_gui:
         return func(*args, **kwargs)
     box = {}
 
@@ -162,11 +166,34 @@ def run_off_gui(func, *args, **kwargs):
         except BaseException as exc:
             box["error"] = exc
 
-    worker = threading.Thread(target=_run, name="zenvi-off-gui", daemon=True)
-    worker.start()
-    while worker.is_alive():
+    running = _start_worker(_run)
+    while running():
         _pump_events()
-        worker.join(0.02)
     if "error" in box:
         raise box["error"]
     return box.get("result")
+
+
+def _start_worker(target):
+    """Start *target*; returns a callable that waits ~20 ms and says if it still runs.
+
+    A QThread when real Qt is loaded: libopenshot readers and Qt image/SVG
+    decoding are only safe there, not on a plain threading.Thread (see
+    editor_tools.project_export_render.run_on_qthread).
+    """
+    if isinstance(QThread, type):
+        class _Job(QThread):
+            def run(self):
+                target()
+
+        job = _Job()
+        job.start()
+        return lambda: not job.wait(20)
+    worker = threading.Thread(target=target, name="zenvi-off-gui", daemon=True)
+    worker.start()
+
+    def _running():
+        worker.join(0.02)
+        return worker.is_alive()
+
+    return _running

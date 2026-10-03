@@ -472,6 +472,10 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         self.new()
         self.last_missing_media = []
 
+        if not file_path:
+            # A blank project: the previous one is free for other sessions.
+            from classes import project_lock
+            project_lock.release()
         if file_path:
             log.info("Loading project file: %s", file_path)
 

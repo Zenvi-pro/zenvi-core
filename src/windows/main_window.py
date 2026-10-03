@@ -883,6 +883,12 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             previous_filepath = getattr(app.project, "current_filepath", None) or ""
 
             try:
+                from classes import project_lock
+                free, holder = project_lock.may_save(file_path)
+                if not free:
+                    raise RuntimeError(project_lock.in_use_message(file_path, holder)
+                                       + " Or save under another name.")
+
                 # Update history in project data
                 s = app.get_settings()
                 app.updates.save_history(app.project, s.get("history-limit"))
@@ -1051,6 +1057,26 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             elif ret == QMessageBox.Cancel:
                 # User canceled prompt
                 return False
+
+        # One session owns a project: two that both save overwrite each other.
+        from classes import project_lock
+        if file_exists(file_path):
+            free, holder = project_lock.claim(file_path)
+            if not free:
+                message = project_lock.in_use_message(file_path, holder)
+                if not interactive:
+                    raise RuntimeError(message)
+                if headless.is_active():
+                    # Nobody can choose, and overwriting the user's work is the
+                    # worst guess: leave it to the session that has it open.
+                    headless.report("did not open %s: %s" % (file_path, message))
+                    return False
+                ret = QMessageBox.warning(
+                    self, _("Project In Use"), message,
+                    QMessageBox.Open | QMessageBox.Cancel, QMessageBox.Cancel)
+                if ret != QMessageBox.Open:
+                    return False
+                project_lock.override(file_path)
 
         # Set cursor to waiting
         app.setOverrideCursor(QCursor(Qt.WaitCursor))
