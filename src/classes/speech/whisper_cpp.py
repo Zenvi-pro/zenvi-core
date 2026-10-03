@@ -106,7 +106,7 @@ def model_id() -> str:
     except OSError:
         stamp = os.path.normcase(os.path.abspath(path))
     return "whisper.cpp-%s-%s" % (os.path.splitext(os.path.basename(path))[0],
-                                  hashlib.sha1(stamp.encode("utf-8")).hexdigest()[:8])
+                                  hashlib.sha1(stamp.encode("utf-8"), usedforsecurity=False).hexdigest()[:8])
 
 
 def _time_limit(wav_path: str) -> float:
