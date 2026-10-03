@@ -954,8 +954,10 @@ def save_frame_image(time=-1, file_path="", overwrite=False):
     try:
         saved = run_on_qthread(_render, timeout_seconds=120)
     finally:
-        if os.path.exists(staged):
-            os.remove(staged)
+        try:
+            os.remove(staged)  # a timed-out render thread may still own it
+        except OSError:
+            pass
     if not saved or not os.path.isfile(path):
         raise ToolError(f"the frame could not be saved to {path}")
     proj = get_app().project
