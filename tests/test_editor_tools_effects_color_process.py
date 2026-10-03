@@ -1,8 +1,8 @@
 """effects-color editor tools: frame analysis and the processing effects (Stabilizer, Tracker, ...)."""
 
-import os
 import copy
 import json
+import os
 
 import pytest
 
