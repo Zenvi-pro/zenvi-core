@@ -105,6 +105,11 @@ jobs:
           pip3 install --upgrade pip
           pip3 install -r requirements.txt
 
+      - name: Bundle local transcription (whisper.cpp + base model)
+        run: |
+          sudo apt-get install -y cmake ninja-build
+          bash installer/build-whisper-cli.sh
+
       - name: Freeze with cx_Freeze
         run: python3 freeze.py build --git-branch=production
 
@@ -457,6 +462,9 @@ jobs:
           pip3 install --upgrade pip
           pip3 install -r requirements.txt
           pip3 install pyobjc-framework-Cocoa 2>/dev/null || true
+
+      - name: Bundle local transcription (whisper.cpp + base model)
+        run: bash installer/build-whisper-cli.sh
 
       - name: Freeze with cx_Freeze
         run: |
@@ -1171,6 +1179,15 @@ jobs:
           # first agent-backend use. pywin32 must come from pacman (see pkgs above);
           # FastMCP import dies with ModuleNotFoundError: pywintypes without it.
           ./.venv/bin/python -c "import pywintypes, win32api, win32con, win32job; import mcp.types; from mcp.server.fastmcp import FastMCP; print('mcp import OK'); print('pywin32', pywintypes.__file__)"
+
+      - name: Bundle local transcription (whisper.cpp + base model)
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          export MSYSTEM=UCRT64
+          export PATH="/ucrt64/bin:$PATH"
+          cd "${GITHUB_WORKSPACE}"
+          bash installer/build-whisper-cli.sh
 
       - name: Freeze with cx_Freeze
         shell: msys2 {0}
