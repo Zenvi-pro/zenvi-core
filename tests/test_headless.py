@@ -200,7 +200,7 @@ def signed_in(monkeypatch):
 def test_bad_project_exits_before_anything_starts(reported, lock):
     runtime = _runtime(FakeApp(), project_path="/nowhere/cut.zvn")
     assert runtime.run() == headless.EXIT_PROJECT
-    assert reported == ["project not found: /nowhere/cut.zvn"]
+    assert reported == ["project not found: %s" % os.path.abspath("/nowhere/cut.zvn")]
 
 
 def test_second_headless_session_is_refused(reported, lock, signed_in):

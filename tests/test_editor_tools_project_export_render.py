@@ -147,7 +147,7 @@ def test_ranges_and_paths(studio):
     from classes.editor_tools.project_export_render import build_export_plan
     plan = build_export_plan(start=2.0, end=7.0, output_path="~/zenvi-test/reel")
     assert (plan["range"], plan["start_frame"], plan["end_frame"]) == ("custom", 61, 210)
-    assert plan["path"] == os.path.expanduser("~/zenvi-test/reel.mp4")
+    assert plan["path"] == os.path.normpath(os.path.expanduser("~/zenvi-test/reel.mp4"))
     assert build_export_plan(output_path=str(studio.out_dir / "a.mov"))["vformat"] == "mov"
     # A .gif path with an MP4 preset would hand the GIF muxer H.264/AAC.
     with pytest.raises(ToolError, match="preset='GIF'"):

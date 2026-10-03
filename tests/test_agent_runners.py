@@ -543,6 +543,7 @@ def test_cancel_does_not_disable_the_tab_for_later_messages(qapp, monkeypatch):
     assert [e[1] for e in events if e[0] == "response_ready"] == ["ok"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="process groups are POSIX; Windows uses taskkill /T, tested separately")
 def test_cancel_signals_the_whole_process_group(qapp, monkeypatch):
     """The CLI spawns children that keep driving the editor through MCP, so
     Stop has to take down the group, not just the CLI process."""
