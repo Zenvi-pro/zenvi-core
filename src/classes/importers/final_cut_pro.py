@@ -25,7 +25,6 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-import json
 import os
 from urllib.parse import unquote, urlparse
 from xml.dom import minidom, Node

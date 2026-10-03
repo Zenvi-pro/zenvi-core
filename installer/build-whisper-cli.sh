@@ -21,6 +21,8 @@ MODELS=(
 for tool in git cmake curl; do
   command -v "$tool" >/dev/null || { echo "ERROR: $tool is needed to bundle whisper.cpp" >&2; exit 1; }
 done
+command -v sha256sum >/dev/null || command -v shasum >/dev/null \
+  || { echo "ERROR: sha256sum or shasum is needed to verify the models" >&2; exit 1; }
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 dest="${1:-${root}/src/whisper}"
@@ -74,4 +76,4 @@ for entry in "${MODELS[@]}"; do
 done
 
 "$dest/$exe" --help >/dev/null 2>&1 || { echo "ERROR: $dest/$exe does not run" >&2; exit 1; }
-echo "whisper-cli ${WHISPER_TAG} and $(ls "$dest" | tr '\n' ' ')in ${dest}"
+echo "whisper-cli ${WHISPER_TAG}, ggml-base-q5_1.bin and ggml-silero-v5.1.2.bin in ${dest}"

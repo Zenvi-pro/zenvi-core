@@ -15,6 +15,9 @@ pytest.importorskip("PyQt5.QtCore")
 
 from PyQt5.QtCore import QLockFile  # noqa: E402
 
+if not isinstance(QLockFile, type):  # conftest's Qt stub, not real Qt
+    pytest.skip("real Qt required (run with ZENVI_REAL_QT=1)", allow_module_level=True)
+
 from classes import info, project_lock  # noqa: E402
 
 

@@ -20,6 +20,9 @@ pytest.importorskip("PyQt5.QtWidgets")
 
 from PyQt5.QtWidgets import QApplication  # noqa: E402
 
+if not hasattr(QApplication, "instance"):  # conftest's Qt stub, not real Qt
+    pytest.skip("real Qt required (run with ZENVI_REAL_QT=1)", allow_module_level=True)
+
 # Held for the whole module: a QApplication only a fixture local refers to is
 # destroyed when the fixture returns, and without an app instance nothing is
 # marshalled between threads (everything would run inline and prove nothing).

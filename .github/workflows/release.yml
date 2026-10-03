@@ -118,7 +118,7 @@ jobs:
           # freeze.py ships src/whisper only because it copies all of src/:
           # fail here if the engine or its models did not reach the app.
           for f in ggml-base-q5_1.bin ggml-silero-v5.1.2.bin whisper-cli; do
-            found="$(find build -path '*/whisper/*' -not -path 'build/whisper.cpp/*' -name "$f" -type f | head -1)"
+            found="$(find build -path '*/lib/whisper/*' -not -path 'build/whisper.cpp/*' -name "$f" -type f | head -1)"
             [ -n "$found" ] || { echo "::error::$f is missing from the frozen app"; exit 1; }
           done
 
@@ -484,7 +484,7 @@ jobs:
           # freeze.py ships src/whisper only because it copies all of src/:
           # fail here if the engine or its models did not reach the app.
           for f in ggml-base-q5_1.bin ggml-silero-v5.1.2.bin whisper-cli; do
-            found="$(find build -path '*/whisper/*' -not -path 'build/whisper.cpp/*' -name "$f" -type f | head -1)"
+            found="$(find build -path '*/lib/whisper/*' -not -path 'build/whisper.cpp/*' -name "$f" -type f | head -1)"
             [ -n "$found" ] || { echo "::error::$f is missing from the frozen app"; exit 1; }
           done
 
@@ -1220,10 +1220,11 @@ jobs:
         shell: msys2 {0}
         run: |
           cd "${GITHUB_WORKSPACE}"
+          set -euo pipefail
           # freeze.py ships src/whisper only because it copies all of src/:
           # fail here if the engine or its models did not reach the app.
           for f in ggml-base-q5_1.bin ggml-silero-v5.1.2.bin whisper-cli.exe; do
-            found="$(find build -path '*/whisper/*' -not -path 'build/whisper.cpp/*' -name "$f" -type f | head -1)"
+            found="$(find build -path '*/lib/whisper/*' -not -path 'build/whisper.cpp/*' -name "$f" -type f | head -1)"
             [ -n "$found" ] || { echo "::error::$f is missing from the frozen app"; exit 1; }
           done
 
