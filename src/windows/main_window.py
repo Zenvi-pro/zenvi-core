@@ -1149,11 +1149,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             if still_open != file_path:
                 # The lock went to the project that failed to load; the one
                 # still open must not be left for another session to take.
-                if not still_open:
-                    project_lock.release()
-                elif not project_lock.claim(still_open)[0]:
-                    # It was opened anyway (another session holds it): as before.
-                    project_lock.override(still_open)
+                # (A load that fails has already blanked the project: no path.)
+                if not still_open or not project_lock.claim(still_open)[0]:
+                    project_lock.release()  # at least not the failed project's
             if not interactive:
                 app.restoreOverrideCursor()
                 raise
