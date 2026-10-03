@@ -292,3 +292,21 @@ def test_wait_for_editor_job_tool_reports_a_failed_receipt_as_an_error(monkeypat
 
     done = agent_api_proxy.wait_for_editor_job_tool(job_id=exc.value.job_id, timeout_seconds=5)
     assert done.startswith("status=error job_id=%s" % exc.value.job_id)
+
+
+def test_a_running_job_is_never_evicted_from_the_late_job_list(monkeypatch):
+    """Review #216: the 33rd late job evicted the oldest even while it still ran."""
+    monkeypatch.setattr(tool_handlers, "_late_jobs", {})
+    running = tool_handlers._MainThreadJob(lambda: None, ())
+    running.state = running.RUNNING
+    running.started_at = 0.0
+    running_id = tool_handlers._remember_late_job(running)
+    finished = []
+    for _ in range(tool_handlers._LATE_JOBS_MAX + 5):
+        job = tool_handlers._MainThreadJob(lambda: None, ())
+        job.state, job.started_at, job.finished_at = job.DONE, 0.0, 0.0
+        job.done.set()
+        finished.append(tool_handlers._remember_late_job(job))
+    assert tool_handlers.wait_for_main_thread_job(running_id, 0)["state"] == "running"
+    assert len(tool_handlers._late_jobs) == tool_handlers._LATE_JOBS_MAX
+    assert finished[-1] in tool_handlers._late_jobs and finished[0] not in tool_handlers._late_jobs

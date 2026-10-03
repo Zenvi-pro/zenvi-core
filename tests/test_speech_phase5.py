@@ -888,3 +888,71 @@ def test_caption_cues_split_on_timeline_gaps_not_source_time():
          "timelineStartSec": 0.45, "timelineEndSec": 0.85},
     ]
     assert [c["text"] for c in phrase_words(joined, fps=fps)] == ["hello world"]
+
+
+@pytest.mark.parametrize("retime", [
+    {"speed": 2.0},
+    {"time": {"Points": [{"co": {"X": 1.0, "Y": 1.0}}, {"co": {"X": 31.0, "Y": 61.0}}]}},
+])
+def test_remove_words_refuses_a_retimed_clip(tmp_cache, tmp_path, retime):
+    """Review #216: fragments of a retimed clip were packed in source seconds,
+    so they landed too far apart and the ripple moved later clips wrongly."""
+    from classes.speech import asr as asr_mod
+    asr_mod.set_transcriber_factory(_FakeTranscriber)
+    try:
+        media = tmp_path / "talk.wav"
+        media.write_bytes(b"RIFF" + b"\x00" * 64)
+        st = media.stat()
+        tmp_cache.put(TranscriptRecord(
+            path=str(media.resolve()), size=st.st_size, mtimeNs=st.st_mtime_ns,
+            modelId="faster-whisper-base", language="en", requestLanguage="auto",
+            words=[Word("hello", 0.0, 0.4), Word("um", 0.5, 0.7), Word("world", 0.8, 1.2)],
+            generation=1,
+        ))
+        clip = {"id": "c1", "file_id": "f1", "position": 0.0, "start": 0.0, "end": 2.0,
+                "layer": 0, "reader": {"path": str(media)}}
+        clip.update(retime)
+        project = {"fps": {"num": 30, "den": 1}, "clips": [clip], "layers": [{"number": 0}]}
+        app = MagicMock()
+        app.project.get.side_effect = lambda k, d=None: project.get(k, d)
+        app.updates.transaction_id = None
+        with patch("classes.app.get_app", return_value=app), \
+             patch("classes.agent_tools.inspect_render.snapshot_project", return_value=project), \
+             patch("classes.agent_tools.transcript._file_data_for_clip",
+                   return_value={"path": str(media)}), \
+             patch("classes.clip_utils.project_fps_fraction", return_value=Fraction(30, 1)), \
+             patch("classes.agent_tools.transcript.apply_compacted_fragments",
+                   return_value=(["c2"], [])) as apply_mock:
+            from classes.agent_tools.transcript import remove_words
+            receipt = parse_receipt(remove_words(clipId="c1", wordIndices=[1], transcriptGeneration=1))
+        assert receipt["status"] == "refused", receipt
+        assert "speed" in receipt["summary"].lower()
+        assert not apply_mock.called
+    finally:
+        asr_mod.reset_transcriber_factory()
+
+
+def test_is_retimed_reads_speed_and_time_curves():
+    from classes.speech.map_timeline import is_retimed
+
+    assert not is_retimed({})
+    assert not is_retimed({"time": {"Points": [{"co": {"X": 1.0, "Y": 1.0}}]}})
+    assert is_retimed({"speed": 0.5})
+    assert is_retimed({"time": {"Points": [{"co": {"X": 1.0, "Y": 1.0}}, {"co": {"X": 31.0, "Y": 61.0}}]}})
+
+
+def test_an_explicit_language_never_reuses_another_languages_transcript(tmp_cache, tmp_path):
+    """Review #216: a later language=fr request got the cached English words."""
+    media = tmp_path / "talk.wav"
+    media.write_bytes(b"RIFF" + b"\x00" * 64)
+    st = media.stat()
+    path = str(media.resolve())
+    tmp_cache.put(TranscriptRecord(
+        path=path, size=st.st_size, mtimeNs=st.st_mtime_ns, modelId="faster-whisper-base",
+        language="en", requestLanguage="auto", words=[Word("hello", 0.0, 0.3)], generation=1,
+    ))
+    tmp_cache._mem.clear()
+    assert tmp_cache.get(path, model_id="faster-whisper-base", language="fr") is None
+    # The same language (any region) and auto still share the record.
+    assert tmp_cache.get(path, model_id="faster-whisper-base", language="en-US") is not None
+    assert tmp_cache.get(path, model_id="faster-whisper-base", language="auto") is not None

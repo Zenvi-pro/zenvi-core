@@ -931,7 +931,28 @@ def save_frame_image(time=-1, file_path="", overwrite=False):
         raise ToolError(f"{path} already exists; pass overwrite=true")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fmt = "JPG" if ext in (".jpg", ".jpeg") else "PNG"
-    saved = on_main(lambda: window().save_frame_to_path(path, frame, fmt), timeout=120)
+    from classes.editor_tools.effects_color_analysis import render_frame
+
+    def _render():
+        # A private full-size timeline on a QThread: the GUI thread (and the
+        # preview timeline File > Save Current Frame borrows) stay untouched.
+        rendered = render_frame(None, frame_to_seconds(frame))
+        try:
+            rendered.frame.Save(staged, 1.0, fmt)
+        finally:
+            rendered.close()
+        if not os.path.isfile(staged):
+            return False
+        os.replace(staged, path)
+        return True
+
+    # Staged, so a failed render never passes for an older file at *path*.
+    staged = os.path.join(os.path.dirname(path), ".%s.partial" % os.path.basename(path))
+    try:
+        saved = run_on_qthread(_render, timeout_seconds=120)
+    finally:
+        if os.path.exists(staged):
+            os.remove(staged)
     if not saved or not os.path.isfile(path):
         raise ToolError(f"the frame could not be saved to {path}")
     proj = get_app().project
@@ -997,24 +1018,31 @@ def export_files_to_folder(file_ids, folder=""):
                 else:
                     def _render(clip=clip, out=out):
                         start_frame, end_frame = ec.startAndEndFrames(clip)
-                        writer = openshot.FFmpegWriter(out)
+                        # Written under a staged name (same extension, FFmpeg
+                        # picks the container from it) and moved into place
+                        # only once complete: Close() can still write after a
+                        # failure, and a file at *out* is skipped next time.
+                        stem, ext = os.path.splitext(out)
+                        staged = stem + ".partial" + ext
+                        writer = openshot.FFmpegWriter(staged)
                         reader = None
                         try:
-                            ec.setupWriter(clip, writer)
-                            reader = openshot.Clip(clip.data.get("path"))
-                            reader.Open()
-                            for frame in range(start_frame, end_frame + 1):
-                                if render_interrupted():
-                                    raise ToolError("the render was stopped")
-                                writer.WriteFrame(reader.GetFrame(frame))
-                        except Exception:
-                            if os.path.exists(out):
-                                os.remove(out)
-                            raise
+                            try:
+                                ec.setupWriter(clip, writer)
+                                reader = openshot.Clip(clip.data.get("path"))
+                                reader.Open()
+                                for frame in range(start_frame, end_frame + 1):
+                                    if render_interrupted():
+                                        raise ToolError("the render was stopped")
+                                    writer.WriteFrame(reader.GetFrame(frame))
+                            finally:
+                                if reader:
+                                    reader.Close()
+                                writer.Close()
+                            os.replace(staged, out)
                         finally:
-                            if reader:
-                                reader.Close()
-                            writer.Close()
+                            if os.path.exists(staged):
+                                os.remove(staged)
 
                     run_on_qthread(_render)
                     entry["status"] = "rendered"

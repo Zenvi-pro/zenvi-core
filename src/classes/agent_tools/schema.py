@@ -211,6 +211,8 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "import_files_tool": _obj({
         "paths": {"oneOf": [{"type": "array", "items": {"type": "string"}}, {"type": "string"}],
                   "description": "List of paths, or one comma-separated string."},
+        "files": {"oneOf": [{"type": "array", "items": {"type": "string"}}, {"type": "string"}],
+                  "description": "Alias of paths."},
         "path": _str(),
         "folder": _str(),
         "skip_indexing": _str_or_bool(),

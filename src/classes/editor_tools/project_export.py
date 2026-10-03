@@ -723,7 +723,9 @@ def consolidate_project_media(action):
     gone), so it adds no undo step. Nothing is deleted if its original is missing.
     """
     from classes import info
-    from classes.media_collect import collect_media_into_project, reclaim_unused_asset_media
+    from classes.media_collect import (
+        collect_media_into_project, commit_reclaim, find_reclaimable_media, repoint_media,
+    )
 
     proj = get_app().project
     path = project_path()
@@ -732,13 +734,8 @@ def consolidate_project_media(action):
     files = copy.deepcopy(proj.get("files") or [])
     clips = copy.deepcopy(proj.get("clips") or [])
     before_files, before_clips = copy.deepcopy(files), copy.deepcopy(clips)
-    if action == "collect":
-        done, other, errors = collect_media_into_project(files, clips, path, app_root=info.PATH)
-    else:
-        done, other, errors = reclaim_unused_asset_media(files, clips, path)
-    file_changes, clip_changes = _media_changes(before_files, files, before_clips, clips)
 
-    def _apply():
+    def _apply(file_changes, clip_changes):
         app = get_app()
         updates = app.updates
 
@@ -754,8 +751,29 @@ def consolidate_project_media(action):
         else:
             _write()
 
-    if file_changes or clip_changes:
-        on_main(_apply)
+    if action == "collect":
+        done, other, errors = collect_media_into_project(files, clips, path, app_root=info.PATH)
+        file_changes, clip_changes = _media_changes(before_files, files, before_clips, clips)
+        if file_changes or clip_changes:
+            on_main(lambda: _apply(file_changes, clip_changes))
+    else:
+        moves, other, errors = find_reclaimable_media(files, path)
+        live = {"files": copy.deepcopy(files), "clips": copy.deepcopy(clips)}
+
+        def _repoint(m):
+            repoint_media(files, clips, m)
+            fc, cc = _media_changes(live["files"], files, live["clips"], clips)
+            live["files"], live["clips"] = copy.deepcopy(files), copy.deepcopy(clips)
+            if fc or cc:
+                on_main(lambda: _apply(fc, cc))
+
+        # Saved before any copy is deleted: the project on disk never points at
+        # removed media, and a failed save deletes nothing.
+        done, commit_errors = commit_reclaim(moves, _repoint, lambda: save_to(path))
+        if commit_errors and not done:
+            raise ToolError(commit_errors[0])
+        errors = errors + commit_errors
+        file_changes, clip_changes = _media_changes(before_files, files, before_clips, clips)
     verb = "Copied" if action == "collect" else "Removed"
     summary = (f"{verb} {len(done)} file(s); {'skipped' if action == 'collect' else 'kept'} {len(other)}"
                f"{f'; {len(errors)} error(s)' if errors else ''}.")
