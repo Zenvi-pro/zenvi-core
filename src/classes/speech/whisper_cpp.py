@@ -77,8 +77,8 @@ def words_from_cli_json(data: dict, language: Optional[str]) -> tuple[list[Word]
         if not text or (text.startswith("[") and text.endswith("]")):
             continue
         offsets = seg.get("offsets") or {}
-        words.append(Word(text, float(offsets.get("from", 0)) / 1000.0,
-                          float(offsets.get("to", 0)) / 1000.0))
+        words.append(Word(text, float(offsets.get("from") or 0) / 1000.0,
+                          float(offsets.get("to") or 0) / 1000.0))
     detected = str((data.get("result") or {}).get("language") or language or "auto")
     return words, detected
 
@@ -114,6 +114,9 @@ class WhisperCppTranscriber:
                 # Speech only: otherwise words are timed into the silence around
                 # them, and silence itself comes back as hallucinated words.
                 cmd += ["--vad", "-vm", vad]
+            else:
+                log.warning("no %s found: transcribing without --vad (word timings "
+                            "drift into silence)", VAD_FILE)
             kwargs = {}
             if sys.platform == "win32":
                 kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
