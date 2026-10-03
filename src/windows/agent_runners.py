@@ -1809,12 +1809,19 @@ class CodexRunner(BaseAgentRunner):
         return _cli_child_env(extra)
 
     def _after_launch(self, text: str):
-        try:
-            self._proc.stdin.write(self._stdin_prompt)
-            self._proc.stdin.close()
-        except Exception:
-            # Codex already exited; the base read loop reports its output.
-            log.debug("codex stdin write failed", exc_info=True)
+        proc, prompt = self._proc, self._stdin_prompt
+
+        def _send():
+            try:
+                proc.stdin.write(prompt)
+                proc.stdin.close()
+            except Exception:
+                # Codex already exited; the base read loop reports its output.
+                log.debug("codex stdin write failed", exc_info=True)
+
+        # Not on this thread: a prompt larger than the pipe buffer would block
+        # here while Codex blocks writing the stdout nobody reads yet.
+        threading.Thread(target=_send, name="codex-stdin", daemon=True).start()
 
     def _build_argv(self, text: str):
         url = self._server.url() if self._server else ""

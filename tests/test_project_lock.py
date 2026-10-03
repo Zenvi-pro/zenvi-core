@@ -198,3 +198,26 @@ def test_a_failed_open_gives_the_lock_back_to_the_project_still_open(tmp_path, m
     lock = QLockFile(project_lock.lock_path(str(current)))
     lock.setStaleLockTime(0)
     assert not lock.tryLock(0), "the project still open lost its lock"
+
+
+def test_a_failed_open_never_keeps_the_failed_projects_lock(tmp_path, monkeypatch):
+    """The project still open was opened anyway (another session holds it): its
+    lock cannot come back, but the failed project's must still be let go."""
+    from classes import headless
+
+    main_window, app, win = _main_window(monkeypatch)
+    monkeypatch.setattr(headless, "is_active", lambda: False)
+    monkeypatch.setattr(main_window, "QCursor", MagicMock())
+    monkeypatch.setattr(main_window.QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+    current = tmp_path / "current.zvn"
+    broken = tmp_path / "broken.zvn"
+    for path in (current, broken):
+        path.write_text("{}")
+    app.project.current_filepath = str(current)
+    other = _other_session_holds(str(current))
+    app.project.load.side_effect = ValueError("not a project")
+    try:
+        main_window.MainWindow.open_project(win, str(broken))
+        _other_session_holds(str(broken)).unlock()  # free again
+    finally:
+        other.unlock()

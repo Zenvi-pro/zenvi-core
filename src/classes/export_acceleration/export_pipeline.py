@@ -38,12 +38,18 @@ class _CompositedFrame:
 
 
 def _reap_busy_timelines() -> None:
-    """Close timelines parked by a stuck cancel whose compositor has since exited."""
+    """Close timelines parked by a stuck cancel whose compositor has since exited.
+
+    Runs when the next export starts; until then a parked timeline stays open.
+    """
     for entry in list(_BUSY_TIMELINES):
         thread, tl, _keep_alive = entry
         if thread.is_alive():
             continue
-        _BUSY_TIMELINES.remove(entry)
+        try:
+            _BUSY_TIMELINES.remove(entry)
+        except ValueError:
+            continue  # another export reaped it
         try:
             tl.Close()
         except Exception:

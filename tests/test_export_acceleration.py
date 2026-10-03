@@ -806,3 +806,22 @@ def test_parked_timelines_are_closed_once_their_compositor_has_exited():
         release.set()
         busy.join()
         export_pipeline._BUSY_TIMELINES[:] = []
+
+
+def test_reaping_a_timeline_another_export_already_reaped_is_harmless(monkeypatch):
+    import threading
+    import types
+
+    from classes.export_acceleration import export_pipeline
+
+    done = threading.Thread(target=lambda: None)
+    done.start()
+    done.join()
+    entry = (done, types.SimpleNamespace(Close=lambda: None), [])
+
+    class _Raced(list):
+        def remove(self, item):  # the other export got there first
+            raise ValueError("list.remove(x): x not in list")
+
+    monkeypatch.setattr(export_pipeline, "_BUSY_TIMELINES", _Raced([entry]))
+    export_pipeline._reap_busy_timelines()
