@@ -143,3 +143,26 @@ def test_an_unexpected_failure_is_shown_not_raised_into_qt(window, monkeypatch, 
     assert warned and "volume went away" in warned[0]
     assert window.data["files"][0]["path"] == window.outside
     window.app.restoreOverrideCursor.assert_called()
+
+
+@pytest.mark.parametrize("action, importer", [
+    ("actionImportEDL_trigger", "import_edl"),
+    ("actionImportFCPXML_trigger", "import_xml"),
+])
+def test_the_import_menu_says_which_media_it_left_out(window, monkeypatch, action, importer):
+    """PR #216 review: an unreadable source was skipped without a word, so the
+    edit looked completely imported."""
+    warned = []
+    monkeypatch.setattr(window.main_window.QMessageBox, "warning",
+                        staticmethod(lambda *a, **k: warned.append(a[2])))
+    monkeypatch.setattr(window.main_window, importer,
+                        lambda: {"clip_ids": ["c1"], "missing": ["C:/shots/broken.mp4"]})
+    getattr(window.main_window.MainWindow, action)(window.win)
+    assert warned and "broken.mp4" in warned[0]
+
+    del warned[:]
+    monkeypatch.setattr(window.main_window, importer, lambda: {"clip_ids": ["c1"], "missing": []})
+    getattr(window.main_window.MainWindow, action)(window.win)
+    monkeypatch.setattr(window.main_window, importer, lambda: None)  # the file dialog was cancelled
+    getattr(window.main_window.MainWindow, action)(window.win)
+    assert warned == []

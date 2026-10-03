@@ -159,8 +159,17 @@ def test_another_model_gets_its_own_cache_key(fake_cli, tmp_path, monkeypatch):
     other = tmp_path / "ggml-small.bin"
     other.write_bytes(b"ggml")
     monkeypatch.setenv("ZENVI_WHISPER_MODEL", str(other))
-    assert asr._cache_model_id("whisper", asr.DEFAULT_MODEL_ID) == "whisper.cpp-ggml-small"
-    assert whisper_cpp.WhisperCppTranscriber().model_id == "whisper.cpp-ggml-small"
+    small = asr._cache_model_id("whisper", asr.DEFAULT_MODEL_ID)
+    assert small.startswith("whisper.cpp-ggml-small-") and small == whisper_cpp.WhisperCppTranscriber().model_id
+    # Another file under the bundled model's own name is another model too.
+    same_name = tmp_path / "elsewhere" / whisper_cpp.MODEL_FILE
+    same_name.parent.mkdir()
+    same_name.write_bytes(b"not the bundled model")
+    monkeypatch.setenv("ZENVI_WHISPER_MODEL", str(same_name))
+    renamed = whisper_cpp.model_id()
+    assert renamed not in (whisper_cpp.MODEL_ID, small)
+    same_name.write_bytes(b"replaced with yet another model")
+    assert whisper_cpp.model_id() != renamed
 
 
 def test_a_stuck_whisper_cli_is_killed_at_the_time_limit(fake_cli, tmp_path, monkeypatch):

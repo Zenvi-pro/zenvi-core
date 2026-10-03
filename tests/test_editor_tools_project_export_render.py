@@ -352,10 +352,19 @@ def test_save_frame_image(studio, monkeypatch):
     monkeypatch.setattr(render, "run_on_qthread", timed_out)
     target = studio.out_dir / "late.png"
     assert studio.call("save_frame_image_tool", time=1, file_path=str(target)).startswith("Error")
-    monkeypatch.setattr(render, "render_interrupted", lambda: True)
     assert late[0]() is False
     assert not target.exists()
     assert [n for n in os.listdir(str(studio.out_dir)) if "late" in n] == []
+
+    # ...and one that had already published when the wait gave up is a success,
+    # not an error the caller would retry over a file that is there.
+    def published_then_timed_out(func, *a, **k):
+        func()
+        raise render.ToolError("the render did not finish within 120 s")
+
+    monkeypatch.setattr(render, "run_on_qthread", published_then_timed_out)
+    data = _receipt(studio.call("save_frame_image_tool", time=1, file_path=str(studio.out_dir / "slow.png")))
+    assert os.path.isfile(data["path"])
 
 
 def test_export_files_to_folder(studio, tmp_path, monkeypatch):

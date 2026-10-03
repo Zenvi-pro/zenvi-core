@@ -943,11 +943,13 @@ def save_frame_image(time=-1, file_path="", overwrite=False):
                 rendered.frame.Save(staged, 1.0, fmt)
             finally:
                 rendered.close()
-            # Timed out: the tool already reported the failure, so publish nothing.
-            if render_interrupted() or not os.path.isfile(staged):
-                return False
-            os.replace(staged, path)
-            return True
+            with publish:
+                # Given up on: the tool already reported the failure, so publish nothing.
+                if outcome["abandoned"] or not os.path.isfile(staged):
+                    return False
+                os.replace(staged, path)
+                outcome["published"] = True
+                return True
         finally:
             try:
                 os.remove(staged)
@@ -958,7 +960,18 @@ def save_frame_image(time=-1, file_path="", overwrite=False):
     # own name per call, so a render that timed out cannot touch a retry's file.
     staged = os.path.join(os.path.dirname(path),
                           ".%s.%s.partial" % (os.path.basename(path), uuid.uuid4().hex[:8]))
-    saved = run_on_qthread(_render, timeout_seconds=120)
+    # The decision to publish and the decision to give up exclude each other:
+    # a render is never reported as failed and then written anyway.
+    publish = threading.Lock()
+    outcome = {"abandoned": False, "published": False}
+    try:
+        saved = run_on_qthread(_render, timeout_seconds=120)
+    except ToolError:
+        with publish:  # waits out a replace that is under way
+            outcome["abandoned"] = True
+            if not outcome["published"]:
+                raise
+        saved = True
     if not saved or not os.path.isfile(path):
         raise ToolError(f"the frame could not be saved to {path}")
     proj = get_app().project

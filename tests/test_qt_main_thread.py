@@ -104,9 +104,10 @@ def test_run_off_gui_holds_other_threads_gui_calls_until_it_is_done(qapp):
     assert events == ["worker done", "returned", "agent tool"]
 
 
-def test_a_held_call_on_gui_waits_instead_of_timing_out(qapp):
-    """A blocking GUI call held behind run_off_gui must not report a timeout
-    and then run anyway: it waits, runs once, and returns its result."""
+def test_a_call_on_gui_that_times_out_never_runs_later(qapp):
+    """A blocking GUI call held behind run_off_gui keeps its timeout, and one
+    that reported a timeout is dropped: the caller may retry without the
+    first attempt still happening."""
     results, ran = [], []
 
     def agent():
@@ -126,4 +127,7 @@ def test_a_held_call_on_gui_waits_instead_of_timing_out(qapp):
     while thread.is_alive() and time.time() < deadline:
         qapp.processEvents()
         time.sleep(0.01)
-    assert results == ["done"] and ran == [1]
+    for _ in range(20):
+        qapp.processEvents()
+        time.sleep(0.01)
+    assert len(results) == 1 and isinstance(results[0], TimeoutError) and ran == []
