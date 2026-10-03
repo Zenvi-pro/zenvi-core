@@ -88,7 +88,6 @@ def test_export_video_renders_outside_the_main_thread_dispatcher(monkeypatch):
     monkeypatch.setattr(render, "window", lambda: MagicMock())
     # No project here: the "is it one of the inputs?" check sees no files.
     from classes import query
-    monkeypatch.setattr(query.File, "filter", classmethod(lambda cls, **kw: []))
     monkeypatch.setattr(query.File, "get", classmethod(lambda cls, **kw: None))
     try:
         result = th.execute_tool("export_video_tool", {"overwrite": True})
