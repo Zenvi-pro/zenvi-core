@@ -583,6 +583,86 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "provider": _str(description="local or auto."),
     }, required=["query"]),
 
+
+    # Phase 7 pro-NLE edit_ops
+    "create_proxies_tool": _obj({
+        "file_ids": _str_or_num(),
+        "fileIds": _str_or_num(),
+    }),
+    "extract_clips_tool": _obj({
+        "clipIds": _str_or_num(),
+        "clip_ids": _str_or_num(),
+        "timeline_clip_id": _str_or_num(),
+    }),
+    "get_edit_mode_tool": _obj({
+
+    }),
+    "lift_clips_tool": _obj({
+        "clipIds": _str_or_num(),
+        "clip_ids": _str_or_num(),
+        "timeline_clip_id": _str_or_num(),
+    }),
+    "manage_clip_links_tool": _obj({
+        "action": _str_or_num(),
+        "clipIds": _str_or_num(),
+        "clip_ids": _str_or_num(),
+        "timeline_clip_id": _str_or_num(),
+    }),
+    "remove_proxies_tool": _obj({
+        "file_ids": _str_or_num(),
+        "fileIds": _str_or_num(),
+    }),
+    "ripple_trim_tool": _obj({
+        "timeline_clip_id": _str_or_num(),
+        "clipId": _str_or_num(),
+        "clip_query": _str_or_num(),
+        "edge": _str_or_num(),
+        "frames": _str_or_num(),
+        "soft": _str_or_num(),
+        "track": _str_or_num(),
+    }),
+    "roll_edit_tool": _obj({
+        "clip_a_id": _str_or_num(),
+        "clip_b_id": _str_or_num(),
+        "timeline_clip_id": _str_or_num(),
+        "frames": _str_or_num(),
+        "soft": _str_or_num(),
+    }),
+    "set_edit_mode_tool": _obj({
+        "mode": _str_or_num(),
+    }),
+    "set_proxy_mode_tool": _obj({
+        "mode": _str_or_num(),
+    }),
+    "set_speed_ramp_tool": _obj({
+        "timeline_clip_id": _str_or_num(),
+        "clipId": _str_or_num(),
+        "keypoints": _str_or_num(),
+        "frames": _str_or_num(),
+    }),
+    "set_track_sync_lock_tool": _obj({
+        "track": _str_or_num(),
+        "sync_locked": _str_or_num(),
+    }),
+    "slide_clip_tool": _obj({
+        "timeline_clip_id": _str_or_num(),
+        "clipId": _str_or_num(),
+        "clip_query": _str_or_num(),
+        "frames": _str_or_num(),
+        "soft": _str_or_num(),
+        "track": _str_or_num(),
+    }),
+    "slip_clip_tool": _obj({
+        "timeline_clip_id": _str_or_num(),
+        "clipId": _str_or_num(),
+        "clip_query": _str_or_num(),
+        "frames": _str_or_num(),
+        "soft": _str_or_num(),
+        "track": _str_or_num(),
+    }),
+    "three_point_edit_tool": _obj({
+
+    }),
 }
 
 
