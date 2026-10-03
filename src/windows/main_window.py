@@ -112,6 +112,20 @@ _DEFAULT_WINDOW_STATE = (
 )
 
 
+def _report_media_left_out(parent, summary):
+    """Say which sources an EDL / XML import skipped (not found, or unreadable)."""
+    left_out = sorted({str(p) for p in ((summary or {}).get("missing") or []) if p})
+    if not left_out:
+        return
+    _ = get_app()._tr
+    listed = "\n".join(left_out[:10])
+    if len(left_out) > 10:
+        listed += "\n..."
+    QMessageBox.warning(
+        parent, _("Import"),
+        _("These media files could not be opened and their clips were left out:") + "\n\n" + listed)
+
+
 class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     """ This class contains the logic for the main window widget """
 
@@ -883,6 +897,12 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             previous_filepath = getattr(app.project, "current_filepath", None) or ""
 
             try:
+                from classes import project_lock
+                free, holder = project_lock.may_save(file_path)
+                if not free:
+                    raise RuntimeError(project_lock.in_use_message(file_path, holder)
+                                       + " Or save under another name.")
+
                 # Update history in project data
                 s = app.get_settings()
                 app.updates.save_history(app.project, s.get("history-limit"))
@@ -1052,6 +1072,26 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 # User canceled prompt
                 return False
 
+        # One session owns a project: two that both save overwrite each other.
+        from classes import project_lock
+        if file_exists(file_path):
+            free, holder = project_lock.claim(file_path)
+            if not free:
+                message = project_lock.in_use_message(file_path, holder)
+                if not interactive:
+                    raise RuntimeError(message)
+                if headless.is_active():
+                    # Nobody can choose, and overwriting the user's work is the
+                    # worst guess: leave it to the session that has it open.
+                    headless.report("did not open %s: %s" % (file_path, message))
+                    return False
+                ret = QMessageBox.warning(
+                    self, _("Project In Use"), message,
+                    QMessageBox.Open | QMessageBox.Cancel, QMessageBox.Cancel)
+                if ret != QMessageBox.Open:
+                    return False
+                project_lock.override(file_path)
+
         # Set cursor to waiting
         app.setOverrideCursor(QCursor(Qt.WaitCursor))
 
@@ -1119,6 +1159,13 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         except Exception as ex:
             log.error("Couldn't open project %s.", file_path, exc_info=1)
+            still_open = app.project.current_filepath
+            if still_open != file_path:
+                # The lock went to the project that failed to load; the one
+                # still open must not be left for another session to take.
+                # (A load that fails has already blanked the project: no path.)
+                if not still_open or not project_lock.claim(still_open)[0]:
+                    project_lock.release()  # at least not the failed project's
             if not interactive:
                 app.restoreOverrideCursor()
                 raise
@@ -1349,15 +1396,30 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 _("Save the project first, then collect media into it."),
             )
             return
+        import copy
         from classes import info as _info
-        from classes.media_collect import collect_media_into_project
+        from classes.media_collect import copy_media_into_project, repoint_media
+        from classes.qt_main_thread import run_off_gui
 
-        files = project._data.get("files") or []
-        clips = project._data.get("clips") or []
-        copied, skipped, errors = collect_media_into_project(
-            files, clips, project.current_filepath, app_root=_info.PATH
-        )
-        project.has_unsaved_changes = True
+        # Copying can take minutes: on a worker, against a snapshot. The editor
+        # keeps painting but takes no input meanwhile, so the project cannot be
+        # edited, closed or swapped under the operation.
+        files = copy.deepcopy(project._data.get("files") or [])
+        app.setOverrideCursor(QCursor(Qt.WaitCursor))
+        try:
+            copied, skipped, errors, moves = run_off_gui(
+                copy_media_into_project, files, project.current_filepath, app_root=_info.PATH)
+        except Exception as ex:
+            # Re-raised here from the worker: report it, do not crash the editor.
+            log.error("Collect Media failed", exc_info=1)
+            QMessageBox.warning(self, _("Collect Media"), str(ex))
+            return
+        finally:
+            app.restoreOverrideCursor()
+        repoint_media(project._data.get("files") or [], project._data.get("clips") or [],
+                      moves, keep_original=True)
+        if moves:
+            project.has_unsaved_changes = True
         QMessageBox.information(
             self,
             _("Collect Media"),
@@ -1377,15 +1439,41 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 _("Save the project first."),
             )
             return
-        from classes.media_collect import reclaim_unused_asset_media
+        import copy
+        from classes.media_collect import commit_reclaim, find_reclaimable_media, repoint_media
+        from classes.qt_main_thread import call_on_gui, run_off_gui
 
-        files = project._data.get("files") or []
-        clips = project._data.get("clips") or []
-        removed, kept, errors = reclaim_unused_asset_media(
-            files, clips, project.current_filepath
-        )
-        if removed:
-            project.has_unsaved_changes = True
+        # Full-file hashing, the save and the deletes run on a worker; only the
+        # in-memory path rewrite runs on the GUI thread. No input is taken
+        # meanwhile (see Collect), so what was hashed is what gets deleted.
+        files = copy.deepcopy(project._data.get("files") or [])
+        project_path = project.current_filepath
+
+        def _repoint(moves):
+            call_on_gui(lambda: repoint_media(
+                project._data.get("files") or [], project._data.get("clips") or [], moves))
+
+        def _work():
+            moves, kept, errors = find_reclaimable_media(files, project_path)
+            # Saved before any copy is deleted, so the file on disk never
+            # references removed media (closing with "Don't Save" stays safe).
+            removed, commit_errors = commit_reclaim(
+                moves, _repoint,
+                lambda: self.save_project(project_path, raise_errors=True),
+            )
+            if commit_errors and not removed:
+                kept.extend(dest for _fid, dest, _orig in moves)
+            return removed, kept, errors + commit_errors
+
+        app.setOverrideCursor(QCursor(Qt.WaitCursor))
+        try:
+            removed, kept, errors = run_off_gui(_work)
+        except Exception as ex:
+            log.error("Reclaim Space failed", exc_info=1)
+            QMessageBox.warning(self, _("Reclaim Space"), str(ex))
+            return
+        finally:
+            app.restoreOverrideCursor()
         QMessageBox.information(
             self,
             _("Reclaim Space"),
@@ -1509,11 +1597,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def actionImportEDL_trigger(self, checked=True):
         """Import EDL File"""
-        import_edl()
+        _report_media_left_out(self, import_edl())
 
     def actionImportFCPXML_trigger(self, checked=True):
         """Import XML (Final Cut Pro) File"""
-        import_xml()
+        _report_media_left_out(self, import_xml())
 
     def actionUndo_trigger(self, checked=True):
         log.info('actionUndo_trigger')
