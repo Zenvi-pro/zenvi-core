@@ -129,7 +129,10 @@ def call_on_gui(func, *args, timeout=30, context=None, **kwargs):
     """Run *func* on the GUI thread and block until it finishes.
 
     Must not be used from the GUI thread while holding a lock the GUI work
-    also needs. Timeouts raise ``TimeoutError``.
+    also needs. Raises ``TimeoutError`` when the call has not started within
+    *timeout* (busy GUI thread, or held behind run_off_gui) -- it is then
+    dropped and never runs -- or, once started, has not finished within
+    another *timeout* (it is still running and will complete).
     """
     if is_gui_thread():
         return func(*args, **kwargs)
@@ -166,7 +169,7 @@ def call_on_gui(func, *args, timeout=30, context=None, **kwargs):
                 state["dropped"] = True
                 raise TimeoutError("GUI-thread call did not start within %ss" % timeout)
         if not done.wait(timeout=timeout):
-            raise TimeoutError("GUI-thread call did not finish within %ss" % timeout)
+            raise TimeoutError("GUI-thread call started but is still running after %ss" % timeout)
     if error_box[0] is not None:
         raise error_box[0]
     return result_box[0]

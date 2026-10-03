@@ -114,7 +114,7 @@ _DEFAULT_WINDOW_STATE = (
 
 def _report_media_left_out(parent, summary):
     """Say which sources an EDL / XML import skipped (not found, or unreadable)."""
-    left_out = sorted(set((summary or {}).get("missing") or []))
+    left_out = sorted({str(p) for p in ((summary or {}).get("missing") or []) if p})
     if not left_out:
         return
     _ = get_app()._tr

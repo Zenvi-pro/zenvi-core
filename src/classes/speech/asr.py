@@ -142,8 +142,8 @@ def _whisper_transcriber(model_id: str = DEFAULT_MODEL_ID) -> Transcriber:
     from classes.speech import whisper_cpp
     if whisper_cpp.available():
         if model_id and model_id != DEFAULT_MODEL_ID:
-            log.info("modelId %s ignored: the bundled whisper.cpp engine has one model (%s)",
-                     model_id, whisper_cpp.MODEL_ID)
+            log.info("modelId %s ignored: whisper.cpp runs the model it was installed with (%s)",
+                     model_id, whisper_cpp.model_id())
         return whisper_cpp.WhisperCppTranscriber()
     return FasterWhisperTranscriber(model_id=model_id or DEFAULT_MODEL_ID)
 
