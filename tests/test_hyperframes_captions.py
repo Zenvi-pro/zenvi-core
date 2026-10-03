@@ -148,3 +148,8 @@ def test_phrase_cues_become_evenly_spaced_words():
                            {"text": "  ", "start": 5.0, "end": 6.0}, {"text": "late", "start": 7.0, "end": 7.0}])
     assert words == [{"text": "Hello", "start": 3.0, "end": 3.5}, {"text": "there", "start": 3.5, "end": 4.0},
                      {"text": "world", "start": 4.0, "end": 4.5}]
+
+
+def test_a_word_cannot_close_the_script_element():
+    html = cap.compile_composition(COMPONENT, [{"text": "</script><b>x", "start": 0.0, "end": 0.5}], 2.0)
+    assert "</script><b>" not in html and "<\\/script>" in html

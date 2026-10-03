@@ -90,7 +90,8 @@ def compile_composition(html: str, words: List[dict], duration: float) -> str:
     if not _WORD_LIST_RE.search(html):
         raise CaptionError("this caption component has no word list Zenvi knows how to fill")
     # Function replacements: the JSON may contain backslashes re.sub would interpret.
-    html = _WORD_LIST_RE.sub(lambda m: m.group(1) + json.dumps(words, ensure_ascii=False) + ";", html, count=1)
+    payload = json.dumps(words, ensure_ascii=False).replace("</", "<\\/")      # a word cannot end the <script>
+    html = _WORD_LIST_RE.sub(lambda m: m.group(1) + payload + ";", html, count=1)
     groups = group_words(words, duration)
     pairs = json.dumps([[g["wordStart"], g["wordEnd"]] for g in groups])
     html = _RAW_GROUPS_RE.sub(lambda m: m.group(1) + pairs + ";", html, count=1)

@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import threading
 
-from PyQt5.QtCore import pyqtSignal
-from PyQt5.QtWidgets import (
+from qt_api import (
+    pyqtSignal,
     QCheckBox,
     QComboBox,
     QHBoxLayout,
@@ -24,6 +24,14 @@ from PyQt5.QtWidgets import (
 from classes import hyperframes_captions as cap
 from classes.app import get_app
 from classes.logger import log
+
+
+def status_line(out: str) -> str:
+    """What to show for a tool result: the receipt's summary, not the receipt."""
+    from classes.agent_tools.receipt import parse_receipt
+
+    receipt = parse_receipt(out)
+    return str(receipt["summary"] if receipt else out).split("\n", 1)[0]
 
 
 class CaptionsDock(QWidget):
@@ -117,7 +125,7 @@ class CaptionsDock(QWidget):
             except Exception as exc:
                 log.error("Captions dock: %s failed", tool_name, exc_info=True)
                 out = "Error: %s" % exc
-            self.finished.emit(out.split("\n", 1)[0])
+            self.finished.emit(status_line(out))
 
         threading.Thread(target=work, name="zenvi-captions-dock", daemon=True).start()
 

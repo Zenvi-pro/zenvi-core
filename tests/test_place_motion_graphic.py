@@ -7,6 +7,8 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
@@ -299,3 +301,15 @@ def test_a_graphic_is_still_capped_at_a_minute_by_default():
         th.place_motion_graphic(file_id="F1", position_seconds="0", duration_seconds="240", mode="overlay")
     assert add_clip.call_args.kwargs["duration_seconds"] == "60.0"
     assert add_clip.call_args.kwargs["transaction_id"]
+
+
+@pytest.mark.parametrize("limit", [-5, 0, "nan", "inf", "soon"])
+def test_a_nonsense_duration_limit_falls_back_to_a_minute(limit):
+    f = _file(transparent=True)
+    app = _layers_app()
+    app.updates.transaction_id = None
+    patches = _patch_place(f, [], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        th.place_motion_graphic(file_id="F1", position_seconds="0", duration_seconds="240", mode="overlay",
+                                max_duration_seconds=limit)
+    assert add_clip.call_args.kwargs["duration_seconds"] == "60.0"

@@ -211,14 +211,14 @@ def build_captions(clip, style: str = cap.DEFAULT_STYLE, behind_subject: bool = 
     title = str(clip.data.get("title") or clip_id)
     info = {"clip_id": clip_id, "style": style, "behind_subject": bool(behind_subject), "role": "captions",
             "text": " ".join(w["text"] for w in words)}
-    removed = _remove(clip_id)                           # one caption track per clip: this replaces the last
     caption_file = _import_overlay(os.path.join(root, out_rel.replace("/", os.sep)), "Captions: " + title, info)
+    subject = behind_subject and _import_overlay(os.path.join(root, subject_rel.replace("/", os.sep)),
+                                                 "Subject: " + title, dict(info, role="subject"))
+    removed = _remove(clip_id)                           # one caption track per clip: this replaces the last
     receipt = {"timeline_clip_id": _place(caption_file.id, start, duration), "file_id": caption_file.id,
                "clip_id": clip_id, "style": style, "words": len(words), "replaced": removed,
                "behind_subject": bool(behind_subject)}
-    if behind_subject:
-        subject = _import_overlay(os.path.join(root, subject_rel.replace("/", os.sep)), "Subject: " + title,
-                                  dict(info, role="subject"))
+    if subject:
         # Placed after the captions, so the placement rule puts it on the track above them.
         receipt["subject_clip_id"] = _place(subject.id, start, duration)
         receipt["subject_file_id"] = subject.id

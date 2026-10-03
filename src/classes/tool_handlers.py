@@ -8318,6 +8318,8 @@ def place_motion_graphic(
             longest = float(_kw.get("max_duration_seconds") or 60.0)
         except (TypeError, ValueError):
             longest = 60.0
+        if not 0 < longest < float("inf"):              # negative, NaN or infinite
+            longest = 60.0
         dur = max(0.5, min(dur, longest))
 
         app = _get_app()

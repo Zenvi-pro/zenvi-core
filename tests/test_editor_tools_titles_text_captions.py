@@ -191,3 +191,20 @@ def test_long_clips_are_captioned_for_their_whole_length(editor, studio):
     assert studio.placed == []
     captions._place("F-any", 0.0, 240.0)
     assert studio.place_kwargs[-1]["max_duration_seconds"] >= 240.0
+
+
+def test_a_failed_import_leaves_the_existing_captions_in_place(editor, studio, monkeypatch):
+    first = _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip))
+    monkeypatch.setattr(tool_handlers, "_import_generated_video", lambda path, **kw: (None, "disk full"))
+    out = editor.call("add_captions_tool", timeline_clip_id=studio.clip, style="highlight")
+    assert out.startswith("Error") and "disk full" in out
+    assert editor.clip(first["timeline_clip_id"]) is not None
+
+
+def test_the_dock_shows_the_receipt_summary_not_the_raw_receipt():
+    from windows.views.captions_dock import status_line
+    receipt = json.dumps({"contract": 3, "status": "ok", "summary": "Captions added.\nmore", "data": {}})
+    assert status_line(receipt) == "Captions added."
+    assert status_line("Error: no clip") == "Error: no clip"
+    source = open(os.path.join(os.path.dirname(__file__), "..", "src", "windows", "views", "captions_dock.py")).read()
+    assert "PyQt5" not in source                    # qt_api picks the binding
