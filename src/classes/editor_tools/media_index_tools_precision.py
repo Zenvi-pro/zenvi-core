@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 from classes.editor_tools._base import ToolError, boolean, enum, get_app, number, obj, ok, string
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.media_files import FILE_TARGET, _display_name, resolve_files
-from classes.editor_tools.media_index_tools import _all_files
+from classes.editor_tools.media_index_tools import _all_files, _index_for
 from classes.media_index import context, health
 from classes.media_index.facts import technical_of
 from classes.media_index.probe import probe_media
@@ -178,3 +178,121 @@ def get_clip_context(timeline_clip_id, if_edit="", seconds=0.0):
     if prediction:
         bits.append(f"{if_edit}: {prediction['shifted_count']} clip(s) would shift by {prediction['shift']:+g} s")
     return ok(f"{info['clip']['name'] or timeline_clip_id}: " + "; ".join(bits) + ".", changed=False, context=info, prediction=prediction)
+
+
+# ============================ get_voice_edges_tool ============================
+def _audio_path(f) -> str:
+    from classes.path_utils import absolute_media_path
+    return absolute_media_path(f.data.get("path")) or str(f.data.get("path") or "")
+
+
+def _speech_layer(shelf, sha: str) -> Dict[str, Any]:
+    if not sha or not shelf.layer_ready(sha, "speech"):
+        return {}
+    return shelf.read_json(sha, "speech.json") or {}
+
+
+@editor_tool(
+    "get_voice_edges_tool",
+    covers=("index.voice",),
+    label="Exact voice edges",
+    schema=obj({
+        **FILE_TARGET,
+        "start_seconds": number("Start of the stretch to look at, in the file's own seconds (a sentence from search_footage_tool, or a clip's in point).", None, minimum=0),
+        "end_seconds": number("End of the stretch.", None, minimum=0),
+    }, required=["start_seconds", "end_seconds"]),
+    read_only=True,
+)
+def get_voice_edges(start_seconds, end_seconds, file_ids=None, file_query=""):
+    """Find the exact instants a voice starts and stops in a stretch of a file, to cut right where it stops. Word times from
+    transcription are only good to a few tenths of a second; this reads the sound itself and returns when the voice first rises
+    above the room's noise and when it last falls back, the pauses inside it, how far the transcript's timing was off, and how
+    sure it is (the contrast between the voice and the noise). Cut a little after the end it gives, not on it, so the last
+    sound is not clipped. Measured from the original audio; kept on the shelf, so asking again is free.
+    """
+    from classes.media_index import voice
+    if start_seconds is None or end_seconds is None or float(end_seconds) - float(start_seconds) < 0.2:
+        raise ToolError("give start_seconds and end_seconds, at least 0.2 s apart")
+    start, end = float(start_seconds), float(end_seconds)
+    if end - start > voice.MAX_RANGE_SECONDS:
+        raise ToolError(f"look at {int(voice.MAX_RANGE_SECONDS)} seconds or less at a time")
+    f = resolve_files(file_ids, file_query)[0]
+    sha = sha_of(f.data.get("fingerprint"))
+    shelf = default_shelf()
+    name = f"voice_{int(round(start * 1000))}_{int(round(end * 1000))}.json"
+    saved = shelf.read_json(sha, name) if sha else None
+    if isinstance(saved, dict) and saved.get("found") is not None:
+        result = saved
+        cached = True
+    else:
+        layer = _speech_layer(shelf, sha)
+        words = [w for w in layer.get("words") or [] if float(w["endSec"]) > start and float(w["startSec"]) < end]
+        pad = voice.SEARCH_BEFORE + 0.5
+        lo = max(0.0, start - pad)
+        try:
+            samples = voice.read_audio(_audio_path(f), lo, end + pad)
+        except RuntimeError as exc:
+            raise ToolError(f"could not read the audio: {exc}")
+        result = voice.voice_edges(samples, offset=lo, words=words or None, within=(start, end))
+        result["range"] = [round(start, 3), round(end, 3)]
+        result["transcript"] = " ".join(str(w.get("text") or "").strip() for w in words)[:200] or None
+        if sha:
+            shelf.write_json(sha, name, result)
+        cached = False
+    if not result.get("found"):
+        return ok("No voice stands out from the noise in that stretch.", changed=False, file_id=str(f.id), voice=result, cached=cached)
+    note = (f" (the transcript had it {result['start_offset']:+.2f} s / {result['end_offset']:+.2f} s off)" if "start_offset" in result else "")
+    return ok(f"Voice from {result['start']:.2f} s to {result['end']:.2f} s{note}; {len(result['pauses'])} pause(s) inside.", changed=False, file_id=str(f.id),
+              voice=result, cached=cached, advice="cut 0.05 to 0.1 s after the end, not on it")
+
+
+# ============================ find_retakes_tool ============================
+def _level_fn(fi):
+    windows = ((getattr(fi, "audio", None) or {}).get("windows")) or []
+
+    def level(a: float, b: float):
+        import math
+        mine = [w for w in windows if w["end"] > a and w["start"] < b and float(w.get("rms_db", -120.0)) > -80.0]
+        if not mine:
+            return None
+        return 10.0 * math.log10(sum(10 ** (float(w["rms_db"]) / 10.0) for w in mine) / len(mine))
+    return level
+
+
+@editor_tool(
+    "find_retakes_tool",
+    covers=("index.retakes",),
+    label="Find retakes",
+    schema=obj({
+        **FILE_TARGET,
+        "min_similarity": number("How alike two sentences must be to count as the same line (0 to 1).", 0.75, minimum=0.5, maximum=1.0),
+    }),
+    read_only=True,
+)
+def find_retakes(file_ids=None, file_query="", min_similarity=0.75):
+    """Find lines that were said more than once (retakes and false starts) in the transcripts of the project's files, so the best
+    take can be chosen and the others cut. Each group lists the takes in order with what can be measured about each: filler
+    words (um, uh), whether it finished its sentence, how fast it was said, its level, and the pause after it; and which take
+    looks best and why (the one with the fewest fillers that finished its sentence, the later on a tie). That is a starting point:
+    listen to or look at the candidates before cutting. Uses the local transcripts, no cloud.
+    """
+    from classes.media_index import voice
+    shelf = default_shelf()
+    files = _media_files(file_ids, file_query)
+    out: List[Dict[str, Any]] = []
+    scanned = 0
+    for f in files:
+        sha = sha_of(f.data.get("fingerprint"))
+        layer = _speech_layer(shelf, sha)
+        sentences = layer.get("sentences") or []
+        if len(sentences) < 2:
+            continue
+        scanned += 1
+        fi = _index_for(f, shelf)
+        for g in voice.retake_groups(sentences, layer.get("words") or [], threshold=float(min_similarity), level_db=_level_fn(fi) if fi else None):
+            out.append({"file_id": str(f.id), "name": _display_name(f.data), **g})
+    out = out[:100]
+    head = (f"{len(out)} line(s) said more than once across {scanned} file(s) with a transcript" if out
+            else f"no retakes found in {scanned} file(s) with a transcript")
+    return ok(head, changed=False, groups=out, files_with_transcript=scanned,
+              note="likely_best is a heuristic over measured facts (fillers, finished sentence, order); check it before cutting")

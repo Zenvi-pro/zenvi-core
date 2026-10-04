@@ -123,6 +123,11 @@ def voice_edges() -> Dict[str, Any]:
     path, truth = corpus.voice_bursts()
     res = au.analyze_audio(str(path), probe_media(str(path)))
     out = {"audio_layer": metrics.edge_errors(_complement(res.get("silence_ranges") or [], truth["seconds"]), truth["spans"])}
+    from classes.media_index import voice
+    samples = voice.read_audio(str(path), 0.0, truth["seconds"])
+    found = voice.voice_edges(samples)
+    out["energy_edges"] = metrics.edge_errors([[a, b] for a, b in found.get("spans", [])], truth["spans"])
+    out["energy_edges"]["pauses_found"] = len(found.get("pauses", []))
     try:
         from classes.speech import vad
         from classes.speech.runtime import CancelToken
