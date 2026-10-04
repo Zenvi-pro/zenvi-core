@@ -85,7 +85,7 @@ def test_setup_downloads_only_with_the_runtime_and_reports_failures(monkeypatch)
 # ============================ scanning ============================
 def test_scanning_needs_the_models_scans_unscanned_files_once_and_reports_each(env, monkeypatch):
     assert "setup_people_tool" in REGISTRY["scan_people_tool"].func() or "onnxruntime" in REGISTRY["scan_people_tool"].func()
-    monkeypatch.setattr(PM, "status", lambda: {"runtime": True, "models": {"detector": True, "recognizer": True}, "download_bytes": 0, "licenses": {}})
+    monkeypatch.setattr(PM, "status", lambda: {"runtime": True, "models": {"detector": True, "recognizer": True, "voice": True}, "faces_ready": True, "voices_ready": True, "download_bytes": 0, "licenses": {}, "attributions": []})
     calls = []
 
     def fake_scan(fi):
@@ -104,7 +104,7 @@ def test_scanning_needs_the_models_scans_unscanned_files_once_and_reports_each(e
 
 
 def test_one_file_failing_does_not_stop_the_others_and_a_budget_leaves_the_rest(env, monkeypatch):
-    monkeypatch.setattr(PM, "status", lambda: {"runtime": True, "models": {"detector": True, "recognizer": True}, "download_bytes": 0, "licenses": {}})
+    monkeypatch.setattr(PM, "status", lambda: {"runtime": True, "models": {"detector": True, "recognizer": True, "voice": True}, "faces_ready": True, "voices_ready": True, "download_bytes": 0, "licenses": {}, "attributions": []})
     build(env.shelf, "e" * 64, shots=[shot(0, 0, 8)], duration=8.0, watch=[w(0, 0, 8, "A kitchen")])
     env.files.append(file_obj("F9", "kitchen.mp4", "e" * 64))
     library.clear_cache()
@@ -276,3 +276,104 @@ def test_no_tool_receipt_carries_the_numbers_of_a_face(env):
     for secret in (P._read_json(P._registry_path())["people"][0]["exemplars"][0], P.load_scan(SHA1)["tracks"][0]["embedding"]):
         assert secret not in blob
     assert "embedding" not in blob and "exemplar" not in blob
+
+
+# ============================ voices ============================
+def vscan_of(*speakers, segments=()):
+    return {"version": P.VERSION, "duration": 20.0, "segments": [{"start": a, "end": b, "speaker": s} for a, b, s in segments],
+            "speakers": [{"id": sid, "seconds": 10.0, "embedding": P.enc(v)} for sid, v in speakers]}
+
+
+def seed_voices(sha, *speakers, segments=()):
+    scan = vscan_of(*speakers, segments=segments)
+    P._write_json(P._voice_path(sha), scan)
+    P.assign_new_voices(sha, scan)
+    return scan
+
+
+def test_scanning_also_listens_to_speech_and_saves_silence_as_silence(env, monkeypatch):
+    monkeypatch.setattr(PM, "status", lambda: {"runtime": True, "models": {"detector": True, "recognizer": True, "voice": True}, "faces_ready": True, "voices_ready": True,
+                                              "download_bytes": 0, "licenses": {}, "attributions": []})
+    monkeypatch.setattr(TP, "_scan_one", lambda fi: {"scan": scan_of(unit(0)), "assigned": {"matched": 0, "new": 1, "unsure": 0}})
+    env.shelf.write_json(SHA1, "speech.json", {"words": [{"startSec": 0.0, "endSec": 0.3}, {"startSec": 0.4, "endSec": 0.7}]})
+    monkeypatch.setattr(TP, "default_shelf", lambda: env.shelf)
+    heard = []
+    monkeypatch.setattr(P, "scan_voices", lambda path, sha, words, duration, **k: heard.append((sha, len(words))) or (
+        P._write_json(P._voice_path(sha), vscan_of(("S1", unit(0, 256)))) or vscan_of(("S1", unit(0, 256))) if words else vscan_of()))
+    _, r, _ = run("scan_people_tool", file_ids=["F1"])
+    row = r["scanned"][0]
+    assert heard == [(SHA1, 2)] and row["voices"] == 1 and row["new"] == 1 and "error" not in row
+    _, r2, _ = run("scan_people_tool", file_ids=["F2"])
+    assert r2["scanned"][0]["voices"] == 0 and "no speech" in r2["scanned"][0]["why"]
+
+
+def test_voices_are_only_scanned_when_the_voice_model_is_installed(env, monkeypatch):
+    monkeypatch.setattr(PM, "status", lambda: {"runtime": True, "models": {"detector": True, "recognizer": True, "voice": False}, "faces_ready": True, "voices_ready": False,
+                                              "download_bytes": 26_000_000, "licenses": {}, "attributions": []})
+    monkeypatch.setattr(TP, "_scan_one", lambda fi: {"scan": scan_of(unit(0)), "assigned": {"matched": 0, "new": 1, "unsure": 0}})
+    monkeypatch.setattr(P, "scan_voices", lambda *a, **k: pytest.fail("no voice model: no listening"))
+    _, r, _ = run("scan_people_tool", file_ids=["F1"])
+    assert "voices" not in r["scanned"][0]
+    monkeypatch.setattr(PM, "model_path", lambda n: "/x" if n != "voice" else None)
+    head, st, _ = run("people_status_tool")
+    assert st["voices_ready"] is False and st["ready"] is True and "voices need the voice model" in head and "MB" in head
+
+
+def test_who_is_this_also_says_whose_voice_is_heard_then(env):
+    seed(env, {SHA1: [unit(0)]})
+    seed_voices(SHA1, ("S1", unit(0, 256)), ("S2", unit(1, 256)), segments=[(0.0, 8.0, "S1"), (9.0, 15.0, "S2")])
+    P.name_person("P2", "Maya")
+    _, r, _ = run("who_is_this_tool", file_id="F1", seconds=12.0)
+    assert r["voice"]["person"] == "P3" and r["voice"]["status"] == "match" and r["voice"]["speaking"] == [9.0, 15.0] and r["faces"] == [], "no face at 12 s, but a voice"
+    _, a, _ = run("who_is_this_tool", file_id="F1", seconds=3.0)
+    assert a["voice"]["speaker"] == "S1" and a["faces"][0]["person"] == "P1"
+    head, none, _ = run("who_is_this_tool", file_id="F1", seconds=18.5)
+    assert none["voice"] is None and none["faces"] == [] and "No face or voice" in head
+
+
+def test_naming_by_voice_names_the_speaker_or_adds_to_a_known_person(env):
+    seed_voices(SHA1, ("S1", unit(0, 256)), ("S2", unit(1, 256)), segments=[(0.0, 8.0, "S1"), (9.0, 15.0, "S2")])
+    _, r, _ = run("name_person_tool", name="Sam", file_id="F1", seconds=3.0, by="voice")
+    assert r["person"]["name"] == "Sam" and r["person"]["id"] == "P1"
+    head, again, _ = run("name_person_tool", name="sam", file_id="F1", seconds=12.0, by="voice")
+    assert "already known" in head and again["person"] == "P1" and P.resolve_speakers(SHA1, P.load_voice_scan(SHA1), P.load_registry())[1]["status"] == "pinned"
+    assert "no one is speaking" in REGISTRY["name_person_tool"].func(name="X", file_id="F1", seconds=18.0, by="voice")
+    assert "no voice scan" in REGISTRY["name_person_tool"].func(name="X", file_id="F2", seconds=1.0, by="voice")
+
+
+def test_a_voice_matched_to_the_wrong_person_can_be_corrected(env):
+    seed_voices(SHA1, ("S1", unit(0, 256)), ("S2", unit(1, 256)), segments=[(0.0, 8.0, "S1"), (9.0, 15.0, "S2")])
+    _, r, _ = run("fix_person_track_tool", file_id="F1", person="P1", speaker_id="S2")
+    assert r["person"] == "P1" and r["speaker"].endswith(":S2")
+    _, n, _ = run("fix_person_track_tool", file_id="F1", person="new", speaker_id="S2")
+    assert n["person"] == "P3"
+    assert "say which one" in REGISTRY["fix_person_track_tool"].func(file_id="F1", person="P1")
+    assert "say which one" in REGISTRY["fix_person_track_tool"].func(file_id="F1", person="P1", track_id="s0t1", speaker_id="S1")
+    assert "no such" in REGISTRY["fix_person_track_tool"].func(file_id="F1", person="P1", speaker_id="S9")
+
+
+def test_the_list_shows_speaking_time_and_a_voice_that_goes_with_a_face(env):
+    shots = [{"id": 0, "start": 0.0, "end": 20.0}, {"id": 1, "start": 20.0, "end": 40.0}]
+    face = P.build_scan([{"t": t, "box": [0.4, 0.2, 0.1, 0.2], "px": 100, "score": 0.9, "vec": unit(0)} for t in (1.0, 10.0, 19.0)]
+                        + [{"t": t, "box": [0.4, 0.2, 0.1, 0.2], "px": 100, "score": 0.9, "vec": unit(1)} for t in (21.0, 30.0, 39.0)], shots, 6, 40.0)
+    P._write_json(P._scan_path(SHA1), face)
+    P.assign_new_faces(SHA1, face)
+    seed_voices(SHA1, ("S1", unit(0, 256)), ("S2", unit(1, 256)), segments=[(0.0, 19.0, "S1"), (21.0, 39.0, "S2")])
+    _, r, out = run("list_people_tool", include_minor=True)
+    by = {p["id"]: p for p in r["people"]}
+    voice_people = [p for p in r["people"] if p["has_voice"] and not p["has_face"]]
+    assert len(voice_people) == 2 and {p["speaking_seconds"] for p in voice_people} == {19.0, 18.0}
+    linked = [p for p in voice_people if p["likely_same_as"]]
+    assert len(linked) == 2 and by[linked[0]["likely_same_as"]["person"]]["has_face"] is True and linked[0]["likely_same_as"]["confidence"] > 0.5
+    assert "embedding" not in out and "voices" not in out.replace("has_voice", "")
+
+
+def test_search_by_person_includes_shots_where_their_voice_is_heard_and_says_so(env):
+    seed(env, {SHA1: [unit(0), unit(1)]})              # faces: person 1 in shot 0, person 2 in shot 1
+    seed_voices(SHA1, ("S1", unit(0, 256)), segments=[(11.0, 19.0, "S1")])        # a voice heard during shot 1
+    P.merge_people("P1", "P3")                         # the user says that voice is person 1's
+    P.name_person("P1", "Sam")
+    _, r = tcall("search_footage_tool", person="sam")
+    by_shot = {h["shot_id"]: h for h in r["hits"]}
+    assert set(by_shot) == {0, 1} and by_shot[0]["person_heard"] is False and by_shot[1]["person_heard"] is True
+    assert by_shot[1]["person_confidence"] == 1.0

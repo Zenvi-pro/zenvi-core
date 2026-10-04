@@ -197,6 +197,7 @@ def search_footage(query="", look_for="", reference_file_id="", reference_start=
     if person_note:
         for h, raw in zip(hits, result["hits"]):
             h["person_confidence"] = person_note["confidence"].get(raw["sha"], {}).get(raw["shot_id"])
+            h["person_heard"] = raw["shot_id"] in person_note["by_voice"].get(raw["sha"], ())
     summary = f"{result['total']} match(es)" + (f", showing {len(hits)}" if len(hits) < result["total"] else "")
     if not hits:
         summary = "no matches" + (" (a weak match is treated as none; try other words or fewer filters)" if result["ranked"] or query else "")
@@ -224,9 +225,20 @@ def _person_shots(files, person: str):
         for tr in (pp.resolve_tracks(fi.sha, scan, reg) if scan else []):
             if tr["status"] == "unsure" and tr["candidate"] in {p["id"] for p in found}:
                 unsure += 1
+    spoken: dict = {}
+    for fi in files:
+        vscan = pp.load_voice_scan(fi.sha)
+        if vscan:
+            got = pp.speaking_shots(fi.sha, vscan, reg, [p["id"] for p in found], fi.shots)
+            if got:
+                spoken[fi.sha] = got
+    for sha, got in spoken.items():                     # a person whose voice is heard in a shot counts as there, said to be by voice
+        merged = by_sha.setdefault(sha, {})
+        for shot_id, conf in got.items():
+            merged[shot_id] = max(merged.get(shot_id, 0.0), conf)
     by_file = {fi.file_id: set(by_sha.get(fi.sha, {})) for fi in files}
     note = {"who": {"ids": [p["id"] for p in found], "name": found[0].get("name"), "not_scanned": unscanned[:12] or None},
-            "unsure_shots": unsure, "confidence": by_sha}
+            "unsure_shots": unsure, "confidence": by_sha, "by_voice": {sha: set(g) for sha, g in spoken.items()}}
     return by_file, note
 
 

@@ -31,6 +31,10 @@ MAX_SAMPLES = 1500          # per file
 FRAME_LONG_EDGE = 960
 MAX_EXEMPLARS = 12
 EXEMPLAR_MIN_DISTANCE = 0.1  # a new exemplar must differ from the existing ones by at least this (cosine distance)
+VOICE_EXEMPLAR_MIN_DISTANCE = 0.05
+MIN_LINK_SECONDS = 10.0     # a voice and a face are linked only after this long speaking with that one face on screen
+LINK_RATIO = 0.7            # ... and only when that face is alone on screen for at least this share of all the time the voice speaks (so a narrator
+                            # speaking over footage of someone is not taken for them)
 _lock = threading.RLock()
 
 
@@ -99,6 +103,7 @@ def load_registry() -> Dict[str, Any]:
         reg.setdefault("version", VERSION)
         reg.setdefault("people", [])
         reg.setdefault("pins", {})
+        reg.setdefault("voice_pins", {})
         reg.setdefault("next", 1)
         return reg
 
@@ -121,11 +126,37 @@ def _add_exemplar(person: Dict[str, Any], vec: np.ndarray) -> None:
         person["exemplars"].pop(0)
 
 
-def new_person(reg: Dict[str, Any], vec: np.ndarray, name: Optional[str] = None) -> Dict[str, Any]:
-    p = {"id": f"P{reg['next']}", "name": name or None, "exemplars": [enc(vec)]}
+def new_person(reg: Dict[str, Any], vec: Optional[np.ndarray] = None, name: Optional[str] = None, voice: Optional[np.ndarray] = None) -> Dict[str, Any]:
+    """A new person with a face (``vec``), a voice (``voice``) or both; at least one is needed."""
+    p = {"id": f"P{reg['next']}", "name": name or None, "exemplars": [enc(vec)] if vec is not None else [], "voices": [enc(voice)] if voice is not None else []}
     reg["next"] += 1
     reg["people"].append(p)
     return p
+
+
+def _add_voice(person: Dict[str, Any], vec: np.ndarray) -> None:
+    person.setdefault("voices", [])
+    ex = [dec(e) for e in person["voices"]]
+    if ex and max(float(np.dot(vec, e)) for e in ex) > 1.0 - VOICE_EXEMPLAR_MIN_DISTANCE:
+        return
+    person["voices"].append(enc(vec))
+    if len(person["voices"]) > MAX_EXEMPLARS:
+        person["voices"].pop(0)
+
+
+def match_voice(reg: Dict[str, Any], vec: np.ndarray) -> Dict[str, Any]:
+    """Whose voice this is: like ``match``, with the voice lines (``voiceprint.SAME_VOICE`` and ``UNSURE_VOICE``)."""
+    from classes.media_index import voiceprint as vp
+    best, best_sim = None, -1.0
+    for p in reg["people"]:
+        sim = max((float(np.dot(vec, dec(e))) for e in p.get("voices") or []), default=-1.0)
+        if sim > best_sim:
+            best, best_sim = p, sim
+    if best is not None and best_sim >= vp.SAME_VOICE:
+        return {"person": best["id"], "confidence": round(best_sim, 3), "status": "match", "candidate": None}
+    if best is not None and best_sim >= vp.UNSURE_VOICE:
+        return {"person": None, "confidence": round(best_sim, 3), "status": "unsure", "candidate": best["id"]}
+    return {"person": None, "confidence": round(max(best_sim, 0.0), 3), "status": "new", "candidate": None}
 
 
 def match(reg: Dict[str, Any], vec: np.ndarray) -> Dict[str, Any]:
@@ -384,9 +415,12 @@ def merge_people(keep: str, drop: str) -> Dict[str, Any]:
             raise KeyError(keep if a is None else drop)
         for e in b["exemplars"]:
             _add_exemplar(a, dec(e))
+        for e in b.get("voices") or []:
+            _add_voice(a, dec(e))
         if not a.get("name") and b.get("name"):
             a["name"] = b["name"]
         reg["pins"] = {k: (keep if v == drop else v) for k, v in reg["pins"].items()}
+        reg["voice_pins"] = {k: (keep if v == drop else v) for k, v in reg["voice_pins"].items()}
         reg["people"] = [p for p in reg["people"] if p["id"] != drop]
         save_registry(reg)
     return {"kept": keep, "merged": drop, "name": a.get("name")}
@@ -436,6 +470,196 @@ def appearances(sha: str, scan: Dict[str, Any], reg: Dict[str, Any], person_id: 
              "box": t["samples"][len(t["samples"]) // 2]["box"]} for t in resolve_tracks(sha, scan, reg) if t["person"] == person_id]
 
 
+# ============================ voices ============================
+def _voice_path(sha: str) -> str:
+    return os.path.join(people_root(), "voices", f"{sha}.json")
+
+
+def load_voice_scan(sha: str) -> Optional[Dict[str, Any]]:
+    scan = _read_json(_voice_path(sha)) if sha else None
+    return scan if scan and scan.get("version") == VERSION else None
+
+
+def build_voice_scan(labels: Sequence[int], words: Sequence[Any], speakers: Sequence[Dict[str, Any]], duration: float) -> Dict[str, Any]:
+    """The saved voice scan of a file: who spoke (a voiceprint each, seconds heard) and when (a run of words by one speaker)."""
+    segments: List[Dict[str, Any]] = []
+    for w, lab in zip(words, labels):
+        a, b = float(w.startSec), float(w.endSec)
+        if segments and segments[-1]["speaker"] == f"S{lab + 1}" and a - segments[-1]["end"] <= 1.5:
+            segments[-1]["end"] = round(max(segments[-1]["end"], b), 3)
+        else:
+            segments.append({"start": round(a, 3), "end": round(b, 3), "speaker": f"S{lab + 1}"})
+    return {"version": VERSION, "duration": round(float(duration), 3), "segments": segments,
+            "speakers": [{"id": f"S{sp['index'] + 1}", "seconds": sp["seconds"], "embedding": enc(sp["vector"])} for sp in speakers]}
+
+
+def scan_voices(path: str, sha: str, words: Sequence[Any], duration: float, *, session: Any = None,
+                should_cancel: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
+    """Tell the voices in a file apart, from its transcript's word times, and save them. Blocks on decode and inference.
+
+    Raises ``people_models.PeopleUnavailable`` (no runtime or voice model), RuntimeError (audio unreadable) and InterruptedError.
+    """
+    from classes.media_index import people_models as pm, voiceprint as vp
+    if not words:
+        scan = build_voice_scan([], [], [], duration)       # nothing said: save that, so the file is not looked at again
+    else:
+        sess = session or pm.session("voice")
+        from classes.speech.audio_extract import extract_mono_16k_wav
+        wav, err = extract_mono_16k_wav(path)
+        if err:
+            raise RuntimeError(err)
+        try:
+            samples = vp.read_wav16k(wav)
+        finally:
+            try:
+                os.remove(wav)
+            except OSError:
+                pass
+        got = vp.speakers_of(sess, samples, words, should_cancel=should_cancel)
+        scan = build_voice_scan(got["labels"], words, got["speakers"], duration)
+    if should_cancel and should_cancel():
+        raise InterruptedError("voice scan cancelled")
+    with _lock:
+        _write_json(_voice_path(sha), scan)
+    log.info("heard %d voice(s) in a file", len(scan["speakers"]))
+    return scan
+
+
+def scan_file_voices(path: str, sha: str, duration: float, shelf: Any, *, should_cancel: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
+    """Listen to a file using the word times of its saved transcript, save the voices and register them: ``{"scan", "assigned", "had_speech"}``.
+
+    A file with no transcript words is saved as silent (so it is not looked at again). Blocks on decode and inference.
+    """
+    from types import SimpleNamespace
+    words = [SimpleNamespace(startSec=float(w["startSec"]), endSec=float(w["endSec"])) for w in (shelf.read_json(sha, "speech.json") or {}).get("words") or []]
+    scan = scan_voices(path, sha, words, duration, should_cancel=should_cancel)
+    return {"scan": scan, "assigned": assign_new_voices(sha, scan) if words else {"matched": 0, "new": 0, "unsure": 0}, "had_speech": bool(words)}
+
+
+def resolve_speakers(sha: str, vscan: Dict[str, Any], reg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Each voice heard in a file with whose it is: a pin the user made wins, else the closest known voice, else unsure or new."""
+    out = []
+    for sp in vscan.get("speakers", []):
+        key = f"{sha[:16]}:{sp['id']}"
+        pinned = reg["voice_pins"].get(key)
+        if pinned and _person(reg, pinned):
+            who = {"person": pinned, "confidence": 1.0, "status": "pinned", "candidate": None}
+        else:
+            who = match_voice(reg, dec(sp["embedding"]))
+        out.append({"speaker": sp["id"], "key": key, "seconds": sp["seconds"], **who})
+    return out
+
+
+def assign_new_voices(sha: str, vscan: Dict[str, Any]) -> Dict[str, int]:
+    """Give each voice that matches nobody a new unnamed person and grow known voices (never merging a merely unsure one)."""
+    counts = {"matched": 0, "new": 0, "unsure": 0}
+    with _lock:
+        reg = load_registry()
+        for sp in vscan.get("speakers", []):
+            key = f"{sha[:16]}:{sp['id']}"
+            if key in reg["voice_pins"]:
+                continue
+            vec = dec(sp["embedding"])
+            m = match_voice(reg, vec)
+            if m["status"] == "match":
+                _add_voice(_person(reg, m["person"]), vec)
+                counts["matched"] += 1
+            elif m["status"] == "unsure":
+                counts["unsure"] += 1
+            else:
+                new_person(reg, voice=vec)
+                counts["new"] += 1
+        save_registry(reg)
+    return counts
+
+
+def pin_speaker(sha: str, speaker_id: str, person_id: Optional[str]) -> Dict[str, Any]:
+    """The user says whose voice a speaker is (``person_id``), or that it is someone new (None)."""
+    vscan = load_voice_scan(sha)
+    sp = next((x for x in (vscan or {}).get("speakers", []) if x["id"] == speaker_id), None)
+    if sp is None:
+        raise KeyError(speaker_id)
+    with _lock:
+        reg = load_registry()
+        vec = dec(sp["embedding"])
+        if person_id is None:
+            person_id = new_person(reg, voice=vec)["id"]
+        else:
+            p = _person(reg, person_id)
+            if p is None:
+                raise KeyError(person_id)
+            _add_voice(p, vec)
+        reg["voice_pins"][f"{sha[:16]}:{speaker_id}"] = person_id
+        save_registry(reg)
+    return {"speaker": f"{sha[:16]}:{speaker_id}", "person": person_id}
+
+
+def voice_at(sha: str, vscan: Dict[str, Any], reg: Dict[str, Any], t: float) -> Optional[Dict[str, Any]]:
+    """Whose voice is heard at a time (within a second of a spoken stretch), or None."""
+    seg = next((g for g in vscan.get("segments", []) if g["start"] - 0.5 <= t <= g["end"] + 0.5), None)
+    if seg is None:
+        return None
+    who = next((r for r in resolve_speakers(sha, vscan, reg) if r["speaker"] == seg["speaker"]), None)
+    return None if who is None else {**who, "start": seg["start"], "end": seg["end"]}
+
+
+def speaking_shots(sha: str, vscan: Dict[str, Any], reg: Dict[str, Any], person_ids: Sequence[str], shots: Sequence[Dict[str, Any]]) -> Dict[int, float]:
+    """{shot id: confidence} for the shots in which one of these people's voice is heard (an unsure voice is not counted)."""
+    wanted = set(person_ids)
+    who = {r["speaker"]: r for r in resolve_speakers(sha, vscan, reg) if r["person"] in wanted}
+    out: Dict[int, float] = {}
+    for seg in vscan.get("segments", []):
+        r = who.get(seg["speaker"])
+        if r is None:
+            continue
+        for sh in shots:
+            if float(sh["end"]) > seg["start"] and float(sh["start"]) < seg["end"]:
+                out[int(sh["id"])] = max(out.get(int(sh["id"]), 0.0), float(r["confidence"]))
+    return out
+
+
+def speaking_seconds(reg: Dict[str, Any], vscans: Dict[str, Dict[str, Any]]) -> Dict[str, float]:
+    """Seconds each person is heard speaking, over the voice scans."""
+    out: Dict[str, float] = {}
+    for sha, vscan in vscans.items():
+        who = {r["speaker"]: r["person"] for r in resolve_speakers(sha, vscan, reg) if r["person"]}
+        for seg in vscan.get("segments", []):
+            if seg["speaker"] in who:
+                out[who[seg["speaker"]]] = out.get(who[seg["speaker"]], 0.0) + (seg["end"] - seg["start"])
+    return out
+
+
+def voice_face_links(reg: Dict[str, Any], files: Dict[str, Tuple[Dict[str, Any], Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Which voice goes with which face: ``files`` is {sha: (face scan, voice scan)}.
+
+    While a voice speaks, if exactly one known face is on screen, that is a sighting of the pair. A pair is linked only after
+    ``MIN_LINK_SECONDS`` of it and when that face is alone on screen for ``LINK_RATIO`` of all the time the voice speaks. A voice and a face of
+    the same person (already merged) are not listed. Returns ``{voice, face, seconds, ratio, confidence}`` best first; the user decides
+    whether to merge them.
+    """
+    seconds: Dict[Tuple[str, str], float] = {}
+    totals: Dict[str, float] = {}
+    for sha, (fscan, vscan) in files.items():
+        tracks = [t for t in resolve_tracks(sha, fscan, reg) if t["person"]]
+        voices = {r["speaker"]: r["person"] for r in resolve_speakers(sha, vscan, reg) if r["person"]}
+        for seg in vscan.get("segments", []):
+            vp = voices.get(seg["speaker"])
+            if not vp:
+                continue
+            totals[vp] = totals.get(vp, 0.0) + (seg["end"] - seg["start"])      # all the time this voice speaks, seen or not
+            on = {t["person"] for t in tracks if t["end"] + 0.5 >= seg["start"] and t["start"] - 0.5 <= seg["end"]}
+            if len(on) == 1:
+                face = next(iter(on))
+                seconds[(vp, face)] = seconds.get((vp, face), 0.0) + (seg["end"] - seg["start"])
+    links = []
+    for (vp, face), sec in seconds.items():
+        ratio = sec / totals[vp]
+        if vp != face and sec >= MIN_LINK_SECONDS and ratio >= LINK_RATIO:
+            links.append({"voice": vp, "face": face, "seconds": round(sec, 1), "ratio": round(ratio, 3), "confidence": round(ratio * min(1.0, sec / (3 * MIN_LINK_SECONDS)), 3)})
+    links.sort(key=lambda r: -r["confidence"])
+    return links
+
+
 def find_people(reg: Dict[str, Any], ref: str) -> List[Dict[str, Any]]:
     """The people a name or id refers to (names are matched ignoring case; ``P3`` is an id)."""
     ref = " ".join(str(ref or "").split()).lower()
@@ -462,11 +686,11 @@ def delete_all(include_models: bool = False) -> Dict[str, Any]:
     removed = {"scans": 0, "registry": False, "models": 0}
     with _lock:
         root = people_root()
-        files = os.path.join(root, "files")
-        try:
-            removed["scans"] = len([n for n in os.listdir(files) if n.endswith(".json")])
-        except OSError:
-            pass
+        for folder in ("files", "voices"):
+            try:
+                removed["scans"] += len([n for n in os.listdir(os.path.join(root, folder)) if n.endswith(".json")])
+            except OSError:
+                pass
         removed["registry"] = os.path.isfile(_registry_path())
         shutil.rmtree(root, ignore_errors=True)
     if include_models:

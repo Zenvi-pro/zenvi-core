@@ -104,23 +104,27 @@ class IndexingJob:
         self._run_people_scan(file_path, media_type)
 
     def _run_people_scan(self, file_path, media_type):
-        """Find the faces in a video when the people preference is on and the models are already installed (it never downloads).
+        """Find the faces in a video and tell the voices apart when the people preference is on and the models are already installed (it never downloads).
 
         Local only. Never raises: whatever happens here, indexing carries on exactly as it did before.
         """
         try:
             from classes.media_index.flags import people_enabled
-            if media_type != "video" or not people_enabled():
+            if media_type not in ("video", "audio") or not people_enabled():
                 return
             from classes.media_index import default_shelf, library, people, people_models
             st = people_models.status()
             sha = self._fingerprint_sha(file_path)
-            if not sha or not st["runtime"] or not all(st["models"].values()) or people.load_scan(sha):
+            if not sha or not st["runtime"]:
                 return
-            fi = library.get_file_index(default_shelf(), sha, file_id=str(self.file_data.get("id") or ""), name=file_path)
-            if fi is None or not fi.shots:
+            shelf = default_shelf()
+            fi = library.get_file_index(shelf, sha, file_id=str(self.file_data.get("id") or ""), name=file_path)
+            if fi is None:
                 return
-            people.scan_video(file_path, sha, fi.shots, fi.duration, should_cancel=lambda: self._cancelled)
+            if st["faces_ready"] and fi.shots and not people.load_scan(sha):
+                people.scan_video(file_path, sha, fi.shots, fi.duration, should_cancel=lambda: self._cancelled)
+            if st["voices_ready"] and not people.load_voice_scan(sha):
+                people.scan_file_voices(file_path, sha, fi.duration, shelf, should_cancel=lambda: self._cancelled)
         except Exception as exc:  # includes cancellation
             log.info("People scan skipped for %s: %s", file_path, exc)
 

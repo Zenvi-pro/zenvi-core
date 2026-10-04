@@ -327,11 +327,11 @@ def tiny_models(monkeypatch):
 
 
 def test_a_download_is_checked_against_its_hash_before_it_is_installed(home, tiny_models):
-    assert PM.status()["models"] == {"detector": False, "recognizer": False} and PM.status()["download_bytes"] > 0
+    assert PM.status()["models"] == {"detector": False, "recognizer": False, "voice": False} and PM.status()["download_bytes"] > 0
     steps = []
     out = PM.download(progress=steps.append, fetch=fake_fetch(tiny_models))
-    assert out == {"ok": True, "installed": ["detector", "recognizer"], "error": None} and steps[-1] == 1.0
-    assert PM.status()["models"] == {"detector": True, "recognizer": True} and PM.status()["download_bytes"] == 0
+    assert out == {"ok": True, "installed": ["detector", "recognizer", "voice"], "error": None} and steps[-1] == 1.0
+    assert PM.status()["models"] == {"detector": True, "recognizer": True, "voice": True} and PM.status()["download_bytes"] == 0
     assert PM.download(fetch=fake_fetch({}))["installed"] == [], "nothing is fetched twice"
 
 
@@ -339,7 +339,7 @@ def test_a_download_that_does_not_match_installs_nothing_and_leaves_no_part_file
     bad = {k: v + b"tampered" for k, v in tiny_models.items()}
     out = PM.download(fetch=fake_fetch(bad))
     assert out["ok"] is False and "checksum" in out["error"] and out["installed"] == []
-    assert PM.status()["models"] == {"detector": False, "recognizer": False}
+    assert PM.status()["models"] == {"detector": False, "recognizer": False, "voice": False}
     assert not [n for n in os.listdir(PM.models_dir()) if n.endswith(".part")]
 
 
@@ -368,7 +368,8 @@ def test_a_missing_runtime_or_model_says_what_to_install(home, monkeypatch):
 
 def test_the_licences_and_sizes_the_user_is_told_are_the_ones_in_the_table():
     s = PM.status()
-    assert s["licenses"] == {"detector": "MIT", "recognizer": "Apache-2.0"}
+    assert s["licenses"] == {"detector": "MIT", "recognizer": "Apache-2.0", "voice": "CC-BY-4.0"}
+    assert s["attributions"] and "CC BY 4.0" in s["attributions"][0] and "WeSpeaker" in s["attributions"][0], "the share-alike-free licence still needs credit"
     assert PM.MODELS["recognizer"]["bytes"] < 40_000_000 and all(len(m["sha256"]) == 64 for m in PM.MODELS.values())
 
 

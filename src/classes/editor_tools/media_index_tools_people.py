@@ -13,7 +13,8 @@ from classes.editor_tools._base import ToolError, array, boolean, integer, numbe
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.media_index_tools import project_indexes
 from classes.logger import log
-from classes.media_index import handoff, people as pp, people_models as pm
+from classes.media_index import handoff, people as pp, people_models as pm, voice_diarize
+from classes.media_index.store import default_shelf
 from classes.media_index.flags import people_enabled
 
 SCAN_BUDGET_SECONDS = 120.0
@@ -51,16 +52,20 @@ def people_status():
     st = pm.status()
     reg = pp.load_registry()
     enabled = people_enabled()
-    ready = st["runtime"] and all(st["models"].values())
+    ready = st["runtime"] and st["faces_ready"]
     todo = []
     if not enabled:
         todo.append("turn on 'recognise people' in Preferences")
     if not st["runtime"]:
         todo.append("install onnxruntime (pip install -r requirements-speech.txt)")
-    elif not all(st["models"].values()):
+    elif not st["faces_ready"] or not st["voices_ready"]:
         todo.append(f"download the models ({st['download_bytes'] / 1e6:.0f} MB, one time) with setup_people_tool")
-    return ok("People identity is " + ("ready." if enabled and ready else "not ready: " + "; ".join(todo) + "."), changed=False, enabled=enabled, ready=bool(enabled and ready),
-              runtime=st["runtime"], models=st["models"], licenses=st["licenses"], people=len(reg["people"]), named=sum(1 for p in reg["people"] if p.get("name")),
+    if enabled and ready and not st["voices_ready"]:
+        head = f"People identity is ready for faces; voices need the voice model ({st['download_bytes'] / 1e6:.0f} MB, one time): run setup_people_tool."
+    else:
+        head = "People identity is " + ("ready." if enabled and ready else "not ready: " + "; ".join(todo) + ".")
+    return ok(head, changed=False, enabled=enabled, ready=bool(enabled and ready),
+              runtime=st["runtime"], models=st["models"], voices_ready=st["voices_ready"], licenses=st["licenses"], attributions=st["attributions"], people=len(reg["people"]), named=sum(1 for p in reg["people"] if p.get("name")),
               stored=pp.has_data(), privacy="faces stay on this computer: never uploaded, never logged, not in shared or exported indexes; erase_people_data_tool removes all of it")
 
 
@@ -71,8 +76,8 @@ def people_status():
     schema=obj({}),
 )
 def setup_people():
-    """Download the two small face models (about 37 MB, one time, checked against fixed checksums) so people can be recognised on this
-    computer. Only when the user asked for people recognition: it fetches files from the internet (the models only, never any of
+    """Download the people models (faces about 37 MB, voices about 27 MB, one time, each checked against a fixed checksum) so people can be
+    recognised on this computer. Only when the user asked for people recognition: it fetches files from the internet (the models only, never any of
     their media). Needs the preference on and the onnxruntime package.
     """
     _need_on()
@@ -94,44 +99,61 @@ def _scan_one(fi) -> Dict[str, Any]:
         raise ToolError(str(exc))
 
 
+def _scan_voices_one(fi) -> Dict[str, Any]:
+    """Tell the voices in one file apart from its transcript's word times (nothing to do when it has no speech)."""
+    from classes.path_utils import absolute_media_path
+    try:
+        got = pp.scan_file_voices(absolute_media_path(fi.path) or fi.path, fi.sha, fi.duration, default_shelf())
+    except RuntimeError as exc:
+        raise ToolError(str(exc))
+    return {"voices": len(got["scan"]["speakers"]), **got["assigned"]} if got["had_speech"] else {"voices": 0, "why": "no speech to listen to"}
+
+
 @editor_tool(
     "scan_people_tool",
     covers=("index.people",),
     label="Find the people in footage",
     schema=obj({
-        "file_ids": array({"type": "string"}, "Project files to scan (default: every indexed video not scanned yet)."),
+        "file_ids": array({"type": "string"}, "Project files to scan (default: every indexed video or audio file not scanned yet)."),
         "rescan": boolean("Scan again files that already have a scan.", False),
     }),
 )
 def scan_people(file_ids=None, rescan=False):
-    """Look through indexed videos for faces and note where each person is on screen (about half a second at a time), on this computer.
-    Fast (a 30 s clip takes a couple of seconds). People are unnamed until the user names them (name_person_tool). Needs the preference
-    on and the models (people_status_tool says what is missing). It stops after about two minutes and says what is left.
+    """Look through indexed videos for faces and note where each person is on screen (about half a second at a time), and listen to the
+    speech in each file to tell the voices apart, all on this computer. Fast (a 30 s clip takes a couple of seconds). People are unnamed
+    until the user names them (name_person_tool). Needs the preference on and the models (people_status_tool says what is missing);
+    voices need the voice model and a transcript. It stops after about two minutes and says what is left.
     """
     _need_on()
     st = pm.status()
-    if not st["runtime"] or not all(st["models"].values()):
+    if not st["runtime"] or not st["faces_ready"]:
         raise ToolError("people models are not ready: " + ("install onnxruntime (pip install -r requirements-speech.txt)" if not st["runtime"] else "run setup_people_tool first"))
-    files, missing = _fi_by_file(file_ids or None)
+    all_files, missing = project_indexes(file_ids or None)
     started, rows, left = time.time(), [], []
-    for fi in files:
-        if pp.load_scan(fi.sha) and not rescan:
+    for fi in all_files:
+        is_video = fi.media_type == "video"
+        need_faces = is_video and (rescan or not pp.load_scan(fi.sha))
+        need_voice = st["voices_ready"] and (rescan or not pp.load_voice_scan(fi.sha))
+        if not (need_faces or need_voice):
             continue
         if time.time() - started > SCAN_BUDGET_SECONDS:
             left.append(fi.name)
             continue
+        row: Dict[str, Any] = {"file_id": fi.file_id, "name": fi.name}
         try:
-            got = _scan_one(fi)
+            if need_faces:
+                got = _scan_one(fi)
+                row.update(tracks=len(got["scan"]["tracks"]), frames=got["scan"]["sampled"], **got["assigned"])
+            if need_voice:
+                row.update(_scan_voices_one(fi))
         except ToolError as exc:
-            rows.append({"file_id": fi.file_id, "name": fi.name, "error": str(exc)})
-            continue
+            row["error"] = str(exc)
         except pm.PeopleUnavailable as exc:
             raise ToolError(str(exc))
         except Exception as exc:  # noqa: BLE001 - one file failing must not stop the rest; say which
             log.warning("people scan failed", exc_info=True)
-            rows.append({"file_id": fi.file_id, "name": fi.name, "error": f"could not scan: {exc}"[:160]})
-            continue
-        rows.append({"file_id": fi.file_id, "name": fi.name, "tracks": len(got["scan"]["tracks"]), "frames": got["scan"]["sampled"], **got["assigned"]})
+            row["error"] = f"could not scan: {exc}"[:160]
+        rows.append(row)
     done = [r for r in rows if "error" not in r]
     return ok(f"Scanned {len(done)} file(s)" + (f", {len(left)} left (run it again)" if left else "") + ".", changed=bool(done), scanned=rows, left=left or None, not_indexed=missing[:12] or None)
 
@@ -139,6 +161,10 @@ def scan_people(file_ids=None, rescan=False):
 # ============================ who is who ============================
 def _scans_for(files) -> Dict[str, Dict[str, Any]]:
     return {fi.sha: s for fi in files for s in [pp.load_scan(fi.sha)] if s}
+
+
+def _voice_scans_for(files) -> Dict[str, Dict[str, Any]]:
+    return {fi.sha: s for fi in files for s in [pp.load_voice_scan(fi.sha)] if s}
 
 
 @editor_tool(
@@ -157,11 +183,22 @@ def list_people(include_minor=False):
     _need_on()
     reg = pp.load_registry()
     files, _missing = _fi_by_file(None)
-    rows = pp.person_summary(reg, _scans_for(files))
-    shown = [r for r in rows if include_minor or r["shots"] >= 2 or r["seconds_on_screen"] >= MINOR_SECONDS or r["name"]]
+    scans, vscans = _scans_for(files), _voice_scans_for(project_indexes(None)[0])
+    rows = pp.person_summary(reg, scans)
+    spoken = pp.speaking_seconds(reg, vscans)
+    links = pp.voice_face_links(reg, {sha: (scans[sha], vscans[sha]) for sha in scans if sha in vscans})
+    for r in rows:
+        p = next(q for q in reg["people"] if q["id"] == r["id"])
+        r["speaking_seconds"] = round(spoken.get(r["id"], 0.0), 1)
+        r["has_face"], r["has_voice"] = bool(p["exemplars"]), bool(p.get("voices"))
+        pair = next((k for k in links if r["id"] in (k["voice"], k["face"])), None)
+        r["likely_same_as"] = None if pair is None else {"person": pair["face"] if pair["voice"] == r["id"] else pair["voice"], "confidence": pair["confidence"],
+                                                         "seen_together_seconds": pair["seconds"]}
+    shown = [r for r in rows if include_minor or r["shots"] >= 2 or r["seconds_on_screen"] >= MINOR_SECONDS or r["speaking_seconds"] >= MINOR_SECONDS or r["name"]]
     return ok(f"{len(shown)} people" + (f" ({len(rows) - len(shown)} brief appearances hidden)" if len(rows) > len(shown) else "") + ".", changed=False,
               people=shown[:MAX_LISTED], hidden=len(rows) - len(shown), unnamed=sum(1 for r in shown if not r["name"]),
-              note="names come only from the user; an id like P3 is just a label")
+              note="names come only from the user; an id like P3 is just a label. likely_same_as pairs a voice with a face that is on screen "
+                   "while it speaks: if the user agrees they are one person, merge_people_tool joins them")
 
 
 def _file_track(fi, seconds: float, track_id: str = ""):
@@ -195,18 +232,30 @@ def _describe_track(reg, t) -> Dict[str, Any]:
     read_only=True,
 )
 def who_is_this(file_id, seconds):
-    """Who is on screen at a moment of a file: each face found near that time with the person it matches, the name the user gave, how
-    sure the match is, and 'unsure' with the possible person when it is not sure enough to say. Boxes are fractions of the frame.
+    """Who is on screen, and who is speaking, at a moment of a file: each face found near that time and the voice heard then, with the
+    person it matches, the name the user gave, how sure the match is, and 'unsure' with the possible person when it is not sure enough
+    to say. Boxes are fractions of the frame.
     """
     _need_on()
     files, _m = _fi_by_file([str(file_id)])
     if not files:
         raise ToolError(f"no indexed video with id {file_id!r}")
-    reg, tracks = _file_track(files[0], float(seconds))
-    if not tracks:
-        return ok("No face was found near that time.", changed=False, faces=[])
+    fi = files[0]
+    vscan = pp.load_voice_scan(fi.sha)
+    if not pp.load_scan(fi.sha) and not vscan:
+        raise ToolError(f"{fi.name!r} has no people scan yet: run scan_people_tool")
+    reg = pp.load_registry()
+    tracks = _file_track(fi, float(seconds))[1] if pp.load_scan(fi.sha) else []
     rows = [_describe_track(reg, t) for t in tracks]
-    return ok(f"{len(rows)} face(s) near {float(seconds):.1f} s.", changed=False, faces=rows)
+    voice = None
+    if vscan:
+        v = pp.voice_at(fi.sha, vscan, reg, float(seconds))
+        if v:
+            voice = {"speaker": v["speaker"], "person": v["person"], "name": _name_of(reg, v["person"]), "confidence": v["confidence"], "status": v["status"],
+                     "possible": v["candidate"], "possible_name": _name_of(reg, v["candidate"]), "speaking": [v["start"], v["end"]]}
+    if not rows and not voice:
+        return ok("No face or voice was found near that time.", changed=False, faces=[], voice=None)
+    return ok(f"{len(rows)} face(s)" + (" and a voice" if voice else "") + f" near {float(seconds):.1f} s.", changed=False, faces=rows, voice=voice)
 
 
 @editor_tool(
@@ -219,9 +268,10 @@ def who_is_this(file_id, seconds):
         "file_id": string("Or point at a face: the project file...", ""),
         "seconds": number("...and a time it is on screen.", None, minimum=0),
         "track_id": string("When several faces are on screen at that time: which one (from who_is_this_tool).", ""),
+        "by": {"type": "string", "enum": ["face", "voice"], "description": "When pointing at a time: name the face on screen (default) or the voice speaking then.", "default": "face"},
     }, required=["name"]),
 )
-def name_person(name, person_id="", file_id="", seconds=None, track_id=""):
+def name_person(name, person_id="", file_id="", seconds=None, track_id="", by="face"):
     """Give a person the name the user told you, by id or by pointing at a face at a time in a file. If that name already belongs to
     someone, the face is added to them (recognised as the same person) instead of making a second person. Only name someone because
     the user said who they are: never infer a name.
@@ -243,6 +293,8 @@ def name_person(name, person_id="", file_id="", seconds=None, track_id=""):
     if not files:
         raise ToolError(f"no indexed video with id {file_id!r}")
     fi = files[0]
+    if by == "voice":
+        return _name_voice(fi, float(seconds), clean)
     reg, tracks = _file_track(fi, float(seconds), track_id)
     if not tracks:
         raise ToolError("no face was found there: who_is_this_tool shows where faces are")
@@ -260,6 +312,23 @@ def name_person(name, person_id="", file_id="", seconds=None, track_id=""):
         pid = t["person"]
     out = pp.name_person(pid, clean)
     return ok(f"{out['id']} is now called {out['name']}.", changed=True, person=out)
+
+
+def _name_voice(fi, seconds: float, clean: str) -> str:
+    vscan = pp.load_voice_scan(fi.sha)
+    if not vscan:
+        raise ToolError(f"{fi.name!r} has no voice scan yet: run scan_people_tool (it needs the voice model and a transcript)")
+    reg = pp.load_registry()
+    v = pp.voice_at(fi.sha, vscan, reg, seconds)
+    if v is None:
+        raise ToolError("no one is speaking then: who_is_this_tool shows when voices are heard")
+    existing = [p for p in pp.find_people(reg, clean) if (p.get("name") or "").lower() == clean.lower()]
+    if existing:
+        res = pp.pin_speaker(fi.sha, v["speaker"], existing[0]["id"])
+        return ok(f"That voice is {clean} ({existing[0]['id']}), already known; it was added to them.", changed=True, person=existing[0]["id"], speaker=res["speaker"])
+    pid = v["person"] or pp.pin_speaker(fi.sha, v["speaker"], None)["person"]
+    out = pp.name_person(pid, clean)
+    return ok(f"{out['id']} (a voice) is now called {out['name']}.", changed=True, person=out)
 
 
 @editor_tool(
@@ -291,23 +360,30 @@ def merge_people(keep, merge):
     label="Correct who a face is",
     schema=obj({
         "file_id": string("Project file id."),
-        "track_id": string("The face (from who_is_this_tool)."),
         "person": string("Who it really is: a person id like P2, or 'new' for someone else."),
-    }, required=["file_id", "track_id", "person"]),
+        "track_id": string("The face (from who_is_this_tool).", ""),
+        "speaker_id": string("Or the voice (the speaker id from who_is_this_tool, like S1).", ""),
+    }, required=["file_id", "person"]),
 )
-def fix_person_track(file_id, track_id, person):
-    """Correct one face that was matched to the wrong person (or that is someone new): the correction is kept and the face is added
+def fix_person_track(file_id, person, track_id="", speaker_id=""):
+    """Correct one face or voice that was matched to the wrong person (or that is someone new): the correction is kept and it is added
     to the right person. Use it when who_is_this_tool names the wrong person.
     """
     _need_on()
-    files, _m = _fi_by_file([str(file_id)])
+    if bool(track_id) == bool(speaker_id):
+        raise ToolError("say which one: a track_id (a face) or a speaker_id (a voice)")
+    files, _m = project_indexes([str(file_id)])
     if not files:
-        raise ToolError(f"no indexed video with id {file_id!r}")
+        raise ToolError(f"no indexed file with id {file_id!r}")
+    target = None if str(person).lower() == "new" else str(person)
     try:
-        out = pp.pin_track(files[0].sha, str(track_id), None if str(person).lower() == "new" else str(person))
+        if track_id:
+            out = pp.pin_track(files[0].sha, str(track_id), target)
+        else:
+            out = pp.pin_speaker(files[0].sha, str(speaker_id), target)
     except KeyError as exc:
-        raise ToolError(f"no such face or person: {exc.args[0]}")
-    return ok(f"That face is now {out['person']}.", changed=True, **out)
+        raise ToolError(f"no such face, voice or person: {exc.args[0]}")
+    return ok(f"That {'face' if track_id else 'voice'} is now {out['person']}.", changed=True, **out)
 
 
 # ============================ locate a person ============================
@@ -385,3 +461,6 @@ def erase_people_data(confirm, include_models=False):
         raise ToolError("this removes every face scan and every name for good: ask the user, then pass confirm=true")
     out = pp.delete_all(include_models=bool(include_models))
     return ok(f"Deleted {out['scans']} scan(s) and the people list" + (f" and {out['models']} model file(s)" if out["models"] else "") + ".", changed=True, removed=out)
+
+
+voice_diarize.install()          # speaker labels by voiceprint when people identity is on and ready; the baseline otherwise

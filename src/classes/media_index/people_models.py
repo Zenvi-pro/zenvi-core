@@ -2,8 +2,8 @@
  @file
  @brief The two small ONNX models behind people identity: where they live, how they are fetched, and how they are loaded.
 
- Faces are found with YuNet (MIT, 0.2 MB) and recognised with SFace (Apache 2.0, 37 MB), both from the OpenCV model zoo. They run
- locally through onnxruntime, which is the optional speech extra (``requirements-speech.txt``). Nothing is fetched unless the
+ Faces are found with YuNet (MIT, 0.2 MB) and recognised with SFace (Apache 2.0, 37 MB), both from the OpenCV model zoo; voices are
+ told apart with WeSpeaker's ResNet34 (CC-BY-4.0, 27 MB: needs attribution). They run locally through onnxruntime, which is the optional speech extra (``requirements-speech.txt``). Nothing is fetched unless the
  user turned the people preference on and asked for it, every file is checked against a pinned SHA-256, and a download is
  staged in a temporary file and only then moved into place.
 """
@@ -22,7 +22,11 @@ MODELS: Dict[str, Dict[str, Any]] = {
                  "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4", "bytes": 232589, "license": "MIT"},
     "recognizer": {"file": "face_recognition_sface_2021dec.onnx", "url": f"{_ZOO}/face_recognition_sface/face_recognition_sface_2021dec.onnx",
                    "sha256": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79", "bytes": 38696353, "license": "Apache-2.0"},
+    "voice": {"file": "voxceleb_resnet34_LM.onnx", "url": "https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM/resolve/main/voxceleb_resnet34_LM.onnx",
+              "sha256": "7bb2f06e9df17cdf1ef14ee8a15ab08ed28e8d0ef5054ee135741560df2ec068", "bytes": 26530309, "license": "CC-BY-4.0",
+              "attribution": "WeSpeaker ResNet34 speaker model (Wespeaker project, trained on VoxCeleb2), CC BY 4.0"},
 }
+FACE_MODELS = ("detector", "recognizer")
 
 
 class PeopleUnavailable(RuntimeError):
@@ -69,8 +73,10 @@ def runtime_available() -> bool:
 def status() -> Dict[str, Any]:
     """What is installed: the runtime and each model."""
     return {"runtime": runtime_available(), "models": {n: bool(model_path(n)) for n in MODELS},
+            "faces_ready": all(model_path(n) for n in FACE_MODELS), "voices_ready": bool(model_path("voice")),
             "download_bytes": sum(s["bytes"] for n, s in MODELS.items() if not model_path(n)),
-            "licenses": {n: s["license"] for n, s in MODELS.items()}}
+            "licenses": {n: s["license"] for n, s in MODELS.items()},
+            "attributions": [s["attribution"] for s in MODELS.values() if s.get("attribution")]}
 
 
 def download(progress: Optional[Callable[[float], None]] = None, should_cancel: Optional[Callable[[], bool]] = None,
