@@ -326,3 +326,49 @@ def test_audio_without_a_rhythm_has_no_bars_but_still_has_an_arc(tmp_path):
 def test_a_short_clip_has_no_sections(tmp_path):
     out = analyse(write_wav(tmp_path / "short.wav", tone(10, 330.0, -20.0)))
     assert out["music"]["sections"] == [] and len(out["music"]["arc"]) == 3
+
+
+# ============================ builds and fades have no sharp edge: found by their slope ============================
+def _energy(*parts):
+    out = []
+    for kind, a, b, n in parts:
+        out += [a] * n if kind == "flat" else list(np.linspace(a, b, n))
+    return np.array(out, dtype=np.float64)
+
+
+def test_a_steady_build_is_found_from_where_it_starts_to_where_it_tops_out():
+    e = _energy(("flat", 0.1, 0.1, 15), ("ramp", 0.1, 0.95, 24), ("flat", 0.95, 0.95, 20))
+    start, top = au.ramp_boundaries(e)
+    assert start == pytest.approx(15, abs=3) and top == pytest.approx(37, abs=3)
+
+
+def test_a_fade_out_is_a_ramp_too():
+    e = _energy(("flat", 0.9, 0.9, 20), ("ramp", 0.9, 0.05, 20), ("flat", 0.05, 0.05, 15))
+    start, end = au.ramp_boundaries(e)
+    assert start == pytest.approx(21, abs=3) and end == pytest.approx(36, abs=4)
+
+
+@pytest.mark.parametrize("name,e", [
+    ("a step up", _energy(("flat", 0.05, 0.05, 20), ("flat", 0.95, 0.95, 20))),
+    ("a step down", _energy(("flat", 0.95, 0.95, 20), ("flat", 0.05, 0.05, 20))),
+    ("a short swell", _energy(("flat", 0.1, 0.1, 15), ("ramp", 0.1, 0.9, 5), ("flat", 0.9, 0.9, 20))),
+    ("a small drift", _energy(("flat", 0.4, 0.4, 15), ("ramp", 0.4, 0.55, 30), ("flat", 0.55, 0.55, 15))),
+    ("a steady level", _energy(("flat", 0.5, 0.5, 60))),
+    ("too short to judge", _energy(("ramp", 0.0, 1.0, 10))),
+])
+def test_things_that_are_not_a_build_are_not_ramps(name, e):
+    assert au.ramp_boundaries(e) == [], name
+
+
+def test_noise_on_the_plateau_does_not_stretch_a_ramp():
+    rng = np.random.default_rng(1)
+    e = _energy(("flat", 0.1, 0.1, 15), ("ramp", 0.1, 0.95, 24), ("flat", 0.95, 0.95, 30)) + rng.normal(0, 0.01, 69)
+    start, top = au.ramp_boundaries(np.clip(e, 0, 1))
+    assert top < 45, "the top is where it first gets there, not where the plateau ends"
+
+
+def test_a_ramps_edges_win_and_a_novelty_edge_beside_one_is_the_same_change():
+    out = au.merge_bounds([17.0, 44.0, 70.0], [15.0, 40.0])
+    assert 15.0 in out and 40.0 in out and 17.0 not in out and 44.0 not in out and 70.0 in out
+    assert au.merge_bounds([30.0, 80.0], [20.0, 45.0]) == [20.0, 45.0, 80.0], "no edge in the middle of a build"
+    assert au.merge_bounds([10.0, 12.0, 30.0], []) == [10.0, 30.0], "edges closer than the minimum gap collapse to the first"

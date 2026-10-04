@@ -217,3 +217,39 @@ def voice_bursts(spans: Sequence[Tuple[float, float]] = ((1.0, 3.0), (4.5, 6.0),
 
     path = cached(f"voice_{key}.wav", build)
     return path, {"spans": [list(s) for s in spans], "seconds": seconds}
+
+
+def song(bpm: float = 100.0, seconds: float = 60.0, sections: Sequence[Dict[str, Any]] = (), seed: int = 5) -> Tuple[Path, Dict[str, Any]]:
+    """A harder synthetic song. Each section dict: start, end, level (0..1, can be a (from, to) ramp), bed (Hz), click (Hz), hat (bool).
+
+    Sections can differ in loudness, in which instruments play (a low bed, a bright click, a hi-hat), or both, and a level can
+    ramp so a build has no sharp edge. The truth is the section edges and the beats.
+    """
+    key = hashlib.sha1(json.dumps([bpm, seconds, list(sections), seed], default=str).encode()).hexdigest()[:10]
+
+    def build(out):
+        n = int(seconds * SR)
+        t = np.arange(n) / SR
+        rng = np.random.default_rng(seed)
+        audio = np.zeros(n, np.float32)
+        step = 60.0 / bpm
+        for sec in sections:
+            lo, hi = int(sec["start"] * SR), min(n, int(sec["end"] * SR))
+            level = sec.get("level", 0.5)
+            ramp = np.linspace(level[0], level[1], hi - lo) if isinstance(level, (tuple, list)) else np.full(hi - lo, float(level))
+            audio[lo:hi] += (0.3 * ramp * np.sin(2 * np.pi * sec.get("bed", 220) * t[lo:hi])).astype(np.float32)
+            for b in np.arange(sec["start"] + 0.25, sec["end"] - 0.1, step):
+                i = int(b * SR)
+                length = int(0.05 * SR)
+                gain = float(ramp[min(len(ramp) - 1, max(0, i - lo))])
+                env = np.exp(-np.arange(length) / (0.01 * SR))
+                audio[i:i + length] += (np.sin(2 * np.pi * sec.get("click", 900) * np.arange(length) / SR) * env * gain).astype(np.float32)[: n - i]
+                if sec.get("hat"):
+                    j = int((b + step / 2) * SR)
+                    hl = int(0.02 * SR)
+                    audio[j:j + hl] += (rng.standard_normal(hl) * np.exp(-np.arange(hl) / (0.004 * SR)) * 0.35 * gain).astype(np.float32)[: max(0, n - j)]
+        write_wav(out, audio * 0.8)
+
+    path = cached(f"song_{key}.wav", build)
+    return path, {"bpm": bpm, "seconds": seconds, "section_edges": [s["start"] for s in sections[1:]],
+                  "beats": [round(float(b), 3) for sec in sections for b in np.arange(sec["start"] + 0.25, sec["end"] - 0.1, 60.0 / bpm)]}

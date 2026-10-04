@@ -274,6 +274,64 @@ def novelty_boundaries(features: np.ndarray, min_gap: float = SECTION_MIN_SECOND
     return peaks
 
 
+RAMP_MIN_SECONDS = 8          # a build or a fade is at least this long
+RAMP_MIN_RISE = 0.35          # and moves the energy (0..1) at least this far
+RAMP_TOLERANCE = 0.06         # a ramp may dip this much and still be one
+RAMP_EDGE = 0.05              # a ramp starts where it has covered this much of the way (5%) and ends where it first gets within the same of its top
+
+
+def ramp_boundaries(energy_by_second: np.ndarray) -> List[float]:
+    """Seconds where a steady build (or fade) starts and ends. A crescendo has no sharp edge for novelty to find.
+
+    A ramp is a stretch of at least ``RAMP_MIN_SECONDS`` where the smoothed energy keeps climbing (or falling) by at least
+    ``RAMP_MIN_RISE``. It starts where it has covered 5% of the way and ends where it first gets within 5% of its top, so a long flat
+    intro or plateau around it is not counted as part of it.
+    """
+    n = int(energy_by_second.size)
+    if n < 2 * RAMP_MIN_SECONDS:
+        return []
+    sm = np.convolve(energy_by_second, np.ones(5) / 5.0, mode="same")
+    out: List[float] = []
+    for sign in (1.0, -1.0):
+        series = sign * sm
+        i = 0
+        while i < n - 1:
+            best = i
+            k = i
+            while k + 1 < n and series[k + 1] >= series[best] - RAMP_TOLERANCE:
+                k += 1
+                if series[k] > series[best]:
+                    best = k
+            rise = series[best] - series[i]
+            if best - i >= RAMP_MIN_SECONDS and rise >= RAMP_MIN_RISE:
+                lo_level = series[i] + RAMP_EDGE * rise
+                start = max(j for j in range(i, best + 1) if series[j] <= lo_level)
+                top = min(j for j in range(start, best + 1) if series[j] >= series[best] - RAMP_EDGE * rise)       # within 5% of the top
+                if top - start >= RAMP_MIN_SECONDS:        # a smoothed step climbs for about 5 s; a build climbs for longer
+                    out += [float(start), float(top)]
+                i = best + 1
+            else:
+                i += 1
+    return sorted(set(out))
+
+
+def merge_bounds(novelty: List[float], ramps: List[float], min_gap: float = SECTION_MIN_SECONDS) -> List[float]:
+    """Section edges from novelty and ramps: a ramp's edges win (novelty edges inside or beside one are dropped), and no two edges
+    are closer than *min_gap* seconds. *ramps* is the flat list of start, end pairs ``ramp_boundaries`` returns."""
+    kept = list(ramps)
+    spans = list(zip(ramps[0::2], ramps[1::2]))
+    for b in novelty:
+        inside = any(a < b < z for a, z in spans)                     # a gradual change has no edge in the middle of it
+        if not inside and all(abs(b - r) >= min_gap + 2.0 for r in ramps):   # novelty smears an edge over a few seconds: next to a ramp it is that ramp
+            kept.append(b)
+    kept = sorted(kept)
+    out: List[float] = []
+    for b in kept:
+        if not out or b - out[-1] >= min_gap:
+            out.append(b)
+    return out
+
+
 def label_sections(bounds: List[float], energy_by_second: np.ndarray) -> List[Dict[str, Any]]:
     """Sections between *bounds* named by position and relative energy: intro, build, peak, break, steady, outro."""
     edges = [0.0] + [b for b in bounds] + [float(energy_by_second.size)]
@@ -320,7 +378,7 @@ def music_profile(feat: Dict[str, np.ndarray], rms_db: np.ndarray, bpm: Optional
                 per_second(feat["flux"].astype(np.float64)), per_second(feat["low"].astype(np.float64))]
         n = min(c.size for c in cols)
         matrix = np.stack([c[:n] for c in cols], axis=1)
-        bounds = [float(b) for b in novelty_boundaries(matrix)]
+        bounds = merge_bounds([float(b) for b in novelty_boundaries(matrix)], ramp_boundaries(energy[:n]))
         sections = label_sections(bounds, energy[:n])
         if sections:
             sections[-1]["end"] = round(float(duration), 2)

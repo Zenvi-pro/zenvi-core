@@ -2,7 +2,7 @@
   "_about": "Floors (min) and ceilings (max) the fast eval must hold. Set just inside the measured result so a real regression fails the build. 'baseline' is what the same corpus measured before round 2 (for the record).",
   "baseline_before_round_2": {
     "shots.dissolve.f1": 0.8571, "shots.dissolve.mean_error": 0.2833, "shots.fade_through_black.f1": 0.5,
-    "shots.fade_through_black.boundaries_per_transition": 3.0, "shots.soft_pooled.f1": 0.6667, "quality.blur.recall": 0.3333,
+    "shots.fade_through_black.boundaries_per_transition": 3.0, "shots.soft_pooled.f1": 0.6667, "quality.blur.recall": 0.3333, "music.gradual_build.section_f1": 0.6667,
     "quality.blur_by_amount.blur_medium": 0.0
   },
   "limits": {
@@ -18,6 +18,10 @@
     "music.beat_f1_pooled": {"min": 0.95},
     "music.section_f1_pooled": {"min": 0.9},
     "music.bpm_error_max": {"max": 1.5},
+    "music.gradual_build.section_f1": {"min": 0.9},
+    "music.fade_out.section_f1": {"min": 0.9},
+    "music.timbre_only.section_f1": {"min": 0.9},
+    "music.same_loudness_new_instruments.section_f1": {"min": 0.9},
     "voice_edges.audio_layer.start_mae": {"max": 0.08},
     "voice_edges.audio_layer.end_mae": {"max": 0.08},
     "voice_edges.audio_layer.missed": {"max": 0},

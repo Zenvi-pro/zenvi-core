@@ -61,6 +61,15 @@ TRACKS = {
     "low_contrast": dict(bpm=90.0, sections=((0.0, 16.0, 0.4), (16.0, 32.0, 0.55), (32.0, 48.0, 0.4))),
     "with_break": dict(bpm=128.0, sections=((0.0, 8.0, 0.3), (8.0, 24.0, 0.8), (24.0, 30.0, 0.05), (30.0, 48.0, 0.8))),
 }
+# Harder: sections that differ in which instruments play, a build with no sharp edge, a hi-hat entering at a steady level.
+SONGS = {
+    "timbre_only": dict(bpm=100.0, seconds=60.0, sections=[dict(start=0, end=20, level=0.5, bed=220, click=900),
+                                                         dict(start=20, end=40, level=0.5, bed=660, click=1800, hat=True), dict(start=40, end=60, level=0.5, bed=220, click=900)]),
+    "gradual_build": dict(bpm=110.0, seconds=60.0, sections=[dict(start=0, end=15, level=0.15), dict(start=15, end=40, level=(0.15, 0.9)), dict(start=40, end=60, level=0.9, hat=True)]),
+    "same_loudness_new_instruments": dict(bpm=90.0, seconds=48.0, sections=[dict(start=0, end=16, level=0.6, bed=200, click=700), dict(start=16, end=32, level=0.6, bed=200, click=700, hat=True),
+                                                                         dict(start=32, end=48, level=0.6, bed=400, click=1500, hat=True)]),
+    "fade_out": dict(bpm=100.0, seconds=60.0, sections=[dict(start=0, end=30, level=0.8), dict(start=30, end=48, level=(0.8, 0.05)), dict(start=48, end=60, level=0.05)]),
+}
 
 
 def music() -> Dict[str, Any]:
@@ -79,6 +88,15 @@ def music() -> Dict[str, Any]:
         out[name] = {"bpm_error": round(abs((tempo.get("bpm") or 0.0) - truth["bpm"]), 3), "beat_f1": beats["f1"], "beat_mean_error": beats["mean_error"],
                      "section_f1": sections["f1"], "section_extra": sections["extra"], "section_missed": sections["missed"]}
         pooled_beats.append(beats)
+        pooled_sections.append(sections)
+    for name, spec in SONGS.items():
+        path, truth = corpus.song(**spec)
+        res = au.analyze_audio(str(path), probe_media(str(path)))
+        edges = [s["start"] for s in (res.get("music") or {}).get("sections", [])[1:]]
+        # where a gradual build or fade "starts" is fuzzy by a few seconds (loudness in dB is flat near the top): 3 s there, 2 s elsewhere
+        sections = metrics.prf(edges, truth["section_edges"], 3.0 if name in ("gradual_build", "fade_out") else 2.0)
+        out[name] = {"section_f1": sections["f1"], "section_extra": sections["extra"], "section_missed": sections["missed"],
+                     "bpm_error": round(abs(((res.get("tempo") or {}).get("bpm") or 0.0) - truth["bpm"]), 3)}
         pooled_sections.append(sections)
     out["beat_f1_pooled"] = metrics.combine(*pooled_beats)["f1"]
     out["section_f1_pooled"] = metrics.combine(*pooled_sections)["f1"]
