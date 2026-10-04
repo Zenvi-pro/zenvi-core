@@ -124,6 +124,10 @@ def test_video_without_audio_skips_audio_and_speech(media, shelf):
     out = run(media["silent"], shelf)
     assert out["layers"] == {"structure": "ready", "look": "ready", "audio": "skipped", "speech": "skipped"}
     assert fake_transcribe.calls == []
+    # recorded in the manifest, so nothing waits on a layer this file can never have
+    for layer in ("audio", "speech"):
+        assert shelf.layer(out["sha"], layer)["status"] == "not_applicable" and not shelf.layer_ready(out["sha"], layer)
+    assert shelf.layer(out["sha"], "structure")["status"] == "ready"
 
 
 def test_audio_only_files_skip_the_picture_layers(tmp_path, shelf):
@@ -132,6 +136,8 @@ def test_audio_only_files_skip_the_picture_layers(tmp_path, shelf):
     subprocess.run([mf.need_ffmpeg(), "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=300:duration=3", wav], check=True)
     out = run(wav, shelf, media_type="audio")
     assert out["layers"] == {"structure": "skipped", "look": "skipped", "audio": "ready", "speech": "ready"}
+    assert shelf.layer(out["sha"], "structure")["status"] == "not_applicable" and shelf.layer(out["sha"], "look")["status"] == "not_applicable"
+    assert shelf.layer_ready(out["sha"], "audio")
 
 
 def test_a_still_image_gets_a_look_and_no_audio(tmp_path, shelf):

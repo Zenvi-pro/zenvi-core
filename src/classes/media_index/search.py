@@ -23,7 +23,7 @@ from classes.media_index.library import FileIndex
 RRF_K = 60
 PER_LAYER = 60                    # candidates taken from each ranked list before fusing
 WEIGHT = {"shot": 1.35, "speech": 1.30, "image": 1.0, "look": 0.8}
-MIN_COSINE = {"shot": 0.30, "speech": 0.30, "image": 0.20}   # a hit below this is noise, not a match
+MIN_COSINE = {"shot": 0.40, "speech": 0.40, "image": 0.36}   # below this a hit is noise (measured: real matches 0.39-0.78, unrelated 0.21-0.33)
 
 def _num(d: Dict[str, Any], key: str, default: float) -> float:
     value = d.get(key)

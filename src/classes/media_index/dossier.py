@@ -59,7 +59,7 @@ def header(fi: FileIndex) -> List[str]:
         lines.append("LOOK " + file_look)
     for w in fi.warnings:
         lines.append("WARNING " + w.split(":")[0])
-    missing = [name for name in ("structure", "look", "audio", "speech", "watch", "vectors") if not fi.layers.get(name)]
+    missing = [name for name in ("structure", "look", "audio", "speech", "watch", "vectors") if not fi.layers.get(name) and name not in fi.not_applicable]
     if missing:
         lines.append("NOT INDEXED YET: " + ", ".join(missing))
     return lines

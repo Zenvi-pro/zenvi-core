@@ -28,6 +28,7 @@ CACHED = "cached"        # already on the shelf at the current version
 SKIPPED = "skipped"      # nothing to analyse (no video / no audio)
 UNAVAILABLE = "unavailable"
 FAILED = "failed"
+NOT_APPLICABLE = S.NOT_APPLICABLE
 
 # share of the progress bar each stage owns
 _WEIGHTS = {"structure": (0.0, 0.5), "audio": (0.5, 0.6), "speech": (0.6, 1.0)}
@@ -109,6 +110,16 @@ def compute_facts(
         errors[layer] = str(exc)[:300]
         layers[layer] = FAILED
         shelf.set_layer(sha, layer, version=S.LAYER_VERSIONS[layer], status=FAILED, error=errors[layer])
+
+    def not_applicable(*names: str, why: str) -> None:
+        """A layer the file cannot have (no audio track, no picture): recorded, so nothing waits on it."""
+        for name in names:
+            shelf.set_layer(sha, name, version=S.LAYER_VERSIONS[name], status=NOT_APPLICABLE, note=why)
+
+    if not probe.get("has_video"):
+        not_applicable(S.LAYER_STRUCTURE, S.LAYER_LOOK, why="no picture")
+    if not probe.get("has_audio"):
+        not_applicable(S.LAYER_AUDIO, S.LAYER_SPEECH, why="no audio track")
 
     # ---- structure + look: one decode pass ------------------------------------------------
     shots: list = []

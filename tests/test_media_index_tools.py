@@ -147,6 +147,20 @@ def test_look_profile_needs_a_measured_look(env):
     assert out.startswith("Error") and "no measured look" in out
 
 
+def test_a_layer_a_file_cannot_have_is_not_reported_as_missing(env):
+    env.shelf.set_layer(SHA2, "audio", version=1, status="not_applicable", note="no audio track")
+    env.shelf.set_layer(SHA2, "speech", version=1, status="not_applicable", note="no audio track")
+    _, r = call("index_status_tool", file_ids=["F2"])
+    row = r["files"][0]
+    assert row["not_applicable"] == ["audio", "speech"] and "audio" not in row["missing"] and "speech" not in row["missing"]
+    assert "watch" in row["missing"]
+    fi = library.load_file_index(env.shelf, SHA2)
+    assert fi.not_applicable == ["audio", "speech"]
+    from classes.media_index.dossier import build_dossier
+    notes = build_dossier(fi)["text"]
+    assert "NOT INDEXED YET" in notes and "audio" not in notes.split("NOT INDEXED YET")[1] and "watch" in notes
+
+
 def test_index_status_lists_each_layer_and_skips_non_media(env):
     head, r = call("index_status_tool")
     rows = {x["file_id"]: x for x in r["files"]}

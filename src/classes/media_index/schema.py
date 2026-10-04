@@ -47,3 +47,5 @@ KEYFRAME_EVERY_SECONDS = 2.0      # at least one picture vector this often insid
 MAX_KEYFRAMES = 3000              # a safety cap per file
 KEYFRAME_LONG_EDGE = 384
 PROXY_HEIGHT = 480
+
+NOT_APPLICABLE = "not_applicable"     # manifest status of a layer the file cannot have (no audio track, no picture)
