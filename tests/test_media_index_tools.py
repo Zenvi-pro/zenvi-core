@@ -324,6 +324,23 @@ def test_view_audio_draws_a_spectrogram_and_remembers_it(env, tmp_path, monkeypa
     assert again["cached"] is True and again["image_path"] == r["image_path"]
 
 
+def test_view_audio_over_a_minute_comes_back_as_several_strips(env, tmp_path, monkeypatch):
+    import subprocess
+    sys.path.insert(0, str(Path(__file__).parent))
+    import media_fixtures as mf
+    wav = tmp_path / "long.wav"
+    subprocess.run([mf.need_ffmpeg(), "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=400:duration=100", str(wav)], check=True)
+    sha = "e" * 64
+    env.shelf.set_source(sha, duration=100.0, has_audio=True, media_type="audio")
+    f = file_obj("A2", "long.wav", sha, "audio")
+    f.data["path"] = str(wav)
+    env.files.append(f)
+    monkeypatch.setattr("classes.path_utils.absolute_media_path", lambda p: p, raising=False)
+    head, r = call("view_audio_tool", file_id="A2", start=0.0, end=100.0)
+    assert len(r["strips"]) == 2 and [(s["start"], s["end"]) for s in r["strips"]] == [(0.0, 50.0), (50.0, 100.0)] and "2 strips" in head
+    assert all(Path(s["image_path"]).is_file() for s in r["strips"]) and r["image_path"] == r["strips"][0]["image_path"]
+
+
 def test_view_audio_refuses_silent_files_and_unfingerprinted_ones(env):
     env.shelf.set_source(SHA2, duration=5.0, has_audio=False, media_type="video")
     out = REGISTRY["view_audio_tool"].func(file_id="F2")

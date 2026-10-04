@@ -73,7 +73,7 @@ def test_a_range_is_cut_from_the_file(tone, shelf):
     assert a["path"] != b["path"] and open(a["path"], "rb").read() != open(b["path"], "rb").read()
 
 
-@pytest.mark.parametrize("start,end,fragment", [(0.0, 0.2, "too short"), (0.0, 200.0, "at most 90"), (5.9, 6.0, "too short")])
+@pytest.mark.parametrize("start,end,fragment", [(0.0, 0.2, "too short"), (0.0, 200.0, "at most 60"), (5.9, 6.0, "too short")])
 def test_unreasonable_ranges_are_refused_with_what_to_ask_instead(tone, shelf, start, end, fragment):
     out = spectro.make_spectrogram(tone, SHA, shelf, start, end, 400.0 if end > 100 else 6.0)
     assert out["ok"] is False and fragment in out["error"]

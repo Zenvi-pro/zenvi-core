@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from classes.media_index import spectro
+
 ENERGY_RANGES = {"low": (0.0, 0.4), "medium": (0.3, 0.7), "high": (0.6, 1.0)}
 BUILD_RISE = 0.15
 
@@ -25,6 +27,7 @@ def profile_from_audio(audio: Dict[str, Any], seconds: float) -> Dict[str, Any]:
         "energy_arc": music.get("arc", []), "arc_seconds": music.get("arc_seconds"),
         "sections": music.get("sections", []), "downbeats": (music.get("downbeats") or [])[:16],
         "phrase_points": (music.get("phrase_points") or [])[:16], "silence_ranges": (audio.get("silence_ranges") or [])[:8],
+        "spectrogramSuggested": spectro.suggest(music.get("sections", []), seconds),
     }
 
 

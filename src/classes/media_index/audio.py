@@ -21,7 +21,7 @@ from __future__ import annotations
 import math
 import re
 import subprocess
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -252,6 +252,11 @@ def per_second(values: np.ndarray, frame_hz: float = FRAME_HZ) -> np.ndarray:
 
 def novelty_boundaries(features: np.ndarray, min_gap: float = SECTION_MIN_SECONDS) -> List[int]:
     """Second indices where the music changes character (Foote's checkerboard novelty on a self-similarity matrix)."""
+    return [t for t, _strength in novelty_peaks(features, min_gap)]
+
+
+def novelty_peaks(features: np.ndarray, min_gap: float = SECTION_MIN_SECONDS) -> List[Tuple[int, float]]:
+    """Second indices where the music changes character, each with how far its novelty peak stands above the bar (1.0 = at the bar)."""
     t_len = features.shape[0]
     half = int(min_gap)
     if t_len < 4 * half:
@@ -270,10 +275,11 @@ def novelty_boundaries(features: np.ndarray, min_gap: float = SECTION_MIN_SECOND
     if live.size == 0 or live.std() < 1e-9:
         return []
     threshold = live.mean() + 0.8 * live.std()
-    peaks = [t for t in range(half, t_len - half) if nov[t] >= threshold and nov[t] == nov[max(0, t - half):t + half + 1].max()]
-    return peaks
+    return [(t, float(nov[t] / threshold)) for t in range(half, t_len - half) if nov[t] >= threshold and nov[t] == nov[max(0, t - half):t + half + 1].max()]
 
 
+RAMP_EDGE_CONFIDENCE = 0.4    # the start of a gradual build or fade is only roughly where it is, whatever the slope
+NOVELTY_SURE_EXTRA = 1.0      # a novelty peak this far above the bar (2x) is as sure as it gets
 RAMP_MIN_SECONDS = 8          # a build or a fade is at least this long
 RAMP_MIN_RISE = 0.35          # and moves the energy (0..1) at least this far
 RAMP_TOLERANCE = 0.06         # a ramp may dip this much and still be one
@@ -313,6 +319,20 @@ def ramp_boundaries(energy_by_second: np.ndarray) -> List[float]:
             else:
                 i += 1
     return sorted(set(out))
+
+
+def edge_confidence(source: str, strength: Optional[float]) -> float:
+    """How sure an edge between two sections is, 0 to 1: a sharp change is sure; a gradual ramp's start is only roughly where it is."""
+    if source == "ramp":
+        return RAMP_EDGE_CONFIDENCE
+    return round(min(1.0, max(0.0, (float(strength or 1.0) - 1.0) / NOVELTY_SURE_EXTRA)), 3)
+
+
+def merge_bounds_detailed(novelty: Sequence[Tuple[float, float]], ramps: List[float], min_gap: float = SECTION_MIN_SECONDS) -> List[Dict[str, Any]]:
+    """``merge_bounds`` that keeps where each edge came from: ``{"t", "source": "ramp" | "novelty", "confidence"}``."""
+    kept = merge_bounds([t for t, _ in novelty], ramps, min_gap)
+    strength = {float(t): s for t, s in novelty}
+    return [{"t": b, "source": ("ramp" if b in set(ramps) else "novelty"), "confidence": edge_confidence("ramp" if b in set(ramps) else "novelty", strength.get(b))} for b in kept]
 
 
 def merge_bounds(novelty: List[float], ramps: List[float], min_gap: float = SECTION_MIN_SECONDS) -> List[float]:
@@ -378,9 +398,11 @@ def music_profile(feat: Dict[str, np.ndarray], rms_db: np.ndarray, bpm: Optional
                 per_second(feat["flux"].astype(np.float64)), per_second(feat["low"].astype(np.float64))]
         n = min(c.size for c in cols)
         matrix = np.stack([c[:n] for c in cols], axis=1)
-        bounds = merge_bounds([float(b) for b in novelty_boundaries(matrix)], ramp_boundaries(energy[:n]))
-        bounds = [b for b in bounds if SECTION_MIN_SECONDS <= b <= n - SECTION_MIN_SECONDS]      # no sliver at either end of the track
-        sections = label_sections(bounds, energy[:n])
+        edges = merge_bounds_detailed([(float(t), s_) for t, s_ in novelty_peaks(matrix)], ramp_boundaries(energy[:n]))
+        edges = [e for e in edges if SECTION_MIN_SECONDS <= e["t"] <= n - SECTION_MIN_SECONDS]      # no sliver at either end of the track
+        sections = label_sections([e["t"] for e in edges], energy[:n])
+        for sec, edge in zip(sections[1:], edges):               # a section's confidence is that of the edge it starts at
+            sec["confidence"], sec["source"] = edge["confidence"], edge["source"]
         if sections:
             sections[-1]["end"] = round(float(duration), 2)
     downbeats: List[float] = []

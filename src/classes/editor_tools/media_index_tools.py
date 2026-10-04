@@ -461,18 +461,27 @@ def locate_in_footage(what, kind="auto", file_ids=None, start=None, end=None, li
         "file_id": string("Project file id.", ""),
         "file_query": string("Describe the file instead of an id (its name).", ""),
         "start": number("Start second (default: the beginning).", None, minimum=0),
-        "end": number("End second (default: 90 s after start at most).", None, minimum=0),
+        "end": number("End second (default: 60 s after start).", None, minimum=0),
+        "timeline": boolean("Look at the finished timeline's mixed sound instead of a file: start and end are then timeline seconds, the mix is "
+                            "rendered (not kept), and the levels of each clip over time come back as numbers.", False),
     }),
     read_only=True,
 )
-def view_audio(file_id="", file_query="", start=None, end=None):
-    """Draw a spectrogram of a stretch of a file's audio (up to 90 s) as a PNG you can look at: time across,
-    frequency up (logarithmic, 20 Hz to 11 kHz), brightness = loudness in dBFS, with labelled axes and a legend.
-    Use it to see what the audio is doing: steady tones and hum are horizontal lines, speech is stacked bands
-    that move, drums and impacts are vertical bars, music has regular repeating structure, silence is dark.
-    The time axis starts at 0 for the start of the strip. Returns the image path to open.
+def view_audio(file_id="", file_query="", start=None, end=None, timeline=False):
+    """Draw a spectrogram of a stretch of audio as a PNG you can look at: time across, frequency up (logarithmic, 20 Hz to 11 kHz),
+    brightness = loudness in dBFS, with labelled axes and a legend. NUMBERS FIRST: loudness, silence, beats, tempo, speech and
+    music sections are already in the dossier, search results, analyze_music_tool and review_edit_tool, and answer "find the quiet
+    part", "cut on the beat", "where does she speak", "where is the music loud". Use the picture only (1) where
+    spectrogramSuggested on analyze_music_tool says a section edge is uncertain and the edit depends on song structure, (2) to
+    compare takes or tracks, (3) to check a finished mix: with timeline=true it shows the rendered mix, and the numbers beside
+    it give each clip's level over time (does the music duck under the voice, does a cut jump in loudness). Do not use it to find
+    words, silence or beats: those are better as numbers. A range must be given; each strip covers at most 60 s and one call returns
+    at most 4. Steady tones and hum are horizontal lines, speech is stacked bands that move, drums are vertical bars, silence is dark.
+    The time axis of each strip starts at 0 at its start. Strips of a file are kept; a timeline render is not.
     """
     from classes.media_index import spectro
+    if timeline:
+        return _view_timeline_audio(start, end)
     f = resolve_files([file_id] if file_id else None, file_query)[0]
     sha = sha_of(f.data.get("fingerprint"))
     if not sha:
@@ -483,14 +492,86 @@ def view_audio(file_id="", file_query="", start=None, end=None):
     duration = float(source.get("duration") or (fi.duration if fi else 0.0) or f.data.get("duration") or 0.0)
     lo = float(start or 0.0)
     hi = float(end) if end is not None else min(duration or lo + spectro.MAX_SECONDS, lo + spectro.MAX_SECONDS)
+    try:
+        strips = spectro.plan_strips(lo, hi, duration)
+    except ValueError as exc:
+        raise ToolError(str(exc))
     from classes.path_utils import absolute_media_path
     path = absolute_media_path(f.data.get("path")) or str(f.data.get("path") or "")
-    out = spectro.make_spectrogram(path, sha, shelf, lo, hi, duration, has_audio=source.get("has_audio") is not False)
-    if not out["ok"]:
-        raise ToolError(out["error"])
-    return ok(f"spectrogram of {_display_name(f.data)} {out['start']:.1f}-{out['end']:.1f} s", file_id=str(f.id),
-              image_path=out["path"], start=out["start"], end=out["end"], cached=out["cached"],
-              axes="x = seconds from the strip start, y = Hz (log), colour = dBFS")
+    made = []
+    for a, b in strips:
+        out = spectro.make_spectrogram(path, sha, shelf, a, b, duration, has_audio=source.get("has_audio") is not False)
+        if not out["ok"]:
+            raise ToolError(out["error"])
+        made.append({"start": out["start"], "end": out["end"], "image_path": out["path"], "cached": out["cached"]})
+    head = f"spectrogram of {_display_name(f.data)} {made[0]['start']:.1f}-{made[-1]['end']:.1f} s" + (f" in {len(made)} strips" if len(made) > 1 else "")
+    return ok(head, file_id=str(f.id), image_path=made[0]["image_path"], strips=made, start=made[0]["start"], end=made[-1]["end"],
+              cached=all(m["cached"] for m in made), axes="x = seconds from each strip's start, y = Hz (log), colour = dBFS",
+              numbers_first="loudness, beats and sections are available as numbers (analyze_music_tool, get_segment_dossier_tool)")
+
+
+def _view_timeline_audio(start, end):
+    """The rendered timeline mix as spectrogram strips, with each clip's level over time as numbers."""
+    import os
+    from classes.editor_tools.media_index_tools_review import build_timeline, render_timeline_mix
+    from classes.media_index import review as R, spectro
+    if start is None or end is None:
+        raise ToolError("give start and end (timeline seconds) for the part of the mix to look at")
+    lo, hi = float(start), float(end)
+    try:
+        strips = spectro.plan_strips(lo, hi)
+    except ValueError as exc:
+        raise ToolError(str(exc))
+    clips, project, _objs = build_timeline()
+    hi_clamped = min(hi, project.duration) if project.duration else hi
+    if hi_clamped - lo < spectro.MIN_SECONDS:
+        raise ToolError("that range is past the end of the timeline")
+    path, why = render_timeline_mix(lo, hi_clamped)
+    if not path:
+        raise ToolError("could not render the mix: " + why)
+    made = []
+    try:
+        import tempfile
+        folder = tempfile.mkdtemp(prefix="zenvi_mixview_")
+        for a, b in plan_clamped(strips, hi_clamped):
+            png = os.path.join(folder, f"mix_{int(a * 1000)}_{int(b * 1000)}.png")
+            ok_, err = spectro.draw_strip(path, a - lo, b - lo, png)
+            if not ok_:
+                raise ToolError(err)
+            made.append({"start": a, "end": b, "image_path": png, "cached": False})
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    cache: dict = {}
+
+    def index_for(c):
+        if c.sha not in cache:
+            cache[c.sha] = library.get_file_index(default_shelf(), c.sha, file_id=c.file_id, name=c.name) if c.sha else None
+        return cache[c.sha]
+
+    levels = []
+    for c in clips:
+        if not c.has_audio or c.end <= lo or c.start >= hi_clamped or c.length <= 0:
+            continue
+        seconds = []
+        t = max(lo, c.start)
+        while t < min(hi_clamped, c.end) and len(seconds) < 120:
+            t2 = min(t + 1.0, c.end, hi_clamped)
+            base = R.source_level_db(c, index_for(c), c.to_source(t), c.to_source(t2))
+            seconds.append({"t": round(t, 2), "db": None if base is None else round(base + c.gain_over(t, t2), 1)})
+            t = t2
+        levels.append({"clip": c.id, "name": c.name, "role": c.role, "per_second": seconds, "volume_automated": c.gain_fn is not None})
+    return ok(f"spectrogram of the timeline mix {made[0]['start']:.1f}-{made[-1]['end']:.1f} s with the level of {len(levels)} clip(s) over time",
+              image_path=made[0]["image_path"], strips=made, levels=levels[:12], start=made[0]["start"], end=made[-1]["end"], cached=False,
+              axes="x = seconds from each strip's start, y = Hz (log), colour = dBFS",
+              numbers_first="read the levels as numbers (dB, source level plus the gain set); the picture shows what the mix looks like, not how loud each part is")
+
+
+def plan_clamped(strips, hi):
+    """The planned strips cut to the end of the timeline."""
+    return [(a, min(b, hi)) for a, b in strips if a < hi]
 
 
 # ---------------------------------------------------------------------------
