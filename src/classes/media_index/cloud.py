@@ -171,13 +171,23 @@ def v1_metadata_from_v2(watch: Dict[str, Any], speech: Optional[Dict[str, Any]],
 
 
 # ============================ proxy and keyframes (ffmpeg) ============================
-def make_proxy(path: str, probe: Dict[str, Any], out_path: str) -> Tuple[bool, str]:
-    """A small copy of a video for the watch pass: 480 px high, 15 fps, mono 48k audio."""
+def make_proxy(path: str, probe: Dict[str, Any], out_path: str, start: Optional[float] = None,
+               end: Optional[float] = None) -> Tuple[bool, str]:
+    """A small copy of a video for the watch pass: 480 px high, 15 fps, mono 48k audio.
+
+    With *start* and *end* only that stretch is copied (its time starts at 0), for long files done in chunks.
+    """
     video = (probe or {}).get("video") or {}
     height = int(video.get("height") or 0)
     scale = f"scale=-2:{S.PROXY_HEIGHT}," if height > S.PROXY_HEIGHT or height <= 0 else ""
-    cmd = ["ffmpeg", "-nostdin", "-y", "-hide_banner", "-loglevel", "error", "-i", path, "-map", "0:v:0", "-map", "0:a:0?",
-           "-map_metadata", "-1", "-map_chapters", "-1",     # never upload the clip's GPS, device or date tags
+    window: List[str] = []
+    if start:
+        window += ["-ss", f"{max(0.0, float(start)):.3f}"]
+    cmd = ["ffmpeg", "-nostdin", "-y", "-hide_banner", "-loglevel", "error", *window, "-i", path]
+    if end is not None:
+        cmd += ["-t", f"{max(0.1, float(end) - float(start or 0.0)):.3f}"]
+    cmd += ["-map", "0:v:0", "-map", "0:a:0?",
+            "-map_metadata", "-1", "-map_chapters", "-1",     # never upload the clip's GPS, device or date tags
            "-vf", f"{scale}fps=15,format=yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
            "-c:a", "aac", "-b:a", "48k", "-ac", "1", "-movflags", "+faststart", out_path]
     try:
@@ -229,21 +239,22 @@ def _wait_for_job(client: Any, session: Any, job_id: str, should_cancel: Optiona
     return {"error": f"{what} timed out"}
 
 
-def run_watch(client: Any, path: str, probe: Dict[str, Any], file_id: str, structure: Dict[str, Any],
-              speech: Optional[Dict[str, Any]], *, should_cancel: Optional[Callable[[], bool]] = None,
-              on_progress: Optional[Callable[[float], None]] = None, uploader: Optional[Callable[..., Any]] = None
-              ) -> Dict[str, Any]:
-    """Describe every shot of a video. Returns ``{"shots", "usage", ...}`` or ``{"error": ..., "unsupported"?}``."""
-    from classes.gemini_direct_upload import upload_file_to_gemini_resumable
+PASS_UP = ("error", "unsupported", "auth", "credits", "rate_limited", "forbidden", "retry_after")
 
-    uploader = uploader or upload_file_to_gemini_resumable
-    shots = watch_request_shots(structure, speech)
-    if not shots:
-        return {"error": "no shots to describe"}
+
+def _watch_window(client: Any, path: str, probe: Dict[str, Any], file_id: str, shots: List[Dict[str, Any]],
+                  transcript: List[Dict[str, Any]], *, start: Optional[float], end: Optional[float],
+                  should_cancel: Optional[Callable[[], bool]], on_progress: Optional[Callable[[float], None]],
+                  uploader: Callable[..., Any]) -> Dict[str, Any]:
+    """Describe *shots* from a proxy of the whole file, or of [start, end) when given (then times are shifted to match)."""
+    offset = float(start or 0.0)
+    request = [{**s, "start": s["start"] - offset, "end": s["end"] - offset} for s in shots] if offset else shots
+    rows = ([{**r, "start": r["start"] - offset, "end": r["end"] - offset} for r in transcript
+             if r["end"] > offset and (end is None or r["start"] < end)] if offset or end is not None else transcript)
     session = client._new_http_session()
     with tempfile.TemporaryDirectory(prefix="zenvi_watch_") as tmp:
         proxy = os.path.join(tmp, "proxy.mp4")
-        ok, err = make_proxy(path, probe, proxy)
+        ok, err = make_proxy(path, probe, proxy, start, end)
         if not ok:
             return {"error": f"could not make the proxy: {err}"}
         if should_cancel and should_cancel():
@@ -252,20 +263,104 @@ def run_watch(client: Any, path: str, probe: Dict[str, Any], file_id: str, struc
             on_progress(0.15)
         sess = client.v2_upload_session(file_id, os.path.basename(path) or "proxy.mp4", os.path.getsize(proxy), "video/mp4", session=session)
         if sess.get("error") or not sess.get("upload_url"):
-            return {k: v for k, v in sess.items() if k in ("error", "unsupported", "auth", "credits", "rate_limited", "forbidden", "retry_after")} or {"error": "no upload url"}
+            return {k: v for k, v in sess.items() if k in PASS_UP} or {"error": "no upload url"}
         info, up_err = uploader(proxy, sess["upload_url"], mime_type="video/mp4")
         if up_err:
             return {"error": f"upload failed: {up_err}"}
         if on_progress:
             on_progress(0.4)
-    started = client.v2_understand(info.get("name", ""), info.get("uri", ""), shots, transcript_rows(speech), session=session)
+    started = client.v2_understand(info.get("name", ""), info.get("uri", ""), request, rows, session=session)
     if started.get("error") or not started.get("job_id"):
-        return {k: v for k, v in started.items() if k in ("error", "unsupported", "auth", "credits", "rate_limited", "forbidden", "retry_after")} or {"error": "the backend did not start the job"}
+        return {k: v for k, v in started.items() if k in PASS_UP} or {"error": "the backend did not start the job"}
     result = _wait_for_job(client, session, started["job_id"], should_cancel,
                            on_tick=(lambda f: on_progress(0.4 + 0.6 * f)) if on_progress else None)
     if on_progress:
         on_progress(1.0)
+    if offset and result.get("shots"):
+        original = {int(s["id"]): s for s in shots}
+        for shot in result["shots"]:
+            src = original.get(int(shot.get("id", -1)))
+            if src:
+                shot["start"], shot["end"] = float(src["start"]), float(src["end"])
     return result
+
+
+def run_watch(client: Any, path: str, probe: Dict[str, Any], file_id: str, structure: Dict[str, Any],
+              speech: Optional[Dict[str, Any]], *, should_cancel: Optional[Callable[[], bool]] = None,
+              on_progress: Optional[Callable[[float], None]] = None, uploader: Optional[Callable[..., Any]] = None,
+              resume: Optional[Tuple[Shelf, str]] = None) -> Dict[str, Any]:
+    """Describe every shot of a video. Returns ``{"shots", "usage", ...}`` or ``{"error": ..., "unsupported"?}``.
+
+    A file longer than ``longfile.LONG_SECONDS`` is described in chunks (see ``run_watch_chunked``); *resume* is the
+    shelf and fingerprint its finished chunks are kept under.
+    """
+    from classes.gemini_direct_upload import upload_file_to_gemini_resumable
+    from classes.media_index import longfile
+
+    uploader = uploader or upload_file_to_gemini_resumable
+    shots = watch_request_shots(structure, speech)
+    if not shots:
+        return {"error": "no shots to describe"}
+    if longfile.is_long(float((probe or {}).get("duration") or max(float(s["end"]) for s in shots))):
+        return run_watch_chunked(client, path, probe, file_id, shots, transcript_rows(speech), should_cancel=should_cancel,
+                                 on_progress=on_progress, uploader=uploader, resume=resume)
+    return _watch_window(client, path, probe, file_id, shots, transcript_rows(speech), start=None, end=None,
+                         should_cancel=should_cancel, on_progress=on_progress, uploader=uploader)
+
+
+def run_watch_chunked(client: Any, path: str, probe: Dict[str, Any], file_id: str, shots: List[Dict[str, Any]],
+                      transcript: List[Dict[str, Any]], *, should_cancel: Optional[Callable[[], bool]] = None,
+                      on_progress: Optional[Callable[[float], None]] = None, uploader: Callable[..., Any],
+                      resume: Optional[Tuple[Shelf, str]] = None) -> Dict[str, Any]:
+    """Describe a long file one chunk at a time, keeping each finished chunk so an interrupted run carries on.
+
+    Chunks are cut between shots. Each chunk is its own proxy, upload and cloud job (and is charged on its own by the
+    backend), so a failure at chunk 5 never repeats chunks 1 to 4. The result has the shape of ``run_watch``.
+    """
+    from classes.media_index import longfile
+
+    chunks = longfile.plan_chunks(shots)
+    plan = [[c["index"], round(c["start"], 3), round(c["end"], 3), len(c["shot_ids"])] for c in chunks]
+    version = S.LAYER_VERSIONS[S.LAYER_WATCH]
+    saved: Dict[str, Any] = {}
+    if resume:
+        shelf, sha = resume
+        found = shelf.read_json(sha, "watch_partial.json") or {}
+        if found.get("plan") == plan and found.get("version") == version:        # same footage, same cut: reuse what finished
+            saved = found.get("done") or {}
+    done: Dict[str, Any] = dict(saved)
+    by_id = {int(s["id"]): s for s in shots}
+    for chunk in chunks:
+        key = str(chunk["index"])
+        if key in done:
+            continue
+        if should_cancel and should_cancel():
+            raise Cancelled()
+        lo, hi = chunk["index"] / len(chunks), (chunk["index"] + 1) / len(chunks)
+        part = _watch_window(
+            client, path, probe, file_id, [by_id[i] for i in chunk["shot_ids"]], transcript, start=chunk["start"], end=chunk["end"],
+            should_cancel=should_cancel, on_progress=(lambda f, lo=lo, hi=hi: on_progress(lo + (hi - lo) * f)) if on_progress else None,
+            uploader=uploader)
+        if part.get("error") or not part.get("shots"):
+            fail = {k: v for k, v in part.items() if k in PASS_UP}
+            fail["error"] = f"chunk {chunk['index'] + 1} of {len(chunks)}: " + str(fail.get("error") or "no descriptions came back")
+            return fail
+        done[key] = {"shots": part["shots"], "usage": part.get("usage") or {}}
+        if resume:
+            resume[0].write_json(resume[1], "watch_partial.json", {"plan": plan, "version": version, "done": done})
+    merged = [shot for chunk in chunks for shot in done[str(chunk["index"])]["shots"]]
+    usage = {"prompt_tokens": 0, "output_tokens": 0, "batches": 0, "model": None, "chunks": len(chunks)}
+    for part in done.values():
+        u = part["usage"]
+        usage["prompt_tokens"] += int(u.get("prompt_tokens") or 0)
+        usage["output_tokens"] += int(u.get("output_tokens") or 0)
+        usage["batches"] += int(u.get("batches") or 0)
+        usage["model"] = u.get("model") or usage["model"]
+    if resume:
+        resume[0].write_json(resume[1], "watch_partial.json", {})
+    if on_progress:
+        on_progress(1.0)
+    return {"shots": merged, "usage": usage, "missing": sum(1 for s in merged if s.get("missing")), "errors": []}
 
 
 def embed_in_batches(client: Any, items: List[Dict[str, Any]], *, dims: int = S.EMBED_DIMS, task_type: Optional[str] = None,
@@ -331,7 +426,7 @@ def compute_cloud(client: Any, path: str, probe: Dict[str, Any], sha: str, shelf
         watch = shelf.read_json(sha, "watch.json")
     else:
         result = run_watch(client, path, probe, file_id or sha[:12], structure, speech, should_cancel=should_cancel,
-                           on_progress=report(0.0, 0.6), uploader=uploader)
+                           on_progress=report(0.0, 0.6), uploader=uploader, resume=(shelf, sha))
         if result.get("error") or not result.get("shots"):
             fail = {k: result[k] for k in ("error", "unsupported", "auth", "credits", "rate_limited", "forbidden", "retry_after") if k in result}
             fail["layers"] = layers

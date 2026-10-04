@@ -142,6 +142,7 @@ CAPABILITIES = [
     ("index.dossier", "media-index", "Scene Descriptions dock", "Read everything the index knows about a file or range as compact text"),
     ("index.look", "media-index", "Color scopes / grading", "Read a file's or range's measured look without rendering"),
     ("index.status", "media-index", "Indexing badges", "Per-file index layer status"),
+    ("index.long_file", "media-index", "Project Files", "Approve describing a file over 30 minutes after seeing the passes and the cost ceiling"),
     ("index.match", "media-index", "Recreate a reference from footage", "Match a reference's shots to project footage with cut windows, gaps and stock queries"),
     ("index.locate", "media-index", "Masking / object tools", "Find an object or on-screen text with time and rough position"),
     ("index.review", "media-index", "Export checklist", "Audit the finished edit: what still needs doing, with measured evidence"),

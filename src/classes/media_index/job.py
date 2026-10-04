@@ -10,9 +10,43 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict
+import threading
+from contextlib import contextmanager
+from typing import Any, Callable, Dict, Iterator, Tuple
 
 from classes.logger import log
+
+_FLIGHTS_LOCK = threading.Lock()
+_FLIGHTS: Dict[str, Tuple[threading.Lock, int]] = {}
+
+
+@contextmanager
+def single_flight(key: str, cancelled: Callable[[], bool] = lambda: False, poll: float = 0.2) -> Iterator[bool]:
+    """Let one thread at a time work on *key* (a file's fingerprint); the others wait their turn.
+
+    Two workers handed the same footage (two copies in one import, or the same file in two projects) would each pay for
+    the same cloud analysis. The second waits, then finds the first one's result on the shelf and reuses it. Yields True
+    once it holds the turn, or False when this job was cancelled while waiting.
+    """
+    with _FLIGHTS_LOCK:
+        lock, users = _FLIGHTS.get(key) or (threading.Lock(), 0)
+        _FLIGHTS[key] = (lock, users + 1)
+    held = False
+    try:
+        while not held:
+            held = lock.acquire(timeout=poll)
+            if not held and cancelled():
+                break
+        yield held
+    finally:
+        if held:
+            lock.release()
+        with _FLIGHTS_LOCK:
+            lock, users = _FLIGHTS[key]
+            if users <= 1:
+                del _FLIGHTS[key]
+            else:
+                _FLIGHTS[key] = (lock, users - 1)
 
 
 class IndexingJob:
@@ -66,6 +100,52 @@ class IndexingJob:
             )
         except Exception as exc:  # includes facts.Cancelled
             log.info("Local media analysis stopped for %s: %s", file_path, exc)
+
+    def _long_file_needs_approval(self, file_path, duration, metadata) -> bool:
+        """True (with the reason and the cost estimate written into *metadata*) when a file over 30 minutes must not go on.
+
+        With media index v2 on, a long file can be described in chunks, but only after the user approved it (the file
+        carries ``index_long_ok``): it takes a while and uses the cloud. Everything else keeps the original 30-minute limit.
+        """
+        import os
+        from classes.media_index import longfile
+        from classes.media_index.flags import v2_enabled
+        name = os.path.basename(file_path) or "This file"
+        if v2_enabled() and not self.summarize_only:
+            if self.file_data.get("index_long_ok"):
+                return False
+            from classes.indexing_status import SKIP_LONG
+            metadata["skip_reason"] = longfile.approval_text(name, duration)
+            metadata["skip_code"] = SKIP_LONG
+            return True
+        log.warning("Skipping indexing+summarize for %s: duration %.0fs > 30-minute limit.", file_path, duration)
+        metadata["skip_reason"] = (f"Clip duration {duration / 60:.1f} min exceeds the 30-minute limit. "
+                                   "Indexing and description generation were skipped.")
+        return True
+
+    def _flight_key(self, file_path):
+        """The fingerprint to take a turn on, or None when the file has none (then there is nothing to share)."""
+        from classes.media_index.flags import v2_enabled
+        return self._fingerprint_sha(file_path) if v2_enabled() else None
+
+    def _run_local_facts_once(self, file_path, media_type, file_id):
+        key = self._flight_key(file_path)
+        if not key:
+            return self._run_local_facts(file_path, media_type, file_id)
+        with single_flight(key, lambda: self._cancelled) as turn:
+            if turn:
+                self._run_local_facts(file_path, media_type, file_id)
+
+    def _try_v2_once(self, client, file_path, media_type, duration, file_id, index_name, metadata):
+        """``_try_v2`` with one job at a time per fingerprint. A cancelled wait returns True (the caller then reports it)."""
+        key = self._flight_key(file_path)
+        if not key:
+            return self._try_v2(client, file_path, media_type, duration, file_id, index_name, metadata)
+        with single_flight(key, lambda: self._cancelled) as turn:
+            if not turn:
+                self._completed(self.file_data, metadata, None)
+                return True
+            return self._try_v2(client, file_path, media_type, duration, file_id, index_name, metadata)
 
     def _v2_index_block(self, index_name, file_id, media_type, sha):
         block = {"status": "ready", "index_id": index_name, "index_name": index_name, "video_id": file_id,
@@ -190,20 +270,13 @@ class IndexingJob:
                 media_type = get_media_type(self.file_data) if self.file_data else "video"
             if media_type in ("video", "image", "audio"):
 
-                self._run_local_facts(file_path, media_type, file_id)
+                self._run_local_facts_once(file_path, media_type, file_id)
                 if self._cancelled:
                     self._completed(self.file_data, metadata, None)
                     return
                 duration = float(self.file_data.get("duration") or 0)
-                if media_type != "image" and duration > self._MAX_INDEXING_SECONDS:
-                    log.warning(
-                        "Skipping indexing+summarize for %s: duration %.0fs > 30-minute limit.",
-                        file_path, duration,
-                    )
-                    metadata["skip_reason"] = (
-                        f"Clip duration {duration / 60:.1f} min exceeds the 30-minute limit. "
-                        "Indexing and description generation were skipped."
-                    )
+                too_long = media_type != "image" and duration > self._MAX_INDEXING_SECONDS
+                if too_long and self._long_file_needs_approval(file_path, duration, metadata):
                     self._completed(self.file_data, metadata, None)
                     return
 
@@ -214,8 +287,16 @@ class IndexingJob:
                 index_name = build_project_index_name(self.project_id)
 
                 from classes.media_index.flags import v2_enabled
-                if not self.summarize_only and v2_enabled() and self._try_v2(
+                if not self.summarize_only and v2_enabled() and self._try_v2_once(
                         client, file_path, media_type, duration, file_id, index_name, metadata):
+                    return
+                if self._cancelled:
+                    self._completed(self.file_data, metadata, None)
+                    return
+                if too_long:       # the original indexing cannot take a long file: nothing else to try
+                    metadata["skip_reason"] = (f"Clip duration {duration / 60:.1f} min exceeds the 30-minute limit of the original "
+                                               "indexing. Indexing and description generation were skipped.")
+                    self._completed(self.file_data, metadata, None)
                     return
 
                 indexing_configured = client.is_indexing_configured()
@@ -441,13 +522,14 @@ class IndexingJob:
     # -- media index shelf ---------------------------------------------------------
     @staticmethod
     def _signed_in():
-        """True when a Zenvi session exists. Unknown counts as signed in: the credit
-        check that follows then reports the real problem."""
+        """True when a Zenvi session exists. When that cannot be told, the answer is no: the file is then
+        queued again on sign-in, instead of running unauthenticated cloud work that the backend will refuse."""
         try:
             from classes.auth_manager import AuthManager
             return bool(AuthManager.instance().is_authenticated())
         except Exception:
-            return True
+            log.warning("Could not tell whether a Zenvi session exists; treating as signed out", exc_info=True)
+            return False
 
     def _fingerprint_sha(self, file_path):
         """sha256 fingerprint key of the file (stamped on import; computed here if missing)."""

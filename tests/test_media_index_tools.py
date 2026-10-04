@@ -396,3 +396,23 @@ def test_an_audio_only_file_with_just_an_audio_analysis_counts_as_indexed(env):
     found, missing = T.project_indexes()
     assert "M9" in [f.file_id for f in found] and "song.mp3" not in missing
     assert "new.mp4" in missing, "a file with no index at all is still reported as not indexed"
+
+
+# -- which files only the original index can find ---------------------------------------
+def test_v1_only_files_are_the_ones_with_an_original_index_and_no_local_vectors(monkeypatch):
+    from classes.media_index import flags
+    from classes.editor_tools import media_index_tools as MT
+    from classes import twelvelabs_match as tm
+    ready = {"index": {"status": "ready", "index_id": "i", "video_id": "v"}}
+
+    def f(fid, ai, mt="video"):
+        return SimpleNamespace(id=fid, data={"media_type": mt, "ai_metadata": ai})
+
+    files = [f("old", ready), f("covered", ready), f("none", {}), f("pic", ready, "image"), f("song", ready, "audio")]
+    monkeypatch.setattr(MT, "_all_files", lambda: files)
+    monkeypatch.setattr(MT, "_index_for", lambda fo, shelf=None: SimpleNamespace(layers={"vectors": fo.id == "covered"}))
+    monkeypatch.setattr(flags, "v2_enabled", lambda: True)
+    assert MT.v1_only_file_ids() == {"old", "song"}, "images are not searched by the original index; a file with no index at all is not offered"
+    monkeypatch.setattr(flags, "v2_enabled", lambda: False)
+    assert MT.v1_only_file_ids() == set()
+    assert tm.twelvelabs_is_indexed(tm.get_index_block(ready)) is True

@@ -18,6 +18,7 @@ SKIPPED = "skipped"
 
 # ``skip_code`` values the indexing worker records next to ``skip_reason``.
 SKIP_SIGNIN = "signin"
+SKIP_LONG = "long_file"      # over 30 minutes: waits for the user to approve describing it (shows the cost estimate)
 
 PHASE_LABELS = {
     "analyzing": "Analyzing shots, colour and sound…",
@@ -99,6 +100,8 @@ def derive_indexing_status(
             SKIPPED, "Sign in to index",
             skip_reason or "Sign in to Zenvi to index this file for search",
         )
+    if str(meta.get("skip_code") or "") == SKIP_LONG:
+        return IndexingStatus(SKIPPED, "Approval needed", skip_reason or "This long file needs your approval before it is described.")
     if skip_reason or block_status == "skipped":
         tooltip = skip_reason or str(block.get("error") or "").strip() or "Indexing skipped"
         return IndexingStatus(SKIPPED, "Indexing skipped", tooltip)

@@ -10,9 +10,9 @@ import base64
 
 import numpy as np
 
-from classes.editor_tools._base import ToolError, array, boolean, enum, integer, mapping, number, obj, ok, string
+from classes.editor_tools._base import ToolError, array, boolean, enum, get_app, integer, mapping, number, obj, ok, on_main, string
 from classes.editor_tools._registry import editor_tool
-from classes.editor_tools.media_files import _display_name, resolve_files
+from classes.editor_tools.media_files import FILE_TARGET, _display_name, resolve_files
 from classes.logger import log
 from classes.media_index import library, schema as S, search as msearch
 from classes.media_index.dossier import build_dossier
@@ -311,6 +311,72 @@ def index_status(file_ids=None, only_incomplete=False):
 
 
 @editor_tool(
+    "index_long_file_tool",
+    covers=("index.long_file",),
+    label="Describe a long file",
+    schema=obj({
+        **FILE_TARGET,
+        "approve": boolean("Say yes: describe the file for search now. Leave false to only see what it would involve and cost.", False),
+    }),
+)
+def index_long_file(file_ids=None, file_query="", approve=False):
+    """Files longer than 30 minutes are analysed on this computer (shots, colour, sound) but are only described by the
+    AI after a yes, because describing one takes several cloud passes and uses credits. Call with approve=false to see
+    how many passes and the most it can cost (a ceiling: the real charge follows what the AI used and is usually lower);
+    ask the user; then call with approve=true. Each pass is charged on its own, so an interrupted run never repays what
+    already finished. Needs media-index-v2 on.
+    """
+    from classes.indexing_status import SKIP_LONG
+    from classes.media_index import longfile
+    from classes.media_index.flags import v2_enabled
+    if not v2_enabled():
+        raise ToolError("long files can only be described with media-index-v2 turned on (Preferences)")
+    shelf = default_shelf()
+    rows, to_queue = [], []
+    for f in resolve_files(file_ids, file_query):
+        data = f.data
+        kind = str(data.get("media_type") or "video")
+        duration = float(data.get("duration") or 0.0)
+        row = {"file_id": str(f.id), "name": _display_name(data), "media_type": kind, "duration_seconds": round(duration, 1)}
+        sha = sha_of(data.get("fingerprint"))
+        if kind not in ("video", "audio"):
+            row.update(state="not_applicable", note="only video and audio files are described")
+        elif not longfile.is_long(duration):
+            row.update(state="not_long", note="under 30 minutes: indexed without asking")
+        elif not sha:
+            row.update(state="not_ready", note="the file has no fingerprint yet; wait for import to finish")
+        else:
+            row.update(longfile.estimate(duration))
+            if shelf.layer_ready(sha, S.LAYER_WATCH):
+                row.update(state="described", note="already described")
+            elif data.get("index_long_ok") and not approve:
+                row.update(state="approved", note="already approved; it is queued or running (see index_status_tool)")
+            else:
+                waiting = (data.get("ai_metadata") or {}).get("skip_code") == SKIP_LONG
+                row.update(state="will_describe" if approve else "needs_approval", waiting=waiting)
+                if approve:
+                    to_queue.append(f)
+        rows.append(row)
+
+    def queue():
+        files_model = get_app().window.files_model
+        for f in to_queue:
+            f.data["index_long_ok"] = True
+            f.save()
+            files_model._enqueue_index(str(f.id))
+
+    if to_queue:
+        on_main(queue)
+    if approve:
+        head = f"Queued {len(to_queue)} long file(s) to be described." if to_queue else "Nothing to queue."
+    else:
+        asking = [r for r in rows if r["state"] == "needs_approval"]
+        head = (f"{len(asking)} file(s) need a yes: " + "; ".join(f"{r['name']} ({r['minutes']} min, {r['chunks']} passes, up to {r['max_credits']} credits)" for r in asking)
+                if asking else "No long file is waiting for approval.")
+    return ok(head, changed=bool(to_queue), files=rows, ceiling_note="max_credits is a flat ceiling per minute; the real charge follows token use")
+
+
+@editor_tool(
     "match_reference_tool",
     covers=("index.match",),
     label="Match reference",
@@ -449,6 +515,29 @@ def _v2_files():
     files, missing = project_indexes()
     files = [f for f in files if f.layers.get(S.LAYER_VECTORS)]
     return (files or None), len(missing)
+
+
+def v1_only_file_ids():
+    """Ids of project media that the local index cannot search by meaning but the original project index can.
+
+    With the preference on, ``search_clips_tool`` answers from the local index; footage indexed before the switch (or on
+    another machine) has only the original index, and would otherwise vanish from search. Empty when the preference is off.
+    """
+    from classes.media_index.flags import v2_enabled
+    if not v2_enabled():
+        return set()
+    from classes.twelvelabs_match import get_index_block, twelvelabs_is_indexed
+    shelf = default_shelf()
+    out = set()
+    for f in _all_files():
+        if str(f.data.get("media_type") or "video") not in ("video", "audio"):
+            continue
+        fi = _index_for(f, shelf)
+        if fi is not None and fi.layers.get(S.LAYER_VECTORS):
+            continue
+        if twelvelabs_is_indexed(get_index_block(f.data.get("ai_metadata") or {})):
+            out.add(str(f.id))
+    return out
 
 
 def legacy_search_clips(query, k, look_for="", nth=0):

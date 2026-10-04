@@ -56,8 +56,8 @@ class Harness:
         self.sha = fingerprint(str(self.media))["sha256"]
 
     def run(self, *, file_id="f1", project="p1", duration=30.0, media_type="video", summarize_only=False,
-            existing_ai=None, with_fingerprint=True, path=None):
-        data = {"id": file_id, "path": path or str(self.media), "media_type": media_type, "duration": duration}
+            existing_ai=None, with_fingerprint=True, path=None, extra=None):
+        data = {"id": file_id, "path": path or str(self.media), "media_type": media_type, "duration": duration, **(extra or {})}
         if with_fingerprint:
             data["fingerprint"] = fingerprint(data["path"])
         if existing_ai is not None:
@@ -290,7 +290,7 @@ def test_a_clip_over_the_cloud_cap_is_still_analysed_locally(monkeypatch, tmp_pa
     calls = _facts_calls(monkeypatch, enabled=True)
     h = Harness(monkeypatch, tmp_path)
     meta, _ = h.run(duration=45 * 60.0)
-    assert len(calls) == 1 and "30-minute" in meta["skip_reason"]
+    assert len(calls) == 1 and meta["skip_code"] == "long_file" and "Approve it with index_long_file_tool" in meta["skip_reason"]
     h.client.start_direct_indexing_job.assert_not_called()
 
 
@@ -478,3 +478,100 @@ def test_a_settled_song_is_not_sent_to_the_cloud_again_even_signed_out(monkeypat
     meta, _ = h.run(media_type="audio", duration=40.0)
     assert calls == [] and h.charges == [] and meta["index"]["status"] == "ready" and meta["analyzed"] is True
     assert meta.get("skip_code") != "signin", "a finished file does not ask to sign in"
+
+
+# -- one indexer per fingerprint: the same footage is never analysed (or paid for) twice at once -----------
+def test_two_jobs_for_the_same_footage_pay_for_one_analysis(monkeypatch, tmp_path):
+    import threading
+    import time
+    from classes.media_index import cloud, job as jobmod
+    h, calls = _v2(monkeypatch, tmp_path, result={"layers": {"watch": "ready", "vectors": "ready"}})
+    inner = cloud.compute_cloud
+    gate, inside = threading.Event(), threading.Event()
+
+    def slow(*a, **k):
+        inside.set()
+        gate.wait(10)
+        return inner(*a, **k)
+
+    monkeypatch.setattr(cloud, "compute_cloud", slow)
+    out = {}
+
+    def run(name, file_id, project):
+        out[name] = h.run(file_id=file_id, project=project, duration=6.0)[0]
+
+    first = threading.Thread(target=run, args=("a", "f1", "p1"))
+    first.start()
+    assert inside.wait(10)
+    second = threading.Thread(target=run, args=("b", "f2", "p2"))
+    second.start()
+    deadline = time.time() + 10
+    while time.time() < deadline and jobmod._FLIGHTS.get(h.sha, (None, 0))[1] < 2:
+        time.sleep(0.01)
+    assert jobmod._FLIGHTS[h.sha][1] == 2, "the second job is waiting for the first"
+    gate.set()
+    first.join(10)
+    second.join(10)
+    assert len(calls) == 1, "one cloud analysis for the same content"
+    assert out["a"]["index"]["video_id"] == "f1" and out["b"]["index"]["video_id"] == "f2"
+    assert out["b"]["index"]["index_id"] == "zenvi-p2" and out["b"]["chapters"], "the second job reused the first one's result under its own ids"
+    assert jobmod._FLIGHTS == {}, "no turn is left behind"
+
+
+def test_footage_with_different_content_does_not_wait_for_each_other():
+    import threading
+    from classes.media_index.job import single_flight
+    order = []
+    release = threading.Event()
+
+    def hold(key):
+        with single_flight(key) as turn:
+            order.append((key, turn))
+            release.wait(5)
+
+    t = threading.Thread(target=hold, args=("aaa",))
+    t.start()
+    while not order:
+        pass
+    with single_flight("bbb") as turn:
+        assert turn is True, "another fingerprint is free to go at once"
+    release.set()
+    t.join(5)
+
+
+def test_a_job_cancelled_while_waiting_for_its_turn_gives_up_and_leaves_no_trace():
+    import threading
+    from classes.media_index import job as jobmod
+    started, release = threading.Event(), threading.Event()
+
+    def hold():
+        with jobmod.single_flight("ccc"):
+            started.set()
+            release.wait(5)
+
+    t = threading.Thread(target=hold)
+    t.start()
+    assert started.wait(5)
+    with jobmod.single_flight("ccc", cancelled=lambda: True, poll=0.01) as turn:
+        assert turn is False
+    release.set()
+    t.join(5)
+    assert jobmod._FLIGHTS == {}
+
+
+def test_when_it_cannot_be_told_whether_a_user_is_signed_in_the_answer_is_no(monkeypatch):
+    from classes import auth_manager
+
+    class Broken:
+        @staticmethod
+        def instance():
+            raise RuntimeError("keychain locked")
+
+    monkeypatch.setattr(auth_manager, "AuthManager", Broken)
+    assert IndexingJob._signed_in() is False
+
+
+def test_a_signed_in_user_is_signed_in(monkeypatch):
+    from classes import auth_manager
+    monkeypatch.setattr(auth_manager, "AuthManager", type("A", (), {"instance": staticmethod(lambda: MagicMock(is_authenticated=lambda: True))}))
+    assert IndexingJob._signed_in() is True
