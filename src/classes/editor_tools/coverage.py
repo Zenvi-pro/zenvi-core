@@ -146,6 +146,7 @@ CAPABILITIES = [
     ("index.health", "media-index", "Project Files", "What about the footage will cause trouble: variable frame rate, interlacing, HDR, frame rate and size that do not fit the project"),
     ("index.context", "media-index", "Timeline", "What is under, above and around a clip, and what a delete, trim or lengthen would move"),
     ("index.frames", "media-index", "Preview / storyboard", "Frames of a range as one readable picture, each stamped with its exact time and frame, at two zoom levels"),
+    ("index.moment", "media-index", "Preview / storyboard", "Everything about one range of a file in one bounded call: frames, shots, words, quality and look, timeline context"),
     ("index.style", "media-index", "Recreate a reference from footage", "A finished video's pacing, transitions, motion, beat alignment, speech, loudness, look and text, and where the timeline differs"),
     ("index.framing", "media-index", "Project profile / reframe", "Where the subject of a shot is and where a crop window of another shape should sit to keep it in shot"),
     ("index.reframe", "media-index", "Project profile / reframe", "Fill the frame with footage of another shape and keep the subject in shot, in one undo step"),

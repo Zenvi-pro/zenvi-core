@@ -11,6 +11,7 @@ from classes.editor_tools._base import ToolError, array, boolean, enum, get_app,
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.media_files import FILE_TARGET, _display_name, resolve_files
 from classes.editor_tools.media_index_tools import _all_files, _index_for
+from classes.logger import log
 from classes.media_index import context, health
 from classes.media_index.facts import technical_of
 from classes.media_index.probe import probe_media
@@ -610,11 +611,17 @@ def view_frames(start_seconds, end_seconds, file_ids=None, file_query="", per_se
     it to look). Tiles are 320 px wide by default: small things like a logo or a screen need that much. Measured from the
     original file; the picture is kept on the shelf, so asking again is free.
     """
+    f = resolve_files(file_ids, file_query)[0]
+    head, receipt = _frames_pack(f, start_seconds, end_seconds, per_second, count, every_frame, tile_width)
+    return ok(head, changed=False, **receipt, hint="every tile is stamped t=<seconds> f=<frame>; zoom in by asking again with a narrower range and a higher per_second, or every_frame")
+
+
+def _frames_pack(f, start_seconds, end_seconds, per_second=None, count=None, every_frame=False, tile_width=320):
+    """Frames of a range of one video file: (headline, receipt). Raises ToolError."""
     import os
     from classes.media_index import contact
     if float(end_seconds) - float(start_seconds) < 0.04:
         raise ToolError("give a range of at least a frame")
-    f = resolve_files(file_ids, file_query)[0]
     if str(f.data.get("media_type") or "video") != "video":
         raise ToolError("only video has frames")
     probe = probe_media(_audio_path(f))
@@ -639,8 +646,8 @@ def view_frames(start_seconds, end_seconds, file_ids=None, file_query="", per_se
     entry = shelf.entry_dir(sha, create=True) if sha else None
     meta = shelf.read_json(sha, name + ".json") if sha else None
     if entry and meta and shelf.read_bytes(sha, name + ".png"):
-        return ok(f"{len(meta['tiles'])} frames of {_display_name(f.data)}, {start:.2f} to {end:.2f} s.", changed=False, file_id=str(f.id), image_path=os.path.join(entry, name + ".png"),
-                  tiles=meta["tiles"], tile_size=[width, height], fps=round(fps, 3), cached=True)
+        return (f"{len(meta['tiles'])} frames of {_display_name(f.data)}, {start:.2f} to {end:.2f} s.",
+                dict(file_id=str(f.id), image_path=os.path.join(entry, name + ".png"), tiles=meta["tiles"], tile_size=[width, height], fps=round(fps, 3), cached=True))
     try:
         frames, times = contact.decode_frames(_audio_path(f), start, end, (width, height), rate=rate, start_time=float(probe.get("start_time") or 0.0))
     except RuntimeError as exc:
@@ -666,6 +673,89 @@ def view_frames(start_seconds, end_seconds, file_ids=None, file_query="", per_se
         fd, path = tempfile.mkstemp(suffix=".png", prefix="frames_")
         os.close(fd)
         contact.write_png(path, picture)
-    return ok(f"{len(tiles)} frames of {_display_name(f.data)}, {start:.2f} to {end:.2f} s.", changed=False, file_id=str(f.id), image_path=path, tiles=tiles,
-              tile_size=[width, height], fps=round(fps, 3), cached=False,
-              hint="every tile is stamped t=<seconds> f=<frame>; zoom in by asking again with a narrower range and a higher per_second, or every_frame")
+    return (f"{len(tiles)} frames of {_display_name(f.data)}, {start:.2f} to {end:.2f} s.",
+            dict(file_id=str(f.id), image_path=path, tiles=tiles, tile_size=[width, height], fps=round(fps, 3), cached=False))
+
+
+# ============================ get_moment_tool ============================
+def _timeline_use(clip, clips, tracks, transitions, opacity, links) -> Dict[str, Any]:
+    """A short reading of one timeline clip's surroundings for a moment pack."""
+    from classes.media_index import context
+    info = context.clip_context(clip.id, clips, tracks, transitions, opacity, links)
+    vis = info.get("visible") or {}
+    return {"timeline_clip_id": clip.id, "name": clip.name, "timeline": [round(clip.start, 3), round(clip.end, 3)], "source": [round(clip.src_in, 3), round(clip.src_out, 3)],
+            "layer": clip.layer, "above": [r["name"] or r["id"] for r in info["above"]], "below": [r["name"] or r["id"] for r in info["below"]],
+            "hidden_seconds": vis.get("hidden_seconds"), "before": (info["before"] or {}).get("kind"), "after": (info["after"] or {}).get("kind"),
+            "sound_with": [{"name": r["name"] or r["id"], "role": r["role"]} for r in info["sound_with"]], "track_locked": info["track"]["locked"]}
+
+
+@editor_tool(
+    "get_moment_tool",
+    covers=("index.moment",),
+    label="Everything about one moment",
+    schema=obj({
+        **FILE_TARGET,
+        "start_seconds": number("Start of the moment, in the file's own seconds.", None, minimum=0),
+        "end_seconds": number("End of the moment (at most 60 s after the start).", None, minimum=0),
+        "frames": integer("How many evenly spaced frames to include (0 for none).", 8, minimum=0, maximum=12),
+        "tile_width": integer("Width of each frame tile in pixels.", 320, minimum=96, maximum=640),
+        "audio_picture": boolean("Include a spectrogram of the range. By default it is included only when the numbers are unsure of a music section edge here.", False),
+    }, required=["start_seconds", "end_seconds"]),
+    read_only=True,
+)
+def get_moment(start_seconds, end_seconds, file_ids=None, file_query="", frames=8, tile_width=320, audio_picture=False):
+    """Everything known about ONE range of ONE file, in one call, sized to read at once: frames of it as a stamped picture, the
+    shots in it with their description, measured quality and look, the words spoken, notes on what happens, a spectrogram only
+    when it helps (a music section edge the numbers are unsure of) or when you ask, and where this footage is used on the
+    timeline with what is above, below and around it there. Use it when you have found a moment (from search) and want to
+    judge it before cutting. It is never the way to survey a library: use search_footage_tool and get_media_overview_tool
+    for that. A moment is at most 60 seconds.
+    """
+    from classes.media_index import moment, spectro
+    f = resolve_files(file_ids, file_query)[0]
+    fi = _index_for(f)
+    if fi is None or not (fi.shots or fi.rows):
+        raise ToolError(f"{_display_name(f.data)!r} has no saved index yet; index_status_tool shows progress")
+    try:
+        lo, hi = moment.check_range(start_seconds, end_seconds, fi.duration)
+    except ValueError as exc:
+        raise ToolError(str(exc))
+    shelf = default_shelf()
+    sha = sha_of(f.data.get("fingerprint")) or fi.sha
+    pack: Dict[str, Any] = {"file_id": str(f.id), "name": _display_name(f.data), "range": [round(lo, 3), round(hi, 3)], "media_type": fi.media_type}
+    pack.update(moment.shots_in(fi, lo, hi))
+    pack["words"] = moment.words_in(_speech_layer(shelf, sha).get("words") or [], lo, hi)
+    pack["notes"] = moment.notes(fi, lo, hi)
+
+    if int(frames) > 0 and fi.media_type == "video":
+        try:
+            head, got = _frames_pack(f, lo, hi, count=int(frames), tile_width=int(tile_width))
+            pack["frames"] = got
+        except ToolError as exc:
+            pack["frames"] = {"error": str(exc)}
+    else:
+        pack["frames"] = None
+
+    has_audio = (shelf.manifest(sha).get("source") or {}).get("has_audio") is not False if sha else True
+    sections = (((fi.audio or {}).get("music") or {}).get("sections")) or []
+    choice = moment.audio_picture_worth(sections, lo, hi, fi.duration, bool(audio_picture))
+    pack["audio_picture"] = {"included": False, "why": choice["why"]}
+    if choice["include"] and has_audio and sha:
+        out = spectro.make_spectrogram(_audio_path(f), sha, shelf, lo, hi, fi.duration)
+        pack["audio_picture"] = ({"included": True, "why": choice["why"], "image_path": out["path"], "cached": out["cached"]} if out["ok"]
+                                 else {"included": False, "why": "could not draw it: " + str(out["error"])})
+    elif choice["include"] and not has_audio:
+        pack["audio_picture"] = {"included": False, "why": "this file has no audio track"}
+
+    try:
+        clips, tracks, transitions, opacity, links = _timeline_facts()
+        uses = moment.timeline_uses(clips, str(f.id), lo, hi)
+        pack["timeline"] = {"uses": [_timeline_use(c, clips, tracks, transitions, opacity, links) for c in uses],
+                            "note": None if uses else "this part of the file is not on the timeline"}
+    except Exception as exc:  # noqa: BLE001 - the rest of the pack is still good; say what is missing
+        log.warning("moment: timeline context unavailable", exc_info=True)
+        pack["timeline"] = {"uses": [], "error": f"timeline context unavailable: {exc}"[:160]}
+    shown = pack["total"]
+    return ok(f"{pack['name']} {lo:.2f}-{hi:.2f} s: {shown} shot(s), {pack['words']['count']} word(s)"
+              + (", frames" if pack["frames"] and "error" not in pack["frames"] else "") + (", spectrogram" if pack["audio_picture"]["included"] else "") + ".",
+              changed=False, **pack)

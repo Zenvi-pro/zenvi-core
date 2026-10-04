@@ -166,3 +166,10 @@ def test_the_range_and_the_rate_are_held_to_the_limits_with_advice(library):
 def test_the_range_is_clamped_to_the_clip(library):
     _, r = call(file_ids=["V1"], start_seconds=20.0, end_seconds=40.0, per_second=1)
     assert 3 <= len(r["tiles"]) <= 5 and r["tiles"][-1]["t"] <= 24.0
+
+
+def test_tiles_start_at_the_start_of_the_range_and_are_evenly_spread_across_it():
+    path, _ = corpus.hard_cuts()
+    _, times = C.decode_frames(str(path), 4.0, 10.0, (64, 36), rate=8 / 6)
+    assert len(times) == 8 and times[0] == pytest.approx(4.0, abs=0.04) and times[-1] < 10.0
+    assert np.diff(times).std() < 0.05, "the gaps between tiles are the same, not bunched against the far end"

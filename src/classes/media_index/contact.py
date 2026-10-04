@@ -77,21 +77,26 @@ def decode_frames(path: str, start: float, end: float, size: Tuple[int, int], *,
                   ) -> Tuple[np.ndarray, List[float]]:
     """RGB frames of [start, end) at *size*, with their times (seconds from the file's start).
 
-    ``rate`` samples that many a second; None gives every frame exactly as stored (passthrough). Raises RuntimeError on a bad read.
+    ``rate`` samples that many a second, the first at *start* and the rest evenly after it (the nearest frame to each instant, and the
+    time given is that instant); None gives every frame exactly as stored, with each frame's own time. Raises RuntimeError on a bad read.
     """
     w, h = size
     length = max(0.05, float(end) - float(start))
-    sample = f"fps={rate:.6f}," if rate else ""
-    cmd = ["ffmpeg", "-nostdin", "-v", "info", "-ss", f"{max(0.0, start + start_time):.3f}", "-copyts", "-t", f"{length:.3f}", "-i", path, "-an",
+    # every frame keeps the file's own timestamps; sampling runs on a clock that starts at the seek point, so its ticks start at *start*
+    # (on the file's clock fps aligns ticks to multiples of 1/rate from time zero, and the first tile could be late)
+    stamps = [] if rate else ["-copyts"]
+    sample = f"fps=fps={rate:.6f}," if rate else ""
+    cmd = ["ffmpeg", "-nostdin", "-v", "info", "-ss", f"{max(0.0, start + start_time):.3f}", *stamps, "-t", f"{length:.3f}", "-i", path, "-an",
            "-vf", f"{sample}scale={w}:{h}:flags=area,format=rgb24,showinfo", "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
     proc = run_ffmpeg(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=180)
     raw = proc.stdout or b""
-    times = [float(m.group(1)) - start_time for m in _PTS.finditer((proc.stderr or b"").decode("utf-8", "replace"))]
+    shift = float(start) if rate else -float(start_time)
+    times = [float(m.group(1)) + shift for m in _PTS.finditer((proc.stderr or b"").decode("utf-8", "replace"))]
     if proc.returncode != 0 or not raw or not times:
         raise RuntimeError((proc.stderr or b"could not decode the picture").decode("utf-8", "replace")[-200:])
     count = min(len(times), len(raw) // (w * h * 3))
     frames = np.frombuffer(raw[: count * w * h * 3], dtype=np.uint8).reshape(count, h, w, 3)
-    # ffmpeg may read past the end with timestamps preserved: keep only the frames whose own time is inside the range asked for
+    # keep only the frames whose own time is inside the range asked for (the half-open [start, end))
     keep = [i for i in range(count) if start - 1e-3 <= times[i] < end - 1e-3]
     if not keep:
         raise RuntimeError("no frames in that range")
