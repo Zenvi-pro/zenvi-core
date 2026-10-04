@@ -72,6 +72,47 @@ def _nonempty(d):
     return {k: v for k, v in d.items() if v not in (None, "", [], {})}
 
 
+def _bound(text: str, end: bool):
+    """A date or date-time as a UTC instant; a date used as an upper bound means the end of that day."""
+    from datetime import datetime, timedelta, timezone
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    try:
+        when = datetime.fromisoformat(raw)
+    except ValueError:
+        raise ToolError(f"{raw!r} is not a date (use 2024-05-01 or 2024-05-01T09:00)")
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when + timedelta(days=1) if end and "T" not in raw and " " not in raw else when
+
+
+def restrict_files(files, captured_after: str, captured_before: str, place_id: int):
+    """Files shot inside a date window and/or at one place (clips with no capture time or position are left out)."""
+    from datetime import datetime, timezone
+    from classes.media_index import trip
+    if not (captured_after or captured_before) and place_id < 0:
+        return files
+    lo, hi = _bound(captured_after, False), _bound(captured_before, True)
+    keep = []
+    for fi in files:
+        if not fi.captured_at:
+            continue
+        try:
+            when = datetime.fromisoformat(fi.captured_at)
+        except ValueError:
+            continue
+        when = when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+        if (lo and when < lo) or (hi and when >= hi):
+            continue
+        keep.append(fi)
+    if place_id >= 0:
+        outline = trip.trip_outline([{"file_id": f.file_id, "captured_at": f.captured_at, "gps": f.gps, "duration": f.duration} for f in files])
+        at_place = {fid for p in outline["places"] if p["id"] == place_id for fid in p["file_ids"]}
+        keep = [fi for fi in keep if fi.file_id in at_place] if (captured_after or captured_before) else [fi for fi in files if fi.file_id in at_place]
+    return keep
+
+
 @editor_tool(
     "search_footage_tool",
     covers=("index.search",),
@@ -91,15 +132,23 @@ def _nonempty(d):
                            "shot_type (wide|medium|close|...), mood, object_label, text_on_screen, speech (true = "
                            "someone talks, false = no talking), look (warm|cool|dark|bright|saturated|muted|"
                            "contrasty|flat), orientation (landscape|portrait|square), min_duration, max_duration "
-                           "(seconds), exclude_black (default true)."),
+                           "(seconds), exclude_black (default true), usable_only (true = leave out blurry, black and "
+                           "model-judged unusable shots), min_highlight (0-1, how striking the moment is)."),
         "file_ids": array({"type": "string"}, "Only search these project files (default: every indexed file)."),
+        "sort": enum(["relevance", "highlight", "chronological"], "'relevance' = best match first, 'highlight' = the most striking "
+                     "moments first (for choosing what to use), 'chronological' = in the order it was shot.", "relevance"),
+        "captured_after": string("Only footage shot on or after this date or time (2024-05-01 or 2024-05-01T09:00). Clips without a "
+                                 "capture time are left out.", ""),
+        "captured_before": string("Only footage shot on or before this date (a date means the end of that day).", ""),
+        "place_id": integer("Only footage shot at this place (ids come from get_project_overview_tool's trip.places); -1 = anywhere.", -1,
+                            minimum=-1),
         "limit": integer("Most results to return.", 10, minimum=1, maximum=50),
         "cursor": integer("Where to continue: the `next` of the previous result.", 0, minimum=0),
     }),
     read_only=True,
 )
 def search_footage(query="", look_for="", reference_file_id="", reference_start=None, reference_end=None, match="picture",
-                   filters=None, file_ids=None, limit=10, cursor=0):
+                   filters=None, file_ids=None, sort="relevance", captured_after="", captured_before="", place_id=-1, limit=10, cursor=0):
     """Search every indexed file in the project and return the best moments, each with the file, the in and out
     seconds (snapped to the real cut, or to the spoken sentence), where in it the match peaks and why.
 
@@ -111,6 +160,7 @@ def search_footage(query="", look_for="", reference_file_id="", reference_start=
     """
     query = str(query or "").strip()[:QUERY_LIMIT_CHARS]
     files, missing = project_indexes(file_ids)
+    files = restrict_files(files, captured_after, captured_before, int(place_id))
     if not files:
         raise ToolError("no indexed footage yet" + (f" ({len(missing)} file(s) still indexing or not indexed)" if missing else "")
                         + "; index_status_tool shows progress")
@@ -130,7 +180,7 @@ def search_footage(query="", look_for="", reference_file_id="", reference_start=
             if ref_vec is None:
                 raise ToolError("that reference has no picture vectors yet (not fully indexed)")
     result = msearch.search(files, query_vector=qv, reference_vector=ref_vec, reference_look=ref_look, look_for=look_for or "",
-                            filters=filters or {}, limit=int(limit), offset=int(cursor))
+                            filters=filters or {}, limit=int(limit), offset=int(cursor), sort=str(sort or "relevance"))
     hits = [_nonempty({**h, "sha": None, "scores": h["scores"]}) for h in result["hits"]]
     summary = f"{result['total']} match(es)" + (f", showing {len(hits)}" if len(hits) < result["total"] else "")
     if not hits:

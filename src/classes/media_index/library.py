@@ -49,6 +49,7 @@ class FileIndex:
     layers: Dict[str, bool] = field(default_factory=dict)
     not_applicable: List[str] = field(default_factory=list)
     scenes: List[Dict[str, Any]] = field(default_factory=list)
+    music_desc: List[Dict[str, Any]] = field(default_factory=list)       # lazy cloud reading of a music file (inferred)
 
     @property
     def rows(self) -> int:
@@ -125,15 +126,19 @@ def load_file_index(shelf: Shelf, sha: str, *, file_id: str = "", name: str = ""
         fi.text_rows, fi.text_matrix = (text_rows, tm) if tm is not None else ([], None)
         fi.image_rows, fi.image_matrix = (image_rows, im) if im is not None else ([], None)
     fi.scenes = quality.scenes_of(fi)
+    if shelf.layer_ready(sha, S.LAYER_MUSIC_DESC):
+        fi.music_desc = list((shelf.read_json(sha, "music_desc.json") or {}).get("windows") or [])
     return fi
 
 
 def get_file_index(shelf: Shelf, sha: str, **kw: Any) -> Optional[FileIndex]:
     """Cached ``load_file_index``; the cache is invalidated when the shelf's manifest changes."""
     try:
-        stamp = max([float(r.get("updated") or 0) for r in shelf.manifest(sha).get("layers", {}).values()] or [0.0])
+        manifest = shelf.manifest(sha)
+        stamp = (max([float(r.get("updated") or 0) for r in manifest.get("layers", {}).values()] or [0.0]),
+                 repr(sorted((manifest.get("source") or {}).items(), key=lambda kv: kv[0])))      # layers or source facts changed
     except Exception:
-        stamp = 0.0
+        stamp = (0.0, "")
     key = (shelf.root, sha, stamp)
     with _lock:
         hit = _cache.get(key)

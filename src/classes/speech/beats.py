@@ -90,13 +90,48 @@ def reset_beat_factory() -> None:
     _factory = EnergyBeatEngine
 
 
+def _from_media_index(media_path: str) -> Optional[dict]:
+    """Beats from the media index's tempo analysis: the saved one when the file is indexed, else a fresh one.
+
+    The index tracks beats against a tempo (and finds real bars), so this is the one beat implementation;
+    ``EnergyBeatEngine`` below is only the fallback when the index cannot read the file. A file with no
+    steady rhythm returns no beats and bpm 0, instead of beats invented from speech or noise.
+    """
+    try:
+        from classes.media_fingerprint import fingerprint
+        from classes.media_index import audio as index_audio, default_shelf, sha_of
+        from classes.media_index.probe import probe_media
+
+        shelf = default_shelf()
+        sha = sha_of(fingerprint(media_path))
+        saved = shelf.read_json(sha, "audio.json") if sha and shelf.layer_ready(sha, "audio") else None
+        audio = saved or index_audio.analyze_audio(media_path, probe_media(media_path))
+        if not audio:
+            return None
+        tempo = audio.get("tempo")
+        if not tempo or not tempo.get("beats"):
+            return {"beats": [], "downbeats": [], "bpm": 0.0, "source": "media-index", "rhythmic": False}
+        times = [float(t) for t in tempo["beats"]]
+        downs = (audio.get("music") or {}).get("downbeats") or times[::4]
+        return {"beats": [{"timeSec": t, "strength": 1.0} for t in times], "downbeats": [{"timeSec": float(t)} for t in downs],
+                "bpm": float(tempo["bpm"]), "source": "media-index", "rhythmic": True}
+    except Exception:  # noqa: BLE001 - any failure falls back to the older engine
+        log.debug("media index beats unavailable for %s", media_path, exc_info=True)
+        return None
+
+
 def detect_beats(
     media_path: str,
     *,
     token: Optional[CancelToken] = None,
+    use_index: bool = True,
 ) -> dict:
     import os
 
+    if use_index and _factory is EnergyBeatEngine:      # a test or caller that installed its own engine gets that engine
+        found = _from_media_index(media_path)
+        if found is not None:
+            return found
     with inference_slot(token) as tok:
         wav, err = extract_mono_16k_wav(media_path)
         if err:

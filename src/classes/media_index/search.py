@@ -88,6 +88,11 @@ def passes_filters(shot: Dict[str, Any], f: Dict[str, Any], fi: FileIndex) -> bo
         return False
     if f.get("speech") is False and float((shot.get("speech") or {}).get("speech_ratio") or 0.0) >= 0.2:
         return False
+    q = shot.get("quality") or {}
+    if f.get("usable_only") and ((q.get("inferred") or {}).get("usable") is False or set(q.get("flags") or []) & {"blurry", "black"}):
+        return False
+    if f.get("min_highlight") and float(q.get("highlight", 0.0)) < float(f["min_highlight"]):
+        return False
     if f.get("look"):
         profile = shot.get("look") or {}
         test = LOOK_TESTS.get(str(f["look"]))
@@ -108,11 +113,13 @@ def _speech_text(fi: FileIndex, start: float, end: float, limit: int = 160) -> s
 
 def search(files: Sequence[FileIndex], *, query_vector: Optional[np.ndarray] = None,
            reference_vector: Optional[np.ndarray] = None, reference_look: Optional[Dict[str, Any]] = None,
-           look_for: str = "", filters: Optional[Dict[str, Any]] = None, limit: int = 20, offset: int = 0
-           ) -> Dict[str, Any]:
+           look_for: str = "", filters: Optional[Dict[str, Any]] = None, limit: int = 20, offset: int = 0,
+           sort: str = "relevance") -> Dict[str, Any]:
     """Rank shots of *files*. With no query, vector or look reference, returns the shots that pass the filters.
 
-    ``look_for`` is "spoken" (transcript only), "on_screen" (what is seen) or "" (both).
+    ``look_for`` is "spoken" (transcript only), "on_screen" (what is seen) or "" (both). ``sort`` is "relevance" (the
+    ranking, or file order when nothing was asked), "highlight" (best moments first) or "chronological" (by when each
+    was shot, then by position in its file).
     """
     f = dict(filters or {})
     q = query_vector if query_vector is not None else reference_vector
@@ -231,8 +238,14 @@ def search(files: Sequence[FileIndex], *, query_vector: Optional[np.ndarray] = N
             "camera": (shot.get("motion") or {}).get("class"), "shot_type": watch.get("shot_type") or None,
             "mood": watch.get("mood") or None,
             "speech_ratio": (shot.get("speech") or {}).get("speech_ratio"),
+            "highlight": (shot.get("quality") or {}).get("highlight"), "captured_at": fi.captured_at or None,
             "same_content_files": same_content.get(fi.sha) or None,
         })
+    if sort == "highlight":
+        hits.sort(key=lambda h: (-(h["highlight"] or 0.0), -h["score"]))
+    elif sort == "chronological":
+        order = {fi.file_id: i for i, fi in enumerate(files)}
+        hits.sort(key=lambda h: (h["captured_at"] or "9999", order.get(h["file_id"], 0), h["start"]))
     total = len(hits)
     page = hits[offset: offset + max(1, limit)]
     return {"hits": page, "total": total, "next": offset + len(page) if offset + len(page) < total else None,

@@ -329,3 +329,56 @@ def test_view_audio_refuses_silent_files_and_unfingerprinted_ones(env):
     assert out.startswith("Error") and "fingerprinted" in out
     out = REGISTRY["view_audio_tool"].func(file_id="F1", start=0.0, end=500.0)
     assert out.startswith("Error")
+
+
+# -- dates, places and the new search arguments ------------------------------------------
+@pytest.fixture
+def trip_env(env):
+    """F1 shot in San Francisco on 1 May, F2 in Tokyo on 3 May, F3 has no tags."""
+    env.shelf.set_source(SHA1, captured_at="2024-05-01T09:00:00+00:00", gps={"lat": 37.7749, "lon": -122.4194})
+    env.shelf.set_source(SHA2, captured_at="2024-05-03T10:00:00+00:00", gps={"lat": 35.6762, "lon": 139.6503})
+    sha3 = "3" * 64                                                    # indexed, but its camera wrote no date or position
+    build(env.shelf, sha3, shots=[shot(0, 0, 6)], duration=6.0, watch=[w(0, 0, 6, "A calm lake again")],
+          text=[({"kind": "shot", "shot": 0, "start": 0, "end": 6, "text": "A calm lake again"}, unit(0))], image=[({"shot": 0, "t": 2.0}, unit(0))])
+    env.files.append(file_obj("F5", "undated.mp4", sha3))
+    library.clear_cache()
+    return env
+
+
+def run_search(**kw):
+    _, r = call("search_footage_tool", limit=50, **kw)
+    return sorted({h["file_id"] for h in r["hits"]})
+
+
+def test_footage_can_be_limited_to_a_date_window(trip_env):
+    assert run_search(captured_after="2024-05-02") == ["F2"]
+    assert run_search(captured_before="2024-05-01") == ["F1"], "a date as the upper bound means the end of that day"
+    assert run_search(captured_after="2024-05-01", captured_before="2024-05-03") == ["F1", "F2"]
+
+
+def test_a_window_with_nothing_in_it_is_an_empty_search_not_an_error(trip_env):
+    out = REGISTRY["search_footage_tool"].func(captured_after="2030-01-01")
+    assert out.startswith("Error") and "no indexed footage" in out
+
+
+def test_a_bad_date_is_a_clear_error(trip_env):
+    out = REGISTRY["search_footage_tool"].func(captured_after="last tuesday")
+    assert out.startswith("Error") and "is not a date" in out
+
+
+def test_clips_without_a_capture_time_are_left_out_of_a_date_window_but_found_otherwise(trip_env):
+    assert "F5" in run_search()
+    assert "F5" not in run_search(captured_after="2000-01-01") and "F5" not in run_search(captured_before="2100-01-01")
+
+
+def test_footage_can_be_limited_to_one_place_by_the_ids_the_overview_gives(trip_env):
+    assert run_search(place_id=0) == ["F1"] and run_search(place_id=1) == ["F2"]
+    assert run_search(place_id=-1) == ["F1", "F2", "F5"]
+    assert run_search(place_id=1, captured_after="2024-05-02") == ["F2"]
+
+
+def test_chronological_search_follows_when_things_were_shot(trip_env):
+    _, r = call("search_footage_tool", sort="chronological", limit=50)
+    assert list(dict.fromkeys(h["file_id"] for h in r["hits"])) == ["F1", "F2", "F5"], "by capture time, with undated footage last"
+    _, back = call("search_footage_tool", sort="chronological", captured_after="2024-05-03", limit=50)
+    assert {h["file_id"] for h in back["hits"]} == {"F2"}

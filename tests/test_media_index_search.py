@@ -335,3 +335,62 @@ def test_duplicates_do_not_inflate_the_ranking(shelf, two_files):
     once = search.search(two_files, query_vector=unit(1))["hits"][0]["score"]
     twice = search.search([two_files[0], twin, two_files[1]], query_vector=unit(1))["hits"][0]["score"]
     assert once == twice
+
+
+# ============================ editing filters and sorting ============================
+def set_quality(fi, shot_id, **q):
+    shot_ = next(s for s in fi.shots if s["id"] == shot_id)
+    shot_["quality"] = {**(shot_.get("quality") or {}), **q}
+
+
+def test_usable_only_leaves_out_blurry_black_and_model_judged_unusable_shots_but_keeps_shaky_ones(two_files):
+    f1, f2 = two_files
+    set_quality(f1, 0, flags=["blurry"], highlight=0.5)
+    set_quality(f1, 1, flags=["shaky"], highlight=0.5)
+    set_quality(f2, 0, flags=[], highlight=0.5, inferred={"usable": False})
+    set_quality(f2, 1, flags=[], highlight=0.5, inferred={"usable": True})
+    got = ids(search.search(two_files, filters={"usable_only": True}))
+    assert ("F1", 0) not in got and ("F2", 0) not in got and ("F1", 1) in got and ("F2", 1) in got
+    everything = ids(search.search(two_files))
+    assert ("F1", 0) in everything and ("F2", 0) in everything, "off by default"
+
+
+def test_min_highlight_keeps_only_striking_moments(two_files):
+    f1, f2 = two_files
+    for fi, sid, h in ((f1, 0, 0.2), (f1, 1, 0.8), (f2, 0, 0.6), (f2, 1, 0.4)):
+        set_quality(fi, sid, highlight=h)
+    assert ids(search.search(two_files, filters={"min_highlight": 0.5})) == [("F1", 1), ("F2", 0)]
+    assert len(ids(search.search(two_files, filters={"min_highlight": 0}))) == 4
+
+
+def test_sorting_by_highlight_puts_the_best_moments_first_and_by_time_follows_the_calendar(two_files):
+    f1, f2 = two_files
+    for fi, sid, h in ((f1, 0, 0.2), (f1, 1, 0.8), (f2, 0, 0.6), (f2, 1, 0.4)):
+        set_quality(fi, sid, highlight=h)
+    f1.captured_at, f2.captured_at = "2024-05-03T10:00:00+00:00", "2024-05-01T10:00:00+00:00"
+    assert ids(search.search(two_files, sort="highlight")) == [("F1", 1), ("F2", 0), ("F2", 1), ("F1", 0)]
+    assert ids(search.search(two_files, sort="chronological")) == [("F2", 0), ("F2", 1), ("F1", 0), ("F1", 1)]
+    assert ids(search.search(two_files, sort="relevance")) == [("F1", 0), ("F1", 1), ("F2", 0), ("F2", 1)]
+
+
+def test_a_ranked_query_can_still_be_sorted_by_highlight(two_files):
+    set_quality(two_files[0], 0, highlight=0.1)
+    set_quality(two_files[0], 1, highlight=0.9)
+    res = search.search(two_files[:1], query_vector=blend(0, 1, 0.5), sort="highlight")
+    assert [(h["file_id"], h["shot_id"]) for h in res["hits"]][:2] == [("F1", 1), ("F1", 0)] and res["hits"][0]["highlight"] == 0.9
+
+
+def test_hits_report_their_highlight_and_when_they_were_shot(two_files):
+    two_files[0].captured_at = "2024-05-01T09:00:00+00:00"
+    set_quality(two_files[0], 0, highlight=0.7)
+    hit = search.search(two_files)["hits"][0]
+    assert hit["highlight"] == 0.7 and hit["captured_at"] == "2024-05-01T09:00:00+00:00"
+    assert [h["captured_at"] for h in search.search(two_files)["hits"] if h["file_id"] == "F2"][0] is None
+
+
+def test_the_loaded_index_refreshes_when_the_files_source_facts_change(shelf, two_files):
+    a = library.get_file_index(shelf, SHA1, file_id="F1")
+    assert a.captured_at == ""
+    shelf.set_source(SHA1, captured_at="2024-05-01T09:00:00+00:00")
+    b = library.get_file_index(shelf, SHA1, file_id="F1")
+    assert b.captured_at == "2024-05-01T09:00:00+00:00" and b is not a

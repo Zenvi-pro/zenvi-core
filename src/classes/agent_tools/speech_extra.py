@@ -555,7 +555,8 @@ def detect_beats_tool_handler(
             "bpm": result.get("bpm"),
             "fileId": fileId or "",
             "clipId": clipId or "",
-            "provider": "local",
+            "provider": result.get("source") or "local",
+            "rhythmic": result.get("rhythmic", bool(beats)),
         },
     ).to_json()
 

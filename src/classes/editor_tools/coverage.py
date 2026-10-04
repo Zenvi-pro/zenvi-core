@@ -144,6 +144,10 @@ CAPABILITIES = [
     ("index.status", "media-index", "Indexing badges", "Per-file index layer status"),
     ("index.match", "media-index", "Recreate a reference from footage", "Match a reference's shots to project footage with cut windows, gaps and stock queries"),
     ("index.locate", "media-index", "Masking / object tools", "Find an object or on-screen text with time and rough position"),
+    ("index.review", "media-index", "Export checklist", "Audit the finished edit: what still needs doing, with measured evidence"),
+    ("index.overview", "media-index", "Project Files", "Survey the footage: amounts, days and places, best moments, music, look clusters"),
+    ("index.music", "media-index", "Audio library", "Understand a music file: tempo, energy, sections, phrase points, fit"),
+    ("index.listen", "media-index", "Audio preview", "A model's second opinion on how the mix sounds"),
     ("index.audio_view", "media-index", "Audio waveform / spectrum", "Spectrogram strip of a file's audio as an image"),
 ]
 
