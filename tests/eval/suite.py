@@ -55,6 +55,24 @@ def shots() -> Dict[str, Any]:
     return out
 
 
+# ============================ exact cut frames ============================
+def exact_frames() -> Dict[str, Any]:
+    """Frame-exact cuts: from a hint a tenth of a second off, how many hard cuts are found on exactly the right frame."""
+    from classes.media_index import refine
+    from classes.media_index.probe import probe_media
+    path, truth = corpus.hard_cuts()
+    probe = probe_media(str(path))
+    fps = probe["video"]["fps"]
+    errors = []
+    for exact in truth["hard"]:
+        for offset in (-0.12, 0.12):
+            got = refine.refine_cut(str(path), probe, exact + offset)
+            errors.append(abs(got["frame"] - round(exact * fps)) if got.get("kind") == "hard" else 99)
+    quiet = sum(1 for builder in (corpus.no_cuts_busy, corpus.flash_inside) if refine.refine_cut(str(builder()[0]), probe_media(str(builder()[0])), 5.0)["kind"] != "none")
+    return {"hard_cuts_tested": len(errors), "exact_share": round(sum(1 for e in errors if e == 0) / len(errors), 3), "max_frame_error": max(errors),
+            "false_cuts_in_quiet_or_flash_clips": quiet}
+
+
 # ============================ music ============================
 TRACKS = {
     "easy": dict(),
@@ -193,4 +211,4 @@ def quality(seeds: Tuple[int, ...] = (1, 2, 3, 4)) -> Dict[str, Any]:
 
 # ============================ everything ============================
 def run_fast() -> Dict[str, Any]:
-    return {"shots": shots(), "music": music(), "voice_edges": voice_edges(), "quality": quality()}
+    return {"shots": shots(), "exact_frames": exact_frames(), "music": music(), "voice_edges": voice_edges(), "quality": quality()}

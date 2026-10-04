@@ -58,9 +58,12 @@ EDGE_MARGIN = 0.4             # boundaries this close to the start or end are no
 # several "cuts" in one transition. These rules look at the run around a reported cut and, when it is a smooth ramp,
 # replace the cuts with one boundary. They only reclassify boundaries already reported; they never add a new cut.
 DIP_LUMA = 0.08               # a fade through black reaches (nearly) black ...
-DIP_SHOULDER_LUMA = 0.10      # ... from and back to a picture at least this bright
+DIP_SHOULDER_LUMA = 0.05      # ... from and back to a picture at least this bright (a dark cinematic scene is only about 0.07) ...
+DIP_SHOULDER_FACTOR = 5.0     # ... and at least this many times as bright as the darkest frame
 DIP_MIN_STEPS = 3             # steps (frames) of steady darkening before it and steady brightening after it
-DIP_STEP_LUMA = 0.01          # a step of the ramp changes the mean brightness by at least this (a scene drifts by far less)
+DIP_FLAT = 0.01               # frames this close to the darkest are the bottom of the dip
+DIP_STEP_MIN = 0.003          # a step of the ramp changes the mean brightness by at least this ...
+DIP_STEP_REL = 0.03           # ... or this share of the brightness it started from, whichever is more (a scene drifts by far less)
 DIP_SPAN_SECONDS = 3.0        # the whole dip, down and up, is at most this long
 TRANSITION_GUARD_SECONDS = 0.8   # no second transition starts this soon after one ends: such a "dissolve" is its tail
 GRADUAL_B = 0.12              # histogram change per step that counts as "the picture is changing"
@@ -82,37 +85,50 @@ SHARP_EVERY = 3
 
 
 # ============================ transitions: ramps, not cuts ============================
+def _ramp_step(luma: float) -> float:
+    """The least change in mean brightness from one frame to the next that counts as a step of a ramp."""
+    return max(DIP_STEP_MIN, DIP_STEP_REL * luma)
+
+
 def find_dips(lumas: List[float], fps: float) -> List[Dict[str, float]]:
     """Fades through black: the picture darkens steadily to (nearly) black and brightens steadily again.
 
-    Returns ``{"t", "start", "end"}`` (seconds) for each dip: the darkest frame and the span of both ramps. A dip needs
-    ``DIP_MIN_STEPS`` frames of steady change on each side, so a black frame between two cuts, a one-frame dropout and
-    a dark scene are none of them dips. Black held for ``BLACK_MIN_SECONDS`` or more is a shot of its own (the black
-    run logic reports it), not a dip.
+    Returns ``{"t", "start", "end"}`` (seconds) for each dip: the darkest frame and the span of both ramps. Each connected stretch
+    of frames below ``DIP_LUMA`` is looked at; its single darkest frame, with the frames within ``DIP_FLAT`` of it, is the bottom,
+    and the ramps are walked out from there while the brightness keeps changing by a real step. A dip needs ``DIP_MIN_STEPS``
+    frames of steady change on each side, shoulders at least as bright as ``DIP_SHOULDER_LUMA`` and ``DIP_SHOULDER_FACTOR`` times
+    the bottom, so a black frame between two cuts, a one-frame dropout, a dark scene and flicker are none of them dips. Black
+    held for ``BLACK_MIN_SECONDS`` or more is a shot of its own (the black run logic reports it), not a dip.
     """
     out: List[Dict[str, float]] = []
     n = len(lumas)
-    i = 1
-    while i < n - 1:
-        if lumas[i] >= DIP_LUMA or lumas[i] > lumas[i - 1] + 1e-9:
+    i = 0
+    while i < n:
+        if lumas[i] >= DIP_LUMA:
             i += 1
             continue
-        lo = i
-        while lo > 0 and lumas[lo - 1] > lumas[lo] + DIP_STEP_LUMA:         # walk back up the way down
-            lo -= 1
-        j = i
-        while j + 1 < n and lumas[j + 1] <= lumas[j] + 1e-3 and lumas[j + 1] < DIP_LUMA:   # across the bottom
+        first = i
+        while i < n and lumas[i] < DIP_LUMA:
+            i += 1
+        last = i                                                         # the dark stretch is [first, last)
+        m = min(range(first, last), key=lambda x: lumas[x])
+        floor = lumas[m]
+        k = j = m
+        while k - 1 >= first and lumas[k - 1] <= floor + DIP_FLAT:
+            k -= 1
+        while j + 1 < last and lumas[j + 1] <= floor + DIP_FLAT:
             j += 1
+        lo = k
+        while lo > 0 and lumas[lo - 1] > lumas[lo] + _ramp_step(lumas[lo - 1]):          # walk back up the way down
+            lo -= 1
         hi = j
-        while hi + 1 < n and lumas[hi + 1] > lumas[hi] + DIP_STEP_LUMA:      # up the other side
+        while hi + 1 < n and lumas[hi + 1] > lumas[hi] + _ramp_step(lumas[hi + 1]):      # up the other side
             hi += 1
-        down, up = i - lo, hi - j
-        held = (j - i + 1) / fps >= BLACK_MIN_SECONDS
-        if (not held and down >= DIP_MIN_STEPS and up >= DIP_MIN_STEPS and lumas[lo] >= DIP_SHOULDER_LUMA
-                and lumas[hi] >= DIP_SHOULDER_LUMA and (hi - lo) / fps <= DIP_SPAN_SECONDS):
-            darkest = min(range(i, j + 1), key=lambda k: lumas[k])
-            out.append({"t": darkest / fps, "start": lo / fps, "end": hi / fps})
-        i = max(j, hi) + 1
+        shoulder = max(DIP_SHOULDER_LUMA, DIP_SHOULDER_FACTOR * floor)
+        held = (j - k + 1) / fps >= BLACK_MIN_SECONDS
+        if (not held and k - lo >= DIP_MIN_STEPS and hi - j >= DIP_MIN_STEPS and lumas[lo] >= shoulder and lumas[hi] >= shoulder
+                and (hi - lo) / fps <= DIP_SPAN_SECONDS):
+            out.append({"t": m / fps, "start": lo / fps, "end": hi / fps})
     return out
 
 

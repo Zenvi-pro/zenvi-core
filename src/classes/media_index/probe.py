@@ -170,6 +170,7 @@ def parse_probe(data: Dict[str, Any]) -> Dict[str, Any]:
         "capture": parse_capture(fmt.get("tags"), [s.get("tags") for s in streams]),
         "camera": parse_camera(fmt.get("tags"), [s.get("tags") for s in streams]),
         "bit_rate": int(_float(fmt.get("bit_rate"))),
+        "start_time": _float(fmt.get("start_time")),
     }
     if video:
         width, height = int(video.get("width") or 0), int(video.get("height") or 0)

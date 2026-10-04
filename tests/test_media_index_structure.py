@@ -469,3 +469,15 @@ def test_the_tail_of_a_reconciled_dissolve_is_not_reported_again():
     kept = st.reconcile_transitions([{"t": 4.1, "kind": "hard", "score": 2.0}, {"t": 5.4, "kind": "dissolve", "score": 0.9}, {"t": 12.0, "kind": "dissolve", "score": 0.9}],
                                     [], [{"t": 4.45, "start": 3.9, "end": 5.0}], 10.0)
     assert [(b["t"], b["kind"]) for b in kept] == [(4.45, "dissolve"), (12.0, "dissolve")], "a dissolve right after one is its tail; a later one is real"
+
+
+def test_a_fade_through_black_in_dark_footage_is_still_a_dip():
+    lumas = [0.07] * 10 + _ramp(0.07, 0.003, 8) + [0.003, 0.003] + _ramp(0.003, 0.25, 6) + [0.24] * 8
+    dips = st.find_dips(lumas, 24.0)
+    assert len(dips) == 1 and dips[0]["t"] == pytest.approx(19 / 24.0, abs=0.12)
+
+
+def test_a_dark_scene_that_only_flickers_is_not_a_dip():
+    rng = __import__("numpy").random.default_rng(3)
+    assert st.find_dips(list(0.06 + rng.normal(0, 0.004, 80)), 24.0) == []
+    assert st.find_dips([0.06] * 10 + _ramp(0.06, 0.04, 5) + _ramp(0.04, 0.06, 5) + [0.06] * 10, 24.0) == [], "a dip of 0.02 never reaches near black"

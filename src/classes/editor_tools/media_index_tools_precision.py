@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from classes.editor_tools._base import ToolError, boolean, enum, get_app, number, obj, ok, string
+from classes.editor_tools._base import ToolError, boolean, enum, get_app, integer, number, obj, ok, string
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.media_files import FILE_TARGET, _display_name, resolve_files
 from classes.editor_tools.media_index_tools import _all_files, _index_for
@@ -296,3 +296,70 @@ def find_retakes(file_ids=None, file_query="", min_similarity=0.75):
             else f"no retakes found in {scanned} file(s) with a transcript")
     return ok(head, changed=False, groups=out, files_with_transcript=scanned,
               note="likely_best is a heuristic over measured facts (fillers, finished sentence, order); check it before cutting")
+
+
+# ============================ refine_cut_tool ============================
+def _refined(f, shelf, sha: str, probe: Dict[str, Any], near: float, radius: float) -> Dict[str, Any]:
+    from classes.media_index import refine
+    name = f"refine_{int(round(near * 1000))}_{int(round(radius * 1000))}.json"
+    saved = shelf.read_json(sha, name) if sha else None
+    if isinstance(saved, dict) and saved.get("kind"):
+        return {**saved, "cached": True}
+    try:
+        result = refine.refine_cut(_audio_path(f), probe, near, radius)
+    except RuntimeError as exc:
+        raise ToolError(f"could not read the picture: {exc}")
+    if sha:
+        shelf.write_json(sha, name, result)
+    return {**result, "cached": False}
+
+
+@editor_tool(
+    "refine_cut_tool",
+    covers=("index.refine",),
+    label="Exact cut frame",
+    schema=obj({
+        **FILE_TARGET,
+        "near_seconds": number("Roughly where the cut is, in the file's own seconds (a boundary from search_footage_tool or get_segment_dossier_tool).", None, minimum=0),
+        "shot_id": integer("Instead of near_seconds: a shot id from the dossier; both its start and its end are made exact.", None, minimum=0),
+        "radius_seconds": number("How far either side of the hint to look.", 0.5, minimum=0.1, maximum=2.0),
+    }),
+    read_only=True,
+)
+def refine_cut(file_ids=None, file_query="", near_seconds=None, shot_id=None, radius_seconds=0.5):
+    """Find the exact frame of a cut. The index finds boundaries to about a tenth of a second; this decodes the stretch around
+    one at every frame (with each frame's real timestamp, so variable frame rate is safe) and returns the first frame of the
+    new shot for a hard cut, or the whole span and centre of a dissolve or a fade through black. A flash is not a cut and
+    comes back as none. It tells you how far the hint was off. Run it only for the cut you are about to make: it is computed on
+    demand and kept on the shelf. Measured from the original file.
+    """
+    if near_seconds is None and shot_id is None:
+        raise ToolError("give near_seconds (roughly where the cut is) or a shot_id")
+    f = resolve_files(file_ids, file_query)[0]
+    if str(f.data.get("media_type") or "video") != "video":
+        raise ToolError("only video has cuts")
+    sha = sha_of(f.data.get("fingerprint"))
+    shelf = default_shelf()
+    probe = probe_media(_audio_path(f))
+    if not probe.get("ok") or not probe.get("video"):
+        raise ToolError("could not read the picture of this file")
+    radius = float(radius_seconds)
+    if shot_id is not None:
+        structure = (shelf.read_json(sha, "structure.json") if sha else None) or {}
+        shot = next((s for s in structure.get("shots") or [] if int(s["id"]) == int(shot_id)), None)
+        if shot is None:
+            raise ToolError(f"no shot {shot_id} in this file's index (get_segment_dossier_tool lists the shots)")
+        edges = {}
+        last = max(int(s["id"]) for s in structure["shots"])
+        for label, at, skip in (("start", float(shot["start"]), int(shot_id) == 0), ("end", float(shot["end"]), int(shot_id) == last)):
+            edges[label] = {"kind": "file_edge", "t": round(at, 3), "note": "the start or end of the file"} if skip else _refined(f, shelf, sha, probe, at, radius)
+        bits = [f"{k} {v['t']:.3f} s" + (f" (frame {v['frame']})" if "frame" in v and v.get("kind") != "file_edge" else "") for k, v in edges.items() if "t" in v]
+        return ok(f"Shot {shot_id}: " + ", ".join(bits) + ".", changed=False, file_id=str(f.id), shot_id=int(shot_id), edges=edges)
+    result = _refined(f, shelf, sha, probe, float(near_seconds), radius)
+    if result["kind"] == "none":
+        return ok(f"No cut near {float(near_seconds):.2f} s: {result.get('reason', 'nothing changes like a cut')}.", changed=False, file_id=str(f.id), cut=result)
+    what = {"hard": "cut", "dissolve": "dissolve", "fade": "fade through black"}[result["kind"]]
+    frame = f" (frame {result['frame']} at {result['fps']:g} fps)" if "frame" in result else ""
+    span = f", from {result['start']:.3f} s to {result['end']:.3f} s" if "start" in result else ""
+    return ok(f"The {what} is at {result['t']:.3f} s{frame}{span}; the hint was {abs(result['hint_error']):.2f} s {'early' if result['hint_error'] > 0 else 'late'}.",
+              changed=False, file_id=str(f.id), cut=result)
