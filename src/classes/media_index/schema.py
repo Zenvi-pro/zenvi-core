@@ -19,11 +19,15 @@ LAYER_STRUCTURE = "structure"
 LAYER_AUDIO = "audio"
 LAYER_SPEECH = "speech"
 LAYER_LOOK = "look"
+LAYER_WATCH = "watch"        # cloud: what happens in each shot (one cheap Gemini pass)
+LAYER_VECTORS = "vectors"    # cloud: text and picture vectors for search
 LAYER_VERSIONS = {
     LAYER_STRUCTURE: 1,
     LAYER_AUDIO: 1,
     LAYER_SPEECH: 1,
     LAYER_LOOK: 1,
+    LAYER_WATCH: 1,
+    LAYER_VECTORS: 1,
 }
 
 # One decode pass feeds cuts, motion and colour: small frames, ten per second. Measured:
@@ -36,3 +40,10 @@ ANALYSIS_FPS = 10.0
 # covers more than SHOT_MAX_SECONDS (finer search and cheaper watching).
 SHOT_MIN_SECONDS = 0.3
 SHOT_MAX_SECONDS = 8.0
+
+# Cloud layers.
+EMBED_DIMS = 768                  # vector size stored on the shelf (float16, L2-normalised)
+KEYFRAME_EVERY_SECONDS = 2.0      # at least one picture vector this often inside a shot
+MAX_KEYFRAMES = 3000              # a safety cap per file
+KEYFRAME_LONG_EDGE = 384
+PROXY_HEIGHT = 480

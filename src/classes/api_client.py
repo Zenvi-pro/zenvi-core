@@ -1310,6 +1310,48 @@ class ZenviBackendClient:
             log.warning("restore_index failed: %s", exc)
             return {"success": False, "unsupported": False, "error": str(exc)}
 
+    # -- media index v2 -----------------------------------------------------------------
+    def _v2(self, method: str, path: str, payload: Optional[Dict[str, Any]] = None, *,
+            timeout: float = 60, session=None) -> Dict[str, Any]:
+        """Call /index/v2/<path>. Never raises: errors come back as ``{"error": ...}`` and
+        ``unsupported`` marks a backend that has no v2 routes (the caller then uses v1)."""
+        try:
+            s = session or self.session
+            url = f"{self.api_url}/index/v2{path}"
+            r = s.get(url, timeout=timeout) if method == "GET" else s.post(url, json=payload or {}, timeout=timeout)
+            if r.status_code in (404, 405):
+                return {"unsupported": True, "error": "this backend has no media index v2"}
+            if r.status_code in (401, 403):
+                return {"auth": True, "error": "sign in to use the media index"}
+            r.raise_for_status()
+            data = r.json()
+            return data if isinstance(data, dict) else {"error": "unexpected response"}
+        except Exception as exc:
+            log.warning("media index v2 %s %s failed: %s", method, path, exc)
+            return {"error": str(exc)}
+
+    def v2_upload_session(self, file_id: str, filename: str, total_size: int, mime_type: str = "video/mp4",
+                          session=None) -> Dict[str, Any]:
+        return self._v2("POST", "/upload-session", {"file_id": file_id, "filename": filename,
+                                                    "total_size": int(total_size), "mime_type": mime_type}, session=session)
+
+    def v2_understand(self, file_name: str, file_uri: str, shots: List[Dict[str, Any]],
+                      transcript: List[Dict[str, Any]], mime_type: str = "video/mp4",
+                      media_type: str = "video", session=None) -> Dict[str, Any]:
+        return self._v2("POST", "/understand", {"file_name": file_name, "file_uri": file_uri, "mime_type": mime_type,
+                                                "media_type": media_type, "shots": shots, "transcript": transcript},
+                        timeout=120, session=session)
+
+    def v2_job(self, job_id: str, session=None) -> Dict[str, Any]:
+        return self._v2("GET", f"/job/{job_id}", timeout=15, session=session)
+
+    def v2_embed(self, items: List[Dict[str, Any]], dims: int = 768, task_type: Optional[str] = None,
+                 session=None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"items": items, "dims": int(dims)}
+        if task_type:
+            payload["task_type"] = task_type
+        return self._v2("POST", "/embed", payload, timeout=180, session=session)
+
     def is_indexing_configured(self) -> bool:
         """Check whether the backend has video indexing configured."""
         try:

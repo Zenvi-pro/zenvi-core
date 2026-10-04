@@ -197,3 +197,34 @@ def test_manifest_is_valid_json_with_a_schema_version(shelf):
     shelf.set_layer(FP, "facts", version=1, status="ready")
     raw = json.loads(Path(shelf.entry_dir(FP), "manifest.json").read_text())
     assert raw["schema_version"] == store_mod.SCHEMA_VERSION
+
+
+# -- binary files (vectors) --------------------------------------------------------
+def test_binary_files_round_trip_atomically(shelf):
+    blob = bytes(range(256)) * 40
+    assert shelf.write_bytes(FP, "vectors_text.f16", blob)
+    assert shelf.read_bytes(FP, "vectors_text.f16") == blob
+    assert [n for n in os.listdir(shelf.entry_dir(FP)) if n.endswith(".partial")] == []
+    assert shelf.read_bytes(FP, "vectors_image.f16") is None
+
+
+@pytest.mark.parametrize("name", ["../x.f16", "a/b.f16", "x.exe", "", ".hidden.f16", "x.f16/../y.f16"])
+def test_binary_names_are_confined(shelf, name):
+    assert shelf.write_bytes(FP, name, b"x") is False
+    assert shelf.read_bytes(FP, name) is None
+
+
+def test_binary_writes_need_a_real_key(shelf):
+    assert shelf.write_bytes("../../etc", "v.f16", b"x") is False
+    assert not os.path.exists(shelf.root)
+
+
+def test_vector_files_travel_with_their_layer(shelf, tmp_path):
+    shelf.write_bytes(FP, "vectors_text.f16", b"abcd")
+    shelf.write_json(FP, "vectors_index.json", {"rows": 2})
+    shelf.set_layer(FP, "vectors", version=1, status="ready")
+    project = tmp_path / "proj" / "index"
+    shelf.export_entries([FP], str(project))
+    other = Shelf(str(tmp_path / "other"))
+    assert other.import_entries(str(project)) == [FP]
+    assert other.read_bytes(FP, "vectors_text.f16") == b"abcd" and other.read_json(FP, "vectors_index.json") == {"rows": 2}

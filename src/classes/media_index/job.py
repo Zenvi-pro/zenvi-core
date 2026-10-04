@@ -67,6 +67,96 @@ class IndexingJob:
         except Exception as exc:  # includes facts.Cancelled
             log.info("Local media analysis stopped for %s: %s", file_path, exc)
 
+    def _v2_index_block(self, index_name, file_id, media_type, sha):
+        block = {"status": "ready", "index_id": index_name, "index_name": index_name, "video_id": file_id,
+                 "provider": "gemini-v2", "media_type": media_type, "v2": True, "fingerprint": sha}
+        return block
+
+    def _try_v2(self, client, file_path, media_type, duration, file_id, index_name, metadata):
+        """The media index v2 path (preference on). Returns True when it finished the job.
+
+        False means "carry on with the original indexing": no fingerprint, or a backend that
+        has no v2 routes yet. A file whose v2 layers are already on the shelf is restored for
+        free, in any project, with no sign-in and no charge.
+        """
+        from classes.media_index import S_WATCH, S_VECTORS, cloud, default_shelf
+        from classes.media_index import schema as S
+
+        sha = self._fingerprint_sha(file_path)
+        if not sha:
+            return False
+        shelf = default_shelf()
+
+        def ready(layer):
+            return shelf.layer_ready(sha, layer, version=S.LAYER_VERSIONS[layer])
+
+        def build():
+            structure = shelf.read_json(sha, "structure.json") or {}
+            watch = shelf.read_json(sha, "watch.json") or {"shots": []}
+            speech = shelf.read_json(sha, "speech.json") if ready(S.LAYER_SPEECH) else None
+            meta = cloud.v1_metadata_from_v2(watch, speech, structure, media_type)
+            block = self._v2_index_block(index_name, file_id, media_type, sha)
+            meta["index"], meta["twelvelabs"] = block, dict(block)
+            return meta
+
+        done_watch = ready(S_WATCH) or media_type != "video"
+        if done_watch and ready(S_VECTORS):
+            self._progress(file_id, "done", 100)
+            self._completed(self.file_data, build(), None)
+            return True
+
+        if not self._signed_in():
+            from classes.indexing_status import SKIP_SIGNIN
+            metadata["skip_reason"] = "Sign in to Zenvi to index this file for search."
+            metadata["skip_code"] = SKIP_SIGNIN
+            self._completed(self.file_data, metadata, None)
+            return True
+
+        from classes.credits_client import charge_operation_on_success, check_operation
+        credit_duration = duration if media_type != "image" else 60.0
+        _, _balance, blocked = check_operation("indexing_per_minute", f"{media_type} indexing", duration_seconds=credit_duration)
+        if blocked:
+            block = {"status": "skipped", "error": blocked, "index_name": index_name, "provider": "gemini-v2", "media_type": media_type}
+            metadata["index"], metadata["twelvelabs"] = block, dict(block)
+            self._completed(self.file_data, metadata, None)
+            return True
+
+        from classes.media_index.probe import probe_media
+        probe = probe_media(file_path)
+
+        def on_progress(fraction):
+            if fraction < 0.4:
+                self._progress(file_id, "uploading", int(fraction / 0.4 * 100))
+            else:
+                self._progress(file_id, "indexing", -1)
+
+        try:
+            result = cloud.compute_cloud(client, file_path, probe, sha, shelf, file_id=file_id, media_type=media_type,
+                                         should_cancel=lambda: self._cancelled, on_progress=on_progress)
+        except cloud.Cancelled:
+            self._completed(self.file_data, metadata, None)
+            return True
+        if result.get("unsupported"):
+            log.info("This backend has no media index v2; using the original indexing")
+            return False
+        if result.get("auth"):
+            from classes.indexing_status import SKIP_SIGNIN
+            metadata["skip_reason"] = "Sign in to Zenvi to index this file for search."
+            metadata["skip_code"] = SKIP_SIGNIN
+            self._completed(self.file_data, metadata, None)
+            return True
+        if result.get("error"):
+            block = {"status": "failed", "error": result["error"], "index_name": index_name, "provider": "gemini-v2", "media_type": media_type}
+            metadata["index"], metadata["twelvelabs"], metadata["error"] = block, dict(block), result["error"]
+            self._completed(self.file_data, metadata, None)
+            return True
+        charge_operation_on_success(True, "indexing_per_minute", provider="gemini", note=f"import {file_id}",
+                                    duration_seconds=credit_duration)
+        meta = build()
+        self._progress(file_id, "done", 100)
+        self._completed(self.file_data, meta, None)
+        return True
+
     def run(self):
         import os as _os
 
@@ -108,6 +198,12 @@ class IndexingJob:
                 from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
 
                 index_name = build_project_index_name(self.project_id)
+
+                from classes.media_index.flags import v2_enabled
+                if not self.summarize_only and v2_enabled() and self._try_v2(
+                        client, file_path, media_type, duration, file_id, index_name, metadata):
+                    return
+
                 indexing_configured = client.is_indexing_configured()
 
                 existing_ai = self.file_data.get("ai_metadata") or {}

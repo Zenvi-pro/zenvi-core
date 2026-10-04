@@ -34,6 +34,7 @@ LAYER_V1 = "v1_index"
 
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*\.json$")
+_BIN_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*\.(json|f16|png|jpg)$")
 _LAYER_RE = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
 _MANIFEST = "manifest.json"
 _tmp_counter = itertools.count()
@@ -53,6 +54,25 @@ def sha_of(fingerprint: Any) -> str:
     key = fingerprint.get("sha256") if isinstance(fingerprint, dict) else fingerprint
     key = str(key or "").strip().lower()
     return key if _SHA_RE.match(key) else ""
+
+
+def _atomic_write_bytes(path: str, data: bytes) -> None:
+    folder = os.path.dirname(path)
+    os.makedirs(folder, exist_ok=True)
+    tmp = os.path.join(folder, ".%s.%d.%d.%d.partial" % (
+        os.path.basename(path), os.getpid(), threading.get_ident(), next(_tmp_counter)))
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _atomic_write_json(path: str, data: Any) -> None:
@@ -132,6 +152,29 @@ class Shelf:
         except Exception:
             log.error("Could not write media index file %s", path, exc_info=True)
             return False
+
+    def write_bytes(self, fingerprint: Any, name: str, data: bytes) -> bool:
+        """Write a binary file (vectors, images) into an entry, atomically."""
+        if not self.entry_dir(fingerprint, create=True) or not _BIN_RE.match(str(name or "")):
+            return False
+        try:
+            with self._lock:
+                _atomic_write_bytes(os.path.join(self.entry_dir(fingerprint), name), bytes(data))
+            return True
+        except Exception:
+            log.error("Could not write media index file %s", name, exc_info=True)
+            return False
+
+    def read_bytes(self, fingerprint: Any, name: str) -> Optional[bytes]:
+        entry = self.entry_dir(fingerprint)
+        if not entry or not _BIN_RE.match(str(name or "")):
+            return None
+        path = os.path.join(entry, name)
+        try:
+            with open(path, "rb") as fh:
+                return fh.read()
+        except OSError:
+            return None
 
     def _file(self, fingerprint: Any, name: str) -> str:
         entry = self.entry_dir(fingerprint)
