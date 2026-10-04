@@ -81,6 +81,11 @@ SERVER_INSTRUCTIONS = (
     "on-device visual search; search_footage_tool searches everything the index knows (what happens, what is said, how it looks); search_clips_tool remains the cloud tier."
 )
 
+# The editing playbook (how to finish a whole piece) is one text shared with the Zenvi Assistant; see classes.edit_playbook.
+from classes.edit_playbook import PLAYBOOK  # noqa: E402
+
+SERVER_INSTRUCTIONS = SERVER_INSTRUCTIONS + "\n\n" + PLAYBOOK
+
 # Preferred port: stable across restarts so a CLI registered once (e.g.
 # ``claude mcp add zenvi --transport http http://127.0.0.1:7434/mcp``) keeps
 # working. Falls back to an ephemeral port if taken — only the terminal-attach
