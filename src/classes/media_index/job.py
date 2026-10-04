@@ -39,6 +39,33 @@ class IndexingJob:
         self._completed = emit_completed
         self._progress = emit_progress
         self._intermediate = emit_intermediate
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        """Ask the job to stop at its next check (called from another thread at app quit)."""
+        self._cancelled = True
+
+    def _run_local_facts(self, file_path, media_type, file_id):
+        """The local analysis layers (shots, colour, audio, transcript), when the preference is on.
+
+        Runs before any cloud step and needs no sign-in, so it works offline. It never raises:
+        whatever happens here, indexing carries on exactly as it did before.
+        """
+        try:
+            from classes.media_index.flags import v2_enabled
+            if not v2_enabled():
+                return
+            from classes.media_index import facts
+            self._progress(file_id, "analyzing", 0)
+            facts.compute_facts(
+                file_path,
+                fingerprint=self.file_data.get("fingerprint"),
+                media_type=media_type,
+                should_cancel=lambda: self._cancelled,
+                on_progress=lambda f: self._progress(file_id, "analyzing", int(f * 100)),
+            )
+        except Exception as exc:  # includes facts.Cancelled
+            log.info("Local media analysis stopped for %s: %s", file_path, exc)
 
     def run(self):
         import os as _os
@@ -59,6 +86,10 @@ class IndexingJob:
                 media_type = get_media_type(self.file_data) if self.file_data else "video"
             if media_type in ("video", "image", "audio"):
 
+                self._run_local_facts(file_path, media_type, file_id)
+                if self._cancelled:
+                    self._completed(self.file_data, metadata, None)
+                    return
                 duration = float(self.file_data.get("duration") or 0)
                 if media_type != "image" and duration > self._MAX_INDEXING_SECONDS:
                     log.warning(

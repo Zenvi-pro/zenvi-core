@@ -233,3 +233,81 @@ def test_signing_in_later_lets_the_same_file_index(monkeypatch, tmp_path):
     meta, _ = h.run(file_id="f1", existing_ai=skipped)
     h.client.start_direct_indexing_job.assert_called_once()
     assert meta["index"]["status"] == "ready" and "skip_code" not in meta
+
+
+# -- local analysis (media-index-v2) --------------------------------------------------
+def _facts_calls(monkeypatch, enabled, raises=None):
+    from classes.media_index import facts, flags
+    calls = []
+    monkeypatch.setattr(flags, "v2_enabled", lambda: enabled)
+
+    def fake(path, **kw):
+        calls.append((path, kw))
+        if raises:
+            raise raises
+        kw["on_progress"](0.5)
+        return {"ok": True}
+
+    monkeypatch.setattr(facts, "compute_facts", fake)
+    return calls
+
+
+def test_with_the_preference_off_no_local_analysis_runs(monkeypatch, tmp_path):
+    calls = _facts_calls(monkeypatch, enabled=False)
+    h = Harness(monkeypatch, tmp_path)
+    h.run()
+    assert calls == []
+    h.client.start_direct_indexing_job.assert_called_once()
+
+
+def test_with_it_on_the_analysis_runs_first_and_reports_progress(monkeypatch, tmp_path):
+    calls = _facts_calls(monkeypatch, enabled=True)
+    h = Harness(monkeypatch, tmp_path)
+    _meta, progress = h.run()
+    assert len(calls) == 1 and calls[0][0] == str(h.media) and calls[0][1]["media_type"] == "video"
+    assert progress[0] == ("analyzing", 0) and ("analyzing", 50) in progress
+    h.client.start_direct_indexing_job.assert_called_once()
+
+
+def test_the_analysis_runs_even_when_signed_out(monkeypatch, tmp_path):
+    calls = _facts_calls(monkeypatch, enabled=True)
+    h = Harness(monkeypatch, tmp_path, signed_in=False)
+    meta, _ = h.run()
+    assert len(calls) == 1 and meta["skip_code"] == "signin"
+
+
+def test_a_failing_analysis_never_stops_indexing(monkeypatch, tmp_path):
+    _facts_calls(monkeypatch, enabled=True, raises=RuntimeError("decoder exploded"))
+    h = Harness(monkeypatch, tmp_path)
+    meta, _ = h.run()
+    h.client.start_direct_indexing_job.assert_called_once()
+    assert meta["index"]["status"] == "ready"
+
+
+def test_a_clip_over_the_cloud_cap_is_still_analysed_locally(monkeypatch, tmp_path):
+    calls = _facts_calls(monkeypatch, enabled=True)
+    h = Harness(monkeypatch, tmp_path)
+    meta, _ = h.run(duration=45 * 60.0)
+    assert len(calls) == 1 and "30-minute" in meta["skip_reason"]
+    h.client.start_direct_indexing_job.assert_not_called()
+
+
+def test_cancelling_during_analysis_ends_the_job_without_cloud_work(monkeypatch, tmp_path):
+    from classes.media_index import facts, flags
+    monkeypatch.setattr(flags, "v2_enabled", lambda: True)
+    h = Harness(monkeypatch, tmp_path)
+    done = []
+    job = IndexingJob({"id": "f1", "path": str(h.media), "media_type": "video", "duration": 5.0}, "p1", False,
+                      client_factory=lambda: h.client, emit_completed=lambda fd, md, err: done.append(md),
+                      emit_progress=lambda *a: None, emit_intermediate=lambda *a: None)
+
+    def fake(path, should_cancel=None, **kw):
+        job.cancel()
+        assert should_cancel() is True
+        raise facts.Cancelled()
+
+    monkeypatch.setattr(facts, "compute_facts", fake)
+    job.run()
+    assert len(done) == 1
+    h.client.start_direct_indexing_job.assert_not_called()
+    h.client.restore_index.assert_not_called()

@@ -99,6 +99,7 @@ class BackendIndexingWorker(QThread):
         self.file_data = file_data
         self.project_id = project_id or ""
         self.summarize_only = bool(summarize_only)
+        self._job = None
 
 
     def run(self):
@@ -106,16 +107,20 @@ class BackendIndexingWorker(QThread):
         # this thread only supplies the backend client and the three signals.
         from classes.media_index.job import IndexingJob
 
-        IndexingJob(
+        self._job = IndexingJob(
             self.file_data, self.project_id, self.summarize_only,
             client_factory=get_backend_client,  # looked up now, so a test can patch the module name
             emit_completed=self.completed.emit,
             emit_progress=self.progress.emit,
             emit_intermediate=self.intermediate_save.emit,
-        ).run()
+        )
+        self._job.run()
 
     def interrupt(self):
-        """Close the active HTTP session to unblock any pending request."""
+        """Stop local analysis and close the active HTTP session to unblock any pending request."""
+        job = getattr(self, "_job", None)
+        if job is not None:
+            job.cancel()
         try:
             client = get_backend_client()
             if client._session is not None:

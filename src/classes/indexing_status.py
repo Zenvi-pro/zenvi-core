@@ -20,6 +20,7 @@ SKIPPED = "skipped"
 SKIP_SIGNIN = "signin"
 
 PHASE_LABELS = {
+    "analyzing": "Analyzing shots, colour and sound…",
     "uploading": "Uploading for search…",
     "indexing": "Indexing for search…",
     "summarizing": "Generating description…",
