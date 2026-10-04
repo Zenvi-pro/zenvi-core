@@ -145,6 +145,8 @@ CAPABILITIES = [
     ("index.long_file", "media-index", "Project Files", "Approve describing a file over 30 minutes after seeing the passes and the cost ceiling"),
     ("index.health", "media-index", "Project Files", "What about the footage will cause trouble: variable frame rate, interlacing, HDR, frame rate and size that do not fit the project"),
     ("index.context", "media-index", "Timeline", "What is under, above and around a clip, and what a delete, trim or lengthen would move"),
+    ("index.framing", "media-index", "Project profile / reframe", "Where the subject of a shot is and where a crop window of another shape should sit to keep it in shot"),
+    ("index.reframe", "media-index", "Project profile / reframe", "Fill the frame with footage of another shape and keep the subject in shot, in one undo step"),
     ("index.refine", "media-index", "Timeline razor / trim", "The exact frame of a cut near a rough time, computed on demand at the file's own frame rate"),
     ("index.voice", "media-index", "Audio waveform", "The exact instants a voice starts and stops in a stretch of a file, with the pauses inside"),
     ("index.retakes", "media-index", "Transcript editing", "Lines said more than once, each take measured, with a likely best"),

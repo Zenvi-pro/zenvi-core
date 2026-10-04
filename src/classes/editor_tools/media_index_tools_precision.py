@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from classes.editor_tools._base import ToolError, boolean, enum, get_app, integer, number, obj, ok, string
+from classes.editor_tools._base import ToolError, array, boolean, enum, get_app, integer, number, obj, ok, on_main, string
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.media_files import FILE_TARGET, _display_name, resolve_files
 from classes.editor_tools.media_index_tools import _all_files, _index_for
@@ -363,3 +363,185 @@ def refine_cut(file_ids=None, file_query="", near_seconds=None, shot_id=None, ra
     span = f", from {result['start']:.3f} s to {result['end']:.3f} s" if "start" in result else ""
     return ok(f"The {what} is at {result['t']:.3f} s{frame}{span}; the hint was {abs(result['hint_error']):.2f} s {'early' if result['hint_error'] > 0 else 'late'}.",
               changed=False, file_id=str(f.id), cut=result)
+
+
+# ============================ framing: where the subject is, and reframing to keep it in shot ============================
+ASPECTS = {"9:16": 9 / 16, "4:5": 4 / 5, "1:1": 1.0, "3:4": 3 / 4, "2:3": 2 / 3, "16:9": 16 / 9, "21:9": 21 / 9}
+
+
+def _frame_aspect(text: str) -> float:
+    text = str(text or "project").strip().lower()
+    if text in ("", "project"):
+        project = _project_facts()
+        if not project["width"] or not project["height"]:
+            raise ToolError("the project has no size yet")
+        return project["width"] / project["height"]
+    if text in ASPECTS:
+        return ASPECTS[text]
+    try:
+        w, _, h = text.partition(":")
+        value = float(w) / float(h)
+    except (TypeError, ValueError, ZeroDivisionError):
+        raise ToolError(f"aspect must be 'project' or one of {', '.join(ASPECTS)} (or w:h)")
+    if not 0.2 <= value <= 5.0:
+        raise ToolError("that aspect is outside 1:5 to 5:1")
+    return value
+
+
+def _framing_cached(f, shelf, sha: str, path: str, start: float, end: float, fraction: float, axis: str) -> Dict[str, Any]:
+    from classes.media_index import framing
+    name = f"framing_{int(round(start * 1000))}_{int(round(end * 1000))}_{int(round(fraction * 1000))}_{axis}.json"
+    saved = shelf.read_json(sha, name) if sha else None
+    if isinstance(saved, dict) and saved.get("samples"):
+        return {**saved, "cached": True}
+    try:
+        result = framing.framing_of(path, start, end, fraction, axis)
+    except RuntimeError as exc:
+        raise ToolError(f"could not read the picture: {exc}")
+    if sha:
+        shelf.write_json(sha, name, result)
+    return {**result, "cached": False}
+
+
+def _window_of(source_aspect: float, frame_aspect: float):
+    """(axis, fraction of the picture a crop window covers) for filling a frame of another shape, or None when the shapes match."""
+    from classes.media_index import framing
+    if abs(source_aspect - frame_aspect) / frame_aspect < framing.SAME_SHAPE:
+        return None
+    return ("x", frame_aspect / source_aspect) if source_aspect > frame_aspect else ("y", source_aspect / frame_aspect)
+
+
+@editor_tool(
+    "get_framing_tool",
+    covers=("index.framing",),
+    label="Where the subject is",
+    schema=obj({
+        **FILE_TARGET,
+        "start_seconds": number("Start of the stretch, in the file's own seconds.", None, minimum=0),
+        "end_seconds": number("End of the stretch.", None, minimum=0),
+        "aspect": string("The frame shape to fill: 'project' (default), 9:16, 4:5, 1:1, 3:4, 2:3, 16:9, 21:9 or w:h.", "project"),
+    }, required=["start_seconds", "end_seconds"]),
+    read_only=True,
+)
+def get_framing(start_seconds, end_seconds, file_ids=None, file_query="", aspect="project"):
+    """Find where the subject of a shot is, and where a crop window of another shape (a vertical 9:16 from landscape footage,
+    say) should sit to keep it in shot. It reads a few frames, finds the part of the picture that draws the eye, and returns
+    the window's position over time, whether the subject moves, and a confidence. It is an attention heuristic, not an
+    understanding of the picture: a small subject against bright clutter can be missed, and when confidence is low it says so
+    (check those shots by eye). Faces count extra when the people index is on. The result includes the values to give the
+    clip (set_clip_properties_tool, or reframe_to_subject_tool to do it for you). Measured from the original; kept on the shelf.
+    """
+    from classes.media_index import framing
+    if float(end_seconds) - float(start_seconds) < 0.2:
+        raise ToolError("give a stretch at least 0.2 s long")
+    f = resolve_files(file_ids, file_query)[0]
+    if str(f.data.get("media_type") or "video") not in ("video", "image"):
+        raise ToolError("only pictures have a subject to frame")
+    probe = probe_media(_audio_path(f))
+    video = probe.get("video") or {}
+    if not video.get("width") or not video.get("height"):
+        raise ToolError("could not read the picture of this file")
+    source_aspect = video["width"] / video["height"]
+    frame_aspect = _frame_aspect(aspect)
+    window = _window_of(source_aspect, frame_aspect)
+    if window is None:
+        return ok("The footage already has the shape of that frame: nothing to reframe.", changed=False, file_id=str(f.id), source_aspect=round(source_aspect, 3))
+    axis, fraction = window
+    sha = sha_of(f.data.get("fingerprint"))
+    result = _framing_cached(f, default_shelf(), sha, _audio_path(f), float(start_seconds), float(end_seconds), fraction, axis)
+    place = framing.offsets(result, source_aspect, frame_aspect)
+    prop = place["property"]
+    suggestion = {"properties": {"scale": "Crop", "gravity": "Center", prop: place["static"]}}
+    if place.get("keyframes"):
+        suggestion["keyframes"] = {prop: place["keyframes"], "note": "the subject moves: set these with set_clip_properties_tool(at_seconds=...) on the timeline, or let reframe_to_subject_tool do it"}
+    sure = "" if result["sure"] else " Not sure: nothing stands out clearly, so check this shot by eye."
+    direction = "across" if axis == "x" else "down"
+    moving = ""
+    if result["moves"]:
+        moving = " (the subject moves: " + ", ".join("%.0f%%" % (r["window_center"] * 100) for r in result["samples"]) + ")"
+    head = "Keep the window at %.0f%% of the way %s the picture%s; confidence %.2f.%s" % (result["center"] * 100, direction, moving, result["confidence"], sure)
+    return ok(head, changed=False, file_id=str(f.id), framing=result, placement=place, suggestion=suggestion, source_aspect=round(source_aspect, 3), frame_aspect=round(frame_aspect, 3))
+
+
+@editor_tool(
+    "reframe_to_subject_tool",
+    covers=("index.reframe",),
+    label="Reframe to the subject",
+    schema=obj({
+        "timeline_clip_ids": array({"type": "string"}, "Clips to reframe (default: every full-frame picture clip whose shape differs from the project's)."),
+        "aspect": string("The frame shape to fill: 'project' (default), 9:16, 4:5, 1:1, 3:4, 2:3, 16:9, 21:9 or w:h.", "project"),
+        "dry_run": boolean("Only say what each clip would get; change nothing.", False),
+    }),
+)
+def reframe_to_subject(timeline_clip_ids=None, aspect="project", dry_run=False):
+    """Fill the frame with footage of another shape (landscape clips in a vertical project, say) and keep the subject in shot,
+    instead of cutting people in half with a centre crop. For each full-frame picture clip it sets crop-to-fill and positions
+    the picture on the subject (a fixed position, or keyframes across the clip when the subject moves), all in one undo step.
+    Clips moved or resized as picture-in-picture, titles, and clips on locked tracks are left alone, and every clip reports
+    its confidence: where nothing stands out it still centres but says to check it by eye. Use get_framing_tool first to
+    look at one shot, or dry_run to see the plan.
+    """
+    from classes.editor_tools import clip_props, clip_props_model as cpm
+    from classes.editor_tools._base import is_locked, refresh_preview
+    from classes.editor_tools.project_export_profiles import GRAVITY_CENTER, SCALE_CROP, _constant, _source_aspect
+    from classes.media_index import framing
+    from classes.query import Clip, File
+    frame_aspect = _frame_aspect(aspect)
+    wanted = {str(x) for x in timeline_clip_ids} if timeline_clip_ids else None
+    shelf = default_shelf()
+    plans: List[Any] = []
+    report: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, str]] = []
+    for clip in Clip.filter():
+        if wanted is not None and str(clip.id) not in wanted:
+            continue
+        data = clip.data if isinstance(clip.data, dict) else {}
+        reader = data.get("reader") or {}
+        path = str(reader.get("path") or "")
+        if not reader.get("has_video", True) or reader.get("media_type") == "audio" or path.lower().endswith(".svg"):
+            continue
+        source_aspect = _source_aspect(data)
+        window = _window_of(source_aspect, frame_aspect) if source_aspect else None
+        if window is None:
+            continue
+        if not (_constant(data.get("scale_x"), 1.0) and _constant(data.get("scale_y"), 1.0) and _constant(data.get("location_x"), 0.0) and _constant(data.get("location_y"), 0.0)):
+            skipped.append({"timeline_clip_id": str(clip.id), "reason": "resized or moved (picture-in-picture) clip kept"})
+            continue
+        if is_locked(int(data.get("layer") or 0)):
+            skipped.append({"timeline_clip_id": str(clip.id), "reason": "track is locked"})
+            continue
+        axis, fraction = window
+        file_obj = File.get(id=str(data.get("file_id") or ""))
+        sha = sha_of((file_obj.data if file_obj else {}).get("fingerprint"))
+        from classes.path_utils import absolute_media_path
+        media_path = absolute_media_path(path) or path
+        start, end = float(data.get("start") or 0.0), float(data.get("end") or 0.0)
+        result = _framing_cached(file_obj, shelf, sha, media_path, start, end, fraction, axis)
+        place = framing.offsets(result, source_aspect, frame_aspect)
+        prop = place["property"]
+        ct = cpm.ClipTime.of(data)
+        if place.get("keyframes"):                  # X is a 1-based clip frame that counts the trimmed-off source frames
+            points = [cpm.make_point(ct.from_source_seconds(kf["t"]), kf["value"], cpm.BEZIER) for kf in place["keyframes"]]
+            curve = {"Points": sorted(points, key=lambda p: float(p["co"]["X"]))}
+        else:
+            curve = {"Points": [cpm.make_point(1, place["static"], cpm.BEZIER)]}
+        values = {"scale": SCALE_CROP, "gravity": GRAVITY_CENTER, prop: curve}
+        plans.append((str(clip.id), values))
+        report.append({"timeline_clip_id": str(clip.id), "name": str(data.get("title") or ""), "property": prop, "value": place["static"],
+                       "moving": bool(result["moves"]), "keyframes": len(place.get("keyframes") or []), "confidence": result["confidence"], "sure": result["sure"],
+                       "clamped": place["clamped"]})
+    if not plans:
+        return ok("Nothing to reframe: no full-frame picture clip has a shape different from that frame.", changed=False, skipped=skipped, clips=[])
+    unsure = [r for r in report if not r["sure"]]
+    note = f" {len(unsure)} clip(s) had no clear subject and are centred: check them by eye." if unsure else ""
+    if dry_run:
+        return ok(f"Would reframe {len(plans)} clip(s) to keep the subject in shot.{note}", changed=False, dry_run=True, clips=report, skipped=skipped)
+
+    def apply() -> None:
+        with clip_props._transaction():
+            for clip_id, values in plans:
+                clip_props.save_clip_values(clip_id, values)
+        refresh_preview()
+
+    on_main(apply)
+    return ok(f"Reframed {len(plans)} clip(s) to keep the subject in shot (crop to fill, positioned on the subject).{note}", changed=True, clips=report, skipped=skipped)

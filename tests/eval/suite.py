@@ -73,6 +73,28 @@ def exact_frames() -> Dict[str, Any]:
             "false_cuts_in_quiet_or_flash_clips": quiet}
 
 
+# ============================ subject framing ============================
+def framing() -> Dict[str, Any]:
+    """Where to put a vertical crop window: does it hold a known object, and does a picture with no subject admit it has none?"""
+    from classes.media_index import framing as F
+    fraction = (9 / 16) / (16 / 9)
+    rng = np.random.default_rng(11)
+    w, h = 128, 72
+    held, errors = 0, []
+    cases = [(cx, noise, seed) for cx in (0.15, 0.3, 0.5, 0.7, 0.85) for noise, seed in ((10, 1), (18, 2), (28, 3))]
+    for cx, noise, seed in cases:
+        img = np.random.default_rng(seed).normal(110, noise, (h, w))
+        yy, xx = np.mgrid[0:h, 0:w]
+        img[((xx / w - cx) ** 2 * (w / h) ** 2 + (yy / h - 0.5) ** 2) < 0.08 ** 2] = 235
+        win = F.best_window(F.saliency(np.clip(img, 0, 255).astype(np.uint8)), fraction)
+        errors.append(abs(win["center"] - cx))
+        held += int(abs(win["center"] - cx) <= fraction / 2)
+    empty = [np.full((h, w), 90, np.uint8)] + [np.clip(rng.normal(110, sd, (h, w)), 0, 255).astype(np.uint8) for sd in (8, 18, 28)]
+    falsely_sure = sum(1 for img in empty if F.best_window(F.saliency(img), fraction)["confidence"] >= F.LOW_CONFIDENCE)
+    return {"scenes": len(cases), "window_holds_object": round(held / len(cases), 3), "mean_window_error": round(float(np.mean(errors)), 3),
+            "pictures_with_no_subject": len(empty), "falsely_sure_about_no_subject": falsely_sure}
+
+
 # ============================ music ============================
 TRACKS = {
     "easy": dict(),
@@ -211,4 +233,4 @@ def quality(seeds: Tuple[int, ...] = (1, 2, 3, 4)) -> Dict[str, Any]:
 
 # ============================ everything ============================
 def run_fast() -> Dict[str, Any]:
-    return {"shots": shots(), "exact_frames": exact_frames(), "music": music(), "voice_edges": voice_edges(), "quality": quality()}
+    return {"shots": shots(), "exact_frames": exact_frames(), "framing": framing(), "music": music(), "voice_edges": voice_edges(), "quality": quality()}
