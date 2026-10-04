@@ -21,8 +21,12 @@ from classes.media_index import schema as S
 
 # --- sharpness: the strong edges of the lightly smoothed frame, relative to its own contrast -------
 SHARP_PERCENTILE = 95.0
-SOFT_REL = 0.6              # a shot this much softer than its file's median is "soft"
-BLURRY_REL = 0.35
+SOFT_REL = 0.70             # a shot this much softer than its file's median is "soft"
+BLURRY_REL = 0.52
+# Calibrated (tests/eval, `quality`): textured scenes blurred by a Gaussian of 3, 6 and 12 px at 1080p measure 0.83, 0.65 and 0.49
+# of the sharp take, so "soft" at 0.70 catches a clearly visible blur and "blurry" at 0.52 a heavy one. Real footage varies far less
+# between the shots of one file (22 phone, camera and stock shots: 0.90-1.00, one mixed-trailer shot at 0.54), so this adds no false
+# accusations there. The old 0.60 and 0.35 missed the 6 px blur completely.
 # A file with one shot has no siblings to compare with, so there is also an absolute floor: a real scene at
 # 320 px blurred by about 6 px measures 0.24 and the same scene sharp 0.6 (see frame_sharpness).
 ABS_BLURRY = 0.22

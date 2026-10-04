@@ -53,6 +53,20 @@ BLACK_LUMA = 0.05
 BLACK_MIN_SECONDS = 0.3
 EDGE_MARGIN = 0.4             # boundaries this close to the start or end are not boundaries
 
+# --- a transition is a run of steps, a cut is one spike ------------------------------------
+# Each step of a dissolve or fade can look like a cut by itself (the histogram jumps), so the cut test alone reports
+# several "cuts" in one transition. These rules look at the run around a reported cut and, when it is a smooth ramp,
+# replace the cuts with one boundary. They only reclassify boundaries already reported; they never add a new cut.
+DIP_LUMA = 0.08               # a fade through black reaches (nearly) black ...
+DIP_SHOULDER_LUMA = 0.10      # ... from and back to a picture at least this bright
+DIP_MIN_STEPS = 3             # steps (frames) of steady darkening before it and steady brightening after it
+DIP_STEP_LUMA = 0.01          # a step of the ramp changes the mean brightness by at least this (a scene drifts by far less)
+DIP_SPAN_SECONDS = 3.0        # the whole dip, down and up, is at most this long
+TRANSITION_GUARD_SECONDS = 0.8   # no second transition starts this soon after one ends: such a "dissolve" is its tail
+GRADUAL_B = 0.12              # histogram change per step that counts as "the picture is changing"
+GRADUAL_MAX_A = CUT_A_ABS     # but the pixels move less than a cut's step: a blend, not a jump
+GRADUAL_MIN_STEPS = 4         # consecutive steps of that
+
 # --- motion -----------------------------------------------------------------------------
 WIN = 128                     # phase correlation runs on the centre WIN x WIN of the grey frame
 MIN_PEAK = 0.10               # below this the correlation peak is noise
@@ -65,6 +79,85 @@ BUSY_DIFF = 0.03
 
 # --- sharpness: a per-shot median needs far fewer frames than cut detection does ----------------
 SHARP_EVERY = 3
+
+
+# ============================ transitions: ramps, not cuts ============================
+def find_dips(lumas: List[float], fps: float) -> List[Dict[str, float]]:
+    """Fades through black: the picture darkens steadily to (nearly) black and brightens steadily again.
+
+    Returns ``{"t", "start", "end"}`` (seconds) for each dip: the darkest frame and the span of both ramps. A dip needs
+    ``DIP_MIN_STEPS`` frames of steady change on each side, so a black frame between two cuts, a one-frame dropout and
+    a dark scene are none of them dips. Black held for ``BLACK_MIN_SECONDS`` or more is a shot of its own (the black
+    run logic reports it), not a dip.
+    """
+    out: List[Dict[str, float]] = []
+    n = len(lumas)
+    i = 1
+    while i < n - 1:
+        if lumas[i] >= DIP_LUMA or lumas[i] > lumas[i - 1] + 1e-9:
+            i += 1
+            continue
+        lo = i
+        while lo > 0 and lumas[lo - 1] > lumas[lo] + DIP_STEP_LUMA:         # walk back up the way down
+            lo -= 1
+        j = i
+        while j + 1 < n and lumas[j + 1] <= lumas[j] + 1e-3 and lumas[j + 1] < DIP_LUMA:   # across the bottom
+            j += 1
+        hi = j
+        while hi + 1 < n and lumas[hi + 1] > lumas[hi] + DIP_STEP_LUMA:      # up the other side
+            hi += 1
+        down, up = i - lo, hi - j
+        held = (j - i + 1) / fps >= BLACK_MIN_SECONDS
+        if (not held and down >= DIP_MIN_STEPS and up >= DIP_MIN_STEPS and lumas[lo] >= DIP_SHOULDER_LUMA
+                and lumas[hi] >= DIP_SHOULDER_LUMA and (hi - lo) / fps <= DIP_SPAN_SECONDS):
+            darkest = min(range(i, j + 1), key=lambda k: lumas[k])
+            out.append({"t": darkest / fps, "start": lo / fps, "end": hi / fps})
+        i = max(j, hi) + 1
+    return out
+
+
+def find_gradual_runs(pairs: List[Dict[str, Any]], fps: float) -> List[Dict[str, float]]:
+    """Runs of steps where the histogram keeps moving but the pixels hardly do: the signature of a dissolve."""
+    out: List[Dict[str, float]] = []
+    run: List[Dict[str, Any]] = []
+
+    def close() -> None:
+        if len(run) >= GRADUAL_MIN_STEPS:
+            first, last = run[0]["t"], run[-1]["t"]
+            out.append({"t": (first + last) / 2.0, "start": first - 1.0 / fps, "end": last})
+        run.clear()
+
+    for p in pairs:
+        if p.get("b") is not None and p["b"] >= GRADUAL_B and p["diff"] < GRADUAL_MAX_A:
+            run.append(p)
+        else:
+            close()
+    close()
+    return out
+
+
+def reconcile_transitions(boundaries: List[Dict[str, Any]], dips: List[Dict[str, float]],
+                          runs: List[Dict[str, float]], fps: float) -> List[Dict[str, Any]]:
+    """Replace the cuts reported inside a fade or a dissolve by one boundary at its centre.
+
+    The tail of a reconciled transition (a "dissolve" reported just after it) is dropped too.
+    """
+    kept = list(boundaries)
+    for dip in dips:
+        inside = [b for b in kept if b["kind"] in ("hard", "dissolve") and dip["start"] - 1.0 / fps <= b["t"] <= dip["end"] + 1.0 / fps]
+        if not inside:
+            continue
+        kept = [b for b in kept if b not in inside]
+        if not any(b["kind"] == "fade" and abs(b["t"] - dip["t"]) < DIP_SPAN_SECONDS / 2 for b in kept):
+            kept.append({"t": round(dip["t"], 3), "kind": "fade", "score": 1.0})
+    for run in runs:
+        inside = [b for b in kept if b["kind"] == "hard" and run["start"] - 1.0 / fps <= b["t"] <= run["end"] + 1.0 / fps]
+        if not inside:
+            continue                       # nothing was reported as a cut here: not this rule's business
+        kept = [b for b in kept if b not in inside]
+        kept = [b for b in kept if not (b["kind"] == "dissolve" and (run["start"] - TRANSITION_GUARD_SECONDS <= b["t"] <= run["end"] + TRANSITION_GUARD_SECONDS))]
+        kept.append({"t": round(run["t"], 3), "kind": "dissolve", "score": 1.0})
+    return sorted(kept, key=lambda b: b["t"])
 
 
 # ============================ small pure helpers ============================
@@ -466,10 +559,10 @@ def analyze_structure(
             if is_cut:
                 pending_cut = (idx, a, b)
                 gray_before_pending = prev_gray
-                pair = {"t": idx / fps, "diff": a, "cut": True}
+                pair = {"t": idx / fps, "diff": a, "b": b, "cut": True}
             else:
                 m = motion_between(prev_gray, gray)
-                pair = {"t": idx / fps, "diff": a, "cut": False}
+                pair = {"t": idx / fps, "diff": a, "b": b, "cut": False}
                 if m:
                     pair.update(m)
             pairs.append(pair)
@@ -519,6 +612,7 @@ def analyze_structure(
         return {"frames": frames_seen, "still": True, "analysis": {"fps": fps, "width": width, "height": height},
                 "boundaries": [], "shots": []}
     total = duration if duration > 0 else frames_seen / fps
+    boundaries = reconcile_transitions(boundaries, find_dips(lumas, fps), find_gradual_runs(pairs, fps), fps)
     merged = merge_boundaries(boundaries, total)
     shots = build_shots(merged, total)
     for shot in shots:

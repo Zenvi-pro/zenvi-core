@@ -411,3 +411,61 @@ def test_cancelling_stops_the_decode_and_raises(clips):
 def test_frames_visited_matches_the_duration(clips):
     res = analyse(clips["hard"])
     assert res["frames"] == pytest.approx(160, abs=3)   # four 4 s scenes at 10 fps
+
+
+# ============================ transitions are ramps, not several cuts ============================
+def _ramp(a, b, steps):
+    return [a + (b - a) * (i + 1) / steps for i in range(steps)]
+
+
+def test_a_fade_through_black_is_one_dip_in_the_brightness():
+    lumas = [0.5] * 10 + _ramp(0.5, 0.02, 5) + _ramp(0.02, 0.5, 5) + [0.5] * 10
+    dips = st.find_dips(lumas, 10.0)
+    assert len(dips) == 1 and dips[0]["t"] == pytest.approx(1.4, abs=0.1) and dips[0]["start"] < 1.1 < 1.5 < dips[0]["end"] + 0.5
+
+
+@pytest.mark.parametrize("name,lumas", [
+    ("a cut to black held for a second", [0.5] * 10 + [0.01] * 10 + [0.5] * 10),
+    ("a black frame between two cuts", [0.5] * 10 + [0.01] + [0.5] * 10),
+    ("a dark scene", [0.06] * 30),
+    ("a slow drift", [0.5 - 0.002 * i for i in range(60)]),
+    ("a fade-in from black at the start", _ramp(0.02, 0.5, 6) + [0.5] * 10),
+    ("black held after a ramp (its own shot)", [0.5] * 5 + _ramp(0.5, 0.01, 5) + [0.01] * 5 + _ramp(0.01, 0.5, 5) + [0.5] * 5),
+    ("a ramp that never gets near black", [0.5] * 5 + _ramp(0.5, 0.3, 5) + _ramp(0.3, 0.5, 5)),
+])
+def test_things_that_are_not_a_dip_are_not_found(name, lumas):
+    assert st.find_dips(lumas, 10.0) == [], name
+
+
+def test_a_run_of_steady_histogram_change_with_little_pixel_change_is_a_dissolve():
+    pairs = [{"t": i / 10.0, "diff": 0.03, "b": 0.02 if i < 5 or i > 14 else 0.35} for i in range(30)]
+    runs = st.find_gradual_runs(pairs, 10.0)
+    assert len(runs) == 1 and runs[0]["t"] == pytest.approx(0.95, abs=0.06) and runs[0]["start"] < 0.5 and runs[0]["end"] >= 1.4
+
+
+@pytest.mark.parametrize("name,pairs", [
+    ("a single spike (a cut)", [{"t": i / 10.0, "diff": 0.03, "b": 0.5 if i == 10 else 0.02} for i in range(30)]),
+    ("large pixel change each step (fast motion, not a blend)", [{"t": i / 10.0, "diff": 0.2, "b": 0.35} for i in range(30)]),
+    ("a short burst of three", [{"t": i / 10.0, "diff": 0.03, "b": 0.35 if 10 <= i < 13 else 0.02} for i in range(30)]),
+])
+def test_other_changes_are_not_gradual_runs(name, pairs):
+    assert st.find_gradual_runs(pairs, 10.0) == [], name
+
+
+def test_reconciling_replaces_the_cuts_inside_a_transition_with_one_boundary():
+    hard = lambda t: {"t": t, "kind": "hard", "score": 2.0}  # noqa: E731
+    fade = st.reconcile_transitions([hard(3.6), hard(4.0), hard(4.4), hard(9.0)], [{"t": 4.0, "start": 3.5, "end": 4.5}], [], 10.0)
+    assert [(b["t"], b["kind"]) for b in fade] == [(4.0, "fade"), (9.0, "hard")]
+    dissolve = st.reconcile_transitions([hard(4.1), hard(9.0)], [], [{"t": 4.45, "start": 3.9, "end": 5.0}], 10.0)
+    assert [(b["t"], b["kind"]) for b in dissolve] == [(4.45, "dissolve"), (9.0, "hard")]
+
+
+def test_a_gradual_run_with_no_reported_cut_adds_nothing():
+    assert st.reconcile_transitions([{"t": 9.0, "kind": "hard", "score": 2.0}], [], [{"t": 4.45, "start": 3.9, "end": 5.0}], 10.0) == \
+        [{"t": 9.0, "kind": "hard", "score": 2.0}], "this rule only reclassifies boundaries that were already reported"
+
+
+def test_the_tail_of_a_reconciled_dissolve_is_not_reported_again():
+    kept = st.reconcile_transitions([{"t": 4.1, "kind": "hard", "score": 2.0}, {"t": 5.4, "kind": "dissolve", "score": 0.9}, {"t": 12.0, "kind": "dissolve", "score": 0.9}],
+                                    [], [{"t": 4.45, "start": 3.9, "end": 5.0}], 10.0)
+    assert [(b["t"], b["kind"]) for b in kept] == [(4.45, "dissolve"), (12.0, "dissolve")], "a dissolve right after one is its tail; a later one is real"
