@@ -308,3 +308,78 @@ def test_only_the_named_clips_are_reframed(project):
     b = ed.add_clip(project.video, position=6.0, layer=1000000, start=0.0, end=5.0)
     r = reframe(project, timeline_clip_ids=[b])
     assert [c["timeline_clip_id"] for c in r["data"]["clips"]] == [b] and ed.clip(a).get("scale") != 0
+
+
+# ============================ faces from the people scan ============================
+def tracks_at(*boxes_by_time):
+    return [{"samples": [{"t": t, "box": box} for t, box in boxes_by_time]}]
+
+
+def test_faces_come_from_a_scan_near_the_time_asked_and_none_when_there_are_none_near():
+    at = F.faces_at_from_tracks(tracks_at((2.0, [0.1, 0.2, 0.1, 0.2]), (4.0, [0.7, 0.2, 0.1, 0.2])))
+    assert at(2.3) == [[0.1, 0.2, 0.1, 0.2]] and at(3.9) == [[0.7, 0.2, 0.1, 0.2]]
+    assert at(10.0) is None and F.faces_at_from_tracks([])(1.0) is None
+    both = F.faces_at_from_tracks(tracks_at((2.0, [0.1, 0.2, 0.1, 0.2]), (2.1, [0.7, 0.2, 0.1, 0.2])))
+    assert len(both(2.05)) == 2, "two faces seen at about the same time both count"
+
+
+def test_the_method_says_faces_were_used_only_when_a_face_was_there():
+    plain = F.framing_of("x", 0.0, 10.0, NINE_SIXTEEN_OF_16_9, frames=fake_frames([0.8] * 5))
+    assert plain["method"] == "saliency" and plain["faces_in_samples"] == 0
+    faced = F.framing_of("x", 0.0, 10.0, NINE_SIXTEEN_OF_16_9, frames=fake_frames([0.8] * 5), faces_at=lambda t: [(0.05, 0.3, 0.15, 0.3)])
+    assert faced["method"] == "saliency+faces" and faced["faces_in_samples"] == 5
+    none_near = F.framing_of("x", 0.0, 10.0, NINE_SIXTEEN_OF_16_9, frames=fake_frames([0.8] * 5), faces_at=lambda t: None)
+    assert none_near["method"] == "saliency"
+
+
+@pytest.fixture
+def people_on(library, monkeypatch):
+    from classes import info
+    from classes.media_index import people as pp
+    monkeypatch.setattr(info, "USER_PATH", str(library.shelf.root) + "_user", raising=False)
+    monkeypatch.setattr("classes.media_index.flags.people_enabled", lambda: True)
+    sha = "a" * 64
+    v = np.zeros(128, np.float32)
+    v[0] = 1.0
+    w = np.zeros(128, np.float32)
+    w[1] = 1.0
+    shots = [{"id": 0, "start": 0.0, "end": 10.0}]
+    d = lambda t, vec, box: {"t": t, "box": box, "px": 100, "score": 0.9, "vec": vec}   # noqa: E731
+    scan = pp.build_scan([d(t, v, [0.05, 0.3, 0.15, 0.3]) for t in (1.0, 3.0, 5.0)] + [d(t, w, [0.8, 0.3, 0.15, 0.3]) for t in (1.0, 3.0, 5.0)], shots, 6, 10.0)
+    pp._write_json(pp._scan_path(sha), scan)
+    pp.assign_new_faces(sha, scan)
+    pp.name_person("P1", "Left")
+    pp.name_person("P2", "Right")
+    return pp
+
+
+def test_with_people_on_the_window_follows_the_faces_and_a_named_person_is_followed_exactly(people_on, library):
+    _, plain = call("get_framing_tool", file_ids=["V1"], start_seconds=0.0, end_seconds=8.0, aspect="9:16")
+    assert plain["framing"]["method"] == "saliency+faces"
+    _, left = call("get_framing_tool", file_ids=["V1"], start_seconds=0.0, end_seconds=8.0, aspect="9:16", person="left")
+    _, right = call("get_framing_tool", file_ids=["V1"], start_seconds=0.0, end_seconds=8.0, aspect="9:16", person="P2")
+    assert left["framing"]["center"] < 0.4 < 0.6 < right["framing"]["center"], "the window goes to the person asked for"
+    assert left["framing"]["person_in_shot"] is True and left["framing"]["method"] == "saliency+faces"
+
+
+def test_a_person_who_is_not_in_the_stretch_says_so_and_a_missing_name_or_scan_is_an_error(people_on, library):
+    head, r = call("get_framing_tool", file_ids=["V1"], start_seconds=8.5, end_seconds=9.9, aspect="9:16", person="Left")
+    assert "was not found on screen" in head and r["framing"]["person_in_shot"] is False
+    assert "no person 'Zed'" in REGISTRY["get_framing_tool"].func(file_ids=["V1"], start_seconds=0.0, end_seconds=4.0, aspect="9:16", person="Zed")
+    people_on.delete_all()
+    assert "no people scan" in REGISTRY["get_framing_tool"].func(file_ids=["V1"], start_seconds=0.0, end_seconds=4.0, aspect="9:16", person="Left")
+    _, still = call("get_framing_tool", file_ids=["V1"], start_seconds=0.0, end_seconds=4.0, aspect="9:16")
+    assert still["framing"]["method"] == "saliency", "without a scan, framing is as before"
+
+
+def test_following_a_person_needs_the_preference(library, monkeypatch):
+    monkeypatch.setattr("classes.media_index.flags.people_enabled", lambda: False)
+    assert "needs the people preference" in REGISTRY["get_framing_tool"].func(file_ids=["V1"], start_seconds=0.0, end_seconds=4.0, aspect="9:16", person="Left")
+
+
+def test_a_cached_framing_is_not_reused_for_a_different_person(people_on, library):
+    call("get_framing_tool", file_ids=["V1"], start_seconds=0.0, end_seconds=8.0, aspect="9:16", person="Left")
+    _, other = call("get_framing_tool", file_ids=["V1"], start_seconds=0.0, end_seconds=8.0, aspect="9:16", person="Right")
+    assert other["framing"]["cached"] is False
+    _, again = call("get_framing_tool", file_ids=["V1"], start_seconds=0.0, end_seconds=8.0, aspect="9:16", person="Right")
+    assert again["framing"]["cached"] is True

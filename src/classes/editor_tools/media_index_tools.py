@@ -148,13 +148,15 @@ def restrict_files(files, captured_after: str, captured_before: str, place_id: i
         "captured_before": string("Only footage shot on or before this date (a date means the end of that day).", ""),
         "place_id": integer("Only footage shot at this place (ids come from get_project_overview_tool's trip.places); -1 = anywhere.", -1,
                             minimum=-1),
+        "person": string("Only shots this person is on screen in: a name the user gave (list_people_tool) or an id like P3. Needs the people "
+                         "preference and a people scan. A possible match is left out and counted in `unsure_shots`.", ""),
         "limit": integer("Most results to return.", 10, minimum=1, maximum=50),
         "cursor": integer("Where to continue: the `next` of the previous result.", 0, minimum=0),
     }),
     read_only=True,
 )
 def search_footage(query="", look_for="", reference_file_id="", reference_start=None, reference_end=None, match="picture",
-                   filters=None, file_ids=None, sort="relevance", captured_after="", captured_before="", place_id=-1, limit=10, cursor=0):
+                   filters=None, file_ids=None, sort="relevance", captured_after="", captured_before="", place_id=-1, person="", limit=10, cursor=0):
     """Search every indexed file in the project and return the best moments, each with the file, the in and out
     seconds (snapped to the real cut, or to the spoken sentence), where in it the match peaks and why.
 
@@ -170,6 +172,10 @@ def search_footage(query="", look_for="", reference_file_id="", reference_start=
     if not files:
         raise ToolError("no indexed footage yet" + (f" ({len(missing)} file(s) still indexing or not indexed)" if missing else "")
                         + "; index_status_tool shows progress")
+    filters = dict(filters or {})
+    person_note = {}
+    if person:
+        filters["person_shots"], person_note = _person_shots(files, str(person))
     qv = embed_query(query) if query else None
     ref_vec = ref_look = None
     if reference_file_id:
@@ -188,10 +194,40 @@ def search_footage(query="", look_for="", reference_file_id="", reference_start=
     result = msearch.search(files, query_vector=qv, reference_vector=ref_vec, reference_look=ref_look, look_for=look_for or "",
                             filters=filters or {}, limit=int(limit), offset=int(cursor), sort=str(sort or "relevance"))
     hits = [_nonempty({**h, "sha": None, "scores": h["scores"]}) for h in result["hits"]]
+    if person_note:
+        for h, raw in zip(hits, result["hits"]):
+            h["person_confidence"] = person_note["confidence"].get(raw["sha"], {}).get(raw["shot_id"])
     summary = f"{result['total']} match(es)" + (f", showing {len(hits)}" if len(hits) < result["total"] else "")
     if not hits:
         summary = "no matches" + (" (a weak match is treated as none; try other words or fewer filters)" if result["ranked"] or query else "")
-    return ok(summary, hits=hits, total=result["total"], next=result["next"], not_indexed=missing[:20])
+    extra = {"person": person_note["who"], "unsure_shots": person_note["unsure_shots"]} if person_note else {}
+    return ok(summary, hits=hits, total=result["total"], next=result["next"], not_indexed=missing[:20], **extra)
+
+
+def _person_shots(files, person: str):
+    """({file_id: {shot ids}}, note) for search's person filter. Raises ToolError saying what to do when it cannot be answered."""
+    from classes.media_index import people as pp
+    from classes.media_index.flags import people_enabled
+    if not people_enabled():
+        raise ToolError("searching by person needs the people preference turned on (Preferences) and a people scan of the footage")
+    reg = pp.load_registry()
+    found = pp.find_people(reg, person)
+    if not found:
+        known = [p["name"] or p["id"] for p in reg["people"] if p.get("name")][:12]
+        raise ToolError(f"no person called {person!r}" + (f" (named people: {', '.join(known)})" if known else ": name someone first with name_person_tool, or look with list_people_tool"))
+    scans = {fi.sha: s for fi in files for s in [pp.load_scan(fi.sha)] if s}
+    unscanned = [fi.name for fi in files if fi.media_type == "video" and fi.sha not in scans]
+    by_sha = pp.shots_with(reg, [p["id"] for p in found], scans)
+    unsure = 0
+    for fi in files:
+        scan = scans.get(fi.sha)
+        for tr in (pp.resolve_tracks(fi.sha, scan, reg) if scan else []):
+            if tr["status"] == "unsure" and tr["candidate"] in {p["id"] for p in found}:
+                unsure += 1
+    by_file = {fi.file_id: set(by_sha.get(fi.sha, {})) for fi in files}
+    note = {"who": {"ids": [p["id"] for p in found], "name": found[0].get("name"), "not_scanned": unscanned[:12] or None},
+            "unsure_shots": unsure, "confidence": by_sha}
+    return by_file, note
 
 
 @editor_tool(
@@ -461,8 +497,9 @@ def locate_in_footage(what, kind="auto", file_ids=None, start=None, end=None, li
             data = pf.data if pf is not None else {}
             width, height = int(data.get("width") or video.get("width") or 0), int(data.get("height") or video.get("height") or 0)
             fps = float(video.get("fps") or 0.0)
+            length = data.get("video_length")
             try:
-                frames = int(float(data.get("video_length"))) if data.get("video_length") else None
+                frames = int(float(length)) if length else None
             except (TypeError, ValueError):
                 frames = None
             hit["handoff"] = handoff.mask_handoff(hit, width, height, fps, frames, for_action) or {"unavailable": "no box for this hit, or the frame size is unknown: "

@@ -389,16 +389,49 @@ def _frame_aspect(text: str) -> float:
     return value
 
 
-def _framing_cached(f, shelf, sha: str, path: str, start: float, end: float, fraction: float, axis: str) -> Dict[str, Any]:
+def _faces_for_framing(sha: str, person: str = ""):
+    """(faces_at, cache tag) from the people scan when people identity is on and the file was scanned, else (None, "").
+
+    With *person*, only that person's faces count: the crop follows them. Raises ToolError when nobody has that name.
+    """
+    from classes.media_index import framing, people as pp
+    from classes.media_index.flags import people_enabled
+    if not sha or not people_enabled():
+        if person:
+            raise ToolError("following a person needs the people preference on and a people scan (scan_people_tool)")
+        return None, ""
+    scan = pp.load_scan(sha)
+    if not scan:
+        if person:
+            raise ToolError("this file has no people scan yet: run scan_people_tool, then ask again")
+        return None, ""
+    reg = pp.load_registry()
+    tracks = pp.resolve_tracks(sha, scan, reg)
+    tag = f"faces{len(tracks)}"
+    if person:
+        found = pp.find_people(reg, person)
+        if not found:
+            raise ToolError(f"no person {person!r} (list_people_tool lists them)")
+        ids = {p["id"] for p in found}
+        tracks = [t for t in tracks if t["person"] in ids]
+        tag = "p" + "-".join(sorted(ids)) + f"n{len(tracks)}"
+    return framing.faces_at_from_tracks(tracks), tag
+
+
+def _framing_cached(f, shelf, sha: str, path: str, start: float, end: float, fraction: float, axis: str, person: str = "") -> Dict[str, Any]:
     from classes.media_index import framing
-    name = f"framing_{int(round(start * 1000))}_{int(round(end * 1000))}_{int(round(fraction * 1000))}_{axis}.json"
+    faces_at, tag = _faces_for_framing(sha, person)
+    name = f"framing_{int(round(start * 1000))}_{int(round(end * 1000))}_{int(round(fraction * 1000))}_{axis}{('_' + tag) if tag else ''}.json"
     saved = shelf.read_json(sha, name) if sha else None
     if isinstance(saved, dict) and saved.get("samples"):
         return {**saved, "cached": True}
     try:
-        result = framing.framing_of(path, start, end, fraction, axis)
+        result = framing.framing_of(path, start, end, fraction, axis, faces_at=faces_at)
     except RuntimeError as exc:
         raise ToolError(f"could not read the picture: {exc}")
+    if person:
+        result["person"] = person
+        result["person_in_shot"] = bool(result["faces_in_samples"])
     if sha:
         shelf.write_json(sha, name, result)
     return {**result, "cached": False}
@@ -421,15 +454,16 @@ def _window_of(source_aspect: float, frame_aspect: float):
         "start_seconds": number("Start of the stretch, in the file's own seconds.", None, minimum=0),
         "end_seconds": number("End of the stretch.", None, minimum=0),
         "aspect": string("The frame shape to fill: 'project' (default), 9:16, 4:5, 1:1, 3:4, 2:3, 16:9, 21:9 or w:h.", "project"),
+        "person": string("Keep this person in shot (a name the user gave, or an id like P3). Needs the people preference and a people scan.", ""),
     }, required=["start_seconds", "end_seconds"]),
     read_only=True,
 )
-def get_framing(start_seconds, end_seconds, file_ids=None, file_query="", aspect="project"):
+def get_framing(start_seconds, end_seconds, file_ids=None, file_query="", aspect="project", person=""):
     """Find where the subject of a shot is, and where a crop window of another shape (a vertical 9:16 from landscape footage,
     say) should sit to keep it in shot. It reads a few frames, finds the part of the picture that draws the eye, and returns
     the window's position over time, whether the subject moves, and a confidence. It is an attention heuristic, not an
     understanding of the picture: a small subject against bright clutter can be missed, and when confidence is low it says so
-    (check those shots by eye). Faces count extra when the people index is on. The result includes the values to give the
+    (check those shots by eye). When people identity is on and the file was scanned, faces count extra, and with person the window follows that person. The result includes the values to give the
     clip (set_clip_properties_tool, or reframe_to_subject_tool to do it for you). Measured from the original; kept on the shelf.
     """
     from classes.media_index import framing
@@ -449,13 +483,15 @@ def get_framing(start_seconds, end_seconds, file_ids=None, file_query="", aspect
         return ok("The footage already has the shape of that frame: nothing to reframe.", changed=False, file_id=str(f.id), source_aspect=round(source_aspect, 3))
     axis, fraction = window
     sha = sha_of(f.data.get("fingerprint"))
-    result = _framing_cached(f, default_shelf(), sha, _audio_path(f), float(start_seconds), float(end_seconds), fraction, axis)
+    result = _framing_cached(f, default_shelf(), sha, _audio_path(f), float(start_seconds), float(end_seconds), fraction, axis, str(person or ""))
     place = framing.offsets(result, source_aspect, frame_aspect)
     prop = place["property"]
     suggestion = {"properties": {"scale": "Crop", "gravity": "Center", prop: place["static"]}}
     if place.get("keyframes"):
         suggestion["keyframes"] = {prop: place["keyframes"], "note": "the subject moves: set these with set_clip_properties_tool(at_seconds=...) on the timeline, or let reframe_to_subject_tool do it"}
     sure = "" if result["sure"] else " Not sure: nothing stands out clearly, so check this shot by eye."
+    if person and not result.get("person_in_shot"):
+        sure += f" {person} was not found on screen in this stretch, so this follows the main subject instead."
     direction = "across" if axis == "x" else "down"
     moving = ""
     if result["moves"]:
@@ -472,9 +508,10 @@ def get_framing(start_seconds, end_seconds, file_ids=None, file_query="", aspect
         "timeline_clip_ids": array({"type": "string"}, "Clips to reframe (default: every full-frame picture clip whose shape differs from the project's)."),
         "aspect": string("The frame shape to fill: 'project' (default), 9:16, 4:5, 1:1, 3:4, 2:3, 16:9, 21:9 or w:h.", "project"),
         "dry_run": boolean("Only say what each clip would get; change nothing.", False),
+        "person": string("Keep this person in shot in every clip (a name the user gave, or an id like P3); needs a people scan.", ""),
     }),
 )
-def reframe_to_subject(timeline_clip_ids=None, aspect="project", dry_run=False):
+def reframe_to_subject(timeline_clip_ids=None, aspect="project", dry_run=False, person=""):
     """Fill the frame with footage of another shape (landscape clips in a vertical project, say) and keep the subject in shot,
     instead of cutting people in half with a centre crop. For each full-frame picture clip it sets crop-to-fill and positions
     the picture on the subject (a fixed position, or keyframes across the clip when the subject moves), all in one undo step.
@@ -517,7 +554,7 @@ def reframe_to_subject(timeline_clip_ids=None, aspect="project", dry_run=False):
         from classes.path_utils import absolute_media_path
         media_path = absolute_media_path(path) or path
         start, end = float(data.get("start") or 0.0), float(data.get("end") or 0.0)
-        result = _framing_cached(file_obj, shelf, sha, media_path, start, end, fraction, axis)
+        result = _framing_cached(file_obj, shelf, sha, media_path, start, end, fraction, axis, str(person or ""))
         place = framing.offsets(result, source_aspect, frame_aspect)
         prop = place["property"]
         ct = cpm.ClipTime.of(data)

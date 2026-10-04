@@ -76,6 +76,8 @@ def passes_filters(shot: Dict[str, Any], f: Dict[str, Any], fi: FileIndex) -> bo
     motion = shot.get("motion") or {}
     if f.get("camera") and motion.get("class") != f["camera"]:
         return False
+    if "person_shots" in f and int(shot["id"]) not in ((f["person_shots"] or {}).get(fi.file_id) or ()):
+        return False                         # only the shots a chosen person is on screen in (computed by the caller from people data)
     watch = shot.get("watch") or {}
     if f.get("shot_type") and (watch.get("shot_type") or "") != str(f["shot_type"]).lower():
         return False

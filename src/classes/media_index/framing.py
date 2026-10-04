@@ -106,6 +106,23 @@ def with_faces(sal: np.ndarray, faces: Optional[Sequence[Sequence[float]]]) -> n
     return out / out.sum()
 
 
+FACE_REACH = 1.0               # a face seen this many seconds from a sample still counts for it (the scan looks every half second)
+
+
+def faces_at_from_tracks(tracks: Sequence[Dict[str, Any]], reach: float = FACE_REACH) -> Callable[[float], Optional[List[List[float]]]]:
+    """A ``faces_at(t)`` for ``framing_of`` from a people scan's tracks: the face boxes seen nearest to *t* (None when none are near)."""
+    samples = [(float(sm["t"]), sm["box"]) for tr in tracks for sm in tr.get("samples", [])]
+
+    def faces_at(t: float) -> Optional[List[List[float]]]:
+        near = [(abs(st - t), box) for st, box in samples if abs(st - t) <= reach]
+        if not near:
+            return None
+        best = min(d for d, _ in near)
+        return [list(box) for d, box in near if d - best < 1e-6 or d <= 0.25]
+
+    return faces_at
+
+
 def subject_of(sal: np.ndarray) -> Dict[str, float]:
     """The centre (x, y as fractions of the picture) of the strongest part of the map, and how spread out it is."""
     h, w = sal.shape
@@ -163,8 +180,11 @@ def framing_of(path: str, start: float, end: float, window_fraction: float, axis
     ``axis`` is the way the window slides ("x" for a vertical crop of landscape footage, "y" for the reverse).
     """
     rows = []
+    with_face = 0
     for t, gray in (frames or source_frames)(path, start, end, samples):
-        sal = with_faces(saliency(gray), faces_at(t) if faces_at else None)
+        found = faces_at(t) if faces_at else None
+        with_face += 1 if found else 0
+        sal = with_faces(saliency(gray), found)
         subject = subject_of(sal)
         window = best_window(sal, window_fraction, axis)
         rows.append({"t": t, "x": subject["x"], "y": subject["y"], "window_center": window["center"], "held": window["held"], "confidence": window["confidence"]})
@@ -174,7 +194,7 @@ def framing_of(path: str, start: float, end: float, window_fraction: float, axis
     moves = (max(centres) - min(centres)) > MOVES_AT
     confidence = round(float(np.median([r["confidence"] for r in rows])), 3)
     return {"axis": axis, "samples": rows, "center": round(median, 4), "range": [round(min(centres), 4), round(max(centres), 4)], "moves": bool(moves),
-            "confidence": confidence, "sure": confidence >= LOW_CONFIDENCE, "method": "saliency", "kind": "measured",
+            "confidence": confidence, "sure": confidence >= LOW_CONFIDENCE, "method": "saliency+faces" if with_face else "saliency", "faces_in_samples": with_face, "kind": "measured",
             "window_fraction": round(window_fraction, 4)}
 
 

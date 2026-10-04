@@ -100,6 +100,29 @@ class IndexingJob:
             )
         except Exception as exc:  # includes facts.Cancelled
             log.info("Local media analysis stopped for %s: %s", file_path, exc)
+            return
+        self._run_people_scan(file_path, media_type)
+
+    def _run_people_scan(self, file_path, media_type):
+        """Find the faces in a video when the people preference is on and the models are already installed (it never downloads).
+
+        Local only. Never raises: whatever happens here, indexing carries on exactly as it did before.
+        """
+        try:
+            from classes.media_index.flags import people_enabled
+            if media_type != "video" or not people_enabled():
+                return
+            from classes.media_index import default_shelf, library, people, people_models
+            st = people_models.status()
+            sha = self._fingerprint_sha(file_path)
+            if not sha or not st["runtime"] or not all(st["models"].values()) or people.load_scan(sha):
+                return
+            fi = library.get_file_index(default_shelf(), sha, file_id=str(self.file_data.get("id") or ""), name=file_path)
+            if fi is None or not fi.shots:
+                return
+            people.scan_video(file_path, sha, fi.shots, fi.duration, should_cancel=lambda: self._cancelled)
+        except Exception as exc:  # includes cancellation
+            log.info("People scan skipped for %s: %s", file_path, exc)
 
     def _long_file_needs_approval(self, file_path, duration, metadata) -> bool:
         """True (with the reason and the cost estimate written into *metadata*) when a file over 30 minutes must not go on.

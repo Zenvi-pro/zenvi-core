@@ -23,6 +23,7 @@ WORKSTREAM_MODULES = (
     "media_index_tools_review",
     "media_index_tools_edit",
     "media_index_tools_precision",
+    "media_index_tools_people",
 )
 
 WORKSTREAM_OF_MODULE = {
@@ -60,4 +61,5 @@ from classes.editor_tools import (  # noqa: E402,F401
     media_index_tools_review,
     media_index_tools_edit,
     media_index_tools_precision,
+    media_index_tools_people,
 )

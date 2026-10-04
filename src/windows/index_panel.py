@@ -15,6 +15,7 @@ try:
         QLabel,
         QListWidget,
         QListWidgetItem,
+        QMessageBox,
         QPushButton,
         QVBoxLayout,
         QWidget,
@@ -52,6 +53,11 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
         row.addWidget(self._refresh_btn, 0)
         layout.addLayout(row)
 
+        self._people_btn = QPushButton("Delete people data…")
+        self._people_btn.setToolTip("Remove every face scan and every name stored on this computer")
+        self._people_btn.clicked.connect(self.delete_people_data)
+        layout.addWidget(self._people_btn, 0)
+
         self._list = QListWidget()
         self._list.itemActivated.connect(self._on_item)
         self._list.itemClicked.connect(self._on_item)
@@ -77,6 +83,30 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
         threading.Thread(
             target=self._load_transcript, args=(token,), name="index_panel_transcript", daemon=True,
         ).start()
+
+    def _confirm_delete_people(self):
+        return QMessageBox.question(
+            self, "Delete people data",
+            "Delete every face scan and every name stored on this computer? This cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes
+
+    def delete_people_data(self):
+        """Remove all people data (face scans, names). The files are removed on a worker, never on the GUI thread."""
+        if QDockWidget is object or not self._confirm_delete_people():
+            return
+        self._status.setText("Deleting people data…")
+        threading.Thread(target=self._delete_people_worker, name="index_panel_delete_people", daemon=True).start()
+
+    def _delete_people_worker(self):
+        from classes.qt_main_thread import invoke_on_gui
+        try:
+            from classes.media_index import people
+            out = people.delete_all()
+            text = f"Deleted {out['scans']} face scan(s) and the people list."
+        except Exception as exc:
+            log.warning("Deleting people data failed: %s", exc)
+            text = f"Could not delete people data: {exc}"
+        invoke_on_gui(self._status.setText, text)
 
     def _project_token(self):
         """The open project's data dict: New and Open replace it."""

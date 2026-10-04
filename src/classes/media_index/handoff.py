@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 ROUGH_PAD = 0.05             # the index's boxes are rough: grow each side by this share of the box so the object is not clipped
 MAX_HANDOFFS = 5
@@ -51,3 +51,28 @@ def mask_handoff(hit: Dict[str, Any], width: int, height: int, fps: float, frame
             raise ValueError(f"action must be one of {', '.join(ACTIONS)}")
         args["action"] = action
     return {"tool": TOOL, "args": args, "frame_size": [int(width), int(height)], "box_is": f"rough, grown {ROUGH_PAD:.0%} per side; check it on a frame first"}
+
+
+BODY_WIDTH_FACES = 2.6       # a standing or sitting person is about this many face-widths across at the shoulders
+BODY_ABOVE_FACES = 0.4       # the top of the head is a little above the face box
+BODY_HEIGHT_FACES = 6.0      # from the head down to about mid-thigh
+
+
+def body_box_from_face(box: Sequence[float]) -> Optional[list]:
+    """A rough box around the whole person from a face box ([x, y, w, h] as 0-1 fractions), kept inside the frame.
+
+    It is an estimate from proportions (a face is not a body): good for seeding a mask, to be checked on a frame first.
+    """
+    try:
+        x, y, w, h = (float(v) for v in box)
+    except (TypeError, ValueError):
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    cx = x + w / 2.0
+    bw, top = w * BODY_WIDTH_FACES, y - h * BODY_ABOVE_FACES
+    x1, x2 = max(0.0, cx - bw / 2.0), min(1.0, cx + bw / 2.0)
+    y1, y2 = max(0.0, top), min(1.0, top + h * BODY_HEIGHT_FACES)
+    if x2 - x1 <= 0 or y2 - y1 <= 0:
+        return None
+    return [round(x1, 4), round(y1, 4), round(x2 - x1, 4), round(y2 - y1, 4)]
