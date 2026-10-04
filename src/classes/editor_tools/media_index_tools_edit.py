@@ -376,15 +376,21 @@ def harmonize_look(reference="median", tolerance=0.15, max_clips=12, measure_lim
     out = th().match_color_to_reference(clipIds=",".join(plan["to_match"]), referenceClipId=ref)
     if _is_error(out):
         raise ToolError(f"the colour match failed: {str(out)[:300]}")
-    again, _n = measure_looks([c for c in clips if c.id in set(plan["to_match"])], objs, max_clips=len(plan["to_match"]) + 1)
+    # Re-read the timeline: the clips changed, and the objects read before the match still hold the old data.
+    fresh_clips, _p, fresh_objs = build_timeline()
+    matched = set(plan["to_match"])
+    again, _n = measure_looks([c for c in fresh_clips if c.id in matched], fresh_objs, max_clips=len(matched) + 1)
     after: Dict[str, Any] = {}
     for cid in plan["to_match"]:
         d = ca.look_profile_distance(again[cid], looks[ref]) if cid in again else None
         after[cid] = round(float(d), 4) if d is not None else None
     improved = [cid for cid in plan["to_match"] if after.get(cid) is not None and after[cid] < plan["distances"][cid]]
+    still_far = [cid for cid in plan["to_match"] if after.get(cid) is None or after[cid] > plan["tolerance"]]
     closer = ", ".join(f"{names.get(cid) or cid} {plan['distances'][cid]:.2f} -> {after[cid]:.2f}" for cid in improved[:4] if after.get(cid) is not None)
-    return ok(f"Matched {len(plan['to_match'])} clip(s) to {names.get(ref) or ref}; {len(improved)} now look closer" + (f" ({closer})" if closer else "") + ".",
-              changed=True, after=after, improved=improved, matcher=str(out)[:400], **receipt)
+    said = f"Matched {len(plan['to_match'])} clip(s) to {names.get(ref) or ref}; {len(improved)} now look closer" + (f" ({closer})" if closer else "")
+    if still_far:
+        said += f"; {len(still_far)} still differ by more than {plan['tolerance']:g} (a very different look can take more than one pass: run it again, pick a closer reference, or grade those clips by hand)"
+    return ok(said + ".", changed=True, after=after, improved=improved, still_far=still_far, matcher=str(out)[:400], **receipt)
 
 
 # ============================ audition_music_tool ============================

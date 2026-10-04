@@ -368,12 +368,13 @@ def picture_edit(timeline, n=5):
 def test_strays_are_matched_to_the_median_clip_and_reported_before_and_after(grader):
     picture_edit(grader.tl)
     grader.looks = {"c0": look_of(0.50), "c1": look_of(0.52), "c2": look_of(0.48), "c3": look_of(0.20, -0.2), "c4": look_of(0.85)}
-    grader.after = {"c3": look_of(0.47, -0.01), "c4": look_of(0.55)}
+    grader.after = {"c3": look_of(0.48, -0.01), "c4": look_of(0.53)}
     head, r = call("harmonize_look_tool")
     assert r["reference"] in ("c0", "c1", "c2") and r["to_match"] == ["c3", "c4"], "the dark, cool clip is furthest from the reference, so it goes first"
     clip_ids, ref = grader.calls[0]
     assert set(clip_ids.split(",")) == {"c3", "c4"} and ref == r["reference"]
     assert r["changed"] is True and set(r["improved"]) == {"c3", "c4"} and all(r["after"][c] < r["distances"][c] for c in ("c3", "c4"))
+    assert r["still_far"] == [] and "still differ" not in head
     assert "Matched 2 clip(s)" in head and "now look closer" in head
 
 
@@ -505,3 +506,22 @@ def test_a_bed_far_enough_under_stays_untouched_even_when_the_voices_are_adjuste
     assert [v for v in mixer.volumes if v[0].startswith("talk")], "the voices were evened out"
     assert mixer.ducks == [], "but the bed, already 20 dB down, is left as it is"
     assert r["ducking"][0]["why"] == "already far enough under the voice"
+
+
+def test_a_clip_that_is_still_far_after_matching_is_reported_with_what_to_try(grader):
+    picture_edit(grader.tl)
+    grader.looks = {f"c{i}": look_of(0.5 if i < 4 else 0.95) for i in range(5)}
+    grader.after = {"c4": look_of(0.85)}               # moved closer, not close enough
+    head, r = call("harmonize_look_tool")
+    assert r["improved"] == ["c4"] and r["still_far"] == ["c4"] and "still differ by more than 0.15" in head and "run it again" in head
+
+
+def test_the_clips_are_measured_afresh_after_the_match_not_from_the_objects_read_before(grader, monkeypatch):
+    picture_edit(grader.tl)
+    grader.looks = {f"c{i}": look_of(0.5 if i < 4 else 0.9) for i in range(5)}
+    grader.after = {"c4": look_of(0.5)}
+    builds = []
+    original = TE.build_timeline
+    monkeypatch.setattr(TE, "build_timeline", lambda: builds.append(1) or original())
+    call("harmonize_look_tool")
+    assert len(builds) == 2, "the timeline is read once to plan and again after the match"
