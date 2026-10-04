@@ -393,3 +393,57 @@ def test_a_watch_layer_saved_by_an_older_version_is_kept_not_run_again(video, pr
     second = FakeClient()
     out = cloud.compute_cloud(second, video, probe, SHA, shelf, file_id="F1", uploader=uploader)
     assert out["layers"] == {"watch": "cached", "vectors": "cached"} and second.calls == [] and len(uploader.sent) == 1, "only the first run uploaded anything"
+
+
+# ============================ a file with nothing to embed is finished, not failed ============================
+def test_a_song_with_no_speech_has_nothing_to_embed_and_that_is_not_an_error(video, tmp_path):
+    shelf = Shelf(str(tmp_path / "s"))
+    audio_probe = {"ok": True, "has_video": False, "has_audio": True, "duration": 40.0}
+    client = FakeClient()
+    out = cloud.compute_cloud(client, video, audio_probe, SHA, shelf, file_id="M1", media_type="audio", uploader=uploader)
+    assert "error" not in out and out["nothing_to_embed"] is True and out["layers"] == {"watch": "skipped", "vectors": "skipped"}
+    assert [c for c in client.calls if c[0] in ("embed", "understand", "upload_session")] == [], "no cloud work, no cost"
+    assert shelf.layer(SHA, "vectors")["status"] == "not_applicable" and not shelf.layer_ready(SHA, "vectors")
+
+
+def test_that_settled_state_is_not_redone_until_a_transcript_appears(video, tmp_path):
+    shelf = Shelf(str(tmp_path / "s"))
+    audio_probe = {"ok": True, "has_video": False, "has_audio": True, "duration": 40.0}
+    cloud.compute_cloud(FakeClient(), video, audio_probe, SHA, shelf, file_id="M1", media_type="audio", uploader=uploader)
+    assert cloud.is_settled(shelf, SHA, "vectors") is True, "nothing to embed and still no speech: settled"
+    again = FakeClient()
+    out = cloud.compute_cloud(again, video, audio_probe, SHA, shelf, file_id="M1", media_type="audio", uploader=uploader)
+    assert out["layers"]["vectors"] == "cached" and again.calls == []
+    shelf.write_json(SHA, "speech.json", SPEECH)
+    shelf.set_layer(SHA, "speech", version=1, status="ready")
+    assert cloud.is_settled(shelf, SHA, "vectors") is False, "a transcript now exists: the speech can be embedded"
+    third = FakeClient()
+    done = cloud.compute_cloud(third, video, audio_probe, SHA, shelf, file_id="M1", media_type="audio", uploader=uploader)
+    assert done["layers"]["vectors"] == "ready" and any(c[0] == "embed" for c in third.calls)
+
+
+def test_a_video_that_has_its_shots_but_no_description_to_embed_is_not_called_nothing(video, prepared):
+    shelf, probe = prepared
+    out = cloud.compute_cloud(FakeClient(watch={"shots": []}), video, probe, SHA, shelf, file_id="F1", uploader=uploader)
+    assert "error" in out, "described nothing at all is still a failed watch, not a finished file"
+
+
+@pytest.mark.parametrize("layer_status,had_speech,speech_ready,settled", [
+    ("ready", None, False, True), ("not_applicable", True, True, True), ("not_applicable", False, False, True),
+    ("not_applicable", False, True, False), ("failed", None, False, False), (None, None, False, False)])
+def test_when_a_cloud_layer_counts_as_settled(tmp_path, layer_status, had_speech, speech_ready, settled):
+    shelf = Shelf(str(tmp_path / "s"))
+    if layer_status:
+        extra = {} if had_speech is None else {"had_speech": had_speech}
+        shelf.set_layer(SHA, "vectors", version=1, status=layer_status, **extra)
+    if speech_ready:
+        shelf.set_layer(SHA, "speech", version=1, status="ready")
+    assert cloud.is_settled(shelf, SHA, "vectors") is settled
+
+
+def test_the_audio_summary_states_only_what_was_measured():
+    assert cloud.audio_summary({}, 40.2) == "Audio, 40 s."
+    full = cloud.audio_summary({"tempo": {"bpm": 109.6}, "loudness": {"integrated_lufs": -13.6},
+                                "music": {"sections": [{"label": "intro"}, {"label": "peak"}, {"label": "outro"}]}}, 36.0)
+    assert full == "Audio, 36 s, 110 BPM, sections: intro, peak, outro, -14 LUFS."
+    assert cloud.audio_summary({"music": {"sections": [{"label": "steady"}]}}, 10) == "Audio, 10 s.", "one section is not worth naming"

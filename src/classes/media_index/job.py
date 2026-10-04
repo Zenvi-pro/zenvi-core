@@ -91,17 +91,25 @@ class IndexingJob:
             # any saved version counts: an older cloud layer is kept, not paid for again
             return shelf.layer_ready(sha, layer)
 
+        def settled(layer):
+            return cloud.is_settled(shelf, sha, layer)
+
         def build():
             structure = shelf.read_json(sha, "structure.json") or {}
             watch = shelf.read_json(sha, "watch.json") or {"shots": []}
             speech = shelf.read_json(sha, "speech.json") if ready(S.LAYER_SPEECH) else None
             meta = cloud.v1_metadata_from_v2(watch, speech, structure, media_type)
+            if media_type == "audio" and not meta.get("analyzed") and ready(S.LAYER_AUDIO):
+                # A music file has no picture to describe; its local analysis is the whole index, and the audio roles
+                # (music bed, sound effect) are only assigned to files marked analysed.
+                meta["analyzed"] = True
+                meta["short_summary"] = cloud.audio_summary(shelf.read_json(sha, "audio.json") or {}, duration)
             block = self._v2_index_block(index_name, file_id, media_type, sha)
             meta["index"], meta["twelvelabs"] = block, dict(block)
             return meta
 
-        done_watch = ready(S_WATCH) or media_type != "video"
-        if done_watch and ready(S_VECTORS):
+        done_watch = settled(S_WATCH) or media_type != "video"
+        if done_watch and settled(S_VECTORS):
             self._progress(file_id, "done", 100)
             self._completed(self.file_data, build(), None)
             return True
@@ -151,8 +159,9 @@ class IndexingJob:
             metadata["index"], metadata["twelvelabs"], metadata["error"] = block, dict(block), result["error"]
             self._completed(self.file_data, metadata, None)
             return True
-        charge_operation_on_success(True, "indexing_per_minute", provider="gemini", note=f"import {file_id}",
-                                    duration_seconds=credit_duration)
+        if any(state == "ready" for state in (result.get("layers") or {}).values()):      # only cloud work that really ran is charged
+            charge_operation_on_success(True, "indexing_per_minute", provider="gemini", note=f"import {file_id}",
+                                        duration_seconds=credit_duration)
         meta = build()
         self._progress(file_id, "done", 100)
         self._completed(self.file_data, meta, None)

@@ -103,6 +103,35 @@ def keyframe_plan(shots: List[Dict[str, Any]], every: float = S.KEYFRAME_EVERY_S
     return rows
 
 
+def is_settled(shelf: Any, sha: str, layer: str) -> bool:
+    """A cloud layer needs no further work: it is ready, or it was found to have nothing to hold.
+
+    A vectors layer that held nothing because there was no speech to embed is settled only until a transcript appears.
+    """
+    row = shelf.layer(sha, layer) or {}
+    status = row.get("status")
+    if status == READY:
+        return True
+    if status == S.NOT_APPLICABLE:
+        return not (layer == S.LAYER_VECTORS and row.get("had_speech") is False and shelf.layer_ready(sha, S.LAYER_SPEECH))
+    return False
+
+
+def audio_summary(audio: Dict[str, Any], seconds: float) -> str:
+    """One factual line about an audio file from its local analysis (tempo, length, loudness, sections)."""
+    bits = [f"Audio, {int(round(seconds))} s"]
+    tempo = (audio or {}).get("tempo") or {}
+    if tempo.get("bpm"):
+        bits.append(f"{float(tempo['bpm']):.0f} BPM")
+    sections = ((audio or {}).get("music") or {}).get("sections") or []
+    if len(sections) > 1:
+        bits.append("sections: " + ", ".join(sec["label"] for sec in sections))
+    lufs = ((audio or {}).get("loudness") or {}).get("integrated_lufs")
+    if lufs is not None:
+        bits.append(f"{float(lufs):.0f} LUFS")
+    return ", ".join(bits) + "."
+
+
 def v1_metadata_from_v2(watch: Dict[str, Any], speech: Optional[Dict[str, Any]], structure: Dict[str, Any],
                         media_type: str = "video") -> Dict[str, Any]:
     """The v1 ``ai_metadata`` shape (chapters, scene descriptions, cues...) from v2 data, so the
@@ -291,7 +320,7 @@ def compute_cloud(client: Any, path: str, probe: Dict[str, Any], sha: str, shelf
 
     def current(layer: str) -> bool:
         # Cloud layers cost money: one saved by an older version is kept, never re-run just for being old.
-        return shelf.layer_ready(sha, layer)
+        return is_settled(shelf, sha, layer)
 
     # ---- watch -------------------------------------------------------------------------
     watch: Optional[Dict[str, Any]] = None
@@ -356,6 +385,12 @@ def compute_cloud(client: Any, path: str, probe: Dict[str, Any], sha: str, shelf
     t_rows, t_blob = _pack(text_rows, text_vecs)
     i_rows, i_blob = _pack(image_rows, image_vecs)
     errors = text_errors + image_errors
+    if not text_rows and not image_rows and (media_type != "video" or structure.get("shots")):
+        # Nothing existed to embed (a song with no speech, a silent clip with nothing described): that is a finished file, not a failure.
+        shelf.set_layer(sha, S.LAYER_VECTORS, version=S.LAYER_VERSIONS[S.LAYER_VECTORS], status=S.NOT_APPLICABLE,
+                        note="nothing to embed", had_speech=bool(speech))
+        layers[S.LAYER_VECTORS] = "skipped"
+        return {"layers": layers, "usage": usage, "watch": watch, "nothing_to_embed": True}
     if not t_rows and not i_rows:
         return {"error": errors[0] if errors else "no vectors were produced", "layers": layers, "usage": usage,
                 **({"unsupported": True} if any("no media index v2" in e for e in errors) else {})}

@@ -329,7 +329,7 @@ def _v2(monkeypatch, tmp_path, *, signed_in=True, result=None, populate=False, b
 
     def fake_cloud(client, path, probe, sha, shelf, **kw):
         calls.append(kw)
-        if result and not result.get("error") and not result.get("unsupported") and not result.get("auth"):
+        if result and (result.get("layers") or {}).get("watch") == "ready":
             shelf.write_json(sha, "structure.json", {"shots": [{"id": 0, "start": 0.0, "end": 6.0}]})
             shelf.write_json(sha, "watch.json", V2_WATCH)
             for layer in ("watch", "vectors"):
@@ -430,3 +430,42 @@ def test_cancelling_during_v2_ends_the_job_without_a_charge(monkeypatch, tmp_pat
     job.run()
     assert len(done) == 1 and h.charges == []
     h.client.start_direct_indexing_job.assert_not_called()
+
+
+# -- a file with nothing to embed (a song) is finished, uncharged, and marked as analysed music --------------
+def test_a_song_with_nothing_to_embed_finishes_uncharged_and_is_marked_analysed_music(monkeypatch, tmp_path):
+    h, calls = _v2(monkeypatch, tmp_path, result={"layers": {"watch": "skipped", "vectors": "skipped"}, "nothing_to_embed": True})
+    h.shelf.write_json(h.sha, "audio.json", {"tempo": {"bpm": 110.0, "beats": [1.0, 1.5]}, "loudness": {"integrated_lufs": -14.0},
+                                             "music": {"sections": [{"label": "intro"}, {"label": "peak"}]}})
+    h.shelf.set_layer(h.sha, "audio", version=2, status="ready")
+    meta, progress = h.run(media_type="audio", duration=40.0)
+    assert len(calls) == 1 and meta["index"]["status"] == "ready" and meta["index"]["v2"] is True
+    assert h.charges == [], "no cloud work ran, so nothing is charged"
+    assert meta["analyzed"] is True and meta["short_summary"] == "Audio, 40 s, 110 BPM, sections: intro, peak, -14 LUFS."
+    assert progress[-1] == ("done", 100)
+    from classes.indexing_status import SUCCESS, derive_indexing_status
+    assert derive_indexing_status(meta).state == SUCCESS
+
+
+def test_a_real_cloud_run_is_charged_but_a_run_that_only_found_nothing_to_embed_is_not(monkeypatch, tmp_path):
+    (tmp_path / "video").mkdir()
+    (tmp_path / "song").mkdir()
+    video, _ = _v2(monkeypatch, tmp_path / "video", result={"layers": {"watch": "ready", "vectors": "ready"}})
+    video.run(duration=6.0)
+    assert len(video.charges) == 1
+    song, _ = _v2(monkeypatch, tmp_path / "song", result={"layers": {"watch": "skipped", "vectors": "skipped"}, "nothing_to_embed": True})
+    song.shelf.write_json(song.sha, "audio.json", {"tempo": None})
+    song.shelf.set_layer(song.sha, "audio", version=2, status="ready")
+    song.run(media_type="audio", duration=40.0)
+    assert song.charges == []
+
+
+def test_a_settled_song_is_not_sent_to_the_cloud_again_even_signed_out(monkeypatch, tmp_path):
+    h, calls = _v2(monkeypatch, tmp_path)
+    h.shelf.write_json(h.sha, "audio.json", {"tempo": None})
+    h.shelf.set_layer(h.sha, "audio", version=2, status="ready")
+    h.shelf.set_layer(h.sha, "vectors", version=1, status="not_applicable", note="nothing to embed", had_speech=False)
+    monkeypatch.setattr(IndexingJob, "_signed_in", staticmethod(lambda: False))
+    meta, _ = h.run(media_type="audio", duration=40.0)
+    assert calls == [] and h.charges == [] and meta["index"]["status"] == "ready" and meta["analyzed"] is True
+    assert meta.get("skip_code") != "signin", "a finished file does not ask to sign in"
