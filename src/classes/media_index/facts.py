@@ -100,7 +100,10 @@ def compute_facts(
     shelf.set_source(sha, duration=probe.get("duration"), width=video.get("width"), height=video.get("height"),
                      fps=video.get("fps"), has_audio=probe.get("has_audio"), has_video=probe.get("has_video"),
                      media_type=media_type, orientation=video.get("orientation"),
-                     colour=look_mod.pipeline_from_probe(probe))
+                     colour=look_mod.pipeline_from_probe(probe),
+                     captured_at=(probe.get("capture") or {}).get("captured_at"),
+                     captured_source=(probe.get("capture") or {}).get("captured_source"),
+                     gps=(probe.get("capture") or {}).get("gps"))
 
     def cancelled() -> bool:
         return bool(should_cancel and should_cancel())

@@ -24,6 +24,7 @@ import numpy as np
 
 from classes.ffmpeg_cli import popen_ffmpeg
 from classes.media_index import schema as S
+from classes.media_index.quality import frame_sharpness
 from classes.media_index.probe import analysis_size
 
 # --- hard cuts (calibrated on real footage joined at known times: every cut scored
@@ -61,6 +62,9 @@ STILL_DIFF = 0.008
 STILL_SHIFT_PX = 0.25
 JITTER_PX = 0.35
 BUSY_DIFF = 0.03
+
+# --- sharpness: a per-shot median needs far fewer frames than cut detection does ----------------
+SHARP_EVERY = 3
 
 
 # ============================ small pure helpers ============================
@@ -406,6 +410,7 @@ def analyze_structure(
     black_run_start: Optional[int] = None
     frames_seen = 0
     lumas: List[float] = []                   # mean grey of every frame, 0..1
+    sharps: Dict[int, float] = {}             # edge strength of every SHARP_EVERY-th frame
     prev_gray = prev_hist = None
     pending_cut: Optional[Tuple[int, float, float]] = None  # (index, a, b) awaiting flash check
     gray_before_pending: Optional[np.ndarray] = None
@@ -432,6 +437,8 @@ def analyze_structure(
 
         mean_luma = float(gray.mean()) / 255.0
         lumas.append(mean_luma)
+        if idx % SHARP_EVERY == 0:
+            sharps[idx] = frame_sharpness(gray)
         if mean_luma < BLACK_LUMA:
             if black_run_start is None:
                 black_run_start = idx
@@ -520,6 +527,8 @@ def analyze_structure(
         frame_luma = lumas[lo:hi] or lumas[-1:] or [0.0]
         shot["mean_luma"] = round(float(np.mean(frame_luma)), 4)
         shot["black"] = bool(np.median(frame_luma) < BLACK_LUMA)   # a black screen, not a scene
+        in_shot = [v for i, v in sharps.items() if lo <= i < hi]
+        shot["sharpness"] = None if shot["black"] or not in_shot else round(float(np.median(in_shot)), 4)
     if on_progress is not None:
         on_progress(1.0)
     return {

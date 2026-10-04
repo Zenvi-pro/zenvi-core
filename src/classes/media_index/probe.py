@@ -10,7 +10,9 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from classes.ffmpeg_cli import run_ffmpeg
@@ -48,6 +50,80 @@ def _rotation(stream: Dict[str, Any]) -> int:
         return 0
 
 
+_ISO6709 = re.compile(r"^([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)?(?:CRS\w+)?/?$")
+_TZ_NO_COLON = re.compile(r"([+-]\d{2})(\d{2})$")
+MIN_YEAR = 1995        # camera clocks that were never set read 1970, 1980 or 1904
+_LOCATION_KEYS = ("com.apple.quicktime.location.iso6709", "location", "location-eng")
+_DATE_KEYS = ("com.apple.quicktime.creationdate", "creation_time")
+
+
+def parse_iso6709(text: Any) -> Optional[Dict[str, float]]:
+    """{"lat", "lon"[, "alt"]} from a tag like ``+37.7749-122.4194+012.000/``; None when absent or nonsense.
+
+    A position of exactly 0, 0 is how many cameras say "no fix", so it is treated as absent.
+    """
+    m = _ISO6709.match(str(text or "").strip())
+    if not m:
+        return None
+    lat, lon = float(m.group(1)), float(m.group(2))
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0) or (lat == 0.0 and lon == 0.0):
+        return None
+    out = {"lat": round(lat, 6), "lon": round(lon, 6)}
+    if m.group(3) is not None:
+        out["alt"] = round(float(m.group(3)), 1)
+    return out
+
+
+def parse_capture_time(text: Any) -> Optional[str]:
+    """ISO 8601 UTC (``2024-05-01T14:03:09+00:00``) from a container date tag; None for unset clocks.
+
+    A tag without a zone is taken as UTC (ffmpeg writes UTC); one with a zone is converted.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    raw = raw.replace("Z", "+00:00").replace(" ", "T", 1)
+    raw = _TZ_NO_COLON.sub(r"\1:\2", raw) if re.search(r"T.*[+-]\d{4}$", raw) else raw
+    try:
+        when = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    when = when.astimezone(timezone.utc)
+    if when.year < MIN_YEAR or when > datetime.now(timezone.utc) + timedelta(days=1):
+        return None
+    return when.strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+
+def parse_capture(fmt_tags: Any, stream_tags: Any = ()) -> Dict[str, Any]:
+    """When and (if the camera knew) where a clip was shot, from container and stream tags.
+
+    ``captured_at`` is as tagged: a file that was re-exported may carry the export time, so
+    treat it as a hint for ordering, not proof. Location stays on this machine (see store).
+    """
+    tag_sets = [{str(k).lower(): v for k, v in (t or {}).items()} for t in [fmt_tags, *list(stream_tags or [])]
+                if isinstance(t, dict)]
+    captured, source = None, None
+    for key in _DATE_KEYS:
+        for tags in tag_sets:
+            when = parse_capture_time(tags.get(key))
+            if when:
+                captured, source = when, key
+                break
+        if captured:
+            break
+    gps = None
+    for key in _LOCATION_KEYS:
+        for tags in tag_sets:
+            gps = parse_iso6709(tags.get(key))
+            if gps:
+                break
+        if gps:
+            break
+    return {"captured_at": captured, "captured_source": source, "gps": gps}
+
+
 def parse_probe(data: Dict[str, Any]) -> Dict[str, Any]:
     """Reduce ffprobe's JSON to what the index uses (pure, so it is tested without ffprobe)."""
     streams = [s for s in (data.get("streams") or []) if isinstance(s, dict)]
@@ -72,6 +148,7 @@ def parse_probe(data: Dict[str, Any]) -> Dict[str, Any]:
         "has_audio": audio is not None,
         "video": None,
         "audio": None,
+        "capture": parse_capture(fmt.get("tags"), [s.get("tags") for s in streams]),
     }
     if video:
         width, height = int(video.get("width") or 0), int(video.get("height") or 0)

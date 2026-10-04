@@ -101,6 +101,39 @@ def test_a_second_run_does_no_work_at_all(media, shelf, monkeypatch):
     assert called == [] and len(fake_transcribe.calls) == 1 and again["sha"] == first["sha"]
 
 
+def test_layers_saved_by_an_older_version_are_refreshed_and_gain_the_new_fields(media, shelf):
+    first = run(media["av"], shelf)
+    sha = first["sha"]
+    # what an older release left behind: structure and audio without sharpness, quality or music facts
+    saved = shelf.read_json(sha, "structure.json")
+    for shot in saved["shots"]:
+        shot.pop("sharpness", None)
+    shelf.write_json(sha, "structure.json", saved)
+    audio_saved = shelf.read_json(sha, "audio.json")
+    audio_saved.pop("music", None)
+    shelf.write_json(sha, "audio.json", audio_saved)
+    for layer in ("structure", "audio"):
+        shelf.set_layer(sha, layer, version=1, status="ready")
+    # still readable as it is ...
+    assert shelf.layer_ready(sha, "structure") and not shelf.layer_ready(sha, "structure", version=2)
+    # ... and the next run refreshes just those (speech is untouched)
+    again = run(media["av"], shelf)
+    assert again["layers"]["structure"] == "ready" and again["layers"]["audio"] == "ready" and again["layers"]["speech"] == "cached"
+    assert all(s.get("sharpness") is not None for s in shelf.read_json(sha, "structure.json")["shots"])
+    assert "music" in shelf.read_json(sha, "audio.json") and shelf.layer_ready(sha, "structure", version=2)
+
+
+def test_capture_time_and_place_are_kept_with_the_source(media, shelf, tmp_path):
+    tagged = str(tmp_path / "tagged.mp4")
+    subprocess.run([mf.need_ffmpeg(), "-y", "-v", "error", "-i", media["av"], "-c", "copy", "-metadata", "location=+37.7749-122.4194+012.000/",
+                    "-metadata", "creation_time=2024-05-01T14:03:09Z", tagged], check=True)
+    out = run(tagged, shelf)
+    source = shelf.manifest(out["sha"])["source"]
+    assert source["gps"] == {"lat": 37.7749, "lon": -122.4194, "alt": 12.0} and source["captured_at"] == "2024-05-01T14:03:09+00:00"
+    untagged = shelf.manifest(run(media["silent"], shelf)["sha"])["source"]
+    assert "gps" not in untagged and "captured_at" not in untagged, "nothing is invented for a file that carries no tags"
+
+
 def test_the_same_content_at_another_path_is_already_done(media, shelf, tmp_path):
     run(media["av"], shelf)
     copy = tmp_path / "renamed.mov"

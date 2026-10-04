@@ -48,12 +48,20 @@ TEMPO_MIN_CONFIDENCE = 0.35
 # only ripple (its 99th percentile sits near 1.5 standard deviations) and hiss's is about 2.3,
 # so without this gate z-scoring the envelope turns that ripple into a confident fake tempo.
 ONSET_PEAK_Z = 3.0
+BEAT_MIN_SUPPORT = 0.3                       # z-scored onset strength a beat at the start or end of the chain needs
 BEAT_TIGHTNESS = 100.0                       # Ellis (2007): the cost of straying from the tempo
 # A frame's flux peaks before the click's own time, so tracked beats come out early. Measured on
 # click tracks at 90, 100, 128 and 140 BPM: -26 to -28 ms at every tempo (p10/p90 -36/-17 ms,
 # which is the 23 ms frame hop). Add it back so beat times land on the sound.
 BEAT_OFFSET_SECONDS = 0.027
 _EPS = 1e-10
+RUMBLE_HZ = 100.0                            # energy below this reads as wind or handling noise, not content
+CLIP_PEAK = 0.995                            # a frame that reaches this is at (or against) full scale
+SECTION_MIN_SECONDS = 6.0
+SECTION_MIN_TRACK = 24.0                     # shorter material has no sections worth naming
+ARC_SECONDS = 4.0
+BARS_PER_PHRASE = 4
+BEATS_PER_BAR = 4
 
 
 class Cancelled(Exception):
@@ -70,12 +78,13 @@ def frame_features(buf: np.ndarray, prev_mag: Optional[np.ndarray]) -> Tuple[Dic
     """Per-frame features for every whole N_FFT frame in *buf* (hop HOP), plus the last magnitudes."""
     frames = np.lib.stride_tricks.sliding_window_view(buf, N_FFT)[::HOP]
     if frames.shape[0] == 0:
-        return {k: np.zeros(0, np.float32) for k in ("rms", "peak", "centroid", "flatness", "flux")}, (
+        return {k: np.zeros(0, np.float32) for k in ("rms", "peak", "centroid", "flatness", "flux", "low")}, (
             prev_mag if prev_mag is not None else np.zeros(N_FFT // 2 + 1, np.float32))
     window = np.hanning(N_FFT).astype(np.float32)
     mag = np.abs(np.fft.rfft(frames * window, axis=1)).astype(np.float32)
     freqs = np.fft.rfftfreq(N_FFT, 1.0 / SAMPLE_RATE).astype(np.float32)
     total = mag.sum(axis=1) + _EPS
+    low = mag[:, freqs < RUMBLE_HZ].sum(axis=1) / total
     centroid = (mag * freqs).sum(axis=1) / total
     flatness = np.exp(np.log(mag + _EPS).mean(axis=1)) / (mag.mean(axis=1) + _EPS)
     logmag = np.log1p(mag * 10.0)
@@ -88,6 +97,7 @@ def frame_features(buf: np.ndarray, prev_mag: Optional[np.ndarray]) -> Tuple[Dic
         "centroid": centroid.astype(np.float32),
         "flatness": flatness.astype(np.float32),
         "flux": flux.astype(np.float32),
+        "low": low.astype(np.float32),
     }, mag[-1]
 
 
@@ -159,6 +169,12 @@ def track_beats(flux: np.ndarray, bpm: float, frame_hz: float = FRAME_HZ) -> Lis
         beats.append(t)
         t = int(back[t])
     beats.reverse()
+    # The chain happily keeps stepping through silence at the tempo it has; only beats with an onset under
+    # them are real, so unsupported ones at the start and end (before the groove starts, after it stops) go.
+    while beats and x[beats[0]] < BEAT_MIN_SUPPORT:
+        beats.pop(0)
+    while beats and x[beats[-1]] < BEAT_MIN_SUPPORT:
+        beats.pop()
     return [round(b / frame_hz + BEAT_OFFSET_SECONDS, 3) for b in beats]
 
 
@@ -208,9 +224,119 @@ def window_facts(feat: Dict[str, np.ndarray], duration: float, frame_hz: float =
             "centroid_hz": round(float(np.average(feat["centroid"][sl], weights=seg_rms + _EPS)) if loud.any() else 0.0, 1),
             "flatness": round(float(np.mean(feat["flatness"][sl][loud])) if loud.any() else 0.0, 4),
             "onsets_per_sec": round(onsets / max(1e-6, (end - start)), 3),
+            "clipped_ratio": round(float(np.mean(feat["peak"][sl] >= CLIP_PEAK)), 4),
+            "rumble_ratio": round(float(np.mean(feat["low"][sl][loud])) if loud.any() else 0.0, 3),
         })
         start += WINDOW_HOP_SECONDS
     return out
+
+
+def _level_facts(rms_db: np.ndarray) -> Dict[str, Any]:
+    """Noise floor (the quiet 10th percentile of non-silent frames) and dynamic range, in dB."""
+    live = rms_db[rms_db > -90.0]
+    if live.size < 10:
+        return {"noise_floor_db": None, "dynamic_range_db": None}
+    floor, top = float(np.percentile(live, 10)), float(np.percentile(live, 95))
+    return {"noise_floor_db": round(floor, 1), "dynamic_range_db": round(top - floor, 1)}
+
+
+def per_second(values: np.ndarray, frame_hz: float = FRAME_HZ) -> np.ndarray:
+    """Mean of a per-frame feature over each whole second."""
+    seconds = int(values.size / frame_hz)
+    if seconds <= 0:
+        return np.zeros(0, np.float32)
+    idx = (np.arange(values.size) / frame_hz).astype(int)
+    keep = idx < seconds
+    return np.bincount(idx[keep], weights=values[keep], minlength=seconds) / np.maximum(1, np.bincount(idx[keep], minlength=seconds))
+
+
+def novelty_boundaries(features: np.ndarray, min_gap: float = SECTION_MIN_SECONDS) -> List[int]:
+    """Second indices where the music changes character (Foote's checkerboard novelty on a self-similarity matrix)."""
+    t_len = features.shape[0]
+    half = int(min_gap)
+    if t_len < 4 * half:
+        return []
+    z = (features - features.mean(axis=0)) / (features.std(axis=0) + 1e-9)
+    smooth = np.stack([np.convolve(z[:, j], np.ones(3) / 3.0, mode="same") for j in range(z.shape[1])], axis=1)
+    unit = smooth / (np.linalg.norm(smooth, axis=1, keepdims=True) + 1e-9)
+    sim = unit @ unit.T
+    taper = np.exp(-0.5 * (np.arange(-half, half) + 0.5) ** 2 / (half / 2.0) ** 2)
+    sign = np.where((np.arange(-half, half) < 0)[:, None] == (np.arange(-half, half) < 0)[None, :], 1.0, -1.0)
+    kernel = sign * np.outer(taper, taper)
+    nov = np.zeros(t_len)
+    for t in range(half, t_len - half):
+        nov[t] = float(np.sum(kernel * sim[t - half:t + half, t - half:t + half]))
+    live = nov[half:t_len - half]
+    if live.size == 0 or live.std() < 1e-9:
+        return []
+    threshold = live.mean() + 0.8 * live.std()
+    peaks = [t for t in range(half, t_len - half) if nov[t] >= threshold and nov[t] == nov[max(0, t - half):t + half + 1].max()]
+    return peaks
+
+
+def label_sections(bounds: List[float], energy_by_second: np.ndarray) -> List[Dict[str, Any]]:
+    """Sections between *bounds* named by position and relative energy: intro, build, peak, break, steady, outro."""
+    edges = [0.0] + [b for b in bounds] + [float(energy_by_second.size)]
+    energies = []
+    for a, b in zip(edges[:-1], edges[1:]):
+        seg = energy_by_second[int(a):max(int(b), int(a) + 1)]
+        energies.append(float(seg.mean()) if seg.size else 0.0)
+    top = max(energies) if energies else 0.0
+    out = []
+    for i, (a, b) in enumerate(zip(edges[:-1], edges[1:])):
+        e, prev = energies[i], energies[i - 1] if i else None
+        if i == len(energies) - 1 and len(energies) > 1 and e < 0.5:
+            label = "outro"
+        elif e >= 0.7 and e >= top - 0.05:
+            label = "peak"
+        elif i == 0 and e < 0.55:
+            label = "intro"
+        elif prev is not None and e - prev >= 0.2:
+            label = "build"
+        elif prev is not None and prev - e >= 0.2:
+            label = "break"
+        else:
+            label = "steady"
+        out.append({"start": round(a, 2), "end": round(b, 2), "label": label, "energy": round(e, 3)})
+    return out
+
+
+def music_profile(feat: Dict[str, np.ndarray], rms_db: np.ndarray, bpm: Optional[float], beats: List[float],
+                  duration: float) -> Dict[str, Any]:
+    """The shape of a piece of audio: energy arc, sections, bars and phrase points, brightness. All measured.
+
+    Energy is level normalised to the file's own quiet-to-loud range, so a quiet song and a loud one both span 0..1.
+    """
+    per_s = per_second(rms_db.astype(np.float64))
+    if per_s.size < 8:
+        return {"arc": [], "sections": [], "downbeats": [], "phrase_points": [], "brightness_hz": None}
+    lo, hi = float(np.percentile(per_s, 5)), float(np.percentile(per_s, 95))
+    energy = np.full(per_s.shape, 0.5) if hi - lo < 3.0 else np.clip((per_s - lo) / (hi - lo), 0.0, 1.0)
+    arc_n = int(ARC_SECONDS)
+    arc = [round(float(energy[i:i + arc_n].mean()), 3) for i in range(0, energy.size, arc_n)]
+    sections: List[Dict[str, Any]] = []
+    if duration >= SECTION_MIN_TRACK:
+        cols = [per_s, per_second(feat["centroid"].astype(np.float64)), per_second(feat["flatness"].astype(np.float64)),
+                per_second(feat["flux"].astype(np.float64)), per_second(feat["low"].astype(np.float64))]
+        n = min(c.size for c in cols)
+        matrix = np.stack([c[:n] for c in cols], axis=1)
+        bounds = [float(b) for b in novelty_boundaries(matrix)]
+        sections = label_sections(bounds, energy[:n])
+        if sections:
+            sections[-1]["end"] = round(float(duration), 2)
+    downbeats: List[float] = []
+    phrases: List[float] = []
+    if len(beats) >= 2 * BEATS_PER_BAR:
+        flux = feat["flux"]
+        idx = [min(flux.size - 1, max(0, int(round((t - BEAT_OFFSET_SECONDS) * FRAME_HZ)))) for t in beats]
+        strengths = np.array([float(flux[i]) for i in idx])
+        phase = int(np.argmax([strengths[p::BEATS_PER_BAR].sum() for p in range(BEATS_PER_BAR)]))
+        downbeats = [round(float(t), 3) for t in beats[phase::BEATS_PER_BAR]]
+        phrases = downbeats[::BARS_PER_PHRASE]
+    loud = feat["rms"] > 1e-5
+    brightness = round(float(np.median(feat["centroid"][loud])), 1) if loud.any() else None
+    return {"arc": arc, "arc_seconds": ARC_SECONDS, "sections": sections, "downbeats": downbeats, "phrase_points": phrases,
+            "brightness_hz": brightness}
 
 
 # ============================ decoding and loudness ============================
@@ -283,7 +409,7 @@ def analyze_audio(
     if not (probe or {}).get("has_audio"):
         return None
     duration = float(probe.get("duration") or 0.0)
-    feats: Dict[str, List[np.ndarray]] = {k: [] for k in ("rms", "peak", "centroid", "flatness", "flux")}
+    feats: Dict[str, List[np.ndarray]] = {k: [] for k in ("rms", "peak", "centroid", "flatness", "flux", "low")}
     carry = np.zeros(0, np.float32)
     prev_mag: Optional[np.ndarray] = None
     samples = 0
@@ -327,5 +453,7 @@ def analyze_audio(
         "tempo": {"bpm": round(bpm, 2), "confidence": round(confidence, 3), "beats": beats} if bpm else None,
         "tempo_confidence": round(confidence, 3),
         "silence_ranges": silence_ranges(rms_db),
+        **_level_facts(rms_db),
+        "music": music_profile(feat, rms_db, bpm, beats, duration or decoded),
         "kind": S.MEASURED,
     }

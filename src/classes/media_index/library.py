@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from classes.media_index import schema as S
+from classes.media_index import quality, schema as S
 from classes.media_index.store import Shelf
 
 MAX_CACHED_ROWS = 250_000      # about 750 MB of float32 at 768 dims
@@ -34,6 +34,8 @@ class FileIndex:
     media_type: str = "video"
     duration: float = 0.0
     orientation: str = ""
+    captured_at: str = ""
+    gps: Optional[Dict[str, float]] = None
     shots: List[Dict[str, Any]] = field(default_factory=list)
     sentences: List[Dict[str, Any]] = field(default_factory=list)
     audio: Dict[str, Any] = field(default_factory=dict)
@@ -46,6 +48,7 @@ class FileIndex:
     image_matrix: Optional[np.ndarray] = None
     layers: Dict[str, bool] = field(default_factory=dict)
     not_applicable: List[str] = field(default_factory=list)
+    scenes: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def rows(self) -> int:
@@ -76,10 +79,11 @@ def load_file_index(shelf: Shelf, sha: str, *, file_id: str = "", name: str = ""
     manifest = shelf.manifest(sha)
     if not manifest.get("layers"):
         return None
-    ready = {layer: shelf.layer_ready(sha, layer, version=v) for layer, v in S.LAYER_VERSIONS.items()}
+    ready = {layer: shelf.layer_ready(sha, layer) for layer in S.LAYER_VERSIONS}      # older versions still read (additive shapes)
     source = manifest.get("source") or {}
     fi = FileIndex(sha=sha, file_id=file_id, name=name, path=path, media_type=source.get("media_type") or media_type,
                    duration=float(source.get("duration") or 0.0), orientation=str(source.get("orientation") or ""),
+                   captured_at=str(source.get("captured_at") or ""), gps=source.get("gps") or None,
                    layers=ready, not_applicable=[name for name in S.LAYER_VERSIONS if (shelf.layer(sha, name) or {}).get("status") == S.NOT_APPLICABLE])
     structure = shelf.read_json(sha, "structure.json") if ready[S.LAYER_STRUCTURE] else None
     look = shelf.read_json(sha, "look.json") if ready[S.LAYER_LOOK] else None
@@ -101,11 +105,17 @@ def load_file_index(shelf: Shelf, sha: str, *, file_id: str = "", name: str = ""
             "id": sid, "start": float(shot["start"]), "end": float(shot["end"]),
             "duration": float(shot.get("duration") or (shot["end"] - shot["start"])),
             "opens_with": shot.get("opens_with"), "black": bool(shot.get("black")),
-            "motion": shot.get("motion") or {}, "watch": watch_by_id.get(sid),
+            "motion": shot.get("motion") or {}, "sharpness": shot.get("sharpness"), "watch": watch_by_id.get(sid),
             "look": lk.get("profile"), "look_extras": lk.get("extras"),
             "speech": per_shot.get(str(sid)),
         })
     fi.sentences = list((speech or {}).get("sentences") or [])
+    sharps = [s["sharpness"] for s in fi.shots if s.get("sharpness") is not None]
+    median = float(np.median(sharps)) if sharps else None
+    windows = fi.audio.get("windows") or []
+    for shot in fi.shots:
+        trouble = quality.audio_trouble(windows, shot["start"], shot["end"], fi.audio.get("noise_floor_db")) if windows else None
+        shot["quality"] = quality.shot_quality(shot, median_sharpness=median, audio=trouble, watch=shot.get("watch"))
     if ready[S.LAYER_VECTORS]:
         index = shelf.read_json(sha, "vectors_index.json") or {}
         dims = int(index.get("dims") or S.EMBED_DIMS)
@@ -114,6 +124,7 @@ def load_file_index(shelf: Shelf, sha: str, *, file_id: str = "", name: str = ""
         im = _matrix(shelf, sha, "vectors_image.f16", image_rows, dims)
         fi.text_rows, fi.text_matrix = (text_rows, tm) if tm is not None else ([], None)
         fi.image_rows, fi.image_matrix = (image_rows, im) if im is not None else ([], None)
+    fi.scenes = quality.scenes_of(fi)
     return fi
 
 

@@ -236,14 +236,15 @@ def index_status(file_ids=None, only_incomplete=False):
         if kind not in ("video", "audio", "image"):
             continue
         sha = sha_of(f.data.get("fingerprint"))
-        ready = {layer: bool(sha) and shelf.layer_ready(sha, layer, version=v) for layer, v in S.LAYER_VERSIONS.items()}
+        ready = {layer: bool(sha) and shelf.layer_ready(sha, layer) for layer in S.LAYER_VERSIONS}
+        stale = [layer for layer in LAYER_ORDER if ready[layer] and not shelf.layer_ready(sha, layer, version=S.LAYER_VERSIONS[layer])]
         na = [layer for layer in LAYER_ORDER if not ready[layer] and sha
               and (shelf.layer(sha, layer) or {}).get("status") == S.NOT_APPLICABLE]
         missing = [layer for layer in LAYER_ORDER if not ready[layer] and layer not in na]
         if only_incomplete and not missing:
             continue
         rows.append({"file_id": str(f.id), "name": _display_name(f.data), "media_type": kind,
-                     "ready": [layer for layer in LAYER_ORDER if ready[layer]], "missing": missing, "not_applicable": na,
+                     "ready": [layer for layer in LAYER_ORDER if ready[layer]], "missing": missing, "not_applicable": na, "stale": stale,
                      "searchable": ready["vectors"] or ready["structure"]})
     log.debug("index_status: %d files", len(rows))
     complete = sum(1 for r in rows if not r["missing"])

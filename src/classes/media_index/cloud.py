@@ -148,6 +148,7 @@ def make_proxy(path: str, probe: Dict[str, Any], out_path: str) -> Tuple[bool, s
     height = int(video.get("height") or 0)
     scale = f"scale=-2:{S.PROXY_HEIGHT}," if height > S.PROXY_HEIGHT or height <= 0 else ""
     cmd = ["ffmpeg", "-nostdin", "-y", "-hide_banner", "-loglevel", "error", "-i", path, "-map", "0:v:0", "-map", "0:a:0?",
+           "-map_metadata", "-1", "-map_chapters", "-1",     # never upload the clip's GPS, device or date tags
            "-vf", f"{scale}fps=15,format=yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
            "-c:a", "aac", "-b:a", "48k", "-ac", "1", "-movflags", "+faststart", out_path]
     try:
@@ -161,7 +162,7 @@ def make_proxy(path: str, probe: Dict[str, Any], out_path: str) -> Tuple[bool, s
 
 def extract_keyframe(path: str, t: float, out: str, long_edge: int = S.KEYFRAME_LONG_EDGE) -> bool:
     cmd = ["ffmpeg", "-nostdin", "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{max(0.0, t):.3f}", "-i", path,
-           "-frames:v", "1", "-vf", f"scale='if(gt(iw,ih),{long_edge},-2)':'if(gt(iw,ih),-2,{long_edge})':flags=area",
+           "-map_metadata", "-1", "-frames:v", "1", "-vf", f"scale='if(gt(iw,ih),{long_edge},-2)':'if(gt(iw,ih),-2,{long_edge})':flags=area",
            "-q:v", "4", out]
     try:
         proc = run_ffmpeg(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=120)

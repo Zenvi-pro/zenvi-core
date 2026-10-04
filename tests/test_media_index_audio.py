@@ -230,3 +230,99 @@ def test_cancelling_stops_the_decode(tmp_path, monkeypatch):
     with pytest.raises(au.Cancelled):
         analyse(path, should_cancel=cancel)
     assert calls["n"] <= 6
+
+
+# ============================ trouble: clipping, rumble, noise floor ============================
+def test_a_clipped_signal_reports_clipping_and_a_clean_one_does_not(tmp_path):
+    loud = analyse(write_wav(tmp_path / "clip.wav", tone(6, 440.0, 0.0) * 3.0))
+    clean = analyse(write_wav(tmp_path / "clean.wav", tone(6, 440.0, -20.0)))
+    assert all(w["clipped_ratio"] > 0.9 for w in loud["windows"])
+    assert all(w["clipped_ratio"] == 0.0 for w in clean["windows"])
+
+
+def test_low_frequency_rumble_is_told_from_content(tmp_path):
+    rng = np.random.default_rng(1)
+    rumble = analyse(write_wav(tmp_path / "wind.wav", tone(6, 60.0, -10.0) + rng.normal(0, 0.01, 6 * SR)))
+    voice_band = analyse(write_wav(tmp_path / "mid.wav", tone(6, 1000.0, -10.0)))
+    assert all(w["rumble_ratio"] > 0.55 for w in rumble["windows"])
+    assert all(w["rumble_ratio"] < 0.05 for w in voice_band["windows"])
+
+
+def test_the_quiet_floor_and_dynamic_range_are_measured(tmp_path):
+    rng = np.random.default_rng(2)
+    x = np.concatenate([rng.normal(0, 10 ** (-50 / 20), 10 * SR), tone(10, 440.0, -10.0)])
+    out = analyse(write_wav(tmp_path / "range.wav", x))
+    assert out["noise_floor_db"] == pytest.approx(-53, abs=2.5)       # noise at -50 dBFS reads about 3 dB lower in the 11 kHz analysis band
+    assert out["dynamic_range_db"] > 30
+
+
+def test_an_empty_or_silent_file_has_no_floor(tmp_path):
+    out = analyse(write_wav(tmp_path / "silence.wav", np.zeros(4 * SR)))
+    assert out["noise_floor_db"] is None and out["dynamic_range_db"] is None
+
+
+# ============================ the shape of a piece of music ============================
+def three_part_song():
+    """12 s quiet pad, 12 s loud groove at 120 BPM, 12 s quiet pad."""
+    groove, _ = clicks(12, 120, noise_db=-50)
+    t = np.arange(12 * SR) / SR
+    return np.concatenate([tone(12, 200.0, -38.0), groove * 1.4 + tone(12, 220.0, -14.0) + 0.15 * np.sin(2 * np.pi * 55 * t),
+                           tone(12, 200.0, -38.0)])
+
+
+def test_sections_and_energy_arc_follow_quiet_loud_quiet(tmp_path):
+    music = analyse(write_wav(tmp_path / "song.wav", three_part_song()))["music"]
+    sections = music["sections"]
+    assert [s["label"] for s in sections] == ["intro", "peak", "outro"]
+    assert sections[0]["end"] == pytest.approx(12.0, abs=2.0) and sections[1]["end"] == pytest.approx(24.0, abs=2.0)
+    assert sections[-1]["end"] == pytest.approx(36.0, abs=0.1)
+    assert sections[1]["energy"] > 0.8 > 0.2 > sections[0]["energy"]
+    arc = music["arc"]
+    assert len(arc) == 9 and arc[0] < 0.1 and arc[4] > 0.9 and arc[-1] < 0.1
+    assert music["brightness_hz"] is not None
+
+
+def test_beats_stop_where_the_groove_stops(tmp_path):
+    out = analyse(write_wav(tmp_path / "song.wav", three_part_song()))
+    beats = out["tempo"]["beats"]
+    assert beats[0] == pytest.approx(12.25, abs=0.2) and beats[-1] == pytest.approx(23.75, abs=0.2)
+    assert len(beats) == pytest.approx(24, abs=1)
+
+
+def accented_clicks(seconds, bpm, accent_at, sr=SR):
+    """Clicks where every 4th is loud; *accent_at* picks which click of the bar is the loud one."""
+    rng = np.random.default_rng(4)
+    x = rng.normal(0, 10 ** (-55 / 20.0), int(seconds * sr))
+    period, t, k, loud = 60.0 / bpm, 0.25, 0, []
+    while t < seconds - 0.1:
+        n0, n = int(t * sr), int(0.025 * sr)
+        env = np.exp(-np.arange(n) / (0.006 * sr))
+        gain = 1.0 if k % 4 == accent_at else 0.4
+        x[n0:n0 + n] += (rng.normal(0, 1, n) * 0.6 + np.sin(2 * np.pi * 1800 * np.arange(n) / sr) * 0.5) * env * 0.7 * gain
+        if k % 4 == accent_at:
+            loud.append(round(t, 3))
+        t += period
+        k += 1
+    return x, loud
+
+
+@pytest.mark.parametrize("accent_at", [0, 1, 2])
+def test_downbeats_land_on_the_accented_beat_whichever_beat_of_the_bar_it_is(tmp_path, accent_at):
+    x, loud = accented_clicks(40, 120, accent_at)
+    music = analyse(write_wav(tmp_path / f"acc{accent_at}.wav", x))["music"]
+    downbeats = music["downbeats"]
+    assert len(downbeats) >= 8
+    near = [min(abs(d - t) for t in loud) for d in downbeats]
+    assert max(near) < 0.08, near
+    assert music["phrase_points"] == downbeats[::4] and len(music["phrase_points"]) >= 2
+
+
+def test_audio_without_a_rhythm_has_no_bars_but_still_has_an_arc(tmp_path):
+    out = analyse(write_wav(tmp_path / "tone.wav", tone(20, 330.0, -20.0)))
+    assert out["tempo"] is None and out["music"]["downbeats"] == [] and out["music"]["phrase_points"] == []
+    assert len(out["music"]["arc"]) == 5 and out["music"]["sections"] == [] or out["music"]["sections"][0]["label"] in ("steady", "intro")
+
+
+def test_a_short_clip_has_no_sections(tmp_path):
+    out = analyse(write_wav(tmp_path / "short.wav", tone(10, 330.0, -20.0)))
+    assert out["music"]["sections"] == [] and len(out["music"]["arc"]) == 3
