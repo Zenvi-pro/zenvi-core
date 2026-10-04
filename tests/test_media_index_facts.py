@@ -279,3 +279,20 @@ def test_progress_runs_forward_to_the_end(media, shelf):
     seen = []
     run(media["av"], shelf, on_progress=seen.append)
     assert seen and seen[-1] == 1.0 and all(a <= b + 1e-9 for a, b in zip(seen, seen[1:]))
+
+
+def test_the_technical_facts_and_camera_are_kept_with_the_source_for_the_health_check(media, shelf, tmp_path):
+    out = tmp_path / "tagged.mp4"
+    subprocess.run([mf.need_ffmpeg(), "-y", "-v", "error", "-i", media["av"], "-c", "copy", "-movflags", "use_metadata_tags",
+                    "-metadata", "com.apple.quicktime.make=Acme", "-metadata", "com.apple.quicktime.model=Cam 1", str(out)], check=True)
+    fp = fingerprint(str(out))
+    facts.compute_facts(str(out), fingerprint=fp, shelf=shelf, media_type="video", transcribe=fake_transcribe)
+    from classes.media_index.store import sha_of
+    source = shelf.manifest(sha_of(fp))["source"]
+    tech = source["technical"]
+    assert tech["video"]["width"] == 640 and tech["video"]["codec"] == "h264" and tech["video"]["vfr"] is False and tech["video"]["interlaced"] is False
+    assert tech["audio"]["channels"] >= 1 and tech["duration"] == pytest.approx(8.0, abs=0.3)
+    assert source["camera"] == {"make": "Acme", "model": "Cam 1"}
+    from classes.media_index import library
+    fi = library.load_file_index(shelf, sha_of(fp), file_id="F", name="tagged.mp4")
+    assert fi.camera == {"make": "Acme", "model": "Cam 1"} and fi.technical["video"]["height"] == 360

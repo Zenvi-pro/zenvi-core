@@ -36,6 +36,8 @@ class FileIndex:
     orientation: str = ""
     captured_at: str = ""
     gps: Optional[Dict[str, float]] = None
+    camera: Dict[str, str] = field(default_factory=dict)
+    technical: Dict[str, Any] = field(default_factory=dict)
     shots: List[Dict[str, Any]] = field(default_factory=list)
     sentences: List[Dict[str, Any]] = field(default_factory=list)
     audio: Dict[str, Any] = field(default_factory=dict)
@@ -85,6 +87,7 @@ def load_file_index(shelf: Shelf, sha: str, *, file_id: str = "", name: str = ""
     fi = FileIndex(sha=sha, file_id=file_id, name=name, path=path, media_type=source.get("media_type") or media_type,
                    duration=float(source.get("duration") or 0.0), orientation=str(source.get("orientation") or ""),
                    captured_at=str(source.get("captured_at") or ""), gps=source.get("gps") or None,
+                   camera=dict(source.get("camera") or {}), technical=dict(source.get("technical") or {}),
                    layers=ready, not_applicable=[name for name in S.LAYER_VERSIONS if (shelf.layer(sha, name) or {}).get("status") == S.NOT_APPLICABLE])
     structure = shelf.read_json(sha, "structure.json") if ready[S.LAYER_STRUCTURE] else None
     look = shelf.read_json(sha, "look.json") if ready[S.LAYER_LOOK] else None

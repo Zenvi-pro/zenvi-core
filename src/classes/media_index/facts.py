@@ -58,6 +58,15 @@ def _watch_cancel(should_cancel: Optional[Callable[[], bool]], token: Any) -> Ca
     return stop.set
 
 
+def technical_of(probe: Dict[str, Any]) -> Dict[str, Any]:
+    """The technical facts of a file worth keeping beside the index (what the media health check reads), no picture data."""
+    video, audio = probe.get("video") or {}, probe.get("audio") or {}
+    return {"duration": probe.get("duration"), "format": probe.get("format"), "bit_rate": probe.get("bit_rate") or None,
+            "video": {k: video.get(k) for k in ("codec", "width", "height", "rotation", "fps", "nominal_fps", "vfr", "interlaced", "bit_depth",
+                                                 "hdr", "color_transfer", "bit_rate", "orientation")} if video else None,
+            "audio": {k: audio.get(k) for k in ("codec", "sample_rate", "channels", "channel_layout")} if audio else None}
+
+
 def compute_facts(
     path: str,
     *,
@@ -103,7 +112,8 @@ def compute_facts(
                      colour=look_mod.pipeline_from_probe(probe),
                      captured_at=(probe.get("capture") or {}).get("captured_at"),
                      captured_source=(probe.get("capture") or {}).get("captured_source"),
-                     gps=(probe.get("capture") or {}).get("gps"))
+                     gps=(probe.get("capture") or {}).get("gps"),
+                     camera=probe.get("camera") or None, technical=technical_of(probe))
 
     def cancelled() -> bool:
         return bool(should_cancel and should_cancel())

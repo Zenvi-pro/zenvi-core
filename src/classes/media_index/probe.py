@@ -55,6 +55,12 @@ _TZ_NO_COLON = re.compile(r"([+-]\d{2})(\d{2})$")
 MIN_YEAR = 1995        # camera clocks that were never set read 1970, 1980 or 1904
 _LOCATION_KEYS = ("com.apple.quicktime.location.iso6709", "location", "location-eng")
 _DATE_KEYS = ("com.apple.quicktime.creationdate", "creation_time")
+_CAMERA_KEYS = {"make": ("com.apple.quicktime.make", "make", "manufacturer"),
+                "model": ("com.apple.quicktime.model", "model"),
+                "software": ("com.apple.quicktime.software", "software"),
+                "lens": ("com.apple.quicktime.lens", "lens", "lensmodel")}
+INTERLACED_ORDERS = ("tt", "bb", "tb", "bt")
+VFR_TOLERANCE = 0.01          # the average and the nominal frame rate differ by more than this share: variable frame rate
 
 
 def parse_iso6709(text: Any) -> Optional[Dict[str, float]]:
@@ -124,6 +130,19 @@ def parse_capture(fmt_tags: Any, stream_tags: Any = ()) -> Dict[str, Any]:
     return {"captured_at": captured, "captured_source": source, "gps": gps}
 
 
+def parse_camera(fmt_tags: Any, stream_tags: Any = ()) -> Dict[str, str]:
+    """Camera make, model, lens and the software that wrote the file, from container and stream tags (only what is tagged)."""
+    tag_sets = [{str(k).lower(): v for k, v in (t or {}).items()} for t in [fmt_tags, *list(stream_tags or [])] if isinstance(t, dict)]
+    out: Dict[str, str] = {}
+    for field, keys in _CAMERA_KEYS.items():
+        for key in keys:
+            value = next((str(t[key]).strip() for t in tag_sets if str(t.get(key) or "").strip()), "")
+            if value:
+                out[field] = value[:80]
+                break
+    return out
+
+
 def parse_probe(data: Dict[str, Any]) -> Dict[str, Any]:
     """Reduce ffprobe's JSON to what the index uses (pure, so it is tested without ffprobe)."""
     streams = [s for s in (data.get("streams") or []) if isinstance(s, dict)]
@@ -149,6 +168,8 @@ def parse_probe(data: Dict[str, Any]) -> Dict[str, Any]:
         "video": None,
         "audio": None,
         "capture": parse_capture(fmt.get("tags"), [s.get("tags") for s in streams]),
+        "camera": parse_camera(fmt.get("tags"), [s.get("tags") for s in streams]),
+        "bit_rate": int(_float(fmt.get("bit_rate"))),
     }
     if video:
         width, height = int(video.get("width") or 0), int(video.get("height") or 0)
@@ -158,12 +179,19 @@ def parse_probe(data: Dict[str, Any]) -> Dict[str, Any]:
         transfer = str(video.get("color_transfer") or "")
         pix_fmt = str(video.get("pix_fmt") or "")
         bits = int(video.get("bits_per_raw_sample") or 0) or (10 if "10" in pix_fmt else 8)
+        avg_fps, nominal_fps = _frac(video.get("avg_frame_rate")), _frac(video.get("r_frame_rate"))
+        field_order = str(video.get("field_order") or "")
         out["video"] = {
             "codec": str(video.get("codec_name") or ""),
             "width": width,
             "height": height,
             "rotation": rotation,
-            "fps": _frac(video.get("avg_frame_rate")) or _frac(video.get("r_frame_rate")),
+            "fps": avg_fps or nominal_fps,
+            "nominal_fps": nominal_fps,
+            "vfr": bool(avg_fps and nominal_fps and abs(avg_fps - nominal_fps) / nominal_fps > VFR_TOLERANCE),
+            "field_order": field_order,
+            "interlaced": field_order in INTERLACED_ORDERS,
+            "bit_rate": int(_float(video.get("bit_rate"))),
             "pix_fmt": pix_fmt,
             "bit_depth": bits,
             "color_range": str(video.get("color_range") or ""),
@@ -178,6 +206,7 @@ def parse_probe(data: Dict[str, Any]) -> Dict[str, Any]:
             "codec": str(audio.get("codec_name") or ""),
             "sample_rate": int(_float(audio.get("sample_rate"))),
             "channels": int(audio.get("channels") or 0),
+            "channel_layout": str(audio.get("channel_layout") or ""),
         }
     return out
 
