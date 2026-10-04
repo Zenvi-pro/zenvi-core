@@ -545,3 +545,43 @@ def reframe_to_subject(timeline_clip_ids=None, aspect="project", dry_run=False):
 
     on_main(apply)
     return ok(f"Reframed {len(plans)} clip(s) to keep the subject in shot (crop to fill, positioned on the subject).{note}", changed=True, clips=report, skipped=skipped)
+
+
+# ============================ get_edit_style_tool ============================
+@editor_tool(
+    "get_edit_style_tool",
+    covers=("index.style",),
+    label="Style of an edit",
+    schema=obj({
+        **FILE_TARGET,
+        "compare_to_timeline": boolean("Also measure the timeline being built and say where it differs from this reference, and what to do.", True),
+    }),
+    read_only=True,
+)
+def get_edit_style(file_ids=None, file_query="", compare_to_timeline=True):
+    """Read the style of a finished video in numbers, so "make it like this" has something to match: how fast it cuts (shot
+    lengths, cuts a minute, whether it speeds up), how it changes shots (hard cuts, dissolves, fades), how much of it is
+    still, panning or handheld, how many cuts land on the beat, how much is speech and how fast it is spoken, how loud it is,
+    its look, and how much text is on screen. With compare_to_timeline it measures the timeline being built the same way and
+    lists where the two differ by enough to matter, each with what to do and which tool does it (the colour match itself is
+    match_reference_tool). It reports measurements; deciding what to copy is yours. The reference must be indexed.
+    """
+    from classes.media_index import style
+    shelf = default_shelf()
+    f = resolve_files(file_ids, file_query)[0]
+    fi = _index_for(f, shelf)
+    if fi is None or not fi.shots:
+        raise ToolError("that file has no shot index yet (index_status_tool shows what is still being worked on)")
+    reference = style.edit_style(fi)
+    yours, gaps = None, []
+    if compare_to_timeline:
+        clips, _tracks, transitions, _opacity, _links = _timeline_facts()
+        pictures = [c for c in clips if c.kind in ("video", "image")]
+        if pictures:
+            beats, _speech = _timeline_beats(clips)
+            yours = style.timeline_style(pictures, beats, max(c.end for c in clips), transitions=len(transitions))
+            gaps = style.compare_style(reference, yours)
+    pacing = reference.get("pacing") or {}
+    head = (f"{_display_name(f.data)}: {pacing.get('average_shot', '?')} s average shot, {pacing.get('cuts_per_minute', '?')} cuts a minute, {pacing.get('shape', 'steady')} pace"
+            + (f"; {len(gaps)} way(s) your timeline differs." if yours else "."))
+    return ok(head, changed=False, file_id=str(f.id), reference=reference, timeline=yours, gaps=gaps)
