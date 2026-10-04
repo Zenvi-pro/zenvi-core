@@ -134,7 +134,15 @@ def search(files: Sequence[FileIndex], *, query_vector: Optional[np.ndarray] = N
                 if why:
                     info["why"] = why
 
-    by_sha = {fi.sha: fi for fi in files}
+    # The same footage imported twice is one candidate (the first file wins); the others are reported, not ranked again.
+    by_sha: Dict[str, FileIndex] = {}
+    same_content: Dict[str, List[str]] = {}
+    for fi in files:
+        if fi.sha in by_sha:
+            same_content.setdefault(fi.sha, []).append(fi.file_id)
+        else:
+            by_sha[fi.sha] = fi
+    files = list(by_sha.values())
     if q is not None:
         shot_rank: List[Tuple[Tuple[str, int], float]] = []
         speech_rank: List[Tuple[Tuple[str, int], float]] = []
@@ -223,6 +231,7 @@ def search(files: Sequence[FileIndex], *, query_vector: Optional[np.ndarray] = N
             "camera": (shot.get("motion") or {}).get("class"), "shot_type": watch.get("shot_type") or None,
             "mood": watch.get("mood") or None,
             "speech_ratio": (shot.get("speech") or {}).get("speech_ratio"),
+            "same_content_files": same_content.get(fi.sha) or None,
         })
     total = len(hits)
     page = hits[offset: offset + max(1, limit)]

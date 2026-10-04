@@ -313,3 +313,25 @@ def test_a_dossier_names_the_layers_that_are_still_missing(shelf):
 
 def test_an_empty_range_says_so(two_files):
     assert "no analysed shots" in dossier.build_dossier(two_files[1], 500.0, 600.0)["text"]
+
+
+# ============================ the same footage twice ============================
+def test_the_same_footage_in_two_project_files_is_one_result_and_names_the_other(shelf, two_files):
+    twin = library.load_file_index(shelf, SHA1, file_id="F1-COPY", name="beach copy.mp4")
+    res = search.search([two_files[0], twin, two_files[1]], query_vector=unit(0))
+    mine = [h for h in res["hits"] if h["shot_id"] == 0 and h["sha"] == SHA1]
+    assert len(mine) == 1, "ranked once, not twice"
+    assert mine[0]["file_id"] == "F1" and mine[0]["same_content_files"] == ["F1-COPY"], "the first file wins, deterministically"
+    swapped = search.search([twin, two_files[0]], query_vector=unit(0))
+    assert swapped["hits"][0]["file_id"] == "F1-COPY" and swapped["hits"][0]["same_content_files"] == ["F1"]
+
+
+def test_a_file_without_a_twin_has_no_same_content_note(two_files):
+    assert all(h["same_content_files"] is None for h in search.search(two_files, query_vector=unit(0))["hits"])
+
+
+def test_duplicates_do_not_inflate_the_ranking(shelf, two_files):
+    twin = library.load_file_index(shelf, SHA1, file_id="F1-COPY", name="copy")
+    once = search.search(two_files, query_vector=unit(1))["hits"][0]["score"]
+    twice = search.search([two_files[0], twin, two_files[1]], query_vector=unit(1))["hits"][0]["score"]
+    assert once == twice
