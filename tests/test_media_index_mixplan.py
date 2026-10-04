@@ -21,25 +21,47 @@ def adj(out):
     return {a["id"]: a["delta_db"] for a in out["adjust"]}
 
 
-def test_every_voice_is_brought_to_the_median_level():
+def test_a_loud_outlier_is_cut_to_the_median_voice():
+    out = M.speech_adjustments([item("loud", -10.0), item("b", -21.0), item("c", -22.0)])
+    assert out["target_db"] == -21.0 and adj(out) == {"loud": -11.0} and out["adjust"][0]["to_db"] == -21.0 and out["left_alone"] == []
+
+
+def test_voices_are_levelled_to_what_the_quietest_can_reach_because_volume_stops_at_130_percent():
+    # a clip can be set to at most +2.28 dB, so the quiet voice is lifted as far as it can go and the others come down to it
     out = M.speech_adjustments([item("a", -18.0), item("b", -24.0), item("c", -20.0)])
-    assert out["target_db"] == -20.0 and adj(out) == {"a": -2.0, "b": 4.0}
-    assert [a["to_db"] for a in out["adjust"]] == [-20.0, -20.0] and out["left_alone"] == []
+    assert M.MAX_GAIN_DB == pytest.approx(2.28, abs=0.005)
+    assert out["target_db"] == pytest.approx(-21.72, abs=0.01)
+    assert adj(out) == {"a": pytest.approx(-3.72, abs=0.01), "b": M.MAX_GAIN_DB, "c": pytest.approx(-1.72, abs=0.01)}
+    assert all(a["to_db"] == pytest.approx(-21.72, abs=0.06) for a in out["adjust"])
+    assert all(a["limited"] is False for a in out["adjust"])
+
+
+def test_no_voice_is_ever_asked_for_more_than_the_editor_can_set():
+    out = M.speech_adjustments([item("a", -20.0), item("b", -20.0), item("quiet", -30.0)])
+    assert out["target_db"] == pytest.approx(-27.72, abs=0.01)
+    assert adj(out)["quiet"] == M.MAX_GAIN_DB and adj(out)["a"] == pytest.approx(-7.72, abs=0.01)
+    for u in out["adjust"]:
+        assert u["delta_db"] <= M.MAX_GAIN_DB + 1e-9, "a clip that has no gain yet cannot gain more than the ceiling"
 
 
 def test_the_gain_already_set_counts_toward_where_a_clip_sits_now():
-    out = M.speech_adjustments([item("a", -30.0, gain=10.0), item("b", -20.0, gain=0.0), item("c", -20.0, gain=0.0)])
+    out = M.speech_adjustments([item("a", -22.0, gain=2.0), item("b", -20.0, gain=0.0), item("c", -20.0, gain=0.0)])
     assert out["adjust"] == [] and out["target_db"] == -20.0, "a is boosted to the same level already"
 
 
 def test_voices_within_tolerance_are_left_alone_and_the_target_can_be_chosen():
     assert M.speech_adjustments([item("a", -20.0), item("b", -21.0), item("c", -19.5)])["adjust"] == []
+    out = M.speech_adjustments([item("a", -20.0), item("b", -21.0)], target_db=-23.0)
+    assert out["target_db"] == -23.0 and adj(out) == {"a": -3.0, "b": -2.0}
+
+
+def test_a_target_above_what_a_voice_can_reach_is_limited_and_says_so():
     out = M.speech_adjustments([item("a", -20.0), item("b", -21.0)], target_db=-16.0)
-    assert out["target_db"] == -16.0 and adj(out) == {"a": 4.0, "b": 5.0}
+    assert adj(out) == {"a": M.MAX_GAIN_DB, "b": M.MAX_GAIN_DB} and all(a["limited"] for a in out["adjust"])
 
 
 def test_one_pass_never_cuts_or_boosts_beyond_the_limits_and_says_so():
-    out = M.speech_adjustments([item("quiet", -50.0), item("normal", -20.0), item("normal2", -20.0)])
+    out = M.speech_adjustments([item("quiet", -50.0), item("normal", -20.0), item("normal2", -20.0)], target_db=-20.0)
     a = out["adjust"][0]
     assert a["id"] == "quiet" and a["delta_db"] == M.MAX_GAIN_DB and a["limited"] is True
     loud = M.speech_adjustments([item("loud", 0.0), item("a", -30.0), item("b", -30.0)])
@@ -47,7 +69,7 @@ def test_one_pass_never_cuts_or_boosts_beyond_the_limits_and_says_so():
 
 
 def test_a_clip_already_at_its_limit_is_reported_not_adjusted():
-    out = M.speech_adjustments([item("quiet", -50.0, gain=9.0), item("a", -20.0), item("b", -20.0)])
+    out = M.speech_adjustments([item("quiet", -50.0, gain=M.MAX_GAIN_DB), item("a", -20.0), item("b", -20.0)], target_db=-20.0)
     assert out["adjust"] == [] and out["left_alone"] == [{"id": "quiet", "why": "already at the boost limit"}]
 
 
@@ -78,6 +100,18 @@ def test_raising_the_level_never_pushes_peaks_over_the_limit():
 def test_lowering_the_level_ignores_the_peak_limit_and_unknown_peaks_are_not_a_blocker():
     assert M.master_correction(-8.0, -14.0, 0.0)["delta_db"] == -6.0
     assert M.master_correction(-20.0, -14.0, None)["delta_db"] == 6.0
+
+
+def test_the_master_gain_stops_at_the_volume_ceiling_and_says_what_to_do():
+    out = M.master_correction(-22.4, -14.0, -6.4, headroom_db=2.28)
+    assert out["delta_db"] == pytest.approx(2.28, abs=0.01) and out["volume_ceiling"] is True
+    assert "130%" in out["peak_warning"] and "louder source" in out["peak_warning"]
+    maxed = M.master_correction(-22.4, -14.0, -6.4, headroom_db=0.0)
+    assert maxed["delta_db"] == 0.0 and maxed["volume_ceiling"] is True and "maximum volume" in maxed["reason"]
+    roomy = M.master_correction(-20.0, -14.0, -10.0, headroom_db=6.0)
+    assert roomy["delta_db"] == pytest.approx(6.0, abs=0.01) and roomy["volume_ceiling"] is False and roomy["peak_warning"] is None
+    lowering = M.master_correction(-8.0, -14.0, 0.0, headroom_db=0.0)
+    assert lowering["delta_db"] == -6.0, "the ceiling never stops a cut"
 
 
 def test_a_silent_mix_has_nothing_to_correct():

@@ -172,10 +172,28 @@ def test_the_whole_mix_pass_is_one_undo_step_and_undo_restores_every_volume(mix_
     assert receipt["status"] == "applied", receipt
     data = receipt["data"]
     assert {a["id"] for a in data["voices"]["adjust"]} == {mix_world.s1, mix_world.s2}
-    assert data["loudness"]["before"]["integrated_lufs"] == -21.0 and data["loudness"]["after"]["integrated_lufs"] == -14.4
-    assert abs(data["loudness"]["delta_db"] - 7.0) < 0.1 and mix_world.mixes == [(0.0, 20.0), (0.0, 20.0)]
+    # the quiet voice was lifted to the editor's 130% ceiling, so there is no volume left to raise the whole mix: said, not faked
+    assert data["loudness"]["before"]["integrated_lufs"] == -21.0 and data["loudness"]["volume_ceiling"] is True
+    assert data["loudness"]["delta_db"] == 0.0 and "after" not in data["loudness"] and "louder source" in data["loudness"]["peak_warning"]
+    assert mix_world.mixes == [(0.0, 20.0)]
     assert any(volume_points(ed, i) != before[i] for i in ids), "the volumes really changed"
-    assert ed.undo_steps_since_mark() == 1, "voices, ducking and the master gain are one user intent"
+    assert ed.undo_steps_since_mark() == 1, "voices and ducking are one user intent"
+    ed.undo()
+    assert {i: volume_points(ed, i) for i in ids} == before
+
+
+def test_the_master_gain_goes_through_the_real_volume_handler_up_to_the_130_percent_ceiling_and_is_one_undo_step(mix_world):
+    ed = mix_world.world.editor
+    ids = (mix_world.s1, mix_world.s2, mix_world.bed)
+    before = {i: volume_points(ed, i) for i in ids}
+    data = ed.call_receipt("balance_mix_tool", even_out_voices=False, duck_music=False)["data"]
+    assert data["loudness"]["delta_db"] == pytest.approx(2.28, abs=0.01) and data["loudness"]["volume_ceiling"] is True
+    assert "130%" in data["loudness"]["peak_warning"]
+    assert data["loudness"]["after"]["integrated_lufs"] == -14.4 and mix_world.mixes == [(0.0, 20.0), (0.0, 20.0)]
+    for i in ids:
+        levels = [p["Y"] for p in volume_points(ed, i) for p in [p.get("co", p)]]
+        assert levels and max(levels) == pytest.approx(1.3, abs=0.01), f"{i} sits at the ceiling, not above it"
+    assert ed.undo_steps_since_mark() == 1
     ed.undo()
     assert {i: volume_points(ed, i) for i in ids} == before
 
@@ -193,8 +211,8 @@ def test_the_quieter_voice_is_raised_and_the_louder_one_lowered_toward_the_media
     ed = mix_world.world.editor
     data = ed.call_receipt("balance_mix_tool", set_loudness=False, duck_music=False)["data"]
     by = {a["id"]: a["delta_db"] for a in data["voices"]["adjust"]}
-    assert by[mix_world.s2] > 0 > by[mix_world.s1] and abs(by[mix_world.s2] + by[mix_world.s1] - 0.0) < 8.0
-    assert data["voices"]["target_db"] == pytest.approx(-22.0, abs=0.1)
+    assert by[mix_world.s2] == pytest.approx(2.28, abs=0.01) and by[mix_world.s1] == pytest.approx(-5.72, abs=0.01)
+    assert data["voices"]["target_db"] == pytest.approx(-23.72, abs=0.01), "the quiet voice can only be lifted 2.28 dB: the loud one comes down to it"
 
 
 # ============================ the audit and the survey on a real project ============================

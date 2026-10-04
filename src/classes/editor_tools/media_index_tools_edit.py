@@ -214,7 +214,11 @@ def balance_mix(even_out_voices=True, speech_target_db=None, duck_music=True, se
         from classes.media_index import audio as au
         end = min(project.duration, MAX_MIX_SECONDS)
         before = _measure_mix(end, au, errors)
-        corr = mixplan.master_correction(before.get("integrated_lufs") if before else None, target, before.get("true_peak_db") if before else None)
+        # Every clip's volume tops out at 130%: how much louder the clip nearest that ceiling can still go, after the voice changes.
+        voice_delta = {a["id"]: a["delta_db"] for a in voices["adjust"]}
+        room = [mixplan.MAX_GAIN_DB - (c.gain_db + voice_delta.get(c.id, 0.0)) for c in audio_clips if c.gain_db is not None]
+        corr = mixplan.master_correction(before.get("integrated_lufs") if before else None, target, before.get("true_peak_db") if before else None,
+                                         headroom_db=min(room) if room else None)
         result["loudness"] = {"before": before, "target_lufs": target, **corr}
         if abs(corr["delta_db"]) > 0.05:
             def apply_master() -> None:

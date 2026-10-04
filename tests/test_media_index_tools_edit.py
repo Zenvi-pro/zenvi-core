@@ -205,23 +205,39 @@ def test_voices_are_evened_out_the_music_is_ducked_and_the_mix_is_brought_to_the
     voices_and_music(mixer.tl)
     mixer.loudness = [{"integrated_lufs": -20.0, "true_peak_db": -9.0}, {"integrated_lufs": -14.2, "true_peak_db": -3.5}]
     head, r = call("balance_mix_tool")
-    voice_calls = mixer.volumes[:2]                                      # the voice levelling comes first ...
-    master_calls = mixer.volumes[2:]                                     # ... then one overall gain on every audio clip
+    voice_calls = mixer.volumes[:3]                                      # the voice levelling comes first ...
+    master_calls = mixer.volumes[3:]                                     # ... then one overall gain on every audio clip
     by_clip = {cid: db for cid, db, mode in voice_calls if mode == "scale"}
-    assert by_clip["talk0"] == pytest.approx(-2.0, abs=0.1) and by_clip["talk1"] == pytest.approx(4.0, abs=0.1) and "talk2" not in by_clip
+    # voices -18, -24 and -20 dB meet where the quietest can reach (+2.28 dB is the 130% ceiling): -21.72
+    assert by_clip == {"talk0": pytest.approx(-3.72, abs=0.01), "talk1": pytest.approx(2.28, abs=0.01), "talk2": pytest.approx(-1.72, abs=0.01)}
     assert len(mixer.ducks) == 1 and mixer.ducks[0]["bed_clip_ids"] == "bed" and mixer.ducks[0]["speech_clip_ids"] == "auto"
-    assert mixer.ducks[0]["duck_db"] == "-10.0", "voices end at -20 dB and the bed is -20 dB: it must go 10 dB down to sit a margin under them"
-    assert r["ducking"][0]["duck_db"] == -10.0 and r["ducking"][0]["limited"] is False
-    assert {cid for cid, _db, _m in master_calls} == {"talk0", "talk1", "talk2", "bed"} and all(db == pytest.approx(6.0, abs=0.01) for _c, db, _m in master_calls)
-    assert r["loudness"]["before"]["integrated_lufs"] == -20.0 and r["loudness"]["after"]["integrated_lufs"] == -14.2 and r["changed"] is True
-    assert "Balanced the mix" in head and "-20.0 -> -14.2" in head and mixer.renders == [(0.0, 30.0), (0.0, 30.0)]
+    assert mixer.ducks[0]["duck_db"] == "-11.7", "voices end at -21.7 dB and the bed is -20 dB: it must go 11.7 dB down to sit a margin under them"
+    assert r["ducking"][0]["duck_db"] == -11.7 and r["ducking"][0]["limited"] is False
+    # the clip nearest the ceiling (talk1, now at +2.28 dB) leaves no room: the mix cannot be made louder by volume alone
+    assert master_calls == [] and r["loudness"]["volume_ceiling"] is True and r["loudness"]["delta_db"] == 0.0
+    assert r["loudness"]["before"]["integrated_lufs"] == -20.0 and "after" not in r["loudness"] and r["changed"] is True
+    assert "130%" in r["loudness"]["peak_warning"] or "maximum volume" in r["loudness"]["reason"]
+    assert "Balanced the mix" in head and mixer.renders == [(0.0, 30.0)]
+
+
+def test_the_master_gain_raises_every_clip_by_the_room_the_clip_nearest_the_ceiling_has(mixer):
+    voices_and_music(mixer.tl)
+    mixer.loudness = [{"integrated_lufs": -20.0, "true_peak_db": -9.0}, {"integrated_lufs": -17.7, "true_peak_db": -6.7}]
+    _, r = call("balance_mix_tool", even_out_voices=False, duck_music=False)
+    assert {cid for cid, _db, _m in mixer.volumes} == {"talk0", "talk1", "talk2", "bed"}
+    assert all(db == pytest.approx(2.28, abs=0.01) for _c, db, _m in mixer.volumes), "wants +6 dB, the volume can only give +2.28 dB"
+    assert r["loudness"]["volume_ceiling"] is True and r["loudness"]["after"]["integrated_lufs"] == -17.7
+    mixer.volumes.clear()
+    mixer.loudness = [{"integrated_lufs": -16.0, "true_peak_db": -9.0}, {"integrated_lufs": -14.0, "true_peak_db": -7.0}]
+    _, ok_run = call("balance_mix_tool", even_out_voices=False, duck_music=False)
+    assert all(db == pytest.approx(2.0, abs=0.01) for _c, db, _m in mixer.volumes) and ok_run["loudness"]["volume_ceiling"] is False
 
 
 def test_a_dry_run_changes_nothing_and_renders_nothing(mixer):
     voices_and_music(mixer.tl)
     head, r = call("balance_mix_tool", dry_run=True)
     assert r["changed"] is False and r["dry_run"] is True and mixer.volumes == [] and mixer.ducks == [] and mixer.renders == []
-    assert len(r["voices"]["adjust"]) == 2 and r["target_lufs"] == -14.0 and head.startswith("Would adjust 2 voice(s)")
+    assert len(r["voices"]["adjust"]) == 3 and r["target_lufs"] == -14.0 and head.startswith("Would adjust 3 voice(s)")
 
 
 def test_each_part_can_be_switched_off(mixer):
@@ -470,7 +486,7 @@ def test_each_bed_is_ducked_to_a_margin_under_the_quietest_voice_it_plays_with(m
 def test_the_depth_uses_the_voice_levels_as_they_will_be_after_the_voices_are_evened_out(mixer):
     voices_and_music(mixer.tl, levels=(-18.0, -26.0))
     call("balance_mix_tool", set_loudness=False)
-    assert mixer.ducks[0]["duck_db"] == "-12.0", "voices meet at -22 dB, the bed is -20 dB: 12 dB down"
+    assert mixer.ducks[0]["duck_db"] == "-13.7", "voices meet at -23.7 dB (the quiet one can only be lifted to the 130% ceiling), the bed is -20 dB: 13.7 dB down"
 
 
 def test_a_bed_already_far_enough_under_the_voice_is_not_ducked(mixer):
