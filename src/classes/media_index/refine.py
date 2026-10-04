@@ -45,9 +45,14 @@ def decode_window(path: str, start: float, end: float, size: Tuple[int, int], *,
     times = [float(m.group(1)) - start_time for m in _PTS.finditer((proc.stderr or b"").decode("utf-8", "replace"))]
     if proc.returncode != 0 or not raw or not times:
         raise RuntimeError((proc.stderr or b"could not decode the picture").decode("utf-8", "replace")[-200:])
-    count = min(len(times), len(raw) // (w * h), MAX_FRAMES)
+    count = min(len(times), len(raw) // (w * h))
     frames = np.frombuffer(raw[: count * w * h], dtype=np.uint8).reshape(count, h, w)
-    return frames, times[:count]
+    # ffmpeg may read past the end with timestamps preserved: keep only the frames whose own time is inside the window
+    lo, hi = start - start_time, end - start_time
+    keep = [i for i in range(count) if lo - 1e-3 <= times[i] < hi - 1e-3][:MAX_FRAMES]
+    if not keep:
+        raise RuntimeError("no frames in that window")
+    return frames[keep], [times[i] for i in keep]
 
 
 def step_scores(frames: np.ndarray) -> List[Dict[str, float]]:

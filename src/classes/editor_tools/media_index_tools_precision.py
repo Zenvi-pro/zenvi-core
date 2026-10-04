@@ -585,3 +585,87 @@ def get_edit_style(file_ids=None, file_query="", compare_to_timeline=True):
     head = (f"{_display_name(f.data)}: {pacing.get('average_shot', '?')} s average shot, {pacing.get('cuts_per_minute', '?')} cuts a minute, {pacing.get('shape', 'steady')} pace"
             + (f"; {len(gaps)} way(s) your timeline differs." if yours else "."))
     return ok(head, changed=False, file_id=str(f.id), reference=reference, timeline=yours, gaps=gaps)
+
+
+# ============================ view_frames_tool ============================
+@editor_tool(
+    "view_frames_tool",
+    covers=("index.frames",),
+    label="View frames of a range",
+    schema=obj({
+        **FILE_TARGET,
+        "start_seconds": number("Start of the range, in the file's own seconds.", None, minimum=0),
+        "end_seconds": number("End of the range.", None, minimum=0),
+        "per_second": number("Tiles per second: 1 for a first look over a long range, 5 to 10 around a moment (default 1).", None, minimum=0.05, maximum=60),
+        "count": integer("Instead of a rate: this many evenly spaced tiles.", None, minimum=1, maximum=48),
+        "every_frame": boolean("Every frame of the range exactly as stored, to choose the exact cut frame (the range must hold 48 frames or fewer).", False),
+        "tile_width": integer("Width of each tile in pixels (readable small things need 320 or more).", 320, minimum=96, maximum=640),
+    }, required=["start_seconds", "end_seconds"]),
+    read_only=True,
+)
+def view_frames(start_seconds, end_seconds, file_ids=None, file_query="", per_second=None, count=None, every_frame=False, tile_width=320):
+    """Look at a range of a video as one picture of frames, each stamped with the exact file time and frame number it shows, so
+    what you see can be cut exactly. Two zoom levels: a wide range at about a frame a second to find a moment, then a second or
+    two at 5 to 10 a second (or every_frame) to choose the cut. At most 48 tiles; the picture comes back as image_path (open
+    it to look). Tiles are 320 px wide by default: small things like a logo or a screen need that much. Measured from the
+    original file; the picture is kept on the shelf, so asking again is free.
+    """
+    import os
+    from classes.media_index import contact
+    if float(end_seconds) - float(start_seconds) < 0.04:
+        raise ToolError("give a range of at least a frame")
+    f = resolve_files(file_ids, file_query)[0]
+    if str(f.data.get("media_type") or "video") != "video":
+        raise ToolError("only video has frames")
+    probe = probe_media(_audio_path(f))
+    video = probe.get("video") or {}
+    if not video.get("width") or not video.get("height"):
+        raise ToolError("could not read the picture of this file")
+    fps = float(video.get("fps") or 0.0)
+    duration = float(probe.get("duration") or 0.0)
+    start, end = max(0.0, float(start_seconds)), min(duration, float(end_seconds)) if duration else float(end_seconds)
+    if end - start < 0.04:
+        raise ToolError("that range is outside the file")
+    try:
+        rate, n = contact.choose_times(start, end, count=count, rate=per_second, every_frame=bool(every_frame), fps=fps)
+    except ValueError as exc:
+        raise ToolError(str(exc))
+    width = int(tile_width)
+    height = max(2, int(round(width * video["height"] / video["width"] / 2)) * 2)
+    mode = "all" if every_frame else (f"n{int(count)}" if count else f"r{float(per_second or 1.0):g}")
+    name = f"frames_{int(round(start * 1000))}_{int(round(end * 1000))}_{mode}_{width}"
+    shelf = default_shelf()
+    sha = sha_of(f.data.get("fingerprint"))
+    entry = shelf.entry_dir(sha, create=True) if sha else None
+    meta = shelf.read_json(sha, name + ".json") if sha else None
+    if entry and meta and shelf.read_bytes(sha, name + ".png"):
+        return ok(f"{len(meta['tiles'])} frames of {_display_name(f.data)}, {start:.2f} to {end:.2f} s.", changed=False, file_id=str(f.id), image_path=os.path.join(entry, name + ".png"),
+                  tiles=meta["tiles"], tile_size=[width, height], fps=round(fps, 3), cached=True)
+    try:
+        frames, times = contact.decode_frames(_audio_path(f), start, end, (width, height), rate=rate, start_time=float(probe.get("start_time") or 0.0))
+    except RuntimeError as exc:
+        raise ToolError(f"could not read the picture: {exc}")
+    frames, times = frames[:contact.MAX_TILES], times[:contact.MAX_TILES]
+    picture = contact.sheet(frames, times, fps, contact.columns_for(width, len(times)))
+    tiles = [{"index": i, "t": round(t, 4), "frame": int(round(t * fps)) if fps else None} for i, t in enumerate(times)]
+    path = None
+    if entry:
+        import tempfile
+        fd, tmp = tempfile.mkstemp(suffix=".png", prefix="frames_")
+        os.close(fd)
+        try:
+            contact.write_png(tmp, picture)
+            with open(tmp, "rb") as fh:
+                shelf.write_bytes(sha, name + ".png", fh.read())
+        finally:
+            os.remove(tmp)
+        shelf.write_json(sha, name + ".json", {"tiles": tiles})
+        path = os.path.join(entry, name + ".png")
+    else:
+        import tempfile
+        fd, path = tempfile.mkstemp(suffix=".png", prefix="frames_")
+        os.close(fd)
+        contact.write_png(path, picture)
+    return ok(f"{len(tiles)} frames of {_display_name(f.data)}, {start:.2f} to {end:.2f} s.", changed=False, file_id=str(f.id), image_path=path, tiles=tiles,
+              tile_size=[width, height], fps=round(fps, 3), cached=False,
+              hint="every tile is stamped t=<seconds> f=<frame>; zoom in by asking again with a narrower range and a higher per_second, or every_frame")
