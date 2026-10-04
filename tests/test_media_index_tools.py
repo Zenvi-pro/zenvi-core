@@ -433,3 +433,33 @@ def test_v1_only_files_are_the_ones_with_an_original_index_and_no_local_vectors(
     monkeypatch.setattr(flags, "v2_enabled", lambda: False)
     assert MT.v1_only_file_ids() == set()
     assert tm.twelvelabs_is_indexed(tm.get_index_block(ready)) is True
+
+
+def test_locate_with_an_action_gives_each_hit_the_masking_tools_arguments(env):
+    build(env.shelf, "e" * 64, shots=[shot(0, 0, 8)], duration=8.0,
+          watch=[w(0, 0, 8, "A kitchen", objects=[{"label": "kettle", "box": [0.5, 0.4, 0.1, 0.2], "t": 2.0}, {"label": "kettle", "t": 4.0}])])
+    f = file_obj("F9", "kitchen.mp4", "e" * 64)
+    f.data.update(width=1280, height=720, video_length=200)
+    env.files.append(f)
+    for fi_id in ("e" * 64,):
+        env.shelf.set_source(fi_id, duration=8.0, has_audio=True, media_type="video", technical={"video": {"width": 640, "height": 360, "fps": 25.0}})
+    library.clear_cache()
+    _, plain = call("locate_in_footage_tool", what="kettle")
+    assert all("handoff" not in h for h in plain["hits"])
+    _, r = call("locate_in_footage_tool", what="kettle", for_action="blur_object")
+    with_box, no_box = r["hits"]
+    args = with_box["handoff"]["args"]
+    assert args["action"] == "blur_object" and args["file_id"] == "F9" and args["seed_frame"] == 51 and args["boxes"][0]["x2"] <= 1280 and with_box["handoff"]["frame_size"] == [1280, 720], "the project file's size wins: it is what the masking tool checks against"
+    assert "unavailable" in no_box["handoff"]
+
+
+def test_the_handoff_is_given_only_for_the_first_few_hits(env):
+    objects = [{"label": "kettle", "box": [0.1, 0.1, 0.1, 0.1], "t": float(i)} for i in range(8)]
+    build(env.shelf, "e" * 64, shots=[shot(0, 0, 9)], duration=9.0, watch=[w(0, 0, 9, "A kitchen", objects=objects)])
+    f = file_obj("F9", "kitchen.mp4", "e" * 64)
+    f.data.update(width=640, height=360)
+    env.files.append(f)
+    env.shelf.set_source("e" * 64, duration=9.0, has_audio=True, media_type="video", technical={"video": {"width": 640, "height": 360, "fps": 25.0}})
+    library.clear_cache()
+    _, r = call("locate_in_footage_tool", what="kettle", for_action="mask_object")
+    assert [("handoff" in h) for h in r["hits"]] == [True] * 5 + [False] * 3

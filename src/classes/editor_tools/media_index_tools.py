@@ -431,22 +431,42 @@ def match_reference(reference_file_id="", reference_start=None, reference_end=No
         "start": number("Only after this second of each file.", None, minimum=0),
         "end": number("Only before this second of each file.", None, minimum=0),
         "limit": integer("Most results to return.", 30, minimum=1, maximum=200),
+        "for_action": enum(["", "blur_object", "highlight_object", "mask_object"],
+                           "To blur, highlight or cut out what you find, say which: each of the first 5 results then comes with a ready 'handoff' "
+                           "(the arguments for enhance_file_with_comfyui_tool).", ""),
     }, required=["what"]),
     read_only=True,
 )
-def locate_in_footage(what, kind="auto", file_ids=None, start=None, end=None, limit=30):
+def locate_in_footage(what, kind="auto", file_ids=None, start=None, end=None, limit=30, for_action=""):
     """Find where an object or on-screen text appears, with when (seconds in the file) and where in the frame.
     box is [x, y, width, height] as 0-1 fractions from the top-left. It is a ROUGH box from the indexing pass:
     good for choosing where to look, point-masking or a region prompt, but not pixel-exact; refine it on a
     frame (inspect_media_tool, then the masking or tracking effect) before masking, blurring, removing or
     replacing the thing. For a generative replace or removal, pass the file, time and region to the
-    generation tool that is available.
+    generation tool that is available. With for_action (blur_object, highlight_object or mask_object) each of the first
+    5 results carries a handoff: the box in source pixels (grown a little, since it is rough), a point on the object, the seed
+    frame and a prompt, ready to pass to enhance_file_with_comfyui_tool (needs the optional ComfyUI AI tools to be ready).
     """
-    from classes.media_index import reference as mref
+    from classes.media_index import handoff, reference as mref
     files, missing = project_indexes(file_ids)
     if not files:
         raise ToolError("no indexed footage yet; index_status_tool shows progress")
     hits = mref.locate(files, what, kind=kind, start=start, end=end, limit=int(limit))
+    if for_action:
+        by_file = {str(fi.file_id): fi for fi in files}
+        by_project = {str(f.id): f for f in _all_files()}
+        for hit in hits[:handoff.MAX_HANDOFFS]:
+            fi, pf = by_file.get(str(hit["file_id"])), by_project.get(str(hit["file_id"]))
+            video = ((fi.technical or {}).get("video") or {}) if fi else {}
+            data = pf.data if pf is not None else {}
+            width, height = int(data.get("width") or video.get("width") or 0), int(data.get("height") or video.get("height") or 0)
+            fps = float(video.get("fps") or 0.0)
+            try:
+                frames = int(float(data.get("video_length"))) if data.get("video_length") else None
+            except (TypeError, ValueError):
+                frames = None
+            hit["handoff"] = handoff.mask_handoff(hit, width, height, fps, frames, for_action) or {"unavailable": "no box for this hit, or the frame size is unknown: "
+                                                                                                "use inspect_media_tool to choose points on the object"}
     summary = f"{len(hits)} place(s) where {what!r} appears" if hits else f"{what!r} was not found in the indexed footage"
     note = ("Boxes are rough. Only what the indexing pass noticed is listed, so a missing result is not proof the "
             "thing is absent: try search_footage_tool with a description, or inspect_media_tool on the footage.")
