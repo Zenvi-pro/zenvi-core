@@ -986,7 +986,7 @@
     "title": "Redo",
     "restart": false,
     "setting": "actionRedo",
-    "value": "Ctrl+Shift+Z",
+    "value": "Ctrl+Shift+Z | Ctrl+Y",
     "type": "text"
   },
   {
@@ -1202,7 +1202,7 @@
     "title": "Add Track",
     "restart": false,
     "setting": "actionAddTrack",
-    "value": "Ctrl+Y",
+    "value": "Ctrl+Shift+Y",
     "type": "text"
   },
   {
