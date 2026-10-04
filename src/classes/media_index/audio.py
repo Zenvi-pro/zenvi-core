@@ -379,6 +379,7 @@ def music_profile(feat: Dict[str, np.ndarray], rms_db: np.ndarray, bpm: Optional
         n = min(c.size for c in cols)
         matrix = np.stack([c[:n] for c in cols], axis=1)
         bounds = merge_bounds([float(b) for b in novelty_boundaries(matrix)], ramp_boundaries(energy[:n]))
+        bounds = [b for b in bounds if SECTION_MIN_SECONDS <= b <= n - SECTION_MIN_SECONDS]      # no sliver at either end of the track
         sections = label_sections(bounds, energy[:n])
         if sections:
             sections[-1]["end"] = round(float(duration), 2)

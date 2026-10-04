@@ -372,3 +372,14 @@ def test_a_ramps_edges_win_and_a_novelty_edge_beside_one_is_the_same_change():
     assert 15.0 in out and 40.0 in out and 17.0 not in out and 44.0 not in out and 70.0 in out
     assert au.merge_bounds([30.0, 80.0], [20.0, 45.0]) == [20.0, 45.0, 80.0], "no edge in the middle of a build"
     assert au.merge_bounds([10.0, 12.0, 30.0], []) == [10.0, 30.0], "edges closer than the minimum gap collapse to the first"
+
+
+def test_a_fade_in_at_the_very_start_does_not_leave_a_sliver_section(tmp_path):
+    seconds = 40
+    t = np.arange(seconds * SR) / SR
+    gain = np.clip(t / 14.0, 0.0, 1.0)                       # a 14 s fade in from silence, then steady
+    wave_data = (0.6 * gain * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+    path = write_wav(tmp_path / "fadein.wav", wave_data)
+    sections = analyse(path)["music"]["sections"]
+    assert all(s["end"] - s["start"] >= au.SECTION_MIN_SECONDS - 0.5 for s in sections), sections
+    assert sections[0]["start"] == 0.0 and sections[-1]["end"] == pytest.approx(40.0, abs=0.2)
