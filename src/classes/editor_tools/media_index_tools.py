@@ -20,6 +20,7 @@ from classes.media_index.store import default_shelf, sha_of
 
 QUERY_LIMIT_CHARS = 500
 LAYER_ORDER = ("structure", "look", "audio", "speech", "watch", "vectors")
+CLOUD_LAYERS = ("watch", "vectors")
 
 
 def _all_files():
@@ -237,14 +238,16 @@ def index_status(file_ids=None, only_incomplete=False):
             continue
         sha = sha_of(f.data.get("fingerprint"))
         ready = {layer: bool(sha) and shelf.layer_ready(sha, layer) for layer in S.LAYER_VERSIONS}
-        stale = [layer for layer in LAYER_ORDER if ready[layer] and not shelf.layer_ready(sha, layer, version=S.LAYER_VERSIONS[layer])]
+        older = [layer for layer in LAYER_ORDER if ready[layer] and not shelf.layer_ready(sha, layer, version=S.LAYER_VERSIONS[layer])]
+        stale = [layer for layer in older if layer not in CLOUD_LAYERS]            # free: refreshed on the next index run
+        older_cloud = [layer for layer in older if layer in CLOUD_LAYERS]         # paid: kept as is, newer fields read as unknown
         na = [layer for layer in LAYER_ORDER if not ready[layer] and sha
               and (shelf.layer(sha, layer) or {}).get("status") == S.NOT_APPLICABLE]
         missing = [layer for layer in LAYER_ORDER if not ready[layer] and layer not in na]
         if only_incomplete and not missing:
             continue
         rows.append({"file_id": str(f.id), "name": _display_name(f.data), "media_type": kind,
-                     "ready": [layer for layer in LAYER_ORDER if ready[layer]], "missing": missing, "not_applicable": na, "stale": stale,
+                     "ready": [layer for layer in LAYER_ORDER if ready[layer]], "missing": missing, "not_applicable": na, "stale": stale, "older_cloud": older_cloud,
                      "searchable": ready["vectors"] or ready["structure"]})
     log.debug("index_status: %d files", len(rows))
     complete = sum(1 for r in rows if not r["missing"])

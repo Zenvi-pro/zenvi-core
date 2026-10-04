@@ -26,7 +26,7 @@ LAYER_VERSIONS = {
     LAYER_AUDIO: 2,             # 2: clipping, rumble, noise floor and a music profile
     LAYER_SPEECH: 1,
     LAYER_LOOK: 1,
-    LAYER_WATCH: 1,
+    LAYER_WATCH: 2,             # 2: interest, usable, people, hook (older saved watch layers are kept, never re-bought)
     LAYER_VECTORS: 1,
 }
 
@@ -48,7 +48,13 @@ MAX_KEYFRAMES = 3000              # a safety cap per file
 KEYFRAME_LONG_EDGE = 384
 PROXY_HEIGHT = 480
 
+# Lazy layers: made the first time they are asked for, then kept. They are not part of "fully indexed".
+LAYER_MUSIC_DESC = "music_desc"     # cloud: genre, mood, energy, vocals per window of a music file
+LAZY_LAYERS = {LAYER_MUSIC_DESC: 1}
+
 NOT_APPLICABLE = "not_applicable"     # manifest status of a layer the file cannot have (no audio track, no picture)
 
+# Cloud layers (watch, vectors) cost money, so they are never re-run because of a version bump: an older one stays in
+# use and the new fields read as unknown. Local layers are free and do refresh.
 # Layer shapes only ever grow: a reader accepts a layer saved at an older version (it lacks the newer
 # fields) and the next index run refreshes it, so a version bump never makes existing data unreadable.

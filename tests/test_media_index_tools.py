@@ -166,7 +166,8 @@ def test_index_status_lists_each_layer_and_skips_non_media(env):
     rows = {x["file_id"]: x for x in r["files"]}
     assert set(rows) == {"F1", "F2", "F3"}
     assert rows["F1"]["missing"] == ["audio"] and rows["F1"]["searchable"] is True
-    assert rows["F1"]["stale"] == ["structure"], "saved by an older version: still readable, refreshed on the next index run"
+    assert rows["F1"]["stale"] == ["structure"], "a free local layer saved by an older version: refreshed on the next index run"
+    assert rows["F1"]["older_cloud"] == ["watch"], "a paid cloud layer from an older version is kept as is (newer fields read as unknown)"
     assert rows["F2"]["ready"] == ["structure"] and "watch" in rows["F2"]["missing"]
     assert rows["F3"]["missing"] == ["structure", "look", "audio", "speech", "watch", "vectors"] and rows["F3"]["searchable"] is False
     _, incomplete = call("index_status_tool", only_incomplete=True)

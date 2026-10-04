@@ -173,7 +173,7 @@ def extract_keyframe(path: str, t: float, out: str, long_edge: int = S.KEYFRAME_
 
 # ============================ talking to the backend ============================
 def _wait_for_job(client: Any, session: Any, job_id: str, should_cancel: Optional[Callable[[], bool]],
-                  on_tick: Optional[Callable[[float], None]] = None) -> Dict[str, Any]:
+                  on_tick: Optional[Callable[[float], None]] = None, what: str = "describing shots") -> Dict[str, Any]:
     deadline = time.time() + MAX_WAIT_SECONDS
     unreachable_since: Optional[float] = None
     started = time.time()
@@ -184,20 +184,20 @@ def _wait_for_job(client: Any, session: Any, job_id: str, should_cancel: Optiona
         if reply.get("error") and not reply.get("status"):
             unreachable_since = unreachable_since or time.time()
             if time.time() - unreachable_since >= UNREACHABLE_SECONDS:
-                return {"error": f"backend unreachable while describing shots: {reply['error']}"}
+                return {"error": f"backend unreachable while {what}: {reply['error']}"}
         else:
             unreachable_since = None
             status = reply.get("status")
             if status == "done":
                 return reply.get("result") or {"error": "the backend returned an empty result"}
             if status == "failed":
-                return {"error": str((reply.get("result") or {}).get("error") or "describing shots failed")}
+                return {"error": str((reply.get("result") or {}).get("error") or f"{what} failed")}
             if status == "not_found":
                 return {"error": "the backend lost the job"}
         if on_tick:
             on_tick(min(0.95, (time.time() - started) / 120.0))
         time.sleep(POLL_SECONDS)
-    return {"error": "describing shots timed out"}
+    return {"error": f"{what} timed out"}
 
 
 def run_watch(client: Any, path: str, probe: Dict[str, Any], file_id: str, structure: Dict[str, Any],
@@ -290,7 +290,8 @@ def compute_cloud(client: Any, path: str, probe: Dict[str, Any], sha: str, shelf
         return lambda f: on_progress(round(lo + (hi - lo) * max(0.0, min(1.0, f)), 4)) if on_progress else None
 
     def current(layer: str) -> bool:
-        return shelf.layer_ready(sha, layer, version=S.LAYER_VERSIONS[layer])
+        # Cloud layers cost money: one saved by an older version is kept, never re-run just for being old.
+        return shelf.layer_ready(sha, layer)
 
     # ---- watch -------------------------------------------------------------------------
     watch: Optional[Dict[str, Any]] = None

@@ -1342,6 +1342,18 @@ class ZenviBackendClient:
                                                 "media_type": media_type, "shots": shots, "transcript": transcript},
                         timeout=120, session=session)
 
+    def v2_describe_audio(self, file_name: str, file_uri: str, duration_seconds: float, windows: List[Dict[str, Any]],
+                          mime_type: str = "audio/aac", session=None) -> Dict[str, Any]:
+        return self._v2("POST", "/describe-audio", {"file_name": file_name, "file_uri": file_uri, "mime_type": mime_type,
+                                                    "duration_seconds": float(duration_seconds), "windows": windows},
+                        timeout=120, session=session)
+
+    def v2_listen(self, file_name: str, file_uri: str, duration_seconds: float, context: Optional[Dict[str, Any]] = None,
+                  mime_type: str = "audio/aac", session=None) -> Dict[str, Any]:
+        return self._v2("POST", "/listen", {"file_name": file_name, "file_uri": file_uri, "mime_type": mime_type,
+                                            "duration_seconds": float(duration_seconds), "context": context or {}},
+                        timeout=120, session=session)
+
     def v2_job(self, job_id: str, session=None) -> Dict[str, Any]:
         return self._v2("GET", f"/job/{job_id}", timeout=15, session=session)
 

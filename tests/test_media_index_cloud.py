@@ -309,7 +309,7 @@ def test_the_cloud_layers_are_computed_and_kept(video, prepared):
     client = FakeClient()
     out = cloud.compute_cloud(client, video, probe, SHA, shelf, file_id="F1", uploader=uploader)
     assert out["layers"] == {"watch": "ready", "vectors": "ready"} and out["usage"]["prompt_tokens"] == 1000
-    assert shelf.layer_ready(SHA, "watch", version=1) and shelf.layer_ready(SHA, "vectors", version=1)
+    assert shelf.layer_ready(SHA, "watch", version=S.LAYER_VERSIONS["watch"]) and shelf.layer_ready(SHA, "vectors", version=S.LAYER_VERSIONS["vectors"])
     watch = shelf.read_json(SHA, "watch.json")
     assert watch["kind"] == "inferred" and len(watch["shots"]) == 2 and watch["model"] == "m"
     index = shelf.read_json(SHA, "vectors_index.json")
@@ -380,3 +380,16 @@ def test_cancelling_keeps_the_watch_layer(video, prepared):
     with pytest.raises(cloud.Cancelled):
         cloud.compute_cloud(FakeClient(), video, probe, SHA, shelf, uploader=uploader, should_cancel=cancel)
     assert shelf.layer_ready(SHA, "watch") and not shelf.layer_ready(SHA, "vectors")
+
+
+# ============================ cloud layers are never re-bought ============================
+def test_a_watch_layer_saved_by_an_older_version_is_kept_not_run_again(video, prepared):
+    shelf, probe = prepared
+    first = FakeClient()
+    cloud.compute_cloud(first, video, probe, SHA, shelf, file_id="F1", uploader=uploader)
+    for layer in ("watch", "vectors"):
+        shelf.set_layer(SHA, layer, version=1, status="ready")           # what an older release left
+    assert not shelf.layer_ready(SHA, "watch", version=S.LAYER_VERSIONS["watch"])
+    second = FakeClient()
+    out = cloud.compute_cloud(second, video, probe, SHA, shelf, file_id="F1", uploader=uploader)
+    assert out["layers"] == {"watch": "cached", "vectors": "cached"} and second.calls == [] and len(uploader.sent) == 1, "only the first run uploaded anything"

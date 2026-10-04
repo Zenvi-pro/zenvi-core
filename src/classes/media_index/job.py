@@ -88,7 +88,8 @@ class IndexingJob:
         shelf = default_shelf()
 
         def ready(layer):
-            return shelf.layer_ready(sha, layer, version=S.LAYER_VERSIONS[layer])
+            # any saved version counts: an older cloud layer is kept, not paid for again
+            return shelf.layer_ready(sha, layer)
 
         def build():
             structure = shelf.read_json(sha, "structure.json") or {}

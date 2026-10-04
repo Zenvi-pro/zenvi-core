@@ -18,6 +18,7 @@
     "src/classes/launch_args.py",
     "src/classes/media_index/__init__.py",
     "src/classes/media_index/job.py",
+    "src/classes/media_index/audio_cloud.py",
     "src/classes/media_index/trip.py",
     "src/classes/media_index/quality.py",
     "src/classes/media_index/spectro.py",
