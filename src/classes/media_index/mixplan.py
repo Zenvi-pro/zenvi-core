@@ -15,6 +15,8 @@ from typing import Any, Dict, Optional, Sequence
 
 SPEECH_TOLERANCE_DB = 1.5        # voices closer than this to the target are left alone
 MIN_GAIN_DB = -12.0              # one pass never cuts a clip by more than this
+CEILING_HINT = ("use louder source files, or try apply_audio_effect_tool with voice_compressor on the quiet clips (it evens the level and adds makeup gain); "
+                "then check the result with review_edit_tool(render_mix=true), because the gain it adds has not been measured here")
 MAX_LEVEL_LINEAR = 1.3           # the editor's volume tops out at 130 %, and so does what a volume change may multiply by
 MAX_GAIN_DB = round(20.0 * math.log10(MAX_LEVEL_LINEAR), 2)      # +2.28 dB: the most a clip can be set to
 MASTER_TOLERANCE_LU = 1.0
@@ -83,8 +85,7 @@ def master_correction(measured_lufs: Optional[float], target_lufs: float, true_p
     if headroom_db is not None and clamped > max(0.0, float(headroom_db)):
         if float(headroom_db) < 0.3:
             return {"delta_db": 0.0, "reason": "the clips are already at the editor's maximum volume (130%)", "volume_ceiling": True,
-                    "peak_warning": f"the mix is {abs(delta):.0f} LU under the {target_lufs:g} LUFS target but clip volume cannot go higher: "
-                                    "use louder source files, or raise them with an audio effect (apply_audio_effect_tool)"}
+                    "peak_warning": f"the mix is {abs(delta):.0f} LU under the {target_lufs:g} LUFS target but clip volume cannot go higher: " + CEILING_HINT}
         clamped, ceiling = round(float(headroom_db), 2), True
     warning = None
     if true_peak_db is not None and clamped > 0 and float(true_peak_db) + clamped > peak_limit:
@@ -96,8 +97,7 @@ def master_correction(measured_lufs: Optional[float], target_lufs: float, true_p
         clamped = round(room, 2)
         warning = f"raised only {clamped:.1f} dB so peaks stay under {peak_limit:g} dB; the mix will stay a little under target"
     if ceiling and warning is None:
-        warning = (f"raised only {clamped:.1f} dB: clip volume tops out at 130%, so the mix stays {abs(delta) - clamped:.0f} LU under the target; "
-                   "use louder source files, or raise them with an audio effect (apply_audio_effect_tool)")
+        warning = (f"raised only {clamped:.1f} dB: clip volume tops out at 130%, so the mix stays {abs(delta) - clamped:.0f} LU under the target; " + CEILING_HINT)
     return {"delta_db": round(clamped, 2), "volume_ceiling": ceiling, "peak_warning": warning,
             "reason": ("raised" if clamped > 0 else "lowered") + f" to move {measured_lufs:.1f} LUFS toward {target_lufs:g}"
             + (" (limited)" if abs(clamped - delta) > 0.05 and warning is None else "")}

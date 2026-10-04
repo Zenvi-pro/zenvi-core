@@ -106,6 +106,7 @@ def test_the_master_gain_stops_at_the_volume_ceiling_and_says_what_to_do():
     out = M.master_correction(-22.4, -14.0, -6.4, headroom_db=2.28)
     assert out["delta_db"] == pytest.approx(2.28, abs=0.01) and out["volume_ceiling"] is True
     assert "130%" in out["peak_warning"] and "louder source" in out["peak_warning"]
+    assert "voice_compressor" in out["peak_warning"] and "render_mix" in out["peak_warning"] and "not been measured" in out["peak_warning"]
     maxed = M.master_correction(-22.4, -14.0, -6.4, headroom_db=0.0)
     assert maxed["delta_db"] == 0.0 and maxed["volume_ceiling"] is True and "maximum volume" in maxed["reason"]
     roomy = M.master_correction(-20.0, -14.0, -10.0, headroom_db=6.0)
