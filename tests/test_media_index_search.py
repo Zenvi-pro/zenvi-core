@@ -394,3 +394,31 @@ def test_the_loaded_index_refreshes_when_the_files_source_facts_change(shelf, tw
     shelf.set_source(SHA1, captured_at="2024-05-01T09:00:00+00:00")
     b = library.get_file_index(shelf, SHA1, file_id="F1")
     assert b.captured_at == "2024-05-01T09:00:00+00:00" and b is not a
+
+
+# ============================ the cut-offs below which a match is noise ============================
+def at_cosine(i, c):
+    """A query whose cosine with ``unit(i)`` is exactly *c* (and with every other row about zero)."""
+    v = unit(i) * c + unit(DIMS - 1) * float(np.sqrt(1 - c * c))      # the last axis is used by no row
+    return v / np.linalg.norm(v)
+
+
+def test_the_calibrated_cut_offs_are_the_ones_measured_on_labelled_queries():
+    assert search.MIN_COSINE == {"shot": 0.40, "speech": 0.52, "image": 0.36}
+
+
+@pytest.mark.parametrize("layer,row,floor", [("shot", 0, search.MIN_COSINE["shot"]), ("speech", 2, search.MIN_COSINE["speech"]), ("image", 3, search.MIN_COSINE["image"])])
+def test_a_match_just_under_its_cut_off_is_dropped_and_just_over_is_kept(two_files, layer, row, floor):
+    assert search.search(two_files, query_vector=at_cosine(row, floor - 0.02))["hits"] == [], f"{layer}: noise"
+    kept = search.search(two_files, query_vector=at_cosine(row, floor + 0.02))["hits"]
+    assert kept and layer in kept[0]["scores"], f"{layer}: a real match"
+
+
+def test_a_speech_score_that_passed_the_old_cut_off_is_now_noise(two_files):
+    assert search.search(two_files, query_vector=at_cosine(2, 0.46))["hits"] == []
+
+
+def test_each_kind_of_row_is_held_to_its_own_floor_whichever_is_lower(two_files, monkeypatch):
+    monkeypatch.setattr(search, "MIN_COSINE", {"shot": 0.40, "speech": 0.30, "image": 0.36})
+    assert search.search(two_files, query_vector=at_cosine(2, 0.35))["hits"], "a spoken match above a lower speech floor is kept"
+    assert search.search(two_files, query_vector=at_cosine(0, 0.35))["hits"] == [], "a shot description under its own floor is not"

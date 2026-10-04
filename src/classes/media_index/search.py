@@ -23,7 +23,12 @@ from classes.media_index.library import FileIndex
 RRF_K = 60
 PER_LAYER = 60                    # candidates taken from each ranked list before fusing
 WEIGHT = {"shot": 1.35, "speech": 1.30, "image": 1.0, "look": 0.8}
-MIN_COSINE = {"shot": 0.40, "speech": 0.40, "image": 0.36}   # below this a hit is noise (measured: real matches 0.39-0.78, unrelated 0.21-0.33)
+# Below these a hit is noise. Calibrated on 19 clips and 22 queries with known answers, plus 7 queries that match nothing
+# (tests/eval/live_search.py; raw scores in tests/eval/results/search_calibration.json). The right clip came first for every query.
+#   shot   0.40  right answers 0.22-0.78 (90% above 0.51); wrong pairs: 95% under 0.45. Kept: real footage matched down to 0.39.
+#   speech 0.52  right answers 0.57-0.78; wrong pairs ran as high as 0.58 (median 0.40), so the old 0.40 passed half of them.
+#   image  0.36  right answers 0.23-0.5 (a picture matches words less closely); wrong pairs: 99% under 0.34.
+MIN_COSINE = {"shot": 0.40, "speech": 0.52, "image": 0.36}
 
 def _num(d: Dict[str, Any], key: str, default: float) -> float:
     value = d.get(key)
@@ -157,8 +162,10 @@ def search(files: Sequence[FileIndex], *, query_vector: Optional[np.ndarray] = N
         for fi in files:
             if fi.text_matrix is not None:
                 sims = fi.text_matrix @ q
-                for i in _top(sims, MIN_COSINE["shot"]):
+                for i in _top(sims, min(MIN_COSINE["shot"], MIN_COSINE["speech"])):
                     row = fi.text_rows[i]
+                    if sims[i] < MIN_COSINE["speech" if row["kind"] != "shot" else "shot"]:
+                        continue          # shot descriptions and spoken sentences share one matrix but not one noise floor
                     if row["kind"] == "shot":
                         if look_for == "spoken":
                             continue
