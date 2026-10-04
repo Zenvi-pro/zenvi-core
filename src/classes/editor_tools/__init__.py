@@ -19,6 +19,7 @@ WORKSTREAM_MODULES = (
     "tracks_nav",
     "media_files",
     "ai_generation",
+    "media_index_tools",
 )
 
 WORKSTREAM_OF_MODULE = {
@@ -30,6 +31,7 @@ WORKSTREAM_OF_MODULE = {
     "tracks_nav": "tracks-nav",
     "media_files": "media-files",
     "ai_generation": "ai-generation",
+    "media_index_tools": "media-index",
 }
 
 
@@ -51,4 +53,5 @@ from classes.editor_tools import (  # noqa: E402,F401
     tracks_nav,
     media_files,
     ai_generation,
+    media_index_tools,
 )

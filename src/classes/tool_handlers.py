@@ -3005,6 +3005,14 @@ def search_clips(query="", top_k="5", look_for="", **_kw) -> str:
     k = max(1, min(k, 20))
 
     try:
+        from classes.editor_tools.media_index_tools import legacy_search_clips
+        local = legacy_search_clips(q, k, str(look_for or "").strip(), _detect_ordinal(q))
+        if local is not None:
+            return local
+    except Exception:
+        log.warning("search_clips: the local media index could not answer; using the project index", exc_info=True)
+
+    try:
         from collections import defaultdict
 
         from classes.api_client import get_backend_client
@@ -3227,6 +3235,14 @@ def search_clip_scenes(
         nth = _parse_occurrence(str(_kw.get("occurrence", "0")), query)
         # Why the index could not answer, so a fallback result (or none) says so.
         index_notes = []
+
+        try:
+            from classes.editor_tools.media_index_tools import legacy_search_in_clip
+            local = legacy_search_in_clip(_semantic_search_query(query), k, ctx.file_id, clip_start, clip_end, clip_name)
+            if local is not None:
+                return local
+        except Exception:
+            log.warning("search_clip_scenes: the local media index could not answer", exc_info=True)
 
         # TwelveLabs search (parent index + trim window)
         if not client.is_indexing_configured():

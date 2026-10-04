@@ -25,15 +25,24 @@ PER_LAYER = 60                    # candidates taken from each ranked list befor
 WEIGHT = {"shot": 1.35, "speech": 1.30, "image": 1.0, "look": 0.8}
 MIN_COSINE = {"shot": 0.30, "speech": 0.30, "image": 0.20}   # a hit below this is noise, not a match
 
+def _num(d: Dict[str, Any], key: str, default: float) -> float:
+    value = d.get(key)
+    return default if value is None else float(value)
+
+
+def _saturation(p: Dict[str, Any], e: Dict[str, Any]) -> float:
+    return float((e.get("saturation") or {}).get("mean") or p.get("sat_proxy") or 0.0)
+
+
 LOOK_TESTS: Dict[str, Callable[[Dict[str, Any], Dict[str, Any]], bool]] = {
-    "warm": lambda p, e: (p.get("warm_cool") or 0.0) >= 0.06,
-    "cool": lambda p, e: (p.get("warm_cool") or 0.0) <= -0.06,
-    "dark": lambda p, e: (p.get("avg_luma") if p.get("avg_luma") is not None else 0.5) <= 0.30,
-    "bright": lambda p, e: (p.get("avg_luma") if p.get("avg_luma") is not None else 0.5) >= 0.60,
-    "saturated": lambda p, e: ((e.get("saturation") or {}).get("mean") or p.get("sat_proxy") or 0.0) >= 0.45,
-    "muted": lambda p, e: ((e.get("saturation") or {}).get("mean") or p.get("sat_proxy") or 0.0) <= 0.20,
-    "contrasty": lambda p, e: (p.get("contrast_span") or 0.0) >= 0.55,
-    "flat": lambda p, e: (p.get("contrast_span") if p.get("contrast_span") is not None else 1.0) <= 0.25,
+    "warm": lambda p, e: _num(p, "warm_cool", 0.0) >= 0.06,
+    "cool": lambda p, e: _num(p, "warm_cool", 0.0) <= -0.06,
+    "dark": lambda p, e: _num(p, "avg_luma", 0.5) <= 0.30,
+    "bright": lambda p, e: _num(p, "avg_luma", 0.5) >= 0.60,
+    "saturated": lambda p, e: _saturation(p, e) >= 0.45,
+    "muted": lambda p, e: _saturation(p, e) <= 0.20,
+    "contrasty": lambda p, e: _num(p, "contrast_span", 0.0) >= 0.55,
+    "flat": lambda p, e: _num(p, "contrast_span", 1.0) <= 0.25,
 }
 LOOK_NAMES = tuple(LOOK_TESTS)
 

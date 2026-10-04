@@ -34,6 +34,11 @@ def _look_line(profile: Optional[Dict[str, Any]], extras: Optional[Dict[str, Any
     return ", ".join(bits)
 
 
+def _speaker(sentence: Dict[str, Any]) -> str:
+    who = sentence.get("speaker")
+    return f"{who}: " if who else ""
+
+
 def header(fi: FileIndex) -> List[str]:
     lines = [f"FILE {fi.name or fi.file_id or fi.sha[:10]} ({fi.media_type}, {_t(fi.duration)} long"
              + (f", {fi.orientation}" if fi.orientation else "") + f", {len(fi.shots)} shots)"]
@@ -82,7 +87,7 @@ def shot_lines(fi: FileIndex, shot: Dict[str, Any]) -> str:
         parts.append("  hears: " + ", ".join(sounds))
     said = [s for s in fi.sentences if s["end"] > shot["start"] and s["start"] < shot["end"]]
     if said:
-        parts.append("  says: " + " ".join(f"{(s.get('speaker') + ': ') if s.get('speaker') else ''}\"{s['text']}\"" for s in said))
+        parts.append("  says: " + " ".join(f"{_speaker(s)}\"{s['text']}\"" for s in said))
     look = _look_line(shot.get("look"), shot.get("look_extras"))
     if look:
         parts.append("  look: " + look)

@@ -137,6 +137,11 @@ CAPABILITIES = [
     ("ai.search", "ai-generation", "search_clips/search_clip_scenes/slice_clip_at_best_match", "Semantic search tools without crashes; failures reported as errors"),
     ("ai.stock_media", "ai-generation", "Stock search in Project Files", "Pexels/Freesound import (existing tools) with errors reported as errors"),
     ("recording.prepare", "ai-generation", "View > Recording View / Clip > Audio > Record", "Open and configure the Recording dock (sources mic/screen/webcam, devices, track, start time); starting capture stays a human action"),
+    # ------------------------------------------------------------------ media-index
+    ("index.search", "media-index", "Project Files search / agent search", "Search every indexed file by description, speech, picture or reference, with measured-fact filters"),
+    ("index.dossier", "media-index", "Scene Descriptions dock", "Read everything the index knows about a file or range as compact text"),
+    ("index.look", "media-index", "Color scopes / grading", "Read a file's or range's measured look without rendering"),
+    ("index.status", "media-index", "Indexing badges", "Per-file index layer status"),
 ]
 
 OUT_OF_SCOPE = {
