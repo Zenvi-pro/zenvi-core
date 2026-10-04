@@ -163,13 +163,27 @@ def balance_mix(even_out_voices=True, speech_target_db=None, duck_music=True, se
     items = [{"id": c.id, "level_db": R.source_level_db(c, index_for(c)), "gain_db": c.gain_db} for c in speech]
     voices = mixplan.speech_adjustments(items, target_db=speech_target_db) if even_out_voices and speech else {"target_db": None, "adjust": [], "left_alone": []}
     result["voices"] = voices
+    duck_plan: List[Dict[str, Any]] = []
     if duck_music and speech and beds:
-        result["ducking"] = f"{len(beds)} bed(s) under {len(speech)} speaking clip(s): the attenuation is derived from each bed's measured level"
+        # How deep each bed must go to sit a margin under the quietest voice it plays with, using the levels that will be heard
+        # (source level plus gain, after the voices have been evened out). Unknown levels fall back to the editor's own estimate.
+        delta = {a["id"]: a["delta_db"] for a in voices["adjust"]}
+        for bed in beds:
+            heard = []
+            for sp in speech:
+                lo, hi = max(sp.start, bed.start), min(sp.end, bed.end)
+                level = R.source_level_db(sp, index_for(sp))
+                if hi - lo >= 0.5 and level is not None:
+                    heard.append(level + sp.gain_over(lo, hi) + delta.get(sp.id, 0.0))
+            bed_src = R.source_level_db(bed, index_for(bed))
+            depth = mixplan.duck_depth(heard, None if bed_src is None else bed_src + bed.gain_over(bed.start, bed.end))
+            duck_plan.append({"bed": bed.id, "name": bed.name, **depth})
+        result["ducking"] = duck_plan
     elif duck_music and beds and not speech:
         result["ducking"] = "no speech on the timeline: the music is the soundtrack and stays at its level"
     target = float(target_lufs) if target_lufs is not None else R.loudness_target(R.Brief(form=str(form or "")))
     if dry_run:
-        return ok(f"Would adjust {len(voices['adjust'])} voice(s)" + (", duck the music" if result["ducking"] and speech and beds else "") +
+        return ok(f"Would adjust {len(voices['adjust'])} voice(s)" + (", duck the music" if duck_plan and any(d["duck_db"] is not None or d["why"] == "levels unknown" for d in duck_plan) else "") +
                   (f" and set the loudness to {target:g} LUFS" if set_loudness else "") + ".", changed=False, dry_run=True, target_lufs=target, **result)
 
     errors: List[str] = []
@@ -180,13 +194,20 @@ def balance_mix(even_out_voices=True, speech_target_db=None, duck_music=True, se
             out = handlers.set_clip_volume(timeline_clip_id=a["id"], level_db=str(a["delta_db"]), mode="scale")
             if _is_error(out):
                 errors.append(f"voice {a['id']}: {out}")
-        if duck_music and speech and beds:
-            out = handlers.duck_under_speech(speech_clip_ids="auto", duck_db="auto")
+        reports = []
+        for step in duck_plan:
+            if step["duck_db"] is None and step["why"] != "levels unknown":
+                continue                                           # already far enough under the voice: leave it
+            out = handlers.duck_under_speech(bed_clip_ids=step["bed"], speech_clip_ids="auto",
+                                             duck_db="auto" if step["duck_db"] is None else str(step["duck_db"]))
             if _is_error(out):
-                errors.append(f"ducking: {out}")
-            result["ducking_report"] = str(out)[:600]
+                errors.append(f"ducking {step['bed']}: {out}")
+            else:
+                reports.append(str(out)[:300])
+        if reports:
+            result["ducking_report"] = " | ".join(reports)[:900]
 
-    if voices["adjust"] or (duck_music and speech and beds):
+    if voices["adjust"] or any(s["duck_db"] is not None or s["why"] == "levels unknown" for s in duck_plan):
         on_main(apply_voices_and_ducking)
 
     if set_loudness:

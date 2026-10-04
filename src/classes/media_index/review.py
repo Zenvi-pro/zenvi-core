@@ -53,6 +53,7 @@ BEAT_TOLERANCE = 0.10            # a cut within this many seconds of a beat coun
 BEAT_MIN_FRACTION = 0.40
 MIN_CUTS_FOR_BEATS = 6
 SILENCE_FLOOR_DB = -50.0
+GAIN_SAMPLE_SECONDS = 0.25       # how finely an automated volume curve is read over an overlap
 
 # ---- forms ------------------------------------------------------------------------------------
 _MUSIC_FORMS = ("vlog", "tiktok", "reel", "short", "montage", "trailer", "recap", "highlight", "music video", "film",
@@ -82,10 +83,20 @@ class TimelineClip:
     has_audio: bool = False
     effects: List[str] = field(default_factory=list)
     generated: bool = False
+    gain_fn: Optional[Callable[[float], float]] = None   # gain in dB at a timeline second, for clips with automated (e.g. ducked) volume
+    windows: List[Tuple[float, float]] = field(default_factory=list)   # timeline seconds in which this clip's voice is actually speaking
 
     @property
     def length(self) -> float:
         return max(0.0, self.end - self.start)
+
+    def gain_over(self, lo: float, hi: float) -> float:
+        """The gain (dB) this clip really has over [lo, hi): the set level, or for automated volume the power average of the curve."""
+        if self.gain_fn is None:
+            return float(self.gain_db or 0.0)
+        steps = max(1, int((hi - lo) / GAIN_SAMPLE_SECONDS))
+        points = [self.gain_fn(lo + (hi - lo) * (i + 0.5) / steps) for i in range(steps)]
+        return round(10.0 * math.log10(statistics.fmean(10 ** (g / 10.0) for g in points)), 2)
 
     def to_source(self, t: float) -> float:
         return self.src_in + (t - self.start) * self.speed
@@ -403,18 +414,19 @@ def sound_findings(clips: Sequence[TimelineClip], project: ProjectInfo, brief: B
 
     margins, unknown_levels = [], 0
     for sp in speech:
-        s_level = source_level_db(sp, index_for(sp))
-        for bed in beds:
-            lo, hi = max(sp.start, bed.start), min(sp.end, bed.end)
-            if hi - lo < 0.5:
-                continue
-            b_level = source_level_db(bed, index_for(bed), bed.to_source(lo), bed.to_source(hi))
-            if s_level is None or b_level is None:
-                unknown_levels += 1
-                continue
-            margin = (s_level + (sp.gain_db or 0.0)) - (b_level + (bed.gain_db or 0.0))
-            margins.append({"speech": sp.id, "bed": bed.id, "from": round(lo, 2), "to": round(hi, 2), "margin_db": round(margin, 1),
-                            "automated_gain": sp.gain_db is None or bed.gain_db is None})
+        for w0, w1 in (sp.windows or [(sp.start, sp.end)]):           # only while someone is speaking: the gaps are where the music comes back up
+            for bed in beds:
+                lo, hi = max(w0, bed.start, sp.start), min(w1, bed.end, sp.end)
+                if hi - lo < 0.5:
+                    continue
+                s_level = source_level_db(sp, index_for(sp), sp.to_source(lo), sp.to_source(hi))
+                b_level = source_level_db(bed, index_for(bed), bed.to_source(lo), bed.to_source(hi))
+                if s_level is None or b_level is None:
+                    unknown_levels += 1
+                    continue
+                margin = (s_level + sp.gain_over(lo, hi)) - (b_level + bed.gain_over(lo, hi))
+                margins.append({"speech": sp.id, "bed": bed.id, "from": round(lo, 2), "to": round(hi, 2), "margin_db": round(margin, 1),
+                                "automated_gain": sp.gain_fn is not None or bed.gain_fn is not None})
     if margins:
         worst = min(margins, key=lambda m: m["margin_db"])
         bad = [m for m in margins if m["margin_db"] < MARGIN_NEEDS_DB]
@@ -431,7 +443,7 @@ def sound_findings(clips: Sequence[TimelineClip], project: ProjectInfo, brief: B
     jumps = []
     for (a, la), (b, lb) in zip(levels, levels[1:]):
         if la is not None and lb is not None:
-            diff = (lb + (b.gain_db or 0.0)) - (la + (a.gain_db or 0.0))
+            diff = (lb + b.gain_over(b.start, b.end)) - (la + a.gain_over(a.start, a.end))
             if abs(diff) > LEVEL_JUMP_DB:
                 jumps.append({"from_clip": a.id, "to_clip": b.id, "at": round(b.start, 2), "jump_db": round(diff, 1)})
     if len(speech) >= 2:

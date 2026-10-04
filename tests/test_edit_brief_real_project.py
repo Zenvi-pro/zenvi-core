@@ -58,7 +58,7 @@ def test_the_brief_is_saved_with_the_project_and_comes_back(world, tmp_path):
     assert store.read_from_file(path, path_mode="absolute")["edit_brief"] == {"form": "film", "done": ["scene 1"]}
 
 
-def test_a_key_set_to_null_stays_in_the_file_and_the_tool_reads_it_as_absent(world, tmp_path):
+def test_a_key_set_to_null_stays_in_the_file_and_the_tool_reads_it_as_absent(world, tmp_path, monkeypatch):
     store, manager = world
     manager.update_untracked(["edit_brief"], {"form": "film", "vibe": "warm"})
     manager.update_untracked(["edit_brief"], {"vibe": None})
@@ -67,7 +67,7 @@ def test_a_key_set_to_null_stays_in_the_file_and_the_tool_reads_it_as_absent(wor
     saved = store.read_from_file(path, path_mode="absolute")["edit_brief"]
     assert saved == {"form": "film", "vibe": None}
     from classes.editor_tools import media_index_tools_edit as TE
-    TE.get_app = lambda: MagicMock(project=MagicMock(get=lambda k, d=None: saved if k == "edit_brief" else d))
+    monkeypatch.setattr(TE, "get_app", lambda: MagicMock(project=MagicMock(get=lambda k, d=None: saved if k == "edit_brief" else d)))
     assert TE.read_brief() == {"form": "film"}
 
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import tempfile
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from classes.editor_tools._base import ToolError, boolean, enum, integer, number, obj, ok, string
 from classes.editor_tools._registry import REGISTRY, editor_tool
@@ -60,12 +60,21 @@ def build_timeline() -> Tuple[List[R.TimelineClip], R.ProjectInfo, Dict[str, Any
         speed = (src_out - src_in) / tl_len if tl_len > 0.01 and src_out > src_in else 1.0
         entry = audio_by_id.get(str(clip_obj.id))
         level = entry["level"] if entry else None
+        gain_fn: Optional[Callable[[float], float]] = None
+        if entry is not None and level is None:          # automated volume (ducking, fades): read the curve where it matters
+            points, fps_info = am.curve_points(data), entry["fps"]
+
+            def curve_gain(t: float, _data=data, _points=points, _fps=fps_info) -> float:
+                return am.gain_to_db(am.evaluate_volume_curve(_points, am.timeline_to_source_frame(t, _data, _fps)))
+
+            gain_fn = curve_gain
         clips.append(R.TimelineClip(
             id=str(clip_obj.id), name=str(data.get("title") or (fdata or {}).get("name") or os.path.basename(str((fdata or {}).get("path") or "")) or "clip"),
             file_id=fid, sha=sha_of((fdata or {}).get("fingerprint")), layer=int(data.get("layer") or 0), kind=_file_kind(fdata, data),
             start=float(tl_start), end=float(tl_end), src_in=src_in, src_out=src_out, speed=float(speed),
             role=entry["role"] if entry else None, gain_db=(am.gain_to_db(level) if level is not None else None),
-            has_audio=entry is not None, effects=[str(e.get("class_name") or "") for e in (data.get("effects") or []) if isinstance(e, dict)]))
+            has_audio=entry is not None, effects=[str(e.get("class_name") or "") for e in (data.get("effects") or []) if isinstance(e, dict)],
+            gain_fn=gain_fn, windows=[(float(a), float(b)) for a, b in (entry["windows"] if entry else [])]))
         objs[str(clip_obj.id)] = clip_obj
     project = th._get_app().project
     width, height = int(project.get("width") or 1920), int(project.get("height") or 1080)

@@ -43,6 +43,9 @@ FLAT_CONTRAST = 0.20
 AUDIO_CLIPPED = 0.01        # share of analysis frames at full scale
 AUDIO_RUMBLE = 0.55         # share of spectral magnitude below 100 Hz (wind, handling noise)
 
+# --- highlight ----------------------------------------------------------------------------------
+UNKNOWN_INTEREST = 0.4     # what a shot with no model opinion counts as: ordinary footage
+
 # --- grouping -------------------------------------------------------------------------------------
 TAKE_SIMILARITY = 0.90      # two shots whose mean picture vectors are this alike are takes of one thing
 SCENE_SIMILARITY = 0.78     # neighbouring shots below this start a new scene
@@ -172,7 +175,11 @@ def shot_quality(shot: Dict[str, Any], *, median_sharpness: Optional[float], aud
     if inferred:
         block["inferred"] = inferred
     interest = inferred.get("interest")
-    highlight = score if interest is None else round(0.6 * float(interest) + 0.4 * score, 3)
+    # An unknown opinion is an ordinary shot (the model rates everyday footage 0.3-0.5), never a perfect one: otherwise a clean
+    # shot nobody has judged would outrank one the model found striking.
+    highlight = round(0.6 * (UNKNOWN_INTEREST if interest is None else float(interest)) + 0.4 * score, 3)
+    if shot.get("black"):
+        highlight = 0.0
     if inferred.get("usable") is False:
         highlight = min(highlight, 0.1)
     block["highlight"] = highlight

@@ -382,3 +382,14 @@ def test_chronological_search_follows_when_things_were_shot(trip_env):
     assert list(dict.fromkeys(h["file_id"] for h in r["hits"])) == ["F1", "F2", "F5"], "by capture time, with undated footage last"
     _, back = call("search_footage_tool", sort="chronological", captured_after="2024-05-03", limit=50)
     assert {h["file_id"] for h in back["hits"]} == {"F2"}
+
+
+def test_an_audio_only_file_with_just_an_audio_analysis_counts_as_indexed(env):
+    sha = "7" * 64
+    env.shelf.set_source(sha, duration=40.0, media_type="audio")
+    env.shelf.write_json(sha, "audio.json", {"tempo": {"bpm": 100.0, "beats": [1.0, 1.6]}})
+    env.shelf.set_layer(sha, "audio", version=2, status="ready")
+    env.files.append(file_obj("M9", "song.mp3", sha, "audio"))
+    found, missing = T.project_indexes()
+    assert "M9" in [f.file_id for f in found] and "song.mp3" not in missing
+    assert "new.mp4" in missing, "a file with no index at all is still reported as not indexed"

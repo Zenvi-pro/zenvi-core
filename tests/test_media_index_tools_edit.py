@@ -65,6 +65,7 @@ def timeline(monkeypatch):
         state.clips = list(clips)
         state.objs = {c.id: FakeClipObj(c) for c in clips}
     state.load = load
+    state.set_provider = lambda fn: monkeypatch.setattr(TE, "_index_provider", fn)       # scoped to the test
     return state
 
 
@@ -196,7 +197,7 @@ def voices_and_music(timeline, levels=(-18.0, -24.0, -20.0)):
     clips.append(clip("bed", 0.0, 30.0, kind="audio", role="music", file="M", layer=3, gain=0.0))
     timeline.load(*clips)
     base = TE._index_provider()
-    TE._index_provider = lambda: (lambda c: idx.get(c.file_id) or base()(c))
+    timeline.set_provider(lambda: (lambda c: idx.get(c.file_id) or base(c)))
     return idx
 
 
@@ -208,7 +209,9 @@ def test_voices_are_evened_out_the_music_is_ducked_and_the_mix_is_brought_to_the
     master_calls = mixer.volumes[2:]                                     # ... then one overall gain on every audio clip
     by_clip = {cid: db for cid, db, mode in voice_calls if mode == "scale"}
     assert by_clip["talk0"] == pytest.approx(-2.0, abs=0.1) and by_clip["talk1"] == pytest.approx(4.0, abs=0.1) and "talk2" not in by_clip
-    assert len(mixer.ducks) == 1 and mixer.ducks[0]["speech_clip_ids"] == "auto" and mixer.ducks[0]["duck_db"] == "auto"
+    assert len(mixer.ducks) == 1 and mixer.ducks[0]["bed_clip_ids"] == "bed" and mixer.ducks[0]["speech_clip_ids"] == "auto"
+    assert mixer.ducks[0]["duck_db"] == "-10.0", "voices end at -20 dB and the bed is -20 dB: it must go 10 dB down to sit a margin under them"
+    assert r["ducking"][0]["duck_db"] == -10.0 and r["ducking"][0]["limited"] is False
     assert {cid for cid, _db, _m in master_calls} == {"talk0", "talk1", "talk2", "bed"} and all(db == pytest.approx(6.0, abs=0.01) for _c, db, _m in master_calls)
     assert r["loudness"]["before"]["integrated_lufs"] == -20.0 and r["loudness"]["after"]["integrated_lufs"] == -14.2 and r["changed"] is True
     assert "Balanced the mix" in head and "-20.0 -> -14.2" in head and mixer.renders == [(0.0, 30.0), (0.0, 30.0)]
@@ -453,3 +456,52 @@ def test_nothing_usable_is_an_error_that_says_why(monkeypatch):
     out = REGISTRY["audition_music_tool"].func(candidates=[{"id": "1", "preview_url": "http://x"}])
     assert out.startswith("Error") and "none of the candidates could be analysed" in out and "only https" in out
     assert REGISTRY["audition_music_tool"].func(candidates=[]).startswith("Error")
+
+
+# ============================ how deep each bed is ducked ============================
+def test_each_bed_is_ducked_to_a_margin_under_the_quietest_voice_it_plays_with(mixer):
+    voices_and_music(mixer.tl, levels=(-18.0, -26.0))
+    _, r = call("balance_mix_tool", even_out_voices=False, set_loudness=False)
+    assert mixer.ducks[0]["duck_db"] == "-16.0", "the quietest voice is -26 dB and the bed -20 dB: 16 dB down leaves a 10 dB margin"
+    assert r["ducking"][0]["needed"] == -16.0 and r["ducking"][0]["bed"] == "bed"
+
+
+def test_the_depth_uses_the_voice_levels_as_they_will_be_after_the_voices_are_evened_out(mixer):
+    voices_and_music(mixer.tl, levels=(-18.0, -26.0))
+    call("balance_mix_tool", set_loudness=False)
+    assert mixer.ducks[0]["duck_db"] == "-12.0", "voices meet at -22 dB, the bed is -20 dB: 12 dB down"
+
+
+def test_a_bed_already_far_enough_under_the_voice_is_not_ducked(mixer):
+    voices_and_music(mixer.tl, levels=(-18.0, -18.0))
+    mixer.tl.load(*[c for c in mixer.tl.clips if c.id != "bed"], clip("bed", 0.0, 30.0, kind="audio", role="music", file="M", layer=3, gain=-20.0))
+    _, r = call("balance_mix_tool", even_out_voices=False, set_loudness=False)
+    assert mixer.ducks == [] and r["ducking"][0]["why"] == "already far enough under the voice" and r["ducking"][0]["duck_db"] is None
+
+
+def test_unknown_levels_leave_ducking_to_the_editors_own_estimate(mixer):
+    idx = {}
+    clips = [clip("pic", 0.0, 30.0), clip("talk0", 0.0, 6.0, kind="audio", role="speech", file="NOINDEX", layer=2, gain=0.0),
+             clip("bed", 0.0, 30.0, kind="audio", role="music", file="NOINDEX2", layer=3, gain=0.0)]
+    mixer.tl.load(*clips)
+    call("balance_mix_tool", even_out_voices=False, set_loudness=False)
+    assert mixer.ducks and mixer.ducks[0]["duck_db"] == "auto" and idx == {}
+
+
+def test_two_beds_are_each_given_their_own_depth(mixer):
+    voices_and_music(mixer.tl, levels=(-20.0,))
+    mixer.tl.load(*mixer.tl.clips, clip("loud", 0.0, 30.0, kind="audio", role="music", file="L", layer=4, gain=0.0))
+    base = TE._index_provider()
+    mixer.tl.set_provider(lambda: (lambda c: audio_index(-14.0) if c.file_id == "L" else base(c)))
+    call("balance_mix_tool", even_out_voices=False, set_loudness=False)
+    depths = {d["bed_clip_ids"]: d["duck_db"] for d in mixer.ducks}
+    assert depths == {"bed": "-10.0", "loud": "-16.0"}, "the louder bed has to go further down"
+
+
+def test_a_bed_far_enough_under_stays_untouched_even_when_the_voices_are_adjusted(mixer):
+    voices_and_music(mixer.tl, levels=(-18.0, -24.0))
+    mixer.tl.load(*[c for c in mixer.tl.clips if c.id != "bed"], clip("bed", 0.0, 30.0, kind="audio", role="music", file="M", layer=3, gain=-20.0))
+    _, r = call("balance_mix_tool", set_loudness=False)
+    assert [v for v in mixer.volumes if v[0].startswith("talk")], "the voices were evened out"
+    assert mixer.ducks == [], "but the bed, already 20 dB down, is left as it is"
+    assert r["ducking"][0]["why"] == "already far enough under the voice"

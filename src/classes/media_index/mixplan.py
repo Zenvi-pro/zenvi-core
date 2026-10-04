@@ -77,3 +77,27 @@ def master_correction(measured_lufs: Optional[float], target_lufs: float, true_p
         warning = f"raised only {clamped:.1f} dB so peaks stay under {peak_limit:g} dB; the mix will stay a little under target"
     return {"delta_db": round(clamped, 2), "reason": ("raised" if clamped > 0 else "lowered") + f" to move {measured_lufs:.1f} LUFS toward {target_lufs:g}"
             + (" (limited)" if abs(clamped - delta) > 0.05 and warning is None else ""), "peak_warning": warning}
+
+
+DUCK_MARGIN_DB = 10.0            # the music should sit this far under the quietest voice it plays with
+DUCK_FLOOR_DB = -24.0            # the deepest duck ever applied
+DUCK_CEILING_DB = -3.0           # a duck shallower than this is not worth keyframing
+
+
+def duck_depth(speech_levels_db: Sequence[float], bed_level_db: Optional[float], *, margin_db: float = DUCK_MARGIN_DB,
+               floor_db: float = DUCK_FLOOR_DB, ceiling_db: float = DUCK_CEILING_DB) -> Dict[str, Any]:
+    """How far to duck a music bed so it sits ``margin_db`` under the quietest voice it overlaps.
+
+    Levels are what will be heard: source level plus the gain set on the clip. Returns ``{"duck_db", "needed", "limited"}``
+    where ``duck_db`` is a negative attenuation (None when the bed already sits far enough under, or its level is unknown:
+    the caller then leaves ducking to the editor's own estimate), and ``limited`` says the floor stopped it reaching the margin.
+    """
+    levels = [float(x) for x in speech_levels_db if x is not None]
+    if not levels or bed_level_db is None:
+        return {"duck_db": None, "needed": None, "limited": False, "why": "levels unknown"}
+    quietest = min(levels)
+    needed = (quietest - margin_db) - float(bed_level_db)          # attenuation that gives exactly the margin (negative = quieter)
+    if needed >= -0.5:
+        return {"duck_db": None, "needed": round(needed, 1), "limited": False, "why": "already far enough under the voice"}
+    depth = min(ceiling_db, max(floor_db, needed))
+    return {"duck_db": round(depth, 1), "needed": round(needed, 1), "limited": needed < floor_db, "why": "ducked to the margin"}

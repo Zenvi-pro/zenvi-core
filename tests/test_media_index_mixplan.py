@@ -83,3 +83,37 @@ def test_lowering_the_level_ignores_the_peak_limit_and_unknown_peaks_are_not_a_b
 def test_a_silent_mix_has_nothing_to_correct():
     out = M.master_correction(None, -14.0)
     assert out["delta_db"] == 0.0 and "silent" in out["reason"]
+
+
+# ============================ how deep to duck ============================
+@pytest.mark.parametrize("speech,bed,expected", [([-20.0], -22.0, -8.0), ([-26.0], -20.0, -16.0), ([-20.0, -26.0], -20.0, -16.0), ([-20.0], -40.0, None)])
+def test_the_duck_puts_the_bed_a_margin_under_the_quietest_voice(speech, bed, expected):
+    out = M.duck_depth(speech, bed)
+    assert out["duck_db"] == expected
+    if expected is not None:
+        assert (min(speech) - (bed + expected)) == pytest.approx(M.DUCK_MARGIN_DB, abs=0.11), "voice minus bed is exactly the margin afterwards"
+
+
+def test_a_bed_that_is_already_far_enough_under_is_not_ducked():
+    out = M.duck_depth([-20.0], -33.0)
+    assert out["duck_db"] is None and out["why"] == "already far enough under the voice" and out["needed"] == 3.0
+
+
+def test_the_duck_is_limited_by_the_floor_and_says_so():
+    out = M.duck_depth([-40.0], -10.0)             # would need -40 dB
+    assert out["duck_db"] == M.DUCK_FLOOR_DB and out["limited"] is True and out["needed"] == -40.0
+
+
+def test_a_tiny_duck_is_not_worth_keyframing_but_a_small_one_is_raised_to_the_ceiling():
+    assert M.duck_depth([-20.0], -29.7)["duck_db"] is None, "needs only 0.3 dB"
+    assert M.duck_depth([-20.0], -28.5)["duck_db"] == M.DUCK_CEILING_DB, "needs 1.5 dB: a duck is either worth keyframing (3 dB) or not at all"
+    assert M.duck_depth([-20.0], -26.0)["duck_db"] == -4.0, "deeper needs are used as they are"
+
+
+def test_unknown_levels_leave_the_decision_to_the_caller():
+    assert M.duck_depth([], -20.0)["duck_db"] is None and M.duck_depth([-20.0], None)["why"] == "levels unknown"
+    assert M.duck_depth([None, -20.0], -22.0)["duck_db"] == -8.0, "voices without a level are ignored"
+
+
+def test_the_margin_can_be_chosen():
+    assert M.duck_depth([-20.0], -22.0, margin_db=6.0)["duck_db"] == -4.0

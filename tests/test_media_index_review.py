@@ -438,3 +438,71 @@ def test_a_short_film_is_not_held_to_social_rules():
     assert "format" not in ids and "form_length" not in ids and ids["captions"]["status"] == "ok"
     reel = by_id(run(clips, Brief(form="Instagram Reel"), project=ProjectInfo(200.0, 1920, 1080)))
     assert reel["format"]["status"] == "needs" and reel["form_length"]["status"] == "needs" and reel["captions"]["status"] == "needs"
+
+
+# ============================ automated (ducked) volume ============================
+def with_curve(c, fn):
+    c.gain_fn, c.gain_db = fn, None
+    return c
+
+
+def test_a_static_gain_is_used_as_set_and_an_automated_one_is_read_from_its_curve():
+    static = clip("a", 0, 10, role="music", gain=-6.0)
+    assert static.gain_over(0, 10) == -6.0
+    unset = clip("b", 0, 10, role="music")
+    unset.gain_db = None
+    assert unset.gain_over(0, 10) == 0.0, "no curve and no level: unity"
+    ducked = with_curve(clip("c", 0, 10, role="music"), lambda t: -20.0 if 2.0 <= t <= 8.0 else 0.0)
+    assert ducked.gain_over(3.0, 7.0) == pytest.approx(-20.0, abs=0.01) and ducked.gain_over(8.5, 10.0) == pytest.approx(0.0, abs=0.01)
+    half = with_curve(clip("d", 0, 10, role="music"), lambda t: 0.0 if t < 5.0 else -20.0)
+    assert half.gain_over(0.0, 10.0) == pytest.approx(-2.97, abs=0.1), "a power average (loud half dominates), not -10"
+
+
+def test_a_bed_ducked_by_volume_automation_counts_as_ducked_in_the_margin():
+    speech = clip("talk", 2, 8, kind="audio", role="speech", file="S", gain=0.0)
+    unducked = clip("bed", 0, 20, kind="audio", role="music", file="M", gain=0.0)
+    ducked = with_curve(clip("bed", 0, 20, kind="audio", role="music", file="M"), lambda t: -18.0 if 1.5 <= t <= 8.5 else 0.0)
+    idx = provider(S=audio_index(-20.0), M=audio_index(-22.0))
+    bad = by_id(run([clip("pic", 0, 20), speech, unducked], Brief(form="vlog"), index=idx))["dialogue_margin"]
+    good = by_id(run([clip("pic", 0, 20), speech, ducked], Brief(form="vlog"), index=idx))["dialogue_margin"]
+    assert bad["status"] == "needs" and bad["evidence"]["worst_db"] == pytest.approx(2.0, abs=0.2)
+    assert good["status"] == "ok" and good["evidence"]["worst_db"] == pytest.approx(20.0, abs=0.3) and good["evidence"]["overlaps"][0]["automated_gain"] is True
+
+
+def test_a_duck_that_ends_before_the_speech_does_is_still_caught():
+    speech = clip("talk", 2, 8, kind="audio", role="speech", file="S", gain=0.0)
+    late = with_curve(clip("bed", 0, 20, kind="audio", role="music", file="M"), lambda t: -18.0 if t < 4.0 else 0.0)
+    f = by_id(run([clip("pic", 0, 20), speech, late], index=provider(S=audio_index(-20.0), M=audio_index(-22.0))))["dialogue_margin"]
+    assert f["status"] == "needs" and 2.0 < f["evidence"]["worst_db"] < 20.0, "half the overlap is still under the voice at full level"
+
+
+# ============================ margins are measured while someone speaks ============================
+def test_the_margin_is_read_only_inside_the_speaking_windows_not_the_whole_clip():
+    speech = clip("talk", 0, 20, kind="audio", role="speech", file="S", gain=0.0)
+    speech.windows = [(5.0, 9.0)]
+    bed = with_curve(clip("bed", 0, 20, kind="audio", role="music", file="M"), lambda t: -20.0 if 4.5 <= t <= 9.5 else 0.0)   # ducked only around the words
+    idx = provider(S=audio_index(-20.0), M=audio_index(-22.0))
+    good = by_id(run([clip("pic", 0, 20), speech, bed], index=idx))["dialogue_margin"]
+    assert good["status"] == "ok" and len(good["evidence"]["overlaps"]) == 1 and good["evidence"]["overlaps"][0]["from"] == 5.0
+    no_windows = clip("talk", 0, 20, kind="audio", role="speech", file="S", gain=0.0)
+    whole = by_id(run([clip("pic", 0, 20), no_windows, bed], index=idx))["dialogue_margin"]
+    assert whole["status"] == "needs", "without windows the whole clip counts, gaps included"
+
+
+def test_a_voice_that_speaks_in_several_bursts_is_checked_in_each_and_the_worst_wins():
+    speech = clip("talk", 0, 20, kind="audio", role="speech", file="S", gain=0.0)
+    speech.windows = [(2.0, 5.0), (12.0, 15.0)]
+    bed = with_curve(clip("bed", 0, 20, kind="audio", role="music", file="M"), lambda t: -20.0 if t < 8.0 else -2.0)      # only the first burst is ducked
+    f = by_id(run([clip("pic", 0, 20), speech, bed], index=provider(S=audio_index(-20.0), M=audio_index(-22.0))))["dialogue_margin"]
+    assert f["status"] == "needs" and len(f["evidence"]["overlaps"]) == 2
+    assert f["evidence"]["worst_db"] == pytest.approx(4.0, abs=0.3), "voice -20 dB; the bed's -22 dB source at -2 dB gain is -24 dB"
+    assert f["evidence"]["overlaps"][0]["margin_db"] == pytest.approx(22.0, abs=0.3), "the ducked first burst is fine"
+
+
+def test_speech_level_is_read_from_the_part_that_is_spoken():
+    quiet_then_loud = FakeIndex(audio={"windows": [{"start": 0, "end": 5, "rms_db": -40.0}, {"start": 5, "end": 10, "rms_db": -16.0}]})
+    speech = clip("talk", 0, 10, kind="audio", role="speech", file="S", gain=0.0)
+    speech.windows = [(5.0, 10.0)]
+    f = by_id(run([clip("pic", 0, 10), speech, clip("bed", 0, 10, kind="audio", role="music", file="M", gain=0.0)],
+                  index=provider(S=quiet_then_loud, M=audio_index(-26.0))))["dialogue_margin"]
+    assert f["evidence"]["worst_db"] == pytest.approx(10.0, abs=0.3), "the voice is -16 dB where it speaks (not the -40 dB lead-in)"

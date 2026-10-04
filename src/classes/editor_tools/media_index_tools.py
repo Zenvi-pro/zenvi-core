@@ -50,7 +50,8 @@ def project_indexes(file_ids=None):
         if str(f.data.get("media_type") or "video") not in ("video", "audio", "image"):
             continue
         fi = _index_for(f, shelf)
-        (found if fi and (fi.shots or fi.rows) else missing).append(fi if fi and (fi.shots or fi.rows) else _display_name(f.data))
+        has_index = fi is not None and (fi.shots or fi.rows or any(fi.layers.values()))      # a music file has only an audio analysis
+        (found if has_index else missing).append(fi if has_index else _display_name(f.data))
     return found, missing
 
 

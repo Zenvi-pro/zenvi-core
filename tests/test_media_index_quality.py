@@ -163,9 +163,24 @@ def test_a_shot_the_model_calls_unusable_cannot_be_a_highlight():
     assert q["highlight"] <= 0.1 and q["inferred"]["usable_reason"] == "lens covered"
 
 
-def test_without_the_model_the_highlight_is_the_measured_score():
-    q = Q.shot_quality({"sharpness": 0.5, "motion": {}, "black": False, "look": prof()}, median_sharpness=0.5, audio=None, watch=None)
-    assert q["highlight"] == q["score"] and "inferred" not in q
+def test_without_the_model_a_shot_counts_as_ordinary_footage_with_its_measured_quality():
+    clean = Q.shot_quality({"sharpness": 0.5, "motion": {}, "black": False, "look": prof()}, median_sharpness=0.5, audio=None, watch=None)
+    assert "inferred" not in clean and clean["score"] == 1.0
+    assert clean["highlight"] == pytest.approx(0.6 * Q.UNKNOWN_INTEREST + 0.4 * 1.0, abs=1e-3), "an unjudged shot is ordinary, not perfect"
+    shaky = Q.shot_quality({"sharpness": 0.5, "motion": {"valid_pairs": 10, "jitter_px": 2.0}, "black": False, "look": prof()}, median_sharpness=0.5, audio=None, watch=None)
+    assert shaky["highlight"] < clean["highlight"], "with no opinions at all, measured quality still orders the shots"
+
+
+def test_a_clean_shot_nobody_judged_does_not_outrank_one_the_model_found_striking():
+    unjudged = Q.shot_quality({"sharpness": 0.5, "motion": {}, "black": False, "look": prof()}, median_sharpness=0.5, audio=None, watch=None)
+    striking = Q.shot_quality({"sharpness": 0.5, "motion": {}, "black": False, "look": prof()}, median_sharpness=0.5, audio=None, watch={"interest": 0.9})
+    dull = Q.shot_quality({"sharpness": 0.5, "motion": {}, "black": False, "look": prof()}, median_sharpness=0.5, audio=None, watch={"interest": 0.1})
+    assert striking["highlight"] > unjudged["highlight"] > dull["highlight"]
+
+
+def test_a_black_shot_is_never_a_highlight_whatever_the_model_says():
+    q = Q.shot_quality({"sharpness": None, "motion": {}, "black": True, "look": None}, median_sharpness=0.4, audio=None, watch={"interest": 1.0})
+    assert q["highlight"] == 0.0 and q["score"] == 0.0
 
 
 # ============================ takes and scenes ============================
