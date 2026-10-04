@@ -17,7 +17,7 @@ from classes.editor_tools._registry import REGISTRY, editor_tool
 from classes.editor_tools.media_files import _display_name, resolve_files
 from classes.editor_tools.media_index_tools import _index_for, project_indexes
 from classes.logger import log
-from classes.media_index import audio_cloud, library, quality, review as R, schema as S, trip
+from classes.media_index import audio_cloud, library, musicfit, quality, review as R, schema as S, trip
 from classes.media_index.store import default_shelf, sha_of
 
 MEASURE_BUDGET_SECONDS = 40.0
@@ -338,55 +338,11 @@ def get_project_overview(top_moments=8, precise_places=False):
 
 # ============================ analyze_music_tool ============================
 def music_profile_of(fi: Any) -> Dict[str, Any]:
-    audio = fi.audio or {}
-    tempo, music, loud = audio.get("tempo") or {}, audio.get("music") or {}, audio.get("loudness") or {}
-    return {
-        "seconds": round(fi.duration, 1), "bpm": tempo.get("bpm"), "tempo_confidence": audio.get("tempo_confidence"),
-        "beats": len(tempo.get("beats") or []), "integrated_lufs": loud.get("integrated_lufs"), "loudness_range": loud.get("lra"),
-        "dynamic_range_db": audio.get("dynamic_range_db"), "brightness_hz": music.get("brightness_hz"),
-        "energy_arc": music.get("arc", []), "arc_seconds": music.get("arc_seconds"),
-        "sections": music.get("sections", []), "downbeats": (music.get("downbeats") or [])[:16],
-        "phrase_points": (music.get("phrase_points") or [])[:16], "silence_ranges": (audio.get("silence_ranges") or [])[:8],
-    }
+    return musicfit.profile_from_audio(fi.audio or {}, fi.duration)
 
 
-def music_fit(profile: Dict[str, Any], *, bpm_min: Optional[float], bpm_max: Optional[float], seconds: Optional[float],
-              energy: str) -> Dict[str, Any]:
-    """How well a track fits what the edit needs; every line is a measured comparison."""
-    notes, ok_all = [], True
-    bpm = profile.get("bpm")
-    if bpm_min or bpm_max:
-        if bpm is None:
-            notes.append("no steady tempo was found, so cuts cannot be placed on beats")
-            ok_all = False
-        elif (bpm_min and bpm < bpm_min) or (bpm_max and bpm > bpm_max):
-            notes.append(f"{bpm:.0f} BPM is outside {bpm_min or 0:.0f}-{bpm_max or 999:.0f}")
-            ok_all = False
-        else:
-            notes.append(f"{bpm:.0f} BPM is inside the wanted range")
-    if seconds:
-        have = float(profile.get("seconds") or 0.0)
-        if have >= seconds:
-            notes.append(f"long enough ({have:.0f} s for {seconds:.0f} s needed)")
-        else:
-            notes.append(f"{have:.0f} s is shorter than the {seconds:.0f} s needed: it must be looped or ended early at a phrase point")
-            ok_all = ok_all and bool(profile.get("phrase_points"))
-    arc = profile.get("energy_arc") or []
-    if energy and arc:
-        mean = sum(arc) / len(arc)
-        want = {"low": (0.0, 0.4), "medium": (0.3, 0.7), "high": (0.6, 1.0), "building": None}.get(energy)
-        if energy == "building":
-            third = max(1, len(arc) // 3)
-            first, middle, last = arc[:third], arc[third:2 * third] or arc[:third], arc[-third:]
-            mean = lambda xs: sum(xs) / len(xs)  # noqa: E731
-            rising = len(arc) >= 3 and mean(last) > mean(first) + 0.15 and mean(last) >= mean(middle) - 0.05      # ends high, not a mid-track peak
-            notes.append("energy builds over the track" if rising else "energy does not build")
-            ok_all = ok_all and rising
-        elif want:
-            inside = want[0] <= mean <= want[1]
-            notes.append(f"average energy {mean:.2f} is {'within' if inside else 'outside'} the {energy} range")
-            ok_all = ok_all and inside
-    return {"fits": ok_all, "notes": notes}
+def music_fit(profile, *, bpm_min=None, bpm_max=None, seconds=None, energy=""):
+    return musicfit.music_fit(profile, bpm_min=bpm_min, bpm_max=bpm_max, seconds=seconds, energy=energy)
 
 
 @editor_tool(
