@@ -142,6 +142,9 @@ CAPABILITIES = [
     ("index.dossier", "media-index", "Scene Descriptions dock", "Read everything the index knows about a file or range as compact text"),
     ("index.look", "media-index", "Color scopes / grading", "Read a file's or range's measured look without rendering"),
     ("index.status", "media-index", "Indexing badges", "Per-file index layer status"),
+    ("index.match", "media-index", "Recreate a reference from footage", "Match a reference's shots to project footage with cut windows, gaps and stock queries"),
+    ("index.locate", "media-index", "Masking / object tools", "Find an object or on-screen text with time and rough position"),
+    ("index.audio_view", "media-index", "Audio waveform / spectrum", "Spectrogram strip of a file's audio as an image"),
 ]
 
 OUT_OF_SCOPE = {

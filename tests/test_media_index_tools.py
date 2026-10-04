@@ -247,3 +247,83 @@ def test_search_in_one_clip_is_limited_to_its_trimmed_range(v2_on, monkeypatch):
     assert "keep 0:00-0:02 peak" in out and "keep 0:02-0:06 peak" in out
     assert T.legacy_search_in_clip("anything", 5, "F1", 100.0, 110.0, "x") is None
     assert T.legacy_search_in_clip("anything", 5, "F2", 0.0, 5.0, "x") is None
+
+
+# -- match / locate / view audio ---------------------------------------------------------
+@pytest.fixture
+def recreate(env, monkeypatch):
+    """A reference (R) of two shots plus the two project files from `env`."""
+    from test_media_index_reference import REF
+    build(env.shelf, REF, shots=[shot(0, 0, 4), shot(1, 4, 7)], duration=7.0,
+          watch=[w(0, 0, 4, "A calm lake"), w(1, 4, 7, "A spaceship lands")],
+          text=[], image=[({"shot": 0, "t": 1.0}, unit(0)), ({"shot": 1, "t": 5.0}, unit(12))])
+    env.files.append(file_obj("R", "ref.mp4", REF))
+    return env
+
+
+def test_match_reference_plans_each_shot_and_reports_the_gaps(recreate):
+    head, r = call("match_reference_tool", reference_file_id="R")
+    assert r["total"] == 2 and r["matched"] == 1 and "gaps: shots [1]" in head
+    first, second = r["shots"]
+    assert first["status"] == "matched" and first["candidates"][0]["file_id"] == "F1" and first["candidates"][0]["fits"] is True
+    assert second["status"] == "no_match" and second["stock_query"] == "A spaceship lands"
+
+
+def test_match_reference_can_be_limited_to_a_range_and_to_source_files(recreate):
+    _, r = call("match_reference_tool", reference_file_id="R", reference_start=0.0, reference_end=4.0, candidate_file_ids=["F1"])
+    assert [s["reference_shot"] for s in r["shots"]] == [0]
+    out = REGISTRY["match_reference_tool"].func(reference_file_id="R", candidate_file_ids=["R"])
+    assert out.startswith("Error") and "no other indexed footage" in out
+
+
+def test_match_reference_needs_an_indexed_reference(recreate):
+    assert REGISTRY["match_reference_tool"].func(reference_file_id="F3").startswith("Error")
+    out = REGISTRY["match_reference_tool"].func(reference_file_id="nope")
+    assert out.startswith("Error") and "no saved index" in out
+
+
+def test_locate_finds_an_object_with_time_and_box_and_says_the_box_is_rough(env):
+    build(env.shelf, "e" * 64, shots=[shot(0, 0, 8)], duration=8.0,
+          watch=[w(0, 0, 8, "A kitchen", objects=[{"label": "kettle", "box": [0.5, 0.4, 0.1, 0.2], "t": 2.0}],
+                   on_screen_text=[{"text": "SALE", "box": [0.1, 0.1, 0.2, 0.1], "t": 5.0}])])
+    env.files.append(file_obj("F9", "kitchen.mp4", "e" * 64))
+    head, r = call("locate_in_footage_tool", what="kettle")
+    assert r["hits"][0]["file_id"] == "F9" and r["hits"][0]["t"] == 2.0 and r["hits"][0]["box"] == [0.5, 0.4, 0.1, 0.2]
+    assert r["hits"][0]["box_precision"] == "rough" and "rough" in r["note"]
+    _, t = call("locate_in_footage_tool", what="sale", kind="text")
+    assert [h["label"] for h in t["hits"]] == ["SALE"]
+    head, none = call("locate_in_footage_tool", what="zebra")
+    assert none["hits"] == [] and "not found" in head and "not proof" in none["note"]
+
+
+def test_locate_with_nothing_indexed_is_an_error(env, monkeypatch):
+    monkeypatch.setattr(T, "_all_files", lambda: [env.files[2]])
+    assert REGISTRY["locate_in_footage_tool"].func(what="x").startswith("Error")
+
+
+def test_view_audio_draws_a_spectrogram_and_remembers_it(env, tmp_path, monkeypatch):
+    import subprocess
+    sys.path.insert(0, str(Path(__file__).parent))
+    import media_fixtures as mf
+    wav = tmp_path / "t.wav"
+    subprocess.run([mf.need_ffmpeg(), "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=700:duration=4", str(wav)], check=True)
+    sha = "f" * 64
+    env.shelf.set_source(sha, duration=4.0, has_audio=True, media_type="audio")
+    f = file_obj("A1", "t.wav", sha, "audio")
+    f.data["path"] = str(wav)
+    env.files.append(f)
+    monkeypatch.setattr("classes.path_utils.absolute_media_path", lambda p: p, raising=False)
+    head, r = call("view_audio_tool", file_id="A1", start=0.0, end=4.0)
+    assert Path(r["image_path"]).is_file() and r["cached"] is False and r["start"] == 0.0 and r["end"] == 4.0 and "log" in r["axes"]
+    _, again = call("view_audio_tool", file_id="A1", start=0.0, end=4.0)
+    assert again["cached"] is True and again["image_path"] == r["image_path"]
+
+
+def test_view_audio_refuses_silent_files_and_unfingerprinted_ones(env):
+    env.shelf.set_source(SHA2, duration=5.0, has_audio=False, media_type="video")
+    out = REGISTRY["view_audio_tool"].func(file_id="F2")
+    assert out.startswith("Error") and "no audio track" in out
+    out = REGISTRY["view_audio_tool"].func(file_id="F3")
+    assert out.startswith("Error") and "fingerprinted" in out
+    out = REGISTRY["view_audio_tool"].func(file_id="F1", start=0.0, end=500.0)
+    assert out.startswith("Error")

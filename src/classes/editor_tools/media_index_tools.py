@@ -250,6 +250,123 @@ def index_status(file_ids=None, only_incomplete=False):
     return ok(f"{complete} of {len(rows)} files fully indexed", files=rows)
 
 
+@editor_tool(
+    "match_reference_tool",
+    covers=("index.match",),
+    label="Match reference",
+    schema=obj({
+        "reference_file_id": string("The file to recreate (a reference scene, an anime clip, a rough cut).", ""),
+        "reference_start": number("Start second of the part to recreate (default: the beginning).", None, minimum=0),
+        "reference_end": number("End second of the part to recreate (default: the end).", None, minimum=0),
+        "candidate_file_ids": array({"type": "string"}, "Only use these project files as source footage (default: every "
+                                    "indexed file except the reference)."),
+        "per_shot": integer("Candidates to return for each reference shot.", 3, minimum=1, maximum=8),
+        "filters": mapping("Same facts as search_footage_tool's filters (camera, shot_type, look, orientation, "
+                           "min_duration...), applied to the candidates."),
+    }),
+    read_only=True,
+)
+def match_reference(reference_file_id="", reference_start=None, reference_end=None, candidate_file_ids=None, per_shot=3,
+                    filters=None):
+    """Plan a recreation of a reference, shot by shot, from the footage in the project. For each shot of the
+    reference it finds the project footage that looks most like it (its own saved frames against every other
+    file's pictures, no upload) and returns ready cut windows, in/out seconds of exactly the reference shot's
+    length, centred on the best moment and kept inside the source shot. status: matched = a candidate is long
+    enough; short_only = only too-short footage exists (see short_by); no_match = nothing similar, with a
+    stock_query to search stock footage for that gap. Place the windows in order, then check with
+    inspect_timeline_tool. Black shots and flashes under 0.25 s are skipped.
+    """
+    from classes.media_index import reference as mref
+    files, missing = project_indexes()
+    ref = next((f for f in files if f.file_id == str(reference_file_id)), None)
+    if ref is None:
+        raise ToolError(f"reference file {reference_file_id!r} has no saved index yet; index_status_tool shows progress")
+    wanted = {str(x) for x in candidate_file_ids} if candidate_file_ids else None
+    pool = [f for f in files if wanted is None or f.file_id in wanted]
+    if not [f for f in pool if f.sha != ref.sha]:
+        raise ToolError("no other indexed footage to match against; import and index the source clips first")
+    out = mref.match_reference(ref, pool, reference_start, reference_end, per_shot=int(per_shot), filters=filters or {})
+    if not out["total"]:
+        raise ToolError("the reference has no analysed shots in that range")
+    gaps = [r["reference_shot"] for r in out["shots"] if r["status"] != "matched"]
+    return ok(f"{out['matched']} of {out['total']} reference shots have matching footage" + (f"; gaps: shots {gaps}" if gaps else ""),
+              reference_file_id=str(reference_file_id), shots=out["shots"], matched=out["matched"], total=out["total"],
+              not_indexed=missing[:20])
+
+
+@editor_tool(
+    "locate_in_footage_tool",
+    covers=("index.locate",),
+    label="Locate in footage",
+    schema=obj({
+        "what": string("What to find: an object ('red car', 'torch'), or on-screen text ('OPEN', 'SALE')."),
+        "kind": enum(["auto", "object", "text"], "'object' = things seen, 'text' = written words, 'auto' = both.", "auto"),
+        "file_ids": array({"type": "string"}, "Only these project files (default: every indexed file)."),
+        "start": number("Only after this second of each file.", None, minimum=0),
+        "end": number("Only before this second of each file.", None, minimum=0),
+        "limit": integer("Most results to return.", 30, minimum=1, maximum=200),
+    }, required=["what"]),
+    read_only=True,
+)
+def locate_in_footage(what, kind="auto", file_ids=None, start=None, end=None, limit=30):
+    """Find where an object or on-screen text appears, with when (seconds in the file) and where in the frame.
+    box is [x, y, width, height] as 0-1 fractions from the top-left. It is a ROUGH box from the indexing pass:
+    good for choosing where to look, point-masking or a region prompt, but not pixel-exact; refine it on a
+    frame (inspect_media_tool, then the masking or tracking effect) before masking, blurring, removing or
+    replacing the thing. For a generative replace or removal, pass the file, time and region to the
+    generation tool that is available.
+    """
+    from classes.media_index import reference as mref
+    files, missing = project_indexes(file_ids)
+    if not files:
+        raise ToolError("no indexed footage yet; index_status_tool shows progress")
+    hits = mref.locate(files, what, kind=kind, start=start, end=end, limit=int(limit))
+    summary = f"{len(hits)} place(s) where {what!r} appears" if hits else f"{what!r} was not found in the indexed footage"
+    note = ("Boxes are rough. Only what the indexing pass noticed is listed, so a missing result is not proof the "
+            "thing is absent: try search_footage_tool with a description, or inspect_media_tool on the footage.")
+    return ok(summary, hits=hits, note=note, not_indexed=missing[:20])
+
+
+@editor_tool(
+    "view_audio_tool",
+    covers=("index.audio_view",),
+    label="View audio",
+    schema=obj({
+        "file_id": string("Project file id.", ""),
+        "file_query": string("Describe the file instead of an id (its name).", ""),
+        "start": number("Start second (default: the beginning).", None, minimum=0),
+        "end": number("End second (default: 90 s after start at most).", None, minimum=0),
+    }),
+    read_only=True,
+)
+def view_audio(file_id="", file_query="", start=None, end=None):
+    """Draw a spectrogram of a stretch of a file's audio (up to 90 s) as a PNG you can look at: time across,
+    frequency up (logarithmic, 20 Hz to 11 kHz), brightness = loudness in dBFS, with labelled axes and a legend.
+    Use it to see what the audio is doing: steady tones and hum are horizontal lines, speech is stacked bands
+    that move, drums and impacts are vertical bars, music has regular repeating structure, silence is dark.
+    The time axis starts at 0 for the start of the strip. Returns the image path to open.
+    """
+    from classes.media_index import spectro
+    f = resolve_files([file_id] if file_id else None, file_query)[0]
+    sha = sha_of(f.data.get("fingerprint"))
+    if not sha:
+        raise ToolError(f"{_display_name(f.data)!r} has not been fingerprinted yet (wait for the import to finish)")
+    shelf = default_shelf()
+    fi = _index_for(f, shelf)
+    source = (shelf.manifest(sha).get("source") or {})
+    duration = float(source.get("duration") or (fi.duration if fi else 0.0) or f.data.get("duration") or 0.0)
+    lo = float(start or 0.0)
+    hi = float(end) if end is not None else min(duration or lo + spectro.MAX_SECONDS, lo + spectro.MAX_SECONDS)
+    from classes.path_utils import absolute_media_path
+    path = absolute_media_path(f.data.get("path")) or str(f.data.get("path") or "")
+    out = spectro.make_spectrogram(path, sha, shelf, lo, hi, duration, has_audio=source.get("has_audio") is not False)
+    if not out["ok"]:
+        raise ToolError(out["error"])
+    return ok(f"spectrogram of {_display_name(f.data)} {out['start']:.1f}-{out['end']:.1f} s", file_id=str(f.id),
+              image_path=out["path"], start=out["start"], end=out["end"], cached=out["cached"],
+              axes="x = seconds from the strip start, y = Hz (log), colour = dBFS")
+
+
 # ---------------------------------------------------------------------------
 # The older search tools, answered from the local index when media-index-v2 is on
 # ---------------------------------------------------------------------------
