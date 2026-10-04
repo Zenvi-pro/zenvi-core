@@ -177,6 +177,9 @@ def test_index_status_lists_each_layer_and_skips_non_media(env):
 
 
 @pytest.mark.parametrize("out,fragment", [({"auth": True}, "sign in"), ({"unsupported": True}, "search_clips_tool"),
+                                          ({"credits": True, "error": "Out of credits"}, "out of credits"),
+                                          ({"rate_limited": True, "retry_after": 600, "error": "slow down"}, "about 11 min"),
+                                          ({"rate_limited": True, "error": "slow down"}, "too many searches"),
                                           ({"error": "boom"}, "boom"), ({"vectors": [None]}, "no vector")])
 def test_embedding_failures_become_actionable_errors(monkeypatch, out, fragment):
     monkeypatch.undo()

@@ -447,3 +447,33 @@ def test_the_audio_summary_states_only_what_was_measured():
                                 "music": {"sections": [{"label": "intro"}, {"label": "peak"}, {"label": "outro"}]}}, 36.0)
     assert full == "Audio, 36 s, 110 BPM, sections: intro, peak, outro, -14 LUFS."
     assert cloud.audio_summary({"music": {"sections": [{"label": "steady"}]}}, 10) == "Audio, 10 s.", "one section is not worth naming"
+
+
+# ============================ a refusal from the backend ends the batch loop instead of being asked again ============================
+@pytest.mark.parametrize("flag", ["credits", "rate_limited", "forbidden"])
+def test_an_embed_refused_for_credits_or_rate_stops_the_remaining_batches(flag):
+    calls = []
+
+    class Refusing:
+        def _new_http_session(self):
+            return object()
+
+        def v2_embed(self, chunk, dims=768, task_type=None, session=None):
+            calls.append(len(chunk))
+            return {flag: True, "error": "refused"}
+
+    items = [{"kind": "text", "text": f"t{i}"} for i in range(cloud.EMBED_BATCH * 3)]
+    vecs, errors = cloud.embed_in_batches(Refusing(), items, task_type="RETRIEVAL_DOCUMENT")
+    assert calls == [cloud.EMBED_BATCH], "one request, then stop"
+    assert all(v is None for v in vecs) and errors == ["refused"]
+
+
+def test_a_watch_refused_for_credits_passes_the_flag_up_so_the_job_can_skip_the_file(video, prepared):
+    shelf, probe = prepared
+
+    class OutOfCredits(FakeClient):
+        def v2_upload_session(self, *a, **k):
+            return {"credits": True, "error": "Out of credits"}
+
+    out = cloud.compute_cloud(OutOfCredits(), video, probe, SHA, shelf, file_id="F1", uploader=uploader)
+    assert out["credits"] is True and "Out of credits" in out["error"]

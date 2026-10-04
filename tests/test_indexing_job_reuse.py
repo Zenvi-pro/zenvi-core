@@ -358,7 +358,7 @@ def test_with_v2_on_a_new_video_gets_the_cloud_layers_and_v1_shaped_metadata(mon
     assert meta["index"]["status"] == "ready" and meta["index"]["v2"] is True and meta["index"]["provider"] == "gemini-v2"
     assert meta["index"]["video_id"] == "f1" and meta["index"]["index_id"] == "zenvi-p1" and meta["index"]["fingerprint"] == h.sha
     assert meta["analyzed"] and meta["chapters"][0]["summary"] == "A calm pond." and meta["twelvelabs"]["status"] == "ready"
-    assert len(h.charges) == 1 and h.charges[0][1]["provider"] == "gemini"
+    assert h.charges == [], "the backend meters /index/v2 from Gemini's real usage; the desktop charges nothing"
     assert ("uploading", 50) in progress and ("indexing", -1) in progress and progress[-1] == ("done", 100)
     from classes.indexing_status import SUCCESS, derive_indexing_status
     assert derive_indexing_status(meta).state == SUCCESS
@@ -447,17 +447,26 @@ def test_a_song_with_nothing_to_embed_finishes_uncharged_and_is_marked_analysed_
     assert derive_indexing_status(meta).state == SUCCESS
 
 
-def test_a_real_cloud_run_is_charged_but_a_run_that_only_found_nothing_to_embed_is_not(monkeypatch, tmp_path):
+def test_the_desktop_never_charges_for_a_v2_run_the_backend_meters_it(monkeypatch, tmp_path):
     (tmp_path / "video").mkdir()
     (tmp_path / "song").mkdir()
     video, _ = _v2(monkeypatch, tmp_path / "video", result={"layers": {"watch": "ready", "vectors": "ready"}})
     video.run(duration=6.0)
-    assert len(video.charges) == 1
+    assert video.charges == []
     song, _ = _v2(monkeypatch, tmp_path / "song", result={"layers": {"watch": "skipped", "vectors": "skipped"}, "nothing_to_embed": True})
     song.shelf.write_json(song.sha, "audio.json", {"tempo": None})
     song.shelf.set_layer(song.sha, "audio", version=2, status="ready")
     song.run(media_type="audio", duration=40.0)
     assert song.charges == []
+
+
+@pytest.mark.parametrize("flag", ["credits", "rate_limited"])
+def test_an_account_out_of_credits_or_over_its_limit_is_skipped_with_the_servers_message_not_failed(monkeypatch, tmp_path, flag):
+    h, _ = _v2(monkeypatch, tmp_path, result={"error": "Out of credits for video indexing.", flag: True, "layers": {}})
+    meta, _ = h.run(duration=6.0)
+    assert meta["index"]["status"] == "skipped" and "Out of credits" in meta["index"]["error"] and "error" not in meta
+    h.client.start_direct_indexing_job.assert_not_called()
+    assert h.charges == []
 
 
 def test_a_settled_song_is_not_sent_to_the_cloud_again_even_signed_out(monkeypatch, tmp_path):

@@ -96,7 +96,7 @@ def _upload_and_run(client: Any, audio_path: str, file_id: str, start_call: Call
         raise Cancelled()
     sess = client.v2_upload_session(file_id, os.path.basename(audio_path), os.path.getsize(audio_path), MIME, session=session)
     if sess.get("error") or not sess.get("upload_url"):
-        return {k: v for k, v in sess.items() if k in ("error", "unsupported", "auth")} or {"error": "no upload url"}
+        return {k: v for k, v in sess.items() if k in ("error", "unsupported", "auth", "credits", "rate_limited", "forbidden", "retry_after")} or {"error": "no upload url"}
     info, up_err = uploader(audio_path, sess["upload_url"], mime_type=MIME)
     if up_err:
         return {"error": f"upload failed: {up_err}"}
@@ -104,7 +104,7 @@ def _upload_and_run(client: Any, audio_path: str, file_id: str, start_call: Call
         on_progress(0.3)
     started = start_call(info.get("name", ""), info.get("uri", ""), session)
     if started.get("error") or not started.get("job_id"):
-        return {k: v for k, v in started.items() if k in ("error", "unsupported", "auth")} or {"error": "the backend did not start the job"}
+        return {k: v for k, v in started.items() if k in ("error", "unsupported", "auth", "credits", "rate_limited", "forbidden", "retry_after")} or {"error": "the backend did not start the job"}
     result = _wait_for_job(client, session, started["job_id"], should_cancel,
                            on_tick=(lambda f: on_progress(0.3 + 0.7 * f)) if on_progress else None, what=what)
     if on_progress:
@@ -141,7 +141,7 @@ def describe_music(client: Any, path: str, probe: Dict[str, Any], sha: str, shel
             lambda name, uri, session: client.v2_describe_audio(name, uri, duration, windows, MIME, session=session),
             what="describing the music", should_cancel=should_cancel, on_progress=on_progress, uploader=uploader)
     if result.get("error") or not result.get("windows"):
-        return {k: v for k, v in result.items() if k in ("error", "unsupported", "auth")} or {"error": "the backend returned no description"}
+        return {k: v for k, v in result.items() if k in ("error", "unsupported", "auth", "credits", "rate_limited", "forbidden", "retry_after")} or {"error": "the backend returned no description"}
     shelf.write_json(sha, "music_desc.json", {"version": version, "kind": S.INFERRED, "windows": result["windows"],
                                               "usage": result.get("usage"), "created": time.time()})
     shelf.set_layer(sha, S.LAYER_MUSIC_DESC, version=version, status="ready", windows=len(result["windows"]))

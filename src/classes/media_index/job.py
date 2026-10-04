@@ -121,7 +121,7 @@ class IndexingJob:
             self._completed(self.file_data, metadata, None)
             return True
 
-        from classes.credits_client import charge_operation_on_success, check_operation
+        from classes.credits_client import check_operation
         credit_duration = duration if media_type != "image" else 60.0
         _, _balance, blocked = check_operation("indexing_per_minute", f"{media_type} indexing", duration_seconds=credit_duration)
         if blocked:
@@ -154,14 +154,18 @@ class IndexingJob:
             metadata["skip_code"] = SKIP_SIGNIN
             self._completed(self.file_data, metadata, None)
             return True
+        if result.get("credits") or result.get("rate_limited"):
+            # out of credits, or over the account's limit: nothing was wrong with the file, so it is skipped, not failed
+            block = {"status": "skipped", "error": result["error"], "index_name": index_name, "provider": "gemini-v2", "media_type": media_type}
+            metadata["index"], metadata["twelvelabs"] = block, dict(block)
+            self._completed(self.file_data, metadata, None)
+            return True
         if result.get("error"):
             block = {"status": "failed", "error": result["error"], "index_name": index_name, "provider": "gemini-v2", "media_type": media_type}
             metadata["index"], metadata["twelvelabs"], metadata["error"] = block, dict(block), result["error"]
             self._completed(self.file_data, metadata, None)
             return True
-        if any(state == "ready" for state in (result.get("layers") or {}).values()):      # only cloud work that really ran is charged
-            charge_operation_on_success(True, "indexing_per_minute", provider="gemini", note=f"import {file_id}",
-                                        duration_seconds=credit_duration)
+        # No desktop charge here: the backend meters /index/v2 itself, from what Gemini really billed.
         meta = build()
         self._progress(file_id, "done", 100)
         self._completed(self.file_data, meta, None)

@@ -252,7 +252,7 @@ def run_watch(client: Any, path: str, probe: Dict[str, Any], file_id: str, struc
             on_progress(0.15)
         sess = client.v2_upload_session(file_id, os.path.basename(path) or "proxy.mp4", os.path.getsize(proxy), "video/mp4", session=session)
         if sess.get("error") or not sess.get("upload_url"):
-            return {k: v for k, v in sess.items() if k in ("error", "unsupported", "auth")} or {"error": "no upload url"}
+            return {k: v for k, v in sess.items() if k in ("error", "unsupported", "auth", "credits", "rate_limited", "forbidden", "retry_after")} or {"error": "no upload url"}
         info, up_err = uploader(proxy, sess["upload_url"], mime_type="video/mp4")
         if up_err:
             return {"error": f"upload failed: {up_err}"}
@@ -260,7 +260,7 @@ def run_watch(client: Any, path: str, probe: Dict[str, Any], file_id: str, struc
             on_progress(0.4)
     started = client.v2_understand(info.get("name", ""), info.get("uri", ""), shots, transcript_rows(speech), session=session)
     if started.get("error") or not started.get("job_id"):
-        return {k: v for k, v in started.items() if k in ("error", "unsupported", "auth")} or {"error": "the backend did not start the job"}
+        return {k: v for k, v in started.items() if k in ("error", "unsupported", "auth", "credits", "rate_limited", "forbidden", "retry_after")} or {"error": "the backend did not start the job"}
     result = _wait_for_job(client, session, started["job_id"], should_cancel,
                            on_tick=(lambda f: on_progress(0.4 + 0.6 * f)) if on_progress else None)
     if on_progress:
@@ -282,8 +282,8 @@ def embed_in_batches(client: Any, items: List[Dict[str, Any]], *, dims: int = S.
         reply = client.v2_embed(chunk, dims=dims, task_type=task_type, session=session)
         if reply.get("error") and not reply.get("vectors"):
             errors.append(str(reply["error"]))
-            if reply.get("unsupported") or reply.get("auth"):
-                break
+            if reply.get("unsupported") or reply.get("auth") or reply.get("credits") or reply.get("rate_limited") or reply.get("forbidden"):
+                break                  # asking again would only be refused again
             continue
         for i, b64 in enumerate(reply.get("vectors") or []):
             if b64:
@@ -333,7 +333,7 @@ def compute_cloud(client: Any, path: str, probe: Dict[str, Any], sha: str, shelf
         result = run_watch(client, path, probe, file_id or sha[:12], structure, speech, should_cancel=should_cancel,
                            on_progress=report(0.0, 0.6), uploader=uploader)
         if result.get("error") or not result.get("shots"):
-            fail = {k: result[k] for k in ("error", "unsupported", "auth") if k in result}
+            fail = {k: result[k] for k in ("error", "unsupported", "auth", "credits", "rate_limited", "forbidden", "retry_after") if k in result}
             fail["layers"] = layers
             fail.setdefault("error", "no shot descriptions came back")
             return fail

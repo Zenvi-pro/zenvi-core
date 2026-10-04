@@ -61,6 +61,11 @@ def embed_query(text: str):
     out = get_backend_client().v2_embed([{"kind": "text", "id": "q", "text": text}], dims=S.EMBED_DIMS, task_type="RETRIEVAL_QUERY")
     if out.get("auth"):
         raise ToolError("sign in to Zenvi to search by description (searching with filters or a reference clip works signed out)")
+    if out.get("credits"):
+        raise ToolError("out of credits for searching by description: add credits, or search with filters or a reference clip (those cost nothing)")
+    if out.get("rate_limited"):
+        wait = out.get("retry_after")
+        raise ToolError("too many searches this hour" + (f"; try again in about {int(wait) // 60 + 1} min" if wait else "") + ", or search with filters or a reference clip")
     if out.get("unsupported"):
         raise ToolError("this backend has no media index v2 search yet; use search_clips_tool")
     vectors = out.get("vectors") or []

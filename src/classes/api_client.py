@@ -54,6 +54,28 @@ def _refresh_credits_after_backend_billing() -> None:
         log.debug("credits refresh after a backend-billed request failed: %s", exc)
 
 
+def _v2_refusal(response) -> dict:
+    """A 402, 403 or 429 from the media index v2 routes as ``{"error", ...}`` with a flag saying which.
+
+    ``credits``: the account is out of credits; ``rate_limited`` (and ``retry_after`` seconds): too many requests or the
+    daily limit; ``forbidden``: the upload or job belongs to another account. The server's own message is kept.
+    """
+    try:
+        detail = (response.json() or {}).get("detail")
+    except Exception:  # noqa: BLE001
+        detail = None
+    detail = detail if isinstance(detail, dict) else {}
+    message = str(detail.get("message") or "")
+    if response.status_code == 402:
+        return {"credits": True, "error": message or "Out of credits for media indexing. Upgrade your plan or add credits to continue."}
+    if response.status_code == 429:
+        out = {"rate_limited": True, "error": message or "Too many media index requests. Try again shortly."}
+        if detail.get("retry_after") is not None:
+            out["retry_after"] = detail["retry_after"]
+        return out
+    return {"forbidden": True, "error": message or "The media index refused this request."}
+
+
 class ZenviBackendClient:
     """HTTP/WebSocket client for the Zenvi backend API."""
 
@@ -1321,11 +1343,18 @@ class ZenviBackendClient:
             r = s.get(url, timeout=timeout) if method == "GET" else s.post(url, json=payload or {}, timeout=timeout)
             if r.status_code in (404, 405):
                 return {"unsupported": True, "error": "this backend has no media index v2"}
-            if r.status_code in (401, 403):
+            if r.status_code == 401:
                 return {"auth": True, "error": "sign in to use the media index"}
+            if r.status_code in (402, 403, 429):
+                return _v2_refusal(r)
             r.raise_for_status()
             data = r.json()
-            return data if isinstance(data, dict) else {"error": "unexpected response"}
+            if not isinstance(data, dict):
+                return {"error": "unexpected response"}
+            billing = data.get("billing") or (data.get("result") or {}).get("billing")
+            if isinstance(billing, dict) and billing.get("credits"):
+                _refresh_credits_after_backend_billing()          # the backend charged for this: repaint the badge
+            return data
         except Exception as exc:
             log.warning("media index v2 %s %s failed: %s", method, path, exc)
             return {"error": str(exc)}
