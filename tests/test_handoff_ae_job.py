@@ -291,6 +291,11 @@ def test_a_quiet_run_goes_through_a_runner_that_is_removed_afterwards(monkeypatc
     assert len([n for n in os.listdir(script.parent) if n.startswith(".zenvi-run-")]) == 1
 
 
+def test_a_runner_that_cannot_be_written_says_how_to_run_the_script(tmp_path):
+    with pytest.raises(X.AeHandoffError, match="File > Scripts"):
+        X.quiet_runner(str(tmp_path / "no such folder" / "Trip.jsx"))
+
+
 @pytest.mark.parametrize("via, name", [("zenvi-link", "Zenvi: Run JSX file"), ("applescript", "Import Zenvi project")])
 def test_the_undo_step_is_named_for_the_way_the_script_ran(via, name):
     summary = {"zenvi_ae_import": 1, "status": "ok", "summary": "Built comp \"Trip\": 3 layers."}

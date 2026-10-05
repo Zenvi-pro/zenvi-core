@@ -643,8 +643,13 @@ def quiet_runner(script_path: str) -> str:
         "    }",
         "}());",
         ""])
-    with open(runner, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(body)
+    try:
+        with open(runner, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(body)
+    except OSError as exc:
+        raise AeHandoffError(f"could not write a small runner script next to {os.path.basename(target)} "
+                             f"({exc.strerror or exc}); run it in After Effects with File > Scripts > Run Script "
+                             f"File") from None
     return runner
 
 
