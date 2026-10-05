@@ -161,14 +161,16 @@ def import_hyperframes_project(window) -> None:
         dialog = HyperFramesImportDialog(job.result, window)
         if dialog.exec_() != QDialog.Accepted:
             return
-        _run_import(window, folder, dialog.mode(), fps, canvas)
+        _run_import(window, folder, dialog.mode(), fps, canvas, shown=job.result.warnings)
 
     jobs.submit_job(read, label=_("Reading HyperFrames project"), kind="hyperframes", on_done=read_done)
 
 
-def _run_import(window, folder: str, mode: str, fps: float, canvas) -> None:
+def _run_import(window, folder: str, mode: str, fps: float, canvas, shown=()) -> None:
+    """Import in a job. *shown*: notes the import dialog already listed (not repeated in a box afterwards)."""
     from classes.handoff import jobs
     _ = _tr
+    seen = set(shown or ())
 
     def work(job):
         from classes.handoff.hyperframes import importer
@@ -188,7 +190,7 @@ def _run_import(window, folder: str, mode: str, fps: float, canvas) -> None:
             "name": os.path.basename(folder), "native": r.get("native", 0), "linked": r.get("linked", 0),
             "restored": r.get("restored", 0)}
         _notify(window, text)
-        warnings = r.get("warnings") or []
+        warnings = [w for w in (r.get("warnings") or []) if w not in seen]
         if warnings:
             QMessageBox.information(window, _("Import HyperFrames Project"), text + "\n\n" + "\n".join(
                 "• " + w for w in warnings[:10]))

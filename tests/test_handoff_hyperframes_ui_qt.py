@@ -78,6 +78,54 @@ def test_import_dialog_lists_what_cannot_be_rebuilt(dialogs, tmp_path):
     dlg.deleteLater()
 
 
+class _Job:
+    def __init__(self):
+        self.state, self.error, self.result = "done", None, None
+
+    def report(self, *a, **k):
+        pass
+
+    def should_cancel(self):
+        return False
+
+
+class _Boxes:
+    def __init__(self):
+        self.shown = []
+
+    def information(self, parent, title, text):
+        self.shown.append(text)
+
+    warning = information
+
+
+@pytest.mark.parametrize("warnings, boxed", [
+    (["already listed"], None),  # the dialog showed it: no second box, just the short message
+    (["already listed", "the render is 2 frames short"], "the render is 2 frames short"),
+])
+def test_after_import_only_new_notes_get_a_box(dialogs, monkeypatch, warnings, boxed):
+    from classes.handoff import jobs
+    from classes.handoff.hyperframes import importer
+    boxes, notes = _Boxes(), []
+    monkeypatch.setattr(dialogs, "QMessageBox", boxes)
+    monkeypatch.setattr(dialogs, "_notify", lambda window, text: notes.append(text))
+    monkeypatch.setattr(importer, "inspect_project", lambda *a, **k: object())
+    monkeypatch.setattr(importer, "run_import", lambda insp, **k: {"native": 2, "linked": 1, "warnings": warnings})
+
+    def run_now(fn, *, on_done=None, **kw):
+        job = _Job()
+        job.result = fn(job)
+        on_done(job)
+        return job
+    monkeypatch.setattr(jobs, "submit_job", run_now)
+    dialogs._run_import(None, "/x/sample", "auto", 30.0, (1920, 1080), shown=["already listed"])
+    assert notes == ["Imported sample: 2 native, 1 linked, 0 restored clip(s)"]
+    if boxed is None:
+        assert boxes.shown == []
+    else:
+        assert len(boxes.shown) == 1 and boxed in boxes.shown[0] and "already listed" not in boxes.shown[0]
+
+
 def test_export_dialog_copies_media_by_default(dialogs, tmp_path):
     dlg = dialogs.HyperFramesExportDialog(str(tmp_path))
     box = dlg.findChild(QCheckBox, "hyperframesCopyMedia")

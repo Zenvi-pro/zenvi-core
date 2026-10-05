@@ -133,6 +133,21 @@ def test_native_import_is_one_undo_step(hf, tmp_path):
     assert len(hf.clips()) == 5
 
 
+def test_the_playhead_is_read_when_the_import_starts(hf, tmp_path, monkeypatch):
+    player = hf.window.preview_thread.player
+    player.Position.return_value = 91  # frame 91 = 3.0 s at 30 fps
+    rendering = hfprov.HyperFramesProvider.render
+
+    def render(self, link, out_dir, **kw):
+        player.Position.return_value = 301  # the user scrubs to 10 s while it renders
+        return rendering(self, link, out_dir, **kw)
+    monkeypatch.setattr(hfprov.HyperFramesProvider, "render", render)
+    r = hf.call_receipt("import_hyperframes_project_tool", project_dir=project(tmp_path))
+    assert r["status"] == "applied" and r["data"]["position"] == 3.0
+    native = {c["element"]: c for c in _clips_by_kind(r)["native"]}
+    assert native["bg"]["position"] == 3.0 and native["logo"]["position"] == 6.0
+
+
 def test_flatten_and_auto_decisions(hf, tmp_path):
     r = hf.call_receipt("import_hyperframes_project_tool", project_dir=project(tmp_path), mode="flatten")
     assert r["data"]["mode"] == "flatten" and r["data"]["linked"] == 1 and r["undoSteps"] == 1

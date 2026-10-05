@@ -423,6 +423,22 @@ def _discard(paths: Sequence[str]) -> None:
             log.warning("could not remove the unused render %s", p, exc_info=True)
 
 
+def _landing(position: Optional[float]) -> float:
+    """Where the project's 0 lands: *position*, or the playhead when the import starts.
+
+    Read once before rendering (a minute or more), so the clips land where the
+    user asked even if they move the playhead meanwhile.
+    """
+    if position is not None:
+        return float(position)
+    from classes.editor_tools._base import ToolError, playhead_seconds
+    from classes.editor_tools.titles_text_common import precheck_on_main
+    try:
+        return float(precheck_on_main(playhead_seconds) or 0.0)
+    except ToolError as exc:
+        raise lm.LinkError(str(exc)) from None
+
+
 def run_import(insp: Inspection, *, position: Optional[float] = None, track: str = "",
                on_progress: Optional[ProgressFn] = None, should_cancel: Optional[Callable[[], bool]] = None) -> dict:
     """Render the linked parts, probe everything and add it all as ONE undo step. Blocking."""
@@ -430,6 +446,7 @@ def run_import(insp: Inspection, *, position: Optional[float] = None, track: str
     from classes.handoff.jobs import JobCancelled
     cancel = should_cancel or (lambda: False)
     lm.precheck_placement(position, track or None, None)
+    position = _landing(position)
     renders: List[str] = []
     linked = insp.linked
     try:
