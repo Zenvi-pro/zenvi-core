@@ -381,3 +381,24 @@ def test_save_rolls_back_adopted_renders_when_the_write_fails(tmp_path, monkeypa
         store.save(str(tmp_path / "Trip.zvn"))
     assert written["path"] == str(tmp_path / "Trip_assets" / "links" / "remotion" / "Intro-1.mov")
     assert files[0]["path"] == src and clips[0]["reader"]["path"] == src and os.path.isfile(src)
+
+
+def test_a_second_rerender_of_the_same_clip_is_refused_while_one_runs(linked):
+    provider = FakeProvider(probe=linked.probe)
+    lm.register_provider(provider)
+    out = lm.import_linked(remotion_link(), position=0.0)
+    provider.gate = threading.Event()
+    first = threading.Thread(target=lambda: lm.rerender_linked(out["file_id"]))
+    first.start()
+    try:
+        for _ in range(500):
+            if jobs.job_for(out["file_id"]) is not None:
+                break
+            threading.Event().wait(0.01)
+        with pytest.raises(lm.LinkError, match="already rendering"):
+            lm.rerender_linked(out["file_id"])
+    finally:
+        provider.gate.set()
+        first.join(10)
+    assert lm.link_state(linked.file(out["file_id"]), compute=False) == "fresh"
+    lm.rerender_linked(out["file_id"])  # free again once the first one swapped its media

@@ -1035,6 +1035,10 @@ def import_linked(link: dict, *, position: Optional[float] = None, track: Option
     return receipt
 
 
+_rendering: set = set()          # file ids between the start of a re-render and its media swap
+_rendering_lock = threading.Lock()
+
+
 def rerender_linked(file_id: str, *, props: Optional[dict] = None, on_progress: Optional[ProgressFn] = None,
                     should_cancel: Optional[CancelFn] = None, replace_props: bool = False) -> dict:
     """Re-render a linked file from its source (with *props* merged in) and swap the media: ONE undo step.
@@ -1057,8 +1061,10 @@ def rerender_linked(file_id: str, *, props: Optional[dict] = None, on_progress: 
         link["props"] = dict(props) if replace_props else dict(link_props(link), **props)
     kind = str(link.get("kind") or "")
     label = "Rendering %s" % ((link.get("source") or {}).get("composition") or kind_label(kind))
-    if jobs.job_for(str(file_id)) is not None:
-        raise LinkError("that linked clip is already rendering; wait for it to finish or cancel it")
+    with _rendering_lock:
+        if str(file_id) in _rendering or jobs.job_for(str(file_id)) is not None:
+            raise LinkError("that linked clip is already rendering; wait for it to finish or cancel it")
+        _rendering.add(str(file_id))
 
     try:
         with jobs.track_job(label, key=str(file_id), kind=kind) as job:
@@ -1072,12 +1078,23 @@ def rerender_linked(file_id: str, *, props: Optional[dict] = None, on_progress: 
 
             path, completed = render_link(link, on_progress=_progress, should_cancel=_cancel)
     except jobs.JobCancelled:
+        with _rendering_lock:
+            _rendering.discard(str(file_id))
         raise
     except Exception as exc:
+        with _rendering_lock:
+            _rendering.discard(str(file_id))
         set_render_error(str(file_id), str(exc))
         raise
-    warnings = list(completed.get("warnings") or [])
-    receipt = swap_linked_media(str(file_id), path, _strip_runtime(completed))
+    try:
+        warnings = list(completed.get("warnings") or [])
+        receipt = swap_linked_media(str(file_id), path, _strip_runtime(completed))
+    except LinkError as exc:  # the render is fine but the project could not take it
+        set_render_error(str(file_id), str(exc))
+        raise
+    finally:
+        with _rendering_lock:
+            _rendering.discard(str(file_id))
     receipt["warnings"] = warnings + list(receipt.get("warnings") or [])
     receipt["props"] = link_props(completed)
     return receipt
