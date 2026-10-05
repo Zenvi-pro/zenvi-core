@@ -445,13 +445,17 @@
     }
 
     function quietRun() {
-        // Zenvi sets this flag only while it runs the script from its own window (its runner script
-        // deletes it afterwards), so a run started from File > Scripts always gets the closing alert.
+        // Zenvi's runner (and Zenvi Link's ae_run_jsx_file) set this flag for one run. Reading it also
+        // clears it, so even a run that stops half-way cannot leave it in After Effects' shared global
+        // scope, where it would hide the alert of a later File > Scripts run.
+        var on = false;
         try {
-            return !!($.global && $.global.ZENVI_AE_QUIET === true);
-        } catch (e) {
-            return false;
-        }
+            on = $.global.ZENVI_AE_QUIET === true;
+            if ($.global.ZENVI_AE_QUIET !== undefined) {
+                delete $.global.ZENVI_AE_QUIET;
+            }
+        } catch (e) {}
+        return on;
     }
 
     function fileAt(path) {
@@ -471,7 +475,7 @@
     function scriptFolder() {
         var f;
         try {
-            f = new File($.fileName);
+            f = fileAt($.fileName);
             if (f.exists) {
                 return f.parent;
             }
@@ -1184,7 +1188,7 @@
         var R = {"zenvi_ae_import": 1, "status": "ok", "comp": "", "comp_id": 0, "folder": "", "layers": 0,
                  "footage": 0, "placeholders": [], "warnings": [], "summary": "", "undo": "Import Zenvi project"};
         var base = scriptFolder(), root, footage, titles = null, comp, items = {}, made = {}, refs = [], fonts = {};
-        var i, f, s, L, g, ref, p, text;
+        var quiet = quietRun(), i, f, s, L, g, ref, p, text;
         if (!app.project) {
             app.newProject();
         }
@@ -1312,8 +1316,8 @@
             } catch (e9) {}
         }
         // the alert only for a run someone started in After Effects: an export for Zenvi Link says
-        // interactive false, and Zenvi's own runner sets ZENVI_AE_QUIET (an alert would block it)
-        if (X.interactive && !quietRun()) {
+        // interactive false, and a run Zenvi starts sets ZENVI_AE_QUIET (an alert would block it)
+        if (X.interactive && !quiet) {
             alert(text + " Edit > Undo \"" + R.undo + "\" removes " + (R.status === "ok" ? "it." : "them.") +
                 (R.warnings.length ? "\n\n" + R.warnings.slice(0, 12).join("\n") : "") +
                 (D.notes.length ? "\n\nNotes from the export: see README.txt next to this script." : ""));

@@ -281,14 +281,30 @@ def test_a_quiet_run_goes_through_a_runner_that_is_removed_afterwards(monkeypatc
     assert "my 50%25 folder" in body  # File() reads %XX as an escape
     assert sorted(os.listdir(script.parent)) == ["Trip.jsx"]
 
-    def timed_out(app, tool, args=None, timeout=120.0, base_dir=None):
-        raise adobe_link.LinkHostError("no answer", "TIMEOUT")
+    # a timeout, a missing file or any other failure: the runner goes too (a run that started has read it;
+    # one that has not must not build the comp later)
+    for code in ("TIMEOUT", "NOT_FOUND", "HOST_ERROR"):
+        def failed(app, tool, args=None, timeout=120.0, base_dir=None, code=code):
+            assert os.path.exists(args["path"])
+            raise adobe_link.LinkHostError("no", code)
 
-    monkeypatch.setattr(adobe_link, "call_host_tool", timed_out)
-    with pytest.raises(adobe_link.LinkHostError):
-        X.run_in_after_effects(str(script), quiet=True)
-    # After Effects may still read the runner after a timeout: it stays
-    assert len([n for n in os.listdir(script.parent) if n.startswith(".zenvi-run-")]) == 1
+        monkeypatch.setattr(adobe_link, "call_host_tool", failed)
+        with pytest.raises(adobe_link.LinkHostError):
+            X.run_in_after_effects(str(script), quiet=True)
+        assert sorted(os.listdir(script.parent)) == ["Trip.jsx"], code
+
+
+def test_the_runner_never_returns_from_inside_try():
+    # whether ExtendScript runs `finally` after a `return` in `try` is unverified: the runner stores the
+    # result, clears the flag on both paths, then returns or re-throws
+    import tempfile
+    with tempfile.TemporaryDirectory() as folder:
+        script = os.path.join(folder, "Trip.jsx")
+        open(script, "w").close()
+        body = open(X.quiet_runner(script), encoding="utf-8").read()
+    inside_try = body.split("try {", 1)[1].split("}", 1)[0]
+    assert "return" not in inside_try and "finally" not in body
+    assert body.index("delete $.global.ZENVI_AE_QUIET;") < body.index("throw failed;") < body.index("return result;")
 
 
 def test_a_runner_that_cannot_be_written_says_how_to_run_the_script(tmp_path):
@@ -408,10 +424,11 @@ def test_the_applescript_wait_can_be_cancelled_and_is_bounded(monkeypatch, tmp_p
     with pytest.raises(X.AeCancelled, match="may still finish"):
         X.run_with_applescript(str(script), AE_2026, quiet=True, should_cancel=cancel_on_third_check, poll=0.001)
     assert fake.killed and calls["n"] == 3
-    # the runner stays (After Effects may still read it); the AppleScript ran the runner, not the export
+    # the AppleScript ran the runner, not the export, and the runner is gone after the cancel
     assert fake.argv[-1] != str(script) and os.path.basename(fake.argv[-1]).startswith(".zenvi-run-")
+    assert sorted(os.listdir(tmp_path)) == ["Trip.jsx"]
     fake = _Osascript(None)
     monkeypatch.setattr(subprocess, "Popen", fake)
     with pytest.raises(X.AeHandoffError, match=r"did not report back within 1 second\. .*File > Scripts"):
-        X.run_with_applescript(str(script), AE_2026, timeout=0.05, poll=0.001)
-    assert fake.killed
+        X.run_with_applescript(str(script), AE_2026, quiet=True, timeout=0.05, poll=0.001)
+    assert fake.killed and sorted(os.listdir(tmp_path)) == ["Trip.jsx"]

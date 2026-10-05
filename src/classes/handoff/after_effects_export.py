@@ -626,21 +626,30 @@ def quiet_runner(script_path: str) -> str:
 
     For an export written for people (``interactive``) that Zenvi itself
     runs: an alert would hold Zenvi Link's call or AppleScript's
-    DoScriptFile until someone clicks it. The flag lives only for the run
-    (the export runtime's ``quietRun``). Delete the runner afterwards.
+    DoScriptFile until someone clicks it. The flag lives only for the run:
+    the export reads and clears it first thing (``quietRun``), and the
+    runner clears it again on its way out, whether the run returned or
+    threw -- without depending on ``finally`` after a ``return``.
+    The caller deletes the runner afterwards.
     """
     target = os.path.abspath(script_path)
     runner = os.path.join(os.path.dirname(target), ".zenvi-run-%s.jsx" % uuid.uuid4().hex[:12])
     body = "\n".join([
         "// Zenvi: runs the export next to this file without its closing alert (removed after the run)",
         "(function () {",
+        "    var result, failed = null;",
         "    $.global.%s = true;" % QUIET_FLAG,
         "    try {",
         # File() reads %XX as an escape
-        "        return $.evalFile(new File(%s));" % js_str(target.replace("%", "%25")),
-        "    } finally {",
-        "        delete $.global.%s;" % QUIET_FLAG,
+        "        result = $.evalFile(new File(%s));" % js_str(target.replace("%", "%25")),
+        "    } catch (e) {",
+        "        failed = e;",
         "    }",
+        "    delete $.global.%s;" % QUIET_FLAG,
+        "    if (failed !== null) {",
+        "        throw failed;",
+        "    }",
+        "    return result;",
         "}());",
         ""])
     try:
@@ -674,11 +683,10 @@ def run_in_after_effects(script_path: str, *, quiet: bool = False, timeout: floa
     try:
         result = adobe_link.call_host_tool(AE_APP, RUN_TOOL, {"path": runner or script_path}, timeout=timeout,
                                            base_dir=base_dir)
-    except adobe_link.HostNotConnected:
+    finally:
+        # also after a timeout or an error: a run that already started has read it, and one that has not
+        # started should not build the comp later
         _drop_runner(runner)
-        raise
-    # (after a timeout or a dropped connection the runner stays: After Effects may still read it)
-    _drop_runner(runner)
     summary = parse_import_summary(result)
     if result.is_error:
         raise AeHandoffError("After Effects could not run the script: " + str(result.receipt.get("summary") or
@@ -797,7 +805,6 @@ def run_with_applescript(script_path: str, app_path: str, *, quiet: bool = False
     """
     name = os.path.basename(script_path)
     runner = quiet_runner(script_path) if quiet else None
-    finished = False
     try:
         try:
             proc = subprocess.Popen(applescript_command(app_path, runner or script_path, timeout),
@@ -814,8 +821,8 @@ def run_with_applescript(script_path: str, app_path: str, *, quiet: bool = False
                 if should_cancel is not None and should_cancel():
                     proc.kill()
                     proc.communicate()
-                    raise AeCancelled("Zenvi stopped waiting for After Effects; it may still finish building the "
-                                      "comp") from None
+                    raise AeCancelled("Zenvi stopped waiting for After Effects; if it had already started, it may "
+                                      "still finish building the comp") from None
                 if time.monotonic() >= deadline:
                     proc.kill()
                     proc.communicate()
@@ -824,10 +831,9 @@ def run_with_applescript(script_path: str, app_path: str, *, quiet: bool = False
                         f"still be building the comp, or DoScriptFile is stuck (a known After Effects 2024 "
                         f"problem): check After Effects, or run {name} there with File > Scripts > Run Script "
                         f"File.") from None
-        finished = True
     finally:
-        if finished:
-            _drop_runner(runner)
+        # also after a cancel or a timeout: see run_in_after_effects
+        _drop_runner(runner)
     err = (err or "").strip()
     if proc.returncode != 0:
         if "-1743" in err or "not authorized" in err.lower() or "not allowed" in err.lower():
