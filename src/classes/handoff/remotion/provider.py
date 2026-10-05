@@ -22,22 +22,26 @@ Rendering (blocking, off the GUI thread):
    ``qtrle`` is ProRes 4444 re-encoded by ffmpeg, and a ``<Still>``
    (one frame) becomes a 5 s clip of that frame.
 
-The fingerprint covers the project's code and assets (content hash for
-small files, size + mtime for big media), its package/lock/config files,
-the props, the composition, the entry and the requested render settings.
+The fingerprint covers the project's code (content hash for small files,
+size + mtime for big ones), its public folder (size + mtime), its
+package/lock/config files, the props, the composition, the entry and the
+requested render settings (see :func:`sources_fingerprint`). Props travel in
+Remotion's own special-type JSON (a ``Date`` is ``"remotion-date:<ISO>"``),
+so a Date default is still a Date on every re-render.
 Cancelling raises ``jobs.JobCancelled`` (never a LinkError), so a cancel
 is not remembered as a render error.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
 from fractions import Fraction
 from typing import Any, Callable, Dict, List, Optional
 
-from classes.handoff import alpha
+from classes.handoff import alpha, linked_media
 from classes.handoff.linked_media import (
     DEFAULT_EXCLUDED_DIRS, LinkError, RenderResult, SourceMissing, decode_props, encode_props,
     fingerprint_sources, fingerprint_value, link_props,
@@ -119,10 +123,78 @@ def fps_fraction(value: Any) -> Fraction:
 # Fingerprints
 # ---------------------------------------------------------------------------
 
+PUBLIC_MAX_FILES = 20000
+
+
+def _skipped_dir(name: str) -> bool:
+    """Top-level folders that are not the project's sources: installs, outputs, VCS, a Zenvi project's assets."""
+    return (name in DEFAULT_EXCLUDED_DIRS or name.startswith(".") or name.endswith("_assets")
+            or name.startswith(linked_media.STAGING_PREFIX))
+
+
+def _public_fingerprint(folder: str) -> str:
+    """public/ by name, size and mtime only (no content reads: image sequences and media are big)."""
+    trees = getattr(getattr(linked_media, "_tree_cache", None), "trees", None)  # check_links' per-sweep cache
+    key = ("remotion-public", os.path.abspath(folder))
+    if isinstance(trees, dict) and key in trees:
+        return trees[key]
+    digest = hashlib.sha256()
+    count = 0
+    for dirpath, dirnames, filenames in os.walk(folder):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and not d.endswith("_assets"))
+        for name in sorted(filenames):
+            if name.startswith("."):
+                continue
+            full = os.path.join(dirpath, name)
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            rel = os.path.relpath(full, folder).replace(os.sep, "/")
+            digest.update(("%s\0%d:%d\n" % (rel, st.st_size, st.st_mtime_ns)).encode("utf-8", "surrogateescape"))
+            count += 1
+            if count >= PUBLIC_MAX_FILES:
+                log.warning("fingerprint of %s stopped at %d files", folder, PUBLIC_MAX_FILES)
+                break
+        if count >= PUBLIC_MAX_FILES:
+            break
+    value = "sha256:" + digest.hexdigest()
+    if isinstance(trees, dict):
+        trees[key] = value
+    return value
+
+
 def sources_fingerprint(project: detect.RemotionProject) -> str:
-    """What a bundle of *project* depends on: code, assets and package/lock/config files. Blocking."""
-    return fingerprint_sources(project.root, include=WATCHED_SUFFIXES, exclude_dirs=DEFAULT_EXCLUDED_DIRS,
-                               extra={"entry": project.entry, "public": project.public_dir})
+    """What a bundle of *project* depends on: code, assets and package/lock/config files. Blocking.
+
+    Three parts, so none can starve another: the files at the project root
+    (package.json, lockfile, configs, .env), each top-level source folder
+    (``src/`` ...; code by content), and the public folder (by size and
+    mtime). Installs, outputs, hidden folders and ``*_assets`` folders (a
+    Zenvi project saved inside the Remotion project keeps its renders there)
+    are left out.
+    """
+    root = project.root
+    public_top = project.public_dir.split("/")[0]
+    try:
+        names = sorted(os.listdir(root))
+    except OSError as exc:
+        raise SourceMissing(f"cannot read the Remotion project {root}: {exc}") from None
+    subdirs = [n for n in names if os.path.isdir(os.path.join(root, n))]
+    trees = {}
+    for name in subdirs:
+        if name == public_top or _skipped_dir(name):
+            continue
+        trees[name] = fingerprint_sources(os.path.join(root, name), include=WATCHED_SUFFIXES,
+                                          exclude_dirs=DEFAULT_EXCLUDED_DIRS)
+    public = os.path.join(root, *project.public_dir.split("/"))
+    return fingerprint_value({
+        "root": fingerprint_sources(root, include=WATCHED_SUFFIXES, exclude_dirs=set(subdirs)),
+        "trees": trees,
+        "public": _public_fingerprint(public) if os.path.isdir(public) else None,
+        "entry": project.entry,
+        "public_dir": project.public_dir,
+    })
 
 
 def _project_of(link: dict) -> detect.RemotionProject:

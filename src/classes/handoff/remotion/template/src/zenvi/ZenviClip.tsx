@@ -1,11 +1,13 @@
 // One Zenvi clip, drawn the way Zenvi (libopenshot 1.0) draws it: the source image placed by the
 // clip's scale mode, gravity, location, scale, rotation, origin and shear (geometry.ts), its
 // alpha as opacity, its volume curve as Remotion's volume callback, constant speed as
-// playbackRate, holds / reverse / ramps frame by frame, and the mapped effects as CSS filters.
+// playbackRate, holds / reverse / ramps frame by frame (without sound), and the mapped effects as
+// CSS filters.
 import React from 'react';
 import {Audio, Freeze, Img, OffthreadVideo, staticFile, useCurrentFrame} from 'remotion';
 import {cropAt, filterAt, valueAt} from './curves';
 import {clipMatrix, cssMatrix} from './geometry';
+import {audioPlayback} from './timing';
 import type {ZenviClipData, ZenviTransitionData} from './types';
 
 type Props = {
@@ -42,13 +44,14 @@ export const ZenviClip: React.FC<Props> = ({clip, from, fps, width, height, tran
   const at = frame + trim;
   const volumeAt = (f: number): number => clamp(valueAt(k.volume, f + trim, 1), 0, 1) * volume;
   const time = clip.time;
-  // the source frame shown at the clip's first visible frame, and its speed (normal / rate)
-  const sourceStart = time.mode === 'rate' ? time.trimBefore + Math.round((trim - time.forTrim) * time.playbackRate)
-    : time.mode === 'normal' ? trim : 0;
-  const rate = time.mode === 'rate' ? time.playbackRate : 1;
+  // the source frame shown at the clip's first visible frame, and its speed (normal / rate);
+  // null for holds, reverse and ramps, which play their frames without sound
+  const playback = audioPlayback(time, trim);
+  const sourceStart = playback ? playback.trimBefore : 0;
+  const rate = playback ? playback.playbackRate : 1;
 
   if (clip.kind === 'audio' || !clip.hasVideo) {
-    if (!clip.hasAudio) {
+    if (!clip.hasAudio || playback === null) {
       return null;
     }
     return (

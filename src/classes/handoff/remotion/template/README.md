@@ -25,6 +25,7 @@ npx remotion render ZenviTimeline out/video.mp4    # render the timeline
 | `src/zenvi/ZenviTimeline.tsx`, `ZenviClip.tsx` | the renderer |
 | `src/zenvi/geometry.ts` | Zenvi's clip placement (scale mode, gravity, location, scale, rotation, origin, shear) |
 | `src/zenvi/curves.ts` | keyframe evaluation, CSS filters, crop |
+| `src/zenvi/timing.ts` | clip frames, the composition's length, stacking order (track, then position), sound |
 | `public/zenvi-media/` | the media ({{MEDIA_MODE}}) |
 
 A clip's timing in `timeline.json` is `position` (where it starts on the timeline), `start` and `end`
@@ -66,11 +67,17 @@ see them as they render.
 
 Agents can do the same with Zenvi's `import_remotion_project_tool` (`project_dir` = this folder).
 
+Exporting from Zenvi into this folder again updates it (`node_modules`, added dependencies and your
+own files stay). Zenvi records what it wrote (under `zenvi` in `timeline.json`), so it will not
+replace changes you made here -- timeline edits, code, media copies -- without asking: import them
+first to keep them.
+
 ## How close is it to Zenvi?
 
-Exact: clip timing and trims, track order, scale modes, gravity, location, scale, rotation,
-origin and shear (the same math as Zenvi), keyframe easing, opacity, volume, constant speed,
-fade transitions, and where titles sit (the title SVGs themselves; fonts come from this computer).
+Exact: clip timing and trims, stacking (by track, then position), scale modes, gravity, location,
+scale, rotation, origin and shear (the same math as Zenvi), keyframe easing, opacity, volume,
+constant speed, fade transitions, and where titles sit (the title SVGs themselves; fonts come from
+this computer).
 
 Approximated: Chrome lays out SVG title text a few percent wider than Zenvi does (same font,
 start and baseline); wipe transitions play as fades; Brightness/Contrast, Saturation, Hue, Blur

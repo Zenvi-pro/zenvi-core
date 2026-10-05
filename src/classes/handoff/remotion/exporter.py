@@ -14,9 +14,13 @@ The template files live in ``template/`` next to this module (package
 data). Everything is computed from a ``TimelineSnapshot`` (taken on the GUI
 thread) and a copy of the project data, so the export runs off the GUI
 thread. A new folder is built in a hidden sibling and renamed into place
-when complete; exporting again into a previous Zenvi export updates its
-generated files and media and keeps ``node_modules`` and any dependencies
-you added.
+when complete; exporting again into a previous Zenvi export stages the
+update in a hidden folder inside it and renames it into place at the end,
+keeping ``node_modules``, any dependencies and files you added. It refuses
+(``ExportHasEdits``) to discard changes made there since -- the export
+records what Zenvi wrote under ``zenvi.files`` / ``zenvi.media_files`` --
+unless ``replace_edits``, and never writes or deletes through linked
+folders.
 
 Mapping (exact unless noted; README lists the approximations):
 
@@ -48,6 +52,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import struct
 import tempfile
 from dataclasses import dataclass
@@ -58,6 +63,7 @@ from classes.handoff.keyframes import Curve, Segment
 from classes.handoff.linked_media import LinkError
 from classes.handoff.timeline_view import ClipView, FileView, TimelineSnapshot, TransitionView
 from classes.handoff.transform import SCALE_NONE
+from classes.logger import log
 
 REMOTION_VERSION = "4.0.532"
 DEPENDENCIES = {
@@ -83,6 +89,7 @@ STATIC_FILES = (
     ("src/zenvi/types.ts", "src/zenvi/types.ts"),
     ("src/zenvi/geometry.ts", "src/zenvi/geometry.ts"),
     ("src/zenvi/curves.ts", "src/zenvi/curves.ts"),
+    ("src/zenvi/timing.ts", "src/zenvi/timing.ts"),
     ("src/zenvi/ZenviClip.tsx", "src/zenvi/ZenviClip.tsx"),
     ("src/zenvi/ZenviTimeline.tsx", "src/zenvi/ZenviTimeline.tsx"),
 )
@@ -340,6 +347,15 @@ def clip_kind(file: FileView) -> str:
     return "video"
 
 
+def metadata_rotation(data: Any) -> float:
+    """The ``rotate`` metadata of a probed file (phone videos), in degrees; 0 when there is none."""
+    metadata = (data or {}).get("metadata") if hasattr(data, "get") else None
+    try:
+        return float((metadata or {}).get("rotate") or 0.0) if hasattr(metadata or {}, "get") else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def has_alpha(file: FileView) -> bool:
     link = file.zenvi_link
     if link is not None:
@@ -390,8 +406,15 @@ def plan_assets(snapshot: TimelineSnapshot) -> Tuple[Dict[str, Asset], List[str]
 
 def install_media(assets: Dict[str, Asset], public_dir: str, *, copy_media: bool = True,
                   on_progress: Optional[ProgressFn] = None, should_cancel: Optional[Callable[[], bool]] = None,
-                  keep: Optional[set] = None) -> List[str]:
-    """Copy (or symlink) each asset into *public_dir*; returns warnings. Files already identical are kept."""
+                  keep: Optional[set] = None, live_dir: Optional[str] = None,
+                  moves: Optional[List[Tuple[str, str]]] = None) -> List[str]:
+    """Copy (or symlink) each asset into *public_dir*; returns warnings. Files already identical are kept.
+
+    With *live_dir* (updating an earlier export) the existing copies are
+    looked up there and new ones are written to *public_dir* (a staging
+    folder): each ``(staged, live)`` pair is appended to *moves* for the
+    caller to rename into place once everything is ready.
+    """
     from classes.handoff.jobs import JobCancelled
     unique = {a.src: a for a in assets.values()}
     total = sum(a.size for a in unique.values()) or 1
@@ -402,22 +425,26 @@ def install_media(assets: Dict[str, Asset], public_dir: str, *, copy_media: bool
         if should_cancel is not None and should_cancel():
             raise JobCancelled("Remotion export cancelled")
         dest = os.path.join(public_dir, *src.split("/"))
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        live = os.path.join(live_dir, *src.split("/")) if live_dir else dest
         report(done / total, f"Copying {os.path.basename(asset.source)}")
-        if os.path.lexists(dest):
+        if os.path.lexists(live):
             same = False
             try:
-                if os.path.islink(dest):
-                    same = (not copy_media) and os.path.realpath(dest) == os.path.realpath(asset.source)
+                if os.path.islink(live):
+                    same = (not copy_media) and os.path.realpath(live) == os.path.realpath(asset.source)
                 else:
-                    st, sd = os.stat(asset.source), os.stat(dest)
+                    st, sd = os.stat(asset.source), os.stat(live)
                     same = copy_media and st.st_size == sd.st_size and int(st.st_mtime) == int(sd.st_mtime)
             except OSError:
                 same = False
             if same:
                 done += asset.size
                 continue
-            os.remove(dest)
+            if live == dest:
+                os.remove(dest)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        if live != dest and moves is not None:
+            moves.append((dest, live))
         if not copy_media:
             try:
                 os.symlink(asset.source, dest)
@@ -433,6 +460,17 @@ def install_media(assets: Dict[str, Asset], public_dir: str, *, copy_media: bool
     if keep is not None:
         keep.update(unique)
     return warnings
+
+
+def media_record(path: str) -> Optional[dict]:
+    """What Zenvi wrote at *path* (a media copy or link): size, mtime and whether it is a link."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    if stat.S_ISLNK(st.st_mode):
+        return {"link": True}
+    return {"size": int(st.st_size), "mtime_ns": int(st.st_mtime_ns), "link": False}
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +616,10 @@ def build_timeline(snapshot: TimelineSnapshot, project_data: dict, assets: Dict[
             link = dict(f.zenvi_link)
             info["linked"] = {"kind": link.get("kind"),
                               "composition": (link.get("source") or {}).get("composition")}
+        rotation = metadata_rotation(f.data)
+        if rotation % 360:
+            notes.append(f"{f.name} is stored rotated ({rotation:g}°, phone video): the browser applies that rotation "
+                         "itself, so check it in Remotion Studio -- it can look rotated twice or squashed")
         media[key] = info
     rate = float(fps)
     timeline = {
@@ -702,26 +744,219 @@ def target_mode(output_dir: str) -> str:
                       "new folder name (Zenvi creates it)")
 
 
-def _write_project(root: str, snapshot: TimelineSnapshot, timeline: dict, *, generator: str, copy_media: bool,
-                   notes: List[str], existing_package: Optional[dict]) -> List[str]:
-    written = []
-    for rel_src, rel_dest in STATIC_FILES:
-        _write_text(os.path.join(root, *rel_dest.split("/")), _template(rel_src))
-        written.append(rel_dest)
-    _write_text(os.path.join(root, "package.json"),
-                json.dumps(package_json(snapshot.name, existing_package), indent=2) + "\n")
-    _write_text(os.path.join(root, "src", "Root.tsx"), render_root_tsx(snapshot.name, generator))
+def project_texts(snapshot: TimelineSnapshot, timeline: dict, *, generator: str, copy_media: bool,
+                  notes: List[str], existing_package: Optional[dict]) -> Dict[str, str]:
+    """Every file Zenvi writes except timeline.json: relative path -> text."""
+    texts = {rel_dest: _template(rel_src) for rel_src, rel_dest in STATIC_FILES}
+    texts["package.json"] = json.dumps(package_json(snapshot.name, existing_package), indent=2) + "\n"
+    texts["src/Root.tsx"] = render_root_tsx(snapshot.name, generator)
+    texts["README.md"] = render_readme(timeline, generator=generator, copy_media=copy_media, notes=notes)
+    return texts
+
+
+def text_sha256(text: str) -> str:
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def file_sha256(path: str) -> Optional[str]:
+    try:
+        with open(path, "rb") as fh:
+            return "sha256:" + hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return None
+
+
+def _write_files(root: str, texts: Dict[str, str], timeline: dict) -> List[str]:
+    for rel, text in texts.items():
+        _write_text(os.path.join(root, *rel.split("/")), text)
     _write_text(os.path.join(root, *TIMELINE_REL.split("/")), json.dumps(timeline, indent=1, ensure_ascii=False) + "\n")
-    _write_text(os.path.join(root, "README.md"), render_readme(timeline, generator=generator, copy_media=copy_media,
-                                                               notes=notes))
-    written += list(GENERATED_FILES)
-    return written
+    return list(texts) + [TIMELINE_REL]
+
+
+# ---------------------------------------------------------------------------
+# Exporting into an earlier export
+# ---------------------------------------------------------------------------
+
+class ExportHasEdits(ExportError):
+    """Exporting into this earlier export would throw away changes made in it; ``edits`` lists them."""
+
+    def __init__(self, message: str, edits: List[str]):
+        super().__init__(message)
+        self.edits = list(edits)
+
+
+# Folders an update writes into: as links they would make Zenvi write (and delete) files elsewhere.
+UPDATED_FOLDERS = ("public", "public/" + MEDIA_DIR, "src", "src/zenvi")
+_MEDIA_NAME_RE = re.compile(r"^" + re.escape(MEDIA_DIR) + r"/[^/\\]+$")
+
+
+def _is_link(path: str) -> bool:
+    isjunction = getattr(os.path, "isjunction", None)
+    return os.path.islink(path) or bool(isjunction and isjunction(path))
+
+
+def check_update_target(output_dir: str) -> None:
+    """Refuse an earlier export whose folders Zenvi updates are symbolic links (or junctions) or files."""
+    for rel in UPDATED_FOLDERS:
+        path = os.path.join(output_dir, *rel.split("/"))
+        if _is_link(path):
+            raise ExportError(f"{rel} in {output_dir} is a link (to {os.path.realpath(path)}); Zenvi only updates an "
+                              "export's own folders, so it will not write or delete files through it. Replace the link "
+                              "with a folder, or export into a new folder")
+        if os.path.lexists(path) and not os.path.isdir(path):
+            raise ExportError(f"{rel} in {output_dir} is not a folder; export into a new folder")
+
+
+def read_previous_timeline(output_dir: str) -> Optional[dict]:
+    """The earlier export's timeline.json, or None when it cannot be read."""
+    try:
+        with open(os.path.join(output_dir, *TIMELINE_REL.split("/")), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _same_as_source(path: str, asset: Optional[Asset]) -> bool:
+    """*path* is the copy install_media would make of *asset* now (same size and mtime: copy2 keeps it)."""
+    if asset is None:
+        return False
+    try:
+        st, sd = os.stat(asset.source), os.stat(path)
+    except OSError:
+        return False
+    return st.st_size == sd.st_size and int(st.st_mtime) == int(sd.st_mtime)
+
+
+def _zenvi_block(timeline: Optional[dict]) -> dict:
+    block = (timeline or {}).get("zenvi")
+    return block if isinstance(block, dict) else {}
+
+
+def update_losses(output_dir: str, previous: Optional[dict], texts: Dict[str, str],
+                  assets: Optional[Dict[str, Asset]] = None) -> List[str]:
+    """What exporting into *output_dir* again would discard: changes made in the Remotion project since Zenvi
+    wrote it (timeline edits not imported yet, code and docs, edited media copies). Blocking (reads files).
+
+    A file counts only when it differs both from what Zenvi recorded writing
+    and from what this export would write, so the files a part-way update
+    already replaced are not mistaken for edits.
+    """
+    by_src = {a.src: a for a in (assets or {}).values()}
+    if previous is None:
+        return [f"{TIMELINE_REL} cannot be read (it was changed and is no longer valid JSON)"]
+    zenvi = _zenvi_block(previous)
+    out: List[str] = []
+    stored = zenvi.get("readable_sha256")
+    if stored and stored != readable_hash(previous):
+        out.append(f"edits to {TIMELINE_REL} that were not imported into Zenvi yet")
+    files = zenvi.get("files")
+    if isinstance(files, dict):
+        for rel, digest in sorted(files.items()):
+            path = os.path.join(output_dir, *str(rel).split("/"))
+            now = file_sha256(path) if os.path.isfile(path) else None
+            if now is not None and now != digest and (rel not in texts or now != text_sha256(texts[rel])):
+                out.append(f"changes to {rel}")
+    else:  # an export from before the manifest: anything that differs from what Zenvi writes now
+        for rel, text in sorted(texts.items()):
+            if rel == "package.json":
+                continue  # merged: the project's own additions are kept
+            path = os.path.join(output_dir, *rel.split("/"))
+            if os.path.isfile(path) and file_sha256(path) != text_sha256(text):
+                out.append(f"changes to {rel} (or an older Zenvi wrote it)")
+    media = zenvi.get("media_files")
+    if isinstance(media, dict):
+        for rel, record in sorted(media.items()):
+            if not isinstance(record, dict) or not _MEDIA_NAME_RE.match(str(rel)):
+                continue
+            path = os.path.join(output_dir, "public", *str(rel).split("/"))
+            now = media_record(path)
+            if now is None or now.get("link") or _same_as_source(path, by_src.get(str(rel))):
+                continue
+            if record.get("link") or (now.get("size"), now.get("mtime_ns")) != (record.get("size"),
+                                                                                 record.get("mtime_ns")):
+                out.append(f"changes to public/{rel}")
+    else:
+        from classes.handoff.remotion import restore
+        for original, src in sorted((zenvi.get("assets") or {}).items()):
+            copy_path = os.path.join(output_dir, "public", *str(src).split("/"))
+            if not os.path.isfile(copy_path) or os.path.islink(copy_path) or not os.path.isfile(str(original)):
+                continue
+            try:
+                newer = os.path.getmtime(copy_path) > os.path.getmtime(str(original))
+            except OSError:
+                newer = False
+            if newer and not restore._same_content(str(original), copy_path) \
+                    and not _same_as_source(copy_path, by_src.get(str(src))):
+                out.append(f"changes to public/{src}")
+    return out
+
+
+def _recorded_media(previous: Optional[dict]) -> List[str]:
+    """The media files (``zenvi-media/<name>``) the earlier export says Zenvi wrote."""
+    zenvi = _zenvi_block(previous)
+    media, assets = zenvi.get("media_files"), zenvi.get("assets")
+    names = list(media.keys()) if isinstance(media, dict) else []
+    names += [str(v) for v in assets.values()] if isinstance(assets, dict) else []
+    return sorted({str(n) for n in names if _MEDIA_NAME_RE.match(str(n))})
+
+
+STAGING_PREFIX = ".zenvi-update-"
+STAGING_MAX_AGE = 3600.0
+
+
+def _remove_old_staging(output_dir: str) -> None:
+    """Staging folders an interrupted update left behind (Zenvi's by name; an hour old, so never a running one)."""
+    import time
+    try:
+        names = os.listdir(output_dir)
+    except OSError:
+        return
+    for name in names:
+        path = os.path.join(output_dir, name)
+        if not name.startswith(STAGING_PREFIX) or os.path.islink(path) or not os.path.isdir(path):
+            continue
+        try:
+            old = time.time() - os.path.getmtime(path) > STAGING_MAX_AGE
+        except OSError:
+            continue
+        if old:
+            shutil.rmtree(path, ignore_errors=True)
+
+
+def _remove_stale_media(output_dir: str, previous: Optional[dict], kept: set) -> List[str]:
+    """Delete the media an earlier export recorded and this one no longer uses (never anything else)."""
+    removed = []
+    for rel in _recorded_media(previous):
+        if rel in kept:
+            continue
+        path = os.path.join(output_dir, "public", *rel.split("/"))
+        try:
+            st = os.lstat(path)
+        except OSError:
+            continue
+        if stat.S_ISDIR(st.st_mode):
+            continue
+        try:
+            os.remove(path)
+            removed.append("public/" + rel)
+        except OSError as exc:
+            log.warning("could not remove stale Remotion media %s: %s", path, exc)
+    return removed
 
 
 def export_project(snapshot: TimelineSnapshot, project_data: dict, output_dir: str, *, copy_media: bool = True,
                    install: bool = False, generator: Optional[str] = None, on_progress: Optional[ProgressFn] = None,
-                   should_cancel: Optional[Callable[[], bool]] = None) -> dict:
-    """Write the Remotion project for *snapshot* into *output_dir*; returns a receipt. Blocking (disk, npm)."""
+                   should_cancel: Optional[Callable[[], bool]] = None, replace_edits: bool = False) -> dict:
+    """Write the Remotion project for *snapshot* into *output_dir*; returns a receipt. Blocking (disk, npm).
+
+    A new folder is built in a hidden sibling and renamed into place. An
+    earlier export is updated the same way: everything is staged first and
+    renamed into place at the end, so a cancel or failure before that leaves
+    it as it was. It is refused (:class:`ExportHasEdits`) when that would
+    discard changes made in it -- timeline edits not imported yet, changed
+    code or docs, edited media copies -- unless *replace_edits*.
+    """
     from classes.handoff.jobs import JobCancelled
     output_dir = os.path.abspath(os.path.expanduser(str(output_dir or "")))
     mode = target_mode(output_dir)
@@ -738,48 +973,96 @@ def export_project(snapshot: TimelineSnapshot, project_data: dict, output_dir: s
         raise ExportError("none of the timeline's clips can be exported (their media is missing or unsupported): "
                           + "; ".join(warnings[:3]))
     existing_package = None
+    previous = None
     if mode == "update":
+        check_update_target(output_dir)
         try:
             with open(os.path.join(output_dir, "package.json"), encoding="utf-8") as fh:
                 existing_package = json.load(fh)
         except (OSError, ValueError):
             existing_package = None
-        root = output_dir
+    texts = project_texts(snapshot, timeline, generator=generator, copy_media=copy_media, notes=notes,
+                          existing_package=existing_package)
+    if mode == "update":
+        previous = read_previous_timeline(output_dir)
+        losses = update_losses(output_dir, previous, texts, assets)
+        if losses and not replace_edits:
+            raise ExportHasEdits(
+                f"{output_dir} is an earlier Zenvi export with changes made in it that exporting again would discard: "
+                + "; ".join(losses[:6]) + ("; ..." if len(losses) > 6 else "")
+                + ". Import it into Zenvi first to keep them, export into a new folder, or replace them", losses)
+        if losses:
+            warnings.append("replaced changes made in the earlier export: " + "; ".join(losses[:6]))
+        _remove_old_staging(output_dir)
+        stage = tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=output_dir)
     else:
         parent = os.path.dirname(output_dir)
         os.makedirs(parent, exist_ok=True)
-        root = tempfile.mkdtemp(prefix="." + os.path.basename(output_dir) + ".zenvi-partial-", dir=parent)
+        stage = tempfile.mkdtemp(prefix="." + os.path.basename(output_dir) + ".zenvi-partial-", dir=parent)
+    live_public = os.path.join(output_dir, "public")
+    removed: List[str] = []
     try:
-        public = os.path.join(root, "public")
+        moves: List[Tuple[str, str]] = []
         kept: set = set()
-        warnings += install_media(assets, public, copy_media=copy_media,
+        warnings += install_media(assets, os.path.join(stage, "public"), copy_media=copy_media,
                                   on_progress=lambda f, m: report(0.85 * (f or 0.0), m), should_cancel=cancel,
-                                  keep=kept)
-        media_dir = os.path.join(public, MEDIA_DIR)
-        if mode == "update" and os.path.isdir(media_dir):
-            for name in os.listdir(media_dir):
-                if f"{MEDIA_DIR}/{name}" not in kept:
-                    stale = os.path.join(media_dir, name)
-                    if os.path.isfile(stale) or os.path.islink(stale):
-                        os.remove(stale)
+                                  keep=kept, live_dir=live_public if mode == "update" else None, moves=moves)
         if cancel():
             raise JobCancelled("Remotion export cancelled")
         report(0.9, "Writing the Remotion project")
-        written = _write_project(root, snapshot, timeline, generator=generator, copy_media=copy_media, notes=notes,
-                                 existing_package=existing_package)
+        staged = {staged_path for staged_path, _live in moves}
+        records = {}
+        for src in sorted(kept):
+            in_stage = os.path.join(stage, "public", *src.split("/"))
+            record = media_record(in_stage if (mode == "new" or in_stage in staged)
+                                  else os.path.join(live_public, *src.split("/")))
+            if record is not None:
+                records[src] = record
+        timeline["zenvi"]["files"] = {rel: text_sha256(text) for rel, text in sorted(texts.items())
+                                      if rel != "package.json"}
+        timeline["zenvi"]["media_files"] = records
+        written = _write_files(stage, texts, timeline)
+        if cancel():
+            raise JobCancelled("Remotion export cancelled")
         if mode == "new":
             if os.path.isdir(output_dir):
                 os.rmdir(output_dir)  # empty (checked above)
-            os.replace(root, output_dir)
-            root = output_dir
+            os.replace(stage, output_dir)
+            stage = output_dir
+        else:
+            # Everything is ready: rename it into place (quick; never cancelled), timeline.json last so the
+            # project never points at media that is not there yet.
+            done = 0
+            try:
+                for staged_path, live in moves:
+                    os.makedirs(os.path.dirname(live), exist_ok=True)
+                    os.replace(staged_path, live)
+                    done += 1
+                for rel in written:
+                    if rel == TIMELINE_REL:
+                        continue
+                    live = os.path.join(output_dir, *rel.split("/"))
+                    os.makedirs(os.path.dirname(live), exist_ok=True)
+                    os.replace(os.path.join(stage, *rel.split("/")), live)
+                    done += 1
+                live_timeline = os.path.join(output_dir, *TIMELINE_REL.split("/"))
+                os.makedirs(os.path.dirname(live_timeline), exist_ok=True)
+                os.replace(os.path.join(stage, *TIMELINE_REL.split("/")), live_timeline)
+            except OSError as exc:
+                raise ExportError(f"updating {output_dir} stopped part-way ({done} of {len(moves) + len(written)} "
+                                  f"files replaced): {exc}. Export again to finish the update") from None
+            removed = _remove_stale_media(output_dir, previous, kept)
     except BaseException:
-        if mode == "new" and root != output_dir:
-            shutil.rmtree(root, ignore_errors=True)
+        if stage != output_dir:
+            shutil.rmtree(stage, ignore_errors=True)
         raise
+    if mode == "update":
+        shutil.rmtree(stage, ignore_errors=True)
     receipt: Dict[str, Any] = {
         "output_dir": output_dir, "mode": mode, "composition": dict(timeline["composition"]),
         "clips": len(timeline["clips"]), "transitions": len(timeline["transitions"]),
         "media_files": len({a.src for a in assets.values()}), "copy_media": bool(copy_media), "files": written,
+        "removed_media": removed,
         "remotion_version": REMOTION_VERSION, "warnings": warnings, "notes": notes, "installed": False,
         "next_steps": [f"cd {output_dir}", "npm install" if not install else None, "npx remotion studio",
                        f"npx remotion render {COMPOSITION_ID} out/video.mp4"],
@@ -802,5 +1085,6 @@ def export_project(snapshot: TimelineSnapshot, project_data: dict, output_dir: s
 __all__ = ["export_project", "build_timeline", "plan_assets", "install_media", "curve_keys", "time_spec",
            "transition_entry", "mask_multiplier", "effect_filters", "clip_entry", "lossless_project", "readable_hash",
            "render_root_tsx", "package_json", "render_readme", "target_mode", "is_zenvi_export", "ExportError",
+           "ExportHasEdits", "check_update_target", "update_losses", "project_texts", "media_record",
            "REMOTION_VERSION", "DEPENDENCIES", "DEV_DEPENDENCIES", "COMPOSITION_ID", "TIMELINE_REL", "MEDIA_DIR",
            "STATIC_FILES", "GENERATED_FILES", "TEMPLATE_DIR", "round_half_up", "project_copy", "snapshot_from_app"]

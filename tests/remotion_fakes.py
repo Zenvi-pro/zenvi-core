@@ -84,13 +84,21 @@ const log = (o) => { if (process.env.FAKE_REMOTION_LOG) fs.appendFileSync(proces
 module.exports = log;
 """
 
-_CLI_CONFIG_JS = """let entry = null;
+_CLI_CONFIG_JS = """const client = require('@remotion/renderer/client');
+let entry = null;
 let override = (c) => c;
 exports.Config = {
   setEntryPoint: (e) => { entry = e; },
   overrideWebpackConfig: (fn) => { override = fn; },
   setVideoImageFormat: () => {},
   setOverwriteOutput: () => {},
+  // render settings live in the renderer's options, like the real @remotion/cli/config
+  setDelayRenderTimeoutInMilliseconds: (v) => client.__set('delayRenderTimeoutInMillisecondsOption', v),
+  setChromiumOpenGlRenderer: (v) => client.__set('glOption', v),
+  setBrowserExecutable: (v) => client.__set('browserExecutableOption', v),
+  setChromeMode: (v) => client.__set('chromeModeOption', v),
+  setOffthreadVideoCacheSizeInBytes: (v) => client.__set('offthreadVideoCacheSizeInBytesOption', v),
+  setChromiumIgnoreCertificateErrors: (v) => client.__set('ignoreCertificateErrorsOption', v),
 };
 exports.ConfigInternals = {
   getEntryPoint: () => entry,
@@ -125,20 +133,34 @@ exports.bundle = async (opts) => {
 
 _RENDERER_JS = """const fs = require('fs');
 const log = require('./log');
-const comps = () => JSON.parse(process.env.FAKE_REMOTION_COMPS || '[]');
+const {NoReactInternals} = require('remotion/no-react');
+// like the real getCompositions: props come back from the browser with Remotion's special types revived
+const comps = () => NoReactInternals.deserializeJSONWithSpecialTypes(process.env.FAKE_REMOTION_COMPS || '[]');
 const withProps = (c, inputProps) => ({...c, props: {...(c.defaultProps || {}), ...(inputProps || {})}});
-exports.ensureBrowser = async ({onBrowserDownload}) => {
-  const d = onBrowserDownload({chromeMode: 'headless-shell'});
+const types = (props) => Object.fromEntries(Object.entries(props || {}).map(
+  ([k, v]) => [k, v instanceof Date ? 'date' : typeof v]));
+const settings = (o) => ({timeoutInMilliseconds: o.timeoutInMilliseconds ?? null,
+  chromiumOptions: o.chromiumOptions ?? null, browserExecutable: o.browserExecutable ?? null,
+  chromeMode: o.chromeMode ?? null, offthreadVideoCacheSizeInBytes: o.offthreadVideoCacheSizeInBytes ?? null});
+exports.ensureBrowser = async (o) => {
+  log({call: 'ensureBrowser', browserExecutable: o.browserExecutable ?? null, chromeMode: o.chromeMode ?? null});
+  const d = o.onBrowserDownload({chromeMode: 'headless-shell'});
   d.onProgress({alreadyAvailable: false, percent: 0.5, downloadedBytes: 50e6, totalSizeInBytes: 100e6});
   d.onProgress({alreadyAvailable: false, percent: 1, downloadedBytes: 100e6, totalSizeInBytes: 100e6});
   return {type: 'local-puppeteer-browser'};
 };
-exports.openBrowser = async () => ({close: async () => log({call: 'closeBrowser'})});
+exports.openBrowser = async (browser, o) => {
+  log({call: 'openBrowser', ...settings(o || {})});
+  return {close: async () => log({call: 'closeBrowser'})};
+};
 exports.getCompositions = async (serveUrl, opts) => {
-  log({call: 'getCompositions', serveUrl, inputProps: opts.inputProps, env: opts.envVariables});
+  log({call: 'getCompositions', serveUrl, inputProps: opts.inputProps, env: opts.envVariables,
+       propTypes: types(opts.inputProps), ...settings(opts)});
   return comps().map((c) => withProps(c, opts.inputProps));
 };
-exports.selectComposition = async ({id, inputProps}) => {
+exports.selectComposition = async (o) => {
+  const {id, inputProps} = o;
+  log({call: 'selectComposition', id, propTypes: types(inputProps), ...settings(o)});
   const c = comps().find((x) => x.id === id);
   if (!c) {
     throw new Error(`Could not find composition with ID ${id}. The following compositions are available: ${comps().map((x) => x.id).join(', ')}`);
@@ -153,7 +175,7 @@ exports.renderMedia = async (o) => {
   log({call: 'renderMedia', codec: o.codec, proResProfile: o.proResProfile || null, pixelFormat: o.pixelFormat,
        imageFormat: o.imageFormat, crf: o.crf || null, frameRange: o.frameRange, concurrency: o.concurrency || null,
        outputLocation: o.outputLocation, inputProps: o.inputProps, colorSpace: o.colorSpace || null,
-       env: o.envVariables});
+       env: o.envVariables, propTypes: types(o.inputProps), ...settings(o)});
   if (process.env.FAKE_REMOTION_FAIL) throw new Error(process.env.FAKE_REMOTION_FAIL);
   for (let i = 1; i <= 4; i++) {
     o.onProgress({progress: i / 4, renderedFrames: i, encodedFrames: i, stitchStage: 'encoding'});
@@ -165,15 +187,45 @@ exports.renderMedia = async (o) => {
   fs.writeFileSync(o.outputLocation, 'movie');
 };
 exports.renderStill = async (o) => {
-  log({call: 'renderStill', frame: o.frame, output: o.output, imageFormat: o.imageFormat});
+  log({call: 'renderStill', frame: o.frame, output: o.output, imageFormat: o.imageFormat,
+       propTypes: types(o.inputProps), ...settings(o)});
   fs.writeFileSync(o.output, 'png');
 };
 """
 
-_CLIENT_JS = """exports.BrowserSafeApis = {options: {
-  publicDirOption: {getValue: () => ({value: null})},
-  rspackOption: {getValue: () => ({value: false})},
-}};
+_CLIENT_JS = """const values = {publicDirOption: null, rspackOption: false, delayRenderTimeoutInMillisecondsOption: 30000,
+  chromeModeOption: 'headless-shell', headlessOption: true};
+const option = (name) => ({getValue: () => ({value: values[name], source: 'config'}),
+  setConfig: (v) => { values[name] = v; }});
+exports.BrowserSafeApis = {options: new Proxy({}, {get: (_target, name) => option(String(name))})};
+exports.__set = (name, v) => { values[name] = v; };
+"""
+
+# remotion/no-react: Remotion's special-type JSON (Dates as "remotion-date:<ISO>"; a staticFile token
+# needs the browser's window, so deserializing one in Node throws, as in the real package)
+_NO_REACT_JS = """const DATE_TOKEN = 'remotion-date:';
+const FILE_TOKEN = 'remotion-file:';
+exports.NoReactInternals = {
+  serializeJSONWithSpecialTypes: ({data, indent, staticBase}) => {
+    let customDateUsed = false;
+    const serializedString = JSON.stringify(data, function (key, value) {
+      const item = this[key];
+      if (item instanceof Date) {
+        customDateUsed = true;
+        return DATE_TOKEN + item.toISOString();
+      }
+      return value;
+    }, indent);
+    return {serializedString, customDateUsed, customFileUsed: false, mapUsed: false, setUsed: false};
+  },
+  deserializeJSONWithSpecialTypes: (text) => JSON.parse(text, (_key, value) => {
+    if (typeof value === 'string' && value.startsWith(DATE_TOKEN)) return new Date(value.replace(DATE_TOKEN, ''));
+    if (typeof value === 'string' && value.startsWith(FILE_TOKEN)) {
+      return `${window.remotion_staticBase}/${value.replace(FILE_TOKEN, '')}`;
+    }
+    return value;
+  }),
+};
 """
 
 
@@ -193,7 +245,8 @@ def write_fake_remotion(root: str, version: str = "4.0.532") -> None:
             with open(os.path.join(folder, fname), "w") as fh:
                 fh.write(body)
 
-    pkg("remotion", {"index.js": "module.exports = {};\n"})
+    pkg("remotion", {"index.js": "module.exports = {};\n", "no-react.js": _NO_REACT_JS},
+        exports={".": "./index.js", "./no-react": "./no-react.js", "./package.json": "./package.json"})
     pkg("@remotion/cli", {"index.js": "module.exports = {};\n", "config.js": _CLI_CONFIG_JS},
         exports={".": "./index.js", "./config": "./config.js", "./package.json": "./package.json"})
     pkg("@remotion/bundler", {"index.js": _BUNDLER_JS, "log.js": _LOG_JS})

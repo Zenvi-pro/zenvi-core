@@ -122,13 +122,65 @@ export const CODECS = {
   },
 };
 
-const readProps = (file) => {
+// Remotion passes props between processes as JSON with special types: a Date travels as
+// "remotion-date:<ISO>" (NoReactInternals.serializeJSONWithSpecialTypes, what renderMedia and
+// getCompositions use). Zenvi stores props in that form, so a Date default stays a Date on every
+// re-render instead of turning into a plain string. Map and Set cannot cross (like in Remotion's own
+// Studio render dialog).
+const DATE_TOKEN = 'remotion-date:';
+
+const specialTypes = (rq) => {
+  try {
+    const internals = rq.load('remotion/no-react').NoReactInternals;
+    if (internals && typeof internals.serializeJSONWithSpecialTypes === 'function'
+        && typeof internals.deserializeJSONWithSpecialTypes === 'function') {
+      return internals;
+    }
+  } catch {
+    // older Remotion 4: the fallback below handles Dates the same way
+  }
+  return null;
+};
+
+export const encodeProps = (internals, value) => {
+  if (value === undefined || value === null) {
+    return {};
+  }
+  let text;
+  if (internals) {
+    text = internals.serializeJSONWithSpecialTypes({data: value, indent: undefined, staticBase: null}).serializedString;
+  } else {
+    text = JSON.stringify(value, function (key, v) {
+      const item = this[key];
+      return item instanceof Date ? DATE_TOKEN + item.toISOString() : v;
+    });
+  }
+  return JSON.parse(text ?? '{}');
+};
+
+const reviveDates = (text) => JSON.parse(text, (_key, value) => (
+  typeof value === 'string' && value.startsWith(DATE_TOKEN) ? new Date(value.slice(DATE_TOKEN.length)) : value));
+
+export const decodeProps = (internals, text) => {
+  if (internals) {
+    try {
+      return internals.deserializeJSONWithSpecialTypes(text);
+    } catch (err) {
+      if (!(err instanceof ReferenceError)) {  // a remotion-file: token needs the browser's window
+        throw err;
+      }
+    }
+  }
+  return reviveDates(text);
+};
+
+const readProps = (ctx, file) => {
   if (!file || file === true) {
     return {};
   }
   let parsed;
   try {
-    parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    parsed = decodeProps(ctx.specialTypes, fs.readFileSync(file, 'utf8'));
   } catch (err) {
     throw new HelperError('INVALID_ARGUMENT', `could not read the props file ${file}: ${err.message}`);
   }
@@ -253,6 +305,48 @@ const optionValue = (rq, name) => configValue(() => {
   return client.BrowserSafeApis.options[name].getValue({commandLine: {}}).value;
 });
 
+// The render settings remotion.config.* can set (Config.setDelayRenderTimeoutInMilliseconds,
+// setChromiumOpenGlRenderer, setBrowserExecutable, setChromeMode, setOffthreadVideoCacheSizeInBytes, ...),
+// read the way `npx remotion render` reads them, and passed to every Remotion call and browser.
+// Output settings (codec, pixel format, CRF, scale, concurrency) stay Zenvi's: it picks them for the
+// linked clip.
+export const renderSettings = (read) => {
+  const value = (name) => {
+    const v = read(name);
+    return v === undefined ? null : v;
+  };
+  const chromiumOptions = {};
+  for (const [key, name] of [
+    ['gl', 'glOption'],
+    ['headless', 'headlessOption'],
+    ['ignoreCertificateErrors', 'ignoreCertificateErrorsOption'],
+    ['disableWebSecurity', 'disableWebSecurityOption'],
+    ['userAgent', 'userAgentOption'],
+    ['enableMultiProcessOnLinux', 'enableMultiprocessOnLinuxOption'],
+    ['darkMode', 'darkModeOption'],
+  ]) {
+    const v = value(name);
+    if (v !== null) {
+      chromiumOptions[key] = v;
+    }
+  }
+  const settings = {chromiumOptions, browserExecutable: value('browserExecutableOption')};
+  for (const [key, name] of [
+    ['timeoutInMilliseconds', 'delayRenderTimeoutInMillisecondsOption'],
+    ['chromeMode', 'chromeModeOption'],
+    ['offthreadVideoCacheSizeInBytes', 'offthreadVideoCacheSizeInBytesOption'],
+    ['offthreadVideoThreads', 'offthreadVideoThreadsOption'],
+    ['mediaCacheSizeInBytes', 'mediaCacheSizeInBytesOption'],
+    ['binariesDirectory', 'binariesDirectoryOption'],
+  ]) {
+    const v = value(name);
+    if (v !== null) {
+      settings[key] = v;
+    }
+  }
+  return settings;
+};
+
 // The CLI loads <project>/.env (or Config.setDotEnvLocation) into the render; so do we.
 const readEnv = (projectDir, internals) => {
   const location = configValue(() => internals?.getDotEnvLocation?.()) ?? '.env';
@@ -308,6 +402,8 @@ const setup = async (opts) => {
     publicDir: optionValue(rq, 'publicDirOption'),
     rspack: Boolean(optionValue(rq, 'rspackOption')),
     envVariables: readEnv(projectDir, internals),
+    settings: renderSettings((name) => optionValue(rq, name)),
+    specialTypes: specialTypes(rq),
   };
 };
 
@@ -401,7 +497,12 @@ const ensureBrowser = async (ctx) => {
   }
   emit({event: 'progress', stage: 'browser', progress: null, message: 'Checking the headless browser'});
   let lastReported = -1;
+  const browserOptions = {browserExecutable: ctx.settings.browserExecutable};
+  if (ctx.settings.chromeMode) {
+    browserOptions.chromeMode = ctx.settings.chromeMode;
+  }
   await ensure({
+    ...browserOptions,
     logLevel: LOG_LEVEL,
     onBrowserDownload: () => ({
       version: null,
@@ -441,7 +542,12 @@ const onBrowserLog = (log) => {
 
 const openBrowser = async (ctx) => {
   const {openBrowser: open} = ctx.rq.load('@remotion/renderer');
-  return open('chrome', {logLevel: LOG_LEVEL});
+  const options = {logLevel: LOG_LEVEL, browserExecutable: ctx.settings.browserExecutable,
+    chromiumOptions: ctx.settings.chromiumOptions};
+  if (ctx.settings.chromeMode) {
+    options.chromeMode = ctx.settings.chromeMode;
+  }
+  return open('chrome', options);
 };
 
 const closeBrowser = async (browser) => {
@@ -459,6 +565,7 @@ const selectComposition = async (ctx, serveUrl, id, inputProps, browser) => {
   const {selectComposition: select} = ctx.rq.load('@remotion/renderer');
   try {
     return await select({
+      ...ctx.settings,
       serveUrl,
       id,
       inputProps,
@@ -475,14 +582,14 @@ const selectComposition = async (ctx, serveUrl, id, inputProps, browser) => {
   }
 };
 
-const describeComposition = (c) => ({
+const describeComposition = (ctx, c) => ({
   id: c.id,
   width: c.width,
   height: c.height,
   fps: c.fps,
   durationInFrames: c.durationInFrames,
-  defaultProps: c.defaultProps ?? {},
-  props: c.props ?? c.defaultProps ?? {},
+  defaultProps: encodeProps(ctx.specialTypes, c.defaultProps ?? {}),
+  props: encodeProps(ctx.specialTypes, c.props ?? c.defaultProps ?? {}),
   defaultCodec: c.defaultCodec ?? null,
 });
 
@@ -535,18 +642,19 @@ const commands = {
 
   async compositions(opts) {
     const ctx = await setup(opts);
-    const inputProps = readProps(opts.props);
+    const inputProps = readProps(ctx, opts.props);
     const serveUrl = await getServeUrl(ctx, typeof opts['bundle-dir'] === 'string' ? opts['bundle-dir'] : null);
     await ensureBrowser(ctx);
     emit({event: 'progress', stage: 'compositions', progress: null, message: 'Reading the compositions'});
     const {getCompositions} = ctx.rq.load('@remotion/renderer');
     const list = await getCompositions(serveUrl, {
+      ...ctx.settings,
       inputProps,
       envVariables: ctx.envVariables,
       logLevel: LOG_LEVEL,
       onBrowserLog,
     });
-    return {compositions: list.map(describeComposition), warnings: ctx.warnings, serveUrl};
+    return {compositions: list.map((c) => describeComposition(ctx, c)), warnings: ctx.warnings, serveUrl};
   },
 
   async render(opts) {
@@ -561,7 +669,7 @@ const commands = {
     if (path.extname(output).toLowerCase() !== codec.extension) {
       throw new HelperError('INVALID_ARGUMENT', `--output must end in ${codec.extension} for ${codecName}`);
     }
-    const inputProps = readProps(opts.props);
+    const inputProps = readProps(ctx, opts.props);
     const frameRange = parseFrameRange(opts.frames);
     const concurrency = opts.concurrency && opts.concurrency !== true ? Number(opts.concurrency) : null;
     const serveUrl = await getServeUrl(ctx, typeof opts['bundle-dir'] === 'string' ? opts['bundle-dir'] : null);
@@ -578,6 +686,7 @@ const commands = {
       }
       let lastReported = -1;
       const options = {
+        ...ctx.settings,
         serveUrl,
         composition,
         codec: codec.codec,
@@ -637,8 +746,8 @@ const commands = {
         fps: composition.fps,
         durationInFrames: frames,
         compositionDurationInFrames: composition.durationInFrames,
-        defaultProps: composition.defaultProps ?? {},
-        props: composition.props ?? {},
+        defaultProps: encodeProps(ctx.specialTypes, composition.defaultProps ?? {}),
+        props: encodeProps(ctx.specialTypes, composition.props ?? {}),
         warnings: ctx.warnings,
       };
     } catch (err) {
@@ -658,7 +767,7 @@ const commands = {
     const ctx = await setup(opts);
     const id = required(opts, 'composition');
     const outDir = path.resolve(required(opts, 'out-dir'));
-    const inputProps = readProps(opts.props);
+    const inputProps = readProps(ctx, opts.props);
     const wanted = String(opts.frames && opts.frames !== true ? opts.frames : 'middle')
       .split(',').map((s) => s.trim()).filter(Boolean);
     const serveUrl = await getServeUrl(ctx, typeof opts['bundle-dir'] === 'string' ? opts['bundle-dir'] : null);
@@ -686,6 +795,7 @@ const commands = {
         }
         const out = path.join(outDir, `still-${frames[i]}.png`);
         await renderStill({
+          ...ctx.settings,
           serveUrl,
           composition,
           output: out,
@@ -708,8 +818,8 @@ const commands = {
         height: composition.height,
         fps: composition.fps,
         durationInFrames: composition.durationInFrames,
-        defaultProps: composition.defaultProps ?? {},
-        props: composition.props ?? {},
+        defaultProps: encodeProps(ctx.specialTypes, composition.defaultProps ?? {}),
+        props: encodeProps(ctx.specialTypes, composition.props ?? {}),
         warnings: ctx.warnings,
       };
     } finally {
@@ -741,9 +851,20 @@ const main = async () => {
   }
 };
 
+// Run main() when started as a program, not when imported (tests). Compared as real paths: Node
+// resolves symlinks for import.meta.url but not for argv[1], so a helper reached through a symlinked
+// folder (macOS /tmp, Snap, /opt/zenvi -> /opt/zenvi-1.2, Windows junctions) must still run.
+const realPath = (p) => {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return path.resolve(p);
+  }
+};
+
 const invokedDirectly = (() => {
   try {
-    return path.resolve(process.argv[1] ?? '') === path.resolve(fileURLToPath(import.meta.url));
+    return realPath(process.argv[1] ?? '') === realPath(fileURLToPath(import.meta.url));
   } catch {
     return true;
   }

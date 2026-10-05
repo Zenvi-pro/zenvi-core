@@ -35,17 +35,24 @@ dialog, freshness, the toolbar pill) is described in [handoff.md](handoff.md).
 **File > Import Project > Remotion Project...** and pick the folder that holds the project's `package.json`. A
 folder inside it, such as `src/`, works too.
 
-1. Zenvi reads the project off the editor's thread: its entry point, then its compositions. To find the entry point
-   it checks, in order, `Config.setEntryPoint()` in `remotion.config.*`, a `remotion studio|render <entry>` script
-   in `package.json`, and the CLI's defaults (`src/index.ts`, ...). The compositions come from the project's own
-   bundle; the first read takes the longest because webpack runs and the headless browser may need downloading.
-2. The dialog lists every composition with its size, frame rate, duration and folder. Tick the ones to bring in.
+1. Zenvi first looks at the project **without running any of it**: its entry point and the composition ids in its
+   code. To find the entry point it checks, in order, `Config.setEntryPoint()` in `remotion.config.*`, a
+   `remotion studio|render <entry>` script in `package.json`, and the CLI's defaults (`src/index.ts`, ...).
+2. Reading sizes and props, rendering and installing **run the project's code** (its `remotion.config.*` and
+   components in Node.js and a headless browser; npm install scripts), so Zenvi asks first: **Run Its Code**,
+   **Cancel**, or, for a project Zenvi exported, **Restore Without Running It**. The answer is remembered for that
+   folder until Zenvi quits. Then the compositions come from the project's own bundle; the first read takes the
+   longest because webpack runs and the headless browser may need downloading.
+3. The dialog lists every composition with its size, frame rate, duration and folder. Tick the ones to bring in.
    **Edit Props...** opens the props editor for the selected composition (text, numbers, colours, true/false, and
    JSON for lists and objects). **Render as** picks the codec (see below).
-3. **Import** renders each composition in the background; the toolbar pill shows progress and Cancel. All the
+4. **Import** renders each composition in the background; the toolbar pill shows progress and Cancel. All the
    clips land together at the playhead, on the lowest free tracks above the video, with opaque renders below
    transparent ones (a title sits over its background scene). **One Ctrl+Z removes the whole import.** A failed or
-   cancelled import adds nothing and deletes its renders.
+   cancelled render adds nothing and deletes its renders. If adding the clips stops part-way (a locked track, an
+   editor too busy to answer), the message says which clips were added -- they are one undo step -- and which
+   may still land; a render whose commit is still queued is kept. The clips go into the project that was open
+   when the import started: if you open another project meanwhile, nothing is added.
 
 Each linked clip's media lives in `<project>_assets/links/remotion/` (renders of an unsaved project move there on
 the first save).
@@ -57,6 +64,11 @@ them all to Remotion. Change them with **Linked Source > Edit Props...** or `upd
 re-render and the media swap are one undo step. Props added in code later keep their default value. Changing a
 default in code does **not** change clips that were already imported; edit their props instead.
 
+Props travel in Remotion's own JSON with special types, as between `npx remotion render` and the browser: a `Date`
+is stored as `"remotion-date:2026-05-01T00:00:00.000Z"` and reaches the component as a `Date` on every render;
+`staticFile()` URLs pass through. `Map` and `Set` cannot cross between processes (Remotion Studio's render dialog
+has the same limit), so give such props plain objects or arrays.
+
 ### Open Code and Open in Studio
 
 - **Linked Source > Open Code** opens the component that renders the composition, at the line that defines it, in
@@ -64,11 +76,14 @@ default in code does **not** change clips that were already imported; edit their
   reading the code: `<Composition id component={X}>`, `lazyComponent`, `<Still>` and `<Folder>`, following named,
   aliased, default and namespace imports and re-exports. When it cannot follow (a dynamic id, an import from a
   package or a path alias), it opens the `<Composition>` line.
-- **Linked Source > Open in Studio** starts the project's own Remotion Studio (one per project, on the first free
-  port from 3000) and opens `http://localhost:<port>/<compositionId>`. Zenvi stops it when Zenvi quits.
-  **Remotion Studio listens on all network interfaces:** Remotion binds `0.0.0.0` / `::` (`getHostToBind` in
-  `@remotion/renderer/dist/port-config.js`) and 4.0.532 has no localhost-only option, so other machines on your
-  network can reach it while it runs, exactly as with `npx remotion studio`.
+- **Linked Source > Open in Studio** starts the project's own Remotion Studio (one per project, even when asked
+  twice at once, on the first port from 3000 that is free on every interface) and opens
+  `http://localhost:<port>/<compositionId>` once that Studio answers: Remotion's `/__remotion_config` must name this
+  project, so another server on the port is never opened instead. Zenvi stops it when Zenvi quits, and a preloaded
+  watchdog (`studio_watchdog.cjs`) stops it if Zenvi dies without quitting. **Remotion Studio listens on all network
+  interfaces:** Remotion binds `0.0.0.0` / `::` (`getHostToBind` in `@remotion/renderer/dist/port-config.js`) and
+  4.0.532 has no localhost-only option, so other machines on your network can reach it while it runs, exactly as
+  with `npx remotion studio`.
 
 ### Codecs and transparency
 
@@ -81,13 +96,24 @@ default in code does **not** change clips that were already imported; edit their
 
 Linked clips are never WebM: libopenshot 1.0 drops VP9's alpha. A `<Still>` renders as a 5 s clip of its frame.
 
+The render settings in `remotion.config.*` apply as they do for `npx remotion render`: webpack overrides, the
+public folder, the entry point, `.env`, `Config.setDelayRenderTimeoutInMilliseconds`, `setChromiumOpenGlRenderer`,
+`setBrowserExecutable`, `setChromeMode`, `setChromiumHeadlessMode`, the other Chromium options
+(`setChromiumIgnoreCertificateErrors`, `setChromiumDisableWebSecurity`, `setChromiumUserAgent`,
+`setChromiumMultiProcessOnLinux`, `setChromiumDarkMode`), `setOffthreadVideoCacheSizeInBytes` and
+`setBinariesDirectory`. Output settings (codec, pixel format, CRF, scale, concurrency) are Zenvi's: it picks them
+for the linked clip.
+
 ### Freshness and re-rendering
 
-Zenvi fingerprints what a render depends on: the project's code and assets (small files by content, big media by
-size and date), `package.json` and lockfiles, `remotion.config.*`, `tsconfig.json`, `.env`, the props and the
-render settings. When any of these change, the clip reads **stale** in Linked Source and the toolbar pill; **Re-render**
-brings it up to date. Bundles are cached in `~/.openshot_qt/cache/remotion/bundles/` (the six most recent are
-kept), so re-rendering an unchanged project skips webpack.
+Zenvi fingerprints what a render depends on, in three parts so a big one never hides another: the files at the
+project root (`package.json`, lockfiles, `remotion.config.*`, `tsconfig.json`, `.env`), each source folder (code
+and assets; small files by content, big ones by size and date) and the public folder (by size and date). Installs,
+outputs, hidden folders and `*_assets` folders (where a Zenvi project saved inside the Remotion project keeps its
+renders) are left out. The props and the render settings count too. When any of these change, the clip reads
+**stale** in Linked Source and the toolbar pill; **Re-render** brings it up to date. Bundles are cached in
+`~/.openshot_qt/cache/remotion/bundles/` (the six most recent are kept, two on Windows, where each bundle holds a
+copy of `public/`), so re-rendering an unchanged project skips webpack.
 
 ## Export a Zenvi project to Remotion
 
@@ -110,22 +136,30 @@ npx remotion studio                                  # preview, edit props
 npx remotion render ZenviTimeline out/video.mp4      # render
 ```
 
-Exporting again into the same folder updates it in place and keeps `node_modules` and any dependencies you added.
+Exporting again into the same folder updates it in place and keeps `node_modules`, any dependencies you added and
+any files you put there. Everything is staged in a hidden folder first and renamed into place at the end, so a
+cancel or failure before that leaves the earlier export as it was. Zenvi records what it wrote (a hash of each
+file it generates, the size and date of each media copy, under `zenvi` in `timeline.json`) and refuses to export
+over changes made since -- timeline edits not imported yet, edited code or docs, edited media copies -- unless you
+confirm (**Replace Them**, or `replace_edits` for agents); import the folder first to keep them. It only deletes
+media it recorded and no longer uses, and it refuses when `public`, `public/zenvi-media`, `src` or `src/zenvi` is a
+link, so it never writes or deletes through one.
 
 ### How close is it?
 
 Measured on this Mac (1080p30, 16 frames compared with Zenvi's own render of the same project): **41–50 dB PSNR,
 mean difference ≤ 0.7/255** everywhere except title text; whole frames **22–49 dB** while a title is on screen.
 
-- **Exact:** clip timing and trims, track order, scale modes, gravity, location, scale, rotation, origin, shear and
-  margin (the same math as Zenvi), keyframe easing, opacity, volume, constant speed, fade transitions, and where
-  titles sit.
+- **Exact:** clip timing and trims, stacking (by track, then position, whatever the order in `timeline.json`),
+  scale modes, gravity, location, scale, rotation, origin, shear and margin (the same math as Zenvi), keyframe
+  easing, opacity, volume, constant speed, fade transitions, and where titles sit.
 - **Approximated:**
   - Chrome lays out SVG title text a few percent wider than Zenvi (same font, start and baseline).
   - Wipe transitions play as fades.
   - Brightness/Contrast, Saturation, Hue, Blur and Negate become CSS filters; Crop becomes a CSS clip-path; blend
     modes become `mix-blend-mode`.
-  - Holds, reverse playback and speed ramps show the right frame on every frame but play no sound.
+  - Holds, reverse playback and speed ramps show the right frame on every frame but play no sound (audio-only
+    clips with them are silent).
 - **Not drawn:** other effects (they are listed in the export's README and come back on re-import), image
   sequences and missing media (left out, with a warning).
 - **Colour:** libopenshot 1.0 decodes video tagged BT.709 with BT.601 coefficients, while Chrome follows the tag,
@@ -136,7 +170,10 @@ mean difference ≤ 0.7/255** everywhere except title text; whole frames **22–
 Import the exported folder (**File > Import Project > Remotion Project...**, or `import_remotion_project_tool`).
 Zenvi recognises its own export by `src/zenvi/timeline.json` and offers:
 
-- **Open as an editable Zenvi project** (recommended): it writes a new `.zvn` (with a new project id) and opens it.
+- **Open as an editable Zenvi project** (recommended): it settles the open project's unsaved changes first (Save /
+  Don't Save / Cancel, asked once), proposes a new file next to the export folder (`<name> (from Remotion).zvn`),
+  writes it with a new project id and opens it. It never writes over the project that is open, and never over a
+  file you did not confirm.
 - **Add its timeline to this project as native clips**: it adds the clips in one undo step, at the playhead. In an
   empty timeline the tracks and ids keep their numbers; otherwise the clips go on new tracks above. Keyframes are
   rescaled with the editor's frame-rate rule when the frame rates differ.
@@ -172,7 +209,9 @@ render.
 
 Every value is checked before anything is applied. An impossible one (alpha 2, a trim past the end of the media,
 a track that does not exist, an unknown easing) is refused with a note naming the clip and field, and that field
-keeps its original value. These edits are reported but **not** brought back: speed (`playbackRate`, holds, ramps),
+keeps its original value. Trims of slowed, sped-up or frozen clips are checked through their speed curve (a 0.5×
+clip may run longer than its media), and a media swap is refused when the new file is too short for the clip. A
+clip that followed a deleted clip no longer points at it. These edits are reported but **not** brought back: speed (`playbackRate`, holds, ramps),
 effect edits (`filters`, `crop`), new media files, new transitions, the composition's size, frame rate or length,
 and the background. Changes to the renderer code are not read back either; to see them as they render, import
 `ZenviTimeline` as a linked clip.
@@ -181,9 +220,9 @@ and the background. Changes to the renderer code are not read back either; to se
 
 | Tool | Arguments | What it does |
 | --- | --- | --- |
-| `list_remotion_compositions_tool` | `project_dir` | Read-only. Lists compositions (id, kind, size, fps, duration, `default_props`, `file:line`, folder) and the project (entry, Remotion version, installed, `zenvi_generated`). Without `node_modules` it lists from the code only. |
+| `list_remotion_compositions_tool` | `project_dir` | Read-only in Zenvi. Lists compositions (id, kind, size, fps, duration, `default_props`, `file:line`, folder) and the project (entry, Remotion version, installed, `zenvi_generated`). Reading sizes and props runs the project's code (like `npx remotion compositions`); without `node_modules` it lists from the code only and runs nothing. |
 | `import_remotion_project_tool` | `project_dir`, `compositions` (ids; empty = all, or the Zenvi timeline of an export), `props` (`{id: {...}}`), `codec` (`auto` / `prores4444` / `h264` / `qtrle`), `position` (default: the playhead), `track` (one composition only), `restore_native` (default true) | Renders linked clips and/or restores an export natively: one undo step. The receipt lists the clips, codecs, `file:line`, and for a restore `native.edits` (what came back) and `warnings` (what did not). |
-| `export_to_remotion_tool` | `output_dir`, `copy_media` (default true), `install` (default false) | Writes the Remotion project; the receipt lists the files, notes and next steps. Changes nothing in the project. |
+| `export_to_remotion_tool` | `output_dir`, `copy_media` (default true), `install` (default false), `replace_edits` (default false) | Writes the Remotion project; the receipt lists the files, removed media, notes and next steps. Into an earlier export with changes made in it, it refuses unless `replace_edits` (only after the user agreed). Changes nothing in the project. |
 
 The shared tools work on Remotion clips too: `get_linked_clip_tool` (state, `editable_props`),
 `update_linked_clip_tool`, `rerender_linked_clip_tool`, `open_linked_source_tool` (`code` or `studio`) and
@@ -196,8 +235,9 @@ companies need a company licence (https://www.remotion.dev/license). Zenvi does 
 uses the copy the project installed, and exported projects install it from npm under its own licence. The import
 dialog and the export's README say so.
 
-Importing renders the project's code (its `remotion.config.*`, its components), exactly like `npx remotion
-render`: import projects you trust.
+Importing runs the project's code (its `remotion.config.*`, its components), exactly like `npx remotion
+render`: import projects you trust. The import dialog asks before anything runs; the tool descriptions tell agents
+the same.
 
 ## For developers
 
@@ -206,15 +246,16 @@ render`: import projects you trust.
 | `__init__.py` | Registers `RemotionProvider` and the two menu entries (loaded by `handoff.plugins.load_plugins`). |
 | `detect.py` | Is this a Remotion project: root, entry, installed (Node-style resolution incl. workspaces, npm-nested and pnpm), version, package manager, whether it is a Zenvi export. |
 | `sources.py` | The static scan behind Open Code. |
-| `helper.mjs` / `helper.py` | The Node side (`probe`, `compositions`, `render`, `still`; `@@zenvi {json}` events; applies `remotion.config.*` and `.env` like the CLI) and its Python runner (progress, errors, bundle cache, cancel, orphan cleanup). |
+| `helper.mjs` / `helper.py` | The Node side (`probe`, `compositions`, `render`, `still`; `@@zenvi {json}` events, found anywhere on a line; applies `remotion.config.*` render settings and `.env` like the CLI; props in Remotion's special-type JSON; runs when reached through symlinked folders) and its Python runner (progress, errors, bundle cache, cancel, cleanup of orphaned Chrome / compositor processes only). |
 | `provider.py` | `RemotionProvider`: fingerprint, render (auto codec, qtrle, stills), open code / studio, editable props. |
-| `studio.py`, `install.py` | Remotion Studio processes; dependency installs. |
+| `studio.py`, `studio_watchdog.cjs`, `install.py` | Remotion Studio processes (one per project, identity-checked, watchdog); dependency installs. |
 | `importer.py` | Listing and import; checks placement before rendering; one undo step. |
-| `exporter.py`, `template/` | The generated project. |
+| `exporter.py`, `template/` | The generated project (`template/src/zenvi/timing.ts`: clip frames, length, stacking order, sound; tested under Node's type stripping). Updates of an earlier export are staged and checked against the manifest. |
 | `restore.py`, `edits.py` | Native restore and the edit round trip. |
 | `dialogs.py` | The Qt dialogs (loaded on use). |
 
-`helper.mjs` and `template/` ship as package data (`setup.py` and `freeze.py` copy every file under `src/`).
+`helper.mjs`, `studio_watchdog.cjs` and `template/` ship as package data (`setup.py` and `freeze.py` copy every
+file under `src/`).
 
 Tests (headless, parallel-safe; the helper tests run real Node against a fake Remotion in `tests/remotion_fakes.py`):
 
@@ -227,8 +268,11 @@ QT_QPA_PLATFORM=offscreen ZENVI_REAL_QT=1 PYTHONPATH=$HOME/zenvi-deps-1.0/python
 The real end-to-end run (Remotion + Chrome + libopenshot; renders, so it takes a few minutes) is
 `tests/manual/remotion_handoff_e2e.py`; its docstring has the command. It covers linked import with alpha checks,
 prop re-render as one undo step, cancel with no Chrome left behind, and export → npm install → tsc → render →
-PSNR against libopenshot. It also checks re-import equality, and that edits made in the Remotion project render
-the same in Zenvi.
+PSNR against libopenshot. It also checks re-import equality, that edits made in the Remotion project (a title moved
+under the video included) render the same in Zenvi, the helper reached through a symlinked folder, a `Date` prop
+through listing, stills, import and re-render, `remotion.config`'s delayRender timeout reaching the page, "Open as
+an editable Zenvi project" with the real dialog code, and exporting into an earlier export (refused over edits and
+through a linked media folder, a cancelled update changing nothing, `replace_edits`).
 
 ### Troubleshooting
 

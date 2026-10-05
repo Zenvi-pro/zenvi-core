@@ -351,3 +351,79 @@ def test_trimming_keeps_unchanged_keyframes_on_the_source(exported):
     project, warnings, _ = _restore(out)
     v = _clip(project, clips["video"])
     assert v["start"] == pytest.approx(68 / 30) and v["alpha"] == _clip(original, clips["video"])["alpha"] and warnings == []
+
+
+# ---------------------------------------------------------------------------
+# Review round 1: speed curves, media swaps, parents of deleted clips
+# ---------------------------------------------------------------------------
+
+def _kf(*points):
+    from test_handoff_remotion_export import _kf as kf
+    return kf(*points)
+
+
+def _export_with(editor, tmp_path, tweak):
+    clips, files = build_project(editor, str(tmp_path / "media"))
+    tweak(editor.store._data, clips, files)
+    out = str(tmp_path / "trip-remotion")
+    _export(editor, out)
+    return out, clips, files
+
+
+def test_trims_of_slowed_and_frozen_clips_are_checked_through_the_speed_curve(linked, tmp_path):  # noqa: F811
+    """A 0.5x clip 2-14 s on 12 s media is valid: its window is longer than the media, its frames are not."""
+    def tweak(data, clips, files):
+        video = next(c for c in data["clips"] if c["id"] == clips["video"])
+        video["time"] = _kf((1, 1.0, LINEAR), (720, 360.0, LINEAR))     # 0.5x across the 12 s media
+        video["start"], video["end"] = 2.0, 14.0
+        frozen = copy.deepcopy(video)
+        frozen.update(id="FROZEN0001", position=20.0, start=0.0, end=15.0,
+                      time=_kf((1, 100.0, CONSTANT), (450, 100.0, CONSTANT)))  # holds frame 100 for 15 s
+        past = copy.deepcopy(video)  # a curve that runs past the media (1x, 720 frames of a 360-frame file)
+        past.update(id="PASTEND001", position=40.0, start=0.0, end=6.0, time=_kf((1, 1.0, LINEAR), (720, 720.0, LINEAR)))
+        data["clips"] += [frozen, past]
+
+    out, clips, _files = _export_with(linked, tmp_path, tweak)
+    t = _load(out)
+    _entry(t, clips["video"])["start"] = 3.0                          # was refused: "end 14 s is past 12 s media"
+    _entry(t, "FROZEN0001")["start"] = 1.0
+    _entry(t, "PASTEND001")["end"] = 20.0                             # would show media frame 600 of 360
+    _save(out, t)
+    project, warnings, applied = _restore(out)
+    assert (_clip(project, clips["video"])["start"], _clip(project, clips["video"])["end"]) == (3.0, 14.0)
+    assert _clip(project, "FROZEN0001")["start"] == 1.0
+    assert _clip(project, "PASTEND001")["end"] == 6.0
+    assert len(warnings) == 1 and "media frame 600" in warnings[0] and "kept 0-6 s" in warnings[0], warnings
+    assert sorted((e["id"], e["field"]) for e in applied) == sorted([("FROZEN0001", "start"), (clips["video"], "start")])
+
+
+def test_swapping_a_clips_media_checks_the_new_media_covers_its_window(linked, tmp_path):  # noqa: F811
+    def tweak(data, clips, files):
+        music = next(c for c in data["clips"] if c["id"] == clips["music"])
+        music["end"] = 20.0                                           # 20 s of the 30 s song
+
+    out, clips, files = _export_with(linked, tmp_path, tweak)
+    t = _load(out)
+    _entry(t, clips["music"])["fileId"] = files["video"]              # the 12 s beach video: too short
+    _entry(t, clips["video"])["fileId"] = files["music"]              # 2-8 s of the 30 s song: fine
+    _save(out, t)
+    project, warnings, applied = _restore(out)
+    assert _clip(project, clips["music"])["file_id"] == files["music"]
+    assert _clip(project, clips["video"])["file_id"] == files["music"]
+    assert len(warnings) == 1 and "past the end of its 12 s media; kept its media" in warnings[0], warnings
+    assert [(e["id"], e["field"]) for e in applied] == [(clips["video"], "file_id")]
+
+
+def test_deleting_a_parent_clip_frees_the_clips_that_followed_it(linked, tmp_path):  # noqa: F811
+    def tweak(data, clips, files):
+        title = next(c for c in data["clips"] if c["id"] == clips["title"])
+        title["parentObjectId"] = clips["image"]                      # the title follows the logo
+
+    out, clips, _files = _export_with(linked, tmp_path, tweak)
+    t = _load(out)
+    t["clips"] = [c for c in t["clips"] if c["id"] != clips["image"]]
+    _save(out, t)
+    project, warnings, applied = _restore(out)
+    assert _clip(project, clips["title"])["parentObjectId"] == ""
+    assert any("followed a clip that was deleted" in w for w in warnings)
+    assert (clips["title"], "parentObjectId") in [(e["id"], e["field"]) for e in applied]

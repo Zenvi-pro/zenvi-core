@@ -10,7 +10,15 @@
   undo step: the clips land together at the playhead on free tracks above
   the video, opaque renders below transparent ones. Placement is validated
   before anything renders; renders that never made it into the project are
-  deleted.
+  deleted (except one whose commit timed out: it may still land). The
+  clips go into the project that was open when the import started; if
+  another one was opened meanwhile, nothing is added. If adding stops
+  part-way, :class:`PartialImport` says exactly what was added.
+
+Reading compositions runs the project's own code (remotion.config.*, the
+bundle, Chrome) -- like ``npx remotion compositions``. ``static=True``
+lists them from the code without running anything (the import dialog asks
+whether to trust the project first).
 
 Blocking (Node, renders, disk): call off the GUI thread.
 """
@@ -76,10 +84,19 @@ class Listing:
 
 
 def list_compositions(project_dir: str, *, on_progress: Optional[ProgressFn] = None,
-                      should_cancel: Optional[Callable[[], bool]] = None, allow_static: bool = False) -> Listing:
-    """The project's compositions. Without node_modules: LinkError, or (allow_static) the static scan only."""
+                      should_cancel: Optional[Callable[[], bool]] = None, allow_static: bool = False,
+                      static: bool = False) -> Listing:
+    """The project's compositions. Without node_modules: LinkError, or (allow_static) the static scan only.
+
+    *static*: never run the project's code -- ids and code locations from the
+    static scan only (``static_only``), whether or not it is installed.
+    """
     project = detect.inspect_project(project_dir)
     scanned = sources.scan_project(project.root, project.entry)
+    if static:
+        comps = [Composition(id=s.id, width=None, height=None, fps=None, duration_frames=None,
+                             kind=s.kind, source=s) for s in scanned.values()]
+        return Listing(project, comps, [], static_only=True)
     if not project.installed or not project.entry:
         if not allow_static:
             detect.require_ready(project)
@@ -231,6 +248,44 @@ def _discard(paths: List[str]) -> None:
             log.debug("could not remove unused render %s", path, exc_info=True)
 
 
+class PartialImport(LinkError):
+    """Adding stopped part-way: ``receipt`` lists what is in the project (one undo step) and what may still land."""
+
+    def __init__(self, message: str, receipt: dict):
+        super().__init__(message)
+        self.receipt = receipt
+
+
+def _project_identity() -> Tuple[str, str]:
+    """(project id, file path) of the open project, read on the GUI thread."""
+    def _read():
+        from classes.editor_tools._base import get_app
+        project = get_app().project
+        return str(project.get("id") or ""), str(getattr(project, "current_filepath", "") or "")
+
+    from classes.editor_tools._base import ToolError
+    from classes.editor_tools.titles_text_common import precheck_on_main
+    try:
+        found = precheck_on_main(_read)
+    except ToolError as exc:
+        raise LinkError(str(exc)) from None
+    return (str(found[0]), str(found[1])) if isinstance(found, (tuple, list)) and len(found) == 2 else ("", "")
+
+
+def _end_batch() -> None:
+    """The preview refresh skipped by ``ignore_refresh`` adds, when the batch stopped before its last clip."""
+    try:
+        from classes.editor_tools.titles_text_common import end_clip_batch, precheck_on_main
+        precheck_on_main(end_clip_batch)
+    except Exception:
+        log.debug("could not refresh the preview after a partial Remotion import", exc_info=True)
+
+
+def _is_commit_timeout(exc: BaseException) -> bool:
+    from classes.editor_tools.titles_text_common import CommitTimeout
+    return isinstance(exc, CommitTimeout)
+
+
 def import_project(project_dir: str, *, compositions: Optional[Sequence[str]] = None, props: Optional[dict] = None,
                    codec: str = "auto", position: Optional[float] = None, track: str = "",
                    restore_native: bool = True, listing: Optional[Listing] = None,
@@ -245,9 +300,15 @@ def import_project(project_dir: str, *, compositions: Optional[Sequence[str]] = 
                        should_cancel=cancel)
     position = _resolve_position(position)
     _precheck_placement(plan, position, track)
+    identity = _project_identity()
     project = plan.project
     rendered: List[Tuple[Composition, str, dict]] = []
     added: List[str] = []
+    in_flight: Optional[str] = None
+    batch_open = False  # clips placed without a preview refresh, waiting for the last one's
+    native_receipt = None
+    native_started = False
+    clips: List[dict] = []
     total = max(1, len(plan.linked))
     try:
         for i, comp in enumerate(plan.linked):
@@ -267,20 +328,28 @@ def import_project(project_dir: str, *, compositions: Optional[Sequence[str]] = 
             linked_media.probe_media(path)
         if cancel():
             raise JobCancelled("Remotion import cancelled")
+        if _project_identity() != identity:
+            raise LinkError("another project was opened while Remotion was rendering, so nothing was added; import "
+                            "again into the project you want the clips in")
         report(0.96, "Adding the clips")
         # opaque renders first: they take the lower tracks, transparent titles stack above them
         ordered = sorted(rendered, key=lambda r: 0 if (r[2].get("render") or {}).get("codec") == "h264" else 1)
         from classes.editor_tools._base import get_app
         from classes.updates import nested_transaction
-        native_receipt = None
-        clips = []
         with nested_transaction(get_app().updates):
             if plan.native and plan.timeline is not None:
+                native_started = True
                 native_receipt = restore.insert_native(plan.timeline, project.root, position=position)
-            for comp, path, completed in ordered:
+            for index, (comp, path, completed) in enumerate(ordered):
                 stored = {k: v for k, v in completed.items() if k != "warnings"}
+                in_flight = path
+                last = index == len(ordered) - 1
+                batch_open = batch_open or not last
+                # one preview refresh for the batch: the last clip's (end_clip_batch if it stops early)
                 receipt = linked_media.add_linked_media(path, stored, position=position, track=track or None,
-                                                        name=comp.id)
+                                                        name=comp.id, ignore_refresh=not last)
+                in_flight = None
+                batch_open = batch_open and not last
                 added.append(path)
                 render = completed.get("render") or {}
                 clips.append({
@@ -294,11 +363,34 @@ def import_project(project_dir: str, *, compositions: Optional[Sequence[str]] = 
                     "source": {k: (completed.get("source") or {}).get(k) for k in ("file", "line", "folder")},
                     "warnings": list(completed.get("warnings") or []),
                 })
-    except BaseException:
-        _discard([p for _c, p, _l in rendered if p not in added])
-        if added:
-            log.warning("Remotion import failed after adding %d clip(s); they are in one undo step", len(added))
-        raise
+    except BaseException as exc:
+        timed_out = _is_commit_timeout(exc)
+        keep = set(added) | ({in_flight} if in_flight and timed_out else set())
+        _discard([p for _c, p, _l in rendered if p not in keep])
+        if batch_open:
+            _end_batch()
+        pending = [c.id for c, p, _l in rendered if p == in_flight] if timed_out else []
+        landed_native = native_receipt is not None
+        if not (added or landed_native or pending or (timed_out and native_started)):
+            raise
+        names = [c["composition"] for c in clips]
+        parts = []
+        if landed_native:
+            parts.append(f"restored the Zenvi timeline ({len((native_receipt or {}).get('clips') or [])} clip(s))")
+        if names:
+            parts.append(f"added {', '.join(names)}")
+        if pending:
+            parts.append(f"{', '.join(pending)} may still be added (the editor was busy)")
+        elif timed_out and native_started and not landed_native:
+            parts.append("the restored timeline may still be added (the editor was busy)")
+        summary = "; ".join(parts)
+        log.warning("Remotion import stopped part-way (%s): %s", summary, exc)
+        receipt_so_far = {"project_dir": project.root, "project": project.name, "native": native_receipt,
+                          "linked": clips, "pending": pending, "error": str(exc)}
+        undo = ("What was added is one undo step (Edit > Undo removes it)" if names or landed_native
+                else "If it lands, it is one undo step")
+        raise PartialImport(f"the Remotion import stopped part-way: {summary}, then {exc}. {undo}; check the "
+                            "timeline before importing again", receipt_so_far) from exc
     warnings = list(plan.warnings)
     if native_receipt:
         warnings += native_receipt.get("warnings") or []
@@ -310,4 +402,5 @@ def import_project(project_dir: str, *, compositions: Optional[Sequence[str]] = 
             "warnings": [w for i, w in enumerate(warnings) if w and w not in warnings[:i]]}
 
 
-__all__ = ["Composition", "Listing", "ImportPlan", "list_compositions", "plan_import", "import_project"]
+__all__ = ["Composition", "Listing", "ImportPlan", "PartialImport", "list_compositions", "plan_import",
+           "import_project"]

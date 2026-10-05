@@ -34,13 +34,17 @@ from classes.handoff import node_runtime
 from classes.handoff.linked_media import LinkError, fingerprint_value
 from classes.logger import log
 
-HELPER_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "helper.mjs")
+# A real path: helper.mjs runs main() only when Node's argv[1] is the file itself (it compares real
+# paths too, but resolving here keeps the argv honest for logs and error reports).
+HELPER_FILE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "helper.mjs")
 HELPER_VERSION = 1
 EVENT_PREFIX = "@@zenvi "
 MIN_NODE_MAJOR = 18
 COMMANDS = ("probe", "compositions", "render", "still")
 TIMEOUTS = {"probe": 120.0, "compositions": 1200.0, "still": 1200.0, "render": 6 * 3600.0}
-BUNDLE_CACHE_KEEP = 6
+# Each bundle is ~50 MB of webpack output; on Windows Remotion cannot symlink public/ into it, so
+# every cached bundle also holds a copy of public/ -- keep fewer there.
+BUNDLE_CACHE_KEEP = 2 if sys.platform == "win32" else 6
 BUNDLE_MIN_IDLE_SECONDS = 3600.0
 MESSAGE_LIMIT = 700
 
@@ -80,9 +84,11 @@ class HelperRun:
 
 
 def helper_path() -> str:
-    if not os.path.isfile(HELPER_FILE):
+    """helper.mjs as a real path (symlinked install folders resolved)."""
+    path = os.path.realpath(HELPER_FILE)
+    if not os.path.isfile(path):
         raise LinkError(f"this Zenvi build is missing {HELPER_FILE}; reinstall Zenvi")
-    return HELPER_FILE
+    return path
 
 
 def cache_root() -> str:
@@ -137,18 +143,28 @@ def prune_bundles(keep: int = BUNDLE_CACHE_KEEP, *, now: Optional[float] = None,
     return removed
 
 
+# What Remotion starts and may leave behind when Node dies first: its headless Chrome (in the
+# project's node_modules/.remotion browser cache) and its compositor binary. Never Node itself --
+# that could be the user's own `npx remotion studio`.
+_ORPHAN_MARKERS = (os.path.join(".remotion", "chrome-headless-shell"), os.path.join(".remotion", "chrome-for-testing"),
+                   os.path.join("@remotion", "compositor-"))
+# Processes that adopt orphans: init / launchd (pid 1) and subreapers such as `systemd --user`.
+_REAPERS = ("init", "launchd", "systemd")
+
+
 def orphan_pids(project_root: str, ps_output: Optional[str] = None) -> List[int]:
-    """Orphaned (parent pid 1) processes started from *project_root*'s Remotion: headless Chrome, the compositor.
+    """Orphaned processes started from *project_root*'s Remotion: headless Chrome, the compositor.
 
     Remotion starts Chrome in its own process group and kills it from
     Node's SIGTERM/exit handlers; if Node is SIGKILLed first (a stuck
-    cancel), Chrome survives, re-parented to launchd/init. Matched by the
-    executable living under the project's ``node_modules`` (``.remotion``
-    browser cache or an ``@remotion`` package). POSIX only.
+    cancel), Chrome survives, re-parented to init/launchd or a subreaper
+    (``systemd --user``). Matched by the executable living in the project's
+    ``node_modules/.remotion`` browser cache or being the ``@remotion``
+    compositor. POSIX only.
     """
     roots = {os.path.join(os.path.abspath(project_root), "node_modules")}
     roots.add(os.path.realpath(next(iter(roots))))
-    markers = [os.path.join(r, ".remotion") for r in roots] + [os.path.join(r, "@remotion") for r in roots]
+    markers = [os.path.join(r, m) for r in sorted(roots) for m in _ORPHAN_MARKERS]
     if ps_output is None:
         if sys.platform == "win32":
             return []
@@ -157,14 +173,23 @@ def orphan_pids(project_root: str, ps_output: Optional[str] = None) -> List[int]
                                        timeout=10).stdout
         except (OSError, subprocess.SubprocessError):
             return []
-    found = []
+    rows = []
+    commands: Dict[int, str] = {}
     for line in (ps_output or "").splitlines():
         parts = line.strip().split(None, 2)
         if len(parts) < 3 or not parts[0].isdigit() or not parts[1].isdigit():
             continue
-        if int(parts[1]) == 1 and any(m in parts[2] for m in markers):
-            found.append(int(parts[0]))
-    return found
+        pid, ppid = int(parts[0]), int(parts[1])
+        rows.append((pid, ppid, parts[2]))
+        commands[pid] = parts[2]
+
+    def _reaper(ppid: int) -> bool:
+        if ppid == 1:
+            return True
+        exe = os.path.basename(commands.get(ppid, "").split(" ", 1)[0]).lstrip("-")
+        return exe in _REAPERS
+
+    return [pid for pid, ppid, command in rows if _reaper(ppid) and any(command.startswith(m) for m in markers)]
 
 
 def reap_orphans(project_root: str) -> List[int]:
@@ -211,11 +236,16 @@ def build_argv(node: str, command: str, *, project_dir: str, entry: Optional[str
 
 
 def parse_event(line: str) -> Optional[dict]:
-    """The JSON event on a ``@@zenvi `` line, else None (Remotion's own output)."""
-    if not line.startswith(EVENT_PREFIX):
+    """The JSON event on a ``@@zenvi `` line, else None (Remotion's own output).
+
+    The event may follow other output on the same line: something in the
+    project that writes to stdout without a newline must not swallow it.
+    """
+    at = line.find(EVENT_PREFIX)
+    if at < 0:
         return None
     try:
-        event = json.loads(line[len(EVENT_PREFIX):])
+        event = json.loads(line[at + len(EVENT_PREFIX):])
     except ValueError:
         return None
     return event if isinstance(event, dict) and isinstance(event.get("event"), str) else None
@@ -335,6 +365,10 @@ def run_helper(command: str, *, project_dir: str, entry: Optional[str] = None, p
     if code != 0 or state["result"] is None:
         reap_orphans(project_dir)
         message, err_code = error_message(state["error"], tail, command, code)
+        if code == 0 and state["error"] is None and not events:
+            message = (f"Zenvi's Remotion helper ended without reporting anything (exit 0) for {command}; "
+                       f"reinstall Zenvi if this keeps happening ({HELPER_FILE})")
+            err_code = "NO_OUTPUT"
         log.warning("Remotion helper %s failed (exit %s, %s): %s\n%s", command, code, err_code, message,
                     "\n".join(tail.splitlines()[-40:]))
         raise HelperError(message, err_code, tail)

@@ -17,6 +17,21 @@ widget is the tests' FakeTimeline), driving the real editor tools:
             side-by-side images are written for a human to look at.
   reimport  import the export back (restore_native) -> the native clips,
             files, transitions and markers equal the original.
+  edits     edits made to the export's timeline.json (moves, trims, a
+            duplicate, a title moved under the video) render the same in
+            Remotion and, after the restore, in libopenshot.
+  helper    (review round 1) helper.mjs run through a symlinked Zenvi folder;
+            a Date default prop survives listing -> stills -> a linked import
+            -> a re-render; remotion.config's delayRender timeout reaches the
+            page.
+  restored  (review round 1) "Open as an editable Zenvi project" with the
+            real dialog code (offscreen Qt): unsaved changes settled first,
+            a new default name, the open project's file never written; the
+            written .zvn renders like the original in libopenshot.
+  update    (review round 1) exporting into the earlier export: refused over
+            Remotion-side edits (tree unchanged), refused through a
+            symlinked media folder, a cancelled update changes nothing, an
+            unchanged re-export still renders, replace_edits replaces.
 
 Usage (heavy: renders and npm install go through the machine-wide lock)::
 
@@ -487,6 +502,9 @@ def part_reimport(work, project, export_dir):
 def edit_timeline(timeline):
     """What a person or agent might do in timeline.json (edits whose meaning is the same in Zenvi and Remotion)."""
     clips = {c["id"]: c for c in timeline["clips"]}
+    # the title onto a new track below the video: hidden under it in Zenvi; Remotion must stack by track too,
+    # although the title's entry still comes after the video's in the file
+    clips["CTITLE0001"]["layer"] = 999999
     card = clips["CIMAGE0001"]
     card["position"] += 0.5                                      # move the card 0.5 s later
     card["keyframes"]["location_x"][-1]["value"] = 0.0           # ...and slide it to the centre instead
@@ -495,7 +513,7 @@ def edit_timeline(timeline):
     timeline["clips"].append(dup)
     clips["CVIDEO0001"]["end"] = 5.0                             # cut the video's last second
     timeline["markers"][0].update(time=4.0, name="Late hold")
-    return {"moved": "CIMAGE0001", "duplicate": "CARDCOPY01", "trimmed": "CVIDEO0001"}
+    return {"moved": "CIMAGE0001", "duplicate": "CARDCOPY01", "trimmed": "CVIDEO0001", "under_the_video": "CTITLE0001"}
 
 
 def part_edits(work, project, export_dir):
@@ -554,27 +572,368 @@ def part_edits(work, project, export_dir):
     return result
 
 
+# ---------------------------------------------------------------------------
+# (e) review round 1: the helper through symlinks, special prop types, config render settings
+# ---------------------------------------------------------------------------
+
+REVIEW_CHECKS_TSX = """import React from 'react';
+import {AbsoluteFill} from 'remotion';
+
+// Throws unless the prop arrives as a real Date (a plain ISO string has no toISOString()).
+export const DateCard: React.FC<{when: Date}> = ({when}) => (
+  <AbsoluteFill style={{backgroundColor: 'white', color: 'black', fontSize: 72, justifyContent: 'center',
+    alignItems: 'center'}}>
+    {when.toISOString().slice(0, 10)}
+  </AbsoluteFill>
+);
+
+// Throws unless remotion.config's Config.setDelayRenderTimeoutInMilliseconds(123456) reached the page.
+export const SettingsCard: React.FC = () => {
+  const timeout = (window as unknown as {remotion_puppeteerTimeout?: number}).remotion_puppeteerTimeout;
+  if (timeout !== 123456) {
+    throw new Error('remotion.config delayRender timeout did not arrive: ' + String(timeout));
+  }
+  return <AbsoluteFill style={{backgroundColor: '#123456'}} />;
+};
+"""
+
+
+def review_app(work, app_dir):
+    """A scratch clone of the sample with a Date-prop composition, a settings check and a config setting."""
+    app = os.path.join(work, "app-review")
+    if not os.path.isdir(app):
+        subprocess.run(["cp", "-Rc", app_dir, app], check=True)  # APFS clone, node_modules included
+        with open(os.path.join(app, "src", "ReviewChecks.tsx"), "w") as fh:
+            fh.write(REVIEW_CHECKS_TSX)
+        root = os.path.join(app, "src", "Root.tsx")
+        text = open(root).read()
+        text = text.replace("import {Scene} from './Scene';",
+                            "import {Scene} from './Scene';\nimport {DateCard, SettingsCard} from './ReviewChecks';")
+        text = text.replace(
+            '<Composition id="Scene"',
+            '<Composition id="DateCard" component={DateCard} durationInFrames={30} fps={30} width={640} '
+            "height={360} defaultProps={{when: new Date('2026-05-01T00:00:00.000Z')}} />\n"
+            '      <Composition id="SettingsCard" component={SettingsCard} durationInFrames={30} fps={30} '
+            'width={640} height={360} />\n      <Composition id="Scene"')
+        open(root, "w").write(text)
+        with open(os.path.join(app, "remotion.config.ts"), "a") as fh:
+            fh.write("Config.setDelayRenderTimeoutInMilliseconds(123456);\n")
+    return app
+
+
+def part_helper(work, app_dir):
+    from classes.handoff.remotion import helper, importer
+    app = review_app(work, app_dir)
+    result = {}
+    # (1) helper.mjs reached through a symlinked Zenvi folder (macOS /tmp, /opt/zenvi -> /opt/zenvi-1.2, ...)
+    link = os.path.join(work, "zenvi-src-link")
+    if not os.path.islink(link):
+        os.symlink(SRC, link)
+    via_link = os.path.join(link, "classes", "handoff", "remotion", "helper.mjs")
+    node = shutil.which("node")
+    # cwd = the project, as run_helper does: Remotion keeps its browser under the nearest package.json above the
+    # cwd (node_modules/.remotion), so elsewhere it would download another one
+    out = subprocess.run([node, via_link, "compositions", "--project", app, "--entry", "src/index.ts", "--bundle-dir",
+                          os.path.join(work, "bundle-review")], cwd=app, capture_output=True, text=True, timeout=1200)
+    events = [helper.parse_event(line) for line in out.stdout.splitlines()]
+    events = [e for e in events if e]
+    found = [e for e in events if e["event"] == "result"]
+    result["symlinked_helper"] = {"exit": out.returncode, "events": len(events),
+                                  "compositions": [c["id"] for c in (found[0]["compositions"] if found else [])]}
+    log("helper through a symlinked folder:", result["symlinked_helper"])
+    assert out.returncode == 0 and found, out.stdout[-800:] + out.stderr[-800:]
+    probe = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, %r); "
+                            "from classes.handoff.remotion import helper; print(helper.helper_path())" % link],
+                           capture_output=True, text=True, timeout=120)
+    result["python_through_link"] = {"helper_path": probe.stdout.strip(), "real": os.path.realpath(via_link)}
+    assert probe.stdout.strip() == os.path.realpath(via_link), probe.stdout + probe.stderr
+    # (2) a Date default prop: listed as a remotion-date token, rendered as a Date
+    listing = importer.list_compositions(app)
+    date_card = listing.by_id()["DateCard"]
+    result["date_default_prop"] = date_card.default_props.get("when")
+    log("DateCard default props:", date_card.default_props)
+    assert date_card.default_props.get("when") == "remotion-date:2026-05-01T00:00:00.000Z"
+    stills = os.path.join(work, "frames", "review-stills")
+    ok = helper.run_helper("still", project_dir=app, entry=listing.project.entry, props=date_card.default_props,
+                           options={"composition": "DateCard", "frames": "first", "out_dir": stills + "-date"})
+    result["date_still"] = [s["output"] for s in ok.result["stills"]]
+    try:  # what the old helper sent back: the ISO string without the token
+        helper.run_helper("still", project_dir=app, entry=listing.project.entry,
+                          props={"when": "2026-05-01T00:00:00.000Z"},
+                          options={"composition": "DateCard", "frames": "first", "out_dir": stills + "-old"})
+        result["iso_string_still"] = "rendered (unexpected)"
+    except helper.HelperError as exc:
+        result["iso_string_still"] = "failed as expected: " + str(exc)[:200]
+    log("DateCard with the stored Date:", result["date_still"], "| with a plain ISO string:", result["iso_string_still"])
+    assert "failed as expected" in result["iso_string_still"]
+    # (3) remotion.config's delayRender timeout reaches the page
+    settings = helper.run_helper("still", project_dir=app, entry=listing.project.entry,
+                                 options={"composition": "SettingsCard", "frames": "first",
+                                          "out_dir": stills + "-settings"})
+    result["settings_still"] = [s["output"] for s in settings.result["stills"]]
+    log("SettingsCard (throws unless the 123456 ms timeout arrived):", result["settings_still"])
+    # (4) the whole linked-clip path: import, then a re-render with the stored props
+    editor = make_editor(work)
+    receipt = editor.call_receipt("import_remotion_project_tool", project_dir=app, compositions=["DateCard"],
+                                  position=0.0)
+    assert receipt["status"] == "applied", receipt["summary"]
+    clip = receipt["data"]["linked"][0]
+    from classes.handoff import linked_media as lm
+    link_data = lm.read_link(editor.file(clip["file_id"]))
+    result["linked_props"] = lm.link_props(link_data)
+    again = editor.call_receipt("rerender_linked_clip_tool", file_id=clip["file_id"])
+    result["rerender"] = again["status"]
+    log("linked DateCard props:", result["linked_props"], "| re-render:", again["status"], again["summary"][:160])
+    assert result["linked_props"]["when"] == "remotion-date:2026-05-01T00:00:00.000Z" and again["status"] == "applied"
+    REPORT["helper"] = result
+    return result
+
+
+# ---------------------------------------------------------------------------
+# (f) review round 1: "Open as an editable Zenvi project"
+# ---------------------------------------------------------------------------
+
+class _InlineJob:
+    def __init__(self):
+        self.state, self.result, self.error = "done", None, None
+
+    def report(self, *_a):
+        pass
+
+    def should_cancel(self):
+        return False
+
+
+def _inline_jobs():
+    from classes.handoff import jobs
+
+    def submit(fn, *, label, on_done=None, **_kw):
+        job = _InlineJob()
+        try:
+            job.result = fn(job)
+        except Exception as exc:  # noqa: BLE001
+            job.state, job.error = jobs.FAILED, exc
+        if on_done is not None:
+            on_done(job)
+        return job
+
+    jobs.submit_job = submit
+
+
+def part_restored(work, project, export_dir):
+    from PyQt5.QtWidgets import QMessageBox
+    from classes.handoff.remotion import detect, dialogs
+    _inline_jobs()
+    remotion_project = detect.inspect_project(export_dir)
+    source = detect.zenvi_source_project(export_dir) or remotion_project.name
+    open_file = os.path.join(os.path.dirname(export_dir), source + ".zvn")  # what the old default would overwrite
+    with open(open_file, "w") as fh:
+        json.dump(project, fh)
+    before = open(open_file, "rb").read()
+
+    class Proj:
+        current_filepath = open_file
+
+        def needs_save(self):
+            return True
+
+    class App:
+        def __init__(self):
+            self.project = Proj()
+            self._tr = lambda text: text
+
+    app = App()
+    dialogs.get_app = lambda: app
+    events, warnings, defaults = [], [], []
+    QMessageBox.question = staticmethod(lambda *a, **k: events.append("asked: save first?") or QMessageBox.No)
+    QMessageBox.warning = staticmethod(lambda w, title, text: warnings.append(text))
+    QMessageBox.information = staticmethod(lambda *a, **k: events.append("info"))
+    opened = []
+
+    class Window:
+        class OpenProjectSignal:
+            @staticmethod
+            def emit(path):
+                opened.append((path, "signal"))
+
+        @staticmethod
+        def open_project(path, interactive=True):
+            opened.append((path, interactive))
+            return True
+
+        @staticmethod
+        def actionSave_trigger():
+            events.append("saved")
+
+    # 1) typing the open project's own name: refused, the file untouched
+    dialogs.ask_restored_path = lambda w, default: defaults.append(default) or open_file
+    dialogs._open_restored(Window, remotion_project)
+    result = {"default_name": defaults[0], "open_project": open_file,
+              "own_name_refused": warnings[-1] if warnings else None,
+              "open_project_untouched": open(open_file, "rb").read() == before, "events_1": list(events)}
+    # 2) the proposed name: written after the question, opened once without a second prompt
+    events.clear()
+    dialogs.ask_restored_path = lambda w, default: default
+    dialogs._open_restored(Window, remotion_project)
+    written = defaults[0]
+    result.update(events_2=list(events), opened=opened[-1] if opened else None, written=os.path.isfile(written))
+    log("open as editable:", result)
+    assert result["default_name"] != open_file and "is the project open in Zenvi" in (result["own_name_refused"] or "")
+    assert result["open_project_untouched"] and opened and opened[-1] == (written, False)
+    assert events[0] == "asked: save first?" and events.count("asked: save first?") == 1
+    with open(written) as fh:
+        restored = json.load(fh)
+    same = {k: restored.get(k) == json.loads(json.dumps(project.get(k))) for k in ("files", "clips", "effects", "markers")}
+    result["equal_to_original"] = same
+    picks = [0, 30, 60, 90, 120]
+    a = libopenshot_frames(project, picks, os.path.join(work, "frames", "restored-original"))
+    b = libopenshot_frames(restored, picks, os.path.join(work, "frames", "restored-zvn"))
+    result["psnr_restored_vs_original"] = [compare(a[n], b[n])[0] for n in picks]
+    log("restored .zvn equals the original:", same, "PSNR per frame:", result["psnr_restored_vs_original"])
+    assert all(same.values())
+    REPORT["restored"] = result
+    return result
+
+
+# ---------------------------------------------------------------------------
+# (g) review round 1: exporting into the earlier export
+# ---------------------------------------------------------------------------
+
+def _tree(folder):
+    import hashlib
+    out = {}
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = [d for d in dirs if d != "node_modules"]
+        for name in files:
+            path = os.path.join(root, name)
+            rel = os.path.relpath(path, folder)
+            if os.path.islink(path):
+                out[rel] = "link:" + os.readlink(path)
+            else:
+                with open(path, "rb") as fh:
+                    out[rel] = hashlib.sha256(fh.read()).hexdigest()
+    return out
+
+
+def part_update(work, project, export_dir):
+    from classes.handoff import jobs
+    from classes.handoff.remotion import exporter
+    from classes.handoff.timeline_view import TimelineSnapshot
+    upd = export_dir + "-update"
+    if os.path.isdir(upd):
+        shutil.rmtree(upd)
+    subprocess.run(["cp", "-Rc", export_dir, upd], check=True)  # APFS clone with node_modules
+    editor = make_editor(work)
+    editor.store._data = copy.deepcopy(project)
+    editor.mark()
+    result = {}
+    # 1) an unchanged re-export updates in place and the project still works
+    receipt = editor.call_receipt("export_to_remotion_tool", output_dir=upd)
+    result["unchanged_update"] = {"status": receipt["status"], "mode": receipt["data"].get("mode"),
+                                  "node_modules_kept": os.path.isdir(os.path.join(upd, "node_modules", "remotion"))}
+    listed = subprocess.run(["npx", "remotion", "compositions", "src/index.ts"], cwd=upd,  # (the list is info level)
+                            capture_output=True, text=True)
+    result["unchanged_update"]["compositions"] = [ln.split()[0] for ln in listed.stdout.splitlines()
+                                                  if ln.strip().startswith("ZenviTimeline")]
+    log("unchanged re-export:", result["unchanged_update"])
+    assert receipt["status"] == "applied" and result["unchanged_update"]["compositions"] == ["ZenviTimeline"]
+    # 2) changes made in the Remotion project: refused, nothing touched
+    tl_path = os.path.join(upd, "src", "zenvi", "timeline.json")
+    timeline = json.load(open(tl_path))
+    next(c for c in timeline["clips"] if c["id"] == "CIMAGE0001")["position"] = 2.0
+    json.dump(timeline, open(tl_path, "w"), indent=1)
+    with open(os.path.join(upd, "src", "zenvi", "ZenviClip.tsx"), "a") as fh:
+        fh.write("// a tweak made in the Remotion project\n")
+    card = os.path.join(upd, "public", "zenvi-media", "card.png")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:size=800x400", "-frames:v", "1",
+                    card], check=True)
+    before = _tree(upd)
+    refused = editor.call("export_to_remotion_tool", output_dir=upd)
+    result["refused_over_edits"] = refused[:600]
+    result["tree_unchanged_after_refusal"] = _tree(upd) == before
+    log("export over Remotion-side edits:", refused[:400])
+    assert refused.startswith("Error") and "replace_edits=true" in refused and result["tree_unchanged_after_refusal"]
+    # 3) a cancelled update leaves everything as it was (staged, then swapped)
+    data = exporter.project_copy(editor.store._data)
+    calls = []
+
+    def cancel():
+        calls.append(1)
+        return len(calls) > 2
+
+    try:
+        exporter.export_project(TimelineSnapshot.from_project(data, None), data, upd, replace_edits=True,
+                                should_cancel=cancel)
+        result["cancelled_update"] = "finished (unexpected)"
+    except jobs.JobCancelled:
+        result["cancelled_update"] = "cancelled"
+    result["tree_unchanged_after_cancel"] = _tree(upd) == before
+    result["no_staging_left"] = not [n for n in os.listdir(upd) if n.startswith(".zenvi-update-")]
+    log("cancelled update:", result["cancelled_update"], "unchanged:", result["tree_unchanged_after_cancel"])
+    assert result["tree_unchanged_after_cancel"] and result["no_staging_left"]
+    # 4) a media folder that is a link (e.g. committed to git pointing at a shared library): never written through
+    library = os.path.join(work, "shared-library")
+    os.makedirs(library, exist_ok=True)
+    with open(os.path.join(library, "keynote.mov"), "wb") as fh:
+        fh.write(b"precious")
+    media = os.path.join(upd, "public", "zenvi-media")
+    aside = media + "-aside"
+    os.rename(media, aside)
+    os.symlink(library, media)
+    linked_out = editor.call("export_to_remotion_tool", output_dir=upd, replace_edits=True)
+    result["refused_through_link"] = linked_out[:300]
+    result["library_untouched"] = sorted(os.listdir(library)) == ["keynote.mov"]
+    os.remove(media)
+    os.rename(aside, media)
+    log("export through a linked media folder:", linked_out[:300])
+    assert linked_out.startswith("Error") and "is a link" in linked_out and result["library_untouched"]
+    # 5) replace_edits: the changes are replaced and the project renders
+    replaced = editor.call_receipt("export_to_remotion_tool", output_dir=upd, replace_edits=True)
+    result["replaced"] = {"status": replaced["status"], "warnings": replaced["data"].get("warnings"),
+                          "tweak_gone": "a tweak made" not in open(os.path.join(upd, "src", "zenvi",
+                                                                                "ZenviClip.tsx")).read()}
+    png = os.path.join(work, "frames", "update-frame-45.png")
+    still = subprocess.run(["npx", "remotion", "still", "src/index.ts", "ZenviTimeline", png, "--frame=45",
+                            "--log=error"], cwd=upd, capture_output=True, text=True)
+    zenvi = libopenshot_frames(project, [45], os.path.join(work, "frames", "update-zenvi"))
+    result["replaced"]["still"] = still.returncode
+    result["replaced"]["psnr_frame_45_without_title_text"] = compare(zenvi[45], png, exclude=[TITLE_STRIP])[0] \
+        if still.returncode == 0 else None
+    log("replace_edits:", result["replaced"])
+    assert replaced["status"] == "applied" and result["replaced"]["tweak_gone"] and still.returncode == 0
+    REPORT["update"] = result
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--work", required=True)
     parser.add_argument("--remotion-app", required=True)
     parser.add_argument("--video-matrix", choices=["bt709", "bt601"], default="bt709",
                         help="colour tags of the test video (libopenshot 1.0 decodes both as BT.601)")
-    parser.add_argument("parts", nargs="+", choices=["linked", "export", "reimport", "edits", "all"])
+    parser.add_argument("parts", nargs="+", choices=["linked", "export", "reimport", "edits", "helper", "restored",
+                                                      "update", "all"])
     args = parser.parse_args()
     work = os.path.abspath(args.work)
     os.makedirs(work, exist_ok=True)
     boot()
-    parts = {"linked", "export", "reimport", "edits"} if "all" in args.parts else set(args.parts)
+    everything = {"linked", "export", "reimport", "edits", "helper", "restored", "update"}
+    parts = everything if "all" in args.parts else set(args.parts)
     try:
         if "linked" in parts:
             part_linked(work, os.path.abspath(args.remotion_app))
-        if parts & {"export", "reimport", "edits"}:
+        if "helper" in parts:
+            part_helper(work, os.path.abspath(args.remotion_app))
+        if parts & {"export", "reimport", "edits", "restored", "update"}:
             project, export_dir = part_export(work, os.path.abspath(args.remotion_app), args.video_matrix)
             if "reimport" in parts:
                 part_reimport(work, project, export_dir)
             if "edits" in parts:
                 part_edits(work, project, export_dir)
+            if "restored" in parts:
+                part_restored(work, project, export_dir)
+            if "update" in parts:
+                part_update(work, project, export_dir)
     finally:
         REPORT.pop("export_project", None)
         with open(os.path.join(work, "report.json"), "w") as fh:

@@ -120,6 +120,20 @@ def test_zenvi_generated_projects_are_recognised_by_the_timeline_header(tmp_path
 # sources (static scan)
 # ---------------------------------------------------------------------------
 
+def test_the_source_project_name_is_read_from_the_head_of_a_big_timeline(tmp_path):
+    root = make_project(str(tmp_path / "export"))
+    folder = os.path.join(root, "src", "zenvi")
+    os.makedirs(folder, exist_ok=True)
+    big = {"zenvi_timeline": 1, "source_project": 'Trip "2026" \u00e9t\u00e9', "clips": ["x" * 100] * 50000}
+    with open(os.path.join(folder, "timeline.json"), "w") as fh:
+        json.dump(big, fh)  # ~5 MB: only the first 4 KB is read (off the GUI thread, but no JSON parse of it all)
+    assert detect.zenvi_source_project(root) == 'Trip "2026" \u00e9t\u00e9'
+    with open(os.path.join(folder, "timeline.json"), "w") as fh:
+        json.dump({"zenvi_timeline": 1, "clips": []}, fh)
+    assert detect.zenvi_source_project(root) is None
+    assert detect.zenvi_source_project(str(tmp_path / "missing")) is None
+
+
 def test_scan_finds_every_composition_and_its_component_definition():
     found = sources.scan_project(FIXTURE, "src/index.ts")
     assert set(found) == {"TitleCard", "Aliased", "Promo", "Outro", "Lazy", "Thumb"}

@@ -145,6 +145,55 @@ def test_a_failed_or_cancelled_render_adds_nothing_and_cleans_up(remotion):
     assert remotion.undo_steps_since_mark() == 0 and _renders(remotion) == []
 
 
+def test_a_timed_out_commit_keeps_its_render_and_the_error_says_what_was_added(remotion, monkeypatch):
+    """CommitTimeout: the queued GUI commit may still land, so its render must stay; the message is truthful."""
+    from classes.editor_tools.titles_text_common import CommitTimeout
+    real = lm.add_linked_media
+    seen = []
+
+    def add(path, link, **kw):
+        seen.append(link["source"]["composition"])
+        if len(seen) == 2:
+            raise CommitTimeout("the editor was too busy to finish within 30s; the change is still running")
+        return real(path, link, **kw)
+
+    monkeypatch.setattr(lm, "add_linked_media", add)
+    out = remotion.call("import_remotion_project_tool", project_dir=remotion.project_dir)
+    assert out.startswith("Error") and "stopped part-way: added Scene" in out, out
+    assert "TitleCard may still be added (the editor was busy)" in out and "Nothing was added" not in out
+    assert remotion.undo_steps_since_mark() == 1                  # Scene, in one undo step
+    assert len(_renders(remotion)) == 2                           # Scene's and the in-flight TitleCard's
+
+
+def test_a_later_add_that_fails_reports_the_clips_already_added(remotion, monkeypatch):
+    real = lm.add_linked_media
+    seen = []
+
+    def add(path, link, **kw):
+        seen.append(link["source"]["composition"])
+        if len(seen) == 2:
+            raise lm.LinkError("the track is locked")
+        return real(path, link, **kw)
+
+    monkeypatch.setattr(lm, "add_linked_media", add)
+    out = remotion.call("import_remotion_project_tool", project_dir=remotion.project_dir)
+    assert out.startswith("Error") and "added Scene, then the track is locked" in out, out
+    assert "one undo step" in out and "Nothing was added" not in out
+    assert remotion.undo_steps_since_mark() == 1 and len(remotion.clips()) == 2
+    assert len(_renders(remotion)) == 1                           # the TitleCard render was not kept
+    remotion.undo()
+    assert len(remotion.clips()) == 1
+
+
+def test_an_import_refuses_when_another_project_was_opened_meanwhile(remotion, monkeypatch):
+    from classes.handoff.remotion import importer
+    ids = iter([("P1", "/a.zvn"), ("P2", "/b.zvn")])
+    monkeypatch.setattr(importer, "_project_identity", lambda: next(ids))
+    out = remotion.call("import_remotion_project_tool", project_dir=remotion.project_dir, compositions=["Scene"])
+    assert out.startswith("Error") and "another project was opened" in out
+    assert remotion.undo_steps_since_mark() == 0 and _renders(remotion) == []
+
+
 def test_import_of_an_uninstalled_project_says_how_to_install(remotion, tmp_path):
     bare = make_project(str(tmp_path / "bare"), installed=False)
     out = remotion.call("import_remotion_project_tool", project_dir=bare)
@@ -230,3 +279,21 @@ def test_edits_made_in_the_remotion_project_come_back_through_the_tools(remotion
     image = remotion.clip(clips["image"])
     assert image["position"] == 2.0 and image["location_x"]["Points"][1]["co"]["Y"] == 0.25
     assert remotion.clip(clips["music"]) is None and remotion.clip(clips["video"]) is not None
+
+
+def test_exporting_over_unimported_remotion_edits_needs_replace_edits(remotion, tmp_path):
+    remotion.store._data.update(clips=[], files=[])
+    clips, _files = build_project(remotion, str(tmp_path / "media"))
+    out_dir = str(tmp_path / "trip-remotion")
+    _data(remotion.call("export_to_remotion_tool", output_dir=out_dir))
+    path = os.path.join(out_dir, "src", "zenvi", "timeline.json")
+    timeline = json.load(open(path))
+    next(c for c in timeline["clips"] if c["id"] == clips["image"])["position"] = 2.0
+    json.dump(timeline, open(path, "w"))
+    before = open(path).read()
+    out = remotion.call("export_to_remotion_tool", output_dir=out_dir)
+    assert out.startswith("Error") and "were not imported into Zenvi yet" in out and "replace_edits=true" in out
+    assert open(path).read() == before
+    data = _data(remotion.call("export_to_remotion_tool", output_dir=out_dir, replace_edits=True))
+    assert data["mode"] == "update" and any("replaced changes" in w for w in data["warnings"])
+    assert next(c for c in json.load(open(path))["clips"] if c["id"] == clips["image"])["position"] == 1.0
