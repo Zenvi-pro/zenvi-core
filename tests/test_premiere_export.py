@@ -232,6 +232,20 @@ def test_fade_in_and_out_become_black_aligned_dissolves():
     assert fcp.validate_xmeml(result.root) == []
 
 
+def test_a_fade_covering_a_whole_clip_keeps_its_direction():
+    # review C3-1 #4: a 1 s fade-out over a 1 s clip used to become a fade-in ("fades the wrong way")
+    f = video_file("F1", "/media/a.mp4", duration=20.0, has_audio=False)
+    for reverse, alignment in ((True, "end-black"), (False, "start-black")):
+        proj = project(files=[f], clips=[clip("A", "F1", position=2.0, end=1.0)],
+                       transitions=[fade("T", L1, 2.0, 1.0, reverse=reverse)])
+        result = build(proj)
+        track_items = items(tracks(result.root, "video")[0])
+        (tr,) = [el for el in track_items if el.tag == "transitionitem"]
+        assert (ints(tr, "start", "end"), tr.findtext("alignment")) == ((60, 90), alignment)
+        assert not any("wrong way" in w for w in result.warnings)
+        assert fcp.validate_xmeml(result.root) == []
+
+
 def test_overlapping_clips_without_a_transition_stack_on_extra_lanes():
     proj = crossfade()
     proj["effects"] = []
@@ -334,6 +348,54 @@ def test_tracks_carry_names_locks_and_exploded_stereo_with_links():
     assert v.find("file").findtext("pathurl") and a_l.find("file").find("pathurl") is None   # defined once
 
 
+def _audio_layout(result):
+    return [(t.get("premiereTrackType"), t.get("currentExplodedTrackIndex"),
+             [(c.findtext("name"), c.get("premiereChannelType"), c.findtext("sourcetrack/trackindex"))
+              for c in t.findall("clipitem")]) for t in tracks(result.root, "audio")]
+
+
+def test_mono_media_on_a_track_with_stereo_media_gets_its_own_mono_track():
+    # review C3-1 #2: a mono voice-over in a lane with stereo music was written onto the stereo pair
+    # (sourcetrack 2 of a one-channel file), so Premiere played it on one side only
+    vo = audio_file("F1", "/media/vo mono.wav", duration=20.0, channels=1)
+    music = audio_file("F2", "/media/music.wav", duration=20.0, channels=2)
+    proj = project(files=[vo, music], clips=[clip("VO", "F1", end=5.0), clip("Music", "F2", position=6.0, end=5.0)])
+    result = build(proj)
+    assert _audio_layout(result) == [
+        ("Stereo", "0", [("Music", "stereo", "1")]), ("Stereo", "1", [("Music", "stereo", "2")]),
+        ("Mono", "0", [("VO", "mono", "1")])]
+    assert fcp.validate_xmeml(result.root) == []
+
+
+def test_a_clip_playing_one_channel_is_a_mono_item_of_that_channel():
+    # review C3-1 #3: Separate Audio > each channel (channel_filter) exported every channel clip as full stereo
+    stereo = video_file("F1", "/media/interview.mov", duration=20.0)
+    only = {"Points": [{"co": {"X": 1.0, "Y": 0.0}, "interpolation": 2}]}
+    video_off = {"Points": [{"co": {"X": 1.0, "Y": 0.0}, "interpolation": 2}]}
+    proj = project(files=[stereo], clips=[
+        clip("Picture", "F1", end=5.0, has_audio=video_off),
+        clip("Lav (channel 1)", "F1", layer=L2, end=5.0, has_video=video_off, channel_filter=only),
+        clip("Camera (channel 2)", "F1", layer=L3, end=5.0, has_video=video_off,
+             channel_filter={"Points": [{"co": {"X": 1.0, "Y": 1.0}, "interpolation": 2}]}),
+        clip("All", "F1", layer=L3, position=6.0, end=2.0, has_video=video_off,
+             channel_filter={"Points": [{"co": {"X": 1.0, "Y": -1.0}, "interpolation": 2}]})])
+    result = build(proj)
+    assert _audio_layout(result) == [
+        ("Mono", "0", [("Lav (channel 1)", "mono", "1")]),
+        ("Stereo", "0", [("All", "stereo", "1")]), ("Stereo", "1", [("All", "stereo", "2")]),
+        ("Mono", "0", [("Camera (channel 2)", "mono", "2")])]
+    assert fcp.validate_xmeml(result.root) == []
+
+
+def test_a_channel_filter_that_changes_during_the_clip_is_reported():
+    stereo = audio_file("F1", "/media/stereo.wav", duration=20.0)
+    switching = {"Points": [{"co": {"X": 1.0, "Y": 0.0}, "interpolation": 2},
+                            {"co": {"X": 60.0, "Y": 1.0}, "interpolation": 2}]}
+    result = build(project(files=[stereo], clips=[clip("Switch", "F1", end=5.0, channel_filter=switching)]))
+    assert _audio_layout(result) == [("Mono", "0", [("Switch", "mono", "1")])]
+    assert any("switches audio channels" in w for w in result.warnings)
+
+
 def test_clip_audio_and_video_switches_choose_the_items():
     off = {"Points": [{"co": {"X": 1.0, "Y": 0.0}, "interpolation": 2}]}
     proj = project(files=[V], clips=[clip("Mute", "F1", end=3.0, has_audio=off),
@@ -403,6 +465,72 @@ def test_stills_written_as_png_drop_their_old_extension_from_the_clip_name(tmp_p
              if c.findtext("file/name")}
     assert names["Lower third"] == "Lower third-T1.png" and names["photo"] == "photo-W1.png"
     assert names["logo.png"] == "logo.png" and "Lower third.svg" not in names
+
+
+def test_titles_shown_bigger_than_their_svg_are_rendered_at_that_size(tmp_path):
+    # review C3-1: a title scaled up in Zenvi (or a 1080p SVG in a 4K project) became a 1x PNG that
+    # Premiere enlarged; it is now rendered at the size it is shown and Basic Motion scales it less
+    from classes.handoff.transform import clip_geometry
+    big = clip("Big", "T1", layer=L2, end=3.0, scale_x=kf([(1, 1.0), (90, 2.0)]), scale_y=kf([(1, 1.0), (90, 2.0)]))
+    proj = project(files=[V, title_file()], clips=[clip("A", "F1", end=3.0), big])
+    stills = FakeStills()
+    out = fcp.export_timeline(snapshot(proj), str(tmp_path / "Edit.xml"), render_stills=stills)
+    assert [(j.width, j.height) for j in stills.jobs] == [(3840, 2160)]
+    item = [c for c in parse(out.path).iter("clipitem") if c.findtext("name") == "Big"][0]
+    assert (item.findtext("file/media/video/samplecharacteristics/width"),
+            item.findtext("file/media/video/samplecharacteristics/height")) == ("3840", "2160")
+    scale = [v for _w, v in keys(param(item, "basic", "scale"))]
+    assert scale[0] == pytest.approx(50.0) and scale[-1] == pytest.approx(100.0)
+    # the same picture: 50 % of the 3840 px PNG is the 1920 px Zenvi showed at scale 1
+    snap = snapshot(proj)
+    g = clip_geometry([c for c in snap.clips if c.title == "Big"][0], 0.0, 1920, 1080)
+    assert g.width == pytest.approx(3840 * scale[0] / 100.0)
+    small = project(files=[V, title_file()], clips=[clip("A", "F1", end=3.0), clip("T", "T1", layer=L2, end=2.0)])
+    stills = FakeStills()
+    fcp.export_timeline(snapshot(small), str(tmp_path / "Small.xml"), render_stills=stills)
+    assert [(j.width, j.height) for j in stills.jobs] == [(1920, 1080)]      # shown at 1x: rendered at 1x
+
+
+def test_videos_with_an_alpha_channel_keep_it(tmp_path, monkeypatch):
+    # review C3-1: ProRes 4444 / Animation / VP9 overlays were written alphatype none (Premiere drops alpha)
+    folder = tmp_path / "media"
+    folder.mkdir()
+    from premiere_fakes import media_on_disk
+    overlay, plate = media_on_disk(folder, dict(video_file("F1", "/m/lower third.mov", duration=5.0), vcodec="prores"),
+                                   dict(video_file("F2", "/m/plate.mp4", duration=5.0), vcodec="h264"))
+    asked = []
+
+    def probe(path):
+        asked.append(os.path.basename(path))
+        return True
+
+    monkeypatch.setattr(fcp, "has_alpha_channel", probe)
+    proj = project(files=[overlay, plate], clips=[clip("Plate", "F2", end=3.0), clip("Overlay", "F1", layer=L2,
+                                                                                  end=3.0)])
+    out = fcp.export_timeline(snapshot(proj), str(tmp_path / "Edit.xml"), render_stills=FakeStills())
+    alphas = {c.findtext("name"): c.findtext("alphatype") for c in parse(out.path).iter("clipitem")
+              if c.findtext("alphatype")}
+    assert alphas == {"Plate": "none", "Overlay": "straight"} and asked == ["lower third.mov"]
+
+    def broken(path):
+        raise fcp.ExportError("ffprobe was not found")
+
+    monkeypatch.setattr(fcp, "has_alpha_channel", broken)
+    out = fcp.export_timeline(snapshot(proj), str(tmp_path / "Edit2.xml"), render_stills=FakeStills())
+    assert any("could not check 'lower third.mov' for transparency" in w for w in out.warnings)
+
+
+@pytest.mark.skipif(__import__("shutil").which("ffmpeg") is None or __import__("shutil").which("ffprobe") is None,
+                    reason="needs ffmpeg and ffprobe")
+def test_has_alpha_channel_reads_real_files(tmp_path):
+    import subprocess
+    alpha, opaque = tmp_path / "alpha.mov", tmp_path / "opaque.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red@0.5:s=64x64:d=0.2,format=rgba",
+                    "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", str(alpha)], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=64x64:d=0.2",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(opaque)], check=True)
+    assert fcp.has_alpha_channel(str(alpha)) is True
+    assert fcp.has_alpha_channel(str(opaque)) is False
 
 
 def test_collect_media_copies_files_and_points_the_xml_at_them(tmp_path):

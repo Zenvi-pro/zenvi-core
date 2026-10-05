@@ -67,17 +67,20 @@ Export XML working.
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
 import shutil
+import subprocess
 import uuid as uuid_module
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from fractions import Fraction
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, cast
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, cast
 from urllib.parse import quote
 
+from classes.handoff.keyframes import Curve
 from classes.handoff.timeline_view import ClipView, FileView, TimelineSnapshot, TrackView, TransitionView
 from classes.handoff.transform import (  # noqa: F401  (legacy helpers moved there; kept importable here)
     clip_geometry,
@@ -95,6 +98,11 @@ ROTATION_LIMIT = 8640.0                  # 24 turns, either way
 STILL_EXTENSIONS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif", ".psd", ".tga")
 CONVERT_STILL_EXTENSIONS = (".webp", ".avif", ".heic", ".heif", ".jxl")   # Premiere may not read these
 ALPHA_EXTENSIONS = (".png", ".tif", ".tiff", ".psd", ".tga", ".gif")
+# video codecs that can carry an alpha channel: their files are checked (ffprobe) so Premiere keeps it
+ALPHA_CODECS = ("prores", "qtrle", "png", "apng", "vp8", "vp9", "ffv1", "utvideo", "hap", "rawvideo", "cfhd",
+                "tiff", "targa", "gif")
+ALPHA_PIX_RE = re.compile(r"^(yuva|rgba|argb|bgra|abgr|gbrap|ya\d|pal8)")
+TITLE_RASTER_MAX = 8192                  # px: the largest side a title PNG is rendered at
 DISSOLVE = {"name": "Cross Dissolve", "effectid": "Cross Dissolve", "effectcategory": "Dissolve"}
 AUDIO_CROSSFADE = {"name": "Cross Fade (+3dB)", "effectid": "KGAudioTransCrossFade3dB"}
 PPRO = {"authoringApp": "PremierePro"}
@@ -363,6 +371,7 @@ class _Media:
     still: bool
     alpha: bool
     written: bool = False
+    raster: float = 1.0     # a title rendered bigger than its SVG: PNG pixels per source pixel
 
 
 @dataclass
@@ -414,10 +423,16 @@ class _Plan:
     vspan: Optional[_Span] = None
     aspan: Optional[_Span] = None
     items: List[Tuple[str, int, int, str]] = field(default_factory=list)  # (kind, track no, clip index, id)
+    channel: Optional[int] = None   # the one source channel a mono item plays (Zenvi channel_filter)
 
     @property
     def id(self) -> str:
         return self.clip.id
+
+    @property
+    def stereo(self) -> bool:
+        """Written as Premiere's exploded stereo pair (else one mono item on a mono track)."""
+        return self.media.channels >= 2 and self.channel is None
 
     def in_at(self, frame: int) -> int:
         """The in/out-space frame shown at sequence *frame* (retimed frames advance with the timeline)."""
@@ -429,8 +444,9 @@ class XmemlBuilder:
 
     def __init__(self, snapshot: TimelineSnapshot, xml_path: str, *, media_dir: Optional[str] = None,
                  collect_media: bool = False, sequence_name: str = "", sequence_uuid: Optional[str] = None,
-                 translate: Optional[Callable[[str], str]] = None):
+                 translate: Optional[Callable[[str], str]] = None, alpha_media: Iterable[str] = ()):
         self._ = translate or (lambda text: text)      # warnings: English for agents, the app's _tr in menus
+        self.alpha_media = set(alpha_media)           # file ids of videos with transparency (export_timeline)
         self.snap = snapshot
         self.xml_path = os.path.abspath(xml_path)
         stem = os.path.splitext(os.path.basename(self.xml_path))[0]
@@ -472,7 +488,7 @@ class XmemlBuilder:
         width = int(fv.width or 0) or self.w
         height = int(fv.height or 0) or self.h
         still = bool(fv.is_still or fv.is_title)
-        path, alpha = fv.path, ext in ALPHA_EXTENSIONS or fv.is_title
+        path, alpha = fv.path, ext in ALPHA_EXTENSIONS or fv.is_title or fv.id in self.alpha_media
         link = fv.zenvi_link or {}
         render = link.get("render") if isinstance(link, dict) else None
         if isinstance(render, dict) and render.get("codec") in ("prores4444", "qtrle"):
@@ -566,6 +582,8 @@ class XmemlBuilder:
             in_frame, duration = 0, 0          # graph built below
         plan = _Plan(clip=clip, track=track, media=media, start=start, end=end, video=video, audio=audio,
                      speed=speed, factor=factor, reversed=reversed_, in_frame=in_frame, item_duration=duration)
+        if audio:
+            plan.channel = self._channel_of(clip, media, title)
         if speed == "constant":
             plan.graph = self._constant_graph(plan, media.duration or duration)
         elif speed == "variable":
@@ -578,6 +596,22 @@ class XmemlBuilder:
                                  "remapping -- check its speed keyframes in Premiere") % title)
         self._warn_unmapped(plan)
         return plan
+
+    def _channel_of(self, clip: ClipView, media: _Media, title: str) -> Optional[int]:
+        """The source channel a clip plays alone (Zenvi's channel_filter; Separate Audio > each channel)."""
+        raw = (clip.data or {}).get("channel_filter")
+        if raw is None:
+            return None
+        curve = Curve.from_json(raw, fps=clip.fps, position=clip.position, start=clip.start, default=-1.0)
+        if not curve.points:
+            return None
+        value = int(round(curve.value_at_x(clip.frame_range()[0])))
+        if not curve.is_constant:
+            self.warn.add(self._("clip '%s' switches audio channels during the clip; exported with the channel it "
+                                 "starts with") % title)
+        if value < 0 or (media.channels and value >= media.channels):
+            return None
+        return value
 
     def _constant_graph(self, plan: _Plan, total: int) -> List[Tuple[int, int, str]]:
         f, out = plan.factor, plan.in_frame + (plan.end - plan.start)
@@ -667,8 +701,12 @@ class XmemlBuilder:
                 joins[(a.id, b.id)] = tr
                 tails[a.id] = heads[b.id] = tr
                 if audio_hint and a.audio and b.audio:
-                    a_joins[(a.id, b.id)] = True
-                    a_tails[a.id] = a_heads[b.id] = _Transition(lo, hi, "center", "audio")
+                    if a.stereo == b.stereo:
+                        a_joins[(a.id, b.id)] = True
+                        a_tails[a.id] = a_heads[b.id] = _Transition(lo, hi, "center", "audio")
+                    else:   # a mono and a stereo item sit on different Premiere tracks
+                        self.warn.add(self._("an audio cross fade between a mono and a stereo clip was left out; "
+                                             "both play in full while they overlap"))
                 if not fade:
                     self.warn.add(self._("the '%s' wipe has no exact Premiere equivalent; exported as a Cross "
                                          "Dissolve") % label)
@@ -680,10 +718,14 @@ class XmemlBuilder:
                 continue
             edge = None
             for p in vplans:
-                if p.id not in heads and abs(p.start - ts) <= 1 and te <= p.end + 1:
+                at_head = p.id not in heads and abs(p.start - ts) <= 1 and te <= p.end + 1
+                at_tail = p.id not in tails and abs(p.end - te) <= 1 and ts >= p.start - 1
+                if at_head and at_tail:          # it covers the whole clip: its direction says which edge
+                    at_head, at_tail = not tv.reversed, bool(tv.reversed)
+                if at_head:
                     edge = ("head", p, _Transition(p.start, min(te, p.end), "start-black", "video"))
                     break
-                if p.id not in tails and abs(p.end - te) <= 1 and ts >= p.start - 1:
+                if at_tail:
                     edge = ("tail", p, _Transition(max(ts, p.start), p.end, "end-black", "video"))
                     break
             if edge is not None:
@@ -765,7 +807,7 @@ class XmemlBuilder:
         snap = self.snap
         all_plans: List[_Plan] = []
         video_lanes: List[Tuple[TrackView, int, List[_Plan]]] = []
-        audio_lanes: List[Tuple[TrackView, int, List[_Plan]]] = []
+        audio_lanes: List[Tuple[TrackView, int, List[_Plan], bool]] = []
         for track in snap.tracks:
             plans = [p for p in (self._plan(c, track) for c in track.clips) if p is not None]
             if not plans:
@@ -775,9 +817,13 @@ class XmemlBuilder:
             all_plans.extend(plans)
             for k, lane in enumerate(self._lanes([p for p in plans if p.video], "video")):
                 video_lanes.append((track, k, lane))
-            for k, lane in enumerate(self._lanes([p for p in plans if p.audio], "audio")):
-                audio_lanes.append((track, k, lane))
+            # stereo media on Premiere's exploded stereo pairs, mono media and single channels on mono tracks
+            stereo_lanes = self._lanes([p for p in plans if p.audio and p.stereo], "audio")
+            mono_lanes = self._lanes([p for p in plans if p.audio and not p.stereo], "audio")
+            for k, lane in enumerate(stereo_lanes + mono_lanes):
+                audio_lanes.append((track, k, lane, k < len(stereo_lanes)))
         self.counts["clips"] = len(all_plans)
+        self._raster_titles(all_plans)
         ends = [p.vspan.end for p in all_plans if p.vspan] + [p.aspan.end for p in all_plans if p.aspan]
         seq_frames = max(ends, default=0)
         for p in all_plans:
@@ -825,8 +871,7 @@ class XmemlBuilder:
             _sub(group, "downmix", 0)
             _sub(_sub(group, "channel"), "index", index)
         a_number = 0
-        for track, lane_no, lane in audio_lanes:
-            stereo = any(p.media.channels >= 2 for p in lane)
+        for track, lane_no, lane, stereo in audio_lanes:
             for channel in ((1, 2) if stereo else (1,)):
                 a_number += 1
                 self._audio_track(audio, track, lane_no, lane, a_number, channel, stereo)
@@ -855,6 +900,33 @@ class XmemlBuilder:
             self.counts["markers"] += 1
         return BuildResult(root=root, stills=list(self.stills), copies=list(self.copies),
                            warnings=self.warn.as_list(), counts=dict(self.counts), media_dir=self.media_dir)
+
+    def _raster_titles(self, plans: List[_Plan]) -> None:
+        """Render a title at the largest size it is shown (a scaled-up title, a 1080p SVG in a 4K project),
+        so Premiere never enlarges a small PNG; Basic Motion scale and centre follow the bigger raster."""
+        shown: Dict[int, Tuple[_Media, float]] = {}
+        for p in plans:
+            fv = p.clip.file
+            if fv is None or not fv.is_title or not p.video or p.media.raster != 1.0:
+                continue
+            first, last = p.start, p.end - 1
+            step = max(1, (last - first) // 240)
+            k = shown.get(id(p.media), (p.media, 1.0))[1]
+            for fr in list(range(first, last + 1, step)) + [last]:
+                g = clip_geometry(p.clip, self.t(fr), self.w, self.h, src_w=p.media.width, src_h=p.media.height)
+                k = max(k, abs(float(g.scale_x)), abs(float(g.scale_y)))
+            shown[id(p.media)] = (p.media, k)
+        for media, k in shown.values():
+            k = min(k, TITLE_RASTER_MAX / float(max(media.width, media.height, 1)))
+            if k <= 1.01:
+                continue
+            job = next((j for j in self.stills if j.target == media.path), None)
+            if job is None:
+                continue
+            width, height = int(round(media.width * k)), int(round(media.height * k))
+            media.raster = width / float(media.width)
+            job.width, job.height = width, height
+            media.width, media.height = width, height
 
     def _track_name(self, track: TrackView, lane_no: int) -> str:
         base = track.label or f"Track {track.index + 1}"
@@ -892,8 +964,8 @@ class XmemlBuilder:
                 index += 1
                 node.append(self._transition_item(span.head))
             index += 1
-            node.append(self._clip_item(p, "audio", span, number, index, channel=channel if stereo else 1,
-                                        stereo=stereo))
+            source = channel if stereo else (p.channel + 1 if p.channel is not None else 1)
+            node.append(self._clip_item(p, "audio", span, number, index, channel=source, stereo=stereo))
             if span.tail is not None:
                 index += 1
                 node.append(self._transition_item(span.tail))
@@ -1059,14 +1131,15 @@ class XmemlBuilder:
         clip, media = p.clip, p.media
         par = float(self.snap.pixel_aspect or 1)
         rows = []
+        r = media.raster
         for fr in frames_range:
-            g = clip_geometry(clip, self.t(fr), self.w, self.h, src_w=media.width, src_h=media.height)
-            sw, sh = float(g.source_width), float(g.source_height)
+            g = clip_geometry(clip, self.t(fr), self.w, self.h, src_w=media.width / r, src_h=media.height / r)
+            sw, sh = float(g.source_width) * r, float(g.source_height) * r     # the media's pixels in the XML
             ax, ay = g.origin_x - 0.5, g.origin_y - 0.5
             cx = ((g.anchor_x - self.w / 2.0) / sw - ax) * par
             cy = (g.anchor_y - self.h / 2.0) / sh - ay
             aspect = (1.0 - (g.scale_x / g.scale_y)) * 100.0 if abs(g.scale_y) > 1e-12 else 0.0
-            rows.append(((cx, cy), (ax, ay), g.scale_y * 100.0, g.rotation, aspect, sw, sh))
+            rows.append(((cx, cy), (ax, ay), g.scale_y * 100.0 / r, g.rotation, aspect, sw, sh))
         return rows
 
     def _motion_filters(self, node: ET.Element, p: _Plan, frames_range: range) -> None:
@@ -1264,10 +1337,14 @@ class XmemlBuilder:
 
 def build_xmeml(snapshot: TimelineSnapshot, xml_path: str, *, media_dir: Optional[str] = None,
                 collect_media: bool = False, sequence_name: str = "", sequence_uuid: Optional[str] = None,
-                translate: Optional[Callable[[str], str]] = None) -> BuildResult:
-    """The xmeml tree for *snapshot* plus the stills to render and media to copy (pure)."""
+                translate: Optional[Callable[[str], str]] = None, alpha_media: Iterable[str] = ()) -> BuildResult:
+    """The xmeml tree for *snapshot* plus the stills to render and media to copy (pure).
+
+    *alpha_media*: ids of the video files that have transparency (:func:`find_alpha_media`).
+    """
     builder = XmemlBuilder(snapshot, xml_path, media_dir=media_dir, collect_media=collect_media,
-                           sequence_name=sequence_name, sequence_uuid=sequence_uuid, translate=translate)
+                           sequence_name=sequence_name, sequence_uuid=sequence_uuid, translate=translate,
+                           alpha_media=alpha_media)
     result = builder.build()
     problems = validate_xmeml(result.root)
     if problems:
@@ -1506,6 +1583,54 @@ def _copy_media(copies: List[CopyJob], should_cancel: Optional[Callable[[], bool
     return copied
 
 
+def has_alpha_channel(path: str) -> bool:
+    """True when the file's video stream carries alpha (ffprobe reads the stream header; nothing is decoded)."""
+    from classes import ffmpeg_cli
+    exe = ffmpeg_cli.find_ffmpeg("ffprobe")
+    if not exe:
+        raise ExportError("ffprobe was not found (install ffmpeg, or set ZENVI_FFMPEG_DIR)")
+    proc = ffmpeg_cli.run_ffmpeg([exe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                  "stream=pix_fmt:stream_tags=alpha_mode", "-of", "json", path],
+                                 capture_output=True, text=True, timeout=30)
+    if proc.returncode != 0:
+        raise ExportError((proc.stderr or "ffprobe failed").strip().splitlines()[-1][:200])
+    streams = (json.loads(proc.stdout or "{}").get("streams") or [{}])
+    stream = streams[0] if streams else {}
+    tags = {str(k).lower(): v for k, v in (stream.get("tags") or {}).items()}
+    if str(tags.get("alpha_mode") or "") == "1":          # VP8 / VP9 alpha in WebM
+        return True
+    return ALPHA_PIX_RE.search(str(stream.get("pix_fmt") or "")) is not None
+
+
+def find_alpha_media(snapshot: TimelineSnapshot, translate: Optional[Callable[[str], str]] = None
+                     ) -> Tuple[Set[str], List[str]]:
+    """(ids of the timeline's videos with an alpha channel, warnings). Blocking: off the GUI thread.
+
+    Only codecs that can carry alpha are checked (ProRes 4444, Animation, PNG, VP9 ...); Premiere is
+    told ``alphatype straight`` for them, as for PNG stills and titles.
+    """
+    _ = translate or (lambda text: text)
+    found: Set[str] = set()
+    problems: List[str] = []
+    seen: Set[str] = set()
+    for c in snapshot.clips:
+        fv = c.file
+        if fv is None or fv.id in seen or fv.media_type != "video" or fv.is_title or fv.is_still:
+            continue
+        seen.add(fv.id)
+        codec = str((fv.data or {}).get("vcodec") or "").lower()
+        if not codec.startswith(ALPHA_CODECS) or not os.path.isfile(fv.path):
+            continue
+        try:
+            if has_alpha_channel(fv.path):
+                found.add(fv.id)
+        except (ExportError, OSError, ValueError, subprocess.SubprocessError) as exc:
+            log.warning("Cannot check %s for an alpha channel: %s", fv.path, exc)
+            problems.append(_("could not check '%(name)s' for transparency (%(error)s); Premiere treats it as "
+                              "opaque") % {"name": fv.name, "error": exc})
+    return found, problems
+
+
 def export_timeline(snapshot: TimelineSnapshot, xml_path: str, *, collect_media: bool = False,
                     media_dir: Optional[str] = None, sequence_name: str = "", sequence_uuid: Optional[str] = None,
                     render_stills: Optional[Callable[[List[StillJob]], None]] = None,
@@ -1526,8 +1651,11 @@ def export_timeline(snapshot: TimelineSnapshot, xml_path: str, *, collect_media:
     if not xml_path.lower().endswith(".xml"):
         xml_path += ".xml"
     replaced = os.path.exists(xml_path)
+    alpha_media, alpha_problems = find_alpha_media(snapshot, translate)
     result = build_xmeml(snapshot, xml_path, media_dir=media_dir, collect_media=collect_media,
-                         sequence_name=sequence_name, sequence_uuid=sequence_uuid, translate=translate)
+                         sequence_name=sequence_name, sequence_uuid=sequence_uuid, translate=translate,
+                         alpha_media=alpha_media)
+    result.warnings.extend(alpha_problems)
     if on_progress is not None:
         on_progress(0.1, _("Rendering titles"))
     if result.stills:
