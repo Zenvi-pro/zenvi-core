@@ -491,33 +491,81 @@ def test_titles_shown_bigger_than_their_svg_are_rendered_at_that_size(tmp_path):
     assert [(j.width, j.height) for j in stills.jobs] == [(1920, 1080)]      # shown at 1x: rendered at 1x
 
 
-def test_videos_with_an_alpha_channel_keep_it(tmp_path, monkeypatch):
-    # review C3-1: ProRes 4444 / Animation / VP9 overlays were written alphatype none (Premiere drops alpha)
-    folder = tmp_path / "media"
-    folder.mkdir()
+def _alpha_project(folder):
     from premiere_fakes import media_on_disk
-    overlay, plate = media_on_disk(folder, dict(video_file("F1", "/m/lower third.mov", duration=5.0), vcodec="prores"),
-                                   dict(video_file("F2", "/m/plate.mp4", duration=5.0), vcodec="h264"))
+    overlay, webm, plate = media_on_disk(
+        folder, dict(video_file("F1", "/m/lower third.mov", duration=5.0), vcodec="prores"),
+        dict(video_file("F3", "/m/sparks.webm", duration=5.0), vcodec="vp9"),
+        dict(video_file("F2", "/m/plate.mp4", duration=5.0), vcodec="h264"))
+    twin = dict(overlay, id="F4")                        # the same file twice in Project Files
+    return project(files=[overlay, webm, plate, twin],
+                   clips=[clip("Plate", "F2", end=3.0), clip("Overlay", "F1", layer=L2, end=3.0),
+                          clip("Sparks", "F3", layer=L3, end=3.0), clip("Again", "F4", layer=L3, position=4.0,
+                                                                        end=1.0)])
+
+
+def test_videos_with_an_alpha_channel_keep_it(tmp_path, monkeypatch):
+    # review C3-1: ProRes 4444 / Animation / VP9 overlays were written alphatype none (Premiere drops alpha);
+    # verify-C3-1 E/F: each path checked once, VP9 alpha exported with a note that Zenvi shows it opaque
+    (tmp_path / "media").mkdir()
+    proj = _alpha_project(tmp_path / "media")
     asked = []
 
-    def probe(path):
+    def probe(path, exe=None):
         asked.append(os.path.basename(path))
-        return True
+        return {"lower third.mov": "alpha", "sparks.webm": "vp9"}.get(os.path.basename(path), "")
 
-    monkeypatch.setattr(fcp, "has_alpha_channel", probe)
-    proj = project(files=[overlay, plate], clips=[clip("Plate", "F2", end=3.0), clip("Overlay", "F1", layer=L2,
-                                                                                  end=3.0)])
+    monkeypatch.setattr(fcp, "probe_alpha", probe)
+    monkeypatch.setattr("classes.ffmpeg_cli.find_ffmpeg", lambda name="ffmpeg": "/usr/bin/" + name)
     out = fcp.export_timeline(snapshot(proj), str(tmp_path / "Edit.xml"), render_stills=FakeStills())
     alphas = {c.findtext("name"): c.findtext("alphatype") for c in parse(out.path).iter("clipitem")
               if c.findtext("alphatype")}
-    assert alphas == {"Plate": "none", "Overlay": "straight"} and asked == ["lower third.mov"]
+    assert alphas == {"Plate": "none", "Overlay": "straight", "Sparks": "straight", "Again": "straight"}
+    assert asked == ["lower third.mov", "sparks.webm"]                 # one probe per path; h264 never
+    (note,) = [w for w in out.warnings if "VP9" in w]
+    assert note == "Zenvi shows 'sparks.webm' opaque (libopenshot drops VP9 alpha); Premiere will show their transparency"
 
-    def broken(path):
-        raise fcp.ExportError("ffprobe was not found")
 
-    monkeypatch.setattr(fcp, "has_alpha_channel", broken)
-    out = fcp.export_timeline(snapshot(proj), str(tmp_path / "Edit2.xml"), render_stills=FakeStills())
-    assert any("could not check 'lower third.mov' for transparency" in w for w in out.warnings)
+def test_alpha_checks_that_fail_are_one_warning_and_the_export_goes_on(tmp_path, monkeypatch):
+    (tmp_path / "media").mkdir()
+    proj = _alpha_project(tmp_path / "media")
+    monkeypatch.setattr("classes.ffmpeg_cli.find_ffmpeg", lambda name="ffmpeg": None)
+    out = fcp.export_timeline(snapshot(proj), str(tmp_path / "A.xml"), render_stills=FakeStills())
+    assert [w for w in out.warnings if "transparency" in w] == [
+        "ffprobe was not found, so 3 video file(s) were not checked for transparency; Premiere treats them as opaque"]
+
+    def broken(path, exe=None):
+        raise fcp.ExportError("Invalid data found when processing input")
+
+    monkeypatch.setattr("classes.ffmpeg_cli.find_ffmpeg", lambda name="ffmpeg": "/usr/bin/" + name)
+    monkeypatch.setattr(fcp, "probe_alpha", broken)
+    out = fcp.export_timeline(snapshot(proj), str(tmp_path / "B.xml"), render_stills=FakeStills())
+    assert [w for w in out.warnings if "transparency" in w] == [
+        "could not check 2 video file(s) for transparency (lower third.mov: Invalid data found when processing "
+        "input); Premiere treats them as opaque"]
+
+
+def test_probe_alpha_reports_a_silent_ffprobe_failure(monkeypatch):
+    import subprocess
+    monkeypatch.setattr("classes.ffmpeg_cli.run_ffmpeg",
+                        lambda args, **kw: subprocess.CompletedProcess(args, 1, stdout="", stderr=""))
+    with pytest.raises(fcp.ExportError, match=r"ffprobe failed \(exit 1\)"):       # was an IndexError
+        fcp.probe_alpha("/m/x.mov", "/usr/bin/ffprobe")
+
+
+def test_the_alpha_check_can_be_cancelled(tmp_path, monkeypatch):
+    from classes.handoff.jobs import JobCancelled
+    (tmp_path / "media").mkdir()
+    proj = _alpha_project(tmp_path / "media")
+    asked = []
+    monkeypatch.setattr("classes.ffmpeg_cli.find_ffmpeg", lambda name="ffmpeg": "/usr/bin/" + name)
+    monkeypatch.setattr(fcp, "probe_alpha", lambda path, exe=None: asked.append(path) or "")
+    progress = []
+    with pytest.raises(JobCancelled):
+        fcp.export_timeline(snapshot(proj), str(tmp_path / "C.xml"), render_stills=FakeStills(),
+                            on_progress=lambda f, m: progress.append(m), should_cancel=lambda: bool(asked))
+    assert len(asked) == 1 and progress[0].startswith("Checking lower third.mov")
+    assert not (tmp_path / "C.xml").exists()
 
 
 @pytest.mark.skipif(__import__("shutil").which("ffmpeg") is None or __import__("shutil").which("ffprobe") is None,

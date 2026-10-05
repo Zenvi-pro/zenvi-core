@@ -751,7 +751,9 @@ class _Planner:
         self.legacy = self._legacy_centers(seq)
         self.legacy_keys = self._legacy_keys(seq)
         self._channel_group: Dict[str, int] = {}    # audio item id -> items playing its channels together
+        self._split_channels: set = set()           # channel items of one file kept apart (not in the same state)
         self._image_sequences: List[str] = []
+        self.has_links = self._has_links(seq)       # the writer links its A/V items (Premiere, FCP7, Resolve)
         if abs(self.k - 1.0) > 1e-6:
             self.warn.add(self._("the sequence is %(seq)s and the project %(project)s; positions and sizes were "
                                  "scaled to fit") % {"seq": "%dx%d" % (seq.width, seq.height),
@@ -784,6 +786,20 @@ class _Planner:
                         values = [p.value] + [v for _w, v in p.keys]
                         if any(isinstance(v, tuple) and max(abs(v[0]), abs(v[1])) > LEGACY_CENTER_LIMIT
                                for v in values):
+                            return True
+            return False
+
+        return walk(seq)
+
+    @staticmethod
+    def _has_links(seq: XSequence) -> bool:
+        def walk(s, depth=0):
+            for track in s.video + s.audio:
+                for item in track.items:
+                    if isinstance(item, XClip):
+                        if item.links:
+                            return True
+                        if item.sequence is not None and depth < MAX_NEST_DEPTH and walk(item.sequence, depth + 1):
                             return True
             return False
 
@@ -921,7 +937,14 @@ class _Planner:
         tol = 1.0 / float(seq.rate.fps) + 1e-6
         candidates = []
         linked = [cid for cid, mt in video.links if mt == "audio" or (cid in audio_by_id)]
-        pool = [audio_by_id[c] for c in linked if c in audio_by_id] if linked else list(audio_by_id.values())
+        if linked:
+            pool = [audio_by_id[c] for c in linked if c in audio_by_id]
+        elif not self.has_links:
+            # a writer that links nothing: match the sound by timing, but never a single channel of a file
+            # (Zenvi's Separate Audio leaves the picture silent and plays each channel on its own)
+            pool = [a for a in audio_by_id.values() if not self._channel_item(a)]
+        else:
+            return None       # this XML links its clips: an unlinked picture has no sound of its own
         for a in pool:
             if a.id in taken or a.file is None or not a.track.primary:
                 continue
@@ -941,19 +964,8 @@ class _Planner:
                                               a.track.number))
 
     def _same_group(self, seq: XSequence, video: XClip, audio: XClip, audio_by_id: Dict[str, XClip]) -> List[str]:
-        """The audio item and the other channels of its stereo pair (same file and timing)."""
-        out = [audio.id]
-        span = self._media_span(seq, audio)
-        tol = 1.0 / float(seq.rate.fps) + 1e-6
-        for other in audio_by_id.values():
-            if other.id == audio.id or other.file is None or audio.file is None:
-                continue
-            if other.file.path != audio.file.path:
-                continue
-            o_span = self._media_span(seq, other)
-            if abs(o_span[0] - span[0]) <= tol and abs(o_span[1] - span[1]) <= tol:
-                out.append(other.id)
-        return out
+        """The video's sound item and the other channels of the same sound (linked to either, same state)."""
+        return [audio.id] + self._channel_siblings(seq, audio, audio_by_id, set(), also=video)
 
     def _warn_image_sequence(self, item: XClip, reader: dict) -> None:
         """Premiere links an image sequence by its first frame; Zenvi reads that file as one still."""
@@ -966,18 +978,29 @@ class _Planner:
                 self._image_sequences.append(name)
 
     def _channel_siblings(self, seq: XSequence, item: XClip, audio_by_id: Dict[str, XClip],
-                          taken: set) -> List[str]:
-        """Audio items linked to *item* that play other channels of the same media with the same timing."""
-        if item.file is None or item.sequence is not None:
+                          taken: set, also: Optional[XClip] = None) -> List[str]:
+        """Audio items that play other channels of *item*'s media with the same timing, in the same state.
+
+        Candidates are the items linked to *item* (or to *also*, its picture). Channel items in another
+        state (off, muted track, other Audio Levels) stay separate clips, each playing its own channel;
+        so do all of them when the writer links nothing (Zenvi's own Separate Audio clips come back as
+        they were). The two halves of an exploded stereo pair are one clip whatever they say.
+        """
+        if item.file is None or item.sequence is not None or not self._channelable(item):
             return []
-        linked = {cid for cid, _mt in item.links}
-        linked |= {o.id for o in audio_by_id.values() if any(cid == item.id for cid, _mt in o.links)}
+        if self.has_links:
+            refs = {cid for cid, _mt in item.links} | {o.id for o in audio_by_id.values()
+                                                        if any(cid == item.id for cid, _mt in o.links)}
+            if also is not None:
+                refs |= {cid for cid, _mt in also.links}
+            candidates = [audio_by_id[c] for c in sorted(refs) if c in audio_by_id]
+        else:
+            candidates = list(audio_by_id.values())
         span = self._media_span(seq, item)
         tol = 1.0 / float(seq.rate.fps) + 1e-6
         out = []
-        for cid in sorted(linked):
-            other = audio_by_id.get(cid)
-            if other is None or other is item or other.id in taken or other.file is None:
+        for other in candidates:
+            if other is item or other.id in taken or other.file is None or not self._channelable(other):
                 continue
             if other.file.path != item.file.path or other.sourcetrack == item.sourcetrack:
                 continue
@@ -988,8 +1011,31 @@ class _Planner:
                 continue
             if abs(self._source_in(seq, other) - self._source_in(seq, item)) > tol:
                 continue
-            out.append(other.id)
+            exploded = item.track.exploded_count > 1 and other.track.exploded_count > 1
+            if exploded or (self.has_links and _same_state(item, other)):
+                out.append(other.id)
+            else:
+                self._split_channels.update((item.id, other.id))
         return out
+
+    def _channelable(self, item: XClip) -> bool:
+        """An item that may stand for one channel: no stereo / adaptive type, and not from a mono file."""
+        if item.channel_type not in ("", "mono"):
+            return False
+        return not (item.file is not None and item.file.channels is not None and item.file.channels < 2)
+
+    def _channels_of(self, item: XClip) -> int:
+        """The media's channel count: what the XML says, else what the probe read."""
+        if item.file is not None and item.file.channels is not None:
+            return int(item.file.channels)
+        try:
+            return int((self.probes.get(item.file.path) or {}).get("channels") or 0) if item.file else 0
+        except (TypeError, ValueError):
+            return 0
+
+    def _channel_item(self, item: XClip) -> bool:
+        """An item that plays one channel of a multi-channel file (not the file's whole sound)."""
+        return item.sourcetrack >= 2 or (item.channel_type == "mono" and self._channels_of(item) >= 2)
 
     def _single_channel(self, item: XClip, reader: dict) -> Optional[int]:
         """The media channel (0-based) an audio item plays on its own, or None when it plays them all.
@@ -1000,15 +1046,18 @@ class _Planner:
         """
         if self._channel_group.get(item.id, 1) > 1 or item.track.exploded_count > 1:
             return None
-        if item.channel_type not in ("", "mono"):      # stereo, adaptive, 5.1: the item plays them all
-            return None
-        if item.file is not None and item.file.channels is not None and item.file.channels < 2:
-            return None                                # the XML says the file is mono
         try:
             channels = int(reader.get("channels") or 0)
         except (TypeError, ValueError):
             channels = 0
         k = item.sourcetrack - 1
+        if not self._channelable(item):                # stereo / adaptive items, or the XML says the file is mono
+            return None
+        if item.id in self._split_channels:            # one of a channel pair kept apart: its own channel
+            return k if channels >= 2 and 0 <= k < channels else None
+        if item.channel_type != "mono" and item.sourcetrack < 2:
+            # DaVinci Resolve and FCP7 write one item per stereo clip, from the first channel: the whole file
+            return None
         return k if channels >= 2 and 0 <= k < channels else None
 
     # -- one clip ---------------------------------------------------------------------
@@ -1500,6 +1549,15 @@ def _remap_keys(graph: Optional[XParam]) -> List[Tuple[float, float]]:
     return out
 
 
+def _same_state(a: XClip, b: XClip) -> bool:
+    """Two audio items that would sound alike: both on or both off, the same track state, the same levels."""
+    def levels(item: XClip):
+        e = item.effect("audiolevels")
+        p = e.params.get("level") if e is not None else None
+        return None if p is None else (str(p.value), tuple(p.keys))
+    return (a.enabled, a.track.enabled, levels(a)) == (b.enabled, b.track.enabled, levels(b))
+
+
 def _speed_of(item: XClip) -> Tuple[float, bool, bool]:
     """(speed %, reverse, variable) of an item's Time Remap ((100, False, False) without one)."""
     remap = item.effect("timeremap")
@@ -1764,13 +1822,19 @@ def _app_tr(text: str) -> str:
 
 
 def _roll_back(updates, history_len: int, redo: list) -> None:
-    """Undo the half-made import (its actions are the newest transaction) and forget it for Redo."""
-    if len(updates.actionHistory) > history_len:
+    """Revert exactly the actions this import added (newest first), drop them from history, restore Redo.
+
+    Not ``updates.undo()``: that reverts the whole transaction id, which may include a caller's own
+    earlier edits in the same transaction.
+    """
+    added = list(updates.actionHistory[history_len:])
+    del updates.actionHistory[history_len:]
+    for action in reversed(added):
         try:
-            updates.undo()
+            updates.dispatch_action(updates.get_reverse_action(action))
         except Exception:
-            log.error("could not roll back a failed XML import", exc_info=True)
-            return
+            log.error("could not roll back part of a failed XML import (%s %s)", action.type, action.key,
+                      exc_info=True)
     updates.redoHistory[:] = redo
 
 
