@@ -1,0 +1,169 @@
+"""Running the HyperFrames CLI: which CLI, the quiet environment, JSON output, renders, the Studio."""
+
+import json
+import os
+import sys
+import textwrap
+
+import pytest
+
+from classes.handoff import node_runtime
+from classes.handoff.hyperframes import cli as hf_cli
+
+
+@pytest.fixture
+def node(monkeypatch, tmp_path):
+    runtime = node_runtime.NodeRuntime(node=sys.executable, npm=(sys.executable, "npm-cli.js"),
+                                       npx=(sys.executable, "npx-cli.js"), version="22.11.0")
+    monkeypatch.setattr(node_runtime, "find_node", lambda min_major=18, env=None, **kw: runtime)
+    from classes import info
+    monkeypatch.setattr(info, "USER_PATH", str(tmp_path / "user"))
+    monkeypatch.delenv(hf_cli.CLI_ENV_OVERRIDE, raising=False)
+    monkeypatch.delenv(hf_cli.WORKERS_ENV, raising=False)
+    return runtime
+
+
+def _package(root, version):
+    os.makedirs(os.path.join(root, "bin"), exist_ok=True)
+    open(os.path.join(root, "bin", "hyperframes.mjs"), "w").write("// cli")
+    json.dump({"name": "hyperframes", "version": version}, open(os.path.join(root, "package.json"), "w"))
+
+
+def _project(tmp_path, pin=None):
+    root = tmp_path / "proj"
+    root.mkdir(exist_ok=True)
+    scripts = {"render": "npx --yes hyperframes@%s render" % pin} if pin else {"build": "vite"}
+    json.dump({"name": "p", "scripts": scripts}, open(root / "package.json", "w"))
+    return str(root)
+
+
+def test_project_pin(tmp_path):
+    assert hf_cli.project_pin(_project(tmp_path, "0.8.120")) == "0.8.120"
+    assert hf_cli.project_pin(_project(tmp_path)) is None
+    assert hf_cli.project_pin(str(tmp_path / "missing")) is None and hf_cli.project_pin(None) is None
+
+
+def test_resolution_order(tmp_path, node, monkeypatch):
+    proj = _project(tmp_path, "0.8.120")
+    cli = hf_cli.resolve_cli(proj)
+    assert (cli.source, cli.version) == ("npx", "0.8.120")
+    assert cli.argv == (sys.executable, "npx-cli.js", "--yes", "hyperframes@0.8.120")
+    assert hf_cli.resolve_cli(_project(tmp_path)).version == hf_cli.PINNED_VERSION
+    # Zenvi's private install (motion graphics) counts when the project pins nothing or the same version
+    private = hf_cli.private_install()
+    _package(private, "0.8.115")
+    assert hf_cli.resolve_cli(_project(tmp_path)).source == "zenvi"
+    assert hf_cli.resolve_cli(_project(tmp_path, "0.8.120")).source == "npx"
+    # the project's own install wins over both
+    _package(os.path.join(proj, "node_modules", "hyperframes"), "0.8.121")
+    cli = hf_cli.resolve_cli(proj)
+    assert (cli.source, cli.version, cli.argv[0]) == ("project", "0.8.121", sys.executable)
+    # and ZENVI_HYPERFRAMES_CLI over everything
+    other = str(tmp_path / "other")
+    _package(other, "9.9.9")
+    monkeypatch.setenv(hf_cli.CLI_ENV_OVERRIDE, other)
+    assert (hf_cli.resolve_cli(proj).source, hf_cli.resolve_cli(proj).version) == ("env", "9.9.9")
+    monkeypatch.setenv(hf_cli.CLI_ENV_OVERRIDE, str(tmp_path / "nope"))
+    with pytest.raises(hf_cli.CliError, match="does not exist"):
+        hf_cli.resolve_cli(proj)
+
+
+def test_no_node_is_a_clear_error(monkeypatch):
+    def missing(*a, **kw):
+        raise node_runtime.NodeNotFound("Node.js 22 or newer was not found. Install Node.js")
+    monkeypatch.setattr(node_runtime, "find_node", missing)
+    with pytest.raises(hf_cli.CliError, match="HyperFrames needs Node.js 22"):
+        hf_cli.resolve_cli(None)
+
+
+def test_every_command_runs_quiet(tmp_path, node, monkeypatch):
+    seen = {}
+
+    def fake_run(argv, cwd, env=None, timeout=None, on_line=None, should_cancel=None, runtime=None):
+        seen.update(argv=list(argv), env=dict(env), cwd=cwd)
+        for line in ("\x1b[1G\x1b[J◒  Checking browser", '{"ok": true, "errorCount": 0, "findings": []}'):
+            on_line(line)
+        return 0, ""
+    monkeypatch.setattr(node_runtime, "run_node", fake_run)
+    report = hf_cli.lint(_project(tmp_path))
+    assert report["ok"] is True and seen["argv"][-2:] == ["lint", "--json"]
+    for key, value in hf_cli.QUIET_ENV.items():
+        assert seen["env"][key] == value
+    assert seen["env"]["HYPERFRAMES_NO_TELEMETRY"] == "1" and seen["env"]["DO_NOT_TRACK"] == "1"
+
+
+def test_json_is_found_in_noisy_output_and_missing_json_is_an_error(tmp_path, node, monkeypatch):
+    out = ["[INFO] something {not json}", json.dumps({"timeline": {"duration": 3, "tracks": []}}), "done"]
+    monkeypatch.setattr(node_runtime, "run_node",
+                        lambda argv, cwd, **kw: ([kw["on_line"](x) for x in out], (0, ""))[1])
+    assert hf_cli.timeline(_project(tmp_path))["timeline"]["duration"] == 3
+    monkeypatch.setattr(node_runtime, "run_node",
+                        lambda argv, cwd, **kw: ([kw["on_line"](x) for x in ["Unknown command"]], (1, ""))[1])
+    with pytest.raises(hf_cli.CliError, match="printed no JSON"):
+        hf_cli.timeline(_project(tmp_path))
+
+
+def test_clean_line():
+    assert hf_cli.clean_line("\x1b[1G\x1b[J◐  Checking\x1b[1G\x1b[J◓  Checking browser") == "◓  Checking browser"
+    assert hf_cli.clean_line("\x1b[90m  26%  Streaming frame 1/78\x1b[39m") == "26%  Streaming frame 1/78"
+
+
+def test_render_arguments_progress_and_failure(tmp_path, node, monkeypatch):
+    proj = _project(tmp_path)
+    calls = []
+
+    def fake_run(argv, cwd, env=None, timeout=None, on_line=None, should_cancel=None, runtime=None):
+        calls.append(list(argv))
+        out = argv[argv.index("--output") + 1]
+        on_line("  ██░░  26%  Streaming frame 1/78")
+        on_line("  ██░░  80%  Streaming frame 78/78")
+        if "fail" in out:
+            return 1, "[INFO] noise\nError: Chrome cannot start"
+        open(out, "wb").write(b"mov")
+        return 0, ""
+    monkeypatch.setattr(node_runtime, "run_node", fake_run)
+    monkeypatch.setenv(hf_cli.WORKERS_ENV, "1")
+    progress = []
+    out = str(tmp_path / "r.mov")
+    hf_cli.render(proj, ".render-zenvi-1/index.html", out, fmt="mov", variables={"t": "A"}, fps="25",
+                  on_progress=lambda f, m: progress.append((f, m)))
+    argv = calls[0]
+    assert argv[argv.index("--composition") + 1] == ".render-zenvi-1/index.html"
+    assert argv[argv.index("--format") + 1] == "mov" and argv[argv.index("--fps") + 1] == "25"
+    assert argv[argv.index("--workers") + 1] == "1"
+    assert json.load(open(argv[argv.index("--variables-file") + 1])) == {"t": "A"}
+    assert progress == [(0.26, "Streaming frame 1/78"), (0.8, "Streaming frame 78/78")]
+    with pytest.raises(hf_cli.CliError, match="Chrome cannot start"):
+        hf_cli.render(proj, "index.html", str(tmp_path / "fail.mp4"), fmt="mp4")
+
+
+def test_studio_starts_once_reuses_and_stops(tmp_path, node, monkeypatch):
+    script = tmp_path / "fake_preview.py"
+    script.write_text(textwrap.dedent("""
+        import json, sys, time
+        port = sys.argv[sys.argv.index("--port") + 1]
+        print("[INFO] warming up", flush=True)
+        print(json.dumps({"schemaVersion": 1, "operation": "start", "ok": True, "result": {
+            "state": "started", "ready": True, "studioUrl": "http://127.0.0.1:%s/#project/p" % port}}), flush=True)
+        time.sleep(60)
+    """))
+    cli = hf_cli.Cli((sys.executable, str(script)), "0.8.126", "env", node)
+    monkeypatch.setattr(hf_cli, "resolve_cli", lambda project_dir=None, **kw: cli)
+    proj = _project(tmp_path)
+    studio = hf_cli.start_studio(proj, timeout=30)
+    try:
+        assert studio.url.startswith("http://127.0.0.1:%d/#project/" % studio.port)
+        assert hf_cli.start_studio(proj) is studio and hf_cli.running_studio(proj) is studio
+    finally:
+        assert hf_cli.stop_studios() == 1
+    studio.proc.wait(timeout=10)
+    assert studio.proc.poll() is not None and hf_cli.running_studio(proj) is None
+
+
+def test_studio_that_never_gets_ready(tmp_path, node, monkeypatch):
+    script = tmp_path / "broken.py"
+    script.write_text("print('Error: port in use', flush=True)\n")
+    cli = hf_cli.Cli((sys.executable, str(script)), "0.8.126", "env", node)
+    monkeypatch.setattr(hf_cli, "resolve_cli", lambda project_dir=None, **kw: cli)
+    with pytest.raises(hf_cli.CliError, match="port in use"):
+        hf_cli.start_studio(_project(tmp_path), timeout=10)
