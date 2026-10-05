@@ -67,11 +67,17 @@ see them as they render.
 
 Agents can do the same with Zenvi's `import_remotion_project_tool` (`project_dir` = this folder).
 
+Exporting from Zenvi into this folder again updates it (`node_modules`, added dependencies and your
+own files stay). Zenvi records what it wrote (under `zenvi` in `timeline.json`), so it will not
+replace changes you made here -- timeline edits, code, media copies -- without asking: import them
+first to keep them.
+
 ## How close is it to Zenvi?
 
-Exact: clip timing and trims, track order, scale modes, gravity, location, scale, rotation,
-origin and shear (the same math as Zenvi), keyframe easing, opacity, volume, constant speed,
-fade transitions, and where titles sit (the title SVGs themselves; fonts come from this computer).
+Exact: clip timing and trims, stacking (by track, then position), scale modes, gravity, location,
+scale, rotation, origin and shear (the same math as Zenvi), keyframe easing, opacity, volume,
+constant speed, fade transitions, and where titles sit (the title SVGs themselves; fonts come from
+this computer).
 
 Approximated: Chrome lays out SVG title text a few percent wider than Zenvi does (same font,
 start and baseline); wipe transitions play as fades; Brightness/Contrast, Saturation, Hue, Blur
