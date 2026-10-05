@@ -137,7 +137,7 @@ def _cancel_hook(job):
 
 def _progress_hook(job):
     def report(fraction, message) -> None:
-        job.report(fraction, message)
+        job.report(fraction, _tr(message) if message else message)
     return report
 
 
@@ -313,7 +313,7 @@ def _run_now(window, script_path: str, app_path: Optional[str]) -> None:
 
     def work(job):
         from classes.handoff.after_effects_export import run_in_after_effects, run_with_applescript
-        job.report(None, "Building the comp in After Effects")
+        job.report(None, _tr("Building the comp in After Effects"))
         if app_path:
             return run_with_applescript(script_path, app_path)
         summary, _receipt = run_in_after_effects(script_path)
@@ -389,7 +389,7 @@ def _offer_fallback(window, snapshot, message: str, app_path: Optional[str]) -> 
         result = export_after_effects(snapshot, send_folder(snapshot.project_path, snapshot.name),
                                       collect_media=False, interactive=False, progress=_progress_hook(job),
                                       should_cancel=_cancel_hook(job))
-        job.report(None, "Building the comp in After Effects")
+        job.report(None, _tr("Building the comp in After Effects"))
         return run_with_applescript(result.script_path, app_path)
 
     def done(job):
