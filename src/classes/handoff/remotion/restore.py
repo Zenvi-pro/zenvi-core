@@ -17,7 +17,10 @@ Remotion project (it differs from the original and is newer), so a title SVG
 changed there comes back. Edits to the readable timeline (moved, trimmed,
 deleted or duplicated clips, keyframes, markers, ...) are applied onto the
 original objects by :mod:`classes.handoff.remotion.edits`; an untouched
-export restores bit-identical.
+export restores bit-identical. A restore with edits records the readable
+timeline's hash under the project's ``settings`` (``remotion_imported``),
+so exporting into that folder again does not mistake them for edits it
+would discard.
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from classes.handoff.linked_media import LinkError
 from classes.handoff.remotion import edits
-from classes.handoff.remotion.exporter import TIMELINE_REL, readable_hash
+from classes.handoff.remotion.exporter import IMPORTED_KEY, TIMELINE_REL, readable_hash, with_imported
 
 SUPPORTED_VERSION = 1
 TRACK_STEP = 1000000
@@ -222,6 +225,11 @@ def write_project_file(timeline: dict, project_root: str, zvn_path: str, *, repl
     project, warnings, applied = restored_project(timeline, project_root)
     project["history"] = {"undo": [], "redo": []}
     project["id"] = _new_id(set())  # a new project, not the exported one's twin (cloud identity)
+    if timeline_edited(timeline):  # its edits are in this project now: exporting there again keeps nothing to lose
+        found = project.get("settings")
+        settings: Dict[str, Any] = dict(found) if isinstance(found, dict) else {}
+        settings[IMPORTED_KEY] = with_imported(project, readable_hash(timeline))
+        project["settings"] = settings
     partial = zvn_path + ".partial"
     with open(partial, "w", encoding="utf-8") as fh:
         json.dump(project, fh, indent=1, ensure_ascii=False)
@@ -353,6 +361,7 @@ def insert_native(timeline: dict, project_root: str, *, position: Optional[float
     reused.
     """
     project, warnings, applied = restored_project(timeline, project_root)
+    edited_hash = readable_hash(timeline) if timeline_edited(timeline) else None
 
     def _commit():
         from classes.editor_tools._base import get_app, playhead_seconds, snap_seconds
@@ -364,7 +373,13 @@ def insert_native(timeline: dict, project_root: str, *, position: Optional[float
         start = snap_seconds(playhead_seconds() if position is None else max(0.0, float(position)))
         plan, plan_warnings = plan_native(project, current, offset=start)
         reused: Dict[str, str] = {}
+        record = edited_hash is not None and isinstance(current.get("settings"), dict)
+        if record and IMPORTED_KEY not in current["settings"]:
+            # updates merge, so undo cannot remove a key an edit added: give it a neutral value outside history
+            app.updates.update_untracked(["settings"], {IMPORTED_KEY: []})
         with nested_transaction(app.updates):
+            if record:  # the edits are in this project now (undo takes the record back with them)
+                app.updates.update(["settings"], {IMPORTED_KEY: with_imported(current, str(edited_hash))})
             for layer in plan["layers"]:
                 app.updates.insert(["layers"], layer)
             for f in plan["files"]:

@@ -755,15 +755,55 @@ def project_texts(snapshot: TimelineSnapshot, timeline: dict, *, generator: str,
 
 
 def text_sha256(text: str) -> str:
-    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+    """sha256 of a generated text file, line endings normalized (a Windows ``core.autocrlf`` checkout is no edit)."""
+    return "sha256:" + hashlib.sha256(text.replace("\r\n", "\n").encode("utf-8")).hexdigest()
 
 
 def file_sha256(path: str) -> Optional[str]:
+    """:func:`text_sha256` of the file at *path* (CRLF read as LF); None when it cannot be read."""
     try:
         with open(path, "rb") as fh:
-            return "sha256:" + hashlib.sha256(fh.read()).hexdigest()
+            return "sha256:" + hashlib.sha256(fh.read().replace(b"\r\n", b"\n")).hexdigest()
     except OSError:
         return None
+
+
+TEXT_MEDIA_SUFFIXES = (".svg", ".json", ".txt", ".srt", ".vtt", ".csv", ".xml", ".html", ".css")
+TEXT_MEDIA_LIMIT = 4 * 1024 * 1024
+
+
+def same_media(a: str, b: str) -> bool:
+    """*a* and *b* hold the same media: text files (title SVGs ...) with line endings normalized, others sampled."""
+    from classes.handoff.remotion import restore
+    try:
+        small = max(os.path.getsize(a), os.path.getsize(b)) <= TEXT_MEDIA_LIMIT
+    except OSError:
+        return False
+    if small and a.lower().endswith(TEXT_MEDIA_SUFFIXES):
+        try:
+            with open(a, "rb") as fa, open(b, "rb") as fb:
+                return fa.read().replace(b"\r\n", b"\n") == fb.read().replace(b"\r\n", b"\n")
+        except OSError:
+            return False
+    return restore._same_content(a, b)
+
+
+IMPORTED_KEY = "remotion_imported"   # under the project's "settings": readable hashes of imported Remotion timelines
+IMPORTED_KEEP = 20
+
+
+def imported_timelines(project_data: Any) -> List[str]:
+    """The readable hashes of the Remotion timelines whose edits this project already contains (restore records
+    them), so exporting into that folder again does not count them as edits to keep."""
+    settings = (project_data or {}).get("settings") if hasattr(project_data, "get") else None
+    value = settings.get(IMPORTED_KEY) if isinstance(settings, dict) else None
+    return [str(v) for v in value if isinstance(v, str)] if isinstance(value, list) else []
+
+
+def with_imported(project_data: Any, digest: str) -> List[str]:
+    """:func:`imported_timelines` plus *digest* (the newest last, at most IMPORTED_KEEP)."""
+    found = [d for d in imported_timelines(project_data) if d != digest] + [digest]
+    return found[-IMPORTED_KEEP:]
 
 
 def _write_files(root: str, texts: Dict[str, str], timeline: dict) -> List[str]:
@@ -817,15 +857,17 @@ def read_previous_timeline(output_dir: str) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
-def _same_as_source(path: str, asset: Optional[Asset]) -> bool:
-    """*path* is the copy install_media would make of *asset* now (same size and mtime: copy2 keeps it)."""
-    if asset is None:
+def _same_as_source(path: str, source: Optional[str]) -> bool:
+    """*path* holds what Zenvi copies from *source* (a fresh clone or checkout of the export has new dates)."""
+    if not source or not os.path.isfile(source):
         return False
     try:
-        st, sd = os.stat(asset.source), os.stat(path)
+        st, sd = os.stat(source), os.stat(path)
     except OSError:
         return False
-    return st.st_size == sd.st_size and int(st.st_mtime) == int(sd.st_mtime)
+    if st.st_size == sd.st_size and int(st.st_mtime) == int(sd.st_mtime):
+        return True  # copy2 keeps both
+    return same_media(source, path)
 
 
 def _zenvi_block(timeline: Optional[dict]) -> dict:
@@ -834,13 +876,16 @@ def _zenvi_block(timeline: Optional[dict]) -> dict:
 
 
 def update_losses(output_dir: str, previous: Optional[dict], texts: Dict[str, str],
-                  assets: Optional[Dict[str, Asset]] = None) -> List[str]:
+                  assets: Optional[Dict[str, Asset]] = None, imported: Optional[List[str]] = None) -> List[str]:
     """What exporting into *output_dir* again would discard: changes made in the Remotion project since Zenvi
     wrote it (timeline edits not imported yet, code and docs, edited media copies). Blocking (reads files).
 
     A file counts only when it differs both from what Zenvi recorded writing
     and from what this export would write, so the files a part-way update
-    already replaced are not mistaken for edits.
+    already replaced are not mistaken for edits; line endings do not count
+    (a ``core.autocrlf`` checkout), nor do new dates on unchanged media (a
+    clone). Timeline edits whose readable hash is in *imported* (the project
+    restored them) are in the project already.
     """
     by_src = {a.src: a for a in (assets or {}).values()}
     if previous is None:
@@ -848,8 +893,11 @@ def update_losses(output_dir: str, previous: Optional[dict], texts: Dict[str, st
     zenvi = _zenvi_block(previous)
     out: List[str] = []
     stored = zenvi.get("readable_sha256")
-    if stored and stored != readable_hash(previous):
+    current = readable_hash(previous)
+    if stored and stored != current and current not in set(imported or []):
         out.append(f"edits to {TIMELINE_REL} that were not imported into Zenvi yet")
+    originals = {str(src): str(original) for original, src in (zenvi.get("assets") or {}).items()
+                 if isinstance(original, str) and isinstance(src, str)}
     files = zenvi.get("files")
     if isinstance(files, dict):
         for rel, digest in sorted(files.items()):
@@ -871,13 +919,16 @@ def update_losses(output_dir: str, previous: Optional[dict], texts: Dict[str, st
                 continue
             path = os.path.join(output_dir, "public", *str(rel).split("/"))
             now = media_record(path)
-            if now is None or now.get("link") or _same_as_source(path, by_src.get(str(rel))):
+            if now is None or now.get("link"):
                 continue
-            if record.get("link") or (now.get("size"), now.get("mtime_ns")) != (record.get("size"),
-                                                                                 record.get("mtime_ns")):
-                out.append(f"changes to public/{rel}")
+            if not record.get("link") and (now.get("size"), now.get("mtime_ns")) == (record.get("size"),
+                                                                                     record.get("mtime_ns")):
+                continue  # as Zenvi wrote it
+            asset = by_src.get(str(rel))
+            if _same_as_source(path, asset.source if asset else originals.get(str(rel))):
+                continue
+            out.append(f"changes to public/{rel}")
     else:
-        from classes.handoff.remotion import restore
         for original, src in sorted((zenvi.get("assets") or {}).items()):
             copy_path = os.path.join(output_dir, "public", *str(src).split("/"))
             if not os.path.isfile(copy_path) or os.path.islink(copy_path) or not os.path.isfile(str(original)):
@@ -886,8 +937,9 @@ def update_losses(output_dir: str, previous: Optional[dict], texts: Dict[str, st
                 newer = os.path.getmtime(copy_path) > os.path.getmtime(str(original))
             except OSError:
                 newer = False
-            if newer and not restore._same_content(str(original), copy_path) \
-                    and not _same_as_source(copy_path, by_src.get(str(src))):
+            asset = by_src.get(str(src))
+            if newer and not same_media(str(original), copy_path) \
+                    and not _same_as_source(copy_path, asset.source if asset else None):
                 out.append(f"changes to public/{src}")
     return out
 
@@ -903,10 +955,52 @@ def _recorded_media(previous: Optional[dict]) -> List[str]:
 
 STAGING_PREFIX = ".zenvi-update-"
 STAGING_MAX_AGE = 3600.0
+HEARTBEAT = ".zenvi-heartbeat"
+HEARTBEAT_EVERY = 30.0
+STAGING_SCAN_LIMIT = 20000
+
+
+def last_activity(folder: str) -> float:
+    """The newest mtime of *folder* and everything in it (a copy in progress keeps touching its file)."""
+    newest = 0.0
+    seen = 0
+    for dirpath, dirnames, filenames in os.walk(folder):
+        for name in [dirpath] + [os.path.join(dirpath, n) for n in filenames + dirnames]:
+            try:
+                newest = max(newest, os.lstat(name).st_mtime)
+            except OSError:
+                continue
+            seen += 1
+            if seen >= STAGING_SCAN_LIMIT:
+                return newest
+    return newest
+
+
+class _Heartbeat:
+    """Touches ``<stage>/.zenvi-heartbeat`` at most every HEARTBEAT_EVERY seconds while an update runs."""
+
+    def __init__(self, stage: str):
+        import time
+        self.path = os.path.join(stage, HEARTBEAT)
+        self._time = time.monotonic
+        self._last = -HEARTBEAT_EVERY
+        self.beat()
+
+    def beat(self) -> None:
+        now = self._time()
+        if now - self._last < HEARTBEAT_EVERY:
+            return
+        self._last = now
+        try:
+            with open(self.path, "w") as fh:
+                fh.write(str(os.getpid()))
+        except OSError:
+            pass
 
 
 def _remove_old_staging(output_dir: str) -> None:
-    """Staging folders an interrupted update left behind (Zenvi's by name; an hour old, so never a running one)."""
+    """Staging folders an interrupted update left behind: Zenvi's by name, and nothing in them changed for an
+    hour (a running update's copies and heartbeat keep its folder fresh)."""
     import time
     try:
         names = os.listdir(output_dir)
@@ -916,11 +1010,7 @@ def _remove_old_staging(output_dir: str) -> None:
         path = os.path.join(output_dir, name)
         if not name.startswith(STAGING_PREFIX) or os.path.islink(path) or not os.path.isdir(path):
             continue
-        try:
-            old = time.time() - os.path.getmtime(path) > STAGING_MAX_AGE
-        except OSError:
-            continue
-        if old:
+        if time.time() - last_activity(path) > STAGING_MAX_AGE:
             shutil.rmtree(path, ignore_errors=True)
 
 
@@ -985,7 +1075,7 @@ def export_project(snapshot: TimelineSnapshot, project_data: dict, output_dir: s
                           existing_package=existing_package)
     if mode == "update":
         previous = read_previous_timeline(output_dir)
-        losses = update_losses(output_dir, previous, texts, assets)
+        losses = update_losses(output_dir, previous, texts, assets, imported_timelines(project_data))
         if losses and not replace_edits:
             raise ExportHasEdits(
                 f"{output_dir} is an earlier Zenvi export with changes made in it that exporting again would discard: "
@@ -1001,11 +1091,18 @@ def export_project(snapshot: TimelineSnapshot, project_data: dict, output_dir: s
         stage = tempfile.mkdtemp(prefix="." + os.path.basename(output_dir) + ".zenvi-partial-", dir=parent)
     live_public = os.path.join(output_dir, "public")
     removed: List[str] = []
+    heartbeat = _Heartbeat(stage) if mode == "update" else None
+
+    def media_progress(fraction: Optional[float], message: str) -> None:
+        if heartbeat is not None:
+            heartbeat.beat()
+        report(0.85 * (fraction or 0.0), message)
+
     try:
         moves: List[Tuple[str, str]] = []
         kept: set = set()
         warnings += install_media(assets, os.path.join(stage, "public"), copy_media=copy_media,
-                                  on_progress=lambda f, m: report(0.85 * (f or 0.0), m), should_cancel=cancel,
+                                  on_progress=media_progress, should_cancel=cancel,
                                   keep=kept, live_dir=live_public if mode == "update" else None, moves=moves)
         if cancel():
             raise JobCancelled("Remotion export cancelled")
@@ -1086,5 +1183,6 @@ __all__ = ["export_project", "build_timeline", "plan_assets", "install_media", "
            "transition_entry", "mask_multiplier", "effect_filters", "clip_entry", "lossless_project", "readable_hash",
            "render_root_tsx", "package_json", "render_readme", "target_mode", "is_zenvi_export", "ExportError",
            "ExportHasEdits", "check_update_target", "update_losses", "project_texts", "media_record",
+           "imported_timelines", "with_imported", "IMPORTED_KEY", "same_media", "last_activity",
            "REMOTION_VERSION", "DEPENDENCIES", "DEV_DEPENDENCIES", "COMPOSITION_ID", "TIMELINE_REL", "MEDIA_DIR",
            "STATIC_FILES", "GENERATED_FILES", "TEMPLATE_DIR", "round_half_up", "project_copy", "snapshot_from_app"]

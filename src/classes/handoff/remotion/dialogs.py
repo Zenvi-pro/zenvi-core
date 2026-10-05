@@ -10,7 +10,9 @@ Nothing of a picked project runs before the user trusts it: the first look
 is the static scan (no Node); reading sizes and props, rendering and
 installing run its code (``remotion.config.*``, its components, npm
 scripts), so Zenvi asks first and remembers the answer for that folder until
-it quits. Disk work (existence checks, names, timeline.json) stays in jobs.
+it quits (:mod:`classes.handoff.remotion.trust`, which also gates re-renders
+and Open in Studio). Disk work (existence checks, names, timeline.json)
+stays in jobs.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from qt_api import (
 )
 
 from classes.app import get_app
+from classes.handoff.remotion import trust
 from classes.logger import log
 
 CODEC_LABELS = (
@@ -41,22 +44,14 @@ TRUST_TEXT = ("Reading %s runs its code: Zenvi uses the project's own Remotion, 
               "projects you trust.")
 INSTALL_TRUST_TEXT = ("Installing the dependencies of %s runs code from its packages (npm install scripts). Only "
                       "continue with projects you trust.")
-
-# Project folders (real paths) the user agreed to run, for this session.
-_trusted: set = set()
-
-
-def trust_key(root: str) -> str:
-    """The key a project folder is trusted under (its real path). Blocking (resolves links)."""
-    return os.path.normcase(os.path.realpath(root))
-
-
-def is_trusted(key: str) -> bool:
-    return key in _trusted
-
-
-def remember_trust(key: str) -> None:
-    _trusted.add(key)
+ACTION_TRUST_TEXTS = {
+    "render": ("Re-rendering %s runs its code: Zenvi uses the project's own Remotion, which evaluates its "
+               "remotion.config and compositions with Node.js and a headless browser, like npx remotion render. "
+               "Only continue with projects you trust."),
+    "studio": ("Opening %s in Remotion Studio runs its code (its remotion.config and compositions, with Node.js), "
+               "like npx remotion studio. Only continue with projects you trust."),
+    "read": TRUST_TEXT,
+}
 
 
 def _tr(text: str) -> str:
@@ -299,14 +294,28 @@ def ask_trust(window, project, *, install: bool = False) -> Optional[str]:
     return None
 
 
+def ask_trust_for(root: str, name: str, action: str) -> bool:
+    """The trust question for a re-render or Open in Studio of a linked clip (``trust.require``; GUI thread)."""
+    window = getattr(get_app(), "window", None)
+    box = QMessageBox(window)
+    box.setIcon(QMessageBox.Warning)
+    box.setWindowTitle(_tr("Run This Project's Code?"))
+    box.setText(_tr(ACTION_TRUST_TEXTS.get(action, TRUST_TEXT)) % name)
+    box.setInformativeText(root)
+    run_button = box.addButton(_tr("Run Its Code"), QMessageBox.AcceptRole)
+    box.addButton(QMessageBox.Cancel)
+    box.exec_()
+    return box.clickedButton() is run_button
+
+
 def read_project(window, folder: str) -> None:
     """Look at *folder* without running it, ask whether to trust it, then read it with its own Remotion."""
     from classes.handoff import jobs
-    from classes.handoff.remotion import importer
+    from classes.handoff.remotion import detect, importer
 
     def look(job):  # the static scan: nothing of the project runs
         listing = importer.list_compositions(folder, static=True)
-        return listing, trust_key(listing.project.root)
+        return listing, trust.trust_key(listing.project.root)
 
     def looked(job):
         if job.error is not None:
@@ -314,21 +323,28 @@ def read_project(window, folder: str) -> None:
             return
         listing, key = job.result
         project = listing.project
-        if not listing.compositions and not project.is_zenvi_generated:
-            QMessageBox.information(window, _tr("Import Remotion Project"),
-                                    _tr("%s has no compositions.") % project.name)
-            return
-        if not project.installed or not project.entry:  # nothing can run yet; Install asks first
+        if not project.entry:  # nothing can ever render
+            if not listing.compositions and not project.is_zenvi_generated:
+                try:
+                    detect.require_ready(project)
+                except Exception as exc:
+                    QMessageBox.information(window, _tr("Import Remotion Project"), str(exc))
+                    return
             _show_import_dialog(window, _not_installed(listing), key)
             return
-        if not is_trusted(key):
+        if not project.installed:  # nothing can run yet; Install asks first, then the compositions are read
+            _show_import_dialog(window, _not_installed(listing), key)
+            return
+        # Installed: the compositions come from the project's own bundle -- also when the code registers them
+        # dynamically (templates.map(t => <Composition id={t.id} ... />)) and the static scan found none.
+        if not trust.is_trusted(key):
             answer = ask_trust(window, project)
             if answer is None:
                 return
             if answer == "restore":
                 _show_import_dialog(window, listing, key)
                 return
-            remember_trust(key)
+            trust.remember(key)
         _read_compositions(window, folder, key)
 
     jobs.submit_job(look, label=_tr("Reading Remotion project"), kind="remotion", interactive=True, on_done=looked)
@@ -382,10 +398,11 @@ def _start_import(window, listing, choice: ImportChoice, key: str = "") -> None:
     from classes.handoff.remotion import detect, importer
     project = listing.project
     if choice.mode == "install":
-        if not is_trusted(key):
+        if not (key and trust.is_trusted(key)):  # (the key comes from the job that looked at the project)
             if ask_trust(window, project, install=True) != "run":
                 return
-            remember_trust(key)
+            if key:
+                trust.remember(key)
         _install(window, project.root)
         return
     if choice.mode == "open":
@@ -704,5 +721,5 @@ def _run_export(window, snapshot, data, values: dict, *, replace_edits: bool) ->
 
 
 __all__ = ["import_remotion_project", "export_remotion_project", "read_project", "RemotionImportDialog",
-           "RemotionExportDialog", "ImportChoice", "ask_trust", "settle_unsaved", "ask_restored_path",
-           "default_export_dir", "trust_key", "is_trusted", "remember_trust"]
+           "RemotionExportDialog", "ImportChoice", "ask_trust", "ask_trust_for", "settle_unsaved", "ask_restored_path",
+           "default_export_dir"]

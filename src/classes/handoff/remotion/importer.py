@@ -31,7 +31,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from classes.handoff import linked_media
 from classes.handoff.linked_media import LinkError
-from classes.handoff.remotion import detect, helper, provider, restore, sources
+from classes.handoff.remotion import detect, helper, provider, restore, sources, trust
 from classes.logger import log
 
 ProgressFn = Callable[[Optional[float], str], None]
@@ -106,6 +106,7 @@ def list_compositions(project_dir: str, *, on_progress: Optional[ProgressFn] = N
                if project.entry else "the project has no entry point")
         return Listing(project, comps, [f"read from the code only: {why}"], static_only=True)
     detect.require_ready(project)
+    trust.require(project.root, project.name, action="read")  # the dialog asked already; tools are not gated
     bundle = helper.bundle_dir(project.root, project.entry or "", provider.sources_fingerprint(project), project.version)
     run = helper.run_helper("compositions", project_dir=project.root, entry=project.entry,
                             options={"bundle": bundle}, on_progress=on_progress, should_cancel=should_cancel)
@@ -256,12 +257,13 @@ class PartialImport(LinkError):
         self.receipt = receipt
 
 
-def _project_identity() -> Tuple[str, str]:
-    """(project id, file path) of the open project, read on the GUI thread."""
+def _project_identity() -> Tuple[str, int]:
+    """Which project is open, read on the GUI thread: its id and its data (opening or starting a project
+    replaces both; saving -- Save As, or the first save of an untitled project -- changes neither)."""
     def _read():
         from classes.editor_tools._base import get_app
         project = get_app().project
-        return str(project.get("id") or ""), str(getattr(project, "current_filepath", "") or "")
+        return str(project.get("id") or ""), id(getattr(project, "_data", None))
 
     from classes.editor_tools._base import ToolError
     from classes.editor_tools.titles_text_common import precheck_on_main
@@ -269,7 +271,7 @@ def _project_identity() -> Tuple[str, str]:
         found = precheck_on_main(_read)
     except ToolError as exc:
         raise LinkError(str(exc)) from None
-    return (str(found[0]), str(found[1])) if isinstance(found, (tuple, list)) and len(found) == 2 else ("", "")
+    return (str(found[0]), int(found[1])) if isinstance(found, (tuple, list)) and len(found) == 2 else ("", 0)
 
 
 def _end_batch() -> None:
@@ -391,6 +393,8 @@ def import_project(project_dir: str, *, compositions: Optional[Sequence[str]] = 
                 else "If it lands, it is one undo step")
         raise PartialImport(f"the Remotion import stopped part-way: {summary}, then {exc}. {undo}; check the "
                             "timeline before importing again", receipt_so_far) from exc
+    if clips:  # its code ran with the user's (or their agent's) go-ahead: later re-renders do not ask again
+        trust.trust_folder(project.root)
     warnings = list(plan.warnings)
     if native_receipt:
         warnings += native_receipt.get("warnings") or []

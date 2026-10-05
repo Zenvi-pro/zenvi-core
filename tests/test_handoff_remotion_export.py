@@ -667,3 +667,106 @@ def test_rotated_phone_video_gets_a_note(linked, tmp_path):  # noqa: F811
     receipt = _export(linked, tmp_path / "out")
     assert any("stored rotated (90°" in n for n in receipt["notes"])
     assert exporter.metadata_rotation({"metadata": {"rotate": "x"}}) == 0.0 and exporter.metadata_rotation({}) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Verification round: re-export after importing the edits, line endings, clones, staging age
+# ---------------------------------------------------------------------------
+
+def _move_image(out, clips, position=3.0):
+    timeline = _timeline(out)
+    next(c for c in timeline["clips"] if c["id"] == clips["image"])["position"] = position
+    with open(os.path.join(str(out), "src", "zenvi", "timeline.json"), "w") as fh:
+        json.dump(timeline, fh)
+
+
+def test_exporting_again_after_importing_the_edits_is_not_refused(linked, tmp_path):  # noqa: F811
+    """The documented round trip: edit in Remotion -> import into Zenvi -> export into the same folder again."""
+    clips, _files = build_project(linked, str(tmp_path / "media"))
+    out = tmp_path / "out"
+    _export(linked, out)
+    _move_image(out, clips)
+    timeline = restore.load_timeline(restore.timeline_path(str(out)))
+    zvn, _warnings, applied = restore.write_project_file(timeline, str(out), str(tmp_path / "restored.zvn"))
+    assert applied and json.load(open(zvn))["settings"][exporter.IMPORTED_KEY] == [exporter.readable_hash(timeline)]
+    linked.store._data = json.load(open(zvn))  # the restored project, as Zenvi opens it
+    receipt = _export(linked, out)
+    assert receipt["mode"] == "update" and not any("replaced" in w for w in receipt["warnings"])
+    assert next(c for c in _timeline(out)["clips"] if c["id"] == clips["image"])["position"] == 3.0
+    # a further Remotion-side edit after that import is still protected
+    _move_image(out, clips, 4.0)
+    with pytest.raises(exporter.ExportHasEdits, match="not imported into Zenvi yet"):
+        _export(linked, out)
+
+
+def test_a_crlf_checkout_or_a_fresh_clone_of_the_export_is_not_an_edit(linked, tmp_path):  # noqa: F811
+    """git core.autocrlf rewrites line endings; a clone gives every file a new date: neither is an edit."""
+    build_project(linked, str(tmp_path / "media"))
+    with open(str(tmp_path / "media" / "title.svg"), "wb") as fh:
+        fh.write(b"<svg>\n  <text>Trip</text>\n</svg>\n")  # a title SVG with lines (text: git converts it)
+    out = tmp_path / "out"
+    _export(linked, out)
+    svg = out / "public" / "zenvi-media" / "Title.svg"
+    assert svg.read_bytes().count(b"\n") == 3
+    for rel in [dest for _src, dest in exporter.STATIC_FILES] + ["src/Root.tsx", "README.md",
+                                                                 "public/zenvi-media/Title.svg"]:
+        path = os.path.join(str(out), *rel.split("/"))
+        data = open(path, "rb").read().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+        with open(path, "wb") as fh:
+            fh.write(data)
+    for name in os.listdir(str(out / "public" / "zenvi-media")):
+        os.utime(str(out / "public" / "zenvi-media" / name), (1, 1))  # a clone's dates
+    with open(str(out / "src" / "zenvi" / "timeline.json"), "rb") as fh:
+        crlf = fh.read().replace(b"\n", b"\r\n")
+    with open(str(out / "src" / "zenvi" / "timeline.json"), "wb") as fh:
+        fh.write(crlf)
+    assert svg.read_bytes().count(b"\r\n") == 3
+    receipt = _export(linked, out)
+    assert receipt["mode"] == "update" and not any("replaced" in w for w in receipt["warnings"])
+    # a real edit to a media copy is still found under new dates
+    (out / "public" / "zenvi-media" / "logo.png").write_bytes(b"edited in Photoshop")
+    os.utime(str(out / "public" / "zenvi-media" / "logo.png"), (1, 1))
+    with pytest.raises(exporter.ExportHasEdits, match="logo.png"):
+        _export(linked, out)
+
+
+def test_an_updates_staging_folder_counts_as_busy_while_anything_in_it_changes(tmp_path):
+    import time
+    stage = tmp_path / ".zenvi-update-abc"
+    (stage / "public" / "zenvi-media").mkdir(parents=True)
+    copying = stage / "public" / "zenvi-media" / "big.mov.partial"
+    copying.write_bytes(b"still copying")
+    old = time.time() - 3 * 3600
+    for path in (stage, stage / "public", stage / "public" / "zenvi-media"):
+        os.utime(str(path), (old, old))  # the folders themselves do not change while a file is copied into them
+    exporter._remove_old_staging(str(tmp_path))
+    assert stage.exists()  # an update running for over an hour is not deleted under it
+    os.utime(str(copying), (old, old))
+    exporter._remove_old_staging(str(tmp_path))
+    assert not stage.exists()
+    other = tmp_path / "not-ours"
+    other.mkdir()
+    os.utime(str(other), (old, old))
+    exporter._remove_old_staging(str(tmp_path))
+    assert other.exists()
+
+
+def test_a_running_update_keeps_a_heartbeat(linked, tmp_path, monkeypatch):  # noqa: F811
+    build_project(linked, str(tmp_path / "media"))
+    out = tmp_path / "out"
+    _export(linked, out)
+    with open(str(tmp_path / "media" / "beach.mp4"), "wb") as fh:
+        fh.write(b"a new cut")
+    seen = []
+    real = exporter.install_media
+
+    def spy(assets, public_dir, **kw):
+        stage = os.path.dirname(public_dir)
+        seen.append(os.path.isfile(os.path.join(stage, exporter.HEARTBEAT)))
+        return real(assets, public_dir, **kw)
+
+    monkeypatch.setattr(exporter, "install_media", spy)
+    _export(linked, out)
+    assert seen == [True]
+    assert not [n for n in os.listdir(str(out)) if n.startswith(exporter.STAGING_PREFIX)]
+    assert not os.path.exists(str(out / exporter.HEARTBEAT))

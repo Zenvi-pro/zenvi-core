@@ -29,7 +29,9 @@ requested render settings (see :func:`sources_fingerprint`). Props travel in
 Remotion's own special-type JSON (a ``Date`` is ``"remotion-date:<ISO>"``),
 so a Date default is still a Date on every re-render.
 Cancelling raises ``jobs.JobCancelled`` (never a LinkError), so a cancel
-is not remembered as a render error.
+is not remembered as a render error. A re-render or Open in Studio the user
+clicked asks first when the project's folder is not trusted this session
+(:mod:`classes.handoff.remotion.trust`); a "no" is a cancel too.
 """
 
 from __future__ import annotations
@@ -46,7 +48,7 @@ from classes.handoff.linked_media import (
     DEFAULT_EXCLUDED_DIRS, LinkError, RenderResult, SourceMissing, decode_props, encode_props,
     fingerprint_sources, fingerprint_value, link_props,
 )
-from classes.handoff.remotion import detect, helper, sources
+from classes.handoff.remotion import detect, helper, sources, trust
 from classes.logger import log
 
 KIND = "remotion"
@@ -248,6 +250,8 @@ class RemotionProvider:
             entry = project.entry or ""
         if not entry:
             raise SourceMissing(f"the entry point of {project.name} is gone")
+        # a re-render the user clicked (pill, Linked Source, Edit Props) asks before running the project's code
+        trust.require(project.root, project.name, action="render")
         props = link_props(link)
         codec = requested_codec(link)
         frames = settings(link).get("frames") or None
@@ -334,6 +338,7 @@ class RemotionProvider:
     def open_studio(self, link: dict) -> None:
         from classes.handoff.remotion import studio
         project = detect.require_ready(_project_of(link))
+        trust.require(project.root, project.name, action="studio")
         source = link.get("source") or {}
         studio.open_studio(project, str(source.get("composition") or "") or None)
 
