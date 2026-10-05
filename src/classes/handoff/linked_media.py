@@ -38,7 +38,6 @@ import datetime
 import errno
 import hashlib
 import json
-import math
 import os
 import re
 import shutil
@@ -49,6 +48,7 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Tuple, runtime_checkable
 
+from classes import frame_time as ft
 from classes.assets import path_is_under
 from classes.logger import log
 
@@ -881,13 +881,12 @@ def add_linked_media(path: str, link: dict, *, position: Optional[float] = None,
         from classes.updates import nested_transaction
         File = _query("File")
         from classes.editor_tools._base import playhead_seconds
+        from classes import project_files
         app = _app()
         fps = _project_fps()
         start = _snap(playhead_seconds() if position is None else position, fps)
-        frames = max(1, int(round(duration * float(fps))))
-        length = frames / float(fps)
-        if length > duration + 1e-6:
-            length = max(1.0 / float(fps), (frames - 1) / float(fps))
+        # whole frames like Timeline.addClip: float error in the probe never drops the last frame
+        length = ft.to_seconds(project_files.media_frame_count(duration, fps), fps)
         layer, created = plan_overlay_track(start, start + length, str(track or ""))
         with nested_transaction(app.updates):
             existing = File.get(path=path)
@@ -951,27 +950,30 @@ def _swap_on_gui(file_id: str, reader: dict, duration: float, update: dict, expe
     new["name"] = old.get("name") or new.get("name")
     warnings, notes = [], []
     fps = _project_fps()
-    frame = 1.0 / float(fps)
+    # Compare in whole project frames, rounded like Timeline.addClip: a probed duration a hair
+    # short of a frame boundary (ProRes: 2.5999999 for 2.6 s) never cuts a clip's last frame.
+    last_frame = project_files.media_frame_count(duration, fps)
+    end_limit = ft.to_seconds(last_frame, fps)
     old_duration = float(old.get("duration") or 0.0)
-    # the last whole project frame of the new render (clip ends stay on the frame grid)
-    end_limit = math.floor(duration * float(fps) + 1e-6) / float(fps)
     for c in _query("Clip").filter(file_id=f.id):
         cs, ce = float(c.data.get("start") or 0.0), float(c.data.get("end") or 0.0)
+        start_frame, end_frame = ft.to_frame(cs, fps), ft.to_frame(ce, fps)
         title = c.data.get("title") or c.id
-        if end_limit - cs < frame - 1e-9:  # less than one whole frame would remain
-            length = min(ce - cs, end_limit)
-            c.data["start"] = _snap(max(0.0, end_limit - length), fps)
+        # not one whole frame of the new render would remain (also for an off-grid start)
+        if last_frame - start_frame < 1 or end_limit - cs < 1.0 / float(fps) - 1e-6:
+            length_frames = min(end_frame - start_frame, last_frame)
+            c.data["start"] = ft.to_seconds(max(0, last_frame - length_frames), fps)
             c.data["end"] = end_limit
             c.save()
-            warnings.append(f"clip {title!r} started past the end of the new {duration:.2f}s render; it "
+            warnings.append(f"clip {title!r} started past the end of the new {end_limit:.2f}s render; it "
                             f"now shows its last {end_limit - c.data['start']:.2f}s")
-        elif ce > end_limit + 1e-6:
+        elif end_frame > last_frame:
             c.data["end"] = end_limit
             c.save()
             warnings.append(f"clip {title!r} was shortened from {ce - cs:.2f}s to {end_limit - cs:.2f}s: "
-                            f"the new render is only {duration:.2f}s long")
-    if duration > old_duration + frame / 2 and old_duration > 0:
-        notes.append(f"the new render is {duration:.2f}s (was {old_duration:.2f}s); clips keep their "
+                            f"the new render is only {end_limit:.2f}s long")
+    if old_duration > 0 and last_frame > project_files.media_frame_count(old_duration, fps):
+        notes.append(f"the new render is {end_limit:.2f}s (was {old_duration:.2f}s); clips keep their "
                      "length -- trim them longer to show the rest")
     removed = [k for k in old if k not in new]
     f.data = new

@@ -117,3 +117,29 @@ def test_remove_files_from_project_deletes_clips_then_the_file(editor):
     assert files == [fid] and set(clips) == {c1, c2}
     assert editor.file(fid) is None and editor.clip(keep) is not None
     editor.window.generation_queue.cancel_jobs_for_file.assert_called_with(fid)
+
+
+def test_sync_clips_never_clamps_for_float_error_in_the_duration(editor):
+    """A relinked ProRes file probes 2.5999999 s for 2.6 s: its clips keep their last frame."""
+    from classes.query import File
+    fid = editor.add_file("video", duration=2.6)
+    cid = editor.add_clip(fid, position=0.0, end=2.6)
+    f = File.get(id=fid)
+    f.data = dict(f.data, duration=2.5999999)
+    from classes.tool_handlers import _transaction
+    with _transaction(editor.app):
+        pf.save_file_and_sync_clips(f)
+    assert editor.clip(cid)["end"] == 2.6
+    f = File.get(id=fid)
+    f.data = dict(f.data, duration=1.99999)  # really shorter: clamped onto the frame grid
+    with _transaction(editor.app):
+        pf.save_file_and_sync_clips(f)
+    assert editor.clip(cid)["end"] == pytest.approx(2.0) and editor.clip(cid)["end"] == 60 / 30
+
+
+def test_media_frame_count_rounds_like_add_clip():
+    from fractions import Fraction
+    assert pf.media_frame_count(2.5999999, Fraction(30)) == 78
+    assert pf.media_frame_count(2.6, Fraction(30)) == 78
+    assert pf.media_frame_count(2.583, Fraction(30)) == 77  # 77.49 frames
+    assert pf.media_frame_count(0.0, Fraction(30)) == 1
