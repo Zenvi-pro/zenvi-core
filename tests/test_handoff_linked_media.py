@@ -529,3 +529,29 @@ def test_save_adopts_renders_only_with_instant_operations(tmp_path, monkeypatch)
     first = files[0]["path"]
     lm.adopt_linked_renders(files, clips, str(tmp_path / "Copy.zvn"), previous_path=str(tmp_path / "Trip.zvn"))
     assert os.stat(files[0]["path"]).st_ino == os.stat(first).st_ino  # Save As hard-links, no byte copy
+
+
+def test_props_filled_by_the_provider_do_not_make_a_fresh_render_stale(linked):
+    provider = FakeProvider(probe=linked.probe)
+    lm.register_provider(provider)
+    real_render = provider.render
+
+    def with_defaults(link, out_dir, **kw):
+        result = real_render(link, out_dir, **kw)
+        result.props = dict(link.get("props") or {}, size=96)  # Remotion fills defaultProps
+        return result
+
+    provider.render = with_defaults
+    out = lm.import_linked(remotion_link(), position=0.0)
+    f = linked.file(out["file_id"])
+    assert lm.read_link(f)["props"] == {"title": "Hello", "size": 96}
+    assert lm.link_state(f) == "fresh"
+
+
+def test_a_source_edited_during_the_render_reads_stale_afterwards(linked):
+    provider = FakeProvider(probe=linked.probe)
+    lm.register_provider(provider)
+    provider.during_render = lambda link, out_dir: setattr(provider, "version", provider.version + 1)
+    out = lm.import_linked(remotion_link(), position=0.0)
+    assert any("changed while it was rendering" in w for w in out["warnings"])
+    assert lm.link_state(linked.file(out["file_id"])) == "stale"

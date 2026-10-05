@@ -1061,9 +1061,25 @@ def render_link(link: dict, *, on_progress: Optional[ProgressFn] = None,
         shutil.rmtree(staging, ignore_errors=True)
 
     completed["render"]["output"] = output_token(target, project_path)
+    warnings = list(result.warnings or [])
+    # The stored fingerprint must be what the STORED link fingerprints to: a provider may have
+    # filled in the source (an AE comp id) or default props while rendering. Unless the sources
+    # changed during the render -- then keep the pre-render one so the clip reads stale.
     final = normalize_link(completed)
     final_decoded = read_link({LINK_KEY: final}) or final
-    final_decoded["warnings"] = list(result.warnings or [])
+    try:
+        unchanged = provider.fingerprint(decoded) == fingerprint
+        stored_fp = provider.fingerprint(final_decoded) if unchanged else fingerprint
+    except Exception:
+        log.warning("re-fingerprinting %s after its render failed", kind, exc_info=True)
+        unchanged, stored_fp = True, fingerprint
+    if not unchanged:
+        warnings.append("the source changed while it was rendering; re-render to pick up the latest version")
+    if stored_fp != fingerprint:
+        completed["render"]["fingerprint"] = stored_fp
+        final = normalize_link(completed)
+        final_decoded = read_link({LINK_KEY: final}) or final
+    final_decoded["warnings"] = warnings
     return target, final_decoded
 
 

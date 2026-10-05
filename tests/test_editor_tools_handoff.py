@@ -221,3 +221,44 @@ def test_a_broken_package_tool_module_is_logged_and_skipped(monkeypatch, caplog)
         sys.modules.pop("classes.editor_tools.handoff_remotion", None)
     assert "handoff_remotion" in handoff.package_tool_errors()
     assert "failed to load" in caplog.text
+
+
+def test_after_effects_provider_renders_through_zenvi_link(linked, tmp_path):
+    """The AE provider maps comp / output folder onto the host tool's own argument names."""
+    import json as _json
+    from classes.handoff.aftereffects_link import AfterEffectsProvider, _schema_cache
+    host = FakeHost()
+    _schema_cache.clear()
+    try:
+        host.tools = [{"name": "ae_render_for_zenvi", "inputSchema": {"type": "object", "properties": {
+            "comp": {}, "output_dir": {}, "project": {}}}}]
+        aep = tmp_path / "promo.aep"
+        aep.write_bytes(b"aep")
+
+        def render(name, args):
+            out = os.path.join(args["output_dir"], "Promo.mov")
+            with open(out, "wb") as fh:
+                fh.write(b"prores")
+            linked.probe.durations[out] = 2.0
+            receipt = {"contract": 3, "status": "applied", "tool": name, "host": "aftereffects", "summary": "ok",
+                       "data": {"path": out, "comp_id": 12, "comp_name": "Promo", "project": str(aep),
+                                "width": 1920, "height": 1080, "fps": 30, "duration": 2.0, "codec": "prores4444"}}
+            return {"content": [{"type": "text", "text": _json.dumps(receipt)}], "structuredContent": receipt,
+                    "isError": False}
+
+        host.call = render
+        write_discovery(linked.user_path, host)
+        lm.register_provider(AfterEffectsProvider())
+        link = {"kind": "aftereffects", "source": {"aep": str(aep), "composition": "Promo"}}
+        out = lm.import_linked(link, position=0.0)
+        f = linked.file(out["file_id"])
+        stored = lm.read_link(f)
+        assert stored["source"]["composition_key"] == 12 and stored["render"]["codec"] == "prores4444"
+        assert stored["render"]["duration_frames"] == 60 and f["path"].endswith(".mov")
+        call = [c for c in host.calls if c.get("method") == "tools/call"][-1]["params"]["arguments"]
+        assert call["comp"] == "Promo" and call["project"] == str(aep) and os.path.basename(call["output_dir"])
+        assert lm.link_state(f) == "fresh"
+        aep.write_bytes(b"aep saved again")
+        assert lm.link_state(f) == "stale"
+    finally:
+        host.stop()
