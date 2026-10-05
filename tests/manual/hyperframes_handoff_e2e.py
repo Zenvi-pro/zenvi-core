@@ -414,14 +414,17 @@ def part_import(work, project_dir):
     # cancel a render: JobCancelled, no wrapper folder, no headless Chrome left behind
     link = lm.read_link(editor.file(fid))
     stop = threading.Event()
-    threading.Timer(12.0, stop.set).start()
     staging = os.path.join(work, "cancel-staging")
     os.makedirs(staging, exist_ok=True)
     cancelled = False
     chrome_before = chrome_pids()
     t0 = time.time()
+
+    def progress(fraction, _message):
+        if fraction is not None and fraction > 0.2:  # cancel while HyperFrames is capturing frames
+            stop.set()
     try:
-        hfprov.HyperFramesProvider().render(link, staging, on_progress=lambda f, m: None, should_cancel=stop.is_set)
+        hfprov.HyperFramesProvider().render(link, staging, on_progress=progress, should_cancel=stop.is_set)
     except jobs.JobCancelled:
         cancelled = True
     time.sleep(2.0)

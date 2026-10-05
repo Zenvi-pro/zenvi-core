@@ -102,14 +102,43 @@ def test_every_command_runs_quiet(tmp_path, node, monkeypatch):
 
 
 def test_json_is_found_in_noisy_output_and_missing_json_is_an_error(tmp_path, node, monkeypatch):
+    cli = hf_cli.Cli((sys.executable, "hf.mjs"), "0.8.126", "env", node)
     out = ["[INFO] something {not json}", json.dumps({"timeline": {"duration": 3, "tracks": []}}), "done"]
     monkeypatch.setattr(node_runtime, "run_node",
                         lambda argv, cwd, **kw: ([kw["on_line"](x) for x in out], (0, ""))[1])
-    assert hf_cli.timeline(_project(tmp_path))["timeline"]["duration"] == 3
+    assert hf_cli.timeline(_project(tmp_path), cli=cli)["timeline"]["duration"] == 3
     monkeypatch.setattr(node_runtime, "run_node",
                         lambda argv, cwd, **kw: ([kw["on_line"](x) for x in ["Unknown command"]], (1, ""))[1])
     with pytest.raises(hf_cli.CliError, match="printed no JSON"):
-        hf_cli.timeline(_project(tmp_path))
+        hf_cli.timeline(_project(tmp_path), cli=cli)
+
+
+def test_timeline_runs_plain_node_in_the_project_never_npm(tmp_path, node, monkeypatch):
+    """0.8.126's `timeline` reads the project from its working folder only (a folder argument is taken for a
+    sub-command): it runs there, but as `node <entry>` -- an npx CLI is found in npm's cache first."""
+    proj = _project(tmp_path, "0.8.126")
+    cache = tmp_path / "npm-cache"
+    monkeypatch.setenv("npm_config_cache", str(cache))
+    calls = []
+
+    def fake_run(argv, cwd, env=None, timeout=None, on_line=None, should_cancel=None, runtime=None):
+        calls.append((list(argv), cwd))
+        if "--version" in argv:  # what npx --yes does on first use: download into the cache
+            _package(str(cache / "_npx" / "abc123" / "node_modules" / "hyperframes"), "0.8.126")
+            return 0, "0.8.126"
+        on_line(json.dumps({"timeline": {"duration": 2, "tracks": []}}))
+        return 0, ""
+    monkeypatch.setattr(node_runtime, "run_node", fake_run)
+    cli = hf_cli.resolve_cli(proj)
+    assert cli.source == "npx"
+    assert hf_cli.timeline(proj, cli=cli)["timeline"]["duration"] == 2
+    (download, download_cwd), (listing, listing_cwd) = calls
+    assert download[-1] == "--version" and download_cwd == hf_cli.work_dir()          # npx: Zenvi's folder
+    assert listing[0] == sys.executable and "npx-cli.js" not in listing                 # then plain node...
+    assert listing[1].endswith(os.path.join("_npx", "abc123", "node_modules", "hyperframes", "bin",
+                                            "hyperframes.mjs")) and listing_cwd == proj  # ...in the project
+    with pytest.raises(hf_cli.CliError, match="never runs inside a project folder"):
+        hf_cli.run(cli, ["timeline"], cwd=proj)
 
 
 def test_clean_line():

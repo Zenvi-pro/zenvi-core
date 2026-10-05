@@ -466,7 +466,8 @@ class HyperFramesProvider:
         target = os.path.join(folder, wrappers.WRAPPER_FILE)
         if role == "layer":
             hidden = []
-            signatures = block.get("signatures") if isinstance(block.get("signatures"), dict) else {}
+            raw_signatures = block.get("signatures")
+            signatures: Dict[str, str] = raw_signatures if isinstance(raw_signatures, dict) else {}
             for ref in block.get("exclude") or []:
                 el = _find_excluded(index, project.root.element, str(ref), signatures.get(str(ref)))
                 if el is None:
