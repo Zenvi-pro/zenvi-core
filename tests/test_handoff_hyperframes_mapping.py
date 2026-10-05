@@ -100,6 +100,11 @@ def test_static_css_transform_and_opacity_are_starting_values(tmp_path):
 
 
 @pytest.mark.parametrize("style, problem", [
+    ("filter: blur(4px)", "filter: blur(4px)"),
+    ("animation: spin 2s linear infinite", "animation"),
+    ("clip-path: circle(50%)", "clip-path"),
+    ("border-radius: 24px", "border-radius"),
+    ("mix-blend-mode: screen", "mix-blend-mode"),
     ("left: calc(10px + 5%)", "calc"),
     ("transform: matrix(1, 0, 0, 1, 0, 0)", "matrix"),
     ("object-fit: cover; object-position: 10px 20px; width: 100px; height: 100px", "object-position"),

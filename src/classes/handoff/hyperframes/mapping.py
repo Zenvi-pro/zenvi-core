@@ -301,9 +301,25 @@ class Placement:
     warnings: List[str] = field(default_factory=list)
 
 
+# CSS a native Zenvi clip cannot reproduce: the browser would draw the media differently.
+_CSS_EFFECTS = ("animation", "animation-name", "transition", "filter", "backdrop-filter", "clip-path", "mask",
+                "mask-image", "-webkit-mask-image", "mix-blend-mode", "border-radius", "box-shadow", "perspective")
+_CSS_NEUTRAL = ("", "none", "0", "0px", "normal", "initial", "unset", "inherit", "all 0s ease 0s")
+
+
+def css_effects(style: Dict[str, str]) -> List[str]:
+    """The CSS effects on an element that Zenvi does not rebuild (``filter: blur(4px)`` ...)."""
+    out = []
+    for key in _CSS_EFFECTS:
+        value = style.get(key, "").strip().lower()
+        if value and value not in _CSS_NEUTRAL:
+            out.append("%s: %s" % (key, style[key].strip()))
+    return out
+
+
 def placement(clip: Clip, comp: Composition, media: Tuple[int, int], canvas: Tuple[int, int]) -> Placement:
     """Placement of a visual primitive (video / img) on a *canvas* (the Zenvi project's width, height)."""
-    problems: List[str] = []
+    problems: List[str] = ["its CSS %s is not rebuilt in Zenvi" % e for e in css_effects(clip.style)]
     warnings: List[str] = []
     W, H = float(comp.width), float(comp.height)
     zw, zh = float(canvas[0]), float(canvas[1])
@@ -780,7 +796,7 @@ def _dedupe(items: Sequence[str]) -> List[str]:
 
 
 __all__ = [
-    "css_length", "parse_transform", "CssTransform", "Box", "element_box", "clip_box", "content_rect",
+    "css_effects", "css_length", "parse_transform", "CssTransform", "Box", "element_box", "clip_box", "content_rect",
     "Placement", "placement", "Seg", "channel_segments", "channel_keyframe", "KeyBuilder", "gain_at",
     "gsap_progress",
     "volume_keyframe", "NativePlan", "native_plan", "constant", "CHANNELS",
