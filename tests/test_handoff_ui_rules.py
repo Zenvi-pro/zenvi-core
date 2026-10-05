@@ -32,3 +32,13 @@ def test_state_and_source_captions():
     link = {"source": {"composition": "Intro", "project_dir": "/p", "file": "src/Intro.tsx", "line": 12}}
     assert dlg.describe_source(link) == "Intro — /p — src/Intro.tsx:12"
     assert dlg.describe_source({"source": {"aep": "/x/promo.aep", "composition": "Promo"}}) == "Promo — /x/promo.aep"
+
+
+def test_merge_edited_props_keeps_what_the_provider_did_not_offer():
+    stored = {"title": "Hi", "internal": 3}
+    editable = {"title": "Hi", "size": 96}  # Remotion: defaults merged in; "internal" not offered
+    assert dlg.merge_edited_props(stored, editable, {"title": "Bye", "size": 96}) == {
+        "title": "Bye", "internal": 3, "size": 96}
+    # a key removed in Raw JSON is removed; a new key typed there is added
+    assert dlg.merge_edited_props(stored, editable, {"size": 96, "extra": True}) == {
+        "internal": 3, "size": 96, "extra": True}

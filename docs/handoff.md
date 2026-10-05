@@ -25,14 +25,17 @@ live in zenvi-web.
 
 ## Packages and where they plug in
 
-| Package | Core module | Editor tools | Menu entries |
-| --- | --- | --- | --- |
-| Shared (this page) | `classes/handoff/*` | `editor_tools/handoff.py` | Linked Source submenu, Send To, toolbar pill |
-| After Effects export | `classes/handoff/after_effects.py` | `editor_tools/handoff_after_effects.py` | Export Project, Send To |
-| Premiere export/import | `classes/handoff/premiere.py` | `editor_tools/handoff_premiere.py` | Export / Import Project, Send To |
-| Remotion | `classes/handoff/remotion.py` | `editor_tools/handoff_remotion.py` | Export / Import Project |
-| HyperFrames | `classes/handoff/hyperframes.py` | `editor_tools/handoff_hyperframes.py` | Export / Import Project |
-| AE linked clips | `classes/handoff/aftereffects_link.py` | (shared tools) | (Linked Source) |
+| Package | Docs | Core module | Editor tools | Menu entries |
+| --- | --- | --- | --- | --- |
+| Shared (this page) | — | `classes/handoff/*` | `editor_tools/handoff.py` | Linked Source submenu, Send To, toolbar pill |
+| After Effects export | [handoff-after-effects.md](handoff-after-effects.md) | `classes/handoff/after_effects.py` (+ `after_effects_export.py`) | `editor_tools/handoff_after_effects.py` | Export Project, Send To |
+| Premiere export/import | [handoff-premiere.md](handoff-premiere.md) | `classes/handoff/premiere.py` | `editor_tools/handoff_premiere.py` | Export / Import Project, Send To |
+| Remotion | [handoff-remotion.md](handoff-remotion.md) | `classes/handoff/remotion/` | `editor_tools/handoff_remotion.py` | Export / Import Project |
+| HyperFrames | [handoff-hyperframes.md](handoff-hyperframes.md) | `classes/handoff/hyperframes/` | `editor_tools/handoff_hyperframes.py` | Export / Import Project |
+| AE linked clips | (this page) | `classes/handoff/aftereffects_link.py` | (shared tools) | (Linked Source) |
+
+Each package documents its own handoff (what it maps, its limits, how to test it)
+in `docs/handoff-<package>.md`; this page covers the shared core they build on.
 
 `classes.handoff.plugins.load_plugins()` imports each package module that is
 present in the build (at startup, from `install_handoff_menus`); a package
@@ -125,6 +128,28 @@ media is **never WebM**: codec `auto` renders one still first and picks
 ProRes 4444 when any pixel is not fully opaque, else H.264 (CRF ≤ 18,
 yuv420p, BT.709); a WebM from another tool is re-encoded to ProRes 4444
 before it is linked (`handoff.alpha`).
+
+### Colour: linked media is treated like any other media
+
+Zenvi does **no colour conversion** on linked renders — a Remotion, HyperFrames or
+After Effects render goes through exactly the same path as any imported video. This
+is deliberate (measured 2026-10-05):
+
+* libopenshot 1.0 decodes every YUV source with the BT.601 matrix, whatever the
+  file is tagged with. A BT.709-tagged 720p test pattern compares at 26.7 dB PSNR
+  between Zenvi's preview and an ffmpeg reference decode; the same source
+  pre-converted to BT.601 compares at 32.8 dB. So BT.709 footage — camera files
+  and linked renders alike — looks slightly shifted in the **preview**.
+* libopenshot's exports re-encode with the same BT.601 matrix and write untagged
+  yuv420p, so regular BT.709 footage comes out with its original YUV values and
+  plays correctly in players that treat untagged HD as BT.709.
+* Converting a linked render to BT.601 for Zenvi would therefore make it look right
+  in the preview but play shifted in every final export.
+
+The preview shift is a pre-existing libopenshot issue (its YUV→RGB conversion
+ignores the colour tags) and should be fixed there, once, for all media — not worked
+around per provider. Providers render with their tool's normal BT.709 settings
+(`handoff.alpha.H264_ARGS` tags H.264 as BT.709).
 
 ### Providers
 
