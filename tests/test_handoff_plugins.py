@@ -86,9 +86,7 @@ def test_missing_plugins_are_skipped_and_a_broken_one_is_logged(monkeypatch, cap
     finally:
         sys.meta_path.remove(finder)
         sys.modules.pop("classes.handoff.remotion", None)
-    # every real package of this build loads too (aftereffects_link, after_effects, premiere, ...)
-    assert {"classes.handoff.aftereffects_link", "classes.handoff.hyperframes"} <= set(loaded)
-    assert "classes.handoff.remotion" not in loaded
+    assert loaded == ["classes.handoff.aftereffects_link", "classes.handoff.hyperframes"]
     assert "remotion failed to load" in caplog.text
     assert plugins.load_plugins() == loaded  # once per session
 
