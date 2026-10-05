@@ -115,3 +115,24 @@ def test_round_trip_to_json_keeps_points():
     again = Curve.from_json(curve.to_json(), fps=30)
     assert [p.value for p in again.points] == [p.value for p in curve.points]
     assert again.segments()[0].bezier == curve.segments()[0].bezier
+
+
+def test_bezier_between_reproduces_the_clipped_part_of_a_segment():
+    seg = Curve.from_json(MIXED, fps=30).segments()[0]  # bezier 0 -> 100 over frames 1..31
+    curve = Curve.from_json(MIXED, fps=30)
+    t0, t1 = 0.2, 0.7
+    x1, y1, x2, y2 = seg.bezier_between(t0, t1)
+    v0, v1 = curve.value_at(t0), curve.value_at(t1)
+    for frac in (0.1, 0.25, 0.5, 0.75, 0.9):
+        # evaluate the sub-easing like a CSS cubic-bezier and compare with the original curve
+        lo, hi = 0.0, 1.0
+        for _ in range(80):
+            u = (lo + hi) / 2
+            xu = 3 * (1 - u) ** 2 * u * x1 + 3 * (1 - u) * u * u * x2 + u ** 3
+            lo, hi = (u, hi) if xu < frac else (lo, u)
+        u = (lo + hi) / 2
+        yu = 3 * (1 - u) ** 2 * u * y1 + 3 * (1 - u) * u * u * y2 + u ** 3
+        assert v0 + yu * (v1 - v0) == pytest.approx(curve.value_at(t0 + frac * (t1 - t0)), abs=0.3)
+    assert seg.bezier_between(seg.start.time, seg.end.time) == pytest.approx(seg.bezier, abs=1e-6)
+    lin = Curve.from_json(MIXED, fps=30).segments()[1]
+    assert lin.bezier_between(1.1, 1.5) == (0.0, 0.0, 1.0, 1.0)

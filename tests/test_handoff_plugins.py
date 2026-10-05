@@ -66,6 +66,8 @@ class _Broken(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 
 
 def test_missing_plugins_are_skipped_and_a_broken_one_is_logged(monkeypatch, caplog):
+    from classes.handoff import linked_media
+    monkeypatch.setattr(linked_media, "_PROVIDERS", dict(linked_media._PROVIDERS))
     monkeypatch.setattr(plugins, "_done", False)
     monkeypatch.setattr(plugins, "_loaded", [])
     good = types.ModuleType("classes.handoff.hyperframes")
@@ -77,7 +79,20 @@ def test_missing_plugins_are_skipped_and_a_broken_one_is_logged(monkeypatch, cap
     finally:
         sys.meta_path.remove(finder)
         sys.modules.pop("classes.handoff.remotion", None)
-    # real packages present in this build (after_effects, premiere, ...) load too
-    assert "classes.handoff.hyperframes" in loaded and "classes.handoff.remotion" not in loaded
+    # every real package of this build loads too (aftereffects_link, after_effects, premiere, ...)
+    assert {"classes.handoff.aftereffects_link", "classes.handoff.hyperframes"} <= set(loaded)
+    assert "classes.handoff.remotion" not in loaded
     assert "remotion failed to load" in caplog.text
     assert plugins.load_plugins() == loaded  # once per session
+
+
+def test_unregister_notifies_listeners(clean_registry):
+    heard = []
+    reg.register_import_action("gone", "Gone", lambda w: None)
+    reg.add_listener(lambda: heard.append(1))
+    try:
+        reg.unregister_action("gone")
+        reg.unregister_action("never-registered")
+    finally:
+        reg._listeners.clear()
+    assert heard == [1]

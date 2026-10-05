@@ -107,6 +107,9 @@ def reencode_to_prores4444(src: str, dst: str, *, on_progress: Optional[Callable
             os.unlink(partial)
         except OSError:
             pass
+        if should_cancel is not None and should_cancel():
+            from classes.handoff.jobs import JobCancelled
+            raise JobCancelled(f"re-encoding {os.path.basename(src)} was cancelled")
         raise AlphaError(f"re-encoding {os.path.basename(src)} to ProRes 4444 failed (ffmpeg exit {result.returncode})")
     os.replace(partial, dst)
     return dst

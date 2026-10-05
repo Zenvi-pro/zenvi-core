@@ -93,8 +93,12 @@ def register_send_action(id: str, label: Label, host_app: Optional[str], handler
 
 def unregister_action(id: str, kind: Optional[str] = None) -> None:
     with _lock:
+        removed = False
         for k in ([kind] if kind else list(_actions)):
-            _actions.get(k, {}).pop(id, None)
+            removed = _actions.get(k, {}).pop(id, None) is not None or removed
+        listeners = list(_listeners) if removed else []
+    for listener in listeners:
+        listener()
 
 
 def actions(kind: str) -> List[HandoffAction]:
@@ -117,7 +121,8 @@ def send_actions() -> List[HandoffAction]:
 
 
 def add_listener(callback: Callable[[], None]) -> None:
-    """Called (on the registering thread) whenever an action is registered -- the menus rebuild."""
+    """Called whenever an action is registered or unregistered, ON THE CALLER'S THREAD -- hop to
+    the GUI thread before touching Qt (``HandoffMenus`` does, via ``invoke_on_gui``)."""
     with _lock:
         if callback not in _listeners:
             _listeners.append(callback)

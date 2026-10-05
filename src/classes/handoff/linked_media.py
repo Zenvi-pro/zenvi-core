@@ -35,17 +35,21 @@ from __future__ import annotations
 
 import copy
 import datetime
+import errno
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Tuple, runtime_checkable
 
+from classes.assets import path_is_under
 from classes.logger import log
 
 LINK_KEY = "zenvi_link"
@@ -195,7 +199,10 @@ def normalize_link(link: Any) -> dict:
     for key in ("entry", "composition", "file"):
         source[key] = _opt_str(source.get(key))
     if source.get("file") and source.get("project_dir") and os.path.isabs(str(source["file"])):
-        rel = os.path.relpath(str(source["file"]), source["project_dir"])
+        try:
+            rel = os.path.relpath(str(source["file"]), source["project_dir"])
+        except ValueError:  # another drive (Windows): keep the absolute path
+            rel = ".."
         if not rel.startswith(".."):
             source["file"] = rel.replace(os.sep, "/")
     source["line"] = _opt_int(source.get("line"), "source.line")
@@ -402,6 +409,28 @@ def fingerprint_value(value: Any) -> str:
     return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+_tree_cache = threading.local()
+
+
+class fingerprint_cache:
+    """Within this block, :func:`fingerprint_sources` hashes each source tree once.
+
+    ``check_links`` uses it: several clips from one Remotion / HyperFrames
+    project fingerprint the same tree (only their props differ).
+    """
+
+    def __enter__(self):
+        self._outer = getattr(_tree_cache, "trees", None)
+        if self._outer is None:
+            _tree_cache.trees = {}
+        return self
+
+    def __exit__(self, *exc):
+        if self._outer is None:
+            _tree_cache.trees = None
+        return False
+
+
 def fingerprint_sources(root: str, *, include: Optional[Iterable[str]] = None,
                         exclude_dirs: Iterable[str] = DEFAULT_EXCLUDED_DIRS, extra: Any = None,
                         max_files: int = FINGERPRINT_MAX_FILES) -> str:
@@ -417,6 +446,12 @@ def fingerprint_sources(root: str, *, include: Optional[Iterable[str]] = None,
         raise SourceMissing(f"the source folder {root!r} no longer exists; relink it or unlink the clip")
     suffixes = tuple(s.lower() for s in include) if include else None
     excluded = set(exclude_dirs)
+    trees = getattr(_tree_cache, "trees", None)
+    key = (os.path.abspath(root), suffixes, tuple(sorted(excluded)), int(max_files))
+    if trees is not None and key in trees:
+        digest = trees[key].copy()
+        digest.update(fingerprint_value(extra).encode("ascii"))
+        return "sha256:" + digest.hexdigest()
     digest = hashlib.sha256()
     count = 0
     for dirpath, dirnames, filenames in os.walk(root):
@@ -445,6 +480,8 @@ def fingerprint_sources(root: str, *, include: Optional[Iterable[str]] = None,
                 break
         if count >= max_files:
             break
+    if trees is not None:
+        trees[key] = digest.copy()
     digest.update(fingerprint_value(extra).encode("ascii"))
     return "sha256:" + digest.hexdigest()
 
@@ -586,13 +623,20 @@ def check_link(file_like: Any, *, compute: bool = True) -> Optional[LinkCheck]:
     render failed this session) > ``missing_source`` > ``stale`` (the
     provider's fingerprint differs from the one it was rendered from, or the
     rendered media is gone) > the stored state (``fresh``). With *compute*
-    the provider fingerprints the source: blocking, call off the GUI thread.
+    the source, the media and the provider's fingerprint are checked on disk:
+    blocking, call off the GUI thread. ``compute=False`` answers from memory
+    only (running job, session error, stored state) and is safe anywhere.
     """
     data = _file_data(file_like)
-    link = read_link(data)
+    file_id = str(data.get("id") or getattr(file_like, "id", "") or "")
+    try:
+        link = read_link(data)
+    except LinkError as exc:  # a damaged link: this file is in error, the others still get checked
+        raw = data.get(LINK_KEY)
+        return LinkCheck(file_id, str(raw.get("kind") or "") if isinstance(raw, dict) else "", "error",
+                         f"its link data is damaged: {exc}")
     if link is None:
         return None
-    file_id = str(data.get("id") or getattr(file_like, "id", "") or "")
     kind = str(link.get("kind") or "")
     stored = (link.get("render") or {}).get("fingerprint")
     from classes.handoff import jobs
@@ -602,11 +646,15 @@ def check_link(file_like: Any, *, compute: bool = True) -> Optional[LinkCheck]:
     err = render_error(file_id)
     if err:
         return LinkCheck(file_id, kind, "error", err, None, stored)
+    provider = provider_for(kind)
+    if not compute:  # in memory only: no stat of the source, the media or the provider
+        stored_state = link.get("state")
+        state = stored_state if isinstance(stored_state, str) and stored_state in STATES else "fresh"
+        return LinkCheck(file_id, kind, "stale" if state == "rendering" else state, "", None, stored)
     gone = _source_gone(link)
     if gone:
         return LinkCheck(file_id, kind, "missing_source", gone, None, stored)
     current = None
-    provider = provider_for(kind)
     if compute and provider is not None:
         try:
             current = provider.fingerprint(link)
@@ -628,6 +676,26 @@ def check_link(file_like: Any, *, compute: bool = True) -> Optional[LinkCheck]:
     if provider is None and state == "fresh":
         detail = f"no {kind} provider in this build: freshness is not checked"
     return LinkCheck(file_id, kind, state, detail, current, stored)
+
+
+def check_links(files: Iterable[Any], *, compute: bool = True) -> List[LinkCheck]:
+    """:func:`check_link` for many files, sharing source fingerprints between files of one project.
+
+    A file whose check raises is reported as ``error`` (with the reason) and
+    the rest still get checked. Blocking with *compute*.
+    """
+    out: List[LinkCheck] = []
+    with fingerprint_cache():
+        for item in files:
+            data = _file_data(item)
+            try:
+                check = check_link(data, compute=compute)
+            except Exception as exc:
+                log.warning("freshness check of %s failed", data.get("id"), exc_info=True)
+                check = LinkCheck(str(data.get("id") or ""), "", "error", f"could not check it: {exc}")
+            if check is not None:
+                out.append(check)
+    return out
 
 
 def link_state(file_like: Any, *, compute: bool = True) -> Optional[str]:
@@ -736,6 +804,25 @@ def _get_file(file_id: str):
     return f
 
 
+def _seed_absent_keys(obj: Any, defaults: Dict[str, Any]) -> None:
+    """Write absent keys with a neutral value outside undo history (``media_files.seed_missing_keys``).
+
+    Project updates merge, so an undo cannot remove a key an edit added; a key
+    that already exists (as None) is restored to None instead. GUI thread.
+    """
+    missing = {k: v for k, v in defaults.items() if k not in obj.data}
+    if not missing or not obj.key:
+        return
+    updates = _app().updates
+    previous = updates.ignore_history
+    updates.ignore_history = True
+    try:
+        updates.update(list(obj.key), copy.deepcopy(missing))
+    finally:
+        updates.ignore_history = previous
+    obj.data.update(copy.deepcopy(missing))
+
+
 def _linked_file(file_id: str):
     f = _get_file(file_id)
     if not isinstance(f.data.get(LINK_KEY), dict):
@@ -805,6 +892,9 @@ def add_linked_media(path: str, link: dict, *, position: Optional[float] = None,
         with nested_transaction(app.updates):
             existing = File.get(path=path)
             if existing:
+                # updates merge and undo cannot remove a key an edit added: give the
+                # file a neutral link (None = not linked) outside history first
+                _seed_absent_keys(existing, {LINK_KEY: None})
                 existing.data = dict(existing.data, **{LINK_KEY: stored})
                 existing.save()
                 f = existing
@@ -826,67 +916,126 @@ def add_linked_media(path: str, link: dict, *, position: Optional[float] = None,
             "path": path, "kind": stored["kind"], "name": display, "state": stored["state"]}
 
 
-def swap_linked_media(file_id: str, new_path: str, link_update: Optional[dict] = None) -> dict:
+def _identity(link: Optional[dict]) -> dict:
+    """What a render was made FROM: kind, source and props (not the render metadata)."""
+    link = link or {}
+    return {"kind": link.get("kind"), "source": copy.deepcopy(link.get("source") or {}),
+            "props": link_props(link)}
+
+
+def _probe_new_media(new_path: str) -> Tuple[str, dict, float]:
+    new_path = _check_media_path(new_path)
+    reader = probe_media(new_path)
+    duration = _media_duration(reader)
+    if duration <= 0:
+        raise LinkError(f"{os.path.basename(new_path)} has no duration; is the render complete?")
+    return new_path, reader, duration
+
+
+def _swap_on_gui(file_id: str, reader: dict, duration: float, update: dict, expect: Optional[dict]):
+    """The GUI-thread half of a swap; joins the caller's transaction. Returns (stored, updated, warnings, notes)."""
+    from classes import project_files
+    f = _linked_file(file_id)
+    old = copy.deepcopy(f.data)
+    link = read_link(old) or {}
+    if expect is not None and _identity(link) != expect:
+        raise LinkError(f"{old.get('name') or file_id!r} was changed while it was rendering (props or source); the "
+                        "new render was dropped -- re-render it again")
+    merged = dict(link, **{k: v for k, v in update.items() if k not in ("source", "render")})
+    for sub in ("source", "render"):
+        if isinstance(update.get(sub), dict):
+            merged[sub] = dict(link.get(sub) or {}, **update[sub])
+    stored = normalize_link(merged)
+    new = project_files.relinked_file_data(old, reader, reader.get("media_type"), reader.get("fingerprint"))
+    new[LINK_KEY] = stored
+    new["name"] = old.get("name") or new.get("name")
+    warnings, notes = [], []
+    fps = _project_fps()
+    frame = 1.0 / float(fps)
+    old_duration = float(old.get("duration") or 0.0)
+    # the last whole project frame of the new render (clip ends stay on the frame grid)
+    end_limit = math.floor(duration * float(fps) + 1e-6) / float(fps)
+    for c in _query("Clip").filter(file_id=f.id):
+        cs, ce = float(c.data.get("start") or 0.0), float(c.data.get("end") or 0.0)
+        title = c.data.get("title") or c.id
+        if end_limit - cs < frame - 1e-9:  # less than one whole frame would remain
+            length = min(ce - cs, end_limit)
+            c.data["start"] = _snap(max(0.0, end_limit - length), fps)
+            c.data["end"] = end_limit
+            c.save()
+            warnings.append(f"clip {title!r} started past the end of the new {duration:.2f}s render; it "
+                            f"now shows its last {end_limit - c.data['start']:.2f}s")
+        elif ce > end_limit + 1e-6:
+            c.data["end"] = end_limit
+            c.save()
+            warnings.append(f"clip {title!r} was shortened from {ce - cs:.2f}s to {end_limit - cs:.2f}s: "
+                            f"the new render is only {duration:.2f}s long")
+    if duration > old_duration + frame / 2 and old_duration > 0:
+        notes.append(f"the new render is {duration:.2f}s (was {old_duration:.2f}s); clips keep their "
+                     "length -- trim them longer to show the rest")
+    removed = [k for k in old if k not in new]
+    f.data = new
+    updated = project_files.save_file_and_sync_clips(f, removed)
+    return stored, updated, warnings, notes
+
+
+def _swap_receipt(file_id: str, path: str, duration: float, result) -> dict:
+    stored, updated, warnings, notes = result
+    return {"file_id": str(file_id), "path": path, "duration": round(duration, 3),
+            "updated_clip_ids": list(updated), "warnings": warnings, "notes": notes, "kind": stored["kind"],
+            "state": stored["state"], "fingerprint": (stored.get("render") or {}).get("fingerprint")}
+
+
+def swap_linked_media(file_id: str, new_path: str, link_update: Optional[dict] = None, *,
+                      expect: Optional[dict] = None) -> dict:
     """Point linked file *file_id* at newly rendered *new_path* (and merge *link_update*), as ONE undo step.
 
     Every clip of the file follows (reader, duration). A clip whose out-point
     lies past the end of a shorter new render is shortened to it, and one
     that would start after it moves its window back -- each reported in
     ``warnings``. A longer render leaves clips as they are (``notes`` says
-    so). Probes on the calling thread: call off the GUI thread.
+    so). *expect* (``_identity`` of the link the render was made from)
+    refuses the swap when the link changed meanwhile. Probes on the calling
+    thread: call off the GUI thread.
     """
-    new_path = _check_media_path(new_path)
-    reader = probe_media(new_path)
-    duration = _media_duration(reader)
-    if duration <= 0:
-        raise LinkError(f"{os.path.basename(new_path)} has no duration; is the render complete?")
+    new_path, reader, duration = _probe_new_media(new_path)
     update = dict(link_update or {})
 
     def _commit():
-        from classes import project_files
         from classes.updates import nested_transaction
-        f = _linked_file(file_id)
-        old = copy.deepcopy(f.data)
-        link = read_link(old) or {}
-        merged = dict(link, **{k: v for k, v in update.items() if k not in ("source", "render")})
-        for sub in ("source", "render"):
-            if isinstance(update.get(sub), dict):
-                merged[sub] = dict(link.get(sub) or {}, **update[sub])
-        stored = normalize_link(merged)
-        new = project_files.relinked_file_data(old, reader, reader.get("media_type"), reader.get("fingerprint"))
-        new[LINK_KEY] = stored
-        new["name"] = old.get("name") or new.get("name")
-        warnings, notes = [], []
-        fps = _project_fps()
-        frame = 1.0 / float(fps)
-        old_duration = float(old.get("duration") or 0.0)
         with nested_transaction(_app().updates):
-            for c in _query("Clip").filter(file_id=f.id):
-                cs, ce = float(c.data.get("start") or 0.0), float(c.data.get("end") or 0.0)
-                title = c.data.get("title") or c.id
-                if cs >= duration - frame / 2:
-                    length = min(ce - cs, duration)
-                    c.data["start"] = _snap(max(0.0, duration - length), fps)
-                    c.data["end"] = duration
-                    c.save()
-                    warnings.append(f"clip {title!r} started past the end of the new {duration:.2f}s render; it "
-                                    f"now shows its last {duration - c.data['start']:.2f}s")
-                elif ce > duration + 1e-6:
-                    warnings.append(f"clip {title!r} was shortened from {ce - cs:.2f}s to {duration - cs:.2f}s: "
-                                    f"the new render is only {duration:.2f}s long")
-            if duration > old_duration + frame / 2 and old_duration > 0:
-                notes.append(f"the new render is {duration:.2f}s (was {old_duration:.2f}s); clips keep their "
-                             "length -- trim them longer to show the rest")
-            removed = [k for k in old if k not in new]
-            f.data = new
-            updated = project_files.save_file_and_sync_clips(f, removed)
-        return stored, updated, warnings, notes
+            return _swap_on_gui(file_id, reader, duration, update, expect)
 
-    stored, updated, warnings, notes = _commit_on_gui(_commit)
+    result = _commit_on_gui(_commit)
     clear_render_error(file_id)
-    return {"file_id": str(file_id), "path": new_path, "duration": round(duration, 3),
-            "updated_clip_ids": list(updated), "warnings": warnings, "notes": notes, "kind": stored["kind"],
-            "state": stored["state"], "fingerprint": (stored.get("render") or {}).get("fingerprint")}
+    return _swap_receipt(file_id, new_path, duration, result)
+
+
+def swap_linked_media_many(items: List[Tuple[str, str, dict, Optional[dict]]]) -> List[dict]:
+    """Several swaps ``(file_id, new_path, link_update, expect)`` in ONE GUI hop, as ONE undo step.
+
+    Every file is checked first; if any cannot be swapped nothing changes
+    (LinkError names it). Probes off the GUI thread.
+    """
+    probed = [(fid, *_probe_new_media(path), dict(update or {}), expect) for fid, path, update, expect in items]
+
+    def _commit():
+        from classes.updates import nested_transaction
+        for fid, _path, _reader, _duration, _update, expect in probed:  # validate all before mutating any
+            f = _linked_file(fid)
+            if expect is not None and _identity(read_link(f.data)) != expect:
+                raise LinkError(f"{f.data.get('name') or fid!r} was changed while it was rendering; nothing was "
+                                "swapped -- re-render again")
+        with nested_transaction(_app().updates):
+            return [_swap_on_gui(fid, reader, duration, update, None)
+                    for fid, _path, reader, duration, update, _expect in probed]
+
+    results = _commit_on_gui(_commit)
+    receipts = []
+    for (fid, path, _reader, duration, _update, _expect), result in zip(probed, results):
+        clear_render_error(fid)
+        receipts.append(_swap_receipt(fid, path, duration, result))
+    return receipts
 
 
 def update_link(file_id: str, changes: dict) -> dict:
@@ -898,6 +1047,8 @@ def update_link(file_id: str, changes: dict) -> dict:
     """
     if not isinstance(changes, dict) or not changes:
         raise LinkError("say what to change in the link")
+    if is_rendering(file_id):
+        raise LinkError("that linked clip is rendering; wait for it to finish or cancel it, then change it")
 
     def _commit():
         from classes import project_files
@@ -922,6 +1073,8 @@ def update_link(file_id: str, changes: dict) -> dict:
 
 def unlink(file_id: str) -> dict:
     """Drop a file's link and keep its rendered media, as ONE undo step (``updates.delete``)."""
+    if is_rendering(file_id):
+        raise LinkError("that linked clip is rendering; wait for it to finish or cancel it, then unlink it")
 
     def _commit():
         from classes import project_files
@@ -968,10 +1121,17 @@ def render_link(link: dict, *, on_progress: Optional[ProgressFn] = None,
     staging = tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=folder)
     progress = on_progress or (lambda _f, _m: None)
     cancel = should_cancel or (lambda: False)
+    from classes.handoff.jobs import JobCancelled
     try:
-        result = provider.render(decoded, staging, on_progress=progress, should_cancel=cancel)
+        try:
+            result = provider.render(decoded, staging, on_progress=progress, should_cancel=cancel)
+        except JobCancelled:
+            raise
+        except Exception:
+            if cancel():  # whatever the provider raised on its way out of a cancel, it is a cancel
+                raise JobCancelled(f"{kind_label(kind)} render cancelled") from None
+            raise
         if cancel():
-            from classes.handoff.jobs import JobCancelled
             raise JobCancelled(f"{kind_label(kind)} render cancelled")
         if not isinstance(result, RenderResult):
             raise LinkError(f"the {kind} provider returned no render result")
@@ -983,33 +1143,61 @@ def render_link(link: dict, *, on_progress: Optional[ProgressFn] = None,
             raise LinkError(f"the {kind_label(kind)} render is {codec or os.path.splitext(produced)[1]}; linked "
                             "media must be ProRes 4444, H.264 or qtrle (libopenshot drops WebM alpha)")
         ext = os.path.splitext(produced)[1] or CODEC_EXTENSIONS[codec]
+        # Check everything about the result BEFORE the file is installed: a bad fps or size
+        # must not leave a render behind in the links folder.
+        completed = dict(stored)
+        source = dict(stored.get("source") or {})
+        source.update(result.source_updates or {})
+        completed["source"] = source
+        completed["props"] = result.props if result.props is not None else (decoded.get("props") or {})
+        try:
+            render_meta: Dict[str, Any] = {
+                "codec": codec, "width": int(result.width), "height": int(result.height),
+                "fps": _fps_dict(result.fps), "duration_frames": int(result.duration_frames),
+                "rendered_at": _utc_now(), "fingerprint": fingerprint,
+            }
+        except (TypeError, ValueError) as exc:
+            raise LinkError(f"the {kind} provider returned a bad render result: {exc}") from None
+        render_meta["output"] = None
+        completed["render"] = render_meta
+        completed["state"] = "fresh"
+        completed["error"] = None
+        normalize_link(completed)  # raises LinkError before anything is installed
         target = _unique_path(folder, render_file_name(stored, fingerprint, ext))
-        if os.path.dirname(produced) == staging or produced.startswith(staging + os.sep):
+        if path_is_under(produced, staging):
             os.replace(produced, target)
         else:
-            shutil.copy2(produced, target + ".partial")
-            os.replace(target + ".partial", target)
+            # a host (After Effects) rendered elsewhere: bring it into the staging folder first, so
+            # a failed copy is cleaned up with it; files in the temp folder are ours to take
+            staged = os.path.join(staging, "incoming" + ext)
+            if path_is_under(produced, tempfile.gettempdir()):
+                shutil.move(produced, staged)
+            else:
+                shutil.copy2(produced, staged)
+            os.replace(staged, target)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
-    completed = dict(stored)
-    source = dict(stored.get("source") or {})
-    source.update(result.source_updates or {})
-    completed["source"] = source
-    if result.props is not None:
-        completed["props"] = result.props
-    else:
-        completed["props"] = decoded.get("props") or {}
-    completed["render"] = {
-        "codec": codec, "width": int(result.width), "height": int(result.height),
-        "fps": _fps_dict(result.fps), "duration_frames": int(result.duration_frames),
-        "output": output_token(target, project_path), "rendered_at": _utc_now(), "fingerprint": fingerprint,
-    }
-    completed["state"] = "fresh"
-    completed["error"] = None
+    completed["render"]["output"] = output_token(target, project_path)
+    warnings = list(result.warnings or [])
+    # The stored fingerprint must be what the STORED link fingerprints to: a provider may have
+    # filled in the source (an AE comp id) or default props while rendering. Unless the sources
+    # changed during the render -- then keep the pre-render one so the clip reads stale.
     final = normalize_link(completed)
     final_decoded = read_link({LINK_KEY: final}) or final
-    final_decoded["warnings"] = list(result.warnings or [])
+    try:
+        unchanged = provider.fingerprint(decoded) == fingerprint
+        stored_fp = provider.fingerprint(final_decoded) if unchanged else fingerprint
+    except Exception:
+        log.warning("re-fingerprinting %s after its render failed", kind, exc_info=True)
+        unchanged, stored_fp = True, fingerprint
+    if not unchanged:
+        warnings.append("the source changed while it was rendering; re-render to pick up the latest version")
+    if stored_fp != fingerprint:
+        completed["render"]["fingerprint"] = stored_fp
+        final = normalize_link(completed)
+        final_decoded = read_link({LINK_KEY: final}) or final
+    final_decoded["warnings"] = warnings
     return target, final_decoded
 
 
@@ -1019,39 +1207,137 @@ def _strip_runtime(link: dict) -> dict:
     return out
 
 
+def precheck_placement(position: Optional[float] = None, track: Optional[str] = None,
+                       duration: Optional[float] = None) -> None:
+    """Refuse a placement that cannot work BEFORE anything is rendered (GUI-thread read, blocking hop).
+
+    Checks *position* and that an explicit *track* exists and is unlocked; with
+    an expected *duration* also that the track is free for that window.
+    Raises LinkError with the reason.
+    """
+    if position is not None:
+        try:
+            if float(position) < 0:
+                raise LinkError(f"position must be 0 or later, got {position}")
+        except (TypeError, ValueError):
+            raise LinkError(f"position must be a number of seconds, got {position!r}") from None
+    if not str(track or "").strip():
+        return
+
+    def _check():
+        from classes.editor_tools._base import ToolError, ensure_unlocked, resolve_layer
+        from classes.editor_tools.titles_text_common import plan_overlay_track
+        try:
+            layer = resolve_layer(str(track))
+            ensure_unlocked(layer)
+            if duration and position is not None:
+                plan_overlay_track(float(position), float(position) + float(duration), str(track))
+        except ToolError as exc:
+            raise LinkError(str(exc)) from None
+
+    _read_on_gui(_check)
+
+
+def _discard_render(path: str) -> None:
+    """Remove a render nothing references (a failed add or swap)."""
+    try:
+        os.unlink(path)
+    except OSError:
+        log.warning("Could not remove the unused render %s", path, exc_info=True)
+
+
 def import_linked(link: dict, *, position: Optional[float] = None, track: Optional[str] = None, name: str = "",
-                  on_progress: Optional[ProgressFn] = None, should_cancel: Optional[CancelFn] = None) -> dict:
-    """Render *link* and add the result as a linked clip (render + :func:`add_linked_media`). Blocking."""
+                  on_progress: Optional[ProgressFn] = None, should_cancel: Optional[CancelFn] = None,
+                  expected_duration: Optional[float] = None) -> dict:
+    """Render *link* and add the result as a linked clip (render + :func:`add_linked_media`). Blocking.
+
+    The placement is checked before rendering (*expected_duration*, when the
+    provider knows it, also checks the track is free); a render that cannot
+    be added is deleted, so a refused import leaves nothing behind.
+    """
+    normalize_link(link)
+    precheck_placement(position, track, expected_duration)
     path, completed = render_link(link, on_progress=on_progress, should_cancel=should_cancel)
     warnings = list(completed.get("warnings") or [])
-    receipt = add_linked_media(path, _strip_runtime(completed), position=position, track=track, name=name)
+    try:
+        receipt = add_linked_media(path, _strip_runtime(completed), position=position, track=track, name=name)
+    except Exception as exc:
+        from classes.editor_tools.titles_text_common import CommitTimeout
+        if not isinstance(exc, CommitTimeout):  # a timed-out commit may still land: keep its file
+            _discard_render(path)
+        raise
     receipt["warnings"] = warnings
     receipt["fingerprint"] = (completed.get("render") or {}).get("fingerprint")
     return receipt
 
 
-def rerender_linked(file_id: str, *, props: Optional[dict] = None, on_progress: Optional[ProgressFn] = None,
-                    should_cancel: Optional[CancelFn] = None) -> dict:
-    """Re-render a linked file from its source (with *props* merged in) and swap the media: ONE undo step.
+_rendering: Dict[str, Optional[float]] = {}  # file id -> None (busy) or the time it is free again
+_rendering_lock = threading.Lock()
+LATE_COMMIT_HOLD_SECONDS = 6 * 60  # a commit that timed out may still land: keep the file busy this long
 
-    Registers a ``handoff.jobs`` job keyed by the file id while it renders
-    (``link_state`` reports ``rendering``; the status bar shows it). A failed
-    render leaves the project and history untouched and is remembered as
-    the file's ``error`` state for the session. Blocking: call off the GUI
-    thread.
+
+def is_rendering(file_id: str) -> bool:
+    """True from the start of a re-render of *file_id* until its media swap (or its failure)."""
+    from classes.handoff import jobs
+    with _rendering_lock:
+        until = _rendering.get(str(file_id), 0.0)
+        if until is not None and until <= time.monotonic():
+            _rendering.pop(str(file_id), None)
+            busy = False
+        else:
+            busy = True
+    return busy or jobs.job_for(str(file_id)) is not None
+
+
+def _claim(file_id: str) -> None:
+    if is_rendering(file_id):
+        raise LinkError("that linked clip is already rendering; wait for it to finish or cancel it")
+    with _rendering_lock:
+        _rendering[str(file_id)] = None
+
+
+def _release(file_id: str, *, late_commit: bool = False) -> None:
+    with _rendering_lock:
+        if late_commit:
+            _rendering[str(file_id)] = time.monotonic() + LATE_COMMIT_HOLD_SECONDS
+        else:
+            _rendering.pop(str(file_id), None)
+
+
+@dataclass
+class PreparedRender:
+    """A finished re-render waiting for its media swap (the file stays claimed until then)."""
+
+    file_id: str
+    path: str
+    link_update: dict
+    expect: dict
+    warnings: List[str]
+    props: dict
+
+
+def prepare_rerender(file_id: str, *, props: Optional[dict] = None, replace_props: bool = False,
+                     on_progress: Optional[ProgressFn] = None,
+                     should_cancel: Optional[CancelFn] = None) -> PreparedRender:
+    """Render a linked file again WITHOUT touching the project; the file stays claimed for the swap.
+
+    Pair with :func:`swap_linked_media` / :func:`swap_linked_media_many` and
+    :func:`finish_rerender`. Registers a ``handoff.jobs`` job keyed by the
+    file id while it renders. A failure or cancel releases the file: a
+    failure is remembered as its session ``error``; a cancel raises
+    ``jobs.JobCancelled`` and is not an error. Blocking.
     """
     from classes.handoff import jobs
     f = _read_on_gui(_linked_file, file_id)
     link = read_link(f.data) or {}
+    expect = _identity(link)
     if props is not None:
         if not isinstance(props, dict):
             raise LinkError("props must be an object")
-        link["props"] = dict(link_props(link), **props)
+        link["props"] = dict(props) if replace_props else dict(link_props(link), **props)
     kind = str(link.get("kind") or "")
     label = "Rendering %s" % ((link.get("source") or {}).get("composition") or kind_label(kind))
-    if jobs.job_for(str(file_id)) is not None:
-        raise LinkError("that linked clip is already rendering; wait for it to finish or cancel it")
-
+    _claim(file_id)
     try:
         with jobs.track_job(label, key=str(file_id), kind=kind) as job:
             def _progress(fraction, message):
@@ -1062,41 +1348,172 @@ def rerender_linked(file_id: str, *, props: Optional[dict] = None, on_progress: 
             def _cancel():
                 return job.should_cancel() or bool(should_cancel and should_cancel())
 
-            path, completed = render_link(link, on_progress=_progress, should_cancel=_cancel)
+            try:
+                path, completed = render_link(link, on_progress=_progress, should_cancel=_cancel)
+            except jobs.JobCancelled:
+                raise
+            except Exception:
+                if _cancel():
+                    raise jobs.JobCancelled("render cancelled") from None  # a cancel, not a failed render
+                raise
     except jobs.JobCancelled:
+        _release(file_id)
         raise
     except Exception as exc:
+        _release(file_id)
         set_render_error(str(file_id), str(exc))
         raise
-    warnings = list(completed.get("warnings") or [])
-    receipt = swap_linked_media(str(file_id), path, _strip_runtime(completed))
-    receipt["warnings"] = warnings + list(receipt.get("warnings") or [])
-    receipt["props"] = link_props(completed)
+    return PreparedRender(file_id=str(file_id), path=path, link_update=_strip_runtime(completed), expect=expect,
+                          warnings=list(completed.get("warnings") or []), props=link_props(completed))
+
+
+def finish_rerender(prepared: PreparedRender, exc: Optional[BaseException] = None) -> None:
+    """Release a prepared re-render after its swap; *exc* is the swap's error, if it failed."""
+    from classes.editor_tools.titles_text_common import CommitTimeout
+    if isinstance(exc, CommitTimeout):  # it may still land: keep the file busy, keep the render
+        _release(prepared.file_id, late_commit=True)
+        return
+    if exc is not None:
+        if isinstance(exc, LinkError):
+            set_render_error(prepared.file_id, str(exc))
+        _discard_render(prepared.path)
+    _release(prepared.file_id)
+
+
+def rerender_linked(file_id: str, *, props: Optional[dict] = None, on_progress: Optional[ProgressFn] = None,
+                    should_cancel: Optional[CancelFn] = None, replace_props: bool = False) -> dict:
+    """Re-render a linked file from its source (with *props* merged in) and swap the media: ONE undo step.
+
+    *replace_props* uses *props* as the complete new props instead of merging
+    (the props dialog, where keys can be removed). While it renders the file
+    is busy: ``link_state`` reports ``rendering``, and another re-render,
+    ``update_link`` or ``unlink`` of it is refused; if its props or source
+    change anyway (undo), the new render is dropped instead of overwriting
+    them. A failed render leaves the project and history untouched and is
+    remembered as the file's ``error`` state for the session. Blocking.
+    """
+    prepared = prepare_rerender(file_id, props=props, replace_props=replace_props, on_progress=on_progress,
+                                should_cancel=should_cancel)
+    try:
+        receipt = swap_linked_media(prepared.file_id, prepared.path, prepared.link_update, expect=prepared.expect)
+    except BaseException as exc:
+        finish_rerender(prepared, exc)
+        raise
+    finish_rerender(prepared)
+    receipt["warnings"] = prepared.warnings + list(receipt.get("warnings") or [])
+    receipt["props"] = prepared.props
     return receipt
+
+
+def rerender_many(file_ids: List[str], *, props: Optional[dict] = None, replace_props: bool = False,
+                  on_progress: Optional[Callable[[Optional[float], str], None]] = None,
+                  should_cancel: Optional[CancelFn] = None) -> dict:
+    """Re-render several linked files, then swap all their media in ONE GUI hop: ONE undo step.
+
+    Nothing in the project changes until every render is done, so edits the
+    user makes meanwhile are never folded into the step. Files that fail to
+    render are reported in ``failed`` and keep their media; a cancel stops
+    before any swap (``jobs.JobCancelled``; the renders made so far are
+    dropped). Returns ``{"swapped": [receipts], "failed": [(file_id, message)]}``.
+    """
+    from classes.handoff import jobs
+    prepared: List[PreparedRender] = []
+    failed: List[Tuple[str, str]] = []
+    ids = [str(f) for f in file_ids if f]
+    try:
+        for index, file_id in enumerate(ids):
+            if should_cancel is not None and should_cancel():
+                raise jobs.JobCancelled("re-render cancelled")
+            if on_progress is not None:
+                on_progress(index / float(len(ids)), "Rendering %d of %d" % (index + 1, len(ids)))
+            try:
+                prepared.append(prepare_rerender(file_id, props=props, replace_props=replace_props,
+                                                 should_cancel=should_cancel))
+            except jobs.JobCancelled:
+                raise
+            except Exception as exc:
+                log.warning("Re-render of linked file %s failed", file_id, exc_info=True)
+                failed.append((file_id, str(exc)))
+    except jobs.JobCancelled:
+        for item in prepared:
+            finish_rerender(item, jobs.JobCancelled("cancelled"))
+        raise
+    if not prepared:
+        return {"swapped": [], "failed": failed}
+    try:
+        receipts = swap_linked_media_many([(p.file_id, p.path, p.link_update, p.expect) for p in prepared])
+    except BaseException as exc:
+        for item in prepared:
+            finish_rerender(item, exc)
+        raise
+    for item, receipt in zip(prepared, receipts):
+        finish_rerender(item)
+        receipt["warnings"] = item.warnings + list(receipt.get("warnings") or [])
+        receipt["props"] = item.props
+    return {"swapped": receipts, "failed": failed}
 
 
 # ---------------------------------------------------------------------------
 # Save: adopt renders of an unsaved project into its assets folder
 # ---------------------------------------------------------------------------
 
-def _under(path: str, root: str) -> bool:
-    try:
-        return os.path.commonpath([os.path.abspath(path), os.path.abspath(root)]) == os.path.abspath(root)
-    except ValueError:
-        return False
+def remap_history_paths(mapping: Dict[str, str], *, updates: Any = None, history: Any = None) -> int:
+    """Point undo/redo history at media that a save moved (``old path -> new path``).
+
+    History actions hold their own copies of file records, so after a save
+    moved a render, an undo or redo would restore the old, now missing path.
+    Rewrites the live ``updates.actionHistory`` / ``redoHistory`` actions and
+    the serialized ``project["history"]`` about to be written. Returns how
+    many strings changed.
+    """
+    if not mapping:
+        return 0
+    count = 0
+
+    def fix(value):
+        nonlocal count
+        if isinstance(value, str):
+            new = mapping.get(value)
+            if new is not None:
+                count += 1
+                return new
+            return value
+        if isinstance(value, dict):
+            for k in list(value):
+                value[k] = fix(value[k])
+        elif isinstance(value, list):
+            for i in range(len(value)):
+                value[i] = fix(value[i])
+        return value
+
+    if updates is not None:
+        for action in list(getattr(updates, "actionHistory", []) or []) + list(getattr(updates, "redoHistory", []) or []):
+            action.values = fix(action.values)
+            action.old_values = fix(action.old_values)
+    if history is not None:
+        fix(history)
+    return count
 
 
 def adopt_linked_renders(files: List[dict], clips: List[dict], project_file_path: str,
-                         previous_path: Optional[str] = None) -> List[Tuple[str, str]]:
+                         previous_path: Optional[str] = None,
+                         path_changes: Optional[Dict[str, str]] = None) -> List[Tuple[str, str]]:
     """Bring linked renders into ``<project>_assets/links`` when a project is saved (``project_data.save``).
 
     Renders of a never-saved project (``~/.openshot_qt/links``) are MOVED
-    (like generated media); renders in a previous project's assets folder
-    (Save As) are COPIED, so the old project keeps working. File paths and
-    clip readers are updated in memory; ``render.output`` tokens
-    (``@assets/links/...``) stay valid. A file that cannot be brought over
-    keeps its old, still-valid path (logged) -- never a failed save. Returns
-    the move ledger ``[(src, dest)]`` for ``assets.reverse_media_moves``.
+    (renamed, like generated media); renders in a previous project's assets
+    folder (Save As) are HARD-LINKED, so the old project keeps working and no
+    bytes are copied. Save runs on the GUI thread, so only these instant
+    operations are used: a render on another volume (or a file system without
+    hard links) keeps its old, still-valid path (logged; Collect Media copies
+    it) -- never a slow or failed save. File paths and clip readers are
+    updated in memory; ``render.output`` tokens (``@assets/links/...``) stay
+    valid. Returns the move ledger ``[(src, dest)]`` for
+    ``assets.reverse_media_moves``; *path_changes* (a dict) receives every
+    ``old path -> new path`` (moves and links) for :func:`remap_history_paths`.
+
+    Any file under a links folder is adopted, linked or not (a clip unlinked
+    before the first save still plays a render from there).
     """
     from classes import info
     from classes.assets import get_assets_path
@@ -1115,7 +1532,7 @@ def adopt_linked_renders(files: List[dict], clips: List[dict], project_file_path
     remap: Dict[str, str] = {}
     id_to_new: Dict[str, str] = {}
     for f in files or []:
-        if not isinstance(f, dict) or not isinstance(f.get(LINK_KEY), dict):
+        if not isinstance(f, dict):
             continue
         src = str(f.get("path") or "")
         abs_src = os.path.abspath(src) if src else ""
@@ -1123,9 +1540,9 @@ def adopt_linked_renders(files: List[dict], clips: List[dict], project_file_path
             f["path"] = remap[abs_src]
             id_to_new[str(f.get("id"))] = remap[abs_src]
             continue
-        if not src or "%" in src or not os.path.isfile(src) or _under(src, new_root):
+        if not src or "%" in src or not os.path.isfile(src) or path_is_under(src, new_root):
             continue
-        match = next(((root, m) for root, m in sources if _under(src, root)), None)
+        match = next(((root, m) for root, m in sources if path_is_under(src, root)), None)
         if match is None:
             continue
         root, mode = match
@@ -1134,17 +1551,27 @@ def adopt_linked_renders(files: List[dict], clips: List[dict], project_file_path
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             if os.path.exists(dest):
                 dest = _unique_path(os.path.dirname(dest), os.path.basename(dest))
+            # Save runs on the GUI thread: only instant operations here. A rename (same
+            # volume) or a hard link (Save As) costs nothing; a render that would need its
+            # bytes copied (another volume) keeps its current, still valid path.
             if mode == "move":
-                shutil.move(abs_src, dest)
+                os.rename(abs_src, dest)
                 moves.append((abs_src, dest))
             else:
-                shutil.copy2(abs_src, dest + ".partial")
-                os.replace(dest + ".partial", dest)
-        except OSError:
-            log.warning("Could not bring linked render %s into %s; it keeps its current path", abs_src, new_root,
-                        exc_info=True)
+                os.link(abs_src, dest)
+        except OSError as exc:
+            if isinstance(exc, PermissionError) or exc.errno in (errno.EXDEV, errno.EPERM, errno.ENOTSUP,
+                                                                 errno.EOPNOTSUPP, errno.EMLINK, errno.EACCES):
+                log.info("Linked render %s stays where it is (it would need a copy to reach %s); File > Collect "
+                         "Media copies it into the project", abs_src, new_root)
+            else:
+                log.warning("Could not bring linked render %s into %s; it keeps its current path", abs_src,
+                            new_root, exc_info=True)
             continue
         remap[abs_src] = dest
+        if path_changes is not None:
+            path_changes[abs_src] = dest
+            path_changes[src] = dest
         id_to_new[str(f.get("id"))] = dest
         f["path"] = dest
         log.info("Linked render %s -> %s (%s)", abs_src, dest, mode)
@@ -1166,8 +1593,10 @@ __all__ = [
     "RenderResult", "LinkCheck", "normalize_link", "read_link", "link_props", "encode_props", "decode_props",
     "is_linked", "kind_label", "register_provider", "unregister_provider", "provider_for", "registered_kinds",
     "supports_studio", "require_provider", "fingerprint_value", "fingerprint_sources", "short_fingerprint",
-    "links_root", "links_dir", "output_token", "render_file_name", "check_link", "link_state", "probe_media",
+    "links_root", "links_dir", "output_token", "render_file_name", "check_link", "check_links", "link_state",
+    "fingerprint_cache", "probe_media",
     "add_linked_media", "swap_linked_media", "update_link", "unlink", "render_link", "import_linked",
-    "rerender_linked", "adopt_linked_renders", "set_render_error", "clear_render_error", "render_error",
-    "file_id_for_clip",
+    "rerender_linked", "rerender_many", "prepare_rerender", "finish_rerender", "PreparedRender",
+    "swap_linked_media_many", "is_rendering", "precheck_placement", "adopt_linked_renders", "remap_history_paths",
+    "set_render_error", "clear_render_error", "render_error", "file_id_for_clip",
 ]
