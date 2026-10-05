@@ -242,3 +242,53 @@ def test_cancel_kills_the_render_and_leaves_no_partial_file(fake_project, tmp_pa
                           on_progress=progress, should_cancel=stop.is_set, runtime=NODE)
     assert time.monotonic() - started < 20
     assert not os.path.exists(out)
+
+
+# ---------------------------------------------------------------------------
+# install.py
+# ---------------------------------------------------------------------------
+
+def test_install_uses_the_projects_package_manager_when_it_is_there():
+    from classes.handoff.node_runtime import NodeRuntime
+    from classes.handoff.remotion import install
+    rt = NodeRuntime(node="/n/node", npm=("/n/node", "/n/npm-cli.js"), npx=(), version="22.0.0")
+    argv, used, warnings = install.install_argv(rt, "npm")
+    assert argv == ["/n/node", "/n/npm-cli.js", "install", "--no-audit", "--no-fund", "--prefer-offline"]
+    assert used == "npm" and warnings == []
+    argv, used, _ = install.install_argv(rt, "pnpm", which=lambda name, path=None: "/opt/bin/pnpm")
+    assert argv == ["/opt/bin/pnpm", "install", "--prefer-offline"] and used == "pnpm"
+    argv, used, warnings = install.install_argv(rt, "yarn", which=lambda name, path=None: None)
+    assert used == "npm" and "yarn is not installed" in warnings[0]
+
+
+FAKE_NPM = """import json, os, sys
+print("npm warn deprecated something", flush=True)
+if os.environ.get("FAKE_NPM_FAIL"):
+    print("npm error network request to https://registry.npmjs.org/remotion failed", flush=True)
+    sys.exit(1)
+for name in ("remotion", "@remotion/renderer", "@remotion/bundler", "@remotion/cli"):
+    folder = os.path.join("node_modules", *name.split("/"))
+    os.makedirs(folder, exist_ok=True)
+    json.dump({"name": name, "version": "4.0.532"}, open(os.path.join(folder, "package.json"), "w"))
+print("added 261 packages in 3s", flush=True)
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX script as npm")
+def test_install_dependencies_reports_progress_and_failures(tmp_path, monkeypatch):
+    from classes.handoff.linked_media import LinkError
+    from classes.handoff.node_runtime import NodeRuntime
+    from classes.handoff.remotion import install
+    root = make_project(str(tmp_path / "p"), installed=False)
+    script = tmp_path / "npm-cli.py"
+    script.write_text(FAKE_NPM)
+    rt = NodeRuntime(node=sys.executable, npm=(sys.executable, str(script)), npx=(), version="22.0.0")
+    lines = []
+    result = install.install_dependencies(root, on_progress=lambda f, m: lines.append(m), runtime=rt)
+    assert result == {"manager": "npm", "warnings": [], "remotion_version": "4.0.532"}
+    assert any("added 261 packages" in m for m in lines)
+    monkeypatch.setenv("FAKE_NPM_FAIL", "1")
+    with pytest.raises(LinkError, match="npm install` failed .*registry.npmjs.org"):
+        install.install_dependencies(root, runtime=rt)
+    with pytest.raises(LinkError, match="no package.json"):
+        install.install_dependencies(str(tmp_path), runtime=rt)

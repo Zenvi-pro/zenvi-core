@@ -45,6 +45,7 @@ export type ZenviClipData = {
   sourceHeight: number;
   scaleMode: number;
   gravity: number;
+  maxScale: [number, number] | null;
   time: TimeSpec;
   keyframes: Record<string, Keys>;
   hasAudio: boolean;

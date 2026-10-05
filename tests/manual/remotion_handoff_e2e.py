@@ -1,0 +1,511 @@
+#!/usr/bin/env python3
+"""Real end-to-end check of the Remotion <-> Zenvi handoff (not part of the pytest suite).
+
+Runs the project's own Remotion (Node) and libopenshot 1.0 in the headless
+editor harness (real ProjectDataStore, UpdateManager and undo; the timeline
+widget is the tests' FakeTimeline), driving the real editor tools:
+
+  linked    list + import TitleCard (transparent) and Scene (opaque) with
+            import_remotion_project_tool; decode the renders with libopenshot
+            (the title keeps alpha); change a prop with update_linked_clip_tool
+            (re-render, one undo step); cancel a render and check that no
+            headless Chrome is left behind.
+  export    a Zenvi project (video + image + title + keyframed move + fade
+            transition) -> export_to_remotion_tool -> npm install ->
+            npx remotion render (PNG sequence) -> compare with libopenshot's
+            frames of the same project (PSNR, mean absolute difference);
+            side-by-side images are written for a human to look at.
+  reimport  import the export back (restore_native) -> the native clips,
+            files, transitions and markers equal the original.
+
+Usage (heavy: renders and npm install go through the machine-wide lock)::
+
+    QT_QPA_PLATFORM=offscreen PYTHONPATH=$HOME/zenvi-deps-1.0/python ZENVI_REMOTION_CONCURRENCY=2 \\
+      ~/Projects/zenvi-worktrees/.handoff/bin/heavy.sh .venv/bin/python tests/manual/remotion_handoff_e2e.py \\
+      --work /tmp/remotion-e2e --remotion-app /path/to/installed/remotion-app all
+
+``--remotion-app`` is an installed Remotion project with TitleCard and Scene
+compositions (the handoff fixture's sample). Results go to
+``<work>/report.json``; images to ``<work>/frames``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+TESTS = os.path.dirname(HERE)
+SRC = os.path.join(os.path.dirname(TESTS), "src")
+REPORT: dict = {}
+_KEEP: list = []
+
+
+def log(*parts):
+    print("[e2e]", *parts, flush=True)
+
+
+def boot():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    sys.path[:0] = [SRC, TESTS]
+    from PyQt5.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    _KEEP.append(app)  # PyQt deletes the C++ QApplication with its last Python reference
+    import openshot  # the real libopenshot (PYTHONPATH)
+    from classes import tool_handlers
+    tool_handlers.QThread = None  # no event loop here: GUI hops run inline, like the headless suite
+    log("libopenshot", openshot.OPENSHOT_VERSION_FULL)
+    return app
+
+
+def make_editor(work):
+    from classes import info
+    from editor_tools_harness import make_editor as _make
+    from titles_text_fakes import FakeFilesModel, FakeTimeline
+    info.USER_PATH = os.path.join(work, "user")
+    os.makedirs(info.USER_PATH, exist_ok=True)
+    editor = _make()
+    editor.window.timeline = FakeTimeline(editor)
+    editor.window.files_model = FakeFilesModel(editor)
+    import classes.handoff.remotion  # noqa: F401  (registers the provider)
+    return editor
+
+
+def ffprobe(path):
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                          "stream=codec_name,pix_fmt,width,height,r_frame_rate,nb_frames", "-of", "json", path],
+                         capture_output=True, text=True, check=True)
+    return json.loads(out.stdout)["streams"][0]
+
+
+def openshot_frame_png(path, frame, out_png):
+    import openshot
+    reader = openshot.FFmpegReader(path)
+    reader.Open()
+    try:
+        reader.GetFrame(frame).Save(out_png, 1.0, "PNG", 100)
+    finally:
+        reader.Close()
+    return out_png
+
+
+def alpha_at(png, points):
+    from PIL import Image
+    img = Image.open(png).convert("RGBA")
+    return [img.getpixel(p)[3] for p in points], img.getchannel("A").getextrema()
+
+
+def over_black(png, out):
+    from PIL import Image
+    img = Image.open(png).convert("RGBA")
+    bg = Image.new("RGBA", img.size, (0, 0, 0, 255))
+    Image.alpha_composite(bg, img).convert("RGB").save(out)
+    return out
+
+
+def chrome_orphans(project_dir):
+    from classes.handoff.remotion import helper
+    return helper.orphan_pids(project_dir)
+
+
+def chrome_children(project_dir):
+    ps = subprocess.run(["ps", "-axo", "pid=,ppid=,command="], capture_output=True, text=True).stdout
+    return [line.strip() for line in ps.splitlines()
+            if os.path.join(project_dir, "node_modules", ".remotion") in line]
+
+
+# ---------------------------------------------------------------------------
+# (a) Remotion -> Zenvi linked clips
+# ---------------------------------------------------------------------------
+
+def part_linked(work, app_dir):
+    from classes.handoff import jobs
+    from classes.handoff import linked_media as lm
+    from classes.handoff.remotion import detect, provider
+    editor = make_editor(work)
+    frames = os.path.join(work, "frames")
+    os.makedirs(frames, exist_ok=True)
+    result = {}
+
+    t0 = time.time()
+    listing = editor.call_receipt("list_remotion_compositions_tool", project_dir=app_dir)
+    result["list_seconds"] = round(time.time() - t0, 1)
+    comps = {c["id"]: c for c in listing["data"]["compositions"]}
+    log("list:", listing["summary"], "(%.1fs)" % result["list_seconds"])
+    result["compositions"] = {k: {x: v[x] for x in ("width", "height", "fps", "duration_frames", "file", "line")}
+                              for k, v in comps.items()}
+
+    editor.mark()
+    t0 = time.time()
+    receipt = editor.call_receipt("import_remotion_project_tool", project_dir=app_dir)
+    result["import_seconds"] = round(time.time() - t0, 1)
+    log("import:", receipt["status"], receipt["summary"][:300])
+    assert receipt["status"] == "applied", receipt
+    result["import_undo_steps"] = editor.undo_steps_since_mark()
+    clips = {c["composition"]: c for c in receipt["data"]["linked"]}
+    result["linked"] = {}
+    for comp, c in clips.items():
+        f = editor.file(c["file_id"])
+        info = ffprobe(f["path"])
+        link = lm.read_link(f)
+        result["linked"][comp] = {"codec": c["codec"], "ffprobe": info, "layer": c["layer"],
+                                  "state": lm.check_link(f).state, "path": f["path"],
+                                  "source": {k: link["source"].get(k) for k in ("file", "line", "folder")}}
+        log(comp, c["codec"], info, "state", result["linked"][comp]["state"])
+
+    # libopenshot decodes them; the title keeps alpha (frame 25: background clear, text solid)
+    title_path = editor.file(clips["TitleCard"]["file_id"])["path"]
+    png = openshot_frame_png(title_path, 26, os.path.join(frames, "linked-title-f25.png"))
+    corner, extrema = alpha_at(png, [(5, 5), (1900, 20)])
+    text_alpha = None
+    from PIL import Image
+    img = Image.open(png).convert("RGBA")
+    for y in range(820, 960, 4):  # the title text row of the TitleCard
+        for x in range(110, 600, 4):
+            if img.getpixel((x, y))[3] == 255:
+                text_alpha = (x, y)
+                break
+        if text_alpha:
+            break
+    result["title_alpha"] = {"corners": corner, "extrema": extrema, "solid_text_pixel": text_alpha}
+    over_black(png, os.path.join(frames, "linked-title-f25-on-black.png"))
+    scene_path = editor.file(clips["Scene"]["file_id"])["path"]
+    spng = openshot_frame_png(scene_path, 30, os.path.join(frames, "linked-scene-f29.png"))
+    result["scene_alpha_extrema"] = alpha_at(spng, [(0, 0)])[1]
+    log("title alpha", result["title_alpha"], "scene alpha", result["scene_alpha_extrema"])
+
+    # change a prop -> re-render -> ONE undo step for the swap
+    title_id = clips["TitleCard"]["file_id"]
+    before = editor.file(title_id)["path"]
+    editor.mark()
+    t0 = time.time()
+    upd = editor.call_receipt("update_linked_clip_tool", file_id=title_id, props={"title": "Launch day"})
+    result["rerender_seconds"] = round(time.time() - t0, 1)
+    log("update:", upd["status"], upd["summary"][:200])
+    after = editor.file(title_id)["path"]
+    result["rerender"] = {"status": upd["status"], "undo_steps": editor.undo_steps_since_mark(),
+                          "path_changed": after != before, "props": lm.link_props(lm.read_link(editor.file(title_id)))}
+    png2 = openshot_frame_png(after, 46, os.path.join(frames, "rerender-title-f45.png"))
+    over_black(png2, os.path.join(frames, "rerender-title-f45-on-black.png"))
+    editor.undo()
+    result["rerender"]["undo_restores_previous_render"] = editor.file(title_id)["path"] == before
+    editor.redo()
+
+    # cancel a render: JobCancelled, no partial file, no headless Chrome left behind
+    project = detect.inspect_project(app_dir)
+    link = lm.read_link(editor.file(title_id))
+    link["props"]["title"] = "Cancel me"
+    stop = threading.Event()
+    threading.Timer(8.0, stop.set).start()
+    staging = os.path.join(work, "cancel-staging")
+    os.makedirs(staging, exist_ok=True)
+    cancelled = False
+    try:
+        provider.RemotionProvider().render(link, staging, on_progress=lambda f, m: None, should_cancel=stop.is_set)
+    except jobs.JobCancelled:
+        cancelled = True
+    time.sleep(1.0)
+    result["cancel"] = {"raised_job_cancelled": cancelled, "orphans": chrome_orphans(project.root),
+                        "chrome_processes": chrome_children(project.root),
+                        "staging_files": sorted(os.listdir(staging))}
+    log("cancel:", result["cancel"])
+    REPORT["linked"] = result
+    return result
+
+
+# ---------------------------------------------------------------------------
+# (b) Zenvi -> Remotion export, rendered by both
+# ---------------------------------------------------------------------------
+
+TITLE_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <rect x="192" y="780" width="12" height="150" fill="#FF5A36"/>
+  <text x="230" y="860" font-family="Helvetica, Arial, sans-serif" font-size="96" font-weight="700" fill="#F7F7F5">Zenvi to Remotion</text>
+  <text x="232" y="920" font-family="Helvetica, Arial, sans-serif" font-size="44" fill="#F7F7F5">round trip check</text>
+</svg>
+"""
+
+
+def _kf(*points):
+    out = []
+    for p in points:
+        interp = p[2] if len(p) > 2 else 0
+        hl = p[3] if len(p) > 3 else (0.5, 1.0)
+        hr = p[4] if len(p) > 4 else (0.5, 0.0)
+        out.append({"co": {"X": float(p[0]), "Y": float(p[1])}, "interpolation": interp, "handle_type": 0,
+                    "handle_left": {"X": hl[0], "Y": hl[1]}, "handle_right": {"X": hr[0], "Y": hr[1]}})
+    return {"Points": out}
+
+
+MATRIX_TAGS = {"bt709": ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"],
+               "bt601": ["-colorspace", "smpte170m", "-color_primaries", "smpte170m", "-color_trc", "smpte170m"]}
+TITLE_STRIP = (150, 740, 1300, 960)   # where the title's text is drawn (Qt vs Chrome glyphs differ)
+
+
+def build_fixture_project(work, matrix="bt709"):
+    """A 6 s 1080p30 project with real media: video (trimmed, fading in), image (keyframed move + rotation),
+    an SVG title with a fade transition, a marker."""
+    import openshot
+    from classes.image_types import get_media_type
+    from windows.models.files_model import inspect_media
+    media = os.path.join(work, "media")
+    os.makedirs(media, exist_ok=True)
+    video = os.path.join(media, "testsrc-%s.mp4" % matrix)
+    if not os.path.exists(video):
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30:duration=6",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=6", "-c:v", "libx264", "-pix_fmt", "yuv420p"]
+                       + MATRIX_TAGS[matrix] + ["-c:a", "aac", "-shortest", video], check=True)
+    image = os.path.join(media, "card.png")
+    if not os.path.exists(image):
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=800x400:rate=1",
+                        "-frames:v", "1", image], check=True)
+    title = os.path.join(media, "title.svg")
+    with open(title, "w") as fh:
+        fh.write(TITLE_SVG)
+    mask = os.path.join(SRC, "transitions", "common", "fade.svg")
+
+    with open(os.path.join(SRC, "settings", "_default.project")) as fh:
+        project = json.load(fh)
+    project.update(fps={"num": 30, "den": 1}, width=1920, height=1080, sample_rate=48000, channels=2,
+                   channel_layout=3, duration=300.0)
+    files, clips = [], []
+
+    def add_file(fid, path, name):
+        reader, _dur = inspect_media(path)
+        data = dict(reader)
+        data.update(id=fid, path=path, name=name, media_type=get_media_type(reader))
+        files.append(data)
+        return data
+
+    def add_clip(cid, fdata, layer, position, start, end, **props):
+        clip = json.loads(openshot.Clip(fdata["path"]).Json())
+        clip.update(id=cid, file_id=fdata["id"], title=fdata["name"], reader=copy.deepcopy(fdata), layer=layer,
+                    position=position, start=start, end=end, duration=float(fdata.get("duration") or end))
+        clip.update(props)
+        clips.append(clip)
+        return clip
+
+    fv = add_file("FVIDEO0001", video, "testsrc.mp4")
+    fi = add_file("FIMAGE0001", image, "card.png")
+    ft = add_file("FTITLE0001", title, "Title")
+    # video: trimmed by 0.5 s, fades in over 0.5 s (eased), full screen
+    add_clip("CVIDEO0001", fv, 1000000, 0.0, 0.5, 6.0, alpha=_kf((16, 0.0), (31, 1.0)))
+    # image: 40 %, slides from left to right of centre with an expo-out ease, turns 0 -> 10 degrees
+    add_clip("CIMAGE0001", fi, 2000000, 0.5, 0.0, 4.0, scale_x=_kf((1, 0.4)), scale_y=_kf((1, 0.4)),
+             location_x=_kf((1, -0.3), (91, 0.2, 0, (0.3, 1.0), (0.16, 1.0))),
+             location_y=_kf((1, -0.15)), rotation=_kf((1, 0.0), (91, 10.0)))
+    # title: from 1.0 s for 4 s, faded in by a 1 s Fade transition on its track
+    add_clip("CTITLE0001", ft, 3000000, 1.0, 0.0, 4.0)
+    transition = {
+        "id": "TFADE00001", "layer": 3000000, "position": 1.0, "start": 0.0, "end": 1.0, "duration": 1.0,
+        "title": "Fade", "type": "Mask", "class_name": "Mask", "name": "Alpha Mask / Wipe Transition",
+        "brightness": _kf((1, 1.0, 1), (31, -1.0, 1)), "contrast": _kf((1, 3.0)),
+        "reader": json.loads(openshot.QtImageReader(mask).Json()), "replace_image": False,
+    }
+    transition["reader"]["path"] = mask
+    project["files"], project["clips"], project["effects"] = files, clips, [transition]
+    project["markers"] = [{"id": "MARK000001", "position": 3.0, "name": "Hold", "vector": "blue"}]
+    return project
+
+
+def libopenshot_frames(project, frames, out_dir):
+    import openshot
+    os.makedirs(out_dir, exist_ok=True)
+    t = openshot.Timeline(project["width"], project["height"], openshot.Fraction(30, 1), 48000, 2,
+                          openshot.LAYOUT_STEREO)
+    t.SetJson(json.dumps(project))
+    t.Open()
+    out = {}
+    try:
+        for n in frames:
+            path = os.path.join(out_dir, "zenvi-%03d.png" % n)
+            t.GetFrame(n + 1).Save(path, 1.0, "PNG", 100)
+            out[n] = path
+    finally:
+        t.Close()
+    return out
+
+
+def _flat(png, size=None):
+    from PIL import Image
+    img = Image.open(png).convert("RGBA")
+    if size is not None and img.size != size:
+        img = img.resize(size)
+    return Image.alpha_composite(Image.new("RGBA", img.size, (0, 0, 0, 255)), img).convert("RGB")
+
+
+def compare(a_png, b_png, exclude=(), box=None):
+    """(PSNR dB, mean absolute difference 0-255, diff image) over RGB, both composited over black.
+
+    *exclude* boxes are blanked in both images first; *box* crops both to a region.
+    """
+    import math
+    from PIL import ImageChops, ImageStat
+    a = _flat(a_png)
+    b = _flat(b_png, a.size)
+    for region in exclude:
+        a.paste((0, 0, 0), region)
+        b.paste((0, 0, 0), region)
+    if box is not None:
+        a, b = a.crop(box), b.crop(box)
+    diff = ImageChops.difference(a, b)
+    stat = ImageStat.Stat(diff)
+    mad = sum(stat.mean) / 3.0
+    mse = sum(s / stat.count[i] for i, s in enumerate(stat.sum2)) / 3.0
+    psnr = float("inf") if mse == 0 else 10 * math.log10(255.0 ** 2 / mse)
+    return round(psnr, 2), round(mad, 3), diff
+
+
+def side_by_side(a_png, b_png, diff, out):
+    from PIL import Image, ImageOps
+    a = Image.open(a_png).convert("RGB")
+    b = Image.open(b_png).convert("RGB").resize(a.size)
+    d = ImageOps.autocontrast(diff.convert("L")).convert("RGB")
+    w, h = a.size
+    sheet = Image.new("RGB", (w * 3 // 2, h // 2), (40, 40, 40))
+    for i, img in enumerate((a, b, d)):
+        sheet.paste(img.resize((w // 2, h // 2)), (i * w // 2, 0))
+    sheet.save(out)
+
+
+def decoder_check(work, video, out_dir):
+    """Which YUV->RGB matrix each side used for the video: libopenshot vs Remotion vs ffmpeg bt601 / bt709."""
+    refs = {}
+    for matrix in ("bt601", "bt709"):
+        ref = os.path.join(out_dir, "ref-%s.png" % matrix)
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", "1.0", "-i", video, "-frames:v", "1", "-vf",
+                        "scale=1920:1080:in_color_matrix=%s:flags=bicubic,format=rgb24" % matrix, ref], check=True)
+        refs[matrix] = ref
+    return refs
+
+
+def part_export(work, app_dir, matrix="bt709"):
+    from classes.handoff.remotion import install
+    editor = make_editor(work)
+    project = build_fixture_project(work, matrix)
+    editor.store._data = copy.deepcopy(project)
+    editor.mark()
+    export_dir = os.path.join(work, "trip-remotion")
+    if os.path.isdir(export_dir):
+        shutil.rmtree(export_dir)
+    receipt = editor.call_receipt("export_to_remotion_tool", output_dir=export_dir)
+    log("export:", receipt["status"], receipt["summary"][:300])
+    assert receipt["status"] in ("applied", "unchanged", "ok"), receipt
+    result = {"export": {k: receipt["data"][k] for k in ("clips", "transitions", "media_files", "notes", "warnings",
+                                                         "composition")},
+              "export_undo_steps": editor.undo_steps_since_mark()}
+    last = int(receipt["data"]["composition"]["durationInFrames"]) - 1
+    t0 = time.time()
+    inst = install.install_dependencies(export_dir)
+    result["npm_install_seconds"] = round(time.time() - t0, 1)
+    result["npm_install"] = inst
+    log("npm install:", inst, "%.1fs" % result["npm_install_seconds"])
+    # reuse the headless Chrome the linked part downloaded (saves another ~90 MB download)
+    browser = os.path.join(app_dir, "node_modules", ".remotion")
+    if os.path.isdir(browser) and not os.path.isdir(os.path.join(export_dir, "node_modules", ".remotion")):
+        subprocess.run(["cp", "-Rc", browser, os.path.join(export_dir, "node_modules", ".remotion")], check=True)
+    tsc = subprocess.run(["npx", "tsc", "--noEmit", "-p", "."], cwd=export_dir, capture_output=True, text=True)
+    result["tsc"] = {"code": tsc.returncode, "output": (tsc.stdout + tsc.stderr)[-1500:]}
+    log("tsc --noEmit:", tsc.returncode, (tsc.stdout + tsc.stderr)[-500:])
+    seq = os.path.join(work, "frames", "remotion-seq")
+    shutil.rmtree(seq, ignore_errors=True)
+    t0 = time.time()
+    render = subprocess.run(["npx", "remotion", "render", "src/index.ts", "ZenviTimeline", seq, "--sequence",
+                             "--image-format=png", "--frames=0-%d" % last, "--concurrency=%s" % os.environ.get(
+                                 "ZENVI_REMOTION_CONCURRENCY", "2"), "--log=warn"],
+                            cwd=export_dir, capture_output=True, text=True)
+    result["remotion_render"] = {"code": render.returncode, "seconds": round(time.time() - t0, 1),
+                                 "tail": (render.stdout + render.stderr)[-1200:]}
+    log("npx remotion render:", render.returncode, "%.1fs" % result["remotion_render"]["seconds"])
+    assert render.returncode == 0, render.stdout + render.stderr
+    import re
+    rendered = sorted((f for f in os.listdir(seq) if f.endswith(".png")),
+                      key=lambda f: int(re.findall(r"\d+", f)[-1]))
+    result["remotion_frames"] = len(rendered)
+    picks = [n for n in (0, 10, 15, 22, 30, 37, 45, 60, 75, 90, 105, 120, 135, 150) if n <= last] + [last]
+    zenvi = libopenshot_frames(project, picks, os.path.join(work, "frames", "zenvi"))
+    rows = []
+    for n in picks:
+        remotion_png = os.path.join(seq, rendered[n])
+        psnr, mad, diff = compare(zenvi[n], remotion_png)
+        psnr_nt, mad_nt, _ = compare(zenvi[n], remotion_png, exclude=[TITLE_STRIP])
+        side_by_side(zenvi[n], remotion_png, diff, os.path.join(work, "frames", "compare-%03d.png" % n))
+        rows.append({"frame": n, "psnr_db": psnr, "mean_abs_diff": mad, "psnr_db_without_title_text": psnr_nt,
+                     "mean_abs_diff_without_title_text": mad_nt})
+        log("frame %3d  PSNR %6.2f dB  mean |diff| %6.3f   (without the title text: %6.2f dB, %6.3f)"
+            % (n, psnr, mad, psnr_nt, mad_nt))
+    result["compare"] = rows
+    # the video's colour matrix: which decode is each side closest to? (frame 15 = source 1.0 s)
+    video = [f["path"] for f in project["files"] if f["id"] == "FVIDEO0001"][0]
+    refs = decoder_check(work, video, os.path.join(work, "frames"))
+    bars = (1500, 600, 1900, 1050)  # plain video colour bars, nothing drawn over them at frame 15
+    result["decoder_matrix"] = {
+        side: {m: compare(png, refs[m], box=bars)[:2] for m in refs}
+        for side, png in (("libopenshot", zenvi[15]), ("remotion", os.path.join(seq, rendered[15])))}
+    log("video colour matrix (PSNR, mean |diff| vs ffmpeg decodes):", result["decoder_matrix"])
+    REPORT["export"] = result
+    REPORT["export_project"] = project
+    return project, export_dir
+
+
+# ---------------------------------------------------------------------------
+# (c) back into Zenvi
+# ---------------------------------------------------------------------------
+
+def part_reimport(work, project, export_dir):
+    editor = make_editor(work)
+    editor.store._data["fps"] = dict(project["fps"])
+    editor.mark()
+    receipt = editor.call_receipt("import_remotion_project_tool", project_dir=export_dir, position=0.0)
+    log("reimport:", receipt["status"], receipt["summary"][:300])
+    result = {"status": receipt["status"], "undo_steps": editor.undo_steps_since_mark(), "equal": {}}
+    for key in ("files", "clips", "effects", "markers"):
+        mine = sorted(editor.get(key) or [], key=lambda d: d["id"])
+        theirs = sorted(json.loads(json.dumps(project[key])), key=lambda d: d["id"])
+        result["equal"][key] = mine == theirs
+        if mine != theirs:
+            for a, b in zip(mine, theirs):
+                if a != b:
+                    keys = sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
+                    result.setdefault("differences", {})[key] = keys
+                    break
+    log("reimport equality:", result["equal"], result.get("differences"))
+    REPORT["reimport"] = result
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--work", required=True)
+    parser.add_argument("--remotion-app", required=True)
+    parser.add_argument("--video-matrix", choices=["bt709", "bt601"], default="bt709",
+                        help="colour tags of the test video (libopenshot 1.0 decodes both as BT.601)")
+    parser.add_argument("parts", nargs="+", choices=["linked", "export", "reimport", "all"])
+    args = parser.parse_args()
+    work = os.path.abspath(args.work)
+    os.makedirs(work, exist_ok=True)
+    boot()
+    parts = {"linked", "export", "reimport"} if "all" in args.parts else set(args.parts)
+    try:
+        if "linked" in parts:
+            part_linked(work, os.path.abspath(args.remotion_app))
+        if parts & {"export", "reimport"}:
+            project, export_dir = part_export(work, os.path.abspath(args.remotion_app), args.video_matrix)
+            if "reimport" in parts:
+                part_reimport(work, project, export_dir)
+    finally:
+        REPORT.pop("export_project", None)
+        with open(os.path.join(work, "report.json"), "w") as fh:
+            json.dump(REPORT, fh, indent=1, default=str)
+        log("report:", os.path.join(work, "report.json"))
+    os._exit(0)  # libopenshot / Qt teardown order is not our concern here
+
+
+if __name__ == "__main__":
+    main()

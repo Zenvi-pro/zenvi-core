@@ -192,3 +192,17 @@ def test_export_refuses_a_foreign_folder(remotion, tmp_path):
     out = remotion.call("export_to_remotion_tool", output_dir=str(busy))
     assert out.startswith("Error") and "not empty" in out
     assert remotion.call("export_to_remotion_tool", output_dir="").startswith("Error")
+
+
+def test_clips_land_where_the_playhead_was_when_the_import_started(remotion):
+    player = remotion.window.preview_thread.player
+    player.Position.return_value = 91  # frame 91 = 3.0 s at 30 fps
+
+    def move_playhead(command, opts):
+        if command == "render":
+            player.Position.return_value = 301  # the user scrubs to 10 s while it renders
+
+    remotion.fake.during = move_playhead
+    data = _data(remotion.call("import_remotion_project_tool", project_dir=remotion.project_dir,
+                               compositions=["Scene"]))
+    assert data["linked"][0]["position"] == 3.0

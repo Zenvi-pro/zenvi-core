@@ -37,6 +37,26 @@ export const qsizeScaled = (w: number, h: number, tw: number, th: number, mode: 
   return useHeight ? [rw, th] : [tw, Math.trunc((tw * h) / w)];
 };
 
+// SCALE_NONE: libopenshot decodes the source at its size times the clip's LARGEST scale first
+// (stills scale to that box, video only shrinks, keeping its aspect), then draws it at `scale` again --
+// a 1920x1080 video at scale 0.5 shows 480x270. Port of transform.py `delivered_size`.
+export const deliveredSize = (
+  srcW: number, srcH: number, maxScaleX: number, maxScaleY: number, still: boolean,
+): [number, number] => {
+  const boxW = Math.trunc(srcW * maxScaleX);
+  const boxH = Math.trunc(srcH * maxScaleY);
+  if (still) {
+    return boxW > 0 && boxH > 0 ? qsizeScaled(srcW, srcH, boxW, boxH, 'keep') : [srcW, srcH];
+  }
+  if (boxW !== 0 && boxH !== 0 && boxW < srcW && boxH < srcH) {
+    const ratio = srcW / srcH;
+    const possibleW = Math.floor(boxH * ratio + 0.5);
+    const possibleH = Math.floor(boxW / ratio + 0.5);
+    return possibleW <= boxW ? [possibleW, boxH] : [boxW, possibleH];
+  }
+  return [srcW, srcH];
+};
+
 export const scaledSourceSize = (
   srcW: number, srcH: number, scaleMode: number, boxW: number, boxH: number,
 ): [number, number] => {
@@ -99,8 +119,11 @@ class Affine {
   }
 }
 
+// `maxScale` (SCALE_NONE only): the largest scale_x / scale_y keyframe value of the whole clip
+// (default: this instant's); `still`: the source is an image.
 export const clipMatrix = (
   srcW: number, srcH: number, canvasW: number, canvasH: number, scaleMode: number, gravity: number, pose: Pose,
+  maxScale: [number, number] | null = null, still = false,
 ): Matrix => {
   const sw = Math.max(1, Math.round(srcW || canvasW));
   const sh = Math.max(1, Math.round(srcH || canvasH));
@@ -112,7 +135,9 @@ export const clipMatrix = (
   const layoutY = marginPx;
   const layoutW = Math.max(1, width - marginPx * 2);
   const layoutH = Math.max(1, height - marginPx * 2);
-  const [sizeW, sizeH] = scaledSourceSize(sw, sh, scaleMode, Math.trunc(layoutW), Math.trunc(layoutH));
+  const [sizeW, sizeH] = scaleMode === SCALE_NONE
+    ? deliveredSize(sw, sh, maxScale ? maxScale[0] : pose.scaleX, maxScale ? maxScale[1] : pose.scaleY, still)
+    : scaledSourceSize(sw, sh, scaleMode, Math.trunc(layoutW), Math.trunc(layoutH));
   const ssw = sizeW * pose.scaleX;
   const ssh = sizeH * pose.scaleY;
 

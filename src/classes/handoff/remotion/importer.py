@@ -183,32 +183,38 @@ def plan_import(project_dir: str, *, compositions: Optional[Sequence[str]] = Non
                       props={k: dict(v) for k, v in (props or {}).items()}, timeline=timeline, warnings=warnings)
 
 
-def _precheck_placement(plan: ImportPlan, position: Optional[float], track: str) -> None:
-    """Refuse a bad track / window on the GUI thread before rendering (read-only)."""
-    if position is not None and float(position) < 0:
-        raise LinkError("position must be 0 or later (timeline seconds)")
-    if not str(track or "").strip():
-        return
-    if len(plan.linked) > 1 or (plan.linked and plan.native):
-        raise LinkError("track can only be given when importing one composition; leave it empty and Zenvi stacks the "
-                        "clips on free tracks above the video")
-    if not plan.linked:
-        return
-    comp = plan.linked[0]
-    length = comp.seconds or provider.STILL_SECONDS
+def _resolve_position(position: Optional[float]) -> float:
+    """The timeline second the clips land at: *position*, or the playhead when the call starts (snapped).
 
-    def _check():
+    Reading the playhead once, before a render of a minute or more, puts the
+    clips where the user asked even if they move the playhead meanwhile.
+    """
+    if position is not None:
+        if float(position) < 0:
+            raise LinkError("position must be 0 or later (timeline seconds)")
+        return float(position)
+
+    def _playhead():
         from classes.editor_tools._base import playhead_seconds, snap_seconds
-        from classes.editor_tools.titles_text_common import plan_overlay_track
-        start = snap_seconds(playhead_seconds() if position is None else float(position))
-        plan_overlay_track(start, start + length, str(track))
+        return snap_seconds(playhead_seconds())
 
-    from classes.editor_tools.titles_text_common import precheck_on_main
     from classes.editor_tools._base import ToolError
+    from classes.editor_tools.titles_text_common import precheck_on_main
     try:
-        precheck_on_main(_check)
+        return float(precheck_on_main(_playhead) or 0.0)
     except ToolError as exc:
         raise LinkError(str(exc)) from None
+
+
+def _precheck_placement(plan: ImportPlan, position: float, track: str) -> None:
+    """Refuse a bad track / window before anything renders (C1's precheck; read-only GUI hop)."""
+    if str(track or "").strip() and (len(plan.linked) > 1 or (plan.linked and plan.native)):
+        raise LinkError("track can only be given when importing one composition; leave it empty and Zenvi stacks the "
+                        "clips on free tracks above the video")
+    duration = None
+    if len(plan.linked) == 1:
+        duration = plan.linked[0].seconds or provider.STILL_SECONDS
+    linked_media.precheck_placement(position, track or None, duration)
 
 
 def _scaled(report: ProgressFn, lo: float, hi: float) -> ProgressFn:
@@ -237,6 +243,7 @@ def import_project(project_dir: str, *, compositions: Optional[Sequence[str]] = 
     plan = plan_import(project_dir, compositions=compositions, props=props, codec=codec,
                        restore_native=restore_native, listing=listing, on_progress=_scaled(report, 0.0, 0.1),
                        should_cancel=cancel)
+    position = _resolve_position(position)
     _precheck_placement(plan, position, track)
     project = plan.project
     rendered: List[Tuple[Composition, str, dict]] = []

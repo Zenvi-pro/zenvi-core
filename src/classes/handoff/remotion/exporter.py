@@ -57,6 +57,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from classes.handoff.keyframes import Curve, Segment
 from classes.handoff.linked_media import LinkError
 from classes.handoff.timeline_view import ClipView, FileView, TimelineSnapshot, TransitionView
+from classes.handoff.transform import SCALE_NONE
 
 REMOTION_VERSION = "4.0.532"
 DEPENDENCIES = {
@@ -504,6 +505,11 @@ def clip_entry(clip: ClipView, asset: Asset, fps: Fraction) -> Tuple[dict, List[
         notes.append(f"clip {clip.title!r}: composite mode {code} is drawn as normal in Remotion")
     if clip.parent_id:
         notes.append(f"clip {clip.title!r} follows a parent clip in Zenvi; Remotion draws it on its own")
+    max_scale = None
+    if int(clip.scale_mode) == SCALE_NONE:  # libopenshot decodes at the largest scale first (delivered_size)
+        tops = [max((p.value for p in clip.curve(k).points), default=None) for k in ("scale_x", "scale_y")]
+        if tops[0] is not None and tops[1] is not None:
+            max_scale = [_num(tops[0]), _num(tops[1])]
     has_audio = file.has_audio if clip.has_audio is None else bool(clip.has_audio)
     has_video = (kind != "audio") if clip.has_video is None else (bool(clip.has_video) and kind != "audio")
     entry = {
@@ -511,7 +517,8 @@ def clip_entry(clip: ClipView, asset: Asset, fps: Fraction) -> Tuple[dict, List[
         "from": start, "durationInFrames": frames, "position": _num(clip.position), "start": _num(clip.start),
         "end": _num(clip.end), "kind": kind, "src": asset.src, "transparent": kind in ("image", "title") or has_alpha(file),
         "sourceWidth": int(file.width or 0) or None, "sourceHeight": int(file.height or 0) or None,
-        "scaleMode": int(clip.scale_mode), "gravity": int(clip.gravity), "time": time, "keyframes": keyframes,
+        "scaleMode": int(clip.scale_mode), "gravity": int(clip.gravity), "maxScale": max_scale, "time": time,
+        "keyframes": keyframes,
         "hasAudio": bool(has_audio), "hasVideo": bool(has_video), "filters": filters, "crop": crop,
         "blendMode": blend,
     }

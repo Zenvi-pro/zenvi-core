@@ -212,6 +212,8 @@ def test_a_broken_package_tool_module_is_logged_and_skipped(monkeypatch, caplog)
             raise SyntaxError("broken package")
 
     monkeypatch.setattr(handoff, "_package_tool_errors", {})
+    # the real module (C4) is imported at collection; hide it so the broken finder is consulted
+    monkeypatch.delitem(sys.modules, "classes.editor_tools.handoff_remotion", raising=False)
     finder = _Broken()
     sys.meta_path.insert(0, finder)
     try:

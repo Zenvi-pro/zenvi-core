@@ -304,6 +304,10 @@ POSES = [
                                                         shearX=0.2, margin=0.05)),
     dict(src=(640, 480), mode=3, gravity=5, pose=dict(scaleX=2, scaleY=2, locationX=0.05, locationY=0.05,
                                                       rotation=33.3)),
+    # SCALE_NONE below 1: libopenshot decodes at the clip's largest scale first (delivered_size)
+    dict(src=(1920, 1080), mode=3, gravity=4, pose=dict(scaleX=0.5, scaleY=0.5), max_scale=[0.5, 0.5]),
+    dict(src=(1920, 1080), mode=3, gravity=4, pose=dict(scaleX=0.25, scaleY=0.25), max_scale=[0.75, 0.5]),
+    dict(src=(800, 400), mode=3, gravity=0, pose=dict(scaleX=0.5, scaleY=0.5), max_scale=[0.6, 0.6], still=True),
 ]
 
 
@@ -323,7 +327,7 @@ def test_geometry_ts_matches_the_python_port(tmp_path):
         "import {readFileSync} from 'node:fs';\nimport {clipMatrix} from './geometry.ts';\n"
         "const cases = JSON.parse(readFileSync(new URL('./cases.json', import.meta.url), 'utf8'));\n"
         "console.log(JSON.stringify(cases.map((c) => clipMatrix(c.src[0], c.src[1], 1920, 1080, c.mode, c.gravity, "
-        "c.pose))));\n")
+        "c.pose, c.max_scale || null, !!c.still))));\n")
     out = subprocess.run(cmd + [str(tmp_path / "run.mts")], capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr
     ts = json.loads(out.stdout)
@@ -332,7 +336,9 @@ def test_geometry_ts_matches_the_python_port(tmp_path):
         g = geometry(case["src"][0], case["src"][1], 1920, 1080, scale_mode=case["mode"], gravity=case["gravity"],
                      scale_x=p["scaleX"], scale_y=p["scaleY"], location_x=p["locationX"], location_y=p["locationY"],
                      rotation=p["rotation"], origin_x=p["originX"], origin_y=p["originY"], shear_x=p["shearX"],
-                     shear_y=p["shearY"], margin=p["margin"])
+                     shear_y=p["shearY"], margin=p["margin"],
+                     max_scale_x=(case.get("max_scale") or [None, None])[0],
+                     max_scale_y=(case.get("max_scale") or [None, None])[1], still=bool(case.get("still")))
         assert matrix == pytest.approx(list(g.matrix), abs=1e-9), case
 
 

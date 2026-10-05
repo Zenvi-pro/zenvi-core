@@ -57,7 +57,7 @@ export const ZenviClip: React.FC<Props> = ({clip, width, height, transitions, vo
     shearX: valueAt(k.shear_x, frame, 0),
     shearY: valueAt(k.shear_y, frame, 0),
     margin: valueAt(k.margin, frame, 0),
-  });
+  }, clip.maxScale, clip.kind === 'image' || clip.kind === 'title');
   const opacity = clamp(valueAt(k.alpha, frame, 1), 0, 1) * transitionOpacity(transitions, clip.from + frame);
   const radius = valueAt(k.corner_radius, frame, 0);
   const style: React.CSSProperties = {

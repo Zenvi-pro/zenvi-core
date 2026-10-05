@@ -19,8 +19,11 @@ from classes.handoff.linked_media import LinkError
 from classes.handoff.remotion import detect
 
 INSTALL_TIMEOUT = 30 * 60.0
-_ARGS = {"npm": ("install", "--no-audit", "--no-fund"), "pnpm": ("install",), "yarn": ("install",),
-         "bun": ("install",)}
+# --prefer-offline: what is already in the package cache installs without asking the registry (Remotion's
+# pinned versions usually are after the first project); only missing packages need the network.
+# (yarn 2+ has no such flag, so yarn gets none.)
+_ARGS = {"npm": ("install", "--no-audit", "--no-fund", "--prefer-offline"), "pnpm": ("install", "--prefer-offline"),
+         "yarn": ("install",), "bun": ("install",)}
 
 
 def install_argv(runtime: node_runtime.NodeRuntime, manager: str, which=shutil.which) -> tuple:

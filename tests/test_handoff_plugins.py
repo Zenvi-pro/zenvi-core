@@ -13,6 +13,8 @@ from classes.handoff import plugins, ui_registry as reg
 @pytest.fixture
 def clean_registry(monkeypatch):
     saved = {k: dict(v) for k, v in reg._actions.items()}
+    for actions in reg._actions.values():  # handoff packages imported at collection (C2-C5) register real entries
+        actions.clear()
     yield reg
     for k, v in saved.items():
         reg._actions[k].clear()
