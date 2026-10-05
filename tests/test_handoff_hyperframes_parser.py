@@ -184,7 +184,55 @@ def test_cli_timeline_wins_for_root_clips(tmp_path):
     v, i = p.root.clips
     assert p.cli_timeline_used
     assert (v.duration, v.duration_source, v.volume) == (7.0, "cli", 0.5)
+    # i follows v, whose length is its media's: Zenvi resolves that start (with the CLI's 7 s length)
     assert (i.start, i.track_index) == (7.0, 3)
+
+
+def _row(ident, start, duration, track, source="authored", element=True):
+    row = {"id": ident, "file": "index.html", "absStart": start, "duration": duration, "durationSource": source,
+           "trackIndex": track, "nested": False}
+    row["elementId"] = ident if element else None
+    return row
+
+
+def test_cli_starts_after_media_without_duration_are_not_trusted(tmp_path):
+    """`hyperframes timeline --json` resolves data-start="<id>" with the START of a clip that has no
+    data-duration (0.8.126; review C5-1 #1): those starts stay Zenvi's (media length), others follow the CLI."""
+    root = write_project(tmp_path / "p", root_div(
+        '<video id="v1" src="assets/a.mp4" data-start="0" data-track-index="0" muted></video>'
+        '<video id="v2" src="assets/a.mp4" data-start="v1" data-media-start="1" data-playback-rate="2" '
+        'data-track-index="0" muted></video>'
+        '<img id="pic" src="assets/b.png" data-start="v1 - 0.5" data-duration="1" data-track-index="1"/>'
+        '<img id="after" src="assets/b.png" data-start="pic + 0.25" data-duration="1" data-track-index="2"/>'
+        '<img id="cap" src="assets/b.png" data-start="card" data-duration="1" data-track-index="3"/>'
+        '<img id="card" src="assets/b.png" data-start="0.5" data-duration="2" data-track-index="4"/>'
+        '<img id="img" src="assets/b.png" data-start="1" data-duration="1" data-track-index="5"/>'),
+        files={"assets/a.mp4": b"v", "assets/b.png": b"i"})
+    cli = {"timeline": {"duration": 5, "tracks": [{"rows": [
+        _row("v1", 0, 4, 0, "media"), _row("v2", 0, 1.5, 0, "media"),          # v2 wrongly at v1's start
+        _row("pic", 0, 1, 1), _row("after", 1.25, 1, 2),                       # pic "v1 - 0.5" -> 0 (wrong)
+        _row("cap", 2.5, 1, 3), _row("card", 0.5, 2, 4),                       # "card": authored -> trusted
+        _row("img", 9, 1, 6, element=False),                                   # a row for an element w/o id
+    ]}]}}
+    p = hfp.load_project(root, probe=lambda _p: 4.0, cli_timeline=cli)
+    clips = {c.id: c for c in p.root.clips}
+    assert clips["v1"].duration == 4.0
+    assert (clips["v2"].start, clips["v2"].duration) == (4.0, 1.5)     # after v1's 4 s of media
+    assert clips["pic"].start == 3.5 and clips["after"].start == 4.75  # chains follow the corrected start
+    assert clips["cap"].start == 2.5                                   # reference to an authored duration
+    assert (clips["img"].start, clips["img"].track_index) == (1.0, 5)  # not the id-less row's values
+    assert hfp.cli_start_trusted(clips["cap"], clips) and not hfp.cli_start_trusted(clips["after"], clips)
+
+
+def test_playback_start_wins_over_media_start_and_loop_is_read(tmp_path):
+    root = write_project(tmp_path / "p", root_div(
+        '<video id="a" src="assets/a.mp4" data-start="0" data-playback-start="2" data-media-start="1" loop muted>'
+        '</video><audio id="b" src="assets/a.mp4" data-start="0" data-media-start="1.5"></audio>'),
+        files={"assets/a.mp4": b"v"})
+    p = hfp.load_project(root, probe=lambda _p: 10.0)
+    a, b = p.root.clips
+    assert (a.media_start, a.duration, a.loop) == (2.0, 8.0, True)
+    assert (b.media_start, b.duration, b.loop) == (1.5, 8.5, False)
 
 
 # --- styles, attributes, scripts ---------------------------------------------------------------------

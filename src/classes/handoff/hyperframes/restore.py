@@ -8,9 +8,14 @@ clips that come back are the clips that went out, and reads the HTML for
 what was changed in HyperFrames since:
 
 * an exported element (``data-zenvi-clip-id``) whose ``data-start`` /
-  ``data-duration`` / ``data-media-start`` / ``data-track-index`` changed
-  moves / trims its clip accordingly;
+  ``data-duration`` / in point (``data-playback-start`` / ``data-media-start``)
+  changed moves / trims its clip accordingly; a new ``data-track-index`` is
+  only reported -- HyperFrames does not stack by it, so the clip keeps its
+  track (what is in front stays what HyperFrames renders);
 * an exported element that was deleted drops its clip;
+* an exported element that was split or duplicated in HyperFrames (Studio's
+  split and duplicate clone it, ``data-zenvi-clip-id`` included) comes back
+  as copies of its clip with fresh ids, each with its element's timing;
 * everything new (elements without ``data-zenvi-clip-id``, compositions) is
   left to the importer, which brings it in like any HyperFrames content.
 
@@ -23,6 +28,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any, Dict, List, Optional, Set
@@ -46,6 +52,7 @@ class Restore:
     warnings: List[str] = field(default_factory=list)
     edited: List[str] = field(default_factory=list)      # clip ids moved / trimmed in HyperFrames
     dropped: List[str] = field(default_factory=list)     # clip ids deleted in HyperFrames
+    copied: List[str] = field(default_factory=list)      # clip ids split / duplicated in HyperFrames (one per copy)
     exported_ids: Set[str] = field(default_factory=set)  # clip ids of the export (data-zenvi-clip-id)
 
     @property
@@ -162,13 +169,11 @@ def _apply_edit(clip: dict, element: Clip, written: dict, layers: List[int], fps
         end = start + round(new_duration * rate) / rate
         changed = True
     clip["start"], clip["end"] = start, max(start + 1.0 / rate, end)
-    track = element.track_index
-    if track != int(written.get("track", track)):
-        if 0 <= track < len(layers):
-            clip["layer"] = layers[track]
-        else:
-            clip["layer"] = (layers[-1] if layers else 0) + TRACK_STEP * (track - len(layers) + 1)
-        changed = True
+    if element.track_index != int(written.get("track", element.track_index)):
+        # a lane in HyperFrames' timeline does not stack anything there (CSS z-index and the document
+        # order do, and the export's z-index rule did not change), so the clip keeps its Zenvi track
+        warnings.append(f"{clip.get('title')!r} was moved to another track in HyperFrames; tracks do not change "
+                        "what is in front there, so it stays on its Zenvi track")
     return changed
 
 
@@ -195,27 +200,47 @@ def plan_restore(project: Project, *, target_fps: Optional[Fraction] = None) -> 
     elements: Dict[str, Any] = raw_elements if isinstance(raw_elements, dict) else {}
     fps = _fps(zp.get("fps"))
     layers = _layer_numbers(zp)
-    present: Dict[str, Clip] = {}
+    present: Dict[str, List[Clip]] = {}
     for clip in project.root.clips:
         cid = clip.zenvi.get("clip-id")
         if cid:
-            present[cid] = clip
+            present.setdefault(cid, []).append(clip)
     restore = Restore(project=zp, warnings=warnings, exported_ids=set(elements) | set(present))
     kept = []
     for c in zp.get("clips") or []:
         if not isinstance(c, dict):
             continue
         cid = str(c.get("id") or "")
-        if cid in elements and cid not in present:
+        els = present.get(cid) or []
+        if cid in elements and not els:
             restore.dropped.append(cid)
             continue
-        el = present.get(cid)
-        if el is not None and cid in elements and _apply_edit(c, el, elements[cid], layers, fps, warnings):
+        if not els or cid not in elements:
+            kept.append(c)
+            continue
+        written = elements[cid]
+        original = _original_element(els, cid, written)
+        exported = copy.deepcopy(c)
+        if _apply_edit(c, original, written, layers, fps, warnings):
             restore.edited.append(cid)
         kept.append(c)
+        for extra in els:
+            if extra is original:
+                continue
+            dup = copy.deepcopy(exported)
+            dup["id"] = ""  # a fresh id when it is added
+            for e in dup.get("effects") or []:
+                if isinstance(e, dict):
+                    e["id"] = ""
+            _apply_edit(dup, extra, written, layers, fps, warnings)
+            kept.append(dup)
+            restore.copied.append(cid)
     zp["clips"] = kept
     if restore.dropped:
         warnings.append("%d clip(s) deleted in HyperFrames were left out" % len(restore.dropped))
+    if restore.copied:
+        warnings.append("%d clip(s) split or duplicated in HyperFrames came back as copies of their Zenvi clip "
+                        "(same effects and keyframes, from the copy's own start)" % len(restore.copied))
     if restore.edited:
         warnings.append("%d clip(s) moved or trimmed in HyperFrames came back with the new timing" %
                         len(restore.edited))
@@ -226,6 +251,13 @@ def plan_restore(project: Project, *, target_fps: Optional[Fraction] = None) -> 
         warnings.append(f"the export ran at {float(fps):g} fps and this project at {float(target_fps):g} fps; "
                         "keyframes were rescaled")
     return restore
+
+
+def _original_element(els: List[Clip], cid: str, written: dict) -> Clip:
+    """Which of the elements carrying *cid* is the exported one: its element id, else the first."""
+    exported_id = str(written.get("element") or "") or \
+        "c-" + (re.sub(r"[^A-Za-z0-9._-]+", "-", cid).strip("-._")[:80] or "clip")
+    return next((e for e in els if e.id == exported_id), els[0])
 
 
 def track_numbers(zp: dict) -> List[int]:

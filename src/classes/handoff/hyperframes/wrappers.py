@@ -8,7 +8,12 @@ A linked clip renders a part of the user's project, not always its
   only render template sub-compositions mounted from an entry file;
 * the graphics *layer* of the root (what stays once the clips Zenvi rebuilt
   natively are taken out) and an *inline* composition render through a copy
-  of ``index.html`` with elements removed (:func:`document_wrapper`).
+  of ``index.html`` with elements hidden (:func:`document_wrapper`). Hidden,
+  not removed: the root's scripts still find them by id (a missing element
+  would throw before the timeline is registered) and the layout around them
+  stays. ``opacity: 0 !important`` hides an element and everything in it
+  whatever its scripts set (checked with HyperFrames 0.8.126: a hidden
+  ``<video>`` does not appear in the render).
 
 Wrappers live in a hidden ``.render-zenvi-<hex>/`` folder inside the
 project (Zenvi's fingerprints skip ``.render-*`` folders, so a render never
@@ -37,6 +42,11 @@ WRAPPER_ROOT_ID = "zenvi-wrap"
 DEFAULT_GSAP = "https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"
 TRANSPARENT_CSS = ("html, body { background: transparent !important; }\n"
                    "[data-composition-id] { background-color: transparent; }")
+HIDE_ATTR = "data-zenvi-hidden"
+CLEAR_ATTR = "data-zenvi-clear"
+HIDE_CSS = ("[%s] { opacity: 0 !important; }\n"
+            "[%s] { background: transparent !important; border-color: transparent !important; "
+            "box-shadow: none !important; outline: none !important; }") % (HIDE_ATTR, CLEAR_ATTR)
 _URL_ATTRS = ("src", "href", "poster", "data", "xlink:href")
 _ABSOLUTE = re.compile(r"^(?:[a-z][a-z0-9+.\-]*:|//|/|#)", re.I)
 _CSS_URL = re.compile(r"""url\(\s*(['"]?)([^'")]+)\1\s*\)""", re.I)
@@ -215,15 +225,24 @@ def composition_wrapper(index: Document, host: Element, *, width: int, height: i
            tag=host.tag if host.tag not in VOID_TAGS else "div", attrs=attr_text)
 
 
-def document_wrapper(index: Document, *, remove: Iterable[Element] = (),
+def document_wrapper(index: Document, *, remove: Iterable[Element] = (), hide: Iterable[Element] = (),
+                     clear: Iterable[Element] = (),
                      overrides: Optional[Dict[int, Dict[str, Optional[str]]]] = None) -> str:
-    """A copy of ``index.html`` without *remove*, with attribute *overrides*, on a transparent background."""
-    return serialize(index.root, skip=remove, overrides=overrides, rebase=True,
-                     head_extra="<style>%s</style>" % TRANSPARENT_CSS)
+    """A copy of ``index.html`` on a transparent background: *hide* (and what is in them) invisible,
+    *clear* painting nothing of their own (backgrounds, borders, shadows), *remove* left out, attribute
+    *overrides* applied."""
+    over: Dict[int, Dict[str, Optional[str]]] = {k: dict(v) for k, v in (overrides or {}).items()}
+    for el in hide:
+        over.setdefault(id(el), {})[HIDE_ATTR] = ""
+    for el in clear:
+        over.setdefault(id(el), {})[CLEAR_ATTR] = ""
+    return serialize(index.root, skip=remove, overrides=over, rebase=True,
+                     head_extra="<style>%s\n%s</style>" % (TRANSPARENT_CSS, HIDE_CSS))
 
 
 __all__ = [
-    "WRAPPER_PREFIX", "WRAPPER_FILE", "WRAPPER_ROOT_ID", "DEFAULT_GSAP", "wrapper_folder", "rel_entry",
+    "WRAPPER_PREFIX", "WRAPPER_FILE", "WRAPPER_ROOT_ID", "DEFAULT_GSAP", "HIDE_ATTR", "CLEAR_ATTR", "HIDE_CSS",
+    "wrapper_folder", "rel_entry",
     "rebase_url", "rebase_css", "rebase_srcset", "serialize", "head_assets", "composition_wrapper",
     "document_wrapper",
 ]

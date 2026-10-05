@@ -5,27 +5,38 @@ A HyperFrames link records what it renders in ``source`` (``project_dir``,
 and in its own ``hyperframes`` block (unknown keys survive save/load):
 
 * ``role: "project"`` -- the whole project (``index.html``), as HyperFrames'
-  own ``render`` makes it: H.264 MP4 with its sound. ``props`` are the root's
-  variables (``--variables``).
+  own ``render`` makes it: H.264 MP4 with its sound.
 * ``role: "composition"`` -- one nested composition on a transparent
-  background, ``host`` naming its host element in ``index.html``.
-  ``props`` are that mount's ``data-variable-values``. A composition loaded
-  from a file renders through a one-host wrapper; an inline one through a
-  copy of ``index.html`` holding only it.
-* ``role: "layer"`` -- the root composition's graphics: ``index.html``
-  without the clips Zenvi rebuilt natively (``exclude``: element ids, or
-  ``@<path>`` element paths for elements without an id), transparent.
+  background, ``host`` naming its host element in ``index.html``. A
+  composition loaded from a file renders through a one-host wrapper; an
+  inline one through a copy of ``index.html`` where everything but it (and
+  the elements around it, which keep their layout) is hidden.
+* ``role: "layer"`` -- the root composition's graphics: ``index.html`` with
+  the clips Zenvi rebuilt natively hidden (``exclude``: element ids, or
+  ``@<path>`` element paths for elements without an id), transparent. Hidden,
+  not removed: the root's scripts still find them and the layout stays.
+
+``props`` hold only the values changed in Zenvi. A render reads the
+variables as the HTML sets them NOW (the declared defaults; for a
+composition, its mount's ``data-variable-values`` on top) and puts the props
+over them, so edits made in HyperFrames keep coming through
+(:func:`current_values`); a prop equal to the HTML's value is not an
+override and is dropped when the clip renders.
 
 ``hyperframes.fps`` is the frame rate it renders at (the Zenvi project's).
-Transparent renders are ProRes 4444 (HyperFrames' MOV); a composition that
-turns out fully opaque on its first, middle and last frames is re-encoded
-to H.264 to save space (SPEC 3.6 codec rule).
+Renders are SDR (``--sdr``: libopenshot has no HDR path) and are not
+colour-converted (SPEC section 5, 2026-10-05: linked media is treated like any
+other media). Transparent renders are ProRes 4444 (HyperFrames' MOV, video
+only); a composition that turns out fully opaque on its first, middle and
+last frames is re-encoded to H.264 with the same YUV values to save space
+(SPEC 3.6 codec rule).
 
 Freshness (:meth:`HyperFramesProvider.fingerprint`) hashes the project's
 html (structurally: HyperFrames Studio re-serializes files and stamps
 ``data-hf-id`` attributes, which change nothing), its other sources and
-assets, and the link's role / entry / composition / exclusions / props /
-fps -- never what a render fills in, so a fresh import reads fresh.
+assets (also inside symlinked folders), and the link's role / entry /
+composition / exclusions / props / fps -- never what a render fills in, so
+a fresh import reads fresh.
 """
 
 from __future__ import annotations
@@ -142,6 +153,43 @@ def html_digests(root: str) -> Dict[str, str]:
     return out
 
 
+def linked_dir_stats(root: str) -> Dict[str, List[Any]]:
+    """{project-relative file: [size, mtime]} for files inside symlinked folders of the project.
+
+    ``fingerprint_sources`` (and the walk above) do not follow symlinks, so a
+    ``compositions/`` or ``assets/`` folder that is a link would never make a
+    clip stale; its files are listed here instead.
+    """
+    out: Dict[str, List[Any]] = {}
+    seen = set()
+    for dirpath, dirnames, _files in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in EXCLUDED_DIRS and not d.startswith(".render-"))
+        for d in list(dirnames):
+            full = os.path.join(dirpath, d)
+            if not os.path.islink(full):
+                continue
+            real = os.path.realpath(full)
+            if real in seen or not os.path.isdir(real):
+                continue
+            seen.add(real)
+            for sub, subdirs, files in os.walk(real):
+                subdirs[:] = sorted(x for x in subdirs if x not in EXCLUDED_DIRS)
+                for name in sorted(files):
+                    if not name.lower().endswith(ASSET_SUFFIXES + HTML_SUFFIXES):
+                        continue
+                    path = os.path.join(sub, name)
+                    rel = os.path.join(os.path.relpath(full, root), os.path.relpath(path, real)).replace(os.sep, "/")
+                    if name.lower().endswith(HTML_SUFFIXES):
+                        out[rel] = ["html", canonical_html_digest(path)]
+                        continue
+                    try:
+                        st = os.stat(path)
+                        out[rel] = [st.st_size, st.st_mtime_ns]
+                    except OSError:
+                        out[rel] = ["missing"]
+    return out
+
+
 def link_identity(link: dict) -> dict:
     """What a render is made FROM (stable before and after rendering)."""
     source = link.get("source") or {}
@@ -202,29 +250,19 @@ def opaque_everywhere(path: str, duration: float) -> bool:
         return False
 
 
-# libopenshot 1.0 decodes every YUV video with BT.601 coefficients whatever its tag (checked 2026-10-05:
-# HyperFrames' BT.709 MP4 red bar 254,0,0 shows as 232,0,1). HyperFrames' ProRes is BT.601 already; its MP4
-# is BT.709, so it is converted. The H.264 Zenvi writes therefore carries BT.601 coefficients (tagged so;
-# sRGB / BT.709 primaries and transfer), CRF 16, yuv420p.
+# An opaque ProRes render re-encoded to H.264 keeps its YUV values: no colour conversion (SPEC section 5,
+# 2026-10-05). HyperFrames writes its ProRes with BT.601 coefficients, untagged; the H.264 says so.
 H264_ARGS = ["-c:v", "libx264", "-crf", "16", "-preset", "medium", "-pix_fmt", "yuv420p", "-colorspace", "smpte170m",
              "-color_primaries", "bt709", "-color_trc", "bt709", "-movflags", "+faststart"]
-TO_BT601 = "scale=in_color_matrix=bt709:out_color_matrix=bt601:flags=bicubic"
 
 
-def to_h264(src: str, dst: str, *, has_audio: bool, should_cancel=None, from_bt709: bool = False) -> str:
-    """Re-encode a render to H.264 with BT.601 coefficients (what libopenshot decodes), sound as AAC.
-
-    *from_bt709* converts the colours of a BT.709 source (HyperFrames' MP4);
-    its ProRes is BT.601 already and keeps its values.
-    """
+def to_h264(src: str, dst: str, *, has_audio: bool, should_cancel=None) -> str:
+    """Re-encode an opaque render to H.264 (CRF 16, yuv420p, the same YUV values), sound as AAC."""
     from classes import ffmpeg_cli
     ffmpeg = ffmpeg_cli.find_ffmpeg("ffmpeg")
     if not ffmpeg:
         raise HyperFramesLinkError("ffmpeg was not found; install it (brew install ffmpeg)")
-    cmd = [ffmpeg, "-y", "-nostdin", "-i", src]
-    if from_bt709:
-        cmd += ["-vf", TO_BT601]
-    cmd += H264_ARGS
+    cmd = [ffmpeg, "-y", "-nostdin", "-i", src] + H264_ARGS
     cmd += ["-c:a", "aac", "-b:a", "192k"] if has_audio else ["-an"]
     cmd.append(dst)
     result = ffmpeg_cli.run_ffmpeg_with_progress(cmd, should_cancel=should_cancel)
@@ -266,6 +304,22 @@ def _find_element(doc: hfp.Document, scope: hfp.Element, ref: str) -> Optional[h
     return next((e for e in scope.iter() if e.id == ref and e is not scope), None)
 
 
+def element_signature(el: hfp.Element) -> str:
+    """What an element without an id looks like (tag, class, media), to find it again when an edit to
+    ``index.html`` moved its ``@i/j`` path."""
+    return json.dumps([el.tag, el.attrs.get("class", ""),
+                       el.attrs.get("src") or el.attrs.get("data-composition-src") or ""])
+
+
+def _find_excluded(index: hfp.Document, scope: hfp.Element, ref: str, signature: Optional[str]
+                   ) -> Optional[hfp.Element]:
+    el = _find_element(index, scope, ref)
+    if not ref.startswith("@") or not signature or (el is not None and element_signature(el) == signature):
+        return el
+    same = [e for e in scope.iter() if e is not scope and not e.id and element_signature(e) == signature]
+    return same[0] if len(same) == 1 else None
+
+
 def element_ref(el: hfp.Element, scope: hfp.Element) -> str:
     """How a link names *el* inside *scope*: its id, else its child-index path ``@i/j``."""
     if el.id:
@@ -281,6 +335,70 @@ def element_ref(el: hfp.Element, scope: hfp.Element) -> str:
     return "@" + "/".join(reversed(path))
 
 
+def _load(root: str) -> hfp.Project:
+    """The project as the importer reads it: media without data-duration measured with ffprobe, so
+    ``data-start="<id>"`` references to them resolve (review C5-1 #2)."""
+    from classes.handoff.hyperframes import importer  # importer imports this module
+    return hfp.load_project(root, probe=importer._probe_duration)
+
+
+def _root_defaults(root: str) -> Dict[str, Any]:
+    """The variables ``index.html`` declares (``<html data-composition-variables>``) with their defaults."""
+    try:
+        doc = hfp.read_document(root, hfp.INDEX)
+    except lm.LinkError:
+        return {}
+    html_el = next((e for e in doc.iter() if e.tag == "html"), None)
+    raw = html_el.attrs.get("data-composition-variables") if html_el is not None else None
+    try:
+        items = json.loads(raw) if raw else []
+    except ValueError:
+        return {}
+    return {str(v.get("id")): v.get("default") for v in (items if isinstance(items, list) else [])
+            if isinstance(v, dict) and v.get("id")}
+
+
+def _host_clip(project: hfp.Project, link: dict) -> Optional[hfp.Clip]:
+    ref = str(_block(link).get("host") or "")
+    return next((c for c in project.root.clips if c.kind == "composition" and ref and
+                 element_ref(c.element, project.root.element) == ref), None)
+
+
+def current_values(link: dict, project: Optional[hfp.Project] = None) -> Dict[str, Any]:
+    """The variables as the project's HTML sets them now, for what *link* renders.
+
+    The whole project and the root's layer: the root's declared defaults. A
+    composition: its declared defaults with its mount's ``data-variable-values``
+    on top (what HyperFrames uses when nothing overrides them).
+    """
+    role = _block(link).get("role") or "project"
+    root = _project_dir(link)
+    if role != "composition":
+        return dict(project.root.variable_defaults()) if project is not None else _root_defaults(root)
+    project = project if project is not None else _load(root)
+    host = _host_clip(project, link)
+    comp = project.composition_for(host) if host is not None else None
+    values: Dict[str, Any] = dict(comp.variable_defaults()) if comp is not None else {}
+    if host is not None:
+        values.update(host.variable_values)
+    return values
+
+
+def overrides(props: Optional[dict], current: Dict[str, Any]) -> Dict[str, Any]:
+    """The props that change something: those the HTML does not set to the same value."""
+    return {k: copy.deepcopy(v) for k, v in (props or {}).items() if k not in current or current[k] != v}
+
+
+def _with_ancestors(el: hfp.Element, root: hfp.Element) -> List[hfp.Element]:
+    """*el* and its ancestors up to (not including) *root*, innermost first."""
+    out = []
+    node: Optional[hfp.Element] = el
+    while node is not None and node is not root:
+        out.append(node)
+        node = node.parent
+    return out
+
+
 class HyperFramesProvider:
     kind = KIND
     label = "HyperFrames"
@@ -292,7 +410,7 @@ class HyperFramesProvider:
         entry = (link.get("source") or {}).get("entry") or hfp.INDEX
         if not os.path.isfile(os.path.join(root, *str(entry).split("/"))):
             raise lm.SourceMissing(f"{entry} is gone from the HyperFrames project {root}")
-        extra = {"html": html_digests(root), "link": link_identity(link)}
+        extra = {"html": html_digests(root), "link": link_identity(link), "linked": linked_dir_stats(root)}
         return lm.fingerprint_sources(root, include=ASSET_SUFFIXES, exclude_dirs=EXCLUDED_DIRS, extra=extra)
 
     # -- rendering ---------------------------------------------------------------
@@ -302,12 +420,12 @@ class HyperFramesProvider:
         role = str(block.get("role") or "project")
         if role not in ROLES:
             raise HyperFramesLinkError(f"unknown HyperFrames link role {role!r}; re-import the project")
-        props = lm.link_props(link)
         fps = str(block.get("fps") or "") or None
         on_progress(None, "Preparing HyperFrames")
         cli = hf_cli.resolve_cli(root)
         # a whole-project render needs no reading of the HTML: HyperFrames resolves it
-        project = hfp.load_project(root) if role != "project" else None
+        project = _load(root) if role != "project" else None
+        changed = overrides(lm.link_props(link), current_values(link, project))
         warnings: List[str] = []
         fmt = "mp4" if role == "project" else "mov"
         output = os.path.join(out_dir, "render." + fmt)
@@ -316,18 +434,11 @@ class HyperFramesProvider:
             on_progress(None if fraction is None else 0.92 * fraction, "HyperFrames: " + message)
 
         with wrappers.wrapper_folder(root) as folder:
-            entry, variables = self._entry(project, link, role, props, folder, fps, warnings)
-            hf_cli.render(root, entry, output, fmt=fmt, cli=cli, variables=variables, fps=fps,
+            entry, variables = self._entry(project, link, role, changed, folder, fps, warnings)
+            hf_cli.render(root, entry, output, fmt=fmt, cli=cli, variables=variables, fps=fps, sdr=True,
                           on_progress=progress, should_cancel=should_cancel)
         info = probe_render(output)
         codec = "h264"
-        if fmt == "mp4":
-            on_progress(0.95, "Converting colours for Zenvi (BT.709 to BT.601)")
-            converted = os.path.join(out_dir, "render-601.mp4")
-            to_h264(output, converted, has_audio=info["has_audio"], should_cancel=should_cancel, from_bt709=True)
-            os.unlink(output)
-            output = converted
-            info = probe_render(output)
         if fmt == "mov":
             codec = "prores4444"
             if opaque_everywhere(output, info["duration"]):
@@ -338,49 +449,57 @@ class HyperFramesProvider:
                 output, codec = mp4, "h264"
                 info = probe_render(output)
         on_progress(1.0, "Rendered")
+        # stored props = only what Zenvi changes, so later edits made in HyperFrames come through
         return lm.RenderResult(path=output, codec=codec, width=info["width"], height=info["height"], fps=info["fps"],
-                               duration_frames=info["frames"], warnings=warnings)
+                               duration_frames=info["frames"], warnings=warnings, props=changed)
 
-    def _entry(self, project: Optional[hfp.Project], link: dict, role: str, props: dict, folder: str,
+    def _entry(self, project: Optional[hfp.Project], link: dict, role: str, changed: dict, folder: str,
                fps: Optional[str], warnings: List[str]) -> Tuple[str, Optional[dict]]:
-        """(entry file to render, --variables) for a link, writing its wrapper into *folder*."""
+        """(entry file to render, --variables) for a link, writing its wrapper into *folder*.
+
+        *changed*: the props that override what the HTML sets (:func:`overrides`).
+        """
         if role == "project" or project is None:
-            return (link.get("source") or {}).get("entry") or hfp.INDEX, props or None
+            return (link.get("source") or {}).get("entry") or hfp.INDEX, changed or None
         root, index = project.root_dir, project.index
         block = _block(link)
         target = os.path.join(folder, wrappers.WRAPPER_FILE)
         if role == "layer":
-            removed = []
+            hidden = []
+            signatures = block.get("signatures") if isinstance(block.get("signatures"), dict) else {}
             for ref in block.get("exclude") or []:
-                el = _find_element(index, project.root.element, str(ref))
+                el = _find_excluded(index, project.root.element, str(ref), signatures.get(str(ref)))
                 if el is None:
                     warnings.append(f"the layer no longer has {ref!r}; it may now show more than before")
                     continue
-                removed.append(el)
-            text = wrappers.document_wrapper(index, remove=removed)
+                hidden.append(el)
+            text = wrappers.document_wrapper(index, hide=hidden)
             with open(target, "w", encoding="utf-8") as fh:
                 fh.write(text)
-            return wrappers.rel_entry(root, target), props or None
-        host_ref = str(block.get("host") or "")
-        host = _find_element(index, project.root.element, host_ref) if host_ref else None
+            return wrappers.rel_entry(root, target), changed or None
+        host = _find_element(index, project.root.element, str(block.get("host") or "")) if block.get("host") else None
         if host is None:
-            raise HyperFramesLinkError(f"index.html no longer mounts the composition {host_ref or '?'!r}; re-import "
-                                       "the project or unlink the clip")
+            raise HyperFramesLinkError(f"index.html no longer mounts the composition {block.get('host') or '?'!r}; "
+                                       "re-import the project or unlink the clip")
+        host_clip = _host_clip(project, link)
+        values = dict(host_clip.variable_values) if host_clip is not None else {}
+        values.update(changed)
         if host.attrs.get("data-composition-src"):
             comp = project.root
             text = wrappers.composition_wrapper(index, host, width=comp.width, height=comp.height,
-                                                variables=dict(props) if props else None, fps=fps)
-        else:  # inline: index.html holding only this composition, from 0
-            keep = {id(host)}
-            removed = [c for c in project.root.element.children
-                       if id(c) not in keep and c.tag not in ("script", "style", "template")]
-            host_clip = next((c for c in project.root.clips if c.element is host), None)
-            overrides: Dict[int, Dict[str, Optional[str]]] = {id(host): {"data-start": "0"}}
-            if props:
-                overrides[id(host)]["data-variable-values"] = json.dumps(props, ensure_ascii=False, sort_keys=True)
+                                                variables=values or None, fps=fps)
+        else:  # inline: index.html showing only this composition (and the elements around it), from 0
+            rel = project.root.element
+            path = _with_ancestors(host, rel)
+            on_path = {id(e) for e in path} | {id(rel)}
+            hidden = [c for anc in [rel] + path[1:] for c in anc.children
+                      if id(c) not in on_path and c.tag not in hfp.NON_VISUAL_TAGS]
+            overrides_: Dict[int, Dict[str, Optional[str]]] = {id(host): {"data-start": "0"}}
+            if changed:
+                overrides_[id(host)]["data-variable-values"] = json.dumps(values, ensure_ascii=False, sort_keys=True)
             duration = host_clip.duration if host_clip is not None else None
-            overrides[id(project.root.element)] = {"data-duration": ("%g" % duration) if duration else None}
-            text = wrappers.document_wrapper(index, remove=removed, overrides=overrides)
+            overrides_[id(rel)] = {"data-duration": ("%g" % duration) if duration else None}
+            text = wrappers.document_wrapper(index, hide=hidden, clear=path[1:], overrides=overrides_)
         with open(target, "w", encoding="utf-8") as fh:
             fh.write(text)
         return wrappers.rel_entry(root, target), None
@@ -401,25 +520,14 @@ class HyperFramesProvider:
         hf_cli.open_studio(_project_dir(link))
 
     def editable_props(self, link: dict) -> dict:
-        """The composition's declared variables with their current values (props win over defaults)."""
+        """The variables as the HTML sets them now, with the props changed in Zenvi on top."""
         props = lm.link_props(link)
         try:
-            root = _project_dir(link)
-            project = hfp.load_project(root)
+            current = current_values(link)
         except lm.LinkError:
             return dict(props)
-        block = _block(link)
-        declared: Dict[str, Any] = dict(project.root.variable_defaults())
-        if (block.get("role") or "project") == "composition":
-            host_ref = str(block.get("host") or "")
-            host = next((c for c in project.root.clips if c.kind == "composition" and
-                         element_ref(c.element, project.root.element) == host_ref), None)
-            comp = project.composition_for(host) if host is not None else None
-            declared = dict(comp.variable_defaults()) if comp is not None else {}
-            if host is not None:
-                declared.update(host.variable_values)
-        out = copy.deepcopy(declared)
-        out.update(props)
+        out = copy.deepcopy(current)
+        out.update(overrides(props, current))
         return out
 
 
@@ -431,5 +539,6 @@ def register() -> HyperFramesProvider:
 
 __all__ = [
     "KIND", "BLOCK", "ROLES", "HyperFramesProvider", "HyperFramesLinkError", "register", "link_identity",
-    "html_digests", "canonical_html_digest", "probe_render", "opaque_everywhere", "to_h264", "element_ref",
+    "html_digests", "canonical_html_digest", "linked_dir_stats", "probe_render", "opaque_everywhere", "to_h264",
+    "element_ref", "element_signature", "current_values", "overrides",
 ]

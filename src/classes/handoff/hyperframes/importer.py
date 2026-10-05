@@ -78,9 +78,9 @@ def svg_size(path: str) -> Tuple[int, int]:
 
 
 def ffprobe_media(path: str) -> dict:
-    """{width, height, duration, has_video, has_audio} of a media file (zeros when unreadable)."""
+    """{width, height, duration, frames, has_video, has_audio} of a media file (zeros when unreadable)."""
     from classes import ffmpeg_cli
-    out = {"width": 0, "height": 0, "duration": 0.0, "has_video": False, "has_audio": False}
+    out = {"width": 0, "height": 0, "duration": 0.0, "frames": 0, "has_video": False, "has_audio": False}
     if path and str(path).lower().endswith((".svg", ".svgz")) and os.path.isfile(path):
         w, h = svg_size(path)
         out.update(width=w, height=h, has_video=bool(w and h))
@@ -99,6 +99,10 @@ def ffprobe_media(path: str) -> dict:
         if s.get("codec_type") == "video" and not out["has_video"]:
             out["has_video"] = True
             out["width"], out["height"] = int(s.get("width") or 0), int(s.get("height") or 0)
+            try:
+                out["frames"] = int(s.get("nb_frames") or 0)
+            except (TypeError, ValueError):
+                out["frames"] = 0
             if out["duration"] <= 0:
                 try:
                     out["duration"] = float(s.get("duration") or 0.0)
@@ -217,9 +221,53 @@ def _paint_key(el: hfp.Element, comp: hfp.Composition, index: int) -> Tuple[int,
     return z, index
 
 
+def _paint_order(project: hfp.Project, clips: Sequence[hfp.Clip]) -> Dict[int, Tuple[int, int, int]]:
+    """id(clip) -> where HyperFrames paints it: CSS z-index of its top element, then document order.
+
+    The runtime never stacks by ``data-track-index`` (a lane in the Studio
+    timeline); CSS and the DOM decide what is in front.
+    """
+    root = project.root
+    rel = root.element
+    children = [c for c in rel.children if c.tag not in hfp.NON_VISUAL_TAGS]
+    index_of = {id(c): i for i, c in enumerate(children)}
+    order = {id(e): i for i, e in enumerate(rel.iter())}
+    out: Dict[int, Tuple[int, int, int]] = {}
+    for c in clips:
+        top = _top_child(c.element, rel) or c.element
+        z, idx = _paint_key(top, root, index_of.get(id(top), 0))
+        out[id(c)] = (z, idx, order.get(id(c.element), 0))
+    return out
+
+
+def _track_ranks(clips: Sequence[hfp.Clip], paint: Dict[int, Tuple[int, int, int]]) -> Dict[int, int]:
+    """data-track-index -> track order bottom-up, by the paint order of each lane's lowest element."""
+    low: Dict[int, Tuple[int, int, int]] = {}
+    for c in clips:
+        key = paint.get(id(c), (0, 0, 0))
+        low[c.track_index] = min(low.get(c.track_index, key), key)
+    return {t: i for i, t in enumerate(sorted(low, key=lambda t: (low[t], t)))}
+
+
+def _stacking_notes(items: Sequence["Item"], paint: Dict[int, Tuple[int, int, int]]) -> List[str]:
+    """Overlapping clips whose tracks stack them the other way round from HyperFrames' paint order."""
+    notes = []
+    group = [i for i in items if i.clip is not None and i.lane[0] == 0]
+    for a in group:
+        for b in group:
+            if a is b or a.lane[1] >= b.lane[1]:
+                continue
+            if paint.get(id(a.clip), (0, 0, 0)) > paint.get(id(b.clip), (0, 0, 0)) and \
+                    a.start < b.end - 1e-6 and b.start < a.end - 1e-6:
+                notes.append(f"{a.name} is painted over {b.name} in HyperFrames but lands on a track under it (their "
+                             "data-track-index lanes hold clips that stack both ways); move one of them to another track")
+    return notes
+
+
 def _layers(project: hfp.Project, natives: Sequence[hfp.Clip], hosts: Sequence[hfp.Clip]
-            ) -> List[Tuple[int, List[str], List[str]]]:
-    """[(group, excluded refs, what it shows)] for the root's graphics left once *natives* / *hosts* are out."""
+            ) -> List[Tuple[int, List[str], Dict[str, str], List[str]]]:
+    """[(group, hidden refs, signatures of the id-less ones, what it shows)] for the root's graphics left once
+    *natives* / *hosts* are out."""
     root = project.root
     rel = root.element
     removed_ids = {id(c.element) for c in list(natives) + list(hosts)}
@@ -239,14 +287,16 @@ def _layers(project: hfp.Project, natives: Sequence[hfp.Clip], hosts: Sequence[h
         (below if first_native is not None and keys[id(c)] < first_native else above).append(c)
     if not below and not above:
         above = [rel]  # content drawn by script only
-    base = [hfprov.element_ref(c.element, rel) for c in list(natives) + list(hosts)]
+    base = [c.element for c in list(natives) + list(hosts)]
     out = []
     for group, mine, other in ((-1, below, above), (1, above, below)):
         if not mine:
             continue
-        exclude = base + [hfprov.element_ref(o, rel) for o in other if o is not rel]
+        hidden = base + [o for o in other if o is not rel]
+        refs = {hfprov.element_ref(e, rel): e for e in hidden}
+        signatures = {ref: hfprov.element_signature(e) for ref, e in refs.items() if ref.startswith("@")}
         shows = hfp.remaining_visuals(root, removed_ids | {id(o) for o in other})
-        out.append((group, sorted(set(exclude)), shows or left))
+        out.append((group, sorted(refs), signatures, shows or left))
     return out
 
 
@@ -331,7 +381,7 @@ def _plan_flatten(insp: Inspection) -> None:
     project = insp.project
     root = project.root
     link = _base_link(project, role="project", entry=hfp.INDEX, composition=root.id, file=hfp.INDEX,
-                      line=root.element.line, props=root.variable_defaults(), block={}, fps=insp.fps)
+                      line=root.element.line, props={}, block={}, fps=insp.fps)
     name = os.path.basename(project.root_dir.rstrip(os.sep)) or root.id
     insp.items = [Item("linked", name, 0.0, (0, 0), link=link, role="project", expected_duration=root.duration)]
 
@@ -363,6 +413,11 @@ def _plan_parts(insp: Inspection, clips: Sequence[hfp.Clip], *, natives_allowed:
     if note and any(c.is_primitive for c in clips):
         insp.warnings.append(note)
     plans = plans if plans is not None else _native_plans(insp, [c for c in clips if c.is_primitive], canvas)
+    placed_clips = [c for c in clips if (c.is_primitive and natives_allowed and id(c) in plans)
+                    or c.kind == "composition"]
+    paint = _paint_order(project, placed_clips)
+    # a Zenvi export maps data-track-index to its own tracks; anything else stacks by paint order
+    ranks = _track_ranks(placed_clips, paint) if insp.restore is None else {}
     natives: List[hfp.Clip] = []
     hosts: List[hfp.Clip] = []
     for order, c in enumerate(root.clips):
@@ -373,29 +428,34 @@ def _plan_parts(insp: Inspection, clips: Sequence[hfp.Clip], *, natives_allowed:
         if c.is_primitive and natives_allowed and id(c) in plans:
             plan, media = plans[id(c)]
             insp.items.append(Item("native", c.id or os.path.basename(c.media_path or c.src), plan.position,
-                                   (0, c.track_index), order, clip=c, plan=plan, media=media))
+                                   (0, ranks.get(c.track_index, c.track_index)), order, clip=c, plan=plan,
+                                   media=media))
             natives.append(c)
         elif c.kind == "composition":
             hosts.append(c)
             comp = project.composition_for(c)
             ref = hfprov.element_ref(c.element, root.element)
             entry = c.composition_src or hfp.INDEX
-            # every declared variable with its value for this mount: Linked Source > Edit Props lists them all
-            props = dict(comp.variable_defaults()) if comp is not None else {}
-            props.update(c.variable_values)
+            # no props: a render reads the variables from the HTML (defaults + this mount's values), so edits
+            # made in HyperFrames come through; props hold only what is changed in Zenvi (Edit Props)
             link = _base_link(project, role="composition", entry=entry, composition=c.composition_id or ref,
                               file=entry, line=(comp.element.line if comp is not None and comp.file == entry
                                                 else c.line),
-                              props=props, block={"host": ref}, fps=insp.fps)
+                              props={}, block={"host": ref}, fps=insp.fps)
             duration = c.duration if c.duration else (comp.duration if comp is not None else None)
-            insp.items.append(Item("linked", c.composition_id or ref, c.start or 0.0, (0, c.track_index), order,
+            insp.items.append(Item("linked", c.composition_id or ref, c.start or 0.0,
+                                   (0, ranks.get(c.track_index, c.track_index)), order,
                                    clip=c, link=link, role="composition", expected_duration=duration))
             if c.problems:
                 insp.problems.setdefault(c.label, []).extend(c.problems)
-    for group, exclude, shows in _layers(project, natives, hosts):
+    if ranks:
+        insp.warnings.extend(_stacking_notes(insp.items, paint))
+    for group, exclude, signatures, shows in _layers(project, natives, hosts):
+        block: Dict[str, Any] = {"exclude": exclude}
+        if signatures:
+            block["signatures"] = signatures
         link = _base_link(project, role="layer", entry=hfp.INDEX, composition=root.id, file=hfp.INDEX,
-                          line=root.element.line, props=root.variable_defaults(), block={"exclude": exclude},
-                          fps=insp.fps)
+                          line=root.element.line, props={}, block=block, fps=insp.fps)
         name = "%s graphics%s" % (root.id, " (under the media)" if group < 0 else "")
         insp.items.append(Item("linked", name, 0.0, (group, 0 if group < 0 else 1 << 20), len(insp.items),
                                link=link, role="layer", expected_duration=root.duration))
@@ -423,20 +483,31 @@ def _discard(paths: Sequence[str]) -> None:
             log.warning("could not remove the unused render %s", p, exc_info=True)
 
 
-def _landing(position: Optional[float]) -> float:
-    """Where the project's 0 lands: *position*, or the playhead when the import starts.
+def project_identity(app) -> Tuple[int, str]:
+    """Which project is open: its data object (replaced when another project opens) and its id."""
+    data = getattr(app.project, "_data", None)
+    return id(data), str((data or {}).get("id") or "") if isinstance(data, dict) else ""
 
-    Read once before rendering (a minute or more), so the clips land where the
-    user asked even if they move the playhead meanwhile.
+
+def _start(position: Optional[float]) -> Tuple[float, Tuple[int, str]]:
+    """(where the project's 0 lands, the open project) read once on the GUI thread before rendering.
+
+    *position*, or the playhead when the import starts: a render takes a minute
+    or more, and the clips land where the user asked even if they move the
+    playhead meanwhile -- and in the project that was open, or not at all.
     """
-    if position is not None:
-        return float(position)
-    from classes.editor_tools._base import ToolError, playhead_seconds
+    from classes.editor_tools._base import ToolError, get_app, playhead_seconds
     from classes.editor_tools.titles_text_common import precheck_on_main
+
+    def read():
+        return (playhead_seconds() if position is None else float(position)), project_identity(get_app())
     try:
-        return float(precheck_on_main(playhead_seconds) or 0.0)
+        got = precheck_on_main(read)
     except ToolError as exc:
         raise lm.LinkError(str(exc)) from None
+    if not got:
+        raise lm.LinkError("the editor did not report the playhead; try again")
+    return float(got[0] or 0.0), got[1]
 
 
 def run_import(insp: Inspection, *, position: Optional[float] = None, track: str = "",
@@ -446,7 +517,7 @@ def run_import(insp: Inspection, *, position: Optional[float] = None, track: str
     from classes.handoff.jobs import JobCancelled
     cancel = should_cancel or (lambda: False)
     lm.precheck_placement(position, track or None, None)
-    position = _landing(position)
+    position, project_key = _start(position)
     renders: List[str] = []
     linked = insp.linked
     try:
@@ -471,7 +542,7 @@ def run_import(insp: Inspection, *, position: Optional[float] = None, track: str
         restore_readers = _restore_readers(insp)
         if on_progress is not None:
             on_progress(0.95, "Adding the clips")
-        result = commit_on_main(_commit, insp, readers, restore_readers, position, track)
+        result = commit_on_main(_commit, insp, readers, restore_readers, position, track, project_key)
     except CommitTimeout:
         raise  # it may still land: keep the renders it uses
     except BaseException:
@@ -522,15 +593,55 @@ def _overlaps(a: Tuple[float, float], b: Tuple[float, float], tol: float) -> boo
     return a[0] < b[1] - tol and b[0] < a[1] - tol
 
 
+def _rollback(updates, start: int, redo: list) -> None:
+    """Undo the actions a failed commit recorded after *start* and drop them from the history (GUI thread)."""
+    added = list(updates.actionHistory[start:])
+    for action in reversed(added):
+        try:
+            updates.dispatch_action(updates.get_reverse_action(action))
+        except Exception:
+            log.error("could not take back a step of the failed HyperFrames import", exc_info=True)
+    del updates.actionHistory[start:]
+    updates.redoHistory[:] = redo
+    try:
+        updates.update_watchers()
+    except Exception:
+        log.debug("undo watchers not refreshed", exc_info=True)
+
+
 def _commit(insp: Inspection, readers: Dict[int, dict], restore_readers: Dict[str, dict],
-            position: Optional[float], track: str) -> dict:
-    """GUI thread: tracks, files and clips for the whole import, in one transaction."""
-    from classes.editor_tools._base import ToolError, get_app, is_locked, layers, playhead_seconds, resolve_layer
+            position: Optional[float], track: str, project_key: Optional[Tuple[int, str]] = None) -> dict:
+    """GUI thread: tracks, files and clips for the whole import, in one transaction.
+
+    Refuses when another project was opened while the import rendered. A
+    failure half-way takes back what it added (no partial import in the
+    history), so "nothing changed" stays true.
+    """
+    from classes.editor_tools._base import ToolError, get_app
+    app = get_app()
+    if project_key is not None and project_identity(app) != tuple(project_key):
+        raise ToolError("another project was opened while the HyperFrames import was rendering; nothing was "
+                        "added -- import it again into this project")
+    updates = app.updates
+    start, redo = len(updates.actionHistory), list(updates.redoHistory)
+    batch = {"open": False}
+    try:
+        return _commit_all(app, insp, readers, restore_readers, position, track, batch)
+    except BaseException:
+        _rollback(updates, start, redo)
+        if batch["open"]:
+            from classes.editor_tools.titles_text_common import end_clip_batch
+            end_clip_batch()
+        raise
+
+
+def _commit_all(app, insp: Inspection, readers: Dict[int, dict], restore_readers: Dict[str, dict],
+                position: Optional[float], track: str, batch: Dict[str, bool]) -> dict:
+    from classes.editor_tools._base import ToolError, is_locked, layers, playhead_seconds, resolve_layer
     from classes.editor_tools.timeline_edit_common import extend_timeline
     from classes.editor_tools.titles_text_common import clips_in_window, create_track, place_clip
     from classes.query import File
     from classes.updates import nested_transaction
-    app = get_app()
     fps = float(insp.fps)
     frame = 1.0 / fps
     offset = round(max(0.0, playhead_seconds() if position is None else float(position)) * fps) / fps
@@ -644,15 +755,18 @@ def _commit(insp: Inspection, readers: Dict[int, dict], restore_readers: Dict[st
         # restored project (raw records, lossless)
         if restored is not None:
             placed.extend(_commit_restore(app, restored, offset, layer_of, lanes, taken, warnings))
-        for lane, number, _new in plan_numbers:
-            for item, window in lane.items:
-                if not isinstance(item, Item):
-                    continue
-                reader = readers.get(id(item)) or {}
-                if item.kind == "native":
-                    placed.append(_place_native(item, reader, number, window[0], File, place_clip))
-                else:
-                    placed.append(_place_linked(item, reader, number, window[0], fps, File, place_clip))
+        todo = [(item, number, window) for lane, number, _new in plan_numbers for item, window in lane.items
+                if isinstance(item, Item)]
+        for k, (item, number, window) in enumerate(todo):
+            # one preview refresh for the batch: the last clip's (C1 place_clip ignore_refresh)
+            quiet = k < len(todo) - 1
+            batch["open"] = quiet
+            reader = readers.get(id(item)) or {}
+            if item.kind == "native":
+                placed.append(_place_native(item, reader, number, window[0], File, place_clip, quiet))
+            else:
+                placed.append(_place_linked(item, reader, number, window[0], fps, File, place_clip, quiet))
+        batch["open"] = False
     extend_timeline()
     return {"mode": insp.mode, "reason": insp.reason, "position": round(offset, 3), "clips": placed,
             "created_tracks": created, "native": sum(1 for p in placed if p["kind"] == "native"),
@@ -671,7 +785,8 @@ def _relabel(number: int, label: str) -> None:
             return
 
 
-def _place_native(item: Item, reader: dict, layer: int, position: float, File, place_clip) -> dict:
+def _place_native(item: Item, reader: dict, layer: int, position: float, File, place_clip,
+                  quiet: bool = False) -> dict:
     assert item.plan is not None and item.clip is not None
     path = str(item.clip.media_path)
     f = File.get(path=path)
@@ -691,13 +806,14 @@ def _place_native(item: Item, reader: dict, layer: int, position: float, File, p
             media_length = 0.0
         props["duration"] = max(media_length, item.plan.end)
     clip = place_clip(f.id, position, item.plan.duration, layer, title=item.clip.id or os.path.basename(path),
-                      props=props)
+                      props=props, ignore_refresh=quiet)
     return {"kind": "native", "name": item.name, "timeline_clip_id": clip.get("id"), "file_id": f.id,
             "layer": layer, "position": round(position, 3), "end": round(position + item.plan.duration, 3),
             "element": item.clip.id, "problems": item.plan.problems}
 
 
-def _place_linked(item: Item, reader: dict, layer: int, position: float, fps: float, File, place_clip) -> dict:
+def _place_linked(item: Item, reader: dict, layer: int, position: float, fps: float, File, place_clip,
+                  quiet: bool = False) -> dict:
     link = dict(item.link or {})
     link.pop("warnings", None)
     stored = lm.normalize_link(link)
@@ -715,7 +831,7 @@ def _place_linked(item: Item, reader: dict, layer: int, position: float, fps: fl
     rec[lm.LINK_KEY] = stored
     f.data = rec
     f.save()
-    clip = place_clip(f.id, position, length, layer, title=item.name)
+    clip = place_clip(f.id, position, length, layer, title=item.name, ignore_refresh=quiet)
     return {"kind": "linked", "name": item.name, "role": item.role, "timeline_clip_id": clip.get("id"),
             "file_id": f.id, "layer": layer, "position": round(position, 3), "end": round(position + length, 3),
             "path": rec.get("path"), "state": stored.get("state"),

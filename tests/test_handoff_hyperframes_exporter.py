@@ -299,18 +299,59 @@ def test_keyframes_replay_frame_by_frame(tmp_path):
         assert_frames_match(snap, html, cid)
 
 
-def test_transitions_become_opacity_fades(tmp_path):
-    def clips(clip, v, i, a, t):
-        return [clip("CI", i, 1000000, 0.0, 0.0, 2.0)]
+def _fade(position, seconds=1.0, fps=30, **extra):
     mask = os.path.join(SRC, "transitions", "common", "fade.svg")
-    trans = [{"id": "T1", "layer": 1000000, "type": "Mask", "position": 0.0, "start": 0, "end": 1.0,
-              "brightness": kf((1, 1.0, 1), (31, -1.0, 1)), "contrast": kf((1, 3.0)),
-              "reader": {"path": mask}}]
-    _res, snap, html = export(tmp_path, project(tmp_path, clips, trans))
-    replay = Replay(html)
-    assert replay.value("#c-CI", "opacity", 0.0) == pytest.approx(0.0)
-    assert replay.value("#c-CI", "opacity", 0.5) == pytest.approx(0.5, abs=1e-6)
-    assert replay.value("#c-CI", "opacity", 1.5) == pytest.approx(1.0)
+    frames = int(round(seconds * fps)) + 1
+    t = {"id": "T%g" % position, "layer": 1000000, "type": "Mask", "position": position, "start": 0,
+         "end": seconds, "brightness": kf((1, 1.0, 1), (frames, -1.0, 1)), "contrast": kf((1, 3.0, 1)),
+         "reader": {"path": mask}}
+    t.update(extra)
+    return t
+
+
+# what libopenshot 1.0 draws, measured with its own Timeline + Mask (red clip A 0-3 s under blue clip B 2-5 s,
+# fade 2-3 s): B's alpha per 1-based frame -- 61: 0, 62: 0, 65: 58, 70: 158, 75: 255; A stays at 255
+LIBOPENSHOT_FADE = {61: 0.0, 62: 0.0, 65: 58 / 255, 70: 158 / 255, 75: 1.0, 80: 1.0}
+
+
+def test_crossfade_fades_only_the_top_clip_inside_the_transition(tmp_path):
+    """Review C5-1 #5: the transition faded every overlapping clip and hid them before it started."""
+    def clips(clip, v, i, a, t):
+        return [clip("CA", i, 1000000, 0.0, 0.0, 3.0), clip("CB", t, 1000000, 2.0, 0.0, 3.0)]
+    _res, _snap, html = export(tmp_path, project(tmp_path, clips, [_fade(2.0)]))
+    r = Replay(html)
+    # the clip underneath is untouched: no opacity animation at all, fully opaque
+    assert r.value("#c-CA", "opacity", 2.5) is None and _css_rules(html)["c-CA"]["opacity"] == "1"
+    for frame, alpha in LIBOPENSHOT_FADE.items():
+        assert r.value("#c-CB", "opacity", (frame - 1) / 30.0) == pytest.approx(alpha, abs=1.5 / 255), frame
+    assert r.value("#c-CB", "opacity", 4.5) == pytest.approx(1.0)
+
+
+def test_a_fade_in_the_middle_of_a_clip_leaves_the_clip_alone_before_it(tmp_path):
+    def clips(clip, v, i, a, t):
+        return [clip("CI", i, 1000000, 0.0, 0.0, 3.0)]
+    _res, _snap, html = export(tmp_path, project(tmp_path, clips, [_fade(1.0)]))
+    r = Replay(html)
+    assert r.value("#c-CI", "opacity", 0.5) == pytest.approx(1.0)              # not hidden until it starts
+    assert r.value("#c-CI", "opacity", 1.0) == pytest.approx(0.0, abs=1e-5)    # the mask, as libopenshot does
+    assert r.value("#c-CI", "opacity", 1.0 + 9 / 30) == pytest.approx(158 / 255, abs=1.5 / 255)
+    assert r.value("#c-CI", "opacity", 2.5) == pytest.approx(1.0)
+
+
+def test_audio_fading_transitions_export_their_equal_power_fades(tmp_path):
+    def clips(clip, v, i, a, t):
+        return [clip("CA", a, 1000000, 0.0, 0.0, 3.0), clip("CB", a, 1000000, 2.0, 0.0, 3.0)]
+    _res, _snap, _html = export(tmp_path, project(tmp_path, clips, [_fade(2.0, fade_audio_hint=True)]))
+    p = hfp.load_project(str(tmp_path / "out"))
+    c = {x.zenvi["clip-id"]: x for x in p.root.clips}
+    out_pts = {round(pt["t"], 4): pt["v"] for pt in c["CA"].automation["lanes"][0]["points"]}
+    in_pts = {round(pt["t"], 4): pt["v"] for pt in c["CB"].automation["lanes"][0]["points"]}
+    # libopenshot: frame F in the transition (61..90), t = (F - 61) / 29; out = cos, in = sin (equal power)
+    for frame in (61, 70, 80, 90):
+        p_ = (frame - 61) / 29.0
+        assert out_pts[round((frame - 1) / 30.0, 4)] == pytest.approx(math.cos(p_ * math.pi / 2), abs=1e-6)
+        assert in_pts[round((frame - 1 - 60) / 30.0, 4)] == pytest.approx(math.sin(p_ * math.pi / 2), abs=1e-6)
+    assert out_pts[0.0] == 1.0 and in_pts[round(40 / 30.0, 4)] == 1.0
 
 
 def test_audio_attributes(tmp_path):
@@ -340,6 +381,8 @@ def test_speed_and_unsupported_features_warn(tmp_path):
     assert 'data-playback-rate="2' in html
     w = " ".join(res.warnings)
     assert "plays constant reversed" in w and "Blur effect is not exported" in w and "rounded corners" in w
+    # review C5-1 #11: the video has sound -- HyperFrames keeps its pitch at 2x, Zenvi does not
+    assert re.search(r"'clip.mp4' plays at 2[.\d]*x: Zenvi's speed change shifts its pitch", w)
     readme = open(os.path.join(res.output_dir, "README.md")).read()
     assert "Blur effect" in readme and "gsap.com/standard-license" in readme
 
@@ -354,8 +397,8 @@ def test_embedded_timeline_is_safe_html_and_maps_media(tmp_path):
     assert zp["project"]["clips"][0]["title"] == "</script><b>& x"
     assert zp["assets"] == {"FV": "assets/clip.mp4"} and zp["originals"]["FV"].endswith("clip.mp4")
     assert zp["project"]["files"][0]["path"] == "assets/clip.mp4"
-    assert zp["elements"]["CV"] == {"kind": "video", "src": "assets/clip.mp4", "start": 0.0, "duration": 3.0,
-                                    "media_start": 0.5, "track": 0}
+    assert zp["elements"]["CV"] == {"kind": "video", "element": "c-CV", "src": "assets/clip.mp4", "start": 0.0,
+                                    "duration": 3.0, "media_start": 0.5, "track": 0}
     assert "history" not in zp["project"]
 
 
@@ -374,16 +417,102 @@ def test_output_folder_rules_and_re_export(tmp_path):
     with pytest.raises(exporter.ExportError, match="not empty"):
         exporter.check_output_dir(str(busy))
     res, _s, _h = export(tmp_path, project(tmp_path))
+    manifest = exporter.read_manifest(res.output_dir)
+    assert sorted(manifest["files"]) == ["README.md", "assets/clip.mp4", "hyperframes.json", "index.html",
+                                         "meta.json", "package.json"]
     (tmp_path / "out" / "notes.md").write_text("keep me")
+    (tmp_path / "out" / "assets" / "logo.png").write_bytes(b"the user's own logo")   # not Zenvi's file
     # export again over the earlier export: Zenvi's files are replaced, the user's kept, stale assets removed
     def clips(clip, v, i, a, t):
         return [clip("CI", i, 1000000, 0.0, 0.0, 1.0)]
     snap = TimelineSnapshot.from_project(project(tmp_path, clips), str(tmp_path / "demo.zvn"))
     again = exporter.export_project(snap, exporter.raw_project(project(tmp_path, clips)), res.output_dir)
     names = sorted(os.listdir(os.path.join(res.output_dir, "assets")))
-    assert names == ["logo.png"] and (tmp_path / "out" / "notes.md").read_text() == "keep me"
-    assert again.clips == 1
-    assert not [n for n in os.listdir(str(tmp_path)) if n.startswith(".zenvi-export-")]  # staging cleaned
+    assert names == ["logo-2.png", "logo.png"] and (tmp_path / "out" / "notes.md").read_text() == "keep me"
+    assert (tmp_path / "out" / "assets" / "logo.png").read_bytes() == b"the user's own logo"
+    assert again.clips == 1 and "assets/logo-2.png" in exporter.read_manifest(res.output_dir)["files"]
+    assert not [n for n in os.listdir(str(tmp_path)) if n.startswith(".zenvi-export-")]  # staging + backup gone
+
+
+def _earlier_export(tmp_path):
+    res, _s, _h = export(tmp_path, project(tmp_path))
+    return res.output_dir
+
+
+def test_re_export_never_deletes_outside_the_folder(tmp_path):
+    """Review C5-1 #6: a crafted record ("assets/../../../victim.txt") made the re-export delete that file."""
+    victim = tmp_path / "victim.txt"
+    victim.write_text("precious")
+    out = _earlier_export(tmp_path)
+    path = os.path.join(out, exporter.MANIFEST)
+    data = json.load(open(path))
+    data["files"]["assets/../../victim.txt"] = {"size": 8, "mtime_ns": 0}
+    json.dump(data, open(path, "w"))
+    with pytest.raises(exporter.ExportError, match="not a file inside the folder"):
+        export(tmp_path, project(tmp_path))
+    data["files"].pop("assets/../../victim.txt")
+    data["files"][str(victim)] = {"size": 8}                     # absolute
+    json.dump(data, open(path, "w"))
+    with pytest.raises(exporter.ExportError, match="not a file inside the folder"):
+        export(tmp_path, project(tmp_path))
+    assert victim.read_text() == "precious"
+    # an export from before the manifest: its embedded JSON is not trusted for deleting anything
+    os.unlink(path)
+    with pytest.raises(exporter.ExportError, match="kept no record"):
+        export(tmp_path, project(tmp_path))
+    assert victim.read_text() == "precious"
+
+
+def test_re_export_refuses_a_linked_assets_folder(tmp_path):
+    """Review C5-1 #6: a symlinked assets/ was written into and pruned (another folder's files lost)."""
+    out = _earlier_export(tmp_path)
+    library = tmp_path / "library"
+    os.rename(os.path.join(out, "assets"), str(library))
+    (library / "unrelated.png").write_bytes(b"keep")
+    os.symlink(str(library), os.path.join(out, "assets"))
+    before = sorted(os.listdir(library))
+    with pytest.raises(exporter.ExportError, match="is a link to another folder"):
+        export(tmp_path, project(tmp_path))
+    assert sorted(os.listdir(library)) == before
+
+
+def test_re_export_stops_on_edits_made_in_hyperframes(tmp_path):
+    """Review C5-1 #7: index.html / package.json / assets edited since the export were silently replaced."""
+    out = _earlier_export(tmp_path)
+    index = os.path.join(out, "index.html")
+    html = open(index, encoding="utf-8").read()
+    # what HyperFrames Studio does when it opens the project: stamps data-hf-id -- not an edit
+    open(index, "w", encoding="utf-8").write(html.replace('<video id="c-CV"', '<video data-hf-id="hf-1" id="c-CV"'))
+    assert exporter.plan_output(out).changed == []
+    open(index, "w", encoding="utf-8").write(html.replace('data-start="0"', 'data-start="0.5"', 1))
+    pkg = os.path.join(out, "package.json")
+    open(pkg, "a").write("\n")
+    with pytest.raises(exporter.ExportChanged) as err:
+        export(tmp_path, project(tmp_path))
+    assert err.value.changed == ["index.html", "package.json"]
+    assert "data-start=\"0.5\"" in open(index, encoding="utf-8").read()         # nothing was replaced
+    res, _s, _h = export(tmp_path, project(tmp_path), overwrite_changes=True)
+    assert exporter.plan_output(out).changed == [] and res.clips == 1
+
+
+def test_a_failed_re_export_puts_the_earlier_export_back(tmp_path, monkeypatch):
+    """Review C5-1 #7: files were replaced one by one, so a failure left a mixed project."""
+    out = _earlier_export(tmp_path)
+    before = {n: open(os.path.join(out, n), "rb").read() for n in ("index.html", "package.json", "README.md")}
+    real_replace, calls = os.replace, []
+
+    def flaky(src, dst):
+        calls.append(dst)
+        if len(calls) == 9:  # partway through moving the new files in
+            raise OSError("disk full")
+        return real_replace(src, dst)
+    monkeypatch.setattr(exporter.os, "replace", flaky)
+    with pytest.raises(OSError, match="disk full"):
+        export(tmp_path, project(tmp_path))
+    monkeypatch.setattr(exporter.os, "replace", real_replace)
+    assert {n: open(os.path.join(out, n), "rb").read() for n in before} == before
+    assert exporter.plan_output(out).changed == [] and os.path.isfile(os.path.join(out, "assets", "clip.mp4"))
+    assert not [n for n in os.listdir(str(tmp_path)) if n.startswith(".zenvi-export-")]
 
 
 def test_nothing_to_export(tmp_path):

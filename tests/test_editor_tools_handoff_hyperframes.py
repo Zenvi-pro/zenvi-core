@@ -122,7 +122,9 @@ def test_native_import_is_one_undo_step(hf, tmp_path):
     link = comp_file["zenvi_link"]
     assert link["kind"] == "hyperframes" and link["hyperframes"]["role"] == "composition"
     assert link["hyperframes"]["host"] == "intro"
-    assert link["props"] == {"headline": "Launch", "accent": "#FF5A36"}  # every variable, for Edit Props
+    # no stored props (review C5-1 #3): renders read the variables from the HTML; Edit Props shows them all
+    assert link["props"] == {}
+    assert hfprov.HyperFramesProvider().editable_props(link) == {"headline": "Launch", "accent": "#FF5A36"}
     assert link["source"]["entry"] == "compositions/intro.html" and link["render"]["codec"] == "prores4444"
     layer_link = hf.file(linked_clips["layer"]["file_id"])["zenvi_link"]
     assert sorted(layer_link["hyperframes"]["exclude"]) == ["bg", "intro", "logo", "music"]
@@ -279,7 +281,7 @@ def test_tools_are_registered_with_their_coverage():
     assert imp.covers == ("handoff.hyperframes_import",) and imp.background_safe and not imp.read_only
     assert exp.covers == ("handoff.hyperframes_export",) and exp.read_only
     assert set(imp.schema["properties"]) == {"project_dir", "mode", "position", "track"}
-    assert set(exp.schema["properties"]) == {"output_dir", "copy_media"}
+    assert set(exp.schema["properties"]) == {"output_dir", "copy_media", "overwrite_changes"}
 
 
 def test_restore_with_clips_added_in_hyperframes(hf, tmp_path, monkeypatch):
@@ -347,7 +349,129 @@ def test_linked_compositions_take_new_variables_and_rerender(hf, tmp_path):
     hf.mark()
     up = hf.call_receipt("update_linked_clip_tool", file_id=comp["file_id"], props={"headline": "Ship it"})
     assert up["status"] == "applied" and up["undoSteps"] == 1, up["summary"]
-    assert hf.renders[-1]["props"] == {"headline": "Ship it", "accent": "#FF5A36"}
+    assert hf.renders[-1]["props"] == {"headline": "Ship it"}   # only the change; the accent stays the HTML's
     info = hf.call_receipt("get_linked_clip_tool", file_id=comp["file_id"])
     assert info["data"]["editable_props"] == {"headline": "Ship it", "accent": "#FF5A36"}
     assert info["data"]["state"] == "fresh" and info["data"]["can_open_studio"]
+
+
+# --- review C5-1 regressions ------------------------------------------------------------------------------
+
+def test_a_commit_failing_half_way_takes_back_what_it_added(hf, tmp_path, monkeypatch):
+    """#12: the inserts made before the failure stayed in history while the renders were deleted."""
+    placed = []
+    real = importer._place_linked
+
+    def flaky(item, *a, **k):
+        placed.append(item.name)
+        if len(placed) == 2:
+            raise lm.LinkError("the timeline refused the clip")
+        return real(item, *a, **k)
+    monkeypatch.setattr(importer, "_place_linked", flaky)
+    r = hf.call_receipt("import_hyperframes_project_tool", project_dir=project(tmp_path), position=0.0)
+    assert _failed(r) and "refused the clip" in r["summary"]
+    assert hf.undo_steps_since_mark() == 0 and not hf.clips() and not hf.get("files")
+    assert not hf.manager.redoHistory  # no partial import to redo either
+    links = os.path.join(hf.user_path, "links", "hyperframes")
+    assert not [n for n in os.listdir(links) if not n.startswith(".")]
+
+
+def test_an_import_does_not_land_in_another_project(hf, tmp_path, monkeypatch):
+    """Plausible: the clips landed in whichever project was open when the renders finished."""
+    real = importer.project_identity
+    seen = []
+
+    def identity(app):
+        seen.append(1)
+        return real(app) if len(seen) == 1 else (0, "another project")
+    monkeypatch.setattr(importer, "project_identity", identity)
+    r = hf.call_receipt("import_hyperframes_project_tool", project_dir=project(tmp_path), position=0.0)
+    assert _failed(r) and "another project was opened" in r["summary"]
+    assert hf.undo_steps_since_mark() == 0 and not hf.clips()
+
+
+def test_clips_are_placed_as_one_batch(hf, tmp_path, monkeypatch):
+    """Plausible: every clip refreshed the preview (a GUI stall per clip); now only the last one does."""
+    from classes.editor_tools import titles_text_common as ttc
+    flags = []
+    real = ttc.place_clip
+
+    def recording(*a, **k):
+        flags.append(k.get("ignore_refresh"))
+        return real(*a, **k)
+    monkeypatch.setattr(ttc, "place_clip", recording)
+    r = hf.call_receipt("import_hyperframes_project_tool", project_dir=project(tmp_path), position=0.0)
+    assert r["status"] == "applied" and len(flags) == 5
+    assert flags == [True, True, True, True, False]
+
+
+def test_cli_starts_after_unmeasured_media_are_not_taken(hf, tmp_path, monkeypatch):
+    """#1: `hyperframes timeline --json` puts data-start="<id>" at that clip's START when it has no
+    data-duration; the import keeps Zenvi's (media length) start for it."""
+    root = write_project(tmp_path / "refs", root_div(
+        '<video id="v1" class="clip" src="assets/a.mp4" data-start="0" data-track-index="0" muted></video>'
+        '<video id="v2" class="clip" src="assets/a.mp4" data-start="v1" data-track-index="0" muted></video>'),
+        files={"assets/a.mp4": b"v"}, style=".clip { position: absolute; inset: 0; }",
+        script='const tl = gsap.timeline({paused:true}); window.__timelines["main"] = tl;')
+    cli = hf_cli.Cli(("node", "hf.mjs"), "0.8.126", "zenvi", None)
+    monkeypatch.setattr(hf_cli, "resolve_cli", lambda project_dir=None, **kw: cli)
+    rows = [{"id": "v1", "elementId": "v1", "file": "index.html", "absStart": 0, "duration": 20,
+             "durationSource": "media", "trackIndex": 0, "nested": False},
+            {"id": "v2", "elementId": "v2", "file": "index.html", "absStart": 0, "duration": 20,
+             "durationSource": "media", "trackIndex": 0, "nested": False}]
+    monkeypatch.setattr(hf_cli, "timeline", lambda d, cli=None, **kw: {"timeline": {"tracks": [{"rows": rows}]}})
+    r = hf.call_receipt("import_hyperframes_project_tool", project_dir=root, mode="native", position=0.0)
+    assert r["status"] == "applied" and r["data"]["project"]["timing_from"] == "hyperframes"
+    native = {c["element"]: c for c in _clips_by_kind(r)["native"]}
+    assert native["v1"]["position"] == 0.0 and native["v2"]["position"] == 20.0   # after v1's 20 s of media
+
+
+def test_tracks_follow_what_hyperframes_paints_in_front(hf, tmp_path):
+    """Plausible: HyperFrames stacks by CSS z-index and document order, never by data-track-index."""
+    root = write_project(tmp_path / "paint", root_div(
+        '<video id="front" class="clip" src="assets/a.mp4" data-start="0" data-duration="2" data-track-index="0" '
+        'style="z-index: 5" muted></video>'
+        '<img id="back" class="clip" src="assets/logo.png" data-start="0" data-duration="2" data-track-index="1"/>'),
+        files={"assets/a.mp4": b"v", "assets/logo.png": b"i"},
+        style=".clip { position: absolute; inset: 0; }",
+        script='const tl = gsap.timeline({paused:true}); window.__timelines["main"] = tl;')
+    r = hf.call_receipt("import_hyperframes_project_tool", project_dir=root, mode="native", position=0.0)
+    native = {c["element"]: c for c in _clips_by_kind(r)["native"]}
+    assert native["back"]["layer"] < native["front"]["layer"]   # z-index 5 is in front, whatever its lane says
+
+
+def test_split_and_duplicated_clips_come_back_with_fresh_ids(hf, tmp_path, monkeypatch):
+    """#4 through the tool: both halves of a split and a duplicate are separate clips again."""
+    monkeypatch.setattr(hf_cli, "lint", lambda d, **kw: {"ok": True})
+    a, b = _zenvi_timeline(hf)
+    out = str(tmp_path / "export")
+    assert hf.call_receipt("export_to_hyperframes_tool", output_dir=out)["status"] in ("applied", "unchanged")
+    index = os.path.join(out, "index.html")
+    html = open(index, encoding="utf-8").read()
+    tag = re.search(r'<img id="c-%s"[^>]*/>' % b, html).group(0)
+    dup = tag.replace('id="c-%s"' % b, 'id="c-%s-2"' % b).replace('data-start="1"', 'data-start="5"')
+    open(index, "w", encoding="utf-8").write(html.replace(tag, tag + "\n      " + dup))
+    hf.store._data["clips"] = []
+    hf.mark()
+    r = hf.call_receipt("import_hyperframes_project_tool", project_dir=out, position=0.0)
+    assert r["status"] == "applied" and r["data"]["restored"] == 3, r["summary"]
+    clips = hf.clips()
+    assert len({c["id"] for c in clips}) == 3 and sorted(c["position"] for c in clips if c["file_id"] ==
+                                                         next(x for x in clips if x["id"] == b)["file_id"]) == [1.0, 5.0]
+
+
+def test_re_export_stops_on_edits_and_replaces_them_when_asked(hf, tmp_path, monkeypatch):
+    """#7 through the tool."""
+    monkeypatch.setattr(hf_cli, "lint", lambda d, **kw: {"ok": True})
+    _zenvi_timeline(hf)
+    out = str(tmp_path / "export")
+    assert hf.call_receipt("export_to_hyperframes_tool", output_dir=out)["status"] in ("applied", "unchanged")
+    index = os.path.join(out, "index.html")
+    html = open(index, encoding="utf-8").read()
+    open(index, "w", encoding="utf-8").write(html.replace('data-start="1"', 'data-start="1.5"', 1))
+    r = hf.call_receipt("export_to_hyperframes_tool", output_dir=out)
+    assert _failed(r) and "index.html" in r["summary"] and "changed since Zenvi exported it" in r["summary"]
+    assert 'data-start="1.5"' in open(index, encoding="utf-8").read()
+    r = hf.call_receipt("export_to_hyperframes_tool", output_dir=out, overwrite_changes=True)
+    assert r["status"] in ("applied", "unchanged") and r["data"]["replaced_changes"] == ["index.html"]
+    assert 'data-start="1.5"' not in open(index, encoding="utf-8").read()

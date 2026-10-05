@@ -15,7 +15,8 @@ HyperFrames schema (``@hyperframes/core`` docs, CLI 0.8.126):
 * timing: ``data-start`` as seconds or ``<id>`` / ``<id> + n`` / ``<id> - n``
   (the end of another clip of the same composition; cycles and unknown ids
   are errors), ``data-duration`` (images default to 3 s, media to their
-  length from ``data-media-start`` over ``data-playback-rate``), tracks
+  length from the in point -- ``data-playback-start``, else
+  ``data-media-start`` -- over ``data-playback-rate``), tracks
   (``data-track-index``), ``data-volume``, ``data-fade-in`` /
   ``data-fade-out``, ``data-automation`` volume lanes, ``muted`` /
   ``data-has-audio``, ``data-variable-values``, ``data-zenvi-*``;
@@ -29,8 +30,10 @@ HyperFrames schema (``@hyperframes/core`` docs, CLI 0.8.126):
 The HyperFrames CLI's own resolver (``hyperframes timeline --json``) is the
 source of truth for timing when it is available: pass its JSON as
 *cli_timeline* and its absolute starts and durations win for the root
-composition's clips. The Python resolver covers the same rules for when
-Node is not installed (and for tests).
+composition's clips -- except a start that refers to a clip without
+``data-duration`` (the CLI resolves ``"<id>"`` with that clip's start there,
+the runtime with its media's end; :func:`cli_start_trusted`). The Python
+resolver covers the same rules for when Node is not installed (and for tests).
 """
 
 from __future__ import annotations
@@ -47,6 +50,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Set,
 
 from classes.handoff.hyperframes import gsap
 from classes.handoff.linked_media import LinkError
+from classes.logger import log
 
 INDEX = "index.html"
 TIMELINE_SCRIPT_ID = "zenvi-timeline"
@@ -508,7 +512,8 @@ class Clip:
     duration: Optional[float] = None
     duration_source: str = ""                # authored | media | default | timeline | cli | until-end
     track_index: int = 0
-    media_start: float = 0.0
+    media_start: float = 0.0                 # data-playback-start, else data-media-start
+    loop: bool = False                       # <video loop>: HyperFrames repeats the media
     volume: float = 1.0
     fade_in: float = 0.0
     fade_out: float = 0.0
@@ -887,7 +892,12 @@ class _Loader:
                 clip.problems.append(f"its media is not a local file ({clip.src})")
             elif clip.media_path is None:
                 clip.problems.append(f"its media {clip.src} is missing")
-            clip.media_start = max(0.0, _float(el.attrs.get("data-media-start"), 0.0) or 0.0)
+            # the runtime reads data-playback-start before data-media-start (Studio's split writes it)
+            in_point = el.attrs.get("data-playback-start")
+            if in_point is None or _float(in_point) is None:
+                in_point = el.attrs.get("data-media-start")
+            clip.media_start = max(0.0, _float(in_point, 0.0) or 0.0)
+            clip.loop = kind == "video" and "loop" in el.attrs
             clip.playback_rate = _float(el.attrs.get("data-playback-rate"), 1.0) or 1.0
             if clip.playback_rate <= 0:
                 clip.problems.append("its data-playback-rate is not positive")
@@ -980,6 +990,30 @@ class _Loader:
                 c.duration, c.duration_source = max(0.0, total - c.start), "until-end"
 
 
+def cli_start_trusted(clip: Clip, by_id: Dict[str, Clip], _seen: Optional[Set[int]] = None) -> bool:
+    """Whether ``hyperframes timeline --json`` resolves *clip*'s start right.
+
+    The CLI resolves ``data-start="<id>"`` / ``"<id> ± n"`` against AUTHORED
+    durations only: when the referenced clip has no ``data-duration`` (a video
+    measured from its media) it uses that clip's start, not its end, while the
+    runtime plays it after the media's length. So its ``absStart`` counts only
+    for numeric starts and for references to clips whose start counts and whose
+    ``data-duration`` is written out; otherwise Zenvi's own (probed) value stays.
+    """
+    raw = (clip.start_attr or "0").strip()
+    if not re.search(r"[A-Za-z_]", raw):
+        return True
+    m = _START_REF.match(raw)
+    ref = by_id.get(m.group(1)) if m else None
+    if ref is None or _float(ref.element.attrs.get("data-duration")) is None:
+        return False
+    seen = _seen if _seen is not None else set()
+    if id(ref) in seen:
+        return False
+    seen.add(id(ref))
+    return cli_start_trusted(ref, by_id, seen)
+
+
 def _apply_cli_timeline(project: Project, cli_timeline: Any) -> bool:
     """Take the CLI's resolved starts / durations for the root composition's clips; True when applied."""
     if not isinstance(cli_timeline, dict):
@@ -995,18 +1029,26 @@ def _apply_cli_timeline(project: Project, cli_timeline: Any) -> bool:
                 continue
             if str(row.get("file") or INDEX).replace("\\", "/") != project.root.file:
                 continue
-            ident = str(row.get("elementId") or row.get("id") or "")
+            # a row for an element without an id has elementId null and a made-up id ("img"): never
+            # match that to an element whose id really is "img"
+            ident = str(row.get("elementId") or "") if "elementId" in row else str(row.get("id") or "")
             if ident:
                 rows[ident] = row
+    by_id = {c.id: c for c in project.root.clips if c.id}
     used = False
+    untrusted: List[Clip] = []
     for clip in project.root.clips:
         row = rows.get(clip.id)
         if row is None:
             continue
         start = _float(row.get("absStart"), None)
-        if start is not None:
+        if start is not None and cli_start_trusted(clip, by_id):
             clip.start = max(0.0, start)
             used = True
+        elif start is not None:
+            untrusted.append(clip)
+            log.debug("HyperFrames CLI start %.3f for %s not used (it refers to a clip without data-duration)",
+                      start, clip.label)
         source = row.get("durationSource")
         duration = _float(row.get("duration"), None)
         if source in ("authored", "media", "default") and duration is not None and duration > 0:
@@ -1021,7 +1063,31 @@ def _apply_cli_timeline(project: Project, cli_timeline: Any) -> bool:
         rate = _float(row.get("playbackRate"), None)
         if rate:
             clip.playback_rate = rate
+    _reresolve_starts(untrusted, by_id)
     return used
+
+
+def _reresolve_starts(clips: Sequence[Clip], by_id: Dict[str, Clip]) -> None:
+    """Resolve the ``"<id> ± n"`` starts the CLI got wrong again, from the durations as finally known."""
+    pending = {id(c) for c in clips}
+
+    def start_of(c: Clip) -> Optional[float]:
+        if id(c) not in pending:
+            return c.start
+        pending.discard(id(c))
+        m = _START_REF.match((c.start_attr or "").strip())
+        ref = by_id.get(m.group(1)) if m else None
+        if ref is None:
+            return c.start
+        ref_start = start_of(ref)
+        if ref_start is None or ref.duration is None:
+            return c.start
+        offset = float(m.group(3) or 0.0) if m else 0.0
+        c.start = max(0.0, ref_start + ref.duration + (offset if m and m.group(2) != "-" else -offset))
+        return c.start
+
+    for c in clips:
+        start_of(c)
 
 
 def _embedded_timeline(doc: Document, warnings: List[str]) -> Optional[dict]:
@@ -1162,6 +1228,6 @@ __all__ = [
     "HyperFramesError", "Element", "Document", "parse_html", "read_document", "Selector", "parse_selector_list",
     "selector_matches", "Rule", "parse_css", "parse_declarations", "computed_style", "Clip", "Composition",
     "Project", "load_project", "resolve_src", "parse_fps", "attach_tweens", "remaining_visuals",
-    "remaining_visuals_in", "INDEX",
+    "remaining_visuals_in", "cli_start_trusted", "INDEX",
     "TIMELINE_SCRIPT_ID", "MEDIA_TAGS",
 ]

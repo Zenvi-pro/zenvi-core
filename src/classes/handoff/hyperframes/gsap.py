@@ -425,6 +425,7 @@ class Call:
     args: List[Any]
     line: int
     text: str
+    nested: str = ""    # why it may not run exactly once ("inside a block, function or callback"); "" = top level
 
 
 @dataclass
@@ -495,9 +496,56 @@ def _registration(toks: Sequence[Token], i: int) -> Optional[Tuple[str, int]]:
     return None
 
 
+_CONDITIONAL_KEYWORDS = ("if", "for", "while", "with", "switch")
+_BRANCH_WORDS = ("else", "do", "return", "case", "default", "yield", "void", "await")
+_BRANCH_PUNCT = ("=>", "?", ":", "&&", "||", "??", "&&=", "||=", "??=")
+
+
+def _nesting(toks: Sequence[Token]) -> Tuple[List[int], Dict[int, int]]:
+    """Per token: how many brackets enclose it; and closing bracket index -> its opening one."""
+    depth: List[int] = []
+    match: Dict[int, int] = {}
+    stack: List[int] = []
+    for k, t in enumerate(toks):
+        if t.kind == "punct" and t.value in ("(", "[", "{"):
+            depth.append(len(stack))
+            stack.append(k)
+        elif t.kind == "punct" and t.value in (")", "]", "}"):
+            if stack:
+                match[k] = stack.pop()
+            depth.append(len(stack))
+        else:
+            depth.append(len(stack))
+    return depth, match
+
+
+def _statement_context(toks: Sequence[Token], i: int, depth: Sequence[int], match: Dict[int, int]) -> str:
+    """'' when the statement starting at toks[i] runs once, at the top of the script; else where it is.
+
+    A timeline call inside a block, a function, a callback (``forEach(i => tl.to(...))``), after
+    ``if (...)`` / ``for (...)`` / ``else``, or in a ``&&`` / ``?:`` expression may run several
+    times or not at all, so its tween cannot be placed by reading the code.
+    """
+    if depth[i] > 0:
+        return "inside a block, function or callback"
+    if i == 0:
+        return ""
+    prev = toks[i - 1]
+    if prev.kind == "ident" and prev.value in _BRANCH_WORDS:
+        return "after %s" % prev.value
+    if prev.kind == "punct" and prev.value in _BRANCH_PUNCT:
+        return "in a conditional or arrow-function expression"
+    if prev.kind == "punct" and prev.value == ")":
+        o = match.get(i - 1)
+        if o is not None and o > 0 and toks[o - 1].kind == "ident" and toks[o - 1].value in _CONDITIONAL_KEYWORDS:
+            return "inside %s (...)" % toks[o - 1].value
+    return ""
+
+
 def scan_script(src: str, first_line: int = 1) -> ScriptInfo:
     """Timelines, registrations and timeline calls in one script (or several joined)."""
     toks = tokenize(src, first_line)
+    depth, match = _nesting(toks)
     info = ScriptInfo()
     i = 0
     n = len(toks)
@@ -518,7 +566,7 @@ def scan_script(src: str, first_line: int = 1) -> ScriptInfo:
                     var = "__timelines[%s]" % comp_id
                     info.timelines[var] = args[0] if args and isinstance(args[0], dict) else {}
                     info.registrations[comp_id] = var
-                    i = _chain(toks, after, var, info)
+                    i = _chain(toks, after, var, info, _statement_context(toks, i, depth, match))
                     continue
                 i = vi
                 continue
@@ -526,17 +574,18 @@ def scan_script(src: str, first_line: int = 1) -> ScriptInfo:
             if name and after + 1 < n and toks[after].value == "=" and _is_gsap_timeline(toks, after + 1):
                 args, j = _parse_args(toks, after + 4)
                 info.timelines[name] = args[0] if args and isinstance(args[0], dict) else {}
-                i = _chain(toks, j, name, info)
+                i = _chain(toks, j, name, info, _statement_context(toks, i, depth, match))
                 continue
             if name and name in info.timelines and after < n and toks[after].value == ".":
-                i = _chain(toks, after, name, info)
+                i = _chain(toks, after, name, info, _statement_context(toks, i, depth, match))
                 continue
             if name == "gsap" and after + 2 < n and toks[after].value == "." and toks[after + 1].kind == "ident" \
                     and toks[after + 2].value == "(":
                 method = toks[after + 1].value
                 if method in TWEEN_METHODS:
                     args, j = _parse_args(toks, after + 2)
-                    info.global_tweens.append(Call("gsap", method, args, t.line, _source_text(toks, i, j)))
+                    info.global_tweens.append(Call("gsap", method, args, t.line, _source_text(toks, i, j),
+                                                   _statement_context(toks, i, depth, match)))
                     i = j
                     continue
             i = max(after, i + 1)
@@ -546,14 +595,14 @@ def scan_script(src: str, first_line: int = 1) -> ScriptInfo:
     return info
 
 
-def _chain(toks: Sequence[Token], i: int, owner: str, info: ScriptInfo) -> int:
+def _chain(toks: Sequence[Token], i: int, owner: str, info: ScriptInfo, nested: str = "") -> int:
     """Record ``.method(args)`` calls chained from index *i* (after the owner expression)."""
     n = len(toks)
     while i + 2 < n and toks[i].value == "." and toks[i + 1].kind == "ident" and toks[i + 2].value == "(":
         method = toks[i + 1].value
         start = i
         args, i = _parse_args(toks, i + 2)
-        info.calls.append(Call(owner, method, args, toks[start].line, _source_text(toks, start, i)))
+        info.calls.append(Call(owner, method, args, toks[start].line, _source_text(toks, start, i), nested))
     return i
 
 
@@ -701,11 +750,23 @@ def build_timeline(info: ScriptInfo, composition_id: str) -> Timeline:
                 tl.reasons.append("the timeline sets %s" % key)
     tl_end = 0.0
     prev: Optional[Tuple[float, float]] = None
+    after_nested = ""   # the first call that may run several times or not at all: later relative places are guesses
     for call in info.calls:
         if call.owner != var:
             continue
         m = call.method
         if m in QUIET_METHODS:
+            continue
+        if call.nested:
+            why = "it is called %s (line %d), so it may run several times or not at all" % (call.nested, call.line)
+            if m in TWEEN_METHODS:
+                tween = _tween(call, defaults, tl_end, prev, tl.labels)
+                tween.reasons = sorted(set(tween.reasons + [why]))
+                tl.tweens.append(tween)
+            else:
+                tl.reasons.append("timeline.%s() %s" % (m, why[3:]))
+            tl.exact_duration = False
+            after_nested = after_nested or "line %d" % call.line
             continue
         if m in ("addLabel", "add") and call.args and isinstance(call.args[0], str):
             start, problem = _position(call.args[1] if len(call.args) > 1 else None, tl_end, prev, tl.labels)
@@ -734,6 +795,10 @@ def build_timeline(info: ScriptInfo, composition_id: str) -> Timeline:
             tl.exact_duration = False
             continue
         tween = _tween(call, defaults, tl_end, prev, tl.labels)
+        if after_nested and not isinstance(_position_arg(call), (int, float)):
+            tween.reasons = sorted(set(tween.reasons + [
+                "its position follows the end of the timeline, which the call at %s (in a loop, function or "
+                "condition) changes" % after_nested]))
         tl.tweens.append(tween)
         if tween.start is None:
             tl.exact_duration = False
@@ -742,6 +807,13 @@ def build_timeline(info: ScriptInfo, composition_id: str) -> Timeline:
         tl_end = max(tl_end, tween.end or tween.start)
     tl.duration = tl_end
     return tl
+
+
+def _position_arg(call: Call) -> Any:
+    """The position parameter of a to / from / fromTo / set call (None when it has none)."""
+    index = 3 if call.method == "fromTo" else 2
+    value = call.args[index] if len(call.args) > index else None
+    return None if isinstance(value, bool) else value
 
 
 def _literal_object(value: Any, what: str, reasons: List[str]) -> Dict[str, Any]:
