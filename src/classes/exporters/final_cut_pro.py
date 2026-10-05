@@ -1583,35 +1583,49 @@ def _copy_media(copies: List[CopyJob], should_cancel: Optional[Callable[[], bool
     return copied
 
 
-def has_alpha_channel(path: str) -> bool:
-    """True when the file's video stream carries alpha (ffprobe reads the stream header; nothing is decoded)."""
+ALPHA_PROBE_TIMEOUT = 15.0               # seconds per file (a stalled network share must not hang the export)
+
+
+def probe_alpha(path: str, exe: Optional[str] = None) -> str:
+    """How the file's video stream carries alpha: ``""`` (none), ``"alpha"`` (an alpha pixel format) or
+    ``"vp9"`` (WebM VP8/VP9 alpha, which libopenshot drops). ffprobe reads the stream header; nothing is
+    decoded. Raises ExportError when ffprobe is missing or cannot read the file."""
     from classes import ffmpeg_cli
-    exe = ffmpeg_cli.find_ffmpeg("ffprobe")
+    exe = exe or ffmpeg_cli.find_ffmpeg("ffprobe")
     if not exe:
         raise ExportError("ffprobe was not found (install ffmpeg, or set ZENVI_FFMPEG_DIR)")
     proc = ffmpeg_cli.run_ffmpeg([exe, "-v", "error", "-select_streams", "v:0", "-show_entries",
                                   "stream=pix_fmt:stream_tags=alpha_mode", "-of", "json", path],
-                                 capture_output=True, text=True, timeout=30)
+                                 capture_output=True, text=True, timeout=ALPHA_PROBE_TIMEOUT)
     if proc.returncode != 0:
-        raise ExportError((proc.stderr or "ffprobe failed").strip().splitlines()[-1][:200])
-    streams = (json.loads(proc.stdout or "{}").get("streams") or [{}])
-    stream = streams[0] if streams else {}
+        lines = (proc.stderr or "").strip().splitlines()
+        raise ExportError(lines[-1][:200] if lines else "ffprobe failed (exit %s)" % proc.returncode)
+    streams = json.loads(proc.stdout or "{}").get("streams") or []
+    stream = streams[0] if streams and isinstance(streams[0], dict) else {}
     tags = {str(k).lower(): v for k, v in (stream.get("tags") or {}).items()}
-    if str(tags.get("alpha_mode") or "") == "1":          # VP8 / VP9 alpha in WebM
-        return True
-    return ALPHA_PIX_RE.search(str(stream.get("pix_fmt") or "")) is not None
+    if str(tags.get("alpha_mode") or "") == "1":
+        return "vp9"
+    return "alpha" if ALPHA_PIX_RE.search(str(stream.get("pix_fmt") or "")) else ""
 
 
-def find_alpha_media(snapshot: TimelineSnapshot, translate: Optional[Callable[[str], str]] = None
-                     ) -> Tuple[Set[str], List[str]]:
+def has_alpha_channel(path: str) -> bool:
+    """True when the file's video stream carries alpha (see :func:`probe_alpha`)."""
+    return bool(probe_alpha(path))
+
+
+def find_alpha_media(snapshot: TimelineSnapshot, translate: Optional[Callable[[str], str]] = None, *,
+                     on_progress: Optional[Callable[[float, str], None]] = None,
+                     should_cancel: Optional[Callable[[], bool]] = None) -> Tuple[Set[str], List[str]]:
     """(ids of the timeline's videos with an alpha channel, warnings). Blocking: off the GUI thread.
 
-    Only codecs that can carry alpha are checked (ProRes 4444, Animation, PNG, VP9 ...); Premiere is
-    told ``alphatype straight`` for them, as for PNG stills and titles.
+    Only codecs that can carry alpha are checked (ProRes 4444, Animation, PNG, VP9 ...), each path once,
+    with progress and cancel between files. Premiere is told ``alphatype straight`` for them, as for PNG
+    stills and titles. WebM alpha is exported too -- Premiere shows it -- with a note that Zenvi itself
+    shows those files opaque. Files that could not be checked are reported in one warning.
     """
+    from classes import ffmpeg_cli
     _ = translate or (lambda text: text)
-    found: Set[str] = set()
-    problems: List[str] = []
+    candidates: List[FileView] = []
     seen: Set[str] = set()
     for c in snapshot.clips:
         fv = c.file
@@ -1619,15 +1633,44 @@ def find_alpha_media(snapshot: TimelineSnapshot, translate: Optional[Callable[[s
             continue
         seen.add(fv.id)
         codec = str((fv.data or {}).get("vcodec") or "").lower()
-        if not codec.startswith(ALPHA_CODECS) or not os.path.isfile(fv.path):
-            continue
-        try:
-            if has_alpha_channel(fv.path):
-                found.add(fv.id)
-        except (ExportError, OSError, ValueError, subprocess.SubprocessError) as exc:
-            log.warning("Cannot check %s for an alpha channel: %s", fv.path, exc)
-            problems.append(_("could not check '%(name)s' for transparency (%(error)s); Premiere treats it as "
-                              "opaque") % {"name": fv.name, "error": exc})
+        if codec.startswith(ALPHA_CODECS) and os.path.isfile(fv.path):
+            candidates.append(fv)
+    found: Set[str] = set()
+    if not candidates:
+        return found, []
+    exe = ffmpeg_cli.find_ffmpeg("ffprobe")
+    if not exe:
+        return found, [_("ffprobe was not found, so %d video file(s) were not checked for transparency; Premiere "
+                         "treats them as opaque") % len(candidates)]
+    by_path: Dict[str, str] = {}
+    failed: List[Tuple[str, str]] = []
+    vp9: List[str] = []
+    for i, fv in enumerate(candidates):
+        if should_cancel is not None and should_cancel():
+            from classes.handoff.jobs import JobCancelled
+            raise JobCancelled("export cancelled")
+        if on_progress is not None:
+            on_progress(0.05 * i / len(candidates), _("Checking %s for transparency") % fv.name)
+        if fv.path not in by_path:
+            try:
+                by_path[fv.path] = probe_alpha(fv.path, exe)
+            except (ExportError, OSError, ValueError, subprocess.SubprocessError) as exc:
+                log.warning("Cannot check %s for an alpha channel: %s", fv.path, exc)
+                by_path[fv.path] = ""
+                failed.append((fv.name, str(exc)))
+        kind = by_path[fv.path]
+        if kind:
+            found.add(fv.id)
+        if kind == "vp9" and fv.name not in vp9:
+            vp9.append(fv.name)
+    problems: List[str] = []
+    if failed:
+        problems.append(_("could not check %(count)d video file(s) for transparency (%(first)s: %(error)s); Premiere "
+                          "treats them as opaque") % {"count": len(failed), "first": failed[0][0],
+                                                       "error": failed[0][1]})
+    if vp9:
+        problems.append(_("Zenvi shows %(files)s opaque (libopenshot drops VP9 alpha); Premiere will show their "
+                          "transparency") % {"files": ", ".join("'%s'" % n for n in vp9[:5])})
     return found, problems
 
 
@@ -1651,7 +1694,8 @@ def export_timeline(snapshot: TimelineSnapshot, xml_path: str, *, collect_media:
     if not xml_path.lower().endswith(".xml"):
         xml_path += ".xml"
     replaced = os.path.exists(xml_path)
-    alpha_media, alpha_problems = find_alpha_media(snapshot, translate)
+    alpha_media, alpha_problems = find_alpha_media(snapshot, translate, on_progress=on_progress,
+                                                   should_cancel=should_cancel)
     result = build_xmeml(snapshot, xml_path, media_dir=media_dir, collect_media=collect_media,
                          sequence_name=sequence_name, sequence_uuid=sequence_uuid, translate=translate,
                          alpha_media=alpha_media)
