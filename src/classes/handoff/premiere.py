@@ -21,8 +21,7 @@ from __future__ import annotations
 import datetime
 import os
 import re
-import threading
-from typing import Any, Callable, Dict, List, Optional
+from typing import Callable, List, Optional
 
 from classes.handoff.ui_registry import register_export_action, register_import_action, register_send_action
 from classes.logger import log
@@ -31,8 +30,6 @@ APP = "premiere"
 IMPORT_TOOL = "premiere_import_xml"
 SEND_FOLDER = "premiere"
 _PATH_ARGS = ("path", "xml_path", "file_path", "file", "xml")
-_arg_cache: Dict[Any, Optional[str]] = {}
-_arg_lock = threading.Lock()
 
 
 class SendError(Exception):
@@ -62,26 +59,19 @@ def send_folder(name: str, project_path: Optional[str], *, now: Optional[datetim
 
 
 def _path_arg(base_dir: Optional[str] = None) -> str:
-    """The argument name the connected Premiere's ``premiere_import_xml`` takes for the file (``path``)."""
+    """The argument name the connected Premiere's ``premiere_import_xml`` takes for the file (``path``).
+
+    Read from the host's tool catalog (``adobe_link.host_catalog``: fetched once per Zenvi Link session).
+    """
     from classes.handoff import adobe_link
     try:
-        host = adobe_link.get_host(APP, base_dir, probe=False)
-        key = (base_dir, host.pid, host.started_at)
-        with _arg_lock:
-            if key in _arg_cache:
-                return _arg_cache[key] or "path"
-        name = None
-        for tool in adobe_link.list_host_tools(APP, base_dir):
+        for tool in adobe_link.host_catalog(APP, base_dir):
             if tool.get("name") == IMPORT_TOOL:
                 props = (tool.get("inputSchema") or {}).get("properties") or {}
-                name = next((n for n in _PATH_ARGS if n in props), None)
-                break
-        with _arg_lock:
-            _arg_cache.clear()
-            _arg_cache[key] = name
-        return name or "path"
+                return next((n for n in _PATH_ARGS if n in props), "path")
     except adobe_link.LinkHostError:
-        return "path"
+        pass
+    return "path"
 
 
 def send_to_premiere(snapshot, *, base_dir: Optional[str] = None,

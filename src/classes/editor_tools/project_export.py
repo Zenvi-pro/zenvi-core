@@ -585,31 +585,19 @@ def import_project_file(file_path, format="auto"):
             raise ToolError(f"{os.path.basename(path)} has no clips with a media path (FROM CLIP NAME / SOURCE FILE)")
         if not any(_media_resolvable(m) for m in media):
             raise ToolError("none of the media in this EDL can be found: " + ", ".join(sorted(set(media))[:5]))
-    else:
-        from xml.dom import minidom
-        try:
-            doc = minidom.parse(path)
-        except Exception as exc:
-            raise ToolError(f"{os.path.basename(path)} is not valid XML: {exc}") from exc
-        try:
-            if not doc.getElementsByTagName("clipitem"):
-                raise ToolError(f"{os.path.basename(path)} has no clips (no <clipitem>); is it a Final Cut Pro 7 XML?")
-        finally:
-            doc.unlink()
 
-    def _import():
-        if fmt == "edl":
+        def _import():
             from classes.importers.edl import import_edl
             return import_edl(path, prompt=False)
-        from classes.importers.final_cut_pro import import_xml
-        return import_xml(path, prompt=False)
 
-    try:
-        summary = on_main(_import, timeout=_LOAD_TIMEOUT)
-    except ToolError:
-        raise
-    except Exception as exc:
-        raise ToolError(f"importing {os.path.basename(path)} failed: {exc}") from exc
+        try:
+            summary = on_main(_import, timeout=_LOAD_TIMEOUT)
+        except ToolError:
+            raise
+        except Exception as exc:
+            raise ToolError(f"importing {os.path.basename(path)} failed: {exc}") from exc
+    else:
+        summary = _import_xml(path)
     summary = summary or {}
     clip_ids = list(summary.get("clip_ids") or [])
     missing = sorted(set(summary.get("missing") or []))
@@ -619,6 +607,20 @@ def import_project_file(file_path, format="auto"):
     return ok(f"Imported {len(clip_ids)} clip(s) from {os.path.basename(path)} onto {len(tracks)} new track(s)"
               f"{f'; {len(missing)} missing media skipped' if missing else ''}.",
               format=fmt, timeline_clip_ids=clip_ids, layers=tracks, missing_media=missing)
+
+
+def _import_xml(path: str) -> dict:
+    """FCP7 / Premiere XML: parse, find and probe the media here (off the GUI thread), commit on it."""
+    from classes.editor_tools.titles_text_common import commit_on_main, precheck_on_main
+    from classes.importers import final_cut_pro as importer
+    info = precheck_on_main(importer.read_project_info)
+    try:
+        plan = importer.plan_import(path, info=info)
+        summary = dict(commit_on_main(importer.commit_import, plan) or {})
+    except importer.XmlImportError as exc:
+        raise ToolError(str(exc)) from None
+    summary["warnings"] = list(plan.warnings)
+    return summary
 
 
 @editor_tool(
@@ -638,8 +640,11 @@ def export_project_file(format="fcpxml", file_path="", overwrite=False):
 
     Use for "send this edit to Premiere/Resolve" or "give me an EDL". Not a
     video render (that is export_video_tool). EDL holds one track per file, so
-    each non-empty track is written as '<name>-<track>.edl'. Changes nothing in
-    the project.
+    each non-empty track is written as '<name>-<track>.edl'. The XML gives each
+    clip its scale relative to its own size (Premiere's convention): tell
+    DaVinci Resolve users to set Image Scaling > Mismatched resolution files to
+    'Center crop with no resizing' before importing. Changes nothing in the
+    project.
     """
     from classes import info
 

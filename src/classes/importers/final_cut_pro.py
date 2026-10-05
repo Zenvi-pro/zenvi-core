@@ -64,10 +64,11 @@ import copy
 import json
 import math
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from fractions import Fraction
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, cast
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple, cast
 from urllib.parse import unquote, urlparse
 
 try:  # untrusted XML from other applications
@@ -93,6 +94,13 @@ MAX_NEST_DEPTH = 8
 DISSOLVE_BRIGHTNESS = (0.9253, 0.0753)
 DISSOLVE_CONTRAST = 3.0
 LEGACY_CENTER_LIMIT = 20.0          # |center| beyond this: an old OpenShot export (pixel centres)
+# effects whose keyframes may sit straight under <effect> (old Zenvi exports): the parameter they animate
+DIRECT_KEY_PARAMS = {"opacity": "opacity", "audiolevels": "level"}
+# a per-keyframe <interpolation> name (old Zenvi exports) -> libopenshot interpolation; Premiere and
+# FCP7 keys carry none (FCP7's parameter-level FCPCurve is read as linear)
+KEY_INTERPOLATIONS = {"linear": LINEAR, "0": LINEAR, "bezier": BEZIER, "ease": BEZIER, "easein": BEZIER,
+                      "easeout": BEZIER, "1": BEZIER, "constant": CONSTANT, "hold": CONSTANT, "2": CONSTANT}
+STILL_SEQUENCE_RE = r"\d{3,}\.(png|jpe?g|tiff?|exr|dpx|tga|bmp|psd)$"   # name.0001.png: an image sequence
 ZENVI_MARKER_RGB = {
     "blue": (0, 0, 255), "red": (255, 0, 0), "green": (0, 160, 0), "yellow": (255, 215, 0),
     "orange": (255, 140, 0), "purple": (160, 32, 240), "pink": (255, 105, 180), "white": (255, 255, 255),
@@ -141,6 +149,7 @@ class XFile:
     rate: Optional[XRate]
     has_video: bool
     has_audio: bool
+    channels: Optional[int] = None  # <media><audio><channelcount>, when the XML says
 
 
 @dataclass
@@ -149,7 +158,12 @@ class XParam:
     name: str
     value: Any                      # float, (h, v), str
     keys: List[Tuple[float, Any]]   # (when, value)
-    interpolation: str = ""
+    interpolation: str = ""         # the parameter's <interpolation> (FCP7: FCPCurve, hold)
+    valuemin: Optional[float] = None
+    valuemax: Optional[float] = None
+    # per key, in ``keys`` order: its own <interpolation> name (old Zenvi exports write one) and the
+    # flags it carries (``speedvirtualkf``, ``speedkfin``, ... set to TRUE), lower case
+    meta: List[Tuple[str, FrozenSet[str]]] = field(default_factory=list)
 
 
 @dataclass
@@ -211,10 +225,11 @@ class XClip:
     sequence: Optional["XSequence"]
     effects: List[XEffect]
     links: List[Tuple[str, str]]    # (clip id, mediatype)
-    sourcetrack: int
+    sourcetrack: int                # the media channel / track an audio item plays (1-based)
     generator: bool
     markers: int
     track: "XTrack" = field(repr=False, default=None)  # type: ignore[assignment]
+    channel_type: str = ""          # Premiere's premiereChannelType: stereo | mono | ""
     prev: Optional[XTransition] = None
     next: Optional[XTransition] = None
 
@@ -262,6 +277,7 @@ class XSequence:
     video: List[XTrack]
     audio: List[XTrack]
     markers: List[XMarker]
+    others: List[str] = field(default_factory=list)   # the file's other top-level sequences (names)
 
 
 def _text(el: Optional[ET.Element], path: str, default: str = "") -> str:
@@ -363,10 +379,29 @@ class _Parser:
                    media_source=_text(full, "mediaSource"), width=width, height=height,
                    duration=_int(full, "duration"), rate=self._rate(full),
                    has_video=full.find("media/video") is not None,
-                   has_audio=full.find("media/audio") is not None)
+                   has_audio=full.find("media/audio") is not None,
+                   channels=_int(full, "media/audio/channelcount"))
         if fid:
             self.parsed_files[fid] = xf
         return xf
+
+    @staticmethod
+    def keyframes(parent: ET.Element) -> Tuple[List[Tuple[float, Any]], List[Tuple[str, FrozenSet[str]]]]:
+        """(when, value) keys under *parent*, sorted by when, and each key's (interpolation, flags)."""
+        rows = []
+        for k in parent.findall("keyframe"):
+            when = _float(_text(k, "when"), float("nan"))
+            kv_el = k.find("value")
+            if kv_el is None or not math.isfinite(when):
+                continue
+            if kv_el.find("horiz") is not None:
+                kv: Any = (_float(_text(kv_el, "horiz")), _float(_text(kv_el, "vert")))
+            else:
+                kv = _float(kv_el.text)
+            flags = frozenset(c.tag.lower() for c in k if (c.text or "").strip().upper() == "TRUE")
+            rows.append((when, kv, (_text(k, "interpolation/name").lower(), flags)))
+        rows.sort(key=lambda r: r[0])
+        return [(w, v) for w, v, _m in rows], [m for _w, _v, m in rows]
 
     def effect(self, el: ET.Element, enabled: bool) -> XEffect:
         params = {}
@@ -379,21 +414,19 @@ class _Parser:
                     value = (_float(_text(value_el, "horiz")), _float(_text(value_el, "vert")))
                 else:
                     value = (value_el.text or "").strip()
-            keys = []
-            for k in p.findall("keyframe"):
-                when = _float(_text(k, "when"), float("nan"))
-                kv_el = k.find("value")
-                if kv_el is None or not math.isfinite(when):
-                    continue
-                if kv_el.find("horiz") is not None:
-                    kv: Any = (_float(_text(kv_el, "horiz")), _float(_text(kv_el, "vert")))
-                else:
-                    kv = _float(kv_el.text)
-                keys.append((when, kv))
-            keys.sort(key=lambda kw: kw[0])
+            keys, meta = self.keyframes(p)
+            vmin, vmax = _text(p, "valuemin"), _text(p, "valuemax")
             params[pid] = XParam(id=pid, name=_text(p, "name"), value=value, keys=keys,
-                                 interpolation=_text(p, "interpolation/name").lower())
-        return XEffect(name=_text(el, "name"), effectid=_text(el, "effectid"), category=_text(el, "effectcategory"),
+                                 interpolation=_text(p, "interpolation/name").lower(),
+                                 valuemin=_float(vmin, 0.0) if vmin else None,
+                                 valuemax=_float(vmax, 0.0) if vmax else None, meta=meta)
+        effectid = _text(el, "effectid")
+        main = DIRECT_KEY_PARAMS.get(effectid.lower())
+        if main and main not in params and el.find("keyframe") is not None:
+            # old Zenvi / OpenShot exports put an effect's keyframes straight under <effect>
+            keys, meta = self.keyframes(el)
+            params[main] = XParam(id=main, name=main, value=keys[0][1] if keys else "", keys=keys, meta=meta)
+        return XEffect(name=_text(el, "name"), effectid=effectid, category=_text(el, "effectcategory"),
                        mediatype=_text(el, "mediatype"), enabled=enabled, params=params)
 
     def clip(self, el: ET.Element, kind: str, track: XTrack) -> XClip:
@@ -420,7 +453,8 @@ class _Parser:
                      out=_int(el, "out", 0) or 0, duration=_int(el, "duration"), rate=self._rate(el),
                      ticks_in=ticks_in, ticks_out=ticks_out, file=xf, sequence=nested, effects=effects,
                      links=links, sourcetrack=_int(el, "sourcetrack/trackindex", 1) or 1, generator=generator,
-                     markers=len(el.findall("marker")), track=track)
+                     markers=len(el.findall("marker")), track=track,
+                     channel_type=(el.get("premiereChannelType") or "").lower())
 
     def sequence(self, el: ET.Element) -> XSequence:
         sid = el.get("id") or ""
@@ -473,8 +507,12 @@ class _Parser:
             self.depth -= 1
 
 
-def parse_xml(path: str) -> XSequence:
-    """The first sequence of an xmeml file (top level, or inside a project/bin)."""
+def parse_xml(path: str, sequence: str = "") -> XSequence:
+    """A sequence of an xmeml file: the one named *sequence*, else the first top-level one.
+
+    Top level = not used as a nest by another sequence (a Premiere export holds its sequence first and
+    the nests it uses inline; an FCP7 project can hold several). The others' names are in ``.others``.
+    """
     try:
         tree = SafeET.parse(path)
     except SafeET.ParseError as exc:  # type: ignore[attr-defined]
@@ -489,12 +527,27 @@ def parse_xml(path: str) -> XSequence:
                              "export it from Premiere with File > Export > Final Cut Pro XML")
     parser = _Parser(os.path.dirname(os.path.abspath(path)))
     parser.index(root)
-    seq_el = root.find("sequence")
-    if seq_el is None:
-        seq_el = next(iter(root.iter("sequence")), None)
-    if seq_el is None:
+    in_clips = [s_el for item in root.iter("clipitem") for s_el in item.findall("sequence")]
+    nested = {s_el.get("id") for s_el in in_clips if s_el.get("id")}
+    inline = {id(s_el) for s_el in in_clips}
+    tops = [el for el in root.iter("sequence")
+            if len(el) and id(el) not in inline and (el.get("id") or "") not in nested]
+    if not tops:   # only nests, or an empty <sequence/>: take the first one (it says what it lacks below)
+        tops = ([el for el in root.iter("sequence") if len(el)] or list(root.iter("sequence")))[:1]
+    if not tops:
         raise XmlImportError(f"{os.path.basename(path)} has no <sequence> to import")
+    names = [_text(el, "name") or "Sequence" for el in tops]
+    chosen = 0
+    if str(sequence or "").strip():
+        wanted = str(sequence).strip().lower()
+        matches = [i for i, n in enumerate(names) if n.lower() == wanted]
+        if not matches:
+            raise XmlImportError(f"{os.path.basename(path)} has no sequence named {sequence!r}; it has "
+                                 + ", ".join(repr(n) for n in names))
+        chosen = matches[0]
+    seq_el = tops[chosen]
     seq = parser.sequence(parser.sequences.get(seq_el.get("id") or "", seq_el))
+    seq.others = [n for i, n in enumerate(names) if i != chosen]
     if not any(isinstance(i, XClip) for t in seq.video + seq.audio for i in t.items):
         raise XmlImportError(f"{os.path.basename(path)} has no clips (no <clipitem>) in sequence {seq.name!r}")
     return seq
@@ -621,12 +674,30 @@ def _flag_kf(on: bool) -> dict:
     return {"Points": [_point(1, 1.0 if on else 0.0, CONSTANT)]}
 
 
-class _Fn:
-    """A Premiere parameter over the clip: piecewise-linear keys (held outside them), or a constant."""
+def _ease(u: float) -> float:
+    """libopenshot's BEZIER segment with Zenvi's default handles (cubic-bezier(0.5, 0, 0.5, 1)) at x = *u*."""
+    lo, hi = 0.0, 1.0
+    for _ in range(40):                       # x(s) = 1.5 s (1 - s) + s^3 is increasing
+        mid = (lo + hi) / 2.0
+        if 1.5 * mid * (1.0 - mid) + mid ** 3 < u:
+            lo = mid
+        else:
+            hi = mid
+    s = (lo + hi) / 2.0
+    return 3.0 * s * s - 2.0 * s * s * s
 
-    def __init__(self, keys: Sequence[Tuple[float, Any]], value: Any):
+
+class _Fn:
+    """A Premiere parameter over the clip: keys (held outside them), or a constant.
+
+    Segments are straight lines (Premiere's keys carry no easing) unless *interps* gives each key's
+    libopenshot interpolation, which -- as in Zenvi -- shapes the segment that ends at that key.
+    """
+
+    def __init__(self, keys: Sequence[Tuple[float, Any]], value: Any, interps: Optional[Sequence[int]] = None):
         self.keys = list(keys)
         self.value = value
+        self.interps = list(interps) if interps is not None and len(interps) == len(self.keys) else None
 
     def at(self, t: float) -> Any:
         keys = self.keys
@@ -636,9 +707,14 @@ class _Fn:
             return keys[0][1]
         if t >= keys[-1][0]:
             return keys[-1][1]
-        for (t0, v0), (t1, v1) in zip(keys, keys[1:]):
+        for i, ((t0, v0), (t1, v1)) in enumerate(zip(keys, keys[1:])):
             if t0 <= t <= t1:
                 f = 0.0 if t1 <= t0 else (t - t0) / (t1 - t0)
+                interp = self.interps[i + 1] if self.interps else LINEAR
+                if interp == CONSTANT:
+                    f = 1.0 if t >= t1 else 0.0
+                elif interp == BEZIER:
+                    f = _ease(f)
                 if isinstance(v0, tuple):
                     return tuple(a + (b - a) * f for a, b in zip(v0, v1))
                 return v0 + (v1 - v0) * f
@@ -646,6 +722,12 @@ class _Fn:
 
     def times(self) -> List[float]:
         return [k[0] for k in self.keys]
+
+    def interp_map(self, shift: float = 0.0) -> Dict[float, int]:
+        """{key time + *shift*: its interpolation} for the keys that are not straight lines."""
+        if not self.interps:
+            return {}
+        return {t + shift: i for (t, _v), i in zip(self.keys, self.interps) if i != LINEAR}
 
 
 class _Planner:
@@ -667,6 +749,9 @@ class _Planner:
         self.k = min(info.width / float(seq.width or info.width), info.height / float(seq.height or info.height))
         self._audio_hint: set = set()      # id() of video transitions whose audio cross fade came along
         self.legacy = self._legacy_centers(seq)
+        self.legacy_keys = self._legacy_keys(seq)
+        self._channel_group: Dict[str, int] = {}    # audio item id -> items playing its channels together
+        self._image_sequences: List[str] = []
         if abs(self.k - 1.0) > 1e-6:
             self.warn.add(self._("the sequence is %(seq)s and the project %(project)s; positions and sizes were "
                                  "scaled to fit") % {"seq": "%dx%d" % (seq.width, seq.height),
@@ -704,6 +789,24 @@ class _Planner:
 
         return walk(seq)
 
+    @staticmethod
+    def _legacy_keys(seq: XSequence) -> bool:
+        """True for an old Zenvi / OpenShot export: its keyframes carry their own <interpolation>."""
+        def walk(s, depth=0):
+            for track in s.video + s.audio:
+                for item in track.items:
+                    if not isinstance(item, XClip):
+                        continue
+                    if item.sequence is not None and depth < MAX_NEST_DEPTH and walk(item.sequence, depth + 1):
+                        return True
+                    for e in item.effects:
+                        for p in e.params.values():
+                            if any(name in KEY_INTERPOLATIONS for name, _flags in p.meta):
+                                return True
+            return False
+
+        return walk(seq)
+
     # -- tracks -------------------------------------------------------------------
     def _track(self, key: str, label: str, kind: str, locked: bool, disabled: bool = False) -> str:
         """Register a target track (in stacking order); only tracks that get clips are created."""
@@ -714,7 +817,17 @@ class _Planner:
     # -- the sequence ---------------------------------------------------------------
     def plan(self) -> None:
         seq = self.seq
+        if seq.others:
+            self.warn.add(self._("the XML also holds the sequence(s) %(others)s; only '%(name)s' was imported")
+                          % {"others": ", ".join("'%s'" % n for n in seq.others), "name": seq.name})
         self._plan_sequence(seq, shift=self.offset, window=None, prefix="", depth=0, disabled=False)
+        if self._image_sequences:
+            names = ", ".join("'%s'" % n for n in self._image_sequences[:3])
+            if len(self._image_sequences) > 3:
+                names += self._(" and %d more") % (len(self._image_sequences) - 3)
+            self.warn.add(self._("%(count)d image sequence(s) came in as single still frames (%(names)s); import "
+                                 "them into Zenvi as image sequences and replace those clips")
+                          % {"count": len(self._image_sequences), "names": names})
         used = {c.track for c in self.clips} | {t.track for t in self.transitions}
         self.tracks = [t for t in self.tracks if t.key in used]
         for m in seq.markers:
@@ -731,12 +844,12 @@ class _Planner:
         """Plan *seq*'s clips with sequence time t landing at ``t + shift`` (clipped to *window*)."""
         merged_audio: set = set()
         video_by_id: Dict[str, XClip] = {}
+        audio_by_id = {i.id: i for t in seq.audio for i in t.items if isinstance(i, XClip)}
         if not audio_only:
             for track in seq.video:
                 for item in track.items:
                     if isinstance(item, XClip):
                         video_by_id[item.id] = item
-            audio_by_id = {i.id: i for t in seq.audio for i in t.items if isinstance(i, XClip)}
             for track in seq.video:
                 label = (nest_label + " " if nest_label else "") + (track.name or f"V{track.number}")
                 key = f"{prefix}V{track.number}"
@@ -749,7 +862,9 @@ class _Planner:
                         continue
                     partner = self._audio_partner(seq, item, audio_by_id, merged_audio)
                     if partner is not None:
-                        merged_audio.update(self._same_group(seq, item, partner, audio_by_id))
+                        group = self._same_group(seq, item, partner, audio_by_id)
+                        merged_audio.update(group)
+                        self._channel_group[partner.id] = len(group)
                     self._plan_item(seq, item, track, key, label, shift, window, depth,
                                     disabled or not track.enabled, partner)
                     if item.sequence is not None:
@@ -767,6 +882,11 @@ class _Planner:
             for item in track.items:
                 if not isinstance(item, XClip) or item.id in merged_audio:
                     continue
+                # the other channels of the same sound (FCP7 / Resolve stereo pairs on two mono tracks,
+                # Premiere's dual mono) are one Zenvi clip, not one clip per channel
+                siblings = self._channel_siblings(seq, item, audio_by_id, merged_audio)
+                merged_audio.update(siblings)
+                self._channel_group[item.id] = 1 + len(siblings)
                 self._plan_item(seq, item, track, key, label, shift, window, depth,
                                 disabled or not track.enabled, None)
         # The second channel of an exploded stereo pair (currentExplodedTrackIndex 1) is the same clip
@@ -835,6 +955,62 @@ class _Planner:
                 out.append(other.id)
         return out
 
+    def _warn_image_sequence(self, item: XClip, reader: dict) -> None:
+        """Premiere links an image sequence by its first frame; Zenvi reads that file as one still."""
+        xf = item.file
+        if xf is None or not (reader.get("media_type") == "image" or reader.get("has_single_image")):
+            return
+        if xf.duration and 1 < xf.duration < 1000000 and re.search(STILL_SEQUENCE_RE, xf.name or xf.path, re.I):
+            name = xf.name or os.path.basename(xf.path)
+            if name not in self._image_sequences:
+                self._image_sequences.append(name)
+
+    def _channel_siblings(self, seq: XSequence, item: XClip, audio_by_id: Dict[str, XClip],
+                          taken: set) -> List[str]:
+        """Audio items linked to *item* that play other channels of the same media with the same timing."""
+        if item.file is None or item.sequence is not None:
+            return []
+        linked = {cid for cid, _mt in item.links}
+        linked |= {o.id for o in audio_by_id.values() if any(cid == item.id for cid, _mt in o.links)}
+        span = self._media_span(seq, item)
+        tol = 1.0 / float(seq.rate.fps) + 1e-6
+        out = []
+        for cid in sorted(linked):
+            other = audio_by_id.get(cid)
+            if other is None or other is item or other.id in taken or other.file is None:
+                continue
+            if other.file.path != item.file.path or other.sourcetrack == item.sourcetrack:
+                continue
+            if _speed_of(other) != _speed_of(item):
+                continue
+            o_span = self._media_span(seq, other)
+            if abs(o_span[0] - span[0]) > tol or abs(o_span[1] - span[1]) > tol:
+                continue
+            if abs(self._source_in(seq, other) - self._source_in(seq, item)) > tol:
+                continue
+            out.append(other.id)
+        return out
+
+    def _single_channel(self, item: XClip, reader: dict) -> Optional[int]:
+        """The media channel (0-based) an audio item plays on its own, or None when it plays them all.
+
+        One mono item taken from a multi-channel file (Premiere / FCP7 mono tracks, or Zenvi's own
+        "each channel" clips) plays only that channel; an exploded stereo pair, a stereo item or a
+        group of channel siblings plays the whole file.
+        """
+        if self._channel_group.get(item.id, 1) > 1 or item.track.exploded_count > 1:
+            return None
+        if item.channel_type not in ("", "mono"):      # stereo, adaptive, 5.1: the item plays them all
+            return None
+        if item.file is not None and item.file.channels is not None and item.file.channels < 2:
+            return None                                # the XML says the file is mono
+        try:
+            channels = int(reader.get("channels") or 0)
+        except (TypeError, ValueError):
+            channels = 0
+        k = item.sourcetrack - 1
+        return k if channels >= 2 and 0 <= k < channels else None
+
     # -- one clip ---------------------------------------------------------------------
     def _plan_item(self, seq: XSequence, item: XClip, track: XTrack, key: str, label: str, shift: float,
                    window: Optional[Tuple[float, float]], depth: int, disabled: bool, partner: Optional[XClip]):
@@ -897,6 +1073,12 @@ class _Planner:
                         absorbed.add(id(at))
             self._volume_props(seq, audio_item, props, start, duration, offset=offset, gate=gate,
                                absorbed=absorbed)
+            channel = self._single_channel(audio_item, reader)
+            if channel is not None and "has_audio" not in props:
+                props["channel_filter"] = {"Points": [_point(1, channel, CONSTANT)]}
+                self.warn.add(self._("a clip that uses one channel of a stereo file plays only that channel, on "
+                                     "its own side (Premiere centres a mono item)"))
+        self._warn_image_sequence(item, reader)
         planned = PlannedClip(track=key, path=path, title=item.name or os.path.basename(path), position=position,
                               start=start, end=start + duration, props=props, file_id=reader.get("_existing"))
         planned.crop = self._crop(seq, item, start) if item.kind == "video" else None
@@ -944,9 +1126,8 @@ class _Planner:
             start = self.snap(src_in)
             return start, start + duration, None
         if variable:
-            graph = remap.params.get("graphdict")
-            keys = [(w, v) for w, v in (graph.keys if graph else []) if not isinstance(v, tuple)]
-            if not keys:
+            keys = _remap_keys(remap.params.get("graphdict"))
+            if len(keys) < 2:
                 self.warn.add(self._("a variable-speed clip had no speed keyframes; imported at normal speed"))
                 start = self.snap(rate.seconds(item.in_))
                 return start, start + duration, None
@@ -1002,6 +1183,8 @@ class _Planner:
         """Seconds after the clip's media start of an in/out-space ``when``."""
         rate = item.rate or seq.rate
         in_ = item.in_
+        if self.legacy_keys:
+            when -= 1                 # old Zenvi exports wrote libopenshot's 1-based clip frame as when
         return rate.seconds(when - in_)
 
     def _fn(self, seq: XSequence, item: XClip, param: Optional[XParam], default: Any,
@@ -1014,27 +1197,26 @@ class _Planner:
         elif not isinstance(default, tuple):
             static = _float(static, default)
         keys = [(self._local(seq, item, w), convert(v)) for w, v in param.keys]
-        if param.interpolation in ("hold", "constant") and len(keys) > 1:
-            held = []
-            for (t0, v0), (t1, _v1) in zip(keys, keys[1:]):
-                held.append((t0, v0))
-                held.append((max(t0, t1 - 1e-6), v0))
-            held.append(keys[-1])
-            keys = held
-        return _Fn(keys, convert(static))
+        interps: Optional[List[int]] = None
+        if param.interpolation in ("hold", "constant"):
+            interps = [CONSTANT] * len(keys)
+        elif any(name for name, _flags in param.meta):
+            interps = [KEY_INTERPOLATIONS.get(name, LINEAR) for name, _flags in param.meta]
+        return _Fn(keys, convert(static), interps)
 
-    def _curve(self, times: List[float], values: List[float], start: float, default: float) -> Optional[dict]:
-        """Zenvi keyframes (LINEAR) at clip-local *times*; None when it is just the default."""
+    def _curve(self, times: List[float], values: List[float], start: float, default: float,
+               interps: Optional[Dict[float, int]] = None) -> Optional[dict]:
+        """Zenvi keyframes at clip-local *times* (LINEAR, or the key's *interps*); None when it is the default."""
         sx = self.x_of(start)
-        pts: Dict[int, float] = {}
+        pts: Dict[int, Tuple[float, int]] = {}
         for t, v in zip(times, values):
-            pts[sx + ft.to_frame(max(0.0, t), self.fps)] = v
+            pts[sx + ft.to_frame(max(0.0, t), self.fps)] = (v, (interps or {}).get(t, LINEAR))
         if not pts:
             return None
-        vals = list(pts.values())
+        vals = [v for v, _i in pts.values()]
         if all(abs(v - vals[0]) < 1e-9 for v in vals):
             return None if abs(vals[0] - default) < 1e-9 else _constant_kf(vals[0])
-        ordered = sorted(pts.items())
+        ordered = [(x, v, i) for x, (v, i) in sorted(pts.items())]
         # a key that only repeats its neighbour at either end adds nothing (curves hold outside their keys),
         # nor does one on the straight line between its neighbours
         while len(ordered) > 2 and abs(ordered[-1][1] - ordered[-2][1]) < 1e-9:
@@ -1043,19 +1225,20 @@ class _Planner:
             ordered.pop(0)
         i = 1
         while i < len(ordered) - 1:
-            (x0, v0), (x1, v1), (x2, v2) = ordered[i - 1], ordered[i], ordered[i + 1]
-            if x2 > x0 and abs(v0 + (v2 - v0) * (x1 - x0) / (x2 - x0) - v1) < 1e-9:
+            (x0, v0, _i0), (x1, v1, i1), (x2, v2, i2) = ordered[i - 1], ordered[i], ordered[i + 1]
+            if i1 == LINEAR and i2 == LINEAR and x2 > x0 and abs(v0 + (v2 - v0) * (x1 - x0) / (x2 - x0) - v1) < 1e-9:
                 ordered.pop(i)
             else:
                 i += 1
-        return {"Points": [_point(x, v, LINEAR) for x, v in ordered]}
+        return {"Points": [_point(x, v, interp) for x, v, interp in ordered]}
 
     def _video_props(self, seq: XSequence, item: XClip, reader: dict, props: dict, start: float) -> None:
         opacity = item.effect("opacity")
         if opacity is not None:
             fn = self._fn(seq, item, opacity.params.get("opacity"), 100.0, lambda v: _float(v, 100.0))
             times = _clip_times(fn.times())
-            curve = self._curve(times, [max(0.0, min(1.0, fn.at(t) / 100.0)) for t in times], start, 1.0)
+            curve = self._curve(times, [max(0.0, min(1.0, fn.at(t) / 100.0)) for t in times], start, 1.0,
+                                fn.interp_map())
             if curve is not None:
                 props["alpha"] = curve
         motion = item.effect("basic", "basicmotion")
@@ -1064,6 +1247,8 @@ class _Planner:
             eid = e.effectid.lower()
             if eid in ("basic", "basicmotion", "opacity", "timeremap", "deformation", "distort", "crop"):
                 continue
+            if not (e.name or e.effectid):
+                continue          # an empty placeholder Premiere writes: nothing to carry over
             self.warn.add(self._("Premiere effect '%s' has no Zenvi equivalent; left out") % (e.name or e.effectid))
         self._motion(seq, item, reader, motion, distort, props, start)
 
@@ -1119,9 +1304,12 @@ class _Planner:
             rows["origin_y"].append(oy)
         defaults = {"scale_x": 1.0, "scale_y": 1.0, "location_x": 0.0, "location_y": 0.0, "rotation": 0.0,
                     "origin_x": 0.5, "origin_y": 0.5}
+        shapes = {"scale_x": scale.interp_map(), "scale_y": scale.interp_map(), "location_x": center.interp_map(),
+                  "location_y": center.interp_map(), "rotation": rotation.interp_map(),
+                  "origin_x": anchor.interp_map(), "origin_y": anchor.interp_map()}
         for key, values in rows.items():
             values = [0.0 if abs(v) < 1e-12 else v for v in values]
-            curve = self._curve(times, values, start, defaults[key])
+            curve = self._curve(times, values, start, defaults[key], shapes[key])
             if curve is not None:
                 props[key] = curve
         props.setdefault("scale", 1)
@@ -1139,7 +1327,8 @@ class _Planner:
         for side in ("left", "right", "top", "bottom"):
             fn = self._fn(seq, item, crop.params.get(side), 0.0, lambda v: _float(v, 0.0))
             times = _clip_times(fn.times())
-            curve = self._curve(times, [max(0.0, min(1.0, fn.at(t) / 100.0)) for t in times], start, -1.0)
+            curve = self._curve(times, [max(0.0, min(1.0, fn.at(t) / 100.0)) for t in times], start, -1.0,
+                                fn.interp_map())
             out[side] = curve or _constant_kf(0.0)
         return out
 
@@ -1155,7 +1344,7 @@ class _Planner:
         fn = self._fn(seq, item, levels.params.get("level") if levels is not None else None, 1.0,
                       lambda v: _float(v, 1.0))
         for e in item.effects:
-            if e.effectid.lower() not in ("audiolevels", "timeremap"):
+            if e.effectid.lower() not in ("audiolevels", "timeremap") and (e.name or e.effectid):
                 self.warn.add(self._("Premiere audio effect '%s' has no Zenvi equivalent; left out")
                               % (e.name or e.effectid))
         skip = set(absorbed)
@@ -1186,7 +1375,7 @@ class _Planner:
                 g *= ramp
             return g
 
-        curve = self._curve(times_sorted, [gain(t) for t in times_sorted], start, 1.0)
+        curve = self._curve(times_sorted, [gain(t) for t in times_sorted], start, 1.0, fn.interp_map(offset))
         if curve is not None:
             props["volume"] = curve
 
@@ -1281,6 +1470,34 @@ class _Planner:
         return ImportPlan(source=source, sequence_name=self.seq.name, tracks=ordered, clips=self.clips,
                           transitions=self.transitions, markers=self.markers, media=media, missing=missing,
                           warnings=self.warn.as_list(), placement=self.placement, offset=self.offset)
+
+
+def _remap_keys(graph: Optional[XParam]) -> List[Tuple[float, float]]:
+    """The (when, media frame) keys that shape a Time Remap graph.
+
+    Premiere's "virtual" keys mark the media start / end and the clip's in / out on the graph
+    (``speedkfstart`` .. ``speedkfend``). They normally sit on the curve -- the in / out ones give its
+    exact value where the clip starts and ends, inside a curved ramp too -- but real exports sometimes
+    carry junk there (``speedkfout`` = -1815255671), which scrubbed the end of the clip back to frame
+    one. A value outside ``valuemin``..``valuemax`` (the media's frames) is junk and left out; the rest
+    are kept inside that range.
+    """
+    if graph is None:
+        return []
+    lo, hi = graph.valuemin, graph.valuemax
+    bounded = hi is not None and hi > (lo or 0.0)
+    out = []
+    for when, value in graph.keys:
+        if isinstance(value, tuple):
+            continue
+        if (lo is not None and value < lo - 1.0) or (bounded and hi is not None and value > hi + 1.0):
+            continue
+        if lo is not None:
+            value = max(lo, value)
+        if bounded and hi is not None:
+            value = min(hi, value)
+        out.append((when, value))
+    return out
 
 
 def _speed_of(item: XClip) -> Tuple[float, bool, bool]:
@@ -1389,14 +1606,17 @@ def locate_media(paths: Iterable[str], remap: Optional[Dict[str, str]] = None,
 def plan_import(path: str, *, placement: str = "new_tracks", info: Optional[ProjectInfo] = None,
                 remap: Optional[Dict[str, str]] = None, probe: Optional[Callable[[str], dict]] = None,
                 should_cancel: Optional[Callable[[], bool]] = None,
-                translate: Optional[Callable[[str], str]] = None) -> ImportPlan:
-    """Parse, find and probe the media, and plan the import (blocking; off the GUI thread)."""
+                translate: Optional[Callable[[str], str]] = None, sequence: str = "") -> ImportPlan:
+    """Parse, find and probe the media, and plan the import (blocking; off the GUI thread).
+
+    *sequence* picks a sequence by name when the XML holds several (default: the first top-level one).
+    """
     if placement not in ("new_tracks", "at_playhead"):
         raise XmlImportError("placement must be new_tracks or at_playhead")
     path = os.path.abspath(os.path.expanduser(str(path or "")))
     if not os.path.isfile(path):
         raise XmlImportError(f"no XML file at {path}")
-    seq = parse_xml(path)
+    seq = parse_xml(path, sequence)
     if info is None:
         from classes.qt_main_thread import call_on_gui
         info = cast(ProjectInfo, call_on_gui(read_project_info, timeout=30))
@@ -1455,17 +1675,24 @@ def _new_track_numbers(count: int) -> List[int]:
     return [top + TRACK_STRIDE * (i + 1) for i in range(count)]
 
 
-def _dissolve_transition(layer: int, position: float, duration: float, fps: float, reverse: bool, title: str,
-                         audio: bool = False):
+def _fade_source() -> Tuple[dict, dict]:
+    """Zenvi's fade transition (catalog entry, reader JSON): resolved before anything changes."""
     from classes import transition_ops as ops
     from classes.editor_tools._base import timeline_ui
     entry, _cands = ops.find_transition("fade")
     if entry is None:
-        raise XmlImportError("Zenvi's fade transition is missing from this installation")
+        raise XmlImportError("Zenvi's fade transition is missing from this installation; nothing was imported")
     reader = timeline_ui()._get_transition_reader_json(entry["path"])
     if not isinstance(reader, dict):
-        raise XmlImportError("cannot read Zenvi's fade transition image")
-    data = ops.new_mask_transition(None, reader, position=position, layer=layer, duration=duration,
+        raise XmlImportError("cannot read Zenvi's fade transition image; nothing was imported")
+    return entry, reader
+
+
+def _dissolve_transition(layer: int, position: float, duration: float, fps: float, reverse: bool, title: str,
+                         audio: bool = False, source: Optional[Tuple[dict, dict]] = None):
+    from classes import transition_ops as ops
+    entry, reader = source or _fade_source()
+    data = ops.new_mask_transition(None, copy.deepcopy(reader), position=position, layer=layer, duration=duration,
                                    fps_float=fps, title=entry["key"], fade_audio=audio)
     data.pop("id", None)
     frames_n = max(1, int(round(duration * fps)))
@@ -1503,9 +1730,55 @@ def _begin_preview_batch(app) -> None:
 
 
 def _commit(plan: ImportPlan) -> dict:
+    """Everything that can refuse is resolved first; a failure while adding rolls the import back."""
+    from classes.app import get_app
+    app = get_app()
+    fade = _fade_source() if plan.transitions else None
+    crop_template = None
+    if any(c.crop for c in plan.clips):
+        try:
+            from classes.editor_tools.titles_text_common import new_effect_json
+            crop_template = new_effect_json("Crop")
+        except Exception as exc:
+            log.warning("Crop effect unavailable; crop not imported", exc_info=True)
+            plan.warnings.append(_app_tr("crops were left out: this build has no Crop effect (%s)") % exc)
+    updates = app.updates
+    history_len, redo = len(updates.actionHistory), list(updates.redoHistory)
+    try:
+        return _add_to_project(plan, fade, crop_template)
+    except Exception as exc:
+        _roll_back(updates, history_len, redo)
+        if isinstance(exc, XmlImportError):
+            raise
+        log.error("XML import failed while adding to the project", exc_info=True)
+        raise XmlImportError(f"adding the sequence to the project failed ({exc}); nothing was imported") from exc
+
+
+def _app_tr(text: str) -> str:
+    try:
+        from classes.app import get_app
+        out = get_app()._tr(text)
+    except Exception:
+        return text
+    return out if isinstance(out, str) else text
+
+
+def _roll_back(updates, history_len: int, redo: list) -> None:
+    """Undo the half-made import (its actions are the newest transaction) and forget it for Redo."""
+    if len(updates.actionHistory) > history_len:
+        try:
+            updates.undo()
+        except Exception:
+            log.error("could not roll back a failed XML import", exc_info=True)
+            return
+    updates.redoHistory[:] = redo
+
+
+def _add_to_project(plan: ImportPlan, fade: Optional[Tuple[dict, dict]], crop_template: Optional[dict]) -> dict:
     from classes import query, track_ops
     from classes.app import get_app
     from classes.clip_placement import apply_audio_only_clip_overrides
+    from classes.editor_tools.titles_text_common import fresh_effect
     from classes.updates import nested_transaction
     # untyped on purpose: query's class attributes are declared None (C1 does the same in linked_media)
     Clip, File, Track, Transition = (getattr(query, n) for n in ("Clip", "File", "Track", "Transition"))
@@ -1559,17 +1832,18 @@ def _commit(plan: ImportPlan) -> dict:
             apply_audio_only_clip_overrides(data, f.data, constant_interpolation=CONSTANT, scale_none=3)
             for key, value in c.props.items():
                 data[key] = copy.deepcopy(value)
-            if c.crop:
-                effect = _crop_effect(c.crop)
-                if effect is not None:
-                    data["effects"] = [effect]
+            if c.crop and crop_template is not None:
+                effect = fresh_effect(crop_template)
+                for side, curve in c.crop.items():
+                    effect[side] = copy.deepcopy(curve)
+                data["effects"] = [effect]
             clip = Clip()
             clip.data = data
             clip.save()
             summary["clip_ids"].append(clip.id)
         for tr in plan.transitions:
             data = _dissolve_transition(numbers[tr.track], tr.position, tr.duration, fps_float, tr.reverse, tr.label,
-                                        tr.audio)
+                                        tr.audio, fade)
             t = Transition()
             t.data = data
             t.save()
@@ -1583,18 +1857,6 @@ def _commit(plan: ImportPlan) -> dict:
                 created[t.key].save()
     summary["track_number"] = summary["track_numbers"][0] if summary["track_numbers"] else None
     return summary
-
-
-def _crop_effect(sides: dict) -> Optional[dict]:
-    try:
-        from classes.editor_tools.titles_text_common import new_effect_json
-        effect = new_effect_json("Crop")
-    except Exception:
-        log.warning("Crop effect unavailable; crop not imported", exc_info=True)
-        return None
-    for side, curve in sides.items():
-        effect[side] = curve
-    return effect
 
 
 def import_report(plan: ImportPlan, summary: dict, translate: Callable[[str], str]) -> str:
@@ -1692,9 +1954,10 @@ def import_xml(file_path: Optional[str] = None, prompt: bool = True):
     """Import an FCP7 / Premiere XML (File > Import Project > Import XML).
 
     With no *file_path* it asks for one and imports in the background (one
-    undo step); returns the job. With a path (``import_project_file_tool``)
-    it imports right away and returns ``{"track_numbers", "clip_ids",
-    "missing", ...}``; missing media is skipped (no dialog).
+    undo step); returns the job. With a path it imports right away (blocking:
+    call it off the GUI thread, it hops there only to commit) and returns
+    ``{"track_numbers", "clip_ids", "missing", ...}``; missing media is
+    skipped (no dialog).
     """
     from classes.app import get_app
     if file_path is not None:
