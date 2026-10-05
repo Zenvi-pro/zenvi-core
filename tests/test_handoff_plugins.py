@@ -72,6 +72,9 @@ def test_missing_plugins_are_skipped_and_a_broken_one_is_logged(monkeypatch, cap
     monkeypatch.setattr(plugins, "_loaded", [])
     good = types.ModuleType("classes.handoff.hyperframes")
     monkeypatch.setitem(sys.modules, "classes.handoff.hyperframes", good)
+    # the real Remotion package (C4) is imported by its own tests at collection; hide it so the
+    # broken finder below is consulted (monkeypatch puts it back afterwards)
+    monkeypatch.delitem(sys.modules, "classes.handoff.remotion", raising=False)
     finder = _Broken()
     sys.meta_path.insert(0, finder)
     try:
