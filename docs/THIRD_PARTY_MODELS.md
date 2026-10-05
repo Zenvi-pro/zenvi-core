@@ -24,3 +24,10 @@ Face and voice vectors are biometric data. They live in `USER_PATH/media_index_p
 index shelf, so they are never part of a shelf export or a project's index folder. Nothing is sent anywhere, no vector is logged,
 and a person has a name only when the user gave one. The Index panel's "Delete people data…" button and `erase_people_data_tool`
 remove everything.
+
+# Place names
+
+Positions in a clip's tags are named offline from `src/classes/media_index/data/places.tsv.gz`, built by `scripts/build_gazetteer.py` from
+GeoNames' `cities15000` and `countryInfo` (places with more than 15,000 people, or capitals; about 580 KB). GeoNames data is licensed
+**CC BY 4.0**: credit "Place names: GeoNames (geonames.org), CC BY 4.0" (returned by `get_project_overview_tool` as `trip.place_names`;
+it should also appear in the About dialog). Lookups never touch the network, and a position far from any listed place stays a coordinate.

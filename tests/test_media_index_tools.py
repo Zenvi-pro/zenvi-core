@@ -463,3 +463,32 @@ def test_the_handoff_is_given_only_for_the_first_few_hits(env):
     library.clear_cache()
     _, r = call("locate_in_footage_tool", what="kettle", for_action="mask_object")
     assert [("handoff" in h) for h in r["hits"]] == [True] * 5 + [False] * 3
+
+
+def test_footage_can_be_limited_to_a_place_by_name(trip_env):
+    assert run_search(place="san francisco") == ["F1"] and run_search(place="Tokyo") == ["F2"] and run_search(place="japan") == ["F2"]
+    assert run_search(place="tokyo", captured_after="2024-05-02") == ["F2"]
+    out = REGISTRY["search_footage_tool"].func(place="Lisbon")
+    assert out.startswith("Error") and "no footage shot in 'Lisbon'" in out and "Tokyo, Japan" in out and "San Francisco" in out
+
+
+def test_a_place_name_with_no_positions_says_so(env):
+    out = REGISTRY["search_footage_tool"].func(place="Paris")
+    assert out.startswith("Error") and "none of the clips has a position" in out
+
+
+def test_the_overview_gives_place_names_not_coordinates(trip_env):
+    _, r = call("get_project_overview_tool")
+    places = r["trip"]["places"]
+    assert [p["name"] for p in places] == ["San Francisco, CA, United States", "Tokyo, Japan"] and all("lat" not in p and "lon" not in p for p in places)
+    assert "GeoNames" in r["trip"]["place_names"]
+    _, precise = call("get_project_overview_tool", precise_places=True)
+    assert all("lat" in p and "name" in p for p in precise["trip"]["places"])
+
+
+def test_a_place_that_cannot_be_named_keeps_its_rounded_coordinates(env):
+    env.shelf.set_source(SHA1, captured_at="2024-05-01T09:00:00+00:00", gps={"lat": 0.05, "lon": 0.05})
+    library.clear_cache()
+    _, r = call("get_project_overview_tool")
+    p = r["trip"]["places"][0]
+    assert "name" not in p and p["lat"] == 0.1 and p["lon"] == 0.1

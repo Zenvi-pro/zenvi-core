@@ -224,10 +224,11 @@ def test_the_best_moments_are_ranked_and_skip_black_and_unusable_shots(footage):
 def test_days_and_places_come_from_capture_tags_with_city_level_coordinates(footage):
     s = TR.survey(footage, [])
     assert [(d["day"], d["date"]) for d in s["trip"]["days"]] == [(1, "2024-05-01"), (2, "2024-05-03")]
-    assert [(p["lat"], p["lon"]) for p in s["trip"]["places"]] == [(37.8, -122.4), (35.7, 139.7)]
+    assert [p["name"] for p in s["trip"]["places"]] == ["San Francisco, CA, United States", "Tokyo, Japan"], "named places are given by name"
+    assert all("lat" not in p and "lon" not in p for p in s["trip"]["places"]), "and without coordinates"
     assert "city level" in s["trip"]["place_precision"]
     exact = TR.survey(footage, [], precise_places=True)
-    assert exact["trip"]["places"][0]["lat"] == 37.7749 and exact["trip"]["place_precision"] == "exact"
+    assert exact["trip"]["places"][0]["lat"] == 37.7749 and exact["trip"]["places"][0]["name"] and exact["trip"]["place_precision"] == "exact"
 
 
 def test_music_files_and_look_clusters_are_summarised(footage):

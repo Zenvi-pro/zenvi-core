@@ -33,7 +33,8 @@ def test_every_tool_the_playbook_names_is_a_real_registered_tool():
 
 
 def test_the_playbook_covers_the_scope_rule_the_six_layers_the_loop_and_the_trust_rule():
-    for needle in ("narrow request", "STORY", "PICTURE", "SOUND", "TEXT", "GRAPHICS/EFFECTS", "DELIVERY", "THE LOOP", "review_edit_tool",
+    for needle in ("PRECISION AND ZOOM", "get_moment_tool", "view_frames_tool", "refine_cut_tool", "locate_person_tool", "unsure", "Numbers first",
+                   "narrow request", "STORY", "PICTURE", "SOUND", "TEXT", "GRAPHICS/EFFECTS", "DELIVERY", "THE LOOP", "review_edit_tool",
                    "WHEN EACH LAYER IS NEEDED", "TRUST", "LONG-FORM", "Measured facts"):
         assert needle in P.PLAYBOOK, needle
 

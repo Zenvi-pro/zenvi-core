@@ -148,6 +148,7 @@ def restrict_files(files, captured_after: str, captured_before: str, place_id: i
         "captured_before": string("Only footage shot on or before this date (a date means the end of that day).", ""),
         "place_id": integer("Only footage shot at this place (ids come from get_project_overview_tool's trip.places); -1 = anywhere.", -1,
                             minimum=-1),
+        "place": string("Only footage shot in a place by name ('Lisbon', 'Tokyo', 'Portugal'); names come from get_project_overview_tool's trip.places.", ""),
         "person": string("Only shots this person is on screen in: a name the user gave (list_people_tool) or an id like P3. Needs the people "
                          "preference and a people scan. A possible match is left out and counted in `unsure_shots`.", ""),
         "limit": integer("Most results to return.", 10, minimum=1, maximum=50),
@@ -156,7 +157,7 @@ def restrict_files(files, captured_after: str, captured_before: str, place_id: i
     read_only=True,
 )
 def search_footage(query="", look_for="", reference_file_id="", reference_start=None, reference_end=None, match="picture",
-                   filters=None, file_ids=None, sort="relevance", captured_after="", captured_before="", place_id=-1, person="", limit=10, cursor=0):
+                   filters=None, file_ids=None, sort="relevance", captured_after="", captured_before="", place_id=-1, place="", person="", limit=10, cursor=0):
     """Search every indexed file in the project and return the best moments, each with the file, the in and out
     seconds (snapped to the real cut, or to the spoken sentence), where in it the match peaks and why.
 
@@ -168,6 +169,8 @@ def search_footage(query="", look_for="", reference_file_id="", reference_start=
     """
     query = str(query or "").strip()[:QUERY_LIMIT_CHARS]
     files, missing = project_indexes(file_ids)
+    if place:
+        files = _files_in_place(files, str(place))
     files = restrict_files(files, captured_after, captured_before, int(place_id))
     if not files:
         raise ToolError("no indexed footage yet" + (f" ({len(missing)} file(s) still indexing or not indexed)" if missing else "")
@@ -203,6 +206,24 @@ def search_footage(query="", look_for="", reference_file_id="", reference_start=
         summary = "no matches" + (" (a weak match is treated as none; try other words or fewer filters)" if result["ranked"] or query else "")
     extra = {"person": person_note["who"], "unsure_shots": person_note["unsure_shots"]} if person_note else {}
     return ok(summary, hits=hits, total=result["total"], next=result["next"], not_indexed=missing[:20], **extra)
+
+
+def _files_in_place(files, query: str):
+    """The files shot at a place whose name contains *query* (case ignored). Raises ToolError listing the names there are."""
+    from classes.media_index import gazetteer, trip
+    outline = trip.trip_outline([{"file_id": f.file_id, "captured_at": f.captured_at, "gps": f.gps, "duration": f.duration} for f in files])
+    want = " ".join(query.lower().split())
+    names, hit = [], set()
+    for p in outline["places"]:
+        d = gazetteer.describe(p["lat"], p["lon"])
+        label = d["label"] if d else ""
+        if label:
+            names.append(label)
+        if want and want in label.lower():
+            hit.update(p["file_ids"])
+    if not hit:
+        raise ToolError(f"no footage shot in {query!r}" + (f" (places: {', '.join(dict.fromkeys(names))[:300]})" if names else ": none of the clips has a position that can be named"))
+    return [f for f in files if f.file_id in hit]
 
 
 def _person_shots(files, person: str):

@@ -282,9 +282,15 @@ def survey(files: List[Any], not_indexed: List[str], *, top: int = 8, precise_pl
     capture = [{"file_id": f.file_id, "captured_at": f.captured_at or None, "gps": f.gps, "duration": f.duration} for f in unique]
     outline = trip.trip_outline(capture)
     places = []
+    from classes.media_index import gazetteer
     for p in outline["places"]:
-        places.append({"id": p["id"], "lat": round(p["lat"], 5 if precise_places else PLACE_DECIMALS),
-                       "lon": round(p["lon"], 5 if precise_places else PLACE_DECIMALS), "files": len(p["file_ids"]), "minutes": p["minutes"]})
+        named = gazetteer.describe(p["lat"], p["lon"])
+        row = {"id": p["id"], "files": len(p["file_ids"]), "minutes": p["minutes"]}
+        if named:
+            row["name"] = named["label"]                     # a name, not coordinates, is what reaches the model
+        if precise_places or not named:
+            row.update(lat=round(p["lat"], 5 if precise_places else PLACE_DECIMALS), lon=round(p["lon"], 5 if precise_places else PLACE_DECIMALS))
+        places.append(row)
     names = {f.file_id: f.name for f in unique}
 
     clusters: Dict[str, List[str]] = {}
@@ -309,7 +315,8 @@ def survey(files: List[Any], not_indexed: List[str], *, top: int = 8, precise_pl
         "trip": {"days": [{"day": d["day"], "date": d["date"], "minutes": d["minutes"], "clips": len(d["file_ids"]), "places": d["place_ids"],
                            "first": names.get(d["file_ids"][0], "")} for d in outline["days"]],
                  "places": places, "undated_clips": len(outline["undated"]),
-                 "place_precision": "exact" if precise_places else "about 11 km (city level)"},
+                 "place_precision": "exact" if precise_places else "named places carry a city name only; others about 11 km (city level)",
+                 "place_names": gazetteer.ATTRIBUTION},
         "top_moments": moments[:top],
         "take_groups": {"groups": len(groups), "examples": [{"best": g["best"], "also": [m for m in g["members"] if m != g["best"]][:3]} for g in groups[:4]]},
         "speech": [{"file_id": f.file_id, "name": f.name, "sentences": len(f.sentences)} for f in unique if f.sentences][:12],
