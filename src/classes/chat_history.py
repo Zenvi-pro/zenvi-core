@@ -668,3 +668,32 @@ def import_legacy_sessions(conn, project_key: str, project_path: str, sessions: 
         count += 1
     conn.commit()
     return count
+
+
+def handoff_recap(messages: list, after_seq: int, max_chars: int = 6000,
+                  max_each: int = 1500) -> str:
+    """The turns after *after_seq*, as a recap for an agent that missed them.
+
+    Used when a chat switches agent harness mid-conversation: each harness keeps
+    its own memory, so it is told what the others said. Newest turns win when
+    the recap has to be cut to *max_chars*; "" when there is nothing new.
+    """
+    lines = []
+    for m in messages:
+        if m["seq"] <= after_seq or m["role"] not in ("user", "assistant"):
+            continue
+        who = "User" if m["role"] == "user" else "Assistant"
+        text = (m["content"] or "").strip()
+        if len(text) > max_each:
+            text = text[:max_each] + " [...]"
+        lines.append("%s: %s" % (who, text))
+    kept, used = [], 0
+    for line in reversed(lines):
+        if used + len(line) > max_chars and kept:
+            break
+        kept.append(line)
+        used += len(line)
+    if not kept:
+        return ""
+    return ("[Earlier in this chat, handled by a different agent - for context only]\n"
+            + "\n".join(reversed(kept)) + "\n[End of earlier conversation]\n\n")

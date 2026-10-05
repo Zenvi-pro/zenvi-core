@@ -499,7 +499,8 @@ def test_models_for_backend_matches_the_picker_contract(qapp):
     assert len({m["id"] for m in claude}) == len(claude), "duplicate model ids"
     assert sum(1 for m in claude if m.get("default")) == 1
 
-    assert models_for_backend(BACKEND_CODEX) == []
+    # Codex and Cursor list their own models; built in is only "CLI default".
+    assert [m["id"] for m in models_for_backend(BACKEND_CODEX)] == ["cli-default"]
     # Cursor's real list comes from the CLI; built in is only "CLI default".
     assert [m["id"] for m in models_for_backend(BACKEND_CURSOR)] == ["cli-default"]
     assert models_for_backend("zenvi") == []
@@ -974,7 +975,7 @@ def test_missing_or_empty_live_list_falls_back_to_the_built_in_one(qapp, clear_l
     set_live_lineups({BACKEND_CLAUDE: [], BACKEND_CODEX: []})
     assert [m["id"] for m in models_for_backend(BACKEND_CLAUDE)] == \
         [m["id"] for m in ClaudeCodeRunner.MODELS]
-    assert models_for_backend(BACKEND_CODEX) == []
+    assert [m["id"] for m in models_for_backend(BACKEND_CODEX)] == ["cli-default"]
 
     set_live_lineups({})
     assert len(models_for_backend(BACKEND_CLAUDE)) == len(ClaudeCodeRunner.MODELS)
@@ -1479,9 +1480,10 @@ def test_cursor_lineup_reaches_the_model_flag(qapp, fresh_cursor_lineup, monkeyp
     # "CLI default" leaves the choice to the CLI's own config.
     runner._model_id = runner._coerce_model("cli-default")
     assert runner._model_id == "" and "--model" not in runner._build_argv("hi")
-    # The backend's lineup, when it serves one, still wins (#202).
+    # What the CLI listed beats the backend's lineup (#136).
     ar.set_live_lineups({ar.BACKEND_CURSOR: [{"id": "composer-2.5", "name": "Composer"}]})
-    assert [m["id"] for m in ar.models_for_backend(ar.BACKEND_CURSOR)] == ["composer-2.5"]
+    assert [m["id"] for m in ar.models_for_backend(ar.BACKEND_CURSOR)] == [
+        "auto", "claude-opus-5-5-high"]
 
 
 # ── Cursor: approve zenvi-editor alone, token from the environment ────────
@@ -2353,3 +2355,104 @@ def test_register_hermes_decodes_its_output_as_utf8(monkeypatch):
     for _, kw in calls:
         assert kw.get("encoding") == "utf-8" and kw.get("errors") == "replace"
         assert "text" not in kw
+
+
+# ── Model lineups come from the installed harness (#136) ──────────────────
+
+CODEX_CATALOG = json.dumps({"models": [
+    {"slug": "gpt-5.5", "display_name": "GPT-5.5", "visibility": "list", "priority": 13},
+    {"slug": "gpt-reserve", "display_name": "GPT-Reserve", "visibility": "hide", "priority": 4},
+    {"slug": "gpt-5.6-terra", "display_name": "GPT-5.6-Terra", "visibility": "list", "priority": 8},
+    {"slug": "gpt-5.6-terra", "display_name": "dup", "visibility": "list", "priority": 9},
+    {"display_name": "no slug", "visibility": "list", "priority": 1},
+]})
+
+
+def test_parse_codex_models_lists_visible_models_by_priority():
+    from windows.agent_runners import parse_codex_models
+
+    rows = parse_codex_models(CODEX_CATALOG)
+    assert [r["id"] for r in rows] == ["cli-default", "gpt-5.6-terra", "gpt-5.5"]
+    assert rows[1]["name"] == "GPT-5.6-Terra"
+    assert rows[0].get("default") is True and sum(1 for r in rows if r.get("default")) == 1
+
+
+@pytest.mark.parametrize("text", ["", "not json", "[]", '{"models": []}',
+                                  '{"models": [{"slug": "x", "visibility": "hide"}]}'])
+def test_parse_codex_models_gives_nothing_for_junk_or_an_empty_catalog(text):
+    from windows.agent_runners import parse_codex_models
+    assert parse_codex_models(text) == []
+
+
+def test_every_harness_with_a_model_command_can_list_its_own_models():
+    import windows.agent_runners as ar
+    for backend in (ar.BACKEND_CODEX, ar.BACKEND_CURSOR, ar.BACKEND_OPENCODE):
+        assert ar.CLI_RUNNERS[backend].list_models is not None, backend
+
+
+def test_probe_codex_models_runs_codex_debug_models(monkeypatch):
+    import windows.agent_runners as ar
+    seen = []
+    monkeypatch.setattr(ar, "_models_command_output",
+                        lambda argv: seen.append(argv) or CODEX_CATALOG)
+    assert [r["id"] for r in ar.probe_codex_models("/bin/codex")][1:] == ["gpt-5.6-terra", "gpt-5.5"]
+    assert seen == [["/bin/codex", "debug", "models"]]
+
+
+def test_the_installed_cli_lineup_beats_the_zenvi_backends(fresh_cursor_lineup):
+    """The user's own CLI knows which ids it accepts; the API only fills gaps."""
+    ar = fresh_cursor_lineup
+    ar.set_live_lineups({ar.BACKEND_CODEX: [{"id": "from-api", "name": "API"}]})
+    assert [m["id"] for m in ar.models_for_backend(ar.BACKEND_CODEX)] == ["from-api"]
+    ar.set_cli_lineup(ar.BACKEND_CODEX, [{"id": "gpt-5.5", "name": "GPT-5.5"}])
+    assert [m["id"] for m in ar.models_for_backend(ar.BACKEND_CODEX)] == ["gpt-5.5"]
+
+
+def test_codex_lineup_is_asked_of_the_cli_and_reaches_the_model_flag(
+        qapp, fresh_cursor_lineup, monkeypatch):
+    ar = fresh_cursor_lineup
+    monkeypatch.setattr(ar, "_which_cli", lambda name: "/bin/codex")
+    monkeypatch.setattr(ar.CodexRunner, "list_models",
+                        staticmethod(lambda cli: ar.parse_codex_models(CODEX_CATALOG)))
+    assert ar.refresh_cli_models(ar.BACKEND_CODEX, "0.151.0") is True
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: [])
+    runner = ar.CodexRunner()
+    runner._server = None
+    runner._model_id = runner._coerce_model("gpt-5.6-terra")
+    argv = runner._build_argv("hi")
+    assert argv[argv.index("--model") + 1] == "gpt-5.6-terra"
+
+
+def test_a_models_command_that_fails_once_is_retried(monkeypatch):
+    import subprocess
+    import windows.agent_runners as ar
+    runs = []
+
+    def fake_run(argv, **kw):
+        runs.append(argv)
+        code = 1 if len(runs) == 1 else 0
+        return subprocess.CompletedProcess(argv, code, stdout="" if code else "ok\n", stderr="boom")
+
+    monkeypatch.setattr(ar.subprocess, "run", fake_run)
+    monkeypatch.setattr(ar.time, "sleep", lambda s: None)
+    assert ar._models_command_output(["x", "models"]) == "ok\n"
+    assert len(runs) == 2
+
+
+def test_a_models_command_that_keeps_failing_gives_up_with_nothing(monkeypatch):
+    import subprocess
+    import windows.agent_runners as ar
+    monkeypatch.setattr(ar.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, 1, "", "e"))
+    monkeypatch.setattr(ar.time, "sleep", lambda s: None)
+    assert ar._models_command_output(["x", "models"]) == ""
+
+
+@pytest.mark.parametrize("backend", ["codex", "cursor_cli", "opencode", "hermes", "claude_code"])
+def test_a_model_id_from_another_harness_is_never_passed_on(qapp, fresh_cursor_lineup, backend):
+    ar = fresh_cursor_lineup
+    ar.set_cli_lineup("codex", [{"id": "gpt-5.5", "name": "GPT-5.5"}])
+    ar.set_cli_lineup("opencode", [{"id": "openai/gpt-5.5", "name": "gpt-5.5"}])
+    runner = ar.CLI_RUNNERS[backend]()
+    assert runner._coerce_model("gpt-5.5") == ("gpt-5.5" if backend == "codex" else "")
+    assert runner._coerce_model("openai/gpt-5.5") == ("openai/gpt-5.5" if backend == "opencode" else "")
+    assert runner._coerce_model("anthropic/claude-opus-5-5") == ""

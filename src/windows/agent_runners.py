@@ -47,16 +47,13 @@ BACKEND_HERMES = "hermes"
 # full model name or a latest-alias ("opus", "sonnet"), and we use full names so
 # the picker keeps meaning the same model after a new release ships.
 #
-# The lineup the user sees comes from the Zenvi backend's ``GET /models/cli``
-# whenever it has answered (``set_live_lineups``): the backend builds it from
-# each provider's live model list, so a release shows up in the picker the
-# next time it refreshes, with no desktop update.  Each runner's ``MODELS`` is
-# the built-in fallback for when the backend is unreachable or too old to
-# serve the route.
+# Where the lineup comes from, first hit wins: what the installed CLI lists
+# about itself (``set_cli_lineup``: Codex, Cursor, OpenCode), then the Zenvi
+# backend's ``GET /models/cli`` (``set_live_lineups``, for a CLI that cannot
+# list: Claude Code), then each runner's built-in ``MODELS``.
 #
-# A backend with an empty list hides the model pill and lets the CLI use
-# whatever its own config selects. Codex's built-in list is empty because we
-# do not track the OpenAI lineup here; the live one fills it in.
+# A backend with an empty list hides the model pill. Every runner that can
+# list its models carries a "CLI default" entry until the CLI has answered.
 _live_lineups: dict = {}
 _live_lineups_lock = threading.Lock()
 
@@ -116,8 +113,10 @@ def _cli_default_entry(uses: str = "") -> dict:
     return entry
 
 
-# Lineups a CLI reported about itself (``cursor-agent models``), for a backend
-# whose models depend on the user's account. The backend's lineup still wins.
+# Lineups a CLI reported about itself (``cursor-agent models``,
+# ``opencode models``, ``codex debug models``): the user's own install knows
+# which ids it accepts, so this beats the backend's lineup, which only fills in
+# for a CLI that cannot list (Claude Code).
 _cli_lineups: dict = {}
 
 
@@ -138,13 +137,13 @@ def set_cli_lineup(backend: str, rows) -> bool:
 
 def models_for_backend(backend: str) -> list:
     """Model-picker entries for *backend* (see ``setModels`` in chat.js)."""
-    live = live_lineup_for(backend)
-    if live:
-        return live
     with _live_lineups_lock:
         listed = [dict(m) for m in _cli_lineups.get(backend, [])]
     if listed:
         return listed
+    live = live_lineup_for(backend)
+    if live:
+        return live
     runner = CLI_RUNNERS.get(backend)
     return [dict(m) for m in runner.MODELS] if runner else []
 
@@ -1145,28 +1144,64 @@ def parse_cursor_models(text: str) -> list:
     return [_cli_default_entry(current or fallback)] + rows
 
 
-def _models_command_output(argv) -> str:
-    """stdout of a CLI's list-models command, or "" when it failed."""
+def _models_command_output(argv, attempts: int = 2) -> str:
+    """stdout of a CLI's list-models command, or "" when it failed.
+
+    A CLI's first start after boot can fail or stall (it opens its own
+    database, refreshes a login), so one failed run is retried.
+    """
     kwargs = {}
     if sys.platform == "win32":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-    try:
-        result = subprocess.run(
-            argv, capture_output=True, encoding="utf-8", errors="replace",
-            timeout=30, env=_cli_child_env(), **kwargs,
-        )
-    except Exception:
-        log.debug("%s failed", " ".join(argv[1:]), exc_info=True)
-        return ""
-    if result.returncode != 0:
-        log.debug("%s exited %s", " ".join(argv[1:]), result.returncode)
-        return ""
-    return result.stdout or ""
+    name = " ".join(argv[1:])
+    for attempt in range(attempts):
+        if attempt:
+            time.sleep(2)
+        try:
+            result = subprocess.run(
+                argv, capture_output=True, encoding="utf-8", errors="replace",
+                timeout=45, env=_cli_child_env(), **kwargs,
+            )
+        except Exception:
+            log.warning("%s failed (attempt %d)", name, attempt + 1, exc_info=True)
+            continue
+        if result.returncode == 0 and result.stdout:
+            return result.stdout
+        log.warning("%s exited %s (attempt %d): %s", name, result.returncode,
+                    attempt + 1, (result.stderr or "").strip()[-200:])
+    return ""
 
 
 def probe_cursor_models(cli: str) -> list:
     """Ask ``cursor-agent models`` for this account's lineup (a network call)."""
     return parse_cursor_models(_models_command_output([cli, "models"]))
+
+
+def parse_codex_models(text: str) -> list:
+    """Picker entries from ``codex debug models``: the visible models, by priority.
+
+    "CLI default" (whatever ~/.codex/config.toml picks) leads and is preselected.
+    """
+    try:
+        models = json.loads(text or "")["models"]
+    except Exception:
+        return []
+    shown = [m for m in models if isinstance(m, dict) and m.get("visibility") == "list"
+             and isinstance(m.get("slug"), str) and m["slug"]]
+    shown.sort(key=lambda m: m["priority"] if isinstance(m.get("priority"), (int, float)) else 1e9)
+    rows, seen = [], set()
+    for m in shown:
+        if m["slug"] in seen:
+            continue
+        seen.add(m["slug"])
+        rows.append({"id": m["slug"], "name": m.get("display_name") or m["slug"],
+                     "rank": len(rows) + 1, "featured": len(rows) < 8})
+    return [_cli_default_entry()] + rows if rows else []
+
+
+def probe_codex_models(cli: str) -> list:
+    """Ask ``codex debug models`` for the catalogue this install ships."""
+    return parse_codex_models(_models_command_output([cli, "debug", "models"]))
 
 
 def parse_opencode_models(text: str) -> list:
@@ -1781,10 +1816,10 @@ class CodexRunner(BaseAgentRunner):
     DISPLAY_NAME = "Codex"
     BACKEND_ID = BACKEND_CODEX
     register = staticmethod(register_codex)
-    # No built-in lineup: we do not track OpenAI's models here. The backend's
-    # live list (``set_live_lineups``) fills the picker; until it lands the
-    # picker stays hidden and the CLI uses whatever its own config selects.
-    MODELS: list = []
+    # No built-in lineup: the installed Codex lists its own (refresh_cli_models).
+    # Until it has, the picker offers only "CLI default".
+    MODELS = [_cli_default_entry()]
+    list_models = staticmethod(probe_codex_models)
 
     _TOOL_ITEM_TYPES = {
         "command_execution", "mcp_tool_call", "tool_call", "function_call",

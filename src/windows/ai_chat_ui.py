@@ -1222,8 +1222,15 @@ class AIChatWindow(QDockWidget):
         if not sess or sess.get("backend") == backend:
             return
         old_worker = sess.get("worker")
+        # Whatever the old backend is told from here on, the next one has not
+        # seen: remember where its view of the chat ends (see _handoff_prefix).
+        from classes import chat_history
+        seen = chat_history.load_messages(session_id)
+        sess.setdefault("seen_seq", {})[sess.get("backend")] = seen[-1]["seq"] if seen else 0
         if old_worker is not None:
             try:
+                # A reply still in flight must not land in the new backend's tab.
+                old_worker.blockSignals(True)
                 old_worker._stopping = True
             except Exception:
                 pass
@@ -2465,6 +2472,24 @@ class AIChatWindow(QDockWidget):
         dlg.raise_()
         dlg.activateWindow()
 
+    def _handoff_prefix(self, sess: dict) -> str:
+        """Recap of the turns the active backend missed because the tab was on
+        another agent (Zenvi <-> a local harness each keep their own memory).
+
+        Only tabs that switched backend this run carry ``seen_seq``; a backend
+        absent from it has seen nothing yet. ponytail: not persisted, so a
+        restart forgets the switch (the harness's own --resume still holds).
+        """
+        seen = sess.get("seen_seq")
+        backend = sess.get("backend", BACKEND_ZENVI)
+        if not seen or seen.get(backend, 0) is None:
+            return ""
+        from classes import chat_history
+        recap = chat_history.handoff_recap(
+            chat_history.load_messages(self._active_sid), seen.get(backend, 0))
+        seen[backend] = None   # caught up: it sees every turn from here on
+        return recap
+
     def _prepend_editor_snapshot(self, text: str) -> str:
         """Ground the model with a bounded timeline snapshot (main thread).
 
@@ -3380,6 +3405,7 @@ class AIChatWindow(QDockWidget):
         self._clear_widget_tool_blocks()
         shown = display_text if display_text is not None else text
         cmd = command_text if command_text is not None else text
+        handoff = self._handoff_prefix(sess) if action == "chat" else ""
         if action == "chat" and shown:
             self._add_user_msg(shown)
         if action == "chat" and (cmd or text):
@@ -3394,6 +3420,8 @@ class AIChatWindow(QDockWidget):
         if action == "chat" and cmd:
             self._request_preamble_summary(cmd)
         augmented_text = self._prepend_editor_snapshot(text) if text else text
+        if action == "chat" and augmented_text:
+            augmented_text = handoff + augmented_text
         # Hosted Zenvi only: CLI agents read attachment paths themselves.
         if sess.get("backend", BACKEND_ZENVI) == BACKEND_ZENVI and images:
             worker._pending_chat_images = list(images)
