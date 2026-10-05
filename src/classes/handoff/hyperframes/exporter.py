@@ -303,8 +303,7 @@ def plan_output(output_dir: str, *, overwrite_changes: bool = False) -> OutputPl
     if changed and not overwrite_changes:
         shown = ", ".join(changed[:6]) + (" and %d more" % (len(changed) - 6) if len(changed) > 6 else "")
         raise ExportChanged(f"{shown} in {path} changed since Zenvi exported it (in HyperFrames?). Import the folder "
-                            "first to bring those edits into Zenvi, export to a new folder, or replace them "
-                            "(overwrite_changes)", changed)
+                            "first to bring those edits into Zenvi, or export to a new folder", changed)
     return OutputPlan(path, files, changed)
 
 

@@ -183,7 +183,7 @@ they move aside, the new ones move in, and any failure puts the earlier export b
 new file never takes the name of one of them. If Zenvi's files were edited since (in HyperFrames: `index.html`,
 `package.json`, an asset; Studio's `data-hf-id` stamps do not count), the export stops and lists them: import the
 folder first to keep those edits, export to a new folder, or replace them (the dialog asks; the tool takes
-`overwrite_changes: true`). A folder whose record points outside it, or whose `assets/` is a link to another
+`replace_edits: true`). A folder whose record points outside it, or whose `assets/` is a link to another
 folder, is refused.
 
 Not exported (listed in the README and the receipt; they come back on re-import): effects, rounded corners, blend
@@ -203,8 +203,9 @@ exports. That is a libopenshot issue to fix there, for all media.
 - `import_hyperframes_project_tool(project_dir, mode="auto" | "native" | "flatten", position=null, track="")` —
   background-safe, one undo step; the receipt lists every clip (native / linked / restored), the mode and why, the
   project summary and what could not be rebuilt.
-- `export_to_hyperframes_tool(output_dir, copy_media=true, overwrite_changes=false)` — changes nothing in the
-  project; the receipt carries the lint result and the changed files it replaced.
+- `export_to_hyperframes_tool(output_dir, copy_media=true, replace_edits=false)` — background-safe; writes files
+  only, so it changes nothing in the project (no undo step); the receipt carries the lint result and the edited
+  files it replaced (`replaced_edits`).
 
 The shared tools (`get_linked_clip_tool`, `update_linked_clip_tool`, `rerender_linked_clip_tool`,
 `open_linked_source_tool`) work on HyperFrames clips like on any linked clip.

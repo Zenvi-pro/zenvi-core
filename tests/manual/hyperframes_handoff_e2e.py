@@ -20,7 +20,7 @@ FakeTimeline), driving the real editor tools:
             hyperframes lint -> hyperframes render (PNG sequence) -> compare with libopenshot's frames.
   reimport  duplicate a clip in the export (as Studio does: same data-zenvi-clip-id), import it back ->
             the clips, files and markers equal the original plus the copy; export again into the
-            edited folder -> refused, listing index.html; with overwrite_changes -> replaced.
+            edited folder -> refused, listing index.html; with replace_edits -> replaced.
 
 Usage (heavy: renders go through the machine-wide lock)::
 
@@ -608,11 +608,11 @@ def part_reimport(work, out, project):
     exporter_editor = make_editor(work, "user-reexport")
     exporter_editor.store._data = copy.deepcopy(project)
     r1 = exporter_editor.call_receipt("export_to_hyperframes_tool", output_dir=out)
-    r2 = exporter_editor.call_receipt("export_to_hyperframes_tool", output_dir=out, overwrite_changes=True)
+    r2 = exporter_editor.call_receipt("export_to_hyperframes_tool", output_dir=out, replace_edits=True)
     with open(index, encoding="utf-8") as fh:
         back = "c-CCARD00001-copy" not in fh.read()
     REPORT["reexport"] = {"refused": r1["status"], "summary": r1["summary"][:240], "overwrite": r2["status"],
-                          "replaced": (r2.get("data") or {}).get("replaced_changes"), "duplicate_gone": back}
+                          "replaced": (r2.get("data") or {}).get("replaced_edits"), "duplicate_gone": back}
     log("re-export:", REPORT["reexport"])
 
 

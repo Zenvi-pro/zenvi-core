@@ -279,9 +279,10 @@ def test_tools_are_registered_with_their_coverage():
     from classes.editor_tools import REGISTRY
     imp, exp = REGISTRY["import_hyperframes_project_tool"], REGISTRY["export_to_hyperframes_tool"]
     assert imp.covers == ("handoff.hyperframes_import",) and imp.background_safe and not imp.read_only
-    assert exp.covers == ("handoff.hyperframes_export",) and exp.read_only
+    # an exporter writes files: background-safe like the other exporters, not read-only (MCP readOnlyHint)
+    assert exp.covers == ("handoff.hyperframes_export",) and exp.background_safe and not exp.read_only
     assert set(imp.schema["properties"]) == {"project_dir", "mode", "position", "track"}
-    assert set(exp.schema["properties"]) == {"output_dir", "copy_media", "overwrite_changes"}
+    assert set(exp.schema["properties"]) == {"output_dir", "copy_media", "replace_edits"}
 
 
 def test_restore_with_clips_added_in_hyperframes(hf, tmp_path, monkeypatch):
@@ -471,7 +472,8 @@ def test_re_export_stops_on_edits_and_replaces_them_when_asked(hf, tmp_path, mon
     open(index, "w", encoding="utf-8").write(html.replace('data-start="1"', 'data-start="1.5"', 1))
     r = hf.call_receipt("export_to_hyperframes_tool", output_dir=out)
     assert _failed(r) and "index.html" in r["summary"] and "changed since Zenvi exported it" in r["summary"]
+    assert "replace_edits=true" in r["summary"]
     assert 'data-start="1.5"' in open(index, encoding="utf-8").read()
-    r = hf.call_receipt("export_to_hyperframes_tool", output_dir=out, overwrite_changes=True)
-    assert r["status"] in ("applied", "unchanged") and r["data"]["replaced_changes"] == ["index.html"]
-    assert 'data-start="1.5"' not in open(index, encoding="utf-8").read()
+    r = hf.call_receipt("export_to_hyperframes_tool", output_dir=out, replace_edits=True)
+    assert r["status"] in ("applied", "unchanged") and r["data"]["replaced_edits"] == ["index.html"]
+    assert r["undoSteps"] == 0 and 'data-start="1.5"' not in open(index, encoding="utf-8").read()
