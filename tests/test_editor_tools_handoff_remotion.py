@@ -206,3 +206,27 @@ def test_clips_land_where_the_playhead_was_when_the_import_started(remotion):
     data = _data(remotion.call("import_remotion_project_tool", project_dir=remotion.project_dir,
                                compositions=["Scene"]))
     assert data["linked"][0]["position"] == 3.0
+
+
+def test_edits_made_in_the_remotion_project_come_back_through_the_tools(remotion, tmp_path):
+    remotion.store._data.update(clips=[], files=[])
+    clips, _files = build_project(remotion, str(tmp_path / "media"))
+    out_dir = str(tmp_path / "edited-remotion")
+    _data(remotion.call("export_to_remotion_tool", output_dir=out_dir))
+    path = os.path.join(out_dir, "src", "zenvi", "timeline.json")
+    timeline = json.load(open(path))
+    for entry in timeline["clips"]:
+        if entry["id"] == clips["image"]:
+            entry["position"] = 2.0                                   # an agent moved the logo
+            entry["keyframes"]["location_x"][1]["value"] = 0.25       # ...and changed where it slides to
+    timeline["clips"] = [c for c in timeline["clips"] if c["id"] != clips["music"]]  # ...and dropped the music
+    json.dump(timeline, open(path, "w"))
+    remotion.store._data.update(clips=[], files=[], effects=[], markers=[])
+    remotion.mark()
+    receipt = remotion.call_receipt("import_remotion_project_tool", project_dir=out_dir, position=0.0)
+    assert receipt["status"] == "applied", receipt["summary"]
+    assert "3 edit(s) made in the Remotion project" in receipt["summary"]
+    assert remotion.undo_steps_since_mark() == 1
+    image = remotion.clip(clips["image"])
+    assert image["position"] == 2.0 and image["location_x"]["Points"][1]["co"]["Y"] == 0.25
+    assert remotion.clip(clips["music"]) is None and remotion.clip(clips["video"]) is not None

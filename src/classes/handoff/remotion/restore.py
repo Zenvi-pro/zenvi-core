@@ -12,9 +12,12 @@ come back are the clips that went out:
   markers to the open project as ONE undo step (``import_remotion_project_tool``).
 
 Media paths point at the originals when they still exist, else at the
-copies in ``public/zenvi-media/``. The readable part of timeline.json is
-hashed at export; when it was edited since, the restore says so (those
-edits are not read back -- the ``zenvi`` block is the source of truth).
+copies in ``public/zenvi-media/`` -- and at a copy that was edited in the
+Remotion project (it differs from the original and is newer), so a title SVG
+changed there comes back. Edits to the readable timeline (moved, trimmed,
+deleted or duplicated clips, keyframes, markers, ...) are applied onto the
+original objects by :mod:`classes.handoff.remotion.edits`; an untouched
+export restores bit-identical.
 """
 
 from __future__ import annotations
@@ -26,11 +29,13 @@ from fractions import Fraction
 from typing import Any, Dict, List, Optional, Tuple
 
 from classes.handoff.linked_media import LinkError
+from classes.handoff.remotion import edits
 from classes.handoff.remotion.exporter import TIMELINE_REL, readable_hash
 
 SUPPORTED_VERSION = 1
 TRACK_STEP = 1000000
 ID_COLLECTIONS = ("files", "clips", "effects", "markers")
+SAMPLE_BYTES = 1024 * 1024
 
 
 class RestoreError(LinkError):
@@ -74,18 +79,54 @@ def timeline_edited(timeline: dict) -> bool:
     return bool(stored) and stored != readable_hash(timeline)
 
 
+def _same_content(a: str, b: str) -> bool:
+    """True when *a* and *b* hold the same bytes (size, then the first / middle / last MB)."""
+    try:
+        size = os.path.getsize(a)
+        if size != os.path.getsize(b):
+            return False
+        with open(a, "rb") as fa, open(b, "rb") as fb:
+            for offset in sorted({0, max(0, size // 2 - SAMPLE_BYTES // 2), max(0, size - SAMPLE_BYTES)}):
+                fa.seek(offset)
+                fb.seek(offset)
+                if fa.read(SAMPLE_BYTES) != fb.read(SAMPLE_BYTES):
+                    return False
+        return True
+    except OSError:
+        return False
+
+
 def asset_remap(timeline: dict, project_root: str) -> Tuple[Dict[str, str], List[str]]:
-    """original media path -> the copy in public/ (only for originals that are gone), and warnings."""
+    """original media path -> the file restore should use instead, and warnings.
+
+    The copy in ``public/`` replaces the original when the original is gone,
+    or when the copy was edited in the Remotion project (its bytes differ and
+    it is newer than the original). A symlinked copy is the original.
+    """
     remap: Dict[str, str] = {}
     warnings: List[str] = []
     assets = (timeline.get("zenvi") or {}).get("assets") or {}
     for original, src in assets.items():
         if not isinstance(original, str) or not isinstance(src, str):
             continue
-        if os.path.exists(original):
-            continue
         copy_path = os.path.join(project_root, "public", *src.split("/"))
-        if os.path.exists(copy_path):
+        has_copy = os.path.exists(copy_path)
+        if os.path.exists(original):
+            if not has_copy or os.path.islink(copy_path) or _same_content(original, copy_path):
+                continue
+            try:
+                newer = os.path.getmtime(copy_path) > os.path.getmtime(original)
+            except OSError:
+                newer = False
+            if newer:
+                remap[original] = copy_path
+                warnings.append(f"{os.path.basename(original)} was edited in the Remotion project; the restored "
+                                f"clips use that copy ({src})")
+            else:
+                warnings.append(f"the copy of {os.path.basename(original)} in the Remotion project differs from the "
+                                "original, which is newer; kept the original")
+            continue
+        if has_copy:
             remap[original] = os.path.realpath(copy_path) if os.path.islink(copy_path) else copy_path
         else:
             warnings.append(f"{os.path.basename(original)} is missing (neither {original} nor {copy_path} exists)")
@@ -107,15 +148,20 @@ def remap_paths(value: Any, remap: Dict[str, str]) -> Any:
     return value
 
 
-def restored_project(timeline: dict, project_root: str) -> Tuple[dict, List[str]]:
-    """The original project dict with media pointing at files that exist, and warnings."""
+def restored_project(timeline: dict, project_root: str) -> Tuple[dict, List[str], List[dict]]:
+    """(the project as it should come back, warnings, the edits applied from the readable timeline).
+
+    The original project with media pointing at files that exist and, when
+    the readable timeline was edited, those edits applied (``edits.apply_edits``).
+    """
     project = copy.deepcopy((timeline.get("zenvi") or {}).get("project") or {})
     remap, warnings = asset_remap(timeline, project_root)
     project = remap_paths(project, remap)
+    applied: List[dict] = []
     if timeline_edited(timeline):
-        warnings.append("src/zenvi/timeline.json was edited after Zenvi exported it; the native restore uses the "
-                        "timeline as exported (import ZenviTimeline as a linked clip to see the edits)")
-    return project, warnings
+        project, edit_warnings, applied = edits.apply_edits(project, timeline)
+        warnings = warnings + edit_warnings
+    return project, warnings, applied
 
 
 def _new_id(taken: set) -> str:
@@ -128,9 +174,9 @@ def _new_id(taken: set) -> str:
             return candidate
 
 
-def write_project_file(timeline: dict, project_root: str, zvn_path: str) -> Tuple[str, List[str]]:
-    """Write the restored project as a new ``.zvn`` (staged, then renamed); returns (path, warnings)."""
-    project, warnings = restored_project(timeline, project_root)
+def write_project_file(timeline: dict, project_root: str, zvn_path: str) -> Tuple[str, List[str], List[dict]]:
+    """Write the restored project as a new ``.zvn`` (staged, then renamed); returns (path, warnings, edits)."""
+    project, warnings, applied = restored_project(timeline, project_root)
     project["history"] = {"undo": [], "redo": []}
     project["id"] = _new_id(set())  # a new project, not the exported one's twin (cloud identity)
     zvn_path = os.path.abspath(os.path.expanduser(zvn_path))
@@ -143,37 +189,7 @@ def write_project_file(timeline: dict, project_root: str, zvn_path: str) -> Tupl
     with open(partial, "w", encoding="utf-8") as fh:
         json.dump(project, fh, indent=1, ensure_ascii=False)
     os.replace(partial, zvn_path)
-    return zvn_path, warnings
-
-
-def _rescale_points(value: Any, ratio: Fraction) -> Any:
-    """Keyframe X (and time-curve Y) scaled to another frame rate: x' = (x - 1) * ratio + 1."""
-    if isinstance(value, dict):
-        if isinstance(value.get("Points"), list):
-            out = dict(value)
-            pts = []
-            for p in value["Points"]:
-                if isinstance(p, dict) and isinstance(p.get("co"), dict):
-                    p = copy.deepcopy(p)
-                    x = p["co"].get("X")
-                    if isinstance(x, (int, float)):
-                        p["co"]["X"] = round((float(x) - 1.0) * float(ratio) + 1.0, 4)
-                pts.append(p)
-            out["Points"] = pts
-            return out
-        return {k: _rescale_points(v, ratio) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_rescale_points(v, ratio) for v in value]
-    return value
-
-
-def _rescale_time_values(clip: dict, ratio: Fraction) -> None:
-    time = clip.get("time")
-    if isinstance(time, dict) and isinstance(time.get("Points"), list):
-        for p in time["Points"]:
-            co = p.get("co") if isinstance(p, dict) else None
-            if isinstance(co, dict) and isinstance(co.get("Y"), (int, float)):
-                co["Y"] = round((float(co["Y"]) - 1.0) * float(ratio) + 1.0, 4)
+    return zvn_path, warnings, applied
 
 
 def plan_native(project: dict, current: dict, *, offset: float = 0.0) -> Tuple[dict, List[str]]:
@@ -186,7 +202,10 @@ def plan_native(project: dict, current: dict, *, offset: float = 0.0) -> Tuple[d
     src_fps = Fraction(int((project.get("fps") or {}).get("num") or 30), int((project.get("fps") or {}).get("den") or 1))
     dst_fps = Fraction(int((current.get("fps") or {}).get("num") or 30), int((current.get("fps") or {}).get("den") or 1))
     ratio = dst_fps / src_fps
+    source = {"clips": copy.deepcopy(project.get("clips") or []), "effects": copy.deepcopy(project.get("effects") or [])}
     if ratio != 1:
+        from classes.keyframe_scaler import KeyframeScaler
+        KeyframeScaler(float(ratio))(source)  # what the editor does when a project's frame rate changes
         warnings.append(f"the exported project ran at {float(src_fps):g} fps and this one at {float(dst_fps):g} fps; "
                         "keyframes were rescaled to the new frame rate")
     if (project.get("width"), project.get("height")) != (current.get("width"), current.get("height")):
@@ -243,17 +262,14 @@ def plan_native(project: dict, current: dict, *, offset: float = 0.0) -> Tuple[d
             files.append(f)
     shift = float(offset or 0.0)
     clips = []
-    for c in project.get("clips") or []:
+    for c in source["clips"]:
         if not isinstance(c, dict):
             continue
-        c = copy.deepcopy(c)
         c["id"] = _fresh(c.get("id"))
         c["file_id"] = id_map.get(str(c.get("file_id") or ""), c.get("file_id"))
         c["layer"] = layer_map.get(int(c.get("layer") or 0), int(c.get("layer") or 0))
-        c["position"] = round(float(c.get("position") or 0.0) + shift, 6)
-        if ratio != 1:
-            _rescale_time_values(c, ratio)
-            c = _rescale_points(c, ratio)
+        if shift:
+            c["position"] = float(c.get("position") or 0.0) + shift
         for e in c.get("effects") or []:
             if isinstance(e, dict):
                 e["id"] = _fresh(e.get("id"))
@@ -263,21 +279,20 @@ def plan_native(project: dict, current: dict, *, offset: float = 0.0) -> Tuple[d
         if parent:
             c["parentObjectId"] = id_map.get(parent, parent)
     effects = []
-    for t in project.get("effects") or []:
+    for t in source["effects"]:
         if isinstance(t, dict):
-            t = copy.deepcopy(t)
             t["id"] = _fresh(t.get("id"))
             t["layer"] = layer_map.get(int(t.get("layer") or 0), int(t.get("layer") or 0))
-            t["position"] = round(float(t.get("position") or 0.0) + shift, 6)
-            if ratio != 1:
-                t = _rescale_points(t, ratio)
+            if shift:
+                t["position"] = float(t.get("position") or 0.0) + shift
             effects.append(t)
     markers = []
     for m in project.get("markers") or []:
         if isinstance(m, dict):
             m = copy.deepcopy(m)
             m["id"] = _fresh(m.get("id"))
-            m["position"] = round(float(m.get("position") or 0.0) + shift, 6)
+            if shift:
+                m["position"] = float(m.get("position") or 0.0) + shift
             markers.append(m)
     return ({"layers": new_layers, "files": files, "clips": clips, "effects": effects, "markers": markers,
              "layer_map": layer_map, "id_map": id_map}, warnings)
@@ -292,7 +307,7 @@ def insert_native(timeline: dict, project_root: str, *, position: Optional[float
     above the existing ones. Files already in the project (same path) are
     reused.
     """
-    project, warnings = restored_project(timeline, project_root)
+    project, warnings, applied = restored_project(timeline, project_root)
 
     def _commit():
         from classes.editor_tools._base import get_app, playhead_seconds, snap_seconds
@@ -335,7 +350,8 @@ def insert_native(timeline: dict, project_root: str, *, position: Optional[float
     return {"position": round(start, 3), "tracks": len(plan["layers"]), "files": len(plan["files"]) - len(reused),
             "reused_files": len(reused), "clips": [c["id"] for c in plan["clips"]],
             "transitions": len(plan["effects"]), "markers": len(plan["markers"]),
-            "layer_map": {str(k): v for k, v in plan["layer_map"].items()}, "warnings": warnings + plan_warnings}
+            "layer_map": {str(k): v for k, v in plan["layer_map"].items()}, "edits": applied,
+            "warnings": warnings + plan_warnings}
 
 
 __all__ = ["load_timeline", "timeline_edited", "restored_project", "write_project_file", "insert_native",

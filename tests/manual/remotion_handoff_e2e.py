@@ -480,25 +480,101 @@ def part_reimport(work, project, export_dir):
     return result
 
 
+# ---------------------------------------------------------------------------
+# (d) edits made in the Remotion project come back
+# ---------------------------------------------------------------------------
+
+def edit_timeline(timeline):
+    """What a person or agent might do in timeline.json (edits whose meaning is the same in Zenvi and Remotion)."""
+    clips = {c["id"]: c for c in timeline["clips"]}
+    card = clips["CIMAGE0001"]
+    card["position"] += 0.5                                      # move the card 0.5 s later
+    card["keyframes"]["location_x"][-1]["value"] = 0.0           # ...and slide it to the centre instead
+    dup = copy.deepcopy(card)
+    dup.update(id="CARDCOPY01", position=100 / 30)               # a second card at 3.33 s (runs past the end)
+    timeline["clips"].append(dup)
+    clips["CVIDEO0001"]["end"] = 5.0                             # cut the video's last second
+    timeline["markers"][0].update(time=4.0, name="Late hold")
+    return {"moved": "CIMAGE0001", "duplicate": "CARDCOPY01", "trimmed": "CVIDEO0001"}
+
+
+def part_edits(work, project, export_dir):
+    edited_dir = export_dir + "-edited"
+    if os.path.isdir(edited_dir):
+        shutil.rmtree(edited_dir)
+    subprocess.run(["cp", "-Rc", export_dir, edited_dir], check=True)   # APFS clone, node_modules included
+    path = os.path.join(edited_dir, "src", "zenvi", "timeline.json")
+    with open(path) as fh:
+        timeline = json.load(fh)
+    what = edit_timeline(timeline)
+    with open(path, "w") as fh:
+        json.dump(timeline, fh, indent=1)
+    fps = float(timeline["composition"]["fps"])
+    ends = [int((c["position"] + c["end"] - c["start"]) * fps + 0.5) for c in timeline["clips"]]
+    last = max(ends + [t["from"] + t["durationInFrames"] for t in timeline["transitions"]]) - 1  # what Root.tsx computes
+    seq = os.path.join(work, "frames", "remotion-edited-seq")
+    shutil.rmtree(seq, ignore_errors=True)
+    t0 = time.time()
+    render = subprocess.run(["npx", "remotion", "render", "src/index.ts", "ZenviTimeline", seq, "--sequence",
+                             "--image-format=png", "--frames=0-%d" % last, "--concurrency=%s" % os.environ.get(
+                                 "ZENVI_REMOTION_CONCURRENCY", "2"), "--log=warn"],
+                            cwd=edited_dir, capture_output=True, text=True)
+    result = {"edits": what, "remotion_render": {"code": render.returncode, "seconds": round(time.time() - t0, 1)}}
+    log("npx remotion render (edited):", render.returncode, "%.1fs" % result["remotion_render"]["seconds"])
+    assert render.returncode == 0, render.stdout + render.stderr
+    editor = make_editor(work)
+    editor.store._data["fps"] = dict(project["fps"])
+    editor.mark()
+    receipt = editor.call_receipt("import_remotion_project_tool", project_dir=edited_dir, position=0.0)
+    native = receipt["data"]["native"]
+    result["restore"] = {"status": receipt["status"], "undo_steps": editor.undo_steps_since_mark(),
+                         "edits": [(e["kind"], e["id"], e["field"]) for e in native["edits"]],
+                         "warnings": receipt["data"]["warnings"]}
+    log("restore:", receipt["summary"][:240])
+    log("edits brought back:", result["restore"]["edits"], "warnings:", result["restore"]["warnings"])
+    restored = copy.deepcopy(project)
+    for key in ("files", "clips", "effects", "markers", "layers"):
+        restored[key] = copy.deepcopy(editor.get(key))
+    import re
+    rendered = sorted((f for f in os.listdir(seq) if f.endswith(".png")), key=lambda f: int(re.findall(r"\d+", f)[-1]))
+    picks = [n for n in (0, 20, 30, 45, 60, 90, 105, 120, 140, 150, 180, 200) if n <= last] + [last]
+    zenvi = libopenshot_frames(restored, picks, os.path.join(work, "frames", "zenvi-edited"))
+    rows = []
+    for n in picks:
+        remotion_png = os.path.join(seq, rendered[n])
+        psnr, mad, diff = compare(zenvi[n], remotion_png)
+        psnr_nt, mad_nt, _ = compare(zenvi[n], remotion_png, exclude=[TITLE_STRIP])
+        side_by_side(zenvi[n], remotion_png, diff, os.path.join(work, "frames", "compare-edited-%03d.png" % n))
+        rows.append({"frame": n, "psnr_db": psnr, "mean_abs_diff": mad, "psnr_db_without_title_text": psnr_nt,
+                     "mean_abs_diff_without_title_text": mad_nt})
+        log("edited frame %3d  PSNR %6.2f dB  mean |diff| %6.3f   (without the title text: %6.2f dB, %6.3f)"
+            % (n, psnr, mad, psnr_nt, mad_nt))
+    result["compare"] = rows
+    REPORT["edits"] = result
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--work", required=True)
     parser.add_argument("--remotion-app", required=True)
     parser.add_argument("--video-matrix", choices=["bt709", "bt601"], default="bt709",
                         help="colour tags of the test video (libopenshot 1.0 decodes both as BT.601)")
-    parser.add_argument("parts", nargs="+", choices=["linked", "export", "reimport", "all"])
+    parser.add_argument("parts", nargs="+", choices=["linked", "export", "reimport", "edits", "all"])
     args = parser.parse_args()
     work = os.path.abspath(args.work)
     os.makedirs(work, exist_ok=True)
     boot()
-    parts = {"linked", "export", "reimport"} if "all" in args.parts else set(args.parts)
+    parts = {"linked", "export", "reimport", "edits"} if "all" in args.parts else set(args.parts)
     try:
         if "linked" in parts:
             part_linked(work, os.path.abspath(args.remotion_app))
-        if parts & {"export", "reimport"}:
+        if parts & {"export", "reimport", "edits"}:
             project, export_dir = part_export(work, os.path.abspath(args.remotion_app), args.video_matrix)
             if "reimport" in parts:
                 part_reimport(work, project, export_dir)
+            if "edits" in parts:
+                part_edits(work, project, export_dir)
     finally:
         REPORT.pop("export_project", None)
         with open(os.path.join(work, "report.json"), "w") as fh:

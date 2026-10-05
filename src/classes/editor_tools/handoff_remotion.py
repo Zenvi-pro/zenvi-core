@@ -140,8 +140,10 @@ def import_remotion_project(project_dir, compositions=None, props=None, codec="a
     parts = []
     native: Dict[str, Any] = receipt.get("native") or {}
     if native:
+        edited = len(native.get("edits") or [])
         parts.append(f"restored {len(native.get('clips') or [])} native clip(s) on {native.get('tracks', 0)} new "
-                     f"track(s) at {native.get('position', 0):.2f}s")
+                     f"track(s) at {native.get('position', 0):.2f}s"
+                     + (f", with {edited} edit(s) made in the Remotion project" if edited else ""))
     linked = receipt.get("linked") or []
     for c in linked:
         parts.append(f"added {c['composition']} ({c['codec']}, {c['duration']:.2f}s) at {c['position']:.2f}s on "

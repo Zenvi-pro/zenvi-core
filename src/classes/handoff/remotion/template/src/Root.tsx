@@ -5,7 +5,7 @@ import React from 'react';
 import {Composition} from 'remotion';
 import {z} from 'zod';
 import {zColor} from '@remotion/zod-types';
-import {ZenviTimeline, zenviTimeline} from './zenvi/ZenviTimeline';
+import {ZenviTimeline, timelineDurationInFrames, zenviTimeline} from './zenvi/ZenviTimeline';
 
 export const zenviTimelineSchema = z.object({
   background: zColor(),
@@ -14,7 +14,8 @@ export const zenviTimelineSchema = z.object({
 });
 
 export const RemotionRoot: React.FC = () => {
-  const {width, height, fps, durationInFrames} = zenviTimeline.composition;
+  const {width, height, fps} = zenviTimeline.composition;
+  const durationInFrames = timelineDurationInFrames(zenviTimeline); // follows edits to the clips
   return (
     <>
       <Composition

@@ -307,7 +307,11 @@ def _start_import(window, listing, choice: ImportChoice) -> None:
         count = len(receipt.get("linked") or [])
         native = receipt.get("native") or {}
         if native:
-            _notify(window, _tr("Restored %d clip(s) from %s") % (len(native.get("clips") or []), project.name))
+            edited = len(native.get("edits") or [])
+            text = _tr("Restored %d clip(s) from %s") % (len(native.get("clips") or []), project.name)
+            if edited:
+                text += " " + _tr("(%d edit(s) made in the Remotion project)") % edited
+            _notify(window, text)
         if count:
             _notify(window, _tr("Imported %d Remotion clip(s)") % count)
         if receipt.get("warnings"):
@@ -379,10 +383,13 @@ def _open_restored(window, project) -> None:
         if job.error is not None:
             QMessageBox.warning(window, _tr("Import Remotion Project"), str(job.error))
             return
-        written, warnings = job.result
-        if warnings:
-            QMessageBox.information(window, _tr("Import Remotion Project"),
-                                    "\n".join("• %s" % w for w in warnings[:8]))
+        written, warnings, applied = job.result
+        lines = []
+        if applied:
+            lines.append(_tr("Brought back %d edit(s) made in the Remotion project.") % len(applied))
+        lines += ["• %s" % w for w in warnings[:8]]
+        if lines:
+            QMessageBox.information(window, _tr("Import Remotion Project"), "\n".join(lines))
         if _confirm_leave_project(window):
             window.OpenProjectSignal.emit(written)
 

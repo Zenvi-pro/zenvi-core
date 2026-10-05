@@ -27,24 +27,42 @@ npx remotion render ZenviTimeline out/video.mp4    # render the timeline
 | `src/zenvi/curves.ts` | keyframe evaluation, CSS filters, crop |
 | `public/zenvi-media/` | the media ({{MEDIA_MODE}}) |
 
-Keyframes in `timeline.json` are `{frame, value, easing}`; `frame` counts from the clip's first
-visible frame and `easing` (`linear`, `hold` or a cubic-bezier `[x1, y1, x2, y2]`) shapes the
-segment that ends at that keyframe.
+A clip's timing in `timeline.json` is `position` (where it starts on the timeline), `start` and `end`
+(source in and out), in seconds; the renderer derives the frames. Keyframes are `{frame, value,
+easing}`: `frame` is a clip frame (0 = the clip's first frame before any trim, so trimming keeps
+keyframes on the source) and `easing` (`linear`, `hold` or a cubic-bezier `[x1, y1, x2, y2]`) shapes
+the segment that ends at that keyframe.
 
 ## Bring it back into Zenvi
 
 In Zenvi choose **File > Import Project > Remotion Project...** and pick this folder.
 
 - **Open as an editable Zenvi project** (recommended) restores the original clips, keyframes,
-  effects and transitions exactly as they were exported: native, editable Zenvi clips.
+  effects and transitions as native, editable Zenvi clips -- with the edits you made here.
 - Compositions you add to this project come back as **linked clips**: Zenvi renders them with
   this project's own Remotion and keeps the link (Edit Props, Open Code, Open in Studio,
   Re-render).
 
-The native restore reads the `zenvi` block of `src/zenvi/timeline.json`. Changes to the readable
-part of `timeline.json` or to the renderer code are not read back into native clips (Zenvi says
-so when `timeline.json` was edited). To bring such changes back as they render, import
-`ZenviTimeline` as a linked clip instead.
+Edits to `src/zenvi/timeline.json` that come back onto the original Zenvi clips (everything else
+about them stays exactly as exported):
+
+- clips: move (`position`), trim (`start` / `end`: source in / out), another track (`track` index
+  or `layer` number; new layer numbers become new tracks), `title`, another exported file (`fileId`
+  / `src`), `hasAudio` / `hasVideo`, `scaleMode`, `gravity`, `blendMode`; delete a clip by removing
+  it; duplicate one by copying its entry with a new `id`;
+- keyframes of alpha, location, scale, rotation, origin, shear, margin, corner radius and volume:
+  values, frames and easing (`linear`, `hold` or `[x1, y1, x2, y2]`), added or removed points;
+- markers (time, name, colour; add or remove), transitions (`from`, `durationInFrames`, track;
+  remove), track names and locks;
+- media you change in `public/zenvi-media/` (e.g. the text of a title SVG) when the copy is newer
+  than the original.
+
+Zenvi checks every value first: an impossible one (alpha 2, a trim past the end of the media, an
+unknown easing) is refused with a note naming the clip and field, and the original value stays.
+Speed changes (`playbackRate`, holds, ramps), effect edits (`filters`, `crop`), new media files,
+new transitions and the composition's size or frame rate are not brought back -- Zenvi says so.
+Changes to the renderer code are not read back either: import `ZenviTimeline` as a linked clip to
+see them as they render.
 
 Agents can do the same with Zenvi's `import_remotion_project_tool` (`project_dir` = this folder).
 

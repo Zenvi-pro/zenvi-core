@@ -1,9 +1,11 @@
 // The shape of src/zenvi/timeline.json (written by Zenvi; "zenvi_timeline": 1).
 //
-// Frames are composition frames (0-based). A clip's keyframe frames count from the clip's
-// first visible frame. Each keyframe's `easing` shapes the segment that ENDS at it:
-// 'linear', 'hold' (keep the previous value until this keyframe) or a cubic-bezier
-// [x1, y1, x2, y2] -- Zenvi's (libopenshot's) convention.
+// A clip's timing is `position` (timeline start), `start` (source in) and `end` (source out), in
+// seconds: the renderer and Zenvi's round trip both read these. Its keyframe frames are clip frames:
+// 0 is the clip's first frame before any trim, so trimming keeps keyframes on the source. Each
+// keyframe's `easing` shapes the segment that ENDS at it: 'linear', 'hold' (keep the previous value
+// until this keyframe) or a cubic-bezier [x1, y1, x2, y2] -- Zenvi's (libopenshot's) convention.
+// Transitions and markers use composition frames (0-based).
 
 export type KeyEasing = 'linear' | 'hold' | [number, number, number, number] | null;
 
@@ -17,10 +19,13 @@ export type Keys = Key[];
 
 export type ClipKind = 'video' | 'image' | 'title' | 'audio';
 
+// normal: the media plays from `start`. rate / map were sampled for `forTrim` trimmed clip frames;
+// the renderer shifts them when `start` changes.
 export type TimeSpec =
-  | {mode: 'normal' | 'rate'; trimBefore: number; playbackRate: number}
+  | {mode: 'normal'}
+  | {mode: 'rate'; trimBefore: number; playbackRate: number; forTrim: number}
   | {mode: 'freeze'; trimBefore: number}
-  | {mode: 'map'; map: number[]};
+  | {mode: 'map'; map: number[]; forTrim: number};
 
 export type FilterSpec = {
   fn: 'brightness' | 'contrast' | 'saturate' | 'hue-rotate' | 'blur' | 'invert';
@@ -36,8 +41,9 @@ export type ZenviClipData = {
   fileId: string;
   track: number;
   layer: number;
-  from: number;
-  durationInFrames: number;
+  position: number;
+  start: number;
+  end: number;
   kind: ClipKind;
   src: string;
   transparent: boolean;
@@ -88,5 +94,5 @@ export type ZenviTimelineData = {
   media: Record<string, ZenviMediaData>;
   clips: ZenviClipData[];
   transitions: ZenviTransitionData[];
-  markers: {frame: number; time: number; name: string; color: string}[];
+  markers: {id: string; frame: number; time: number; name: string; color: string}[];
 };

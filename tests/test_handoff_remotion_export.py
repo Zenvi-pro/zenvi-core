@@ -60,9 +60,10 @@ def build_project(editor, media_dir):
     }
     mask = media("fade.svg", b"<svg/>")
     transition = editor.effect_fixture("Mask")
+    transition.pop("mask_reader", None)  # what Zenvi's transitions look like (timeline_ops: reader, no mask_reader)
     transition.update(id="TRANS1", layer=2000000, position=1.0, start=0.0, end=1.0, duration=1.0, title="Fade",
                       brightness=_kf((1, 1.0, LINEAR), (31, -1.0, LINEAR)), contrast=_kf((1, 3.0)),
-                      reader={"path": mask, "type": "QtImageReader"})
+                      reader={"path": mask, "type": "QtImageReader", "has_single_image": True})
     editor.store._data["effects"] = [transition]
     editor.store._data["markers"] = [{"id": "M1", "position": 2.0, "name": "Drop", "vector": "red"}]
     editor.mark()
@@ -122,16 +123,17 @@ def test_timeline_json_carries_timing_keyframes_speed_transitions_and_markers(li
                                 "fpsFraction": {"num": 30, "den": 1}, "durationInFrames": 180}
     by_id = {c["id"]: c for c in t["clips"]}
     video = by_id[clips["video"]]
-    assert (video["from"], video["durationInFrames"], video["kind"], video["track"]) == (0, 180, "video", 0)
-    assert video["time"] == {"mode": "normal", "trimBefore": 60, "playbackRate": 1}
+    assert (video["position"], video["start"], video["end"], video["kind"], video["track"]) == (0, 2, 8, "video", 0)
+    assert "from" not in video and "durationInFrames" not in video  # one timing representation: seconds
+    assert video["time"] == {"mode": "normal"}
     assert video["src"] == "zenvi-media/beach.mp4" and video["hasAudio"] and video["hasVideo"]
     assert (video["sourceWidth"], video["sourceHeight"]) == (1280, 720)
-    # keyframe X 61 is the first visible frame of a clip trimmed by 2 s at 30 fps -> frame 0
-    assert video["keyframes"]["alpha"] == [{"frame": 0, "value": 0, "easing": None},
-                                          {"frame": 15, "value": 1, "easing": [0.5, 0, 0.5, 1]}]
-    assert video["keyframes"]["volume"][1] == {"frame": 180, "value": 0, "easing": "linear"}
+    # keyframe frames are clip frames (X - 1): X 61, the first visible frame of a clip trimmed by 2 s, is 60
+    assert video["keyframes"]["alpha"] == [{"frame": 60, "value": 0, "easing": None},
+                                          {"frame": 75, "value": 1, "easing": [0.5, 0, 0.5, 1]}]
+    assert video["keyframes"]["volume"][1] == {"frame": 240, "value": 0, "easing": "linear"}
     image = by_id[clips["image"]]
-    assert (image["from"], image["durationInFrames"], image["kind"], image["gravity"]) == (30, 120, "image", 8)
+    assert (image["position"], image["end"], image["kind"], image["gravity"]) == (1, 4, "image", 8)
     assert image["keyframes"]["location_x"] == [{"frame": 0, "value": -0.2, "easing": None},
                                                {"frame": 30, "value": 0, "easing": [0.5, 0, 0.3, 1]}]
     assert image["keyframes"]["scale_x"] == [{"frame": 0, "value": 0.5, "easing": None}]
@@ -146,7 +148,8 @@ def test_timeline_json_carries_timing_keyframes_speed_transitions_and_markers(li
     assert fade["mask"] == "zenvi-media/fade.svg"
     assert fade["opacity"][0] == 0.0 and fade["opacity"][-1] == 1.0  # brightness 1 hides, -1 shows (fade in)
     assert fade["opacity"] == sorted(fade["opacity"])
-    assert t["markers"] == [{"frame": 60, "time": 2.0, "name": "Drop", "color": "red"}]
+    assert t["markers"] == [{"id": "M1", "frame": 60, "time": 2.0, "name": "Drop", "color": "red"}]
+    assert t["zenvi"]["baseline"] == {k: t[k] for k in exporter.BASELINE_KEYS}
     assert t["media"][files["video"]]["src"] == "zenvi-media/beach.mp4"
     assert t["zenvi"]["readable_sha256"] == exporter.readable_hash(t)
 
@@ -224,16 +227,21 @@ def _clip_with_time(time_kf, start=0.0, end=4.0):
 def test_time_spec_reads_what_libopenshot_plays():
     fps = Fraction(30)
     spec, note = exporter.time_spec(_clip_with_time(None, start=1.0), fps, 30, 90)
-    assert spec == {"mode": "normal", "trimBefore": 30, "playbackRate": 1} and note is None
+    assert spec == {"mode": "normal"} and note is None   # the renderer plays the media from `start`
     double = _kf((1, 1, LINEAR), (301, 601, LINEAR))
     spec, _ = exporter.time_spec(_clip_with_time(double), fps, 0, 120)
     assert spec["mode"] == "rate" and spec["trimBefore"] == 0 and spec["playbackRate"] == pytest.approx(2.0)
+    assert spec["forTrim"] == 0
+    shifted = _kf((1, 11, LINEAR), (301, 311, LINEAR))     # 1:1 but 10 frames into the media: not "normal"
+    spec, _ = exporter.time_spec(_clip_with_time(shifted), fps, 0, 60)
+    assert spec == {"mode": "rate", "trimBefore": 10, "playbackRate": 1, "forTrim": 0}
     held = _kf((1, 50, LINEAR), (301, 50, LINEAR))
     spec, note = exporter.time_spec(_clip_with_time(held), fps, 0, 30)
     assert spec == {"mode": "freeze", "trimBefore": 49} and "no sound" in note
     backwards = _kf((1, 120, LINEAR), (121, 1, LINEAR))
     spec, note = exporter.time_spec(_clip_with_time(backwards), fps, 0, 120)
     assert spec["mode"] == "map" and spec["map"][0] == 119 and spec["map"][-1] < spec["map"][0]
+    assert spec["forTrim"] == 0
     # a 2x curve that ends inside the clip holds its last frame: not "constant 2x"
     short = _kf((1, 1, LINEAR), (31, 61, LINEAR))
     spec, _ = exporter.time_spec(_clip_with_time(short), fps, 0, 90)
@@ -352,10 +360,10 @@ def test_restored_project_points_at_copies_when_the_originals_are_gone(linked, t
     out = tmp_path / "out"
     _export(linked, out)
     timeline = restore.load_timeline(restore.timeline_path(str(out)))
-    project, warnings = restore.restored_project(timeline, str(out))
-    assert project["files"] == original["files"] and warnings == []
+    project, warnings, applied = restore.restored_project(timeline, str(out))
+    assert project["files"] == original["files"] and warnings == [] and applied == []
     shutil.rmtree(str(tmp_path / "media"))
-    project, warnings = restore.restored_project(timeline, str(out))
+    project, warnings, _ = restore.restored_project(timeline, str(out))
     paths = {f["name"]: f["path"] for f in project["files"]}
     assert paths["beach.mp4"] == str(out / "public" / "zenvi-media" / "beach.mp4")
     assert project["effects"][0]["reader"]["path"] == str(out / "public" / "zenvi-media" / "fade.svg")
@@ -399,23 +407,24 @@ def test_insert_native_into_a_busy_project_uses_new_tracks_ids_and_the_position(
     assert len(linked.get("effects")) == 2 and len(linked.get("markers")) == 2
 
 
-def test_edits_to_the_readable_timeline_are_reported_and_fps_changes_rescale(linked, tmp_path):  # noqa: F811
+def test_a_moved_clip_comes_back_and_fps_changes_rescale(linked, tmp_path):  # noqa: F811
     build_project(linked, str(tmp_path / "media"))
     out = tmp_path / "out"
     _export(linked, out)
     path = restore.timeline_path(str(out))
     timeline = json.load(open(path))
-    timeline["clips"][0]["from"] += 5
+    timeline["clips"][0]["position"] += 5 / 30
     json.dump(timeline, open(path, "w"))
     timeline = restore.load_timeline(path)
     assert restore.timeline_edited(timeline)
-    project, warnings = restore.restored_project(timeline, str(out))
-    assert any("edited after Zenvi exported it" in w for w in warnings)
+    project, warnings, applied = restore.restored_project(timeline, str(out))
+    assert [e["field"] for e in applied] == ["position"] and warnings == []
     current = {"fps": {"num": 60, "den": 1}, "width": 1920, "height": 1080, "layers": [], "clips": []}
     plan, plan_warnings = restore.plan_native(project, current)
     assert any("rescaled" in w for w in plan_warnings)
     video = [c for c in plan["clips"] if c["start"] == 2.0][0]
-    assert [p["co"]["X"] for p in video["alpha"]["Points"]] == [121.0, 151.0]
+    # the editor's own frame-rate rule (KeyframeScaler: X * factor, frame 1 kept)
+    assert [p["co"]["X"] for p in video["alpha"]["Points"]] == [122, 152]
 
 
 def test_write_project_file_makes_a_new_project(linked, tmp_path):  # noqa: F811
@@ -424,8 +433,8 @@ def test_write_project_file_makes_a_new_project(linked, tmp_path):  # noqa: F811
     out = tmp_path / "out"
     _export(linked, out)
     timeline = restore.load_timeline(restore.timeline_path(str(out)))
-    path, warnings = restore.write_project_file(timeline, str(out), str(tmp_path / "restored"))
-    assert path == str(tmp_path / "restored.zvn") and warnings == []
+    path, warnings, applied = restore.write_project_file(timeline, str(out), str(tmp_path / "restored"))
+    assert path == str(tmp_path / "restored.zvn") and warnings == [] and applied == []
     data = json.load(open(path))
     assert data["id"] != "ORIGINAL01" and data["history"] == {"undo": [], "redo": []}
     assert len(data["clips"]) == 4 and data["fps"] == {"num": 30, "den": 1}
