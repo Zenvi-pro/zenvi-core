@@ -857,7 +857,7 @@ def _clip_rows(file_id: str) -> List[dict]:
 # ---------------------------------------------------------------------------
 
 def add_linked_media(path: str, link: dict, *, position: Optional[float] = None, track: Optional[str] = None,
-                     name: str = "") -> dict:
+                     name: str = "", ignore_refresh: bool = False) -> dict:
     """Add rendered *path* with *link* to Project Files and place it, as ONE undo step.
 
     *position* (timeline seconds, default the playhead) is snapped to the
@@ -865,7 +865,9 @@ def add_linked_media(path: str, link: dict, *, position: Optional[float] = None,
     the video in its window (a new "Linked" track on top when none is free,
     like titles). Probes the media on the calling thread: call off the GUI
     thread. Returns receipt data: file_id, timeline_clip_id, position,
-    duration, end, layer, new_track, path, kind, state.
+    duration, end, layer, new_track, path, kind, state. Importing several:
+    pass *ignore_refresh* for all but the last (``titles_text_common.place_clip``)
+    so the preview redraws once, and ``end_clip_batch()`` if the batch stops early.
     """
     path = _check_media_path(path)
     stored = normalize_link(link)
@@ -906,7 +908,7 @@ def add_linked_media(path: str, link: dict, *, position: Optional[float] = None,
                 f.save()
             if created:
                 create_track(layer, LINKED_TRACK_LABEL)
-            clip = place_clip(f.id, start, length, layer, title=display)
+            clip = place_clip(f.id, start, length, layer, title=display, ignore_refresh=ignore_refresh)
         return f.id, clip, layer, created, start, length
 
     file_id, clip, layer, created, start, length = _commit_on_gui(_commit)

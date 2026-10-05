@@ -773,3 +773,11 @@ def test_a_really_shorter_rerender_still_clamps_onto_the_frame_grid(linked):
     res = lm.rerender_linked(out["file_id"])
     clip = linked.clip(out["timeline_clip_id"])
     assert clip["end"] == pytest.approx(2.0) and "shortened from 2.60s to 2.00s" in res["warnings"][0]
+
+
+def test_add_linked_media_passes_the_batch_refresh_opt_in(linked):
+    timeline = linked.window.timeline
+    lm.add_linked_media(linked.media("a.mov"), remotion_link(), position=0.0, ignore_refresh=True)
+    assert timeline.add_calls[-1]["ignore_refresh"] is True and timeline.update_calls[-1]["ignore_refresh"] is True
+    lm.add_linked_media(linked.media("b.mov"), remotion_link(composition="B"), position=6.0)
+    assert timeline.add_calls[-1]["ignore_refresh"] is False  # the default: refresh as before
