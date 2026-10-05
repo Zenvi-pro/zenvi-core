@@ -75,3 +75,30 @@ def test_listeners_hear_start_and_finish():
     finally:
         jobs.remove_listener(listener)
     assert ("heard", jobs.RUNNING) in events and ("heard", jobs.DONE) in events
+
+
+def test_shutdown_cancels_running_and_queued_jobs_and_silences_callbacks(monkeypatch):
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    monkeypatch.setattr(jobs, "EXECUTOR", ThreadPoolExecutor(max_workers=1, thread_name_prefix="handoff-test"))
+    monkeypatch.setattr(jobs, "CHECK_EXECUTOR", ThreadPoolExecutor(max_workers=1, thread_name_prefix="handoff-tc"))
+    monkeypatch.setattr(jobs, "_shutting_down", False)
+    started, done_calls = threading.Event(), []
+
+    def long(job):
+        started.set()
+        while not job.should_cancel():
+            time.sleep(0.01)
+        job.raise_if_cancelled()
+
+    running = jobs.submit_job(long, label="running", on_done=done_calls.append)
+    assert started.wait(5)
+    queued = jobs.submit_job(lambda job: "never", label="queued", on_done=done_calls.append)
+    t0 = time.monotonic()
+    jobs.shutdown()
+    with pytest.raises(jobs.JobCancelled):
+        running.wait(5)
+    assert queued.state == jobs.CANCELLED and running.state == jobs.CANCELLED
+    assert done_calls == []  # no GUI callbacks once Zenvi is quitting
+    after = jobs.submit_job(lambda job: 1, label="after quit")
+    assert after.state == jobs.CANCELLED and time.monotonic() - t0 < 5

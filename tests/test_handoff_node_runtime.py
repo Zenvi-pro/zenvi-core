@@ -159,3 +159,12 @@ def test_a_missing_program_is_a_clear_error(tmp_path):
     with pytest.raises(nr.NodeRunError) as err:
         nr.run_node([str(tmp_path / "nope" / "node"), "x.js"], str(tmp_path))
     assert "could not start" in str(err.value)
+
+
+def test_a_cancelled_node_command_is_a_job_cancellation(tmp_path):
+    from classes.handoff import jobs
+    assert issubclass(nr.NodeCancelled, jobs.JobCancelled)
+    flag = threading.Event()
+    flag.set()
+    with pytest.raises(jobs.JobCancelled):
+        nr.run_node([sys.executable, "-c", "import time; time.sleep(30)"], str(tmp_path), should_cancel=flag.is_set)

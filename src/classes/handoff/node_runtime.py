@@ -37,6 +37,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from classes.handoff.jobs import JobCancelled
 from classes.logger import log
 
 DEFAULT_MIN_MAJOR = 18
@@ -75,8 +76,8 @@ class NodeTimeout(NodeRunError):
     pass
 
 
-class NodeCancelled(NodeRunError):
-    pass
+class NodeCancelled(NodeRunError, JobCancelled):
+    """The caller cancelled; also a ``jobs.JobCancelled``, so callers treat it as a cancel, not a failure."""
 
 
 @dataclass(frozen=True)

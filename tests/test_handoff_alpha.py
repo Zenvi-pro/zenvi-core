@@ -48,3 +48,15 @@ def test_codec_args_and_missing_ffmpeg(monkeypatch, tmp_path):
     monkeypatch.setattr(alpha.ffmpeg_cli, "find_ffmpeg", lambda name="ffmpeg": None)
     with pytest.raises(alpha.AlphaError, match="ffmpeg was not found"):
         alpha.has_transparency(str(tmp_path / "x.png"))
+
+
+def test_a_cancelled_reencode_is_a_cancellation_not_an_error(monkeypatch, tmp_path):
+    import subprocess as sp
+    from classes.handoff import jobs
+    monkeypatch.setattr(alpha.ffmpeg_cli, "find_ffmpeg", lambda name="ffmpeg": "/usr/bin/true")
+    monkeypatch.setattr(alpha.ffmpeg_cli, "run_ffmpeg_with_progress",
+                        lambda cmd, on_progress=None, should_cancel=None: sp.CompletedProcess(cmd, 1, "", "cancelled"))
+    with pytest.raises(jobs.JobCancelled):
+        alpha.reencode_to_prores4444(str(tmp_path / "in.webm"), str(tmp_path / "out.mov"), should_cancel=lambda: True)
+    with pytest.raises(alpha.AlphaError):
+        alpha.reencode_to_prores4444(str(tmp_path / "in.webm"), str(tmp_path / "out.mov"), should_cancel=lambda: False)

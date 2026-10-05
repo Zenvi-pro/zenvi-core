@@ -12,21 +12,26 @@ only cost) or from a copy, then export off the GUI thread: nothing here
 touches Qt, libopenshot or the live project.
 
 Units: seconds everywhere except ``Curve`` point ``frame`` values (libopenshot
-X). ``ClipView.position`` / ``start`` / ``end`` are the project's own keys
-(timeline start, source in, source out); ``timeline_in`` / ``timeline_out``
-are where the clip shows on the timeline.
+X). ``ClipView.position`` / ``start`` / ``end`` are the project's own keys:
+the timeline start and the clip-frame window (X axis). They equal the source
+in/out only when the clip does not remap time; ``source_in`` / ``source_out``
+are always the media actually shown, ``speed`` says how it plays (within the
+visible window) and ``time`` is the remap curve for variable speeds
+(``source_time_at(t)``). ``timeline_in`` / ``timeline_out`` are where the clip
+shows on the timeline.
 """
 
 from __future__ import annotations
 
 import copy
+import math
 import os
 from dataclasses import dataclass, field
 from fractions import Fraction
 from types import MappingProxyType
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-from classes.handoff.keyframes import BEZIER, LINEAR, Curve, as_fraction, resolve_points
+from classes.handoff.keyframes import BEZIER, CONSTANT, LINEAR, Curve, as_fraction, resolve_points
 from classes.handoff.transform import (
     GRAVITY_CENTER, REPAIRED_WHEN_EMPTY, SCALE_FIT, TRANSFORM_DEFAULTS,
 )
@@ -158,33 +163,98 @@ class SpeedInfo:
         return self.kind == "normal"
 
 
-def speed_from_time(time_kf: Any, repeat_active: bool = False) -> SpeedInfo:
-    """Speed implied by a clip ``time`` keyframe (source frames Y over clip frames X).
+def _round_half_away(value: float) -> int:
+    return int(math.floor(value + 0.5)) if value >= 0 else int(math.ceil(value - 0.5))
 
-    The constant factor uses ``(|y1 - y0| + 1) / (x1 - x0)`` like
-    ``timeline_edit_time.effective_speed`` (both ends inclusive).
+
+def time_remaps(time_kf: Any) -> bool:
+    """True when libopenshot remaps frames with this ``time`` keyframe (``time.GetLength() > 1``)."""
+    pts = resolve_points(time_kf)
+    return len(pts) >= 2 and _round_half_away(pts[-1][0]) > 1
+
+
+def speed_from_time(time_kf: Any, repeat_active: bool = False,
+                    frame_range: Optional[Tuple[float, float]] = None) -> SpeedInfo:
+    """Speed implied by a clip ``time`` keyframe over the clip frames it shows.
+
+    *frame_range* is the visible window of clip frames (``ClipView.frame_range()``,
+    libopenshot X, inclusive); only that part of the curve counts, and frames
+    before the first / after the last point hold that point's source frame.
+    ``constant`` needs one straight (LINEAR) slope across the whole window; a
+    window that mixes playing and holding, or bends (BEZIER), is ``variable``.
+    The constant factor uses ``(|y1 - y0| + 1) / (x1 - x0)`` over the linear
+    segments involved, like ``timeline_edit_time.effective_speed`` (both ends
+    inclusive).
     """
     if repeat_active:
         return SpeedInfo("variable", None)
     pts = resolve_points(time_kf)
-    segments = [(a, b) for a, b in zip(pts, pts[1:]) if b[0] > a[0]]
-    if not segments:
+    if len(pts) < 2 or _round_half_away(pts[-1][0]) <= 1:
         return SpeedInfo("normal", 1.0)
-    slopes = [(b[1] - a[1]) / (b[0] - a[0]) for a, b in segments]
-    if all(abs(s) < 1e-9 for s in slopes):
-        return SpeedInfo("freeze", 0.0)
-    # One speed throughout: every segment a straight line (bezier time segments are ramps,
-    # constant ones are holds) with the same slope (rounded frame ends allow ~2 %).
-    straight = all(b[2] == LINEAR or (b[2] != BEZIER and abs(b[1] - a[1]) < 1e-9) for a, b in segments)
-    tolerance = max(0.02, abs(slopes[0]) * 0.02)
-    if not straight or any(abs(s - slopes[0]) > tolerance for s in slopes):
+    a, b = (pts[0][0], pts[-1][0]) if frame_range is None else (float(frame_range[0]), float(frame_range[1]))
+    if b < a:
+        a, b = b, a
+    pieces = []  # (from_x, to_x, kind, slope, segment)
+    if a < pts[0][0]:
+        pieces.append((a, min(b, pts[0][0]), "hold", 0.0, None))
+    for p, q in zip(pts, pts[1:]):
+        lo, hi = max(a, p[0]), min(b, q[0])
+        if q[0] <= p[0] or hi < lo or (hi == lo and not (a == b and p[0] <= a <= q[0])):
+            continue
+        if abs(q[1] - p[1]) < 1e-9 or q[2] == CONSTANT:
+            pieces.append((lo, hi, "hold", 0.0, (p, q)))
+        elif q[2] == LINEAR:
+            pieces.append((lo, hi, "line", (q[1] - p[1]) / (q[0] - p[0]), (p, q)))
+        else:
+            pieces.append((lo, hi, "curve", None, (p, q)))
+    if b > pts[-1][0]:
+        pieces.append((max(a, pts[-1][0]), b, "hold", 0.0, None))
+    spans = [pc for pc in pieces if pc[1] - pc[0] >= 1.0 - 1e-9] or pieces
+    if not spans:
+        return SpeedInfo("normal", 1.0)
+    if any(pc[2] == "curve" for pc in spans):
         return SpeedInfo("variable", None)
-    x0, y0, x1, y1 = pts[0][0], pts[0][1], pts[-1][0], pts[-1][1]
+    if all(pc[2] == "hold" for pc in spans):
+        return SpeedInfo("freeze", 0.0)
+    if any(pc[2] == "hold" for pc in spans):
+        return SpeedInfo("variable", None)  # plays, then holds (or the reverse)
+    slopes = [pc[3] for pc in spans]
+    tolerance = max(0.02, abs(slopes[0]) * 0.02)
+    if any(abs(sl - slopes[0]) > tolerance for sl in slopes):
+        return SpeedInfo("variable", None)
+    segs = [pc[4] for pc in spans]
+    x0, y0 = segs[0][0][0], segs[0][0][1]
+    x1, y1 = segs[-1][1][0], segs[-1][1][1]
     factor = (abs(y1 - y0) + 1.0) / (x1 - x0)
     rev = y1 < y0
     if not rev and abs(factor - 1.0) < 0.01:
         return SpeedInfo("normal", 1.0)
     return SpeedInfo("constant", factor, rev)
+
+
+def source_frames(time_curve: Optional[Curve], first: int, last: int) -> Tuple[int, int]:
+    """(lowest, highest) source frame libopenshot shows for clip frames first..last (inclusive).
+
+    ``source frame = max(1, time.GetLong(X))`` when the clip remaps time,
+    else X itself. Evaluates the window's ends, every point inside it and
+    every frame of a bezier segment inside it (where extremes can hide).
+    """
+    if time_curve is None:
+        return first, last
+    xs = {first, last}
+    pts = time_curve.points
+    for p, q in zip(pts, pts[1:]):
+        lo, hi = max(first, int(math.floor(p.frame))), min(last, int(math.ceil(q.frame)))
+        if hi < lo:
+            continue
+        for x in (lo, hi, int(round(p.frame)), int(round(q.frame))):
+            for dx in (-1, 0, 1):
+                if first <= x + dx <= last:
+                    xs.add(x + dx)
+        if q.interpolation == BEZIER and abs(q.value - p.value) > 1e-9 and hi - lo <= 20000:
+            xs.update(range(lo, hi + 1))
+    values = [max(1, _round_half_away(time_curve.value_at_frame(x))) for x in xs]
+    return min(values), max(values)
 
 
 @dataclass(frozen=True)
@@ -202,6 +272,13 @@ class EffectView:
         return value if isinstance(value, Curve) else None
 
 
+def _frame_range(start: float, end: float, fps: Fraction) -> Tuple[int, int]:
+    rate = float(fps)
+    first = int(round(start * rate)) + 1
+    last = int(round(end * rate))
+    return first, max(first, last)
+
+
 @dataclass(frozen=True)
 class ClipView:
     """A timeline clip."""
@@ -211,12 +288,15 @@ class ClipView:
     track_index: int          # 0 = bottom track
     layer: int                # project layer number (track ``number``)
     position: float           # timeline start (s)
-    start: float              # source in (s)
-    end: float                # source out (s)
+    start: float              # clip-frame in (s): the project's ``start`` (= source in unless time is remapped)
+    end: float                # clip-frame out (s): the project's ``end``
     timeline_in: float        # == position
     timeline_out: float       # position + (end - start)
     fps: Fraction
     speed: SpeedInfo
+    time: Optional[Curve]     # the ``time`` remap curve (clip frame X -> source frame Y), None = no remap
+    source_in: float          # earliest source second shown (start of that source frame)
+    source_out: float         # end of the latest source frame shown; [source_in, source_out) is the media used
     scale_mode: int           # transform.SCALE_* (0 crop, 1 fit, 2 stretch, 3 none)
     gravity: int              # transform.GRAVITY_* (4 centre)
     file: Optional[FileView]
@@ -245,10 +325,18 @@ class ClipView:
 
     def frame_range(self) -> Tuple[int, int]:
         """First and last visible clip frame (libopenshot X), inclusive."""
-        rate = float(self.fps)
-        first = int(round(self.start * rate)) + 1
-        last = int(round(self.end * rate))
-        return first, max(first, last)
+        return _frame_range(self.start, self.end, self.fps)
+
+    def source_frame_at(self, time: float) -> int:
+        """1-based source frame libopenshot shows at timeline second *time* (time remap applied)."""
+        x = int(round(self.curve("alpha").frame_at(time)))
+        if self.time is None:
+            return max(1, x)
+        return max(1, _round_half_away(self.time.value_at_frame(x)))
+
+    def source_time_at(self, time: float) -> float:
+        """Source second (start of the frame) shown at timeline second *time*."""
+        return (self.source_frame_at(time) - 1) / float(self.fps)
 
 
 @dataclass(frozen=True)
@@ -421,6 +509,10 @@ class TimelineSnapshot:
             fv = files.get(str(cd.get("file_id") or ""))
             if fv is None and isinstance(cd.get("reader"), dict):
                 fv = FileView.from_data(dict(cd["reader"], id=str(cd.get("file_id") or "")), project_path)
+            first_x, last_x = _frame_range(start, end, fps)
+            time_curve = (Curve.from_json(cd.get("time"), fps=fps, position=position, start=start)
+                          if time_remaps(cd.get("time")) else None)
+            lo_frame, hi_frame = source_frames(time_curve, first_x, last_x)
             clip = ClipView(
                 id=str(cd.get("id") or ""),
                 title=str(cd.get("title") or (fv.name if fv else "")),
@@ -432,7 +524,10 @@ class TimelineSnapshot:
                 timeline_in=position,
                 timeline_out=position + max(0.0, end - start),
                 fps=fps,
-                speed=speed_from_time(cd.get("time"), _repeat_active(cd)),
+                speed=speed_from_time(cd.get("time"), _repeat_active(cd), (first_x, last_x)),
+                time=time_curve,
+                source_in=(lo_frame - 1) / float(fps),
+                source_out=hi_frame / float(fps),
                 scale_mode=_i(cd.get("scale"), SCALE_FIT),
                 gravity=_i(cd.get("gravity"), GRAVITY_CENTER),
                 file=fv,
@@ -588,5 +683,6 @@ def _with_track(item, index: int):
 
 __all__ = [
     "TimelineSnapshot", "TrackView", "ClipView", "FileView", "EffectView", "TransitionView", "MarkerView",
-    "SpeedInfo", "speed_from_time", "resolve_media_path", "CLIP_CURVE_KEYS", "as_fraction",
+    "SpeedInfo", "speed_from_time", "time_remaps", "source_frames", "resolve_media_path", "CLIP_CURVE_KEYS",
+    "as_fraction",
 ]

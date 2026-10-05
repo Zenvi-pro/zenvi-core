@@ -402,3 +402,33 @@ def test_a_second_rerender_of_the_same_clip_is_refused_while_one_runs(linked):
         first.join(10)
     assert lm.link_state(linked.file(out["file_id"]), compute=False) == "fresh"
     lm.rerender_linked(out["file_id"])  # free again once the first one swapped its media
+
+
+def test_a_provider_failing_on_its_way_out_of_a_cancel_is_a_cancel(linked):
+    from classes.handoff.node_runtime import NodeCancelled
+    provider = FakeProvider(probe=linked.probe)
+    lm.register_provider(provider)
+    out = lm.import_linked(remotion_link(), position=0.0)
+    linked.mark()
+    provider.fail = NodeCancelled("cancelled", "tail")
+    with pytest.raises(jobs.JobCancelled):
+        lm.rerender_linked(out["file_id"])
+    provider.fail = RuntimeError("Chrome went away")  # what a provider raises after its process was killed
+    with pytest.raises(jobs.JobCancelled):
+        lm.rerender_linked(out["file_id"], should_cancel=lambda: True)
+    assert lm.link_state(linked.file(out["file_id"]), compute=False) == "fresh"  # not "error"
+    assert linked.undo_steps_since_mark() == 0
+
+
+def test_linking_an_existing_plain_file_undoes_cleanly(linked):
+    path = linked.media("plain.mov", seconds=4.0)
+    plain = linked.add_file("video", path=path, duration=4.0)
+    out = lm.add_linked_media(path, remotion_link(), position=0.0)
+    assert out["file_id"] == plain and linked.file(plain)["zenvi_link"]["kind"] == "remotion"
+    assert linked.undo_steps_since_mark() == 1
+    linked.undo()
+    f = linked.file(plain)
+    assert f is not None and lm.read_link(f) is None and not lm.is_linked(f)  # undo removed the link
+    assert linked.clip(out["timeline_clip_id"]) is None
+    linked.redo()
+    assert lm.read_link(linked.file(plain))["kind"] == "remotion"

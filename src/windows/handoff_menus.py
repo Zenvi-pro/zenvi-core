@@ -418,4 +418,12 @@ def install_handoff_menus(window):
     window.handoff_menus = menus
     window.handoff_status = LinkedClipsStatus(window)
     QTimer.singleShot(2000, lambda: window.handoff_status.check_soon(force=True))
+    # Quit cancels renders (and kills their node / ffmpeg trees) instead of waiting for them
+    from classes.handoff import jobs
+    app = get_app()
+    try:
+        app.aboutToQuit.connect(window.handoff_status.timer.stop)
+        app.aboutToQuit.connect(jobs.shutdown)
+    except Exception:
+        log.warning("handoff jobs are not stopped on quit (no aboutToQuit)", exc_info=True)
     return menus

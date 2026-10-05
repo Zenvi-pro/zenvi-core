@@ -36,10 +36,19 @@ def qapp():
     return QApplication.instance() or QApplication([])
 
 
+class _Signal:
+    def __init__(self):
+        self.slots = []
+
+    def connect(self, slot):
+        self.slots.append(slot)
+
+
 class _App:
     def __init__(self, qapp):
         self._tr = lambda text: text
         self.applicationStateChanged = qapp.applicationStateChanged
+        self.aboutToQuit = _Signal()
 
 
 class _Window(QMainWindow):
@@ -78,6 +87,7 @@ def ui(qapp, tmp_path, monkeypatch):
     from classes import info
     from windows import handoff_menus, linked_clip_dialog, linked_source_menu
     app = _App(qapp)
+    window_app = app
     for mod in (handoff_menus, linked_clip_dialog, linked_source_menu):
         monkeypatch.setattr(mod, "get_app", lambda: app)
     monkeypatch.setattr(info, "USER_PATH", str(tmp_path / "user"))
@@ -91,6 +101,7 @@ def ui(qapp, tmp_path, monkeypatch):
     handoff_menus.install_handoff_menus(window)
     # what a theme does when it builds the main toolbar
     window.toolBar.addWidget(window.handoff_status).setVisible(window.handoff_status.is_active)
+    window.test_app = window_app
     yield window, calls, tmp_path
     window.handoff_status.timer.stop()
     jobs.remove_listener(window.handoff_status._on_job)
@@ -218,3 +229,9 @@ def test_props_dialog_raw_json_round_trip_and_errors(qapp, monkeypatch):
     d.json_edit.setPlainText("[1]")
     d._apply()
     assert d.props() is None and "JSON object" in d.error_label.text()
+
+
+def test_quit_stops_handoff_jobs(ui):
+    window, _calls, _ = ui
+    assert jobs.shutdown in window.test_app.aboutToQuit.slots
+    assert window.handoff_status.timer.stop in window.test_app.aboutToQuit.slots

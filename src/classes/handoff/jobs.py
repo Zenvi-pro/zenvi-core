@@ -42,6 +42,7 @@ _ids = itertools.count(1)
 _lock = threading.RLock()
 _jobs: Dict[str, "Job"] = {}
 _listeners: List[Callable[["Job"], None]] = []
+_shutting_down = False
 
 
 class JobCancelled(Exception):
@@ -49,6 +50,8 @@ class JobCancelled(Exception):
 
 
 def _gui(func: Callable[..., Any], *args: Any) -> None:
+    if _shutting_down:
+        return  # Zenvi is quitting: no window to call back into (invoke_on_gui would run it on this worker)
     from classes.qt_main_thread import invoke_on_gui
     try:
         invoke_on_gui(func, *args)
@@ -204,6 +207,10 @@ def submit_job(fn: Callable[[Job], Any], *, label: str, key: Optional[str] = Non
     job._on_progress = on_progress
     job._on_done = on_done
     job.quick = quick
+    if _shutting_down:  # after Quit: never start new work
+        job._cancel.set()
+        job._finish(CANCELLED)
+        return job
 
     def _run() -> None:
         if job.should_cancel():
@@ -272,6 +279,24 @@ def get_job(job_id: str) -> Optional[Job]:
 def cancel_job(job_id: str) -> bool:
     job = get_job(job_id)
     return job.cancel() if job is not None else False
+
+
+def shutdown(wait: bool = False) -> None:
+    """Stop all handoff work because Zenvi is quitting (connected to ``aboutToQuit``).
+
+    Cancels every queued and running job (renders poll ``should_cancel`` and
+    kill their process trees), drops queued work from both executors and
+    turns GUI callbacks off: once the window is gone they would otherwise run
+    on the worker thread. Later ``submit_job`` calls return cancelled jobs.
+    """
+    global _shutting_down
+    _shutting_down = True
+    with _lock:
+        pending = list(_jobs.values())
+    for job in pending:
+        job.cancel()
+    for executor in (EXECUTOR, CHECK_EXECUTOR):
+        executor.shutdown(wait=wait, cancel_futures=True)
 
 
 def run_on_qthread(func: Callable[[], Any], timeout_seconds: float = 6 * 60 * 60) -> Any:

@@ -151,7 +151,9 @@ class FakeHost:
         self.app = app
         self.token = token
         self.sse = False
+        self.redirect_to = None   # a URL: answer every POST with 302 to it
         self.calls = []
+        self.headers = []         # the request headers of every POST
         host = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -159,6 +161,13 @@ class FakeHost:
                 pass
 
             def do_POST(self):
+                host.headers.append(dict(self.headers))
+                if host.redirect_to:
+                    self.send_response(302)
+                    self.send_header("Location", host.redirect_to)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 if self.headers.get("Authorization") != "Bearer " + host.token:
                     self.send_response(401)
                     self.send_header("WWW-Authenticate", "Bearer")

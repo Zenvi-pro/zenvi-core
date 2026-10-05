@@ -737,6 +737,25 @@ def _get_file(file_id: str):
     return f
 
 
+def _seed_absent_keys(obj: Any, defaults: Dict[str, Any]) -> None:
+    """Write absent keys with a neutral value outside undo history (``media_files.seed_missing_keys``).
+
+    Project updates merge, so an undo cannot remove a key an edit added; a key
+    that already exists (as None) is restored to None instead. GUI thread.
+    """
+    missing = {k: v for k, v in defaults.items() if k not in obj.data}
+    if not missing or not obj.key:
+        return
+    updates = _app().updates
+    previous = updates.ignore_history
+    updates.ignore_history = True
+    try:
+        updates.update(list(obj.key), copy.deepcopy(missing))
+    finally:
+        updates.ignore_history = previous
+    obj.data.update(copy.deepcopy(missing))
+
+
 def _linked_file(file_id: str):
     f = _get_file(file_id)
     if not isinstance(f.data.get(LINK_KEY), dict):
@@ -806,6 +825,9 @@ def add_linked_media(path: str, link: dict, *, position: Optional[float] = None,
         with nested_transaction(app.updates):
             existing = File.get(path=path)
             if existing:
+                # updates merge and undo cannot remove a key an edit added: give the
+                # file a neutral link (None = not linked) outside history first
+                _seed_absent_keys(existing, {LINK_KEY: None})
                 existing.data = dict(existing.data, **{LINK_KEY: stored})
                 existing.save()
                 f = existing
@@ -969,10 +991,17 @@ def render_link(link: dict, *, on_progress: Optional[ProgressFn] = None,
     staging = tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=folder)
     progress = on_progress or (lambda _f, _m: None)
     cancel = should_cancel or (lambda: False)
+    from classes.handoff.jobs import JobCancelled
     try:
-        result = provider.render(decoded, staging, on_progress=progress, should_cancel=cancel)
+        try:
+            result = provider.render(decoded, staging, on_progress=progress, should_cancel=cancel)
+        except JobCancelled:
+            raise
+        except Exception:
+            if cancel():  # whatever the provider raised on its way out of a cancel, it is a cancel
+                raise JobCancelled(f"{kind_label(kind)} render cancelled") from None
+            raise
         if cancel():
-            from classes.handoff.jobs import JobCancelled
             raise JobCancelled(f"{kind_label(kind)} render cancelled")
         if not isinstance(result, RenderResult):
             raise LinkError(f"the {kind} provider returned no render result")
@@ -1084,6 +1113,8 @@ def rerender_linked(file_id: str, *, props: Optional[dict] = None, on_progress: 
     except Exception as exc:
         with _rendering_lock:
             _rendering.discard(str(file_id))
+        if job.should_cancel() or bool(should_cancel and should_cancel()):
+            raise jobs.JobCancelled("render cancelled") from None  # a cancel, not a failed render
         set_render_error(str(file_id), str(exc))
         raise
     try:

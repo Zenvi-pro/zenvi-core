@@ -24,6 +24,7 @@ from __future__ import annotations
 import base64
 import datetime
 import errno
+import http.client
 import itertools
 import json
 import os
@@ -125,9 +126,17 @@ def pid_alive(pid: Any) -> bool:
 def _loopback(url: str) -> bool:
     try:
         parsed = urllib.parse.urlparse(str(url))
+        port = parsed.port  # ValueError when out of range (99999)
     except ValueError:
         return False
-    return parsed.scheme == "http" and (parsed.hostname or "") in LOOPBACK_HOSTS and bool(parsed.port)
+    return parsed.scheme == "http" and (parsed.hostname or "") in LOOPBACK_HOSTS and bool(port)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: it would carry the bearer token to another address."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def _read_token(token_file: Any) -> Optional[str]:
@@ -217,7 +226,8 @@ class McpHttpClient:
             raise LinkHostError(f"refusing a non-loopback host URL {url!r}", "INVALID_ARGUMENT")
         self.url = url
         self.token = token
-        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # loopback: never a proxy
+        # loopback: never a proxy, never a redirect
+        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
     def _post(self, payload: dict, timeout: float) -> Optional[dict]:
         body = json.dumps(payload).encode("utf-8")
@@ -233,17 +243,24 @@ class McpHttpClient:
                 ctype = (resp.headers.get("Content-Type") or "").lower()
                 data = resp.read(MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as exc:
+            if 300 <= exc.code < 400:
+                raise LinkHostError("the host answered with a redirect; refused (Zenvi Link never redirects)",
+                                    "FORBIDDEN") from None
             if exc.code == 401:
                 raise LinkHostError("the host rejected Zenvi's token (the extension restarted?); try again",
                                     "UNAUTHORIZED") from None
             if exc.code == 403:
                 raise LinkHostError("the host refused the request (403)", "FORBIDDEN") from None
             raise LinkHostError(f"the host answered HTTP {exc.code}", "HOST_ERROR") from None
+        except http.client.HTTPException as exc:  # BadStatusLine, IncompleteRead: not an MCP endpoint
+            raise LinkHostError(f"the endpoint sent a broken HTTP reply ({type(exc).__name__})", "HOST_ERROR") from None
         except (TimeoutError, OSError) as exc:
             reason = getattr(exc, "reason", exc)
             if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
                 raise LinkHostError(f"the host did not answer within {timeout:g} s", "TIMEOUT") from None
             raise LinkHostError(f"could not reach the host: {reason}", "NOT_CONNECTED") from None
+        except ValueError as exc:  # a malformed URL or header
+            raise LinkHostError(f"bad host endpoint: {exc}", "HOST_ERROR") from None
         if len(data) > MAX_RESPONSE_BYTES:
             raise LinkHostError("the host's answer is too large", "HOST_ERROR")
         if status == 202 or not data.strip():
@@ -345,13 +362,22 @@ def _inspect(app: str, base_dir: Optional[str], probe: bool, timeout: float) -> 
     return info
 
 
+def _inspect_safely(app: str, base_dir: Optional[str], probe: bool, timeout: float) -> HostInfo:
+    """``_inspect`` that never raises: one broken discovery file must not hide the other app."""
+    try:
+        return _inspect(app, base_dir, probe, timeout)
+    except Exception as exc:
+        log.warning("Zenvi Link discovery for %s failed", app, exc_info=True)
+        return HostInfo(app=app, connected=False, reason=f"its discovery file could not be used: {exc}")
+
+
 def list_hosts(base_dir: Optional[str] = None, *, probe: bool = True, timeout: float = PROBE_TIMEOUT) -> List[HostInfo]:
     """Both Adobe hosts, connected or not; ``active`` marks the most recently used connected one.
 
     *probe* sends one ``initialize`` per discovery file (up to *timeout*
     seconds each). Blocking: off the GUI thread.
     """
-    hosts = [_inspect(app, base_dir, probe, timeout) for app in APPS]
+    hosts = [_inspect_safely(app, base_dir, probe, timeout) for app in APPS]
     live = [h for h in hosts if h.connected]
     if live:
         def _key(h: HostInfo):
@@ -364,14 +390,14 @@ def list_hosts(base_dir: Optional[str] = None, *, probe: bool = True, timeout: f
 def get_host(app: str, base_dir: Optional[str] = None, *, probe: bool = True) -> HostInfo:
     if app not in APPS:
         raise LinkHostError(f"unknown Adobe host {app!r}; expected one of {', '.join(APPS)}", "INVALID_ARGUMENT")
-    return _inspect(app, base_dir, probe, PROBE_TIMEOUT)
+    return _inspect_safely(app, base_dir, probe, PROBE_TIMEOUT)
 
 
 def _connected_client(app: str, base_dir: Optional[str]) -> McpHttpClient:
     if app not in APPS:
         raise LinkHostError(f"unknown Adobe host {app!r}; expected one of {', '.join(APPS)}", "INVALID_ARGUMENT")
     data = read_discovery(app, base_dir)
-    host = _inspect(app, base_dir, True, PROBE_TIMEOUT)
+    host = _inspect_safely(app, base_dir, True, PROBE_TIMEOUT)
     if not host.connected or data is None:
         raise HostNotConnected(f"{APP_LABELS[app]} is not connected ({host.reason}). {connect_hint(app)}")
     return _client_for(data)
