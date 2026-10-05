@@ -160,6 +160,24 @@ def test_comp_matches_the_project():
     assert comp["dur"] >= 5.0 and comp["name"] == "Trip"
 
 
+def test_the_undo_group_name_is_the_one_the_reports_use():
+    from classes.exporters.after_effects_runtime import RUNTIME
+    assert AE.UNDO_NAME == "Import Zenvi project"
+    assert 'app.beginUndoGroup("%s")' % AE.UNDO_NAME in RUNTIME and '"undo": "%s"' % AE.UNDO_NAME in RUNTIME
+
+
+@pytest.mark.parametrize("name, sequence", [("promo 50% off.mp4", False), ("clip 50%20off.mp4", False),
+                                            ("shot_%04d.png", True), ("frame_%d.jpg", True)])
+def test_only_a_frame_pattern_on_an_image_name_is_an_image_sequence(name, sequence):
+    # core's project_files.is_image_sequence (through FileView): a '%' is otherwise just a character
+    b = ProjectBuilder()
+    v = b.add_file("video", path="/media/" + name, duration=2.0)
+    b.add_clip(v, track=1, position=0.0, start=0.0, end=1.0)
+    out, _ = build(b)
+    entry = out.data["footage"][0]
+    assert bool(entry.get("seq")) is sequence and (entry["kind"] == "sequence") is sequence
+
+
 def test_an_empty_timeline_is_refused():
     with pytest.raises(AE.AeExportError, match="no clips"):
         build(ProjectBuilder())
@@ -212,7 +230,9 @@ def assert_zenvi_frames(L, clip, *, last=None, margin=0.0):
 
 
 @pytest.mark.parametrize("speed, stretch", [(2.0, 50.0), (4.0, 25.0), (3.0, 100.0 / 3.0)])
-def test_whole_frame_speeds_are_a_time_stretch_with_a_frame_aligned_start(speed, stretch):
+def test_whole_frame_speeds_are_a_time_stretch_that_stays_inside_each_frame(speed, stretch):
+    # 2x / 3x / 4x land on whole source frames; their startTime keeps the source times half a frame in, so
+    # a startTime After Effects rounds (off the frame grid with an odd trim) cannot slip a frame
     b = ProjectBuilder()
     v = b.add_file("video", path="/media/long.mp4", duration=60.0)
     c = b.add_clip(v, track=1, position=3.0, start=0.0, end=10.0)
@@ -220,7 +240,18 @@ def test_whole_frame_speeds_are_a_time_stretch_with_a_frame_aligned_start(speed,
     out, snap = build(b)
     L = layer(out, index=0)
     assert L["stretch"] == pytest.approx(stretch) and "remap" not in L
-    assert L["start"] == pytest.approx(3.0, abs=1e-9)
+    assert L["start"] == pytest.approx(3.0 - 0.5 / 30.0 / speed)
+    assert_zenvi_frames(L, snap.clip(c), margin=0.49)
+
+
+def test_normal_speed_through_a_time_curve_keeps_a_frame_aligned_start():
+    b = ProjectBuilder()
+    v = b.add_file("video", path="/media/long.mp4", duration=60.0)
+    c = b.add_clip(v, track=1, position=3.0, start=0.0, end=4.0)
+    b.clip(c)["time"] = kf((1, 31, LINEAR), (121, 151, LINEAR))
+    out, snap = build(b)
+    L = layer(out, index=0)
+    assert L["stretch"] == 100 and "remap" not in L and L["start"] == pytest.approx(2.0)
     assert_zenvi_frames(L, snap.clip(c))
 
 
@@ -384,6 +415,44 @@ def test_eased_moves_keep_the_curves_eases():
     assert tf["pos"]["o"][0][0][1] == pytest.approx(50.0)  # the editor's default handles: 50 % influence
     assert tf["op"]["i"] == ["b"] and tf["op"]["t"] == [1.0, 1.5]
     assert_follows(out, snap, c, "photo.jpg")
+
+
+BACK = {"in": ((0.600, -0.280), (0.735, 0.045)), "out": ((0.175, 0.885), (0.320, 1.275)),
+        "in-out": ((0.680, -0.550), (0.265, 1.550))}  # windows/views/menu.py "Ease ... (Back)"
+
+
+@pytest.mark.parametrize("name", sorted(BACK))
+def test_back_easings_on_a_diagonal_move_are_separate_x_and_y(name):
+    # one straight path, but the Back easings run past its ends: After Effects refuses a negative speed
+    # along a spatial path, while X and Y Position take any speed
+    (x1, y1), (x2, y2) = BACK[name]
+    def curve(v1):
+        return {"Points": [point(1, 0.0, 0, (0.5, 1.0), (x1, y1)), point(31, v1, 0, (x2, y2), (0.5, 0.0))]}
+    b = ProjectBuilder()
+    img = b.add_file("image", path="/media/photo.jpg")
+    c = b.add_clip(img, track=1, position=1.0, start=0.0, end=3.0, location_x=curve(0.3), location_y=curve(-0.2))
+    out, snap = build(b)
+    pos = layer(out, index=0)["tf"]["pos"]
+    assert pos["sep"] == 1 and pos["x"]["i"] == ["b"] and pos["y"]["i"] == ["b"]
+    speeds = [pos["x"]["o"][0][0][0], pos["x"]["n"][0][0][0]]
+    assert min(speeds) < 0  # the anticipation / overshoot, kept in one dimension
+    assert_follows(out, snap, c, "photo.jpg", tol=1e-3, props=("pos",))
+
+
+def test_sampled_moves_key_x_and_y_separately_with_few_keys():
+    # top-left gravity and a scale animation: Position follows both, so it is sampled -- per dimension,
+    # and within a tenth of a pixel, so a long move does not become a key per frame
+    b = ProjectBuilder()
+    v = b.add_file("video", path="/media/clip.mp4")
+    c = b.add_clip(v, track=1, position=0.0, start=0.0, end=10.0, gravity=T.GRAVITY_TOP_LEFT,
+                   location_x=kf((1, -0.2), (301, 0.15)), scale_x=kf((1, 0.5), (301, 1.2)),
+                   scale_y=kf((1, 0.5), (301, 1.2)))
+    out, snap = build(b)
+    pos = layer(out, index=0)["tf"]["pos"]
+    assert pos["sep"] == 1
+    keys = len(pos["x"]["t"]) + len(pos["y"]["t"])
+    assert keys < 0.5 * 300, keys
+    assert_follows(out, snap, c, "clip.mp4", tol=AE.TOL_PX + 1e-9, props=("pos",))
 
 
 def test_x_and_y_with_different_eases_are_separated_dimensions():

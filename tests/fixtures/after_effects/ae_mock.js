@@ -6,6 +6,7 @@
  *   node ae_mock.js script.jsx [--media media.json] [--fonts "Family:Style:PostScript,..."]
  *                   [--no-keylight] [--no-fonts-api] [--no-char-reset] [--project-file x.aep]
  *                   [--zenvi-link]   (define the ZenviLink global, as inside the Zenvi Link panel)
+ *                   [--language de_DE] [--wrong-param-ids] [--no-audio-group] [--key-time-grid 24]
  *
  * The script runs in a realm without the library features ExtendScript (ES3) lacks -- JSON,
  * Array.prototype.indexOf/forEach/map/..., String.prototype.trim, Object.keys, Function.prototype.bind --
@@ -19,7 +20,7 @@ const vm = require("vm");
 
 const argv = process.argv.slice(2);
 const options = {keylight: true, fontsApi: true, charStyleReset: true, projectFile: null, scriptPath: null,
-  zenviLink: false};
+  zenviLink: false, language: null, wrongParamIds: false, noAudioGroup: false, keyTimeGrid: 0};
 let media = {};
 let fonts = [];
 let script = null;
@@ -32,6 +33,10 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === "--no-char-reset") options.charStyleReset = false;
   else if (a === "--project-file") options.projectFile = argv[++i];
   else if (a === "--zenvi-link") options.zenviLink = true;
+  else if (a === "--language") options.language = argv[++i];
+  else if (a === "--wrong-param-ids") options.wrongParamIds = true;
+  else if (a === "--no-audio-group") options.noAudioGroup = true;
+  else if (a === "--key-time-grid") options.keyTimeGrid = Number(argv[++i]);
   else script = a;
 }
 if (!script) {
@@ -52,6 +57,7 @@ const host = {
   resolve: (p) => path.resolve(p),
   dirname: (p) => path.dirname(p),
   basename: (p) => path.basename(p),
+  readText: (p) => fs.readFileSync(p, "utf8"),
   mediaInfo: (p, sequence) => {
     const ext = path.extname(p).toLowerCase();
     const m = media[p] || {};

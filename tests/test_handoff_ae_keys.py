@@ -212,3 +212,21 @@ def test_pin_replaces_one_key_and_straightens_only_its_spans():
     with pytest.raises(ValueError):
         K.pin(K.Track([0.0, 1.0], [(0.0, 0.0), (1.0, 1.0)], [K.LINEAR], [[(1.0, 0.3)]], [[(1.0, 0.3)]],
                       spatial=True), {0: (0.5, 0.5)})
+
+
+@pytest.mark.parametrize("handles, spatial", [
+    (((0.5, 0.0), (0.5, 1.0)), True),          # the editor's default ease: stays on the path
+    (((0.175, 0.885), (0.320, 1.275)), False),  # Ease Out (Back): overshoots the end
+    (((0.600, -0.280), (0.735, 0.045)), False),  # Ease In (Back): backs up first
+])
+def test_a_spatial_path_only_takes_easings_that_stay_between_its_keys(handles, spatial):
+    (x1, y1), (x2, y2) = handles
+    xs = _curve([(1, 0.0, 0, (x1, y1)), (31, 300.0, 0, None, (x2, y2))])
+    ys = _curve([(1, 0.0, 0, (x1, y1)), (31, -200.0, 0, None, (x2, y2))])
+    times = [0.0, 1.0]
+    vx, px = K.curve_pieces(xs, times)
+    vy, py = K.curve_pieces(ys, times)
+    track = K.spatial_track(times, vx, vy, px, py)
+    assert (track is not None) is spatial
+    if track is not None:
+        assert track.outs[0][0][0] >= 0 and track.ins[0][0][0] >= 0

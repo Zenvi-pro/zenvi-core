@@ -94,8 +94,9 @@ DB_FLOOR = -96.0
 DB_CEILING = 12.0
 
 # Tolerances: eased keys must match the exact values within these at every frame;
-# sampled keys keep linear interpolation within them.
-TOL_PX = 0.02
+# sampled keys keep linear interpolation within them. A tenth of a pixel is invisible and keeps a long
+# sampled move to a few keys a second instead of one per frame (each key costs After Effects ~6 calls).
+TOL_PX = 0.1
 TOL_PERCENT = 0.01
 TOL_DEGREES = 0.005
 TOL_OPACITY = 0.05
@@ -522,8 +523,10 @@ def _as_stretch(keys: K.Track, whole: bool, offset: float, t_in: float, frames: 
         return None
     speed = 1.0 if abs(slopes[0] - 1.0) < 1e-9 else slopes[0]
     source_in = K.track_value(keys, t_in)[0]
-    if whole:
-        # whole source frames (normal speed, 2x, 3x...): a frame-aligned start, like any other layer
+    if whole and speed == 1.0:
+        # normal speed on whole frames: a frame-aligned start, like any other layer. Any other speed keeps
+        # the source times inside their frames: its startTime is off the frame grid anyway (2x with an odd
+        # trim lands on a half frame), and a time AE rounds there must not slip to the previous frame.
         source_in -= offset / fps
     start = t_in - source_in / speed
     if _ae_frames([(t - start) * speed for t in frames], fps) != list(shown):
@@ -663,13 +666,17 @@ def _transform(ctx: _Ctx, clip, file, src_w: int, src_h: int, t_in: float, t_out
                   [TOL_PX, TOL_PX], spatial=True)
     if isinstance(anchor.keys, K.Track) and not (anchor.keys.spatial or anchor.keys.sampled):
         anchor = K.BuildResult(K.sampled_track(frames, list(zip(cols["ax"], cols["ay"])), [TOL_PX, TOL_PX]))
-    position = prop([K.Dimension(cols["px"], curves["location_x"]), K.Dimension(cols["py"], curves["location_y"])],
-                    [TOL_PX, TOL_PX], spatial=True)
-    if isinstance(position.keys, K.Track) and not (position.keys.spatial or position.keys.sampled):
+    position = K.build_property(frames, [K.Dimension(cols["px"], curves["location_x"]),
+                                         K.Dimension(cols["py"], curves["location_y"])],
+                                t_in=t_in, t_out=t_out, tol=[TOL_PX, TOL_PX], spatial=True)
+    if isinstance(position.keys, K.Track) and not position.keys.spatial:
+        # not one eased straight path (X and Y ease differently, a Back easing, a sampled move): key X and
+        # Y Position separately, each with its own eases or its own (fewer) samples
         pos_spec: Any = {"sep": 1,
                          "x": keys_spec(prop([K.Dimension(cols["px"], curves["location_x"])], [TOL_PX]).keys),
                          "y": keys_spec(prop([K.Dimension(cols["py"], curves["location_y"])], [TOL_PX]).keys)}
     else:
+        _note_track(ctx, position)
         pos_spec = keys_spec(position.keys)
     scale = prop([K.Dimension(cols["sx"], curves["scale_x"]), K.Dimension(cols["sy"], curves["scale_y"])],
                  [TOL_PERCENT, TOL_PERCENT])
@@ -908,7 +915,8 @@ def build_ae_script(snapshot, *, media_map: Optional[Mapping[str, MediaRef]] = N
         "// Built by " + _ascii(generator) + " from " + _ascii(source or name) + ".",
         "// Run it in After Effects with File > Scripts > Run Script File..., or from Zenvi with",
         "// File > Send To > After Effects (needs the Zenvi Link panel). It builds one undo step:",
-        "// Edit > Undo \"" + UNDO_NAME + "\" removes everything it made.",
+        "// Edit > Undo \"" + UNDO_NAME + "\" removes everything it made (\"Zenvi: Run JSX file\" when Zenvi",
+        "// Link ran it).",
         "// ES3 (ExtendScript); everything below is plain ASCII.",
         "",
         "(function () {",

@@ -14,7 +14,10 @@ export keep their footage.
 while unsaved; not a temp folder, because After Effects keeps referencing the
 files) and runs the script in the connected After Effects through Zenvi Link
 (``ae_run_jsx_file``). ``run_with_applescript`` is the macOS fallback when
-After Effects is installed but Zenvi Link is not connected.
+After Effects is installed but Zenvi Link is not connected; it prefers the
+After Effects that is running and can be cancelled. A run Zenvi starts on
+an export written for people (``interactive``) goes through a small runner
+script (``quiet_runner``) so the script's closing alert cannot block it.
 
 Everything here blocks on the disk, Qt rendering threads, the network or a
 subprocess: call it off the Qt GUI thread (``classes.handoff.jobs`` or a
@@ -33,10 +36,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from classes.exporters import after_effects as AE
+from classes.exporters.after_effects_js import js_str
 from classes.exporters.after_effects_titles import NotNative, parse_title_svg
 from classes.logger import log
 
@@ -47,9 +53,13 @@ AnalyzeMask = Callable[[str], "MaskInfo"]
 
 AE_APP = "aftereffects"
 RUN_TOOL = "ae_run_jsx_file"
-# Building a long timeline in After Effects takes a while; Zenvi Link's default call timeout is 120 s.
-AE_RUN_TIMEOUT = 900.0
-APPLESCRIPT_TIMEOUT = 3600
+# Zenvi Link gives ae_run_jsx_file 30 minutes (adobe-link e77b816: a long, heavily keyed timeline takes
+# that long to build). Wait a minute more so its own answer -- result or timeout -- arrives first. The
+# AppleScript route waits as long.
+AE_RUN_TIMEOUT = 1860.0
+# Edit > Undo names: Zenvi Link wraps every tool call in "Zenvi: <tool title>" and After Effects shows the
+# outermost group's name; File > Scripts (and AppleScript's DoScriptFile) show the script's own group.
+ZENVI_LINK_UNDO = "Zenvi: Run JSX file"
 MAX_TITLE_PIXELS = 8192
 COPY_CHUNK = 1 << 20
 HASH_LIMIT = 64 << 20
@@ -92,6 +102,22 @@ class ExportResult:
                 "titles": self.titles, "warnings": self.warnings, "stats": self.stats}
 
 
+def undo_hint(via: str) -> str:
+    """How to undo a build in After Effects, for a run through *via* ("zenvi-link", "applescript" or "script")."""
+    name = ZENVI_LINK_UNDO if via == "zenvi-link" else AE.UNDO_NAME
+    return f'In After Effects, Edit > Undo "{name}" removes it.'
+
+
+def describe_import(summary: Optional[dict], via: str, fallback: str = "") -> str:
+    """The export script's summary line plus the undo hint for the route it ran through."""
+    if summary and summary.get("summary"):
+        text = str(summary["summary"])
+        if summary.get("zenvi_ae_import") and summary.get("status") != "error":
+            text += " " + undo_hint(via)
+        return text
+    return fallback or "After Effects ran the script."
+
+
 @dataclass
 class SendResult:
     export: ExportResult
@@ -101,9 +127,7 @@ class SendResult:
 
     @property
     def message(self) -> str:
-        if self.summary and self.summary.get("summary"):
-            return str(self.summary["summary"])
-        return str(self.host_receipt.get("summary") or "After Effects ran the script.")
+        return describe_import(self.summary, self.via, str(self.host_receipt.get("summary") or ""))
 
 
 # ---------------------------------------------------------------------------
@@ -315,8 +339,9 @@ def _readme(snapshot, result: ExportResult, export: AE.AeExport, generator: str,
         "",
         f"The script adds a folder \"{AE.FOLDER_PREFIX}{snapshot.name}\" with the footage, titles and the comp",
         f"\"{snapshot.name}\" ({snapshot.width}x{snapshot.height}, {float(snapshot.fps):g} fps) and opens it. It is one undo step:",
-        f"Edit > Undo \"{AE.UNDO_NAME}\" removes everything it made. Keep this folder where it is: After",
-        "Effects reads the media, title images and wipe images from it.",
+        f"Edit > Undo \"{AE.UNDO_NAME}\" removes everything it made (when Zenvi runs it through Zenvi Link,",
+        f"the step is called \"{ZENVI_LINK_UNDO}\"). Keep this folder where it is: After Effects reads the",
+        "media, title images and wipe images from it.",
         "",
         f"Layers: {export.stats.get('layers', 0)}, footage items: {export.stats.get('footage', 0)}.",
     ]
@@ -593,15 +618,67 @@ def parse_import_summary(host_result) -> Optional[dict]:
     return None
 
 
-def run_in_after_effects(script_path: str, *, timeout: float = AE_RUN_TIMEOUT,
+QUIET_FLAG = "ZENVI_AE_QUIET"
+
+
+def quiet_runner(script_path: str) -> str:
+    """A small script next to *script_path* that runs it with its closing alert off; returns its path.
+
+    For an export written for people (``interactive``) that Zenvi itself
+    runs: an alert would hold Zenvi Link's call or AppleScript's
+    DoScriptFile until someone clicks it. The flag lives only for the run
+    (the export runtime's ``quietRun``). Delete the runner afterwards.
+    """
+    target = os.path.abspath(script_path)
+    runner = os.path.join(os.path.dirname(target), ".zenvi-run-%s.jsx" % uuid.uuid4().hex[:12])
+    body = "\n".join([
+        "// Zenvi: runs the export next to this file without its closing alert (removed after the run)",
+        "(function () {",
+        "    $.global.%s = true;" % QUIET_FLAG,
+        "    try {",
+        # File() reads %XX as an escape
+        "        return $.evalFile(new File(%s));" % js_str(target.replace("%", "%25")),
+        "    } finally {",
+        "        delete $.global.%s;" % QUIET_FLAG,
+        "    }",
+        "}());",
+        ""])
+    try:
+        with open(runner, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(body)
+    except OSError as exc:
+        raise AeHandoffError(f"could not write a small runner script next to {os.path.basename(target)} "
+                             f"({exc.strerror or exc}); run it in After Effects with File > Scripts > Run Script "
+                             f"File") from None
+    return runner
+
+
+def _drop_runner(runner: Optional[str]) -> None:
+    if runner:
+        try:
+            os.remove(runner)
+        except OSError:
+            log.debug("could not remove %s", runner, exc_info=True)
+
+
+def run_in_after_effects(script_path: str, *, quiet: bool = False, timeout: float = AE_RUN_TIMEOUT,
                          base_dir: Optional[str] = None) -> Tuple[Optional[dict], dict]:
     """Run *script_path* in the connected After Effects (Zenvi Link ``ae_run_jsx_file``). Blocking.
 
+    *quiet*: run it through ``quiet_runner`` (for an interactive export).
     Raises ``adobe_link.HostNotConnected`` (with how to connect) or
     AeHandoffError when After Effects reports a failure.
     """
     from classes.handoff import adobe_link
-    result = adobe_link.call_host_tool(AE_APP, RUN_TOOL, {"path": script_path}, timeout=timeout, base_dir=base_dir)
+    runner = quiet_runner(script_path) if quiet else None
+    try:
+        result = adobe_link.call_host_tool(AE_APP, RUN_TOOL, {"path": runner or script_path}, timeout=timeout,
+                                           base_dir=base_dir)
+    except adobe_link.HostNotConnected:
+        _drop_runner(runner)
+        raise
+    # (after a timeout or a dropped connection the runner stays: After Effects may still read it)
+    _drop_runner(runner)
     summary = parse_import_summary(result)
     if result.is_error:
         raise AeHandoffError("After Effects could not run the script: " + str(result.receipt.get("summary") or
@@ -649,10 +726,35 @@ def _app_rank(path: str) -> Tuple[int, int, str]:
     return (max(years) if years else 0, -beta, name)
 
 
-def find_after_effects_app(applications: Sequence[str] = ("/Applications",), platform: Optional[str] = None) -> Optional[str]:
-    """The newest installed ``Adobe After Effects <year>.app`` on macOS, or None."""
+_RUNNING_APP_RE = re.compile(r"^(/.*?/Adobe After Effects[^/]*\.app)/Contents/MacOS/")
+
+
+def running_after_effects_apps() -> List[str]:
+    """The ``.app`` bundles of the After Effects processes running now (``ps``: no Automation prompt)."""
+    try:
+        proc = subprocess.run(["ps", "-axo", "comm="], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    apps: List[str] = []
+    for line in (proc.stdout or "").splitlines():
+        match = _RUNNING_APP_RE.match(line.strip())
+        if match and match.group(1) not in apps:
+            apps.append(match.group(1))
+    return apps
+
+
+def find_after_effects_app(applications: Sequence[str] = ("/Applications",), platform: Optional[str] = None,
+                           running: Optional[Callable[[], List[str]]] = None) -> Optional[str]:
+    """The After Effects to ask on macOS: the running one (the newest, if several), else the newest installed.
+
+    Asking an installed release that is not running would start it and
+    build the comp in an empty project beside the one the user has open.
+    """
     if (platform or sys.platform) != "darwin":
         return None
+    live = [p for p in (running or running_after_effects_apps)() if os.path.isdir(p)]
+    if live:
+        return max(live, key=_app_rank)
     found: List[str] = []
     for root in applications:
         found += glob.glob(os.path.join(root, "Adobe After Effects*", "Adobe After Effects*.app"))
@@ -660,16 +762,16 @@ def find_after_effects_app(applications: Sequence[str] = ("/Applications",), pla
     return max(found, key=_app_rank) if found else None
 
 
-def applescript_command(app_path: str, script_path: str) -> List[str]:
+def applescript_command(app_path: str, script_path: str, timeout: float = AE_RUN_TIMEOUT) -> List[str]:
     """``osascript`` argv running *script_path* in the After Effects at *app_path* (DoScriptFile).
 
     The script path travels as an argument, never inside the AppleScript
-    source, so no quoting can break it.
+    source, so no quoting can break it; DoScriptFile gets a file, not a
+    string.
     """
     app_name = os.path.splitext(os.path.basename(app_path))[0].replace("\\", "\\\\").replace('"', '\\"')
-    lines = ["on run argv", f'tell application "{app_name}"', "activate",
-             f"with timeout of {APPLESCRIPT_TIMEOUT} seconds", "DoScriptFile (item 1 of argv)", "end timeout",
-             "end tell", "end run"]
+    lines = ["on run argv", "set f to POSIX file (item 1 of argv)", f'tell application "{app_name}"', "activate",
+             f"with timeout of {int(timeout)} seconds", "DoScriptFile f", "end timeout", "end tell", "end run"]
     argv = ["osascript"]
     for line in lines:
         argv += ["-e", line]
@@ -677,22 +779,65 @@ def applescript_command(app_path: str, script_path: str) -> List[str]:
     return argv
 
 
-def run_with_applescript(script_path: str, app_path: str, *, timeout: float = APPLESCRIPT_TIMEOUT) -> Optional[dict]:
-    """Run the export in After Effects through AppleScript (macOS). Blocking; returns the script's summary."""
+def _duration(seconds: float) -> str:
+    if seconds >= 120:
+        return f"{int(round(seconds / 60.0))} minutes"
+    whole = max(1, int(round(seconds)))
+    return f"{whole} second{'' if whole == 1 else 's'}"
+
+
+def run_with_applescript(script_path: str, app_path: str, *, quiet: bool = False, timeout: float = AE_RUN_TIMEOUT,
+                         should_cancel: CancelFn = None, poll: float = 0.25) -> Optional[dict]:
+    """Run the export in After Effects through AppleScript (macOS). Blocking; returns the script's summary.
+
+    Waits at most *timeout* seconds and gives up early when *should_cancel*
+    says so (After Effects may still finish the comp: Zenvi only stops
+    waiting). *quiet*: run it through ``quiet_runner`` (for an interactive
+    export, whose alert would hold DoScriptFile).
+    """
+    name = os.path.basename(script_path)
+    runner = quiet_runner(script_path) if quiet else None
+    finished = False
     try:
-        proc = subprocess.run(applescript_command(app_path, script_path), capture_output=True, text=True,
-                              timeout=timeout)
-    except FileNotFoundError:
-        raise AeHandoffError("osascript is not available on this Mac") from None
-    except subprocess.TimeoutExpired:
-        raise AeHandoffError("After Effects did not finish the script in time; check After Effects") from None
+        try:
+            proc = subprocess.Popen(applescript_command(app_path, runner or script_path, timeout),
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True)
+        except FileNotFoundError:
+            raise AeHandoffError("osascript is not available on this Mac") from None
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                out, err = proc.communicate(timeout=poll)
+                break
+            except subprocess.TimeoutExpired:
+                if should_cancel is not None and should_cancel():
+                    proc.kill()
+                    proc.communicate()
+                    raise AeCancelled("Zenvi stopped waiting for After Effects; it may still finish building the "
+                                      "comp") from None
+                if time.monotonic() >= deadline:
+                    proc.kill()
+                    proc.communicate()
+                    raise AeHandoffError(
+                        f"After Effects did not report back within {_duration(timeout)}. It may "
+                        f"still be building the comp, or DoScriptFile is stuck (a known After Effects 2024 "
+                        f"problem): check After Effects, or run {name} there with File > Scripts > Run Script "
+                        f"File.") from None
+        finished = True
+    finally:
+        if finished:
+            _drop_runner(runner)
+    err = (err or "").strip()
     if proc.returncode != 0:
-        err = (proc.stderr or "").strip()
         if "-1743" in err or "not authorized" in err.lower() or "not allowed" in err.lower():
             raise AeHandoffError("macOS did not let Zenvi control After Effects. Allow it in System Settings > "
                                  "Privacy & Security > Automation, then try again.")
+        if "-1712" in err:
+            raise AeHandoffError(f"After Effects did not answer in time (DoScriptFile may be stuck): check After "
+                                 f"Effects, or run {name} there with File > Scripts > Run Script File.")
         raise AeHandoffError("After Effects could not run the script: " + (err[-400:] or f"osascript exit {proc.returncode}"))
-    out = (proc.stdout or "").strip()
+    out = (out or "").strip()
     start = out.find("{")
     if start >= 0:
         try:
@@ -724,6 +869,7 @@ def reveal(path: str) -> None:
 __all__ = [
     "AeHandoffError", "AeCancelled", "ExportResult", "SendResult", "MaskInfo", "export_after_effects",
     "send_to_after_effects", "run_in_after_effects", "parse_import_summary", "find_after_effects_app",
-    "applescript_command", "run_with_applescript", "reveal", "default_output_dir", "send_folder",
-    "sequence_frames", "render_svg_png", "analyze_mask_image", "AE_RUN_TIMEOUT", "RUN_TOOL",
+    "running_after_effects_apps", "applescript_command", "run_with_applescript", "quiet_runner", "reveal",
+    "default_output_dir", "send_folder", "sequence_frames", "render_svg_png", "analyze_mask_image",
+    "undo_hint", "describe_import", "AE_RUN_TIMEOUT", "RUN_TOOL", "ZENVI_LINK_UNDO", "QUIET_FLAG",
 ]

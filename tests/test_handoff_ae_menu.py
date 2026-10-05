@@ -107,3 +107,57 @@ def test_result_summary_counts_titles_missing_media_and_notes():
     text = result_summary(result, _=lambda s: s)
     assert text == ("Exported 7 layer(s) and 4 footage item(s) for After Effects. 3 title(s): 2 as editable text, "
                     "1 as images. 1 media file(s) are missing and become placeholders. 2 note(s) below.")
+
+
+def test_run_now_runs_the_interactive_export_quietly(menu, monkeypatch):
+    """The export dialog's script ends with an alert for people; run from Zenvi it must not block."""
+    from classes.handoff import after_effects_export as X
+    calls, shown = [], []
+    summary = {"zenvi_ae_import": 1, "status": "ok", "summary": "Built comp \"Trip\"."}
+
+    def link(path, **kw):
+        calls.append(("link", path, kw))
+        return summary, {}
+
+    def applescript(path, app, **kw):
+        calls.append(("applescript", path, kw))
+        return summary
+
+    monkeypatch.setattr(X, "run_in_after_effects", link)
+    monkeypatch.setattr(X, "run_with_applescript", applescript)
+    monkeypatch.setattr(menu, "_run_job", _sync_runner)
+    monkeypatch.setattr(menu, "_show_ae_summary", lambda window, title, s, via: shown.append((s, via)))
+    menu._run_now(object(), "/x/Trip.jsx", None)
+    menu._run_now(object(), "/x/Trip.jsx", "/Applications/AE.app")
+    assert calls[0] == ("link", "/x/Trip.jsx", {"quiet": True})
+    assert calls[1][:2] == ("applescript", "/x/Trip.jsx") and calls[1][2]["quiet"] is True
+    assert callable(calls[1][2]["should_cancel"])
+    assert [via for _, via in shown] == ["zenvi-link", "applescript"]
+
+
+def test_the_summary_names_the_undo_step_of_the_route(menu, monkeypatch):
+    texts = []
+
+    class Box:
+        def __init__(self, window):
+            pass
+
+        def setWindowTitle(self, title):
+            pass
+
+        def setText(self, text):
+            texts.append(text)
+
+        def setDetailedText(self, text):
+            pass
+
+        def exec_(self):
+            return 0
+
+    import qt_api
+    monkeypatch.setattr(qt_api, "QMessageBox", Box, raising=False)
+    summary = {"zenvi_ae_import": 1, "status": "ok", "summary": "Built comp \"Trip\".", "warnings": []}
+    menu._show_ae_summary(object(), "t", summary, "zenvi-link")
+    menu._show_ae_summary(object(), "t", summary, "applescript")
+    assert texts == ['Built comp "Trip". In After Effects, Edit > Undo "Zenvi: Run JSX file" removes it.',
+                     'Built comp "Trip". In After Effects, Edit > Undo "Import Zenvi project" removes it.']
