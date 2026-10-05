@@ -261,7 +261,7 @@ def _show_result(window, result, connected: bool, app_path: Optional[str]) -> No
     layout.addWidget(path)
     details = []
     for t in result.titles:
-        details.append(_tr("Title %(title)s: %(mode)s (%(detail)s)") % {
+        details.append(_tr("Title %(title)s: %(mode)s - %(detail)s") % {
             "title": t.get("title"), "mode": _tr("editable text") if t.get("mode") == "native" else _tr("image"),
             "detail": t.get("detail")})
     details += [_tr("Missing: %s") % m for m in result.missing]

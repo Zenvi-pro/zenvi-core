@@ -184,8 +184,35 @@ def _speed_curve(b, cid, start_frame, speed, frames):
     b.clip(cid)["end"] = end_x / 30.0
 
 
-@pytest.mark.parametrize("speed, stretch", [(2.0, 50.0), (0.5, 200.0), (4.0, 25.0)])
-def test_constant_speed_is_a_time_stretch(speed, stretch):
+def ae_source_time(L, t):
+    """The layer's source time at comp time t: its Time Remap value, else (t - startTime) * 100 / stretch."""
+    if "remap" in L:
+        return value_at(L["remap"], t)[0]
+    return (t - L["start"]) * 100.0 / L["stretch"]
+
+
+def ae_frame(L, t, fps=30.0):
+    """1-based source frame After Effects shows: the frame whose span holds the source time."""
+    return int(math.floor(ae_source_time(L, t) * fps + 1e-7)) + 1
+
+
+def assert_zenvi_frames(L, clip, *, last=None, margin=0.0):
+    """At every frame the layer shows the source frame libopenshot shows (ClipView.source_frame_at).
+
+    *margin* (in frames): how far every source time must stay from a frame boundary.
+    """
+    frames = K.frame_times(L["inp"], L["outp"], 30.0)
+    want = [clip.source_frame_at(t) if last is None else min(last, clip.source_frame_at(t)) for t in frames]
+    assert [ae_frame(L, t) for t in frames] == want
+    for t in frames:
+        position = ae_source_time(L, t) * 30.0
+        assert position - math.floor(position + 1e-7) >= margin - 1e-6 or margin == 0.0
+        assert math.floor(position + 1e-7) + 1 - position >= margin - 1e-6 or margin == 0.0
+    return frames
+
+
+@pytest.mark.parametrize("speed, stretch", [(2.0, 50.0), (4.0, 25.0), (3.0, 100.0 / 3.0)])
+def test_whole_frame_speeds_are_a_time_stretch_with_a_frame_aligned_start(speed, stretch):
     b = ProjectBuilder()
     v = b.add_file("video", path="/media/long.mp4", duration=60.0)
     c = b.add_clip(v, track=1, position=3.0, start=0.0, end=10.0)
@@ -193,32 +220,50 @@ def test_constant_speed_is_a_time_stretch(speed, stretch):
     out, snap = build(b)
     L = layer(out, index=0)
     assert L["stretch"] == pytest.approx(stretch) and "remap" not in L
-    # source time shown at comp time t is (t - startTime) * 100 / stretch
-    clip = snap.clip(c)
-    tc = AE._time_curve(clip)
-    for t in K.frame_times(L["inp"], L["outp"], 30.0):
-        want = (K.exact_value(tc, t) - 1.0) / 30.0
-        assert (t - L["start"]) * 100.0 / L["stretch"] == pytest.approx(want, abs=1e-6)
+    assert L["start"] == pytest.approx(3.0, abs=1e-9)
+    assert_zenvi_frames(L, snap.clip(c))
 
 
-def test_speed_with_a_trimmed_start_places_the_right_source_frame():
+def test_slow_motion_shows_the_frames_libopenshot_rounds_to():
+    # 0.5x: the curve hits x.5 every other frame and libopenshot rounds those up (1, 2, 2, 3, 3, 4...);
+    # a plain startTime would show 1, 1, 2, 2, 3, 3
+    b = ProjectBuilder()
+    v = b.add_file("video", path="/media/long.mp4", duration=60.0)
+    c = b.add_clip(v, track=1, position=3.0, start=0.0, end=10.0)
+    _speed_curve(b, c, 1, 0.5, 150)
+    out, snap = build(b)
+    L = layer(out, index=0)
+    assert L["stretch"] == pytest.approx(200.0) and "remap" not in L
+    frames = assert_zenvi_frames(L, snap.clip(c), margin=0.2)
+    assert [ae_frame(L, t) for t in frames[:6]] == [1, 2, 2, 3, 3, 4]
+
+
+def test_zenvis_own_speed_curve_with_a_trimmed_start():
+    # Clip > Speed 2x on a 300-frame clip writes (1,1) -> (151,300): 1.993x, not 2x (the C1 review example)
     b = ProjectBuilder()
     v = b.add_file("video", path="/media/long.mp4", duration=60.0)
     c = b.add_clip(v, track=1, position=0.0, start=1.0, end=5.0)
-    b.clip(c)["time"] = kf((1, 1, LINEAR), (151, 300, LINEAR))  # the C1 review example
+    b.clip(c)["time"] = kf((1, 1, LINEAR), (151, 300, LINEAR))
     out, snap = build(b)
     L = layer(out, index=0)
-    tc = AE._time_curve(snap.clip(c))
-    first = (K.exact_value(tc, 0.0) - 1.0) / 30.0
-    assert first == pytest.approx((1 + 30 * 299 / 150 - 1) / 30.0)  # ~2.0 s, not the 1.0 s 'start'
-    assert (L["inp"] - L["start"]) * 100.0 / L["stretch"] == pytest.approx(first, abs=1e-6)
+    assert L["stretch"] == pytest.approx(100.0 * 150 / 299) and "remap" not in L
+    frames = assert_zenvi_frames(L, snap.clip(c))
+    assert ae_frame(L, frames[0]) == 61  # round(1 + 30 * 299/150): ~2.0 s in, not the 1.0 s 'start'
 
 
-def _remap_values(L, frames):
-    return [value_at(L["remap"], t)[0] for t in frames]
+def test_a_constant_fraction_of_a_frame_is_still_the_right_frame():
+    # normal speed but half a frame off: libopenshot rounds every x.499 down
+    b = ProjectBuilder()
+    v = b.add_file("video", path="/media/long.mp4", duration=60.0)
+    c = b.add_clip(v, track=1, position=0.0, start=0.0, end=3.0)
+    b.clip(c)["time"] = kf((1, 1.499, LINEAR), (91, 91.499, LINEAR))
+    out, snap = build(b)
+    L = layer(out, index=0)
+    assert L["stretch"] == 100 and "remap" not in L
+    assert_zenvi_frames(L, snap.clip(c), margin=0.4)
 
 
-def test_reverse_is_time_remapped():
+def test_reverse_is_time_remapped_in_the_middle_of_each_frame():
     b = ProjectBuilder()
     v = b.add_file("video", path="/media/long.mp4", duration=60.0)
     c = b.add_clip(v, track=1, position=0.0, start=0.0, end=10.0)
@@ -226,10 +271,8 @@ def test_reverse_is_time_remapped():
     out, snap = build(b)
     L = layer(out, index=0)
     assert L["remap"]["i"] == ["l"] and L["start"] == 0.0 and L["stretch"] == 100
-    tc = AE._time_curve(snap.clip(c))
-    frames = K.frame_times(0.0, 10.0, 30.0)
-    for t, got in zip(frames, _remap_values(L, frames)):
-        assert got == pytest.approx((K.exact_value(tc, t) - 1) / 30.0, abs=1e-6)
+    assert_zenvi_frames(L, snap.clip(c), margin=0.49)
+    assert L["remap"]["v"][0] == pytest.approx(300.5 / 30.0)
 
 
 def test_a_freeze_is_one_time_remap_key():
@@ -237,9 +280,10 @@ def test_a_freeze_is_one_time_remap_key():
     v = b.add_file("video", path="/media/long.mp4", duration=60.0)
     c = b.add_clip(v, track=1, position=1.0, start=0.0, end=3.0)
     b.clip(c)["time"] = kf((1, 46, CONSTANT), (91, 46, CONSTANT))
-    out, _ = build(b)
-    remap = layer(out, index=0)["remap"]
-    assert remap["t"] == [1.0] and remap["v"] == [pytest.approx(1.5)] and remap["i"] == []
+    out, snap = build(b)
+    L = layer(out, index=0)
+    assert L["remap"]["t"] == [1.0] and L["remap"]["v"] == [pytest.approx(45.5 / 30.0)] and L["remap"]["i"] == []
+    assert_zenvi_frames(L, snap.clip(c), margin=0.49)
 
 
 def test_holding_past_the_curves_last_point_and_ramps_are_keyed_exactly():
@@ -251,11 +295,16 @@ def test_holding_past_the_curves_last_point_and_ramps_are_keyed_exactly():
     out, snap = build(b)
     L = layer(out, index=0)
     assert "remap" in L and L["remap"]["i"][0] == "b"
-    tc = AE._time_curve(snap.clip(c))
-    frames = K.frame_times(0.0, 8.0, 30.0)
-    for t, got in zip(frames, _remap_values(L, frames)):
-        assert got == pytest.approx((K.exact_value(tc, t) - 1) / 30.0, abs=1e-5)
-    assert _remap_values(L, [7.9])[0] == pytest.approx(150 / 30.0)
+    assert_zenvi_frames(L, snap.clip(c))
+    assert ae_frame(L, 7.9) == 151
+    # libopenshot's own bezier value (bisected to 0.01 frame) lands across a .5 from the exact curve at
+    # frames 15 and 75: just those frames are keyed, inside the frame Zenvi shows; the ramp keeps its ease
+    remap = L["remap"]
+    for frame in (15, 75):
+        k = min(range(len(remap["t"])), key=lambda j: abs(remap["t"][j] - frame / 30.0))
+        assert remap["t"][k] == pytest.approx(frame / 30.0)
+        assert remap["i"][k - 1:k + 1] == ["l", "l"]
+    assert remap["i"].count("b") >= 3 and len(remap["t"]) <= 10
 
 
 def test_a_speed_curve_past_the_media_end_holds_the_last_frame_and_warns():
@@ -263,10 +312,44 @@ def test_a_speed_curve_past_the_media_end_holds_the_last_frame_and_warns():
     v = b.add_file("video", path="/media/short.mp4", duration=4.0)
     c = b.add_clip(v, track=1, position=0.0, start=0.0, end=4.0)
     b.clip(c)["time"] = kf((1, 1, LINEAR), (121, 241, LINEAR))
-    out, _ = build(b)
+    out, snap = build(b)
     assert any("past the end" in w for w in out.warnings)
-    values = _remap_values(layer(out, index=0), K.frame_times(0.0, 4.0, 30.0))
-    assert max(values) <= 4.0 - 1 / 30.0 + 1e-6
+    L = layer(out, index=0)
+    assert_zenvi_frames(L, snap.clip(c), last=120)
+    assert max(ae_frame(L, t) for t in K.frame_times(0.0, 4.0, 30.0)) == 120
+
+
+def test_a_near_tie_next_to_a_tie_still_shows_both_frames():
+    # x = 2.5 (libopenshot rounds up to 3) one frame before x = 3.4995 (rounds down to 3)
+    b = ProjectBuilder()
+    v = b.add_file("video", path="/media/long.mp4", duration=60.0)
+    c = b.add_clip(v, track=1, position=0.0, start=0.0, end=2.0)
+    b.clip(c)["time"] = kf((1, 1, LINEAR), (2, 2.5, LINEAR), (3, 3.4995, LINEAR), (61, 61.4995, LINEAR))
+    out, snap = build(b)
+    L = layer(out, index=0)
+    assert "remap" in L
+    frames = assert_zenvi_frames(L, snap.clip(c), margin=0.0002)
+    assert [ae_frame(L, t) for t in frames[:4]] == [1, 3, 3, 4]
+
+
+def test_time_remap_keys_that_would_show_another_frame_become_one_key_per_change(monkeypatch):
+    real = K.build_property
+
+    def most_of_a_frame_early(frames, dims, **kw):
+        built = real(frames, dims, **kw)
+        if kw["tol"] == [AE.TOL_SOURCE_FRAMES / 30.0] and isinstance(built.keys, K.Track):
+            built.keys.values = [(v[0] - 0.6 / 30.0,) for v in built.keys.values]
+        return built
+
+    monkeypatch.setattr(K, "build_property", most_of_a_frame_early)
+    b = ProjectBuilder()
+    v = b.add_file("video", path="/media/long.mp4", duration=60.0)
+    c = b.add_clip(v, track=1, position=0.0, start=0.0, end=3.0)
+    b.clip(c)["time"] = kf((1, 91, LINEAR), (91, 1, LINEAR))
+    out, snap = build(b)
+    L = layer(out, index=0)
+    assert_zenvi_frames(L, snap.clip(c), margin=0.49)
+    assert out.stats["sampled_properties"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -425,22 +508,23 @@ def test_simple_titles_become_an_editable_precomp():
     L = layer(out, index=0)
     assert L["src"] == "T1" and L["kind"] == "still" and (L["inp"], L["outp"]) == (1.0, 5.0)
     assert out.titles == [{"title": "Standard_1", "mode": "native",
-                           "detail": "editable layers: 2 text layers (faint outline on 'The Title' omitted; "
-                                     "faint outline on 'Sub-Title' omitted)"}]
+                           "detail": "2 text layers; faint outline on 'The Title' omitted; "
+                                     "faint outline on 'Sub-Title' omitted"}]
     assert comp["dur"] >= out.data["comp"]["dur"]
     assert_follows(out, snap, c, "Standard_1.svg", props=("pos", "scale"))
 
 
 def test_complex_titles_are_images_sized_for_the_comp():
     b, t, c = _title_project()
-    png = AE.TitleAsset("png", reason="filter", image=AE.MediaRef(abs="/x/titles/Gold.png", rel="titles/Gold.png"),
-                        width=3840, height=2160)
+    png = AE.TitleAsset("png", reason="an SVG filter (glow, shadow or blur)", width=3840, height=2160,
+                        image=AE.MediaRef(abs="/x/titles/Gold.png", rel="titles/Gold.png"))
     out, snap = build(b, titles={t: png})
     entry = out.data["footage"][0]
     assert entry["title"] and entry["kind"] == "still" and entry["rel"] == "titles/Gold.png"
     tf = layer(out, index=0)["tf"]
     assert tf["scale"] == [pytest.approx(50.0), pytest.approx(50.0)] and tf["anchor"] == [1920, 1080]
-    assert out.titles[0]["mode"] == "png" and out.titles[0]["detail"] == "filter"
+    assert out.titles[0]["mode"] == "png" and out.titles[0]["detail"] == "an SVG filter (glow, shadow or blur)"
+    assert entry["comment"] == "Zenvi title Standard_1 rendered as an image: an SVG filter (glow, shadow or blur)"
     assert_follows_png = exact_pose(snap, c, 1.0, src=(3840, 2160))
     assert tuple(tf["pos"]) == pytest.approx(assert_follows_png["pos"])
 

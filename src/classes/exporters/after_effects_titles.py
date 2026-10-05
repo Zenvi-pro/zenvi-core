@@ -204,12 +204,15 @@ def _float_prop(node, name: str, default: float) -> float:
         return default
 
 
+_EFFECTS = {"filter": "an SVG filter (glow, shadow or blur)", "mask": "an SVG mask", "clip-path": "an SVG clip path"}
+
+
 def _check_effects(node) -> None:
     style = _style(node)
-    for key in ("filter", "mask", "clip-path"):
+    for key, reason in _EFFECTS.items():
         value = style.get(key) or node.getAttribute(key)
         if value and value.strip().lower() != "none":
-            raise NotNative(key.replace("-", " "))
+            raise NotNative(reason)
 
 
 def _visible(node) -> bool:

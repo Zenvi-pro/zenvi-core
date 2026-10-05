@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Sequence, Tuple, Union
+from typing import Callable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from classes.handoff.keyframes import CONSTANT, LINEAR as OS_LINEAR, Curve, interpolate_between
 
@@ -477,6 +477,26 @@ def sampled_track(frame_times: Sequence[float], model: Sequence[Value], tol: Seq
     return Track(times, values, kinds, outs, ins, sampled=True)
 
 
+def pin(track: Track, pins: Mapping[int, Value]) -> Track:
+    """*track* with the value of each key index in *pins* replaced; the spans touching those keys become linear.
+
+    For a non-spatial track (one ease per dimension).
+    """
+    if track.spatial:
+        raise ValueError("pin() takes a non-spatial track")
+    values = list(track.values)
+    for j, value in pins.items():
+        values[j] = tuple(float(x) for x in value)
+    kinds, outs, ins = list(track.kinds), list(track.outs), list(track.ins)
+    for s in sorted({s for j in pins for s in (j - 1, j) if 0 <= s < len(kinds)}):
+        dt = track.times[s + 1] - track.times[s]
+        eases = [piece_eases(Piece(LINEAR, values[s][d], values[s + 1][d]), dt) for d in range(len(values[s]))]
+        kinds[s] = LINEAR
+        outs[s] = [e[0] for e in eases]
+        ins[s] = [e[1] for e in eases]
+    return Track(list(track.times), values, kinds, outs, ins, spatial=track.spatial, sampled=track.sampled)
+
+
 def is_constant(model: Sequence[Value], tol: Sequence[float]) -> bool:
     if not model:
         return True
@@ -527,12 +547,13 @@ def _affine_fit(xs: Sequence[float], ys: Sequence[float]) -> Optional[Tuple[floa
 
 
 def build_property(frame_times: Sequence[float], dims: Sequence[Dimension], *, t_in: float, t_out: float,
-                   tol: Sequence[float], spatial: bool = False) -> BuildResult:
+                   tol: Sequence[float], spatial: bool = False, cuts: Sequence[float] = ()) -> BuildResult:
     """Static value, eased keys or sampled keys for one AE property (see the module docstring).
 
     *frame_times* are the times of the frames the clip shows; each
     dimension's ``samples`` its exact value at those frames and ``curve`` the
     libopenshot curve it is an affine function of, when it follows one.
+    *cuts* are extra key times for eased keys (the curve is split there exactly).
     """
     model = [tuple(d.samples[k] for d in dims) for k in range(len(frame_times))]
     if not model:
@@ -561,6 +582,10 @@ def build_property(frame_times: Sequence[float], dims: Sequence[Dimension], *, t
     if eased:
         curves = [dim.curve for dim, f in zip(dims, fits) if f is not None]
         times = key_times(curves, t_in, t_out)
+        if cuts and len(times) >= 2:
+            merged = {round(t, 9): t for t in cuts if times[0] + _EPS < t < times[-1] - _EPS}
+            merged.update({round(t, 9): t for t in times})
+            times = [merged[k] for k in sorted(merged)]
         if len(times) >= 2:
             dim_values, dim_pieces = [], []
             for dim, f, d in zip(dims, fits, range(len(dims))):
@@ -600,5 +625,5 @@ Sampler = Callable[[float], Value]
 __all__ = [
     "BEZIER", "LINEAR", "HOLD", "Piece", "Track", "Dimension", "BuildResult", "exact_value", "is_animated_in",
     "curve_pieces", "key_times", "piece_eases", "combine_pieces", "spatial_track", "track_value", "max_error",
-    "simplify", "sampled_track", "build_property", "frame_times", "is_constant",
+    "simplify", "sampled_track", "pin", "build_property", "frame_times", "is_constant",
 ]

@@ -31,7 +31,10 @@ Mapping (libopenshot 1.0 semantics; see ``classes.handoff.keyframes`` and
   over the visible frames gives ``stretch = 100/k`` with ``startTime`` placing
   the right source frame at the in point; anything else (reverse, freeze,
   ramps, a hold after the curve's last point, loops) becomes Time Remap keys
-  from the curve, eased like the curve or sampled per frame.
+  from the curve, eased like the curve or sampled per frame. After Effects
+  shows the source frame whose span holds the source time (a floor), so with
+  a curve the source times are shifted into the frame libopenshot rounds to
+  (``_timing``); every frame is checked against ``ClipView.source_frame_at``.
 * **Transform.** For every frame the clip shows, ``transform.geometry`` (the
   port of ``Clip::get_transform``) gives the canvas placement; AE Anchor
   Point = origin x source size, Position = the origin's canvas point, Scale =
@@ -97,6 +100,7 @@ TOL_PERCENT = 0.01
 TOL_DEGREES = 0.005
 TOL_OPACITY = 0.05
 TOL_DB = 0.1
+TOL_SOURCE_FRAMES = 0.001  # Time Remap / stretch, in source frames
 
 # Zenvi marker colours -> AE label indices (After Effects default label colours).
 MARKER_LABELS = {"red": 1, "yellow": 2, "aqua": 3, "pink": 4, "lavender": 5, "peach": 6, "seafoam": 7,
@@ -345,16 +349,13 @@ def _title_source(ctx: _Ctx, f, longest: float) -> Optional[Tuple[str, int, int]
                                   "detail": asset.reason or "rendered as a transparent PNG"}
     fid = _footage_entry(ctx, "titlepng:" + f.id, name + ".png", asset.image, "still", width=asset.width,
                          height=asset.height, fps=ctx.fps_f, duration=longest, title=True,
-                         comment=f"Zenvi title {name} rendered as an image ({asset.reason or 'complex template'})")
+                         comment=f"Zenvi title {name} rendered as an image: {asset.reason or 'a complex template'}")
     return fid, int(asset.width or f.width or ctx.width), int(asset.height or f.height or ctx.height)
 
 
 def _describe_layout(layout: TitleLayout) -> str:
     from classes.exporters.after_effects_titles import describe
-    text = "editable layers: " + describe(layout)
-    if layout.notes:
-        text += " (" + "; ".join(layout.notes) + ")"
-    return text
+    return "; ".join([describe(layout)] + list(layout.notes))
 
 
 def _title_comp(ctx: _Ctx, tid: str, name: str, layout: TitleLayout, duration: float, f) -> dict:
@@ -502,47 +503,102 @@ def _guide_for(ctx: _Ctx, mask_path: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def _time_curve(clip) -> Optional[Curve]:
-    """The clip's ``time`` curve when it remaps (``ClipView.time``: libopenshot needs 2+ points), else None."""
-    if hasattr(clip, "time"):
-        curve = clip.time
-    else:  # a snapshot from before ClipView.time
-        raw = clip.data.get("time") if clip.data is not None else None
-        curve = Curve.from_json(raw, fps=clip.fps, position=clip.position, start=clip.start)
-    return curve if isinstance(curve, Curve) and len(curve.points) >= 2 else None
+    """The clip's ``time`` curve when libopenshot remaps with it (``ClipView.time``), else None."""
+    return clip.time
+
+
+def _ae_frames(values: Sequence[float], fps: float) -> List[int]:
+    """1-based source frames After Effects shows for these source times: the frame whose span holds each."""
+    return [int(math.floor(v * fps + 1e-7)) + 1 for v in values]
+
+
+def _as_stretch(keys: K.Track, whole: bool, offset: float, t_in: float, frames: Sequence[float],
+                shown: Sequence[int], fps: float) -> Optional[Dict[str, Any]]:
+    """startTime + stretch when the source times are one straight forward line that shows *shown*."""
+    slopes = [(b[0] - a[0]) / (t1 - t0) for a, b, t0, t1 in zip(keys.values, keys.values[1:], keys.times,
+                                                                   keys.times[1:]) if t1 > t0]
+    if not (keys.kinds and all(k == K.LINEAR for k in keys.kinds) and slopes and slopes[0] > 1e-6
+            and all(abs(s - slopes[0]) <= 1e-6 * max(1.0, abs(slopes[0])) for s in slopes)):
+        return None
+    speed = 1.0 if abs(slopes[0] - 1.0) < 1e-9 else slopes[0]
+    source_in = K.track_value(keys, t_in)[0]
+    if whole:
+        # whole source frames (normal speed, 2x, 3x...): a frame-aligned start, like any other layer
+        source_in -= offset / fps
+    start = t_in - source_in / speed
+    if _ae_frames([(t - start) * speed for t in frames], fps) != list(shown):
+        return None
+    return {"start": start, "stretch": 100 if speed == 1.0 else 100.0 / speed}
 
 
 def _timing(ctx: _Ctx, clip, file, t_in: float, t_out: float, frames: List[float]) -> Dict[str, Any]:
-    """startTime / stretch / Time Remap keys showing the right source frame at every frame."""
+    """startTime / stretch / Time Remap keys showing the right source frame at every frame.
+
+    libopenshot shows source frame ``max(1, round(time(n)))``
+    (``ClipView.source_frame_at``); After Effects shows the frame whose span
+    holds the layer's source time, and keeps Time Remap values in single
+    precision. The source times follow the curve shifted by the middle of
+    the range of shifts that shows libopenshot's frame at every frame. That
+    range always holds half a frame (``floor(x - 1/2) = round(x) - 1``); its
+    middle keeps the values as far from frame boundaries as the curve allows
+    (half a frame for whole frames, a quarter after 0.5x's .5 ties). The
+    result is checked frame by frame; keys that would still show another
+    frame (sampled keys near a tie) become one key per change of frame, in
+    the middle of its frame.
+    """
     tc = _time_curve(clip)
     if tc is None:
         tau0 = math.floor(clip.start * ctx.fps_f + 0.5) / ctx.fps_f
         return {"start": t_in - tau0, "stretch": 100}
+    fps = ctx.fps_f
+    raw = [max(1.0, K.exact_value(tc, t)) for t in frames]
+    shown = [clip.source_frame_at(t) for t in frames]
     limit = float(file.duration) if file is not None and file.duration else None
-    samples = [(K.exact_value(tc, t) - 1.0) / ctx.fps_f for t in frames]
     if limit:
-        clamped = [_clamp(s, 0.0, max(0.0, limit - 1.0 / ctx.fps_f)) for s in samples]
-        if any(abs(a - b) > 0.5 / ctx.fps_f for a, b in zip(samples, clamped)):
+        last = max(1, int(math.floor(limit * fps + 0.5)))  # the media's last frame; libopenshot holds it
+        if max(shown) > last:
             media = file.name if file is not None else "its media"
             ctx.warn(f"{clip.title}: its speed curve reaches past the end of {media}; the last frame is held")
-        samples = clamped
-    built = K.build_property(frames, [K.Dimension(samples, tc)], t_in=t_in, t_out=t_out, tol=[0.01 / ctx.fps_f])
-    keys = built.keys
+        raw = [min(x, float(last)) for x in raw]
+        shown = [min(s, last) for s in shown]
+    tol = [TOL_SOURCE_FRAMES / fps]
+    # AE shows frame s for the curve value x shifted by d (frames) when s - x <= d < s - x + 1
+    gaps = [s - x for s, x in zip(shown, raw)]
+    offset = (max(gaps) + min(gaps) + 1.0) / 2.0
+    samples = [(x - 1.0 + offset) / fps for x in raw]
+    keys: Any = K.build_property(frames, [K.Dimension(samples, tc)], t_in=t_in, t_out=t_out, tol=tol).keys
     if isinstance(keys, K.Track):
-        slopes = [(b[0] - a[0]) / (t1 - t0) for a, b, t0, t1 in zip(keys.values, keys.values[1:], keys.times,
-                                                                       keys.times[1:]) if t1 > t0]
-        if (keys.kinds and all(k == K.LINEAR for k in keys.kinds) and slopes and slopes[0] > 1e-6
-                and all(abs(s - slopes[0]) <= 1e-6 * max(1.0, abs(slopes[0])) for s in slopes)):
-            speed = slopes[0]
-            source_at_in = K.track_value(keys, t_in)[0]
-            if abs(speed - 1.0) < 1e-9:
-                return {"start": t_in - source_at_in, "stretch": 100}
-            return {"start": t_in - source_at_in / speed, "stretch": 100.0 / speed}
+        stretch = _as_stretch(keys, all(abs(g) < 1e-6 for g in gaps), offset, t_in, frames, shown, fps)
+        if stretch is not None:
+            return stretch
+        values = [K.track_value(keys, t)[0] for t in frames]
+    else:
+        values = [keys[0]] * len(frames)
+    wrong = [i for i, (a, s) in enumerate(zip(_ae_frames(values, fps), shown)) if a != s]
+    if wrong:
+        # one key per change of frame, each in the middle of its frame
+        steps = K.sampled_track(frames, [((s - 0.5) / fps,) for s in shown], tol)
+        pinned = None
+        if isinstance(keys, K.Track) and not keys.sampled:
+            # libopenshot rounds its own (approximate) bezier value, which can sit across a .5 from the exact
+            # curve: key just those frames inside the frame Zenvi shows and keep the ease everywhere else
+            cuts = sorted({frames[k] for i in wrong for k in (i - 1, i, i + 1) if 0 <= k < len(frames)})
+            cut = K.build_property(frames, [K.Dimension(samples, tc)], t_in=t_in, t_out=t_out, tol=tol,
+                                   cuts=cuts).keys
+            if isinstance(cut, K.Track) and not cut.sampled:
+                at = {round(t, 9): j for j, t in enumerate(cut.times)}
+                pinned = K.pin(cut, {at[round(frames[i], 9)]: ((shown[i] - 0.5) / fps,) for i in wrong})
+                if _ae_frames([K.track_value(pinned, t)[0] for t in frames], fps) != shown:
+                    pinned = None
+        keys = pinned if pinned is not None and len(pinned.times) <= len(steps.times) else steps
+    if isinstance(keys, K.Track):
         if keys.sampled:
             ctx.stats["sampled_properties"] += 1
-        return {"start": t_in, "stretch": 100, "remap": keys_spec(keys)}
+        if len(keys.times) > 1 and any(abs(v[0] - keys.values[0][0]) > tol[0] for v in keys.values):
+            return {"start": t_in, "stretch": 100, "remap": keys_spec(keys)}
+        keys = keys.values[0]
     # one source frame held for the whole clip
-    return {"start": t_in, "stretch": 100,
-            "remap": {"t": [t_in], "v": [keys[0]], "i": []}}
+    return {"start": t_in, "stretch": 100, "remap": {"t": [t_in], "v": [keys[0]], "i": []}}
 
 
 _TRANSFORM_CURVES = ("alpha", "location_x", "location_y", "scale_x", "scale_y", "rotation", "origin_x", "origin_y",

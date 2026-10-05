@@ -77,7 +77,7 @@
                 "h": 1080,
                 "fps": 25,
                 "dur": 3,
-                "comment": "Zenvi title Gold_1 rendered as an image (filter)",
+                "comment": "Zenvi title Gold_1 rendered as an image: an SVG filter (glow, shadow or blur)",
                 "title": true
             },
             {
@@ -197,7 +197,7 @@
                 "outp": 10,
                 "start": 6,
                 "stretch": 100,
-                "remap": {"t": [6, 10], "v": [4, 0], "i": ["l"]},
+                "remap": {"t": [6, 10], "v": [4.02, 0.02], "i": ["l"]},
                 "tf": {"anchor": [640, 360], "pos": [960, 540], "scale": [150, 150], "rot": 0, "op": 100},
                 "label": 9,
                 "comment": "Zenvi clip C0012 on track 1 (Track 1)"

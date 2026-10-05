@@ -119,9 +119,9 @@ def _assets(name, files):
             with open(os.path.join(TITLES, "Standard_3.svg"), encoding="utf-8") as fh:
                 titles[f["id"]] = AE.TitleAsset("native", layout=parse_title_svg(fh.read()))
         elif f["path"].endswith("Gold_1.svg"):
-            titles[f["id"]] = AE.TitleAsset("png", reason="filter", width=1920, height=1080,
-                                            image=AE.MediaRef(abs="/fixtures/export/titles/Gold_1.png",
-                                                              rel="titles/Gold_1.png"))
+            titles[f["id"]] = AE.TitleAsset("png", reason="an SVG filter (glow, shadow or blur)", width=1920,
+                                            height=1080, image=AE.MediaRef(abs="/fixtures/export/titles/Gold_1.png",
+                                                                           rel="titles/Gold_1.png"))
     masks = {FADE: AE.MaskAsset("uniform", gray=0),
              WIPE: AE.MaskAsset("image", width=1920, height=1080,
                                 image=AE.MediaRef(abs="/fixtures/export/masks/wipe_left_to_right.png",

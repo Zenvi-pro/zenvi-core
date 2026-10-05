@@ -185,3 +185,30 @@ def test_piece_eases_for_linear_spans_are_straight_beziers():
     assert out == (15.0, K.LINEAR_INFLUENCE) and into == (15.0, K.LINEAR_INFLUENCE)
     track = K.Track([0.0, 2.0], [(10.0,), (40.0,)], [K.BEZIER], [[out]], [[into]])
     assert K.track_value(track, 1.0)[0] == pytest.approx(25.0, abs=1e-9)
+
+
+def test_extra_cuts_split_eased_keys_exactly():
+    curve = _eased("smooth", 0.0, 90.0, frames=60)
+    frames = K.frame_times(0.0, 2.0, FPS)
+    samples = [K.exact_value(curve, t) for t in frames]
+    built = K.build_property(frames, [K.Dimension(samples, curve)], t_in=0.0, t_out=2.0, tol=[1e-6],
+                             cuts=[0.5, 0.5 + 1e-12, 1.2, 2.0, 7.0])
+    track = built.keys
+    assert isinstance(track, K.Track) and not track.sampled
+    assert track.times == pytest.approx([0.0, 0.5, 1.2, 2.0]) and track.kinds == [K.BEZIER] * 3
+    assert _worst(track, curve, 0.0, 2.0) < 1e-6
+
+
+def test_pin_replaces_one_key_and_straightens_only_its_spans():
+    curve = _eased("smooth", 0.0, 90.0, frames=60)
+    times = [0.0, 0.5, 1.0, 2.0]
+    track = _track_for(curve, times)
+    pinned = K.pin(track, {2: (50.0,)})
+    assert pinned.values[2] == (50.0,) and pinned.values[1] == track.values[1]
+    assert pinned.kinds == [K.BEZIER, K.LINEAR, K.LINEAR] and pinned.outs[0] == track.outs[0]
+    assert K.track_value(pinned, 1.0)[0] == 50.0
+    assert K.track_value(pinned, 0.25)[0] == pytest.approx(K.exact_value(curve, 0.25), abs=1e-6)
+    assert K.track_value(pinned, 1.5)[0] == pytest.approx((50.0 + track.values[3][0]) / 2.0)
+    with pytest.raises(ValueError):
+        K.pin(K.Track([0.0, 1.0], [(0.0, 0.0), (1.0, 1.0)], [K.LINEAR], [[(1.0, 0.3)]], [[(1.0, 0.3)]],
+                      spatial=True), {0: (0.5, 0.5)})

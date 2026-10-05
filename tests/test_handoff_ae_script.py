@@ -210,7 +210,9 @@ def test_the_effects_export_runs_with_placeholders_remaps_and_fallbacks(tmp_path
     layers = {L["name"]: L for L in comp["layers"]}
     reversed_clip = layers["missing.mp4"]
     remap = reversed_clip["timeRemap"]["keys"]
-    assert [k["t"] for k in remap] == [6, 10] and remap[0]["v"] == pytest.approx(4.0) and remap[1]["v"] == 0
+    # source times sit half a frame (1/50 s) into the frame libopenshot shows: AE floors them
+    assert [k["t"] for k in remap] == [6, 10]
+    assert remap[0]["v"] == pytest.approx(4.02) and remap[1]["v"] == pytest.approx(0.02)
     interview = layers["interview.mov"]
     fx = [e["match"] for e in interview["groups"]["ADBE Effect Parade"]["children"]]
     assert fx == ["ADBE Gaussian Blur 2", "ADBE Brightness & Contrast 2", "ADBE HUE SATURATION"]
