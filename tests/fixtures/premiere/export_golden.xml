@@ -222,28 +222,112 @@
 										<value>50</value>
 									</keyframe>
 									<keyframe>
+										<when>7</when>
+										<value>50.008347</value>
+									</keyframe>
+									<keyframe>
+										<when>13</when>
+										<value>50.029756</value>
+									</keyframe>
+									<keyframe>
+										<when>19</when>
+										<value>50.065473</value>
+									</keyframe>
+									<keyframe>
 										<when>25</when>
 										<value>50.117142</value>
+									</keyframe>
+									<keyframe>
+										<when>30</when>
+										<value>50.17332</value>
+									</keyframe>
+									<keyframe>
+										<when>36</when>
+										<value>50.257834</value>
+									</keyframe>
+									<keyframe>
+										<when>42</when>
+										<value>50.362914</value>
 									</keyframe>
 									<keyframe>
 										<when>47</when>
 										<value>50.46717</value>
 									</keyframe>
 									<keyframe>
+										<when>53</when>
+										<value>50.613504</value>
+									</keyframe>
+									<keyframe>
+										<when>58</when>
+										<value>50.753544</value>
+									</keyframe>
+									<keyframe>
+										<when>63</when>
+										<value>50.910789</value>
+									</keyframe>
+									<keyframe>
 										<when>69</when>
 										<value>51.121538</value>
+									</keyframe>
+									<keyframe>
+										<when>74</when>
+										<value>51.313904</value>
+									</keyframe>
+									<keyframe>
+										<when>79</when>
+										<value>51.519358</value>
+									</keyframe>
+									<keyframe>
+										<when>99</when>
+										<value>52.395375</value>
 									</keyframe>
 									<keyframe>
 										<when>107</when>
 										<value>52.725441</value>
 									</keyframe>
 									<keyframe>
+										<when>112</when>
+										<value>52.914905</value>
+									</keyframe>
+									<keyframe>
+										<when>117</when>
+										<value>53.089211</value>
+									</keyframe>
+									<keyframe>
+										<when>122</when>
+										<value>53.246456</value>
+									</keyframe>
+									<keyframe>
 										<when>126</when>
 										<value>53.360104</value>
 									</keyframe>
 									<keyframe>
+										<when>132</when>
+										<value>53.510022</value>
+									</keyframe>
+									<keyframe>
+										<when>138</when>
+										<value>53.637086</value>
+									</keyframe>
+									<keyframe>
+										<when>144</when>
+										<value>53.742166</value>
+									</keyframe>
+									<keyframe>
 										<when>151</when>
 										<value>53.838864</value>
+									</keyframe>
+									<keyframe>
+										<when>158</when>
+										<value>53.910727</value>
+									</keyframe>
+									<keyframe>
+										<when>165</when>
+										<value>53.960006</value>
+									</keyframe>
+									<keyframe>
+										<when>172</when>
+										<value>53.989052</value>
 									</keyframe>
 									<keyframe>
 										<when>179</when>

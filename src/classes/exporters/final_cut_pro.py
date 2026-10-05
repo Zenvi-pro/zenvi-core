@@ -75,7 +75,7 @@ import uuid as uuid_module
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from fractions import Fraction
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, cast
 from urllib.parse import quote
 
 from classes.handoff.timeline_view import ClipView, FileView, TimelineSnapshot, TrackView, TransitionView
@@ -428,7 +428,9 @@ class XmemlBuilder:
     """Builds the xmeml tree for a snapshot (pure: no Qt, no project access, no file writes)."""
 
     def __init__(self, snapshot: TimelineSnapshot, xml_path: str, *, media_dir: Optional[str] = None,
-                 collect_media: bool = False, sequence_name: str = "", sequence_uuid: Optional[str] = None):
+                 collect_media: bool = False, sequence_name: str = "", sequence_uuid: Optional[str] = None,
+                 translate: Optional[Callable[[str], str]] = None):
+        self._ = translate or (lambda text: text)      # warnings: English for agents, the app's _tr in menus
         self.snap = snapshot
         self.xml_path = os.path.abspath(xml_path)
         stem = os.path.splitext(os.path.basename(self.xml_path))[0]
@@ -450,8 +452,8 @@ class XmemlBuilder:
         self.counts = {"clips": 0, "video_items": 0, "audio_items": 0, "transitions": 0, "markers": 0,
                        "video_tracks": 0, "audio_tracks": 0, "titles": 0}
         if self.rate.fps != snapshot.fps and not self.rate.ntsc:
-            self.warn.add(f"the project's {float(snapshot.fps):g} fps has no whole xmeml timebase; frames are "
-                          f"counted at {self.rate.timebase} fps")
+            self.warn.add(self._("the project's %(fps)s fps has no whole xmeml timebase; frames are counted at "
+                                 "%(base)d fps") % {"fps": "%g" % float(snapshot.fps), "base": self.rate.timebase})
 
     # -- frames ---------------------------------------------------------------
     def f(self, seconds: float) -> int:
@@ -487,8 +489,8 @@ class XmemlBuilder:
         elif self.collect and fv.path:
             path = self._collect(fv.path)
         if fv.is_image_sequence:
-            self.warn.add(f"image sequence {os.path.basename(fv.path)!r} is written as its file pattern; import "
-                          "the sequence in Premiere and relink it")
+            self.warn.add(self._("image sequence '%s' is written as its file pattern; import the sequence in "
+                                 "Premiere and relink it") % os.path.basename(fv.path))
         data = fv.data or {}
         try:
             channels = int(data.get("channels") or 2)
@@ -527,7 +529,7 @@ class XmemlBuilder:
     def _plan(self, clip: ClipView, track: TrackView) -> Optional[_Plan]:
         title = clip.title or clip.id
         if clip.file is None:
-            self.warn.add(f"clip {title!r} has no media file; skipped")
+            self.warn.add(self._("clip '%s' has no media file; skipped") % title)
             return None
         start, end = self.f(clip.timeline_in), self.f(clip.timeline_out)
         if end - start < 1:
@@ -536,10 +538,10 @@ class XmemlBuilder:
         video = media.has_video and clip.has_video is not False
         audio = media.has_audio and clip.has_audio is not False
         if not video and not audio:
-            self.warn.add(f"clip {title!r} has its video and audio turned off; skipped")
+            self.warn.add(self._("clip '%s' has its video and audio turned off; skipped") % title)
             return None
         if clip.parent_id:
-            self.warn.add(f"clip {title!r} follows a parent clip in Zenvi; exported at its own transform")
+            self.warn.add(self._("clip '%s' follows a parent clip in Zenvi; exported at its own transform") % title)
         n = end - start
         speed, factor, reversed_ = "normal", 1.0, False
         kind = clip.speed.kind
@@ -549,7 +551,7 @@ class XmemlBuilder:
             in_frame = self.f(clip.source_in)
             duration = max(media.duration, in_frame + n)
             if media.duration and in_frame + n > media.duration + 1:
-                self.warn.add(f"clip {title!r} runs past the end of its media; Premiere may shorten it")
+                self.warn.add(self._("clip '%s' runs past the end of its media; Premiere may shorten it") % title)
         elif kind == "constant" and clip.speed.factor:
             speed, factor, reversed_ = "constant", float(clip.speed.factor), bool(clip.speed.reversed)
             total = media.duration or (self.f(clip.source_out) + 1)
@@ -570,10 +572,10 @@ class XmemlBuilder:
             self._variable_graph(plan)
             if plan.audio:
                 plan.audio = False
-                self.warn.add(f"clip {title!r} has variable speed or a freeze frame: Premiere time remapping "
-                              "moves only video, so its audio was left out")
-            self.warn.add(f"clip {title!r} has variable speed or a freeze frame; exported as Premiere time "
-                          "remapping -- check its speed keyframes in Premiere")
+                self.warn.add(self._("clip '%s' has variable speed or a freeze frame: Premiere time remapping "
+                                     "moves only video, so its audio was left out") % title)
+            self.warn.add(self._("clip '%s' has variable speed or a freeze frame; exported as Premiere time "
+                                 "remapping -- check its speed keyframes in Premiere") % title)
         self._warn_unmapped(plan)
         return plan
 
@@ -622,12 +624,14 @@ class XmemlBuilder:
         for effect in clip.effects:
             if effect.class_name == "Crop" and self._crop_static(effect) is not None:
                 continue
-            self.warn.add(f"effect {effect.name or effect.class_name!r} has no Premiere equivalent in FCP XML; "
-                          "left out")
-        for key, what in (("shear_x", "shear"), ("shear_y", "shear"), ("corner_radius", "rounded corners")):
+            self.warn.add(self._("effect '%s' has no Premiere equivalent in FCP XML; left out")
+                          % (effect.name or effect.class_name))
+        for key, what in (("shear_x", self._("shear")), ("shear_y", self._("shear")),
+                          ("corner_radius", self._("rounded corners"))):
             curve = clip.curves.get(key)
             if curve is not None and (curve.is_animated or abs(curve.first_value) > 1e-9):
-                self.warn.add(f"clip {title!r} uses {what}, which Premiere's Basic Motion cannot carry; left out")
+                self.warn.add(self._("clip '%(clip)s' uses %(what)s, which Premiere's Basic Motion cannot carry; left "
+                                     "out") % {"clip": title, "what": what})
 
     # -- transitions ------------------------------------------------------------
     def _match_transitions(self, track: TrackView, plans: List[_Plan]) -> None:
@@ -666,12 +670,13 @@ class XmemlBuilder:
                     a_joins[(a.id, b.id)] = True
                     a_tails[a.id] = a_heads[b.id] = _Transition(lo, hi, "center", "audio")
                 if not fade:
-                    self.warn.add(f"the {label!r} wipe has no exact Premiere equivalent; exported as a Cross Dissolve")
+                    self.warn.add(self._("the '%s' wipe has no exact Premiere equivalent; exported as a Cross "
+                                         "Dissolve") % label)
                 if tv.reversed:
-                    self.warn.add(f"a reversed {label!r} transition was exported as a normal Cross Dissolve")
+                    self.warn.add(self._("a reversed '%s' transition was exported as a normal Cross Dissolve") % label)
                 if abs(lo - ts) > 1 or abs(hi - te) > 1 or abs(lo - b.start) > 1 or abs(hi - a.end) > 1:
-                    self.warn.add("a transition that does not cover its clips' overlap was exported as a Cross "
-                                  "Dissolve over the part that does")
+                    self.warn.add(self._("a transition that does not cover its clips' overlap was exported as a "
+                                         "Cross Dissolve over the part that does"))
                 continue
             edge = None
             for p in vplans:
@@ -688,18 +693,19 @@ class XmemlBuilder:
                     (a_heads if side == "head" else a_tails)[p.id] = _Transition(tr.start, tr.end, tr.alignment,
                                                                                  "audio")
                 if not fade:
-                    self.warn.add(f"the {label!r} wipe has no exact Premiere equivalent; exported as a Cross Dissolve")
+                    self.warn.add(self._("the '%s' wipe has no exact Premiere equivalent; exported as a Cross "
+                                         "Dissolve") % label)
                 if tv.reversed == (side == "head"):
-                    self.warn.add(f"a {label!r} transition that fades the wrong way for its clip edge was exported "
-                                  "as a plain dissolve")
+                    self.warn.add(self._("a '%s' transition that fades the wrong way for its clip edge was exported "
+                                         "as a plain dissolve") % label)
                 continue
             if fade:
                 top = [p for p in vplans if p.start < te and p.end > ts]
                 for p in top:
                     p.masks.append(tv)
-                self.warn.add("a fade in the middle of a clip was exported as opacity keyframes")
+                self.warn.add(self._("a fade in the middle of a clip was exported as opacity keyframes"))
             else:
-                self.warn.add(f"the {label!r} wipe does not sit on a clip edge; left out")
+                self.warn.add(self._("the '%s' wipe does not sit on a clip edge; left out") % label)
         # visible / media spans per item kind
         for p in plans:
             head, tail = heads.get(p.id), tails.get(p.id)
@@ -728,8 +734,10 @@ class XmemlBuilder:
         lanes: List[List[_Plan]] = []
         lane_of: Dict[str, int] = {}
 
-        def span(p):
-            return p.vspan if kind == "video" else p.aspan
+        def span(p: _Plan) -> _Span:
+            found = p.vspan if kind == "video" else p.aspan
+            assert found is not None, "spans are set by _match_transitions"
+            return found
 
         for p in sorted(plans, key=lambda q: (span(q).start, q.id)):
             s = span(p)
@@ -1056,6 +1064,9 @@ class XmemlBuilder:
             return
         rows = self._motion_values(p, frames_range)
         sw, sh = rows[0][5], rows[0][6]
+        # scale and aspect are percentages of the source: keep their error under TOL_CENTER_PX pixels too
+        tol_scale = min(TOL_SCALE, 100.0 * TOL_CENTER_PX / max(sw, sh))
+        tol_aspect = min(TOL_ASPECT, 100.0 * TOL_CENTER_PX / max(sw, sh))
         centers = [r[0] for r in rows]
         anchors = [r[1] for r in rows]
         scales = [(min(SCALE_MAX, r[2]),) for r in rows]
@@ -1064,10 +1075,11 @@ class XmemlBuilder:
         identity = (_constant(centers, (TOL_CENTER_PX / sw, TOL_CENTER_PX / sh))
                     and all(abs(c) <= TOL_CENTER_PX / max(sw, sh) for c in centers[0])
                     and _constant(anchors, (1e-6, 1e-6)) and all(abs(a) < 1e-6 for a in anchors[0])
-                    and _constant(scales, (TOL_SCALE,)) and abs(scales[0][0] - 100.0) <= TOL_SCALE
+                    and _constant(scales, (tol_scale,)) and abs(scales[0][0] - 100.0) <= tol_scale
                     and _constant(rotations, (TOL_ROTATION,)) and abs(rotations[0][0]) <= TOL_ROTATION)
         if any(r[2] > SCALE_MAX for r in rows):
-            self.warn.add(f"clip {p.clip.title!r} is scaled above {SCALE_MAX:g}%; Premiere's Basic Motion stops there")
+            self.warn.add(self._("clip '%(clip)s' is scaled above %(max)s%%; Premiere's Basic Motion stops there")
+                          % {"clip": p.clip.title, "max": "%g" % SCALE_MAX})
         whens = [p.in_at(fr) for fr in frames_range]
         clip = p.clip
         must = self._key_offsets(p, [clip.curves.get(k) for k in ("location_x", "location_y", "scale_x", "scale_y",
@@ -1077,18 +1089,18 @@ class XmemlBuilder:
         if not identity:
             effect = self._effect(node, "Basic Motion", "basic", "motion", "video")
             _sub(effect, "pproBypass", "false")
-            self._param(effect, "scale", "Scale", scales, whens, (TOL_SCALE,), must, lo=0, hi=1000)
+            self._param(effect, "scale", "Scale", scales, whens, (tol_scale,), must, lo=0, hi=1000)
             self._param(effect, "rotation", "Rotation", rotations, whens, (TOL_ROTATION,), must, lo=-8640, hi=8640)
             self._param(effect, "center", "Center", centers, whens, (TOL_CENTER_PX / sw, TOL_CENTER_PX / sh), must,
                         point=True)
             self._param(effect, "centerOffset", "Anchor Point", anchors, whens,
                         (TOL_CENTER_PX / sw, TOL_CENTER_PX / sh), must, point=True)
             self._param(effect, "antiflicker", "Anti-flicker Filter", [(0.0,)], [0], (1.0,), (), lo="0.0", hi="1.0")
-        if not (_constant(aspects, (TOL_ASPECT,)) and abs(aspects[0][0]) <= TOL_ASPECT):
+        if not (_constant(aspects, (tol_aspect,)) and abs(aspects[0][0]) <= tol_aspect):
             effect = self._effect(node, "Distort", "deformation", "motion", "video")
-            self._param(effect, "aspect", "Aspect", aspects, whens, (TOL_ASPECT,), must, lo=-10000, hi=10000)
-            self.warn.add(f"clip {p.clip.title!r} is scaled unevenly; exported as Scale (height) plus Distort "
-                          "Aspect -- check its proportions in Premiere")
+            self._param(effect, "aspect", "Aspect", aspects, whens, (tol_aspect,), must, lo=-10000, hi=10000)
+            self.warn.add(self._("clip '%s' is scaled unevenly; exported as Scale (height) plus Distort Aspect -- "
+                                 "check its proportions in Premiere") % p.clip.title)
 
     @staticmethod
     def _crop_static(effect) -> Optional[dict]:
@@ -1164,7 +1176,8 @@ class XmemlBuilder:
         curve = p.clip.curve("volume")
         raw = [curve.value_at(self.t(fr)) for fr in frames_range]
         if any(v > LEVEL_MAX + 1e-6 for v in raw):
-            self.warn.add(f"clip {p.clip.title!r} is louder than Premiere's +12 dB Audio Levels limit; capped")
+            self.warn.add(self._("clip '%s' is louder than Premiere's +12 dB Audio Levels limit; capped")
+                          % p.clip.title)
         values = [(max(0.0, min(LEVEL_MAX, v)),) for v in raw]
         if _constant(values, (TOL_LEVEL,)) and abs(values[0][0] - 1.0) <= TOL_LEVEL:
             return
@@ -1240,11 +1253,11 @@ class XmemlBuilder:
 
 
 def build_xmeml(snapshot: TimelineSnapshot, xml_path: str, *, media_dir: Optional[str] = None,
-                collect_media: bool = False, sequence_name: str = "", sequence_uuid: Optional[str] = None
-                ) -> BuildResult:
+                collect_media: bool = False, sequence_name: str = "", sequence_uuid: Optional[str] = None,
+                translate: Optional[Callable[[str], str]] = None) -> BuildResult:
     """The xmeml tree for *snapshot* plus the stills to render and media to copy (pure)."""
     builder = XmemlBuilder(snapshot, xml_path, media_dir=media_dir, collect_media=collect_media,
-                       sequence_name=sequence_name, sequence_uuid=sequence_uuid)
+                           sequence_name=sequence_name, sequence_uuid=sequence_uuid, translate=translate)
     result = builder.build()
     problems = validate_xmeml(result.root)
     if problems:
@@ -1405,7 +1418,7 @@ def _xml_text(root: ET.Element) -> str:
     return '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE xmeml>\n' + ET.tostring(root, encoding="unicode") + "\n"
 
 
-def _install(path: str, write: Callable[[str], None]) -> None:
+def _install(path: str, write: Callable[[str], Any]) -> None:
     """Write through ``<path>.partial`` and move it into place (never a half-written file at *path*)."""
     folder = os.path.dirname(path)
     if folder:
@@ -1485,7 +1498,8 @@ def export_timeline(snapshot: TimelineSnapshot, xml_path: str, *, collect_media:
                     media_dir: Optional[str] = None, sequence_name: str = "", sequence_uuid: Optional[str] = None,
                     render_stills: Optional[Callable[[List[StillJob]], None]] = None,
                     on_progress: Optional[Callable[[float, str], None]] = None,
-                    should_cancel: Optional[Callable[[], bool]] = None) -> ExportResult:
+                    should_cancel: Optional[Callable[[], bool]] = None,
+                    translate: Optional[Callable[[str], str]] = None) -> ExportResult:
     """Write *snapshot* as Premiere-ready FCP7 XML at *xml_path* (blocking; off the GUI thread).
 
     Titles are rendered to PNG stills (and media copied when
@@ -1500,7 +1514,7 @@ def export_timeline(snapshot: TimelineSnapshot, xml_path: str, *, collect_media:
         xml_path += ".xml"
     replaced = os.path.exists(xml_path)
     result = build_xmeml(snapshot, xml_path, media_dir=media_dir, collect_media=collect_media,
-                         sequence_name=sequence_name, sequence_uuid=sequence_uuid)
+                         sequence_name=sequence_name, sequence_uuid=sequence_uuid, translate=translate)
     if on_progress is not None:
         on_progress(0.1, "Rendering titles")
     if result.stills:
@@ -1533,7 +1547,7 @@ def export_timeline(snapshot: TimelineSnapshot, xml_path: str, *, collect_media:
 def snapshot_from_app() -> TimelineSnapshot:
     """The open project's snapshot, taken on the GUI thread from any thread."""
     from classes.qt_main_thread import call_on_gui
-    return call_on_gui(TimelineSnapshot.from_app, timeout=60)
+    return cast(TimelineSnapshot, call_on_gui(TimelineSnapshot.from_app, timeout=60))
 
 
 def default_export_path(ext: str = ".xml", suffix: str = "") -> str:
@@ -1579,7 +1593,7 @@ def run_export_job(window, xml_path: str, *, collect_media: bool = False, open_f
         return None
 
     def work(job):
-        return export_timeline(snapshot, xml_path, collect_media=collect_media,
+        return export_timeline(snapshot, xml_path, collect_media=collect_media, translate=_,
                                on_progress=lambda f, m: job.report(f, m), should_cancel=job.should_cancel)
 
     def on_done(job):

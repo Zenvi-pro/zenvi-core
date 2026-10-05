@@ -642,7 +642,8 @@ class _Fn:
 
 class _Planner:
     def __init__(self, seq: XSequence, info: ProjectInfo, probes: Dict[str, dict], placement: str,
-                 missing: Iterable[str]):
+                 missing: Iterable[str], translate: Optional[Callable[[str], str]] = None):
+        self._ = translate or (lambda text: text)      # warnings: English for agents, the app's _tr in menus
         self.seq = seq
         self.info = info
         self.fps = info.fps
@@ -659,11 +660,13 @@ class _Planner:
         self._audio_hint: set = set()      # id() of video transitions whose audio cross fade came along
         self.legacy = self._legacy_centers(seq)
         if abs(self.k - 1.0) > 1e-6:
-            self.warn.add(f"the sequence is {seq.width}x{seq.height} and the project {info.width}x{info.height}; "
-                          "positions and sizes were scaled to fit")
+            self.warn.add(self._("the sequence is %(seq)s and the project %(project)s; positions and sizes were "
+                                 "scaled to fit") % {"seq": "%dx%d" % (seq.width, seq.height),
+                                                     "project": "%dx%d" % (info.width, info.height)})
         if abs(float(seq.rate.fps) - float(info.fps)) > 1e-6:
-            self.warn.add(f"the sequence runs at {float(seq.rate.fps):.3f} fps and the project at "
-                          f"{float(info.fps):.3f} fps; times were snapped to the project's frames")
+            self.warn.add(self._("the sequence runs at %(seq).3f fps and the project at %(project).3f fps; times "
+                                 "were snapped to the project's frames")
+                          % {"seq": float(seq.rate.fps), "project": float(info.fps)})
 
     # -- helpers ---------------------------------------------------------------
     def snap(self, seconds: float) -> float:
@@ -713,7 +716,7 @@ class _Planner:
                 name = f"{m.name}: {m.comment}"
             self.markers.append(PlannedMarker(position=position, name=name, color=_marker_color(m.color)))
             if m.out not in (-1, None) and m.out > m.in_:
-                self.warn.add("Zenvi markers are points; marker durations were dropped")
+                self.warn.add(self._("Zenvi markers are points; marker durations were dropped"))
 
     def _plan_sequence(self, seq: XSequence, *, shift: float, window: Optional[Tuple[float, float]], prefix: str,
                        depth: int, disabled: bool, audio_only: bool = False, nest_label: str = "") -> None:
@@ -731,8 +734,8 @@ class _Planner:
                 key = f"{prefix}V{track.number}"
                 self._track(key, label, "video", track.locked, disabled or not track.enabled)
                 if not track.enabled and any(isinstance(i, XClip) for i in track.items):
-                    self.warn.add(f"track {track.name or 'V%d' % track.number} was turned off in Premiere; its "
-                                  "clips came in with their video off")
+                    self.warn.add(self._("track %s was turned off in Premiere; its clips came in with their video "
+                                         "off") % (track.name or "V%d" % track.number))
                 for item in track.items:
                     if not isinstance(item, XClip):
                         continue
@@ -751,8 +754,8 @@ class _Planner:
             key = f"{prefix}A{track.number}"
             self._track(key, label, "audio", track.locked, disabled or not track.enabled)
             if not track.enabled and any(isinstance(i, XClip) for i in track.items):
-                self.warn.add(f"track {track.name or 'A%d' % track.number} was muted in Premiere; its clips came "
-                              "in with their audio off")
+                self.warn.add(self._("track %s was muted in Premiere; its clips came in with their audio off")
+                              % (track.name or "A%d" % track.number))
             for item in track.items:
                 if not isinstance(item, XClip) or item.id in merged_audio:
                     continue
@@ -832,13 +835,14 @@ class _Planner:
             return
         if item.generator or item.file is None:
             what = item.name or "generator"
-            self.warn.add(f"generators and graphics (titles, colour mattes, bars) are not imported: {what!r}")
+            self.warn.add(self._("generators and graphics (titles, colour mattes, bars) are not imported: '%s'")
+                          % what)
             return
         path = item.file.path
         if not path or path in self.missing or path not in self.probes:
             return   # listed in missing
         if item.markers:
-            self.warn.add("clip markers are not imported (Zenvi has timeline markers only)", item.markers)
+            self.warn.add(self._("clip markers are not imported (Zenvi has timeline markers only)"), item.markers)
         reader = self.probes.get(path) or {}
         m_start, m_end = self._media_span(seq, item)
         if m_end - m_start <= 1e-9:
@@ -935,7 +939,7 @@ class _Planner:
             graph = remap.params.get("graphdict")
             keys = [(w, v) for w, v in (graph.keys if graph else []) if not isinstance(v, tuple)]
             if not keys:
-                self.warn.add("a variable-speed clip had no speed keyframes; imported at normal speed")
+                self.warn.add(self._("a variable-speed clip had no speed keyframes; imported at normal speed"))
                 start = self.snap(rate.seconds(item.in_))
                 return start, start + duration, None
             fn = _Fn(keys, keys[0][1])
@@ -954,7 +958,7 @@ class _Planner:
             for x, y in pts:
                 dedup[int(x)] = max(1, int(y))
             points = [_point(x, y, LINEAR) for x, y in sorted(dedup.items())]
-            self.warn.add("variable speed (time remapping) was imported as straight-line speed changes")
+            self.warn.add(self._("variable speed (time remapping) was imported as straight-line speed changes"))
             return start, start + duration, points if len(points) > 1 else None
         if f <= 0:
             start = self.snap(rate.seconds(item.in_))
@@ -966,7 +970,7 @@ class _Planner:
         if reverse:
             total = media_seconds
             if total <= 0:
-                self.warn.add("a reversed clip's media length is unknown; imported forward")
+                self.warn.add(self._("a reversed clip's media length is unknown; imported forward"))
                 reverse = False
             else:
                 hi = total - rate.seconds(item.in_) * f
@@ -1052,7 +1056,7 @@ class _Planner:
             eid = e.effectid.lower()
             if eid in ("basic", "basicmotion", "opacity", "timeremap", "deformation", "distort", "crop"):
                 continue
-            self.warn.add(f"Premiere effect {e.name or e.effectid!r} has no Zenvi equivalent; left out")
+            self.warn.add(self._("Premiere effect '%s' has no Zenvi equivalent; left out") % (e.name or e.effectid))
         self._motion(seq, item, reader, motion, distort, props, start)
 
     def _motion(self, seq: XSequence, item: XClip, reader: dict, motion: Optional[XEffect],
@@ -1117,7 +1121,7 @@ class _Planner:
         if motion is not None:
             for pid in ("antiflicker",):
                 if _float(params[pid].value if pid in params else 0.0) > 0:
-                    self.warn.add("Premiere's anti-flicker filter has no Zenvi equivalent; left out")
+                    self.warn.add(self._("Premiere's anti-flicker filter has no Zenvi equivalent; left out"))
 
     def _crop(self, seq: XSequence, item: XClip, start: float) -> Optional[dict]:
         crop = item.effect("crop")
@@ -1144,7 +1148,8 @@ class _Planner:
                       lambda v: _float(v, 1.0))
         for e in item.effects:
             if e.effectid.lower() not in ("audiolevels", "timeremap"):
-                self.warn.add(f"Premiere audio effect {e.name or e.effectid!r} has no Zenvi equivalent; left out")
+                self.warn.add(self._("Premiere audio effect '%s' has no Zenvi equivalent; left out")
+                              % (e.name or e.effectid))
         skip = set(absorbed)
         fades = [(f0 + offset, f1 + offset, kind, plus3) for f0, f1, kind, plus3, tr in self._audio_fades(seq, item)
                  if id(tr) not in skip]
@@ -1207,7 +1212,7 @@ class _Planner:
                 joined = [before, after]
             joined = [x for x in joined if isinstance(x, XClip) and (x.end == -1 or x.start == -1)]
             if any(x.sequence is not None or x.generator for x in joined):
-                self.warn.add("transitions next to nested sequences or generators were not imported")
+                self.warn.add(self._("transitions next to nested sequences or generators were not imported"))
                 continue
             if not any(x.file is not None and x.file.path in self.probes for x in joined):
                 continue
@@ -1219,7 +1224,7 @@ class _Planner:
                     continue
             name = item.name or item.effectid or "transition"
             if "dissolve" not in name.lower() and "cross" not in name.lower():
-                self.warn.add(f"Premiere transition {name!r} became a fade")
+                self.warn.add(self._("Premiere transition '%s' became a fade") % name)
             if item.alignment == "end-black":
                 reverse = True                      # the clip before fades out (even into a dip to black)
             elif item.alignment == "start-black":
@@ -1237,7 +1242,8 @@ class _Planner:
         nested = item.sequence
         assert nested is not None
         if depth + 1 > MAX_NEST_DEPTH:
-            self.warn.add(f"nested sequence {nested.name!r} is more than {MAX_NEST_DEPTH} levels deep; skipped")
+            self.warn.add(self._("nested sequence '%(name)s' is more than %(depth)d levels deep; skipped")
+                          % {"name": nested.name, "depth": MAX_NEST_DEPTH})
             return
         m_start, m_end = self._media_span(seq, item)
         rate = item.rate or nested.rate
@@ -1250,9 +1256,9 @@ class _Planner:
         for e in item.effects:
             eid = e.effectid.lower()
             if eid in ("basic", "basicmotion", "opacity", "timeremap", "deformation", "crop") and not _identity(e):
-                self.warn.add(f"nested sequence {nested.name!r} had its own {e.name or e.effectid} in Premiere; "
-                              "its clips came in without it")
-        self.warn.add(f"nested sequence {nested.name!r} was flattened onto its own tracks")
+                self.warn.add(self._("nested sequence '%(name)s' had its own %(effect)s in Premiere; its clips came "
+                                     "in without it") % {"name": nested.name, "effect": e.name or e.effectid})
+        self.warn.add(self._("nested sequence '%s' was flattened onto its own tracks") % nested.name)
         prefix = f"{key}>{nested.id or nested.name}#"
         self._plan_sequence(nested, shift=shift + m_start - n_in, window=inner_window,
                             prefix=prefix, depth=depth + 1, disabled=disabled or not item.enabled,
@@ -1374,7 +1380,8 @@ def locate_media(paths: Iterable[str], remap: Optional[Dict[str, str]] = None,
 
 def plan_import(path: str, *, placement: str = "new_tracks", info: Optional[ProjectInfo] = None,
                 remap: Optional[Dict[str, str]] = None, probe: Optional[Callable[[str], dict]] = None,
-                should_cancel: Optional[Callable[[], bool]] = None) -> ImportPlan:
+                should_cancel: Optional[Callable[[], bool]] = None,
+                translate: Optional[Callable[[str], str]] = None) -> ImportPlan:
     """Parse, find and probe the media, and plan the import (blocking; off the GUI thread)."""
     if placement not in ("new_tracks", "at_playhead"):
         raise XmlImportError("placement must be new_tracks or at_playhead")
@@ -1408,7 +1415,7 @@ def plan_import(path: str, *, placement: str = "new_tracks", info: Optional[Proj
             continue
         reader["path"] = disk
         probes[original] = reader
-    planner = _Planner(seq, info, probes, placement, missing)
+    planner = _Planner(seq, info, probes, placement, missing, translate)
     planner.plan()
     if not planner.clips:
         detail = (": missing media " + ", ".join(os.path.basename(m) for m in missing[:5])) if missing else ""
@@ -1417,7 +1424,7 @@ def plan_import(path: str, *, placement: str = "new_tracks", info: Optional[Proj
         c.path = probes[c.path].get("path", c.path) if c.path in probes else c.path
     media = {probes[k]["path"]: v for k, v in probes.items() if "_existing" not in v}
     if missing:
-        planner.warn.add(f"{len(missing)} media file(s) were not found and their clips were skipped")
+        planner.warn.add(planner._("%d media file(s) were not found and their clips were skipped") % len(missing))
     return planner.result(path, media, sorted(set(missing)))
 
 
@@ -1609,7 +1616,8 @@ def run_import_job(window, path: str, *, placement: str = "new_tracks", prompt: 
 
     def plan_job(remap):
         def work(job):
-            return plan_import(path, placement=placement, info=info, remap=remap, should_cancel=job.should_cancel)
+            return plan_import(path, placement=placement, info=info, remap=remap, should_cancel=job.should_cancel,
+                               translate=_)
         return work
 
     def finish(job):
