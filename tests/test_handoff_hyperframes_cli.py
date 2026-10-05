@@ -49,10 +49,15 @@ def test_resolution_order(tmp_path, node, monkeypatch):
     assert (cli.source, cli.version) == ("npx", "0.8.120")
     assert cli.argv == (sys.executable, "npx-cli.js", "--yes", "hyperframes@0.8.120")
     assert hf_cli.resolve_cli(_project(tmp_path)).version == hf_cli.PINNED_VERSION
-    # Zenvi's private install (motion graphics) counts when the project pins nothing or the same version
+    # Zenvi's private install (motion graphics) counts when the project pins its version, or pins
+    # nothing and it is at least the version Zenvi verified (older CLIs may lack the flags used)
     private = hf_cli.private_install()
     _package(private, "0.8.115")
-    assert hf_cli.resolve_cli(_project(tmp_path)).source == "zenvi"
+    assert hf_cli.resolve_cli(_project(tmp_path)).source == "npx"
+    assert hf_cli.resolve_cli(_project(tmp_path, "0.8.115")).source == "zenvi"
+    for version, source in ((hf_cli.PINNED_VERSION, "zenvi"), ("0.9.0", "zenvi"), ("1.0.0-beta.1", "npx")):
+        _package(private, version)
+        assert hf_cli.resolve_cli(_project(tmp_path)).source == source, version
     assert hf_cli.resolve_cli(_project(tmp_path, "0.8.120")).source == "npx"
     # the project's own install wins over both
     _package(os.path.join(proj, "node_modules", "hyperframes"), "0.8.121")

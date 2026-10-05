@@ -5,7 +5,8 @@ Which CLI (first match):
 1. ``ZENVI_HYPERFRAMES_CLI`` -- a ``hyperframes`` executable, ``bin/hyperframes.mjs`` or ``dist/cli.js``;
 2. the project's own install (``<project>/node_modules/hyperframes``);
 3. the local HyperFrames setup's private install (``~/.openshot_qt/hyperframes/node_modules``,
-   motion graphics), when the project pins no other version;
+   motion graphics), when it is the version the project pins, or the project pins none and it
+   is at least :data:`PINNED_VERSION` (older CLIs may lack the flags Zenvi uses);
 4. ``npx --yes hyperframes@<version>`` -- the version the project's package.json
    scripts pin (``npx hyperframes@0.8.126 render``), else :data:`PINNED_VERSION`.
 
@@ -91,6 +92,15 @@ def project_pin(project_dir: Optional[str]) -> Optional[str]:
     return None
 
 
+def _at_least(version: Optional[str], minimum: str) -> bool:
+    """``version >= minimum`` for plain ``X.Y.Z`` releases (a pre-release or an unreadable version: no)."""
+    def parts(text: Optional[str]) -> Optional[Tuple[int, ...]]:
+        m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", str(text or "").strip())
+        return tuple(int(g) for g in m.groups()) if m else None
+    have, need = parts(version), parts(minimum)
+    return have is not None and need is not None and have >= need
+
+
 def _package_version(pkg_dir: str) -> Optional[str]:
     try:
         with open(os.path.join(pkg_dir, "package.json"), encoding="utf-8") as fh:
@@ -143,7 +153,7 @@ def resolve_cli(project_dir: Optional[str] = None, *, env: Optional[Dict[str, st
     entry = _entry_in(private)
     if entry:
         version = _package_version(private)
-        if pin is None or pin == version:
+        if pin == version or (pin is None and _at_least(version, PINNED_VERSION)):
             return Cli((runtime.node, entry), version, "zenvi", runtime)
     version = pin or PINNED_VERSION
     return Cli(tuple(runtime.npx_argv("--yes", "hyperframes@%s" % version)), version, "npx", runtime)
