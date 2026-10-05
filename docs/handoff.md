@@ -214,7 +214,7 @@ opens) and says how to connect otherwise.
 
 | Tool | Arguments | What it does |
 | --- | --- | --- |
-| `list_link_hosts_tool` | — | Adobe hosts: connected, active, version, project, how to connect. Read-only. |
+| `list_link_hosts_tool` | `include_tools`? (false) | Adobe hosts: connected, active, version, project, how to connect; with `include_tools`, each connected host's own tools (`name, title, description, inputSchema, annotations`, cached per host session) or `tools_error`. The Assistant calls it with `include_tools=true` before its first `call_link_host_tool` for an app. Read-only. |
 | `call_link_host_tool` | `host` (`aftereffects`/`premiere`), `tool`, `arguments` | Runs an `ae_*` / `premiere_*` tool in the connected app; returns its receipt and frame images. Changes the Adobe app only. |
 | `import_linked_media_tool` | `path`, `link`, `position`?, `track`?, `name`? | Adds a render with its link as one undo step (AE → Zenvi uses it). The file is moved from the temp folder or copied into the links folder; WebM is re-encoded to ProRes 4444. |
 | `get_linked_clip_tool` | `clip_id` or `file_id` | Link, props, render settings, freshness, editable props, clips. Read-only. |

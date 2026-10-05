@@ -117,11 +117,13 @@ class FakeProvider:
 @pytest.fixture
 def linked(tt, tmp_path, monkeypatch):  # noqa: F811  (tt is a fixture)
     from classes import info
-    from classes.handoff import linked_media
+    from classes.handoff import adobe_link, linked_media
 
     user = tmp_path / "user"
     user.mkdir()
     monkeypatch.setattr(info, "USER_PATH", str(user))
+    # Host catalogs are cached per host session; a port reused by a later test's FakeHost must not see this one's.
+    monkeypatch.setattr(adobe_link, "_catalogs", {})
     probe = FakeProbe(tt)
     monkeypatch.setattr(linked_media, "probe_media", probe)
     tt.user_path = str(user)
@@ -162,6 +164,7 @@ class FakeHost:
         self.sse = False
         self.redirect_to = None   # a URL: answer every POST with 302 to it
         self.tools = [{"name": "ae_get_state", "inputSchema": {"type": "object"}}]  # tools/list
+        self.tools_error = None   # a message: tools/list answers with a JSON-RPC error
         self.calls = []
         self.headers = []         # the request headers of every POST
         host = self
@@ -194,6 +197,8 @@ class FakeHost:
                 if method == "initialize":
                     reply["result"] = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}},
                                        "serverInfo": {"name": "zenvi-link-" + host.app, "version": "1.0.0"}}
+                elif method == "tools/list" and host.tools_error:
+                    reply["error"] = {"code": -32603, "message": host.tools_error}
                 elif method == "tools/list":
                     reply["result"] = {"tools": host.tools}
                 elif method == "tools/call":
@@ -237,7 +242,7 @@ class FakeHost:
 
 
 def write_discovery(base_dir, host, *, app=None, pid=None, url=None, token=None,
-                    last_active="2026-10-04T21:05:12Z"):
+                    last_active="2026-10-04T21:05:12Z", started_at="2026-10-04T21:00:00Z"):
     """Write ``<base_dir>/link/<app>.json`` (+ its 0600 token file) pointing at *host*; returns base_dir."""
     app = app or host.app
     link = os.path.join(base_dir, "link")
@@ -248,7 +253,7 @@ def write_discovery(base_dir, host, *, app=None, pid=None, url=None, token=None,
     os.chmod(token_file, 0o600)
     data = {"url": url or host.url, "token_file": token_file, "pid": pid or os.getpid(), "project": "/x/p.aep",
             "version": "1.0.0", "app": app, "app_name": "Adobe After Effects 2026", "app_version": "26.3.0",
-            "protocol": 1, "started_at": "2026-10-04T21:00:00Z", "last_active_at": last_active}
+            "protocol": 1, "started_at": started_at, "last_active_at": last_active}
     with open(os.path.join(link, app + ".json"), "w") as fh:
         json.dump(data, fh)
     return base_dir
