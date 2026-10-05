@@ -319,7 +319,11 @@ def spatial_track(times: Sequence[float], xs: Sequence[float], ys: Sequence[floa
     Each span needs the same interpolation and the same normalized easing in
     every moving dimension (motion along a straight line); its ease is then
     one KeyframeEase on the path length (TASTE.md section 2: spatial
-    properties use the path length as dv). None when that does not hold.
+    properties use the path length as dv). None when that does not hold, and
+    for an easing that leaves the path (``y1``/``y2`` outside [0, 1]: the
+    Back easings' anticipation and overshoot). Along a spatial path After
+    Effects only moves forward between the two keys -- a negative speed is
+    refused -- while separate X/Y dimensions take any speed.
     """
     kinds, outs, ins = [], [], []
     for j in range(len(times) - 1):
@@ -358,6 +362,8 @@ def spatial_track(times: Sequence[float], xs: Sequence[float], ys: Sequence[floa
                 return None
         assert norm is not None
         x1, y1, x2, y2 = norm
+        if not (-1e-9 <= y1 <= 1.0 + 1e-9 and -1e-9 <= y2 <= 1.0 + 1e-9):
+            return None  # anticipation / overshoot: off the path's ends
         out_speed = y1 * length / (x1 * dt) if x1 > 1e-9 and dt > 0 else 0.0
         in_speed = (1.0 - y2) * length / ((1.0 - x2) * dt) if (1.0 - x2) > 1e-9 and dt > 0 else 0.0
         kinds.append(BEZIER)

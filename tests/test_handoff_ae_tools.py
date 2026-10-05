@@ -84,5 +84,7 @@ def test_send_builds_the_comp_in_after_effects(ae):
     assert (data["comp"], data["comp_id"], data["layers"]) == ("Trip", 9, 3)
     assert data["script"].startswith(str(ae.tmp / "user" / "after_effects")) and os.path.isfile(data["script"])
     assert receipt["summary"].startswith("Built comp 'Trip' in After Effects with 3 layer(s)")
+    # Zenvi Link runs the script inside its own undo group, whose name After Effects shows
+    assert receipt["summary"].endswith('In After Effects, Edit > Undo "Zenvi: Run JSX file" removes it.')
     tool_calls = [c for c in host.calls if c.get("method") == "tools/call"]
     assert tool_calls[-1]["params"]["name"] == "ae_run_jsx_file"

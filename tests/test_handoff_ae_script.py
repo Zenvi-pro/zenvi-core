@@ -20,6 +20,7 @@ import subprocess
 import pytest
 
 import ae_goldens
+from ae_project import LINEAR, ProjectBuilder, kf, point
 from classes.exporters import after_effects as AE
 from classes.exporters.after_effects_js import es3_problems
 
@@ -157,6 +158,8 @@ def test_the_basic_export_builds_the_whole_timeline(tmp_path):
     assert result["status"] == "ok" and result["layers"] == 6 and result["footage"] == 6
     assert result["warnings"] == [] and result["placeholders"] == []
     assert dump["undo"]["groups"] == ["Import Zenvi project"] and dump["undo"]["depth"] == 0
+    # the summary line names no undo step (Zenvi adds the route's name); the File > Scripts alert does
+    assert result["undo"] == "Import Zenvi project" and "Undo" not in result["summary"]
     folders = {i["name"]: i["parent"] for i in dump["items"] if i["type"] == "Folder"}
     assert folders == {"Zenvi — Trip": "Root", "Footage": "Zenvi — Trip", "Titles": "Zenvi — Trip"}
     comp = _comp(dump, "Trip")
@@ -196,6 +199,7 @@ def test_the_basic_export_builds_the_whole_timeline(tmp_path):
     assert all(t["justification"] == 7415 and t["fontSize"] == pytest.approx(90) for t in texts)
     assert layers["Standard_3.svg"]["sourceId"] == title["id"]
     assert len(dump["alerts"]) == 1 and "Built comp" in dump["alerts"][0]
+    assert 'Edit > Undo "Import Zenvi project" removes it.' in dump["alerts"][0]
 
 
 @needs_node
@@ -258,10 +262,217 @@ def test_older_after_effects_without_a_font_list_or_style_reset(tmp_path):
 
 
 @needs_node
-def test_inside_zenvi_link_the_script_shows_no_alert(tmp_path):
+def test_the_zenvi_link_panel_does_not_hide_the_alert_of_a_run_from_file_scripts(tmp_path):
+    # After Effects shares one global scope: the panel's ZenviLink global is there for every script
     out, script, media = _materialize("basic", tmp_path)
     result, dump = _run(script, media, "--zenvi-link")
-    assert result["status"] == "ok" and dump["alerts"] == [] and dump["info"]
+    assert result["status"] == "ok" and len(dump["alerts"]) == 1 and dump["info"]
+
+
+@needs_node
+def test_zenvis_runner_runs_an_interactive_export_without_its_alert(tmp_path):
+    from classes.handoff.after_effects_export import quiet_runner
+    out, script, media = _materialize("basic", tmp_path)
+    runner = quiet_runner(str(script))
+    result, dump = _run(runner, media)
+    assert result["status"] == "ok" and result["layers"] == 6
+    assert dump["alerts"] == [] and dump["quietFlagLeft"] is False
+
+
+@needs_node
+def test_an_export_for_zenvi_link_shows_no_alert(tmp_path):
+    b = ProjectBuilder()
+    v = b.add_file("video", path="/m/beach.mp4")
+    b.add_clip(v, track=1, position=0.0, start=0.0, end=2.0)
+    out, script, media = _export_project(b, tmp_path, interactive=False)
+    result, dump = _run(script, media)
+    assert result["status"] == "ok" and dump["alerts"] == []
+
+
+# ---------------------------------------------------------------------------
+# Review round 1 (state/C2-review-1.md): each runs against the mock After Effects
+# ---------------------------------------------------------------------------
+
+def _export_project(b, tmp_path, *, titles=None, interactive=True, missing=()):
+    """Export a ProjectBuilder project next to real (tiny) media files; (out, script, media.json)."""
+    folder = tmp_path / "export"
+    media, info = {}, {}
+    for f in b.data["files"]:
+        name = os.path.basename(f["path"])
+        target = folder / "media" / name
+        if name not in missing:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"media")
+        media[f["id"]] = AE.MediaRef(abs=str(target), rel="media/" + name, missing=name in missing)
+        info[str(target)] = {"duration": f.get("duration") or 10.0, "width": f.get("width") or 1920,
+                             "height": f.get("height") or 1080, "hasAudio": bool(f.get("has_audio")),
+                             "hasVideo": f.get("media_type") != "audio", "fps": 30}
+    out = AE.build_ae_script(b.snapshot(str(tmp_path / "Trip.zvn")), media_map=media, title_assets=titles or {},
+                             options=AE.AeExportOptions(generator="Zenvi test", interactive=interactive))
+    folder.mkdir(parents=True, exist_ok=True)
+    script = folder / "Trip.jsx"
+    script.write_text(out.jsx, encoding="utf-8")
+    media_json = tmp_path / "media.json"
+    media_json.write_text(json.dumps(info))
+    return out, script, media_json
+
+
+def _layers(dump, comp="Trip"):
+    return {L["name"]: L for L in _comp(dump, comp)["layers"]}
+
+
+@needs_node
+def test_a_missing_audio_file_is_a_placeholder_that_shows_no_picture(tmp_path):
+    b = ProjectBuilder()
+    v = b.add_file("video", path="/m/beach.mp4")
+    a = b.add_file("audio", path="/m/music.mp3")
+    b.add_clip(v, track=1, position=0.0, start=0.0, end=4.0)
+    b.add_clip(a, track=2, position=0.0, start=0.0, end=4.0)
+    out, script, media = _export_project(b, tmp_path, missing=("music.mp3",))
+    result, dump = _run(script, media)
+    assert result["placeholders"] == ["music.mp3"] and any("Missing media" in w for w in result["warnings"])
+    layers = _layers(dump)
+    assert layers["music.mp3"]["enabled"] is False  # the colour-bar placeholder would cover the comp
+    assert layers["beach.mp4"]["enabled"] is True
+
+
+@needs_node
+def test_a_layer_whose_audio_group_cannot_be_found_is_still_built(tmp_path):
+    out, script, media = _materialize("basic", tmp_path)
+    result, dump = _run(script, media, "--no-audio-group")
+    assert result["status"] == "ok" and result["layers"] == 6
+    notes = [w for w in result["warnings"] if "audio levels" in w]
+    assert "music.mp3 audio levels: property not found" in notes
+    assert all(w.endswith(" audio levels: property not found") for w in notes) and len(notes) == len(result["warnings"])
+    for layer in _layers(dump).values():
+        assert layer["comment"]  # the parts after the audio were set too
+
+
+@needs_node
+def test_file_names_with_percent_signs_are_found(tmp_path):
+    # File() reads %XX as an escape: "50%20off" would otherwise be looked for as "50 off"
+    b = ProjectBuilder()
+    for i, name in enumerate(("clip 50%20off.mp4", "promo 50% off.mp4", "100%.mov")):
+        b.add_clip(b.add_file("video", path="/m/" + name), track=1, position=3.0 * i, start=0.0, end=2.0)
+    out, script, media = _export_project(b, tmp_path)
+    result, dump = _run(script, media)
+    assert result["placeholders"] == [] and result["warnings"] == []
+    files = {os.path.basename(i["file"]) for i in dump["items"] if i["type"] == "Footage"}
+    assert files == {"clip 50%20off.mp4", "promo 50% off.mp4", "100%.mov"}
+
+
+@needs_node
+def test_a_back_easing_move_is_keyed_as_x_and_y_position(tmp_path):
+    # a spatial ease refuses negative speeds (the mock throws); separating the dimensions invalidates the
+    # transform group's references (the mock does that too), so the runtime fetches it again
+    b = ProjectBuilder()
+    img = b.add_file("image", path="/m/photo.jpg")
+    back = {"Points": [point(1, -0.3, 0, (0.5, 1.0), (0.175, 0.885)), point(31, 0.0, 0, (0.320, 1.275), (0.5, 0.0))]}
+    back_y = {"Points": [point(1, -0.2, 0, (0.5, 1.0), (0.175, 0.885)), point(31, 0.1, 0, (0.320, 1.275), (0.5, 0.0))]}
+    b.add_clip(img, track=1, position=0.0, start=0.0, end=3.0, location_x=back, location_y=back_y,
+               rotation=kf((1, 0.0), (61, 45.0)), alpha=kf((1, 0.0), (16, 1.0)))
+    out, script, media = _export_project(b, tmp_path)
+    result, dump = _run(script, media)
+    assert result["status"] == "ok" and result["warnings"] == []
+    photo = _layers(dump)["photo.jpg"]
+    pos = _prop(photo, "ADBE Transform Group", "ADBE Position")
+    assert pos["separated"] and [len(f.get("keys", [])) for f in pos["followers"][:2]] == [2, 2]
+    assert min(pos["followers"][0]["keys"][1]["inEase"][0][0], pos["followers"][0]["keys"][0]["outEase"][0][0]) < 0
+    assert len(_prop(photo, "ADBE Transform Group", "ADBE Rotate Z")["keys"]) == 2
+    assert len(_prop(photo, "ADBE Transform Group", "ADBE Opacity")["keys"]) == 2
+
+
+@needs_node
+def test_a_key_that_is_bezier_on_one_side_keeps_its_ease(tmp_path):
+    # making a side Bezier recomputes its ease in the mock (as After Effects may): type first, then ease
+    b = ProjectBuilder()
+    v = b.add_file("video", path="/m/beach.mp4")
+    b.add_clip(v, track=1, position=0.0, start=0.0, end=3.0,
+               alpha=kf((1, 0.0, 0), (16, 1.0, 0), (31, 0.5, LINEAR)))
+    out, script, media = _export_project(b, tmp_path)
+    spec = out.data["layers"][0]["tf"]["op"]
+    assert spec["i"] == ["b", "l"]
+    result, dump = _run(script, media)
+    key = _prop(_layers(dump)["beach.mp4"], "ADBE Transform Group", "ADBE Opacity")["keys"][1]
+    assert (key["in"], key["out"]) == ("bezier", "linear")
+    assert key["inEase"] == [[pytest.approx(spec["n"][0][0][0]), pytest.approx(spec["n"][0][0][1])]]
+
+
+@needs_node
+def test_a_wrongly_guessed_effect_parameter_id_never_sets_another_parameter(tmp_path):
+    # --wrong-param-ids: Mosaic -0001 / -0003 and Color Key -0001 / -0002 hold each other's parameters
+    out, script, media = _materialize("effects", tmp_path)
+    mosaic = next(fx for L in out.data["layers"] for fx in L.get("fx", []) if fx["opts"][0]["match"] == "ADBE Mosaic")
+    blocks = mosaic["opts"][0]["params"][0]["val"]
+    assert not isinstance(blocks, dict)  # a static value in this fixture
+    color = [0, 200 / 255, 40 / 255, 1]
+    # English After Effects: an unverified id holding another name falls back to the display name
+    result, dump = _run(script, media, "--wrong-param-ids", "--no-keylight")
+    params = {p["name"]: p for p in _mosaic_params(dump)}
+    assert params["Horizontal Blocks"]["match"] == "ADBE Mosaic-0003"
+    assert params["Horizontal Blocks"]["value"] == pytest.approx(blocks) and params["Sharp Colors"]["value"] == 0
+    assert not [w for w in result["warnings"] if "Mosaic" in w or "Color Key" in w or "Pixelate" in w]
+    key = {p["name"]: p.get("value") for p in _effect(dump, "greenscreen.mp4", "ADBE Color Key")["children"]}
+    assert key["Key Color"] == pytest.approx(color, abs=1e-5)
+    # another language: names cannot be compared, but a parameter of the wrong kind is never set (the
+    # colour does not land on Color Tolerance, nor the tolerance on Key Color)
+    result, dump = _run(script, media, "--wrong-param-ids", "--no-keylight", "--language", "de_DE")
+    key = {p["name"]: p.get("value") for p in _effect(dump, "greenscreen.mp4", "ADBE Color Key")["children"]}
+    assert isinstance(key["Color Tolerance"], (int, float)) and key["Key Color"] == pytest.approx(color, abs=1e-5)
+
+
+def _effect(dump, layer, match, comp="Promo"):
+    fx = _comp(dump, comp)
+    L = next(x for x in fx["layers"] if x["name"] == layer)
+    return next(e for e in L["groups"]["ADBE Effect Parade"]["children"] if e["match"] == match)
+
+
+def _mosaic_params(dump):
+    for L in _comp(dump, "Promo")["layers"]:
+        for e in L["groups"]["ADBE Effect Parade"]["children"]:
+            if e["match"] == "ADBE Mosaic":
+                return e["children"]
+    raise KeyError("ADBE Mosaic")
+
+
+@needs_node
+def test_time_remap_keeps_its_keys_when_after_effects_rounds_key_times(tmp_path):
+    # the mock rounds every key time to 1/24 s: the old cleanup (drop keys not at our exact times)
+    # deleted our own keys; now only the two keys After Effects added are removed
+    b = ProjectBuilder()
+    v = b.add_file("video", path="/m/long.mp4", duration=60.0)
+    c = b.add_clip(v, track=1, position=1.1, start=0.0, end=3.0)
+    b.clip(c)["time"] = kf((1, 91, LINEAR), (91, 1, LINEAR))
+    out, script, media = _export_project(b, tmp_path)
+    want = out.data["layers"][0]["remap"]
+    result, dump = _run(script, media, "--key-time-grid", "24")
+    keys = _layers(dump)["long.mp4"]["timeRemap"]["keys"]
+    assert [k["v"] for k in keys] == [pytest.approx(v, abs=1e-5) for v in want["v"]]
+    assert [k["t"] for k in keys] == [pytest.approx(round(t * 24) / 24) for t in want["t"]]
+
+
+@needs_node
+@pytest.mark.parametrize("installed, font, warned", [
+    ("Ubuntu:Regular:Ubuntu-Regular,Arial:Regular:ArialMT", "Ubuntu-Regular", False),
+    ("Arial:Regular:ArialMT", "ArialMT", True),
+])
+def test_older_after_effects_finds_fonts_by_their_usual_postscript_names(tmp_path, installed, font, warned):
+    from classes.exporters.after_effects_titles import parse_title_svg
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">'
+           '<text x="960" y="540" style="font-family:Ubuntu;font-size:80px;fill:#ffffff">Hello</text></svg>')
+    title = tmp_path / "Hello.svg"
+    title.write_text(svg, encoding="utf-8")
+    b = ProjectBuilder()
+    t = b.add_title(str(title))
+    b.add_clip(t, track=1, position=0.0, start=0.0, end=2.0)
+    out, script, media = _export_project(b, tmp_path, titles={t: AE.TitleAsset("native", layout=parse_title_svg(svg))})
+    result, dump = _run(script, media, "--no-fonts-api", "--fonts", installed)
+    texts = [L["groups"]["ADBE Text Properties"]["children"][0]["value"] for L in _comp(dump, "Hello")["layers"]]
+    assert [t["font"] for t in texts] == [font]
+    notes = [w for w in result["warnings"] if "Font" in w]
+    assert bool(notes) is warned
+    if warned:
+        assert "usual PostScript names" in notes[0] and "titles use ArialMT instead" in notes[0]
 
 
 @needs_node

@@ -220,7 +220,8 @@ def test_send_exports_and_runs_the_script_through_zenvi_link(tmp_path, ae_host):
     b = _project(tmp_path, titles=False)
     result = X.send_to_after_effects(b.snapshot(), base_dir=base, output_dir=str(tmp_path / "send"),
                                      render_svg=fake_render, analyze_mask=fake_analyze)
-    assert result.summary["comp"] == "Trip" and result.message == "Built comp \"Trip\""
+    assert result.summary["comp"] == "Trip"
+    assert result.message == 'Built comp "Trip" In After Effects, Edit > Undo "Zenvi: Run JSX file" removes it.'
     call = [c for c in ae_host.calls if c.get("method") == "tools/call"][-1]
     assert call["params"] == {"name": "ae_run_jsx_file", "arguments": {"path": result.export.script_path}}
     with open(result.export.script_path, encoding="utf-8") as fh:
@@ -257,7 +258,46 @@ def test_running_the_script_waits_longer_than_the_link_default(monkeypatch, tmp_
     X.run_in_after_effects("/x/Trip.jsx")
     assert seen == {"app": "aftereffects", "tool": "ae_run_jsx_file", "args": {"path": "/x/Trip.jsx"},
                     "timeout": X.AE_RUN_TIMEOUT}
-    assert X.AE_RUN_TIMEOUT > adobe_link.DEFAULT_TIMEOUT
+    # Zenvi Link's ae_run_jsx_file allows 30 minutes (adobe-link e77b816): wait a little longer than that
+    assert 1800.0 < X.AE_RUN_TIMEOUT <= 1900.0 and X.AE_RUN_TIMEOUT > adobe_link.DEFAULT_TIMEOUT
+
+
+def test_a_quiet_run_goes_through_a_runner_that_is_removed_afterwards(monkeypatch, tmp_path):
+    script = tmp_path / "my 50% folder" / "Trip.jsx"
+    script.parent.mkdir()
+    script.write_text("// export", encoding="utf-8")
+    seen = []
+
+    def call_host_tool(app, tool, args=None, timeout=120.0, base_dir=None):
+        runner = args["path"]
+        seen.append((os.path.basename(runner), open(runner, encoding="utf-8").read()))
+        return _Result({"status": "applied", "data": {"result": json.dumps({"zenvi_ae_import": 1, "status": "ok"})}})
+
+    monkeypatch.setattr(adobe_link, "call_host_tool", call_host_tool)
+    X.run_in_after_effects(str(script), quiet=True)
+    (name, body), = seen
+    assert name.startswith(".zenvi-run-") and name.endswith(".jsx")
+    assert "$.global.ZENVI_AE_QUIET = true;" in body and "delete $.global.ZENVI_AE_QUIET;" in body
+    assert "my 50%25 folder" in body  # File() reads %XX as an escape
+    assert sorted(os.listdir(script.parent)) == ["Trip.jsx"]
+
+    def timed_out(app, tool, args=None, timeout=120.0, base_dir=None):
+        raise adobe_link.LinkHostError("no answer", "TIMEOUT")
+
+    monkeypatch.setattr(adobe_link, "call_host_tool", timed_out)
+    with pytest.raises(adobe_link.LinkHostError):
+        X.run_in_after_effects(str(script), quiet=True)
+    # After Effects may still read the runner after a timeout: it stays
+    assert len([n for n in os.listdir(script.parent) if n.startswith(".zenvi-run-")]) == 1
+
+
+@pytest.mark.parametrize("via, name", [("zenvi-link", "Zenvi: Run JSX file"), ("applescript", "Import Zenvi project")])
+def test_the_undo_step_is_named_for_the_way_the_script_ran(via, name):
+    summary = {"zenvi_ae_import": 1, "status": "ok", "summary": "Built comp \"Trip\": 3 layers."}
+    assert X.describe_import(summary, via) == f'Built comp "Trip": 3 layers. In After Effects, Edit > Undo "{name}" removes it.'
+    failed = {"zenvi_ae_import": 1, "status": "error", "summary": "Error: the Zenvi import stopped: boom."}
+    assert X.describe_import(failed, via) == failed["summary"]
+    assert X.describe_import(None, via, "Ran Trip.jsx") == "Ran Trip.jsx"
 
 
 def test_folders(monkeypatch, tmp_path):
@@ -271,34 +311,102 @@ def test_folders(monkeypatch, tmp_path):
     assert saved.startswith(str(tmp_path / "proj")) and saved.endswith(os.path.join("after_effects", "Trip"))
 
 
-def test_applescript_passes_the_script_as_an_argument():
+def test_applescript_passes_the_script_as_an_argument_and_a_file_to_doscriptfile():
     argv = X.applescript_command("/Applications/Adobe After Effects 2026/Adobe After Effects 2026.app",
                                  '/tmp/my "odd" folder/Trip.jsx')
     assert argv[0] == "osascript" and argv[-1] == '/tmp/my "odd" folder/Trip.jsx'
     lines = argv[2:-1:2]
-    assert lines[0] == "on run argv" and 'tell application "Adobe After Effects 2026"' in lines
-    assert "DoScriptFile (item 1 of argv)" in lines and all(a == "-e" for a in argv[1:-1:2])
+    assert lines[:2] == ["on run argv", "set f to POSIX file (item 1 of argv)"]
+    assert 'tell application "Adobe After Effects 2026"' in lines and "DoScriptFile f" in lines
+    assert "with timeout of %d seconds" % int(X.AE_RUN_TIMEOUT) in lines and all(a == "-e" for a in argv[1:-1:2])
 
 
-def test_the_newest_after_effects_release_is_used(tmp_path):
-    for name in ("Adobe After Effects 2025", "Adobe After Effects 2026", "Adobe After Effects (Beta)"):
+def test_the_running_after_effects_is_asked_before_a_newer_installed_one(tmp_path):
+    for name in ("Adobe After Effects 2024", "Adobe After Effects 2025", "Adobe After Effects 2026",
+                 "Adobe After Effects (Beta)"):
         (tmp_path / name / (name + ".app")).mkdir(parents=True)
-    found = X.find_after_effects_app([str(tmp_path)], platform="darwin")
-    assert found.endswith("Adobe After Effects 2026.app")
-    assert X.find_after_effects_app([str(tmp_path)], platform="win32") is None
+    app = lambda year: str(tmp_path / f"Adobe After Effects {year}" / f"Adobe After Effects {year}.app")  # noqa: E731
+    assert X.find_after_effects_app([str(tmp_path)], platform="darwin", running=lambda: []) == app(2026)
+    assert X.find_after_effects_app([str(tmp_path)], platform="darwin", running=lambda: [app(2024)]) == app(2024)
+    both = lambda: [app(2024), app(2025)]  # noqa: E731
+    assert X.find_after_effects_app([str(tmp_path)], platform="darwin", running=both) == app(2025)
+    assert X.find_after_effects_app([str(tmp_path)], platform="win32", running=both) is None
+
+
+def test_running_after_effects_comes_from_ps(monkeypatch):
+    listing = "\n".join([
+        "/System/Library/CoreServices/Dock.app/Contents/MacOS/Dock",
+        "/Applications/Adobe After Effects 2024/Adobe After Effects 2024.app/Contents/MacOS/After Effects",
+        "/Applications/Adobe After Effects 2024/Adobe After Effects 2024.app/Contents/MacOS/aerendercore",
+        "/Applications/Adobe Premiere Pro 2025/Adobe Premiere Pro 2025.app/Contents/MacOS/Adobe Premiere Pro 2025"])
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, listing, ""))
+    assert X.running_after_effects_apps() == [
+        "/Applications/Adobe After Effects 2024/Adobe After Effects 2024.app"]
+
+
+class _Osascript:
+    """Popen stand-in: answers (returncode, stdout, stderr) after *ticks* polls, or never (None)."""
+
+    instances: list = []
+
+    def __init__(self, answer, ticks=0):
+        self.answer, self.ticks, self.killed, self.argv = answer, ticks, False, None
+        self.returncode = None
+
+    def __call__(self, argv, **kw):
+        self.argv = argv
+        _Osascript.instances.append(self)
+        return self
+
+    def communicate(self, timeout=None):
+        if self.killed:
+            return "", ""
+        if self.answer is None or self.ticks > 0:
+            self.ticks -= 1
+            raise subprocess.TimeoutExpired("osascript", timeout)
+        self.returncode, out, err = self.answer
+        return out, err
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+
+AE_2026 = "/Applications/Adobe After Effects 2026/Adobe After Effects 2026.app"
 
 
 def test_applescript_failures_say_what_to_allow(monkeypatch):
-    def denied(*a, **k):
-        return subprocess.CompletedProcess(a, 1, "", "execution error: Not authorized to send Apple events to "
-                                                     "Adobe After Effects 2026. (-1743)")
-
-    monkeypatch.setattr(subprocess, "run", denied)
+    denied = (1, "", "execution error: Not authorized to send Apple events to Adobe After Effects 2026. (-1743)")
+    monkeypatch.setattr(subprocess, "Popen", _Osascript(denied))
     with pytest.raises(X.AeHandoffError, match="Automation"):
-        X.run_with_applescript("/x/Trip.jsx", "/Applications/Adobe After Effects 2026/Adobe After Effects 2026.app")
+        X.run_with_applescript("/x/Trip.jsx", AE_2026, poll=0.001)
+    stuck = (1, "", "execution error: Adobe After Effects 2026 got an error: AppleEvent timed out. (-1712)")
+    monkeypatch.setattr(subprocess, "Popen", _Osascript(stuck))
+    with pytest.raises(X.AeHandoffError, match="DoScriptFile may be stuck"):
+        X.run_with_applescript("/x/Trip.jsx", AE_2026, poll=0.001)
+    ok = (0, json.dumps({"zenvi_ae_import": 1, "comp": "Trip"}) + "\n", "")
+    monkeypatch.setattr(subprocess, "Popen", _Osascript(ok, ticks=3))
+    assert X.run_with_applescript("/x/Trip.jsx", "/Applications/AE.app", poll=0.001)["comp"] == "Trip"
 
-    def ok(*a, **k):
-        return subprocess.CompletedProcess(a, 0, json.dumps({"zenvi_ae_import": 1, "comp": "Trip"}) + "\n", "")
 
-    monkeypatch.setattr(subprocess, "run", ok)
-    assert X.run_with_applescript("/x/Trip.jsx", "/Applications/AE.app")["comp"] == "Trip"
+def test_the_applescript_wait_can_be_cancelled_and_is_bounded(monkeypatch, tmp_path):
+    script = tmp_path / "Trip.jsx"
+    script.write_text("// export", encoding="utf-8")
+    calls = {"n": 0}
+
+    def cancel_on_third_check():
+        calls["n"] += 1
+        return calls["n"] >= 3
+
+    fake = _Osascript(None)
+    monkeypatch.setattr(subprocess, "Popen", fake)
+    with pytest.raises(X.AeCancelled, match="may still finish"):
+        X.run_with_applescript(str(script), AE_2026, quiet=True, should_cancel=cancel_on_third_check, poll=0.001)
+    assert fake.killed and calls["n"] == 3
+    # the runner stays (After Effects may still read it); the AppleScript ran the runner, not the export
+    assert fake.argv[-1] != str(script) and os.path.basename(fake.argv[-1]).startswith(".zenvi-run-")
+    fake = _Osascript(None)
+    monkeypatch.setattr(subprocess, "Popen", fake)
+    with pytest.raises(X.AeHandoffError, match=r"did not report back within 1 second\. .*File > Scripts"):
+        X.run_with_applescript(str(script), AE_2026, timeout=0.05, poll=0.001)
+    assert fake.killed

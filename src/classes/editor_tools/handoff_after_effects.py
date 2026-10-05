@@ -7,7 +7,8 @@ Effects). Both are background-safe: the project is snapshotted on the GUI
 thread (a deep copy), then media copies, title and wipe rendering, file
 writes and the Zenvi Link call run on the calling worker thread, registered
 as a handoff job. Neither changes the Zenvi project, so neither adds an undo
-step; in After Effects the import is one undo step ("Import Zenvi project").
+step. In After Effects the import is one undo step: "Import Zenvi project"
+after File > Scripts, "Zenvi: Run JSX file" when Zenvi Link ran it.
 """
 
 from __future__ import annotations
@@ -119,11 +120,12 @@ def send_to_after_effects(collect_media=False):
     Effects to read), runs it in After Effects, and returns After Effects'
     own summary: the comp name and id, layers built, placeholders for missing
     media and any warnings. In After Effects the import is one undo step
-    (Edit > Undo "Import Zenvi project"); the Zenvi project is not changed.
+    (Edit > Undo "Zenvi: Run JSX file"); the Zenvi project is not changed.
     Refuses with how to connect when After Effects is not connected.
     """
     from classes.handoff import adobe_link, jobs
-    from classes.handoff.after_effects_export import AeCancelled, AeHandoffError, send_to_after_effects as send
+    from classes.handoff.after_effects_export import AeCancelled, AeHandoffError, undo_hint
+    from classes.handoff.after_effects_export import send_to_after_effects as send
     snapshot = _snapshot()
     try:
         with jobs.track_job("Send to After Effects", kind="after-effects") as job:
@@ -149,7 +151,7 @@ def send_to_after_effects(collect_media=False):
             "After Effects ran the export script")
     line += (f"; {len(placeholders)} placeholder(s) for missing media" if placeholders else "")
     line += (f"; {len(ae_warnings) + len(export.warnings)} warning(s)" if ae_warnings or export.warnings else "")
-    line += ". In After Effects, Edit > Undo \"Import Zenvi project\" removes it."
+    line += ". " + undo_hint("zenvi-link")
     return ok(line, comp=comp, comp_id=summary.get("comp_id"), folder=summary.get("folder"), layers=layers,
               placeholders=placeholders, ae_warnings=ae_warnings, export_warnings=export.warnings,
               titles=_titles(export.titles), script=export.script_path, collected_media=export.collected,

@@ -10,8 +10,18 @@
  *    ease array sizes (TwoD -> 2, ThreeD -> 3, else 1), spatial calls on non-spatial properties,
  *    bad key indices and edits to locked layers throw like AE does;
  *  - PropertyGroup.addProperty invalidates the references handed out earlier for that group's
- *    children (the guide's Slider/Color Control example), so stale references throw;
- *  - turning on time remapping adds two keys; setting an unknown font keeps the previous one.
+ *    children (the guide's Slider/Color Control example), and turning Position's
+ *    dimensionsSeparated on or off invalidates the layer's group references, so stale ones throw;
+ *  - turning on time remapping adds two keys; setting an unknown font keeps the previous one;
+ *  - File() reads "%XX" in a path as an escape (ExtendScript's URI notation);
+ *  - a spatial property refuses a negative ease speed;
+ *  - making a key's side Bezier with setInterpolationTypeAtKey recomputes that side's ease (an
+ *    ease set before the type is lost); setTemporalEaseAtKey leaves the types alone;
+ *  - $.evalFile runs another script in the same global scope ($.global) and returns its value.
+ *
+ * Options (ae_mock.js) model other After Effects setups: no font list, no Keylight, another
+ * language (app.isoLanguage), wrongly guessed effect parameter ids, a layer without an audio
+ * group, key times rounded to a coarser grid.
  *
  * Everything the script did is available through __dump().
  */
@@ -64,9 +74,16 @@
     }
 
     // ---- files ---------------------------------------------------------------------------------
+    function decodePath(p) {
+        // ExtendScript paths are URI notation: File("a%20b") is "a b"
+        return String(p).replace(/(%[0-9A-Fa-f]{2})+/g, function (m) {
+            try { return decodeURIComponent(m); } catch (e) { return m; }
+        });
+    }
+
     function File(p) {
         if (!(this instanceof File)) return new File(p);
-        this._path = String(p);
+        this._path = decodePath(p);
     }
     Object.defineProperty(File.prototype, "exists", {get: function () { return host.isFile(this._path); }});
     Object.defineProperty(File.prototype, "fsName", {get: function () { return host.resolve(this._path); }});
@@ -180,8 +197,9 @@
         this._v.justification = ParagraphJustification.LEFT_JUSTIFY;
     };
     TextDocument.prototype.__clone = function () {
+        // a copy, as Source Text's value is in After Effects (not an alias of the layer's document)
         var t = new TextDocument(this._v.text);
-        t._v = clone(this._v);
+        t._v = {};
         for (var k in this._v) t._v[k] = clone(this._v[k]);
         return t;
     };
@@ -232,6 +250,12 @@
         set: function (v) {
             this._locked();
             if (!this._opts.separable) throw aeError(this.name + " cannot be separated");
+            if (this._separated !== !!v) {
+                // the property tree changes: references to the layer's groups and their children go stale
+                var layer = this._owner && this._owner.__layer ? this._owner.__layer() : null;
+                if (layer) layer._invalidate();
+                if (this._owner && this._owner._invalidate) this._owner._invalidate();
+            }
             this._separated = !!v;
         }
     });
@@ -290,6 +314,7 @@
     Property.prototype._addKey = function (t, v) {
         var i, key;
         if (!isNum(t)) throw aeError(this.name + ": key time must be a number");
+        if (host.options.keyTimeGrid) t = Math.round(t * host.options.keyTimeGrid) / host.options.keyTimeGrid;
         if (this._opts.noKeys) throw aeError(this.name + " cannot be keyframed");
         for (i = 0; i < this._keys.length; i++) {
             if (Math.abs(this._keys[i].time - t) < 1e-9) {
@@ -348,6 +373,14 @@
         if (!this.isInterpolationTypeValid(inType) || !this.isInterpolationTypeValid(outType)) {
             throw aeError(this.name + ": interpolation type not valid for this property");
         }
+        // a side that becomes Bezier gets an ease After Effects works out itself
+        var n = easeCountOf(this.propertyValueType), auto = function () {
+            var out = [];
+            for (var j = 0; j < n; j++) out.push([0, 16.666667]);
+            return out;
+        };
+        if (inType === KeyframeInterpolationType.BEZIER && key.inType !== inType) key.inEase = auto();
+        if (outType === KeyframeInterpolationType.BEZIER && key.outType !== outType) key.outEase = auto();
         key.inType = inType;
         key.outType = outType;
     };
@@ -361,6 +394,9 @@
         };
         check(inEase, "in");
         check(outEase, "out");
+        if (this.isSpatial && (inEase[0].speed < 0 || outEase[0].speed < 0)) {
+            throw aeError(this.name + ": a spatial property's ease speed cannot be negative");
+        }
         key.inEase = [];
         key.outEase = [];
         for (var j = 0; j < n; j++) {
@@ -436,6 +472,10 @@
         return child;
     };
     Object.defineProperty(PropertyGroup.prototype, "numProperties", {get: function () { return this._children.length; }});
+    PropertyGroup.prototype._invalidate = function () {
+        for (var i = 0; i < this._handles.length; i++) this._handles[i].valid = false;
+        this._handles = [];
+    };
     PropertyGroup.prototype._handle = function (target) {
         var record = {valid: true}, proxy = new Proxy(target, {
             get: function (t, k) {
@@ -490,6 +530,7 @@
     // ---- effects -----------------------------------------------------------------------------------
     var P = PropertyValueType;
     function param(m, name, type, value, opts) { return [m, name, type, value, opts || {}]; }
+    var swap = !!host.options.wrongParamIds;  // guessed ids that hold other parameters
     var EFFECTS = {
         "ADBE Gaussian Blur 2": ["Gaussian Blur", [
             param("ADBE Gaussian Blur 2-0001", "Blurriness", P.OneD, 0, {min: 0, max: 3000}),
@@ -510,13 +551,17 @@
             param("ADBE Invert-0001", "Channel", P.OneD, 1, {min: 1, max: 16, integer: true, holdOnly: true}),
             param("ADBE Invert-0002", "Blend With Original", P.OneD, 0, {min: 0, max: 100})]],
         "ADBE Mosaic": ["Mosaic", [
-            param("ADBE Mosaic-0001", "Horizontal Blocks", P.OneD, 10, {min: 1, max: 4000}),
+            swap ? param("ADBE Mosaic-0001", "Sharp Colors", P.OneD, 0, {min: 0, max: 1, integer: true, holdOnly: true})
+                : param("ADBE Mosaic-0001", "Horizontal Blocks", P.OneD, 10, {min: 1, max: 4000}),
             param("ADBE Mosaic-0002", "Vertical Blocks", P.OneD, 10, {min: 1, max: 4000}),
-            param("ADBE Mosaic-0003", "Sharp Colors", P.OneD, 0, {min: 0, max: 1, integer: true, holdOnly: true})]],
+            swap ? param("ADBE Mosaic-0003", "Horizontal Blocks", P.OneD, 10, {min: 1, max: 4000})
+                : param("ADBE Mosaic-0003", "Sharp Colors", P.OneD, 0, {min: 0, max: 1, integer: true, holdOnly: true})]],
         "ADBE Sharpen": ["Sharpen", [param("ADBE Sharpen-0001", "Sharpen Amount", P.OneD, 0, {min: 0, max: 4000})]],
         "ADBE Color Key": ["Color Key", [
-            param("ADBE Color Key-0001", "Key Color", P.COLOR, [0, 0, 1, 1]),
-            param("ADBE Color Key-0002", "Color Tolerance", P.OneD, 0, {min: 0, max: 255}),
+            swap ? param("ADBE Color Key-0001", "Color Tolerance", P.OneD, 0, {min: 0, max: 255})
+                : param("ADBE Color Key-0001", "Key Color", P.COLOR, [0, 0, 1, 1]),
+            swap ? param("ADBE Color Key-0002", "Key Color", P.COLOR, [0, 0, 1, 1])
+                : param("ADBE Color Key-0002", "Color Tolerance", P.OneD, 0, {min: 0, max: 255}),
             param("ADBE Color Key-0003", "Edge Thin", P.OneD, 0, {min: -5, max: 5}),
             param("ADBE Color Key-0004", "Edge Feather", P.OneD, 0, {min: 0, max: 500})]],
         "ADBE Gradient Wipe": ["Gradient Wipe", [
@@ -739,13 +784,14 @@
             inPoint: 0, outPoint: length, enabled: true, audioEnabled: true, guideLayer: false, comment: "",
             label: 0, blendingMode: BlendingMode.NORMAL, timeRemapEnabled: false, shy: false};
         this._locked = false;
+        this._handles = [];
         var w = source ? source.width : comp.width, h = source ? source.height : comp.height;
         if (kind !== "av") { w = 0; h = 0; }
         this._groups = [transformGroup(this, w, h, comp.width, comp.height),
             new PropertyGroup(this, "ADBE Effect Parade", "Effects", effectFactories, []),
             new PropertyGroup(this, "ADBE Mask Parade", "Masks", {"ADBE Mask Atom": maskAtom, "Mask": maskAtom}, [])];
         for (var g = 0; g < this._groups.length; g++) this._groups[g]._owner = this;
-        if (this.hasAudio) {
+        if (this.hasAudio && !host.options.noAudioGroup) {
             var audio = new PropertyGroup(this, "ADBE Audio Group", "Audio", {}, [
                 new Property(null, "ADBE Audio Levels", "Audio Levels", P.TwoD, [0, 0], {min: -192, max: 24})]);
             this._groups.push(audio);
@@ -865,12 +911,14 @@
             this._v.timeRemapEnabled = !!v;
         }
     });
+    Layer.prototype._invalidate = PropertyGroup.prototype._invalidate;
+    Layer.prototype._handle = PropertyGroup.prototype._handle;
     Layer.prototype.property = function (key) {
         if (key === "ADBE Time Remapping" || key === "Time Remap") {
             return this._remap && this._v.timeRemapEnabled ? this._remap : null;
         }
         for (var i = 0; i < this._groups.length; i++) {
-            if (this._groups[i].matchName === key || this._groups[i].name === key) return this._groups[i];
+            if (this._groups[i].matchName === key || this._groups[i].name === key) return this._handle(this._groups[i]);
         }
         return null;
     };
@@ -975,6 +1023,7 @@
     var app = {
         project: project,
         version: "26.0x1",
+        isoLanguage: host.options.language || "en_US",
         fonts: host.options.fontsApi ? fonts : undefined,
         beginUndoGroup: function (name) {
             if (typeof name !== "string") throw aeError("beginUndoGroup needs a string");
@@ -1007,13 +1056,27 @@
     global.CompItem = CompItem;
     global.FootageItem = FootageItem;
     global.FolderItem = FolderItem;
-    global.$ = {fileName: host.options.scriptPath};
+    var dollar = {fileName: host.options.scriptPath, global: global};
+    dollar.evalFile = function (file) {
+        var p = file instanceof File ? file.fsName : host.resolve(decodePath(file));
+        if (!host.isFile(p)) throw aeError("evalFile: no file " + p);
+        var saved = dollar.fileName;
+        dollar.fileName = p;
+        try {
+            // '#target' lines are preprocessor directives, not JavaScript
+            return (0, eval)(host.readText(p).replace(/^#/mg, "//#"));
+        } finally {
+            dollar.fileName = saved;
+        }
+    };
+    global.$ = dollar;
     global.alert = function (text) { log.alerts.push(String(text)); };
     global.writeLn = function (text) { log.info.push(String(text)); };
 
     var stringifyJSON = JSON.stringify;
     global.__dump = function () {
-        var items = allItems(), out = {items: [], undo: undo, alerts: log.alerts, info: log.info};
+        var items = allItems(), out = {items: [], undo: undo, alerts: log.alerts, info: log.info,
+            quietFlagLeft: global.ZENVI_AE_QUIET !== undefined};
         for (var i = 0; i < items.length; i++) {
             var it = items[i], d = {id: it.id, type: it.typeName, name: it.name, comment: it.comment,
                 parent: it._parentFolder ? it._parentFolder.name : null};
