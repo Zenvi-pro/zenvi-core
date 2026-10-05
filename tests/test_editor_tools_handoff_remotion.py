@@ -297,3 +297,73 @@ def test_exporting_over_unimported_remotion_edits_needs_replace_edits(remotion, 
     data = _data(remotion.call("export_to_remotion_tool", output_dir=out_dir, replace_edits=True))
     assert data["mode"] == "update" and any("replaced changes" in w for w in data["warnings"])
     assert next(c for c in json.load(open(path))["clips"] if c["id"] == clips["image"])["position"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Verification round: saving during a render, imports are trusted, re-export after the round trip
+# ---------------------------------------------------------------------------
+
+def test_saving_the_project_while_remotion_renders_keeps_the_renders(remotion):
+    """Save As / the first save of an untitled project changes the file path, not the project."""
+    def save_as(command, opts):
+        if command == "render":
+            remotion.store.current_filepath = "/Users/me/trip.zvn"
+
+    remotion.fake.during = save_as
+    data = _data(remotion.call("import_remotion_project_tool", project_dir=remotion.project_dir,
+                               compositions=["Scene"]))
+    assert len(data["linked"]) == 1 and remotion.undo_steps_since_mark() == 1
+
+
+def test_opening_another_project_while_remotion_renders_adds_nothing(remotion):
+    import copy as _copy
+
+    def open_other(command, opts):
+        if command == "render":
+            other = _copy.deepcopy(remotion.store._data)
+            other["id"] = "OTHERPROJ1"
+            remotion.store._data = other  # what project.load() does
+
+    remotion.fake.during = open_other
+    out = remotion.call("import_remotion_project_tool", project_dir=remotion.project_dir, compositions=["Scene"])
+    assert out.startswith("Error") and "another project was opened" in out and _renders(remotion) == []
+
+
+def test_a_project_imported_this_session_is_trusted_for_later_re_renders(remotion):
+    from classes.handoff.remotion import trust
+    trust.reset()
+    key = trust.trust_key(remotion.project_dir)
+    remotion.call("import_remotion_project_tool", project_dir=remotion.project_dir, compositions=["Scene"])
+    assert trust.is_trusted(key)
+    trust.reset()
+
+
+def test_the_round_trip_export_import_export_needs_no_replace(remotion, tmp_path):
+    """Import the Remotion-side edits as native clips, export into the same folder again: nothing to lose.
+    Undoing the import puts the edits back at risk, and the export says so again."""
+    remotion.store._data.update(clips=[], files=[])
+    clips, _files = build_project(remotion, str(tmp_path / "media"))
+    out_dir = str(tmp_path / "trip-remotion")
+    _data(remotion.call("export_to_remotion_tool", output_dir=out_dir))
+    path = os.path.join(out_dir, "src", "zenvi", "timeline.json")
+    timeline = json.load(open(path))
+    next(c for c in timeline["clips"] if c["id"] == clips["image"])["position"] = 2.0
+    json.dump(timeline, open(path, "w"))
+    remotion.store._data.update(clips=[], files=[], effects=[], markers=[])
+    remotion.mark()
+    _data(remotion.call("import_remotion_project_tool", project_dir=out_dir, position=0.0))
+    assert remotion.undo_steps_since_mark() == 1
+    assert remotion.store._data["settings"]["remotion_imported"]
+    data = _data(remotion.call("export_to_remotion_tool", output_dir=out_dir))
+    assert data["mode"] == "update" and not any("replaced" in w for w in data["warnings"])
+    # again: edit in Remotion, import, then undo the import -> the edits are not in the project any more
+    timeline = json.load(open(path))
+    next(c for c in timeline["clips"] if c["id"] == clips["image"])["position"] = 5.0
+    json.dump(timeline, open(path, "w"))
+    remotion.mark()
+    _data(remotion.call("import_remotion_project_tool", project_dir=out_dir, position=0.0))
+    assert len(remotion.store._data["settings"]["remotion_imported"]) == 2
+    remotion.undo()
+    assert len(remotion.store._data["settings"]["remotion_imported"]) == 1
+    out = remotion.call("export_to_remotion_tool", output_dir=out_dir)
+    assert out.startswith("Error") and "not imported into Zenvi yet" in out

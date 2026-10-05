@@ -192,7 +192,8 @@ def test_a_projects_code_runs_only_after_the_user_trusts_it(dialogs, sync_jobs, 
     from remotion_fakes import FakeHelper
     fake = FakeHelper()
     monkeypatch.setattr(helper, "run_helper", fake)
-    monkeypatch.setattr(dialogs, "_trusted", set())
+    from classes.handoff.remotion import trust
+    trust.reset()
     root = make_project(str(tmp_path / "promo"))
     asked, shown = [], []
     answers = iter([None, "run"])
@@ -213,7 +214,8 @@ def test_a_projects_code_runs_only_after_the_user_trusts_it(dialogs, sync_jobs, 
 
 
 def test_installing_dependencies_asks_first_too(dialogs, sync_jobs, tmp_path, monkeypatch):
-    monkeypatch.setattr(dialogs, "_trusted", set())
+    from classes.handoff.remotion import trust
+    trust.reset()
     root = make_project(str(tmp_path / "bare"), installed=False)
     asked, installs, shown = [], [], []
     monkeypatch.setattr(dialogs, "ask_trust", lambda w, p, install=False: asked.append(install) or None)
@@ -370,3 +372,67 @@ def test_exporting_over_remotion_side_edits_asks_before_replacing_them(dialogs, 
     assert dialogs.default_export_dir(str(tmp_path / "trip.zvn")) == str(tmp_path / "trip-remotion")
     (tmp_path / "trip-remotion").mkdir()
     assert dialogs.default_export_dir(str(tmp_path / "trip.zvn")) == str(tmp_path / "trip-remotion-2")
+
+
+# ---------------------------------------------------------------------------
+# Verification round: dynamic compositions, the trust gate beyond File > Import
+# ---------------------------------------------------------------------------
+
+def _dynamic_project(root, *, installed=True):
+    from remotion_fakes import DYNAMIC_ROOT_TSX
+    make_project(root, installed=installed)
+    with open(os.path.join(root, "src", "Root.tsx"), "w") as fh:
+        fh.write(DYNAMIC_ROOT_TSX)  # templates.map(t => <Composition id={t.id} ... />)
+    return root
+
+
+def test_compositions_registered_dynamically_are_read_with_node_after_the_trust_question(
+        dialogs, sync_jobs, tmp_path, monkeypatch):
+    """The static scan finds none: an installed project must still be asked about and listed by Remotion."""
+    from classes.handoff.remotion import helper, sources, trust
+    from remotion_fakes import DYNAMIC_COMPOSITIONS, FakeHelper
+    trust.reset()
+    fake = FakeHelper(DYNAMIC_COMPOSITIONS)
+    monkeypatch.setattr(helper, "run_helper", fake)
+    monkeypatch.setattr(helper, "prune_bundles", lambda *a, **k: [])
+    root = _dynamic_project(str(tmp_path / "templates"))
+    assert sources.scan_project(root, "src/index.ts") == {}
+    asked, shown, infos = [], [], []
+    monkeypatch.setattr(dialogs, "ask_trust", lambda w, p, install=False: asked.append(p.name) or "run")
+    monkeypatch.setattr(dialogs, "_show_import_dialog", lambda window, listing, key: shown.append(listing))
+    from PyQt5.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: infos.append(a[2])))
+    dialogs.read_project(None, root)
+    assert infos == [] and asked == ["fake-remotion"] and fake.commands() == ["compositions"]
+    assert [c.id for c in shown[0].compositions] == ["IntroCard", "OutroCard"] and not shown[0].static_only
+
+
+def test_an_uninstalled_dynamic_project_offers_install_instead_of_saying_it_has_none(
+        dialogs, sync_jobs, tmp_path, monkeypatch):
+    from classes.handoff.remotion import trust
+    trust.reset()
+    root = _dynamic_project(str(tmp_path / "templates"), installed=False)
+    shown, infos = [], []
+    monkeypatch.setattr(dialogs, "_show_import_dialog", lambda window, listing, key: shown.append(listing))
+    from PyQt5.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: infos.append(a[2])))
+    dialogs.read_project(None, root)
+    assert infos == [] and shown and shown[0].static_only and shown[0].compositions == []
+    dialog = dialogs.RemotionImportDialog(shown[0])
+    assert dialog.install_button is not None  # Install, then Remotion lists them
+
+
+def test_the_trust_question_for_a_re_render_or_studio_names_what_runs(dialogs, monkeypatch):
+    from PyQt5.QtWidgets import QMessageBox
+    seen = []
+
+    def exec_(self):
+        seen.append(self.text())
+        self._chosen = [b for b in self.buttons() if b.text() == "Run Its Code"][0]
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec_", exec_)
+    monkeypatch.setattr(QMessageBox, "clickedButton", lambda self: getattr(self, "_chosen", None))
+    assert dialogs.ask_trust_for("/p/promo", "promo", "render") is True
+    assert dialogs.ask_trust_for("/p/promo", "promo", "studio") is True
+    assert seen[0].startswith("Re-rendering promo runs its code") and "Remotion Studio" in seen[1]

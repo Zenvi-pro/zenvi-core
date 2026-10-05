@@ -43,6 +43,30 @@ export const RemotionRoot: React.FC = () => (
 """
 
 
+# A Root that registers its compositions from data: the static scan finds none, Remotion finds two.
+DYNAMIC_ROOT_TSX = """import React from 'react';
+import {Composition} from 'remotion';
+import {TitleCard} from './TitleCard';
+
+const templates = [{id: 'IntroCard', title: 'Intro'}, {id: 'OutroCard', title: 'Outro'}];
+
+export const RemotionRoot: React.FC = () => (
+  <>
+    {templates.map((t) => (
+      <Composition key={t.id} id={t.id} component={TitleCard} durationInFrames={90} fps={30} width={1920}
+        height={1080} defaultProps={{title: t.title}} />
+    ))}
+  </>
+);
+"""
+DYNAMIC_COMPOSITIONS = [
+    {"id": "IntroCard", "width": 1920, "height": 1080, "fps": 30, "durationInFrames": 90,
+     "defaultProps": {"title": "Intro"}},
+    {"id": "OutroCard", "width": 1920, "height": 1080, "fps": 30, "durationInFrames": 90,
+     "defaultProps": {"title": "Outro"}},
+]
+
+
 def make_project(root: str, *, installed: bool = True, version: str = "4.0.532", config: Optional[str] = None,
                  scripts: Optional[dict] = None, extra_deps: Optional[dict] = None) -> str:
     """A Remotion project at *root* (created). Returns root."""
@@ -340,4 +364,4 @@ class FakeHelper:
 
 
 __all__ = ["make_project", "write_fake_remotion", "read_log", "node_runtime_or_none", "FakeHelper", "COMPOSITIONS",
-           "ROOT_TSX"]
+           "ROOT_TSX", "DYNAMIC_ROOT_TSX", "DYNAMIC_COMPOSITIONS"]

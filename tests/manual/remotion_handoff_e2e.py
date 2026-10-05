@@ -32,6 +32,16 @@ widget is the tests' FakeTimeline), driving the real editor tools:
             Remotion-side edits (tree unchanged), refused through a
             symlinked media folder, a cancelled update changes nothing, an
             unchanged re-export still renders, replace_edits replaces.
+  dynamic   (verification round) a project whose compositions come from
+            data (templates.map(t => <Composition id={t.id} .../>)): the
+            static scan finds none, the import dialog code asks the trust
+            question and lists them with the real Remotion; one imports as
+            a linked clip while the project is saved under a new name
+            mid-render; a re-render and Open in Studio from the menus ask
+            first for a folder nobody trusted this session (a "no" runs no
+            Node), the agent tool does not ask.
+  (edits now also exports into the edited folder after importing its
+  edits: no Replace prompt.)
 
 Usage (heavy: renders and npm install go through the machine-wide lock)::
 
@@ -550,6 +560,13 @@ def part_edits(work, project, export_dir):
                          "warnings": receipt["data"]["warnings"]}
     log("restore:", receipt["summary"][:240])
     log("edits brought back:", result["restore"]["edits"], "warnings:", result["restore"]["warnings"])
+    # the round trip goes on: export into the edited folder again -- its edits are in this project now
+    again = editor.call_receipt("export_to_remotion_tool", output_dir=edited_dir)
+    result["export_again"] = {"status": again["status"], "mode": again["data"].get("mode"),
+                              "warnings": again["data"].get("warnings")}
+    log("export into the edited folder after importing its edits:", result["export_again"],
+        again["summary"][:200])
+    assert again["status"] == "applied" and not any("replaced" in w for w in again["data"].get("warnings") or [])
     restored = copy.deepcopy(project)
     for key in ("files", "clips", "effects", "markers", "layers"):
         restored[key] = copy.deepcopy(editor.get(key))
@@ -905,6 +922,137 @@ def part_update(work, project, export_dir):
     return result
 
 
+# ---------------------------------------------------------------------------
+# (h) verification round: dynamic compositions, the trust gate on re-render / Studio, saving mid-render
+# ---------------------------------------------------------------------------
+
+DYNAMIC_ROOT = """import React from 'react';
+import {Composition} from 'remotion';
+import {z} from 'zod';
+import {zColor} from '@remotion/zod-types';
+import {TitleCard} from './TitleCard';
+
+export const titleCardSchema = z.object({title: z.string(), subtitle: z.string(), accent: zColor()});
+
+// Compositions from data: no literal id for a static scan to find.
+const templates = [
+  {id: 'IntroCard', title: 'Intro from data', accent: '#3FA7FF'},
+  {id: 'OutroCard', title: 'Outro from data', accent: '#FFB23F'},
+];
+
+export const RemotionRoot: React.FC = () => (
+  <>
+    {templates.map((t) => (
+      <Composition key={t.id} id={t.id} component={TitleCard} durationInFrames={60} fps={30} width={1920}
+        height={1080} schema={titleCardSchema}
+        defaultProps={{title: t.title, subtitle: 'registered with templates.map', accent: t.accent}} />
+    ))}
+  </>
+);
+"""
+
+
+def part_dynamic(work, app_dir):
+    from classes.handoff import jobs
+    from classes.handoff import linked_media as lm
+    from classes.handoff.remotion import dialogs, provider, sources, studio, trust
+    os.makedirs(os.path.join(work, "frames"), exist_ok=True)
+    app = os.path.join(work, "app-dynamic")
+    if not os.path.isdir(app):
+        subprocess.run(["cp", "-Rc", app_dir, app], check=True)  # APFS clone, node_modules included
+        with open(os.path.join(app, "src", "Root.tsx"), "w") as fh:
+            fh.write(DYNAMIC_ROOT)
+    result = {"static_scan": sorted(sources.scan_project(app, "src/index.ts"))}
+    assert result["static_scan"] == [], result
+    # 1) File > Import Project with the dialog code: the trust question, then Remotion lists them
+    _inline_jobs()
+    trust.reset()
+    asked, shown, infos = [], [], []
+    dialogs.ask_trust = lambda window, project, install=False: asked.append(project.name) or "run"
+    dialogs._show_import_dialog = lambda window, listing, key: shown.append(listing)
+    from PyQt5.QtWidgets import QMessageBox
+    QMessageBox.information = staticmethod(lambda *a, **k: infos.append(a[2] if len(a) > 2 else a))
+    QMessageBox.warning = staticmethod(lambda *a, **k: infos.append(a[2] if len(a) > 2 else a))
+    t0 = time.time()
+    dialogs.read_project(None, app)
+    result["dialog"] = {"asked": asked, "messages": infos, "seconds": round(time.time() - t0, 1),
+                        "compositions": [(c.id, c.width, c.height, c.duration_frames, c.default_props.get("title"))
+                                         for c in (shown[0].compositions if shown else [])]}
+    log("dynamic compositions through the import dialog:", result["dialog"])
+    assert asked and not infos and [c[0] for c in result["dialog"]["compositions"]] == ["IntroCard", "OutroCard"]
+    # 2) import IntroCard as a linked clip; the project is saved under a new name while it renders
+    editor = make_editor(work)
+    editor.mark()
+
+    def save_as_later():
+        time.sleep(3.0)
+        editor.store.current_filepath = os.path.join(work, "saved-mid-render.zvn")
+
+    threading.Thread(target=save_as_later, daemon=True).start()
+    receipt = editor.call_receipt("import_remotion_project_tool", project_dir=app, compositions=["IntroCard"],
+                                  position=0.0)
+    log("import IntroCard (saved mid-render):", receipt["status"], receipt["summary"][:200])
+    assert receipt["status"] == "applied", receipt["summary"]
+    clip = receipt["data"]["linked"][0]
+    path = editor.file(clip["file_id"])["path"]
+    png = openshot_frame_png(path, 30, os.path.join(work, "frames", "dynamic-intro-f29.png"))
+    over_black(png, os.path.join(work, "frames", "dynamic-intro-f29-on-black.png"))
+    result["import"] = {"codec": clip["codec"], "undo_steps": editor.undo_steps_since_mark(),
+                        "saved_to": editor.store.current_filepath, "alpha": alpha_at(png, [(5, 5)])[1]}
+    # 3) a received project nobody trusted this session: the menus' re-render / Open in Studio ask first
+    trust.reset()
+    questions = []
+    answers = {"value": False}
+
+    def asker(root, name, action, key):
+        questions.append((name, action, threading.current_thread().name))
+        return answers["value"]
+
+    trust.set_asker(asker)
+    renders_before = sorted(os.listdir(os.path.dirname(path)))
+
+    def on_executor(fn, name):
+        box = {}
+
+        def run():
+            try:
+                box["result"] = fn()
+            except BaseException as exc:  # noqa: BLE001
+                box["error"] = exc
+
+        th = threading.Thread(target=run, name=name)
+        th.start()
+        th.join(1800)
+        return box
+
+    declined = on_executor(lambda: lm.rerender_many([clip["file_id"]]), "handoff_0")
+    studio_declined = on_executor(lambda: provider.RemotionProvider().open_studio(lm.read_link(
+        editor.file(clip["file_id"]))), "handoff-ui_0")
+    result["declined"] = {"rerender": type(declined.get("error")).__name__,
+                          "studio": type(studio_declined.get("error")).__name__,
+                          "questions": list(questions), "new_files": sorted(set(os.listdir(os.path.dirname(path)))
+                                                                           - set(renders_before)),
+                          "studios": studio.running_studios(), "chrome": chrome_children(app)}
+    log("declined trust:", result["declined"])
+    assert isinstance(declined.get("error"), jobs.JobCancelled) and not result["declined"]["new_files"]
+    assert isinstance(studio_declined.get("error"), jobs.JobCancelled) and not result["declined"]["studios"]
+    answers["value"] = True
+    accepted = on_executor(lambda: lm.rerender_many([clip["file_id"]], props={"title": "Re-rendered after yes"}),
+                           "handoff_0")
+    result["accepted"] = {"error": repr(accepted.get("error")), "swapped": (accepted.get("result") or {}).get(
+        "swapped"), "questions": len(questions)}
+    log("accepted trust:", result["accepted"])
+    assert accepted.get("error") is None and len(questions) == 3
+    # 4) the agent tool keeps its documented behaviour: no question
+    tool = editor.call_receipt("rerender_linked_clip_tool", file_id=clip["file_id"])
+    result["tool_rerender"] = {"status": tool["status"], "questions": len(questions)}
+    log("rerender_linked_clip_tool:", result["tool_rerender"])
+    assert tool["status"] == "applied" and len(questions) == 3
+    trust.set_asker(None)
+    REPORT["dynamic"] = result
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--work", required=True)
@@ -912,18 +1060,20 @@ def main():
     parser.add_argument("--video-matrix", choices=["bt709", "bt601"], default="bt709",
                         help="colour tags of the test video (libopenshot 1.0 decodes both as BT.601)")
     parser.add_argument("parts", nargs="+", choices=["linked", "export", "reimport", "edits", "helper", "restored",
-                                                      "update", "all"])
+                                                      "update", "dynamic", "all"])
     args = parser.parse_args()
     work = os.path.abspath(args.work)
     os.makedirs(work, exist_ok=True)
     boot()
-    everything = {"linked", "export", "reimport", "edits", "helper", "restored", "update"}
+    everything = {"linked", "export", "reimport", "edits", "helper", "restored", "update", "dynamic"}
     parts = everything if "all" in args.parts else set(args.parts)
     try:
         if "linked" in parts:
             part_linked(work, os.path.abspath(args.remotion_app))
         if "helper" in parts:
             part_helper(work, os.path.abspath(args.remotion_app))
+        if "dynamic" in parts:
+            part_dynamic(work, os.path.abspath(args.remotion_app))
         if parts & {"export", "reimport", "edits", "restored", "update"}:
             project, export_dir = part_export(work, os.path.abspath(args.remotion_app), args.video_matrix)
             if "reimport" in parts:

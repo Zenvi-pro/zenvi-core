@@ -61,6 +61,7 @@
     "src/classes/handoff/remotion/sources.py",
     "src/classes/handoff/remotion/studio.py",
     "src/classes/handoff/premiere.py",
+    "src/classes/handoff/remotion/trust.py",
     "src/classes/handoff/timeline_view.py",
     "src/classes/handoff/transform.py",
     "src/classes/handoff/ui_registry.py",

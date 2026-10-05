@@ -41,8 +41,9 @@ folder inside it, such as `src/`, works too.
 2. Reading sizes and props, rendering and installing **run the project's code** (its `remotion.config.*` and
    components in Node.js and a headless browser; npm install scripts), so Zenvi asks first: **Run Its Code**,
    **Cancel**, or, for a project Zenvi exported, **Restore Without Running It**. The answer is remembered for that
-   folder until Zenvi quits. Then the compositions come from the project's own bundle; the first read takes the
-   longest because webpack runs and the headless browser may need downloading.
+   folder until Zenvi quits. Then the compositions come from the project's own bundle -- also when the code
+   registers them from data (`templates.map(t => <Composition id={t.id} ... />)`), which the first look cannot
+   see. The first read takes the longest because webpack runs and the headless browser may need downloading.
 3. The dialog lists every composition with its size, frame rate, duration and folder. Tick the ones to bring in.
    **Edit Props...** opens the props editor for the selected composition (text, numbers, colours, true/false, and
    JSON for lists and objects). **Render as** picks the codec (see below).
@@ -55,7 +56,16 @@ folder inside it, such as `src/`, works too.
    when the import started: if you open another project meanwhile, nothing is added.
 
 Each linked clip's media lives in `<project>_assets/links/remotion/` (renders of an unsaved project move there on
-the first save).
+the first save). Saving the project while it renders (Save As, or the first save of an untitled project) is fine;
+opening another project meanwhile adds nothing.
+
+### Re-renders and Studio ask too
+
+A re-render you start (the toolbar pill, **Linked Source > Re-render**, **Edit Props... > Apply & Re-render**) and
+**Open in Studio** run the project's code as well. For a folder not trusted this session -- say a `.zvn` and its
+Remotion project someone sent you -- Zenvi asks first; **Cancel** runs nothing and changes nothing. A project you
+imported this session is already trusted. Nothing runs on its own: the freshness check only reads files. Agent
+tools (`rerender_linked_clip_tool`, `open_linked_source_tool`, ...) work as documented, without asking.
 
 ### Props
 
@@ -141,9 +151,12 @@ any files you put there. Everything is staged in a hidden folder first and renam
 cancel or failure before that leaves the earlier export as it was. Zenvi records what it wrote (a hash of each
 file it generates, the size and date of each media copy, under `zenvi` in `timeline.json`) and refuses to export
 over changes made since -- timeline edits not imported yet, edited code or docs, edited media copies -- unless you
-confirm (**Replace Them**, or `replace_edits` for agents); import the folder first to keep them. It only deletes
-media it recorded and no longer uses, and it refuses when `public`, `public/zenvi-media`, `src` or `src/zenvi` is a
-link, so it never writes or deletes through one.
+confirm (**Replace Them**, or `replace_edits` for agents); import the folder first to keep them. Once you have
+imported them, exporting there again just works: the restore notes the imported timeline under the project's
+`settings` (`remotion_imported`; Undo takes it back with the import). Line endings (a Windows `core.autocrlf`
+checkout) and new dates on unchanged media (a fresh clone) are not edits. It only deletes media it recorded and
+no longer uses, and it refuses when `public`, `public/zenvi-media`, `src` or `src/zenvi` is a link, so it never
+writes or deletes through one.
 
 ### How close is it?
 
@@ -236,8 +249,8 @@ uses the copy the project installed, and exported projects install it from npm u
 dialog and the export's README say so.
 
 Importing runs the project's code (its `remotion.config.*`, its components), exactly like `npx remotion
-render`: import projects you trust. The import dialog asks before anything runs; the tool descriptions tell agents
-the same.
+render`: import projects you trust. Zenvi asks before anything of a project runs -- the import, a re-render or
+Open in Studio of a folder not trusted this session; the tool descriptions tell agents the same.
 
 ## For developers
 
@@ -249,6 +262,7 @@ the same.
 | `helper.mjs` / `helper.py` | The Node side (`probe`, `compositions`, `render`, `still`; `@@zenvi {json}` events, found anywhere on a line; applies `remotion.config.*` render settings and `.env` like the CLI; props in Remotion's special-type JSON; runs when reached through symlinked folders) and its Python runner (progress, errors, bundle cache, cancel, cleanup of orphaned Chrome / compositor processes only). |
 | `provider.py` | `RemotionProvider`: fingerprint, render (auto codec, qtrle, stills), open code / studio, editable props. |
 | `studio.py`, `studio_watchdog.cjs`, `install.py` | Remotion Studio processes (one per project, identity-checked, watchdog); dependency installs. |
+| `trust.py` | Which project folders the user agreed to run this session; the question before a re-render or Studio started from Zenvi's menus (work on the `handoff.jobs` executors), never for agent tools. |
 | `importer.py` | Listing and import; checks placement before rendering; one undo step. |
 | `exporter.py`, `template/` | The generated project (`template/src/zenvi/timing.ts`: clip frames, length, stacking order, sound; tested under Node's type stripping). Updates of an earlier export are staged and checked against the manifest. |
 | `restore.py`, `edits.py` | Native restore and the edit round trip. |
@@ -272,7 +286,9 @@ PSNR against libopenshot. It also checks re-import equality, that edits made in 
 under the video included) render the same in Zenvi, the helper reached through a symlinked folder, a `Date` prop
 through listing, stills, import and re-render, `remotion.config`'s delayRender timeout reaching the page, "Open as
 an editable Zenvi project" with the real dialog code, and exporting into an earlier export (refused over edits and
-through a linked media folder, a cancelled update changing nothing, `replace_edits`).
+through a linked media folder, a cancelled update changing nothing, `replace_edits`), a project whose compositions
+come from data (listed by the dialog code with the real Remotion, imported while the project is saved under a new
+name), and the trust question before menu re-renders and Studio (a "no" runs no Node; the agent tool does not ask).
 
 ### Troubleshooting
 
