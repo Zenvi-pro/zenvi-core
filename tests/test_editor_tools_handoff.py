@@ -333,3 +333,59 @@ def test_after_effects_prores422_renders_are_linked_as_opaque(linked, tmp_path):
         assert stored["render"]["codec"] == "prores422" and "prores422" not in lm.ALPHA_CODECS
     finally:
         host.stop()
+
+
+AE_CATALOG = [
+    {"name": "ae_get_state", "title": "Get state", "description": "App, project, active comp.",
+     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+     "annotations": {"readOnlyHint": True}, "outputSchema": {"type": "object"}, "timeoutMs": 5000},
+    {"name": "ae_add_text", "title": "Add text", "description": "Text layer with tasteful defaults.",
+     "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "description": "The text."}},
+                     "required": ["text"], "additionalProperties": False},
+     "annotations": {"readOnlyHint": False}, "returnsImage": False},
+]
+
+
+def test_list_link_hosts_can_include_each_connected_hosts_tools(linked, ae_host):
+    ae_host.tools = AE_CATALOG
+    r = linked.call_receipt("list_link_hosts_tool")
+    assert "tools" not in r["data"]["hosts"][0]  # off by default: the listing stays small
+    r = linked.call_receipt("list_link_hosts_tool", include_tools=True)
+    ae, pr = r["data"]["hosts"]
+    assert [t["name"] for t in ae["tools"]] == ["ae_get_state", "ae_add_text"]
+    assert all(set(t) <= {"name", "title", "description", "inputSchema", "annotations"} for t in ae["tools"])
+    assert ae["tools"][1]["inputSchema"]["required"] == ["text"]  # what call_link_host_tool needs
+    assert "tools" not in pr and "tools_error" not in pr  # not connected: nothing to list
+    assert "(2 tools)" in r["summary"] and r["status"] == "applied" and r["undoSteps"] == 0
+
+
+def test_host_tool_catalogs_are_cached_per_host_session(linked, ae_host):
+    from classes.handoff import adobe_link
+    ae_host.tools = AE_CATALOG
+    lists = lambda: sum(1 for c in ae_host.calls if c.get("method") == "tools/list")  # noqa: E731
+    linked.call_receipt("list_link_hosts_tool", include_tools=True)
+    linked.call_receipt("list_link_hosts_tool", include_tools=True)
+    adobe_link.tool_timeout("aftereffects", "ae_get_state")  # the call timeout reads the same cache
+    assert lists() == 1
+    write_discovery(linked.user_path, ae_host, pid=os.getppid())  # the extension restarted: new pid
+    linked.call_receipt("list_link_hosts_tool", include_tools=True)
+    assert lists() == 2
+    ae_host.tools = AE_CATALOG[:1]  # restarted again in the same helper process, same port: a new start time
+    write_discovery(linked.user_path, ae_host, pid=os.getppid(), started_at="2026-10-05T09:30:00Z")
+    r = linked.call_receipt("list_link_hosts_tool", include_tools=True)
+    assert lists() == 3 and [t["name"] for t in r["data"]["hosts"][0]["tools"]] == ["ae_get_state"]
+
+
+def test_a_host_that_cannot_list_its_tools_reports_the_error(linked, ae_host):
+    premiere = FakeHost(app="premiere")
+    try:
+        premiere.tools_error = "catalog failed to load"
+        write_discovery(linked.user_path, premiere, app="premiere")
+        ae_host.tools = AE_CATALOG
+        r = linked.call_receipt("list_link_hosts_tool", include_tools=True)
+        ae, pr = r["data"]["hosts"]
+        assert pr["connected"] and "tools" not in pr
+        assert pr["tools_error"]["code"] == "HOST_ERROR" and "catalog failed to load" in pr["tools_error"]["message"]
+        assert len(ae["tools"]) == 2  # the other app still lists
+    finally:
+        premiere.stop()
