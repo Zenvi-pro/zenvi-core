@@ -262,3 +262,42 @@ def test_after_effects_provider_renders_through_zenvi_link(linked, tmp_path):
         assert lm.link_state(f) == "stale"
     finally:
         host.stop()
+
+
+def test_import_linked_media_leaves_the_callers_file_alone_when_refused(linked):
+    import tempfile
+    fd, src = tempfile.mkstemp(suffix=".mov")
+    os.write(fd, b"movie")
+    os.close(fd)
+    linked.probe.durations[src] = 3.0
+    try:
+        r = linked.call_receipt("import_linked_media_tool", path=src, track="7",
+                                link={"kind": "aftereffects", "source": {"composition": "Promo"}})
+        assert _failed(r) and os.path.isfile(src)  # not moved out from under the caller's retry
+        assert not os.path.exists(os.path.join(linked.user_path, "links", "aftereffects", os.path.basename(src)))
+    finally:
+        if os.path.exists(src):
+            os.unlink(src)
+
+
+def test_import_linked_media_fingerprints_so_the_clip_can_go_stale(linked, tmp_path):
+    from classes.handoff.aftereffects_link import AfterEffectsProvider
+    lm.register_provider(AfterEffectsProvider())
+    aep = tmp_path / "promo.aep"
+    aep.write_bytes(b"v1")
+    src = linked.media("Promo.mov", seconds=2.0)
+    r = linked.call_receipt("import_linked_media_tool", path=src,
+                            link={"kind": "aftereffects", "source": {"aep": str(aep), "composition": "Promo"}})
+    f = linked.file(r["data"]["file_id"])
+    assert lm.read_link(f)["render"]["fingerprint"] and lm.link_state(f) == "fresh"
+    aep.write_bytes(b"v2 saved in After Effects")
+    assert lm.link_state(f) == "stale"
+
+
+def test_a_late_commit_is_not_reported_as_a_failed_render(linked, provider, monkeypatch):
+    from classes.editor_tools.titles_text_common import CommitTimeout
+    out = _import(linked, provider)
+    monkeypatch.setattr(lm, "rerender_linked", lambda *a, **k: (_ for _ in ()).throw(
+        CommitTimeout("the editor was too busy; the change is still running -- check before trying again")))
+    r = linked.call_receipt("rerender_linked_clip_tool", file_id=out["file_id"])
+    assert _failed(r) and "still running" in r["summary"] and "Nothing changed" not in r["summary"]

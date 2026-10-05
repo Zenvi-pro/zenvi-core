@@ -242,6 +242,10 @@ class McpHttpClient:
             with self._opener.open(req, timeout=timeout) as resp:
                 status = resp.status
                 ctype = (resp.headers.get("Content-Type") or "").lower()
+                if "text/event-stream" in ctype and status != 202:
+                    # read event by event and stop at OUR reply: a stream may carry notifications
+                    # first, and a server may keep it open after answering
+                    return _read_sse_reply(resp, payload.get("id"))
                 data = resp.read(MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as exc:
             if 300 <= exc.code < 400:
@@ -267,10 +271,6 @@ class McpHttpClient:
         if status == 202 or not data.strip():
             return None
         text = data.decode("utf-8", errors="replace")
-        if "text/event-stream" in ctype:
-            text = _first_sse_data(text)
-            if text is None:
-                raise LinkHostError("the host sent an empty event stream", "HOST_ERROR")
         try:
             message = json.loads(text)
         except ValueError:
@@ -304,6 +304,49 @@ class McpHttpClient:
         result = self.request("initialize", {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
                                              "clientInfo": CLIENT_INFO}, timeout=timeout)
         return result if isinstance(result, dict) else {}
+
+
+def _read_sse_reply(stream: Any, want_id: Any) -> Optional[dict]:
+    """The JSON-RPC reply with id *want_id* from a ``text/event-stream`` response, read line by line.
+
+    Notifications and other events before it are skipped; reading stops as
+    soon as the reply arrives. LinkHostError when the stream ends first or
+    grows past the size limit.
+    """
+    data_lines: List[str] = []
+    total = 0
+
+    def reply_in(lines: List[str]) -> Optional[dict]:
+        try:
+            message = json.loads("\n".join(lines))
+        except ValueError:
+            return None
+        if not isinstance(message, dict) or ("result" not in message and "error" not in message):
+            return None  # a notification or request from the server
+        if want_id is not None and message.get("id") != want_id:
+            return None
+        return message
+
+    while True:
+        raw = stream.readline(MAX_RESPONSE_BYTES)
+        if not raw:
+            break
+        total += len(raw)
+        if total > MAX_RESPONSE_BYTES:
+            raise LinkHostError("the host's answer is too large", "HOST_ERROR")
+        line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+        if line.startswith("data:"):
+            data_lines.append(line[6:] if line[5:6] == " " else line[5:])
+        elif not line and data_lines:
+            message = reply_in(data_lines)
+            data_lines = []
+            if message is not None:
+                return message
+    if data_lines:
+        message = reply_in(data_lines)
+        if message is not None:
+            return message
+    raise LinkHostError("the host's event stream ended without a reply", "HOST_ERROR")
 
 
 def _first_sse_data(text: str) -> Optional[str]:

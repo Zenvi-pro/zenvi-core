@@ -555,3 +555,196 @@ def test_a_source_edited_during_the_render_reads_stale_afterwards(linked):
     out = lm.import_linked(remotion_link(), position=0.0)
     assert any("changed while it was rendering" in w for w in out["warnings"])
     assert lm.link_state(linked.file(out["file_id"])) == "stale"
+
+
+# ---------------------------------------------------------------------------
+# Second review round (state/C1.md): multi-file re-render, history after save, concurrency
+# ---------------------------------------------------------------------------
+
+def _two_linked(linked, provider):
+    a = lm.import_linked(remotion_link(composition="A"), position=0.0)
+    b = lm.import_linked(remotion_link(composition="B"), position=10.0)
+    linked.mark()
+    return a, b
+
+
+def test_rerender_many_swaps_in_one_step_and_keeps_edits_made_while_rendering(linked):
+    provider = FakeProvider(probe=linked.probe, seconds=5.0)
+    lm.register_provider(provider)
+    a, b = _two_linked(linked, provider)
+    old_a = linked.file(a["file_id"])["path"]
+    provider.gate = threading.Event()
+    result = {}
+    worker = threading.Thread(target=lambda: result.update(out=lm.rerender_many([a["file_id"], b["file_id"]])))
+    worker.start()
+    try:
+        for _ in range(500):
+            if jobs.job_for(a["file_id"]) is not None:
+                break
+            threading.Event().wait(0.01)
+        from classes.query import Clip
+        c = Clip.get(id=a["timeline_clip_id"])  # the user trims A while it renders
+        c.data["end"] = 2.0
+        c.save()
+        assert linked.file(a["file_id"])["path"] == old_a  # nothing swapped yet
+    finally:
+        provider.gate.set()
+        worker.join(20)
+    assert len(result["out"]["swapped"]) == 2 and result["out"]["failed"] == []
+    assert linked.undo_steps_since_mark() == 2  # the trim, then ONE step for both swaps
+    linked.undo()  # undoes both swaps, not the trim
+    assert linked.file(a["file_id"])["path"] == old_a and linked.clip(a["timeline_clip_id"])["end"] == 2.0
+
+
+def test_cancelling_rerender_many_changes_nothing(linked):
+    provider = FakeProvider(probe=linked.probe)
+    lm.register_provider(provider)
+    a, b = _two_linked(linked, provider)
+    calls = {"n": 0}
+
+    def cancel_after_first():
+        calls["n"] += 1
+        return len(provider.renders) >= 1 and calls["n"] > 3
+
+    with pytest.raises(jobs.JobCancelled):
+        lm.rerender_many([a["file_id"], b["file_id"]], should_cancel=cancel_after_first)
+    assert linked.undo_steps_since_mark() == 0
+    assert not lm.is_rendering(a["file_id"]) and not lm.is_rendering(b["file_id"])
+    folder = os.path.join(linked.user_path, "links", "remotion")
+    assert sorted(os.listdir(folder)) == sorted({os.path.basename(linked.file(f)["path"])
+                                                 for f in (a["file_id"], b["file_id"])})  # no orphan renders
+
+
+def test_changes_during_a_render_are_refused_or_never_overwritten(linked):
+    provider = FakeProvider(probe=linked.probe)
+    lm.register_provider(provider)
+    out = lm.import_linked(remotion_link(), position=0.0)
+    provider.gate = threading.Event()
+    errors = {}
+
+    def run():
+        try:
+            lm.rerender_linked(out["file_id"])
+        except lm.LinkError as exc:
+            errors["swap"] = exc
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        for _ in range(500):
+            if lm.is_rendering(out["file_id"]):
+                break
+            threading.Event().wait(0.01)
+        with pytest.raises(lm.LinkError, match="rendering"):
+            lm.update_link(out["file_id"], {"props": {"title": "Mine"}})
+        with pytest.raises(lm.LinkError, match="rendering"):
+            lm.unlink(out["file_id"])
+        from classes.query import File  # a change that bypasses the checks (an undo) ...
+        f = File.get(id=out["file_id"])
+        f.data["zenvi_link"] = dict(f.data["zenvi_link"], props={"title": "Changed meanwhile"})
+        f.save()
+    finally:
+        provider.gate.set()
+        worker.join(20)
+    assert "changed while it was rendering" in str(errors["swap"])  # ... is kept, the render dropped
+    assert lm.read_link(linked.file(out["file_id"]))["props"] == {"title": "Changed meanwhile"}
+    assert not lm.is_rendering(out["file_id"])
+
+
+def test_a_late_commit_keeps_the_clip_busy(linked, monkeypatch):
+    from classes.editor_tools.titles_text_common import CommitTimeout
+    provider = FakeProvider(probe=linked.probe)
+    lm.register_provider(provider)
+    out = lm.import_linked(remotion_link(), position=0.0)
+    monkeypatch.setattr(lm, "swap_linked_media", lambda *a, **k: (_ for _ in ()).throw(CommitTimeout("busy")))
+    with pytest.raises(CommitTimeout):
+        lm.rerender_linked(out["file_id"])
+    assert lm.is_rendering(out["file_id"])  # a retry now would apply a second swap
+    with pytest.raises(lm.LinkError, match="already rendering"):
+        lm.rerender_linked(out["file_id"])
+    lm._release(out["file_id"])
+
+
+def test_save_points_undo_history_at_moved_renders(linked, monkeypatch, tmp_path):
+    import openshot
+    from classes import info
+    provider = FakeProvider(probe=linked.probe)
+    lm.register_provider(provider)
+    out = lm.import_linked(remotion_link(), position=0.0)
+    lm.rerender_linked(out["file_id"])  # history: old render -> new render
+    for name in ("THUMBNAIL_PATH", "TITLE_PATH", "BLENDER_PATH", "PROTOBUF_DATA_PATH", "CLIPBOARD_PATH",
+                 "PROXY_PATH", "COMFYUI_OUTPUT_PATH"):
+        monkeypatch.setattr(info, name, getattr(info, name), raising=False)
+    monkeypatch.setattr(openshot, "OPENSHOT_VERSION_FULL", "0", raising=False)
+    monkeypatch.setattr(linked.store, "write_to_file", lambda *a, **k: None)
+    monkeypatch.setattr(linked.store, "add_to_recent_files", lambda *a, **k: None)
+    linked.store._data["history"] = {"undo": [], "redo": []}
+    linked.manager.save_history(linked.store, 50)
+    current = linked.file(out["file_id"])["path"]  # the latest render, in ~/.openshot_qt/links
+    linked.store.save(str(tmp_path / "Trip.zvn"))
+    saved_root = str(tmp_path / "Trip_assets" / "links" / "remotion")
+    moved = linked.file(out["file_id"])["path"]
+    assert moved.startswith(saved_root) and not os.path.exists(current)
+    assert current not in json.dumps(linked.store._data["history"])  # the history written to the file
+    linked.undo()  # back to the first render: it was never moved, still where history says
+    assert os.path.isfile(linked.file(out["file_id"])["path"])
+    linked.redo()  # forward again: history must name the MOVED latest render, not its old place
+    assert linked.file(out["file_id"])["path"] == moved and os.path.isfile(moved)
+
+
+def test_unlinked_renders_and_files_in_use_on_save(tmp_path, monkeypatch):
+    from classes import info
+    monkeypatch.setattr(info, "USER_PATH", str(tmp_path / "user"))
+    unlinked = str(tmp_path / "user" / "links" / "remotion" / "Old.mov")
+    busy = str(tmp_path / "user" / "links" / "remotion" / "Busy.mov")
+    _write(unlinked)
+    _write(busy)
+    files = [{"id": "F1", "path": unlinked}, {"id": "F2", "path": busy, "zenvi_link": lm.normalize_link(remotion_link())}]
+    real_rename = os.rename
+
+    def rename(a, b):
+        if a.endswith("Busy.mov"):
+            raise PermissionError(13, "The process cannot access the file because it is being used")
+        return real_rename(a, b)
+
+    monkeypatch.setattr(os, "rename", rename)
+    changes = {}
+    lm.adopt_linked_renders(files, [], str(tmp_path / "Trip.zvn"), path_changes=changes)
+    assert files[0]["path"].startswith(str(tmp_path / "Trip_assets"))  # unlinked before saving: still adopted
+    assert files[1]["path"] == busy  # in use (Windows): stays, no failed save
+    assert changes[unlinked] == files[0]["path"]
+
+
+def test_one_damaged_link_does_not_stop_the_other_checks(linked):
+    provider = FakeProvider(probe=linked.probe)
+    lm.register_provider(provider)
+    out = lm.import_linked(remotion_link(), position=0.0)
+    good = linked.file(out["file_id"])
+    bad = {"id": "BAD", "path": good["path"], "zenvi_link": {"kind": "remotion", "props": {"$zenvi_json": "{not"}}}
+    checks = {c.file_id: c for c in lm.check_links([bad, good])}
+    assert checks["BAD"].state == "error" and "damaged" in checks["BAD"].detail
+    assert checks[out["file_id"]].state == "fresh"
+
+
+def test_fingerprint_cache_hashes_a_tree_once(tmp_path, monkeypatch):
+    root = tmp_path / "proj"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "A.tsx").write_text("x")
+    walks = []
+    real_walk = os.walk
+    monkeypatch.setattr(os, "walk", lambda *a, **k: walks.append(a[0]) or real_walk(*a, **k))
+    with lm.fingerprint_cache():
+        one = lm.fingerprint_sources(str(root), extra={"props": 1})
+        two = lm.fingerprint_sources(str(root), extra={"props": 2})
+        again = lm.fingerprint_sources(str(root), extra={"props": 1})
+    assert len(walks) == 1 and one == again and one != two
+    assert lm.fingerprint_sources(str(root), extra={"props": 1}) == one and len(walks) == 2
+
+
+def test_a_source_file_on_another_drive_stays_absolute(monkeypatch, tmp_path):
+    def other_drive(path, start=None):
+        raise ValueError("path is on mount 'D:', start on mount 'C:'")
+
+    monkeypatch.setattr(os.path, "relpath", other_drive)
+    link = lm.normalize_link({"kind": "remotion", "source": {"project_dir": str(tmp_path), "file": "/elsewhere/A.tsx"}})
+    assert link["source"]["file"] == "/elsewhere/A.tsx"

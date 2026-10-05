@@ -169,3 +169,17 @@ def test_host_calls_wait_as_long_as_the_tool_says(tmp_path, host):
     assert al.tool_timeout("aftereffects", "ae_render", base) == pytest.approx(900 + al.TIMEOUT_SLACK)
     assert al.tool_timeout("aftereffects", "ae_get_state", base) == pytest.approx(al.DEFAULT_TIMEOUT + al.TIMEOUT_SLACK)
     assert al.tool_timeout("premiere", "premiere_x", base) == pytest.approx(al.DEFAULT_TIMEOUT + al.TIMEOUT_SLACK)
+
+
+def test_event_stream_replies_skip_notifications_and_stop_at_the_reply():
+    import io
+    body = (b"event: message\ndata: {\"jsonrpc\": \"2.0\", \"method\": \"notifications/message\", "
+            b"\"params\": {\"level\": \"info\"}}\n\n"
+            b"data: {\"jsonrpc\": \"2.0\", \"id\": 9, \"result\": {\"other\": true}}\n\n"
+            b"data: {\"jsonrpc\": \"2.0\", \"id\": 7, \"result\": {\"ok\": 1}}\n\n"
+            b"data: never read\n\n")
+    stream = io.BytesIO(body)
+    assert al._read_sse_reply(stream, 7) == {"jsonrpc": "2.0", "id": 7, "result": {"ok": 1}}
+    assert stream.read() == b"data: never read\n\n"  # stopped at the reply
+    with pytest.raises(al.LinkHostError, match="ended without a reply"):
+        al._read_sse_reply(io.BytesIO(b"data: {\"jsonrpc\": \"2.0\", \"method\": \"ping\"}\n\n"), 1)

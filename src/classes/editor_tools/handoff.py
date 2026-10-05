@@ -84,7 +84,11 @@ def _linked_file(file_id: str):
     f = _query("File").get(id=file_id)
     if not f:
         raise ToolError(f"no project file with id={file_id!r} (list_project_files_tool lists them)")
-    if _lm().read_link(f.data) is None:
+    try:
+        linked = _lm().read_link(f.data) is not None
+    except _lm().LinkError:
+        linked = True  # damaged, but linked: the caller reports it
+    if not linked:
         name = f.data.get("name") or os.path.basename(str(f.data.get("path") or ""))
         raise ToolError(f"{name!r} is not a linked clip (it has no source link); linked clips come from "
                         "import_remotion_project_tool, import_hyperframes_project_tool or import_linked_media_tool")
@@ -213,12 +217,14 @@ def _staged_webm(path: str, kind: str) -> str:
         raise ToolError(f"could not convert the WebM to ProRes 4444 (libopenshot drops WebM alpha): {exc}") from None
 
 
-def _adopt_media(path: str, kind: str) -> str:
+def _adopt_media(path: str, kind: str) -> tuple:
+    """(media path, undo) for a new linked clip: moved from the temp folder, else copied, into
+    ``<project>_assets/links/<kind>/``. ``undo()`` puts things back if the clip cannot be added."""
     """Media for a new linked clip, inside <project>_assets/links/<kind>/ (moved from temp, else copied)."""
     lm = _lm()
     root = lm.links_root()
     if path_is_under(path, root):
-        return path
+        return path, (lambda: None)
     folder = lm.links_dir(kind)
     os.makedirs(folder, exist_ok=True)
     target = os.path.join(folder, os.path.basename(path))
@@ -227,15 +233,26 @@ def _adopt_media(path: str, kind: str) -> str:
     while os.path.exists(target):
         target = "%s-%d%s" % (stem, n, ext)
         n += 1
+    moved = path_is_under(path, tempfile.gettempdir())
     try:
-        if path_is_under(path, tempfile.gettempdir()):
+        if moved:
             shutil.move(path, target + ".partial")
         else:
             shutil.copy2(path, target + ".partial")
         os.replace(target + ".partial", target)
     except OSError as exc:
         raise ToolError(f"could not bring {os.path.basename(path)} into the project's links folder: {exc}") from None
-    return target
+
+    def undo():
+        try:
+            if moved:
+                shutil.move(target, path)  # the caller's file is back where it was (a retry finds it)
+            else:
+                os.unlink(target)
+        except OSError:
+            log.warning("could not put %s back after a refused import", target, exc_info=True)
+
+    return target, undo
 
 
 @editor_tool(
@@ -275,14 +292,40 @@ def import_linked_media(path, link, position=None, track="", name=""):
         raise ToolError(f"no media file at {path!r}")
     try:
         stored = lm.normalize_link(link or {})
+        # refuse a bad placement before the caller's file is moved anywhere
+        lm.precheck_placement(position, str(track or ""))
     except lm.LinkError as exc:
         raise _link_error(exc) from None
     kind = stored["kind"]
-    media = _staged_webm(src, kind) if src.lower().endswith(".webm") else _adopt_media(src, kind)
+    provider = lm.provider_for(kind)
+    if provider is not None and not (stored.get("render") or {}).get("fingerprint"):
+        # without a fingerprint the clip could never read "stale" (e.g. a comp rendered by AE)
+        try:
+            stored["render"] = dict(stored.get("render") or {},
+                                    fingerprint=provider.fingerprint(lm.read_link({lm.LINK_KEY: stored})))
+        except lm.SourceMissing as exc:
+            raise _link_error(exc) from None
+        except Exception:
+            log.warning("could not fingerprint the %s source at import", kind, exc_info=True)
+    if src.lower().endswith(".webm"):
+        media = _staged_webm(src, kind)
+
+        def undo():
+            try:
+                os.unlink(media)
+            except OSError:
+                pass
+    else:
+        media, undo = _adopt_media(src, kind)
     try:
         receipt = lm.add_linked_media(media, stored, position=position, track=str(track or ""), name=str(name or ""))
-    except lm.LinkError as exc:
-        raise _link_error(exc) from None
+    except Exception as exc:
+        from classes.editor_tools.titles_text_common import CommitTimeout
+        if not isinstance(exc, CommitTimeout):  # it may still land: then the file is in use
+            undo()
+        if isinstance(exc, lm.LinkError):
+            raise _link_error(exc) from None
+        raise
     where = f"{receipt['position']:.2f}-{receipt['end']:.2f}s"
     return ok(f"Added linked {lm.kind_label(kind)} clip {receipt['name']!r} at {where}"
               + (" on a new track" if receipt["new_track"] else "") + ".", **receipt)
@@ -291,7 +334,10 @@ def import_linked_media(path, link, position=None, track="", name=""):
 def _link_report(file_id: str, *, compute: bool = True) -> dict:
     lm = _lm()
     f = _linked_file(file_id)
-    link = lm.read_link(f.data) or {}
+    try:
+        link = lm.read_link(f.data) or {}
+    except lm.LinkError as exc:
+        raise ToolError(f"the clip's link data is damaged ({exc}); unlink_clip_tool keeps its media") from None
     check = lm.check_link(f.data, compute=compute)
     provider = lm.provider_for(link.get("kind", ""))
     editable: Dict[str, Any] = {}
@@ -397,6 +443,8 @@ def _rerender(file_id: str, props: Optional[dict]) -> str:
         raise ToolError("the render was cancelled; nothing changed") from None
     except lm.LinkError as exc:
         raise _link_error(exc) from None
+    except ToolError:
+        raise  # e.g. CommitTimeout: the swap may still land -- its message says not to retry
     except Exception as exc:
         raise RuntimeError(f"the render failed: {exc}. Nothing changed; get_linked_clip_tool shows the error") from None
     extra = " " + " ".join(receipt.get("warnings") or []) if receipt.get("warnings") else ""

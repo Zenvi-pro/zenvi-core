@@ -55,39 +55,26 @@ def notify(window, text: str) -> None:
 
 
 def rerender_files(window, file_ids: List[str], props: Optional[dict] = None, *, replace_props: bool = False):
-    """Re-render linked files off the GUI thread; all their media swaps are ONE undo step.
+    """Re-render linked files off the GUI thread; their media swaps are ONE undo step.
 
-    Progress shows in the toolbar pill (with Cancel). Errors are reported in a
-    message box when it ends; files that failed keep their last render.
+    Everything renders first and the project only changes in one final hop
+    (``linked_media.rerender_many``), so edits made meanwhile stay their own
+    undo steps and a cancel changes nothing. Progress shows in the toolbar
+    pill (with Cancel); failures are listed in a message box at the end.
     """
     from classes.handoff import jobs, linked_media
-    from classes.updates import nested_transaction
     ids = [str(f) for f in file_ids if f]
     if not ids:
         return None
-    busy = [f for f in ids if jobs.job_for(f) is not None]
-    if busy:
+    if any(linked_media.is_rendering(f) for f in ids):
         QMessageBox.information(window, _tr("Linked Clips"), _tr("That linked clip is already rendering."))
         return None
     label = _tr("Re-rendering %d linked clips") % len(ids) if len(ids) > 1 else _tr("Re-rendering linked clip")
 
     def work(job):
-        done, failed = [], []
-        app = get_app()
-        with nested_transaction(app.updates):  # this worker's tid: every swap joins one undo step
-            for index, file_id in enumerate(ids):
-                job.raise_if_cancelled()
-                job.report(index / float(len(ids)), label)
-                try:
-                    linked_media.rerender_linked(file_id, props=props, replace_props=replace_props,
-                                                 should_cancel=job.should_cancel)
-                    done.append(file_id)
-                except jobs.JobCancelled:
-                    raise
-                except Exception as exc:
-                    log.warning("Re-render of linked file %s failed", file_id, exc_info=True)
-                    failed.append((file_id, str(exc)))
-        return done, failed
+        return linked_media.rerender_many(ids, props=props, replace_props=replace_props,
+                                          on_progress=lambda fraction, message: job.report(fraction, label),
+                                          should_cancel=job.should_cancel)
 
     def on_done(job):
         status = getattr(window, "handoff_status", None)
@@ -96,14 +83,14 @@ def rerender_files(window, file_ids: List[str], props: Optional[dict] = None, *,
         elif job.error is not None:
             QMessageBox.warning(window, _tr("Linked Clips"), _tr("Re-render failed: %s") % job.error)
         else:
-            done, failed = job.result
+            swapped, failed = job.result["swapped"], job.result["failed"]
             if failed:
                 details = "\n".join("• %s" % msg for _fid, msg in failed[:6])
                 QMessageBox.warning(window, _tr("Linked Clips"),
                                     _tr("%d linked clip(s) could not be re-rendered and keep their last "
                                         "render:\n%s") % (len(failed), details))
-            if done:
-                notify(window, _tr("Re-rendered %d linked clip(s)") % len(done))
+            if swapped:
+                notify(window, _tr("Re-rendered %d linked clip(s)") % len(swapped))
         if status is not None:
             status.check_soon(force=True)
 
@@ -224,7 +211,8 @@ class HandoffMenus(QObject):
                 self._hosts = {h.app: h for h in job.result}
             self._fill_send_menu()
 
-        jobs.submit_job(lambda job: adobe_link.list_hosts(), label="Zenvi Link discovery", quick=True, on_done=done)
+        jobs.submit_job(lambda job: adobe_link.list_hosts(), label="Zenvi Link discovery", interactive=True,
+                        on_done=done)
 
     def hosts(self) -> Dict[str, object]:
         return dict(self._hosts)
@@ -365,7 +353,7 @@ class LinkedClipsStatus(QFrame):
         self._checking = True
 
         def work(job):
-            return [linked_media.check_link(data) for data in files]
+            return linked_media.check_links(files)  # one tree hash per project; a bad file is just "error"
 
         def done(job):
             self._checking = False
@@ -373,7 +361,7 @@ class LinkedClipsStatus(QFrame):
             if job.error is not None:
                 log.warning("Linked clip freshness check failed: %s", job.error)
                 return
-            checks = [c for c in (job.result or []) if c is not None]
+            checks = list(job.result or [])
             self.last_checks = {c.file_id: c for c in checks}
             self._stale = [c.file_id for c in checks if c.state == "stale"]
             self._refresh_view()

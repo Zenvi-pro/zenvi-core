@@ -49,7 +49,7 @@ def state_caption(link: dict, check) -> str:
 
 def add_linked_source_menu(window, menu, file_id: str, parent=None):
     """Append "Linked Source" to *menu* when *file_id* is a linked file; returns the submenu or None."""
-    from classes.handoff import jobs, linked_media
+    from classes.handoff import linked_media
     from windows.views.menu import StyledContextMenu
     try:
         f, link = _file_and_link(file_id)
@@ -62,7 +62,7 @@ def add_linked_source_menu(window, menu, file_id: str, parent=None):
     provider = linked_media.provider_for(kind)
     status = getattr(window, "handoff_status", None)
     check = (getattr(status, "last_checks", {}) or {}).get(f.id)
-    rendering = jobs.job_for(f.id) is not None
+    rendering = linked_media.is_rendering(f.id)
 
     sub = StyledContextMenu(title=_tr("Linked Source"), parent=parent or menu)
     sub.setObjectName("menuLinkedSource")
@@ -146,7 +146,7 @@ def open_linked(window, file_id: str, target: str = "code") -> None:
         if job.error is not None:
             QMessageBox.warning(window, _tr("Linked Source"), _tr("Could not open the source: %s") % job.error)
 
-    jobs.submit_job(work, label=_tr("Opening source"), quick=True, on_done=done)
+    jobs.submit_job(work, label=_tr("Opening source"), interactive=True, on_done=done)
 
 
 def unlink_file(window, file_id: str) -> Optional[dict]:

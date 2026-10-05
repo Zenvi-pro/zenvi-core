@@ -20,7 +20,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import qt_api  # noqa: E402,F401  (pick the binding before the QApplication exists)
 from PyQt5.QtCore import QThread  # noqa: E402
 from PyQt5.QtWidgets import (  # noqa: E402
-    QApplication, QCheckBox, QDoubleSpinBox, QLineEdit, QMainWindow, QMenu, QPlainTextEdit, QPushButton, QSpinBox,
+    QApplication, QCheckBox, QLineEdit, QMainWindow, QMenu, QPlainTextEdit, QPushButton, QSpinBox,
     QStatusBar, QToolBar,
 )
 
@@ -203,11 +203,12 @@ def test_props_dialog_builds_editors_and_returns_typed_props(qapp, monkeypatch):
     assert isinstance(d.findChild(QLineEdit, "prop_title"), QLineEdit)
     assert isinstance(d.findChild(QPushButton, "prop_accent"), QPushButton)
     assert isinstance(d.findChild(QSpinBox, "prop_count"), QSpinBox)
-    assert isinstance(d.findChild(QDoubleSpinBox, "prop_speed"), QDoubleSpinBox)
+    assert isinstance(d.findChild(QLineEdit, "prop_speed"), QLineEdit)  # floats are text: no rounding
     assert isinstance(d.findChild(QCheckBox, "prop_loop"), QCheckBox)
     assert isinstance(d.findChild(QPlainTextEdit, "prop_items"), QPlainTextEdit)
     assert "Source changed" in d.state_label.text()
     d.findChild(QLineEdit, "prop_title").setText("Launch day")
+    d.findChild(QLineEdit, "prop_title").textEdited.emit("Launch day")  # what typing does
     d.findChild(QSpinBox, "prop_count").setValue(5)
     d.findChild(QCheckBox, "prop_loop").setChecked(True)
     d._apply()
@@ -235,3 +236,17 @@ def test_quit_stops_handoff_jobs(ui):
     window, _calls, _ = ui
     assert jobs.shutdown in window.test_app.aboutToQuit.slots
     assert window.handoff_status.timer.stop in window.test_app.aboutToQuit.slots
+
+
+def test_props_dialog_keeps_untouched_values_exact(qapp, monkeypatch):
+    from windows import linked_clip_dialog
+    monkeypatch.setattr(linked_clip_dialog, "get_app", lambda: _App(qapp))
+    props = {"ratio": 0.123456789, "stamp": 1759622400000, "label": "x", "nested": {"a": [1, 2.5]}}
+    d = linked_clip_dialog.LinkedClipDialog({"kind": "remotion", "props": dict(props)})
+    d._apply()
+    assert d.props() == props  # nothing touched, nothing changed (no spin-box rounding or clamping)
+    ratio = d.findChild(QLineEdit, "prop_ratio")
+    ratio.setText("0.25")
+    ratio.textEdited.emit("0.25")
+    d._apply()
+    assert d.props()["ratio"] == 0.25 and d.props()["stamp"] == 1759622400000
