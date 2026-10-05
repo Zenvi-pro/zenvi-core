@@ -181,6 +181,25 @@ def test_import_tool_is_one_undo_step(ppro, speed_xml):
     assert not [c for c in ppro.clips() if c["id"] in data["timeline_clip_ids"]]
 
 
+def test_import_lands_as_one_preview_batch(ppro, speed_xml, monkeypatch):
+    """Playback caching stays off while the clips land and the preview redraws once (not once per clip)."""
+    from classes.importers import final_cut_pro as imp
+    emit = ppro.window.IgnoreUpdates.emit
+    emit.reset_mock()
+    r = ppro.call_receipt("import_timeline_xml_tool", path=speed_xml)
+    assert r["status"] == "applied" and len(r["data"]["timeline_clip_ids"]) == 3, r["summary"]
+    assert [c.args for c in emit.call_args_list] == [(True, False), (False, False)]
+    emit.reset_mock()                                    # a commit that fails still ends the batch
+
+    def broken(plan):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(imp, "_commit", broken)
+    with pytest.raises(RuntimeError):
+        imp.commit_import(imp.plan_import(speed_xml))
+    assert [c.args for c in emit.call_args_list] == [(True, False), (False, False)]
+
+
 def test_import_tool_at_playhead(ppro, speed_xml):
     ppro.window.preview_thread.player.Position.return_value = 301      # 10 s at 30 fps
     r = ppro.call_receipt("import_timeline_xml_tool", path=speed_xml, placement="at_playhead")

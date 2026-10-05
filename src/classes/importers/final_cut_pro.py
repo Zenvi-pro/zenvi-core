@@ -1478,7 +1478,31 @@ def _dissolve_transition(layer: int, position: float, duration: float, fps: floa
 
 
 def commit_import(plan: ImportPlan) -> dict:
-    """Make the import: files, tracks, clips, transitions, markers -- ONE undo step. GUI thread."""
+    """Make the import: files, tracks, clips, transitions, markers -- ONE undo step. GUI thread.
+
+    Runs as one preview batch (the editor's IgnoreUpdates, like Undo and
+    ``place_clip(ignore_refresh=True)``): playback caching stays off while the
+    actions land and the preview redraws once at the end
+    (``titles_text_common.end_clip_batch``), instead of re-filling its cache
+    after every clip.
+    """
+    from classes.app import get_app
+    from classes.editor_tools.titles_text_common import end_clip_batch
+    _begin_preview_batch(get_app())   # before the transaction: entering it lets the event loop run once
+    try:
+        return _commit(plan)
+    finally:
+        end_clip_batch()
+
+
+def _begin_preview_batch(app) -> None:
+    try:
+        app.window.IgnoreUpdates.emit(True, False)
+    except Exception:
+        log.debug("preview batch mode unavailable for the XML import", exc_info=True)
+
+
+def _commit(plan: ImportPlan) -> dict:
     from classes import query, track_ops
     from classes.app import get_app
     from classes.clip_placement import apply_audio_only_clip_overrides
@@ -1557,7 +1581,6 @@ def commit_import(plan: ImportPlan) -> dict:
             if t.locked:
                 created[t.key].data["lock"] = True
                 created[t.key].save()
-    _refresh()
     summary["track_number"] = summary["track_numbers"][0] if summary["track_numbers"] else None
     return summary
 
@@ -1572,27 +1595,6 @@ def _crop_effect(sides: dict) -> Optional[dict]:
     for side, curve in sides.items():
         effect[side] = curve
     return effect
-
-
-def _refresh() -> None:
-    from classes.app import get_app
-    try:
-        window = get_app().window
-        window.refreshFrameSignal.emit()
-        window.propertyTableView.select_frame(window.preview_thread.player.Position())
-    except Exception:
-        log.debug("preview refresh after XML import skipped", exc_info=True)
-
-
-def run_import(path: str, *, placement: str = "new_tracks", on_progress: Optional[Callable[[float, str], None]] = None,
-               should_cancel: Optional[Callable[[], bool]] = None) -> Tuple[ImportPlan, dict]:
-    """plan_import off the GUI thread, then commit_import on it (blocking)."""
-    plan = plan_import(path, placement=placement, should_cancel=should_cancel)
-    if on_progress is not None:
-        on_progress(0.8, "Adding clips")
-    from classes.qt_main_thread import call_on_gui
-    summary = cast(dict, call_on_gui(commit_import, plan, timeout=120))
-    return plan, summary
 
 
 def import_report(plan: ImportPlan, summary: dict, translate: Callable[[str], str]) -> str:

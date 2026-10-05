@@ -1483,14 +1483,16 @@ def _render_stills_qt(stills: List[StillJob]) -> None:
 
 
 def _copy_media(copies: List[CopyJob], should_cancel: Optional[Callable[[], bool]] = None,
-                on_progress: Optional[Callable[[float, str], None]] = None) -> List[str]:
+                on_progress: Optional[Callable[[float, str], None]] = None,
+                translate: Optional[Callable[[str], str]] = None) -> List[str]:
+    _ = translate or (lambda text: text)
     copied = []
     for i, job in enumerate(copies):
         if should_cancel is not None and should_cancel():
             from classes.handoff.jobs import JobCancelled
             raise JobCancelled("export cancelled")
         if on_progress is not None:
-            on_progress(i / max(1, len(copies)), f"Copying {os.path.basename(job.source)}")
+            on_progress(i / max(1, len(copies)), _("Copying %s") % os.path.basename(job.source))
         if not os.path.isfile(job.source):
             raise ExportError(f"the media {job.source} is missing; relink it before collecting media")
         try:
@@ -1519,6 +1521,7 @@ def export_timeline(snapshot: TimelineSnapshot, xml_path: str, *, collect_media:
     """
     if not snapshot.clips:
         raise ExportError("the timeline has no clips to export")
+    _ = translate or (lambda text: text)
     xml_path = os.path.abspath(xml_path)
     if not xml_path.lower().endswith(".xml"):
         xml_path += ".xml"
@@ -1526,10 +1529,10 @@ def export_timeline(snapshot: TimelineSnapshot, xml_path: str, *, collect_media:
     result = build_xmeml(snapshot, xml_path, media_dir=media_dir, collect_media=collect_media,
                          sequence_name=sequence_name, sequence_uuid=sequence_uuid, translate=translate)
     if on_progress is not None:
-        on_progress(0.1, "Rendering titles")
+        on_progress(0.1, _("Rendering titles"))
     if result.stills:
         (render_stills or _render_stills_qt)(result.stills)
-    copied = _copy_media(result.copies, should_cancel, on_progress) if result.copies else []
+    copied = _copy_media(result.copies, should_cancel, on_progress, _) if result.copies else []
     if should_cancel is not None and should_cancel():
         from classes.handoff.jobs import JobCancelled
         raise JobCancelled("export cancelled")
@@ -1541,7 +1544,7 @@ def export_timeline(snapshot: TimelineSnapshot, xml_path: str, *, collect_media:
 
     _install(xml_path, write)
     if on_progress is not None:
-        on_progress(1.0, "Exported")
+        on_progress(1.0, _("Exported"))
     used_media_dir = result.media_dir if (result.stills or result.copies) else None
     seq_name = result.root.findtext("sequence/name") or ""
     log.info("Exported FCP7 XML %s (%s)", xml_path, result.counts)

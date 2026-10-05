@@ -105,7 +105,7 @@ def send_to_premiere(snapshot, *, base_dir: Optional[str] = None,
     result = fcp.export_timeline(snapshot, xml_path, media_dir=os.path.join(folder, "media"),
                                  on_progress=on_progress, should_cancel=should_cancel, translate=translate)
     if on_progress is not None:
-        on_progress(0.9, "Premiere Pro is importing the sequence")
+        on_progress(0.9, (translate or _tr)("Premiere Pro is importing the sequence"))
     args = {_path_arg(base_dir): result.path}
     try:
         reply = adobe_link.call_host_tool(APP, IMPORT_TOOL, args, timeout=None, base_dir=base_dir)
