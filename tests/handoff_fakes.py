@@ -162,6 +162,7 @@ class FakeHost:
         self.sse = False
         self.redirect_to = None   # a URL: answer every POST with 302 to it
         self.tools = [{"name": "ae_get_state", "inputSchema": {"type": "object"}}]  # tools/list
+        self.tools_error = None   # a message: tools/list answers with a JSON-RPC error
         self.calls = []
         self.headers = []         # the request headers of every POST
         host = self
@@ -194,6 +195,8 @@ class FakeHost:
                 if method == "initialize":
                     reply["result"] = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}},
                                        "serverInfo": {"name": "zenvi-link-" + host.app, "version": "1.0.0"}}
+                elif method == "tools/list" and host.tools_error:
+                    reply["error"] = {"code": -32603, "message": host.tools_error}
                 elif method == "tools/list":
                     reply["result"] = {"tools": host.tools}
                 elif method == "tools/call":

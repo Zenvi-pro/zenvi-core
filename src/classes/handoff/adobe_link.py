@@ -22,6 +22,7 @@ Everything here blocks on the network: call it off the GUI thread
 from __future__ import annotations
 
 import base64
+import copy
 import datetime
 import errno
 import http.client
@@ -493,28 +494,50 @@ def _result_from(tool: str, app: str, result: Any) -> HostResult:
 
 TIMEOUT_SLACK = 15.0
 MAX_TIMEOUT = 3 * 60 * 60
-_timeouts: Dict[Any, Dict[str, float]] = {}
-_timeouts_lock = threading.Lock()
+# The fields of a host tool an agent needs to call it (no outputSchema, timeouts, image flags).
+CATALOG_KEYS = ("name", "title", "description", "inputSchema", "annotations")
+_catalogs: Dict[Any, List[dict]] = {}
+_catalogs_lock = threading.Lock()
+
+
+def host_catalog(app: str, base_dir: Optional[str] = None, *, refresh: bool = False) -> List[dict]:
+    """A connected host's ``tools/list`` rows, fetched once per host url + pid for the session.
+
+    A restarted extension has a new pid (and port), so its catalog is fetched
+    again. Raises HostNotConnected / LinkHostError like :func:`list_host_tools`.
+    Returns copies: callers may change them.
+    """
+    data = read_discovery(app, base_dir) or {}
+    key = (app, base_dir, str(data.get("url") or ""), data.get("pid"))
+    if not refresh:
+        with _catalogs_lock:
+            cached = _catalogs.get(key)
+        if cached is not None:
+            return copy.deepcopy(cached)
+    rows = list_host_tools(app, base_dir)
+    with _catalogs_lock:
+        for old in [k for k in _catalogs if k[0] == app and k[1] == base_dir]:
+            _catalogs.pop(old, None)  # an older session of this app
+        _catalogs[key] = copy.deepcopy(rows)
+    return rows
+
+
+def compact_tool(row: dict) -> dict:
+    """A catalog row as an agent needs it: ``{name, title, description, inputSchema, annotations}``."""
+    return {k: copy.deepcopy(row[k]) for k in CATALOG_KEYS if k in row}
 
 
 def tool_timeout(app: str, tool: str, base_dir: Optional[str] = None) -> float:
-    """Seconds to wait for *tool*: its catalog ``timeoutMs`` (``tools/list``, cached per host
-    session) plus slack, else :data:`DEFAULT_TIMEOUT`. A long render keeps its own budget."""
+    """Seconds to wait for *tool*: its catalog ``timeoutMs`` (:func:`host_catalog`) plus slack,
+    else :data:`DEFAULT_TIMEOUT`. A long render keeps its own budget."""
+    seconds = None
     try:
-        host = get_host(app, base_dir, probe=False)
-        key = (app, base_dir, host.pid, host.started_at)
-        with _timeouts_lock:
-            known = _timeouts.get(key)
-        if known is None:
-            known = {}
-            for row in list_host_tools(app, base_dir):
+        for row in host_catalog(app, base_dir):
+            if row.get("name") == tool:
                 ms = row.get("timeoutMs")
                 if isinstance(ms, (int, float)) and not isinstance(ms, bool) and ms > 0:
-                    known[str(row.get("name"))] = float(ms) / 1000.0
-            with _timeouts_lock:
-                _timeouts.clear()
-                _timeouts[key] = known
-        seconds = known.get(tool)
+                    seconds = float(ms) / 1000.0
+                break
     except LinkHostError:
         seconds = None
     return min(MAX_TIMEOUT, (seconds or DEFAULT_TIMEOUT) + TIMEOUT_SLACK)

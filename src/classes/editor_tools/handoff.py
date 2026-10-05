@@ -107,11 +107,15 @@ def _clip_rows(file_id: str) -> List[dict]:
 @editor_tool(
     "list_link_hosts_tool",
     label="List Adobe hosts",
-    schema=obj({}),
+    schema=obj({
+        "include_tools": boolean("Also list each CONNECTED app's own tools -- name, title, description, "
+                                 "inputSchema, annotations -- so call_link_host_tool gets valid arguments. "
+                                 "Use true before your first call_link_host_tool for an app.", False),
+    }),
     read_only=True,
     covers=("handoff.link_hosts",),
 )
-def list_link_hosts():
+def list_link_hosts(include_tools=False):
     """List the Adobe apps Zenvi Link connects -- After Effects and Premiere Pro -- and which one is active.
 
     Use before call_link_host_tool or a Send To After Effects / Premiere handoff,
@@ -119,16 +123,31 @@ def list_link_hosts():
     connected, active (the one used most recently), app version and open
     project; a host that is not connected says why and how to connect it (open
     the app with the Zenvi Link panel; `zenvi adobe install` installs the
-    panel). Read-only; changes nothing.
+    panel). Call it with include_tools=true before your first
+    call_link_host_tool for an app: each connected host then also lists its
+    tools (name, title, description, inputSchema, annotations), so you pass
+    arguments its schema accepts instead of learning them from refusals; a
+    host whose list fails says so in tools_error. Read-only; changes nothing.
     """
     from classes.handoff import adobe_link
     hosts = adobe_link.list_hosts()
-    rows = [h.as_dict() for h in hosts]
+    rows = []
+    counts: Dict[str, int] = {}
+    for host in hosts:
+        row = host.as_dict()
+        if include_tools and host.connected:
+            try:
+                row["tools"] = [adobe_link.compact_tool(t) for t in adobe_link.host_catalog(host.app)]
+                counts[host.app] = len(row["tools"])
+            except adobe_link.LinkHostError as exc:
+                row["tools_error"] = {"code": exc.code, "message": str(exc)}
+        rows.append(row)
     live = [h for h in hosts if h.connected]
     active = next((h.id for h in hosts if h.active), None)
     if live:
         summary = "Connected: %s%s." % (", ".join(
-            "%s %s" % (h.label, h.app_version or "") for h in live),
+            "%s %s%s" % (h.label, h.app_version or "",
+                         " (%d tools)" % counts[h.app] if h.app in counts else "") for h in live),
             "; active: %s" % next(h.label for h in hosts if h.active) if active else "")
     else:
         summary = "No Adobe app is connected. " + adobe_link.connect_hint("aftereffects")
