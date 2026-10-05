@@ -1210,6 +1210,10 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 log.debug("Fingerprint backfill failed", exc_info=1)
             media_snapshot = snapshot_media_paths(files, clips)
             media_moves = relocate_generated_media(files, clips, file_path)
+            # Linked clips' renders (classes.handoff) go to <project>_assets/links/<kind>/.
+            from classes.handoff.linked_media import adopt_linked_renders
+            media_moves = list(media_moves or []) + adopt_linked_renders(
+                files, clips, file_path, previous_path=self.current_filepath)
 
         # Append version info
         self._data["version"] = {"openshot-qt": info.VERSION,

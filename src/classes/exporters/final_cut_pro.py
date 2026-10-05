@@ -42,6 +42,11 @@ from classes.logger import log
 from classes.path_utils import absolute_media_path, relative_export_path, normalize_path
 from classes.query import Clip, Track, File
 from classes import frame_time as ft
+from classes.handoff.transform import (  # noqa: F401  (moved there; kept importable here)
+    gravity_offset as _gravity_offset,
+    normalized_to_center_pixels as _normalized_to_center_pixels,
+    scale_mode_size as _scale_mode_size,
+)
 from fractions import Fraction
 
 INTERPOLATION_EXPORT_MAP = {
@@ -213,18 +218,6 @@ def _append_link(link_parent, mediatype_value, track_index, clip_index, group_in
         link_node.appendChild(child)
 
 
-def _normalized_to_center_pixels(x_norm, y_norm, frame_width, frame_height):
-    """Map normalized OpenShot coords (-1..1, origin center) to pixel center values."""
-    try:
-        w = float(frame_width)
-        h = float(frame_height)
-    except (TypeError, ValueError):
-        return x_norm, y_norm
-    if w <= 0 or h <= 0:
-        return x_norm, y_norm
-    return (w / 2.0) + (x_norm * w / 2.0), (h / 2.0) + (y_norm * h / 2.0)
-
-
 def _export_interp_name(value):
     """Return an interpolation name for export from int/str values."""
     if isinstance(value, str):
@@ -239,63 +232,6 @@ def _export_interp_name(value):
         return INTERPOLATION_EXPORT_MAP.get(int(value), "linear")
     except Exception:
         return "linear"
-
-
-def _scale_mode_size(src_w, src_h, frame_w, frame_h, scale_mode):
-    """Return base scaled dimensions after applying scale mode (before per-axis scale)."""
-    try:
-        sw = float(src_w)
-        sh = float(src_h)
-        fw = float(frame_w)
-        fh = float(frame_h)
-    except (TypeError, ValueError):
-        return src_w, src_h
-    if sw <= 0 or sh <= 0 or fw <= 0 or fh <= 0:
-        return src_w, src_h
-    if scale_mode == openshot.SCALE_STRETCH:
-        return fw, fh
-    if scale_mode == openshot.SCALE_CROP:
-        factor = max(fw / sw, fh / sh)
-        return sw * factor, sh * factor
-    if scale_mode == openshot.SCALE_FIT:
-        factor = min(fw / sw, fh / sh)
-        return sw * factor, sh * factor
-    # SCALE_NONE or unknown
-    return sw, sh
-
-
-def _gravity_offset(gravity, frame_w, frame_h, scaled_w, scaled_h):
-    """Top-left origin based on gravity inside the frame."""
-    try:
-        frame_w = float(frame_w)
-        frame_h = float(frame_h)
-        scaled_w = float(scaled_w)
-        scaled_h = float(scaled_h)
-    except (TypeError, ValueError):
-        return 0.0, 0.0
-    x = 0.0
-    y = 0.0
-    if gravity == openshot.GRAVITY_TOP:
-        x = (frame_w - scaled_w) / 2.0
-    elif gravity == openshot.GRAVITY_TOP_RIGHT:
-        x = frame_w - scaled_w
-    elif gravity == openshot.GRAVITY_LEFT:
-        y = (frame_h - scaled_h) / 2.0
-    elif gravity == openshot.GRAVITY_CENTER:
-        x = (frame_w - scaled_w) / 2.0
-        y = (frame_h - scaled_h) / 2.0
-    elif gravity == openshot.GRAVITY_RIGHT:
-        x = frame_w - scaled_w
-        y = (frame_h - scaled_h) / 2.0
-    elif gravity == openshot.GRAVITY_BOTTOM_LEFT:
-        y = frame_h - scaled_h
-    elif gravity == openshot.GRAVITY_BOTTOM:
-        x = (frame_w - scaled_w) / 2.0
-        y = frame_h - scaled_h
-    elif gravity == openshot.GRAVITY_BOTTOM_RIGHT:
-        x = frame_w - scaled_w
-        y = frame_h - scaled_h
-    return x, y
 
 
 def _merge_uniform_scale(scale_x_points, scale_y_points):

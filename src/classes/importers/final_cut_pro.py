@@ -34,6 +34,7 @@ import openshot
 from qt_api import QFileDialog
 
 from classes import frame_time as ft
+from classes.handoff.transform import gravity_offset as _gravity_offset, scale_mode_size as _scale_mode_size
 from fractions import Fraction
 from classes import info
 from classes.app import get_app
@@ -126,62 +127,6 @@ def _center_pixels_to_normalized(x_px, y_px, frame_width, frame_height):
     if w <= 0 or h <= 0:
         return x_px, y_px
     return ((x_px - (w / 2.0)) / (w / 2.0)), ((y_px - (h / 2.0)) / (h / 2.0))
-
-
-def _scale_mode_size(src_w, src_h, frame_w, frame_h, scale_mode):
-    """Return base scaled dimensions after applying scale mode (before per-axis scale)."""
-    try:
-        sw = float(src_w)
-        sh = float(src_h)
-        fw = float(frame_w)
-        fh = float(frame_h)
-    except (TypeError, ValueError):
-        return src_w, src_h
-    if sw <= 0 or sh <= 0 or fw <= 0 or fh <= 0:
-        return src_w, src_h
-    if scale_mode == openshot.SCALE_STRETCH:
-        return fw, fh
-    if scale_mode == openshot.SCALE_CROP:
-        factor = max(fw / sw, fh / sh)
-        return sw * factor, sh * factor
-    if scale_mode == openshot.SCALE_FIT:
-        factor = min(fw / sw, fh / sh)
-        return sw * factor, sh * factor
-    return sw, sh
-
-
-def _gravity_offset(gravity, frame_w, frame_h, scaled_w, scaled_h):
-    """Top-left origin based on gravity inside the frame."""
-    try:
-        frame_w = float(frame_w)
-        frame_h = float(frame_h)
-        scaled_w = float(scaled_w)
-        scaled_h = float(scaled_h)
-    except (TypeError, ValueError):
-        return 0.0, 0.0
-    x = 0.0
-    y = 0.0
-    if gravity == openshot.GRAVITY_TOP:
-        x = (frame_w - scaled_w) / 2.0
-    elif gravity == openshot.GRAVITY_TOP_RIGHT:
-        x = frame_w - scaled_w
-    elif gravity == openshot.GRAVITY_LEFT:
-        y = (frame_h - scaled_h) / 2.0
-    elif gravity == openshot.GRAVITY_CENTER:
-        x = (frame_w - scaled_w) / 2.0
-        y = (frame_h - scaled_h) / 2.0
-    elif gravity == openshot.GRAVITY_RIGHT:
-        x = frame_w - scaled_w
-        y = (frame_h - scaled_h) / 2.0
-    elif gravity == openshot.GRAVITY_BOTTOM_LEFT:
-        y = frame_h - scaled_h
-    elif gravity == openshot.GRAVITY_BOTTOM:
-        x = (frame_w - scaled_w) / 2.0
-        y = frame_h - scaled_h
-    elif gravity == openshot.GRAVITY_BOTTOM_RIGHT:
-        x = frame_w - scaled_w
-        y = frame_h - scaled_h
-    return x, y
 
 
 def _value_at_time(points, t, fallback=1.0, max_frames=None):
