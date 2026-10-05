@@ -1,6 +1,6 @@
 """
  @file
- @brief Unit tests for EDL and Final Cut Pro XML import/export behavior.
+ @brief Unit tests for EDL import/export behavior (FCP XML: tests/test_premiere_*.py).
 """
 
 import importlib
@@ -11,7 +11,6 @@ import tempfile
 import types
 import unittest
 from unittest.mock import patch
-from xml.dom import minidom
 
 
 PATH = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -148,8 +147,6 @@ class InterchangeImportExportTests(unittest.TestCase):
     def setUpClass(cls):
         cls.edl_importer = importlib.import_module("classes.importers.edl")
         cls.edl_exporter = importlib.import_module("classes.exporters.edl")
-        cls.fcp_importer = importlib.import_module("classes.importers.final_cut_pro")
-        cls.fcp_exporter = importlib.import_module("classes.exporters.final_cut_pro")
 
     def setUp(self):
         _TrackRecord.saved = []
@@ -264,162 +261,8 @@ class InterchangeImportExportTests(unittest.TestCase):
         self.assertIn("* AUDIO LEVEL AT 00:00:00:00 IS -6.02 DB HOLD", exported)
         self.assertIn("* SCALE X AT 00:00:00:00 IS 125% LINEAR", exported)
 
-    def test_fcp_import_audio_only_clip_uses_svg_thumbnail_and_imports_volume(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            audio_path = os.path.join(tmpdir, "audio.wav")
-            xml_path = os.path.join(tmpdir, "input.xml")
-            with open(xml_path, "w", encoding="utf-8") as handle:
-                handle.write(f"""<?xml version="1.0"?>
-<xmeml version="4"><sequence><media><audio><track><locked>TRUE</locked>
-<clipitem id="a1"><name>Audio Only</name><start>24</start><end>48</end><in>0</in><out>24</out>
-<file id="f1"><pathurl>{audio_path}</pathurl></file>
-<filter><effect><effectid>audiolevels</effectid><keyframe><when>12</when><value>0.25</value><interpolation><name>hold</name></interpolation></keyframe></effect></filter>
-</clipitem></track></audio></media></sequence></xmeml>""")
-
-            _FileQuery.reset([_FileRecord("audio-file", audio_path, media_type="audio")])
-            app = _App(_Project(layers=[{"number": 1, "label": "Existing"}]))
-
-            with patch.object(self.fcp_importer, "get_app", return_value=app), \
-                 patch.object(self.fcp_importer.QFileDialog, "getOpenFileName", return_value=(xml_path, "")), \
-                 patch.object(self.fcp_importer, "find_missing_file", return_value=(audio_path, False, False)), \
-                 patch.object(self.fcp_importer, "File", _FileQuery), \
-                 patch.object(self.fcp_importer, "Track", _TrackRecord), \
-                 patch.object(self.fcp_importer, "Clip", _ClipRecord), \
-                 patch.object(self.fcp_importer.openshot, "Clip", _OpenShotClip):
-                self.fcp_importer.import_xml()
-
-        self.assertEqual(len(_TrackRecord.saved), 1)
-        self.assertTrue(_TrackRecord.saved[0].data["lock"])
-        self.assertEqual(len(_ClipRecord.saved), 1)
-        clip_data = _ClipRecord.saved[0].data
-        self.assertEqual(clip_data["title"], "Audio Only")
-        self.assertEqual(clip_data["position"], 1.0)
-        self.assertTrue(clip_data["image"].endswith(os.path.join("images", "AudioThumbnail.svg")))
-        self.assertEqual(clip_data["volume"]["Points"][0]["co"], {"X": 12, "Y": 0.25})
-        self.assertEqual(clip_data["volume"]["Points"][0]["interpolation"], self.fcp_importer.openshot.CONSTANT)
-
-    def test_fcp_import_video_clip_imports_opacity_motion_and_thumbnail_path(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            video_path = os.path.join(tmpdir, "video.mp4")
-            xml_path = os.path.join(tmpdir, "input.xml")
-            with open(xml_path, "w", encoding="utf-8") as handle:
-                handle.write(f"""<?xml version="1.0"?>
-<xmeml version="4"><sequence><media><video><track><locked>FALSE</locked>
-<clipitem id="v1"><name>Video Clip</name><start>24</start><end>72</end><in>12</in><out>60</out>
-<file id="f1"><pathurl>{video_path}</pathurl></file>
-<filter>
-<effect><effectid>opacity</effectid>
-<keyframe><when>12</when><value>50</value><interpolation><name>bezier</name></interpolation></keyframe>
-</effect>
-<effect><effectid>basic</effectid>
-<parameter><parameterid>center</parameterid>
-<keyframe><when>12</when><value><horiz>1056</horiz><vert>486</vert></value><interpolation><name>linear</name></interpolation></keyframe>
-</parameter>
-<parameter><parameterid>scale</parameterid>
-<keyframe><when>12</when><value>125</value><interpolation><name>linear</name></interpolation></keyframe>
-</parameter>
-<parameter><parameterid>rotation</parameterid>
-<keyframe><when>12</when><value>15</value><interpolation><name>hold</name></interpolation></keyframe>
-</parameter>
-</effect>
-</filter>
-</clipitem></track></video></media></sequence></xmeml>""")
-
-            _FileQuery.reset([_FileRecord("video-file", video_path, media_type="video", width=1920, height=1080)])
-            app = _App(_Project(layers=[{"number": 1, "label": "Existing"}], width=1920, height=1080))
-
-            with patch.object(self.fcp_importer, "get_app", return_value=app), \
-                 patch.object(self.fcp_importer.QFileDialog, "getOpenFileName", return_value=(xml_path, "")), \
-                 patch.object(self.fcp_importer, "find_missing_file", return_value=(video_path, False, False)), \
-                 patch.object(self.fcp_importer, "File", _FileQuery), \
-                 patch.object(self.fcp_importer, "Track", _TrackRecord), \
-                 patch.object(self.fcp_importer, "Clip", _ClipRecord), \
-                 patch.object(self.fcp_importer.openshot, "Clip", _OpenShotClip):
-                self.fcp_importer.import_xml()
-
-        self.assertEqual(len(_ClipRecord.saved), 1)
-        clip_data = _ClipRecord.saved[0].data
-        self.assertEqual(clip_data["title"], "Video Clip")
-        self.assertEqual(clip_data["position"], 1.0)
-        self.assertEqual(clip_data["start"], 0.5)
-        self.assertEqual(clip_data["end"], 2.5)
-        self.assertTrue(clip_data["image"].endswith(os.path.join("thumbnail", "video-file.png")))
-        self.assertEqual(clip_data["alpha"]["Points"][0]["co"], {"X": 12, "Y": 0.5})
-        self.assertAlmostEqual(clip_data["location_x"]["Points"][0]["co"]["Y"], 0.05)
-        self.assertAlmostEqual(clip_data["location_y"]["Points"][0]["co"]["Y"], -0.05)
-        self.assertEqual(clip_data["scale_x"]["Points"][0]["co"], {"X": 12, "Y": 1.25})
-        self.assertEqual(clip_data["scale_y"]["Points"][0]["co"], {"X": 12, "Y": 1.25})
-        self.assertEqual(clip_data["rotation"]["Points"][0]["co"], {"X": 12, "Y": 15.0})
-        self.assertEqual(clip_data["rotation"]["Points"][0]["interpolation"], self.fcp_importer.openshot.CONSTANT)
-
-    def test_fcp_pathurl_to_path_decodes_file_urls_relative_paths_and_internal_paths(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            self.assertEqual(
-                self.fcp_importer._pathurl_to_path("file:///tmp/My%20Clip.mov", tmpdir),
-                os.path.normpath("/tmp/My Clip.mov"),
-            )
-            self.assertEqual(
-                self.fcp_importer._pathurl_to_path("media/clip.mov", tmpdir),
-                os.path.normpath(os.path.join(tmpdir, "media", "clip.mov")),
-            )
-            with patch.object(self.fcp_importer, "absolute_media_path", return_value="/resolved/internal.mov"):
-                self.assertEqual(self.fcp_importer._pathurl_to_path("@assets/internal.mov", tmpdir), "/resolved/internal.mov")
-
-    def test_fcp_export_writes_video_audio_tracks_links_and_effect_keyframes(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            media_path = os.path.join(tmpdir, "media.mp4")
-            out_path = os.path.join(tmpdir, "out.xml")
-            _FileQuery.reset([_FileRecord("file-1", media_path, media_type="video", duration=4.0)])
-            app = _App(_Project(
-                fps={"num": 24, "den": 1},
-                layers=[{"number": 1, "label": "Main", "lock": True}],
-                width=1280,
-                height=720,
-            ))
-            clip = _ClipRecord({
-                "id": "clip-1",
-                "file_id": "file-1",
-                "title": "Linked Clip",
-                "position": 1.0,
-                "start": 0.0,
-                "end": 2.0,
-                "scale": self.fcp_exporter.openshot.SCALE_FIT,
-                "gravity": self.fcp_exporter.openshot.GRAVITY_CENTER,
-                "reader": {"path": media_path, "has_video": True, "has_audio": True},
-                "alpha": {"Points": [{"co": {"X": 1, "Y": 0.5}, "interpolation": self.fcp_exporter.openshot.BEZIER}]},
-                "volume": {"Points": [{"co": {"X": 1, "Y": 0.25}, "interpolation": self.fcp_exporter.openshot.CONSTANT}]},
-                "scale_x": {"Points": [{"co": {"X": 1, "Y": 1.25}, "interpolation": self.fcp_exporter.openshot.LINEAR}]},
-                "scale_y": {"Points": [{"co": {"X": 1, "Y": 1.25}, "interpolation": self.fcp_exporter.openshot.LINEAR}]},
-                "rotation": {"Points": [{"co": {"X": 1, "Y": 15.0}, "interpolation": self.fcp_exporter.openshot.LINEAR}]},
-            })
-
-            with patch.object(self.fcp_exporter, "get_app", return_value=app), \
-                 patch.object(self.fcp_exporter.QFileDialog, "getSaveFileName", return_value=(out_path, "")), \
-                 patch.object(self.fcp_exporter, "File", _FileQuery), \
-                 patch.object(self.fcp_exporter.Track, "get", return_value=_TrackRecord(number=1)), \
-                 patch.object(self.fcp_exporter.Clip, "filter", side_effect=lambda layer=None: [clip]), \
-                 patch.object(self.fcp_exporter, "_validate_export"):
-                self.fcp_exporter.export_xml()
-
-            doc = minidom.parse(out_path)
-
-        clipitems = doc.getElementsByTagName("clipitem")
-        self.assertGreaterEqual(len(clipitems), 2)
-        self.assertEqual(doc.getElementsByTagName("sequence")[0].getAttribute("id"), "project-1")
-        self.assertEqual(doc.getElementsByTagName("width")[0].firstChild.nodeValue, "1280")
-        self.assertEqual(doc.getElementsByTagName("locked")[0].firstChild.nodeValue, "TRUE")
-        self.assertTrue(any(node.getAttribute("id") == "clip-1" for node in clipitems))
-        self.assertTrue(any(node.getAttribute("id") == "clip-1-audio" for node in clipitems))
-        self.assertTrue(doc.getElementsByTagName("link"))
-
-        xml_text = doc.toxml()
-        doc.unlink()
-        self.assertIn("<effectid>opacity</effectid>", xml_text)
-        self.assertIn("<effectid>audiolevels</effectid>", xml_text)
-        self.assertIn("<value>50.0</value>", xml_text)
-        self.assertIn("<value>0.25</value>", xml_text)
-        self.assertIn("<value>125.0</value>", xml_text)
-        self.assertIn("<value>15.0</value>", xml_text)
+    # The Final Cut Pro XML (FCP7 / Premiere) exporter and importer are covered headlessly by
+    # tests/test_premiere_export.py and tests/test_premiere_import.py.
 
 
 if __name__ == "__main__":
