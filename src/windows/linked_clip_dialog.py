@@ -190,6 +190,9 @@ class LinkedClipDialog(QDialog):
             switch.addWidget(button)
         switch.addStretch(1)
         layout.addLayout(switch)
+        # the selected page stands out in every theme (the dark themes have no :checked style)
+        self.setStyleSheet("QPushButton#propsPage0:checked, QPushButton#propsPage1:checked "
+                           "{ border: 1px solid #4d9cf6; background-color: rgba(77, 156, 246, 0.22); }")
         self.tabs = QTabWidget(self)
         self.tabs.tabBar().hide()
         self.form_page = QWidget()
