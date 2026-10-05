@@ -75,7 +75,7 @@ The import is one step in Premiere's own undo history. Nothing changes in the Ze
 | Volume keyframes | Audio Levels: linear gain, 1 = 0 dB, capped at +12 dB |
 | Eased and hold keyframes | Extra linear keys wherever a straight line would leave the curve: ¼ source pixel, 0.05 % scale, 0.05°, 1 % opacity. Premiere's XML keyframes are linear |
 | Crossfade (Fade transition across two clips) | Cross Dissolve centred on the cut. The clip edges inside it are `-1`, as in Premiere's exports |
-| Fade from or to black at a clip edge | Cross Dissolve at that edge |
+| Fade from or to black at a clip edge | Cross Dissolve at that edge (a fade covering a whole clip keeps its direction) |
 | Transition with "fade audio" | Cross Fade (+3dB) on the audio tracks too |
 | Other wipes | Cross Dissolve with the same timing (with a warning) |
 | Markers | Sequence markers with names and colours (`pproColor`; green is Premiere's default) |
@@ -83,7 +83,10 @@ The import is one step in Premiere's own undo history. Nothing changes in the Ze
 | Clip video / audio switches | Only the parts that play are written |
 | Overlapping clips on one track (no transition) | Extra tracks named `<track> (2)`, so nothing is hidden |
 | Stereo audio | Premiere's exploded track pairs (A1/A2), linked to the video item |
-| Titles | Transparent PNG stills, `alphatype straight`, named without `.svg` |
+| Mono audio | Its own mono track (a mono voice-over beside stereo music gets one, so it plays in both speakers) |
+| A clip that plays one channel (*Separate Audio > each channel*, `channel_filter`) | A mono item of that source channel on a mono track (Premiere centres it) |
+| Video with an alpha channel (ProRes 4444, Animation, PNG, VP9 alpha) | `alphatype straight`, so Premiere keeps the transparency (ffprobe checks the stream at export) |
+| Titles | Transparent PNG stills, `alphatype straight`, named without `.svg`, rendered at the largest size they are shown (a title scaled up, or a 1080p title in a 4K project), so Premiere never enlarges a small PNG |
 | Media paths | `file://localhost/` URLs, percent-encoded (spaces, Unicode), `C%3a` for drive letters, `file://server/share` for UNC paths |
 
 The export warns about anything else: Zenvi effects that FCP7 XML cannot express (blur, colour grading, and so
@@ -116,18 +119,23 @@ In Zenvi, use **File > Import Project > Premiere Pro XML...** (or *Import XML (F
 | --- | --- |
 | Clip items and trims | Clips with the same position, start and end (snapped to the project's frames) |
 | Linked video + audio with the same timing | One clip. J/L cuts become a video-only and an audio-only clip |
+| Linked audio items playing the channels of one file (FCP7 / Resolve stereo pairs, Premiere dual mono) | One clip, not one per channel |
+| A lone mono item taken from one channel of a stereo file | A clip that plays only that channel (`channel_filter`; libopenshot plays it on that channel's side, Premiere centres it) |
 | A video item without linked audio | The clip's audio is off (Premiere played none) |
 | Disabled clips, turned-off or muted tracks | Clips with video off (hidden) or audio off (muted): nothing is lost |
 | Cross Dissolve (and other video transitions, with a warning) | A Zenvi fade transition over the same frames with a straight-line ramp, so it looks like Premiere's. The two clips overlap on one track, like Zenvi's own crossfades |
 | Audio cross fade under a video dissolve | libopenshot's equal-power audio crossfade on that transition |
 | Other audio transitions | Volume ramps (constant power for Cross Fade (+3dB)) |
 | Time Remap: constant speed, reverse | The `time` curve Zenvi's Speed menu writes |
-| Time Remap: variable speed | A straight-line `time` curve through the same frames (with a warning) |
+| Time Remap: variable speed | A straight-line `time` curve through the same frames (with a warning). Premiere's "virtual" keys with junk values (seen in real exports) are left out |
 | Basic Motion, Distort aspect, Crop, Opacity, Audio Levels | Location, scale, rotation, origin, the Crop effect, alpha and volume, static or keyframed, placing the clip where Premiere did |
 | Sequence markers | Timeline markers with the nearest colour (marker durations are dropped) |
 | Nested sequences | **Flattened**: the nest's clips come in on extra tracks right above the track the nest sat on, cut to the part that was used, up to 8 levels deep. The nest's own motion, opacity or speed is reported, not applied |
 | A sequence of another size or frame rate | Scaled to fit and snapped to the project's frames (reported) |
 | Generators (Premiere titles, colour mattes, bars), clip markers, effects Zenvi lacks | Left out and listed in the report |
+| Image sequences (Premiere links them by their first frame, `shot.0001.png`) | A single still frame, listed in the report: import the sequence into Zenvi and replace the clip |
+| An XML with several sequences (an FCP7 project) | The first top-level sequence; the report names the others (`import_timeline_xml_tool` takes `sequence`) |
+| Old Zenvi / OpenShot XML exports | Their per-keyframe holds and eases, keyframes written straight under `<effect>`, pixel centres, 1-based keyframe times and `@assets` paths are read as before |
 
 ## Editor tools
 
@@ -135,10 +143,19 @@ In Zenvi, use **File > Import Project > Premiere Pro XML...** (or *Import XML (F
 | --- | --- | --- |
 | `export_to_premiere_tool` | `output_path` (default `<project> (Premiere).xml`, a free name), `collect_media` (false), `overwrite` (false) | Writes the XML (and title stills); returns `path`, `media_dir`, `titles`, `copied_media`, `warnings`, `counts`. Refuses an existing file unless `overwrite`. No undo step |
 | `send_to_premiere_tool` | — | Export + `premiere_import_xml` in the connected Premiere. Returns `sequence_name`, `sequences`, `offline`, `warnings`, `xml`. Refused, with how to connect, when Premiere is not connected |
-| `import_timeline_xml_tool` | `path`, `placement` (`new_tracks` / `at_playhead`) | One undo step. Returns `timeline_clip_ids`, `layers`, `transition_ids`, `marker_ids`, `file_ids`, `missing_media`, `warnings`, `offset`. Missing media is skipped and listed (no dialog); refused when nothing can be imported |
+| `import_timeline_xml_tool` | `path`, `placement` (`new_tracks` / `at_playhead`), `sequence` (name; default the first top-level one) | One undo step. Returns `timeline_clip_ids`, `layers`, `transition_ids`, `marker_ids`, `file_ids`, `missing_media`, `warnings`, `offset`. Missing media is skipped and listed (no dialog); refused when nothing can be imported |
 
 Coverage ids: `handoff.premiere_export`, `handoff.premiere_send`, `handoff.timeline_xml_import`.
-`import_project_file_tool` (format `fcpxml`) and `export_project_file_tool` use the same importer and exporter.
+`import_project_file_tool` (format `fcpxml`) and `export_project_file_tool` use the same importer and exporter
+(the import reads and probes off the GUI thread and commits on it, like `import_timeline_xml_tool`).
+
+### Other editors
+
+The XML follows Premiere's conventions: each clip's scale is relative to its own native size. **DaVinci Resolve**
+applies its own input scaling first, so set *Project Settings > Image Scaling > Input Scaling > Mismatched
+resolution files* to **Center crop with no resizing** before importing; with Resolve's default (*Scale entire image
+to fit*) a 4K clip in a 1080p export arrives at half size. Not checked in Resolve. Exports made by Zenvi before this
+version wrote scale relative to the fit size and centres in pixels; Zenvi still reads those.
 
 ## Limits
 
@@ -155,6 +172,9 @@ Coverage ids: `handoff.premiere_export`, `handoff.premiere_send`, `handoff.timel
   across the whole second, centred on the cut. The export keeps the length you chose. A Cross Dissolve comes back
   as a linear fade that matches Premiere's look, not as the original Fade.
 - Effects do not carry over in either direction, except the transforms, crop, opacity, volume and speed above.
+- FCP7's own `FCPCurve` (bezier) keyframes are read as straight lines.
+- Mono items taken from one channel of a stereo file come back playing that channel on its own side (libopenshot's
+  `channel_filter`); Premiere plays a mono item in both speakers.
 - Landing a large import holds the editor for a moment, because libopenshot updates its timeline once per clip.
   The import runs as one preview batch (playback caching off, one redraw at the end): on a loaded 8 GB Mac, 14
   clips took 4–9 s, against 11–17 s without it.
@@ -164,7 +184,7 @@ Coverage ids: `handoff.premiere_export`, `handoff.premiere_send`, `handoff.timel
 
 Before you start: in Premiere, set *Preferences > Media > Default Media Scaling* to **None** (the XML carries each
 clip's scale). For steps 9–11, install the Zenvi Link panel (`zenvi adobe install`) and open it with Window >
-Extensions > Zenvi Link.
+Extensions > Zenvi Link. Steps 15–23 check what only a real Premiere can confirm, highest risk first.
 
 1. In Zenvi, make a 1080p 30 fps timeline: two clips with a 1 s Fade between them on track 1; a PNG logo on
    track 2 with eased location keyframes, a scale change and a 0.5 s fade in; a title on track 3; a clip at 2x
@@ -212,6 +232,28 @@ Extensions > Zenvi Link.
     **Pass:** "Import failed: no clip of '<sequence>' could be imported: missing media ..." and no undo step.
 14. File > Export Project > Export XML (Final Cut Pro) and import that file into Premiere.
     **Pass:** it opens like step 3.
+15. Rotate the logo +15° in Zenvi (clockwise on screen), export, import in Premiere.
+    **Pass:** Premiere shows it rotated clockwise by 15° (Rotation 15.0), not counter-clockwise.
+16. Give a clip a non-centre origin (Zenvi origin 0.25, 0.25), animate its scale, export.
+    **Pass:** in Premiere the Anchor Point sits at the clip's upper-left quarter and the clip grows from there, at the
+    same place as in Zenvi.
+17. Put a ProRes 4444 lower third with transparency over a video, export.
+    **Pass:** Premiere shows the video through the transparent parts (its *Interpret Footage* says alpha straight).
+18. Turn Default Media Scaling to *Set to Frame Size* and import the step-2 XML again.
+    **Pass (expected to differ):** clips not the sequence size come in at the wrong size; with *None* they match.
+19. Keyframe the opacity of the 2x clip (fade in over its first second), export.
+    **Pass:** in Premiere the fade lasts one second of the sequence, starting at the clip's first frame.
+20. On Windows, put the media on a file share (`\\server\share\...`), export from Zenvi, import in Premiere.
+    **Pass:** Premiere finds the media through the `file://server/share/...` paths; nothing is offline.
+21. Play the 2x clip from step 1 with its sound.
+    **Pass:** its audio plays at 2x too, in sync with the picture (Time Remap on the audio items).
+22. Compare the title PNG in Premiere with Zenvi's preview, at 1x and with the title scaled to 200 %.
+    **Pass:** same fonts, colours and position; at 200 % the text is as sharp as at 1x (the PNG was rendered at
+    double size).
+23. Put a mono voice-over and stereo music on one Zenvi track, and *Separate Audio > each channel* on an interview
+    clip (delete the camera-mic channel). Export.
+    **Pass:** in Premiere the voice-over is on a mono track and plays in both speakers; the music is on a stereo
+    pair; only the lav channel of the interview plays.
 
 ## Tests
 
