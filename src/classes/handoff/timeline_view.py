@@ -31,6 +31,7 @@ from fractions import Fraction
 from types import MappingProxyType
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+from classes import project_files
 from classes.handoff.keyframes import BEZIER, CONSTANT, LINEAR, Curve, as_fraction, resolve_points
 from classes.handoff.transform import (
     GRAVITY_CENTER, REPAIRED_WHEN_EMPTY, SCALE_FIT, TRANSFORM_DEFAULTS,
@@ -137,7 +138,7 @@ class FileView:
             duration=_f(data.get("duration")),
             fps=fps,
             is_title=path.lower().endswith(SVG_SUFFIXES),
-            is_image_sequence="%" in raw_path,
+            is_image_sequence=project_files.is_image_sequence(data),
             zenvi_link=MappingProxyType(copy.deepcopy(link)) if isinstance(link, dict) else None,
             data=MappingProxyType(copy.deepcopy(data)),
         )

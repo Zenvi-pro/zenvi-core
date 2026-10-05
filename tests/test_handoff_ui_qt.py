@@ -250,3 +250,67 @@ def test_props_dialog_keeps_untouched_values_exact(qapp, monkeypatch):
     ratio.textEdited.emit("0.25")
     d._apply()
     assert d.props()["ratio"] == 0.25 and d.props()["stamp"] == 1759622400000
+
+
+def test_page_switch_labels_are_never_clipped_and_switch_pages(qapp, monkeypatch):
+    from windows import linked_clip_dialog
+    monkeypatch.setattr(linked_clip_dialog, "get_app", lambda: _App(qapp))
+    d = linked_clip_dialog.LinkedClipDialog({"kind": "remotion", "props": {"title": "A"}})
+    d.show()
+    qapp.processEvents()
+    assert d.tabs.tabBar().isHidden()  # the theme's icon-only tab styling cannot clip anything
+    for index, text in enumerate(("Props", "Raw JSON")):
+        button = d.findChild(QPushButton, "propsPage%d" % index)
+        assert button.text() == text
+        assert button.width() >= button.fontMetrics().horizontalAdvance(text) + 8
+    d.findChild(QPushButton, "propsPage1").click()
+    assert d.tabs.currentIndex() == 1 and '"title": "A"' in d.json_edit.toPlainText()
+    d.findChild(QPushButton, "propsPage0").click()
+    assert d.tabs.currentIndex() == 0 and d.findChild(QPushButton, "propsPage0").isChecked()
+    d.hide()
+
+
+def test_edit_props_shows_the_providers_editable_props(qapp, monkeypatch):
+    from classes.handoff import linked_media
+    from windows import linked_clip_dialog, linked_source_menu
+    app = _App(qapp)
+    for mod in (linked_clip_dialog, linked_source_menu):
+        monkeypatch.setattr(mod, "get_app", lambda: app)
+
+    class _Provider:
+        kind = "remotion"
+
+        def editable_props(self, link):
+            return dict({"size": 96}, **link["props"])
+
+    link = {"kind": "remotion", "source": {"composition": "Intro"}, "props": {"title": "Hi", "internal": 3}}
+
+    class _File:
+        id = "F1"
+        data = {"name": "Intro"}
+
+    monkeypatch.setattr(linked_source_menu, "_file_and_link", lambda fid: (_File(), dict(link)))
+    monkeypatch.setattr(linked_media, "provider_for", lambda kind: _Provider())
+    shown, rerendered = {}, []
+
+    class _Dialog:
+        def __init__(self, link, **kwargs):
+            shown.update(kwargs)
+
+        def exec_(self):
+            return 1
+
+        def props(self):
+            return dict(shown["props"], title="Bye")
+
+    monkeypatch.setattr(linked_clip_dialog, "LinkedClipDialog", _Dialog)
+    from windows import handoff_menus
+    monkeypatch.setattr(handoff_menus, "rerender_files", lambda win, ids, **kw: rerendered.append((ids, kw)))
+    window = _Window()
+    job = linked_source_menu.edit_props(window, "F1")
+    assert _pump(qapp, lambda: bool(rerendered))
+    assert job.error is None and shown["props"] == {"size": 96, "title": "Hi", "internal": 3}
+    ids, kw = rerendered[0]
+    assert ids == ["F1"] and kw["replace_props"] is True
+    assert kw["props"] == {"title": "Bye", "internal": 3, "size": 96}
+    window.deleteLater()

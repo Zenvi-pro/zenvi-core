@@ -111,9 +111,10 @@ class AfterEffectsProvider:
         path = str(data.get("path") or data.get("output") or "")
         if not path or not os.path.isfile(path):
             raise LinkError("After Effects reported no rendered file")
-        codec = str(data.get("codec") or "").lower()
+        codec = str(data.get("codec") or "").lower().replace(" ", "").replace("_", "")
         if "prores" in codec:
-            codec = "prores4444"
+            # AE before 2023 may only have a ProRes 422 output module: opaque, no alpha
+            codec = "prores4444" if "4444" in codec else "prores422"
         elif "264" in codec:
             codec = "h264"
         elif codec != "qtrle":
