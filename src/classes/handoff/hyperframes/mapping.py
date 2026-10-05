@@ -731,9 +731,10 @@ def native_plan(clip: Clip, comp: Composition, media: dict, *, fps: float, canva
             frames = int(media.get("frames") or 0)
         except (TypeError, ValueError):
             frames = 0
-        if frames > 1:
-            problems.append(f"it is an animated image ({frames} frames): HyperFrames plays it, Zenvi would show a "
-                            "still")
+        # ffprobe gives an animated PNG no frame count: its codec (apng) says it
+        if frames > 1 or str(media.get("codec") or "").lower() == "apng":
+            what = "%d frames" % frames if frames > 1 else "an animated PNG"
+            problems.append(f"it is an animated image ({what}): HyperFrames plays it, Zenvi would show a still")
     else:
         start = round(clip.media_start * fps) / fps
         needed = start + duration * rate

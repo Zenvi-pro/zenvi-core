@@ -359,9 +359,36 @@ def _root_defaults(root: str) -> Dict[str, Any]:
 
 
 def _host_clip(project: hfp.Project, link: dict) -> Optional[hfp.Clip]:
-    ref = str(_block(link).get("host") or "")
-    return next((c for c in project.root.clips if c.kind == "composition" and ref and
-                 element_ref(c.element, project.root.element) == ref), None)
+    """The composition host *link* renders.
+
+    Its recorded ``host`` (an id, or an ``@i/j`` path for a host without one) counts only while that
+    element still mounts the same composition (``data-composition-id``, and ``data-composition-src`` for
+    one loaded from a file): an element added above an id-less host moves its path onto another host.
+    Otherwise the host Studio stamped with the recorded ``data-hf-id``, else the one host that mounts it;
+    None when that is not unique (never a wrong one).
+    """
+    block = _block(link)
+    source = link.get("source") or {}
+    comp_id = str(source.get("composition") or "")
+    comp_id = "" if comp_id.startswith("@") else comp_id
+    entry = str(source.get("entry") or "")
+    src = entry if entry and entry != hfp.INDEX else None
+    hosts = [c for c in project.root.clips if c.kind == "composition"]
+
+    def mounts(c: hfp.Clip) -> bool:
+        return (not comp_id or (c.composition_id or "") == comp_id) and (src is None or c.composition_src == src)
+
+    hf_id = str(block.get("host_hf_id") or "")
+    if hf_id:
+        stamped = [c for c in hosts if c.element.attrs.get("data-hf-id") == hf_id and mounts(c)]
+        if len(stamped) == 1:
+            return stamped[0]
+    ref = str(block.get("host") or "")
+    by_ref = next((c for c in hosts if ref and element_ref(c.element, project.root.element) == ref), None)
+    if by_ref is not None and mounts(by_ref):
+        return by_ref
+    same = [c for c in hosts if mounts(c)] if (comp_id or src) else []
+    return same[0] if len(same) == 1 else None
 
 
 def current_values(link: dict, project: Optional[hfp.Project] = None) -> Dict[str, Any]:
@@ -478,12 +505,13 @@ class HyperFramesProvider:
             with open(target, "w", encoding="utf-8") as fh:
                 fh.write(text)
             return wrappers.rel_entry(root, target), changed or None
-        host = _find_element(index, project.root.element, str(block.get("host") or "")) if block.get("host") else None
-        if host is None:
-            raise HyperFramesLinkError(f"index.html no longer mounts the composition {block.get('host') or '?'!r}; "
-                                       "re-import the project or unlink the clip")
         host_clip = _host_clip(project, link)
-        values = dict(host_clip.variable_values) if host_clip is not None else {}
+        if host_clip is None:
+            raise HyperFramesLinkError(f"index.html no longer mounts the composition "
+                                       f"{(link.get('source') or {}).get('composition') or block.get('host') or '?'!r} "
+                                       "(or mounts it more than once); re-import the project or unlink the clip")
+        host = host_clip.element
+        values = dict(host_clip.variable_values)
         values.update(changed)
         if host.attrs.get("data-composition-src"):
             comp = project.root

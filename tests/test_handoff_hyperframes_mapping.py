@@ -275,6 +275,9 @@ def test_loops_animated_images_and_pitch_are_reported(tmp_path):
     assert not plan_of(p, "short", VIDEO).problems          # a loop that never wraps changes nothing
     assert any("animated image (12 frames)" in x for x in plan_of(p, "gif", dict(LOGO, frames=12)).problems)
     assert not plan_of(p, "gif", dict(LOGO, frames=1)).problems
+    # verify-C5-1 #3: ffprobe reports no nb_frames for an APNG -- its codec says it is animated
+    assert any("an animated PNG" in x for x in plan_of(p, "gif", dict(LOGO, frames=0, codec="apng")).problems)
+    assert not plan_of(p, "gif", dict(LOGO, frames=0, codec="png")).problems
     assert any("keeps the pitch" in w for w in plan_of(p, "fast", dict(VIDEO, has_audio=True)).warnings)
     assert not any("pitch" in w for w in plan_of(p, "quiet", dict(VIDEO, has_audio=True)).warnings)
 

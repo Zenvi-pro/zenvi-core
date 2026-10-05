@@ -16,12 +16,25 @@ Every command runs in a folder of Zenvi's own (:func:`work_dir`) with the
 project folder as its argument, so a project's ``.npmrc`` or ``node_modules``
 never applies -- except ``timeline``, which only reads the project from its
 working folder (0.8.126 takes a folder argument for a sub-command name): it
-runs in the project folder, but as a plain ``node <entry>`` (an npx CLI is
-found in npm's cache), so nothing npm reads from there applies. Node.js 22+ comes from
-:func:`classes.handoff.node_runtime.find_node`. Every command runs with
-HyperFrames' telemetry, update check and self-update off (:data:`QUIET_ENV`):
-Zenvi never opts a user in. Everything here blocks -- call it off the GUI
-thread.
+runs in the project folder, as a plain ``node <entry>`` (an npx CLI is found
+in npm's cache), so npm never runs there.
+
+HyperFrames itself reads two things from its working folder that pick
+programs: ``.env`` (applied to every key the environment does not have --
+``HYPERFRAMES_FFPROBE_PATH``, ``HYPERFRAMES_BROWSER_PATH``, ``NODE_OPTIONS``,
+...) and ``.hyperframes/bin/ffprobe`` (or, on Windows, an ``ffprobe.exe`` in
+the folder) when no ffprobe is configured. So every command gets Zenvi's own
+absolute ffmpeg / ffprobe (``HYPERFRAMES_FFMPEG_PATH`` /
+``HYPERFRAMES_FFPROBE_PATH``, which skip every lookup), and every key of the
+working folder's ``.env`` is already set in its environment (the user's
+value, else empty), so HyperFrames applies none of them (:func:`cli_env`).
+Without an ffprobe of Zenvi's own the ``timeline`` call is skipped: it
+measures media, and Zenvi reads the timing itself.
+
+Node.js 22+ comes from :func:`classes.handoff.node_runtime.find_node`.
+Every command runs with HyperFrames' telemetry, update check and
+self-update off (:data:`QUIET_ENV`): Zenvi never opts a user in. Everything
+here blocks -- call it off the GUI thread.
 
 The Studio (``hyperframes preview``) runs as a child of Zenvi on a free
 loopback port; :func:`open_studio` reuses a running one for the same
@@ -170,11 +183,58 @@ def work_dir() -> str:
     return path
 
 
-def cli_env(cli: Cli, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+FFMPEG_PATH_ENV = "HYPERFRAMES_FFMPEG_PATH"     # HyperFrames' own keys: set, they skip every other lookup
+FFPROBE_PATH_ENV = "HYPERFRAMES_FFPROBE_PATH"
+
+
+def zenvi_ffmpeg(name: str) -> Optional[str]:
+    """Zenvi's own ffmpeg / ffprobe as an absolute path (None when it has none)."""
+    from classes import ffmpeg_cli
+    found = ffmpeg_cli.find_ffmpeg(name)
+    return os.path.abspath(found) if found else None
+
+
+def dotenv_keys(folder: str) -> List[str]:
+    """The keys HyperFrames 0.8.126 would take from ``<folder>/.env`` (its own reading, dotEnv.ts)."""
+    try:
+        with open(os.path.join(folder, ".env"), encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return []
+    keys = []
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        eq = line.find("=")
+        if eq < 1:
+            continue
+        key = line[:eq].strip()
+        if key:
+            keys.append(key)
+    return keys
+
+
+def cli_env(cli: Cli, extra: Optional[Dict[str, str]] = None, *, cwd: Optional[str] = None) -> Dict[str, str]:
+    """The environment of a CLI run in *cwd* (default :func:`work_dir`): quiet, Zenvi's ffmpeg / ffprobe
+    pinned, and every key of that folder's ``.env`` already present so HyperFrames applies none of it."""
     env = cli.runtime.env()
     env.update(QUIET_ENV)
+    for name, key in (("ffmpeg", FFMPEG_PATH_ENV), ("ffprobe", FFPROBE_PATH_ENV)):
+        path = zenvi_ffmpeg(name)
+        if path:
+            env[key] = path
     if extra:
         env.update(extra)
+    present = {k.upper() for k in env} if os.name == "nt" else set(env)
+    for key in dotenv_keys(cwd or work_dir()):
+        if "\x00" in key or "=" in key:
+            raise CliError(f"{os.path.join(cwd or work_dir(), '.env')} has a key Zenvi cannot neutralize ({key!r}); "
+                           "HyperFrames is not run there")
+        if (key.upper() if os.name == "nt" else key) not in present:
+            env[key] = ""  # present, so HyperFrames' .env loader skips it; empty reads as unset
     return env
 
 
@@ -195,8 +255,9 @@ def run(cli: Cli, args: Sequence[str], *, timeout: Optional[float] = None,
     if cwd is not None and cli.source == "npx":
         raise CliError("an npx HyperFrames CLI never runs inside a project folder (its .npmrc would apply)")
     try:
-        return node_runtime.run_node(cli.command(*args), cwd or work_dir(), env=cli_env(cli), timeout=timeout,
-                                     on_line=on_line, should_cancel=should_cancel, runtime=cli.runtime)
+        return node_runtime.run_node(cli.command(*args), cwd or work_dir(), env=cli_env(cli, cwd=cwd),
+                                     timeout=timeout, on_line=on_line, should_cancel=should_cancel,
+                                     runtime=cli.runtime)
     except node_runtime.NodeTimeout:
         raise CliError(f"hyperframes {' '.join(args[:1])} did not finish within {int(timeout or 0)} s") from None
     except node_runtime.NodeCancelled:
@@ -279,8 +340,13 @@ def timeline(project_dir: str, cli: Optional[Cli] = None, **kwargs) -> dict:
     """``hyperframes timeline --json``: the resolved tracks and clips (HyperFrames' own timing).
 
     0.8.126 reads the project only from its working folder (a folder argument is taken for a
-    sub-command), so it runs in *project_dir* -- as plain node, never through npm (:func:`direct`).
+    sub-command), so it runs in *project_dir* -- as plain node, never through npm (:func:`direct`),
+    with Zenvi's ffprobe pinned and the project's ``.env`` neutralized (:func:`cli_env`). It measures
+    media with ffprobe, so without one of Zenvi's own it is not run (CliError: Zenvi times it itself).
     """
+    if zenvi_ffmpeg("ffprobe") is None:
+        raise CliError("Zenvi has no ffprobe of its own, so HyperFrames' timeline (which measures media with it) is "
+                       "not run; install ffmpeg (brew install ffmpeg)")
     plain = direct(cli or resolve_cli(project_dir), should_cancel=kwargs.get("should_cancel"))
     return run_json(plain, ["timeline"], cwd=project_dir, **kwargs)
 
@@ -474,4 +540,5 @@ __all__ = [
     "PINNED_VERSION", "NODE_MIN_MAJOR", "QUIET_ENV", "CliError", "Cli", "resolve_cli", "project_pin", "run",
     "run_json", "timeline", "lint", "render", "clean_line", "Studio", "start_studio", "running_studio",
     "stop_studios", "open_studio", "open_url", "free_port", "private_install", "workers", "work_dir", "direct",
+    "cli_env", "dotenv_keys", "zenvi_ffmpeg", "FFMPEG_PATH_ENV", "FFPROBE_PATH_ENV",
 ]

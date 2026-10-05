@@ -322,3 +322,42 @@ def test_remaining_visuals(tmp_path):
 def test_parse_fps():
     assert hfp.parse_fps("30") == 30 and hfp.parse_fps("30000/1001").denominator == 1001
     assert hfp.parse_fps("") is None and hfp.parse_fps("abc") is None and hfp.parse_fps("0") is None
+
+
+@pytest.mark.parametrize("text, value", [
+    ("4", 4.0), (" 4.5 ", 4.5), ("", 0.0), (".5", 0.5), ("5.", 5.0), ("1e1", 10.0), ("0x10", 16.0),
+    ("-2", -2.0), ("4s", None), ("1_000", None), ("Infinity", None), ("nan", None), (None, None),
+])
+def test_numbers_are_read_like_javascript_number(text, value):
+    assert hfp.js_number(text) == value
+
+
+def test_durations_hyperframes_ignores_are_not_authored(tmp_path):
+    """verify-C5-1 #5: data-duration="4s" (or 0) is no duration for HyperFrames (Number(v) > 0 only): the runtime
+    plays such a video for its media's length, and the CLI's start after it must not be trusted."""
+    root = write_project(tmp_path / "p", root_div(
+        '<video id="v1" src="assets/a.mp4" data-start="0" data-duration="4s" muted></video>'
+        '<img id="pic" src="assets/b.png" data-start="v1" data-duration="1"/>'
+        '<video id="v2" src="assets/a.mp4" data-start="0" data-duration="0" data-track-index="1" muted></video>'
+        '<img id="after2" src="assets/b.png" data-start="v2" data-duration="1" data-track-index="1"/>'
+        '<img id="ends" src="assets/b.png" data-start="0" data-end="2" data-track-index="2"/>'
+        '<img id="next" src="assets/b.png" data-start="ends" data-duration="1" data-track-index="2"/>'),
+        files={"assets/a.mp4": b"v", "assets/b.png": b"i"})
+    cli = {"timeline": {"tracks": [{"rows": [
+        _row("v1", 0, 10, 0, "media"), _row("pic", 0, 1, 0), _row("v2", 0, 10, 1, "media"),
+        _row("after2", 0, 1, 1), _row("ends", 0, 2, 2), _row("next", 2.5, 1, 2)]}]}}
+    p = hfp.load_project(root, probe=lambda _p: 10.0, cli_timeline=cli)
+    c = {x.id: x for x in p.root.clips}
+    assert (c["v1"].duration, c["pic"].start) == (10.0, 10.0) and not hfp.cli_start_trusted(c["pic"], c)
+    assert (c["v2"].duration, c["after2"].start) == (10.0, 10.0)
+    assert hfp.cli_start_trusted(c["next"], c) and c["next"].start == 2.5     # data-end after its start counts
+
+
+def test_a_composition_id_names_its_host_in_data_start(tmp_path):
+    """HyperFrames accepts data-start="<data-composition-id>"; such projects no longer fail to import."""
+    root = write_project(tmp_path / "p", root_div(
+        '<div data-composition-id="intro" data-start="0" data-duration="2"><b>x</b></div>'
+        '<img id="pic" src="assets/b.png" data-start="intro + 0.5" data-duration="1"/>'),
+        files={"assets/b.png": b"i"})
+    p = hfp.load_project(root)
+    assert p.root.clip("pic").start == 2.5

@@ -18,6 +18,8 @@ FakeTimeline), driving the real editor tools:
   export    a Zenvi project (trimmed video fading in, PNG with an eased move + rotation, SVG title,
             audio fade, a cross-fade from the video to a second image) -> export_to_hyperframes_tool ->
             hyperframes lint -> hyperframes render (PNG sequence) -> compare with libopenshot's frames.
+  trust     a project whose .env and .hyperframes/bin try to choose the ffprobe HyperFrames runs (and
+            NODE_OPTIONS): Zenvi's timeline call and inspection run none of it.
   reimport  duplicate a clip in the export (as Studio does: same data-zenvi-clip-id), import it back ->
             the clips, files and markers equal the original plus the copy; export again into the
             edited folder -> refused, listing index.html; with replace_edits -> replaced.
@@ -456,6 +458,48 @@ def part_import(work, project_dir):
 
 
 # ---------------------------------------------------------------------------
+# trust: a project cannot choose the programs HyperFrames runs for Zenvi
+# ---------------------------------------------------------------------------
+
+def part_trust(work):
+    from classes.handoff.hyperframes import cli as hf_cli
+    from classes.handoff.hyperframes import importer
+    root = os.path.join(work, "evil")
+    shutil.rmtree(root, ignore_errors=True)
+    os.makedirs(os.path.join(root, "assets"))
+    os.makedirs(os.path.join(root, ".hyperframes", "bin"))
+    clip, _logo, _music = make_media(os.path.join(work, "evil-media"))
+    shutil.copy(clip, os.path.join(root, "assets", "clip.mp4"))
+    with open(os.path.join(root, "index.html"), "w") as fh:
+        fh.write('<!doctype html><html><head><script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js">'
+                 '</script></head><body><div id="root" data-composition-id="main" data-root="true" data-start="0" '
+                 'data-width="1920" data-height="1080"><video id="v" class="clip" src="assets/clip.mp4" '
+                 'data-start="0" muted></video><img id="after" class="clip" src="assets/clip.mp4" data-start="v" '
+                 'data-duration="1"/></div><script>const tl = gsap.timeline({ paused: true }); '
+                 'window.__timelines["main"] = tl;</script></body></html>')
+    for rel, marker in (("evil-ffprobe", "PWNED-by-dotenv"), (os.path.join(".hyperframes", "bin", "ffprobe"),
+                                                             "PWNED-by-bin")):
+        path = os.path.join(root, rel)
+        with open(path, "w") as fh:
+            fh.write('#!/bin/sh\ntouch "%s"\nexec ffprobe "$@"\n' % os.path.join(root, marker))
+        os.chmod(path, 0o755)
+    with open(os.path.join(root, "evil.js"), "w") as fh:
+        fh.write("require('fs').writeFileSync(%r, '')\n" % os.path.join(root, "PWNED-by-node-options"))
+    with open(os.path.join(root, ".env"), "w") as fh:
+        fh.write("HYPERFRAMES_FFPROBE_PATH=./evil-ffprobe\nNODE_OPTIONS=--require ./evil.js\n")
+    t0 = time.time()
+    data = hf_cli.timeline(root)
+    rows = {r.get("elementId"): r for t in data["timeline"]["tracks"] for r in t["rows"]}
+    insp = importer.inspect_project(root, "native")
+    REPORT["trust"] = {"seconds": round(time.time() - t0, 1),
+                       "cli_rows": {k: (v.get("absStart"), v.get("duration")) for k, v in rows.items()},
+                       "timing_from": insp.summary()["timing_from"],
+                       "zenvi_starts": {c.id: c.start for c in insp.project.root.clips},
+                       "pwned": sorted(n for n in os.listdir(root) if n.startswith("PWNED"))}
+    log("trust:", REPORT["trust"])
+
+
+# ---------------------------------------------------------------------------
 # export: a Zenvi project rendered by HyperFrames and by libopenshot
 # ---------------------------------------------------------------------------
 
@@ -619,18 +663,20 @@ def part_reimport(work, out, project):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--work", required=True)
-    ap.add_argument("parts", nargs="+", choices=["init", "import", "export", "reimport", "all"])
+    ap.add_argument("parts", nargs="+", choices=["init", "import", "trust", "export", "reimport", "all"])
     args = ap.parse_args()
     work = os.path.abspath(args.work)
     os.makedirs(work, exist_ok=True)
     boot()
-    parts = {"init", "import", "export", "reimport"} if "all" in args.parts else set(args.parts)
+    parts = {"init", "import", "trust", "export", "reimport"} if "all" in args.parts else set(args.parts)
     try:
         project_dir = os.path.join(work, "sample")
         if "init" in parts:
             project_dir = part_init(work)
         if "import" in parts:
             part_import(work, project_dir)
+        if "trust" in parts:
+            part_trust(work)
         if "export" in parts or "reimport" in parts:
             out, project = part_export(work)
             if "reimport" in parts:

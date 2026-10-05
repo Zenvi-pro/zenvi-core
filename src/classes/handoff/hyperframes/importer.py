@@ -78,9 +78,10 @@ def svg_size(path: str) -> Tuple[int, int]:
 
 
 def ffprobe_media(path: str) -> dict:
-    """{width, height, duration, frames, has_video, has_audio} of a media file (zeros when unreadable)."""
+    """{width, height, duration, frames, codec, has_video, has_audio} of a media file (zeros when unreadable)."""
     from classes import ffmpeg_cli
-    out = {"width": 0, "height": 0, "duration": 0.0, "frames": 0, "has_video": False, "has_audio": False}
+    out = {"width": 0, "height": 0, "duration": 0.0, "frames": 0, "codec": "", "has_video": False,
+           "has_audio": False}
     if path and str(path).lower().endswith((".svg", ".svgz")) and os.path.isfile(path):
         w, h = svg_size(path)
         out.update(width=w, height=h, has_video=bool(w and h))
@@ -99,6 +100,7 @@ def ffprobe_media(path: str) -> dict:
         if s.get("codec_type") == "video" and not out["has_video"]:
             out["has_video"] = True
             out["width"], out["height"] = int(s.get("width") or 0), int(s.get("height") or 0)
+            out["codec"] = str(s.get("codec_name") or "")
             try:
                 out["frames"] = int(s.get("nb_frames") or 0)
             except (TypeError, ValueError):
@@ -438,10 +440,13 @@ def _plan_parts(insp: Inspection, clips: Sequence[hfp.Clip], *, natives_allowed:
             entry = c.composition_src or hfp.INDEX
             # no props: a render reads the variables from the HTML (defaults + this mount's values), so edits
             # made in HyperFrames come through; props hold only what is changed in Zenvi (Edit Props)
+            host_block: Dict[str, Any] = {"host": ref}
+            if c.element.attrs.get("data-hf-id"):
+                host_block["host_hf_id"] = c.element.attrs["data-hf-id"]  # Studio's stable id, when it stamped one
             link = _base_link(project, role="composition", entry=entry, composition=c.composition_id or ref,
                               file=entry, line=(comp.element.line if comp is not None and comp.file == entry
                                                 else c.line),
-                              props={}, block={"host": ref}, fps=insp.fps)
+                              props={}, block=host_block, fps=insp.fps)
             duration = c.duration if c.duration else (comp.duration if comp is not None else None)
             insp.items.append(Item("linked", c.composition_id or ref, c.start or 0.0,
                                    (0, ranks.get(c.track_index, c.track_index)), order,
