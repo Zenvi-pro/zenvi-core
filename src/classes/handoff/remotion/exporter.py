@@ -65,7 +65,7 @@ DEPENDENCIES = {
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "remotion": REMOTION_VERSION,
-    "zod": "3.22.3",
+    "zod": "4.5.4",  # what Remotion 4.0.532 itself pins (@remotion/studio-shared package-info)
 }
 DEV_DEPENDENCIES = {"@types/react": "19.1.0", "typescript": "5.9.3"}
 COMPOSITION_ID = "ZenviTimeline"

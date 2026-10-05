@@ -96,7 +96,7 @@ def test_export_writes_a_complete_remotion_project(linked, tmp_path):  # noqa: F
     assert not [n for n in os.listdir(str(tmp_path)) if ".zenvi-partial-" in n]
     package = json.load(open(str(out / "package.json")))
     assert package["dependencies"]["remotion"] == exporter.REMOTION_VERSION == "4.0.532"
-    assert package["dependencies"]["@remotion/cli"] == "4.0.532" and package["dependencies"]["zod"] == "3.22.3"
+    assert package["dependencies"]["@remotion/cli"] == "4.0.532" and package["dependencies"]["zod"] == "4.5.4"
     assert package["scripts"]["render"] == "remotion render ZenviTimeline out/video.mp4"
     readme = open(str(out / "README.md")).read()
     assert "Import Project > Remotion Project" in readme and "remotion.dev/license" in readme

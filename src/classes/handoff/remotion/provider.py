@@ -186,45 +186,47 @@ class RemotionProvider:
             log.debug("Remotion bundle cache cleanup failed", exc_info=True)
 
         stills_dir = os.path.join(out_dir, "stills")
-        still = helper.run_helper("still", project_dir=project.root, entry=entry, props=props,
-                                  options={"composition": composition, "frames": STILL_FRAMES,
-                                           "out_dir": stills_dir, "bundle": bundle},
-                                  on_progress=_scaled(on_progress, 0.0, 0.15), should_cancel=should_cancel)
-        meta = still.result
-        warnings: List[str] = list(still.warnings)
-        pngs = [str(s.get("output")) for s in (meta.get("stills") or []) if s.get("output")]
-        if not pngs:
-            raise LinkError(f"Remotion rendered no still of {composition}")
-        if codec == "auto":
-            try:
-                transparent = any(alpha.has_transparency(p) for p in pngs)
-            except alpha.AlphaError as exc:
-                raise LinkError(f"could not check {composition} for transparency: {exc}") from None
-            chosen = "prores4444" if transparent else "h264"
-        else:
-            chosen = codec
-        fps = fps_fraction(meta.get("fps") or 30)
-        total = int(meta.get("durationInFrames") or 0)
-        if total <= 1:
-            path = _still_movie(pngs[0], out_dir, composition, chosen, fps, should_cancel)
-            duration_frames = max(1, int(round(STILL_SECONDS * float(fps))))
-            warnings.append(f"{composition} is a still: Zenvi rendered it as a {STILL_SECONDS:g} s clip")
-        else:
-            helper_codec = "h264" if chosen == "h264" else "prores4444"
-            output = os.path.join(out_dir, _safe(composition) + (".mp4" if helper_codec == "h264" else ".mov"))
-            rendered = helper.run_helper(
-                "render", project_dir=project.root, entry=entry, props=props,
-                options={"composition": composition, "codec": helper_codec, "output": output, "frames": frames,
-                         "concurrency": helper.default_concurrency(), "bundle": bundle},
-                on_progress=_scaled(on_progress, 0.15, 0.9 if chosen == "qtrle" else 1.0),
-                should_cancel=should_cancel)
-            warnings += [w for w in rendered.warnings if w not in warnings]
-            path = str(rendered.result.get("output") or output)
-            duration_frames = int(rendered.result.get("durationInFrames") or total)
-            if chosen == "qtrle":
-                path = _reencode(path, os.path.join(out_dir, _safe(composition) + "-qtrle.mov"), "qtrle",
-                                 _scaled(on_progress, 0.9, 1.0), should_cancel)
-        shutil.rmtree(stills_dir, ignore_errors=True)
+        try:
+            still = helper.run_helper("still", project_dir=project.root, entry=entry, props=props,
+                                      options={"composition": composition, "frames": STILL_FRAMES,
+                                               "out_dir": stills_dir, "bundle": bundle},
+                                      on_progress=_scaled(on_progress, 0.0, 0.15), should_cancel=should_cancel)
+            meta = still.result
+            warnings: List[str] = list(still.warnings)
+            pngs = [str(s.get("output")) for s in (meta.get("stills") or []) if s.get("output")]
+            if not pngs:
+                raise LinkError(f"Remotion rendered no still of {composition}")
+            if codec == "auto":
+                try:
+                    transparent = any(alpha.has_transparency(p) for p in pngs)
+                except alpha.AlphaError as exc:
+                    raise LinkError(f"could not check {composition} for transparency: {exc}") from None
+                chosen = "prores4444" if transparent else "h264"
+            else:
+                chosen = codec
+            fps = fps_fraction(meta.get("fps") or 30)
+            total = int(meta.get("durationInFrames") or 0)
+            if total <= 1:
+                path = _still_movie(pngs[0], out_dir, composition, chosen, fps, should_cancel)
+                duration_frames = max(1, int(round(STILL_SECONDS * float(fps))))
+                warnings.append(f"{composition} is a still: Zenvi rendered it as a {STILL_SECONDS:g} s clip")
+            else:
+                helper_codec = "h264" if chosen == "h264" else "prores4444"
+                output = os.path.join(out_dir, _safe(composition) + (".mp4" if helper_codec == "h264" else ".mov"))
+                rendered = helper.run_helper(
+                    "render", project_dir=project.root, entry=entry, props=props,
+                    options={"composition": composition, "codec": helper_codec, "output": output, "frames": frames,
+                             "concurrency": helper.default_concurrency(), "bundle": bundle},
+                    on_progress=_scaled(on_progress, 0.15, 0.9 if chosen == "qtrle" else 1.0),
+                    should_cancel=should_cancel)
+                warnings += [w for w in rendered.warnings if w not in warnings]
+                path = str(rendered.result.get("output") or output)
+                duration_frames = int(rendered.result.get("durationInFrames") or total)
+                if chosen == "qtrle":
+                    path = _reencode(path, os.path.join(out_dir, _safe(composition) + "-qtrle.mov"), "qtrle",
+                                     _scaled(on_progress, 0.9, 1.0), should_cancel)
+        finally:  # the stills only decide the codec; never leave them in the staging folder
+            shutil.rmtree(stills_dir, ignore_errors=True)
 
         updates: Dict[str, Any] = {"entry": entry, "default_props": encode_props(dict(meta.get("defaultProps") or {})),
                                    "remotion_version": still.remotion_version or project.version}
