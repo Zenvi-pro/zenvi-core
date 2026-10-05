@@ -57,8 +57,11 @@ LINK_VERSION = 1
 KINDS = ("remotion", "hyperframes", "aftereffects")
 KIND_LABELS = {"remotion": "Remotion", "hyperframes": "HyperFrames", "aftereffects": "After Effects"}
 STATES = ("fresh", "stale", "rendering", "error", "missing_source")
-CODECS = ("prores4444", "h264", "qtrle")
-CODEC_EXTENSIONS = {"prores4444": ".mov", "qtrle": ".mov", "h264": ".mp4"}
+# prores4444 / qtrle carry alpha; h264 and prores422 are opaque (After Effects before 2023
+# renders ProRes 422 when it has no 4444 output module -- SPEC 5, W2 decision).
+CODECS = ("prores4444", "h264", "qtrle", "prores422")
+ALPHA_CODECS = ("prores4444", "qtrle")
+CODEC_EXTENSIONS = {"prores4444": ".mov", "qtrle": ".mov", "h264": ".mp4", "prores422": ".mov"}
 # Keys the project file rewrites as paths on save/load (json_data.path_regex).
 PATH_LIKE_KEYS = frozenset({"path", "image", "resource", "protobuf_data_path", "lut_path"})
 PROPS_ESCAPE_KEY = "$zenvi_json"
@@ -1146,7 +1149,7 @@ def render_link(link: dict, *, on_progress: Optional[ProgressFn] = None,
         codec = str(result.codec or "").lower()
         if codec not in CODECS or produced.lower().endswith(".webm"):
             raise LinkError(f"the {kind_label(kind)} render is {codec or os.path.splitext(produced)[1]}; linked "
-                            "media must be ProRes 4444, H.264 or qtrle (libopenshot drops WebM alpha)")
+                            "media must be ProRes 4444, ProRes 422, H.264 or qtrle (libopenshot drops WebM alpha)")
         ext = os.path.splitext(produced)[1] or CODEC_EXTENSIONS[codec]
         # Check everything about the result BEFORE the file is installed: a bad fps or size
         # must not leave a render behind in the links folder.
