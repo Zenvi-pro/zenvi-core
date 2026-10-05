@@ -196,3 +196,66 @@ def test_every_way_a_tab_is_restored_reads_its_handoff_markers():
                             "ai_chat_ui.py"), encoding="utf-8").read()
     assert src.count('"seen_seq": AIChatWindow._seen_from_row(entry),') == \
         src.count('"agent_mode": entry.get("agent_mode", "agent"),') == 4
+
+
+# ── effort picker wiring (#147) ───────────────────────────────────────────
+
+def _dispatch(window_cls, monkeypatch, backend, effort):
+    import windows.ai_chat_ui as ui
+    monkeypatch.setattr(ui, "QMetaObject", MagicMock())
+    monkeypatch.setattr(ui, "Q_ARG", lambda *a: a)
+    worker = MagicMock()
+    sess = {"backend": backend, "worker": worker}
+    win = MagicMock()
+    win._active_session.return_value = sess
+    win.is_processing = False
+    win._try_local_command.return_value = False
+    win._handoff_prefix.return_value = ""
+    win._prepend_editor_snapshot.side_effect = lambda t: t
+    win._resolve_agent_mode.return_value = "agent"
+    assert window_cls._dispatch_user_message(win, "hi", "m", effort=effort) is True
+    return worker
+
+
+def test_the_picked_effort_goes_to_a_cli_agent_only(window_cls, monkeypatch):
+    assert _dispatch(window_cls, monkeypatch, "codex", "high")._pending_effort == "high"
+    # Zenvi Assistant has no effort levels (no per-effort pricing to maintain).
+    assert _dispatch(window_cls, monkeypatch, "zenvi", "high")._pending_effort == ""
+
+
+def test_the_chat_page_has_an_effort_picker_wired_to_the_bridge():
+    import os
+    root = os.path.join(os.path.dirname(__file__), "..", "src", "chat_ui")
+    html = open(os.path.join(root, "index.html"), encoding="utf-8").read()
+    js = open(os.path.join(root, "chat.js"), encoding="utf-8").read()
+    assert 'id="chat-effort-select"' in html
+    assert "sendMessageWithEffort" in js and "efforts" in js
+
+
+def test_the_retry_after_a_claude_sign_in_keeps_the_effort(window_cls, monkeypatch):
+    """Sign-in replays the message that hit the auth wall; it must run at the
+    effort it was sent with."""
+    import windows.ai_chat_ui as ui
+    monkeypatch.setattr(ui, "QMetaObject", MagicMock())
+    monkeypatch.setattr(ui, "Q_ARG", lambda *a: a)
+    worker = MagicMock()
+    worker._session_id = "s1"
+    sess = {"backend": "claude_code", "worker": worker}
+    win = MagicMock()
+    win._sessions = {"s1": sess}
+    win._active_sid = "s1"
+    win._active_session.return_value = sess
+    win.is_processing = False
+    win._try_local_command.return_value = False
+    win._handoff_prefix.return_value = ""
+    win._prepend_editor_snapshot.side_effect = lambda t: t
+    win._resolve_agent_mode.return_value = "agent"
+    win.sender.return_value = worker
+    win._dispatch_user_message = lambda *a, **kw: window_cls._dispatch_user_message(win, *a, **kw)
+
+    win._dispatch_user_message("hi", "opus", effort="xhigh")
+    worker._pending_effort = ""                       # the runner consumed it
+    window_cls._on_auth_required(win, "sign in")
+    assert sess["pending_retry"]["effort"] == "xhigh"
+    window_cls._on_sign_in_result(win, "claude_code", True, "ok", "s1")
+    assert worker._pending_effort == "xhigh"

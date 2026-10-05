@@ -516,3 +516,11 @@ html[data-zenvi-webkit="1"] .chat-send-circle:active:not(:disabled) {
     -webkit-transform: none;
     transform: none;
 }
+
+/* Effort picker (#147): keeps its place beside the model pill, shrinks first. */
+html[data-zenvi-webkit="1"] .chat-bottom-left > .chat-effort-select {
+    -webkit-flex: 0 1 auto;
+    flex: 0 1 auto;
+    min-width: 0;
+    -webkit-appearance: none;
+}

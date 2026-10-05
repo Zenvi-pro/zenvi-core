@@ -178,6 +178,12 @@
                                 <div id="chat-model-footer" class="chat-model-footer"></div>
                             </div>
 
+                            <!-- Effort picker: only shown for a CLI agent's
+                                 model that lists effort levels (see setModels) -->
+                            <select id="chat-effort-select" class="chat-effort-select"
+                                    title="Reasoning effort" aria-label="Reasoning effort"
+                                    style="display: none;"></select>
+
                             <!-- Agent Trace -->
                             <button type="button" id="chat-trace-btn"
                                     class="chat-bottom-icon" title="Agent Trace (tool args/results)"

@@ -654,6 +654,22 @@
 .chat-model-trigger.active .chat-model-chevron { transform: rotate(180deg); }
 .chat-model-trigger:active { transform: scale(0.96); }
 
+/* Effort picker beside the model pill: a native select dressed as a pill. */
+.chat-effort-select {
+    font-size: 11px;
+    line-height: 16px;
+    padding: 2px 6px;
+    border-radius: 9999px;
+    border: 1px solid var(--chat-border);
+    background: var(--chat-surface);
+    color: var(--chat-text);
+    cursor: pointer;
+    outline: none;
+    max-width: 96px;
+}
+.chat-effort-select:hover,
+.chat-effort-select:focus { border-color: var(--chat-accent, var(--chat-text)); }
+
 /* ΓöÇΓöÇ Model dropdown ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 @keyframes chat-menu-enter {
     from { opacity: 0; transform: translateY(4px); }

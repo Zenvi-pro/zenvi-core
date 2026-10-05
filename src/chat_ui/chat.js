@@ -30,6 +30,7 @@
     const modelSelect = document.getElementById('chat-model-select');
     const backendSelect = document.getElementById('chat-backend-select');
     const modelTrigger = document.getElementById('chat-model-trigger');
+    const effortSelect = document.getElementById('chat-effort-select');
     const modelLabel = document.getElementById('chat-model-label');
     const modelMenu = document.getElementById('chat-model-menu');
     const modelSearch = document.getElementById('chat-model-search');
@@ -1390,6 +1391,46 @@
         if (modelLabel) modelLabel.textContent = name || id || 'Model';
         updateTriggerIcon(id);
         renderMenu();
+        renderEffortPicker();
+    }
+
+    /* Effort levels belong to a model, so the picker follows the model pill:
+       hidden when the model lists none (always the case for Zenvi Assistant).
+       The level last picked for a model is kept for this page's lifetime. */
+    var effortByModel = {};
+
+    function renderEffortPicker() {
+        if (!effortSelect) return;
+        var efforts = [];
+        for (var i = 0; i < modelItems.length; i++) {
+            if (modelItems[i].id === selectedModelId) efforts = modelItems[i].efforts || [];
+        }
+        effortSelect.innerHTML = '';
+        if (!efforts.length) {
+            effortSelect.style.display = 'none';
+            return;
+        }
+        var names = [''].concat(efforts);
+        for (var j = 0; j < names.length; j++) {
+            var opt = document.createElement('option');
+            opt.value = names[j];
+            opt.textContent = names[j] ? 'Effort: ' + names[j] : 'Effort: default';
+            effortSelect.appendChild(opt);
+        }
+        var kept = effortByModel[selectedModelId] || '';
+        effortSelect.value = efforts.indexOf(kept) >= 0 ? kept : '';
+        effortSelect.style.display = '';
+    }
+
+    function pickedEffort() {
+        if (!effortSelect || effortSelect.style.display === 'none') return '';
+        return effortSelect.value || '';
+    }
+
+    if (effortSelect) {
+        effortSelect.addEventListener('change', function () {
+            effortByModel[selectedModelId] = effortSelect.value || '';
+        });
     }
 
     function openMenu() {
@@ -1525,6 +1566,7 @@
                 featured: item.featured === undefined ? true : !!item.featured,
                 rank: typeof item.rank === 'number' ? item.rank : 500,
                 tags: Array.isArray(item.tags) ? item.tags : [],
+                efforts: Array.isArray(item.efforts) ? item.efforts : [],
                 available: item.available === undefined ? true : !!item.available
             };
         });
@@ -1548,6 +1590,7 @@
         if (!picked && modelItems.length) picked = modelItems[0];
         if (picked) selectModel(picked.id, picked.name);
         else if (modelLabel) modelLabel.textContent = 'Model';
+        renderEffortPicker();
         // Python pushes a new list on every backend/tab change, and whether the
         // pill shows at all depends on that list — see applyBackendChrome.
         if (backendSelect) applyBackendChrome(backendSelect.value);
@@ -1678,7 +1721,12 @@
         closeMentionPalette();
         getBridge(function (bridge) {
             if (!bridge) return;
-            bridge.sendMessage(text, modelSelect.value || '', currentAgentMode);
+            var effort = pickedEffort();
+            if (effort && bridge.sendMessageWithEffort) {
+                bridge.sendMessageWithEffort(text, modelSelect.value || '', currentAgentMode, effort);
+            } else {
+                bridge.sendMessage(text, modelSelect.value || '', currentAgentMode);
+            }
             inputEl.value = '';
             adjustTextareaHeight();
         });

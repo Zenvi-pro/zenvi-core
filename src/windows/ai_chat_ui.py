@@ -750,6 +750,14 @@ class ChatBridge(QObject):
             mode = agent_mode if agent_mode in ("planning", "agent") else None
             self.window._handle_web_send_message(text.strip(), model_id or "", mode)
 
+    @guarded_slot(str, str, str, str)
+    def sendMessageWithEffort(self, text: str, model_id: str, agent_mode: str, effort: str):
+        """sendMessage plus the effort picked for a CLI agent's model (#147)."""
+        if self.window:
+            mode = agent_mode if agent_mode in ("planning", "agent") else None
+            self.window._handle_web_send_message(
+                text.strip(), model_id or "", mode, effort=effort or "")
+
     @guarded_slot(str, str)
     def executePlan(self, plan_id: str, model_id: str):
         if self.window:
@@ -3401,7 +3409,7 @@ class AIChatWindow(QDockWidget):
             return agent_mode
         return sess.get("agent_mode", "agent")
 
-    def _dispatch_user_message(self, text: str, model_id: str, agent_mode: str = None, action: str = "chat", plan_id: str = "", display_text: str = None, command_text: str = None, images=None):
+    def _dispatch_user_message(self, text: str, model_id: str, agent_mode: str = None, action: str = "chat", plan_id: str = "", display_text: str = None, command_text: str = None, images=None, effort: str = ""):
         """Shared send pipeline for web and widget chat UIs."""
         self._user_cancelled = False
         sess = self._active_session()
@@ -3431,6 +3439,7 @@ class AIChatWindow(QDockWidget):
             sess["last_user_display"] = (shown or "").strip()
             sess["last_user_command"] = (cmd or "").strip()
             sess["last_user_model_id"] = model_id or ""
+            sess["last_user_effort"] = effort or ""
             sess["last_user_images"] = list(images or []) if images else []
         if action == "chat" and cmd and self._try_local_command(cmd):
             return True
@@ -3444,6 +3453,10 @@ class AIChatWindow(QDockWidget):
             worker._pending_chat_images = list(images)
         else:
             worker._pending_chat_images = []
+        # CLI agents only: Zenvi Assistant has no effort levels, so there is
+        # no per-effort pricing to keep (#147).
+        is_cli = sess.get("backend", BACKEND_ZENVI) != BACKEND_ZENVI
+        worker._pending_effort = (effort or "") if is_cli else ""
         self._set_processing_ui(True)
         QMetaObject.invokeMethod(
             worker,
@@ -3458,7 +3471,7 @@ class AIChatWindow(QDockWidget):
         self._save_chat_sessions_store()
         return True
 
-    def _handle_web_send_message(self, text: str, model_id: str, agent_mode: str = None):
+    def _handle_web_send_message(self, text: str, model_id: str, agent_mode: str = None, effort: str = ""):
         """Handle send from CEP UI (same logic as send_message but with args)."""
         if self.is_processing:
             self._run_js("alert('Processing previous message...');")
@@ -3490,6 +3503,7 @@ class AIChatWindow(QDockWidget):
             display_text=display,
             command_text=typed,
             images=vision,
+            effort=effort,
         )
         if sent:
             sess = self._active_session()
@@ -4279,6 +4293,7 @@ class AIChatWindow(QDockWidget):
                     "display": sess.get("last_user_display") or "",
                     "command": sess.get("last_user_command") or pending,
                     "model_id": sess.get("last_user_model_id") or "",
+                    "effort": sess.get("last_user_effort") or "",
                     "images": list(sess.get("last_user_images") or []),
                     "generation": sess.get("retry_generation", 0),
                 }
@@ -4377,6 +4392,7 @@ class AIChatWindow(QDockWidget):
                 display_text="",
                 command_text=pending.get("command") or text,
                 images=pending.get("images") or None,
+                effort=pending.get("effort") or "",
             )
         finally:
             self._active_sid = prev_sid
@@ -4404,6 +4420,7 @@ class AIChatWindow(QDockWidget):
                 sess.pop("last_user_display", None)
                 sess.pop("last_user_command", None)
                 sess.pop("last_user_model_id", None)
+                sess.pop("last_user_effort", None)
                 sess.pop("last_user_images", None)
                 self._clear_attachment_undo()
                 from classes import chat_history

@@ -58,7 +58,9 @@ BACKEND_HERMES = "hermes"
 _live_lineups: dict = {}
 _live_lineups_lock = threading.Lock()
 
-_PICKER_KEYS = ("id", "name", "provider", "featured", "rank", "tags", "default")
+# ``efforts`` lists the reasoning-effort levels a model takes, as its CLI
+# names them; the chat shows an effort picker beside the model pill for it.
+_PICKER_KEYS = ("id", "name", "provider", "featured", "rank", "tags", "default", "efforts")
 
 
 def _clean_lineup(rows) -> list:
@@ -105,13 +107,24 @@ def live_lineup_for(backend: str) -> list:
 CLI_DEFAULT_MODEL_ID = "cli-default"
 
 
-def _cli_default_entry(uses: str = "") -> dict:
+def _cli_default_entry(uses: str = "", efforts=None) -> dict:
     """"CLI default", tagged with the model the CLI says it would use."""
     entry = {"id": CLI_DEFAULT_MODEL_ID, "name": "CLI default", "rank": 0,
              "featured": True, "default": True}
     if uses:
         entry["tags"] = [uses]
+    if efforts:
+        entry["efforts"] = list(efforts)
     return entry
+
+
+def _effort_levels(values) -> list:
+    """Effort names out of a CLI's listing: non-empty strings, no repeats."""
+    out = []
+    for value in values if isinstance(values, list) else []:
+        if isinstance(value, str) and value and value not in out:
+            out.append(value)
+    return out
 
 
 # Lineups a CLI reported about itself (``cursor-agent models``,
@@ -1275,22 +1288,26 @@ def parse_claude_models(text: str) -> list:
             reply = ev.get("response") or {}
             models = (reply.get("response") or reply).get("models")
             break
-    rows, seen, default_name = [], set(), ""
+    rows, seen, default_name, default_efforts = [], set(), "", []
     for m in models if isinstance(models, list) else []:
         if not isinstance(m, dict) or not isinstance(m.get("value"), str) or not m["value"]:
             continue
         mid = m["value"]
         name = (str(m.get("description") or "").split("\u00b7")[0].strip()
                 or m.get("displayName") or mid)
+        efforts = _effort_levels(m.get("supportedEffortLevels")) if m.get("supportsEffort") else []
         if mid == "default":
-            default_name = name
+            default_name, default_efforts = name, efforts
             continue
         if mid in seen:
             continue
         seen.add(mid)
-        rows.append({"id": mid, "name": name, "provider": "anthropic",
-                     "rank": len(rows) + 1, "featured": True})
-    return [_cli_default_entry(default_name)] + rows if rows else []
+        row = {"id": mid, "name": name, "provider": "anthropic",
+               "rank": len(rows) + 1, "featured": True}
+        if efforts:
+            row["efforts"] = efforts
+        rows.append(row)
+    return [_cli_default_entry(default_name, default_efforts)] + rows if rows else []
 
 
 def _acp_style_probe(argv, requests, done, timeout: float = 60.0) -> str:
@@ -1414,9 +1431,21 @@ def parse_codex_models(text: str) -> list:
         if m["slug"] in seen:
             continue
         seen.add(m["slug"])
-        rows.append({"id": m["slug"], "name": m.get("display_name") or m["slug"],
-                     "rank": len(rows) + 1, "featured": len(rows) < _FEATURED_FROM_CLI})
-    return [_cli_default_entry()] + rows if rows else []
+        row = {"id": m["slug"], "name": m.get("display_name") or m["slug"],
+               "rank": len(rows) + 1, "featured": len(rows) < _FEATURED_FROM_CLI}
+        levels = m.get("supported_reasoning_levels")
+        efforts = _effort_levels([l.get("effort") for l in levels if isinstance(l, dict)]
+                                 if isinstance(levels, list) else [])
+        if efforts:
+            row["efforts"] = efforts
+        rows.append(row)
+    if not rows:
+        return []
+    # "CLI default" is whichever of these config.toml names, which is not
+    # ours to read: offer only the levels every listed model takes.
+    shared = [e for e in rows[0].get("efforts", [])
+              if all(e in r.get("efforts", []) for r in rows)]
+    return [_cli_default_entry(efforts=shared)] + rows
 
 
 def probe_codex_models(cli: str) -> list:
@@ -1424,7 +1453,37 @@ def probe_codex_models(cli: str) -> list:
     return parse_codex_models(_models_command_output([cli, "debug", "models"]))
 
 
-def parse_opencode_models(text: str) -> list:
+def _opencode_models_cache() -> str:
+    """OpenCode's copy of the models.dev catalogue (XDG cache, on Windows too)."""
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(_resolved_home(), ".cache")
+    return os.path.join(base, "opencode", "models.json")
+
+
+def _opencode_efforts(path: str) -> dict:
+    """``{"provider/model": [levels]}`` from OpenCode's model catalogue cache.
+
+    ``opencode models`` prints ids only; the levels a model takes (its
+    ``#variant``) are in the catalogue it downloaded.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            catalog = json.load(fh)
+    except Exception:
+        return {}
+    out = {}
+    for provider, entry in catalog.items() if isinstance(catalog, dict) else []:
+        models = entry.get("models") if isinstance(entry, dict) else None
+        for mid, model in models.items() if isinstance(models, dict) else []:
+            options = model.get("reasoning_options") if isinstance(model, dict) else None
+            for option in options if isinstance(options, list) else []:
+                if isinstance(option, dict) and option.get("type") == "effort":
+                    levels = _effort_levels(option.get("values"))
+                    if levels:
+                        out["%s/%s" % (provider, mid)] = levels
+    return out
+
+
+def parse_opencode_models(text: str, efforts=None) -> list:
     """Picker entries from ``opencode models``: one ``provider/model`` per line.
 
     The list follows the providers the user signed in to. It marks no default,
@@ -1437,14 +1496,18 @@ def parse_opencode_models(text: str) -> list:
             continue
         seen.add(mid)
         provider, _, name = mid.partition("/")
-        rows.append({"id": mid, "name": name, "provider": provider,
-                     "rank": len(rows) + 1, "featured": len(rows) < _FEATURED_FROM_CLI})
+        row = {"id": mid, "name": name, "provider": provider,
+               "rank": len(rows) + 1, "featured": len(rows) < _FEATURED_FROM_CLI}
+        if (efforts or {}).get(mid):
+            row["efforts"] = list(efforts[mid])
+        rows.append(row)
     return [_cli_default_entry()] + rows if rows else []
 
 
 def probe_opencode_models(cli: str) -> list:
     """Ask ``opencode models`` which models the signed-in providers offer."""
-    return parse_opencode_models(_models_command_output([cli, "models"]))
+    return parse_opencode_models(_models_command_output([cli, "models"]),
+                                 _opencode_efforts(_opencode_models_cache()))
 
 
 # A CLI's model list is re-read on this cadence (the same as the backend
@@ -1580,6 +1643,8 @@ class BaseAgentRunner(QObject):
         self._proc = None
         self._cli_path = ""
         self._model_id = ""
+        self._effort = ""              # reasoning effort for this turn ("" = CLI's own)
+        self._pending_effort = ""
         self._server = None
         self._responded = False
         self._final_text = ""
@@ -1693,6 +1758,9 @@ class BaseAgentRunner(QObject):
         # for signature parity and otherwise ignored.
         self._cancelled = False
         self._model_id = self._coerce_model(model_id)
+        # Left by AIChatWindow just before this call, for this turn only (the
+        # slot's signature is shared with AIChatWorker, which has no effort).
+        self._effort, self._pending_effort = self._coerce_effort(self._pending_effort), ""
         self._responded = False
         self._final_text = ""
         self._last_error = ""
@@ -1874,6 +1942,20 @@ class BaseAgentRunner(QObject):
             return ""
         return model_id if any(m["id"] == model_id for m in offered) else ""
 
+    def _coerce_effort(self, effort) -> str:
+        """Keep *effort* only if the model this turn runs on lists it.
+
+        The picker is shared across models and backends like the model pill
+        is, and a CLI rejects a level its model does not take.
+        """
+        if not effort or not isinstance(effort, str):
+            return ""
+        wanted = self._model_id or CLI_DEFAULT_MODEL_ID
+        for m in models_for_backend(self.BACKEND_ID):
+            if m["id"] == wanted:
+                return effort if effort in (m.get("efforts") or []) else ""
+        return ""
+
     # -- subclass hooks ----------------------------------------------------
     @staticmethod
     def register(port: int, token: str):
@@ -1988,6 +2070,8 @@ class ClaudeCodeRunner(BaseAgentRunner):
         argv += _add_dir_args()
         if self._model_id:
             argv += ["--model", self._model_id]
+        if self._effort:
+            argv += ["--effort", self._effort]
         if self._cli_started and self._cli_session_id:
             argv += ["--resume", self._cli_session_id]
         else:
@@ -2096,6 +2180,8 @@ class CodexRunner(BaseAgentRunner):
         ]
         if self._model_id:
             common += ["--model", self._model_id]
+        if self._effort:
+            common += ["-c", 'model_reasoning_effort="%s"' % self._effort]
         # Unlike Claude, Codex will not take an id we invent -- it mints its own
         # and reports it as ``thread.started``.  Resuming a seeded placeholder
         # would just fail, so wait until we have heard a real one.
@@ -2504,7 +2590,8 @@ class OpenCodeRunner(BaseAgentRunner):
             "--auto", "--thinking",
         ]
         if self._model_id:
-            argv += ["--model", self._model_id]
+            # OpenCode calls an effort level a variant: provider/model#variant.
+            argv += ["--model", self._model_id + ("#" + self._effort if self._effort else "")]
         # Like Codex, OpenCode mints its own session id ("ses_..."), and
         # --session with any other id fails with "Session not found".
         if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
