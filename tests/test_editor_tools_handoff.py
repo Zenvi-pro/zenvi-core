@@ -179,3 +179,125 @@ def test_unlink_clip_is_one_step_and_refuses_plain_files(linked, provider):
     plain = linked.add_file("video")
     r = linked.call_receipt("unlink_clip_tool", file_id=plain)
     assert _failed(r) and "not a linked clip" in r["summary"]
+
+
+def test_every_handoff_package_tool_module_present_imports_cleanly():
+    """The editor tools skip a broken package module (so the others keep working); this fails loudly instead."""
+    import importlib
+    import importlib.util
+    from classes.editor_tools import handoff
+    for name in handoff.PACKAGE_TOOL_MODULES:
+        full = "classes.editor_tools." + name
+        if importlib.util.find_spec(full) is not None:
+            importlib.import_module(full)
+    assert handoff.package_tool_errors() == {}
+
+
+def test_a_broken_package_tool_module_is_logged_and_skipped(monkeypatch, caplog):
+    import importlib.abc
+    import importlib.machinery
+    import sys
+    from classes.editor_tools import handoff
+
+    class _Broken(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == "classes.editor_tools.handoff_remotion":
+                return importlib.machinery.ModuleSpec(fullname, self)
+            return None
+
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            raise SyntaxError("broken package")
+
+    monkeypatch.setattr(handoff, "_package_tool_errors", {})
+    finder = _Broken()
+    sys.meta_path.insert(0, finder)
+    try:
+        handoff._load_package_tools()
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop("classes.editor_tools.handoff_remotion", None)
+    assert "handoff_remotion" in handoff.package_tool_errors()
+    assert "failed to load" in caplog.text
+
+
+def test_after_effects_provider_renders_through_zenvi_link(linked, tmp_path):
+    """The AE provider maps comp / output folder onto the host tool's own argument names."""
+    import json as _json
+    from classes.handoff.aftereffects_link import AfterEffectsProvider, _schema_cache
+    host = FakeHost()
+    _schema_cache.clear()
+    try:
+        host.tools = [{"name": "ae_render_for_zenvi", "inputSchema": {"type": "object", "properties": {
+            "comp": {}, "output_dir": {}, "project": {}}}}]
+        aep = tmp_path / "promo.aep"
+        aep.write_bytes(b"aep")
+
+        def render(name, args):
+            out = os.path.join(args["output_dir"], "Promo.mov")
+            with open(out, "wb") as fh:
+                fh.write(b"prores")
+            linked.probe.durations[out] = 2.0
+            receipt = {"contract": 3, "status": "applied", "tool": name, "host": "aftereffects", "summary": "ok",
+                       "data": {"path": out, "comp_id": 12, "comp_name": "Promo", "project": str(aep),
+                                "width": 1920, "height": 1080, "fps": 30, "duration": 2.0, "codec": "prores4444"}}
+            return {"content": [{"type": "text", "text": _json.dumps(receipt)}], "structuredContent": receipt,
+                    "isError": False}
+
+        host.call = render
+        write_discovery(linked.user_path, host)
+        lm.register_provider(AfterEffectsProvider())
+        link = {"kind": "aftereffects", "source": {"aep": str(aep), "composition": "Promo"}}
+        out = lm.import_linked(link, position=0.0)
+        f = linked.file(out["file_id"])
+        stored = lm.read_link(f)
+        assert stored["source"]["composition_key"] == 12 and stored["render"]["codec"] == "prores4444"
+        assert stored["render"]["duration_frames"] == 60 and f["path"].endswith(".mov")
+        call = [c for c in host.calls if c.get("method") == "tools/call"][-1]["params"]["arguments"]
+        assert call["comp"] == "Promo" and call["project"] == str(aep) and os.path.basename(call["output_dir"])
+        assert lm.link_state(f) == "fresh"
+        aep.write_bytes(b"aep saved again")
+        assert lm.link_state(f) == "stale"
+    finally:
+        host.stop()
+
+
+def test_import_linked_media_leaves_the_callers_file_alone_when_refused(linked):
+    import tempfile
+    fd, src = tempfile.mkstemp(suffix=".mov")
+    os.write(fd, b"movie")
+    os.close(fd)
+    linked.probe.durations[src] = 3.0
+    try:
+        r = linked.call_receipt("import_linked_media_tool", path=src, track="7",
+                                link={"kind": "aftereffects", "source": {"composition": "Promo"}})
+        assert _failed(r) and os.path.isfile(src)  # not moved out from under the caller's retry
+        assert not os.path.exists(os.path.join(linked.user_path, "links", "aftereffects", os.path.basename(src)))
+    finally:
+        if os.path.exists(src):
+            os.unlink(src)
+
+
+def test_import_linked_media_fingerprints_so_the_clip_can_go_stale(linked, tmp_path):
+    from classes.handoff.aftereffects_link import AfterEffectsProvider
+    lm.register_provider(AfterEffectsProvider())
+    aep = tmp_path / "promo.aep"
+    aep.write_bytes(b"v1")
+    src = linked.media("Promo.mov", seconds=2.0)
+    r = linked.call_receipt("import_linked_media_tool", path=src,
+                            link={"kind": "aftereffects", "source": {"aep": str(aep), "composition": "Promo"}})
+    f = linked.file(r["data"]["file_id"])
+    assert lm.read_link(f)["render"]["fingerprint"] and lm.link_state(f) == "fresh"
+    aep.write_bytes(b"v2 saved in After Effects")
+    assert lm.link_state(f) == "stale"
+
+
+def test_a_late_commit_is_not_reported_as_a_failed_render(linked, provider, monkeypatch):
+    from classes.editor_tools.titles_text_common import CommitTimeout
+    out = _import(linked, provider)
+    monkeypatch.setattr(lm, "rerender_linked", lambda *a, **k: (_ for _ in ()).throw(
+        CommitTimeout("the editor was too busy; the change is still running -- check before trying again")))
+    r = linked.call_receipt("rerender_linked_clip_tool", file_id=out["file_id"])
+    assert _failed(r) and "still running" in r["summary"] and "Nothing changed" not in r["summary"]

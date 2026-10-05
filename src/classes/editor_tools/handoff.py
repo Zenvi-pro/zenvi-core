@@ -31,7 +31,6 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-import threading
 from typing import Any, Dict, List, Optional
 
 from classes.editor_tools._base import (
@@ -43,8 +42,6 @@ from classes.logger import log
 
 HOSTS = ("aftereffects", "premiere")
 HOST_PREFIX = {"aftereffects": "ae_", "premiere": "premiere_"}
-DEFAULT_HOST_TIMEOUT = 120.0
-MAX_HOST_TIMEOUT = 3 * 60 * 60
 
 _FILE_TARGET = {
     "clip_id": string("A timeline clip of the linked file (timeline_clip_id from get_timeline_state_tool). "
@@ -77,12 +74,21 @@ def _resolve_file_id(clip_id: str = "", file_id: str = "") -> str:
     return from_clip or file_id
 
 
+def _query(name: str) -> Any:
+    """``classes.query.File`` / ``Clip`` (untyped; looked up per call)."""
+    from classes import query
+    return getattr(query, name)
+
+
 def _linked_file(file_id: str):
-    from classes.query import File
-    f = File.get(id=file_id)
+    f = _query("File").get(id=file_id)
     if not f:
         raise ToolError(f"no project file with id={file_id!r} (list_project_files_tool lists them)")
-    if _lm().read_link(f.data) is None:
+    try:
+        linked = _lm().read_link(f.data) is not None
+    except _lm().LinkError:
+        linked = True  # damaged, but linked: the caller reports it
+    if not linked:
         name = f.data.get("name") or os.path.basename(str(f.data.get("path") or ""))
         raise ToolError(f"{name!r} is not a linked clip (it has no source link); linked clips come from "
                         "import_remotion_project_tool, import_hyperframes_project_tool or import_linked_media_tool")
@@ -91,8 +97,7 @@ def _linked_file(file_id: str):
 
 def _clip_rows(file_id: str) -> List[dict]:
     from classes.editor_tools._base import describe_clip
-    from classes.query import Clip
-    return [describe_clip(c) for c in Clip.filter(file_id=file_id)]
+    return [describe_clip(c) for c in _query("Clip").filter(file_id=file_id)]
 
 
 # ---------------------------------------------------------------------------
@@ -128,33 +133,6 @@ def list_link_hosts():
     else:
         summary = "No Adobe app is connected. " + adobe_link.connect_hint("aftereffects")
     return ok(summary, hosts=rows, active=active)
-
-
-def _host_timeout(app: str, tool: str) -> float:
-    """The tool's own timeout from the host catalog (tools/list, cached per host session) plus slack."""
-    from classes.handoff import adobe_link
-    try:
-        host = adobe_link.get_host(app, probe=False)
-        key = (app, host.pid, host.started_at)
-        with _catalog_lock:
-            cached = _catalog_timeouts.get(key)
-        if cached is None:
-            cached = {}
-            for row in adobe_link.list_host_tools(app):
-                ms = row.get("timeoutMs")
-                if isinstance(ms, (int, float)) and ms > 0:
-                    cached[str(row.get("name"))] = float(ms) / 1000.0
-            with _catalog_lock:
-                _catalog_timeouts.clear()
-                _catalog_timeouts[key] = cached
-        seconds = cached.get(tool)
-    except adobe_link.LinkHostError:
-        seconds = None
-    return min(MAX_HOST_TIMEOUT, (seconds or DEFAULT_HOST_TIMEOUT) + 15.0)
-
-
-_catalog_timeouts: Dict[Any, Dict[str, float]] = {}
-_catalog_lock = threading.Lock()
 
 
 @editor_tool(
@@ -197,7 +175,7 @@ def call_link_host(host, tool, arguments=None):
         raise ToolError(f"{adobe_link.APP_LABELS[host]} tools start with {prefix!r}{hint}")
     args = dict(arguments or {})
     try:
-        result = adobe_link.call_host_tool(host, tool, args, timeout=_host_timeout(host, tool))
+        result = adobe_link.call_host_tool(host, tool, args)  # the tool's own catalog timeout
     except adobe_link.HostNotConnected as exc:
         raise ToolError(str(exc)) from None
     except adobe_link.LinkHostError as exc:
@@ -239,12 +217,14 @@ def _staged_webm(path: str, kind: str) -> str:
         raise ToolError(f"could not convert the WebM to ProRes 4444 (libopenshot drops WebM alpha): {exc}") from None
 
 
-def _adopt_media(path: str, kind: str) -> str:
+def _adopt_media(path: str, kind: str) -> tuple:
+    """(media path, undo) for a new linked clip: moved from the temp folder, else copied, into
+    ``<project>_assets/links/<kind>/``. ``undo()`` puts things back if the clip cannot be added."""
     """Media for a new linked clip, inside <project>_assets/links/<kind>/ (moved from temp, else copied)."""
     lm = _lm()
     root = lm.links_root()
     if path_is_under(path, root):
-        return path
+        return path, (lambda: None)
     folder = lm.links_dir(kind)
     os.makedirs(folder, exist_ok=True)
     target = os.path.join(folder, os.path.basename(path))
@@ -253,15 +233,26 @@ def _adopt_media(path: str, kind: str) -> str:
     while os.path.exists(target):
         target = "%s-%d%s" % (stem, n, ext)
         n += 1
+    moved = path_is_under(path, tempfile.gettempdir())
     try:
-        if path_is_under(path, tempfile.gettempdir()):
+        if moved:
             shutil.move(path, target + ".partial")
         else:
             shutil.copy2(path, target + ".partial")
         os.replace(target + ".partial", target)
     except OSError as exc:
         raise ToolError(f"could not bring {os.path.basename(path)} into the project's links folder: {exc}") from None
-    return target
+
+    def undo():
+        try:
+            if moved:
+                shutil.move(target, path)  # the caller's file is back where it was (a retry finds it)
+            else:
+                os.unlink(target)
+        except OSError:
+            log.warning("could not put %s back after a refused import", target, exc_info=True)
+
+    return target, undo
 
 
 @editor_tool(
@@ -301,14 +292,40 @@ def import_linked_media(path, link, position=None, track="", name=""):
         raise ToolError(f"no media file at {path!r}")
     try:
         stored = lm.normalize_link(link or {})
+        # refuse a bad placement before the caller's file is moved anywhere
+        lm.precheck_placement(position, str(track or ""))
     except lm.LinkError as exc:
         raise _link_error(exc) from None
     kind = stored["kind"]
-    media = _staged_webm(src, kind) if src.lower().endswith(".webm") else _adopt_media(src, kind)
+    provider = lm.provider_for(kind)
+    if provider is not None and not (stored.get("render") or {}).get("fingerprint"):
+        # without a fingerprint the clip could never read "stale" (e.g. a comp rendered by AE)
+        try:
+            stored["render"] = dict(stored.get("render") or {},
+                                    fingerprint=provider.fingerprint(lm.read_link({lm.LINK_KEY: stored})))
+        except lm.SourceMissing as exc:
+            raise _link_error(exc) from None
+        except Exception:
+            log.warning("could not fingerprint the %s source at import", kind, exc_info=True)
+    if src.lower().endswith(".webm"):
+        media = _staged_webm(src, kind)
+
+        def undo():
+            try:
+                os.unlink(media)
+            except OSError:
+                pass
+    else:
+        media, undo = _adopt_media(src, kind)
     try:
         receipt = lm.add_linked_media(media, stored, position=position, track=str(track or ""), name=str(name or ""))
-    except lm.LinkError as exc:
-        raise _link_error(exc) from None
+    except Exception as exc:
+        from classes.editor_tools.titles_text_common import CommitTimeout
+        if not isinstance(exc, CommitTimeout):  # it may still land: then the file is in use
+            undo()
+        if isinstance(exc, lm.LinkError):
+            raise _link_error(exc) from None
+        raise
     where = f"{receipt['position']:.2f}-{receipt['end']:.2f}s"
     return ok(f"Added linked {lm.kind_label(kind)} clip {receipt['name']!r} at {where}"
               + (" on a new track" if receipt["new_track"] else "") + ".", **receipt)
@@ -317,7 +334,10 @@ def import_linked_media(path, link, position=None, track="", name=""):
 def _link_report(file_id: str, *, compute: bool = True) -> dict:
     lm = _lm()
     f = _linked_file(file_id)
-    link = lm.read_link(f.data) or {}
+    try:
+        link = lm.read_link(f.data) or {}
+    except lm.LinkError as exc:
+        raise ToolError(f"the clip's link data is damaged ({exc}); unlink_clip_tool keeps its media") from None
     check = lm.check_link(f.data, compute=compute)
     provider = lm.provider_for(link.get("kind", ""))
     editable: Dict[str, Any] = {}
@@ -423,6 +443,8 @@ def _rerender(file_id: str, props: Optional[dict]) -> str:
         raise ToolError("the render was cancelled; nothing changed") from None
     except lm.LinkError as exc:
         raise _link_error(exc) from None
+    except ToolError:
+        raise  # e.g. CommitTimeout: the swap may still land -- its message says not to retry
     except Exception as exc:
         raise RuntimeError(f"the render failed: {exc}. Nothing changed; get_linked_clip_tool shows the error") from None
     extra = " " + " ".join(receipt.get("warnings") or []) if receipt.get("warnings") else ""
@@ -481,7 +503,7 @@ def open_linked_source(clip_id="", file_id="", target="code"):
     source = link.get("source") or {}
     try:
         if target == "studio":
-            if not lm.supports_studio(kind):
+            if provider is None or not lm.supports_studio(kind):
                 raise ToolError(f"{lm.kind_label(kind)} links have no studio to open here; use target='code'")
             provider.open_studio(link)
             return ok(f"Opened {lm.kind_label(kind)} studio for {source.get('composition') or 'the clip'}.",
@@ -529,28 +551,55 @@ def unlink_clip(clip_id="", file_id=""):
 # The handoff packages' tools
 # ---------------------------------------------------------------------------
 
+PACKAGE_TOOL_MODULES = ("handoff_after_effects", "handoff_premiere", "handoff_remotion", "handoff_hyperframes")
+_package_tool_errors: Dict[str, str] = {}
+
+
+def _package_failed(name: str, exc: BaseException) -> None:
+    """A broken package must not take every editor tool down with it: log it and leave it out.
+
+    tests/test_editor_tools_handoff.py imports each present package module
+    directly, so a broken one still fails the suite loudly.
+    """
+    _package_tool_errors[name] = "%s: %s" % (type(exc).__name__, exc)
+    log.error("Handoff tools %s failed to load; its tools are unavailable", name, exc_info=True)
+
+
+def package_tool_errors() -> Dict[str, str]:
+    """Package tool modules that failed to import this session, with the error."""
+    return dict(_package_tool_errors)
+
+
 def _load_package_tools() -> None:
     """Import the handoff packages' tool modules that exist in this build (written out for frozen builds)."""
     try:
         import classes.editor_tools.handoff_after_effects  # noqa: F401
     except ModuleNotFoundError as exc:
         if exc.name != "classes.editor_tools.handoff_after_effects":
-            raise
+            _package_failed("handoff_after_effects", exc)
+    except Exception as exc:
+        _package_failed("handoff_after_effects", exc)
     try:
         import classes.editor_tools.handoff_premiere  # noqa: F401
     except ModuleNotFoundError as exc:
         if exc.name != "classes.editor_tools.handoff_premiere":
-            raise
+            _package_failed("handoff_premiere", exc)
+    except Exception as exc:
+        _package_failed("handoff_premiere", exc)
     try:
         import classes.editor_tools.handoff_remotion  # noqa: F401
     except ModuleNotFoundError as exc:
         if exc.name != "classes.editor_tools.handoff_remotion":
-            raise
+            _package_failed("handoff_remotion", exc)
+    except Exception as exc:
+        _package_failed("handoff_remotion", exc)
     try:
         import classes.editor_tools.handoff_hyperframes  # noqa: F401
     except ModuleNotFoundError as exc:
         if exc.name != "classes.editor_tools.handoff_hyperframes":
-            raise
+            _package_failed("handoff_hyperframes", exc)
+    except Exception as exc:
+        _package_failed("handoff_hyperframes", exc)
 
 
 _load_package_tools()

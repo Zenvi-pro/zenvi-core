@@ -1,11 +1,13 @@
 """classes.handoff.adobe_link against a real loopback HTTP server (port 0) and a temp discovery dir."""
 
 import os
+import threading
 
 import pytest
 
 from classes.handoff import adobe_link as al
 from handoff_fakes import FakeHost, write_discovery
+
 
 @pytest.fixture
 def host(tmp_path):
@@ -101,3 +103,83 @@ def test_client_refuses_non_loopback_urls():
 def test_first_sse_event_parsing():
     assert al._first_sse_data("event: message\ndata: {\"a\":\ndata: 1}\n\ndata: {}\n\n") == "{\"a\":\n1}"
     assert al._first_sse_data(": ping\n\n") is None
+
+
+def _garbage_server():
+    """A TCP listener that is not an HTTP server (answers every connection with junk)."""
+    import socket
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(5)
+    stop = threading.Event()
+
+    def serve():
+        srv.settimeout(0.2)
+        while not stop.is_set():
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                continue
+            try:
+                conn.recv(4096)
+                conn.sendall(b"\x00\x01 not http at all\r\n\r\n")
+            finally:
+                conn.close()
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    return srv, stop
+
+
+def test_one_broken_discovery_file_does_not_hide_the_other_app(tmp_path, host):
+    srv, stop = _garbage_server()
+    pr = FakeHost(app="premiere")
+    try:
+        base = _discover(tmp_path, host, url="http://127.0.0.1:%d/mcp" % srv.getsockname()[1])
+        _discover(tmp_path, pr, app="premiere")
+        ae, premiere = al.list_hosts(base)
+        assert not ae.connected and "did not answer" in ae.reason
+        assert premiere.connected and premiere.active
+        _discover(tmp_path, host, url="http://127.0.0.1:99999/mcp")  # port out of range
+        ae, premiere = al.list_hosts(base)
+        assert not ae.connected and "loopback" in ae.reason and premiere.connected
+    finally:
+        stop.set()
+        srv.close()
+        pr.stop()
+
+
+def test_redirects_are_refused_and_the_token_never_leaves(tmp_path, host):
+    other = FakeHost(token="other")
+    try:
+        host.redirect_to = other.url
+        base = _discover(tmp_path, host)
+        assert not al.get_host("aftereffects", base).connected
+        with pytest.raises(al.LinkHostError) as err:
+            al.McpHttpClient(host.url, host.token).initialize()
+        assert err.value.code == "FORBIDDEN" and "redirect" in str(err.value)
+        assert other.headers == []  # the bearer token was never sent on
+    finally:
+        other.stop()
+
+
+def test_host_calls_wait_as_long_as_the_tool_says(tmp_path, host):
+    host.tools = [{"name": "ae_render", "timeoutMs": 900000}, {"name": "ae_get_state"}]
+    base = _discover(tmp_path, host)
+    assert al.tool_timeout("aftereffects", "ae_render", base) == pytest.approx(900 + al.TIMEOUT_SLACK)
+    assert al.tool_timeout("aftereffects", "ae_get_state", base) == pytest.approx(al.DEFAULT_TIMEOUT + al.TIMEOUT_SLACK)
+    assert al.tool_timeout("premiere", "premiere_x", base) == pytest.approx(al.DEFAULT_TIMEOUT + al.TIMEOUT_SLACK)
+
+
+def test_event_stream_replies_skip_notifications_and_stop_at_the_reply():
+    import io
+    body = (b"event: message\ndata: {\"jsonrpc\": \"2.0\", \"method\": \"notifications/message\", "
+            b"\"params\": {\"level\": \"info\"}}\n\n"
+            b"data: {\"jsonrpc\": \"2.0\", \"id\": 9, \"result\": {\"other\": true}}\n\n"
+            b"data: {\"jsonrpc\": \"2.0\", \"id\": 7, \"result\": {\"ok\": 1}}\n\n"
+            b"data: never read\n\n")
+    stream = io.BytesIO(body)
+    assert al._read_sse_reply(stream, 7) == {"jsonrpc": "2.0", "id": 7, "result": {"ok": 1}}
+    assert stream.read() == b"data: never read\n\n"  # stopped at the reply
+    with pytest.raises(al.LinkHostError, match="ended without a reply"):
+        al._read_sse_reply(io.BytesIO(b"data: {\"jsonrpc\": \"2.0\", \"method\": \"ping\"}\n\n"), 1)

@@ -71,3 +71,30 @@ def test_failing_launcher_and_missing_file_are_errors(tmp_path):
         osrc.open_in_editor(str(target), 1, setting='%s -c "import sys; sys.exit(3)" {file}' % sys.executable)
     with pytest.raises(osrc.EditorError, match="does not exist"):
         osrc.open_in_editor(str(tmp_path / "gone.tsx"), 1, setting="auto")
+
+
+def test_relative_files_resolve_against_the_project_and_folder_is_the_root(tmp_path):
+    project = tmp_path / "proj"
+    (project / "src").mkdir(parents=True)
+    (project / "src" / "Intro.tsx").write_text("x")
+    record = tmp_path / "args.json"
+    script = tmp_path / "fake_editor.py"
+    script.write_text("import json, sys\njson.dump(sys.argv[1:], open(%r, 'w'))\n" % str(record))
+    out = osrc.open_in_editor("src/Intro.tsx", 3, folder=str(project),
+                              setting="%s %s {folder} {file}:{line}" % (sys.executable, script))
+    assert out["file"] == str(project / "src" / "Intro.tsx")
+    assert json.loads(record.read_text()) == [str(project), str(project / "src" / "Intro.tsx") + ":3"]
+
+
+def test_windows_cmd_shims_run_the_electron_cli_directly_or_refuse_dangerous_names():
+    root = "C:\\Users\\me\\AppData\\Local\\Programs\\Microsoft VS Code"
+    shim = root + "\\bin\\code.cmd"
+    import ntpath
+    have = {ntpath.join(root, "resources", "app", "out", "cli.js"), ntpath.join(root, "Code.exe")}
+    argv, env = osrc.windows_launcher([shim, "-g", "C:\\a&b\\x.tsx:1"], exists=lambda p: p in have)
+    assert argv[0] == ntpath.join(root, "Code.exe") and argv[1].endswith("cli.js")
+    assert env == {"ELECTRON_RUN_AS_NODE": "1"} and argv[-1] == "C:\\a&b\\x.tsx:1"  # no cmd.exe in between
+    with pytest.raises(osrc.EditorError, match="cmd"):
+        osrc.windows_launcher(["C:\\tools\\edit.cmd", "C:\\a&calc.tsx"], exists=lambda p: False)
+    assert osrc.windows_launcher(["C:\\tools\\edit.cmd", "C:\\plain.tsx"], exists=lambda p: False)[0][0].endswith(".cmd")
+    assert osrc.windows_launcher(["/usr/bin/code", "x"])[1] == {}

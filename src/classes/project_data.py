@@ -1189,6 +1189,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         # Move all temp files (i.e. Blender Animations, Titles, Thumbnails, Protobuf files) to the project folder
         media_snapshot = None
         media_moves = None
+        path_changes = {}
         if not backup_only:
             self.move_temp_paths_to_project_folder(
                 file_path, previous_path=self.current_filepath)
@@ -1211,9 +1212,18 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             media_snapshot = snapshot_media_paths(files, clips)
             media_moves = relocate_generated_media(files, clips, file_path)
             # Linked clips' renders (classes.handoff) go to <project>_assets/links/<kind>/.
-            from classes.handoff.linked_media import adopt_linked_renders
+            from classes.handoff.linked_media import adopt_linked_renders, remap_history_paths
+            path_changes = {}
             media_moves = list(media_moves or []) + adopt_linked_renders(
-                files, clips, file_path, previous_path=self.current_filepath)
+                files, clips, file_path, previous_path=self.current_filepath, path_changes=path_changes)
+            # Undo/redo history holds its own copies of moved paths: point them at the new
+            # files too (the live actions and the history about to be written).
+            for moved_from, moved_to in media_moves:
+                path_changes.setdefault(moved_from, moved_to)
+            try:
+                remap_history_paths(path_changes, updates=get_app().updates, history=self._data.get("history"))
+            except Exception:
+                log.warning("Undo history still points at media moved by this save", exc_info=1)
 
         # Append version info
         self._data["version"] = {"openshot-qt": info.VERSION,
@@ -1228,6 +1238,13 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         except Exception:
             reverse_media_moves(media_moves)
             restore_media_paths(media_snapshot)
+            if not backup_only and path_changes:
+                try:
+                    from classes.handoff.linked_media import remap_history_paths
+                    remap_history_paths({new: old for old, new in path_changes.items()},
+                                        updates=get_app().updates, history=self._data.get("history"))
+                except Exception:
+                    log.warning("Could not restore undo history paths after a failed save", exc_info=1)
             raise
 
         if not backup_only:

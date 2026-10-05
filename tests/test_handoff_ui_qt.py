@@ -20,7 +20,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import qt_api  # noqa: E402,F401  (pick the binding before the QApplication exists)
 from PyQt5.QtCore import QThread  # noqa: E402
 from PyQt5.QtWidgets import (  # noqa: E402
-    QApplication, QCheckBox, QDoubleSpinBox, QLineEdit, QMainWindow, QMenu, QPlainTextEdit, QPushButton, QSpinBox,
+    QApplication, QCheckBox, QLineEdit, QMainWindow, QMenu, QPlainTextEdit, QPushButton, QSpinBox,
     QStatusBar, QToolBar,
 )
 
@@ -36,10 +36,19 @@ def qapp():
     return QApplication.instance() or QApplication([])
 
 
+class _Signal:
+    def __init__(self):
+        self.slots = []
+
+    def connect(self, slot):
+        self.slots.append(slot)
+
+
 class _App:
     def __init__(self, qapp):
         self._tr = lambda text: text
         self.applicationStateChanged = qapp.applicationStateChanged
+        self.aboutToQuit = _Signal()
 
 
 class _Window(QMainWindow):
@@ -78,6 +87,7 @@ def ui(qapp, tmp_path, monkeypatch):
     from classes import info
     from windows import handoff_menus, linked_clip_dialog, linked_source_menu
     app = _App(qapp)
+    window_app = app
     for mod in (handoff_menus, linked_clip_dialog, linked_source_menu):
         monkeypatch.setattr(mod, "get_app", lambda: app)
     monkeypatch.setattr(info, "USER_PATH", str(tmp_path / "user"))
@@ -91,6 +101,7 @@ def ui(qapp, tmp_path, monkeypatch):
     handoff_menus.install_handoff_menus(window)
     # what a theme does when it builds the main toolbar
     window.toolBar.addWidget(window.handoff_status).setVisible(window.handoff_status.is_active)
+    window.test_app = window_app
     yield window, calls, tmp_path
     window.handoff_status.timer.stop()
     jobs.remove_listener(window.handoff_status._on_job)
@@ -192,11 +203,12 @@ def test_props_dialog_builds_editors_and_returns_typed_props(qapp, monkeypatch):
     assert isinstance(d.findChild(QLineEdit, "prop_title"), QLineEdit)
     assert isinstance(d.findChild(QPushButton, "prop_accent"), QPushButton)
     assert isinstance(d.findChild(QSpinBox, "prop_count"), QSpinBox)
-    assert isinstance(d.findChild(QDoubleSpinBox, "prop_speed"), QDoubleSpinBox)
+    assert isinstance(d.findChild(QLineEdit, "prop_speed"), QLineEdit)  # floats are text: no rounding
     assert isinstance(d.findChild(QCheckBox, "prop_loop"), QCheckBox)
     assert isinstance(d.findChild(QPlainTextEdit, "prop_items"), QPlainTextEdit)
     assert "Source changed" in d.state_label.text()
     d.findChild(QLineEdit, "prop_title").setText("Launch day")
+    d.findChild(QLineEdit, "prop_title").textEdited.emit("Launch day")  # what typing does
     d.findChild(QSpinBox, "prop_count").setValue(5)
     d.findChild(QCheckBox, "prop_loop").setChecked(True)
     d._apply()
@@ -218,3 +230,23 @@ def test_props_dialog_raw_json_round_trip_and_errors(qapp, monkeypatch):
     d.json_edit.setPlainText("[1]")
     d._apply()
     assert d.props() is None and "JSON object" in d.error_label.text()
+
+
+def test_quit_stops_handoff_jobs(ui):
+    window, _calls, _ = ui
+    assert jobs.shutdown in window.test_app.aboutToQuit.slots
+    assert window.handoff_status.timer.stop in window.test_app.aboutToQuit.slots
+
+
+def test_props_dialog_keeps_untouched_values_exact(qapp, monkeypatch):
+    from windows import linked_clip_dialog
+    monkeypatch.setattr(linked_clip_dialog, "get_app", lambda: _App(qapp))
+    props = {"ratio": 0.123456789, "stamp": 1759622400000, "label": "x", "nested": {"a": [1, 2.5]}}
+    d = linked_clip_dialog.LinkedClipDialog({"kind": "remotion", "props": dict(props)})
+    d._apply()
+    assert d.props() == props  # nothing touched, nothing changed (no spin-box rounding or clamping)
+    ratio = d.findChild(QLineEdit, "prop_ratio")
+    ratio.setText("0.25")
+    ratio.textEdited.emit("0.25")
+    d._apply()
+    assert d.props()["ratio"] == 0.25 and d.props()["stamp"] == 1759622400000

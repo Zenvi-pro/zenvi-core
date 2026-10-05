@@ -147,6 +147,78 @@ class Segment:
     def duration(self) -> float:
         return self.end.time - self.start.time
 
+    def bezier_between(self, t0: float, t1: float) -> Optional[Tuple[float, float, float, float]]:
+        """CSS ``cubic-bezier`` of just the part of this segment between timeline times *t0* and *t1*.
+
+        For an exporter that keys a clipped edge (a clip trimmed or split in the
+        middle of a segment): write keys ``curve.value_at(t0)`` / ``value_at(t1)``
+        and this easing between them, and the curve is unchanged. The sub-curve
+        is the exact de Casteljau piece of the segment's bezier (values match
+        libopenshot within its 0.01-frame bisection). Linear gives (0, 0, 1, 1),
+        hold None, a flat stretch (0, 0, 1, 1).
+        """
+        if self.interpolation == CONSTANT:
+            return None
+        if self.interpolation != BEZIER:
+            return LINEAR_BEZIER
+        span = self.end.time - self.start.time
+        if span <= 0:
+            return self.bezier
+        a = min(1.0, max(0.0, (float(t0) - self.start.time) / span))
+        b = min(1.0, max(0.0, (float(t1) - self.start.time) / span))
+        if b - a < 1e-12:
+            return LINEAR_BEZIER
+        x1, y1, x2, y2 = self.bezier  # type: ignore[misc]
+        ua, ub = _solve_bezier_u(a, x1, x2), _solve_bezier_u(b, x1, x2)
+        q0, q1, q2, q3 = _bezier_piece(((0.0, 0.0), (x1, y1), (x2, y2), (1.0, 1.0)), ua, ub)
+        dx, dy = q3[0] - q0[0], q3[1] - q0[1]
+        if abs(dx) < 1e-12 or abs(dy) < 1e-12:
+            return LINEAR_BEZIER
+        return ((q1[0] - q0[0]) / dx, (q1[1] - q0[1]) / dy, (q2[0] - q0[0]) / dx, (q2[1] - q0[1]) / dy)
+
+
+def _bezier_x(u: float, x1: float, x2: float) -> float:
+    v = 1.0 - u
+    return 3 * v * v * u * x1 + 3 * v * u * u * x2 + u * u * u
+
+
+def _solve_bezier_u(x: float, x1: float, x2: float) -> float:
+    """The curve parameter where a (monotone) CSS easing reaches time fraction *x*."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    lo, hi = 0.0, 1.0
+    for _ in range(80):
+        mid = (lo + hi) / 2
+        if _bezier_x(mid, x1, x2) < x:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
+def _split(points, t):
+    """de Casteljau: the (left, right) control polygons of a cubic split at parameter *t*."""
+    p0, p1, p2, p3 = points
+
+    def lerp(a, b):
+        return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+
+    p01, p12, p23 = lerp(p0, p1), lerp(p1, p2), lerp(p2, p3)
+    p012, p123 = lerp(p01, p12), lerp(p12, p23)
+    mid = lerp(p012, p123)
+    return (p0, p01, p012, mid), (mid, p123, p23, p3)
+
+
+def _bezier_piece(points, ua: float, ub: float):
+    """Control polygon of the cubic between parameters *ua* < *ub*."""
+    left, _right = _split(points, ub)
+    if ub <= 0:
+        return left
+    _l, piece = _split(left, ua / ub)
+    return piece
+
 
 def _resolve_point(raw: Any) -> Tuple[float, float, int, Tuple[float, float], Tuple[float, float], int]:
     p: dict = raw if isinstance(raw, dict) else {}

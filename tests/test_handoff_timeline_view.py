@@ -48,7 +48,7 @@ def _project(tmp_path):
                    {"id": "L1", "number": 1000000, "label": "", "lock": False}],
         "files": [video, audio, title, linked],
         "clips": [
-            clip("C2", "FV", 1000000, 5.0, 1.0, 4.0, time=_kf((31, 31), (61, 91))),  # 2x
+            clip("C2", "FV", 1000000, 5.0, 1.0, 4.0, time=_kf((31, 61), (121, 240))),  # 2x over its window
             clip("C1", "FV", 1000000, 0.0, 2.0, 5.0, effects=[effect], alpha=_kf((61, 0.0), (76, 1.0))),
             clip("C3", "FT", 2000000, 1.0, 0.0, 3.0),
             clip("C4", "FA", 1000000, 8.0, 0.0, 2.0),
@@ -87,7 +87,9 @@ def test_clip_timing_curves_and_effects(tmp_path):
     assert any(isinstance(v, type(alpha)) for v in c1.effects[0].params.values())
     assert c1.speed.kind == "normal"
     c2 = snap.clip("C2")
-    assert c2.speed.kind == "constant" and c2.speed.factor == pytest.approx(61 / 30) and not c2.speed.reversed
+    assert c2.speed.kind == "constant" and c2.speed.factor == pytest.approx(2.0) and not c2.speed.reversed
+    assert c2.time is not None and (c2.source_in, c2.source_out) == (pytest.approx(2.0), pytest.approx(238 / 30))
+    assert c1.time is None and (c1.source_in, c1.source_out) == (2.0, 5.0)
 
 
 def test_files_resolve_paths_and_flags(tmp_path):
@@ -153,3 +155,49 @@ def test_speed_from_time_curves(points, interp, expected):
     else:
         assert info.factor == pytest.approx(factor, rel=0.01)
     assert speed_from_time(kf, repeat_active=True).kind == "variable"
+
+
+def _retimed_snapshot(tmp_path, start, end, time_points, interp=1):
+    project = _project(tmp_path)
+    project["clips"] = [dict(project["clips"][1], id="R", start=start, end=end, time=_kf(*time_points, interp=interp),
+                             alpha=_kf((1, 1.0)))]
+    return TimelineSnapshot.from_project(project, str(tmp_path / "trip.zvn")).clip("R")
+
+
+def test_time_remapped_clip_reports_the_source_it_shows(tmp_path):
+    # review case: start 1.0, end 5.0, time (1,1)->(151,300): libopenshot shows source frames 61..298
+    clip = _retimed_snapshot(tmp_path, 1.0, 5.0, [(1, 1), (151, 300)])
+    assert clip.frame_range() == (31, 150)
+    assert (clip.source_in, clip.source_out) == (pytest.approx(2.0), pytest.approx(298 / 30))
+    assert clip.speed.kind == "constant" and clip.speed.factor == pytest.approx(2.0)
+    assert clip.source_frame_at(clip.position) == 61 and clip.source_time_at(clip.position) == pytest.approx(2.0)
+    assert clip.source_frame_at(clip.position + 1.0) == 121  # one timeline second plays two source seconds
+
+
+def test_a_clip_extended_past_its_time_curve_holds_and_is_variable(tmp_path):
+    clip = _retimed_snapshot(tmp_path, 1.0, 6.0, [(1, 1), (151, 300)])  # frames 152..180 hold source 300
+    assert clip.speed.kind == "variable"
+    assert clip.source_out == pytest.approx(10.0)
+    assert clip.source_frame_at(clip.position + 5.0 - 1 / 30) == 300
+
+
+def test_reversed_and_held_windows(tmp_path):
+    # Speed > Reverse builds X over [start_x, end_x + 1): (1,150)->(151,1) for 150 frames
+    rev = _retimed_snapshot(tmp_path, 0.0, 5.0, [(1, 150), (151, 1)])
+    assert rev.speed.kind == "constant" and rev.speed.reversed and rev.speed.factor == pytest.approx(1.0)
+    assert (rev.source_in, rev.source_out) == (pytest.approx(1 / 30), pytest.approx(5.0))  # frames 150 down to 2
+    held = _retimed_snapshot(tmp_path, 0.0, 2.0, [(1, 40), (90, 40)])
+    assert held.speed.kind == "freeze" and (held.source_in, held.source_out) == (pytest.approx(39 / 30),
+                                                                                pytest.approx(40 / 30))
+    eased = _retimed_snapshot(tmp_path, 0.0, 5.0, [(1, 1), (151, 300)], interp=0)
+    assert eased.speed.kind == "variable" and eased.time is not None
+
+
+def test_snapshot_shares_waveform_samples_instead_of_copying_them(tmp_path):
+    project = _project(tmp_path)
+    samples = [0.5] * 20000
+    project["clips"][0]["ui"] = {"audio_data": samples, "other": {"x": 1}}
+    snap = TimelineSnapshot.from_project(project, str(tmp_path / "trip.zvn"))
+    data = snap.clip(project["clips"][0]["id"]).data
+    assert data["ui"]["audio_data"] is samples           # shared (replaced wholesale, never edited in place)
+    assert data["ui"]["other"] is not project["clips"][0]["ui"]["other"]  # everything else is copied

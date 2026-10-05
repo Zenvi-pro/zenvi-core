@@ -30,9 +30,11 @@ from typing import Any, Callable, Dict, Iterator, List, Optional
 from classes.logger import log
 
 EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="handoff")
-# Short checks (Adobe host discovery, linked-clip freshness) get their own lane so they
-# never wait behind a long render on EXECUTOR.
+# Background checks (linked-clip freshness, which hashes source trees) get their own lane so
+# they never wait behind a long render on EXECUTOR; what the user just clicked (Open Code,
+# Send To discovery) gets another, so it never waits behind a slow check either.
 CHECK_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="handoff-check")
+UI_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="handoff-ui")
 
 QUEUED, RUNNING, DONE, FAILED, CANCELLED = "queued", "running", "done", "failed", "cancelled"
 FINISHED_STATES = (DONE, FAILED, CANCELLED)
@@ -42,6 +44,7 @@ _ids = itertools.count(1)
 _lock = threading.RLock()
 _jobs: Dict[str, "Job"] = {}
 _listeners: List[Callable[["Job"], None]] = []
+_shutting_down = False
 
 
 class JobCancelled(Exception):
@@ -49,6 +52,8 @@ class JobCancelled(Exception):
 
 
 def _gui(func: Callable[..., Any], *args: Any) -> None:
+    if _shutting_down:
+        return  # Zenvi is quitting: no window to call back into (invoke_on_gui would run it on this worker)
     from classes.qt_main_thread import invoke_on_gui
     try:
         invoke_on_gui(func, *args)
@@ -189,21 +194,28 @@ def _register(job: Job) -> Job:
 
 def submit_job(fn: Callable[[Job], Any], *, label: str, key: Optional[str] = None, kind: str = "",
                on_progress: Optional[Callable[[Job], None]] = None,
-               on_done: Optional[Callable[[Job], None]] = None, quick: bool = False) -> Job:
+               on_done: Optional[Callable[[Job], None]] = None, quick: bool = False,
+               interactive: bool = False) -> Job:
     """Run ``fn(job)`` on the handoff executor.
 
     ``on_progress(job)`` follows ``job.report`` calls (throttled) and
     ``on_done(job)`` runs once when it ends -- both on the GUI thread. Read
     ``job.state`` (done / failed / cancelled), ``job.result`` and
     ``job.error`` in ``on_done``. Raising :class:`JobCancelled` (or ending
-    after ``cancel()``) finishes it as cancelled. *quick* work (a probe or a
-    freshness check, seconds at most) runs on :data:`CHECK_EXECUTOR` and is
-    not listed as a running job.
+    after ``cancel()``) finishes it as cancelled. *quick* work (a background
+    freshness check) runs on :data:`CHECK_EXECUTOR`, *interactive* work
+    (something the user just clicked: open the code, re-read host discovery)
+    on :data:`UI_EXECUTOR`; neither is listed as a running job.
     """
-    job = Job(label, key=key, kind=kind) if quick else _register(Job(label, key=key, kind=kind))
+    light = quick or interactive
+    job = Job(label, key=key, kind=kind) if light else _register(Job(label, key=key, kind=kind))
     job._on_progress = on_progress
     job._on_done = on_done
-    job.quick = quick
+    job.quick = light
+    if _shutting_down:  # after Quit: never start new work
+        job._cancel.set()
+        job._finish(CANCELLED)
+        return job
 
     def _run() -> None:
         if job.should_cancel():
@@ -222,7 +234,7 @@ def submit_job(fn: Callable[[Job], Any], *, label: str, key: Optional[str] = Non
                 log.warning("Handoff job %s (%s) failed: %s", job.id, job.label, exc, exc_info=True)
         job._finish(state)
 
-    job.future = (CHECK_EXECUTOR if quick else EXECUTOR).submit(_run)
+    job.future = (UI_EXECUTOR if interactive else CHECK_EXECUTOR if quick else EXECUTOR).submit(_run)
     return job
 
 
@@ -272,6 +284,24 @@ def get_job(job_id: str) -> Optional[Job]:
 def cancel_job(job_id: str) -> bool:
     job = get_job(job_id)
     return job.cancel() if job is not None else False
+
+
+def shutdown(wait: bool = False) -> None:
+    """Stop all handoff work because Zenvi is quitting (connected to ``aboutToQuit``).
+
+    Cancels every queued and running job (renders poll ``should_cancel`` and
+    kill their process trees), drops queued work from both executors and
+    turns GUI callbacks off: once the window is gone they would otherwise run
+    on the worker thread. Later ``submit_job`` calls return cancelled jobs.
+    """
+    global _shutting_down
+    _shutting_down = True
+    with _lock:
+        pending = list(_jobs.values())
+    for job in pending:
+        job.cancel()
+    for executor in (EXECUTOR, CHECK_EXECUTOR, UI_EXECUTOR):
+        executor.shutdown(wait=wait, cancel_futures=True)
 
 
 def run_on_qthread(func: Callable[[], Any], timeout_seconds: float = 6 * 60 * 60) -> Any:

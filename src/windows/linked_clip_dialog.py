@@ -18,7 +18,7 @@ import re
 from typing import Any, Dict, Optional, Tuple
 
 from qt_api import (
-    QCheckBox, QColor, QColorDialog, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QLabel, QLineEdit,
+    QCheckBox, QColor, QColorDialog, QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit,
     QPlainTextEdit, QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -26,7 +26,6 @@ from classes.app import get_app
 
 COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
 INT_LIMIT = 2_000_000_000
-FLOAT_LIMIT = 1e12
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +96,7 @@ def describe_source(link: dict) -> str:
 class _ColorButton(QPushButton):
     def __init__(self, value: str, parent=None):
         super().__init__(parent)
+        self.changed = None
         self._value = value
         self.clicked.connect(self._pick)
         self._paint()
@@ -112,8 +112,14 @@ class _ColorButton(QPushButton):
         color = QColorDialog.getColor(QColor(self._value[:7]), self, get_app()._tr("Choose Colour"))
         if color.isValid():
             alpha = self._value[7:9] if len(self._value) == 9 else ""
-            self._value = color.name().upper() + alpha
-            self._paint()
+            self.set_value(color.name().upper() + alpha)
+
+    def set_value(self, value: str) -> None:
+        self._value = value
+        self._paint()
+        changed = getattr(self, "changed", None)
+        if callable(changed):
+            changed()
 
 
 class LinkedClipDialog(QDialog):
@@ -188,6 +194,7 @@ class LinkedClipDialog(QDialog):
         while self.form.rowCount():
             self.form.removeRow(0)
         self._editors.clear()
+        self._dirty = set()
         if not props:
             self.form.addRow(QLabel(self._("This composition has no props to edit.")))
         for name, value in props.items():
@@ -196,43 +203,55 @@ class LinkedClipDialog(QDialog):
             if kind == "bool":
                 widget = QCheckBox()
                 widget.setChecked(bool(value))
+                widget.toggled.connect(lambda _v, n=name: self._dirty.add(n))
             elif kind == "int":
                 widget = QSpinBox()
                 widget.setRange(-INT_LIMIT, INT_LIMIT)
                 widget.setValue(int(value))
+                widget.valueChanged.connect(lambda _v, n=name: self._dirty.add(n))
             elif kind == "float":
-                widget = QDoubleSpinBox()
-                widget.setDecimals(4)
-                widget.setRange(-FLOAT_LIMIT, FLOAT_LIMIT)
-                widget.setValue(float(value))
+                # a text field, not a spin box: a spin box would round 0.123456 or clamp 1.7e12
+                widget = QLineEdit(repr(float(value)) if isinstance(value, float) else str(value))
+                widget.textEdited.connect(lambda _t, n=name: self._dirty.add(n))
             elif kind == "color":
                 widget = _ColorButton(str(value).strip())
+                widget.changed = lambda n=name: self._dirty.add(n)  # type: ignore[attr-defined]
             elif kind == "json":
                 widget = QPlainTextEdit(json.dumps(value, indent=2, ensure_ascii=False))
                 widget.setMaximumHeight(110)
+                widget.textChanged.connect(lambda n=name: self._dirty.add(n))
             else:
                 widget = QLineEdit("" if value is None else str(value))
+                widget.textEdited.connect(lambda _t, n=name: self._dirty.add(n))
             widget.setObjectName("prop_" + str(name))
             self._editors[name] = (kind, widget)
             self.form.addRow(str(name), widget)
 
     def _read_form(self) -> Dict[str, Any]:
+        """The props, with every field the user did not touch exactly as it was."""
         out: Dict[str, Any] = {}
         for name, (kind, widget) in self._editors.items():
-            if kind == "bool":
+            original = self._props.get(name)
+            if name not in self._dirty:
+                out[name] = original
+            elif kind == "bool":
                 out[name] = widget.isChecked()  # type: ignore[attr-defined]
             elif kind == "int":
                 out[name] = int(widget.value())  # type: ignore[attr-defined]
             elif kind == "float":
-                value = float(widget.value())  # type: ignore[attr-defined]
-                out[name] = int(value) if isinstance(self._props.get(name), int) and value == math.floor(value) else value
+                text = widget.text().strip()  # type: ignore[attr-defined]
+                try:
+                    number = float(text)
+                except ValueError:
+                    raise ValueError(f"{name}: {text!r} is not a number") from None
+                out[name] = int(number) if isinstance(original, int) and number == math.floor(number) else number
             elif kind == "color":
                 out[name] = widget.value()  # type: ignore[attr-defined]
             elif kind == "json":
                 out[name] = parse_json_field(widget.toPlainText(), name)  # type: ignore[attr-defined]
             else:
                 text = widget.text()  # type: ignore[attr-defined]
-                out[name] = None if (self._props.get(name) is None and text == "") else text
+                out[name] = None if (original is None and text == "") else text
         return out
 
     def _tab_changed(self, index: int) -> None:

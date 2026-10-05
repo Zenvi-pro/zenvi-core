@@ -151,7 +151,10 @@ class FakeHost:
         self.app = app
         self.token = token
         self.sse = False
+        self.redirect_to = None   # a URL: answer every POST with 302 to it
+        self.tools = [{"name": "ae_get_state", "inputSchema": {"type": "object"}}]  # tools/list
         self.calls = []
+        self.headers = []         # the request headers of every POST
         host = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -159,6 +162,13 @@ class FakeHost:
                 pass
 
             def do_POST(self):
+                host.headers.append(dict(self.headers))
+                if host.redirect_to:
+                    self.send_response(302)
+                    self.send_header("Location", host.redirect_to)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 if self.headers.get("Authorization") != "Bearer " + host.token:
                     self.send_response(401)
                     self.send_header("WWW-Authenticate", "Bearer")
@@ -176,7 +186,7 @@ class FakeHost:
                     reply["result"] = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}},
                                        "serverInfo": {"name": "zenvi-link-" + host.app, "version": "1.0.0"}}
                 elif method == "tools/list":
-                    reply["result"] = {"tools": [{"name": "ae_get_state", "inputSchema": {"type": "object"}}]}
+                    reply["result"] = {"tools": host.tools}
                 elif method == "tools/call":
                     reply["result"] = host.call(body["params"]["name"], body["params"].get("arguments") or {})
                 else:

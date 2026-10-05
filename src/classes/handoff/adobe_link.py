@@ -24,15 +24,17 @@ from __future__ import annotations
 import base64
 import datetime
 import errno
+import http.client
 import itertools
 import json
 import os
 import sys
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from classes.logger import log
 
@@ -125,9 +127,17 @@ def pid_alive(pid: Any) -> bool:
 def _loopback(url: str) -> bool:
     try:
         parsed = urllib.parse.urlparse(str(url))
+        port = parsed.port  # ValueError when out of range (99999)
     except ValueError:
         return False
-    return parsed.scheme == "http" and (parsed.hostname or "") in LOOPBACK_HOSTS and bool(parsed.port)
+    return parsed.scheme == "http" and (parsed.hostname or "") in LOOPBACK_HOSTS and bool(port)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: it would carry the bearer token to another address."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def _read_token(token_file: Any) -> Optional[str]:
@@ -217,7 +227,8 @@ class McpHttpClient:
             raise LinkHostError(f"refusing a non-loopback host URL {url!r}", "INVALID_ARGUMENT")
         self.url = url
         self.token = token
-        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # loopback: never a proxy
+        # loopback: never a proxy, never a redirect
+        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
     def _post(self, payload: dict, timeout: float) -> Optional[dict]:
         body = json.dumps(payload).encode("utf-8")
@@ -231,28 +242,35 @@ class McpHttpClient:
             with self._opener.open(req, timeout=timeout) as resp:
                 status = resp.status
                 ctype = (resp.headers.get("Content-Type") or "").lower()
+                if "text/event-stream" in ctype and status != 202:
+                    # read event by event and stop at OUR reply: a stream may carry notifications
+                    # first, and a server may keep it open after answering
+                    return _read_sse_reply(resp, payload.get("id"))
                 data = resp.read(MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as exc:
+            if 300 <= exc.code < 400:
+                raise LinkHostError("the host answered with a redirect; refused (Zenvi Link never redirects)",
+                                    "FORBIDDEN") from None
             if exc.code == 401:
                 raise LinkHostError("the host rejected Zenvi's token (the extension restarted?); try again",
                                     "UNAUTHORIZED") from None
             if exc.code == 403:
                 raise LinkHostError("the host refused the request (403)", "FORBIDDEN") from None
             raise LinkHostError(f"the host answered HTTP {exc.code}", "HOST_ERROR") from None
+        except http.client.HTTPException as exc:  # BadStatusLine, IncompleteRead: not an MCP endpoint
+            raise LinkHostError(f"the endpoint sent a broken HTTP reply ({type(exc).__name__})", "HOST_ERROR") from None
         except (TimeoutError, OSError) as exc:
             reason = getattr(exc, "reason", exc)
             if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
                 raise LinkHostError(f"the host did not answer within {timeout:g} s", "TIMEOUT") from None
             raise LinkHostError(f"could not reach the host: {reason}", "NOT_CONNECTED") from None
+        except ValueError as exc:  # a malformed URL or header
+            raise LinkHostError(f"bad host endpoint: {exc}", "HOST_ERROR") from None
         if len(data) > MAX_RESPONSE_BYTES:
             raise LinkHostError("the host's answer is too large", "HOST_ERROR")
         if status == 202 or not data.strip():
             return None
         text = data.decode("utf-8", errors="replace")
-        if "text/event-stream" in ctype:
-            text = _first_sse_data(text)
-            if text is None:
-                raise LinkHostError("the host sent an empty event stream", "HOST_ERROR")
         try:
             message = json.loads(text)
         except ValueError:
@@ -286,6 +304,49 @@ class McpHttpClient:
         result = self.request("initialize", {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
                                              "clientInfo": CLIENT_INFO}, timeout=timeout)
         return result if isinstance(result, dict) else {}
+
+
+def _read_sse_reply(stream: Any, want_id: Any) -> Optional[dict]:
+    """The JSON-RPC reply with id *want_id* from a ``text/event-stream`` response, read line by line.
+
+    Notifications and other events before it are skipped; reading stops as
+    soon as the reply arrives. LinkHostError when the stream ends first or
+    grows past the size limit.
+    """
+    data_lines: List[str] = []
+    total = 0
+
+    def reply_in(lines: List[str]) -> Optional[dict]:
+        try:
+            message = json.loads("\n".join(lines))
+        except ValueError:
+            return None
+        if not isinstance(message, dict) or ("result" not in message and "error" not in message):
+            return None  # a notification or request from the server
+        if want_id is not None and message.get("id") != want_id:
+            return None
+        return message
+
+    while True:
+        raw = stream.readline(MAX_RESPONSE_BYTES)
+        if not raw:
+            break
+        total += len(raw)
+        if total > MAX_RESPONSE_BYTES:
+            raise LinkHostError("the host's answer is too large", "HOST_ERROR")
+        line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+        if line.startswith("data:"):
+            data_lines.append(line[6:] if line[5:6] == " " else line[5:])
+        elif not line and data_lines:
+            message = reply_in(data_lines)
+            data_lines = []
+            if message is not None:
+                return message
+    if data_lines:
+        message = reply_in(data_lines)
+        if message is not None:
+            return message
+    raise LinkHostError("the host's event stream ended without a reply", "HOST_ERROR")
 
 
 def _first_sse_data(text: str) -> Optional[str]:
@@ -345,13 +406,22 @@ def _inspect(app: str, base_dir: Optional[str], probe: bool, timeout: float) -> 
     return info
 
 
+def _inspect_safely(app: str, base_dir: Optional[str], probe: bool, timeout: float) -> HostInfo:
+    """``_inspect`` that never raises: one broken discovery file must not hide the other app."""
+    try:
+        return _inspect(app, base_dir, probe, timeout)
+    except Exception as exc:
+        log.warning("Zenvi Link discovery for %s failed", app, exc_info=True)
+        return HostInfo(app=app, connected=False, reason=f"its discovery file could not be used: {exc}")
+
+
 def list_hosts(base_dir: Optional[str] = None, *, probe: bool = True, timeout: float = PROBE_TIMEOUT) -> List[HostInfo]:
     """Both Adobe hosts, connected or not; ``active`` marks the most recently used connected one.
 
     *probe* sends one ``initialize`` per discovery file (up to *timeout*
     seconds each). Blocking: off the GUI thread.
     """
-    hosts = [_inspect(app, base_dir, probe, timeout) for app in APPS]
+    hosts = [_inspect_safely(app, base_dir, probe, timeout) for app in APPS]
     live = [h for h in hosts if h.connected]
     if live:
         def _key(h: HostInfo):
@@ -364,14 +434,14 @@ def list_hosts(base_dir: Optional[str] = None, *, probe: bool = True, timeout: f
 def get_host(app: str, base_dir: Optional[str] = None, *, probe: bool = True) -> HostInfo:
     if app not in APPS:
         raise LinkHostError(f"unknown Adobe host {app!r}; expected one of {', '.join(APPS)}", "INVALID_ARGUMENT")
-    return _inspect(app, base_dir, probe, PROBE_TIMEOUT)
+    return _inspect_safely(app, base_dir, probe, PROBE_TIMEOUT)
 
 
 def _connected_client(app: str, base_dir: Optional[str]) -> McpHttpClient:
     if app not in APPS:
         raise LinkHostError(f"unknown Adobe host {app!r}; expected one of {', '.join(APPS)}", "INVALID_ARGUMENT")
     data = read_discovery(app, base_dir)
-    host = _inspect(app, base_dir, True, PROBE_TIMEOUT)
+    host = _inspect_safely(app, base_dir, True, PROBE_TIMEOUT)
     if not host.connected or data is None:
         raise HostNotConnected(f"{APP_LABELS[app]} is not connected ({host.reason}). {connect_hint(app)}")
     return _client_for(data)
@@ -421,20 +491,51 @@ def _result_from(tool: str, app: str, result: Any) -> HostResult:
     return HostResult(receipt=receipt, text="\n".join(texts), images=images, is_error=is_error, raw=result)
 
 
-def call_host_tool(app: str, tool: str, args: Optional[dict] = None, timeout: float = DEFAULT_TIMEOUT,
+TIMEOUT_SLACK = 15.0
+MAX_TIMEOUT = 3 * 60 * 60
+_timeouts: Dict[Any, Dict[str, float]] = {}
+_timeouts_lock = threading.Lock()
+
+
+def tool_timeout(app: str, tool: str, base_dir: Optional[str] = None) -> float:
+    """Seconds to wait for *tool*: its catalog ``timeoutMs`` (``tools/list``, cached per host
+    session) plus slack, else :data:`DEFAULT_TIMEOUT`. A long render keeps its own budget."""
+    try:
+        host = get_host(app, base_dir, probe=False)
+        key = (app, base_dir, host.pid, host.started_at)
+        with _timeouts_lock:
+            known = _timeouts.get(key)
+        if known is None:
+            known = {}
+            for row in list_host_tools(app, base_dir):
+                ms = row.get("timeoutMs")
+                if isinstance(ms, (int, float)) and not isinstance(ms, bool) and ms > 0:
+                    known[str(row.get("name"))] = float(ms) / 1000.0
+            with _timeouts_lock:
+                _timeouts.clear()
+                _timeouts[key] = known
+        seconds = known.get(tool)
+    except LinkHostError:
+        seconds = None
+    return min(MAX_TIMEOUT, (seconds or DEFAULT_TIMEOUT) + TIMEOUT_SLACK)
+
+
+def call_host_tool(app: str, tool: str, args: Optional[dict] = None, timeout: Optional[float] = None,
                    base_dir: Optional[str] = None) -> HostResult:
     """Call host tool *tool* (``ae_*`` / ``premiere_*``) with *args* in the connected *app*.
 
-    Raises HostNotConnected (with how to connect) when the host is not
-    reachable, LinkHostError(code=TIMEOUT) when the call outlives *timeout*.
-    A tool that ran and failed comes back as a HostResult with
-    ``is_error=True`` and the host's receipt. Blocking.
+    *timeout* defaults to the tool's own catalog ``timeoutMs`` (+ slack, see
+    :func:`tool_timeout`), 120 s when the catalog gives none. Raises
+    HostNotConnected (with how to connect) when the host is not reachable,
+    LinkHostError(code=TIMEOUT) when the call outlives the timeout. A tool
+    that ran and failed comes back as a HostResult with ``is_error=True`` and
+    the host's receipt. Blocking.
     """
     if not str(tool or "").strip():
         raise LinkHostError("which host tool? pass its name (e.g. ae_get_state)", "INVALID_ARGUMENT")
     if args is not None and not isinstance(args, dict):
         raise LinkHostError("host tool arguments must be an object", "INVALID_ARGUMENT")
     client = _connected_client(app, base_dir)
-    result = client.request("tools/call", {"name": str(tool), "arguments": dict(args or {})},
-                            timeout=float(timeout))
+    wait = float(timeout) if timeout is not None else tool_timeout(app, str(tool), base_dir)
+    result = client.request("tools/call", {"name": str(tool), "arguments": dict(args or {})}, timeout=wait)
     return _result_from(str(tool), app, result)
