@@ -102,21 +102,52 @@ def _rerender(window, file_id: str) -> None:
     rerender_files(window, [file_id])
 
 
-def edit_props(window, file_id: str) -> None:
-    """Linked Source > Edit Props...: the props dialog, then Apply & Re-render (one undo step)."""
-    from classes.handoff import linked_media
-    from windows.handoff_menus import rerender_files
-    from windows.linked_clip_dialog import LinkedClipDialog
+def edit_props(window, file_id: str):
+    """Linked Source > Edit Props...: the provider's editable props in the dialog, then Apply & Re-render.
+
+    ``provider.editable_props(link)`` (e.g. Remotion's default props merged
+    with the stored ones) is read off the GUI thread; without a provider, or
+    if it fails (the dialog says so), the stored props are shown. The new
+    props keep anything the provider did not offer (``merge_edited_props``);
+    the re-render is one undo step. Returns the job reading the props.
+    """
+    from classes.handoff import jobs, linked_media
     f, link = _file_and_link(file_id)
     if f is None or link is None:
-        return
+        return None
+    kind = str(link.get("kind") or "")
+    provider = linked_media.provider_for(kind)
+    stored = linked_media.link_props(link)
+
+    def work(job):
+        if provider is not None and callable(getattr(provider, "editable_props", None)):
+            return dict(provider.editable_props(link) or {})
+        return dict(stored)
+
+    def done(job):
+        note = ""
+        editable = job.result if job.error is None and isinstance(job.result, dict) else None
+        if editable is None:
+            log.warning("editable_props of %s failed: %s", kind, job.error)
+            note = _tr("Showing the stored props: the %s provider could not list its props (%s)") % (
+                linked_media.kind_label(kind), job.error)
+            editable = dict(stored)
+        _open_props_dialog(window, f, link, editable, stored, note, provider is not None)
+
+    return jobs.submit_job(work, label=_tr("Reading props"), interactive=True, on_done=done)
+
+
+def _open_props_dialog(window, f, link, editable, stored, note, can_render):
+    from windows.handoff_menus import rerender_files
+    from windows.linked_clip_dialog import LinkedClipDialog, merge_edited_props
     status = getattr(window, "handoff_status", None)
     check = (getattr(status, "last_checks", {}) or {}).get(f.id)
     dialog = LinkedClipDialog(link, check=check.as_dict() if check is not None else None,
-                              name=str(f.data.get("name") or ""),
-                              can_render=linked_media.provider_for(str(link.get("kind"))) is not None, parent=window)
+                              name=str(f.data.get("name") or ""), can_render=can_render, props=editable, note=note,
+                              parent=window)
     if dialog.exec_() and dialog.props() is not None:
-        rerender_files(window, [f.id], props=dialog.props(), replace_props=True)
+        rerender_files(window, [f.id], props=merge_edited_props(stored, editable, dialog.props()),
+                       replace_props=True)
 
 
 def open_linked(window, file_id: str, target: str = "code") -> None:
