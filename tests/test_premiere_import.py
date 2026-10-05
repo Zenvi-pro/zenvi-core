@@ -545,18 +545,136 @@ def test_one_channel_of_a_stereo_file_plays_alone(tmp_path):
     assert [("channel_filter" in c.props) for c in p.clips] == [False, False]   # the XML says they play all
 
 
-def test_zenvi_channel_clips_round_trip(importer, tmp_path):
+def _first_y(curve):
+    return curve["Points"][0]["co"]["Y"] if isinstance(curve, dict) and curve.get("Points") else None
+
+
+@pytest.mark.parametrize("with_others", [False, True], ids=["only-these-clips", "with-linked-clips-too"])
+def test_zenvi_separate_audio_round_trips(importer, tmp_path, with_others):
+    # verify-C3-1 C: Separate Audio > each channel = the picture with its audio off plus one clip per channel;
+    # the channel items must neither join the picture nor merge back into one clip (a muted channel played again)
     from classes.exporters import final_cut_pro as fcp
     folder = tmp_path / "media"
     folder.mkdir()
-    (f1,) = media_on_disk(folder, audio_file("F1", "/m/interview.wav", duration=30.0))
+    (f1, f2) = media_on_disk(folder, video_file("F1", "/m/interview.mov", duration=30.0),
+                             video_file("F2", "/m/broll.mov", duration=30.0))
+    off = {"Points": [{"co": {"X": 1.0, "Y": 0.0}, "interpolation": 2}]}
     only = [{"Points": [{"co": {"X": 1.0, "Y": float(k)}, "interpolation": 2}]} for k in (0, 1)]
-    proj = project(files=[f1], clips=[clip("Lav", "F1", end=5.0, channel_filter=only[0]),
-                                      clip("Camera", "F1", layer=L2, end=5.0, channel_filter=only[1])])
-    out = fcp.export_timeline(snapshot(proj), str(tmp_path / "Ch.xml"), render_stills=FakeStills())
-    p = imp.plan_import(out.path, info=info(fps=(30, 1)), probe=FakeMediaProbe({f1["path"]: f1}))
-    got = {c.title: c.props.get("channel_filter", {}).get("Points", [{}])[0].get("co", {}).get("Y") for c in p.clips}
-    assert got == {"Lav": 0.0, "Camera": 1.0}
+    clips = [clip("Interview", "F1", end=5.0, has_audio=off),
+             clip("Interview (channel 1)", "F1", layer=L2, end=5.0, has_video=off, channel_filter=only[0]),
+             clip("Interview (channel 2)", "F1", layer=L3, end=5.0, has_video=off, channel_filter=only[1],
+                  volume=const(0.0))]
+    if with_others:                                     # a normal clip makes the XML carry <link>s
+        clips.append(clip("B-roll", "F2", position=6.0, end=3.0))
+    out = fcp.export_timeline(snapshot(project(files=[f1, f2], clips=clips)), str(tmp_path / "Sep.xml"),
+                              render_stills=FakeStills())
+    p = imp.plan_import(out.path, info=info(fps=(30, 1)), probe=FakeMediaProbe({f["path"]: f for f in (f1, f2)}))
+    back = {c.title: c.props for c in p.clips}
+    assert _first_y(back["Interview"].get("has_audio")) == 0.0                    # the picture stays silent
+    assert _first_y(back["Interview (channel 1)"]["channel_filter"]) == 0.0
+    assert _first_y(back["Interview (channel 2)"]["channel_filter"]) == 1.0
+    assert _first_y(back["Interview (channel 2)"].get("volume")) == 0.0          # still muted
+    if with_others:
+        assert "has_audio" not in back["B-roll"] and "channel_filter" not in back["B-roll"]
+    lav_only = [c for c in clips if c.get("title") != "Interview (channel 2)"]
+    out = fcp.export_timeline(snapshot(project(files=[f1, f2], clips=lav_only)), str(tmp_path / "Lav.xml"),
+                              render_stills=FakeStills())
+    p = imp.plan_import(out.path, info=info(fps=(30, 1)), probe=FakeMediaProbe({f["path"]: f for f in (f1, f2)}))
+    back = {c.title: c.props for c in p.clips}
+    assert _first_y(back["Interview"].get("has_audio")) == 0.0
+    assert _first_y(back["Interview (channel 1)"]["channel_filter"]) == 0.0
+
+
+def test_resolve_stereo_items_play_the_whole_file(tmp_path):
+    # verify-C3-1 A: DaVinci Resolve writes one audio item per stereo clip (sourcetrack 1, no
+    # premiereChannelType) -- it must not become "left channel only"
+    (m,) = media_on_disk(tmp_path, video_file("", "/m/interview.mov", duration=60.0, fps=(24, 1)))
+    f = _file("f1", m["path"], tb=24, video=True)
+    video = (f"<clipitem id='Interview.mov 0'><name>Interview.mov</name><duration>1440</duration><rate><timebase>24"
+             f"</timebase><ntsc>FALSE</ntsc></rate><start>0</start><end>96</end><in>0</in><out>96</out>{f}"
+             "<link><linkclipref>Interview.mov 0</linkclipref></link>"
+             "<link><linkclipref>Interview.mov 3</linkclipref></link></clipitem>")
+    audio = (f"<clipitem id='Interview.mov 3'><name>Interview.mov</name><duration>1440</duration><rate><timebase>24"
+             f"</timebase><ntsc>FALSE</ntsc></rate><start>0</start><end>96</end><in>0</in><out>96</out>"
+             "<file id='f1'/><sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>"
+             "<link><linkclipref>Interview.mov 0</linkclipref><mediatype>video</mediatype></link>"
+             "<link><linkclipref>Interview.mov 3</linkclipref></link></clipitem>")
+    music = _item("m1", "Music", 0, 96, 0, 96, "<file id='f1'/>", track=1, tb=24)
+    path = _xml(tmp_path, {"video": f"<track>{video}</track>",
+                           "audio": f"<track>{audio}</track><track>{music}</track>"}, tb=24)
+    p = _plan_xml(path, [m], info=info(fps=(24, 1)))
+    by = {c.title: c.props for c in p.clips}
+    assert "has_audio" not in by["Interview.mov"] and "channel_filter" not in by["Interview.mov"]
+    assert "channel_filter" not in by["Music"]                                   # audio-only too
+    assert not any("one channel" in w for w in p.warnings)
+
+
+@pytest.mark.parametrize("state, lav, cam", [
+    ("cam off", {"channel": 0.0}, {"off": True}),
+    ("lav off", {"off": True}, {"channel": 1.0}),
+    ("cam silent", {"channel": 0.0}, {"channel": 1.0, "volume": 0.0}),
+    ("same", {"whole": True}, None),
+])
+def test_premiere_dual_mono_merges_only_channels_in_the_same_state(tmp_path, state, lav, cam):
+    # verify-C3-1 B: a disabled or silenced camera-mic channel must not come back as part of one clip
+    (m,) = media_on_disk(tmp_path, audio_file("", "/m/interview.wav", duration=120.0))
+    level = ("<filter><effect><name>Audio Levels</name><effectid>audiolevels</effectid><mediatype>audio</mediatype>"
+             "<parameter><parameterid>level</parameterid><value>%s</value></parameter></effect></filter>")
+    links = [("a1", "audio"), ("a2", "audio")]
+    a1 = _item("a1", "Lav", 0, 250, 0, 250, _file("f1", m["path"]), track=1, links=links,
+               attrs=' premiereChannelType="mono"')
+    a2 = _item("a2", "Cam", 0, 250, 0, 250, "<file id='f1'/>", track=2, links=links,
+               attrs=' premiereChannelType="mono"', extra=level % ("0" if state == "cam silent" else "1"))
+    if state == "cam silent":
+        a1 = a1.replace("</sourcetrack>", "</sourcetrack>" + level % "1")
+    if state == "cam off":
+        a2 = a2.replace("<enabled>TRUE</enabled>", "<enabled>FALSE</enabled>")
+    if state == "lav off":
+        a1 = a1.replace("<enabled>TRUE</enabled>", "<enabled>FALSE</enabled>")
+    if state == "same":
+        a1 = a1.replace("</sourcetrack>", "</sourcetrack>" + level % "1")
+    p = _plan_xml(_xml(tmp_path, {"audio": f"<track>{a1}</track><track>{a2}</track>"}), [m])
+    by = {c.title: c.props for c in p.clips}
+
+    def check(props, want):
+        if want.get("whole"):
+            assert "channel_filter" not in props and "has_audio" not in props
+        if want.get("off"):
+            assert _first_y(props.get("has_audio")) == 0.0
+        if "channel" in want:
+            assert _first_y(props["channel_filter"]) == want["channel"] and "has_audio" not in props
+        if "volume" in want:
+            assert _first_y(props["volume"]) == want["volume"]
+
+    check(by["Lav"], lav)
+    if cam is None:
+        assert set(by) == {"Lav"}                                               # one clip: the whole file
+    else:
+        check(by["Cam"], cam)
+
+
+def test_a_failed_import_inside_a_callers_transaction_keeps_the_callers_edits(importer, tmp_path, monkeypatch):
+    # verify-C3-1 D: the rollback reverted the whole transaction id, including a caller's earlier edits
+    from classes.query import Track
+    from classes.updates import nested_transaction
+    updates = importer.app.updates
+    p = plan("premiere_promo.xml", tmp_path, PROMO)
+
+    def breaks(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(imp, "_dissolve_transition", breaks)
+    with nested_transaction(updates) as tid:
+        prior = Track()
+        prior.data = {"number": 98000000, "y": 0, "label": "Prior edit", "lock": False}
+        prior.save()
+        history_before = list(updates.actionHistory)
+        with pytest.raises(imp.XmlImportError, match="nothing was imported"):
+            imp.commit_import(p)
+        assert list(updates.actionHistory) == history_before               # the caller's edit is still there
+    labels = [layer.get("label") for layer in importer.get("layers")]
+    assert "Prior edit" in labels and not any(c.get("title") == "Interview" for c in importer.clips())
+    assert [a.transaction for a in updates.actionHistory[-1:]] == [tid]
 
 
 def test_a_commit_that_cannot_finish_leaves_the_project_and_history_alone(importer, tmp_path, monkeypatch):
