@@ -28,6 +28,15 @@ def qapp():
     yield app
 
 
+@pytest.fixture(autouse=True)
+def _isolated_from_this_machine(monkeypatch):
+    """No test may see the CLIs really installed here or another test's lineup."""
+    import windows.agent_runners as ar
+    monkeypatch.setattr(ar, "_windows_path_dirs", lambda: ())
+    monkeypatch.setattr(ar, "_cli_lineups", {})
+    monkeypatch.setattr(ar, "_cli_models_read", {})
+
+
 def _collect(runner):
     events = []
     runner.token_received.connect(lambda t: events.append(("token", t)))
@@ -1178,7 +1187,7 @@ def test_cursor_argv_is_headless_and_hides_model(qapp, monkeypatch):
     assert argv[argv.index("--workspace") + 1] == r"C:\proj"
     assert argv[argv.index("--resume") + 1] == "cur-abc-123"
     assert argv[argv.index("--add-dir") + 1] == "C:/footage"
-    assert argv[-1] == "make a cut"
+    assert "make a cut" not in argv, "the prompt goes in on stdin"
     assert "--model" not in argv
     assert [m["id"] for m in runner.MODELS] == ["cli-default"]
 
@@ -1424,7 +1433,10 @@ def test_parse_cursor_models_reads_the_real_listing():
     # Preselected, and says what the CLI resolves it to.
     assert rows[0] == {"id": "cli-default", "name": "CLI default", "rank": 0,
                        "featured": True, "default": True, "tags": ["Auto"]}
-    assert [r["id"] for r in rows if r["featured"]] == ["cli-default"], "search reaches the rest"
+    # The menu opens on a short list, not on "CLI default" alone; search
+    # reaches the rest.
+    assert [r["id"] for r in rows if r["featured"]] == [r["id"] for r in rows[:9]]
+    assert rows[9]["featured"] is False
     assert not any(r.get("default") for r in rows[1:])
     names = {r["id"]: r["name"] for r in rows}
     assert names["auto"] == "Auto"                                   # flags stripped
@@ -1926,7 +1938,7 @@ def test_parse_opencode_models_reads_the_real_listing():
     assert [r["id"] for r in rows[1:3]] == ["opencode/big-pickle",
                                            "opencode/ling-3.0-flash-fin-free"]
     assert rows[1]["name"] == "big-pickle" and rows[1]["provider"] == "opencode"
-    assert [r["id"] for r in rows if r.get("featured")] == ["cli-default"]
+    assert [r["id"] for r in rows if r.get("featured")] == [r["id"] for r in rows[:9]]
     assert parse_opencode_models("Error: something\n") == []
 
 
@@ -2314,12 +2326,16 @@ def test_hermes_tool_names(title, name):
     assert "motion graphic" not in humanize_tool_name(name).lower()
 
 
-def test_only_hermes_keeps_stdin_open(qapp):
-    """Every other CLI gets no stdin (``opencode run`` blocks on one)."""
+def test_only_clis_that_are_written_to_keep_stdin_open(qapp):
+    """A CLI nobody writes to gets no stdin (``opencode run`` blocks on one).
+    Hermes speaks ACP on it; Codex and Cursor take their prompt from it."""
     import subprocess
-    from windows.agent_runners import CLI_RUNNERS, HermesRunner
+    from windows.agent_runners import (
+        CLI_RUNNERS, CodexRunner, CursorCliRunner, HermesRunner,
+    )
+    piped = (HermesRunner, CodexRunner, CursorCliRunner)
     for backend, runner in CLI_RUNNERS.items():
-        expected = subprocess.PIPE if runner is HermesRunner else subprocess.DEVNULL
+        expected = subprocess.PIPE if runner in piped else subprocess.DEVNULL
         assert runner.STDIN == expected, backend
 
 
@@ -2456,3 +2472,194 @@ def test_a_model_id_from_another_harness_is_never_passed_on(qapp, fresh_cursor_l
     assert runner._coerce_model("gpt-5.5") == ("gpt-5.5" if backend == "codex" else "")
     assert runner._coerce_model("openai/gpt-5.5") == ("openai/gpt-5.5" if backend == "opencode" else "")
     assert runner._coerce_model("anthropic/claude-opus-5-5") == ""
+
+
+# ── Harness fixes found while verifying #136 (#281, #265) ─────────────────
+
+def test_codex_resume_never_passes_add_dir(qapp, monkeypatch):
+    """`codex exec resume` has no --add-dir: every follow-up turn exited 2 (#281)."""
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: ["--add-dir", "C:/footage"])
+    runner = ar.CodexRunner()
+    runner._server = None
+    assert "--add-dir" in runner._build_argv("first")
+    runner._cli_started = runner._cli_id_from_cli = True
+    runner._cli_session_id = "thread-1"
+    argv = runner._build_argv("again")
+    assert argv[1:4] == ["exec", "resume", "thread-1"]
+    assert "--add-dir" not in argv
+    # The prompt is read from stdin ("-"), so a .cmd launcher cannot cut it.
+    assert argv[-1] == "-" and runner._stdin_prompt.endswith("again")
+
+
+def test_which_cli_reads_the_windows_path_a_stripped_launch_lost(monkeypatch, tmp_path):
+    """run-zenvi-core.sh starts the editor with `env -i`, so PATH and
+    NVM_SYMLINK are gone; the user's real PATH is still in the registry (#265)."""
+    import windows.agent_runners as ar
+
+    name = "opencode.cmd" if os.name == "nt" else "opencode"
+    node = tmp_path / "nodejs"
+    node.mkdir()
+    (node / name).write_bytes(b"")
+    monkeypatch.setattr(ar.shutil, "which", lambda n, **kw: None)
+    monkeypatch.setattr(ar, "_cli_install_dirs", lambda: [])
+    monkeypatch.setattr(ar, "_windows_path_dirs", lambda: [str(node)])
+    assert ar._which_cli("opencode") == os.path.join(str(node), name)
+    # ...and the CLI's own children (node, git) resolve from it too.
+    assert str(node) in ar._cli_child_env()["PATH"].split(os.pathsep)
+
+
+def test_windows_path_dirs_expand_registry_variables():
+    import windows.agent_runners as ar
+
+    dirs = ar._expand_path_value(
+        r"%NVM_SYMLINK%;C:\Tools;;%NOPE%\bin", {"NVM_SYMLINK": r"C:\nvm4w\nodejs"})
+    assert dirs[:2] == [r"C:\nvm4w\nodejs", r"C:\Tools"]
+    assert not [d for d in dirs if d.startswith(r"C:\nvm4w") is False and "%" in d and "NVM" in d]
+
+
+def test_cursor_prompt_goes_through_stdin_not_the_cmd_launcher(qapp, monkeypatch):
+    """cursor-agent.cmd runs through cmd.exe, which cuts an argument at its
+    first newline: Cursor only ever saw "[Editor snapshot]" (#265)."""
+    import subprocess
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: [])
+    runner = ar.CursorCliRunner()
+    runner._cli_cwd = "/proj"
+    prompt = "[Editor snapshot]\nclips: 0\n\nmake a cut"
+    argv = runner._build_argv(prompt)
+    assert prompt not in argv and not [a for a in argv if "\n" in a]
+    assert runner.STDIN == subprocess.PIPE
+
+    import time
+
+    class _Raw:
+        data, closed = "", False
+
+        def write(self, text):
+            self.data += text
+
+        def close(self):
+            self.closed = True
+
+    runner._proc = types.SimpleNamespace(stdin=_Raw())
+    runner._after_launch(prompt)
+    for _ in range(200):
+        if runner._proc.stdin.closed:
+            break
+        time.sleep(0.01)
+    assert runner._proc.stdin.data == prompt
+    assert runner._proc.stdin.closed, "EOF tells the CLI the prompt is complete"
+
+
+def test_opencode_native_is_the_binary_the_shim_really_runs(tmp_path):
+    """npm kept an old `opencode-ai` exe beside the new `@opencode/cli` one;
+    running the stale one failed with "Token refresh failed: 401"."""
+    import windows.agent_runners as ar
+
+    old = tmp_path / "node_modules" / "opencode-ai" / "bin"
+    new = tmp_path / "node_modules" / "@opencode" / "cli" / "bin"
+    old.mkdir(parents=True)
+    new.mkdir(parents=True)
+    (old / "opencode.exe").write_bytes(b"")
+    (new / "opencode.exe").write_bytes(b"")
+    shim = tmp_path / "opencode.cmd"
+    shim.write_text('@ECHO off\r\nCALL :find_dp0\r\n'
+                    '"%dp0%\\node_modules\\@opencode\\cli\\bin\\opencode.exe"   %*\r\n')
+    assert os.path.normpath(ar._opencode_native(str(shim))) == str(new / "opencode.exe")
+
+    # A shim that names no exe: the legacy location still works.
+    shim.write_text('@ECHO off\r\nnode "%dp0%\\x.js" %*\r\n')
+    assert os.path.normpath(ar._opencode_native(str(shim))) == str(old / "opencode.exe")
+    assert ar._opencode_native("/usr/bin/opencode") == "/usr/bin/opencode"
+
+
+CLAUDE_INIT = {"type": "control_response", "response": {"subtype": "success", "response": {"models": [
+    {"value": "default", "displayName": "Default (recommended)",
+     "description": "Sonnet 5 \u00b7 Efficient for routine tasks"},
+    {"value": "sonnet", "displayName": "Sonnet", "description": "Sonnet 5 \u00b7 Efficient"},
+    {"value": "claude-fable-5-1[1m]", "displayName": "Fable",
+     "description": "Fable 5.1 \u00b7 Most capable \u00b7 Requires usage credits"},
+    {"value": "haiku", "displayName": "Haiku", "description": "Haiku 4.5 \u00b7 Fastest"},
+    {"displayName": "no value"}, "junk",
+]}}}
+
+
+def test_parse_claude_models_reads_what_the_installed_cli_offers():
+    """Claude Code lists its models in the reply to a stream-json `initialize`."""
+    from windows.agent_runners import parse_claude_models
+
+    lines = '{"type":"system"}\nnot json\n' + json.dumps(CLAUDE_INIT) + "\n"
+    rows = parse_claude_models(lines)
+    assert [r["id"] for r in rows] == ["cli-default", "sonnet", "claude-fable-5-1[1m]", "haiku"]
+    assert rows[0]["tags"] == ["Sonnet 5"], "what the CLI's own default resolves to"
+    assert [r["name"] for r in rows[1:]] == ["Sonnet 5", "Fable 5.1", "Haiku 4.5"]
+    assert parse_claude_models('{"type":"system"}\n') == []
+    assert parse_claude_models("") == []
+
+
+def test_claude_code_lists_its_own_models_and_passes_them_on(qapp, fresh_cursor_lineup, monkeypatch):
+    ar = fresh_cursor_lineup
+    assert ar.ClaudeCodeRunner.list_models is not None
+    ar.set_cli_lineup(ar.BACKEND_CLAUDE, ar.parse_claude_models(json.dumps(CLAUDE_INIT)))
+    runner = ar.ClaudeCodeRunner()
+    assert runner._coerce_model("claude-fable-5-1[1m]") == "claude-fable-5-1[1m]"
+    assert runner._coerce_model("cli-default") == ""
+
+
+def test_hermes_home_follows_the_platform(monkeypatch, tmp_path):
+    """Hermes keeps config.yaml under %LOCALAPPDATA%\\hermes on Windows, so
+    Connect wrote a file Hermes never read."""
+    import windows.agent_runners as ar
+
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr(ar, "_resolved_home", lambda: str(tmp_path))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    monkeypatch.setattr(ar.sys, "platform", "win32")
+    assert ar._hermes_config_path() == os.path.join(str(tmp_path / "Local"), "hermes", "config.yaml")
+    monkeypatch.setattr(ar.sys, "platform", "linux")
+    assert ar._hermes_config_path() == os.path.join(str(tmp_path), ".hermes", "config.yaml")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "custom"))
+    assert ar._hermes_config_path() == os.path.join(str(tmp_path / "custom"), "config.yaml")
+
+
+HERMES_MODELS = {"availableModels": [
+    {"modelId": "opencode-go:kimi-k2.6", "name": "kimi-k2.6",
+     "description": "Provider: OpenCode Go \u2022 current"},
+    {"modelId": "opencode-go:glm-5.2", "name": "glm-5.2", "description": "Provider: OpenCode Go"},
+    {"name": "no id"},
+], "currentModelId": "opencode-go:kimi-k2.6"}
+
+
+def test_hermes_lineup_comes_from_its_acp_session(qapp, fresh_cursor_lineup):
+    ar = fresh_cursor_lineup
+    rows = ar.parse_hermes_models(HERMES_MODELS)
+    assert [r["id"] for r in rows] == ["cli-default", "opencode-go:kimi-k2.6", "opencode-go:glm-5.2"]
+    assert rows[0]["tags"] == ["kimi-k2.6"] and rows[1]["provider"] == "OpenCode Go"
+    assert ar.parse_hermes_models({}) == [] and ar.parse_hermes_models(None) == []
+
+    # A turn's session/new answer refreshes the picker for free.
+    runner = _hermes("hi")
+    runner._handle_event({"jsonrpc": "2.0", "id": 1, "result": {}})
+    runner._handle_event({"jsonrpc": "2.0", "id": 2,
+                          "result": {"sessionId": "s1", "models": HERMES_MODELS}})
+    assert [m["id"] for m in ar.models_for_backend(ar.BACKEND_HERMES)][1:] == [
+        "opencode-go:kimi-k2.6", "opencode-go:glm-5.2"]
+    assert _sent(runner)[-1]["method"] == "session/prompt", "no model picked: straight to the prompt"
+
+
+def test_hermes_sets_the_picked_model_before_prompting(qapp, fresh_cursor_lineup):
+    ar = fresh_cursor_lineup
+    ar.set_cli_lineup(ar.BACKEND_HERMES, ar.parse_hermes_models(HERMES_MODELS))
+    runner = _hermes("hi")
+    runner._model_id = runner._coerce_model("opencode-go:glm-5.2")
+    runner._handle_event({"jsonrpc": "2.0", "id": 1, "result": {}})
+    runner._handle_event({"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "s1"}})
+    set_model = _sent(runner)[-1]
+    assert set_model["method"] == "session/set_model"
+    assert set_model["params"] == {"sessionId": "s1", "modelId": "opencode-go:glm-5.2"}
+    runner._handle_event({"jsonrpc": "2.0", "id": set_model["id"], "result": {}})
+    prompt = _sent(runner)[-1]
+    assert prompt["method"] == "session/prompt" and prompt["params"]["sessionId"] == "s1"

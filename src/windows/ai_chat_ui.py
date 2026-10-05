@@ -2477,18 +2477,17 @@ class AIChatWindow(QDockWidget):
         another agent (Zenvi <-> a local harness each keep their own memory).
 
         Only tabs that switched backend this run carry ``seen_seq``; a backend
-        absent from it has seen nothing yet. ponytail: not persisted, so a
-        restart forgets the switch (the harness's own --resume still holds).
+        absent from it has seen nothing yet, and one mapped to None is caught
+        up (see _on_response_ready). ponytail: not persisted, so a restart
+        forgets the switch (the harness's own --resume still holds).
         """
         seen = sess.get("seen_seq")
         backend = sess.get("backend", BACKEND_ZENVI)
         if not seen or seen.get(backend, 0) is None:
             return ""
         from classes import chat_history
-        recap = chat_history.handoff_recap(
+        return chat_history.handoff_recap(
             chat_history.load_messages(self._active_sid), seen.get(backend, 0))
-        seen[backend] = None   # caught up: it sees every turn from here on
-        return recap
 
     def _prepend_editor_snapshot(self, text: str) -> str:
         """Ground the model with a bounded timeline snapshot (main thread).
@@ -4130,6 +4129,11 @@ class AIChatWindow(QDockWidget):
         sid = getattr(self.sender(), "_session_id", self._active_sid)
         if sid in self._sessions:
             self._sessions[sid]["processing"] = False
+            # It answered, so it has the handoff recap: stop sending it. Not at
+            # send time, because a turn that fails never reached the agent.
+            seen = self._sessions[sid].get("seen_seq")
+            if seen:
+                seen[self._sessions[sid].get("backend", BACKEND_ZENVI)] = None
             if sid == self._active_sid:
                 self._sessions[sid]["unread"] = False
             else:

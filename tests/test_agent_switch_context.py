@@ -110,10 +110,16 @@ def test_a_tab_that_never_switched_gets_no_recap(window_cls, history):
     assert window_cls._handoff_prefix(_window(window_cls, sess, history), sess) == ""
 
 
-def test_the_recap_is_sent_once_then_the_harness_is_caught_up(window_cls, history):
+def test_the_recap_is_resent_until_the_harness_answers(window_cls, history):
+    """A first turn that fails (not logged in, a bad flag) never reached the
+    agent, so the recap must still be there on the retry."""
     sess = {"backend": "codex", "seen_seq": {"zenvi": 2}}
     win = _window(window_cls, sess, history)
     assert "Cut it." in window_cls._handoff_prefix(win, sess)
+    assert "Cut it." in window_cls._handoff_prefix(win, sess)
+    win.sender.return_value._session_id = "s1"
+    win._user_cancelled = True     # shortest path through the slot
+    window_cls._on_response_ready(win, "done")    # its reply arrived
     assert window_cls._handoff_prefix(win, sess) == ""
     # leaving and coming back resumes counting from where it left
     history.append({"seq": 3, "role": "user", "content": "add music"})

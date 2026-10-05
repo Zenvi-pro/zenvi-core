@@ -48,9 +48,10 @@ BACKEND_HERMES = "hermes"
 # the picker keeps meaning the same model after a new release ships.
 #
 # Where the lineup comes from, first hit wins: what the installed CLI lists
-# about itself (``set_cli_lineup``: Codex, Cursor, OpenCode), then the Zenvi
-# backend's ``GET /models/cli`` (``set_live_lineups``, for a CLI that cannot
-# list: Claude Code), then each runner's built-in ``MODELS``.
+# about itself (``set_cli_lineup``, every runner has a ``list_models``), then
+# the Zenvi backend's ``GET /models/cli`` (``set_live_lineups``), then each
+# runner's built-in ``MODELS``. The last two only show while the CLI has not
+# answered (not signed in, still starting).
 #
 # A backend with an empty list hides the model pill. Every runner that can
 # list its models carries a "CLI default" entry until the CLI has answered.
@@ -114,9 +115,9 @@ def _cli_default_entry(uses: str = "") -> dict:
 
 
 # Lineups a CLI reported about itself (``cursor-agent models``,
-# ``opencode models``, ``codex debug models``): the user's own install knows
-# which ids it accepts, so this beats the backend's lineup, which only fills in
-# for a CLI that cannot list (Claude Code).
+# ``opencode models``, ``codex debug models``, Claude Code's ``initialize``,
+# Hermes' ACP session): the user's own install knows which ids it accepts, so
+# this beats the backend's lineup.
 _cli_lineups: dict = {}
 
 
@@ -191,6 +192,66 @@ def _cli_install_dirs() -> list:
     if local:
         dirs.append(os.path.join(local, "Microsoft", "WinGet", "Links"))
     return dirs
+
+
+def _expand_path_value(value: str, variables: dict) -> list:
+    """Folders of a registry ``Path`` value, with its ``%VAR%`` parts filled in."""
+    def fill(match):
+        name = match.group(1)
+        found = variables.get(name.upper()) or os.environ.get(name)
+        return found if found else match.group(0)
+
+    out = []
+    for part in (value or "").split(";"):
+        part = re.sub(r"%([^%;]+)%", fill, part.strip())
+        if part and "%" not in part:
+            out.append(part)
+    return out
+
+
+@functools.lru_cache(maxsize=1)
+def _windows_path_dirs() -> tuple:
+    """The user's and machine's PATH as Windows stores them.
+
+    run-zenvi-core.sh starts the editor with ``env -i`` and an MSYS shell does
+    not inherit the Windows PATH, so node / npm / nvm folders (where OpenCode
+    and Codex's npm builds live) are missing from ``os.environ`` although
+    every other program on the machine sees them.
+    """
+    if sys.platform != "win32":
+        return ()
+    try:
+        import winreg
+    except Exception:
+        return ()
+    keys = ((winreg.HKEY_CURRENT_USER, "Environment"),
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"))
+    variables, paths = {}, []
+    for root, sub in keys:
+        try:
+            with winreg.OpenKey(root, sub) as key:
+                index = 0
+                while True:
+                    try:
+                        name, value, _ = winreg.EnumValue(key, index)
+                    except OSError:
+                        break
+                    index += 1
+                    if not isinstance(value, str):
+                        continue
+                    if name.upper() == "PATH":
+                        paths.append(value)
+                    else:
+                        variables.setdefault(name.upper(), value)
+        except OSError:
+            continue
+    out = []
+    for value in paths:
+        for folder in _expand_path_value(value, variables):
+            if folder not in out:
+                out.append(folder)
+    return tuple(out)
 
 
 def _in_cursor_install(path: str) -> bool:
@@ -513,6 +574,12 @@ def _cli_child_env(extra=None):
         if bash:
             env["CLAUDE_CODE_SHELL"] = bash
             env["SHELL"] = bash
+    # What the CLI itself starts (node behind an npm shim, git, ffmpeg) is
+    # looked up on PATH, which a stripped launch lost (see _windows_path_dirs).
+    have = [d for d in (env.get("PATH") or "").split(os.pathsep) if d]
+    missing = [d for d in _windows_path_dirs() if d not in have]
+    if missing:
+        env["PATH"] = os.pathsep.join(have + missing)
     if extra:
         env.update(extra)
     return env
@@ -551,7 +618,7 @@ def _which_cli(binary_name: str):
             found = shutil.which(name)
             if found:
                 return found
-    for directory in _cli_install_dirs():
+    for directory in list(_cli_install_dirs()) + list(_windows_path_dirs()):
         for name in names:
             candidate = os.path.join(directory, name)
             if os.path.isfile(candidate):
@@ -614,7 +681,7 @@ def detect_cli(binary_name: str) -> dict:
     version = None
     try:
         result = subprocess.run(
-            [cli, "--version"], capture_output=True, text=True, timeout=3
+            [cli, "--version"], capture_output=True, text=True, timeout=10
         )
         version = (result.stdout or result.stderr or "").strip() or None
     except Exception:
@@ -1049,7 +1116,15 @@ def register_opencode(port: int, token: str):
 
 
 def _hermes_config_path() -> str:
-    home = os.environ.get("HERMES_HOME") or os.path.join(_resolved_home(), ".hermes")
+    """Hermes' config.yaml: ``$HERMES_HOME``, else ``%LOCALAPPDATA%\\hermes`` on
+    Windows and ``~/.hermes`` elsewhere (hermes_constants.get_hermes_home)."""
+    home = (os.environ.get("HERMES_HOME") or "").strip()
+    if not home and sys.platform == "win32":
+        local = (os.environ.get("LOCALAPPDATA") or "").strip() or os.path.join(
+            _resolved_home(), "AppData", "Local")
+        home = os.path.join(local, "hermes")
+    if not home:
+        home = os.path.join(_resolved_home(), ".hermes")
     return os.path.join(home, "config.yaml")
 
 
@@ -1113,12 +1188,17 @@ _CURSOR_MODEL_FLAGS = re.compile(
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 
+# How many of a CLI's own models the picker shows before "search N more".
+_FEATURED_FROM_CLI = 8
+
+
 def parse_cursor_models(text: str) -> list:
     """Picker entries from ``cursor-agent models`` output, in the CLI's order.
 
     "CLI default" comes first and is preselected, tagged with the model the
     CLI says it would use. The list depends on the account and runs to
-    hundreds of ids, so nothing else is featured; search reaches the rest.
+    hundreds of ids, so the menu opens on the CLI's first few and search
+    reaches the rest.
     """
     rows, seen = [], set()
     current = fallback = ""
@@ -1134,7 +1214,8 @@ def parse_cursor_models(text: str) -> list:
             flags = {f.strip() for f in marks.group(1).split(",")}
             name = name[:marks.start()]
         name = " ".join(name.split()) or mid
-        rows.append({"id": mid, "name": name, "rank": len(rows) + 1, "featured": False})
+        rows.append({"id": mid, "name": name, "rank": len(rows) + 1,
+                     "featured": len(rows) < _FEATURED_FROM_CLI})
         if "current" in flags and not current:
             current = name
         if "default" in flags and not fallback:
@@ -1177,6 +1258,145 @@ def probe_cursor_models(cli: str) -> list:
     return parse_cursor_models(_models_command_output([cli, "models"]))
 
 
+def parse_claude_models(text: str) -> list:
+    """Picker entries from Claude Code's answer to a stream-json ``initialize``.
+
+    The CLI lists what this account may pick (``/model``): ``value`` is what
+    ``--model`` takes, ``description`` leads with the model's name. Its
+    "default" entry becomes "CLI default", tagged with what that resolves to.
+    """
+    models = None
+    for line in (text or "").splitlines():
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(ev, dict) and ev.get("type") == "control_response":
+            reply = ev.get("response") or {}
+            models = (reply.get("response") or reply).get("models")
+            break
+    rows, seen, default_name = [], set(), ""
+    for m in models if isinstance(models, list) else []:
+        if not isinstance(m, dict) or not isinstance(m.get("value"), str) or not m["value"]:
+            continue
+        mid = m["value"]
+        name = (str(m.get("description") or "").split("\u00b7")[0].strip()
+                or m.get("displayName") or mid)
+        if mid == "default":
+            default_name = name
+            continue
+        if mid in seen:
+            continue
+        seen.add(mid)
+        rows.append({"id": mid, "name": name, "provider": "anthropic",
+                     "rank": len(rows) + 1, "featured": True})
+    return [_cli_default_entry(default_name)] + rows if rows else []
+
+
+def _acp_style_probe(argv, requests, done, timeout: float = 60.0) -> str:
+    """Run a CLI that talks JSON lines over stdio, send *requests* (the next
+    one each time *done* says "more"), and return what it printed.
+
+    *done(line_dict)* returns True to stop, a dict to send next, else None.
+    """
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    try:
+        proc = subprocess.Popen(
+            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            encoding="utf-8", errors="replace", bufsize=1, env=_cli_child_env(), **kwargs)
+    except Exception:
+        log.warning("%s failed to start", " ".join(argv[1:]), exc_info=True)
+        return ""
+    killer = threading.Timer(timeout, proc.kill)
+    killer.daemon = True
+    killer.start()
+    out = []
+    try:
+        for msg in requests:
+            proc.stdin.write(json.dumps(msg) + "\n")
+        proc.stdin.flush()
+        for line in proc.stdout:
+            out.append(line)
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            step = done(ev) if isinstance(ev, dict) else None
+            if step is True:
+                break
+            if isinstance(step, dict):
+                proc.stdin.write(json.dumps(step) + "\n")
+                proc.stdin.flush()
+    except Exception:
+        log.debug("%s probe failed", " ".join(argv[1:]), exc_info=True)
+    finally:
+        killer.cancel()
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    return "".join(out)
+
+
+def probe_claude_models(cli: str) -> list:
+    """Ask the installed Claude Code which models it offers (no turn is run)."""
+    text = _acp_style_probe(
+        [cli, "-p", "--input-format", "stream-json", "--output-format", "stream-json",
+         "--verbose"],
+        [{"type": "control_request", "request_id": "zenvi-models",
+          "request": {"subtype": "initialize"}}],
+        lambda ev: ev.get("type") == "control_response" or None)
+    return parse_claude_models(text)
+
+
+def parse_hermes_models(state) -> list:
+    """Picker entries from the ``models`` block of Hermes' ACP session answer."""
+    if not isinstance(state, dict):
+        return []
+    rows, seen, current = [], set(), ""
+    for m in state.get("availableModels") or []:
+        mid = m.get("modelId") if isinstance(m, dict) else None
+        if not isinstance(mid, str) or not mid or mid in seen:
+            continue
+        seen.add(mid)
+        name = m.get("name") or mid
+        row = {"id": mid, "name": name, "rank": len(rows) + 1, "featured": len(rows) < 12}
+        provider = re.match(r"Provider: ([^\u2022]+)", str(m.get("description") or ""))
+        if provider:
+            row["provider"] = provider.group(1).strip()
+        if mid == state.get("currentModelId"):
+            current = name
+        rows.append(row)
+    return [_cli_default_entry(current)] + rows if rows else []
+
+
+def probe_hermes_models(cli: str) -> list:
+    """Open an ACP session just to read which models Hermes' provider offers.
+
+    ponytail: this leaves one empty session in Hermes' history per read, so it
+    runs once per CLI version (LIST_MODELS_ONCE); turns refresh the list too.
+    """
+    found = {}
+
+    def done(ev):
+        if ev.get("id") == 1 and "result" in ev:
+            return {"jsonrpc": "2.0", "id": 2, "method": "session/new",
+                    "params": {"cwd": _project_cwd(), "mcpServers": []}}
+        if ev.get("id") in (1, 2):
+            found.update((ev.get("result") or {}).get("models") or {})
+            return True
+        return None
+
+    _acp_style_probe(
+        [cli, "acp", "--accept-hooks"],
+        [{"jsonrpc": "2.0", "id": 1, "method": "initialize",
+          "params": {"protocolVersion": 1, "clientCapabilities": {}}}],
+        done, timeout=90.0)
+    return parse_hermes_models(found)
+
+
 def parse_codex_models(text: str) -> list:
     """Picker entries from ``codex debug models``: the visible models, by priority.
 
@@ -1195,7 +1415,7 @@ def parse_codex_models(text: str) -> list:
             continue
         seen.add(m["slug"])
         rows.append({"id": m["slug"], "name": m.get("display_name") or m["slug"],
-                     "rank": len(rows) + 1, "featured": len(rows) < 8})
+                     "rank": len(rows) + 1, "featured": len(rows) < _FEATURED_FROM_CLI})
     return [_cli_default_entry()] + rows if rows else []
 
 
@@ -1218,7 +1438,7 @@ def parse_opencode_models(text: str) -> list:
         seen.add(mid)
         provider, _, name = mid.partition("/")
         rows.append({"id": mid, "name": name, "provider": provider,
-                     "rank": len(rows) + 1, "featured": False})
+                     "rank": len(rows) + 1, "featured": len(rows) < _FEATURED_FROM_CLI})
     return [_cli_default_entry()] + rows if rows else []
 
 
@@ -1253,7 +1473,8 @@ def refresh_cli_models(backend: str, version) -> bool:
     with _cli_models_lock:
         last = _cli_models_read.setdefault(backend, {"key": None, "at": 0.0, "ok": False})
         wait = CLI_MODELS_TTL_S if last["ok"] else CLI_MODELS_RETRY_S
-        if last["key"] == key and now - last["at"] < wait:
+        if last["key"] == key and (now - last["at"] < wait
+                                   or (last["ok"] and runner.LIST_MODELS_ONCE)):
             return False
         last["key"], last["at"] = key, now
     rows = runner.list_models(cli)
@@ -1662,6 +1883,8 @@ class BaseAgentRunner(QObject):
     # ``list_models(cli) -> picker entries`` for a CLI that can list its own
     # models (see refresh_cli_models); None when it cannot.
     list_models = None
+    # Read the list once per CLI version instead of every 15 minutes.
+    LIST_MODELS_ONCE = False
 
     def _ensure_ready(self):
         """Return an error string if the backend can't run, else None."""
@@ -1676,6 +1899,27 @@ class BaseAgentRunner(QObject):
     def _after_launch(self, text: str):
         """Called once the CLI is running (a stdin protocol starts here)."""
 
+    def _send_prompt_on_stdin(self, prompt: str):
+        """Write *prompt* to the CLI's stdin and close it.
+
+        argv is no place for a prompt on Windows: a ``.cmd`` launcher runs
+        through cmd.exe, which cuts an argument at its first newline, and any
+        local process can read another's command line.
+        """
+        proc = self._proc
+
+        def _send():
+            try:
+                proc.stdin.write(prompt)
+                proc.stdin.close()
+            except Exception:
+                # The CLI already exited; the read loop reports its output.
+                log.debug("%s stdin write failed", self.CLI_NAME, exc_info=True)
+
+        # Not on this thread: a prompt larger than the pipe buffer would block
+        # here while the CLI blocks writing the stdout nobody reads yet.
+        threading.Thread(target=_send, name="cli-stdin", daemon=True).start()
+
     def _handle_event(self, ev: dict):
         raise NotImplementedError
 
@@ -1687,9 +1931,10 @@ class ClaudeCodeRunner(BaseAgentRunner):
     DISPLAY_NAME = "Claude Code"
     BACKEND_ID = BACKEND_CLAUDE
     register = staticmethod(register_claude)
+    list_models = staticmethod(probe_claude_models)
 
-    # Built-in fallback lineup, used until the backend's live list lands (see
-    # ``models_for_backend``). ``rank`` orders the picker, ``featured`` decides
+    # Built-in fallback lineup, used until the installed CLI has listed its
+    # own (see ``models_for_backend``). ``rank`` orders the picker, ``featured`` decides
     # whether an entry shows before the menu's "show all" toggle, the same
     # contract as the Zenvi model list the backend serves (see setModels in
     # chat.js).
@@ -1820,6 +2065,8 @@ class CodexRunner(BaseAgentRunner):
     # Until it has, the picker offers only "CLI default".
     MODELS = [_cli_default_entry()]
     list_models = staticmethod(probe_codex_models)
+    # The prompt goes in through stdin ("-"), not argv.
+    STDIN = subprocess.PIPE
 
     _TOOL_ITEM_TYPES = {
         "command_execution", "mcp_tool_call", "tool_call", "function_call",
@@ -1842,17 +2089,22 @@ class CodexRunner(BaseAgentRunner):
         ]
         if self._model_id:
             common += ["--model", self._model_id]
-        common += _add_dir_args()
         # Unlike Claude, Codex will not take an id we invent -- it mints its own
         # and reports it as ``thread.started``.  Resuming a seeded placeholder
         # would just fail, so wait until we have heard a real one.
         cli = self._cli_path or self.CLI_NAME
         # Codex has no --append-system-prompt; prefix import steering so it
         # does not Glob /mnt/c the way Claude did before the Claude prompt fix.
-        steered = _agent_import_prompt() + "\n\n" + (text or "")
+        # The prompt goes in through stdin ("-"), see _send_prompt_on_stdin.
+        self._stdin_prompt = _agent_import_prompt() + "\n\n" + (text or "")
         if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
-            return [cli, "exec", "resume", self._cli_session_id, *common, steered]
-        return [cli, "exec", *common, steered]
+            # `exec resume` has no --add-dir (it exits 2); the thread keeps
+            # the folders its first turn was given.
+            return [cli, "exec", "resume", self._cli_session_id, *common, "-"]
+        return [cli, "exec", *common, *_add_dir_args(), "-"]
+
+    def _after_launch(self, text: str):
+        self._send_prompt_on_stdin(self._stdin_prompt)
 
     def _handle_event(self, ev: dict):
         etype = ev.get("type")
@@ -1929,6 +2181,8 @@ class CursorCliRunner(BaseAgentRunner):
     # cursor-agent exits without stopping the stdio MCP servers and the worker
     # it started, so every finished turn would leave them running.
     REAP_ON_EXIT = True
+    # On Windows the CLI is a .cmd, which would cut the prompt at a newline.
+    STDIN = subprocess.PIPE
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1985,8 +2239,11 @@ class CursorCliRunner(BaseAgentRunner):
         # an id heard from the CLI is resumed, never the placeholder we seed.
         if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
             argv += ["--resume", self._cli_session_id]
-        argv.append(text)
+        # No prompt argument: `-p` then reads it from stdin (_after_launch).
         return argv
+
+    def _after_launch(self, text: str):
+        self._send_prompt_on_stdin(text or "")
 
     def _handle_event(self, ev: dict):
         etype = ev.get("type")
@@ -2304,10 +2561,22 @@ def _opencode_native(cli: str) -> str:
     mangles quotes, ``&`` and ``%`` in it; the npm package ships a native exe.
     """
     if cli.lower().endswith(".cmd"):
-        native = os.path.join(os.path.dirname(cli), "node_modules", "opencode-ai",
-                              "bin", "opencode.exe")
-        if os.path.isfile(native):
-            return native
+        folder = os.path.dirname(cli)
+        candidates = []
+        try:
+            with open(cli, "r", encoding="utf-8", errors="replace") as fh:
+                # What the shim itself starts: an update can move the package
+                # (opencode-ai -> @opencode/cli) and leave the old exe behind.
+                named = re.search(r'"%dp0%[\\/]+([^"]+\.exe)"', fh.read())
+            if named:
+                candidates.append(os.path.join(folder, *re.split(r"[\\/]+", named.group(1))))
+        except OSError:
+            pass
+        candidates.append(os.path.join(folder, "node_modules", "opencode-ai",
+                                       "bin", "opencode.exe"))
+        for native in candidates:
+            if os.path.isfile(native):
+                return native
     return cli
 
 
@@ -2337,9 +2606,11 @@ class HermesRunner(BaseAgentRunner):
     DISPLAY_NAME = "Hermes"
     BACKEND_ID = BACKEND_HERMES
     register = staticmethod(register_hermes)
-    # Hermes lists its models only inside an ACP session, so the picker offers
-    # its own config's choice.
+    # Hermes lists its models only inside an ACP session (probe_hermes_models,
+    # and every turn's session answer); until then its own config's choice.
     MODELS = [_cli_default_entry()]
+    list_models = staticmethod(probe_hermes_models)
+    LIST_MODELS_ONCE = True
     STDIN = subprocess.PIPE
 
     def __init__(self, parent=None):
@@ -2406,6 +2677,15 @@ class HermesRunner(BaseAgentRunner):
     def _new_session(self):
         self._request("session/new", {"cwd": self._cli_cwd, "mcpServers": self._mcp_servers()})
 
+    def _begin_prompt(self, session_id: str, result: dict):
+        """The session is open: note its models, pick ours, then prompt."""
+        set_cli_lineup(self.BACKEND_ID, parse_hermes_models(result.get("models")))
+        if self._model_id:
+            self._request("session/set_model",
+                          {"sessionId": session_id, "modelId": self._model_id})
+        else:
+            self._send_prompt(session_id)
+
     def _send_prompt(self, session_id: str):
         self._prompting = True
         self._request("session/prompt", {
@@ -2430,6 +2710,10 @@ class HermesRunner(BaseAgentRunner):
             # The stored conversation is gone: start a new one instead.
             self._new_session()
             return
+        if "error" in ev and kind == "session/set_model":
+            # Hermes no longer offers that model: its own default answers.
+            self._send_prompt(self._cli_session_id)
+            return
         if "error" in ev:
             err = ev.get("error") or {}
             data = err.get("data")
@@ -2449,7 +2733,7 @@ class HermesRunner(BaseAgentRunner):
         elif kind == "session/load":
             # An unknown id comes back as an empty result: start over.
             if result:
-                self._send_prompt(self._cli_session_id)
+                self._begin_prompt(self._cli_session_id, result)
             else:
                 self._new_session()
         elif kind == "session/new":
@@ -2461,7 +2745,9 @@ class HermesRunner(BaseAgentRunner):
             self._cli_session_id = session_id
             self._cli_id_from_cli = True
             self._emit_cli_session()
-            self._send_prompt(session_id)
+            self._begin_prompt(session_id, result)
+        elif kind == "session/set_model":
+            self._send_prompt(self._cli_session_id)
         elif kind == "session/prompt":
             self._prompting = False
             self._close_thinking()
