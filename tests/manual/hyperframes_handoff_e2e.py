@@ -5,17 +5,22 @@ Runs the real HyperFrames CLI (Node + headless Chrome + ffmpeg) and libopenshot 
 editor harness (real ProjectDataStore, UpdateManager and undo; the timeline widget is the tests'
 FakeTimeline), driving the real editor tools:
 
-  init      ``npx hyperframes@0.8.126 init`` a project, then give it media primitives (video, alpha
+  init      ``npx hyperframes@0.8.126 init`` a project, then give it media primitives (a video WITHOUT
+            data-duration that two clips start after -- ``data-start="bg - 1.5"`` / ``"bg"`` --, an alpha
             PNG, audio), a nested composition with variables, a root title and GSAP tweens; lint it.
-  import    import_hyperframes_project_tool in native mode (one undo step; renders the composition
-            and the title layer as linked ProRes 4444) and in flatten mode (HyperFrames' own render);
-            decode the overlays with libopenshot (alpha kept); compare libopenshot's frames of the
-            native import with the flattened render (PSNR, mean |diff|); change a variable with
-            update_linked_clip_tool (re-render, one undo step); start the Studio; cancel a render.
+  import    import_hyperframes_project_tool in native mode (one undo step; the CLI's timing except the
+            starts it gets wrong; renders the composition and the title layer -- the media hidden, not
+            removed -- as linked ProRes 4444) and in flatten mode (HyperFrames' own render, no colour
+            conversion); decode the overlays with libopenshot (alpha kept); compare libopenshot's frames
+            of the native import with the flattened render (PSNR, mean |diff|); change a variable with
+            update_linked_clip_tool, then a default in the composition's HTML (the change made in Zenvi
+            stays, the HTML edit comes through); start the Studio; cancel a render.
   export    a Zenvi project (trimmed video fading in, PNG with an eased move + rotation, SVG title,
-            audio fade) -> export_to_hyperframes_tool -> hyperframes lint -> hyperframes render
-            (PNG sequence) -> compare with libopenshot's frames of the same project.
-  reimport  import the export back -> the clips, files and markers equal the original.
+            audio fade, a cross-fade from the video to a second image) -> export_to_hyperframes_tool ->
+            hyperframes lint -> hyperframes render (PNG sequence) -> compare with libopenshot's frames.
+  reimport  duplicate a clip in the export (as Studio does: same data-zenvi-clip-id), import it back ->
+            the clips, files and markers equal the original plus the copy; export again into the
+            edited folder -> refused, listing index.html; with replace_edits -> replaced.
 
 Usage (heavy: renders go through the machine-wide lock)::
 
@@ -243,8 +248,10 @@ INDEX = """<!doctype html>
   </head>
   <body>
     <div id="root" data-composition-id="main" data-start="0" data-duration="6" data-width="1920" data-height="1080">
-      <video id="bg" class="clip" src="assets/clip.mp4" data-start="0" data-duration="4" data-track-index="0"
+      <video id="bg" class="clip" src="assets/clip.mp4" data-start="0" data-track-index="0"
              muted playsinline></video>
+      <video id="tail" class="clip" src="assets/clip.mp4" data-start="bg" data-duration="2" data-media-start="1"
+             data-track-index="5" muted playsinline></video>
       <img id="logo" class="clip" src="assets/logo.png" data-start="bg - 1.5" data-duration="2.5" data-track-index="1"
            style="left: 1300px; top: 120px; width: 400px; height: 200px" />
       <audio id="music" src="assets/music.wav" data-start="0" data-duration="6" data-volume="0.5" data-fade-out="1"
@@ -328,6 +335,11 @@ def part_import(work, project_dir):
                         "timing_from": d["project"]["timing_from"], "cli": d["project"]["hyperframes_cli"],
                         "clips": [{k: c.get(k) for k in ("kind", "role", "element", "name", "layer", "position", "end",
                                                          "codec")} for c in d["clips"]]}
+    # data-start="bg - 1.5" / "bg" after a video without data-duration: 2.5 s and 4.0 s (its 4 s of media),
+    # where HyperFrames plays them -- not the 0.0 its CLI's timeline reports for both
+    starts = {c.get("element"): c.get("position") for c in d["clips"] if c["kind"] == "native"}
+    result["reference_starts"] = {"logo": starts.get("logo"), "tail": starts.get("tail")}
+    log("reference starts:", result["reference_starts"])
     linked = {}
     for c in d["clips"]:
         if c["kind"] != "linked":
@@ -345,6 +357,13 @@ def part_import(work, project_dir):
     corner, extrema = alpha_stats(png, [(5, 5), (1900, 1070)])
     result["lower_third_alpha"] = {"corners": corner, "extrema": extrema}
     log("lower third alpha", result["lower_third_alpha"])
+    # the graphics layer hides (not removes) the media rebuilt natively: nothing of the video at 1 s
+    layer_png = openshot_frame_png(linked["layer"]["path"], 31, os.path.join(frames, "layer-f30.png"))
+    result["layer_alpha_at_1s"] = alpha_stats(layer_png, [(960, 540)])[1]
+    layer_title = openshot_frame_png(linked["layer"]["path"], 151, os.path.join(frames, "layer-f150.png"))
+    result["layer_alpha_at_5s"] = alpha_stats(layer_title, [(960, 540)])[1]
+    log("layer alpha at 1 s (video hidden):", result["layer_alpha_at_1s"], "at 5 s (title):",
+        result["layer_alpha_at_5s"])
     native_project = copy.deepcopy(editor.store._data)
     native_frames = libopenshot_frames(native_project, SAMPLE_TIMES, frames, "native")
 
@@ -364,6 +383,22 @@ def part_import(work, project_dir):
         editor.undo()
         result["rerender"]["undo_restores"] = editor.file(fid)["path"] == before
         editor.redo()
+        # an edit made in HyperFrames (the accent's default) comes through; Zenvi's headline stays
+        comp_file = os.path.join(project_dir, "compositions", "lower-third.html")
+        with open(comp_file, encoding="utf-8") as fh:
+            text = fh.read()
+        with open(comp_file, "w", encoding="utf-8") as fh:
+            fh.write(text.replace('"default":"#FF5A36"', '"default":"#2F6BFF"'))
+        state = lm.check_link(editor.file(fid)).state
+        t0 = time.time()
+        rr = editor.call_receipt("rerender_linked_clip_tool", file_id=fid)
+        link_now = lm.read_link(editor.file(fid))
+        result["html_edit"] = {"state_after_edit": state, "status": rr["status"], "seconds": round(time.time() - t0, 1),
+                               "stored_props": lm.link_props(link_now),
+                               "editable": hfprov.HyperFramesProvider().editable_props(link_now)}
+        if rr["status"] == "applied":
+            openshot_frame_png(editor.file(fid)["path"], 31, os.path.join(frames, "lower-third-blue-f30.png"))
+        log("html edit:", result["html_edit"])
 
     # Studio: a real preview server, reused, stopped
     t0 = time.time()
@@ -379,14 +414,17 @@ def part_import(work, project_dir):
     # cancel a render: JobCancelled, no wrapper folder, no headless Chrome left behind
     link = lm.read_link(editor.file(fid))
     stop = threading.Event()
-    threading.Timer(12.0, stop.set).start()
     staging = os.path.join(work, "cancel-staging")
     os.makedirs(staging, exist_ok=True)
     cancelled = False
     chrome_before = chrome_pids()
     t0 = time.time()
+
+    def progress(fraction, _message):
+        if fraction is not None and fraction > 0.2:  # cancel while HyperFrames is capturing frames
+            stop.set()
     try:
-        hfprov.HyperFramesProvider().render(link, staging, on_progress=lambda f, m: None, should_cancel=stop.is_set)
+        hfprov.HyperFramesProvider().render(link, staging, on_progress=progress, should_cancel=stop.is_set)
     except jobs.JobCancelled:
         cancelled = True
     time.sleep(2.0)
@@ -478,12 +516,20 @@ def build_fixture_project(work):
     ft = add_file("FTITLE0001", title, "Title")
     fm = add_file("FMUSIC0001", music, "music.wav")
     add_clip("CVIDEO0001", fv, 1000000, 0.0, 0.5, 4.0, alpha=_kf((16, 0.0), (31, 1.0)))
+    f2 = add_file("FCARD00002", logo, "logo.png")
+    add_clip("CNEXT00001", f2, 1000000, 3.0, 0.0, 1.5, scale=1)  # on the video's track: the cross-fade target
     add_clip("CCARD00001", fc, 2000000, 0.5, 0.0, 3.0, scale_x=_kf((1, 0.4)), scale_y=_kf((1, 0.4)),
              location_x=_kf((1, -0.3), (61, 0.2, 0, (0.3, 1.0), (0.16, 1.0))), location_y=_kf((1, -0.15)),
              rotation=_kf((1, 0.0), (61, 10.0)))
     add_clip("CTITLE0001", ft, 3000000, 1.0, 0.0, 2.5, alpha=_kf((1, 0.0), (16, 1.0, 1)))
     add_clip("CMUSIC0001", fm, 4000000, 0.0, 0.0, 3.5, volume=_kf((1, 1.0), (61, 1.0, 1), (106, 0.0, 1)))
-    project["files"], project["clips"], project["effects"] = files, clips, []
+    fade = {"id": "TRANS00001", "layer": 1000000, "title": "Fade", "type": "Mask", "position": 3.0, "start": 0.0,
+            "end": 0.5, "duration": 0.5, "brightness": _kf((1, 1.0, 1), (16, -1.0, 1)), "contrast": _kf((1, 3.0, 1)),
+            "reader": json.loads(openshot.QtImageReader(os.path.join(SRC, "transitions", "common", "fade.svg"))
+                                 .Json()),
+            "replace_image": False, "mask_invert": False, "fade_audio_hint": True, "class_name": "Mask",
+            "name": "Mask"}
+    project["files"], project["clips"], project["effects"] = files, clips, [fade]
     project["markers"] = [{"id": "MARK000001", "position": 2.0, "name": "Hold", "vector": "blue"}]
     return project
 
@@ -512,7 +558,7 @@ def part_export(work):
     log("render:", result["render"])
     pngs = sorted(glob.glob(os.path.join(seq, "**", "*.png"), recursive=True))
     result["render"]["frames"] = len(pngs)
-    times = (0.0, 0.3, 0.5, 0.8, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 3.4)
+    times = (0.0, 0.3, 0.5, 0.8, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 3.1, 3.2, 3.3, 3.4, 4.0, 4.4)
     ref = libopenshot_frames(project, times, os.path.join(work, "frames"), "zenvi")
     cmp = {}
     for s in times:
@@ -532,20 +578,42 @@ def part_export(work):
 
 
 def part_reimport(work, out, project):
+    import re
+    # what Studio's duplicate does: a clone with a new id and start, the same data-zenvi-clip-id
+    index = os.path.join(out, "index.html")
+    with open(index, encoding="utf-8") as fh:
+        html = fh.read()
+    tag = re.search(r'<img id="c-CCARD00001"[^>]*/>', html).group(0)
+    dup = tag.replace('id="c-CCARD00001"', 'id="c-CCARD00001-copy"').replace('data-start="0.5"', 'data-start="3.6"')
+    with open(index, "w", encoding="utf-8") as fh:
+        fh.write(html.replace(tag, tag + "\n      " + dup))
     editor = make_editor(work, "user-reimport")
     editor.mark()
     r = editor.call_receipt("import_hyperframes_project_tool", project_dir=out, position=0.0)
     log("reimport:", r["status"], r["summary"][:300])
-    restored = {c["id"]: c for c in editor.store._data["clips"]}
+    clips = editor.store._data["clips"]
     original = {c["id"]: c for c in project["clips"]}
+    restored = {c["id"]: c for c in clips if c["id"] in original}
+    copies = [c for c in clips if c["id"] not in original]
     diffs = sorted(k for cid in original for k in set(original[cid]) | set(restored.get(cid, {}))
                    if original[cid].get(k) != restored.get(cid, {}).get(k))
     files_equal = all(any(f.get("path") == g.get("path") for g in editor.store._data["files"]) for f in project["files"])
     REPORT["reimport"] = {"status": r["status"], "mode": r["data"]["mode"], "undo_steps": editor.undo_steps_since_mark(),
                           "clip_ids_equal": set(restored) == set(original), "differing_clip_keys": diffs,
+                          "copies": [{"file_id": c["file_id"], "position": c["position"]} for c in copies],
                           "files_equal": files_equal,
                           "markers_equal": editor.store._data.get("markers") == project["markers"]}
     log("reimport:", REPORT["reimport"])
+    # exporting again into the folder edited in "HyperFrames": refused, then replaced when asked
+    exporter_editor = make_editor(work, "user-reexport")
+    exporter_editor.store._data = copy.deepcopy(project)
+    r1 = exporter_editor.call_receipt("export_to_hyperframes_tool", output_dir=out)
+    r2 = exporter_editor.call_receipt("export_to_hyperframes_tool", output_dir=out, replace_edits=True)
+    with open(index, encoding="utf-8") as fh:
+        back = "c-CCARD00001-copy" not in fh.read()
+    REPORT["reexport"] = {"refused": r1["status"], "summary": r1["summary"][:240], "overwrite": r2["status"],
+                          "replaced": (r2.get("data") or {}).get("replaced_edits"), "duplicate_gone": back}
+    log("re-export:", REPORT["reexport"])
 
 
 def main():

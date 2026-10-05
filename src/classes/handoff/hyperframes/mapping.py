@@ -727,15 +727,30 @@ def native_plan(clip: Clip, comp: Composition, media: dict, *, fps: float, canva
     duration = max(frame, round(duration * fps) / fps)
     if clip.kind == "img":
         start, end = 0.0, duration
+        try:
+            frames = int(media.get("frames") or 0)
+        except (TypeError, ValueError):
+            frames = 0
+        if frames > 1:
+            problems.append(f"it is an animated image ({frames} frames): HyperFrames plays it, Zenvi would show a "
+                            "still")
     else:
         start = round(clip.media_start * fps) / fps
         needed = start + duration * rate
         if media_duration and needed > media_duration + frame / 2:
             playable = max(frame, (media_duration - start) / rate)
+            if clip.loop:
+                problems.append(f"it loops its media (<video loop>) for {duration:.2f}s; Zenvi plays the "
+                                f"{playable:.2f}s of media once")
             warnings.append(f"{clip.label} runs {duration:.2f}s but its media has only {playable:.2f}s left after "
-                            f"data-media-start; Zenvi ends the clip with the media")
+                            f"its in point; Zenvi ends the clip with the media")
             duration = max(frame, math.floor(playable * fps + 1e-6) / fps)
         end = start + duration
+        audible = clip.kind == "audio" or (not clip.muted and clip.has_audio is not False
+                                           and bool(media.get("has_audio", True)))
+        if abs(rate - 1.0) > 1e-9 and audible and not clip.muted:
+            warnings.append(f"{clip.label} plays at {rate:g}x: HyperFrames keeps the pitch of its sound, Zenvi's "
+                            "speed change shifts it (higher when faster)")
     plan = NativePlan(clip=clip, position=round((clip.start or 0.0) * fps) / fps, start=start, end=end,
                       problems=problems, warnings=warnings)
     props: Dict[str, Any] = {}

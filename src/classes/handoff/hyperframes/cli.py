@@ -1,19 +1,27 @@
 """Run the HyperFrames CLI for linked clips: timeline / lint JSON, renders, and the Studio preview.
 
-Which CLI (first match):
+Which CLI (first match) -- never one the project brings along: a project's
+``node_modules`` is its code, and Zenvi runs a project's code only to render
+it, after the import dialog's trust note (review C5-1 #8):
 
-1. ``ZENVI_HYPERFRAMES_CLI`` -- a ``hyperframes`` executable, ``bin/hyperframes.mjs`` or ``dist/cli.js``;
-2. the project's own install (``<project>/node_modules/hyperframes``);
-3. the local HyperFrames setup's private install (``~/.openshot_qt/hyperframes/node_modules``,
+1. ``ZENVI_HYPERFRAMES_CLI`` -- a ``hyperframes`` executable, ``bin/hyperframes.mjs``
+   or ``dist/cli.js`` the user chose (this is also how to use a project's own install);
+2. the local HyperFrames setup's private install (``~/.openshot_qt/hyperframes/node_modules``,
    motion graphics), when it is the version the project pins, or the project pins none and it
    is at least :data:`PINNED_VERSION` (older CLIs may lack the flags Zenvi uses);
-4. ``npx --yes hyperframes@<version>`` -- the version the project's package.json
+3. ``npx --yes hyperframes@<version>`` -- the version the project's package.json
    scripts pin (``npx hyperframes@0.8.126 render``), else :data:`PINNED_VERSION`.
 
-Node.js 22+ comes from :func:`classes.handoff.node_runtime.find_node`. Every
-command runs with HyperFrames' telemetry, update check and self-update off
-(:data:`QUIET_ENV`): Zenvi never opts a user in. Everything here blocks --
-call it off the GUI thread.
+Every command runs in a folder of Zenvi's own (:func:`work_dir`) with the
+project folder as its argument, so a project's ``.npmrc`` or ``node_modules``
+never applies -- except ``timeline``, which only reads the project from its
+working folder (0.8.126 takes a folder argument for a sub-command name): it
+runs in the project folder, but as a plain ``node <entry>`` (an npx CLI is
+found in npm's cache), so nothing npm reads from there applies. Node.js 22+ comes from
+:func:`classes.handoff.node_runtime.find_node`. Every command runs with
+HyperFrames' telemetry, update check and self-update off (:data:`QUIET_ENV`):
+Zenvi never opts a user in. Everything here blocks -- call it off the GUI
+thread.
 
 The Studio (``hyperframes preview``) runs as a child of Zenvi on a free
 loopback port; :func:`open_studio` reuses a running one for the same
@@ -68,7 +76,7 @@ class Cli:
 
     argv: Tuple[str, ...]
     version: Optional[str]
-    source: str                      # env | project | zenvi | npx
+    source: str                      # env | zenvi | npx | npx-cache (npx's download, run as plain node)
     runtime: node_runtime.NodeRuntime
 
     def command(self, *args: str) -> List[str]:
@@ -144,11 +152,6 @@ def resolve_cli(project_dir: Optional[str] = None, *, env: Optional[Dict[str, st
         pkg = os.path.dirname(os.path.dirname(os.path.realpath(path)))
         return Cli(argv, _package_version(pkg), "env", runtime)
     pin = project_pin(project_dir)
-    if project_dir:
-        local = os.path.join(project_dir, "node_modules", "hyperframes")
-        entry = _entry_in(local)
-        if entry:
-            return Cli((runtime.node, entry), _package_version(local), "project", runtime)
     private = private_install()
     entry = _entry_in(private)
     if entry:
@@ -157,6 +160,14 @@ def resolve_cli(project_dir: Optional[str] = None, *, env: Optional[Dict[str, st
             return Cli((runtime.node, entry), version, "zenvi", runtime)
     version = pin or PINNED_VERSION
     return Cli(tuple(runtime.npx_argv("--yes", "hyperframes@%s" % version)), version, "npx", runtime)
+
+
+def work_dir() -> str:
+    """Zenvi's own folder the CLI runs in (not the project: its .npmrc / node_modules must not apply)."""
+    from classes import info
+    path = os.path.join(info.USER_PATH, "cache", "hyperframes-run")
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 def cli_env(cli: Cli, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
@@ -174,13 +185,18 @@ def clean_line(line: str) -> str:
     return _ANSI.sub("", text).strip()
 
 
-def run(cli: Cli, args: Sequence[str], cwd: str, *, timeout: Optional[float] = None,
+def run(cli: Cli, args: Sequence[str], *, timeout: Optional[float] = None,
         on_line: Optional[Callable[[str], None]] = None,
-        should_cancel: Optional[Callable[[], bool]] = None) -> Tuple[int, str]:
-    """Run ``hyperframes <args>`` in *cwd*: (exit code, output tail). Raises CliError when it cannot start."""
+        should_cancel: Optional[Callable[[], bool]] = None, cwd: Optional[str] = None) -> Tuple[int, str]:
+    """Run ``hyperframes <args>`` in :func:`work_dir` (or *cwd*): (exit code, output tail).
+
+    CliError when it cannot start. Only a direct ``node <entry>`` CLI may run in a project folder.
+    """
+    if cwd is not None and cli.source == "npx":
+        raise CliError("an npx HyperFrames CLI never runs inside a project folder (its .npmrc would apply)")
     try:
-        return node_runtime.run_node(cli.command(*args), cwd, env=cli_env(cli), timeout=timeout, on_line=on_line,
-                                     should_cancel=should_cancel, runtime=cli.runtime)
+        return node_runtime.run_node(cli.command(*args), cwd or work_dir(), env=cli_env(cli), timeout=timeout,
+                                     on_line=on_line, should_cancel=should_cancel, runtime=cli.runtime)
     except node_runtime.NodeTimeout:
         raise CliError(f"hyperframes {' '.join(args[:1])} did not finish within {int(timeout or 0)} s") from None
     except node_runtime.NodeCancelled:
@@ -202,12 +218,12 @@ def _json_from(text: str) -> Optional[dict]:
     return best
 
 
-def run_json(cli: Cli, args: Sequence[str], project_dir: str, *, timeout: float = JSON_TIMEOUT,
+def run_json(cli: Cli, args: Sequence[str], *, timeout: float = JSON_TIMEOUT, cwd: Optional[str] = None,
              should_cancel: Optional[Callable[[], bool]] = None) -> dict:
-    """``hyperframes <args> --json`` in *project_dir*, parsed. CliError with the CLI's message on failure."""
+    """``hyperframes <args> --json``, parsed. CliError with the CLI's message on failure."""
     lines: List[str] = []
-    code, tail = run(cli, list(args) + ["--json"], project_dir, timeout=timeout, on_line=lines.append,
-                     should_cancel=should_cancel)
+    code, tail = run(cli, list(args) + ["--json"], timeout=timeout, on_line=lines.append,
+                     should_cancel=should_cancel, cwd=cwd)
     text = "\n".join(lines) or tail
     data = _json_from(text)
     if data is None:
@@ -216,14 +232,62 @@ def run_json(cli: Cli, args: Sequence[str], project_dir: str, *, timeout: float 
     return data
 
 
+def _npm_cache(cli: Cli) -> str:
+    env = cli_env(cli)
+    value = (env.get("npm_config_cache") or env.get("NPM_CONFIG_CACHE") or "").strip()
+    if value:
+        return os.path.expanduser(value)
+    try:
+        lines: List[str] = []
+        code, tail = node_runtime.run_node(cli.runtime.npm_argv("config", "get", "cache"), work_dir(), env=env,
+                                           timeout=60, on_line=lines.append, runtime=cli.runtime)
+        text = next((clean_line(x) for x in reversed(lines or tail.splitlines()) if clean_line(x)), "")
+        if code == 0 and text and os.path.isdir(text):
+            return text
+    except (node_runtime.NodeRunError, node_runtime.NodeTimeout, OSError):
+        log.debug("npm config get cache failed", exc_info=True)
+    if os.name == "nt":
+        return os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "npm-cache")
+    return os.path.expanduser("~/.npm")
+
+
+def _npx_cached_entry(cli: Cli) -> Optional[str]:
+    """The entry file of the CLI version *cli* names in npm's npx cache, if it was downloaded."""
+    import glob
+    for pkg in sorted(glob.glob(os.path.join(_npm_cache(cli), "_npx", "*", "node_modules", "hyperframes"))):
+        if _package_version(pkg) == cli.version:
+            entry = _entry_in(pkg)
+            if entry:
+                return entry
+    return None
+
+
+def direct(cli: Cli, *, should_cancel: Optional[Callable[[], bool]] = None) -> Cli:
+    """*cli* as a plain ``node <entry>`` command (an npx CLI downloaded first, from :func:`work_dir`)."""
+    if cli.source != "npx":
+        return cli
+    entry = _npx_cached_entry(cli)
+    if entry is None:
+        run(cli, ["--version"], timeout=JSON_TIMEOUT, should_cancel=should_cancel)  # npx downloads it
+        entry = _npx_cached_entry(cli)
+    if entry is None:
+        raise CliError("could not find the HyperFrames CLI npx downloaded; set ZENVI_HYPERFRAMES_CLI to it")
+    return Cli((cli.runtime.node, entry), cli.version, "npx-cache", cli.runtime)
+
+
 def timeline(project_dir: str, cli: Optional[Cli] = None, **kwargs) -> dict:
-    """``hyperframes timeline --json``: the resolved tracks and clips (HyperFrames' own timing)."""
-    return run_json(cli or resolve_cli(project_dir), ["timeline"], project_dir, **kwargs)
+    """``hyperframes timeline --json``: the resolved tracks and clips (HyperFrames' own timing).
+
+    0.8.126 reads the project only from its working folder (a folder argument is taken for a
+    sub-command), so it runs in *project_dir* -- as plain node, never through npm (:func:`direct`).
+    """
+    plain = direct(cli or resolve_cli(project_dir), should_cancel=kwargs.get("should_cancel"))
+    return run_json(plain, ["timeline"], cwd=project_dir, **kwargs)
 
 
 def lint(project_dir: str, cli: Optional[Cli] = None, **kwargs) -> dict:
-    """``hyperframes lint --json``: ``{ok, errorCount, warningCount, findings}``."""
-    return run_json(cli or resolve_cli(project_dir), ["lint"], project_dir, **kwargs)
+    """``hyperframes lint <project> --json``: ``{ok, errorCount, warningCount, findings}``."""
+    return run_json(cli or resolve_cli(project_dir), ["lint", project_dir], **kwargs)
 
 
 def workers() -> Optional[str]:
@@ -234,16 +298,20 @@ def workers() -> Optional[str]:
 
 def render(project_dir: str, entry: str, output: str, *, fmt: str, cli: Optional[Cli] = None,
            variables: Optional[dict] = None, fps: Optional[str] = None, quality: Optional[str] = None,
-           on_progress: Optional[Callable[[Optional[float], str], None]] = None,
+           sdr: bool = True, on_progress: Optional[Callable[[Optional[float], str], None]] = None,
            should_cancel: Optional[Callable[[], bool]] = None, timeout: float = RENDER_TIMEOUT) -> str:
     """Render *entry* (project-relative html) of *project_dir* to *output* (mp4 / mov). Blocking.
 
-    Progress lines (``NN%  Streaming frame 12/78``) go to *on_progress*.
-    Returns *output*; CliError with the last lines of the CLI's output when
-    the render fails or writes nothing.
+    *sdr* passes ``--sdr`` (libopenshot has no HDR path, so linked renders are
+    SDR even when the project has HDR sources). Progress lines (``NN%
+    Streaming frame 12/78``) go to *on_progress*. Returns *output*; CliError
+    with the last lines of the CLI's output when the render fails or writes
+    nothing.
     """
     cli = cli or resolve_cli(project_dir)
     args = ["render", project_dir, "--composition", entry, "--format", fmt, "--output", output]
+    if sdr:
+        args.append("--sdr")
     if variables:
         var_file = output + ".variables.json"
         with open(var_file, "w", encoding="utf-8") as fh:
@@ -264,7 +332,7 @@ def render(project_dir: str, entry: str, output: str, *, fmt: str, cli: Optional
         if m:
             progress(min(1.0, int(m.group(1)) / 100.0), m.group(2).strip() or "Rendering")
 
-    code, tail = run(cli, args, project_dir, timeout=timeout, on_line=on_line, should_cancel=should_cancel)
+    code, tail = run(cli, args, timeout=timeout, on_line=on_line, should_cancel=should_cancel)
     if code != 0 or not os.path.isfile(output) or os.path.getsize(output) == 0:
         lines = [clean_line(x) for x in tail.splitlines() if clean_line(x)]
         useful = [x for x in lines if not x.startswith("[INFO]")] or lines
@@ -286,6 +354,7 @@ class Studio:
 
 _studios: Dict[str, Studio] = {}
 _studio_lock = threading.Lock()
+_starting: Dict[str, threading.Lock] = {}   # one start at a time per project (two quick opens: one Studio)
 
 
 def free_port() -> int:
@@ -305,16 +374,27 @@ def running_studio(project_dir: str) -> Optional[Studio]:
 
 
 def start_studio(project_dir: str, *, cli: Optional[Cli] = None, timeout: float = STUDIO_READY_TIMEOUT) -> Studio:
-    """Start ``hyperframes preview`` for *project_dir* (or reuse Zenvi's running one); returns when it is ready."""
-    existing = running_studio(project_dir)
-    if existing is not None:
-        return existing
+    """Start ``hyperframes preview`` for *project_dir* (or reuse Zenvi's running one); returns when it is ready.
+
+    A second call while the first is still starting waits for it and gets the same Studio.
+    """
+    key = os.path.realpath(project_dir)
+    with _studio_lock:
+        starting = _starting.setdefault(key, threading.Lock())
+    with starting:
+        existing = running_studio(project_dir)
+        if existing is not None:
+            return existing
+        return _launch_studio(project_dir, cli, timeout)
+
+
+def _launch_studio(project_dir: str, cli: Optional[Cli], timeout: float) -> Studio:
     cli = cli or resolve_cli(project_dir)
     port = free_port()
     argv = cli.command("preview", project_dir, "--foreground", "--json", "--no-open", "--port", str(port))
     kwargs = node_runtime._popen_kwargs()  # its own process group (stopped as a tree), no console window
     try:
-        proc = subprocess.Popen(argv, cwd=project_dir, env=cli_env(cli), stdin=subprocess.DEVNULL,
+        proc = subprocess.Popen(argv, cwd=work_dir(), env=cli_env(cli), stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
                                 errors="replace", bufsize=1, **kwargs)
     except OSError as exc:
@@ -393,5 +473,5 @@ atexit.register(stop_studios)
 __all__ = [
     "PINNED_VERSION", "NODE_MIN_MAJOR", "QUIET_ENV", "CliError", "Cli", "resolve_cli", "project_pin", "run",
     "run_json", "timeline", "lint", "render", "clean_line", "Studio", "start_studio", "running_studio",
-    "stop_studios", "open_studio", "open_url", "free_port", "private_install", "workers",
+    "stop_studios", "open_studio", "open_url", "free_port", "private_install", "workers", "work_dir", "direct",
 ]

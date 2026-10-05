@@ -59,11 +59,11 @@ def test_resolution_order(tmp_path, node, monkeypatch):
         _package(private, version)
         assert hf_cli.resolve_cli(_project(tmp_path)).source == source, version
     assert hf_cli.resolve_cli(_project(tmp_path, "0.8.120")).source == "npx"
-    # the project's own install wins over both
+    # the project's own install is the project's code: never run on its own (review C5-1 #8)
     _package(os.path.join(proj, "node_modules", "hyperframes"), "0.8.121")
     cli = hf_cli.resolve_cli(proj)
-    assert (cli.source, cli.version, cli.argv[0]) == ("project", "0.8.121", sys.executable)
-    # and ZENVI_HYPERFRAMES_CLI over everything
+    assert (cli.source, cli.version) == ("npx", "0.8.120") and "node_modules" not in " ".join(cli.argv)
+    # ZENVI_HYPERFRAMES_CLI (the user's choice) over everything
     other = str(tmp_path / "other")
     _package(other, "9.9.9")
     monkeypatch.setenv(hf_cli.CLI_ENV_OVERRIDE, other)
@@ -90,22 +90,55 @@ def test_every_command_runs_quiet(tmp_path, node, monkeypatch):
             on_line(line)
         return 0, ""
     monkeypatch.setattr(node_runtime, "run_node", fake_run)
-    report = hf_cli.lint(_project(tmp_path))
-    assert report["ok"] is True and seen["argv"][-2:] == ["lint", "--json"]
+    proj = _project(tmp_path)
+    open(os.path.join(proj, ".npmrc"), "w").write("registry=https://evil.example/\n")
+    report = hf_cli.lint(proj)
+    assert report["ok"] is True and seen["argv"][-3:] == ["lint", proj, "--json"]
+    # run from Zenvi's own folder with the project as an argument: the project's .npmrc never applies
+    assert seen["cwd"] == hf_cli.work_dir() and not seen["cwd"].startswith(proj)
     for key, value in hf_cli.QUIET_ENV.items():
         assert seen["env"][key] == value
     assert seen["env"]["HYPERFRAMES_NO_TELEMETRY"] == "1" and seen["env"]["DO_NOT_TRACK"] == "1"
 
 
 def test_json_is_found_in_noisy_output_and_missing_json_is_an_error(tmp_path, node, monkeypatch):
+    cli = hf_cli.Cli((sys.executable, "hf.mjs"), "0.8.126", "env", node)
     out = ["[INFO] something {not json}", json.dumps({"timeline": {"duration": 3, "tracks": []}}), "done"]
     monkeypatch.setattr(node_runtime, "run_node",
                         lambda argv, cwd, **kw: ([kw["on_line"](x) for x in out], (0, ""))[1])
-    assert hf_cli.timeline(_project(tmp_path))["timeline"]["duration"] == 3
+    assert hf_cli.timeline(_project(tmp_path), cli=cli)["timeline"]["duration"] == 3
     monkeypatch.setattr(node_runtime, "run_node",
                         lambda argv, cwd, **kw: ([kw["on_line"](x) for x in ["Unknown command"]], (1, ""))[1])
     with pytest.raises(hf_cli.CliError, match="printed no JSON"):
-        hf_cli.timeline(_project(tmp_path))
+        hf_cli.timeline(_project(tmp_path), cli=cli)
+
+
+def test_timeline_runs_plain_node_in_the_project_never_npm(tmp_path, node, monkeypatch):
+    """0.8.126's `timeline` reads the project from its working folder only (a folder argument is taken for a
+    sub-command): it runs there, but as `node <entry>` -- an npx CLI is found in npm's cache first."""
+    proj = _project(tmp_path, "0.8.126")
+    cache = tmp_path / "npm-cache"
+    monkeypatch.setenv("npm_config_cache", str(cache))
+    calls = []
+
+    def fake_run(argv, cwd, env=None, timeout=None, on_line=None, should_cancel=None, runtime=None):
+        calls.append((list(argv), cwd))
+        if "--version" in argv:  # what npx --yes does on first use: download into the cache
+            _package(str(cache / "_npx" / "abc123" / "node_modules" / "hyperframes"), "0.8.126")
+            return 0, "0.8.126"
+        on_line(json.dumps({"timeline": {"duration": 2, "tracks": []}}))
+        return 0, ""
+    monkeypatch.setattr(node_runtime, "run_node", fake_run)
+    cli = hf_cli.resolve_cli(proj)
+    assert cli.source == "npx"
+    assert hf_cli.timeline(proj, cli=cli)["timeline"]["duration"] == 2
+    (download, download_cwd), (listing, listing_cwd) = calls
+    assert download[-1] == "--version" and download_cwd == hf_cli.work_dir()          # npx: Zenvi's folder
+    assert listing[0] == sys.executable and "npx-cli.js" not in listing                 # then plain node...
+    assert listing[1].endswith(os.path.join("_npx", "abc123", "node_modules", "hyperframes", "bin",
+                                            "hyperframes.mjs")) and listing_cwd == proj  # ...in the project
+    with pytest.raises(hf_cli.CliError, match="never runs inside a project folder"):
+        hf_cli.run(cli, ["timeline"], cwd=proj)
 
 
 def test_clean_line():
@@ -163,6 +196,33 @@ def test_studio_starts_once_reuses_and_stops(tmp_path, node, monkeypatch):
         assert hf_cli.stop_studios() == 1
     studio.proc.wait(timeout=10)
     assert studio.proc.poll() is not None and hf_cli.running_studio(proj) is None
+
+
+def test_two_quick_opens_start_one_studio(tmp_path, node, monkeypatch):
+    import threading
+    script = tmp_path / "slow_preview.py"
+    script.write_text(textwrap.dedent("""
+        import json, sys, time
+        port = sys.argv[sys.argv.index("--port") + 1]
+        time.sleep(1.0)
+        print(json.dumps({"ok": True, "result": {"ready": True,
+                          "studioUrl": "http://127.0.0.1:%s/#project/p" % port}}), flush=True)
+        time.sleep(60)
+    """))
+    cli = hf_cli.Cli((sys.executable, str(script)), "0.8.126", "env", node)
+    monkeypatch.setattr(hf_cli, "resolve_cli", lambda project_dir=None, **kw: cli)
+    proj = _project(tmp_path)
+    got = []
+    threads = [threading.Thread(target=lambda: got.append(hf_cli.start_studio(proj, timeout=30))) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(40)
+    try:
+        assert len(got) == 2 and got[0] is got[1]
+    finally:
+        assert hf_cli.stop_studios() == 1
+    got[0].proc.wait(timeout=10)
 
 
 def test_studio_that_never_gets_ready(tmp_path, node, monkeypatch):

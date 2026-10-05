@@ -263,6 +263,22 @@ def test_media_start_playback_rate_and_running_out(tmp_path):
     assert o.end == pytest.approx(20.0) and "Zenvi ends the clip with the media" in o.warnings[0]
 
 
+def test_loops_animated_images_and_pitch_are_reported(tmp_path):
+    """Review C5-1 #11 and plausible items: what a native clip cannot do the way HyperFrames does it."""
+    p = load(tmp_path, '<video id="loop" src="a.mp4" data-start="0" data-duration="30" loop muted></video>'
+                       '<video id="short" src="a.mp4" data-start="0" data-duration="5" loop muted></video>'
+                       '<img id="gif" src="logo.png" data-start="0" data-duration="2"/>'
+                       '<audio id="fast" src="a.mp4" data-start="0" data-duration="4" data-playback-rate="2"></audio>'
+                       '<video id="quiet" src="a.mp4" data-start="0" data-duration="4" data-playback-rate="2" muted>'
+                       '</video>')
+    assert any("loops its media" in x for x in plan_of(p, "loop", VIDEO).problems)
+    assert not plan_of(p, "short", VIDEO).problems          # a loop that never wraps changes nothing
+    assert any("animated image (12 frames)" in x for x in plan_of(p, "gif", dict(LOGO, frames=12)).problems)
+    assert not plan_of(p, "gif", dict(LOGO, frames=1)).problems
+    assert any("keeps the pitch" in w for w in plan_of(p, "fast", dict(VIDEO, has_audio=True)).warnings)
+    assert not any("pitch" in w for w in plan_of(p, "quiet", dict(VIDEO, has_audio=True)).warnings)
+
+
 def test_svg_images_get_their_size_from_the_file(tmp_path):
     from classes.handoff.hyperframes import importer
     svg = tmp_path / "logo.svg"

@@ -71,11 +71,14 @@ def import_hyperframes_project(project_dir, mode="auto", position=None, track=""
     keyframes, data-volume and fades as volume keyframes); each nested
     composition (data-composition-src or inline) becomes a linked clip
     rendered on its own with transparency; titles and other scripted DOM of
-    the root become one linked graphics layer. Linked clips keep their
-    variables as props (update_linked_clip_tool), open their code or the
-    HyperFrames Studio (open_linked_source_tool) and re-render when the code
-    changes. A Zenvi export comes back natively and losslessly, with timing
-    edits made in HyperFrames applied. Renders take seconds to minutes; a
+    the root become one linked graphics layer. Linked clips read their
+    variables from the HTML at every render (so edits made in HyperFrames
+    come through); update_linked_clip_tool's props override them. They open
+    their code or the HyperFrames Studio (open_linked_source_tool) and
+    re-render when the code changes. A Zenvi export comes back natively and
+    losslessly, with timing edits, splits and duplicates made in HyperFrames
+    applied. Renders take seconds to minutes and run the project's HTML and
+    scripts in a headless browser (import projects the user trusts); a
     failed or cancelled render adds nothing. Needs Node.js 22+ for renders.
     The receipt lists every clip with its kind (native / linked / restored),
     the mode used and why, and what could not be rebuilt exactly.
@@ -121,11 +124,15 @@ def import_hyperframes_project(project_dir, mode="auto", position=None, track=""
                              "updated in place; other files in it are kept)."),
         "copy_media": boolean("Copy the media into assets/ (default). false = link to the original files (symlinks) "
                               "to save disk; the project then only works on this computer.", True),
+        "replace_edits": boolean("output_dir is an earlier Zenvi export whose files were edited since (in "
+                                 "HyperFrames: index.html, package.json, a media copy): replace those edits anyway. "
+                                 "Only when the user agreed to lose them; otherwise import that folder first, or "
+                                 "pick a new folder.", False),
     }, required=["output_dir"]),
-    read_only=True,
+    background_safe=True,
     covers=("handoff.hyperframes_export",),
 )
-def export_to_hyperframes(output_dir, copy_media=True):
+def export_to_hyperframes(output_dir, copy_media=True, replace_edits=False):
     """Write the timeline as a HyperFrames project that previews, lints and renders, and comes back to Zenvi losslessly.
 
     Use for "export this edit to HyperFrames", "make a HyperFrames project
@@ -139,7 +146,10 @@ def export_to_hyperframes(output_dir, copy_media=True):
     Effects, rounded corners, blend modes, reversed / ramped speed and wipe
     transitions do not translate; the receipt and README.md list each one.
     When the HyperFrames CLI is available the result is linted and the lint
-    findings come back in the receipt. Changes nothing in the Zenvi project.
+    findings come back in the receipt. Exporting again into the same folder
+    replaces only Zenvi's own files, all together; it stops when they were
+    edited there since (replace_edits replaces them). Writes files only:
+    changes nothing in the Zenvi project (no undo step).
     Example: {"output_dir": "/Users/me/exports/launch-hyperframes"}.
     """
     from classes.editor_tools.titles_text_common import precheck_on_main
@@ -148,7 +158,9 @@ def export_to_hyperframes(output_dir, copy_media=True):
     from classes.handoff.hyperframes import exporter
     from classes.handoff.linked_media import LinkError
     try:
-        target = exporter.check_output_dir(output_dir)
+        target = exporter.check_output_dir(output_dir, overwrite_changes=bool(replace_edits))
+    except exporter.ExportChanged as exc:
+        raise ToolError(f"{exc} (replace_edits=true replaces them -- only if the user agrees)") from None
     except LinkError as exc:
         raise ToolError(str(exc)) from None
 
@@ -165,9 +177,12 @@ def export_to_hyperframes(output_dir, copy_media=True):
     try:
         with jobs.track_job("Exporting to HyperFrames", kind="hyperframes") as job:
             result = exporter.export_project(snapshot, raw, target, copy_media=bool(copy_media),
-                                             on_progress=job.report, should_cancel=job.should_cancel)
+                                             overwrite_changes=bool(replace_edits), on_progress=job.report,
+                                             should_cancel=job.should_cancel)
     except jobs.JobCancelled:
         raise ToolError("the HyperFrames export was cancelled; nothing was written") from None
+    except exporter.ExportChanged as exc:
+        raise ToolError(f"{exc} (replace_edits=true replaces them -- only if the user agrees)") from None
     except LinkError as exc:
         raise ToolError(str(exc)) from None
     lint = None
@@ -186,4 +201,5 @@ def export_to_hyperframes(output_dir, copy_media=True):
         "; lint clean" if lint and lint.get("ok") else ("; lint: %s error(s)" % lint.get("errors")
                                                         if lint and lint.get("ok") is False else "")),
         output_dir=result.output_dir, index=result.index, files=result.files, clips=result.clips,
-        duration=result.duration, warnings=result.warnings, lint=lint, copy_media=bool(copy_media))
+        duration=result.duration, warnings=result.warnings, lint=lint, copy_media=bool(copy_media),
+        replaced_edits=sorted(set(result.replaced_changes)))

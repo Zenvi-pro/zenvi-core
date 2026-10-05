@@ -94,6 +94,7 @@ class ExportResult:
     clips: int
     warnings: List[str] = field(default_factory=list)
     duration: float = 0.0
+    replaced_changes: List[str] = field(default_factory=list)   # files edited since the last export, replaced
 
 
 # ---------------------------------------------------------------------------
@@ -164,22 +165,151 @@ def _is_previous_export(folder: str) -> bool:
     return any(e.tag == "script" and e.id == TIMELINE_SCRIPT_ID for e in doc.iter())
 
 
-def check_output_dir(output_dir: str) -> str:
-    """The absolute export folder; refuses a non-empty folder that is not an earlier Zenvi export."""
+# ---------------------------------------------------------------------------
+# The export folder: what Zenvi wrote there (a manifest), and what changed since
+# ---------------------------------------------------------------------------
+#
+# Every export writes ``.zenvi-export.json``: each file Zenvi put in the folder with how to tell whether it
+# changed (index.html by structure -- HyperFrames Studio stamps data-hf-id attributes, which change nothing;
+# small text files by sha256; media by size + mtime; links by target). Exporting again into that folder
+# replaces exactly those files, and only when none of them was changed since (else ExportChanged, unless
+# overwrite_changes); the user's own files stay. The manifest is the only list of files Zenvi deletes, and
+# its paths must stay inside the folder (assets/ inside assets/, never through a linked assets/).
+
+MANIFEST = ".zenvi-export.json"
+MANIFEST_VERSION = 1
+
+
+class ExportChanged(ExportError):
+    """Files of an earlier Zenvi export in the folder were changed since; ``changed`` lists them."""
+
+    def __init__(self, message: str, changed: Sequence[str]):
+        super().__init__(message)
+        self.changed = list(changed)
+
+
+@dataclass
+class OutputPlan:
+    target: str
+    previous: Optional[Dict[str, dict]]     # the earlier export's files (manifest), None for a new folder
+    changed: List[str] = field(default_factory=list)
+
+
+def _safe_rel(rel: Any) -> Optional[str]:
+    """*rel* as a clean folder-relative path, or None when it is absolute or climbs out with ``..``."""
+    text = str(rel or "").replace("\\", "/")
+    if not text or text.startswith("/") or re.match(r"^[A-Za-z]:", text):
+        return None
+    parts = [x for x in text.split("/") if x not in ("", ".")]
+    if not parts or ".." in parts:
+        return None
+    return "/".join(parts)
+
+
+def _inside(path: str, folder: str) -> bool:
+    """Whether *path* (its own location: a link is not followed) is inside *folder* once resolved."""
+    where = os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
+    base = os.path.realpath(folder)
+    return where.startswith(base.rstrip(os.sep) + os.sep)
+
+
+def _file_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _record(path: str, rel: str) -> dict:
+    """How the manifest remembers a file Zenvi wrote (to tell later whether it was changed)."""
+    if os.path.islink(path):
+        return {"link": os.readlink(path)}
+    if rel == INDEX:
+        from classes.handoff.hyperframes.provider import canonical_html_digest
+        return {"html": canonical_html_digest(path)}
+    if not rel.startswith(ASSETS + "/"):
+        return {"sha256": _file_sha256(path)}
+    st = os.stat(path)
+    return {"size": st.st_size, "mtime_ns": st.st_mtime_ns}
+
+
+def _changed(path: str, rel: str, entry: Any) -> bool:
+    if not os.path.lexists(path):
+        return False  # gone: nothing of anyone's to lose
+    if os.path.isdir(path) and not os.path.islink(path):
+        return True
+    try:
+        return _record(path, rel) != entry
+    except OSError:
+        return True
+
+
+def read_manifest(folder: str) -> Optional[dict]:
+    path = os.path.join(folder, MANIFEST)
+    if not os.path.isfile(path) or os.path.islink(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("files"), dict):
+        return None
+    return data
+
+
+def plan_output(output_dir: str, *, overwrite_changes: bool = False) -> OutputPlan:
+    """Check the export folder: new, empty, or an earlier Zenvi export whose files are all unchanged.
+
+    Raises ExportError for a busy folder that is no Zenvi export (or one whose record points outside it,
+    or whose assets/ is a link), and ExportChanged when files of the earlier export were changed since --
+    unless *overwrite_changes*.
+    """
     if not str(output_dir or "").strip():
         raise ExportError("say where to write the HyperFrames project: output_dir (a new or empty folder)")
     path = os.path.abspath(os.path.expanduser(str(output_dir).strip()))
     if os.path.exists(path) and not os.path.isdir(path):
         raise ExportError(f"{path} is a file; pick a folder for the HyperFrames project")
-    if os.path.isdir(path):
-        visible = [n for n in os.listdir(path) if not n.startswith(".")]
-        if visible and not _is_previous_export(path):
-            raise ExportError(f"{path} is not empty and is not an earlier Zenvi export; pick a new or empty folder "
-                              "so nothing of yours is overwritten")
     parent = os.path.dirname(path)
     if not os.path.isdir(parent):
         raise ExportError(f"the folder {parent} does not exist")
-    return path
+    if not os.path.isdir(path):
+        return OutputPlan(path, None)
+    path = os.path.realpath(path)
+    manifest = read_manifest(path)
+    visible = [n for n in os.listdir(path) if not n.startswith(".")]
+    if manifest is None:
+        if not visible:
+            return OutputPlan(path, None)
+        if _is_previous_export(path):
+            raise ExportError(f"{path} holds a HyperFrames export from an earlier Zenvi build that kept no record "
+                              "of its files, so Zenvi cannot tell its files from yours; export to a new folder")
+        raise ExportError(f"{path} is not empty and is not an earlier Zenvi export; pick a new or empty folder "
+                          "so nothing of yours is overwritten")
+    if os.path.islink(os.path.join(path, ASSETS)):
+        raise ExportError(f"{os.path.join(path, ASSETS)} is a link to another folder; Zenvi does not write into "
+                          "or clean up a folder outside the export -- export to a new folder")
+    files: Dict[str, dict] = {}
+    for rel, entry in manifest["files"].items():
+        safe = _safe_rel(rel)
+        full = os.path.join(path, *safe.split("/")) if safe else ""
+        if safe is None or safe == MANIFEST or not _inside(full, path) or (
+                safe.startswith(ASSETS + "/") and not _inside(full, os.path.join(path, ASSETS))):
+            raise ExportError(f"the export record in {path} lists {rel!r}, which is not a file inside the folder; "
+                              "export to a new folder")
+        files[safe] = entry if isinstance(entry, dict) else {}
+    changed = sorted(rel for rel, entry in files.items() if _changed(os.path.join(path, *rel.split("/")), rel, entry))
+    if changed and not overwrite_changes:
+        shown = ", ".join(changed[:6]) + (" and %d more" % (len(changed) - 6) if len(changed) > 6 else "")
+        raise ExportChanged(f"{shown} in {path} changed since Zenvi exported it (in HyperFrames?). Import the folder "
+                            "first to bring those edits into Zenvi, or export to a new folder", changed)
+    return OutputPlan(path, files, changed)
+
+
+def check_output_dir(output_dir: str, *, overwrite_changes: bool = False) -> str:
+    """The absolute export folder (see :func:`plan_output`)."""
+    return plan_output(output_dir, overwrite_changes=overwrite_changes).target
 
 
 # ---------------------------------------------------------------------------
@@ -348,43 +478,145 @@ def clip_layout(clip: ClipView, canvas_w: int, canvas_h: int, fps: float,
 
 
 # ---------------------------------------------------------------------------
-# Transitions -> opacity
+# Transitions -> opacity and sound (libopenshot 1.0 Timeline + Mask, frame for frame)
 # ---------------------------------------------------------------------------
+#
+# A transition is a Mask on its track. libopenshot applies it to the TOP clip only -- of the clips that
+# cover the frame on that track, the one that starts last (Timeline::GetFrame, is_top_clip) -- and only on
+# the frames the transition covers. With "fade audio" set (fade_audio_hint) it also fades the sound of
+# the (at most two) clips it covers: equal power, the clip whose start is nearer the transition's start
+# fading in (sin), the other out (cos) (Timeline::ResolveTransitionAudioGains).
 
-def transition_ramps(clip: ClipView, transitions: Sequence[TransitionView]) -> List[Tuple[float, float, bool]]:
-    """(start, end, fades_in) for transitions on the clip's track that overlap it."""
-    out = []
+UNIFORM_MASKS = {"fade.svg": (0, 255)}   # mask file -> (gray, alpha): the fade mask is solid black
+
+
+def _frames(start: float, end: float, fps: float) -> Tuple[int, int]:
+    """[first, last] 0-based timeline frames libopenshot gives something placed from *start* to *end*."""
+    return int(round(start * fps)), int(round(end * fps)) - 1
+
+
+def _covers(clip: ClipView, f: int, fps: float) -> bool:
+    first, last = _frames(clip.timeline_in, clip.timeline_out, fps)
+    return first <= f <= last
+
+
+def top_clip(track_clips: Sequence[ClipView], f: int, fps: float) -> Optional[ClipView]:
+    """The clip libopenshot applies a track's transitions to on frame *f*: the latest-starting one there."""
+    top, top_start = None, None
+    for c in track_clips:
+        if _covers(c, f, fps):
+            start = int(round(c.timeline_in * fps))
+            if top_start is None or start > top_start:
+                top, top_start = c, start
+    return top
+
+
+def mask_opacity(tr: TransitionView, f: int, fps: float) -> Optional[float]:
+    """What a uniform mask (the fade) leaves of the top clip on timeline frame *f* (Mask::GetFrame); None
+    for an image mask (a wipe), which has no single value."""
+    uniform = UNIFORM_MASKS.get(os.path.basename(tr.mask_path or "").lower())
+    if uniform is None:
+        return None
+    gray, a = uniform
+    local = f - _frames(tr.position, tr.end, fps)[0] + 1        # the transition's own frame number
+    brightness = tr.brightness.value_at_frame(local)
+    contrast = tr.contrast.value_at_frame(local)
+    factor = 20.0 / max(0.5, 20.0 - contrast)
+    adjusted = max(0, min(255, int(factor * ((gray + int(255 * brightness)) - 128) + 128)))
+    alpha = max(0, min(255, a - adjusted))
+    if tr.data.get("mask_invert"):
+        alpha = 255 - alpha
+    return alpha / 255.0
+
+
+def _wipe_opacity(tr: TransitionView, f: int, fps: float) -> float:
+    """An image mask (wipe) as a cross-fade over the transition, in the mask's direction."""
+    first, last = _frames(tr.position, tr.end, fps)
+    p = 1.0 if last <= first else max(0.0, min(1.0, (f - first) / float(last - first)))
+    return 1.0 - p if tr.reversed else p
+
+
+def transition_opacity(clip: ClipView, track_clips: Sequence[ClipView], transitions: Sequence[TransitionView],
+                       fps: float) -> Optional[Callable[[float], float]]:
+    """factor(t) the track's transitions multiply *clip*'s opacity by (None when they never touch it)."""
+    mine = []
     for tr in transitions:
-        if tr.end <= clip.timeline_in + 1e-9 or tr.position >= clip.timeline_out - 1e-9:
-            continue
-        out.append((tr.position, tr.end, not tr.reversed))
-    return out
+        first, last = _frames(tr.position, tr.end, fps)
+        frames = [f for f in range(max(first, _frames(clip.timeline_in, clip.timeline_out, fps)[0]),
+                                   min(last, _frames(clip.timeline_in, clip.timeline_out, fps)[1]) + 1)
+                  if top_clip(track_clips, f, fps) is clip]
+        if frames:
+            mine.append((tr, set(frames)))
+    if not mine:
+        return None
 
-
-def ramped_opacity(alpha: Curve, ramps: Sequence[Tuple[float, float, bool]]) -> Callable[[float], float]:
-    def fn(t: float) -> float:
-        value = alpha.value_at(t)
-        for t0, t1, fades_in in ramps:
-            if t1 <= t0:
-                continue
-            p = max(0.0, min(1.0, (t - t0) / (t1 - t0)))
-            value *= p if fades_in else 1.0 - p
+    def factor(t: float) -> float:
+        f = int(round(t * fps))
+        value = 1.0
+        for tr, frames in mine:
+            if f in frames:
+                m = mask_opacity(tr, f, fps)
+                value *= _wipe_opacity(tr, f, fps) if m is None else m
         return value
-    return fn
+    return factor
+
+
+def _audible(clip: ClipView) -> bool:
+    return clip.has_audio is not False and clip.file is not None and bool(clip.file.has_audio)
+
+
+def transition_gain(clip: ClipView, track_clips: Sequence[ClipView], transitions: Sequence[TransitionView],
+                    fps: float) -> Optional[Callable[[float], float]]:
+    """gain(t) the track's audio-fading transitions put on *clip*'s sound (None when they never do)."""
+    fading = [tr for tr in transitions if tr.data.get("fade_audio_hint")]
+    if not fading or not _audible(clip):
+        return None
+
+    def gain_at(f: int) -> float:
+        active = [tr for tr in fading if _frames(tr.position, tr.end, fps)[0] <= f <= _frames(tr.position, tr.end,
+                                                                                               fps)[1]]
+        if len(active) != 1:
+            return 1.0
+        tr = active[0]
+        audible = [c for c in track_clips if _audible(c) and _covers(c, f, fps)]
+        if len(audible) > 2 or clip not in audible:
+            return 1.0
+        if len(audible) == 2:
+            top_audio = max(audible, key=lambda c: int(round(c.timeline_in * fps)))
+            is_top = top_clip(track_clips, f, fps) is clip
+            if is_top != (clip is top_audio):
+                return 1.0
+        start_pos = int(round(tr.position * fps)) + 1
+        end_pos = int(round(tr.end * fps))
+        if end_pos <= start_pos:
+            return 1.0
+        clip_start = int(round(clip.timeline_in * fps)) + 1
+        clip_end = int(round(clip.timeline_out * fps))
+        fades_in = abs(start_pos - clip_start) <= abs(end_pos - clip_end)
+        p = max(0.0, min(1.0, (f + 1 - start_pos) / float(end_pos - start_pos)))
+        return math.sin(p * math.pi / 2) if fades_in else math.cos(p * math.pi / 2)
+
+    first, last = _frames(clip.timeline_in, clip.timeline_out, fps)
+    if all(abs(gain_at(f) - 1.0) < 1e-12 for f in range(first, last + 1)):
+        return None
+    return lambda t: gain_at(int(round(t * fps)))
 
 
 # ---------------------------------------------------------------------------
 # Audio
 # ---------------------------------------------------------------------------
 
-def volume_attrs(clip: ClipView, fps: float) -> Dict[str, str]:
-    """``data-volume`` (constant) or a ``data-automation`` volume lane (clip-local seconds)."""
+def volume_attrs(clip: ClipView, fps: float, gain: Optional[Callable[[float], float]] = None) -> Dict[str, str]:
+    """``data-volume`` (constant) or a ``data-automation`` volume lane (clip-local seconds).
+
+    *gain(t)*: a transition's audio fade on top of the clip's volume (sampled per frame).
+    """
     vol = clip.curve("volume")
     t_in, _t_out, n = _window(clip, fps)
-    if vol.is_constant:
+    if vol.is_constant and gain is None:
         value = max(0.0, min(MAX_VOLUME, vol.value_at(t_in)))
         return {} if abs(value - 1.0) < 1e-9 else {"data-volume": _num(value, 4)}
-    exact_linear = all(seg.easing == "linear" for seg in vol.segments())
+    exact_linear = gain is None and all(seg.easing == "linear" for seg in vol.segments())
     points: List[Tuple[float, float]] = []
     if exact_linear:
         for p in vol.points:
@@ -397,7 +629,8 @@ def volume_attrs(clip: ClipView, fps: float) -> Dict[str, str]:
         if points[-1][0] < end - 1e-9:
             points.append((end, vol.value_at(t_in + end)))
     else:
-        points = [(k / fps, vol.value_at(t_in + k / fps)) for k in range(n)]
+        g = gain or (lambda _t: 1.0)
+        points = [(k / fps, vol.value_at(t_in + k / fps) * g(t_in + k / fps)) for k in range(n)]
     lane = {"version": 1, "lanes": [{"target": "volume", "points": [
         {"t": round(t, 6), "v": round(max(0.0, min(MAX_VOLUME, v)), 6)} for t, v in points]}]}
     return {"data-automation": json.dumps(lane, separators=(",", ":"))}
@@ -447,7 +680,8 @@ def _tween_lines(selector: str, ch: Channel, fps: float) -> List[str]:
 
 
 def _clip_element(clip: ClipView, kind: str, src: str, snapshot: TimelineSnapshot, track_index: int,
-                  transitions: Sequence[TransitionView], warnings: List[str]) -> _Element:
+                  track_clips: Sequence[ClipView], transitions: Sequence[TransitionView],
+                  warnings: List[str]) -> _Element:
     fps = float(snapshot.fps)
     eid = "c-" + _safe_name(clip.id, "clip")
     t_in, _t_out, n = _window(clip, fps)
@@ -474,7 +708,11 @@ def _clip_element(clip: ClipView, kind: str, src: str, snapshot: TimelineSnapsho
     script: List[str] = []
     if kind in ("video", "audio"):
         has_audio = clip.has_audio is not False and (clip.file is not None and clip.file.has_audio)
-        volume = volume_attrs(clip, fps) if has_audio else {}
+        volume = volume_attrs(clip, fps, transition_gain(clip, track_clips, transitions, fps)) if has_audio else {}
+        rate = speed.factor if speed.kind == "constant" and not speed.reversed else None
+        if has_audio and rate is not None and abs(rate - 1.0) > 1e-9:
+            warnings.append(f"{clip.title!r} plays at {rate:g}x: Zenvi's speed change shifts its pitch, "
+                            "HyperFrames keeps it")
         if kind == "video":
             if has_audio:
                 attrs["data-has-audio"] = "true"
@@ -483,9 +721,10 @@ def _clip_element(clip: ClipView, kind: str, src: str, snapshot: TimelineSnapsho
             attrs["playsinline"] = ""
         attrs.update(volume)
     if kind != "audio":
-        ramps = transition_ramps(clip, transitions)
+        factor = transition_opacity(clip, track_clips, transitions, fps)
+        alpha = clip.curve("alpha")
         layout = clip_layout(clip, snapshot.width, snapshot.height, fps,
-                             ramped_opacity(clip.curve("alpha"), ramps) if ramps else None)
+                             (lambda t: alpha.value_at(t) * factor(t)) if factor is not None else None)
         warnings.extend(layout.warnings)
         css.update({"left": _num(layout.left, 3) + "px", "top": _num(layout.top, 3) + "px",
                     "width": _num(layout.width, 3) + "px", "height": _num(layout.height, 3) + "px",
@@ -558,11 +797,16 @@ def build_index(snapshot: TimelineSnapshot, media: Dict[str, str], raw: dict, *,
             if not src:
                 continue
             warnings.extend(_unsupported(clip))
-            elements.append(_clip_element(clip, kind, src, snapshot, track.index, track.transitions, warnings))
+            elements.append(_clip_element(clip, kind, src, snapshot, track.index, track.clips, track.transitions,
+                                          warnings))
         for tr in track.transitions:
             name = os.path.basename(tr.mask_path or "")
-            if name.lower() not in ("fade.svg", ""):
-                warnings.append(f"the {tr.title or name} transition at {tr.position:.2f}s is exported as a cross-fade")
+            if name.lower() not in UNIFORM_MASKS:
+                warnings.append(f"the {tr.title or name or 'mask'} transition at {tr.position:.2f}s is exported as "
+                                "a cross-fade")
+            if tr.data.get("replace_image"):
+                warnings.append(f"the {tr.title or name} transition at {tr.position:.2f}s shows its mask image in "
+                                "Zenvi; HyperFrames gets a cross-fade")
     duration = max([snapshot.duration] + [0.0])
     duration = max(round(duration * fps) / fps, 1.0 / fps)
     css_rules = []
@@ -580,7 +824,7 @@ def build_index(snapshot: TimelineSnapshot, media: Dict[str, str], raw: dict, *,
             body.append("      <%s%s></%s>" % (el.tag, attr_text, el.tag))
         script.extend("      " + line for line in el.script)
         element_records[el.clip.id] = {
-            "kind": el.tag, "src": el.src, "start": float(el.attrs["data-start"]),
+            "kind": el.tag, "element": el.element_id, "src": el.src, "start": float(el.attrs["data-start"]),
             "duration": float(el.attrs["data-duration"]), "media_start": float(el.attrs.get("data-media-start", 0)),
             "track": int(el.attrs["data-track-index"])}
     script_text = "\n".join(script)
@@ -590,8 +834,7 @@ def build_index(snapshot: TimelineSnapshot, media: Dict[str, str], raw: dict, *,
         "generator": "Zenvi %s" % _zenvi_version(),
         "fps": {"num": snapshot.fps.numerator, "den": snapshot.fps.denominator},
         "width": W, "height": H, "duration": duration,
-        "zenvi": {"project": raw, "assets": assets, "originals": originals, "elements": element_records,
-                  "script_sha256": hashlib.sha256(script_text.encode("utf-8")).hexdigest()},
+        "zenvi": {"project": raw, "assets": assets, "originals": originals, "elements": element_records},
     }
     blob = json.dumps(timeline_json, ensure_ascii=False, separators=(",", ":"), default=str)
     blob = blob.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
@@ -744,10 +987,16 @@ def _remap_paths(value: Any, mapping: Dict[str, str]) -> Any:
 
 
 def export_project(snapshot: TimelineSnapshot, raw: dict, output_dir: str, *, copy_media: bool = True,
+                   overwrite_changes: bool = False,
                    on_progress: Optional[Callable[[Optional[float], str], None]] = None,
                    should_cancel: Optional[Callable[[], bool]] = None) -> ExportResult:
-    """Write *snapshot* as a HyperFrames project in *output_dir* (staged, then moved in). Blocking."""
-    target = check_output_dir(output_dir)
+    """Write *snapshot* as a HyperFrames project in *output_dir* (staged, then moved in). Blocking.
+
+    Over an earlier Zenvi export only its own files are replaced, all together (:func:`_install`);
+    files changed there since raise ExportChanged unless *overwrite_changes*.
+    """
+    plan = plan_output(output_dir, overwrite_changes=overwrite_changes)
+    target = plan.target
     progress = on_progress or (lambda _f, _m: None)
     cancel = should_cancel or (lambda: False)
     if not snapshot.clips:
@@ -762,7 +1011,10 @@ def export_project(snapshot: TimelineSnapshot, raw: dict, output_dir: str, *, co
         assets: Dict[str, str] = {}
         originals: Dict[str, str] = {}
         path_map: Dict[str, str] = {}
-        taken: set = set()
+        # never a name the user's own files in assets/ already have
+        user_assets = os.path.join(target, ASSETS)
+        taken: set = {n.lower() for n in (os.listdir(user_assets) if os.path.isdir(user_assets) else [])
+                      if (ASSETS + "/" + n) not in (plan.previous or {})}
         for i, f in enumerate(used):
             from classes.handoff.jobs import JobCancelled
             if cancel():
@@ -797,68 +1049,109 @@ def export_project(snapshot: TimelineSnapshot, raw: dict, output_dir: str, *, co
         warnings = list(dict.fromkeys(warnings))
         with open(os.path.join(staging, "README.md"), "w", encoding="utf-8") as fh:
             fh.write(readme(name, warnings, copy_media))
+        _write_manifest(staging)
         progress(0.95, "Installing the project")
-        files = _install(staging, target)
+        files = _install(staging, plan)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     progress(1.0, "Exported")
     return ExportResult(output_dir=target, index=os.path.join(target, INDEX), files=files, assets=assets,
-                        clips=count, warnings=warnings, duration=duration)
+                        clips=count, warnings=warnings, duration=duration, replaced_changes=list(plan.changed))
 
 
-def previous_assets(folder: str) -> List[str]:
-    """The asset files an earlier Zenvi export in *folder* wrote (from its zenvi-timeline JSON)."""
-    if not os.path.isfile(os.path.join(folder, INDEX)):
-        return []
-    try:
-        doc = read_document(folder, INDEX)
-    except LinkError:
-        return []
-    for e in doc.iter():
-        if e.tag == "script" and e.id == TIMELINE_SCRIPT_ID:
-            try:
-                data = json.loads(e.text)
-            except ValueError:
-                return []
-            assets = ((data.get("zenvi") or {}).get("assets") or {}) if isinstance(data, dict) else {}
-            return [str(v) for v in assets.values() if isinstance(v, str) and v.startswith(ASSETS + "/")]
-    return []
-
-
-def _install(staging: str, target: str) -> List[str]:
-    """Move the staged project into *target*: renamed whole when new, file by file over an earlier export.
-
-    Over an earlier export only Zenvi's files are replaced: its index.html,
-    meta files, README.md and the assets the earlier export listed (stale ones
-    are removed); anything else in the folder is left alone.
-    """
-    written = []
+def _staged_files(staging: str) -> List[str]:
+    out = []
     for dirpath, _dirs, filenames in os.walk(staging):
         for name in filenames:
-            written.append(os.path.relpath(os.path.join(dirpath, name), staging).replace(os.sep, "/"))
-    if not os.path.exists(target):
-        os.replace(staging, target)
-        return sorted(written)
-    stale = set(previous_assets(target)) - set(written)
-    for rel in sorted(written):
-        src = os.path.join(staging, *rel.split("/"))
+            out.append(os.path.relpath(os.path.join(dirpath, name), staging).replace(os.sep, "/"))
+    return sorted(out)
+
+
+def _write_manifest(staging: str) -> None:
+    files = {rel: _record(os.path.join(staging, *rel.split("/")), rel) for rel in _staged_files(staging)
+             if rel != MANIFEST}
+    with open(os.path.join(staging, MANIFEST), "w", encoding="utf-8") as fh:
+        json.dump({"zenvi_export": MANIFEST_VERSION, "generator": "Zenvi %s" % _zenvi_version(), "files": files},
+                  fh, indent=1, sort_keys=True)
+        fh.write("\n")
+
+
+def _install(staging: str, plan: OutputPlan) -> List[str]:
+    """Move the staged project into the folder.
+
+    New or empty folder: the staged folder is renamed into place. Over an earlier Zenvi export: its files
+    (the manifest's, nothing else) move to a hidden backup, the new ones move in, the new manifest last;
+    any failure puts the earlier export back as it was. The user's own files are never touched -- a new
+    file whose name one of them has stops the export before anything moves.
+    """
+    target = plan.target
+    written = [rel for rel in _staged_files(staging) if rel != MANIFEST]
+    if plan.previous is None:
+        if not os.path.exists(target):
+            os.replace(staging, target)
+            return written
+        if not os.listdir(target):
+            os.rmdir(target)
+            os.replace(staging, target)
+            return written
+    previous = plan.previous or {}
+    for rel in written + [MANIFEST]:
         dst = os.path.join(target, *rel.split("/"))
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        if os.path.islink(dst):
-            os.unlink(dst)
-        os.replace(src, dst)
-    for rel in sorted(stale):
-        path = os.path.join(target, *rel.split("/"))
-        try:
-            if os.path.islink(path) or os.path.isfile(path):
-                os.unlink(path)
-        except OSError:
-            pass
-    return sorted(written)
+        if rel != MANIFEST and os.path.lexists(dst) and rel not in previous:
+            raise ExportError(f"{rel} in {target} is not from Zenvi's earlier export; move it away or export to a "
+                              "new folder")
+    backup = tempfile.mkdtemp(prefix=".zenvi-export-old-", dir=os.path.dirname(target))
+    moved_old: List[str] = []
+    moved_new: List[str] = []
+    try:
+        for rel in sorted(previous) + [MANIFEST]:
+            src = os.path.join(target, *rel.split("/"))
+            if os.path.lexists(src) and not (os.path.isdir(src) and not os.path.islink(src)):
+                dst = os.path.join(backup, *rel.split("/"))
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                os.replace(src, dst)
+                moved_old.append(rel)
+        for rel in written + [MANIFEST]:  # the manifest last: it says the folder holds this export
+            src = os.path.join(staging, *rel.split("/"))
+            dst = os.path.join(target, *rel.split("/"))
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            os.replace(src, dst)
+            moved_new.append(rel)
+    except BaseException:
+        restored = True
+        for rel in reversed(moved_new):
+            try:
+                os.replace(os.path.join(target, *rel.split("/")), os.path.join(staging, *rel.split("/")))
+            except OSError:
+                restored = False
+        for rel in reversed(moved_old):
+            try:
+                os.replace(os.path.join(backup, *rel.split("/")), os.path.join(target, *rel.split("/")))
+            except OSError:
+                restored = False
+        if not restored:
+            from classes.logger import log
+            log.error("the HyperFrames export could not put every earlier file back; they are in %s", backup)
+            backup = ""
+        raise
+    finally:
+        if backup:
+            shutil.rmtree(backup, ignore_errors=True)
+    _prune_empty(os.path.join(target, ASSETS))
+    return written
+
+
+def _prune_empty(folder: str) -> None:
+    try:
+        if os.path.isdir(folder) and not os.path.islink(folder) and not os.listdir(folder):
+            os.rmdir(folder)
+    except OSError:
+        pass
 
 
 __all__ = [
     "EXPORT_VERSION", "ROOT_ID", "GSAP_CDN", "ExportError", "ExportResult", "raw_project", "check_output_dir",
     "Channel", "affine_channel", "sampled_channel", "Layout", "clip_layout", "volume_attrs", "build_index",
-    "meta_files", "readme", "export_project", "transition_ramps", "ramped_opacity", "previous_assets",
+    "meta_files", "readme", "export_project", "top_clip", "mask_opacity", "transition_opacity", "transition_gain",
+    "MANIFEST", "ExportChanged", "OutputPlan", "plan_output", "read_manifest",
 ]

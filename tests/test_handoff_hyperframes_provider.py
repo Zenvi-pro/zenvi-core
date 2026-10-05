@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 
 import pytest
 
@@ -50,6 +51,15 @@ def provider():
     return hfprov.HyperFramesProvider()
 
 
+def _rewrite(path, change):
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    new = change(text)
+    assert new != text, "the edit changed nothing"
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(new)
+
+
 # --- freshness ---------------------------------------------------------------------------------------------
 
 def test_fingerprint_ignores_studio_reserialization_and_render_scratch(tmp_path, provider):
@@ -79,10 +89,10 @@ def test_fingerprint_follows_real_changes(tmp_path, provider, change):
     before = provider.fingerprint(lk)
     if change == "html":
         path = os.path.join(root, "index.html")
-        open(path, "w").write(open(path).read().replace(">Hi<", ">Hello<"))
+        _rewrite(path, lambda text: text.replace(">Hi<", ">Hello<"))
     elif change == "composition":
         path = os.path.join(root, "compositions", "intro.html")
-        open(path, "w").write(open(path).read().replace("opacity: 0", "opacity: 0.5"))
+        _rewrite(path, lambda text: text.replace("opacity: 0", "opacity: 0.5"))
     elif change == "css":
         open(os.path.join(root, "styles.css"), "w").write("h1 { color: blue }")
     elif change == "asset":
@@ -180,8 +190,9 @@ class FakeCli:
         self.fail = fail
 
     def render(self, project_dir, entry, output, *, fmt, cli=None, variables=None, fps=None, quality=None,
-               on_progress=None, should_cancel=None, timeout=None):
+               sdr=False, on_progress=None, should_cancel=None, timeout=None):
         self.calls.append({"entry": entry, "fmt": fmt, "variables": variables, "fps": fps})
+        self.sdr = sdr
         path = os.path.join(project_dir, *entry.split("/"))
         if entry != "index.html":
             self.seen_wrappers.append(open(path).read())
@@ -196,8 +207,8 @@ class FakeCli:
         return {"codec_name": "prores" if path.endswith(".mov") else "h264", "width": 1920, "height": 1080,
                 "fps": 30, "frames": 78, "duration": 2.6, "has_audio": False}
 
-    def to_h264(self, src, dst, *, has_audio, should_cancel=None, from_bt709=False):
-        self.encodes.append((os.path.basename(src), os.path.basename(dst), from_bt709))
+    def to_h264(self, src, dst, *, has_audio, should_cancel=None):
+        self.encodes.append((os.path.basename(src), os.path.basename(dst)))
         with open(dst, "wb") as fh:
             fh.write(b"h264")
         return dst
@@ -218,8 +229,12 @@ def test_project_role_renders_index_as_mp4_with_variables(tmp_path, monkeypatch,
     result, progress = _render(provider, link(root, props={"brand": "Ship"}), tmp_path)
     assert fake.calls == [{"entry": "index.html", "fmt": "mp4", "variables": {"brand": "Ship"}, "fps": "30"}]
     assert (result.codec, result.width, result.duration_frames) == ("h264", 1920, 78)
-    assert result.path.endswith("render-601.mp4") and any("HyperFrames:" in m for _f, m in progress)
-    assert fake.encodes == [("render.mp4", "render-601.mp4", True)]  # BT.709 -> BT.601 for libopenshot
+    # no colour conversion and no second encode (SPEC section 5, 2026-10-05); SDR always
+    assert result.path.endswith("render.mp4") and fake.encodes == [] and fake.sdr is True
+    assert any("HyperFrames:" in m for _f, m in progress) and result.props == {"brand": "Ship"}
+    # a prop equal to the HTML's default changes nothing: not sent, and the link stores no override
+    result, _p = _render(provider, link(root, props={"brand": "Zenvi"}), tmp_path)
+    assert fake.calls[-1]["variables"] is None and result.props == {}
 
 
 def test_composition_role_renders_a_transparent_wrapper_then_removes_it(tmp_path, monkeypatch, provider):
@@ -230,7 +245,7 @@ def test_composition_role_renders_a_transparent_wrapper_then_removes_it(tmp_path
     (call,) = fake.calls
     assert call["fmt"] == "mov" and call["entry"].startswith(".render-zenvi-") and call["variables"] is None
     assert '"headline": "Ship"' in fake.seen_wrappers[0].replace("&quot;", '"')
-    assert result.codec == "prores4444" and result.path.endswith(".mov")
+    assert result.codec == "prores4444" and result.path.endswith(".mov") and result.props == {"headline": "Ship"}
     assert not [n for n in os.listdir(root) if n.startswith(".render-")]
 
 
@@ -239,8 +254,13 @@ def test_opaque_composition_is_reencoded_to_h264(tmp_path, monkeypatch, provider
     root = make(tmp_path)
     result, _p = _render(provider, link(root, role="composition", host="intro"), tmp_path)
     assert result.codec == "h264" and result.path.endswith("render.mp4")
-    assert fake.encodes == [("render.mov", "render.mp4", False)]  # HyperFrames' ProRes is BT.601 already
+    assert fake.encodes == [("render.mov", "render.mp4")]  # same YUV values, no colour conversion
     assert not os.path.exists(os.path.join(os.path.dirname(result.path), "render.mov"))
+
+
+def _hidden(doc, ident):
+    el = doc.by_id(ident)
+    return el is not None and wrappers.HIDE_ATTR in el.attrs
 
 
 def test_inline_composition_and_layer_wrappers(tmp_path, monkeypatch, provider):
@@ -249,9 +269,92 @@ def test_inline_composition_and_layer_wrappers(tmp_path, monkeypatch, provider):
     _render(provider, link(root, role="composition", host="caps"), tmp_path)
     _render(provider, link(root, role="layer", exclude=["bg", "intro", "caps"]), tmp_path)
     inline, layer = (hfp.parse_html(w) for w in fake.seen_wrappers)
-    assert inline.by_id("caps").attrs["data-start"] == "0" and inline.by_id("bg") is None
-    assert inline.by_id("title") is None and inline.by_id("root").attrs.get("data-duration") is not None
-    assert layer.by_id("title") is not None and layer.by_id("bg") is None and layer.by_id("caps") is None
+    assert inline.by_id("caps").attrs["data-start"] == "0" and not _hidden(inline, "caps")
+    assert _hidden(inline, "bg") and _hidden(inline, "title") and _hidden(inline, "intro")
+    assert inline.by_id("root").attrs.get("data-duration") is not None
+    # the layer hides what Zenvi rebuilt natively (scripts still find it by id; the layout stays)
+    assert not _hidden(layer, "title") and all(_hidden(layer, i) for i in ("bg", "intro", "caps"))
+    assert wrappers.HIDE_CSS in fake.seen_wrappers[1]
+
+
+def test_inline_composition_inside_a_wrapper_div_keeps_its_ancestors(tmp_path, monkeypatch, provider):
+    """Review C5-1 #10: a host inside <div class="stage"> was removed with its wrapper (an empty render)."""
+    fake = FakeCli(tmp_path, monkeypatch)
+    root = write_project(tmp_path / "p2", root_div(
+        '<video id="v1" class="clip" src="assets/a.mp4" data-start="0" data-duration="4" muted></video>'
+        '<div class="stage" id="stage" style="background: #123"><p id="side">side</p>'
+        '<div id="cap" data-composition-id="captions" data-start="1" data-track-index="2"><h2 id="cap-text">Hello'
+        '</h2><script>const ct = gsap.timeline({paused:true}); ct.set({}, {}, 2); window.__timelines["captions"] = ct;'
+        '</script></div></div>', extra='data-width="1920" data-height="1080" data-duration="4"'),
+        files={"assets/a.mp4": b"v"}, script='const tl = gsap.timeline({paused:true}); window.__timelines["main"] = tl;')
+    _render(provider, link(root, role="composition", host="cap"), tmp_path)
+    w = hfp.parse_html(fake.seen_wrappers[0])
+    assert w.by_id("cap-text") is not None and not _hidden(w, "cap") and not _hidden(w, "stage")
+    assert wrappers.CLEAR_ATTR in w.by_id("stage").attrs      # the stage's own background is not part of it
+    assert _hidden(w, "v1") and _hidden(w, "side")
+
+
+def test_renders_resolve_starts_after_media_without_duration(tmp_path, monkeypatch, provider):
+    """Review C5-1 #2: the provider read the project without measuring media, so a data-start="<id>" after a
+    video without data-duration failed every composition / layer render (the import itself measured it)."""
+    from classes.handoff.hyperframes import importer
+    fake = FakeCli(tmp_path, monkeypatch)
+    monkeypatch.setattr(importer, "ffprobe_media", lambda path: {"width": 1920, "height": 1080, "duration": 4.0,
+                                                                  "has_video": True, "has_audio": False})
+    root = write_project(tmp_path / "p3", root_div(
+        '<video id="v1" class="clip" src="assets/a.mp4" data-start="0" muted></video>'
+        '<video id="v2" class="clip" src="assets/a.mp4" data-start="v1" muted></video>'
+        '<h1 id="t" class="clip" data-start="v1 - 0.5" data-duration="1">Hi</h1>'),
+        files={"assets/a.mp4": b"v"}, script='const tl = gsap.timeline({paused:true}); window.__timelines["main"] = tl;')
+    result, _p = _render(provider, link(root, role="layer", exclude=["v1", "v2"]), tmp_path)
+    assert result.codec == "prores4444" and fake.calls
+
+
+def test_props_store_only_zenvi_changes_and_html_edits_come_through(tmp_path, monkeypatch, provider):
+    """Review C5-1 #3: stored defaults / mount values hid edits made in HyperFrames."""
+    fake = FakeCli(tmp_path, monkeypatch)
+    root = make(tmp_path)
+    lk = link(root, role="composition", host="intro")      # a fresh import stores no props
+    assert provider.editable_props(lk) == {"headline": "Launch", "accent": "#FF5A36"}
+    # Edit Props shows those and stores every shown value; the user changed only the accent
+    from windows.linked_clip_dialog import merge_edited_props
+    shown = provider.editable_props(lk)
+    lk["props"] = merge_edited_props(lk["props"], shown, dict(shown, accent="#00FF00"))
+    result, _p = _render(provider, lk, tmp_path)
+    assert result.props == {"accent": "#00FF00"}           # only the real change is kept
+    values = json.loads(re.search(r'data-variable-values="([^"]*)"', fake.seen_wrappers[-1]).group(1)
+                        .replace("&quot;", '"'))
+    assert values == {"headline": "Launch", "accent": "#00FF00"}
+    lk["props"] = result.props
+    # the mount's headline and the composition's default accent change in HyperFrames
+    index = os.path.join(root, "index.html")
+    _rewrite(index, lambda text: text.replace('{"headline":"Launch"}', '{"headline":"Mount B"}'))
+    assert provider.editable_props(lk) == {"headline": "Mount B", "accent": "#00FF00"}
+    _render(provider, lk, tmp_path)
+    values = json.loads(re.search(r'data-variable-values="([^"]*)"', fake.seen_wrappers[-1]).group(1)
+                        .replace("&quot;", '"'))
+    assert values == {"headline": "Mount B", "accent": "#00FF00"}
+    # the root's layer: a changed default in index.html is what renders (no stored copy of it)
+    layer = link(root, role="layer", exclude=["bg"])
+    _rewrite(index, lambda text: text.replace('"default":"Zenvi"', '"default":"Root edited"'))
+    assert provider.editable_props(layer) == {"brand": "Root edited"}
+    result, _p = _render(provider, layer, tmp_path)
+    assert fake.calls[-1]["variables"] is None and result.props == {}
+
+
+def test_fingerprint_follows_files_in_symlinked_folders(tmp_path, provider):
+    root = make(tmp_path)
+    library = tmp_path / "library"
+    library.mkdir()
+    (library / "card.html").write_text("<div>one</div>")
+    (library / "pic.png").write_bytes(b"one")
+    os.symlink(str(library), os.path.join(root, "shared"))
+    lk = link(root)
+    before = provider.fingerprint(lk)
+    (library / "card.html").write_text("<div>two</div>")
+    middle = provider.fingerprint(lk)
+    (library / "pic.png").write_bytes(b"two!")
+    assert len({before, middle, provider.fingerprint(lk)}) == 3
 
 
 def test_missing_host_and_cli_failures_are_link_errors(tmp_path, monkeypatch, provider):
@@ -299,3 +402,24 @@ def test_open_source_and_studio(tmp_path, monkeypatch, provider):
 def test_registered_with_linked_media():
     import classes.handoff.hyperframes  # noqa: F401  (registers on import)
     assert lm.provider_for("hyperframes").label == "HyperFrames" and lm.supports_studio("hyperframes")
+
+
+def test_layer_finds_an_id_less_element_again_after_index_html_moved_it(tmp_path, monkeypatch, provider):
+    """Plausible: ``@i/j`` paths of elements without an id shift when index.html is edited."""
+    fake = FakeCli(tmp_path, monkeypatch)
+    root = write_project(tmp_path / "p4", root_div(
+        '<h1 id="t" class="clip" data-start="0" data-duration="2">Hi</h1>'
+        '<img class="clip pic" src="assets/logo.png" data-start="0" data-duration="2"/>'),
+        files={"assets/logo.png": b"i"}, script='const tl = gsap.timeline({paused:true}); window.__timelines["main"] = tl;')
+    p = hfp.load_project(root)
+    img = next(e for e in p.root.element.children if e.tag == "img")
+    ref, sig = hfprov.element_ref(img, p.root.element), hfprov.element_signature(img)
+    assert ref == "@1"
+    lk = link(root, role="layer", exclude=[ref], signatures={ref: sig})
+    # a new element is added at the top of the root in HyperFrames: the image is now @2
+    _rewrite(os.path.join(root, "index.html"), lambda text: text.replace(
+        '<h1 id="t"', '<p class="clip" data-start="0" data-duration="1">new</p><h1 id="t"'))
+    result, _p = _render(provider, lk, tmp_path)
+    w = hfp.parse_html(fake.seen_wrappers[-1])
+    hidden = [e for e in w.iter() if wrappers.HIDE_ATTR in e.attrs]
+    assert [e.tag for e in hidden] == ["img"] and not result.warnings

@@ -130,6 +130,37 @@ def test_what_is_not_understood_says_why(call, reason):
     assert any(reason in r for r in tl.tweens[0].reasons), tl.tweens[0].reasons
 
 
+@pytest.mark.parametrize("code, where", [
+    ('for (let i = 0; i < 3; i++) { tl.to("#a", {x: "+=200"}, i); }', "inside a block"),
+    ('function outro() { tl.to("#a", {opacity: 0}, 2); }', "inside a block"),   # never called
+    ('if (window.big) tl.to("#a", {scale: 2}, 1);', "inside if"),
+    ('["#a", "#b"].forEach(sel => tl.to(sel, {x: 10}, 0));', "inside a block"),
+    ('window.big && tl.to("#a", {x: 10}, 0);', "conditional"),
+    ('const f = () => tl.to("#a", {x: 10}, 0);', "conditional or arrow"),
+    ('if (window.big) {} else tl.to("#a", {x: 10}, 0);', "after else"),
+])
+def test_timeline_calls_in_loops_functions_and_conditions_are_not_read_as_tweens(code, where):
+    """Review C5-1 #9: such a call may run several times or never, so its tween is a reason, not a key."""
+    tl = _timeline('const tl = gsap.timeline({paused: true});\n%s\nwindow.__timelines["main"] = tl;' % code)
+    assert tl.tweens and all(not tw.parsed for tw in tl.tweens), [t.reasons for t in tl.tweens]
+    assert any(where in r for tw in tl.tweens for r in tw.reasons), tl.tweens[0].reasons
+    assert not tl.exact_duration
+
+
+def test_top_level_calls_still_read_and_later_relative_places_are_doubted():
+    tl = _timeline('const tl = gsap.timeline({paused: true})\n'   # no semicolons: statements end at the line
+                   'tl.to("#a", {x: 10, duration: 1}, 0)\n'
+                   '  .to("#a", {x: 20, duration: 1})\n'
+                   'for (const s of ["#b"]) { tl.to(s, {x: 5}, 3); }\n'
+                   'tl.to("#a", {x: 30, duration: 1}, 5)\n'
+                   'tl.to("#a", {x: 40, duration: 1})\n'
+                   'window.__timelines["main"] = tl')
+    first, second, looped, absolute, relative = tl.tweens
+    assert first.parsed and second.parsed and (second.start, second.end) == (1.0, 2.0)
+    assert not looped.parsed and absolute.parsed and absolute.start == 5.0
+    assert not relative.parsed and any("follows the end of the timeline" in r for r in relative.reasons)
+
+
 def test_nested_timelines_and_timescale_make_the_duration_inexact():
     tl = _timeline("""const tl = gsap.timeline({paused:true}); const sub = gsap.timeline();
       tl.add(sub, 1); tl.timeScale(2); window.__timelines["main"] = tl;""")

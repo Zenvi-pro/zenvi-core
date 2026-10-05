@@ -2,10 +2,15 @@
 
 The handlers ask for a folder and the choices with dialogs, then hand the
 work to ``handoff.jobs`` (the toolbar pill shows progress with Cancel):
-reading the project (``hyperframes timeline --json``), rendering its
-compositions, exporting. Results come back on the GUI thread as a short
-message (``handoff_menus.notify``) or a message box with what to do next.
-One import = one undo step; a failed or cancelled one changes nothing.
+reading the project, rendering its compositions, exporting. Results come
+back on the GUI thread as a short message (``handoff_menus.notify``) or a
+message box with what to do next. One import = one undo step; a failed or
+cancelled one changes nothing.
+
+Nothing of the project runs before the user says Import: the dialog is
+built from Zenvi's own reading of the files; HyperFrames (its timeline,
+then the renders -- which run the project's HTML and scripts) only after
+the trust note (review C5-1 #8).
 """
 
 from __future__ import annotations
@@ -73,7 +78,7 @@ def _fmt_seconds(value: Optional[float]) -> str:
 class HyperFramesImportDialog(QDialog):
     """What a HyperFrames project brings in, and how (auto / native / flatten)."""
 
-    def __init__(self, inspection, parent=None):
+    def __init__(self, inspection, parent=None, *, cli_later: bool = False):
         super().__init__(parent)
         _ = _tr
         self.inspection = inspection
@@ -86,8 +91,12 @@ class HyperFramesImportDialog(QDialog):
         form.addRow(_("Project:"), QLabel(inspection.project_dir))
         form.addRow(_("Composition:"), QLabel("%s — %dx%d, %s" % (s["composition"], s["width"], s["height"],
                                                                    _fmt_seconds(s["duration"]))))
-        timing = _("HyperFrames CLI %s") % (s["hyperframes_cli"] or "") if s["timing_from"] == "hyperframes" \
-            else _("read by Zenvi (HyperFrames CLI not available)")
+        if s["timing_from"] == "hyperframes":
+            timing = _("HyperFrames CLI %s") % (s["hyperframes_cli"] or "")
+        elif cli_later:
+            timing = _("read by Zenvi; HyperFrames' own timing is used once you import")
+        else:
+            timing = _("read by Zenvi (HyperFrames CLI not available)")
         form.addRow(_("Timing:"), QLabel(timing))
         if s["zenvi_export"]:
             form.addRow(_("Zenvi export:"), QLabel(_("%d clip(s) restore natively") % s["restored_clips"]))
@@ -149,7 +158,9 @@ def import_hyperframes_project(window) -> None:
 
     def read(job):
         from classes.handoff.hyperframes import importer
-        return importer.inspect_project(folder, "auto", fps=fps, canvas=canvas, should_cancel=job.should_cancel)
+        # Zenvi's own reading only: no HyperFrames (nor anything of the project) runs before Import
+        return importer.inspect_project(folder, "auto", fps=fps, canvas=canvas, use_cli=False,
+                                        should_cancel=job.should_cancel)
 
     def read_done(job):
         if job.state == jobs.CANCELLED:
@@ -158,7 +169,7 @@ def import_hyperframes_project(window) -> None:
             QMessageBox.warning(window, _("Import HyperFrames Project"),
                                 _("Could not read %s:\n%s") % (folder, job.error))
             return
-        dialog = HyperFramesImportDialog(job.result, window)
+        dialog = HyperFramesImportDialog(job.result, window, cli_later=True)
         if dialog.exec_() != QDialog.Accepted:
             return
         _run_import(window, folder, dialog.mode(), fps, canvas, shown=job.result.warnings)
@@ -178,8 +189,15 @@ def _run_import(window, folder: str, mode: str, fps: float, canvas, shown=()) ->
         return importer.run_import(insp, on_progress=job.report, should_cancel=job.should_cancel)
 
     def done(job):
+        from classes.editor_tools.titles_text_common import CommitTimeout
         if job.state == jobs.CANCELLED:
             _notify(window, _("HyperFrames import cancelled; nothing changed"))
+            return
+        if isinstance(job.error, CommitTimeout):
+            # the clips are still being added (the editor was busy): importing again would add them twice
+            QMessageBox.information(window, _("Import HyperFrames Project"), _(
+                "Zenvi was too busy to finish adding the clips in time. They are still being added and will "
+                "appear shortly -- check the timeline before importing again."))
             return
         if job.error is not None:
             QMessageBox.warning(window, _("Import HyperFrames Project"),
@@ -233,7 +251,6 @@ class HyperFramesExportDialog(QDialog):
 
 def export_hyperframes_project(window) -> None:
     """File > Export Project > HyperFrames Project...: folder + options, snapshot here, export in a job."""
-    from classes.handoff import jobs
     from classes.handoff.hyperframes import exporter
     from classes.handoff.timeline_view import TimelineSnapshot
     _ = _tr
@@ -250,10 +267,18 @@ def export_hyperframes_project(window) -> None:
     copy_media = dialog.copy_media.isChecked()
     snapshot = TimelineSnapshot.from_app()
     raw = exporter.raw_project(get_app().project._data)
+    _run_export(window, folder, snapshot, raw, copy_media, overwrite_changes=False)
+
+
+def _run_export(window, folder: str, snapshot, raw: dict, copy_media: bool, *, overwrite_changes: bool) -> None:
+    from classes.handoff import jobs
+    from classes.handoff.hyperframes import exporter
+    _ = _tr
 
     def work(job):
         from classes.handoff.hyperframes import cli as hf_cli
-        result = exporter.export_project(snapshot, raw, folder, copy_media=copy_media, on_progress=job.report,
+        result = exporter.export_project(snapshot, raw, folder, copy_media=copy_media,
+                                         overwrite_changes=overwrite_changes, on_progress=job.report,
                                          should_cancel=job.should_cancel)
         try:
             lint = hf_cli.lint(result.output_dir, timeout=60.0, should_cancel=job.should_cancel)
@@ -264,6 +289,15 @@ def export_hyperframes_project(window) -> None:
     def done(job):
         if job.state == jobs.CANCELLED:
             _notify(window, _("HyperFrames export cancelled"))
+            return
+        if isinstance(job.error, exporter.ExportChanged) and not overwrite_changes:
+            files = "\n".join("• " + f for f in job.error.changed[:12])
+            answer = QMessageBox.question(window, _("Export HyperFrames Project"), _(
+                "These files of the earlier export in %s were changed since Zenvi wrote them (in HyperFrames?):\n"
+                "%s\n\nReplace them with this export? Import the folder first to keep those edits.") % (folder, files),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer == QMessageBox.Yes:
+                _run_export(window, folder, snapshot, raw, copy_media, overwrite_changes=True)
             return
         if job.error is not None:
             QMessageBox.warning(window, _("Export HyperFrames Project"), _("The export failed:\n%s") % job.error)
