@@ -1019,7 +1019,7 @@ class AIChatWindow(QDockWidget):
                     "backend": backend,
                     "agent_mode": entry.get("agent_mode", "agent"),
                     "current_plan": None,
-                    "seen_seq": self._seen_from_row(entry),
+                    "seen_seq": AIChatWindow._seen_from_row(entry),
                 }
                 self._persist_session(sid)
 
@@ -1423,6 +1423,7 @@ class AIChatWindow(QDockWidget):
             "backend": backend,
             "agent_mode": entry.get("agent_mode", "agent"),
             "current_plan": None,
+            "seen_seq": AIChatWindow._seen_from_row(entry),
         }
         self._persist_session(session_id)
         items = self._local_history_items(session_id)
@@ -1597,6 +1598,7 @@ class AIChatWindow(QDockWidget):
                         "backend": backend,
                         "agent_mode": entry.get("agent_mode", "agent"),
                         "current_plan": None,
+                        "seen_seq": AIChatWindow._seen_from_row(entry),
                     }
                     self._persist_session(sid)
                 self._active_sid = self._pick_active_sid(store)
@@ -1693,6 +1695,7 @@ class AIChatWindow(QDockWidget):
                         "backend": backend,
                         "agent_mode": entry.get("agent_mode", "agent"),
                         "current_plan": None,
+                        "seen_seq": AIChatWindow._seen_from_row(entry),
                     }
                     self._persist_session(sid)
                 self._active_sid = self._pick_active_sid(store)
@@ -4145,10 +4148,14 @@ class AIChatWindow(QDockWidget):
         if sid in self._sessions:
             self._sessions[sid]["processing"] = False
             # It answered, so it has the handoff recap: stop sending it. Not at
-            # send time, because a turn that fails never reached the agent.
+            # send time, because a turn that fails never reached the agent; and
+            # not for a stopped turn, or a reply the replaced worker had queued
+            # before the tab switched agent.
             seen = self._sessions[sid].get("seen_seq")
             backend = self._sessions[sid].get("backend", BACKEND_ZENVI)
-            if seen and seen.get(backend, 0) is not None:
+            stopped = sid == self._active_sid and self._user_cancelled
+            if (seen and seen.get(backend, 0) is not None and not stopped
+                    and self.sender() is self._sessions[sid].get("worker")):
                 seen[backend] = None
                 self._persist_session(sid)
             if sid == self._active_sid:

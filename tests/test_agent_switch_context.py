@@ -72,6 +72,17 @@ def _window(window_cls, sess, history):
     return win
 
 
+def _reply(window_cls, win, sess, worker=None):
+    """Deliver a reply for tab s1 from *worker* (default: the tab's own)."""
+    sess.setdefault("worker", MagicMock())
+    sender = worker or sess["worker"]
+    sender._session_id = "s1"
+    win.sender.return_value = sender
+    win._user_cancelled = False
+    win._final_segment_text.return_value = "done"
+    window_cls._on_response_ready(win, "done")
+
+
 @pytest.fixture
 def history(monkeypatch):
     from classes import chat_history
@@ -117,9 +128,7 @@ def test_the_recap_is_resent_until_the_harness_answers(window_cls, history):
     win = _window(window_cls, sess, history)
     assert "Cut it." in window_cls._handoff_prefix(win, sess)
     assert "Cut it." in window_cls._handoff_prefix(win, sess)
-    win.sender.return_value._session_id = "s1"
-    win._user_cancelled = True     # shortest path through the slot
-    window_cls._on_response_ready(win, "done")    # its reply arrived
+    _reply(window_cls, win, sess)                 # its reply arrived
     assert window_cls._handoff_prefix(win, sess) == ""
     # leaving and coming back resumes counting from where it left
     history.append({"seq": 3, "role": "user", "content": "add music"})
@@ -158,3 +167,32 @@ def test_handoff_markers_are_stored_with_the_tab_and_read_back(window_cls, histo
     assert window_cls._seen_from_row({}) == {}
     assert window_cls._seen_from_row({"handoff_seen": "not json"}) == {}
     assert window_cls._seen_from_row({"handoff_seen": "[1]"}) == {}
+
+
+def test_a_late_reply_from_the_replaced_agent_does_not_use_up_the_recap(window_cls, history):
+    """Queued before the switch, delivered after: it is the old agent's reply,
+    so the new one has still not seen the recap."""
+    sess = {"backend": "codex", "seen_seq": {"zenvi": 2}, "worker": MagicMock()}
+    win = _window(window_cls, sess, history)
+    _reply(window_cls, win, sess, worker=MagicMock())
+    assert "Cut it." in window_cls._handoff_prefix(win, sess)
+
+
+def test_a_stopped_turn_does_not_use_up_the_recap(window_cls, history):
+    sess = {"backend": "codex", "seen_seq": {"zenvi": 2}, "worker": MagicMock()}
+    win = _window(window_cls, sess, history)
+    sess["worker"]._session_id = "s1"
+    win.sender.return_value = sess["worker"]
+    win._user_cancelled = True
+    window_cls._on_response_ready(win, "")
+    assert "Cut it." in window_cls._handoff_prefix(win, sess)
+
+
+def test_every_way_a_tab_is_restored_reads_its_handoff_markers():
+    """Startup, reopening a closed chat, and both project-change paths build
+    the tab from a stored row; each has to carry the markers over."""
+    import os
+    src = open(os.path.join(os.path.dirname(__file__), "..", "src", "windows",
+                            "ai_chat_ui.py"), encoding="utf-8").read()
+    assert src.count('"seen_seq": AIChatWindow._seen_from_row(entry),') == \
+        src.count('"agent_mode": entry.get("agent_mode", "agent"),') == 4
