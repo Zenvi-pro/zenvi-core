@@ -143,3 +143,18 @@ def test_media_frame_count_rounds_like_add_clip():
     assert pf.media_frame_count(2.6, Fraction(30)) == 78
     assert pf.media_frame_count(2.583, Fraction(30)) == 77  # 77.49 frames
     assert pf.media_frame_count(0.0, Fraction(30)) == 1
+
+
+@pytest.mark.parametrize("path, expected", [
+    ("/media/frames/frame_%04d.png", True),
+    ("/media/frames/img%d.jpg", True),
+    ("C:\\renders\\shot_%3d.exr", True),
+    ("/media/promo 50% off.mp4", False),       # a % in the name, not a frame pattern
+    ("/media/clip 50%20off.mp4", False),       # URL-encoded space left in a file name
+    ("/media/seq_%04d.mp4", False),            # a pattern, but not an image
+    ("/media/escaped_%%04d.png", False),       # an escaped %%
+    ("/media/100%done/frame_0001.png", False), # one numbered frame, % only in the folder
+    ("", False),
+])
+def test_is_image_sequence_needs_a_frame_pattern_on_an_image(path, expected):
+    assert pf.is_image_sequence({"path": path, "media_type": "video"}) is expected

@@ -664,7 +664,8 @@ def check_link(file_like: Any, *, compute: bool = True) -> Optional[LinkCheck]:
             log.warning("fingerprint of linked file %s failed", file_id, exc_info=True)
             return LinkCheck(file_id, kind, "error", f"could not check the source: {exc}", None, stored)
     media = str(data.get("path") or "")
-    if media and "%" not in media and not os.path.exists(media):
+    from classes.project_files import is_image_sequence
+    if media and not is_image_sequence(data) and not os.path.exists(media):
         return LinkCheck(file_id, kind, "stale", "the rendered media is missing; re-render it", current, stored)
     if current and stored and current != stored:
         return LinkCheck(file_id, kind, "stale", "the source changed since the last render", current, stored)
@@ -1544,7 +1545,7 @@ def adopt_linked_renders(files: List[dict], clips: List[dict], project_file_path
             f["path"] = remap[abs_src]
             id_to_new[str(f.get("id"))] = remap[abs_src]
             continue
-        if not src or "%" in src or not os.path.isfile(src) or path_is_under(src, new_root):
+        if not src or not os.path.isfile(src) or path_is_under(src, new_root):  # (a sequence pattern is no file)
             continue
         match = next(((root, m) for root, m in sources if path_is_under(src, root)), None)
         if match is None:

@@ -201,3 +201,18 @@ def test_snapshot_shares_waveform_samples_instead_of_copying_them(tmp_path):
     data = snap.clip(project["clips"][0]["id"]).data
     assert data["ui"]["audio_data"] is samples           # shared (replaced wholesale, never edited in place)
     assert data["ui"]["other"] is not project["clips"][0]["ui"]["other"]  # everything else is copied
+
+
+def test_a_percent_in_a_media_name_is_not_an_image_sequence(tmp_path):
+    project = _project(tmp_path)
+    files = _load("files.json")
+    project["files"] += [
+        dict(files["video"], id="PCT", path=str(tmp_path / "promo 50% off.mp4")),
+        dict(files["video"], id="ENC", path=str(tmp_path / "clip 50%20off.mp4")),
+        dict(files["video"], id="SEQ", path=str(tmp_path / "frames" / "frame_%04d.png"), media_type="video"),
+        dict(files["image"], id="IMG", path=str(tmp_path / "logo 100%.png"), media_type="image"),
+    ]
+    snap = TimelineSnapshot.from_project(project, str(tmp_path / "trip.zvn"))
+    assert not snap.file("PCT").is_image_sequence and not snap.file("ENC").is_image_sequence
+    assert snap.file("SEQ").is_image_sequence and not snap.file("SEQ").is_still
+    assert not snap.file("IMG").is_image_sequence and snap.file("IMG").is_still

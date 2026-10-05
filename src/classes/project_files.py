@@ -146,8 +146,23 @@ def fps_fraction(value):
 # File Properties (the dialog's accept, minus the widgets)
 # ---------------------------------------------------------------------------
 
+# A printf frame-number conversion: %d, %4d, %04d (not an escaped %%d).
+_FRAME_PATTERN_RE = re.compile(r"(?<!%)%0?\d*d")
+
+
 def is_image_sequence(file_data):
-    return "%" in str((file_data or {}).get("path") or "")
+    """True for a numbered image sequence file record.
+
+    libopenshot has no flag for it: Zenvi imports a sequence as one file whose
+    path is an image file name with a printf frame pattern (``frame_%04d.png``,
+    read by FFmpegReader's image2 demuxer; ``media_type`` is "video"). A ``%``
+    anywhere else -- ``promo 50% off.mp4``, ``clip 50%20off.mp4`` -- is just a
+    character in the name.
+    """
+    from classes.image_types import is_image
+    path = str((file_data or {}).get("path") or "")
+    name = os.path.basename(path.replace("\\", "/"))
+    return bool(_FRAME_PATTERN_RE.search(name)) and is_image({"path": name})
 
 
 def apply_sequence_fps(file_data, fps_num, fps_den):
