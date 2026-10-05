@@ -31,6 +31,9 @@ import pytest
 from titles_text_fakes import tt  # noqa: F401  (fixture; test modules import it with `linked`)
 
 
+MEDIA_MARKER = b"ZENVI-FAKE-MEDIA"  # first line of a FakeProvider render: "<marker> <seconds>"
+
+
 class FakeProbe:
     def __init__(self, editor):
         self.editor = editor
@@ -41,7 +44,12 @@ class FakeProbe:
         self.calls.append(path)
         if not os.path.isfile(path):
             raise FileNotFoundError(path)
-        seconds = float(self.durations.get(path, 5.0))
+        seconds = self.durations.get(path)
+        if seconds is None:  # a FakeProvider render moved into place: its duration travels in the file
+            with open(path, "rb") as fh:
+                head = fh.readline()
+            seconds = float(head.split()[1]) if head.startswith(MEDIA_MARKER) else 5.0
+        seconds = float(seconds)
         data = copy.deepcopy(self.editor._fixtures["files"]["video"])
         data.update(path=path, duration=seconds, video_length=str(int(round(seconds * 30))), width=1920,
                     height=1080, fps={"num": 30, "den": 1}, has_audio=False, media_type="video")
@@ -87,6 +95,7 @@ class FakeProvider:
             raise self.fail
         path = os.path.join(out_dir, "out" + self.ext)
         with open(path, "wb") as fh:
+            fh.write(MEDIA_MARKER + (" %r\n" % float(self.seconds)).encode())
             fh.write(("render %d %s" % (len(self.renders), json.dumps(link.get("props"), sort_keys=True))).encode())
         if self.probe is not None:
             self.probe.durations[path] = self.seconds
