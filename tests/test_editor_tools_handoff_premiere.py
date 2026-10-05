@@ -208,6 +208,22 @@ def test_import_tool_at_playhead(ppro, speed_xml):
     assert first == pytest.approx(10.0)
 
 
+def test_import_tool_picks_a_sequence_by_name(ppro, speed_xml, tmp_path):
+    text = pathlib.Path(speed_xml).read_text()
+    body = text.split("<xmeml version=\"4\">", 1)[1].rsplit("</xmeml>", 1)[0]
+    second = body.replace("<name>Speeds</name>", "<name>Director's cut</name>", 1).replace('id="', 'id="dc-')
+    two = tmp_path / "Two.xml"
+    two.write_text(text.split("<xmeml version=\"4\">", 1)[0] + "<xmeml version=\"4\"><project><children>"
+                   + body + second + "</children></project></xmeml>")
+    r = ppro.call_receipt("import_timeline_xml_tool", path=str(two))
+    assert r["status"] == "applied" and r["data"]["sequence_name"] == "Speeds", r["summary"]
+    assert any("Director's cut" in w for w in r["data"]["warnings"])
+    r = ppro.call_receipt("import_timeline_xml_tool", path=str(two), sequence="director's cut")
+    assert r["status"] == "applied" and r["data"]["sequence_name"] == "Director's cut", r["summary"]
+    r = ppro.call_receipt("import_timeline_xml_tool", path=str(two), sequence="Nope")
+    assert _failed(r) and "no sequence named 'Nope'" in r["summary"]
+
+
 def test_import_tool_refusals_leave_history_alone(ppro, tmp_path):
     ppro.mark()
     r = ppro.call_receipt("import_timeline_xml_tool", path=str(tmp_path / "nope.xml"))

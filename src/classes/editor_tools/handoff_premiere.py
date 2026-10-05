@@ -163,11 +163,13 @@ def send_to_premiere():
         "placement": enum(["new_tracks", "at_playhead"], "new_tracks = keep the sequence's own timing on new "
                           "tracks above the existing ones; at_playhead = the same, but starting at the playhead.",
                           "new_tracks"),
+        "sequence": string("Which sequence to import when the XML holds several (its name, as listed in the "
+                           "warnings). Empty = the first top-level sequence.", ""),
     }, required=["path"]),
     background_safe=True,
     covers=("handoff.timeline_xml_import",),
 )
-def import_timeline_xml(path, placement="new_tracks"):
+def import_timeline_xml(path, placement="new_tracks", sequence=""):
     """Bring a Premiere Pro / Final Cut Pro 7 XML sequence into this project on new tracks, as one undo step (File > Import Project > Premiere Pro XML).
 
     Use for "bring my Premiere edit back", "import this XML". Clips keep their
@@ -176,9 +178,10 @@ def import_timeline_xml(path, placement="new_tracks"):
     audio cross fades volume ramps; markers keep names and colours; nested
     sequences are flattened onto extra tracks. Media not already in Project
     Files is added; media that cannot be found is skipped and listed
-    (missing_media). Generators, titles made in Premiere and effects Zenvi
-    lacks are listed in warnings. One undo step removes everything it added.
-    Example: {"path": "/Users/me/Desktop/Edit.xml"}.
+    (missing_media). Generators, titles made in Premiere, image sequences and
+    effects Zenvi lacks are listed in warnings, as are the other sequences of a
+    multi-sequence XML (import one of them with sequence). One undo step
+    removes everything it added. Example: {"path": "/Users/me/Desktop/Edit.xml"}.
     """
     from classes.editor_tools.titles_text_common import commit_on_main, precheck_on_main
     from classes.handoff import jobs
@@ -189,7 +192,8 @@ def import_timeline_xml(path, placement="new_tracks"):
     info = precheck_on_main(importer.read_project_info)
     try:
         with jobs.track_job("Importing %s" % os.path.basename(target), kind="xml-import") as job:
-            plan = importer.plan_import(target, placement=placement, info=info, should_cancel=job.should_cancel)
+            plan = importer.plan_import(target, placement=placement, info=info, should_cancel=job.should_cancel,
+                                        sequence=str(sequence or ""))
     except jobs.JobCancelled:
         raise ToolError("the import was cancelled; nothing changed") from None
     except importer.XmlImportError as exc:
