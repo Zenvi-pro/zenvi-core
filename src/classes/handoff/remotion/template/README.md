@@ -52,11 +52,14 @@ Agents can do the same with Zenvi's `import_remotion_project_tool` (`project_dir
 
 Exact: clip timing and trims, track order, scale modes, gravity, location, scale, rotation,
 origin and shear (the same math as Zenvi), keyframe easing, opacity, volume, constant speed,
-fade transitions, titles (the title SVGs; fonts come from this computer).
+fade transitions, and where titles sit (the title SVGs themselves; fonts come from this computer).
 
-Approximated: wipe transitions play as fades; Brightness/Contrast, Saturation, Hue, Blur and
-Negate are CSS filters; Crop is a CSS clip-path; blend modes are CSS `mix-blend-mode`; holds,
-reverse and speed ramps show the right frame each frame but play no sound.
+Approximated: Chrome lays out SVG title text a few percent wider than Zenvi does (same font,
+start and baseline); wipe transitions play as fades; Brightness/Contrast, Saturation, Hue, Blur
+and Negate are CSS filters; Crop is a CSS clip-path; blend modes are CSS `mix-blend-mode`; holds,
+reverse and speed ramps show the right frame each frame but play no sound. Zenvi (libopenshot)
+decodes video as BT.601 even when it is tagged BT.709; Chrome follows the tag, so BT.709 video
+looks slightly different in colour here than in Zenvi's preview.
 
 {{NOTES}}
 
