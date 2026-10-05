@@ -303,3 +303,33 @@ def test_a_late_commit_is_not_reported_as_a_failed_render(linked, provider, monk
         CommitTimeout("the editor was too busy; the change is still running -- check before trying again")))
     r = linked.call_receipt("rerender_linked_clip_tool", file_id=out["file_id"])
     assert _failed(r) and "still running" in r["summary"] and "Nothing changed" not in r["summary"]
+
+
+def test_after_effects_prores422_renders_are_linked_as_opaque(linked, tmp_path):
+    import json as _json
+    from classes.handoff.aftereffects_link import AfterEffectsProvider, _schema_cache
+    host = FakeHost()
+    _schema_cache.clear()
+    try:
+        host.tools = [{"name": "ae_render_for_zenvi", "inputSchema": {"type": "object", "properties": {
+            "comp": {}, "output_dir": {}}}}]
+
+        def render(name, args):
+            out = os.path.join(args["output_dir"], "Promo.mov")
+            with open(out, "wb") as fh:
+                fh.write(b"prores 422")
+            linked.probe.durations[out] = 1.0
+            receipt = {"contract": 3, "status": "applied", "tool": name, "host": "aftereffects", "summary": "ok",
+                       "data": {"path": out, "comp_name": "Promo", "width": 1920, "height": 1080, "fps": 30,
+                                "duration": 1.0, "codec": "prores422"}}
+            return {"content": [{"type": "text", "text": _json.dumps(receipt)}], "structuredContent": receipt,
+                    "isError": False}
+
+        host.call = render
+        write_discovery(linked.user_path, host)
+        lm.register_provider(AfterEffectsProvider())
+        out = lm.import_linked({"kind": "aftereffects", "source": {"composition": "Promo"}}, position=0.0)
+        stored = lm.read_link(linked.file(out["file_id"]))
+        assert stored["render"]["codec"] == "prores422" and "prores422" not in lm.ALPHA_CODECS
+    finally:
+        host.stop()

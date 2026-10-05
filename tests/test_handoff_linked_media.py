@@ -748,3 +748,36 @@ def test_a_source_file_on_another_drive_stays_absolute(monkeypatch, tmp_path):
     monkeypatch.setattr(os.path, "relpath", other_drive)
     link = lm.normalize_link({"kind": "remotion", "source": {"project_dir": str(tmp_path), "file": "/elsewhere/A.tsx"}})
     assert link["source"]["file"] == "/elsewhere/A.tsx"
+
+
+def test_a_rerender_probed_a_hair_short_never_cuts_the_last_frame(linked):
+    # ProRes durations come back as float32: a 2.6 s render probes as 2.5999999
+    provider = FakeProvider(probe=linked.probe, seconds=2.5999999)
+    lm.register_provider(provider)
+    out = lm.import_linked(remotion_link(), position=0.0)
+    clip = linked.clip(out["timeline_clip_id"])
+    assert clip["end"] - clip["start"] == pytest.approx(2.6)  # placed with all 78 frames
+    linked.mark()
+    res = lm.rerender_linked(out["file_id"])
+    assert res["warnings"] == [] and res["notes"] == []
+    clip = linked.clip(out["timeline_clip_id"])
+    assert clip["end"] == pytest.approx(2.6) and clip["end"] == round(clip["end"] * 30) / 30
+    assert linked.undo_steps_since_mark() == 1
+
+
+def test_a_really_shorter_rerender_still_clamps_onto_the_frame_grid(linked):
+    provider = FakeProvider(probe=linked.probe, seconds=2.6)
+    lm.register_provider(provider)
+    out = lm.import_linked(remotion_link(), position=0.0)
+    provider.seconds = 2.0 - 1e-7  # 60 frames, also probed a hair short
+    res = lm.rerender_linked(out["file_id"])
+    clip = linked.clip(out["timeline_clip_id"])
+    assert clip["end"] == pytest.approx(2.0) and "shortened from 2.60s to 2.00s" in res["warnings"][0]
+
+
+def test_add_linked_media_passes_the_batch_refresh_opt_in(linked):
+    timeline = linked.window.timeline
+    lm.add_linked_media(linked.media("a.mov"), remotion_link(), position=0.0, ignore_refresh=True)
+    assert timeline.add_calls[-1]["ignore_refresh"] is True and timeline.update_calls[-1]["ignore_refresh"] is True
+    lm.add_linked_media(linked.media("b.mov"), remotion_link(composition="B"), position=6.0)
+    assert timeline.add_calls[-1]["ignore_refresh"] is False  # the default: refresh as before
