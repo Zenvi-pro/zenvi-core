@@ -523,3 +523,55 @@ def test_the_mock_rejects_stale_references_and_bad_ease_arrays(tmp_path):
     es5.write_text("[1, 2].indexOf(2);", encoding="utf-8")
     proc = subprocess.run([NODE, MOCK, str(es5)], capture_output=True, text=True, timeout=60)
     assert "indexOf" in json.loads(proc.stdout)["error"]
+
+
+# ---------------------------------------------------------------------------
+# Verification round (state/verify-C2C4-1.md, After Effects 2-4)
+# ---------------------------------------------------------------------------
+
+def _mock(script, *args):
+    proc = subprocess.run([NODE, MOCK, str(script)] + list(args), capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+@needs_node
+def test_a_moved_export_folder_with_a_percent_escape_in_its_name_still_finds_its_media(tmp_path):
+    # the media's absolute paths are gone after the move; the script finds them next to itself, and its
+    # own path ($.fileName) holds a literal "%20" that File() must not read as a space
+    b = ProjectBuilder()
+    b.add_clip(b.add_file("video", path="/m/beach.mp4"), track=1, position=0.0, start=0.0, end=2.0)
+    out, script, media = _export_project(b, tmp_path)
+    moved = tmp_path / "Project%20files"
+    moved.mkdir()
+    shutil.move(str(script.parent), str(moved / "export"))
+    result, dump = _run(moved / "export" / "Trip.jsx", None)
+    assert result["placeholders"] == [] and result["warnings"] == []
+    files = [i["file"] for i in dump["items"] if i["type"] == "Footage"]
+    assert files == [str(moved / "export" / "media" / "beach.mp4")]
+
+
+@needs_node
+def test_the_quiet_flag_is_used_once_and_never_outlives_a_run(tmp_path):
+    # After Effects keeps one global scope: a flag left behind (a run that stopped half-way) must not hide
+    # the alert of the next File > Scripts run -- the export clears it when it reads it
+    out, script, media = _materialize("basic", tmp_path)
+    two_runs = tmp_path / "two_runs.jsx"
+    target = json.dumps(str(script))
+    two_runs.write_text("$.global.ZENVI_AE_QUIET = true;\n"
+                        "var first = $.evalFile(new File(%s));\n"
+                        "var leftAfterFirst = $.global.ZENVI_AE_QUIET !== undefined;\n"
+                        "var second = $.evalFile(new File(%s));\n"
+                        "String(leftAfterFirst);\n" % (target, target), encoding="utf-8")
+    run = _mock(two_runs, "--media", str(media))
+    assert run["error"] is None and run["result"] == "false"
+    assert len(run["dump"]["alerts"]) == 1 and run["dump"]["quietFlagLeft"] is False
+
+
+@needs_node
+def test_the_runner_clears_the_flag_when_the_export_throws(tmp_path):
+    from classes.handoff.after_effects_export import quiet_runner
+    broken = tmp_path / "Broken.jsx"
+    broken.write_text('throw new Error("boom");\n', encoding="utf-8")
+    run = _mock(quiet_runner(str(broken)))
+    assert "boom" in run["error"] and run["dump"]["quietFlagLeft"] is False

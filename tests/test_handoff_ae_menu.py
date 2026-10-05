@@ -109,10 +109,11 @@ def test_result_summary_counts_titles_missing_media_and_notes():
                     "1 as images. 1 media file(s) are missing and become placeholders. 2 note(s) below.")
 
 
-def test_run_now_runs_the_interactive_export_quietly(menu, monkeypatch):
-    """The export dialog's script ends with an alert for people; run from Zenvi it must not block."""
+def test_run_now_picks_the_route_when_clicked_and_runs_quietly(menu, monkeypatch):
+    """The route is decided in the job (After Effects may have been quit, started or connected since the
+    export); the export's script ends with an alert for people, so Zenvi runs it quietly."""
     from classes.handoff import after_effects_export as X
-    calls, shown = [], []
+    calls, shown, errors = [], [], []
     summary = {"zenvi_ae_import": 1, "status": "ok", "summary": "Built comp \"Trip\"."}
 
     def link(path, **kw):
@@ -120,19 +121,30 @@ def test_run_now_runs_the_interactive_export_quietly(menu, monkeypatch):
         return summary, {}
 
     def applescript(path, app, **kw):
-        calls.append(("applescript", path, kw))
+        calls.append(("applescript", path, app, kw))
         return summary
+
+    def runner(window, title, work, done):
+        job = _Job()
+        try:
+            job.result = work(job)
+        except Exception as exc:  # what the real job hands to the error dialog
+            errors.append(str(exc))
+            return
+        done(job)
 
     monkeypatch.setattr(X, "run_in_after_effects", link)
     monkeypatch.setattr(X, "run_with_applescript", applescript)
-    monkeypatch.setattr(menu, "_run_job", _sync_runner)
+    monkeypatch.setattr(menu, "_run_job", runner)
     monkeypatch.setattr(menu, "_show_ae_summary", lambda window, title, s, via: shown.append((s, via)))
-    menu._run_now(object(), "/x/Trip.jsx", None)
-    menu._run_now(object(), "/x/Trip.jsx", "/Applications/AE.app")
+    for state in [(True, None), (False, "/Applications/Adobe After Effects 2024/AE.app"), (False, None)]:
+        monkeypatch.setattr(menu, "_ae_availability", lambda state=state: state)
+        menu._run_now(object(), "/x/Trip.jsx")
     assert calls[0] == ("link", "/x/Trip.jsx", {"quiet": True})
-    assert calls[1][:2] == ("applescript", "/x/Trip.jsx") and calls[1][2]["quiet"] is True
-    assert callable(calls[1][2]["should_cancel"])
+    assert calls[1][:3] == ("applescript", "/x/Trip.jsx", "/Applications/Adobe After Effects 2024/AE.app")
+    assert calls[1][3]["quiet"] is True and callable(calls[1][3]["should_cancel"])
     assert [via for _, via in shown] == ["zenvi-link", "applescript"]
+    assert len(errors) == 1 and "cannot be reached now" in errors[0] and "Zenvi Link" in errors[0]
 
 
 def test_the_summary_names_the_undo_step_of_the_route(menu, monkeypatch):

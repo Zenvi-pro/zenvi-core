@@ -277,13 +277,13 @@ def _show_result(window, result, connected: bool, app_path: Optional[str]) -> No
     row.addWidget(reveal_button)
     if connected:
         run = QPushButton(_tr("Run in After Effects now"))
-        run.clicked.connect(lambda: (dialog.accept(), _run_now(window, result.script_path, None)))
+        run.clicked.connect(lambda: (dialog.accept(), _run_now(window, result.script_path)))
         row.addWidget(run)
     elif app_path:
         run = QPushButton(_tr("Run in After Effects now"))
         run.setToolTip(_tr("Zenvi Link is not connected, so Zenvi asks After Effects through AppleScript. "
                            "macOS asks once whether Zenvi may control After Effects."))
-        run.clicked.connect(lambda: (dialog.accept(), _run_now(window, result.script_path, app_path)))
+        run.clicked.connect(lambda: (dialog.accept(), _run_now(window, result.script_path)))
         row.addWidget(run)
     else:
         from classes.handoff.adobe_link import connect_hint
@@ -307,22 +307,29 @@ def _reveal(window, path: str, reveal) -> None:
         QMessageBox.warning(window, _tr("Reveal"), str(exc))
 
 
-def _run_now(window, script_path: str, app_path: Optional[str]) -> None:
-    """Run an exported script in After Effects (Zenvi Link, or AppleScript when *app_path* is given).
+def _run_now(window, script_path: str) -> None:
+    """Run an exported script in After Effects: through Zenvi Link if it is connected now, else through
+    AppleScript in the After Effects running now (macOS).
 
+    The route is chosen when the button is clicked, not when the export
+    finished: After Effects may have been quit, started or connected since.
     The export was written for people (its closing alert on), so it runs
     through the quiet runner: an alert would hold the run until clicked.
     """
     title = _tr("Run in After Effects")
 
     def work(job):
-        from classes.handoff.after_effects_export import run_in_after_effects, run_with_applescript
+        from classes.handoff.adobe_link import connect_hint
+        from classes.handoff.after_effects_export import AeHandoffError, run_in_after_effects, run_with_applescript
         job.report(None, _tr("Building the comp in After Effects"))
+        connected, app_path = _ae_availability()
+        if connected:
+            summary, _receipt = run_in_after_effects(script_path, quiet=True)
+            return "zenvi-link", summary
         if app_path:
             return "applescript", run_with_applescript(script_path, app_path, quiet=True,
                                                        should_cancel=_cancel_hook(job))
-        summary, _receipt = run_in_after_effects(script_path, quiet=True)
-        return "zenvi-link", summary
+        raise AeHandoffError(_tr("After Effects cannot be reached now. %s") % connect_hint("aftereffects"))
 
     def done(job):
         via, summary = job.result

@@ -56,8 +56,17 @@ Runs that Zenvi starts never show the closing alert:
 
 - A Send To export is written as non-interactive.
 - "Run in After Effects now" runs the interactive export through a small
-  runner script (`.zenvi-run-*.jsx`, removed afterwards). The runner sets
-  `$.global.ZENVI_AE_QUIET` only for that run.
+  runner script (`.zenvi-run-*.jsx`). The runner is removed afterwards,
+  also after a cancel, a timeout or an error.
+- The runner sets `$.global.ZENVI_AE_QUIET` for the run; Zenvi Link's
+  `ae_run_jsx_file` will do the same around its `$.evalFile`. The script
+  reads and clears the flag first thing, and the runner clears it again
+  whether the run returned or threw. A flag can therefore never outlive a
+  run and hide the alert of a later File > Scripts run.
+
+"Run in After Effects now" picks its route when you click it: Zenvi Link if
+it is connected then, otherwise AppleScript in the After Effects running
+then. Otherwise it says After Effects cannot be reached.
 
 Notes on the AppleScript route:
 
@@ -67,9 +76,9 @@ Notes on the AppleScript route:
 - **Permission.** macOS asks once whether Zenvi may control After Effects. A
   refusal names System Settings > Privacy & Security > Automation.
 - **Waiting.** Zenvi waits at most 31 minutes, and you can cancel. Cancelling
-  only stops the wait; After Effects may still finish the comp. AE 2024's
-  DoScriptFile is known to hang, and the timeout message says to run the
-  script from File > Scripts instead.
+  stops the wait; if After Effects had already started the script, it may
+  still finish the comp. AE 2024's DoScriptFile is known to hang, and the
+  timeout message says to run the script from File > Scripts instead.
 
 ### Send To
 
@@ -324,6 +333,8 @@ music file. Start Zenvi with `./run.sh`.
     **Pass:**
     - The comp is built with no alert in After Effects.
     - No `.zenvi-run-*.jsx` file is left next to Trip.jsx.
+    - Afterwards, run Trip.jsx with File > Scripts > Run Script File (the
+      panel still open): its closing alert shows.
 14. **AppleScript fallback (macOS).** Close the panel, export again and click
     "Run in After Effects now".
     **Pass:**
