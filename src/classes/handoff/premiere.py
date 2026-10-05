@@ -87,7 +87,7 @@ def _path_arg(base_dir: Optional[str] = None) -> str:
 def send_to_premiere(snapshot, *, base_dir: Optional[str] = None,
                      on_progress: Optional[Callable[[float, str], None]] = None,
                      should_cancel: Optional[Callable[[], bool]] = None,
-                     folder: Optional[str] = None) -> dict:
+                     folder: Optional[str] = None, translate: Optional[Callable[[str], str]] = None) -> dict:
     """Export *snapshot* and open it in the connected Premiere Pro (blocking; off the GUI thread).
 
     Returns ``{xml, media_dir, sequence_name, sequences, offline, warnings,
@@ -103,7 +103,7 @@ def send_to_premiere(snapshot, *, base_dir: Optional[str] = None,
     xml_path = os.path.join(folder, (re.sub(r"[^A-Za-z0-9._ -]+", "_", snapshot.name or "Timeline") or "Timeline")
                             + ".xml")
     result = fcp.export_timeline(snapshot, xml_path, media_dir=os.path.join(folder, "media"),
-                                 on_progress=on_progress, should_cancel=should_cancel)
+                                 on_progress=on_progress, should_cancel=should_cancel, translate=translate)
     if on_progress is not None:
         on_progress(0.9, "Premiere Pro is importing the sequence")
     args = {_path_arg(base_dir): result.path}
@@ -224,7 +224,7 @@ def start_send(window):
 
     def work(job):
         return send_to_premiere(snapshot, on_progress=lambda f, m: job.report(f, m),
-                                should_cancel=job.should_cancel)
+                                should_cancel=job.should_cancel, translate=_)
 
     def done(job):
         from windows.handoff_menus import notify

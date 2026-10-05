@@ -415,3 +415,27 @@ def test_zenvi_to_xml_to_zenvi_round_trip(importer, tmp_path):
     (ta,), (tb,) = before.transitions, after.transitions
     assert (tb.position, tb.duration, tb.data.get("fade_audio_hint")) == (ta.position, ta.duration, True)
     assert [(m.time, m.name, m.color) for m in after.markers] == [(m.time, m.name, m.color) for m in before.markers]
+
+
+GOLDEN_MEDIA = {
+    "/media/Interview A.mp4": video_file("", "/media/Interview A.mp4", duration=30.0),
+    "/media/drone 4k.mov": video_file("", "/media/drone 4k.mov", width=3840, height=2160, duration=20.0),
+    "/media/logo.png": image_file("", "/media/logo.png", width=800, height=400),
+    "/media/music bed.wav": audio_file("", "/media/music bed.wav", duration=60.0),
+    "/exports/Launch_media/titles/Launch day-T1.png": image_file("", "/exports/Launch_media/titles/Launch day-T1.png",
+                                                                width=1920, height=1080),
+}
+
+
+@pytest.mark.parametrize("name", ["export_golden.xml", "otio_rewrite_of_golden.xml"])
+def test_our_export_and_otios_rewrite_of_it_import_alike(tmp_path, name):
+    """OpenTimelineIO's fcp_xml adapter reads the golden export; what it writes back imports the same way."""
+    p = plan(name, tmp_path, GOLDEN_MEDIA, project_info=info(fps=(30, 1)))
+    got = {c.title: (round(c.position, 3), round(c.start, 3), round(c.end, 3), c.track) for c in p.clips}
+    assert got == {"Interview": (0.0, 2.0, 9.0, "V1"), "Drone": (6.0, 0.0, 6.0, "V1"),
+                   "Slowmo": (12.0, 10.0, 12.0, "V1"), "Logo": (1.0, 0.0, 4.0, "V2"),
+                   "Title": (2.0, 0.0, 3.0, "V3"), "Music": (0.0, 5.0, 19.0, got["Music"][3])}
+    assert pts(by_title(p, "Slowmo").props["time"]) == [(301.0, 301.0), (361.0, 330.0)]
+    assert [(t.position, t.duration) for t in p.transitions] == [(6.0, 1.0)]
+    assert [(m.position, m.name, m.color) for m in p.markers] == [(6.0, "Drone in", "orange")]
+    assert p.missing == []
