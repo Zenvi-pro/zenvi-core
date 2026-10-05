@@ -432,3 +432,100 @@ def test_linking_an_existing_plain_file_undoes_cleanly(linked):
     assert linked.clip(out["timeline_clip_id"]) is None
     linked.redo()
     assert lm.read_link(linked.file(plain))["kind"] == "remotion"
+
+
+def test_import_refuses_a_bad_track_before_rendering(linked):
+    provider = FakeProvider(probe=linked.probe)
+    lm.register_provider(provider)
+    with pytest.raises(lm.LinkError):
+        lm.import_linked(remotion_link(), position=0.0, track="99")
+    assert provider.renders == [] and not os.path.exists(os.path.join(linked.user_path, "links", "remotion"))
+    with pytest.raises(lm.LinkError, match="position"):
+        lm.import_linked(remotion_link(), position=-1.0)
+    assert linked.undo_steps_since_mark() == 0
+
+
+def test_a_render_that_cannot_be_added_or_swapped_is_deleted(linked, monkeypatch):
+    provider = FakeProvider(probe=linked.probe)
+    lm.register_provider(provider)
+    folder = os.path.join(linked.user_path, "links", "remotion")
+    real_add = lm.add_linked_media
+    monkeypatch.setattr(lm, "add_linked_media", lambda *a, **k: (_ for _ in ()).throw(lm.LinkError("track filled")))
+    with pytest.raises(lm.LinkError):
+        lm.import_linked(remotion_link(), position=0.0)
+    assert os.listdir(folder) == []
+    monkeypatch.setattr(lm, "add_linked_media", real_add)
+    out = lm.import_linked(remotion_link(), position=0.0)
+    before = set(os.listdir(folder))
+    monkeypatch.setattr(lm, "swap_linked_media", lambda *a, **k: (_ for _ in ()).throw(lm.LinkError("refused")))
+    with pytest.raises(lm.LinkError):
+        lm.rerender_linked(out["file_id"])
+    assert set(os.listdir(folder)) == before  # the new render was removed
+
+
+def test_bad_provider_results_are_refused_before_install(linked):
+    provider = FakeProvider(probe=linked.probe)
+    lm.register_provider(provider)
+    real_render = provider.render
+
+    def bad_fps(link, out_dir, **kw):
+        result = real_render(link, out_dir, **kw)
+        result.fps = {"num": 0, "den": 1}
+        return result
+
+    provider.render = bad_fps
+    with pytest.raises(lm.LinkError, match="fps"):
+        lm.render_link(remotion_link())
+    assert os.listdir(os.path.join(linked.user_path, "links", "remotion")) == []
+
+
+def test_swap_never_leaves_a_sub_frame_sliver(linked):
+    out = lm.add_linked_media(linked.media("a.mov", seconds=6.0), remotion_link(), position=0.0)
+    from classes.query import Clip
+    c = Clip.get(id=out["timeline_clip_id"])
+    c.data.update(start=3.98, end=5.0)  # 0.6 frame would remain at 4.0 s
+    c.save()
+    res = lm.swap_linked_media(out["file_id"], linked.media("b.mov", seconds=4.0), {})
+    clip = linked.clip(out["timeline_clip_id"])
+    assert clip["end"] - clip["start"] >= 1 / 30 - 1e-9 and clip["end"] == pytest.approx(4.0)
+    assert clip["start"] == pytest.approx(round(clip["start"] * 30) / 30)  # on the frame grid
+    assert "started past the end" in res["warnings"][0]
+
+
+def test_check_link_without_compute_never_touches_the_disk(linked, monkeypatch):
+    provider = FakeProvider(probe=linked.probe)
+    lm.register_provider(provider)
+    out = lm.import_linked(remotion_link(project_dir=linked.user_path), position=0.0)
+    data = linked.file(out["file_id"])
+
+    def no_disk(*a, **k):
+        raise AssertionError("compute=False touched the file system")
+
+    for name in ("isdir", "isfile", "exists"):
+        monkeypatch.setattr(os.path, name, no_disk)
+    monkeypatch.setattr(provider, "fingerprint", no_disk)
+    assert lm.link_state(data, compute=False) == "fresh"
+
+
+def test_save_adopts_renders_only_with_instant_operations(tmp_path, monkeypatch):
+    import errno
+    from classes import info
+    monkeypatch.setattr(info, "USER_PATH", str(tmp_path / "user"))
+    src = str(tmp_path / "user" / "links" / "remotion" / "Intro-1.mov")
+    _write(src)
+    link = lm.normalize_link(remotion_link())
+    files = [{"id": "F1", "path": src, "zenvi_link": link}]
+    clips = [{"id": "C1", "file_id": "F1", "reader": {"path": src}}]
+    real_rename = os.rename
+
+    def cross_device(a, b):
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    monkeypatch.setattr(os, "rename", cross_device)
+    assert lm.adopt_linked_renders(files, clips, str(tmp_path / "Trip.zvn")) == []
+    assert files[0]["path"] == src and os.path.isfile(src)  # another volume: stays, no copy on the GUI thread
+    monkeypatch.setattr(os, "rename", real_rename)
+    lm.adopt_linked_renders(files, clips, str(tmp_path / "Trip.zvn"))
+    first = files[0]["path"]
+    lm.adopt_linked_renders(files, clips, str(tmp_path / "Copy.zvn"), previous_path=str(tmp_path / "Trip.zvn"))
+    assert os.stat(files[0]["path"]).st_ino == os.stat(first).st_ino  # Save As hard-links, no byte copy

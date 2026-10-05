@@ -44,6 +44,7 @@ DEFAULT_MIN_MAJOR = 18
 VERSION_TIMEOUT = 10.0
 TAIL_LINES = 200
 KILL_GRACE_SECONDS = 3.0
+EXIT_DRAIN_SECONDS = 2.0
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 _NEW_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
@@ -281,36 +282,83 @@ def find_node(min_major: int = DEFAULT_MIN_MAJOR, *, env: Optional[Mapping[str, 
     raise NodeNotFound(message + " " + INSTALL_GUIDANCE.format(major=min_major), searched)
 
 
-def kill_process_tree(proc: "subprocess.Popen", platform: Optional[str] = None) -> None:
-    """Stop *proc* and everything it started (its process group / Windows job tree)."""
-    if proc.poll() is not None:
-        return
-    platform = platform or sys.platform
+def descendant_pids(pid: int) -> List[int]:
+    """Every process below *pid* (POSIX, from ``ps``): helpers that left its process group
+    -- Puppeteer / Remotion start Chrome in a group of its own -- are still its children."""
     try:
-        if platform == "win32":
+        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    children: Dict[int, List[int]] = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            children.setdefault(int(parts[1]), []).append(int(parts[0]))
+    found, todo = [], [int(pid)]
+    while todo:
+        for child in children.get(todo.pop(), []):
+            if child not in found:
+                found.append(child)
+                todo.append(child)
+    return found
+
+
+def _signal_pids(pids: Sequence[int], sig: int) -> None:
+    for pid in pids:
+        try:
+            os.kill(pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+def kill_process_tree(proc: "subprocess.Popen", platform: Optional[str] = None) -> None:
+    """Stop *proc* and everything it started: its process group, plus (POSIX) every
+    descendant found before the kill, since a parent's death orphans them out of reach.
+    Windows: ``taskkill /T`` walks the tree."""
+    platform = platform or sys.platform
+    if platform == "win32":
+        if proc.poll() is not None:
+            return
+        try:
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True,
                            timeout=15, creationflags=_NO_WINDOW)
-        else:
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                return
-            deadline = time.monotonic() + KILL_GRACE_SECONDS
-            while time.monotonic() < deadline and proc.poll() is None:
-                time.sleep(0.05)
-            if proc.poll() is None:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-    except (OSError, subprocess.SubprocessError):
-        log.debug("process tree kill failed; killing the parent only", exc_info=True)
+        except (OSError, subprocess.SubprocessError):
+            log.debug("taskkill failed; killing the parent only", exc_info=True)
+    else:
+        stray = descendant_pids(proc.pid)  # before anything dies and gets re-parented
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+        _signal_pids(stray, signal.SIGTERM)
+        deadline = time.monotonic() + KILL_GRACE_SECONDS
+        while time.monotonic() < deadline and (proc.poll() is None or any(_alive(p) for p in stray)):
+            time.sleep(0.05)
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        _signal_pids([p for p in stray if _alive(p)], signal.SIGKILL)
     try:
         if proc.poll() is None:
             proc.kill()
         proc.wait(timeout=10)
     except (OSError, subprocess.SubprocessError):
         log.warning("node process %s did not exit after kill", proc.pid)
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:  # a zombie of ours counts as gone
+        done, _status = os.waitpid(pid, os.WNOHANG)
+        return done == 0
+    except ChildProcessError:
+        return True
 
 
 def run_node(argv: Sequence[str], cwd: Optional[str], env: Optional[Mapping[str, str]] = None,
@@ -353,6 +401,7 @@ def run_node(argv: Sequence[str], cwd: Optional[str], env: Optional[Mapping[str,
     threading.Thread(target=_reader, name="handoff-node-output", daemon=True).start()
     deadline = None if timeout is None else time.monotonic() + float(timeout)
     finished_reading = False
+    exited_at: Optional[float] = None
     try:
         while True:
             if should_cancel is not None and should_cancel():
@@ -364,8 +413,15 @@ def run_node(argv: Sequence[str], cwd: Optional[str], env: Optional[Mapping[str,
             try:
                 line = lines.get(timeout=0.1)
             except queue.Empty:
-                if finished_reading and proc.poll() is not None:
-                    break
+                if proc.poll() is not None:
+                    if finished_reading:
+                        break
+                    # the command exited but something it started still holds the output pipe:
+                    # give it a moment to flush, then stop it rather than wait forever
+                    exited_at = exited_at or time.monotonic()
+                    if time.monotonic() - exited_at > EXIT_DRAIN_SECONDS:
+                        kill_process_tree(proc)
+                        break
                 continue
             if line is None:
                 finished_reading = True

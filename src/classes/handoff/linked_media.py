@@ -35,8 +35,10 @@ from __future__ import annotations
 
 import copy
 import datetime
+import errno
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -587,7 +589,9 @@ def check_link(file_like: Any, *, compute: bool = True) -> Optional[LinkCheck]:
     render failed this session) > ``missing_source`` > ``stale`` (the
     provider's fingerprint differs from the one it was rendered from, or the
     rendered media is gone) > the stored state (``fresh``). With *compute*
-    the provider fingerprints the source: blocking, call off the GUI thread.
+    the source, the media and the provider's fingerprint are checked on disk:
+    blocking, call off the GUI thread. ``compute=False`` answers from memory
+    only (running job, session error, stored state) and is safe anywhere.
     """
     data = _file_data(file_like)
     link = read_link(data)
@@ -603,11 +607,15 @@ def check_link(file_like: Any, *, compute: bool = True) -> Optional[LinkCheck]:
     err = render_error(file_id)
     if err:
         return LinkCheck(file_id, kind, "error", err, None, stored)
+    provider = provider_for(kind)
+    if not compute:  # in memory only: no stat of the source, the media or the provider
+        stored_state = link.get("state")
+        state = stored_state if isinstance(stored_state, str) and stored_state in STATES else "fresh"
+        return LinkCheck(file_id, kind, "stale" if state == "rendering" else state, "", None, stored)
     gone = _source_gone(link)
     if gone:
         return LinkCheck(file_id, kind, "missing_source", gone, None, stored)
     current = None
-    provider = provider_for(kind)
     if compute and provider is not None:
         try:
             current = provider.fingerprint(link)
@@ -884,18 +892,22 @@ def swap_linked_media(file_id: str, new_path: str, link_update: Optional[dict] =
         frame = 1.0 / float(fps)
         old_duration = float(old.get("duration") or 0.0)
         with nested_transaction(_app().updates):
+            # the last whole project frame of the new render (clip ends stay on the frame grid)
+            end_limit = math.floor(duration * float(fps) + 1e-6) / float(fps)
             for c in _query("Clip").filter(file_id=f.id):
                 cs, ce = float(c.data.get("start") or 0.0), float(c.data.get("end") or 0.0)
                 title = c.data.get("title") or c.id
-                if cs >= duration - frame / 2:
-                    length = min(ce - cs, duration)
-                    c.data["start"] = _snap(max(0.0, duration - length), fps)
-                    c.data["end"] = duration
+                if end_limit - cs < frame - 1e-9:  # less than one whole frame would remain
+                    length = min(ce - cs, end_limit)
+                    c.data["start"] = _snap(max(0.0, end_limit - length), fps)
+                    c.data["end"] = end_limit
                     c.save()
                     warnings.append(f"clip {title!r} started past the end of the new {duration:.2f}s render; it "
-                                    f"now shows its last {duration - c.data['start']:.2f}s")
-                elif ce > duration + 1e-6:
-                    warnings.append(f"clip {title!r} was shortened from {ce - cs:.2f}s to {duration - cs:.2f}s: "
+                                    f"now shows its last {end_limit - c.data['start']:.2f}s")
+                elif ce > end_limit + 1e-6:
+                    c.data["end"] = end_limit
+                    c.save()
+                    warnings.append(f"clip {title!r} was shortened from {ce - cs:.2f}s to {end_limit - cs:.2f}s: "
                                     f"the new render is only {duration:.2f}s long")
             if duration > old_duration + frame / 2 and old_duration > 0:
                 notes.append(f"the new render is {duration:.2f}s (was {old_duration:.2f}s); clips keep their "
@@ -1013,34 +1025,42 @@ def render_link(link: dict, *, on_progress: Optional[ProgressFn] = None,
             raise LinkError(f"the {kind_label(kind)} render is {codec or os.path.splitext(produced)[1]}; linked "
                             "media must be ProRes 4444, H.264 or qtrle (libopenshot drops WebM alpha)")
         ext = os.path.splitext(produced)[1] or CODEC_EXTENSIONS[codec]
+        # Check everything about the result BEFORE the file is installed: a bad fps or size
+        # must not leave a render behind in the links folder.
+        completed = dict(stored)
+        source = dict(stored.get("source") or {})
+        source.update(result.source_updates or {})
+        completed["source"] = source
+        completed["props"] = result.props if result.props is not None else (decoded.get("props") or {})
+        try:
+            render_meta: Dict[str, Any] = {
+                "codec": codec, "width": int(result.width), "height": int(result.height),
+                "fps": _fps_dict(result.fps), "duration_frames": int(result.duration_frames),
+                "rendered_at": _utc_now(), "fingerprint": fingerprint,
+            }
+        except (TypeError, ValueError) as exc:
+            raise LinkError(f"the {kind} provider returned a bad render result: {exc}") from None
+        render_meta["output"] = None
+        completed["render"] = render_meta
+        completed["state"] = "fresh"
+        completed["error"] = None
+        normalize_link(completed)  # raises LinkError before anything is installed
         target = _unique_path(folder, render_file_name(stored, fingerprint, ext))
         if path_is_under(produced, staging):
             os.replace(produced, target)
-        elif path_is_under(produced, tempfile.gettempdir()):
-            # a host (After Effects) rendered into the temp folder: the file is ours to take
-            shutil.move(produced, target + ".partial")
-            os.replace(target + ".partial", target)
         else:
-            shutil.copy2(produced, target + ".partial")
-            os.replace(target + ".partial", target)
+            # a host (After Effects) rendered elsewhere: bring it into the staging folder first, so
+            # a failed copy is cleaned up with it; files in the temp folder are ours to take
+            staged = os.path.join(staging, "incoming" + ext)
+            if path_is_under(produced, tempfile.gettempdir()):
+                shutil.move(produced, staged)
+            else:
+                shutil.copy2(produced, staged)
+            os.replace(staged, target)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
-    completed = dict(stored)
-    source = dict(stored.get("source") or {})
-    source.update(result.source_updates or {})
-    completed["source"] = source
-    if result.props is not None:
-        completed["props"] = result.props
-    else:
-        completed["props"] = decoded.get("props") or {}
-    completed["render"] = {
-        "codec": codec, "width": int(result.width), "height": int(result.height),
-        "fps": _fps_dict(result.fps), "duration_frames": int(result.duration_frames),
-        "output": output_token(target, project_path), "rendered_at": _utc_now(), "fingerprint": fingerprint,
-    }
-    completed["state"] = "fresh"
-    completed["error"] = None
+    completed["render"]["output"] = output_token(target, project_path)
     final = normalize_link(completed)
     final_decoded = read_link({LINK_KEY: final}) or final
     final_decoded["warnings"] = list(result.warnings or [])
@@ -1053,12 +1073,65 @@ def _strip_runtime(link: dict) -> dict:
     return out
 
 
+def precheck_placement(position: Optional[float] = None, track: Optional[str] = None,
+                       duration: Optional[float] = None) -> None:
+    """Refuse a placement that cannot work BEFORE anything is rendered (GUI-thread read, blocking hop).
+
+    Checks *position* and that an explicit *track* exists and is unlocked; with
+    an expected *duration* also that the track is free for that window.
+    Raises LinkError with the reason.
+    """
+    if position is not None:
+        try:
+            if float(position) < 0:
+                raise LinkError(f"position must be 0 or later, got {position}")
+        except (TypeError, ValueError):
+            raise LinkError(f"position must be a number of seconds, got {position!r}") from None
+    if not str(track or "").strip():
+        return
+
+    def _check():
+        from classes.editor_tools._base import ToolError, ensure_unlocked, resolve_layer
+        from classes.editor_tools.titles_text_common import plan_overlay_track
+        try:
+            layer = resolve_layer(str(track))
+            ensure_unlocked(layer)
+            if duration and position is not None:
+                plan_overlay_track(float(position), float(position) + float(duration), str(track))
+        except ToolError as exc:
+            raise LinkError(str(exc)) from None
+
+    _read_on_gui(_check)
+
+
+def _discard_render(path: str) -> None:
+    """Remove a render nothing references (a failed add or swap)."""
+    try:
+        os.unlink(path)
+    except OSError:
+        log.warning("Could not remove the unused render %s", path, exc_info=True)
+
+
 def import_linked(link: dict, *, position: Optional[float] = None, track: Optional[str] = None, name: str = "",
-                  on_progress: Optional[ProgressFn] = None, should_cancel: Optional[CancelFn] = None) -> dict:
-    """Render *link* and add the result as a linked clip (render + :func:`add_linked_media`). Blocking."""
+                  on_progress: Optional[ProgressFn] = None, should_cancel: Optional[CancelFn] = None,
+                  expected_duration: Optional[float] = None) -> dict:
+    """Render *link* and add the result as a linked clip (render + :func:`add_linked_media`). Blocking.
+
+    The placement is checked before rendering (*expected_duration*, when the
+    provider knows it, also checks the track is free); a render that cannot
+    be added is deleted, so a refused import leaves nothing behind.
+    """
+    normalize_link(link)
+    precheck_placement(position, track, expected_duration)
     path, completed = render_link(link, on_progress=on_progress, should_cancel=should_cancel)
     warnings = list(completed.get("warnings") or [])
-    receipt = add_linked_media(path, _strip_runtime(completed), position=position, track=track, name=name)
+    try:
+        receipt = add_linked_media(path, _strip_runtime(completed), position=position, track=track, name=name)
+    except Exception as exc:
+        from classes.editor_tools.titles_text_common import CommitTimeout
+        if not isinstance(exc, CommitTimeout):  # a timed-out commit may still land: keep its file
+            _discard_render(path)
+        raise
     receipt["warnings"] = warnings
     receipt["fingerprint"] = (completed.get("render") or {}).get("fingerprint")
     return receipt
@@ -1122,6 +1195,7 @@ def rerender_linked(file_id: str, *, props: Optional[dict] = None, on_progress: 
         receipt = swap_linked_media(str(file_id), path, _strip_runtime(completed))
     except LinkError as exc:  # the render is fine but the project could not take it
         set_render_error(str(file_id), str(exc))
+        _discard_render(path)
         raise
     finally:
         with _rendering_lock:
@@ -1140,12 +1214,15 @@ def adopt_linked_renders(files: List[dict], clips: List[dict], project_file_path
     """Bring linked renders into ``<project>_assets/links`` when a project is saved (``project_data.save``).
 
     Renders of a never-saved project (``~/.openshot_qt/links``) are MOVED
-    (like generated media); renders in a previous project's assets folder
-    (Save As) are COPIED, so the old project keeps working. File paths and
-    clip readers are updated in memory; ``render.output`` tokens
-    (``@assets/links/...``) stay valid. A file that cannot be brought over
-    keeps its old, still-valid path (logged) -- never a failed save. Returns
-    the move ledger ``[(src, dest)]`` for ``assets.reverse_media_moves``.
+    (renamed, like generated media); renders in a previous project's assets
+    folder (Save As) are HARD-LINKED, so the old project keeps working and no
+    bytes are copied. Save runs on the GUI thread, so only these instant
+    operations are used: a render on another volume (or a file system without
+    hard links) keeps its old, still-valid path (logged; Collect Media copies
+    it) -- never a slow or failed save. File paths and clip readers are
+    updated in memory; ``render.output`` tokens (``@assets/links/...``) stay
+    valid. Returns the move ledger ``[(src, dest)]`` for
+    ``assets.reverse_media_moves``.
     """
     from classes import info
     from classes.assets import get_assets_path
@@ -1183,15 +1260,21 @@ def adopt_linked_renders(files: List[dict], clips: List[dict], project_file_path
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             if os.path.exists(dest):
                 dest = _unique_path(os.path.dirname(dest), os.path.basename(dest))
+            # Save runs on the GUI thread: only instant operations here. A rename (same
+            # volume) or a hard link (Save As) costs nothing; a render that would need its
+            # bytes copied (another volume) keeps its current, still valid path.
             if mode == "move":
-                shutil.move(abs_src, dest)
+                os.rename(abs_src, dest)
                 moves.append((abs_src, dest))
             else:
-                shutil.copy2(abs_src, dest + ".partial")
-                os.replace(dest + ".partial", dest)
-        except OSError:
-            log.warning("Could not bring linked render %s into %s; it keeps its current path", abs_src, new_root,
-                        exc_info=True)
+                os.link(abs_src, dest)
+        except OSError as exc:
+            if exc.errno in (errno.EXDEV, errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EMLINK):
+                log.info("Linked render %s stays where it is (it would need a copy to reach %s); File > Collect "
+                         "Media copies it into the project", abs_src, new_root)
+            else:
+                log.warning("Could not bring linked render %s into %s; it keeps its current path", abs_src,
+                            new_root, exc_info=True)
             continue
         remap[abs_src] = dest
         id_to_new[str(f.get("id"))] = dest

@@ -31,7 +31,6 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-import threading
 from typing import Any, Dict, List, Optional
 
 from classes.editor_tools._base import (
@@ -43,8 +42,6 @@ from classes.logger import log
 
 HOSTS = ("aftereffects", "premiere")
 HOST_PREFIX = {"aftereffects": "ae_", "premiere": "premiere_"}
-DEFAULT_HOST_TIMEOUT = 120.0
-MAX_HOST_TIMEOUT = 3 * 60 * 60
 
 _FILE_TARGET = {
     "clip_id": string("A timeline clip of the linked file (timeline_clip_id from get_timeline_state_tool). "
@@ -77,9 +74,14 @@ def _resolve_file_id(clip_id: str = "", file_id: str = "") -> str:
     return from_clip or file_id
 
 
+def _query(name: str) -> Any:
+    """``classes.query.File`` / ``Clip`` (untyped; looked up per call)."""
+    from classes import query
+    return getattr(query, name)
+
+
 def _linked_file(file_id: str):
-    from classes.query import File
-    f = File.get(id=file_id)
+    f = _query("File").get(id=file_id)
     if not f:
         raise ToolError(f"no project file with id={file_id!r} (list_project_files_tool lists them)")
     if _lm().read_link(f.data) is None:
@@ -91,8 +93,7 @@ def _linked_file(file_id: str):
 
 def _clip_rows(file_id: str) -> List[dict]:
     from classes.editor_tools._base import describe_clip
-    from classes.query import Clip
-    return [describe_clip(c) for c in Clip.filter(file_id=file_id)]
+    return [describe_clip(c) for c in _query("Clip").filter(file_id=file_id)]
 
 
 # ---------------------------------------------------------------------------
@@ -128,33 +129,6 @@ def list_link_hosts():
     else:
         summary = "No Adobe app is connected. " + adobe_link.connect_hint("aftereffects")
     return ok(summary, hosts=rows, active=active)
-
-
-def _host_timeout(app: str, tool: str) -> float:
-    """The tool's own timeout from the host catalog (tools/list, cached per host session) plus slack."""
-    from classes.handoff import adobe_link
-    try:
-        host = adobe_link.get_host(app, probe=False)
-        key = (app, host.pid, host.started_at)
-        with _catalog_lock:
-            cached = _catalog_timeouts.get(key)
-        if cached is None:
-            cached = {}
-            for row in adobe_link.list_host_tools(app):
-                ms = row.get("timeoutMs")
-                if isinstance(ms, (int, float)) and ms > 0:
-                    cached[str(row.get("name"))] = float(ms) / 1000.0
-            with _catalog_lock:
-                _catalog_timeouts.clear()
-                _catalog_timeouts[key] = cached
-        seconds = cached.get(tool)
-    except adobe_link.LinkHostError:
-        seconds = None
-    return min(MAX_HOST_TIMEOUT, (seconds or DEFAULT_HOST_TIMEOUT) + 15.0)
-
-
-_catalog_timeouts: Dict[Any, Dict[str, float]] = {}
-_catalog_lock = threading.Lock()
 
 
 @editor_tool(
@@ -197,7 +171,7 @@ def call_link_host(host, tool, arguments=None):
         raise ToolError(f"{adobe_link.APP_LABELS[host]} tools start with {prefix!r}{hint}")
     args = dict(arguments or {})
     try:
-        result = adobe_link.call_host_tool(host, tool, args, timeout=_host_timeout(host, tool))
+        result = adobe_link.call_host_tool(host, tool, args)  # the tool's own catalog timeout
     except adobe_link.HostNotConnected as exc:
         raise ToolError(str(exc)) from None
     except adobe_link.LinkHostError as exc:
@@ -481,7 +455,7 @@ def open_linked_source(clip_id="", file_id="", target="code"):
     source = link.get("source") or {}
     try:
         if target == "studio":
-            if not lm.supports_studio(kind):
+            if provider is None or not lm.supports_studio(kind):
                 raise ToolError(f"{lm.kind_label(kind)} links have no studio to open here; use target='code'")
             provider.open_studio(link)
             return ok(f"Opened {lm.kind_label(kind)} studio for {source.get('composition') or 'the clip'}.",
@@ -529,28 +503,55 @@ def unlink_clip(clip_id="", file_id=""):
 # The handoff packages' tools
 # ---------------------------------------------------------------------------
 
+PACKAGE_TOOL_MODULES = ("handoff_after_effects", "handoff_premiere", "handoff_remotion", "handoff_hyperframes")
+_package_tool_errors: Dict[str, str] = {}
+
+
+def _package_failed(name: str, exc: BaseException) -> None:
+    """A broken package must not take every editor tool down with it: log it and leave it out.
+
+    tests/test_editor_tools_handoff.py imports each present package module
+    directly, so a broken one still fails the suite loudly.
+    """
+    _package_tool_errors[name] = "%s: %s" % (type(exc).__name__, exc)
+    log.error("Handoff tools %s failed to load; its tools are unavailable", name, exc_info=True)
+
+
+def package_tool_errors() -> Dict[str, str]:
+    """Package tool modules that failed to import this session, with the error."""
+    return dict(_package_tool_errors)
+
+
 def _load_package_tools() -> None:
     """Import the handoff packages' tool modules that exist in this build (written out for frozen builds)."""
     try:
         import classes.editor_tools.handoff_after_effects  # noqa: F401
     except ModuleNotFoundError as exc:
         if exc.name != "classes.editor_tools.handoff_after_effects":
-            raise
+            _package_failed("handoff_after_effects", exc)
+    except Exception as exc:
+        _package_failed("handoff_after_effects", exc)
     try:
         import classes.editor_tools.handoff_premiere  # noqa: F401
     except ModuleNotFoundError as exc:
         if exc.name != "classes.editor_tools.handoff_premiere":
-            raise
+            _package_failed("handoff_premiere", exc)
+    except Exception as exc:
+        _package_failed("handoff_premiere", exc)
     try:
         import classes.editor_tools.handoff_remotion  # noqa: F401
     except ModuleNotFoundError as exc:
         if exc.name != "classes.editor_tools.handoff_remotion":
-            raise
+            _package_failed("handoff_remotion", exc)
+    except Exception as exc:
+        _package_failed("handoff_remotion", exc)
     try:
         import classes.editor_tools.handoff_hyperframes  # noqa: F401
     except ModuleNotFoundError as exc:
         if exc.name != "classes.editor_tools.handoff_hyperframes":
-            raise
+            _package_failed("handoff_hyperframes", exc)
+    except Exception as exc:
+        _package_failed("handoff_hyperframes", exc)
 
 
 _load_package_tools()

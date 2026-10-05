@@ -161,3 +161,11 @@ def test_redirects_are_refused_and_the_token_never_leaves(tmp_path, host):
         assert other.headers == []  # the bearer token was never sent on
     finally:
         other.stop()
+
+
+def test_host_calls_wait_as_long_as_the_tool_says(tmp_path, host):
+    host.tools = [{"name": "ae_render", "timeoutMs": 900000}, {"name": "ae_get_state"}]
+    base = _discover(tmp_path, host)
+    assert al.tool_timeout("aftereffects", "ae_render", base) == pytest.approx(900 + al.TIMEOUT_SLACK)
+    assert al.tool_timeout("aftereffects", "ae_get_state", base) == pytest.approx(al.DEFAULT_TIMEOUT + al.TIMEOUT_SLACK)
+    assert al.tool_timeout("premiere", "premiere_x", base) == pytest.approx(al.DEFAULT_TIMEOUT + al.TIMEOUT_SLACK)

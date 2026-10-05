@@ -111,3 +111,17 @@ def test_clip_geometry_evaluates_curves_at_timeline_times():
     keys = tf.clip_geometry_keys(clip, 1920, 1080)
     assert [round(k.time, 4) for k in keys] == [1.0, 1.5, 2.0, round(3.0 - 1 / 30, 4)]
     assert all(math.isclose(k.scale_x, 0.5) for k in keys)
+
+
+def test_scale_none_draws_the_decoded_size_again_like_libopenshot():
+    # libopenshot decodes a SCALE_NONE video at size x max(scale), then scales it again:
+    # a 1920x1080 video at 0.5 shows 480x270 at (720, 405) on a 1080p canvas
+    g = tf.geometry(1920, 1080, 1920, 1080, scale_mode=tf.SCALE_NONE, scale_x=0.5, scale_y=0.5)
+    assert (g.width, g.height, g.x, g.y) == (480.0, 270.0, 720.0, 405.0)
+    # video never decodes larger than the stream; a still scales up to the box
+    assert tf.delivered_size(1920, 1080, 2.0, 2.0) == (1920, 1080)
+    assert tf.delivered_size(1000, 500, 2.0, 2.0, still=True) == (2000, 1000)
+    # the box follows the LARGEST scale over the clip, not this instant's
+    g = tf.geometry(1920, 1080, 1920, 1080, scale_mode=tf.SCALE_NONE, scale_x=0.5, scale_y=0.5,
+                    max_scale_x=1.0, max_scale_y=1.0)
+    assert (g.width, g.height) == (960.0, 540.0)

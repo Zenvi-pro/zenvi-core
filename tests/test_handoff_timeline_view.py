@@ -191,3 +191,13 @@ def test_reversed_and_held_windows(tmp_path):
                                                                                 pytest.approx(40 / 30))
     eased = _retimed_snapshot(tmp_path, 0.0, 5.0, [(1, 1), (151, 300)], interp=0)
     assert eased.speed.kind == "variable" and eased.time is not None
+
+
+def test_snapshot_shares_waveform_samples_instead_of_copying_them(tmp_path):
+    project = _project(tmp_path)
+    samples = [0.5] * 20000
+    project["clips"][0]["ui"] = {"audio_data": samples, "other": {"x": 1}}
+    snap = TimelineSnapshot.from_project(project, str(tmp_path / "trip.zvn"))
+    data = snap.clip(project["clips"][0]["id"]).data
+    assert data["ui"]["audio_data"] is samples           # shared (replaced wholesale, never edited in place)
+    assert data["ui"]["other"] is not project["clips"][0]["ui"]["other"]  # everything else is copied

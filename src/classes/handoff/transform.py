@@ -247,13 +247,45 @@ def _near(a: float, b: float) -> bool:
     return abs(a - b) < 0.000001
 
 
+def delivered_size(src_w: int, src_h: int, max_scale_x: float, max_scale_y: float, *,
+                   still: bool = False) -> Tuple[int, int]:
+    """Size libopenshot decodes a SCALE_NONE source at (export at the timeline's own size).
+
+    The reader is asked for a "max box" of the source size times the largest
+    ``scale_x`` / ``scale_y`` keyframe value (``QtImageReader::calculate_max_size``,
+    ``FFmpegReader::ProcessVideoPacket``; web engine ``render/plan/reader.ts``
+    ``maxBox`` / ``deliveredSource``). Stills scale to that box either way;
+    video only scales down, keeping its aspect. SCALE_NONE then draws the
+    delivered image at ``scale`` again, so a 1920x1080 video at scale 0.5
+    shows 480x270.
+    """
+    box_w = math.trunc(float(src_w) * float(max_scale_x))
+    box_h = math.trunc(float(src_h) * float(max_scale_y))
+    if still:
+        return qsize_scaled(src_w, src_h, box_w, box_h, "keep") if box_w > 0 and box_h > 0 else (src_w, src_h)
+    if box_w != 0 and box_h != 0 and box_w < src_w and box_h < src_h:
+        ratio = float(src_w) / float(src_h)
+        possible_w = int(math.floor(box_h * ratio + 0.5))
+        possible_h = int(math.floor(box_w / ratio + 0.5))
+        if possible_w <= box_w:
+            return possible_w, box_h
+        return box_w, possible_h
+    return src_w, src_h
+
+
 def geometry(src_w: float, src_h: float, canvas_w: float, canvas_h: float, *, scale_mode: int = SCALE_FIT,
              gravity: int = GRAVITY_CENTER, scale_x: float = 1.0, scale_y: float = 1.0,
              location_x: float = 0.0, location_y: float = 0.0, rotation: float = 0.0,
              origin_x: float = 0.5, origin_y: float = 0.5, shear_x: float = 0.0, shear_y: float = 0.0,
              alpha: float = 1.0, margin: float = 0.0, time: Optional[float] = None,
-             frame: Optional[float] = None) -> Geometry:
-    """Canvas placement of a *src_w* x *src_h* source with already-evaluated property values."""
+             frame: Optional[float] = None, max_scale_x: Optional[float] = None,
+             max_scale_y: Optional[float] = None, still: bool = False) -> Geometry:
+    """Canvas placement of a *src_w* x *src_h* source with already-evaluated property values.
+
+    For SCALE_NONE pass the largest ``scale_x`` / ``scale_y`` of the whole
+    clip (*max_scale_x/y*, default: this instant's) and whether the source is
+    a *still*: libopenshot decodes at that size first (:func:`delivered_size`).
+    """
     src_w_i = max(1, int(round(float(src_w or 0) or canvas_w)))
     src_h_i = max(1, int(round(float(src_h or 0) or canvas_h)))
     width, height = float(canvas_w), float(canvas_h)
@@ -262,8 +294,12 @@ def geometry(src_w: float, src_h: float, canvas_w: float, canvas_h: float, *, sc
     layout_x = layout_y = margin_px
     layout_w = max(1.0, width - margin_px * 2)
     layout_h = max(1.0, height - margin_px * 2)
-    size_w, size_h = scaled_source_size(src_w_i, src_h_i, int(scale_mode), math.trunc(layout_w),
-                                        math.trunc(layout_h))
+    if int(scale_mode) == SCALE_NONE:
+        size_w, size_h = delivered_size(src_w_i, src_h_i, scale_x if max_scale_x is None else max_scale_x,
+                                        scale_y if max_scale_y is None else max_scale_y, still=still)
+    else:
+        size_w, size_h = scaled_source_size(src_w_i, src_h_i, int(scale_mode), math.trunc(layout_w),
+                                            math.trunc(layout_h))
     ssw = size_w * float(scale_x)
     ssh = size_h * float(scale_y)
 
@@ -332,8 +368,14 @@ def clip_geometry(clip, time: float, canvas_w: float, canvas_h: float, *, src_w:
     file = clip.file
     sw = src_w if src_w is not None else (file.width if file is not None else None)
     sh = src_h if src_h is not None else (file.height if file is not None else None)
+
+    def _max(key: str) -> Optional[float]:  # Keyframe::GetMaxPoint().co.Y
+        curve = curves.get(key)
+        return max((p.value for p in curve.points), default=None) if curve is not None else None
+
     return geometry(sw or canvas_w, sh or canvas_h, canvas_w, canvas_h, scale_mode=clip.scale_mode,
-                    gravity=clip.gravity, margin=margin, time=time, frame=frame, **values)
+                    gravity=clip.gravity, margin=margin, time=time, frame=frame, max_scale_x=_max("scale_x"),
+                    max_scale_y=_max("scale_y"), still=bool(file is not None and file.is_still), **values)
 
 
 def clip_geometry_keys(clip, canvas_w: float, canvas_h: float, *, src_w: Optional[float] = None,

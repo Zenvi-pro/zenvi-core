@@ -29,11 +29,12 @@ import itertools
 import json
 import os
 import sys
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from classes.logger import log
 
@@ -447,20 +448,51 @@ def _result_from(tool: str, app: str, result: Any) -> HostResult:
     return HostResult(receipt=receipt, text="\n".join(texts), images=images, is_error=is_error, raw=result)
 
 
-def call_host_tool(app: str, tool: str, args: Optional[dict] = None, timeout: float = DEFAULT_TIMEOUT,
+TIMEOUT_SLACK = 15.0
+MAX_TIMEOUT = 3 * 60 * 60
+_timeouts: Dict[Any, Dict[str, float]] = {}
+_timeouts_lock = threading.Lock()
+
+
+def tool_timeout(app: str, tool: str, base_dir: Optional[str] = None) -> float:
+    """Seconds to wait for *tool*: its catalog ``timeoutMs`` (``tools/list``, cached per host
+    session) plus slack, else :data:`DEFAULT_TIMEOUT`. A long render keeps its own budget."""
+    try:
+        host = get_host(app, base_dir, probe=False)
+        key = (app, base_dir, host.pid, host.started_at)
+        with _timeouts_lock:
+            known = _timeouts.get(key)
+        if known is None:
+            known = {}
+            for row in list_host_tools(app, base_dir):
+                ms = row.get("timeoutMs")
+                if isinstance(ms, (int, float)) and not isinstance(ms, bool) and ms > 0:
+                    known[str(row.get("name"))] = float(ms) / 1000.0
+            with _timeouts_lock:
+                _timeouts.clear()
+                _timeouts[key] = known
+        seconds = known.get(tool)
+    except LinkHostError:
+        seconds = None
+    return min(MAX_TIMEOUT, (seconds or DEFAULT_TIMEOUT) + TIMEOUT_SLACK)
+
+
+def call_host_tool(app: str, tool: str, args: Optional[dict] = None, timeout: Optional[float] = None,
                    base_dir: Optional[str] = None) -> HostResult:
     """Call host tool *tool* (``ae_*`` / ``premiere_*``) with *args* in the connected *app*.
 
-    Raises HostNotConnected (with how to connect) when the host is not
-    reachable, LinkHostError(code=TIMEOUT) when the call outlives *timeout*.
-    A tool that ran and failed comes back as a HostResult with
-    ``is_error=True`` and the host's receipt. Blocking.
+    *timeout* defaults to the tool's own catalog ``timeoutMs`` (+ slack, see
+    :func:`tool_timeout`), 120 s when the catalog gives none. Raises
+    HostNotConnected (with how to connect) when the host is not reachable,
+    LinkHostError(code=TIMEOUT) when the call outlives the timeout. A tool
+    that ran and failed comes back as a HostResult with ``is_error=True`` and
+    the host's receipt. Blocking.
     """
     if not str(tool or "").strip():
         raise LinkHostError("which host tool? pass its name (e.g. ae_get_state)", "INVALID_ARGUMENT")
     if args is not None and not isinstance(args, dict):
         raise LinkHostError("host tool arguments must be an object", "INVALID_ARGUMENT")
     client = _connected_client(app, base_dir)
-    result = client.request("tools/call", {"name": str(tool), "arguments": dict(args or {})},
-                            timeout=float(timeout))
+    wait = float(timeout) if timeout is not None else tool_timeout(app, str(tool), base_dir)
+    result = client.request("tools/call", {"name": str(tool), "arguments": dict(args or {})}, timeout=wait)
     return _result_from(str(tool), app, result)

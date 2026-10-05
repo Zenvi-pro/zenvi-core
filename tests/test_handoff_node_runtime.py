@@ -168,3 +168,30 @@ def test_a_cancelled_node_command_is_a_job_cancellation(tmp_path):
     flag.set()
     with pytest.raises(jobs.JobCancelled):
         nr.run_node([sys.executable, "-c", "import time; time.sleep(30)"], str(tmp_path), should_cancel=flag.is_set)
+
+
+def test_a_helper_in_its_own_session_dies_with_the_command(tmp_path):
+    pid_file = tmp_path / "helper.pid"
+    script = textwrap.dedent(f"""
+        import subprocess, sys, time
+        helper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+        open({str(pid_file)!r}, "w").write(str(helper.pid))
+        print("started", flush=True)
+        time.sleep(60)
+    """)
+    with pytest.raises(nr.NodeTimeout):
+        nr.run_node([sys.executable, "-c", script], str(tmp_path), timeout=2)
+    helper = int(pid_file.read_text())
+    deadline = time.monotonic() + 5
+    while _pid_alive(helper) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not _pid_alive(helper)  # like Chrome under Remotion: its own process group, still stopped
+
+
+def test_run_node_returns_when_a_leftover_child_keeps_the_output_open(tmp_path):
+    script = ("import subprocess, sys\n"
+              "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+              "print('parent done', flush=True)\n")
+    t0 = time.monotonic()
+    code, tail = nr.run_node([sys.executable, "-c", script], str(tmp_path))
+    assert code == 0 and "parent done" in tail and time.monotonic() - t0 < 15

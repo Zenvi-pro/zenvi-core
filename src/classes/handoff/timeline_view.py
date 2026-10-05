@@ -483,7 +483,7 @@ class TimelineSnapshot:
     @classmethod
     def from_project(cls, project: Mapping[str, Any], project_path: Optional[str] = None) -> "TimelineSnapshot":
         """Snapshot *project* (a project dict); *project_path* resolves relative and ``@assets`` paths."""
-        data = copy.deepcopy(dict(project))
+        data = _copy_project(project)
         fps = _frac(data.get("fps"), Fraction(30, 1))
         width, height = _i(data.get("width"), 1920) or 1920, _i(data.get("height"), 1080) or 1080
         files = {}
@@ -674,6 +674,24 @@ class TimelineSnapshot:
 
     def track(self, index: int) -> TrackView:
         return self.tracks[index]
+
+
+def _copy_project(project: Mapping[str, Any]) -> dict:
+    """A deep copy of the project that shares the waveform sample lists (``ui.audio_data``).
+
+    They are large (tens of thousands of floats per clip) and replaced
+    wholesale, never edited in place -- the same rule as
+    ``query.QueryObject._get_cached_child`` -- so sharing them keeps
+    ``from_app()`` on the GUI thread cheap.
+    """
+    memo: Dict[int, Any] = {}
+    for key in ("clips", "files", "effects"):
+        for item in project.get(key) or []:
+            ui = item.get("ui") if isinstance(item, dict) else None
+            audio = ui.get("audio_data") if isinstance(ui, dict) else None
+            if isinstance(audio, list) and audio:
+                memo[id(audio)] = audio
+    return copy.deepcopy(dict(project), memo)
 
 
 def _with_track(item, index: int):

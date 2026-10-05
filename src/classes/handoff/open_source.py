@@ -22,8 +22,9 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from classes.logger import log
 
@@ -121,13 +122,47 @@ def resolve_editor(setting: Optional[str] = None, *, platform: Optional[str] = N
     return EditorChoice(os.path.basename(argv[0]), tuple(argv))
 
 
-def build_command(choice: EditorChoice, file: str, line: Optional[int] = None) -> Optional[List[str]]:
-    """The argv to run (None = open with the system app)."""
+def build_command(choice: EditorChoice, file: str, line: Optional[int] = None,
+                  folder: Optional[str] = None) -> Optional[List[str]]:
+    """The argv to run (None = open with the system app). ``{folder}`` is *folder* (the project root)
+    when given, else the file's folder."""
     if choice.argv is None:
         return None
     line_no = str(int(line)) if line else "1"
-    folder = os.path.dirname(file)
-    return [a.replace("{file}", file).replace("{line}", line_no).replace("{folder}", folder) for a in choice.argv]
+    root = folder or os.path.dirname(file)
+    return [a.replace("{file}", file).replace("{line}", line_no).replace("{folder}", root) for a in choice.argv]
+
+
+# cmd.exe re-parses a batch file's arguments: these characters in a file name could run commands
+# (CVE-2024-24576 "BatBadBut"), so a .cmd/.bat launcher never gets such a path.
+_CMD_METACHARACTERS = set('&|<>^%!"()')
+
+
+def windows_launcher(argv: List[str], exists: Callable[[str], bool] = os.path.isfile) -> Tuple[List[str], dict]:
+    """Run an Electron editor's ``bin/code.cmd`` / ``cursor.cmd`` without cmd.exe.
+
+    Those shims run ``<App>.exe resources/app/out/cli.js`` with
+    ``ELECTRON_RUN_AS_NODE=1``; doing that directly avoids cmd.exe parsing the
+    file name. Returns (argv, extra environment). Any other batch file is run
+    only when no argument contains a cmd metacharacter.
+    """
+    import ntpath  # Windows path rules (this only runs for Windows launchers; testable anywhere)
+    exe = argv[0] if argv else ""
+    if not exe.lower().endswith((".cmd", ".bat")):
+        return argv, {}
+    folder = ntpath.dirname(ntpath.normpath(exe))
+    for _ in range(4):  # bin/ -> app root, or resources/app/bin/ -> install root
+        cli = ntpath.join(folder, "resources", "app", "out", "cli.js")
+        if exists(cli):
+            for name in ("Code.exe", "Cursor.exe", "Code - Insiders.exe"):
+                app = ntpath.join(folder, name)
+                if exists(app):
+                    return [app, cli] + list(argv[1:]), {"ELECTRON_RUN_AS_NODE": "1"}
+        folder = ntpath.dirname(folder)
+    if any(ch in _CMD_METACHARACTERS for arg in argv[1:] for ch in arg):
+        raise EditorError("the source path has characters a .cmd launcher cannot pass safely (& | < > ^ % ! \" "
+                          "( )); set Preferences > General > Code Editor to the editor's .exe or to system")
+    return argv, {}
 
 
 def _popen_kwargs() -> dict:
@@ -165,26 +200,38 @@ def open_in_editor(file: str, line: Optional[int] = None, *, setting: Optional[s
     Raises EditorError with what to change when nothing could be opened.
     Blocking (up to a few seconds): call off the GUI thread.
     """
-    target = os.path.abspath(os.path.expanduser(str(file or folder or "")))
+    raw = os.path.expanduser(str(file or folder or ""))
+    if raw and not os.path.isabs(raw) and folder:  # a project-relative file ("src/Intro.tsx")
+        raw = os.path.join(os.path.expanduser(str(folder)), raw)
+    target = os.path.abspath(raw) if raw else ""
     if not target or not os.path.exists(target):
         raise EditorError(f"{target or 'the source'} does not exist")
     choice = resolve_editor(editor_setting() if setting is None else setting)
-    argv = build_command(choice, target, line)
+    root = os.path.abspath(os.path.expanduser(str(folder))) if folder else None
+    argv = build_command(choice, target, line, root)
     if argv is None:
         if not _open_with_system(target):
             raise EditorError(f"the system could not open {os.path.basename(target)}; set Preferences > General > "
                               "Code Editor to an editor command")
         return {"editor": "system", "command": None, "file": target, "line": line}
-    try:
-        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.PIPE, **_popen_kwargs())
-    except OSError as exc:
-        raise EditorError(f"could not start {choice.name}: {exc}") from None
-    try:
-        code = proc.wait(timeout=LAUNCH_WAIT_SECONDS)
-    except subprocess.TimeoutExpired:
-        code = None  # still running: an editor that stays in the foreground
-    if code not in (None, 0):
-        err = (proc.stderr.read() if proc.stderr else b"").decode("utf-8", "replace").strip()[-400:]
-        raise EditorError(f"{choice.name} exited with code {code}: {err or 'no message'}")
+    env = None
+    if sys.platform == "win32":
+        argv, extra = windows_launcher(argv)
+        if extra:
+            env = dict(os.environ, **extra)
+    # stderr to a file, not a pipe: an editor that stays in the foreground could fill a pipe and block
+    with tempfile.TemporaryFile() as err_file:
+        try:
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err_file,
+                                    env=env, **_popen_kwargs())
+        except OSError as exc:
+            raise EditorError(f"could not start {choice.name}: {exc}") from None
+        try:
+            code = proc.wait(timeout=LAUNCH_WAIT_SECONDS)
+        except subprocess.TimeoutExpired:
+            code = None  # still running: an editor that stays in the foreground
+        if code not in (None, 0):
+            err_file.seek(0)
+            err = err_file.read().decode("utf-8", "replace").strip()[-400:]
+            raise EditorError(f"{choice.name} exited with code {code}: {err or 'no message'}")
     return {"editor": choice.name, "command": argv, "file": target, "line": line}

@@ -83,3 +83,15 @@ def test_missing_plugins_are_skipped_and_a_broken_one_is_logged(monkeypatch, cap
     assert linked_media.provider_for("aftereffects") is not None
     assert "remotion failed to load" in caplog.text
     assert plugins.load_plugins() == loaded  # once per session
+
+
+def test_unregister_notifies_listeners(clean_registry):
+    heard = []
+    reg.register_import_action("gone", "Gone", lambda w: None)
+    reg.add_listener(lambda: heard.append(1))
+    try:
+        reg.unregister_action("gone")
+        reg.unregister_action("never-registered")
+    finally:
+        reg._listeners.clear()
+    assert heard == [1]

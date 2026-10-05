@@ -179,3 +179,45 @@ def test_unlink_clip_is_one_step_and_refuses_plain_files(linked, provider):
     plain = linked.add_file("video")
     r = linked.call_receipt("unlink_clip_tool", file_id=plain)
     assert _failed(r) and "not a linked clip" in r["summary"]
+
+
+def test_every_handoff_package_tool_module_present_imports_cleanly():
+    """The editor tools skip a broken package module (so the others keep working); this fails loudly instead."""
+    import importlib
+    import importlib.util
+    from classes.editor_tools import handoff
+    for name in handoff.PACKAGE_TOOL_MODULES:
+        full = "classes.editor_tools." + name
+        if importlib.util.find_spec(full) is not None:
+            importlib.import_module(full)
+    assert handoff.package_tool_errors() == {}
+
+
+def test_a_broken_package_tool_module_is_logged_and_skipped(monkeypatch, caplog):
+    import importlib.abc
+    import importlib.machinery
+    import sys
+    from classes.editor_tools import handoff
+
+    class _Broken(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == "classes.editor_tools.handoff_remotion":
+                return importlib.machinery.ModuleSpec(fullname, self)
+            return None
+
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            raise SyntaxError("broken package")
+
+    monkeypatch.setattr(handoff, "_package_tool_errors", {})
+    finder = _Broken()
+    sys.meta_path.insert(0, finder)
+    try:
+        handoff._load_package_tools()
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop("classes.editor_tools.handoff_remotion", None)
+    assert "handoff_remotion" in handoff.package_tool_errors()
+    assert "failed to load" in caplog.text
