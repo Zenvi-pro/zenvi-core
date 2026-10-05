@@ -935,7 +935,7 @@ class XmemlBuilder:
         if kind == "audio":
             attrs["premiereChannelType"] = "stereo" if stereo else "mono"
         node = ET.Element("clipitem", attrs)
-        _sub(node, "name", p.clip.title or p.media.name)
+        _sub(node, "name", self._item_name(p))
         _sub(node, "enabled", "TRUE")
         _sub(node, "duration", p.item_duration)
         node.append(self.rate.element())
@@ -967,6 +967,16 @@ class XmemlBuilder:
         self._items[item_id] = node
         self.counts["video_items" if kind == "video" else "audio_items"] += 1
         return node
+
+    @staticmethod
+    def _item_name(p: _Plan) -> str:
+        """The clip's name; a title or still written as PNG drops its old extension ("Intro.svg" -> "Intro")."""
+        name = p.clip.title or p.media.name
+        stem, ext = os.path.splitext(name)
+        if (p.media.still and stem and ext.lower() in (".svg",) + CONVERT_STILL_EXTENSIONS
+                and p.media.path.lower().endswith(".png")):
+            return stem
+        return name
 
     def _file_element(self, m: _Media) -> ET.Element:
         node = ET.Element("file", {"id": m.file_id})

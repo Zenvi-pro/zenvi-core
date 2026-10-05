@@ -390,6 +390,21 @@ def test_titles_are_rendered_to_png_stills_next_to_the_xml(tmp_path):
     assert fcp.validate_xmeml(root) == []
 
 
+def test_stills_written_as_png_drop_their_old_extension_from_the_clip_name(tmp_path):
+    # Zenvi names a title clip after its file ("Lower third.svg"); Premiere links to the PNG, so the clip
+    # must not say .svg. Stills Premiere reads as they are keep their names.
+    files = [V, title_file(), image_file("W1", "/stills/photo.webp"), image_file("P1", "/stills/logo.png")]
+    proj = project(files=files, clips=[clip("A", "F1", end=6.0),
+                                       clip("T", "T1", layer=L2, end=2.0, title="Lower third.svg"),
+                                       clip("W", "W1", layer=L3, end=2.0, title="photo.webp"),
+                                       clip("P", "P1", layer=L2, position=3.0, end=2.0, title="logo.png")])
+    out = fcp.export_timeline(snapshot(proj), str(tmp_path / "Edit.xml"), render_stills=FakeStills())
+    names = {c.findtext("name"): c.findtext("file/name") for c in parse(out.path).iter("clipitem")
+             if c.findtext("file/name")}
+    assert names["Lower third"] == "Lower third-T1.png" and names["photo"] == "photo-W1.png"
+    assert names["logo.png"] == "logo.png" and "Lower third.svg" not in names
+
+
 def test_collect_media_copies_files_and_points_the_xml_at_them(tmp_path):
     media = tmp_path / "src"
     media.mkdir()

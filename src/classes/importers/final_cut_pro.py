@@ -103,6 +103,14 @@ class XmlImportError(Exception):
     """The XML cannot be imported; the message says why and what to do."""
 
 
+class NoClipsError(XmlImportError):
+    """No clip of the sequence could be placed; ``missing`` is the media that was not found or not readable."""
+
+    def __init__(self, message: str, missing: Iterable[str] = ()):
+        super().__init__(message)
+        self.missing = list(missing)
+
+
 # ---------------------------------------------------------------------------
 # Parsing (pure)
 # ---------------------------------------------------------------------------
@@ -1419,7 +1427,7 @@ def plan_import(path: str, *, placement: str = "new_tracks", info: Optional[Proj
     planner.plan()
     if not planner.clips:
         detail = (": missing media " + ", ".join(os.path.basename(m) for m in missing[:5])) if missing else ""
-        raise XmlImportError(f"no clip of {seq.name!r} could be imported{detail}")
+        raise NoClipsError(f"no clip of {seq.name!r} could be imported{detail}", missing)
     for c in planner.clips:   # point clips at the file on disk
         c.path = probes[c.path].get("path", c.path) if c.path in probes else c.path
     media = {probes[k]["path"]: v for k, v in probes.items() if "_existing" not in v}
@@ -1614,11 +1622,25 @@ def run_import_job(window, path: str, *, placement: str = "new_tracks", prompt: 
     title = title or _("Import XML")
     info = read_project_info()
 
+    asked: List[bool] = []   # the user is asked for missing media once per import
+
     def plan_job(remap):
         def work(job):
             return plan_import(path, placement=placement, info=info, remap=remap, should_cancel=job.should_cancel,
                                translate=_)
         return work
+
+    def relocate(missing: List[str]) -> bool:
+        """Offer to locate *missing*; True when it re-plans with what the user found."""
+        if not prompt or not missing or asked:
+            return False
+        asked.append(True)
+        remap = _ask_for_missing(window, missing)
+        if not remap:
+            return False
+        jobs.submit_job(plan_job(remap), label=_("Importing %s") % os.path.basename(path), kind="xml-import",
+                        on_done=finish)
+        return True
 
     def finish(job):
         from windows.handoff_menus import notify
@@ -1626,16 +1648,14 @@ def run_import_job(window, path: str, *, placement: str = "new_tracks", prompt: 
             notify(window, _("Import cancelled"))
             return
         if job.error is not None:
+            # Nothing could be placed (an XML from another computer): still offer to point at the media.
+            if isinstance(job.error, NoClipsError) and relocate(job.error.missing):
+                return
             QMessageBox.warning(window, title, _("Import failed: %s") % job.error)
             return
         plan = job.result
-        if prompt and plan.missing and not getattr(job, "_relocated", False):
-            remap = _ask_for_missing(window, plan.missing)
-            if remap:
-                again = jobs.submit_job(plan_job(remap), label=_("Importing %s") % os.path.basename(path),
-                                        kind="xml-import", on_done=finish)
-                again._relocated = True  # type: ignore[attr-defined]
-                return
+        if relocate(plan.missing):
+            return
         try:
             summary = commit_import(plan)
         except Exception as exc:

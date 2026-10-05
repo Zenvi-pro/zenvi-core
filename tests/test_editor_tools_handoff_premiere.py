@@ -275,6 +275,62 @@ def test_menu_import_is_one_undo_step(ppro, speed_xml, boxes):
     assert not [c for c in ppro.clips() if c.get("title") in ("Fast", "Back", "Ramp")]
 
 
+@pytest.fixture
+def lost_xml(ppro, tmp_path, monkeypatch):
+    """premiere_speed.xml whose media is not at its path (an XML from another computer), and where it is."""
+    from classes.handoff import linked_media
+    folder = tmp_path / "found"
+    folder.mkdir()
+    (disk,) = media_on_disk(folder, video_file("", "/media/speed/clip.mp4", duration=20.0))
+    xml = tmp_path / "Lost.xml"
+    xml.write_text((FIXTURES / "premiere_speed.xml").read_text().replace("/media/speed/clip.mp4", "/gone/clip.mp4"))
+    monkeypatch.setattr(linked_media, "probe_media", FakeMediaProbe({disk["path"]: disk}))
+    return str(xml), disk["path"]
+
+
+def _submitted_jobs(monkeypatch):
+    from classes.handoff import jobs
+    seen = []
+    real = jobs.submit_job
+
+    def submit(*args, **kwargs):
+        seen.append(real(*args, **kwargs))
+        return seen[-1]
+
+    monkeypatch.setattr(jobs, "submit_job", submit)
+    return seen
+
+
+def test_menu_import_offers_to_locate_media_even_when_none_of_it_is_found(ppro, lost_xml, boxes, monkeypatch):
+    from classes.importers import final_cut_pro as imp
+    xml, found = lost_xml
+    asked = []
+    monkeypatch.setattr(imp, "_ask_for_missing", lambda window, missing: asked.append(missing) or {missing[0]: found})
+    submitted = _submitted_jobs(monkeypatch)
+    ppro.mark()
+    first = imp.run_import_job(ppro.window, xml, prompt=True)
+    with pytest.raises(imp.NoClipsError):
+        first.wait(30)
+    assert asked == [["/gone/clip.mp4"]] and len(submitted) == 2
+    plan = submitted[-1].wait(30)                       # planned again with the file the user pointed at
+    assert plan.missing == [] and len(plan.clips) == 3
+    assert ppro.undo_steps_since_mark() == 1 and _shown(ppro) == ["Imported 3 clip(s) from Speeds"]
+    assert not [c for c in boxes.calls if c[0] == "warning"]
+
+
+def test_menu_import_says_what_is_missing_when_the_user_finds_nothing(ppro, lost_xml, boxes, monkeypatch):
+    from classes.importers import final_cut_pro as imp
+    xml, _found = lost_xml
+    asked = []
+    monkeypatch.setattr(imp, "_ask_for_missing", lambda window, missing: asked.append(missing) or {})
+    ppro.mark()
+    with pytest.raises(imp.NoClipsError):
+        imp.run_import_job(ppro.window, xml, prompt=True).wait(30)
+    assert len(asked) == 1 and ppro.undo_steps_since_mark() == 0
+    assert boxes.calls == [("warning", "Import XML",
+                            "Import failed: no clip of 'Speeds' could be imported: missing media clip.mp4")]
+
+
 def test_menu_send_reports_the_new_sequence(ppro, premiere, boxes):
     from classes.handoff import premiere as ppro_plugin
     _timeline(ppro)
