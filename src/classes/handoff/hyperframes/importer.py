@@ -57,11 +57,35 @@ ProgressFn = Callable[[Optional[float], str], None]
 # Media measurement (ffprobe; off the GUI thread)
 # ---------------------------------------------------------------------------
 
+def svg_size(path: str) -> Tuple[int, int]:
+    """(width, height) of an SVG from its width / height or viewBox (0, 0 when unknown)."""
+    import re
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.parse(path).getroot()
+    except (ET.ParseError, OSError):
+        return 0, 0
+
+    def length(value: Optional[str]) -> float:
+        m = re.match(r"^\s*([\d.]+)\s*(px)?\s*$", value or "")
+        return float(m.group(1)) if m else 0.0
+    w, h = length(root.get("width")), length(root.get("height"))
+    if not (w and h):
+        box = [float(v) for v in re.split(r"[\s,]+", (root.get("viewBox") or "").strip()) if v][:4]
+        if len(box) == 4:
+            w, h = (w or box[2]), (h or box[3])
+    return int(round(w)), int(round(h))
+
+
 def ffprobe_media(path: str) -> dict:
     """{width, height, duration, has_video, has_audio} of a media file (zeros when unreadable)."""
     from classes import ffmpeg_cli
-    exe = ffmpeg_cli.find_ffmpeg("ffprobe")
     out = {"width": 0, "height": 0, "duration": 0.0, "has_video": False, "has_audio": False}
+    if path and str(path).lower().endswith((".svg", ".svgz")) and os.path.isfile(path):
+        w, h = svg_size(path)
+        out.update(width=w, height=h, has_video=bool(w and h))
+        return out
+    exe = ffmpeg_cli.find_ffmpeg("ffprobe")
     if not exe or not path or not os.path.isfile(path):
         return out
     try:
@@ -307,15 +331,37 @@ def _plan_flatten(insp: Inspection) -> None:
     project = insp.project
     root = project.root
     link = _base_link(project, role="project", entry=hfp.INDEX, composition=root.id, file=hfp.INDEX,
-                      line=root.element.line, props={}, block={}, fps=insp.fps)
+                      line=root.element.line, props=root.variable_defaults(), block={}, fps=insp.fps)
     name = os.path.basename(project.root_dir.rstrip(os.sep)) or root.id
     insp.items = [Item("linked", name, 0.0, (0, 0), link=link, role="project", expected_duration=root.duration)]
+
+
+_CLEAR = ("", "none", "transparent", "initial", "unset", "inherit", "#000", "#000000", "black", "rgb(0, 0, 0)",
+          "rgb(0,0,0)")
+
+
+def _background_note(project: hfp.Project) -> Optional[str]:
+    """A warning when the page / root paints a background colour (a native import has none: black)."""
+    root = project.root
+    for el in (next((e for e in project.index.iter() if e.tag == "html"), None),
+               next((e for e in project.index.iter() if e.tag == "body"), None), root.element):
+        if el is None:
+            continue
+        style = hfp.computed_style(el, root.rules)
+        value = (style.get("background-color") or style.get("background") or "").strip().lower()
+        if value and value not in _CLEAR and "url(" not in value:
+            return (f"the composition's background ({value}) is not imported: Zenvi's timeline shows black behind "
+                    "the clips (add a colour clip on the bottom track to match)")
+    return None
 
 
 def _plan_parts(insp: Inspection, clips: Sequence[hfp.Clip], *, natives_allowed: bool, canvas: Tuple[int, int],
                 plans: Optional[Dict[int, Tuple[mapping.NativePlan, dict]]] = None) -> None:
     project = insp.project
     root = project.root
+    note = _background_note(project)
+    if note and any(c.is_primitive for c in clips):
+        insp.warnings.append(note)
     plans = plans if plans is not None else _native_plans(insp, [c for c in clips if c.is_primitive], canvas)
     natives: List[hfp.Clip] = []
     hosts: List[hfp.Clip] = []
@@ -334,10 +380,13 @@ def _plan_parts(insp: Inspection, clips: Sequence[hfp.Clip], *, natives_allowed:
             comp = project.composition_for(c)
             ref = hfprov.element_ref(c.element, root.element)
             entry = c.composition_src or hfp.INDEX
+            # every declared variable with its value for this mount: Linked Source > Edit Props lists them all
+            props = dict(comp.variable_defaults()) if comp is not None else {}
+            props.update(c.variable_values)
             link = _base_link(project, role="composition", entry=entry, composition=c.composition_id or ref,
                               file=entry, line=(comp.element.line if comp is not None and comp.file == entry
                                                 else c.line),
-                              props=c.variable_values, block={"host": ref}, fps=insp.fps)
+                              props=props, block={"host": ref}, fps=insp.fps)
             duration = c.duration if c.duration else (comp.duration if comp is not None else None)
             insp.items.append(Item("linked", c.composition_id or ref, c.start or 0.0, (0, c.track_index), order,
                                    clip=c, link=link, role="composition", expected_duration=duration))
@@ -345,7 +394,8 @@ def _plan_parts(insp: Inspection, clips: Sequence[hfp.Clip], *, natives_allowed:
                 insp.problems.setdefault(c.label, []).extend(c.problems)
     for group, exclude, shows in _layers(project, natives, hosts):
         link = _base_link(project, role="layer", entry=hfp.INDEX, composition=root.id, file=hfp.INDEX,
-                          line=root.element.line, props={}, block={"exclude": exclude}, fps=insp.fps)
+                          line=root.element.line, props=root.variable_defaults(), block={"exclude": exclude},
+                          fps=insp.fps)
         name = "%s graphics%s" % (root.id, " (under the media)" if group < 0 else "")
         insp.items.append(Item("linked", name, 0.0, (group, 0 if group < 0 else 1 << 20), len(insp.items),
                                link=link, role="layer", expected_duration=root.duration))
@@ -616,6 +666,13 @@ def _place_native(item: Item, reader: dict, layer: int, position: float, File, p
         f.save()
     props = dict(item.plan.props)
     props["start"], props["end"] = item.plan.start, item.plan.end
+    if item.clip.kind in ("video", "audio"):
+        # a clip's "duration" is its media's length (how far it can be trimmed out), not what it shows
+        try:
+            media_length = float(reader.get("duration") or 0.0)
+        except (TypeError, ValueError):
+            media_length = 0.0
+        props["duration"] = max(media_length, item.plan.end)
     clip = place_clip(f.id, position, item.plan.duration, layer, title=item.clip.id or os.path.basename(path),
                       props=props)
     return {"kind": "native", "name": item.name, "timeline_clip_id": clip.get("id"), "file_id": f.id,

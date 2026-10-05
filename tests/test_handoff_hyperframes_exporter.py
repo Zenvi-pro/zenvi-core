@@ -393,3 +393,26 @@ def test_nothing_to_export(tmp_path):
     with pytest.raises(exporter.ExportError, match="no clips"):
         exporter.export_project(snap, exporter.raw_project(proj), str(tmp_path / "out"))
     assert not os.path.exists(str(tmp_path / "out"))
+
+
+GOLDEN = os.path.join(HERE, "fixtures", "hyperframes", "golden", "index.html")
+
+
+def test_golden_index_html(tmp_path):
+    """The exported index.html for a fixed project; regenerate with UPDATE_GOLDEN=1 after a deliberate change."""
+    def clips(clip, v, i, a, t):
+        return [clip("CV", v, 1000000, 0.0, 0.5, 3.5, volume=kf((16, 1.0), (106, 0.0, 1))),
+                clip("CI", i, 2000000, 1.0, 0.0, 2.0, scale_x=kf((1, 0.25)), scale_y=kf((1, 0.25)),
+                     location_x=kf((1, -0.4), (19, -0.3, 0, (0.16, 1.0), (0.3, 1.0))),
+                     alpha=kf((1, 0.0), (16, 1.0, 1)), rotation=kf((1, 0.0), (31, 10.0, 0))),
+                clip("CA", a, 3000000, 3.5, 0.0, 1.5, has_video=kf((1, 0.0, 2)), volume=kf((1, 0.5))),
+                clip("CT", t, 4000000, 0.5, 0.0, 2.5)]
+    _res, _snap, html = export(tmp_path, project(tmp_path, clips))
+    html = html.replace(str(tmp_path), "<TMP>").replace('"Zenvi %s"' % exporter._zenvi_version(), '"Zenvi <v>"')
+    html = re.sub(r'"generator":"Zenvi [^"]*"', '"generator":"Zenvi <v>"', html)
+    if os.environ.get("UPDATE_GOLDEN"):
+        os.makedirs(os.path.dirname(GOLDEN), exist_ok=True)
+        with open(GOLDEN, "w", encoding="utf-8") as fh:
+            fh.write(html)
+    with open(GOLDEN, encoding="utf-8") as fh:
+        assert html == fh.read()

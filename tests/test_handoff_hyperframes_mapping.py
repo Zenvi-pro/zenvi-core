@@ -256,3 +256,15 @@ def test_media_start_playback_rate_and_running_out(tmp_path):
     assert time.value_at(0.0) == 31.0 and time.value_at(2.0) == pytest.approx(31 + 60 * 2)
     o = plan_of(p, "o", VIDEO)
     assert o.end == pytest.approx(20.0) and "Zenvi ends the clip with the media" in o.warnings[0]
+
+
+def test_svg_images_get_their_size_from_the_file(tmp_path):
+    from classes.handoff.hyperframes import importer
+    svg = tmp_path / "logo.svg"
+    svg.write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 320"><rect width="10" height="10"/></svg>')
+    media = importer.ffprobe_media(str(svg))
+    assert (media["width"], media["height"], media["has_video"]) == (640, 320, True)
+    svg.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="200px" height="100"></svg>')
+    assert importer.svg_size(str(svg)) == (200, 100)
+    svg.write_text("not xml")
+    assert importer.svg_size(str(svg)) == (0, 0)

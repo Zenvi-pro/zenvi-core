@@ -169,6 +169,7 @@ def test_wrapper_folder_is_hidden_and_removed(tmp_path):
 class FakeCli:
     def __init__(self, tmp_path, monkeypatch, *, opaque=False, fail=None):
         self.calls = []
+        self.encodes = []
         self.seen_wrappers = []
         self.opaque = opaque
         monkeypatch.setattr(hf_cli, "resolve_cli", lambda project_dir=None, **kw: "cli")
@@ -195,7 +196,8 @@ class FakeCli:
         return {"codec_name": "prores" if path.endswith(".mov") else "h264", "width": 1920, "height": 1080,
                 "fps": 30, "frames": 78, "duration": 2.6, "has_audio": False}
 
-    def to_h264(self, src, dst, *, has_audio, should_cancel=None):
+    def to_h264(self, src, dst, *, has_audio, should_cancel=None, from_bt709=False):
+        self.encodes.append((os.path.basename(src), os.path.basename(dst), from_bt709))
         with open(dst, "wb") as fh:
             fh.write(b"h264")
         return dst
@@ -216,7 +218,8 @@ def test_project_role_renders_index_as_mp4_with_variables(tmp_path, monkeypatch,
     result, progress = _render(provider, link(root, props={"brand": "Ship"}), tmp_path)
     assert fake.calls == [{"entry": "index.html", "fmt": "mp4", "variables": {"brand": "Ship"}, "fps": "30"}]
     assert (result.codec, result.width, result.duration_frames) == ("h264", 1920, 78)
-    assert result.path.endswith("render.mp4") and any("HyperFrames:" in m for _f, m in progress)
+    assert result.path.endswith("render-601.mp4") and any("HyperFrames:" in m for _f, m in progress)
+    assert fake.encodes == [("render.mp4", "render-601.mp4", True)]  # BT.709 -> BT.601 for libopenshot
 
 
 def test_composition_role_renders_a_transparent_wrapper_then_removes_it(tmp_path, monkeypatch, provider):
@@ -232,10 +235,11 @@ def test_composition_role_renders_a_transparent_wrapper_then_removes_it(tmp_path
 
 
 def test_opaque_composition_is_reencoded_to_h264(tmp_path, monkeypatch, provider):
-    FakeCli(tmp_path, monkeypatch, opaque=True)
+    fake = FakeCli(tmp_path, monkeypatch, opaque=True)
     root = make(tmp_path)
     result, _p = _render(provider, link(root, role="composition", host="intro"), tmp_path)
     assert result.codec == "h264" and result.path.endswith("render.mp4")
+    assert fake.encodes == [("render.mov", "render.mp4", False)]  # HyperFrames' ProRes is BT.601 already
     assert not os.path.exists(os.path.join(os.path.dirname(result.path), "render.mov"))
 
 

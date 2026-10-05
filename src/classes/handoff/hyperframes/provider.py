@@ -202,14 +202,29 @@ def opaque_everywhere(path: str, duration: float) -> bool:
         return False
 
 
-def to_h264(src: str, dst: str, *, has_audio: bool, should_cancel=None) -> str:
-    """Re-encode an opaque ProRes render to H.264 (CRF 18, yuv420p, BT.709) with AAC sound."""
+# libopenshot 1.0 decodes every YUV video with BT.601 coefficients whatever its tag (checked 2026-10-05:
+# HyperFrames' BT.709 MP4 red bar 254,0,0 shows as 232,0,1). HyperFrames' ProRes is BT.601 already; its MP4
+# is BT.709, so it is converted. The H.264 Zenvi writes therefore carries BT.601 coefficients (tagged so;
+# sRGB / BT.709 primaries and transfer), CRF 16, yuv420p.
+H264_ARGS = ["-c:v", "libx264", "-crf", "16", "-preset", "medium", "-pix_fmt", "yuv420p", "-colorspace", "smpte170m",
+             "-color_primaries", "bt709", "-color_trc", "bt709", "-movflags", "+faststart"]
+TO_BT601 = "scale=in_color_matrix=bt709:out_color_matrix=bt601:flags=bicubic"
+
+
+def to_h264(src: str, dst: str, *, has_audio: bool, should_cancel=None, from_bt709: bool = False) -> str:
+    """Re-encode a render to H.264 with BT.601 coefficients (what libopenshot decodes), sound as AAC.
+
+    *from_bt709* converts the colours of a BT.709 source (HyperFrames' MP4);
+    its ProRes is BT.601 already and keeps its values.
+    """
     from classes import ffmpeg_cli
-    from classes.handoff import alpha
     ffmpeg = ffmpeg_cli.find_ffmpeg("ffmpeg")
     if not ffmpeg:
         raise HyperFramesLinkError("ffmpeg was not found; install it (brew install ffmpeg)")
-    cmd = [ffmpeg, "-y", "-nostdin", "-i", src] + alpha.codec_args("h264")
+    cmd = [ffmpeg, "-y", "-nostdin", "-i", src]
+    if from_bt709:
+        cmd += ["-vf", TO_BT601]
+    cmd += H264_ARGS
     cmd += ["-c:a", "aac", "-b:a", "192k"] if has_audio else ["-an"]
     cmd.append(dst)
     result = ffmpeg_cli.run_ffmpeg_with_progress(cmd, should_cancel=should_cancel)
@@ -291,7 +306,8 @@ class HyperFramesProvider:
         fps = str(block.get("fps") or "") or None
         on_progress(None, "Preparing HyperFrames")
         cli = hf_cli.resolve_cli(root)
-        project = hfp.load_project(root)
+        # a whole-project render needs no reading of the HTML: HyperFrames resolves it
+        project = hfp.load_project(root) if role != "project" else None
         warnings: List[str] = []
         fmt = "mp4" if role == "project" else "mov"
         output = os.path.join(out_dir, "render." + fmt)
@@ -305,6 +321,13 @@ class HyperFramesProvider:
                           on_progress=progress, should_cancel=should_cancel)
         info = probe_render(output)
         codec = "h264"
+        if fmt == "mp4":
+            on_progress(0.95, "Converting colours for Zenvi (BT.709 to BT.601)")
+            converted = os.path.join(out_dir, "render-601.mp4")
+            to_h264(output, converted, has_audio=info["has_audio"], should_cancel=should_cancel, from_bt709=True)
+            os.unlink(output)
+            output = converted
+            info = probe_render(output)
         if fmt == "mov":
             codec = "prores4444"
             if opaque_everywhere(output, info["duration"]):
@@ -318,14 +341,14 @@ class HyperFramesProvider:
         return lm.RenderResult(path=output, codec=codec, width=info["width"], height=info["height"], fps=info["fps"],
                                duration_frames=info["frames"], warnings=warnings)
 
-    def _entry(self, project: hfp.Project, link: dict, role: str, props: dict, folder: str, fps: Optional[str],
-               warnings: List[str]) -> Tuple[str, Optional[dict]]:
+    def _entry(self, project: Optional[hfp.Project], link: dict, role: str, props: dict, folder: str,
+               fps: Optional[str], warnings: List[str]) -> Tuple[str, Optional[dict]]:
         """(entry file to render, --variables) for a link, writing its wrapper into *folder*."""
+        if role == "project" or project is None:
+            return (link.get("source") or {}).get("entry") or hfp.INDEX, props or None
         root, index = project.root_dir, project.index
         block = _block(link)
         target = os.path.join(folder, wrappers.WRAPPER_FILE)
-        if role == "project":
-            return (link.get("source") or {}).get("entry") or hfp.INDEX, props or None
         if role == "layer":
             removed = []
             for ref in block.get("exclude") or []:

@@ -22,9 +22,12 @@ from test_handoff_hyperframes_parser import root_div, write_project
 MEDIA = {".mp4": {"width": 1280, "height": 720, "duration": 20.0, "has_video": True, "has_audio": True},
          ".png": {"width": 400, "height": 200, "duration": 0.0, "has_video": True, "has_audio": False},
          ".wav": {"width": 0, "height": 0, "duration": 5.0, "has_video": False, "has_audio": True}}
-INTRO = """<template><div data-composition-id="intro" data-width="1920" data-height="1080"><b class="x">Hi</b>
+INTRO = """<html data-composition-variables='[{"id":"headline","type":"string","default":"Hello"},
+{"id":"accent","type":"color","default":"#FF5A36"}]'><body>
+<template><div data-composition-id="intro" data-width="1920" data-height="1080"><b class="x">Hi</b>
 <script>const tl = gsap.timeline({paused:true}); tl.from(".x", {opacity: 0, duration: 0.6}, 0);
-tl.to(".x", {opacity: 0, duration: 0.4}, 2.2); window.__timelines["intro"] = tl;</script></div></template>"""
+tl.to(".x", {opacity: 0, duration: 0.4}, 2.2); window.__timelines["intro"] = tl;</script></div></template>
+</body></html>"""
 
 
 @pytest.fixture
@@ -118,7 +121,8 @@ def test_native_import_is_one_undo_step(hf, tmp_path):
     comp_file = hf.file(linked_clips["composition"]["file_id"])
     link = comp_file["zenvi_link"]
     assert link["kind"] == "hyperframes" and link["hyperframes"]["role"] == "composition"
-    assert link["hyperframes"]["host"] == "intro" and link["props"] == {"headline": "Launch"}
+    assert link["hyperframes"]["host"] == "intro"
+    assert link["props"] == {"headline": "Launch", "accent": "#FF5A36"}  # every variable, for Edit Props
     assert link["source"]["entry"] == "compositions/intro.html" and link["render"]["codec"] == "prores4444"
     layer_link = hf.file(linked_clips["layer"]["file_id"])["zenvi_link"]
     assert sorted(layer_link["hyperframes"]["exclude"]) == ["bg", "intro", "logo", "music"]
@@ -295,3 +299,40 @@ def test_restore_with_clips_added_in_hyperframes(hf, tmp_path, monkeypatch):
     assert labels[2000000] == "Logos"  # the exported track's name came back
     hf.undo()
     assert not hf.clips() and {ly["number"]: ly["label"] for ly in hf.store._data["layers"]}[2000000] == ""
+
+
+def test_graphics_under_and_over_the_media_get_their_own_layers(hf, tmp_path):
+    root = write_project(tmp_path / "split", root_div(
+        '<div id="backdrop" style="position:absolute; inset:0; background: linear-gradient(#123, #456)"></div>'
+        '<video id="v" class="clip" src="assets/a.mp4" data-start="0" data-duration="3" muted></video>'
+        '<div id="inline" data-composition-id="inline" data-start="1" data-track-index="5"><i>x</i><script>'
+        'const c = gsap.timeline({paused:true}); c.to("i", {opacity: 0}, 1); window.__timelines["inline"] = c;'
+        '</script></div>'
+        '<h1 id="t" class="clip" data-start="0" data-duration="3">Over</h1>', extra='data-duration="3"'),
+        files={"assets/a.mp4": b"v"}, style="html, body { background: #0a0a0a; }",
+        script='const tl = gsap.timeline({paused:true}); window.__timelines["main"] = tl;')
+    r = hf.call_receipt("import_hyperframes_project_tool", project_dir=root, mode="native", position=0.0)
+    assert r["status"] == "applied", r["summary"]
+    linked_clips = _clips_by_kind(r)["linked"]
+    layers = sorted((c for c in linked_clips if c["role"] == "layer"), key=lambda c: c["layer"])
+    native = _clips_by_kind(r)["native"][0]
+    assert len(layers) == 2 and layers[0]["layer"] < native["layer"] < layers[1]["layer"]
+    under = hf.file(layers[0]["file_id"])["zenvi_link"]["hyperframes"]["exclude"]
+    over = hf.file(layers[1]["file_id"])["zenvi_link"]["hyperframes"]["exclude"]
+    assert "t" in under and "backdrop" in over and "v" in under and "v" in over
+    inline = next(c for c in linked_clips if c["role"] == "composition")
+    link = hf.file(inline["file_id"])["zenvi_link"]
+    assert link["hyperframes"]["host"] == "inline" and link["source"]["entry"] == "index.html"
+    assert any("background (#0a0a0a) is not imported" in w for w in r["data"]["warnings"])
+
+
+def test_linked_compositions_take_new_variables_and_rerender(hf, tmp_path):
+    r = hf.call_receipt("import_hyperframes_project_tool", project_dir=project(tmp_path), position=0.0)
+    comp = next(c for c in r["data"]["clips"] if c.get("role") == "composition")
+    hf.mark()
+    up = hf.call_receipt("update_linked_clip_tool", file_id=comp["file_id"], props={"headline": "Ship it"})
+    assert up["status"] == "applied" and up["undoSteps"] == 1, up["summary"]
+    assert hf.renders[-1]["props"] == {"headline": "Ship it", "accent": "#FF5A36"}
+    info = hf.call_receipt("get_linked_clip_tool", file_id=comp["file_id"])
+    assert info["data"]["editable_props"] == {"headline": "Ship it", "accent": "#FF5A36"}
+    assert info["data"]["state"] == "fresh" and info["data"]["can_open_studio"]
