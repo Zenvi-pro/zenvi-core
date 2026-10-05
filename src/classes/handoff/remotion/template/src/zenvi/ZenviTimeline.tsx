@@ -1,36 +1,16 @@
-// The Zenvi timeline as one Remotion composition: every clip in a <Sequence>, bottom track first
-// (later tracks draw on top, like Zenvi). The data is src/zenvi/timeline.json, written by Zenvi.
+// The Zenvi timeline as one Remotion composition: every clip in a <Sequence>, drawn in Zenvi's order
+// (bottom track first, then by position; later ones on top) whatever their order in the file. The
+// data is src/zenvi/timeline.json, written by Zenvi.
 import React from 'react';
 import {AbsoluteFill, Sequence} from 'remotion';
 import timeline from './timeline.json';
 import {ZenviClip} from './ZenviClip';
-import type {ZenviClipData, ZenviTimelineData} from './types';
+import {clipFrames, drawOrder, timelineDurationInFrames} from './timing';
+import type {ZenviTimelineData} from './types';
+
+export {clipFrames, timelineDurationInFrames};
 
 export const zenviTimeline = timeline as unknown as ZenviTimelineData;
-
-// Frames from seconds, rounded half up -- exactly as Zenvi's exporter does.
-const toFrame = (seconds: number, fps: number): number => Math.floor(seconds * fps + 0.5);
-
-// Where a clip sits in the composition, from its position / start / end (seconds).
-export const clipFrames = (clip: ZenviClipData, fps: number): {from: number; durationInFrames: number} => {
-  const from = toFrame(clip.position, fps);
-  const to = toFrame(clip.position + clip.end - clip.start, fps);
-  return {from, durationInFrames: Math.max(1, to - from)};
-};
-
-// The composition's length: the end of the last clip or transition (edits that extend the timeline show up).
-export const timelineDurationInFrames = (data: ZenviTimelineData): number => {
-  const fps = data.composition.fps;
-  let end = 1;
-  for (const clip of data.clips) {
-    const {from, durationInFrames} = clipFrames(clip, fps);
-    end = Math.max(end, from + durationInFrames);
-  }
-  for (const t of data.transitions) {
-    end = Math.max(end, t.from + t.durationInFrames);
-  }
-  return end;
-};
 
 // The props Root.tsx's zod schema describes (editable in Remotion Studio).
 export type ZenviTimelineProps = {
@@ -43,7 +23,7 @@ export const ZenviTimeline: React.FC<ZenviTimelineProps> = ({background, volume,
   const {width, height, fps} = zenviTimeline.composition;
   return (
     <AbsoluteFill style={{backgroundColor: background, overflow: 'hidden'}}>
-      {zenviTimeline.clips.map((clip) => {
+      {drawOrder(zenviTimeline.clips).map((clip) => {
         if (!showTitles && clip.kind === 'title') {
           return null;
         }

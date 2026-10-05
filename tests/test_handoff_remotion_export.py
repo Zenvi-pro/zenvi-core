@@ -167,7 +167,7 @@ def test_the_zenvi_block_is_the_original_project(linked, tmp_path):  # noqa: F81
 
 
 def test_exporting_again_updates_the_project_and_keeps_installs_and_added_deps(linked, tmp_path):  # noqa: F811
-    build_project(linked, str(tmp_path / "media"))
+    clips, _files = build_project(linked, str(tmp_path / "media"))
     out = tmp_path / "out"
     _export(linked, out)
     (out / "node_modules").mkdir()
@@ -176,12 +176,119 @@ def test_exporting_again_updates_the_project_and_keeps_installs_and_added_deps(l
     package["dependencies"]["lottie-web"] = "5.12.0"
     package["dependencies"]["remotion"] = "4.0.100"
     json.dump(package, open(str(out / "package.json"), "w"))
-    (out / "public" / "zenvi-media" / "stale.mp4").write_text("old")
+    (out / "public" / "zenvi-media" / "mine.mp4").write_text("the user's own file")
+    # the music clip is gone from the Zenvi project: its copy is stale now
+    linked.store._data["clips"] = [c for c in linked.store._data["clips"] if c["id"] != clips["music"]]
     receipt = _export(linked, out)
-    assert receipt["mode"] == "update"
-    assert (out / "node_modules" / "keep.txt").exists() and not (out / "public" / "zenvi-media" / "stale.mp4").exists()
+    assert receipt["mode"] == "update" and receipt["removed_media"] == ["public/zenvi-media/music.mp3"]
+    assert (out / "node_modules" / "keep.txt").exists()
+    assert (out / "public" / "zenvi-media" / "mine.mp4").read_text() == "the user's own file"  # never Zenvi's to delete
+    assert not (out / "public" / "zenvi-media" / "music.mp3").exists()
     package = json.load(open(str(out / "package.json")))
     assert package["dependencies"]["lottie-web"] == "5.12.0" and package["dependencies"]["remotion"] == "4.0.532"
+    assert not [n for n in os.listdir(str(out)) if n.startswith(".zenvi-update-")]
+    manifest = _timeline(out)["zenvi"]
+    assert set(manifest["files"]) >= {"src/Root.tsx", "README.md", "src/zenvi/ZenviClip.tsx"}
+    assert "package.json" not in manifest["files"] and "zenvi-media/music.mp3" not in manifest["media_files"]
+
+
+def _tree(folder):
+    """{relative path: bytes} of everything under *folder* (links as their target)."""
+    out = {}
+    for root, dirs, files in os.walk(str(folder)):
+        dirs[:] = [d for d in dirs if d != "node_modules"]
+        for name in files:
+            path = os.path.join(root, name)
+            rel = os.path.relpath(path, str(folder))
+            out[rel] = ("link:" + os.readlink(path)).encode() if os.path.islink(path) else open(path, "rb").read()
+    return out
+
+
+def test_exporting_again_refuses_to_discard_changes_made_in_the_remotion_project(linked, tmp_path):  # noqa: F811
+    clips, _files = build_project(linked, str(tmp_path / "media"))
+    out = tmp_path / "out"
+    _export(linked, out)
+    timeline = _timeline(out)
+    next(c for c in timeline["clips"] if c["id"] == clips["image"])["position"] = 3.0  # not imported yet
+    (out / "src" / "zenvi" / "timeline.json").write_text(json.dumps(timeline))
+    with open(str(out / "src" / "zenvi" / "ZenviClip.tsx"), "a") as fh:
+        fh.write("// my tweak\n")
+    logo = out / "public" / "zenvi-media" / "logo.png"
+    logo.write_bytes(b"edited in Photoshop")
+    before = _tree(out)
+    with pytest.raises(exporter.ExportHasEdits) as err:
+        _export(linked, out)
+    message = str(err.value)
+    assert "edits to src/zenvi/timeline.json that were not imported" in message
+    assert "changes to src/zenvi/ZenviClip.tsx" in message and "changes to public/zenvi-media/logo.png" in message
+    assert "Import it into Zenvi first" in message and len(err.value.edits) == 3
+    assert _tree(out) == before  # nothing was touched
+    receipt = _export(linked, out, replace_edits=True)
+    assert receipt["mode"] == "update" and any("replaced changes" in w for w in receipt["warnings"])
+    assert "// my tweak" not in (out / "src" / "zenvi" / "ZenviClip.tsx").read_text()
+    assert logo.read_bytes() == b"media"
+    _export(linked, out)  # a fresh export has nothing to lose
+
+
+def test_a_cancelled_or_failed_update_leaves_the_earlier_export_as_it_was(linked, tmp_path, monkeypatch):  # noqa: F811
+    from classes.handoff.jobs import JobCancelled
+    clips, files = build_project(linked, str(tmp_path / "media"))
+    out = tmp_path / "out"
+    _export(linked, out)
+    before = _tree(out)
+    # the media changed in Zenvi: the update has to copy it again
+    with open(str(tmp_path / "media" / "beach.mp4"), "wb") as fh:
+        fh.write(b"a new cut of the beach video")
+    calls = []
+
+    def cancel():
+        calls.append(1)
+        return len(calls) > 1  # after the first copy started
+
+    with pytest.raises(JobCancelled):
+        _export(linked, out, should_cancel=cancel)
+    assert _tree(out) == before and not [n for n in os.listdir(str(out)) if n.startswith(".zenvi-update-")]
+    real = os.replace
+
+    def fail_timeline(src, dst):
+        if str(dst).endswith(os.path.join("zenvi", "timeline.json")) and ".zenvi-update-" in str(src) \
+                and ".zenvi-update-" not in str(dst):  # the final move into place
+            raise OSError(28, "No space left on device")
+        return real(src, dst)
+
+    monkeypatch.setattr(exporter.os, "replace", fail_timeline)
+    with pytest.raises(exporter.ExportError, match="stopped part-way .*No space left"):
+        _export(linked, out)
+    monkeypatch.setattr(exporter.os, "replace", real)
+    assert _timeline(out)["zenvi"]["readable_sha256"] == json.loads(before[os.path.join("src", "zenvi",
+                                                                                        "timeline.json")])["zenvi"]["readable_sha256"]
+    assert not [n for n in os.listdir(str(out)) if n.startswith(".zenvi-update-")]
+    _export(linked, out)  # exporting again finishes the update
+    assert (out / "public" / "zenvi-media" / "beach.mp4").read_bytes() == b"a new cut of the beach video"
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks")
+def test_an_update_never_writes_or_deletes_through_linked_folders(linked, tmp_path):  # noqa: F811
+    build_project(linked, str(tmp_path / "media"))
+    out = tmp_path / "out"
+    _export(linked, out)
+    library = tmp_path / "shared-media-library"
+    library.mkdir()
+    (library / "keynote.mov").write_bytes(b"precious")
+    media = out / "public" / "zenvi-media"
+    shutil.rmtree(str(media))
+    try:
+        os.symlink(str(library), str(media))  # e.g. committed to git as a link to a shared library
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    with pytest.raises(exporter.ExportError, match="public/zenvi-media in .* is a link"):
+        _export(linked, out, replace_edits=True)
+    assert sorted(os.listdir(str(library))) == ["keynote.mov"] and (library / "keynote.mov").read_bytes() == b"precious"
+    os.remove(str(media))
+    shutil.move(str(out / "src" / "zenvi"), str(tmp_path / "elsewhere"))
+    os.symlink(str(tmp_path / "elsewhere"), str(out / "src" / "zenvi"))
+    with pytest.raises(exporter.ExportError, match="src/zenvi in .* is a link"):
+        _export(linked, out, replace_edits=True)
 
 
 def test_export_refuses_foreign_folders_and_empty_timelines(linked, tmp_path):  # noqa: F811
@@ -440,6 +547,54 @@ def test_write_project_file_makes_a_new_project(linked, tmp_path):  # noqa: F811
     assert len(data["clips"]) == 4 and data["fps"] == {"num": 30, "den": 1}
 
 
+def test_write_project_file_never_overwrites_the_open_project_or_an_unconfirmed_name(linked, tmp_path):  # noqa: F811
+    build_project(linked, str(tmp_path / "media"))
+    out = tmp_path / "out"
+    _export(linked, out)
+    timeline = restore.load_timeline(restore.timeline_path(str(out)))
+    trip = tmp_path / "trip.zvn"
+    trip.write_text('{"the": "open project"}')
+    # the default export folder sits next to the open project: its name must not be the default target
+    with pytest.raises(restore.RestoreError, match="is the project open in Zenvi"):
+        restore.write_project_file(timeline, str(out), str(trip), replace=True, open_project=str(trip))
+    link = tmp_path / "alias.zvn"
+    if hasattr(os, "symlink"):
+        os.symlink(str(trip), str(link))
+        with pytest.raises(restore.RestoreError, match="is the project open in Zenvi"):
+            restore.write_project_file(timeline, str(out), str(link), replace=True, open_project=str(trip))
+    # "trip" typed in a save dialog that did not add the suffix: the dialog confirmed "trip", not "trip.zvn"
+    with pytest.raises(restore.RestoreError, match="already exists; choose another name"):
+        restore.write_project_file(timeline, str(out), str(tmp_path / "trip"), replace=True)
+    assert trip.read_text() == '{"the": "open project"}'
+    other = tmp_path / "other.zvn"
+    other.write_text("old")
+    with pytest.raises(restore.RestoreError, match="already exists"):
+        restore.write_project_file(timeline, str(out), str(other))
+    path, _w, _a = restore.write_project_file(timeline, str(out), str(other), replace=True)  # the dialog asked
+    assert path == str(other) and json.load(open(path))["clips"]
+    first = restore.unique_project_path(str(tmp_path), "trip")
+    assert first == str(tmp_path / "trip (from Remotion).zvn")
+    open(first, "w").close()
+    assert restore.unique_project_path(str(tmp_path), "trip") == str(tmp_path / "trip (from Remotion 2).zvn")
+
+
+def test_native_restore_drops_parents_that_are_not_part_of_the_export():
+    project = {"fps": {"num": 30, "den": 1}, "layers": [{"number": 1000000}],
+               "files": [], "clips": [
+                   {"id": "CHILD00001", "layer": 1000000, "position": 0, "parentObjectId": "GONE000001"},
+                   {"id": "CHILD00002", "layer": 1000000, "position": 5, "parentObjectId": "PARENT0001"},
+                   {"id": "PARENT0001", "layer": 1000000, "position": 9},
+                   {"id": "CHILD00003", "layer": 1000000, "position": 12, "parentObjectId": "TRACKER01-0"}]}
+    current = {"fps": {"num": 30, "den": 1}, "layers": [{"number": 1000000}],
+               "clips": [{"id": "GONE000001", "layer": 1000000, "position": 0}]}  # an unrelated clip, same id
+    plan, warnings = restore.plan_native(project, current)
+    by_title = {c["position"]: c for c in plan["clips"]}
+    assert by_title[0]["parentObjectId"] == ""                         # not the unrelated GONE000001 here
+    assert by_title[5]["parentObjectId"] == "PARENT0001"
+    assert by_title[12]["parentObjectId"] == "TRACKER01-0"             # a tracked object: kept
+    assert any("no longer follows it" in w for w in warnings)
+
+
 def test_load_timeline_refuses_what_it_cannot_restore(tmp_path):
     bad = tmp_path / "t.json"
     bad.write_text("{nope")
@@ -461,3 +616,54 @@ def test_template_and_helper_ship_as_package_data():
         assert os.path.isfile(os.path.join(exporter.TEMPLATE_DIR, *rel.split("/"))), rel
     assert os.path.isfile(helper.HELPER_FILE) and helper.HELPER_FILE.endswith(os.path.join("remotion", "helper.mjs"))
     assert exporter.TEMPLATE_DIR.startswith(os.path.join(os.path.dirname(exporter.__file__)))
+
+
+# ---------------------------------------------------------------------------
+# timing.ts: stacking order and the sound of remapped clips (run under Node's type stripping)
+# ---------------------------------------------------------------------------
+
+def _run_timing(tmp_path, script):
+    cmd = _node_strips_types()
+    if cmd is None:
+        pytest.skip("needs Node.js 22.6+ (type stripping) to run timing.ts")
+    for name in ("timing.ts", "types.ts"):
+        shutil.copy(os.path.join(exporter.TEMPLATE_DIR, "src", "zenvi", name), str(tmp_path / name))
+    (tmp_path / "run.mts").write_text("import * as t from './timing.ts';\n" + script)
+    out = subprocess.run(cmd + [str(tmp_path / "run.mts")], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_timing_ts_draws_clips_by_track_then_position_whatever_the_file_order(tmp_path):
+    """A clip moved to another track (or a duplicate appended) in timeline.json stacks like libopenshot."""
+    clips = [{"id": "dup-on-top-track", "layer": 3000000, "position": 0.0},
+             {"id": "late-on-bottom", "layer": 1000000, "position": 5.0},
+             {"id": "moved-to-bottom", "layer": 1000000, "position": 1.0},
+             {"id": "middle", "layer": 2000000, "position": 0.0},
+             {"id": "middle-twin", "layer": 2000000, "position": 0.0}]
+    order = _run_timing(tmp_path, "console.log(JSON.stringify(t.drawOrder(%s).map((c) => c.id)));\n"
+                        % json.dumps(clips))
+    assert order == ["moved-to-bottom", "late-on-bottom", "middle", "middle-twin", "dup-on-top-track"]
+
+
+def test_timing_ts_mutes_held_reversed_and_ramped_audio(tmp_path):
+    specs = [{"mode": "normal"}, {"mode": "rate", "trimBefore": 30, "playbackRate": 2, "forTrim": 15},
+             {"mode": "freeze", "trimBefore": 99}, {"mode": "map", "map": [5, 4, 3], "forTrim": 0}]
+    got = _run_timing(tmp_path, "console.log(JSON.stringify(%s.map((s) => t.audioPlayback(s, 30))));\n"
+                      % json.dumps(specs))
+    assert got == [{"trimBefore": 30, "playbackRate": 1}, {"trimBefore": 60, "playbackRate": 2}, None, None]
+    # and the component plays nothing for them (the export notes say "no sound")
+    clip_tsx = open(os.path.join(exporter.TEMPLATE_DIR, "src", "zenvi", "ZenviClip.tsx")).read()
+    assert "if (!clip.hasAudio || playback === null)" in clip_tsx
+    timeline_tsx = open(os.path.join(exporter.TEMPLATE_DIR, "src", "zenvi", "ZenviTimeline.tsx")).read()
+    assert "drawOrder(zenviTimeline.clips).map" in timeline_tsx
+
+
+def test_rotated_phone_video_gets_a_note(linked, tmp_path):  # noqa: F811
+    _clips, files = build_project(linked, str(tmp_path / "media"))
+    for f in linked.store._data["files"]:
+        if f["id"] == files["video"]:
+            f["metadata"] = {"rotate": "90"}
+    receipt = _export(linked, tmp_path / "out")
+    assert any("stored rotated (90°" in n for n in receipt["notes"])
+    assert exporter.metadata_rotation({"metadata": {"rotate": "x"}}) == 0.0 and exporter.metadata_rotation({}) == 0.0

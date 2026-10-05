@@ -25,6 +25,7 @@ npx remotion render ZenviTimeline out/video.mp4    # render the timeline
 | `src/zenvi/ZenviTimeline.tsx`, `ZenviClip.tsx` | the renderer |
 | `src/zenvi/geometry.ts` | Zenvi's clip placement (scale mode, gravity, location, scale, rotation, origin, shear) |
 | `src/zenvi/curves.ts` | keyframe evaluation, CSS filters, crop |
+| `src/zenvi/timing.ts` | clip frames, the composition's length, stacking order (track, then position), sound |
 | `public/zenvi-media/` | the media ({{MEDIA_MODE}}) |
 
 A clip's timing in `timeline.json` is `position` (where it starts on the timeline), `start` and `end`

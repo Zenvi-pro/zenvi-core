@@ -261,6 +261,22 @@ def zenvi_timeline_path(root: str) -> Optional[str]:
     return path if re.search(r'"zenvi_timeline"\s*:\s*\d+', head) else None
 
 
+_SOURCE_PROJECT_RE = re.compile(r'"source_project"\s*:\s*("(?:[^"\\]|\\.)*")')
+
+
+def zenvi_source_project(root: str) -> Optional[str]:
+    """The Zenvi project name a Zenvi export came from (``source_project``, read from the file's first 4 KB)."""
+    path = os.path.join(root, *ZENVI_TIMELINE.split("/"))
+    m = _SOURCE_PROJECT_RE.search(_read_text(path, limit=4096))
+    if not m:
+        return None
+    try:
+        name = json.loads(m.group(1))
+    except ValueError:
+        return None
+    return str(name).strip() or None if isinstance(name, str) else None
+
+
 def config_file(root: str) -> Optional[str]:
     for name in CONFIG_FILES:
         if os.path.isfile(os.path.join(root, name)):
@@ -330,6 +346,7 @@ def require_ready(project: RemotionProject) -> RemotionProject:
 __all__ = [
     "RemotionProject", "NotRemotionProject", "inspect_project", "require_ready", "find_project_root", "find_entry",
     "parse_config_entry", "parse_config_public_dir", "parse_script_entries", "package_dir", "installed_version",
-    "package_manager", "zenvi_timeline_path", "depends_on_remotion", "DEFAULT_ENTRIES", "REQUIRED_PACKAGES",
+    "package_manager", "zenvi_timeline_path", "zenvi_source_project", "depends_on_remotion", "DEFAULT_ENTRIES",
+    "REQUIRED_PACKAGES",
     "ZENVI_TIMELINE", "ZENVI_COMPOSITION",
 ]

@@ -54,9 +54,11 @@ def list_remotion_compositions(project_dir):
     (composition or still), width x height, fps, duration (frames and seconds), defaultProps and the
     file:line of the component that renders it, plus the project's entry point, Remotion version,
     whether node_modules is installed and whether Zenvi exported it (zenvi_generated: its timeline
-    restores as native clips). Reading sizes and props bundles the project with its own Remotion
-    (seconds to a minute the first time); without node_modules only ids and code locations are listed.
-    Changes nothing. Example: {"project_dir": "/Users/me/code/promo"}.
+    restores as native clips). Reading sizes and props RUNS THE PROJECT'S CODE: its own Remotion
+    bundles it and evaluates remotion.config.* and the compositions in Node.js and headless Chrome,
+    like `npx remotion compositions` (seconds to a minute the first time) -- only for projects the
+    user trusts. Without node_modules only ids and code locations are listed (nothing runs). Changes
+    nothing in Zenvi. Example: {"project_dir": "/Users/me/code/promo"}.
     """
     from classes.handoff import jobs
     from classes.handoff.linked_media import LinkError
@@ -108,8 +110,10 @@ def import_remotion_project(project_dir, compositions=None, props=None, codec="a
 
     Use for "put my Remotion intro on the timeline", "import the TitleCard composition with the
     title Launch day", "bring back the project I exported to Remotion". Each composition renders with
-    the project's own installed Remotion (Zenvi never ships it; node_modules must be installed) --
-    seconds to minutes -- and becomes a linked clip that remembers its source: change props with
+    the project's own installed Remotion (Zenvi never ships it; node_modules must be installed), which
+    RUNS THE PROJECT'S CODE in Node.js and headless Chrome like `npx remotion render` -- only for
+    projects the user trusts -- seconds to minutes, and becomes a linked clip that remembers its source
+    (restoring a Zenvi export natively runs nothing): change props with
     update_linked_clip_tool, open the code or Remotion Studio with open_linked_source_tool, re-render
     after code edits with rerender_linked_clip_tool. Clips land together at position (default the
     playhead) on free tracks above the video, transparent ones on top. A project Zenvi exported comes
@@ -131,12 +135,15 @@ def import_remotion_project(project_dir, compositions=None, props=None, codec="a
                                               on_progress=job.report, should_cancel=job.should_cancel)
     except jobs.JobCancelled:
         raise ToolError("the Remotion import was cancelled; nothing changed") from None
+    except importer.PartialImport as exc:  # some clips are in the project: say which (one undo step)
+        raise _fail(exc) from None
     except LinkError as exc:
         raise _fail(exc) from None
     except ToolError:
         raise
     except Exception as exc:
-        raise RuntimeError(f"the Remotion import failed: {exc}. Nothing was added") from None
+        # import_project turns any failure after a clip was added into PartialImport
+        raise RuntimeError(f"the Remotion import failed before adding anything: {exc}") from None
     parts = []
     native: Dict[str, Any] = receipt.get("native") or {}
     if native:
@@ -163,11 +170,15 @@ def import_remotion_project(project_dir, compositions=None, props=None, codec="a
                               "(false: saves disk, only works on this computer).", True),
         "install": boolean("Run npm install in the new project afterwards (needs Node.js and internet; minutes).",
                            False),
+        "replace_edits": boolean("output_dir is an earlier export with changes made in it (timeline edits not "
+                                 "imported yet, edited code or media copies): replace them anyway. Only when the user "
+                                 "agreed to lose them; otherwise import that folder first, or pick a new folder.",
+                                 False),
     }, required=["output_dir"]),
     background_safe=True,
     covers=("handoff.remotion_export",),
 )
-def export_to_remotion(output_dir, copy_media=True, install=False):
+def export_to_remotion(output_dir, copy_media=True, install=False, replace_edits=False):
     """Write the timeline as a working Remotion project that renders it and comes back to Zenvi losslessly.
 
     Use for "export this to Remotion", "give me this edit as React/Remotion code", "hand the timeline
@@ -177,7 +188,10 @@ def export_to_remotion(output_dir, copy_media=True, install=False):
     generic renderer built on Remotion primitives, the media in public/zenvi-media and a README with
     the studio/render commands and what is approximated (wipes play as fades; some effects are CSS
     filters, others are listed). Re-importing the folder with import_remotion_project_tool restores
-    the native clips. Changes nothing in the project. Example: {"output_dir": "/Users/me/code/trip-remotion"}.
+    the native clips. Exporting into an earlier export updates it in place (node_modules and added
+    dependencies kept; everything staged, then swapped in) and refuses when that would discard changes
+    made there unless replace_edits. Changes nothing in the project. Example:
+    {"output_dir": "/Users/me/code/trip-remotion"}.
     """
     from classes.handoff import jobs
     from classes.handoff.linked_media import LinkError
@@ -198,13 +212,15 @@ def export_to_remotion(output_dir, copy_media=True, install=False):
         with jobs.track_job("Exporting to Remotion", kind="remotion") as job:
             receipt = exporter.export_project(snapshot, data, str(output_dir), copy_media=bool(copy_media),
                                               install=bool(install), on_progress=job.report,
-                                              should_cancel=job.should_cancel)
+                                              should_cancel=job.should_cancel, replace_edits=bool(replace_edits))
     except jobs.JobCancelled:
-        raise ToolError("the Remotion export was cancelled; no project was written") from None
+        raise ToolError(f"the Remotion export was cancelled; nothing in {output_dir} was changed") from None
+    except exporter.ExportHasEdits as exc:
+        raise ToolError(f"{exc} (replace_edits=true replaces them -- only if the user agrees)") from None
     except LinkError as exc:
         raise _fail(exc) from None
     except OSError as exc:
-        raise ToolError(f"could not write the Remotion project: {exc}") from None
+        raise ToolError(f"could not write the Remotion project ({exc}); nothing in {output_dir} was changed") from None
     notes: Optional[List[str]] = receipt.get("notes")
     extra = f" {len(notes)} note(s) on what Remotion approximates are in README.md." if notes else ""
     return ok(f"Exported {receipt['clips']} clip(s) and {receipt['media_files']} media file(s) to "

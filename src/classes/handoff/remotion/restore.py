@@ -174,17 +174,54 @@ def _new_id(taken: set) -> str:
             return candidate
 
 
-def write_project_file(timeline: dict, project_root: str, zvn_path: str) -> Tuple[str, List[str], List[dict]]:
-    """Write the restored project as a new ``.zvn`` (staged, then renamed); returns (path, warnings, edits)."""
-    project, warnings, applied = restored_project(timeline, project_root)
-    project["history"] = {"undo": [], "redo": []}
-    project["id"] = _new_id(set())  # a new project, not the exported one's twin (cloud identity)
-    zvn_path = os.path.abspath(os.path.expanduser(zvn_path))
-    if not zvn_path.lower().endswith(".zvn"):
-        zvn_path += ".zvn"
+def _same_file(a: str, b: str) -> bool:
+    def norm(p: str) -> str:
+        return os.path.normcase(os.path.realpath(os.path.abspath(os.path.expanduser(p))))
+    return bool(a) and bool(b) and norm(a) == norm(b)
+
+
+def restored_project_path(zvn_path: str) -> Tuple[str, bool]:
+    """(*zvn_path* with ``.zvn``, whether the suffix had to be added)."""
+    path = os.path.abspath(os.path.expanduser(str(zvn_path or "")))
+    if path.lower().endswith(".zvn"):
+        return path, False
+    return path + ".zvn", True
+
+
+def unique_project_path(folder: str, name: str) -> str:
+    """``<folder>/<name> (from Remotion).zvn``, numbered until no file has that name. Blocking (stat)."""
+    stem = (" ".join(str(name or "").split()) or "Untitled").replace(os.sep, "-")
+    if os.altsep:
+        stem = stem.replace(os.altsep, "-")
+    candidate = os.path.join(folder, f"{stem} (from Remotion).zvn")
+    n = 2
+    while os.path.exists(candidate):
+        candidate = os.path.join(folder, f"{stem} (from Remotion {n}).zvn")
+        n += 1
+    return candidate
+
+
+def write_project_file(timeline: dict, project_root: str, zvn_path: str, *, replace: bool = False,
+                       open_project: Optional[str] = None) -> Tuple[str, List[str], List[dict]]:
+    """Write the restored project as a new ``.zvn`` (staged, then renamed); returns (path, warnings, edits).
+
+    Never writes over the project open in Zenvi (*open_project*): the open
+    project would be saved back over it. An existing file is replaced only
+    with *replace* (the save dialog asked about exactly that name) -- not
+    when ``.zvn`` had to be added to the name given.
+    """
+    zvn_path, appended = restored_project_path(zvn_path)
+    if open_project and _same_file(zvn_path, open_project):
+        raise RestoreError(f"{os.path.basename(zvn_path)} is the project open in Zenvi; save the restored project "
+                           "under another name")
+    if os.path.exists(zvn_path) and (appended or not replace):
+        raise RestoreError(f"{zvn_path} already exists; choose another name")
     folder = os.path.dirname(zvn_path)
     if not os.path.isdir(folder):
         raise RestoreError(f"the folder {folder} does not exist")
+    project, warnings, applied = restored_project(timeline, project_root)
+    project["history"] = {"undo": [], "redo": []}
+    project["id"] = _new_id(set())  # a new project, not the exported one's twin (cloud identity)
     partial = zvn_path + ".partial"
     with open(partial, "w", encoding="utf-8") as fh:
         json.dump(project, fh, indent=1, ensure_ascii=False)
@@ -274,10 +311,18 @@ def plan_native(project: dict, current: dict, *, offset: float = 0.0) -> Tuple[d
             if isinstance(e, dict):
                 e["id"] = _fresh(e.get("id"))
         clips.append(c)
+    restored_ids = set(id_map)
     for c in clips:  # parents restored after every clip got its id
         parent = str(c.get("parentObjectId") or "")
-        if parent:
-            c["parentObjectId"] = id_map.get(parent, parent)
+        if not parent:
+            continue
+        if parent in id_map:
+            c["parentObjectId"] = id_map[parent]
+        elif "-" not in parent and parent not in restored_ids:
+            # it followed a clip that is not part of the restore: in this project that id may be another clip
+            c["parentObjectId"] = ""
+            warnings.append(f"clip {c.get('title') or c['id']!r} followed a clip that is not in the export; it no "
+                            "longer follows it")
     effects = []
     for t in source["effects"]:
         if isinstance(t, dict):
@@ -355,4 +400,5 @@ def insert_native(timeline: dict, project_root: str, *, position: Optional[float
 
 
 __all__ = ["load_timeline", "timeline_edited", "restored_project", "write_project_file", "insert_native",
-           "plan_native", "asset_remap", "remap_paths", "timeline_path", "RestoreError"]
+           "plan_native", "asset_remap", "remap_paths", "timeline_path", "RestoreError", "unique_project_path",
+           "restored_project_path"]

@@ -86,6 +86,47 @@ def test_fingerprint_follows_code_assets_props_and_settings_but_not_installs_or_
         p.fingerprint(link)
 
 
+def test_fingerprint_ignores_zenvi_assets_reads_public_by_stat_and_never_starves_the_code(project, monkeypatch):
+    p = provider.RemotionProvider()
+    link = _link(project)
+    root = project.root
+    first = p.fingerprint(link)
+    # a Zenvi project saved inside the Remotion project keeps its renders next to it: not a source
+    render = os.path.join(root, "promo_assets", "links", "remotion", "TitleCard-1a2b.mov")
+    os.makedirs(os.path.dirname(render))
+    with open(render, "wb") as fh:
+        fh.write(b"movie")
+    os.makedirs(os.path.join(root, "public", "trip_assets"))
+    with open(os.path.join(root, "public", "trip_assets", "x.mp4"), "wb") as fh:
+        fh.write(b"movie")
+    assert p.fingerprint(link) == first
+    # public/ is read by size and mtime only (no rehashing of every image each sweep)
+    frames = os.path.join(root, "public", "frames")
+    os.makedirs(frames)
+    for i in range(12):
+        with open(os.path.join(frames, "f%03d.png" % i), "wb") as fh:
+            fh.write(b"png")
+    with_frames = p.fingerprint(link)
+    assert with_frames != first
+    reads = []
+    real_open = open
+
+    def spy(path, *a, **k):
+        reads.append(str(path))
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr("builtins.open", spy)
+    assert p.fingerprint(link) == with_frames
+    monkeypatch.setattr("builtins.open", real_open)
+    assert not [r for r in reads if os.sep + "public" + os.sep in r]
+    # a huge public/ cannot hide a code edit (each part has its own file limit)
+    monkeypatch.setattr(provider, "PUBLIC_MAX_FILES", 3)
+    capped = p.fingerprint(link)
+    with open(os.path.join(root, "src", "Scene.tsx"), "a") as fh:
+        fh.write("// edited\n")
+    assert p.fingerprint(link) != capped
+
+
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
@@ -207,22 +248,32 @@ def test_open_studio_uses_the_project_studio(project, monkeypatch):
     assert seen == [(project.root, "Scene")]
 
 
-def test_studio_argv_runs_the_projects_own_cli(project):
+def test_studio_argv_runs_the_projects_own_cli_with_the_watchdog(project):
     from classes.handoff.node_runtime import NodeRuntime
     runtime = NodeRuntime(node="/usr/bin/node", npm=("npm",), npx=("/usr/bin/npx",), version="22.0.0")
     cli = os.path.join(project.root, "node_modules", "@remotion", "cli")
-    assert studio.studio_argv(runtime, project, 3001)[:2] == ["/usr/bin/npx", "remotion"]  # no remotion-cli.js
+    npx = studio.studio_argv(runtime, project, 3001)
+    assert npx[:2] == ["/usr/bin/npx", "remotion"]  # no remotion-cli.js
+    env = studio.studio_env(runtime, npx, parent_pid=4242)
+    assert env["ZENVI_PARENT_PID"] == "4242" and env["BROWSER"] == "none"
+    assert env["NODE_OPTIONS"].endswith('--require "%s"' % studio.WATCHDOG_FILE)  # npx: preloaded via NODE_OPTIONS
     with open(os.path.join(cli, "remotion-cli.js"), "w") as fh:
         fh.write("")
-    assert studio.studio_argv(runtime, project, 3001) == [
-        "/usr/bin/node", os.path.join(cli, "remotion-cli.js"), "studio", "src/index.ts", "--port", "3001", "--no-open"]
+    argv = studio.studio_argv(runtime, project, 3001)
+    assert argv == ["/usr/bin/node", "--require", studio.WATCHDOG_FILE, os.path.join(cli, "remotion-cli.js"),
+                    "studio", "src/index.ts", "--port", "3001", "--no-open"]
+    assert "NODE_OPTIONS" not in studio.studio_env(runtime, argv) or \
+        studio.WATCHDOG_FILE not in studio.studio_env(runtime, argv)["NODE_OPTIONS"]
 
 
-FAKE_STUDIO = """import http.server, sys
+# A fake Remotion Studio: answers /__remotion_config like the real one ({"isRemotion": true, "cwd": ...})
+FAKE_STUDIO = """import http.server, json, os, sys
 port = int(sys.argv[sys.argv.index('--port') + 1])
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200); self.end_headers(); self.wfile.write(b'studio')
+        body = json.dumps({'isRemotion': True, 'cwd': os.getcwd()}).encode() if self.path == '/__remotion_config' \\
+            else b'<title>Remotion Studio</title>'
+        self.send_response(200); self.end_headers(); self.wfile.write(body)
     def log_message(self, *a):
         pass
 print('Server ready - Local: http://localhost:%d' % port, flush=True)
@@ -230,22 +281,41 @@ http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
 """
 
 
+def _python_as_node(tmp_path):
+    """A "node" that drops ``--require <watchdog>`` and runs the (Python) fake CLI."""
+    from classes.handoff.node_runtime import NodeRuntime
+    wrapper = tmp_path / "fake-node"
+    wrapper.write_text('#!/bin/sh\nif [ "$1" = "--require" ]; then shift 2; fi\nexec "%s" "$@"\n' % sys.executable)
+    wrapper.chmod(0o755)
+    return NodeRuntime(node=str(wrapper), npm=(), npx=(), version="22.0.0")
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
 def test_open_studio_starts_once_waits_for_the_port_and_stops_on_exit(project, monkeypatch, tmp_path):
     from classes import info
-    from classes.handoff.node_runtime import NodeRuntime
     monkeypatch.setattr(info, "USER_PATH", str(tmp_path / "user"))
     cli = os.path.join(project.root, "node_modules", "@remotion", "cli", "remotion-cli.js")
     with open(cli, "w") as fh:
-        fh.write(FAKE_STUDIO)  # "node" below is Python, so the fake CLI is a Python HTTP server
-    runtime = NodeRuntime(node=sys.executable, npm=(), npx=(), version="22.0.0")
+        fh.write(FAKE_STUDIO)  # "node" below runs Python, so the fake CLI is a Python HTTP server
+    runtime = _python_as_node(tmp_path)
     monkeypatch.setattr(studio, "_install_exit_hooks", lambda: None)
+    import threading
+    results = []
     try:
-        first = studio.open_studio(project, "TitleCard", open_browser=False, runtime=runtime, timeout=30)
-        assert first["url"] == "http://localhost:%d/TitleCard" % first["port"] and not first["reused"]
+        # two requests at once (double-click, or the menu and an agent): one Studio, the second reuses it
+        threads = [threading.Thread(target=lambda c=c: results.append(
+            studio.open_studio(project, c, open_browser=False, runtime=runtime, timeout=30))) for c in ("TitleCard", "Scene")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(60)
+        assert len(results) == 2 and len({r["pid"] for r in results}) == 1
+        assert sorted(r["reused"] for r in results) == [False, True]
+        first = [r for r in results if not r["reused"]][0]
+        assert first["url"] == "http://localhost:%d/%s" % (first["port"], first["url"].rsplit("/", 1)[-1])
         again = studio.open_studio(project, "Scene", open_browser=False, runtime=runtime)
         assert again["reused"] and again["pid"] == first["pid"] and again["url"].endswith("/Scene")
-        assert studio.running_studios()[0]["alive"]
+        assert len(studio.running_studios()) == 1 and studio.running_studios()[0]["alive"]
     finally:
         studio.stop_all()
     deadline = time.time() + 10
@@ -260,14 +330,104 @@ def test_open_studio_starts_once_waits_for_the_port_and_stops_on_exit(project, m
     assert studio.running_studios() == []
 
 
+def _serve(handler_body: bytes, config_status: int = 404, config_body: bytes = b""):
+    import http.server
+    import threading
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            status, body = (config_status, config_body) if self.path == "/__remotion_config" else (200, handler_body)
+            self.send_response(status)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_answers_only_for_this_projects_remotion_studio(tmp_path):
+    import json
+    other = _serve(b"<h1>my dev server</h1>")  # some other app on the port
+    try:
+        assert not studio._answers(other.server_address[1], str(tmp_path))
+    finally:
+        other.shutdown()
+    elsewhere = _serve(b"", 200, json.dumps({"isRemotion": True, "cwd": str(tmp_path / "another")}).encode())
+    try:
+        assert not studio._answers(elsewhere.server_address[1], str(tmp_path))  # a Studio of another project
+    finally:
+        elsewhere.shutdown()
+    ours = _serve(b"", 200, json.dumps({"isRemotion": True, "cwd": str(tmp_path)}).encode())
+    try:
+        assert studio._answers(ours.server_address[1], str(tmp_path))
+    finally:
+        ours.shutdown()
+    old = _serve(b"<title>Remotion Studio</title>")  # an older Studio without /__remotion_config
+    try:
+        assert studio._answers(old.server_address[1], str(tmp_path))
+    finally:
+        old.shutdown()
+
+
+def test_free_port_skips_ports_taken_on_any_interface():
+    import socket
+    taken = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    taken.bind(("0.0.0.0", 0))
+    taken.listen(1)
+    port = taken.getsockname()[1]
+    try:
+        assert not studio.port_is_free(port)
+        assert studio.free_port(port, 5) != port
+    finally:
+        taken.close()
+    if socket.has_ipv6:
+        six = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        try:
+            six.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            six.bind(("::", 0))
+        except OSError:
+            six.close()
+            return
+        six.listen(1)
+        try:
+            assert not studio.port_is_free(six.getsockname()[1])  # Studio binds :: too
+        finally:
+            six.close()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX processes")
+def test_studio_watchdog_exits_when_zenvi_is_gone(tmp_path):
+    import subprocess
+    from remotion_fakes import node_runtime_or_none
+    runtime = node_runtime_or_none()
+    if runtime is None:
+        pytest.skip("needs Node.js 18+ on PATH")
+    zenvi = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1.5)"])
+    env = dict(runtime.env(), ZENVI_PARENT_PID=str(zenvi.pid), ZENVI_WATCHDOG_MS="100")
+    started = time.monotonic()
+    node = subprocess.Popen([runtime.node, "--require", studio.WATCHDOG_FILE, "-e", "setInterval(() => {}, 1000)"],
+                            env=env)
+    try:
+        zenvi.wait(10)
+        assert node.wait(15) == 0
+    finally:
+        if node.poll() is None:
+            node.kill()
+    assert time.monotonic() - started < 15
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell wrapper as node")
 def test_studio_that_dies_reports_its_output(project, monkeypatch, tmp_path):
     from classes import info
-    from classes.handoff.node_runtime import NodeRuntime
     monkeypatch.setattr(info, "USER_PATH", str(tmp_path / "user"))
     cli = os.path.join(project.root, "node_modules", "@remotion", "cli", "remotion-cli.js")
     with open(cli, "w") as fh:
         fh.write("import sys\nprint('Error: Port 3000 is in use and --port was given')\nsys.exit(1)\n")
-    runtime = NodeRuntime(node=sys.executable, npm=(), npx=(), version="22.0.0")
+    runtime = _python_as_node(tmp_path)
     with pytest.raises(lm.LinkError, match="stopped before it was ready.*in use"):
         studio.open_studio(project, "TitleCard", open_browser=False, runtime=runtime, timeout=20)
 

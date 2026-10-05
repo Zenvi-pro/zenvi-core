@@ -39,9 +39,24 @@ def test_build_argv_keeps_values_as_separate_items(tmp_path):
         helper.build_argv("node", "still", project_dir=str(tmp_path), composition="--evil")
 
 
+def test_build_argv_uses_the_real_path_of_the_helper(tmp_path, monkeypatch):
+    if not hasattr(os, "symlink"):
+        pytest.skip("no symlinks")
+    link = tmp_path / "zenvi-current"
+    try:
+        os.symlink(os.path.dirname(helper.HELPER_FILE), link)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    monkeypatch.setattr(helper, "HELPER_FILE", str(link / "helper.mjs"))
+    argv = helper.build_argv("node", "probe", project_dir=str(tmp_path))
+    assert argv[1] == os.path.realpath(str(link / "helper.mjs")) and "zenvi-current" not in argv[1]
+
+
 def test_events_progress_and_error_messages():
     assert helper.parse_event('@@zenvi {"event":"progress","stage":"bundling","progress":0.5}')["stage"] == "bundling"
     assert helper.parse_event("Bundling 50%") is None and helper.parse_event("@@zenvi {broken") is None
+    # a project's stray stdout.write() without a newline must not swallow the event after it
+    assert helper.parse_event('loading...@@zenvi {"event":"result","output":"/x.mov"}')["output"] == "/x.mov"
     assert helper.overall_progress("render", "rendering", 0.5) == pytest.approx(0.24 + 0.73 * 0.5)
     assert helper.overall_progress("render", "bundling", None) == pytest.approx(0.01)
     assert helper.overall_progress("render", "mystery", 0.5) is None
@@ -86,8 +101,15 @@ def test_orphan_reaper_matches_only_orphans_of_this_project(tmp_path):
         "  103     1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         f"  104     1 {root}/node_modules/@remotion/compositor-darwin-arm64/remotion",
         f"  105     1 {tmp_path}/other/node_modules/.remotion/chrome-headless-shell/x",
+        # the user's own `nohup npx remotion studio`: never Zenvi's to kill
+        f"  106     1 node {root}/node_modules/@remotion/cli/remotion-cli.js studio",
+        f"  107     1 {root}/node_modules/@remotion/cli/remotion-cli.js studio",
+        # re-parented to a subreaper (systemd --user) instead of pid 1
+        "  900     1 /lib/systemd/systemd --user",
+        f"  108   900 {root}/node_modules/.remotion/chrome-for-testing/linux64/chrome-linux64/chrome --headless",
+        f"  109   555 {root}/node_modules/@remotion/compositor-linux-x64-gnu/remotion",
     ])
-    assert helper.orphan_pids(root, ps) == [101, 104]
+    assert helper.orphan_pids(root, ps) == [101, 104, 108]
 
 
 def test_run_helper_without_node_says_how_to_install(monkeypatch, tmp_path):
@@ -150,6 +172,93 @@ def test_probe_and_compositions_apply_the_config_and_reuse_the_bundle(fake_proje
     # second listing: the cached bundle, no webpack
     helper.run_helper("compositions", project_dir=root, entry="src/index.ts", options={"bundle": bundle}, runtime=NODE)
     assert len([c for c in read_log(log) if c["call"] == "bundle"]) == 1
+
+
+@needs_node
+def test_helper_runs_when_reached_through_a_symlinked_folder(fake_project, tmp_path):
+    """Node resolves symlinks for import.meta.url but not argv[1]: the helper must still run (not exit 0 silently)."""
+    import subprocess
+    root, _log = fake_project
+    link = tmp_path / "zenvi-link"
+    try:
+        os.symlink(os.path.dirname(helper.HELPER_FILE), link)
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create symlinks here")
+    out = subprocess.run([NODE.node, str(link / "helper.mjs"), "probe", "--project", root, "--entry", "src/index.ts"],
+                         capture_output=True, text=True, timeout=60, env=NODE.env())
+    events = [helper.parse_event(line) for line in out.stdout.splitlines()]
+    assert out.returncode == 0 and [e["event"] for e in events if e][-1] == "result", out.stdout + out.stderr
+
+
+def test_a_helper_that_reports_nothing_says_so(tmp_path, monkeypatch):
+    runtime = node_runtime_or_none()
+    if runtime is None:
+        pytest.skip("needs Node.js 18+ on PATH")
+    silent = tmp_path / "helper.mjs"
+    silent.write_text("// prints nothing and exits 0\n")
+    monkeypatch.setattr(helper, "HELPER_FILE", str(silent))
+    root = make_project(str(tmp_path / "proj"), installed=False)
+    with pytest.raises(helper.HelperError) as err:
+        helper.run_helper("probe", project_dir=root, runtime=runtime)
+    assert err.value.code == "NO_OUTPUT" and "without reporting anything" in str(err.value)
+
+
+@needs_node
+def test_dates_in_props_survive_the_round_trip(fake_project, tmp_path, monkeypatch):
+    """Remotion revives Dates in props; Zenvi keeps them as remotion-date: tokens and sends them back as Dates."""
+    root, log = fake_project
+    comps = [dict(COMPOSITIONS[0], defaultProps={"title": "Launch", "date": "remotion-date:2026-05-01T00:00:00.000Z"})]
+    monkeypatch.setenv("FAKE_REMOTION_COMPS", json.dumps(comps))
+    listed = helper.run_helper("compositions", project_dir=root, entry="src/index.ts", runtime=NODE)
+    defaults = listed.result["compositions"][0]["defaultProps"]
+    assert defaults == {"title": "Launch", "date": "remotion-date:2026-05-01T00:00:00.000Z"}  # not a bare ISO string
+    props = dict(defaults, logo="remotion-file:logo.png")  # a staticFile token passes through untouched
+    out = str(tmp_path / "TitleCard.mov")
+    run = helper.run_helper("render", project_dir=root, entry="src/index.ts", props=props,
+                            options={"composition": "TitleCard", "codec": "prores4444", "output": out}, runtime=NODE)
+    call = [c for c in read_log(log) if c["call"] == "renderMedia"][0]
+    assert call["propTypes"] == {"title": "string", "date": "date", "logo": "string"}
+    assert call["inputProps"]["logo"] == "remotion-file:logo.png"
+    assert run.result["props"]["date"] == "remotion-date:2026-05-01T00:00:00.000Z"
+    helper.run_helper("still", project_dir=root, entry="src/index.ts", props=props,
+                      options={"composition": "TitleCard", "frames": "first", "out_dir": str(tmp_path / "s")},
+                      runtime=NODE)
+    assert [c for c in read_log(log) if c["call"] == "renderStill"][0]["propTypes"]["date"] == "date"
+
+
+@needs_node
+def test_render_settings_from_remotion_config_reach_every_call(fake_project, tmp_path):
+    """Config.setDelayRenderTimeoutInMilliseconds & co apply like `npx remotion render`, not only webpack overrides."""
+    root, log = fake_project
+    with open(os.path.join(root, "remotion.config.js"), "w") as fh:
+        fh.write("const {Config} = require('@remotion/cli/config');\n"
+                 "Config.setDelayRenderTimeoutInMilliseconds(120000);\n"
+                 "Config.setChromiumOpenGlRenderer('angle');\n"
+                 "Config.setChromiumIgnoreCertificateErrors(true);\n"
+                 "Config.setChromeMode('chrome-for-testing');\n"
+                 "Config.setBrowserExecutable('/opt/chrome/chrome');\n"
+                 "Config.setOffthreadVideoCacheSizeInBytes(1000000000);\n")
+    helper.run_helper("compositions", project_dir=root, entry="src/index.ts", runtime=NODE)
+    helper.run_helper("still", project_dir=root, entry="src/index.ts",
+                      options={"composition": "TitleCard", "frames": "first", "out_dir": str(tmp_path / "s")},
+                      runtime=NODE)
+    helper.run_helper("render", project_dir=root, entry="src/index.ts",
+                      options={"composition": "TitleCard", "codec": "h264", "output": str(tmp_path / "t.mp4")},
+                      runtime=NODE)
+    calls = read_log(log)
+    renders = [c for c in calls if c["call"] in ("getCompositions", "selectComposition", "renderMedia", "renderStill")]
+    assert {c["call"] for c in renders} == {"getCompositions", "selectComposition", "renderMedia", "renderStill"}
+    for c in renders:
+        assert c["timeoutInMilliseconds"] == 120000 and c["offthreadVideoCacheSizeInBytes"] == 1e9, c
+    opened = [c for c in calls if c["call"] == "openBrowser"]
+    assert opened
+    for c in renders + opened:
+        assert c["chromeMode"] == "chrome-for-testing" and c["browserExecutable"] == "/opt/chrome/chrome", c
+        assert c["chromiumOptions"]["gl"] == "angle" and c["chromiumOptions"]["ignoreCertificateErrors"] is True, c
+        assert c["chromiumOptions"]["headless"] is True, c
+    browsers = [c for c in calls if c["call"] == "ensureBrowser"]
+    assert browsers and all(b["chromeMode"] == "chrome-for-testing" and b["browserExecutable"] == "/opt/chrome/chrome"
+                            for b in browsers)
 
 
 @needs_node

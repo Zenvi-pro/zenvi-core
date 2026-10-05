@@ -38,8 +38,9 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from classes.handoff.keyframes import BEZIER, CONSTANT, LINEAR
+from classes.handoff.keyframes import BEZIER, CONSTANT, LINEAR, Curve
 from classes.handoff.remotion.exporter import BLEND_MODES, CLIP_KEYS
+from classes.handoff.timeline_view import source_frames, time_remaps
 
 TRACK_STEP = 1000000
 MARKER_COLORS = ("blue", "red", "green", "yellow", "orange", "purple", "pink", "white")  # track_ops.MARKER_COLORS
@@ -298,6 +299,44 @@ def _media_seconds(clip: dict, ctx: _Context) -> Optional[float]:
     return seconds if seconds > 0 else None
 
 
+def _source_frame_span(clip: dict, ctx: _Context, start: float, end: float) -> Tuple[int, int]:
+    """(lowest, highest) 1-based media frame clip frames *start*..*end* show (the ``time`` remap applied)."""
+    rate = ctx.fps_f
+    first = int(round(start * rate)) + 1
+    last = max(first, int(round(end * rate)))
+    time_kf = clip.get("time")
+    if not time_remaps(time_kf):
+        return first, last
+    return source_frames(Curve.from_json(time_kf, fps=ctx.fps), first, last)
+
+
+def _window_problem(clip: dict, ctx: _Context, start: float, end: float, old_start: Optional[float],
+                    old_end: Optional[float]) -> Optional[str]:
+    """Why clip frames *start*..*end* would show frames past the end of the clip's media, else None.
+
+    Through the clip's ``time`` curve when it remaps time: a slowed clip's
+    window is longer than its media, a frozen one holds a frame. A window
+    that shows no more of the media than the old one (*old_start*..*old_end*)
+    is never refused.
+    """
+    media = _media_seconds(clip, ctx)
+    if media is None:
+        return None
+    rate = ctx.fps_f
+    if not time_remaps(clip.get("time")):
+        if end > media + 0.5 / rate:
+            return f"end {end:g} s is past the end of its {media:g} s media"
+        return None
+    _low, high = _source_frame_span(clip, ctx, start, end)
+    limit = int(round(media * rate))
+    if high <= limit:
+        return None
+    if old_start is not None and old_end is not None and high <= _source_frame_span(clip, ctx, old_start, old_end)[1]:
+        return None
+    return (f"start {start:g} s / end {end:g} s would show media frame {high} through its speed curve, past the end "
+            f"of its {media:g} s ({limit} frame) media")
+
+
 def apply_clip(clip: dict, base: dict, cur: dict, ctx: _Context, *, tracks: List[dict]) -> None:
     """Apply the differences between *base* and *cur* (readable entries) onto *clip* (in place)."""
     changed = _changed(base, cur)
@@ -321,9 +360,9 @@ def apply_clip(clip: dict, base: dict, cur: dict, ctx: _Context, *, tracks: List
         else:
             ctx.warn(f"{label}: title must be text; kept {clip.get('title')!r}")
 
-    # media: another file of the export
+    # media: another file of the export (it must cover the clip's window, checked with the timing below)
+    target: Optional[str] = None
     if changed & {"fileId", "src"}:
-        target = None
         if "fileId" in changed and str(cur.get("fileId")) in ctx.files:
             target = str(cur["fileId"])
         elif "src" in changed and cur.get("src") in ctx.src_to_file:
@@ -331,10 +370,8 @@ def apply_clip(clip: dict, base: dict, cur: dict, ctx: _Context, *, tracks: List
         if target is None:
             ctx.warn(f"{label}: its media was changed to {cur.get('src') or cur.get('fileId')!r}, which is not one "
                      "of the exported media files; new media is not brought back (import it in Zenvi)")
-        elif target != str(clip.get("file_id")):
-            ctx.note("clip", cid, "file_id", clip.get("file_id"), target)
-            clip["file_id"] = target
-            clip["reader"] = copy.deepcopy(ctx.files[target])
+        elif target == str(clip.get("file_id")):
+            target = None
 
     # timing
     rate = ctx.fps_f
@@ -364,19 +401,32 @@ def apply_clip(clip: dict, base: dict, cur: dict, ctx: _Context, *, tracks: List
             if seconds is None:
                 raise _Refused(f"{label}: end (source out) must be seconds, got {cur.get('end')!r}")
             new_end = ctx.snap(seconds)
-        if (new_start, new_end) != (start, end):
-            if new_end - new_start < 1.0 / rate - 1e-9:
-                raise _Refused(f"{label}: end {new_end:g} s must be at least one frame after start {new_start:g} s")
-            media = _media_seconds(clip, ctx)
-            if media is not None and new_end > media + 0.5 / rate:
-                raise _Refused(f"{label}: end {new_end:g} s is past the end of its {media:g} s media")
-            if new_start != start:
-                ctx.note("clip", cid, "start", start, round(new_start, 6))
-            if new_end != end:
-                ctx.note("clip", cid, "end", end, round(new_end, 6))
-            clip["start"], clip["end"] = new_start, new_end
+        if (new_start, new_end) != (start, end) and new_end - new_start < 1.0 / rate - 1e-9:
+            raise _Refused(f"{label}: end {new_end:g} s must be at least one frame after start {new_start:g} s")
     except _Refused as exc:
         ctx.warn(f"{exc}; kept {start:g}-{end:g} s")
+        new_start, new_end = start, end
+    media_clip = dict(clip, file_id=target) if target else clip
+    if (new_start, new_end) != (start, end):
+        why = _window_problem(media_clip, ctx, new_start, new_end, start, end)
+        if why:
+            ctx.warn(f"{label}: {why}; kept {start:g}-{end:g} s")
+            new_start, new_end = start, end
+    if target is not None:
+        why = _window_problem(media_clip, ctx, new_start, new_end, None, None)
+        if why:
+            ctx.warn(f"{label}: its media was changed to {cur.get('src') or cur.get('fileId')!r}, but {why}; kept "
+                     "its media")
+            target = None
+        else:
+            ctx.note("clip", cid, "file_id", clip.get("file_id"), target)
+            clip["file_id"] = target
+            clip["reader"] = copy.deepcopy(ctx.files[target])
+    if new_start != start:
+        ctx.note("clip", cid, "start", start, round(new_start, 6))
+    if new_end != end:
+        ctx.note("clip", cid, "end", end, round(new_end, 6))
+    clip["start"], clip["end"] = new_start, new_end
     if "time" in changed:
         ctx.warn(f"{label}: speed edits (time: mode / playbackRate / map) are not brought back; change the "
                  "clip's speed in Zenvi")
@@ -705,6 +755,11 @@ def apply_edits(project: dict, timeline: dict) -> Tuple[dict, List[str], List[di
                 for cid in deleted:
                     ctx.note("clip", cid, "deleted", None, None)
             out.setdefault("clips", []).extend(duplicates)
+            for c in out.get("clips") or []:  # a clip that followed a deleted one no longer points at it
+                if isinstance(c, dict) and str(c.get("parentObjectId") or "") in deleted:
+                    ctx.note("clip", str(c.get("id")), "parentObjectId", c["parentObjectId"], "")
+                    ctx.warn(f"{_label(c)} followed a clip that was deleted; it no longer follows it")
+                    c["parentObjectId"] = ""
 
     _apply_transitions(out, baseline, timeline, ctx, tracks)
     _apply_markers(out, baseline, timeline, ctx)
