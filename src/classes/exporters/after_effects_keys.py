@@ -160,52 +160,19 @@ def _solve_u(p: Sequence[Tuple[float, float]], t: float) -> float:
     return (lo + hi) / 2.0
 
 
-def _split(p: Sequence[Tuple[float, float]], u0: float, u1: float) -> List[Tuple[float, float]]:
-    """Control points of the sub-curve between parameters u0 < u1 (de Casteljau)."""
-
-    def lerp(a, b, s):
-        return (a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s)
-
-    def right_part(q, s):
-        q01, q12, q23 = lerp(q[0], q[1], s), lerp(q[1], q[2], s), lerp(q[2], q[3], s)
-        q012, q123 = lerp(q01, q12, s), lerp(q12, q23, s)
-        q0123 = lerp(q012, q123, s)
-        return [q0123, q123, q23, q[3]]
-
-    def left_part(q, s):
-        q01, q12, q23 = lerp(q[0], q[1], s), lerp(q[1], q[2], s), lerp(q[2], q[3], s)
-        q012, q123 = lerp(q01, q12, s), lerp(q12, q23, s)
-        q0123 = lerp(q012, q123, s)
-        return [q[0], q01, q012, q0123]
-
-    pts = list(p)
-    if u0 > 0.0:
-        pts = right_part(pts, u0)
-    if u1 < 1.0:
-        s = (u1 - u0) / (1.0 - u0) if u0 < 1.0 else 1.0
-        pts = left_part(pts, s)
-    return pts
-
-
-def _segment_controls(left, right) -> List[Tuple[float, float]]:
-    """The (time, value) control polygon of the libopenshot bezier segment left -> right."""
-    dt = right.time - left.time
-    dv = right.value - left.value
-    return [(left.time, left.value),
-            (left.time + left.handle_right[0] * dt, left.value + left.handle_right[1] * dv),
-            (left.time + right.handle_left[0] * dt, left.value + right.handle_left[1] * dv),
-            (right.time, right.value)]
-
-
 def curve_pieces(curve: Curve, times: Sequence[float]) -> Tuple[List[float], List[Piece]]:
     """Exact values of *curve* at *times* and the piece of curve between each pair.
 
     *times* must be sorted and contain every curve point strictly between its
     first and last entry (``key_times`` builds such a list), so each span lies
-    inside one libopenshot segment or in a constant region.
+    inside one libopenshot segment or in a constant region. A bezier span cut
+    by a key time is ``Segment.bezier_between`` (the exact de Casteljau piece,
+    classes.handoff.keyframes); a flat cut of an overshooting segment comes
+    back linear there, which the per-frame check in ``build_property`` catches.
     """
     values = [exact_value(curve, t) for t in times]
     pts = curve.points
+    segments = curve.segments()
     pieces: List[Piece] = []
     for j in range(len(times) - 1):
         ta, tb = times[j], times[j + 1]
@@ -213,26 +180,22 @@ def curve_pieces(curve: Curve, times: Sequence[float]) -> Tuple[List[float], Lis
         if len(pts) < 2 or tb <= pts[0].time + _EPS or ta >= pts[-1].time - _EPS:
             pieces.append(Piece(LINEAR, va, vb))
             continue
-        # the segment containing the span
         k = 0
-        while k < len(pts) - 2 and pts[k + 1].time <= ta + _EPS:
+        while k < len(segments) - 1 and segments[k].end.time <= ta + _EPS:
             k += 1
-        left, right = pts[k], pts[k + 1]
-        if right.interpolation == CONSTANT:
+        segment = segments[k]
+        if segment.end.interpolation == CONSTANT:
             pieces.append(Piece(HOLD, va, vb))
-        elif right.interpolation == OS_LINEAR:
+        elif segment.end.interpolation == OS_LINEAR:
             pieces.append(Piece(LINEAR, va, vb))
         else:
-            ctrl = _segment_controls(left, right)
-            u0 = 0.0 if ta <= left.time + _EPS else _solve_u(ctrl, ta)
-            u1 = 1.0 if tb >= right.time - _EPS else _solve_u(ctrl, tb)
-            sub = _split(ctrl, u0, u1)
-            span = sub[3][0] - sub[0][0]
-            if span <= _EPS:
-                pieces.append(Piece(LINEAR, va, vb))
+            bezier = segment.bezier_between(ta, tb)
+            if bezier is None:
+                pieces.append(Piece(HOLD, va, vb))
                 continue
-            pieces.append(Piece(BEZIER, sub[0][1], sub[3][1], (sub[1][0] - sub[0][0]) / span, sub[1][1],
-                                (sub[2][0] - sub[0][0]) / span, sub[2][1]))
+            x1, y1, x2, y2 = bezier
+            dv = vb - va
+            pieces.append(Piece(BEZIER, va, vb, x1, va + y1 * dv, x2, va + y2 * dv))
     return values, pieces
 
 

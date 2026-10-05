@@ -57,7 +57,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from classes.exporters import after_effects_keys as K
 from classes.handoff.keyframes import Curve, float32
-from classes.handoff.transform import SCALE_CROP, SCALE_FIT, SCALE_STRETCH
+from classes.handoff.transform import SCALE_CROP, SCALE_FIT, SCALE_NONE, SCALE_STRETCH, delivered_size
 
 # Skia Skottie (modules/skottie/src/SkottiePriv.h): "Close-enough to AE".
 AE_BLUR_SIZE_TO_SIGMA = 0.3
@@ -189,6 +189,7 @@ def decode_size(clip, file, canvas_w: int, canvas_h: int) -> Tuple[float, float]
     QtImageReader::calculate_max_size, FFmpegReader decode size) for a final
     render at the project size: stills scale to the box both ways, video
     only shrinks, and only when smaller than the stream on both axes.
+    SCALE_NONE is ``transform.delivered_size``.
     """
     w = float(getattr(file, "width", 0) or 0)
     h = float(getattr(file, "height", 0) or 0)
@@ -197,6 +198,10 @@ def decode_size(clip, file, canvas_w: int, canvas_h: int) -> Tuple[float, float]
     sx = _max_point(clip.curves.get("scale_x"))
     sy = _max_point(clip.curves.get("scale_y"))
     mode = clip.scale_mode
+    still = bool(getattr(file, "is_still", False) or getattr(file, "is_title", False))
+    if mode == SCALE_NONE:
+        dw, dh = delivered_size(int(w), int(h), sx, sy, still=still)
+        return float(dw), float(dh)
     if mode in (SCALE_FIT, SCALE_STRETCH):
         box_w = math.trunc(max(canvas_w, float32(canvas_w * sx)))
         box_h = math.trunc(max(canvas_h, float32(canvas_h * sy)))
@@ -210,7 +215,7 @@ def decode_size(clip, file, canvas_w: int, canvas_h: int) -> Tuple[float, float]
             box_w, box_h = max(canvas_w, height_size[0]), max(canvas_h, height_size[1])
     else:
         return w, h
-    if getattr(file, "is_still", False) or getattr(file, "is_title", False):
+    if still:
         rw = int((box_h * w) / h)
         if rw <= box_w:
             return float(rw), float(box_h)

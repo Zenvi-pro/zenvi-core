@@ -6,8 +6,8 @@ import os
 import pytest
 
 from classes.handoff import after_effects_export as X
+from handoff_fakes import write_discovery
 from test_handoff_ae_job import AeHost, fake_analyze, fake_render
-from test_handoff_adobe_link import _discover
 
 
 @pytest.fixture
@@ -74,9 +74,8 @@ def test_send_refuses_with_how_to_connect(ae):
 
 def test_send_builds_the_comp_in_after_effects(ae):
     host = AeHost()
-    (ae.tmp / "user").mkdir(exist_ok=True)
     try:
-        _discover(ae.tmp / "user", host)
+        write_discovery(str(ae.tmp / "user"), host)
         receipt = ae.call_receipt("send_to_after_effects_tool")
     finally:
         host.stop()

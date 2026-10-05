@@ -49,11 +49,12 @@ def _error_text(error: Optional[BaseException]) -> str:
 
 
 def _status(window, text: str) -> None:
+    """A short result message in the toolbar pill (the themes hide the status bar)."""
     try:
-        bar = window.statusBar()
-        bar.showMessage(text, 8000)
+        from windows.handoff_menus import notify
+        notify(window, text)
     except Exception:
-        log.debug("status bar unavailable", exc_info=True)
+        log.debug("handoff notice unavailable", exc_info=True)
 
 
 def _snapshot(window):
@@ -104,7 +105,12 @@ class _Progress:
 
 
 def _run_job(window, title: str, work: Callable[[Any], Any], done: Callable[[Any], None]) -> None:
-    """Run ``work(job)`` on the handoff executor with a progress dialog; ``done(job)`` on the GUI thread."""
+    """Run ``work(job)`` on the handoff executor with a progress dialog; ``done(job)`` on the GUI thread.
+
+    The normal (registered) lane, not ``interactive``: an export can copy
+    gigabytes and a send waits on After Effects, and only registered jobs are
+    listed as running and cancelled by ``jobs.shutdown()`` when Zenvi quits.
+    """
     from classes.handoff import jobs
     progress = _Progress(window, title)
 

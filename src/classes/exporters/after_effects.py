@@ -502,12 +502,13 @@ def _guide_for(ctx: _Ctx, mask_path: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def _time_curve(clip) -> Optional[Curve]:
-    """The clip's ``time`` curve when it remaps (libopenshot needs 2+ points), else None."""
-    curve = getattr(clip, "time", None)
-    if not isinstance(curve, Curve):
+    """The clip's ``time`` curve when it remaps (``ClipView.time``: libopenshot needs 2+ points), else None."""
+    if hasattr(clip, "time"):
+        curve = clip.time
+    else:  # a snapshot from before ClipView.time
         raw = clip.data.get("time") if clip.data is not None else None
         curve = Curve.from_json(raw, fps=clip.fps, position=clip.position, start=clip.start)
-    return curve if len(curve.points) >= 2 else None
+    return curve if isinstance(curve, Curve) and len(curve.points) >= 2 else None
 
 
 def _timing(ctx: _Ctx, clip, file, t_in: float, t_out: float, frames: List[float]) -> Dict[str, Any]:
@@ -565,6 +566,10 @@ def _transform(ctx: _Ctx, clip, file, src_w: int, src_h: int, t_in: float, t_out
     file_h = float(file.height) if file is not None and file.height else float(src_h or ctx.height)
     fx = file_w / float(src_w) if src_w else 1.0
     fy = file_h / float(src_h) if src_h else 1.0
+    # libopenshot decodes a SCALE_NONE source at its size times the clip's largest scale (transform.delivered_size)
+    max_sx = max((p.value for p in curves["scale_x"].points), default=1.0)
+    max_sy = max((p.value for p in curves["scale_y"].points), default=1.0)
+    still = bool(file is not None and (file.is_still or file.is_title))
     cols: Dict[str, List[float]] = {k: [] for k in ("ax", "ay", "px", "py", "sx", "sy", "rot", "op")}
     sheared = False
     for t in eval_frames:
@@ -572,7 +577,8 @@ def _transform(ctx: _Ctx, clip, file, src_w: int, src_h: int, t_in: float, t_out
         g = geometry(file_w, file_h, ctx.width, ctx.height, scale_mode=clip.scale_mode, gravity=clip.gravity,
                      scale_x=v["scale_x"], scale_y=v["scale_y"], location_x=v["location_x"],
                      location_y=v["location_y"], rotation=v["rotation"], origin_x=v["origin_x"],
-                     origin_y=v["origin_y"], shear_x=0.0, shear_y=0.0, alpha=v["alpha"], margin=v["margin"])
+                     origin_y=v["origin_y"], shear_x=0.0, shear_y=0.0, alpha=v["alpha"], margin=v["margin"],
+                     max_scale_x=max_sx, max_scale_y=max_sy, still=still)
         if abs(v["shear_x"]) > 1e-6 or abs(v["shear_y"]) > 1e-6:
             sheared = True
         cols["ax"].append(v["origin_x"] * src_w)

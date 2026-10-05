@@ -15,7 +15,7 @@ import pytest
 from ae_project import ProjectBuilder
 from classes.handoff import adobe_link
 from classes.handoff import after_effects_export as X
-from test_handoff_adobe_link import FakeHost, _discover
+from handoff_fakes import FakeHost, write_discovery
 
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src")
 
@@ -216,7 +216,7 @@ def ae_host(tmp_path):
 
 
 def test_send_exports_and_runs_the_script_through_zenvi_link(tmp_path, ae_host):
-    base = _discover(tmp_path, ae_host)
+    base = write_discovery(str(tmp_path), ae_host)
     b = _project(tmp_path, titles=False)
     result = X.send_to_after_effects(b.snapshot(), base_dir=base, output_dir=str(tmp_path / "send"),
                                      render_svg=fake_render, analyze_mask=fake_analyze)
@@ -238,7 +238,7 @@ def test_send_refuses_with_how_to_connect_when_after_effects_is_not_there(tmp_pa
 def test_a_failed_import_in_after_effects_is_an_error(tmp_path):
     host = AeHost({"zenvi_ae_import": 1, "status": "error", "summary": "Error: the Zenvi import stopped: boom"})
     try:
-        base = _discover(tmp_path, host)
+        base = write_discovery(str(tmp_path), host)
         b = _project(tmp_path, titles=False, transitions=False)
         with pytest.raises(X.AeHandoffError, match="boom"):
             X.send_to_after_effects(b.snapshot(), base_dir=base, output_dir=str(tmp_path / "send"))
