@@ -13,6 +13,8 @@ from classes.handoff import plugins, ui_registry as reg
 @pytest.fixture
 def clean_registry(monkeypatch):
     saved = {k: dict(v) for k, v in reg._actions.items()}
+    for actions in reg._actions.values():  # real handoff packages (C2-C5) register entries when imported
+        actions.clear()
     yield reg
     for k, v in saved.items():
         reg._actions[k].clear()
@@ -72,6 +74,11 @@ def test_missing_plugins_are_skipped_and_a_broken_one_is_logged(monkeypatch, cap
     monkeypatch.setattr(plugins, "_loaded", [])
     good = types.ModuleType("classes.handoff.hyperframes")
     monkeypatch.setitem(sys.modules, "classes.handoff.hyperframes", good)
+    # Real packages may already be imported by their own tests: absent ones read as missing
+    # (None in sys.modules), and remotion is hidden so the broken finder below is consulted.
+    for absent in ("classes.handoff.after_effects", "classes.handoff.premiere"):
+        monkeypatch.setitem(sys.modules, absent, None)
+    monkeypatch.delitem(sys.modules, "classes.handoff.remotion", raising=False)
     finder = _Broken()
     sys.meta_path.insert(0, finder)
     try:
