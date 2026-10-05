@@ -501,14 +501,15 @@ _catalogs_lock = threading.Lock()
 
 
 def host_catalog(app: str, base_dir: Optional[str] = None, *, refresh: bool = False) -> List[dict]:
-    """A connected host's ``tools/list`` rows, fetched once per host url + pid for the session.
+    """A connected host's ``tools/list`` rows, fetched once per host session (url + pid + started_at).
 
-    A restarted extension has a new pid (and port), so its catalog is fetched
-    again. Raises HostNotConnected / LinkHostError like :func:`list_host_tools`.
-    Returns copies: callers may change them.
+    A restarted extension has a new start time (and usually a new pid and
+    port), so its catalog is fetched again. Raises HostNotConnected /
+    LinkHostError like :func:`list_host_tools`. Returns copies: callers may
+    change them.
     """
     data = read_discovery(app, base_dir) or {}
-    key = (app, base_dir, str(data.get("url") or ""), data.get("pid"))
+    key = (app, base_dir, str(data.get("url") or ""), data.get("pid"), str(data.get("started_at") or ""))
     if not refresh:
         with _catalogs_lock:
             cached = _catalogs.get(key)

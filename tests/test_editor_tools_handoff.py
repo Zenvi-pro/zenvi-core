@@ -347,8 +347,6 @@ AE_CATALOG = [
 
 
 def test_list_link_hosts_can_include_each_connected_hosts_tools(linked, ae_host):
-    from classes.handoff import adobe_link
-    adobe_link._catalogs.clear()
     ae_host.tools = AE_CATALOG
     r = linked.call_receipt("list_link_hosts_tool")
     assert "tools" not in r["data"]["hosts"][0]  # off by default: the listing stays small
@@ -363,7 +361,6 @@ def test_list_link_hosts_can_include_each_connected_hosts_tools(linked, ae_host)
 
 def test_host_tool_catalogs_are_cached_per_host_session(linked, ae_host):
     from classes.handoff import adobe_link
-    adobe_link._catalogs.clear()
     ae_host.tools = AE_CATALOG
     lists = lambda: sum(1 for c in ae_host.calls if c.get("method") == "tools/list")  # noqa: E731
     linked.call_receipt("list_link_hosts_tool", include_tools=True)
@@ -373,11 +370,13 @@ def test_host_tool_catalogs_are_cached_per_host_session(linked, ae_host):
     write_discovery(linked.user_path, ae_host, pid=os.getppid())  # the extension restarted: new pid
     linked.call_receipt("list_link_hosts_tool", include_tools=True)
     assert lists() == 2
+    ae_host.tools = AE_CATALOG[:1]  # restarted again in the same helper process, same port: a new start time
+    write_discovery(linked.user_path, ae_host, pid=os.getppid(), started_at="2026-10-05T09:30:00Z")
+    r = linked.call_receipt("list_link_hosts_tool", include_tools=True)
+    assert lists() == 3 and [t["name"] for t in r["data"]["hosts"][0]["tools"]] == ["ae_get_state"]
 
 
 def test_a_host_that_cannot_list_its_tools_reports_the_error(linked, ae_host):
-    from classes.handoff import adobe_link
-    adobe_link._catalogs.clear()
     premiere = FakeHost(app="premiere")
     try:
         premiere.tools_error = "catalog failed to load"
