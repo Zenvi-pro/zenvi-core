@@ -27,9 +27,9 @@ CODEC_LABELS = (
     ("h264", "H.264 (opaque, smaller)"),
     ("qtrle", "QuickTime Animation (transparency, large files)"),
 )
-LICENCE_NOTE = ("Zenvi renders with this project's own Remotion; it does not include Remotion. Remotion is free for "
-                "individuals and companies of up to 3 people; larger companies need a company licence "
-                "(remotion.dev/license).")
+LICENCE_NOTE = ("Zenvi renders with this project's own Remotion, which runs the project's code (like npx remotion "
+                "render): import projects you trust. Zenvi does not include Remotion; it is free for individuals and "
+                "companies of up to 3 people, larger companies need a company licence (remotion.dev/license).")
 
 
 def _tr(text: str) -> str:
