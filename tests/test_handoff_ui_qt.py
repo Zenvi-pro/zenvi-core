@@ -73,6 +73,22 @@ class _Window(QMainWindow):
         self.addToolBar(self.toolBar)
 
 
+@pytest.fixture(autouse=True)
+def _collect_qt_garbage(qapp):
+    """Free this test's widgets now, inside its own event loop.
+
+    Parentless dialogs and windows caught in reference cycles were otherwise
+    collected during a later test's nested event loop, which crashed the
+    real-Qt run (segfault / abort) once other handoff packages' Qt tests ran
+    after these.
+    """
+    yield
+    import gc
+    qapp.processEvents()
+    gc.collect()
+    qapp.processEvents()
+
+
 def _pump(qapp, until, timeout=10.0):
     deadline = time.time() + timeout
     while not until() and time.time() < deadline:
