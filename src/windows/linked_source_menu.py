@@ -35,10 +35,13 @@ def _file_and_link(file_id: str):
 
 def state_caption(link: dict, check) -> str:
     """The submenu's first (disabled) line: kind, composition and freshness."""
-    from classes.handoff.linked_media import kind_label
+    from classes.handoff.linked_media import kind_label, provider_for
     from windows.linked_clip_dialog import state_text
+    kind = str(link.get("kind") or "")
     comp = (link.get("source") or {}).get("composition") or ""
-    head = kind_label(str(link.get("kind") or "")) + (" · %s" % comp if comp else "")
+    head = kind_label(kind) + (" · %s" % comp if comp else "")
+    if provider_for(kind) is None:
+        return "%s — %s" % (head, _tr("not checked: this build has no %s renderer") % kind_label(kind))
     if check is None:
         return head
     return "%s — %s" % (head, state_text(getattr(check, "state", None), "", _tr))
@@ -154,7 +157,8 @@ def unlink_file(window, file_id: str) -> Optional[dict]:
     except linked_media.LinkError as exc:
         QMessageBox.warning(window, _tr("Linked Source"), str(exc))
         return None
-    window.statusBar.showMessage(_tr("Unlinked; the clip keeps its rendered media (Undo restores the link)"), 5000)
+    from windows.handoff_menus import notify
+    notify(window, _tr("Unlinked; the clip keeps its rendered media (Undo restores the link)"))
     status = getattr(window, "handoff_status", None)
     if status is not None:
         status.check_soon(force=True)

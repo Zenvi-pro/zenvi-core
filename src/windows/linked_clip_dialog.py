@@ -154,6 +154,8 @@ class LinkedClipDialog(QDialog):
         layout.addLayout(info)
 
         self.tabs = QTabWidget(self)
+        # "tabWidget": the name the Cosmic theme gives visible horizontal tab labels in dialogs
+        self.tabs.setObjectName("tabWidget")
         self.form_page = QWidget()
         self.form = QFormLayout(self.form_page)
         self.tabs.addTab(self.form_page, _("Props"))

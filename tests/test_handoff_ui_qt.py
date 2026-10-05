@@ -21,7 +21,7 @@ import qt_api  # noqa: E402,F401  (pick the binding before the QApplication exis
 from PyQt5.QtCore import QThread  # noqa: E402
 from PyQt5.QtWidgets import (  # noqa: E402
     QApplication, QCheckBox, QDoubleSpinBox, QLineEdit, QMainWindow, QMenu, QPlainTextEdit, QPushButton, QSpinBox,
-    QStatusBar,
+    QStatusBar, QToolBar,
 )
 
 if QThread is None:  # the headless stub (file named explicitly without ZENVI_REAL_QT=1)
@@ -59,6 +59,9 @@ class _Window(QMainWindow):
         self.menuFile.addAction("Quit")
         self.statusBar = QStatusBar(self)
         self.setStatusBar(self.statusBar)
+        self.statusBar.hide()  # every theme hides it; the pill lives on the main toolbar
+        self.toolBar = QToolBar(self)
+        self.addToolBar(self.toolBar)
 
 
 def _pump(qapp, until, timeout=10.0):
@@ -86,6 +89,8 @@ def ui(qapp, tmp_path, monkeypatch):
     window = _Window()
     monkeypatch.setattr(handoff_menus.LinkedClipsStatus, "_linked_files", lambda self: [])
     handoff_menus.install_handoff_menus(window)
+    # what a theme does when it builds the main toolbar
+    window.toolBar.addWidget(window.handoff_status).setVisible(window.handoff_status.is_active)
     yield window, calls, tmp_path
     window.handoff_status.timer.stop()
     jobs.remove_listener(window.handoff_status._on_job)
@@ -128,7 +133,7 @@ def test_send_to_sits_after_export_and_follows_the_host(ui, qapp):
         host.stop()
 
 
-def test_status_bar_shows_running_jobs_and_cancels_them(ui, qapp):
+def test_toolbar_pill_shows_running_jobs_and_cancels_them(ui, qapp):
     window, _calls, _ = ui
     status = window.handoff_status
     assert not status.isVisible()
@@ -141,12 +146,19 @@ def test_status_bar_shows_running_jobs_and_cancels_them(ui, qapp):
             pass
         job.raise_if_cancelled()
 
+    slot = next(a for a in window.toolBar.actions() if window.toolBar.widgetForAction(a) is status)
+    assert not slot.isVisible()
     job = jobs.submit_job(work, label="Rendering Intro", key="F1")
     assert _pump(qapp, lambda: status.isVisible() and status.label.text() == "Rendering Intro")
+    assert slot.isVisible() and status.is_active
     assert status.cancel_button.isVisible() and status.progress.value() == 500
     status.cancel_button.click()
     assert _pump(qapp, lambda: job.finished)
     assert job.state == jobs.CANCELLED
+    assert _pump(qapp, lambda: not status.isVisible())
+    assert not slot.isVisible()
+    status.show_message("Re-rendered 1 linked clip(s)", ms=200)
+    assert status.isVisible() and status.label.text() == "Re-rendered 1 linked clip(s)"
     assert _pump(qapp, lambda: not status.isVisible())
     window.hide()
 

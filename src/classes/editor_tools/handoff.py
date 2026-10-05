@@ -21,7 +21,7 @@ ids in ``coverage.py``.
 
 Long work (renders) blocks the tool call on its worker thread, like
 ``add_animated_title_tool``: the tools are background-safe, register a
-``handoff.jobs`` job while they render (the status bar shows it, and
+``handoff.jobs`` job while they render (the toolbar pill shows it, and
 ``get_linked_clip_tool`` reports ``rendering``), and hop to the GUI thread
 only for the one-undo-step media swap.
 """

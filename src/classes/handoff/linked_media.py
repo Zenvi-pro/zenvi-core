@@ -1043,7 +1043,7 @@ def rerender_linked(file_id: str, *, props: Optional[dict] = None, on_progress: 
     (the props dialog, where keys can be removed).
 
     Registers a ``handoff.jobs`` job keyed by the file id while it renders
-    (``link_state`` reports ``rendering``; the status bar shows it). A failed
+    (``link_state`` reports ``rendering``; the toolbar pill shows it). A failed
     render leaves the project and history untouched and is remembered as
     the file's ``error`` state for the session. Blocking: call off the GUI
     thread.

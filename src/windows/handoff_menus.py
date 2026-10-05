@@ -1,6 +1,6 @@
 """
  @file
- @brief File menu entries for the handoffs (Export / Import Project, Send To) and the linked-clips status bar.
+ @brief File menu entries for the handoffs (Export / Import Project, Send To) and the linked-clips toolbar pill.
 
  ``install_handoff_menus(window)`` (called next to ``install_cloud_menu``):
 
@@ -10,10 +10,11 @@
    File > Send To submenu lists the send entries, enabled only while their
    Adobe host is connected (Zenvi Link discovery is refreshed off the GUI
    thread each time the menu opens; disabled entries say how to connect);
- * adds the linked-clips widget to the status bar: progress of handoff
-   renders with Cancel, and "N linked clips changed — Re-render" when a
-   freshness check (on app activation and every 30 s while linked files
-   exist, off the GUI thread) finds stale ones.
+ * creates the linked-clips pill the themes put on the main toolbar (the
+   status bar is hidden by every theme): progress of handoff renders with
+   Cancel, "N linked clips changed — Re-render" when a freshness check (on
+   app activation and every 30 s while linked files exist, off the GUI
+   thread) finds stale ones, and short results.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import copy
 import time
 from typing import Dict, List, Optional
 
-from qt_api import QHBoxLayout, QLabel, QMenu, QMessageBox, QObject, QProgressBar, QPushButton, Qt, QTimer, QWidget
+from qt_api import QFrame, QHBoxLayout, QLabel, QMenu, QMessageBox, QObject, QProgressBar, QPushButton, Qt, QTimer
 
 from classes.app import get_app
 from classes.logger import log
@@ -42,10 +43,21 @@ def _tr(text: str) -> str:
 # Re-rendering from the UI (one user intent = one undo step)
 # ---------------------------------------------------------------------------
 
+def notify(window, text: str) -> None:
+    """A short result message: the toolbar pill (the themes hide the status bar)."""
+    status = getattr(window, "handoff_status", None)
+    if status is not None and hasattr(status, "show_message"):
+        status.show_message(text)
+    else:
+        bar = getattr(window, "statusBar", None)
+        if bar is not None and hasattr(bar, "showMessage"):
+            bar.showMessage(text, 5000)
+
+
 def rerender_files(window, file_ids: List[str], props: Optional[dict] = None, *, replace_props: bool = False):
     """Re-render linked files off the GUI thread; all their media swaps are ONE undo step.
 
-    Progress shows in the status bar (with Cancel). Errors are reported in a
+    Progress shows in the toolbar pill (with Cancel). Errors are reported in a
     message box when it ends; files that failed keep their last render.
     """
     from classes.handoff import jobs, linked_media
@@ -80,7 +92,7 @@ def rerender_files(window, file_ids: List[str], props: Optional[dict] = None, *,
     def on_done(job):
         status = getattr(window, "handoff_status", None)
         if job.state == jobs.CANCELLED:
-            window.statusBar.showMessage(_tr("Re-render cancelled; nothing changed"), 5000)
+            notify(window, _tr("Re-render cancelled; nothing changed"))
         elif job.error is not None:
             QMessageBox.warning(window, _tr("Linked Clips"), _tr("Re-render failed: %s") % job.error)
         else:
@@ -91,7 +103,7 @@ def rerender_files(window, file_ids: List[str], props: Optional[dict] = None, *,
                                     _tr("%d linked clip(s) could not be re-rendered and keep their last "
                                         "render:\n%s") % (len(failed), details))
             if done:
-                window.statusBar.showMessage(_tr("Re-rendered %d linked clip(s)") % len(done), 5000)
+                notify(window, _tr("Re-rendered %d linked clip(s)") % len(done))
         if status is not None:
             status.check_soon(force=True)
 
@@ -119,7 +131,9 @@ class HandoffMenus(QObject):
         ui_registry.add_listener(self._registry_changed)
 
     def _registry_changed(self):
-        QTimer.singleShot(0, self.rebuild)
+        # a package may register from any thread: rebuild on the GUI thread, after it returns
+        from classes.qt_main_thread import invoke_on_gui
+        invoke_on_gui(self.rebuild, defer=True)
 
     # -- Export / Import ----------------------------------------------------
     def _section(self, menu, kind: str, actions) -> None:
@@ -220,32 +234,59 @@ class HandoffMenus(QObject):
 # Status bar: render progress + stale linked clips
 # ---------------------------------------------------------------------------
 
-class LinkedClipsStatus(QWidget):
-    """Status-bar widget: running handoff jobs (with Cancel) and stale linked clips (with Re-render)."""
+PILL_STYLE = (
+    "QFrame#handoffStatus { background-color: rgba(77,156,246,0.14); border: 1px solid rgba(77,156,246,0.45); "
+    "border-radius: 8px; } "
+    "QFrame#handoffStatus QLabel { color: #d9e6ff; background: transparent; border: none; } "
+    "QFrame#handoffStatus QPushButton { color: #4d9cf6; background: transparent; border: none; padding: 0 4px; "
+    "font-weight: 600; } "
+    "QFrame#handoffStatus QPushButton:hover { color: #7fb8ff; } "
+    "QFrame#handoffStatus QProgressBar { background: rgba(255,255,255,0.12); border: none; border-radius: 2px; } "
+    "QFrame#handoffStatus QProgressBar::chunk { background: #4d9cf6; border-radius: 2px; }"
+)
+MESSAGE_MS = 6000
+
+
+class LinkedClipsStatus(QFrame):
+    """Main-toolbar pill: running handoff renders (with Cancel), stale linked clips (with Re-render),
+    and short results ("Re-rendered 1 linked clip").
+
+    The themes place it on the main toolbar next to the update pill (the
+    status bar is hidden by every theme); ``is_active`` says whether it has
+    anything to show, and it keeps its toolbar slot's visibility in step.
+    """
 
     def __init__(self, window):
         super().__init__(window)
         self.window = window
         self.setObjectName("handoffStatus")
+        self.setStyleSheet(PILL_STYLE)
         self.last_checks: Dict[str, object] = {}
         self._stale: List[str] = []
         self._checking = False
         self._last_check = 0.0
+        self._message = ""
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 0, 6, 0)
+        layout.setContentsMargins(10, 3, 6, 3)
+        layout.setSpacing(6)
         self.label = QLabel("")
+        self.label.setObjectName("handoffStatusLabel")
         self.progress = QProgressBar()
-        self.progress.setMaximumWidth(140)
-        self.progress.setMaximumHeight(14)
+        self.progress.setFixedSize(70, 5)
         self.progress.setTextVisible(False)
         self.cancel_button = QPushButton(_tr("Cancel"))
         self.cancel_button.setObjectName("handoffCancel")
+        self.cancel_button.setCursor(Qt.PointingHandCursor)
         self.cancel_button.clicked.connect(self._cancel_jobs)
         self.rerender_button = QPushButton(_tr("Re-render"))
         self.rerender_button.setObjectName("handoffRerender")
+        self.rerender_button.setCursor(Qt.PointingHandCursor)
         self.rerender_button.clicked.connect(self._rerender_stale)
         for w in (self.label, self.progress, self.cancel_button, self.rerender_button):
             layout.addWidget(w)
+        self.message_timer = QTimer(self)
+        self.message_timer.setSingleShot(True)
+        self.message_timer.timeout.connect(self._clear_message)
         self.setVisible(False)
 
         from classes.handoff import jobs
@@ -258,9 +299,34 @@ class LinkedClipsStatus(QWidget):
             get_app().applicationStateChanged.connect(self._app_state_changed)
         except Exception:
             log.debug("applicationStateChanged unavailable", exc_info=True)
-        status_bar = getattr(window, "statusBar", None)
-        if status_bar is not None and hasattr(status_bar, "addPermanentWidget"):
-            status_bar.addPermanentWidget(self)
+
+    @property
+    def is_active(self) -> bool:
+        """True while there is something to show (themes read it when they rebuild the toolbar)."""
+        from classes.handoff import jobs
+        return bool(jobs.running_jobs() or self._stale or self._message)
+
+    def show_message(self, text: str, ms: int = MESSAGE_MS) -> None:
+        """A short result line in the pill (the status bar is hidden by the themes)."""
+        self._message = str(text)
+        self.message_timer.start(int(ms))
+        self._refresh_view()
+
+    def _clear_message(self) -> None:
+        self._message = ""
+        self._refresh_view()
+
+    def _sync_visibility(self, visible: bool) -> None:
+        self.setVisible(visible)
+        toolbar = getattr(self.window, "toolBar", None)
+        if toolbar is None or not hasattr(toolbar, "actions"):
+            return
+        for action in toolbar.actions():
+            try:
+                if toolbar.widgetForAction(action) is self:
+                    action.setVisible(visible)
+            except Exception:
+                log.debug("toolbar slot lookup failed", exc_info=True)
 
     # -- jobs -----------------------------------------------------------------
     def _on_job(self, _job) -> None:
@@ -322,6 +388,9 @@ class LinkedClipsStatus(QWidget):
     def _refresh_view(self) -> None:
         from classes.handoff import jobs
         running = jobs.running_jobs()
+        self.progress.setVisible(bool(running))
+        self.cancel_button.setVisible(bool(running))
+        self.rerender_button.setVisible(not running and bool(self._stale))
         if running:
             job = running[-1]
             self.label.setText(job.message or job.label)
@@ -330,21 +399,12 @@ class LinkedClipsStatus(QWidget):
             else:
                 self.progress.setRange(0, 1000)
                 self.progress.setValue(int(job.progress * 1000))
-            self.progress.setVisible(True)
-            self.cancel_button.setVisible(True)
-            self.rerender_button.setVisible(False)
-            self.setVisible(True)
-            return
-        self.progress.setVisible(False)
-        self.cancel_button.setVisible(False)
-        if self._stale:
+        elif self._stale:
             n = len(self._stale)
             self.label.setText(_tr("%d linked clip changed") % n if n == 1 else _tr("%d linked clips changed") % n)
-            self.rerender_button.setVisible(True)
-            self.setVisible(True)
         else:
-            self.rerender_button.setVisible(False)
-            self.setVisible(False)
+            self.label.setText(self._message)
+        self._sync_visibility(self.is_active)
 
     def stale_file_ids(self) -> List[str]:
         return list(self._stale)

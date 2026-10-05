@@ -10,7 +10,7 @@ live in zenvi-web.
 ```
  File menu ── Export Project / Import Project / Send To ──┐     Zenvi Assistant / MCP
  Clip & Project Files menus ── Linked Source ─────────────┤     (editor tools)
- Status bar ── render progress, "N linked clips changed" ─┤            │
+ Toolbar pill ── render progress, "N linked clips changed"┤            │
                                                           ▼            ▼
                     classes.handoff  (core, mostly pure Python, no Qt)
    timeline_view · keyframes · transform ─ read the project for exporters
@@ -27,7 +27,7 @@ live in zenvi-web.
 
 | Package | Core module | Editor tools | Menu entries |
 | --- | --- | --- | --- |
-| Shared (this page) | `classes/handoff/*` | `editor_tools/handoff.py` | Linked Source submenu, Send To, status bar |
+| Shared (this page) | `classes/handoff/*` | `editor_tools/handoff.py` | Linked Source submenu, Send To, toolbar pill |
 | After Effects export | `classes/handoff/after_effects.py` | `editor_tools/handoff_after_effects.py` | Export Project, Send To |
 | Premiere export/import | `classes/handoff/premiere.py` | `editor_tools/handoff_premiere.py` | Export / Import Project, Send To |
 | Remotion | `classes/handoff/remotion.py` | `editor_tools/handoff_remotion.py` | Export / Import Project |
@@ -106,12 +106,14 @@ movie, plus `zenvi_link` on the file record (all clips of the file share it):
   provider's fingerprint of sources + props + render settings changed, or the
   render is missing), `rendering`, `error` (the last render failed this
   session; the project is untouched), `missing_source` (project folder or
-  `.aep` gone). The status bar re-checks off the GUI thread when Zenvi becomes
-  the active app and every 30 s while the project has linked files, and
-  offers **Re-render**.
+  `.aep` gone). Zenvi re-checks off the GUI thread when it becomes the active
+  app and every 30 s while the project has linked files; a pill on the main
+  toolbar then says **N linked clips changed — Re-render** (the themes hide
+  the status bar, so render progress with **Cancel** and short results show
+  in the same pill).
 * **Undo:** adding a linked clip (file + clip), re-rendering (the media swap
   for every clip of the file), editing props and unlinking are each one undo
-  step. Re-rendering several stale clips from the status bar is one step.
+  step. Re-rendering several stale clips from the toolbar pill is one step.
   A refused, failed or cancelled operation adds nothing.
 
 ### The alpha rule
@@ -198,7 +200,7 @@ opens) and says how to connect otherwise.
 
 Renders block the tool call on its worker thread (like
 `add_animated_title_tool`); while they run, a job keyed by the file id makes
-`get_linked_clip_tool` report `rendering` and the status bar show progress
+`get_linked_clip_tool` report `rendering` and the toolbar pill show progress
 with Cancel. The packages add `export_to_after_effects_tool`,
 `send_to_after_effects_tool`, `export_to_premiere_tool`,
 `send_to_premiere_tool`, `import_timeline_xml_tool`,
@@ -212,5 +214,5 @@ with Cancel. The packages add `export_to_after_effects_tool`,
   (`tests/handoff_fakes.py`: the `linked` fixture, `FakeProvider`,
   `FakeProbe`, `FakeHost` — a loopback Zenvi Link host on port 0 — and
   `write_discovery`).
-* Real Qt (menus, status bar, props dialog):
+* Real Qt (menus, toolbar pill, props dialog):
   `QT_QPA_PLATFORM=offscreen ZENVI_REAL_QT=1 PYTHONPATH=$HOME/zenvi-deps-1.0/python .venv/bin/python -m pytest tests/test_handoff_ui_qt.py -q`
