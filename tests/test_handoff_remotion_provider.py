@@ -270,3 +270,15 @@ def test_studio_that_dies_reports_its_output(project, monkeypatch, tmp_path):
     runtime = NodeRuntime(node=sys.executable, npm=(), npx=(), version="22.0.0")
     with pytest.raises(lm.LinkError, match="stopped before it was ready.*in use"):
         studio.open_studio(project, "TitleCard", open_browser=False, runtime=runtime, timeout=20)
+
+
+def test_the_package_registers_its_provider_and_menu_entries():
+    import importlib
+    from classes.handoff import ui_registry
+    import classes.handoff.remotion as package
+    importlib.reload(package)
+    assert isinstance(lm.provider_for("remotion"), provider.RemotionProvider) and lm.supports_studio("remotion")
+    imports = {a.id: a for a in ui_registry.import_actions()}
+    exports = {a.id: a for a in ui_registry.export_actions()}
+    assert imports["remotion"].label == exports["remotion"].label == "Remotion Project..."
+    assert imports["remotion"].order == exports["remotion"].order == 30

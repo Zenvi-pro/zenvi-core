@@ -23,13 +23,32 @@ copy installed in the user's project.
 
 from __future__ import annotations
 
-from classes.handoff import linked_media
+from classes.handoff import linked_media, ui_registry
 from classes.handoff.remotion.provider import RemotionProvider
+
+ACTION_ID = "remotion"
+MENU_ORDER = 30
+
+
+def _import_action(window) -> None:
+    from classes.handoff.remotion import dialogs
+    dialogs.import_remotion_project(window)
+
+
+def _export_action(window) -> None:
+    from classes.handoff.remotion import dialogs
+    dialogs.export_remotion_project(window)
 
 
 def register() -> None:
-    """Register the Remotion link provider (idempotent; done at import)."""
+    """Register the Remotion provider and menu entries (idempotent; done at import)."""
     linked_media.register_provider(RemotionProvider())
+    ui_registry.register_import_action(
+        ACTION_ID, "Remotion Project...", _import_action, order=MENU_ORDER,
+        tooltip="Bring a Remotion project in: its compositions as linked clips, or a Zenvi export as native clips")
+    ui_registry.register_export_action(
+        ACTION_ID, "Remotion Project...", _export_action, order=MENU_ORDER,
+        tooltip="Write the timeline as a Remotion project that renders it and comes back to Zenvi losslessly")
 
 
 register()

@@ -25,6 +25,7 @@
     "src/classes/handoff/plugins.py",
     "src/classes/handoff/remotion/__init__.py",
     "src/classes/handoff/remotion/detect.py",
+    "src/classes/handoff/remotion/dialogs.py",
     "src/classes/handoff/remotion/exporter.py",
     "src/classes/handoff/remotion/helper.py",
     "src/classes/handoff/remotion/importer.py",
