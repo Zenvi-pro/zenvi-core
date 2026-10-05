@@ -85,7 +85,8 @@ The import is one step in Premiere's own undo history. Nothing changes in the Ze
 | Stereo audio | Premiere's exploded track pairs (A1/A2), linked to the video item |
 | Mono audio | Its own mono track (a mono voice-over beside stereo music gets one, so it plays in both speakers) |
 | A clip that plays one channel (*Separate Audio > each channel*, `channel_filter`) | A mono item of that source channel on a mono track (Premiere centres it) |
-| Video with an alpha channel (ProRes 4444, Animation, PNG, VP9 alpha) | `alphatype straight`, so Premiere keeps the transparency (ffprobe checks the stream at export) |
+| Video with an alpha channel (ProRes 4444, Animation, PNG, VP9 alpha) | `alphatype straight`, so Premiere keeps the transparency. ffprobe reads each file's stream header once at export, with progress and Cancel; files it cannot check stay opaque and are listed in one warning |
+| WebM with VP8 / VP9 alpha | Exported with its real alpha, because Premiere reads it. Zenvi itself shows these files opaque (libopenshot drops VP9 alpha), so the export says Premiere will show transparency that Zenvi does not |
 | Titles | Transparent PNG stills, `alphatype straight`, named without `.svg`, rendered at the largest size they are shown (a title scaled up, or a 1080p title in a 4K project), so Premiere never enlarges a small PNG |
 | Media paths | `file://localhost/` URLs, percent-encoded (spaces, Unicode), `C%3a` for drive letters, `file://server/share` for UNC paths |
 
@@ -119,8 +120,11 @@ In Zenvi, use **File > Import Project > Premiere Pro XML...** (or *Import XML (F
 | --- | --- |
 | Clip items and trims | Clips with the same position, start and end (snapped to the project's frames) |
 | Linked video + audio with the same timing | One clip. J/L cuts become a video-only and an audio-only clip |
-| Linked audio items playing the channels of one file (FCP7 / Resolve stereo pairs, Premiere dual mono) | One clip, not one per channel |
-| A lone mono item taken from one channel of a stereo file | A clip that plays only that channel (`channel_filter`; libopenshot plays it on that channel's side, Premiere centres it) |
+| Linked audio items playing the channels of one file, in the same state (FCP7 stereo pairs, Premiere dual mono) | One clip that plays the whole file |
+| The same, but one channel off, on a muted track or at another level | Separate clips, each playing its own channel (`channel_filter`), so a disabled camera mic stays silent |
+| One item per stereo clip from its first channel (DaVinci Resolve, FCP7) | The whole file |
+| A lone mono item of one channel (Premiere `premiereChannelType="mono"`, or a second channel) | A clip that plays only that channel (`channel_filter`; libopenshot plays it on that channel's side, Premiere centres it) |
+| Zenvi's own *Separate Audio > each channel* clips | Come back as they were: the picture silent, each channel its own clip with its own level |
 | A video item without linked audio | The clip's audio is off (Premiere played none) |
 | Disabled clips, turned-off or muted tracks | Clips with video off (hidden) or audio off (muted): nothing is lost |
 | Cross Dissolve (and other video transitions, with a warning) | A Zenvi fade transition over the same frames with a straight-line ramp, so it looks like Premiere's. The two clips overlap on one track, like Zenvi's own crossfades |
@@ -175,6 +179,9 @@ version wrote scale relative to the fit size and centres in pixels; Zenvi still 
 - FCP7's own `FCPCurve` (bezier) keyframes are read as straight lines.
 - Mono items taken from one channel of a stereo file come back playing that channel on its own side (libopenshot's
   `channel_filter`); Premiere plays a mono item in both speakers.
+- An XML whose writer links nothing (no `<link>` anywhere) is matched by timing: a picture takes a sound item of the
+  same file and timing, but never a single channel; channel items of one file stay separate clips.
+- WebM (VP9) alpha shows in Premiere but not in Zenvi's own preview (see above).
 - Landing a large import holds the editor for a moment, because libopenshot updates its timeline once per clip.
   The import runs as one preview batch (playback caching off, one redraw at the end): on a loaded 8 GB Mac, 14
   clips took 4–9 s, against 11–17 s without it.
@@ -184,7 +191,7 @@ version wrote scale relative to the fit size and centres in pixels; Zenvi still 
 
 Before you start: in Premiere, set *Preferences > Media > Default Media Scaling* to **None** (the XML carries each
 clip's scale). For steps 9–11, install the Zenvi Link panel (`zenvi adobe install`) and open it with Window >
-Extensions > Zenvi Link. Steps 15–23 check what only a real Premiere can confirm, highest risk first.
+Extensions > Zenvi Link. Steps 15–26 check what only a real Premiere (or Resolve) can confirm, highest risk first.
 
 1. In Zenvi, make a 1080p 30 fps timeline: two clips with a 1 s Fade between them on track 1; a PNG logo on
    track 2 with eased location keyframes, a scale change and a 0.5 s fade in; a title on track 3; a clip at 2x
@@ -254,6 +261,15 @@ Extensions > Zenvi Link. Steps 15–23 check what only a real Premiere can confi
     clip (delete the camera-mic channel). Export.
     **Pass:** in Premiere the voice-over is on a mono track and plays in both speakers; the music is on a stereo
     pair; only the lav channel of the interview plays.
+24. Put a WebM with VP9 transparency (for example a Remotion overlay rendered to WebM) over a video and export.
+    **Pass:** the export report says Zenvi shows it opaque and Premiere will show its transparency; in Premiere the
+    video shows through it.
+25. In DaVinci Resolve, export a timeline with stereo clips as FCP 7 XML and import it in Zenvi with File > Import
+    Project > Import XML (Final Cut Pro).
+    **Pass:** every stereo clip plays both channels (nothing comes in as "left channel only").
+26. In Premiere, split a stereo interview into dual mono (A1 lav, A2 camera mic), disable the camera-mic item, export
+    Final Cut Pro XML and import it in Zenvi.
+    **Pass:** the lav plays alone (one channel), the camera mic comes in muted.
 
 ## Tests
 
