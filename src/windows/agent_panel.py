@@ -336,15 +336,6 @@ class AgentPanel(QFrame):
     def _chat(self):
         return getattr(self.window, "dockAIChat", None)
 
-    def _has_models(self, backend_id):
-        """Whether the chat's model pill offers anything for *backend_id*."""
-        try:
-            from windows.agent_runners import models_for_backend
-            return bool(models_for_backend(backend_id))
-        except Exception:
-            log.debug("model lineup unavailable", exc_info=True)
-            return False
-
     def _state_for(self, backend_id, detected):
         """(color, word, desc, connect, danger, tooltip) for one backend."""
         if backend_id not in CLI_BINARIES:
@@ -420,10 +411,7 @@ class AgentPanel(QFrame):
                     backend_id, status.get(backend_id))
                 row.set_state(backend_id == active, color, word, desc, connect, danger, tip)
 
-            if active in CLI_BINARIES and not self._has_models(active):
-                self.footer.setText(self._tr("This agent uses the model from its own config"))
-            else:
-                self.footer.setText(self._tr("Model is set in the chat panel  →"))
+            self.footer.setText(self._tr("Model is set in the chat panel  →"))
         finally:
             self._refreshing = False
 

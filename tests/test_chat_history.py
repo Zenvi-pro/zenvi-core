@@ -307,3 +307,34 @@ def test_a_draft_that_was_actually_used_is_kept(store):
     store.record_message("s1", "user", "worth keeping")
     assert store.discard_empty_bucket(draft) == 0
     assert len(store.load_sessions(draft)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Agent handoff markers (#136)
+# ---------------------------------------------------------------------------
+
+def test_handoff_markers_survive_a_restart(store):
+    store.upsert_session("s1", "P1", backend="codex", handoff_seen='{"zenvi": 4}')
+    store.upsert_session("s1", "P1", title="later")          # None leaves it alone
+    assert store.load_sessions("P1")[0]["handoff_seen"] == '{"zenvi": 4}'
+    store.update_session("s1", handoff_seen='{"zenvi": 4, "codex": null}')
+    store.close()                                             # "restart"
+    assert store.load_sessions("P1")[0]["handoff_seen"] == '{"zenvi": 4, "codex": null}'
+
+
+def test_a_database_from_before_handoff_markers_is_upgraded(store, tmp_path):
+    import sqlite3
+    store.close()
+    conn = sqlite3.connect(str(tmp_path / "chat_history.db"))
+    conn.executescript(store._SCHEMA_V1)
+    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute("INSERT INTO meta VALUES ('schema_version', '1')")
+    conn.execute("INSERT INTO sessions (session_id, project_key, created_at, updated_at) "
+                 "VALUES ('old', 'P1', 't', 't')")
+    conn.commit()
+    conn.close()
+
+    rows = store.load_sessions("P1")
+    assert rows[0]["session_id"] == "old" and rows[0]["handoff_seen"] is None
+    store.update_session("old", handoff_seen='{"zenvi": 1}')
+    assert store.load_sessions("P1")[0]["handoff_seen"] == '{"zenvi": 1}'

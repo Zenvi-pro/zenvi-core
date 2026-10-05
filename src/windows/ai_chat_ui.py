@@ -1019,6 +1019,7 @@ class AIChatWindow(QDockWidget):
                     "backend": backend,
                     "agent_mode": entry.get("agent_mode", "agent"),
                     "current_plan": None,
+                    "seen_seq": self._seen_from_row(entry),
                 }
                 self._persist_session(sid)
 
@@ -1260,6 +1261,10 @@ class AIChatWindow(QDockWidget):
                 "cli_cwd": getattr(old_worker, "_cli_cwd", "") or "",
             }
         restore = parked.pop(backend, None)
+        if restore is None and backend != BACKEND_ZENVI:
+            # No conversation of its own to resume (first visit, or a restart
+            # dropped the parked one): it starts new and needs every turn.
+            sess["seen_seq"].pop(backend, None)
         worker, thread = self._make_worker(session_id, backend, restore=restore)
         sess["worker"] = worker
         sess["thread"] = thread
@@ -1832,7 +1837,17 @@ class AIChatWindow(QDockWidget):
             cli_session_id=fields.get("cli_session_id"),
             cli_started=fields.get("cli_started"),
             cli_cwd=fields.get("cli_cwd"),
+            handoff_seen=json.dumps(sess["seen_seq"]) if sess.get("seen_seq") else None,
         )
+
+    @staticmethod
+    def _seen_from_row(row: dict) -> dict:
+        """A stored session row's handoff markers (see _handoff_prefix)."""
+        try:
+            seen = json.loads(row.get("handoff_seen") or "{}")
+        except Exception:
+            return {}
+        return seen if isinstance(seen, dict) else {}
 
     def _record_message(self, session_id: str, role: str, text: str) -> None:
         """Persist one final message. Never let a store failure break a turn."""
@@ -2476,10 +2491,10 @@ class AIChatWindow(QDockWidget):
         """Recap of the turns the active backend missed because the tab was on
         another agent (Zenvi <-> a local harness each keep their own memory).
 
-        Only tabs that switched backend this run carry ``seen_seq``; a backend
-        absent from it has seen nothing yet, and one mapped to None is caught
-        up (see _on_response_ready). ponytail: not persisted, so a restart
-        forgets the switch (the harness's own --resume still holds).
+        Only tabs that ever switched backend carry ``seen_seq`` (stored with
+        the tab, so a restart keeps it); a backend absent from it has seen
+        nothing yet, and one mapped to None is caught up (see
+        _on_response_ready).
         """
         seen = sess.get("seen_seq")
         backend = sess.get("backend", BACKEND_ZENVI)
@@ -4132,8 +4147,10 @@ class AIChatWindow(QDockWidget):
             # It answered, so it has the handoff recap: stop sending it. Not at
             # send time, because a turn that fails never reached the agent.
             seen = self._sessions[sid].get("seen_seq")
-            if seen:
-                seen[self._sessions[sid].get("backend", BACKEND_ZENVI)] = None
+            backend = self._sessions[sid].get("backend", BACKEND_ZENVI)
+            if seen and seen.get(backend, 0) is not None:
+                seen[backend] = None
+                self._persist_session(sid)
             if sid == self._active_sid:
                 self._sessions[sid]["unread"] = False
             else:

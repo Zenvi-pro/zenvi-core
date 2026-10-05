@@ -1932,6 +1932,7 @@ class ClaudeCodeRunner(BaseAgentRunner):
     BACKEND_ID = BACKEND_CLAUDE
     register = staticmethod(register_claude)
     list_models = staticmethod(probe_claude_models)
+    STDIN = subprocess.PIPE
 
     # Built-in fallback lineup, used until the installed CLI has listed its
     # own (see ``models_for_backend``). ``rank`` orders the picker, ``featured`` decides
@@ -1972,14 +1973,17 @@ class ClaudeCodeRunner(BaseAgentRunner):
     def _build_argv(self, text: str):
         cfg = _write_claude_mcp_config(self._server)
         argv = [
-            self._cli_path or self.CLI_NAME, "-p", text,
+            # No prompt argument: `-p` reads it from stdin (_after_launch).
+            self._cli_path or self.CLI_NAME, "-p",
             "--output-format", "stream-json", "--verbose", "--include-partial-messages",
             "--mcp-config", cfg, "--strict-mcp-config",
             # The agent is driving the editor on the user's behalf from inside
             # the app ΓÇö there is no terminal to answer a permission prompt, so
             # a prompt would just hang the turn until it times out.
             "--dangerously-skip-permissions",
-            "--append-system-prompt", _claude_code_system_prompt(),
+            # From a file, like the prompt on stdin: npm installs Claude Code as
+            # claude.cmd, and cmd.exe cuts a command line at its first newline.
+            "--append-system-prompt-file", _write_claude_system_prompt(),
         ]
         argv += _add_dir_args()
         if self._model_id:
@@ -1989,6 +1993,9 @@ class ClaudeCodeRunner(BaseAgentRunner):
         else:
             argv += ["--session-id", self._cli_session_id]
         return argv
+
+    def _after_launch(self, text: str):
+        self._send_prompt_on_stdin(text or "")
 
     def _handle_event(self, ev: dict):
         etype = ev.get("type")
@@ -2895,6 +2902,14 @@ def _write_claude_mcp_config(server) -> str:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as fh:
         json.dump(cfg, fh)
+    return path
+
+
+def _write_claude_system_prompt() -> str:
+    """Write Claude's appended system prompt to a file and return its path."""
+    path = os.path.abspath(os.path.join(_agent_mcp_dir(), "claude_system_prompt.txt"))
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(_claude_code_system_prompt())
     return path
 
 

@@ -42,7 +42,7 @@ from classes.logger import log
 # Module-level so tests can point it at a tmp path (cf. agent_gap_log.GAP_LOG_PATH).
 CHAT_DB_PATH = os.path.join(info.USER_PATH, "chat_history.db")
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _lock = threading.RLock()
 _conn = None
@@ -119,6 +119,11 @@ def _migrate(conn) -> None:
     if version < 1:
         conn.executescript(_SCHEMA_V1)
         version = 1
+    if version < 2:
+        # JSON {backend: last message seq it saw | null}: which turns each
+        # agent missed while the tab was on another one (see handoff_recap).
+        conn.execute("ALTER TABLE sessions ADD COLUMN handoff_seen TEXT")
+        version = 2
 
     conn.execute(
         "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
@@ -197,7 +202,7 @@ def close() -> None:
 
 _SESSION_FIELDS = (
     "project_key", "project_path", "title", "backend",
-    "agent_mode", "cli_session_id", "cli_started", "cli_cwd",
+    "agent_mode", "cli_session_id", "cli_started", "cli_cwd", "handoff_seen",
 )
 
 

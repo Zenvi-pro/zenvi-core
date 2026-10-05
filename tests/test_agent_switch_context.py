@@ -125,3 +125,36 @@ def test_the_recap_is_resent_until_the_harness_answers(window_cls, history):
     history.append({"seq": 3, "role": "user", "content": "add music"})
     window_cls._set_session_backend(win, "s1", "zenvi")
     assert sess["seen_seq"]["codex"] == 3
+
+
+def test_a_harness_with_no_conversation_to_resume_gets_the_whole_recap(window_cls, history):
+    """After a restart (or a first visit) the CLI starts a new conversation, so
+    an old "seen up to" marker would hide turns it no longer has."""
+    sess = {"backend": "zenvi", "worker": MagicMock(), "thread": MagicMock(),
+            "seen_seq": {"codex": 2}}
+    win = _window(window_cls, sess, history)
+    window_cls._set_session_backend(win, "s1", "codex")       # nothing parked
+    assert "codex" not in sess["seen_seq"]
+    assert "cut the intro" in window_cls._handoff_prefix(win, sess)
+
+    # ...but one whose conversation is parked on the tab keeps its marker.
+    sess.update(backend="zenvi", seen_seq={"codex": 2},
+                cli_parked={"codex": {"cli_session_id": "t1", "cli_started": True, "cli_cwd": ""}})
+    window_cls._set_session_backend(win, "s1", "codex")
+    assert sess["seen_seq"]["codex"] == 2
+
+
+def test_handoff_markers_are_stored_with_the_tab_and_read_back(window_cls, history, monkeypatch):
+    from classes import chat_history
+    saved = {}
+    monkeypatch.setattr(chat_history, "upsert_session",
+                        lambda sid, key, **fields: saved.update(fields))
+    sess = {"backend": "codex", "seen_seq": {"zenvi": 2, "codex": None}}
+    win = _window(window_cls, sess, history)
+    window_cls._persist_session(win, "s1")
+    assert window_cls._seen_from_row({"handoff_seen": saved["handoff_seen"]}) == {
+        "zenvi": 2, "codex": None}
+
+    assert window_cls._seen_from_row({}) == {}
+    assert window_cls._seen_from_row({"handoff_seen": "not json"}) == {}
+    assert window_cls._seen_from_row({"handoff_seen": "[1]"}) == {}

@@ -318,6 +318,9 @@ def test_footer_points_at_the_model_pill_for_every_harness(qapp, monkeypatch):
     connected = {"cursor_cli": {"installed": True, "version": "2026.09.18", "registered": True}}
     assert "chat panel" in _panel(FakeChat(connected, active="cursor_cli")).footer.text()
     assert "chat panel" in _panel(FakeChat(CONNECTED, active=CLAUDE)).footer.text()
+    # Even with nothing listed, the panel never claims the pill is missing.
+    monkeypatch.setattr(ar, "models_for_backend", lambda backend: [])
+    assert "chat panel" in _panel(FakeChat(CONNECTED, active=CODEX)).footer.text()
 
 
 def test_opencode_row_follows_install_and_connect_status(qapp):

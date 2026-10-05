@@ -800,7 +800,7 @@ def test_agent_bash_prompt_covers_heic_and_zsh():
     assert "HEIC" in text
 
 
-def test_claude_argv_appends_system_prompt(qapp, monkeypatch):
+def test_claude_argv_appends_system_prompt(qapp, monkeypatch, tmp_path):
     import windows.agent_runners as ar
     from windows.agent_runners import ClaudeCodeRunner, _claude_code_system_prompt
 
@@ -808,9 +808,12 @@ def test_claude_argv_appends_system_prompt(qapp, monkeypatch):
     runner = ClaudeCodeRunner()
     runner._session_id = "s7"
     runner._cli_session_id = "s7"
+    monkeypatch.setattr(ar, "_agent_mcp_dir", lambda: str(tmp_path))
     argv = runner._build_argv("hi")
-    assert "--append-system-prompt" in argv
-    prompt = argv[argv.index("--append-system-prompt") + 1]
+    # From a file: the prompt is many lines, and an npm install's claude.cmd
+    # would cut the whole command line at the first of them.
+    with open(argv[argv.index("--append-system-prompt-file") + 1], encoding="utf-8") as fh:
+        prompt = fh.read()
     assert prompt == _claude_code_system_prompt()
     assert "ingest_web_video_tool" in prompt
     assert "ToolSearch" in prompt
@@ -2328,14 +2331,12 @@ def test_hermes_tool_names(title, name):
 
 def test_only_clis_that_are_written_to_keep_stdin_open(qapp):
     """A CLI nobody writes to gets no stdin (``opencode run`` blocks on one).
-    Hermes speaks ACP on it; Codex and Cursor take their prompt from it."""
+    Hermes speaks ACP on it; Claude Code, Codex and Cursor take their prompt
+    from it."""
     import subprocess
-    from windows.agent_runners import (
-        CLI_RUNNERS, CodexRunner, CursorCliRunner, HermesRunner,
-    )
-    piped = (HermesRunner, CodexRunner, CursorCliRunner)
+    from windows.agent_runners import CLI_RUNNERS, OpenCodeRunner
     for backend, runner in CLI_RUNNERS.items():
-        expected = subprocess.PIPE if runner in piped else subprocess.DEVNULL
+        expected = subprocess.DEVNULL if runner is OpenCodeRunner else subprocess.PIPE
         assert runner.STDIN == expected, backend
 
 
@@ -2663,3 +2664,37 @@ def test_hermes_sets_the_picked_model_before_prompting(qapp, fresh_cursor_lineup
     runner._handle_event({"jsonrpc": "2.0", "id": set_model["id"], "result": {}})
     prompt = _sent(runner)[-1]
     assert prompt["method"] == "session/prompt" and prompt["params"]["sessionId"] == "s1"
+
+
+def test_claude_command_line_survives_a_cmd_launcher(qapp, monkeypatch, tmp_path):
+    """npm installs Claude Code as claude.cmd, and cmd.exe cuts a command line
+    at its first newline: nothing multi-line may travel in argv."""
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_write_claude_mcp_config", lambda server: "/tmp/cfg.json")
+    monkeypatch.setattr(ar, "_agent_mcp_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: [])
+    runner = ar.ClaudeCodeRunner()
+    runner._cli_session_id = "s1"
+    prompt = "[Editor snapshot]\nclips: 0\n\nmake a cut"
+    argv = runner._build_argv(prompt)
+    assert "-p" in argv and prompt not in argv
+    assert not [a for a in argv if "\n" in a]
+
+    class _Raw:
+        data, closed = "", False
+
+        def write(self, text):
+            self.data += text
+
+        def close(self):
+            self.closed = True
+
+    import time
+    runner._proc = types.SimpleNamespace(stdin=_Raw())
+    runner._after_launch(prompt)
+    for _ in range(200):
+        if runner._proc.stdin.closed:
+            break
+        time.sleep(0.01)
+    assert runner._proc.stdin.data == prompt and runner._proc.stdin.closed
