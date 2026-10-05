@@ -18,8 +18,8 @@ import re
 from typing import Any, Dict, Optional, Tuple
 
 from qt_api import (
-    QCheckBox, QColor, QColorDialog, QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit,
-    QPlainTextEdit, QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
+    QButtonGroup, QCheckBox, QColor, QColorDialog, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel,
+    QLineEdit, QPlainTextEdit, QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from classes.app import get_app
@@ -64,6 +64,18 @@ def parse_props_json(text: str) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("the props must be a JSON object, e.g. {\"title\": \"Hello\"}")
     return value
+
+
+def merge_edited_props(stored: Dict[str, Any], editable: Dict[str, Any], edited: Dict[str, Any]) -> Dict[str, Any]:
+    """The link's new props after the dialog: the stored props, the edited values on top, and
+    the editable keys the user removed (Raw JSON) taken out. Props the provider did not offer
+    for editing are kept; defaults it offered and the user left alone are stored as shown."""
+    out = dict(stored or {})
+    for key in editable or {}:
+        if key not in edited:
+            out.pop(key, None)
+    out.update(edited or {})
+    return out
 
 
 def state_text(state: Optional[str], detail: str = "", tr=lambda s: s) -> str:
@@ -126,13 +138,14 @@ class LinkedClipDialog(QDialog):
     """Edit a linked clip's props; ``props()`` is the full new props object after ``exec_()`` accepts."""
 
     def __init__(self, link: dict, *, check: Optional[dict] = None, name: str = "", can_render: bool = True,
-                 parent=None):
+                 props: Optional[Dict[str, Any]] = None, note: str = "", parent=None):
+        """*props*: what to edit -- the provider's ``editable_props(link)`` (default: the link's props)."""
         super().__init__(parent)
         _ = get_app()._tr
         self._ = _
         self.setObjectName("LinkedClipDialog")
         self.link = dict(link or {})
-        self._props: Dict[str, Any] = dict(self.link.get("props") or {})
+        self._props: Dict[str, Any] = dict(props if props is not None else (self.link.get("props") or {}))
         self._editors: Dict[str, Tuple[str, QWidget]] = {}
         self._result: Optional[Dict[str, Any]] = None
         from classes.handoff.linked_media import kind_label
@@ -159,9 +172,26 @@ class LinkedClipDialog(QDialog):
                 render.get("height") or "?", ("%.3g" % rate) if rate else "?")))
         layout.addLayout(info)
 
+        # Page switch: two checkable buttons over a tab widget whose own tab bar is hidden.
+        # The dark themes style QTabBar tabs as icon-only dock tabs, which clipped the labels
+        # ("Prop", "aw JSO"); buttons size to their text in every theme.
+        switch = QHBoxLayout()
+        switch.setSpacing(4)
+        self.page_buttons = QButtonGroup(self)
+        self.page_buttons.setExclusive(True)
+        for index, text in enumerate((_("Props"), _("Raw JSON"))):
+            button = QPushButton(text)
+            button.setObjectName("propsPage%d" % index)
+            button.setCheckable(True)
+            button.setChecked(index == 0)
+            button.setMinimumWidth(button.fontMetrics().horizontalAdvance(text) + 28)
+            self.page_buttons.addButton(button, index)
+            button.clicked.connect(lambda _checked=False, i=index: self.tabs.setCurrentIndex(i))
+            switch.addWidget(button)
+        switch.addStretch(1)
+        layout.addLayout(switch)
         self.tabs = QTabWidget(self)
-        # "tabWidget": the name the Cosmic theme gives visible horizontal tab labels in dialogs
-        self.tabs.setObjectName("tabWidget")
+        self.tabs.tabBar().hide()
         self.form_page = QWidget()
         self.form = QFormLayout(self.form_page)
         self.tabs.addTab(self.form_page, _("Props"))
@@ -186,6 +216,8 @@ class LinkedClipDialog(QDialog):
             self.apply_button.setEnabled(False)
             self.error_label.setText(_("This Zenvi build cannot render %s links; the clip keeps its last render.")
                                      % kind)
+        elif note:
+            self.error_label.setText(note)
         layout.addWidget(self.buttons)
         self._build_form(self._props)
 
@@ -255,6 +287,9 @@ class LinkedClipDialog(QDialog):
         return out
 
     def _tab_changed(self, index: int) -> None:
+        button = self.page_buttons.button(index)
+        if button is not None and not button.isChecked():
+            button.setChecked(True)
         self.error_label.setText("")
         if index == 1:
             try:
