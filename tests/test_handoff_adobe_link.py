@@ -1,91 +1,11 @@
 """classes.handoff.adobe_link against a real loopback HTTP server (port 0) and a temp discovery dir."""
 
-import base64
-import json
 import os
-import threading
-import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
 from classes.handoff import adobe_link as al
-
-PNG = base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode()
-
-
-class FakeHost:
-    """A Zenvi Link MCP endpoint: SPEC 3.2 subset, configurable per test."""
-
-    def __init__(self, app="aftereffects", token="t0k3n"):
-        self.app = app
-        self.token = token
-        self.sse = False
-        self.calls = []
-        host = self
-
-        class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *args):
-                pass
-
-            def do_POST(self):
-                if self.headers.get("Authorization") != "Bearer " + host.token:
-                    self.send_response(401)
-                    self.send_header("WWW-Authenticate", "Bearer")
-                    self.end_headers()
-                    return
-                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
-                host.calls.append(body)
-                if "id" not in body:
-                    self.send_response(202)
-                    self.end_headers()
-                    return
-                reply = {"jsonrpc": "2.0", "id": body["id"]}
-                method = body.get("method")
-                if method == "initialize":
-                    reply["result"] = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}},
-                                       "serverInfo": {"name": "zenvi-link-" + host.app, "version": "1.0.0"}}
-                elif method == "tools/list":
-                    reply["result"] = {"tools": [{"name": "ae_get_state", "inputSchema": {"type": "object"}}]}
-                elif method == "tools/call":
-                    reply["result"] = host.call(body["params"]["name"], body["params"].get("arguments") or {})
-                else:
-                    reply["error"] = {"code": -32601, "message": "Method not found"}
-                data = json.dumps(reply).encode()
-                self.send_response(200)
-                if host.sse:
-                    data = b"event: message\ndata: " + data + b"\n\n"
-                    self.send_header("Content-Type", "text/event-stream")
-                else:
-                    self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
-
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
-        self.url = "http://127.0.0.1:%d/mcp" % self.server.server_address[1]
-
-    def call(self, name, args):
-        if name == "slow":
-            time.sleep(float(args.get("seconds") or 2))
-        if name == "ae_fail":
-            receipt = {"contract": 3, "status": "refused", "tool": name, "host": self.app,
-                       "summary": "Error: no active comp", "error": {"code": "NO_ACTIVE_COMP", "message": "x"}}
-            return {"content": [{"type": "text", "text": json.dumps(receipt)}], "structuredContent": receipt,
-                    "isError": True}
-        receipt = {"contract": 3, "status": "ok", "tool": name, "host": self.app, "summary": "State read",
-                   "data": {"args": args}, "warnings": [], "undoSteps": 0}
-        content = [{"type": "text", "text": json.dumps(receipt)}]
-        if name == "ae_capture_frame":
-            content.append({"type": "image", "data": PNG, "mimeType": "image/png"})
-        return {"content": content, "structuredContent": receipt, "isError": False}
-
-    def stop(self):
-        self.server.shutdown()
-        self.server.server_close()
-
+from handoff_fakes import FakeHost, write_discovery
 
 @pytest.fixture
 def host(tmp_path):
@@ -94,17 +14,8 @@ def host(tmp_path):
     fake.stop()
 
 
-def _discover(tmp_path, host, *, app="aftereffects", pid=None, url=None, token=None, last_active="2026-10-04T21:05:12Z"):
-    link = tmp_path / "link"
-    link.mkdir(exist_ok=True)
-    token_file = link / (app + ".token")
-    token_file.write_text(token if token is not None else host.token)
-    os.chmod(token_file, 0o600)
-    data = {"url": url or host.url, "token_file": str(token_file), "pid": pid or os.getpid(), "project": "/x/p.aep",
-            "version": "1.0.0", "app": app, "app_name": "Adobe After Effects 2026", "app_version": "26.3.0",
-            "protocol": 1, "started_at": "2026-10-04T21:00:00Z", "last_active_at": last_active}
-    (link / (app + ".json")).write_text(json.dumps(data))
-    return str(tmp_path)
+def _discover(tmp_path, host, **kwargs):
+    return write_discovery(str(tmp_path), host, **kwargs)
 
 
 def test_no_discovery_files_means_nothing_connected(tmp_path):

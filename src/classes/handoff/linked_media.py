@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Tuple, runtime_checkable
 
+from classes.assets import path_is_under
 from classes.logger import log
 
 LINK_KEY = "zenvi_link"
@@ -984,8 +985,12 @@ def render_link(link: dict, *, on_progress: Optional[ProgressFn] = None,
                             "media must be ProRes 4444, H.264 or qtrle (libopenshot drops WebM alpha)")
         ext = os.path.splitext(produced)[1] or CODEC_EXTENSIONS[codec]
         target = _unique_path(folder, render_file_name(stored, fingerprint, ext))
-        if os.path.dirname(produced) == staging or produced.startswith(staging + os.sep):
+        if path_is_under(produced, staging):
             os.replace(produced, target)
+        elif path_is_under(produced, tempfile.gettempdir()):
+            # a host (After Effects) rendered into the temp folder: the file is ours to take
+            shutil.move(produced, target + ".partial")
+            os.replace(target + ".partial", target)
         else:
             shutil.copy2(produced, target + ".partial")
             os.replace(target + ".partial", target)
@@ -1031,8 +1036,11 @@ def import_linked(link: dict, *, position: Optional[float] = None, track: Option
 
 
 def rerender_linked(file_id: str, *, props: Optional[dict] = None, on_progress: Optional[ProgressFn] = None,
-                    should_cancel: Optional[CancelFn] = None) -> dict:
+                    should_cancel: Optional[CancelFn] = None, replace_props: bool = False) -> dict:
     """Re-render a linked file from its source (with *props* merged in) and swap the media: ONE undo step.
+
+    *replace_props* uses *props* as the complete new props instead of merging
+    (the props dialog, where keys can be removed).
 
     Registers a ``handoff.jobs`` job keyed by the file id while it renders
     (``link_state`` reports ``rendering``; the status bar shows it). A failed
@@ -1046,7 +1054,7 @@ def rerender_linked(file_id: str, *, props: Optional[dict] = None, on_progress: 
     if props is not None:
         if not isinstance(props, dict):
             raise LinkError("props must be an object")
-        link["props"] = dict(link_props(link), **props)
+        link["props"] = dict(props) if replace_props else dict(link_props(link), **props)
     kind = str(link.get("kind") or "")
     label = "Rendering %s" % ((link.get("source") or {}).get("composition") or kind_label(kind))
     if jobs.job_for(str(file_id)) is not None:
@@ -1078,13 +1086,6 @@ def rerender_linked(file_id: str, *, props: Optional[dict] = None, on_progress: 
 # ---------------------------------------------------------------------------
 # Save: adopt renders of an unsaved project into its assets folder
 # ---------------------------------------------------------------------------
-
-def _under(path: str, root: str) -> bool:
-    try:
-        return os.path.commonpath([os.path.abspath(path), os.path.abspath(root)]) == os.path.abspath(root)
-    except ValueError:
-        return False
-
 
 def adopt_linked_renders(files: List[dict], clips: List[dict], project_file_path: str,
                          previous_path: Optional[str] = None) -> List[Tuple[str, str]]:
@@ -1123,9 +1124,9 @@ def adopt_linked_renders(files: List[dict], clips: List[dict], project_file_path
             f["path"] = remap[abs_src]
             id_to_new[str(f.get("id"))] = remap[abs_src]
             continue
-        if not src or "%" in src or not os.path.isfile(src) or _under(src, new_root):
+        if not src or "%" in src or not os.path.isfile(src) or path_is_under(src, new_root):
             continue
-        match = next(((root, m) for root, m in sources if _under(src, root)), None)
+        match = next(((root, m) for root, m in sources if path_is_under(src, root)), None)
         if match is None:
             continue
         root, mode = match

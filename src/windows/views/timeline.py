@@ -2017,6 +2017,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
                 menu.addMenu(Slice_Menu)
 
+        # Linked Source (a clip rendered from code / an After Effects comp)
+        from windows.linked_source_menu import add_linked_source_menu
+        add_linked_source_menu(self.window, menu, clip.data.get("file_id"), parent=self)
+
         # Properties
         menu.addSeparator()
         menu.addAction(self.window.actionProperties)

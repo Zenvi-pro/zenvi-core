@@ -5850,6 +5850,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # File → Zenvi Cloud: push, open in the web editor, open a cloud project.
         from windows.cloud_sync_ui import install_cloud_menu
         self.cloud_sync = install_cloud_menu(self)
+        # Handoffs (After Effects, Premiere, Remotion, HyperFrames): Export / Import Project
+        # entries, File > Send To, and the linked-clips status bar (classes/handoff).
+        from windows.handoff_menus import install_handoff_menus
+        install_handoff_menus(self)
         self.refresh_comfy_availability_async()
 
         # Add window as watcher to receive undo/redo status updates

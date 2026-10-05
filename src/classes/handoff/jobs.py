@@ -30,6 +30,9 @@ from typing import Any, Callable, Dict, Iterator, List, Optional
 from classes.logger import log
 
 EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="handoff")
+# Short checks (Adobe host discovery, linked-clip freshness) get their own lane so they
+# never wait behind a long render on EXECUTOR.
+CHECK_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="handoff-check")
 
 QUEUED, RUNNING, DONE, FAILED, CANCELLED = "queued", "running", "done", "failed", "cancelled"
 FINISHED_STATES = (DONE, FAILED, CANCELLED)
@@ -75,6 +78,7 @@ class Job:
         self._on_done: Optional[Callable[["Job"], None]] = None
         self._last_progress_emit = 0.0
         self.future: Optional[Future] = None
+        self.quick = False
 
     # -- the work's side ------------------------------------------------------
     def should_cancel(self) -> bool:
@@ -156,6 +160,8 @@ class Job:
 
 
 def _notify(job: Job) -> None:
+    if getattr(job, "quick", False):
+        return
     with _lock:
         listeners = list(_listeners)
     for listener in listeners:
@@ -183,18 +189,21 @@ def _register(job: Job) -> Job:
 
 def submit_job(fn: Callable[[Job], Any], *, label: str, key: Optional[str] = None, kind: str = "",
                on_progress: Optional[Callable[[Job], None]] = None,
-               on_done: Optional[Callable[[Job], None]] = None) -> Job:
+               on_done: Optional[Callable[[Job], None]] = None, quick: bool = False) -> Job:
     """Run ``fn(job)`` on the handoff executor.
 
     ``on_progress(job)`` follows ``job.report`` calls (throttled) and
     ``on_done(job)`` runs once when it ends -- both on the GUI thread. Read
     ``job.state`` (done / failed / cancelled), ``job.result`` and
     ``job.error`` in ``on_done``. Raising :class:`JobCancelled` (or ending
-    after ``cancel()``) finishes it as cancelled.
+    after ``cancel()``) finishes it as cancelled. *quick* work (a probe or a
+    freshness check, seconds at most) runs on :data:`CHECK_EXECUTOR` and is
+    not listed as a running job.
     """
-    job = _register(Job(label, key=key, kind=kind))
+    job = Job(label, key=key, kind=kind) if quick else _register(Job(label, key=key, kind=kind))
     job._on_progress = on_progress
     job._on_done = on_done
+    job.quick = quick
 
     def _run() -> None:
         if job.should_cancel():
@@ -213,7 +222,7 @@ def submit_job(fn: Callable[[Job], Any], *, label: str, key: Optional[str] = Non
                 log.warning("Handoff job %s (%s) failed: %s", job.id, job.label, exc, exc_info=True)
         job._finish(state)
 
-    job.future = EXECUTOR.submit(_run)
+    job.future = (CHECK_EXECUTOR if quick else EXECUTOR).submit(_run)
     return job
 
 
