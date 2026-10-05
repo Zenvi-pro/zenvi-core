@@ -232,3 +232,55 @@ def test_studio_that_never_gets_ready(tmp_path, node, monkeypatch):
     monkeypatch.setattr(hf_cli, "resolve_cli", lambda project_dir=None, **kw: cli)
     with pytest.raises(hf_cli.CliError, match="port in use"):
         hf_cli.start_studio(_project(tmp_path), timeout=10)
+
+
+def test_a_project_cannot_pick_the_programs_hyperframes_runs(tmp_path, node, monkeypatch):
+    """verify-C5-1 #1: HyperFrames applies <cwd>/.env to every key the environment lacks (and looks for
+    <cwd>/.hyperframes/bin/ffprobe), and `timeline` runs in the project folder and probes media: the project
+    could make Import run a program of its own. Zenvi's ffmpeg / ffprobe are pinned for every command and
+    every key of the folder's .env is already present, so HyperFrames' loader applies none of them."""
+    proj = _project(tmp_path, "0.8.126")
+    open(os.path.join(proj, ".env"), "w").write(
+        "# set by the project\nHYPERFRAMES_FFPROBE_PATH=./evil-ffprobe\nexport NODE_OPTIONS=--require ./x.js\n"
+        "HYPERFRAMES_BROWSER_PATH = './chrome'\nPRODUCER_HEADLESS_SHELL_PATH=./shell # comment\n"
+        "HYPERFRAMES_NO_TELEMETRY=0\n=nokey\nnot a line\n")
+    os.makedirs(os.path.join(proj, ".hyperframes", "bin"))
+    open(os.path.join(proj, ".hyperframes", "bin", "ffprobe"), "w").write("#!/bin/sh\ntouch pwned\n")
+    zenvi = {"ffmpeg": str(tmp_path / "zbin" / "ffmpeg"), "ffprobe": str(tmp_path / "zbin" / "ffprobe")}
+    monkeypatch.setattr(hf_cli, "zenvi_ffmpeg", lambda name: zenvi.get(name))
+    monkeypatch.delenv("NODE_OPTIONS", raising=False)
+    monkeypatch.delenv("HYPERFRAMES_BROWSER_PATH", raising=False)
+    monkeypatch.delenv("PRODUCER_HEADLESS_SHELL_PATH", raising=False)
+    assert hf_cli.dotenv_keys(proj) == ["HYPERFRAMES_FFPROBE_PATH", "NODE_OPTIONS", "HYPERFRAMES_BROWSER_PATH",
+                                        "PRODUCER_HEADLESS_SHELL_PATH", "HYPERFRAMES_NO_TELEMETRY"]
+    seen = []
+
+    def fake_run(argv, cwd, env=None, timeout=None, on_line=None, should_cancel=None, runtime=None):
+        seen.append((list(argv), cwd, dict(env)))
+        out = argv[argv.index("--output") + 1] if "--output" in argv else None
+        if out:
+            open(out, "wb").write(b"x")
+        on_line(json.dumps({"ok": True, "timeline": {"tracks": []}}))
+        return 0, ""
+    monkeypatch.setattr(node_runtime, "run_node", fake_run)
+    cli = hf_cli.Cli((sys.executable, "hf.mjs"), "0.8.126", "env", node)
+    hf_cli.timeline(proj, cli=cli)
+    hf_cli.lint(proj, cli=cli)
+    hf_cli.render(proj, "index.html", str(tmp_path / "r.mov"), fmt="mov", cli=cli)
+    assert [cwd for _a, cwd, _e in seen] == [proj, hf_cli.work_dir(), hf_cli.work_dir()]
+    for _argv, _cwd, env in seen:
+        assert env["HYPERFRAMES_FFPROBE_PATH"] == zenvi["ffprobe"]           # absolute, Zenvi's own
+        assert env["HYPERFRAMES_FFMPEG_PATH"] == zenvi["ffmpeg"]
+        assert env["HYPERFRAMES_NO_TELEMETRY"] == "1"
+    timeline_env = seen[0][2]
+    for key in hf_cli.dotenv_keys(proj):                                       # HyperFrames: `!(key in env)`
+        assert key in timeline_env
+    assert timeline_env["NODE_OPTIONS"] == "" and timeline_env["HYPERFRAMES_BROWSER_PATH"] == ""
+
+
+def test_no_ffprobe_of_zenvis_own_means_no_cli_timeline(tmp_path, node, monkeypatch):
+    monkeypatch.setattr(hf_cli, "zenvi_ffmpeg", lambda name: None)
+    monkeypatch.setattr(node_runtime, "run_node", lambda *a, **k: pytest.fail("the CLI must not run"))
+    cli = hf_cli.Cli((sys.executable, "hf.mjs"), "0.8.126", "env", node)
+    with pytest.raises(hf_cli.CliError, match="no ffprobe of its own"):
+        hf_cli.timeline(_project(tmp_path), cli=cli)

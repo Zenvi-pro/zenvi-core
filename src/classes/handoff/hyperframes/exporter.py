@@ -1097,7 +1097,8 @@ def _install(staging: str, plan: OutputPlan) -> List[str]:
     previous = plan.previous or {}
     for rel in written + [MANIFEST]:
         dst = os.path.join(target, *rel.split("/"))
-        if rel != MANIFEST and os.path.lexists(dst) and rel not in previous:
+        if rel != MANIFEST and os.path.lexists(dst) and rel not in previous and \
+                not _same_file_as_previous(dst, rel, previous, target):
             raise ExportError(f"{rel} in {target} is not from Zenvi's earlier export; move it away or export to a "
                               "new folder")
     backup = tempfile.mkdtemp(prefix=".zenvi-export-old-", dir=os.path.dirname(target))
@@ -1139,6 +1140,18 @@ def _install(staging: str, plan: OutputPlan) -> List[str]:
             shutil.rmtree(backup, ignore_errors=True)
     _prune_empty(os.path.join(target, ASSETS))
     return written
+
+
+def _same_file_as_previous(dst: str, rel: str, previous: Dict[str, dict], target: str) -> bool:
+    """On a case-insensitive disk (APFS, NTFS) ``assets/Clip.mp4`` IS the earlier export's ``assets/clip.mp4``."""
+    for prev in previous:
+        if prev != rel and prev.lower() == rel.lower():
+            try:
+                if os.path.samefile(dst, os.path.join(target, *prev.split("/"))):
+                    return True
+            except OSError:
+                continue
+    return False
 
 
 def _prune_empty(folder: str) -> None:

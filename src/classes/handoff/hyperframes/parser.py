@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import html.parser
 import json
+import math
 import os
 import posixpath
 import re
@@ -629,6 +630,48 @@ def _float(value: Any, default: Optional[float] = None) -> Optional[float]:
     return out if out == out and out not in (float("inf"), float("-inf")) else default
 
 
+_JS_DECIMAL = re.compile(r"^[+-]?(?:\d+\.?\d*(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)$")
+_JS_RADIX = re.compile(r"^0([xXoObB])([0-9a-fA-F]+)$")
+
+
+def js_number(value: Any) -> Optional[float]:
+    """JavaScript's ``Number(value)`` for an attribute, as HyperFrames reads it (None for NaN / absent / infinite).
+
+    ``"4"`` -> 4, ``" 4 "`` -> 4, ``""`` -> 0, ``"0x10"`` -> 16, ``"4s"`` -> NaN (None).
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text == "":
+        return 0.0
+    if _JS_DECIMAL.match(text):
+        number = float(text)
+    else:
+        m = _JS_RADIX.match(text)
+        if not m:
+            return None
+        try:
+            number = float(int(m.group(2), {"x": 16, "o": 8, "b": 2}[m.group(1).lower()]))
+        except ValueError:
+            return None
+    return number if math.isfinite(number) else None
+
+
+def authored_seconds(value: Any) -> Optional[float]:
+    """A ``data-duration`` HyperFrames counts: ``Number(v) > 0`` (``"4s"``, ``0`` and negatives do not)."""
+    number = js_number(value)
+    return number if number is not None and number > 0 else None
+
+
+def _ref_targets(clips: Sequence["Clip"]) -> Dict[str, "Clip"]:
+    """What ``data-start="<name>"`` can name: a clip's id, or a composition host's data-composition-id."""
+    out = {c.id: c for c in clips if c.id}
+    for c in clips:
+        if c.kind == "composition" and c.composition_id and c.composition_id not in out:
+            out[c.composition_id] = c
+    return out
+
+
 def _int(value: Any, default: int = 0) -> int:
     try:
         return int(float(str(value).strip()))
@@ -801,7 +844,7 @@ class _Loader:
         height = _int(el.attrs.get("data-height"), 0) or (parent.height if parent else DEFAULT_SIZE[1])
         comp = Composition(
             id=comp_id, file=doc.rel, element=el, document=doc, width=width, height=height,
-            fps=parse_fps(el.attrs.get("data-fps")), authored_duration=_float(el.attrs.get("data-duration")),
+            fps=parse_fps(el.attrs.get("data-fps")), authored_duration=authored_seconds(el.attrs.get("data-duration")),
             variables=[v for v in variables if isinstance(v, dict)] if isinstance(variables, list) else [],
             is_root=is_root, inline=inline, rules=_styles_in(doc), parent=parent, host=host)
         key = comp_id
@@ -843,7 +886,7 @@ class _Loader:
             else:
                 sub = self.build(doc, clip.element, is_root=False, inline=True, parent=comp, host=clip,
                                  chain=chain)
-            if clip.duration is None and _float(clip.element.attrs.get("data-duration")) is None \
+            if clip.duration is None and authored_seconds(clip.element.attrs.get("data-duration")) is None \
                     and sub.duration is not None:
                 clip.duration = sub.duration
                 clip.duration_source = "timeline"
@@ -918,17 +961,17 @@ class _Loader:
 
     # -- timing ---------------------------------------------------------------
     def _resolve_timing(self, comp: Composition) -> None:
-        by_id = {c.id: c for c in comp.clips if c.id}
+        by_id = _ref_targets(comp.clips)
         resolving: List[Clip] = []
 
         def duration_of(c: Clip) -> Optional[float]:
             if c.duration is not None:
                 return c.duration
-            authored = _float(c.element.attrs.get("data-duration"))
-            if authored is not None and authored >= 0:
+            authored = authored_seconds(c.element.attrs.get("data-duration"))
+            if authored is not None:
                 c.duration, c.duration_source = authored, "authored"
                 return c.duration
-            end_attr = _float(c.element.attrs.get("data-end"))
+            end_attr = js_number(c.element.attrs.get("data-end"))
             if end_attr is not None:
                 start = start_of(c)
                 if start is not None and end_attr > start:
@@ -1005,7 +1048,12 @@ def cli_start_trusted(clip: Clip, by_id: Dict[str, Clip], _seen: Optional[Set[in
         return True
     m = _START_REF.match(raw)
     ref = by_id.get(m.group(1)) if m else None
-    if ref is None or _float(ref.element.attrs.get("data-duration")) is None:
+    if ref is None:
+        return False
+    # the CLI counts a duration as HyperFrames does: Number(data-duration) > 0, or data-end after the start
+    end = js_number(ref.element.attrs.get("data-end"))
+    if authored_seconds(ref.element.attrs.get("data-duration")) is None and not (
+            end is not None and ref.start is not None and end > ref.start):
         return False
     seen = _seen if _seen is not None else set()
     if id(ref) in seen:
@@ -1034,7 +1082,7 @@ def _apply_cli_timeline(project: Project, cli_timeline: Any) -> bool:
             ident = str(row.get("elementId") or "") if "elementId" in row else str(row.get("id") or "")
             if ident:
                 rows[ident] = row
-    by_id = {c.id: c for c in project.root.clips if c.id}
+    by_id = _ref_targets(project.root.clips)
     used = False
     untrusted: List[Clip] = []
     for clip in project.root.clips:
@@ -1228,6 +1276,6 @@ __all__ = [
     "HyperFramesError", "Element", "Document", "parse_html", "read_document", "Selector", "parse_selector_list",
     "selector_matches", "Rule", "parse_css", "parse_declarations", "computed_style", "Clip", "Composition",
     "Project", "load_project", "resolve_src", "parse_fps", "attach_tweens", "remaining_visuals",
-    "remaining_visuals_in", "cli_start_trusted", "INDEX",
+    "remaining_visuals_in", "cli_start_trusted", "js_number", "authored_seconds", "INDEX",
     "TIMELINE_SCRIPT_ID", "MEDIA_TAGS",
 ]

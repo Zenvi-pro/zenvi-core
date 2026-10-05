@@ -545,3 +545,25 @@ def test_golden_index_html(tmp_path):
             fh.write(html)
     with open(GOLDEN, encoding="utf-8") as fh:
         assert html == fh.read()
+
+
+def test_re_export_after_a_case_only_rename_of_the_media(tmp_path):
+    """verify-C5-1 #4: on a case-insensitive disk the renamed asset's new name is the old file."""
+    proj = project(tmp_path)
+    res, _s, _h = export(tmp_path, proj)
+    media = str(tmp_path / "media")
+    os.rename(os.path.join(media, "clip.mp4"), os.path.join(media, "tmp.mp4"))
+    os.rename(os.path.join(media, "tmp.mp4"), os.path.join(media, "Clip.mp4"))
+    for f in proj["files"]:
+        if f["id"] == "FV":
+            f["path"] = os.path.join(media, "Clip.mp4")
+    for c in proj["clips"]:
+        if c["file_id"] == "FV":
+            c["reader"]["path"] = os.path.join(media, "Clip.mp4")
+    snap = TimelineSnapshot.from_project(proj, str(tmp_path / "demo.zvn"))
+    again = exporter.export_project(snap, exporter.raw_project(proj), res.output_dir)
+    names = sorted(os.listdir(os.path.join(res.output_dir, "assets")))
+    assert names == ["Clip.mp4"] and again.clips == 1
+    assert sorted(exporter.read_manifest(res.output_dir)["files"]) == ["README.md", "assets/Clip.mp4",
+                                                                     "hyperframes.json", "index.html", "meta.json",
+                                                                     "package.json"]

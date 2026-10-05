@@ -233,6 +233,7 @@ def plan_restore(project: Project, *, target_fps: Optional[Fraction] = None) -> 
                 if isinstance(e, dict):
                     e["id"] = ""
             _apply_edit(dup, extra, written, layers, fps, warnings)
+            _continue_split_image(dup, extra, original, written, fps)
             kept.append(dup)
             restore.copied.append(cid)
     zp["clips"] = kept
@@ -251,6 +252,26 @@ def plan_restore(project: Project, *, target_fps: Optional[Fraction] = None) -> 
         warnings.append(f"the export ran at {float(fps):g} fps and this project at {float(target_fps):g} fps; "
                         "keyframes were rescaled")
     return restore
+
+
+def _continue_split_image(dup: dict, extra: Clip, original: Clip, written: dict, fps: Fraction) -> None:
+    """The second half of an image split in Studio continues where the first ends (its keyframes too).
+
+    Studio's split gives video / audio an in point (``data-playback-start``, which moves the clip's
+    start); an image has none, so a copy that begins exactly where the original now ends is taken as
+    the rest of the split: its clip start advances by how far into the clip it begins.
+    """
+    if extra.kind != "img" or extra.start is None or original.start is None or original.duration is None:
+        return
+    if abs(extra.start - (original.start + original.duration)) > TIME_TOLERANCE:
+        return  # a duplicate somewhere else: it plays from its own beginning
+    rate = float(fps)
+    offset = round((extra.start - float(written.get("start", 0.0))) * rate) / rate
+    if offset <= 0:
+        return
+    length = float(dup.get("end") or 0.0) - float(dup.get("start") or 0.0)
+    dup["start"] = round(float(dup.get("start") or 0.0) + offset, 6)
+    dup["end"] = round(dup["start"] + length, 6)
 
 
 def _original_element(els: List[Clip], cid: str, written: dict) -> Clip:

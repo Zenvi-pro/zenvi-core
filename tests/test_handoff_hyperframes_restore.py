@@ -138,3 +138,24 @@ def test_split_and_duplicated_elements_come_back_as_copies(tmp_path):
     assert (ci["position"], i2["position"]) == (1.0, 5.0)
     assert i2["alpha"] == ci["alpha"] and i2["location_x"] == ci["location_x"]   # the clip's look, copied
     assert any("split or duplicated" in w for w in plan.warnings)
+
+
+def test_the_second_half_of_a_split_image_continues_its_animation(tmp_path):
+    """verify-C5-1 #2: the copy restarted at start 0, so its keyframed slide replayed from frame 1."""
+    def clips(clip, v, i, a, t):
+        return [clip("CI", i, 1000000, 1.0, 0.0, 2.0, location_x=kf((1, -0.4, 1), (61, 0.4, 1)))]
+    res, _snap, html = export(tmp_path, project(tmp_path, clips))
+    index = os.path.join(res.output_dir, "index.html")
+    image = re.search(r'<img id="c-CI"[^>]*/>', html).group(0)
+    first = image.replace('data-duration="2"', 'data-duration="1"')
+    second = (image.replace('id="c-CI"', 'id="c-CI-b"').replace('data-start="1"', 'data-start="2"')
+              .replace('data-duration="2"', 'data-duration="1"'))
+    elsewhere = image.replace('id="c-CI"', 'id="c-CI-c"').replace('data-start="1"', 'data-start="6"')
+    with open(index, "w", encoding="utf-8") as fh:
+        fh.write(html.replace(image, first + second + elsewhere))
+    plan = hfrestore.plan_restore(hfp.load_project(res.output_dir))
+    orig = next(c for c in plan.project["clips"] if c["id"] == "CI")
+    half, dup = sorted((c for c in plan.project["clips"] if not c["id"]), key=lambda c: c["position"])
+    assert (orig["position"], orig["start"], orig["end"]) == (1.0, 0.0, 1.0)
+    assert (half["position"], half["start"], half["end"]) == (2.0, 1.0, 2.0)   # continues 1 s into the clip
+    assert (dup["position"], dup["start"], dup["end"]) == (6.0, 0.0, 2.0)     # a duplicate plays from its start

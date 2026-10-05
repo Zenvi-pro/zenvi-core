@@ -37,11 +37,13 @@ def make(tmp_path):
         script='const tl = gsap.timeline({paused:true}); window.__timelines["main"] = tl;')
 
 
-def link(root, role="project", props=None, **block):
+def link(root, role="project", props=None, composition=None, **block):
     data = {"role": role, "fps": "30"}
     data.update(block)
     entry = "compositions/intro.html" if role == "composition" and block.get("host") == "intro" else "index.html"
-    return {"kind": "hyperframes", "source": {"project_dir": root, "entry": entry, "composition": "main",
+    # as the importer records it: a composition link names the composition its host mounts
+    composition = composition or (block.get("host") if role == "composition" else "main")
+    return {"kind": "hyperframes", "source": {"project_dir": root, "entry": entry, "composition": composition,
                                               "file": entry, "line": 3},
             "props": dict(props or {}), "hyperframes": data}
 
@@ -287,7 +289,7 @@ def test_inline_composition_inside_a_wrapper_div_keeps_its_ancestors(tmp_path, m
         '</h2><script>const ct = gsap.timeline({paused:true}); ct.set({}, {}, 2); window.__timelines["captions"] = ct;'
         '</script></div></div>', extra='data-width="1920" data-height="1080" data-duration="4"'),
         files={"assets/a.mp4": b"v"}, script='const tl = gsap.timeline({paused:true}); window.__timelines["main"] = tl;')
-    _render(provider, link(root, role="composition", host="cap"), tmp_path)
+    _render(provider, link(root, role="composition", host="cap", composition="captions"), tmp_path)
     w = hfp.parse_html(fake.seen_wrappers[0])
     assert w.by_id("cap-text") is not None and not _hidden(w, "cap") and not _hidden(w, "stage")
     assert wrappers.CLEAR_ATTR in w.by_id("stage").attrs      # the stage's own background is not part of it
@@ -423,3 +425,40 @@ def test_layer_finds_an_id_less_element_again_after_index_html_moved_it(tmp_path
     w = hfp.parse_html(fake.seen_wrappers[-1])
     hidden = [e for e in w.iter() if wrappers.HIDE_ATTR in e.attrs]
     assert [e.tag for e in hidden] == ["img"] and not result.warnings
+
+
+COMP = """<html><body><template><div data-composition-id="%s" data-width="1920" data-height="1080">
+<b class="x">%s</b><script>const tl = gsap.timeline({paused:true}); tl.set({}, {}, 2);
+window.__timelines["%s"] = tl;</script></div></template></body></html>"""
+
+
+def test_an_id_less_host_is_found_by_what_it_mounts(tmp_path, monkeypatch, provider):
+    """verify-C5-1 #6: an element added above id-less hosts moved clip "b"'s @i/j path onto composition "a"."""
+    fake = FakeCli(tmp_path, monkeypatch)
+    root = write_project(tmp_path / "p5", root_div(
+        '<div data-composition-id="a" data-composition-src="compositions/a.html" data-start="0" '
+        'data-duration="2"></div>'
+        '<div data-composition-id="b" data-composition-src="compositions/b.html" data-start="2" '
+        'data-duration="2"></div>', extra='data-width="1920" data-height="1080" data-duration="4"'),
+        files={"compositions/a.html": COMP % ("a", "A", "a"), "compositions/b.html": COMP % ("b", "B", "b")},
+        script='const tl = gsap.timeline({paused:true}); window.__timelines["main"] = tl;')
+    p = hfp.load_project(root)
+    refs = [hfprov.element_ref(c.element, p.root.element) for c in p.root.clips if c.kind == "composition"]
+    lk = link(root, role="composition", host=refs[1], composition="b")
+    lk["source"]["entry"] = lk["source"]["file"] = "compositions/b.html"
+    _rewrite(os.path.join(root, "index.html"), lambda text: text.replace(
+        '<div data-composition-id="a"', '<p class="clip" data-start="0" data-duration="1">new</p>'
+                                        '<div data-composition-id="a"', 1))
+    p2 = hfp.load_project(root)
+    assert hfprov.element_ref(hfprov._host_clip(p2, lk).element, p2.root.element) != refs[1]
+    assert hfprov._host_clip(p2, lk).composition_id == "b"
+    _render(provider, lk, tmp_path)
+    assert 'data-composition-src="compositions/b.html"' in fake.seen_wrappers[-1]
+    assert 'compositions/a.html' not in fake.seen_wrappers[-1]
+    # two id-less mounts of the same file, and the recorded path now on another element: refused, never a guess
+    _rewrite(os.path.join(root, "index.html"), lambda text: text.replace(
+        'data-composition-id="a" data-composition-src="compositions/a.html"',
+        'data-composition-id="b" data-composition-src="compositions/b.html"').replace(
+        '<p class="clip"', '<p class="clip" data-start="0" data-duration="1">two</p><p class="clip"', 1))
+    with pytest.raises(hfprov.HyperFramesLinkError, match="no longer mounts"):
+        _render(provider, lk, tmp_path)

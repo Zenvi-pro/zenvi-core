@@ -38,8 +38,17 @@ dialog, freshness, the toolbar pill) is described in [handoff.md](handoff.md).
   Every command runs in a folder of Zenvi's own (`~/.openshot_qt/cache/hyperframes-run`) with the project folder
   as its argument, so a project's `.npmrc` never applies. The one exception is `hyperframes timeline --json`,
   which in 0.8.126 only reads the project from its working folder (a folder argument is taken for a sub-command
-  name): it runs in the project folder, but as plain `node <entry>` — an npx CLI is first downloaded from
-  Zenvi's folder and then run from npm's cache — so nothing npm reads from the project applies either.
+  name): it runs in the project folder, as plain `node <entry>` (an npx CLI is first downloaded from Zenvi's
+  folder and then run from npm's cache), so npm never runs there.
+
+  HyperFrames itself reads two things from its working folder that choose the programs it runs: `.env`
+  (applied to every key the environment does not have: `HYPERFRAMES_FFPROBE_PATH`, `HYPERFRAMES_BROWSER_PATH`,
+  `NODE_OPTIONS`, ...) and `.hyperframes/bin/ffprobe` (on Windows also an `ffprobe.exe` in the folder) when no
+  ffprobe is configured — and `timeline` measures media with ffprobe. So every HyperFrames command Zenvi runs
+  (timeline, lint, render, preview) gets Zenvi's own absolute ffmpeg and ffprobe (`HYPERFRAMES_FFMPEG_PATH`,
+  `HYPERFRAMES_FFPROBE_PATH`, which skip every other lookup), and every key of the working folder's `.env` is
+  already set in its environment (your own value, else empty), so HyperFrames applies none of the project's
+  `.env`. Without an ffprobe of Zenvi's own, `timeline` is not run at all and Zenvi reads the timing itself.
   HyperFrames' telemetry, update check and self-install are always off (`HYPERFRAMES_NO_TELEMETRY=1`,
   `DO_NOT_TRACK=1`, ...): Zenvi never opts anyone in.
 - **ffmpeg / ffprobe** (Zenvi already needs them) to measure media and check renders.
@@ -85,13 +94,15 @@ sound warns: HyperFrames keeps the pitch, Zenvi's time curve does not.
 
 ### Timing
 
-HyperFrames' CLI resolves the timeline (`data-start` as seconds or `<id>` / `<id> ± n`, durations, tracks), with
-one exception: it resolves a reference against **authored** durations only, so `data-start="<id>"` after a video
-without `data-duration` comes back at that video's *start*, while the runtime plays it after the video's media.
-Zenvi uses the CLI's start only for numeric starts and for references to clips with a `data-duration` (and whose
-own start counts); the others it resolves itself from the measured media. Without the CLI (no Node) Zenvi's own
-resolver does all of it. Images without `data-duration` last 3 s; media last their length from the in point over
-the playback rate.
+HyperFrames' CLI resolves the timeline (`data-start` as seconds or `<id>` / `<id> ± n` — an element id, or a
+composition host's `data-composition-id` —, durations, tracks), with one exception: it resolves a reference
+against **authored** durations only, so `data-start="<id>"` after a video without `data-duration` comes back at
+that video's *start*, while the runtime plays it after the video's media. Zenvi uses the CLI's start only for
+numeric starts and for references to clips with an authored duration (and whose own start counts); the others it
+resolves itself from the measured media. A duration counts as authored the way HyperFrames counts it:
+`Number(data-duration) > 0` (so `"4s"`, `0` or a negative value is no duration, and the media's length applies),
+or a `data-end` after the start. Without the CLI (no Node, or no ffprobe) Zenvi's own resolver does all of it.
+Images without a duration last 3 s; media last their length from the in point over the playback rate.
 
 ### Tracks and what is in front
 
@@ -135,7 +146,10 @@ Studio you started yourself (port 3002) is not reused.
 
 Layers name the elements they hide by id, or, without an id, by their position in `index.html` (`@1/2`) plus what
 they look like (tag, class, media); when an edit moves such an element, Zenvi finds it again by its look, and the
-layer says when it cannot. Giving elements ids avoids the question.
+layer says when it cannot. A composition clip finds its host the same way: by its recorded id or path only while
+that element still mounts the same composition (`data-composition-id`, and `data-composition-src` for a file),
+else by Studio's `data-hf-id` or the one host that mounts it — and it refuses to render rather than render another
+composition. Giving elements ids avoids the question.
 
 ## A Zenvi export comes back
 
@@ -147,7 +161,9 @@ the project's frame rate). What was changed in HyperFrames since comes along:
 - an exported element's new `data-start`, `data-duration` or in point (`data-playback-start` /
   `data-media-start`) moves or trims its clip;
 - an element split or duplicated in Studio (the clone keeps `data-zenvi-clip-id`) comes back as copies of its clip
-  with fresh ids, each with its element's timing (and the clip's effects and keyframes);
+  with fresh ids, each with its element's timing (and the clip's effects and keyframes); the second half of a
+  split continues where the first ends — its in point for video and audio, its clip start for an image (so a
+  keyframed move goes on instead of starting over), while a duplicate placed elsewhere plays from its beginning;
 - a deleted element drops its clip;
 - a new lane (`data-track-index`) is only reported: it does not change what HyperFrames paints, so the clip keeps
   its Zenvi track;
@@ -180,7 +196,8 @@ linked with `copy_media: false`), `README.md` (how to preview, lint and render; 
 
 **Exporting again into the same folder** replaces exactly the files listed in `.zenvi-export.json` — all together:
 they move aside, the new ones move in, and any failure puts the earlier export back. Your own files there stay; a
-new file never takes the name of one of them. If Zenvi's files were edited since (in HyperFrames: `index.html`,
+new file never takes the name of one of them (a media file renamed only by case, on a disk that ignores case, is
+recognised as the earlier export's own). If Zenvi's files were edited since (in HyperFrames: `index.html`,
 `package.json`, an asset; Studio's `data-hf-id` stamps do not count), the export stops and lists them: import the
 folder first to keep those edits, export to a new folder, or replace them (the dialog asks; the tool takes
 `replace_edits: true`). A folder whose record points outside it, or whose `assets/` is a link to another
