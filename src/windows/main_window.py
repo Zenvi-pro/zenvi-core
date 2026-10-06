@@ -5266,8 +5266,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         chat = getattr(self, "dockAIChat", None)
         view = getattr(chat, "_chat_view", None) if chat is not None else None
         under_mouse = bool(view is not None and view.underMouse())
+        timeline_has_selection = bool(getattr(self, "selected_clips", None) or getattr(self, "selected_transitions", None))
         return dispatch_chat_edit_action(
-            chat, name, QApplication.focusWidget(), under_mouse
+            chat, name, QApplication.focusWidget(), under_mouse, timeline_has_selection
         )
 
     def selectAll(self):

@@ -194,8 +194,41 @@ def chat_owns_clipboard_keys(chat, focus_widget=None, under_mouse=False) -> bool
     return bool(view and under_mouse and focus_widget is None)
 
 
-def dispatch_chat_edit_action(chat, name: str, focus_widget=None, under_mouse=False) -> bool:
-    """Send an edit action to the focused chat surface. Returns True if handled."""
+def chat_has_text_selection(chat) -> bool:
+    """True when the user has text highlighted in the assistant transcript.
+
+    Used by Copy only. Highlighting chat text with the mouse does not move Qt keyboard focus off the timeline, so
+    "who owns the key" cannot see it; the highlight itself says what Copy should copy. It must never widen
+    ``chat_owns_clipboard_keys``: Undo, Paste and Cut stay with the timeline unless the chat really has focus.
+    """
+    if chat is None:
+        return False
+    is_visible = getattr(chat, "isVisible", None)
+    if callable(is_visible) and not is_visible():
+        return False
+    view = getattr(chat, "_chat_view", None)
+    if view is None:
+        return False
+    try:
+        has = getattr(view, "hasSelection", None)
+        if callable(has):
+            return bool(has())
+        text = getattr(view, "selectedText", None)
+        return bool(text()) if callable(text) else False
+    except Exception:
+        log.debug("chat_has_text_selection failed", exc_info=1)
+        return False
+
+
+def dispatch_chat_edit_action(chat, name: str, focus_widget=None, under_mouse=False, timeline_has_selection=False) -> bool:
+    """Send an edit action to the focused chat surface. Returns True if handled.
+
+    Copy also goes to the chat when text is highlighted there, even though the timeline holds keyboard focus. A highlight
+    left behind in the chat does not beat clips the user has since selected unless the pointer is over the chat.
+    """
+    if (name == "copy" and (under_mouse or not timeline_has_selection) and chat_has_text_selection(chat)
+            and not chat_owns_clipboard_keys(chat, focus_widget, under_mouse)):
+        return trigger_web_edit_action(getattr(chat, "_chat_view", None), "copy")
     if not name or not chat_owns_clipboard_keys(chat, focus_widget, under_mouse):
         return False
     if name == "paste" and try_attach_clipboard_media(chat):
