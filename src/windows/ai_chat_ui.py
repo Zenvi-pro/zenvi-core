@@ -909,6 +909,11 @@ class ChatBridge(QObject):
         if self.window:
             self.window._sign_in_cli(backend_id)
 
+    @guarded_slot()
+    def signInZenvi(self):
+        if self.window:
+            self.window._sign_in_zenvi()
+
     @guarded_slot(str, result=str)
     def listMentionables(self, query: str = "") -> str:
         if not self.window:
@@ -4254,6 +4259,42 @@ class AIChatWindow(QDockWidget):
             )
         self._set_processing_ui(False)
         self._detect_clis()
+
+    ZENVI_SIGN_IN_WAIT_SECONDS = 300      # the browser may need a password, a code or a new account: wait for the person
+
+    def _sign_in_zenvi(self):
+        """Open the Zenvi website sign-in in the browser; when it finishes, bring the app back to the front.
+
+        Same sign-in as the login dialog (the page the browser opens, and the session handed back to this app), started
+        from the chat so a "Login required" error is one click from fixed. The chat page is told how it went.
+        """
+        if getattr(self, "_zenvi_sign_in_dialog", None) is not None:
+            return                                           # one at a time: the first browser tab is still open
+        from windows.login_window import LoginWindow
+        main = self.window() if callable(getattr(self, "window", None)) else None
+        dlg = LoginWindow(parent=main, browser_timeout=self.ZENVI_SIGN_IN_WAIT_SECONDS)
+        self._zenvi_sign_in_dialog = dlg
+        done = {"told": False}
+
+        def finish(ok: bool, email: str = ""):
+            if done["told"]:
+                return
+            done["told"] = True
+            self._zenvi_sign_in_dialog = None
+            if ok:
+                try:
+                    if main is not None:
+                        main.raise_()
+                        main.activateWindow()
+                    self.refresh_credits_for_account()
+                except Exception:
+                    log.debug("returning to the app after sign-in failed", exc_info=True)
+            if self._use_web_ui:
+                self._run_js("if(window.onZenviSignInResult) onZenviSignInResult(%s, %s);" % (json.dumps(bool(ok)), json.dumps(email or "")))
+
+        dlg.auth_completed.connect(lambda session: finish(True, str((session or {}).get("user_email") or "")))
+        dlg.auth_cancelled.connect(lambda: finish(False))
+        dlg.open()
 
     def _sign_in_cli(self, backend_id: str):
         """Open Claude's browser login; on success auto-retry the pending message."""

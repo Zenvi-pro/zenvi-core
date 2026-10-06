@@ -1284,3 +1284,26 @@
     background: rgba(77, 156, 246, 0.55);
     color: #ffffff;
 }
+
+
+/* ---- "Sign in" under a tool that failed because nobody is signed in ---- */
+.chat-signin-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px 8px 22px;
+}
+.chat-signin-btn {
+    padding: 4px 14px;
+    font-size: 12px;
+    border-radius: 6px;
+    border: 1px solid var(--chat-border);
+    background: var(--chat-surface);
+    color: var(--chat-text);
+    cursor: pointer;
+}
+.chat-signin-btn:hover:not(:disabled) { border-color: rgba(77, 156, 246, 0.8); }
+.chat-signin-btn:disabled { opacity: 0.6; cursor: default; }
+.chat-signin-status { font-size: 11px; color: var(--chat-muted); }
+.chat-signin-status.ok { color: #6fcf97; }
+.chat-signin-status.error { color: #eb5757; }
