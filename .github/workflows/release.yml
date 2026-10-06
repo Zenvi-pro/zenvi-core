@@ -105,8 +105,22 @@ jobs:
           pip3 install --upgrade pip
           pip3 install -r requirements.txt
 
+      - name: Bundle local transcription (whisper.cpp + base model)
+        run: |
+          sudo apt-get install -y cmake ninja-build
+          bash installer/build-whisper-cli.sh
+
       - name: Freeze with cx_Freeze
         run: python3 freeze.py build --git-branch=production
+
+      - name: Verify local transcription is in the frozen app
+        run: |
+          # freeze.py ships src/whisper only because it copies all of src/:
+          # fail here if the engine or its models did not reach the app.
+          for f in ggml-base-q5_1.bin ggml-silero-v5.1.2.bin whisper-cli; do
+            found="$(find build -path '*/lib/whisper/*' -not -path 'build/whisper.cpp/*' -name "$f" -type f | head -1)"
+            [ -n "$found" ] || { echo "::error::$f is missing from the frozen app"; exit 1; }
+          done
 
       - name: Smoke test frozen zenvi
         run: |
@@ -458,9 +472,23 @@ jobs:
           pip3 install -r requirements.txt
           pip3 install pyobjc-framework-Cocoa 2>/dev/null || true
 
+      - name: Bundle local transcription (whisper.cpp + base model)
+        env:
+          WHISPER_ARCH: ${{ matrix.arch }}
+        run: bash installer/build-whisper-cli.sh
+
       - name: Freeze with cx_Freeze
         run: |
           python3 freeze.py build --git-branch=production
+
+      - name: Verify local transcription is in the frozen app
+        run: |
+          # freeze.py ships src/whisper only because it copies all of src/:
+          # fail here if the engine or its models did not reach the app.
+          for f in ggml-base-q5_1.bin ggml-silero-v5.1.2.bin whisper-cli; do
+            found="$(find build -path '*/lib/whisper/*' -not -path 'build/whisper.cpp/*' -name "$f" -type f | head -1)"
+            [ -n "$found" ] || { echo "::error::$f is missing from the frozen app"; exit 1; }
+          done
 
       # Fix OpenSSL dylib mismatch (arm64 only).
       # cx_Freeze may bundle libssl.3.dylib from the Python toolchain (OpenSSL 3.2+)
@@ -1172,6 +1200,15 @@ jobs:
           # FastMCP import dies with ModuleNotFoundError: pywintypes without it.
           ./.venv/bin/python -c "import pywintypes, win32api, win32con, win32job; import mcp.types; from mcp.server.fastmcp import FastMCP; print('mcp import OK'); print('pywin32', pywintypes.__file__)"
 
+      - name: Bundle local transcription (whisper.cpp + base model)
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          export MSYSTEM=UCRT64
+          export PATH="/ucrt64/bin:$PATH"
+          cd "${GITHUB_WORKSPACE}"
+          bash installer/build-whisper-cli.sh
+
       - name: Freeze with cx_Freeze
         shell: msys2 {0}
         run: |
@@ -1180,6 +1217,18 @@ jobs:
           export PATH="/ucrt64/bin:$PATH"
           cd "${GITHUB_WORKSPACE}"
           ./.venv/bin/python freeze.py build --git-branch=production
+
+      - name: Verify local transcription is in the frozen app
+        shell: msys2 {0}
+        run: |
+          cd "${GITHUB_WORKSPACE}"
+          set -euo pipefail
+          # freeze.py ships src/whisper only because it copies all of src/:
+          # fail here if the engine or its models did not reach the app.
+          for f in ggml-base-q5_1.bin ggml-silero-v5.1.2.bin whisper-cli.exe; do
+            found="$(find build -path '*/lib/whisper/*' -not -path 'build/whisper.cpp/*' -name "$f" -type f | head -1)"
+            [ -n "$found" ] || { echo "::error::$f is missing from the frozen app"; exit 1; }
+          done
 
       - name: Verify production env present in frozen build (Supabase)
         shell: powershell

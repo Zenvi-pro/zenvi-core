@@ -515,7 +515,9 @@ def test_only_the_analyze_tool_is_read_only():
     assert "analyze_timeline_audio_tool" in tool_handlers.READ_ONLY_TOOLS
     assert "set_clip_volume_tool" not in tool_handlers.READ_ONLY_TOOLS
     assert "duck_under_speech_tool" not in tool_handlers.READ_ONLY_TOOLS
-    assert "duck_under_speech_tool" not in tool_handlers.BACKGROUND_SAFE_TOOLS
+    # Off the GUI thread since review #216: its VAD fallback can take minutes,
+    # and its volume writes marshal themselves to the GUI thread.
+    assert "duck_under_speech_tool" in tool_handlers.BACKGROUND_SAFE_TOOLS
 
 
 # --------------------------------------------------------------------------

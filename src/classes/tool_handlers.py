@@ -252,7 +252,8 @@ class _MainThreadJob:
 
 
 # Calls still running when their caller stopped waiting, by job id, so a later
-# wait_for_main_thread_job() can report how they ended.  Oldest dropped first.
+# wait_for_main_thread_job() can report how they ended.  The oldest finished
+# job is dropped first; an unfinished one is kept so its caller can still ask.
 _LATE_JOBS_MAX = 32
 _late_jobs = {}
 _late_jobs_lock = threading.Lock()
@@ -262,8 +263,11 @@ def _remember_late_job(job) -> str:
     job_id = uuid_module.uuid4().hex[:12]
     with _late_jobs_lock:
         _late_jobs[job_id] = job
-        while len(_late_jobs) > _LATE_JOBS_MAX:
-            _late_jobs.pop(next(iter(_late_jobs)))
+        excess = len(_late_jobs) - _LATE_JOBS_MAX
+        if excess > 0:
+            done = [jid for jid, j in _late_jobs.items() if j.state in (j.DONE, j.WITHDRAWN)]
+            for jid in done[:excess]:
+                del _late_jobs[jid]
     with job._lock:
         job.late_id = job_id
     return job_id
@@ -1951,6 +1955,7 @@ def import_files(
     skip_indexing="false",
     dry_run="false",
     media_types="all",
+    files="",
     **_kw
 ) -> str:
     """Import local media by path into Project Files — never opens a file dialog; use dry_run=true to preview.
@@ -1971,7 +1976,7 @@ def import_files(
     )
 
     entries = []
-    for value in (paths, path, folder, _kw.get("files")):
+    for value in (paths, path, folder, files):
         if value:
             entries.extend(_coerce_path_list(value))
     if not entries:
@@ -1983,6 +1988,8 @@ def import_files(
     notes = []
     normalized = []
     adjacent_notes = []
+    allowed_exts = _allowed_exts_for_media_types(media_types)
+    glob_skipped = 0
     for entry in entries:
         candidate = normalize_agent_fs_path(entry)
         if _glob.has_magic(candidate) or _glob.has_magic(str(entry)):
@@ -1992,16 +1999,24 @@ def import_files(
             if not matches:
                 notes.append("No files matched: %s" % entry)
                 continue
-            normalized.extend(matches)
+            # A glob is a folder listing, not a list of named files: filter it
+            # by media_types like a directory walk.
+            for match in matches:
+                if os.path.isdir(match) or os.path.splitext(match)[1].lower() in allowed_exts:
+                    normalized.append(match)
+                else:
+                    glob_skipped += 1
             continue
 
         target = resolve_agent_import_target(entry)
         if target.get("status") == "ambiguous":
             cands = target.get("candidates") or []
-            lines = [
-                "Error: Multiple paths match %r — ask the user which one:"
-                % entry,
-            ]
+            if target.get("elsewhere"):
+                head = ("Error: %r does not exist. A file with a similar name is in "
+                        "another folder — ask the user whether it is the one:" % entry)
+            else:
+                head = "Error: Multiple paths match %r — ask the user which one:" % entry
+            lines = [head]
             for cand in cands:
                 lines.append("  %s" % cand)
             lines.append(
@@ -2034,10 +2049,10 @@ def import_files(
             "or Pictures (e.g. folder=\"Downloads\")."
         )
 
-    allowed_exts = _allowed_exts_for_media_types(media_types)
     resolved, missing, skipped_non_media = _expand_import_paths(
         normalized, allowed_exts=allowed_exts,
     )
+    skipped_non_media += glob_skipped
     if not resolved:
         detail = "; ".join(notes) if notes else (
             "no media files found in: %s" % ", ".join(entries)
@@ -11585,6 +11600,8 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     "remove_silence_tool",
     "add_captions_tool",
     "export_captions_tool",
+    # Its no-cue fallback extracts audio and runs VAD; the writes marshal themselves.
+    "duck_under_speech_tool",
     "detect_beats_tool",
     "diarize_media_tool",
     "search_media_local_tool",

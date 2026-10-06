@@ -154,6 +154,63 @@ def test_reclaim_requires_full_file_match(tmp_path, monkeypatch):
     assert clips[0]["reader"]["path"] == collected
 
 
+def _collected(tmp_path, monkeypatch):
+    from classes.media_collect import collect_media_into_project
+    from classes import info as info_mod
+
+    monkeypatch.setattr(info_mod, "PATH", str(tmp_path / "app"))
+    src = tmp_path / "Downloads" / "clip.mp4"
+    src.parent.mkdir()
+    src.write_bytes(b"body")
+    project = str(tmp_path / "Proj.zvn")
+    files = [{"id": "f1", "path": str(src)}]
+    clips = [{"id": "c1", "file_id": "f1", "reader": {"path": str(src)}}]
+    collect_media_into_project(files, clips, project)
+    return project, files, clips, str(src), files[0]["path"]
+
+
+def test_reclaim_saves_the_project_before_deleting_the_copy(tmp_path, monkeypatch):
+    from classes.media_collect import reclaim_unused_asset_media
+
+    project, files, clips, original, collected = _collected(tmp_path, monkeypatch)
+    seen = []
+
+    def save():
+        # The saved project must already point at the original, copy not yet gone.
+        seen.append((files[0]["path"], clips[0]["reader"]["path"], os.path.isfile(collected)))
+
+    removed, _kept, errors = reclaim_unused_asset_media(files, clips, project, save_project=save)
+    assert seen == [(original, original, True)]
+    assert removed == [collected] and not errors
+    assert not os.path.exists(collected)
+
+
+def test_reclaim_deletes_nothing_when_the_save_fails(tmp_path, monkeypatch):
+    from classes.media_collect import reclaim_unused_asset_media
+
+    project, files, clips, _original, collected = _collected(tmp_path, monkeypatch)
+
+    def save():
+        raise OSError("disk full")
+
+    removed, _kept, errors = reclaim_unused_asset_media(files, clips, project, save_project=save)
+    assert removed == []
+    assert errors and "disk full" in errors[0]
+    assert os.path.isfile(collected)
+    assert files[0]["path"] == collected
+    assert clips[0]["reader"]["path"] == collected
+
+
+def test_finding_reclaimable_media_leaves_the_project_untouched(tmp_path, monkeypatch):
+    """The slow hashing phase runs off the GUI thread on a snapshot, so it must not mutate."""
+    from classes.media_collect import find_reclaimable_media
+
+    project, files, clips, original, collected = _collected(tmp_path, monkeypatch)
+    moves, _kept, errors = find_reclaimable_media(files, project)
+    assert moves == [("f1", os.path.abspath(collected), original)] and not errors
+    assert files[0]["path"] == collected and os.path.isfile(collected)
+
+
 def test_entry_dir_rejects_path_traversal(tmp_path, monkeypatch):
     monkeypatch.setattr(info, "CACHE_PATH", str(tmp_path / "cache"))
     assert entry_dir({"sha256": "../escape"}) == ""

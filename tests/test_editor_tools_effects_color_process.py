@@ -2,6 +2,7 @@
 
 import copy
 import json
+import os
 
 import pytest
 
@@ -193,7 +194,7 @@ def test_object_detection_needs_model_download_opt_in(fx, jobs, monkeypatch):
     monkeypatch.setattr(effect_models, "download_yolo_model", fake_download)
     r = receipt(fx.call("process_clip_effect_tool", timeline_clip_id=c, effect="ObjectDetection",
                         download_model=True, class_filter="person", confidence=0.4))
-    assert downloads == ["yolo26n-seg"] and jobs["context"]["model"].endswith("yolo26n-seg/model.onnx")
+    assert downloads == ["yolo26n-seg"] and jobs["context"]["model"].endswith(os.path.join("yolo26n-seg", "model.onnx"))
     det = effect_of(fx, c, "ObjectDetection")[0]
     assert det["class_filter"] == "person" and det["confidence_threshold"] == 0.4
     assert r["notes"] == ["downloaded YOLO26: Nano"]

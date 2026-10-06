@@ -1,5 +1,10 @@
 """Headless title / lower-third creation (no TitleEditor dialog)."""
 
+# DEAD CODE (PR #216 review): add_title_tool is served by classes/editor_tools/titles_text.py (the editor
+# registry overrides PHASE3_HANDLERS in tool_handlers), and the only other caller
+# is the dead speech_extra.add_captions. Delete this module with its entries in
+# agent_tools/handlers/__init__.py and its tests (tests/test_caption_raster.py).
+
 from __future__ import annotations
 
 import os

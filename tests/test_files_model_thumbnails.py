@@ -106,7 +106,8 @@ def files(qapp, monkeypatch, tmp_path):
         _pending_thumbnail_icon=FilesModel._pending_thumbnail_icon,
     )
     for name in ("request_thumbnail", "_request_file_thumbnail", "_on_thumbnail_ready",
-                 "_project_file_icon_for_file", "thumbnail_icon", "update_file_thumbnail"):
+                 "_project_file_icon_for_file", "thumbnail_icon", "update_file_thumbnail",
+                 "_update_file_thumbnail"):
         setattr(model, name, functools.partial(getattr(FilesModel, name), model))
     manager.thumbnail_ready.connect(model._on_thumbnail_ready, type=Qt.QueuedConnection)
     try:
