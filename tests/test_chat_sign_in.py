@@ -16,28 +16,24 @@ from windows import ai_chat_ui  # noqa: E402
 CHAT_UI = SRC / "chat_ui"
 
 
-class FakeSignal:
-    def __init__(self):
-        self.handlers = []
+class FakeAuth:
+    instance_ = None
 
-    def connect(self, fn):
-        self.handlers.append(fn)
+    def __init__(self, fail_start=False):
+        self.fail_start, self.started, self.poll_kwargs = fail_start, 0, None
 
-    def emit(self, *args):
-        for h in list(self.handlers):
-            h(*args)
+    @classmethod
+    def instance(cls):
+        return cls.instance_
 
+    def start_auth_flow(self):
+        if self.fail_start:
+            raise OSError("no browser")
+        self.started += 1
+        return "https://zenvi.pro/login?state=abc", "abc"
 
-class FakeLogin:
-    instances = []
-
-    def __init__(self, parent=None, browser_timeout=None):
-        self.parent, self.browser_timeout, self.opened = parent, browser_timeout, False
-        self.auth_completed, self.auth_cancelled = FakeSignal(), FakeSignal()
-        FakeLogin.instances.append(self)
-
-    def open(self):
-        self.opened = True
+    def poll_for_session(self, state, on_success=None, on_timeout=None, **kw):
+        self.poll_kwargs = {"state": state, "on_success": on_success, "on_timeout": on_timeout, **kw}
 
 
 class FakeMain:
@@ -51,13 +47,23 @@ class FakeMain:
         self.calls.append("activate")
 
 
-def make_window(monkeypatch, use_web=True):
-    FakeLogin.instances = []
-    monkeypatch.setattr("windows.login_window.LoginWindow", FakeLogin)
+def make_window(monkeypatch, auth=None, use_web=True):
+    FakeAuth.instance_ = auth or FakeAuth()
+    monkeypatch.setattr("classes.auth_manager.AuthManager", FakeAuth)
     js, main = [], FakeMain()
     win = SimpleNamespace(window=lambda: main, _use_web_ui=use_web, _run_js=js.append, refresh_credits_for_account=lambda: main.calls.append("credits"),
-                          ZENVI_SIGN_IN_WAIT_SECONDS=ai_chat_ui.AIChatWindow.ZENVI_SIGN_IN_WAIT_SECONDS)
-    return win, main, js
+                          ZENVI_SIGN_IN_WAIT_SECONDS=ai_chat_ui.AIChatWindow.ZENVI_SIGN_IN_WAIT_SECONDS, _zenvi_sign_in_waiting=False)
+    queued = []
+
+    class FakeMeta:
+        @staticmethod
+        def invokeMethod(obj, name, conn, *args):
+            queued.append((name, [a for a in args]))
+            getattr(ai_chat_ui.AIChatWindow, name)(win, *[getattr(a, "value", a) for a in args])
+
+    monkeypatch.setattr(ai_chat_ui, "QMetaObject", FakeMeta)
+    monkeypatch.setattr(ai_chat_ui, "Q_ARG", lambda t, v: SimpleNamespace(value=v))
+    return win, main, js, queued, FakeAuth.instance_
 
 
 def sign_in(win):
@@ -65,43 +71,62 @@ def sign_in(win):
 
 
 # ============================ the Python side ============================
-def test_the_sign_in_opens_the_website_flow_and_waits_five_minutes(monkeypatch):
-    win, main, js = make_window(monkeypatch)
+def test_the_sign_in_opens_the_website_flow_and_waits_five_minutes_on_a_plain_thread(monkeypatch):
+    win, main, js, queued, auth = make_window(monkeypatch)
     sign_in(win)
-    dlg = FakeLogin.instances[0]
-    assert dlg.opened and dlg.parent is main and dlg.browser_timeout == 300 and js == []
+    assert auth.started == 1 and auth.poll_kwargs["state"] == "abc" and auth.poll_kwargs["timeout"] == 300 and js == [] and win._zenvi_sign_in_waiting is True
 
 
 def test_on_success_the_app_comes_to_the_front_credits_refresh_and_the_page_is_told(monkeypatch):
-    win, main, js = make_window(monkeypatch)
+    win, main, js, queued, auth = make_window(monkeypatch)
     sign_in(win)
-    FakeLogin.instances[0].auth_completed.emit({"user_email": "nilay@example.com"})
+    auth.poll_kwargs["on_success"]({"user_email": "nilay@example.com", "access_token": "x"})
     assert main.calls == ["raise", "activate", "credits"]
-    assert js == ["if(window.onZenviSignInResult) onZenviSignInResult(true, \"nilay@example.com\");"]
-    assert win._zenvi_sign_in_dialog is None, "ready for another sign-in later"
+    assert js == ['if(window.onZenviSignInResult) onZenviSignInResult(true, "nilay@example.com");']
+    assert win._zenvi_sign_in_waiting is False, "ready for another sign-in later"
+    assert [q[0] for q in queued] == ["_on_zenvi_sign_in_done"], "the GUI is reached through one queued call, not from the waiting thread"
 
 
-def test_closing_the_sign_in_without_finishing_tells_the_page_it_did_not_finish(monkeypatch):
-    win, main, js = make_window(monkeypatch)
+def test_a_session_without_an_email_still_counts_as_signed_in(monkeypatch):
+    win, main, js, queued, auth = make_window(monkeypatch)
     sign_in(win)
-    FakeLogin.instances[0].auth_cancelled.emit()
-    assert js == ["if(window.onZenviSignInResult) onZenviSignInResult(false, \"\");"] and main.calls == []
+    auth.poll_kwargs["on_success"]({"access_token": "x"})
+    assert js == ['if(window.onZenviSignInResult) onZenviSignInResult(true, "");']
 
 
-def test_the_page_is_told_once_even_if_the_dialog_reports_twice(monkeypatch):
-    win, main, js = make_window(monkeypatch)
+def test_a_timeout_tells_the_page_it_did_not_finish_and_leaves_the_app_alone(monkeypatch):
+    win, main, js, queued, auth = make_window(monkeypatch)
     sign_in(win)
-    dlg = FakeLogin.instances[0]
-    dlg.auth_completed.emit({"user_email": "a@b.c"})
-    dlg.auth_cancelled.emit()          # a dialog that closes after accepting also reports a cancel
-    assert len(js) == 1 and js[0].endswith('onZenviSignInResult(true, "a@b.c");')
+    auth.poll_kwargs["on_timeout"]()
+    assert js == ['if(window.onZenviSignInResult) onZenviSignInResult(false, "");'] and main.calls == [] and win._zenvi_sign_in_waiting is False
 
 
-def test_a_second_click_while_the_browser_is_open_does_not_open_another(monkeypatch):
-    win, main, js = make_window(monkeypatch)
+def test_a_second_click_while_the_browser_is_open_does_not_start_another(monkeypatch):
+    win, main, js, queued, auth = make_window(monkeypatch)
     sign_in(win)
     sign_in(win)
-    assert len(FakeLogin.instances) == 1
+    assert auth.started == 1
+
+
+def test_a_browser_that_cannot_be_opened_is_reported_and_can_be_tried_again(monkeypatch):
+    win, main, js, queued, auth = make_window(monkeypatch, auth=FakeAuth(fail_start=True))
+    sign_in(win)
+    assert js == ['if(window.onZenviSignInResult) onZenviSignInResult(false, "");'] and win._zenvi_sign_in_waiting is False
+
+
+def test_the_chat_sign_in_uses_no_dialog_and_no_qt_thread():
+    import ast
+    import inspect
+    import textwrap
+    code = ""
+    for fn in (ai_chat_ui.AIChatWindow._sign_in_zenvi, ai_chat_ui.AIChatWindow._on_zenvi_sign_in_done):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        node = tree.body[0]
+        if node.body and isinstance(node.body[0], ast.Expr) and isinstance(getattr(node.body[0], "value", None), ast.Constant):
+            node.body = node.body[1:]                       # the docstring explains the crash and so names what is banned
+        code += ast.unparse(tree)
+    for banned in ("LoginWindow", "QThread", "exec_", ".open("):
+        assert banned not in code, banned
 
 
 def test_the_bridge_exposes_the_sign_in_to_the_page():
@@ -110,21 +135,6 @@ def test_the_bridge_exposes_the_sign_in_to_the_page():
     fn = getattr(ai_chat_ui.ChatBridge.signInZenvi, "__wrapped__", None) or ai_chat_ui.ChatBridge.signInZenvi
     fn(bridge)
     assert called == [1]
-
-
-def test_the_login_dialog_can_wait_longer_than_the_first_launch_default():
-    from windows import login_window
-    seen = {}
-    auth = SimpleNamespace(poll_for_session=lambda **kw: seen.update(kw))
-    worker = login_window._PollWorker.__new__(login_window._PollWorker)
-    worker._auth, worker._state, worker._timeout = auth, "st", 300
-    worker.succeeded, worker.timed_out = FakeSignal(), FakeSignal()
-    login_window._PollWorker.start(worker)
-    assert seen["timeout"] == 300 and seen["state"] == "st"
-    seen.clear()
-    worker._timeout = None
-    login_window._PollWorker.start(worker)
-    assert "timeout" not in seen, "the default wait is left to AuthManager"
 
 
 # ============================ the page ============================

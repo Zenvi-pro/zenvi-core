@@ -118,20 +118,17 @@ class _PollWorker(QObject):
     succeeded = pyqtSignal(dict)
     timed_out = pyqtSignal()
 
-    def __init__(self, auth: AuthManager, state: str, timeout: int | None = None) -> None:
+    def __init__(self, auth: AuthManager, state: str) -> None:
         super().__init__()
         self._auth = auth
         self._state = state
-        self._timeout = timeout
 
     @pyqtSlot()
     def start(self) -> None:
-        extra = {"timeout": self._timeout} if self._timeout else {}
         self._auth.poll_for_session(
             state=self._state,
             on_success=self.succeeded.emit,
             on_timeout=self.timed_out.emit,
-            **extra,
         )
 
 
@@ -178,11 +175,9 @@ class LoginWindow(QDialog):
     _PAGE_BROWSER = 0
     _PAGE_PASSWORD = 1
 
-    def __init__(self, parent=None, browser_timeout: int | None = None) -> None:
-        """*browser_timeout*: seconds to wait for the browser sign-in (default: the short first-launch wait)."""
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._auth = AuthManager.instance()
-        self._browser_timeout = browser_timeout
         self._signup_mode = False
         self._browser_thread: QThread | None = None
         self._browser_worker: _PollWorker | None = None
@@ -384,7 +379,7 @@ class LoginWindow(QDialog):
         print(f"[zenvi-auth] browser flow started: {login_url}", file=sys.stderr)
         QTimer.singleShot(1400, lambda: self._browser_status.setText("Waiting for authentication…"))
 
-        self._browser_worker = _PollWorker(self._auth, state, self._browser_timeout)
+        self._browser_worker = _PollWorker(self._auth, state)
         self._browser_thread = QThread(self)
         self._browser_worker.moveToThread(self._browser_thread)
         self._browser_worker.succeeded.connect(self._sig_browser_success)
