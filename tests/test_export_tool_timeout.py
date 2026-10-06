@@ -86,6 +86,9 @@ def test_export_video_renders_outside_the_main_thread_dispatcher(monkeypatch):
         "end_seconds": 1.0, "start_frame": 1, "end_frame": 30, "range": "whole", "profile": "", "profile_path": None,
         "notes": [], "preset": "MP4 (h.264)", "preset_category": "All Formats", "quality": "High"})
     monkeypatch.setattr(render, "window", lambda: MagicMock())
+    # No project here: the "is it one of the inputs?" check sees no files.
+    from classes import query
+    monkeypatch.setattr(query.File, "get", classmethod(lambda cls, **kw: None))
     try:
         result = th.execute_tool("export_video_tool", {"overwrite": True})
     finally:

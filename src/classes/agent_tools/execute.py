@@ -75,9 +75,16 @@ def _history_len(app) -> int:
 
 
 def _snapshot_clips(app):
+    """Clips, track ids and markers, as the mutation receipt diffs them."""
     try:
         clips = app.project.get("clips") or []
-        return [dict(c) if isinstance(c, dict) else dict(getattr(c, "data", {}) or {}) for c in clips]
+        return {
+            "clips": [dict(c) if isinstance(c, dict) else dict(getattr(c, "data", {}) or {})
+                      for c in clips],
+            "track_ids": [str(t.get("id")) for t in (app.project.get("layers") or [])
+                          if isinstance(t, dict) and t.get("id")],
+            "markers": [dict(m) for m in (app.project.get("markers") or []) if isinstance(m, dict)],
+        }
     except Exception:
         return None
 
@@ -162,7 +169,9 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
         before_snap = None
         if before_clips is not None:
             try:
-                before_snap = timeline_snapshot(before_clips, fps=fps)
+                before_snap = timeline_snapshot(before_clips["clips"], fps=fps,
+                                                track_ids=before_clips["track_ids"],
+                                                markers=before_clips["markers"])
             except Exception:
                 before_snap = None
 
@@ -176,14 +185,17 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
             return ToolOutput(receipt=ToolReceipt.error(tool_name, str(e)))
 
         after_len = _history_len(app)
+        # Undo shrinks the history: nothing new to undo, but the timeline changed.
         mutated = before_len >= 0 and after_len > before_len
+        history_changed = before_len >= 0 and after_len != before_len
 
         if isinstance(raw, ToolOutput):
             receipt = raw.receipt
             if not mutated:
                 receipt.undoSteps = 0
                 if (
-                    receipt.status == "applied"
+                    not history_changed
+                    and receipt.status == "applied"
                     and not receipt.clips
                     and not receipt.removedClipIds
                     and not raw.images
@@ -198,7 +210,8 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
             if not mutated:
                 receipt.undoSteps = 0
                 if (
-                    receipt.status == "applied"
+                    not history_changed
+                    and receipt.status == "applied"
                     and not receipt.clips
                     and not receipt.removedClipIds
                     and receipt.data is None
@@ -214,12 +227,14 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
         if is_error_result(text) or text.startswith("Error"):
             return ToolOutput(receipt=from_handler_str(tool_name, text, mutated=False))
 
-        receipt = from_handler_str(tool_name, text, mutated=mutated)
-        if mutated and before_snap is not None:
+        receipt = from_handler_str(tool_name, text, mutated=history_changed)
+        if history_changed and before_snap is not None:
             after_clips = _snapshot_clips(app)
             if after_clips is not None:
                 try:
-                    after_snap = timeline_snapshot(after_clips, fps=fps)
+                    after_snap = timeline_snapshot(after_clips["clips"], fps=fps,
+                                                   track_ids=after_clips["track_ids"],
+                                                   markers=after_clips["markers"])
                     enriched = mutation_result(
                         before_snap,
                         after_snap,
@@ -227,7 +242,7 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
                         summary=receipt.summary,
                         status="applied",
                         data=receipt.data,
-                        undo_steps=1,
+                        undo_steps=1 if mutated else 0,
                     )
                     return ToolOutput(receipt=enriched)
                 except Exception:

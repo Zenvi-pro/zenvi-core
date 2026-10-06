@@ -180,6 +180,7 @@ class VisualIndex:
             existing = self._entries.get(key)
             if (
                 existing
+                and existing.path == os.path.abspath(path)
                 and existing.size == st.st_size
                 and existing.mtimeNs == mtime_ns
             ):
@@ -200,7 +201,9 @@ class VisualIndex:
             self._save()
             return entry
 
-    def search(self, query: str, *, top_k: int = 5) -> list[dict]:
+    def search(self, query: str, *, top_k: int = 5, file_ids=None) -> list[dict]:
+        """Best matches; with *file_ids*, only entries for those files (the index
+        is shared by every project, so callers pass the open project's ids)."""
         emb = _embedder_factory()
         try:
             q = emb.embed_text(query)
@@ -209,7 +212,7 @@ class VisualIndex:
         with self._lock:
             scored = []
             for e in self._entries.values():
-                if not e.vector:
+                if not e.vector or (file_ids is not None and e.fileId not in file_ids):
                     continue
                 scored.append((cosine(q, e.vector), e))
         scored.sort(key=lambda x: -x[0])

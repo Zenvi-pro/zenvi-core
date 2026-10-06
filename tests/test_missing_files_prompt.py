@@ -132,3 +132,82 @@ def test_nothing_missing_shows_no_prompt(monkeypatch, tmp_path):
     clips = [{"id": "c1", "file_id": "f1", "reader": {"path": str(present)}}]
 
     assert _open_with_missing_media(monkeypatch, tmp_path, files, clips) == []
+
+
+def test_locating_a_folder_scans_it_off_the_gui_thread(monkeypatch, tmp_path):
+    """Review #216: the fingerprint scan and folder walk froze the editor."""
+    import threading
+    from classes import qt_main_thread
+
+    found = tmp_path / "found"
+    found.mkdir()
+    (found / "a_roll.mp4").write_bytes(b"x")
+    gone = str(tmp_path / "gone" / "a_roll.mp4")
+    writers = []
+
+    class _Recorded(dict):
+        """Project data that notes which thread writes it."""
+
+        def __setitem__(self, key, value):
+            writers.append(threading.current_thread())
+            super().__setitem__(key, value)
+
+    files = [_Recorded(id="f1", path=gone)]
+    clips = [{"id": "c1", "file_id": "f1", "reader": _Recorded(path=gone)}]
+
+    scan_threads = []
+    real_walk = pd.os.walk
+
+    def _walk(*a, **k):
+        scan_threads.append(threading.current_thread())
+        return real_walk(*a, **k)
+
+    class _Locate:
+        AcceptRole = 0
+        ActionRole = 1
+
+        def __init__(self, *a, **k):
+            self._locate = object()
+
+        def __getattr__(self, name):
+            return lambda *a, **k: None
+
+        def addButton(self, text, role):
+            return self._locate if "Locate" in str(text) else object()
+
+        def exec_(self):
+            return 0
+
+        def clickedButton(self):
+            return self._locate
+
+    class _App:
+        window = None
+
+        def _tr(self, s):
+            return s
+
+        def get_settings(self):
+            return None
+
+    monkeypatch.setattr(pd, "get_app", lambda: _App())
+    monkeypatch.setattr(pd, "QMessageBox", _Locate)
+    monkeypatch.setattr(pd.QFileDialog, "getExistingDirectory", lambda *a, **k: str(found), raising=False)
+    monkeypatch.setattr(path_utils, "remember_media_root", lambda folder: None)
+    monkeypatch.setattr(path_utils, "_media_roots", lambda: [])
+    monkeypatch.setattr(pd.os, "walk", _walk)
+    monkeypatch.setattr(qt_main_thread, "is_gui_thread", lambda: True)
+    monkeypatch.setattr(qt_main_thread, "_pump_events", lambda: None, raising=False)
+
+    store = pd.ProjectDataStore.__new__(pd.ProjectDataStore)
+    store.current_filepath = str(tmp_path / "project.zvn")
+    store._data = {"files": files, "clips": clips}
+    store.check_if_paths_are_valid()
+
+    assert scan_threads and threading.main_thread() not in scan_threads
+    # ...but the project is only written on the calling (GUI) thread: timers
+    # keep running during the scan and must never see a half-relinked project.
+    assert writers and set(writers) == {threading.main_thread()}
+    relinked = str(found / "a_roll.mp4")
+    assert files[0]["path"] == relinked
+    assert clips[0]["reader"]["path"] == relinked

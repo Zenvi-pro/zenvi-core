@@ -1,5 +1,9 @@
 """Agent keyframe writer — one property curve per call, frame-exact X."""
 
+# DEAD CODE (PR #216 review): set_keyframes_tool is served by the editor tool of the same name (the editor
+# registry overrides PHASE3_HANDLERS in tool_handlers). Delete this module with its
+# entries in agent_tools/handlers/__init__.py and the tests that import it.
+
 from __future__ import annotations
 
 from fractions import Fraction

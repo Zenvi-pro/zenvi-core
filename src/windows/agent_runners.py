@@ -775,6 +775,13 @@ def _codex_desired_section(port: int) -> str:
     ) % (_CODEX_SECTION_HEADER, port)
 
 
+def _token_env_command(name: str, token: str) -> str:
+    """The command that sets *name* in the user's own shell before they launch a CLI."""
+    if sys.platform == "win32":
+        return 'PowerShell: $env:%s="%s"\nCommand Prompt: set %s=%s' % (name, token, name, token)
+    return "export %s=%s" % (name, token)
+
+
 def register_codex(port: int, token: str):
     """Write/update the ``[mcp_servers.zenvi_editor]`` table in
     ``~/.codex/config.toml`` (Codex has no CLI command for registering an
@@ -836,9 +843,8 @@ def register_codex(port: int, token: str):
         return False, "Failed to write ~/.codex/config.toml: %s" % e
 
     return True, (
-        "Updated ~/.codex/config.toml. Before running codex, run:\n"
-        "export ZENVI_MCP_TOKEN=%s"
-    ) % token
+        "Updated ~/.codex/config.toml. Before running codex, run:\n%s"
+    ) % _token_env_command("ZENVI_MCP_TOKEN", token)
 
 
 # The one entry in ~/.cursor/mcp.json that is Zenvi's. A server the user
@@ -902,8 +908,8 @@ def register_cursor(port: int, token: str):
     """
     path = os.path.realpath(_cursor_mcp_path())
     connected = (
-        "Connected. Before running cursor-agent yourself, run:\n"
-        "export %s=%s" % (_CURSOR_TOKEN_ENV, token)
+        "Connected. Before running cursor-agent yourself, run:\n%s"
+        % _token_env_command(_CURSOR_TOKEN_ENV, token)
     )
     original = ""
     data = {}
@@ -962,11 +968,14 @@ def _opencode_config_dir() -> str:
 
 def _opencode_is_registered() -> bool:
     """OpenCode merges ``opencode.json`` and ``opencode.jsonc``; the latter may
-    carry comments, so look for the server key rather than parse JSON."""
+    carry comments, so look for the server key rather than parse JSON. Comments
+    are dropped first (strings kept whole) so a commented-out entry does not count."""
     for name in ("opencode.json", "opencode.jsonc"):
         try:
             with open(os.path.join(_opencode_config_dir(), name), "r", encoding="utf-8") as fh:
-                if re.search(r'"zenvi_editor"\s*:', fh.read()):
+                text = re.sub(r'("(?:\\.|[^"\\])*")|//[^\n]*|/\*.*?\*/',
+                              lambda m: m.group(1) or "", fh.read(), flags=re.S)
+                if re.search(r'"zenvi_editor"\s*:', text):
                     return True
         except Exception:
             continue
@@ -1001,9 +1010,8 @@ def register_opencode(port: int, token: str):
     """
     path = os.path.realpath(os.path.join(_opencode_config_dir(), "opencode.json"))
     done = (
-        "Updated %s. Before running opencode, run:\n"
-        "export ZENVI_MCP_TOKEN=%s"
-    ) % (path, token)
+        "Updated %s. Before running opencode, run:\n%s"
+    ) % (path, _token_env_command("ZENVI_MCP_TOKEN", token))
     original = ""
     data = {}
     mode = 0o600
@@ -1100,9 +1108,8 @@ def register_hermes(port: int, token: str):
     except Exception as e:
         return False, str(e)
     return True, (
-        "Updated %s. Before running hermes, run:\n"
-        "export ZENVI_MCP_TOKEN=%s"
-    ) % (_hermes_config_path(), token)
+        "Updated %s. Before running hermes, run:\n%s"
+    ) % (_hermes_config_path(), _token_env_command("ZENVI_MCP_TOKEN", token))
 
 
 # `cursor-agent models` prints "<id> - <name>" per model, flagging the one the
@@ -1791,12 +1798,30 @@ class CodexRunner(BaseAgentRunner):
         "local_shell_call", "web_search",
     }
     _MSG_ITEM_TYPES = {"assistant_message", "agent_message", "message"}
+    # The prompt goes in through stdin ("-"), not argv: any local process can
+    # read another's command line.
+    STDIN = subprocess.PIPE
 
     def _build_env(self):
         extra = {}
         if self._server is not None and self._server.token:
             extra["ZENVI_MCP_TOKEN"] = self._server.token
         return _cli_child_env(extra)
+
+    def _after_launch(self, text: str):
+        proc, prompt = self._proc, self._stdin_prompt
+
+        def _send():
+            try:
+                proc.stdin.write(prompt)
+                proc.stdin.close()
+            except Exception:
+                # Codex already exited; the base read loop reports its output.
+                log.debug("codex stdin write failed", exc_info=True)
+
+        # Not on this thread: a prompt larger than the pipe buffer would block
+        # here while Codex blocks writing the stdout nobody reads yet.
+        threading.Thread(target=_send, name="codex-stdin", daemon=True).start()
 
     def _build_argv(self, text: str):
         url = self._server.url() if self._server else ""
@@ -1812,12 +1837,14 @@ class CodexRunner(BaseAgentRunner):
         # and reports it as ``thread.started``.  Resuming a seeded placeholder
         # would just fail, so wait until we have heard a real one.
         cli = self._cli_path or self.CLI_NAME
+        if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
+            # The thread already holds the steering from its first turn.
+            self._stdin_prompt = text or ""
+            return [cli, "exec", "resume", self._cli_session_id, *common, "-"]
         # Codex has no --append-system-prompt; prefix import steering so it
         # does not Glob /mnt/c the way Claude did before the Claude prompt fix.
-        steered = _agent_import_prompt() + "\n\n" + (text or "")
-        if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
-            return [cli, "exec", "resume", self._cli_session_id, *common, steered]
-        return [cli, "exec", *common, steered]
+        self._stdin_prompt = _agent_import_prompt() + "\n\n" + (text or "")
+        return [cli, "exec", *common, "-"]
 
     def _handle_event(self, ev: dict):
         etype = ev.get("type")
@@ -1898,7 +1925,6 @@ class CursorCliRunner(BaseAgentRunner):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._think_seq = 0
-        self._mcp_approved = False
         self._begin_turn()
 
     def _begin_turn(self):
@@ -1918,10 +1944,16 @@ class CursorCliRunner(BaseAgentRunner):
         ok, message = register_cursor(self._server.port, self._server.token)
         if not ok:
             return message
-        self._mcp_approved = _approve_cursor_mcp(
-            self._cli_path or self.CLI_NAME, self._cli_cwd or _project_cwd(),
-            self._build_env(), self._server.url(),
-        )
+        cwd = self._cli_cwd or _project_cwd()
+        if not _approve_cursor_mcp(
+            self._cli_path or self.CLI_NAME, cwd, self._build_env(), self._server.url(),
+        ):
+            # No blanket --approve-mcps fallback: it would also start every
+            # server this project's .cursor/mcp.json declares.
+            return (
+                "Cursor CLI did not approve the Zenvi editor tools for this project. "
+                "Run `cursor-agent mcp enable zenvi-editor` in %s, then try again." % cwd
+            )
         return None
 
     def _build_env(self):
@@ -1939,10 +1971,6 @@ class CursorCliRunner(BaseAgentRunner):
             "--force", "--trust",
             "--workspace", self._cli_cwd or _project_cwd(),
         ]
-        if not self._mcp_approved:
-            # Approving zenvi-editor alone failed (an older CLI?). Without
-            # this the turn has no editor tools at all.
-            argv.append("--approve-mcps")
         if self._model_id:
             argv += ["--model", self._model_id]
         argv += _add_dir_args()
@@ -2260,6 +2288,8 @@ class OpenCodeRunner(BaseAgentRunner):
             err = ev.get("error") or {}
             self._last_error = ((err.get("data") or {}).get("message")
                                 or err.get("name") or "The agent reported an error.")
+            # The turn failed: text streamed before the error is not its answer.
+            self._final_text = ""
 
 
 def _opencode_native(cli: str) -> str:
@@ -2430,20 +2460,24 @@ class HermesRunner(BaseAgentRunner):
         elif kind == "session/prompt":
             self._prompting = False
             self._close_thinking()
-            if result.get("stopReason") == "refusal" and not self._final_text:
-                self._last_error = "Hermes declined to answer."
-            else:
+            stop = result.get("stopReason") or "end_turn"
+            if stop == "end_turn" or (stop == "cancelled" and self._cancelled):
                 self._emit_response(self._final_text)
+            else:
+                # Text streamed before a refusal or a limit is not a finished answer.
+                self._final_text = ""
+                self._last_error = ("Hermes declined to answer." if stop == "refusal"
+                                    else "Hermes stopped before finishing (%s)." % stop)
             self._finish()
 
     def _answer(self, ev: dict):
         """Reply to a request Hermes makes of us, so the turn never waits on it."""
         if ev.get("method") == "session/request_permission":
             # No one is there to click a permission dialog (see Claude's
-            # --dangerously-skip-permissions).
+            # --dangerously-skip-permissions). Only ever this once: allow_always
+            # would write a standing rule into the user's own Hermes config.
             options = (ev.get("params") or {}).get("options") or []
-            allow = next((o for o in options
-                          if str(o.get("kind") or "").startswith("allow")), None)
+            allow = next((o for o in options if o.get("kind") == "allow_once"), None)
             outcome = ({"outcome": "selected", "optionId": allow.get("optionId")}
                        if allow else {"outcome": "cancelled"})
             self._write({"jsonrpc": "2.0", "id": ev.get("id"), "result": {"outcome": outcome}})

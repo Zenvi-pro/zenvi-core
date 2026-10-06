@@ -60,3 +60,14 @@ def test_help_mentions_the_headless_contract(capsys):
     out = capsys.readouterr().out
     assert "--headless" in out and "headless_mcp.json" in out and "shutdown_headless_tool" in out
     assert "--project PATH" in out
+
+
+@pytest.mark.parametrize("argv", [
+    ("clip.mp4", "--project", "cut.zvn"),
+    ("clip.mp4", "--project=cut.zvn"),
+])
+def test_project_after_a_media_path_is_still_the_project(argv):
+    """Review #216: REMAINDER swallowed a --project that followed a file name."""
+    args, _extra = _parse(*argv)
+    assert args.project == "cut.zvn"
+    assert args.remain == ["clip.mp4"]
