@@ -68,17 +68,17 @@
 .preamble-try       { display: block; margin-top: 4px; font-size: 12px; opacity: 0.65; }
 
 /* ΓöÇΓöÇ Message entry animation ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
+/* Only the starting state is keyframed and nothing fills forwards: once the animation ends the node has no
+   transform at all. A node left with transform: translateY(0) is its own layer, and Chromium/Qt WebEngine can
+   no longer drag-select text inside it. */
 @keyframes chat-message-enter {
     from { opacity: 0; transform: translateY(12px); }
-    to   { opacity: 1; transform: translateY(0); }
 }
 
 .chat-message {
     margin-bottom: 8px;
     line-height: 1.55;
-    opacity: 0;
-    transform: translateY(12px);
-    animation: chat-message-enter 0.3s ease forwards;
+    animation: chat-message-enter 0.3s ease;
     -webkit-user-select: text;
     user-select: text;
 }
@@ -134,9 +134,7 @@
     font-size: 11px;
     font-family: ui-monospace, monospace;
     color: var(--chat-muted);
-    opacity: 0;
-    transform: translateY(6px);
-    animation: chat-message-enter 0.35s ease forwards;
+    animation: chat-message-enter 0.35s ease;
 }
 
 /* ΓöÇΓöÇ Typing indicator ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
@@ -508,9 +506,7 @@
     /* Blend into the chat background ΓÇö no raised card, just a row. */
     background: transparent;
     overflow: hidden;
-    opacity: 0;
-    transform: translateY(8px);
-    animation: chat-message-enter 0.25s ease forwards;
+    animation: chat-message-enter 0.25s ease;
 }
 
 .chat-tool-header {
@@ -1259,3 +1255,24 @@
     background: transparent;
 }
 
+
+
+/* ---- Selecting text in the transcript ----
+   Everything the user can read in the conversation is selectable (their messages, the assistant's, thinking,
+   tool output, errors, activity rows); only controls are not. */
+#chat-messages,
+#chat-messages * {
+    -webkit-user-select: text;
+    user-select: text;
+}
+#chat-messages button,
+#chat-messages [role="button"],
+#chat-messages .chat-thinking-header {
+    -webkit-user-select: none;
+    user-select: none;
+}
+/* The default highlight is nearly invisible on this dark theme, which reads as "I cannot select". */
+#chat-messages ::selection {
+    background: rgba(77, 156, 246, 0.55);
+    color: #ffffff;
+}

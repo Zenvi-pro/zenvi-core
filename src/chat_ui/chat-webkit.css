@@ -208,15 +208,18 @@ html[data-zenvi-webkit="1"] .chat-command-item.active {
         opacity: 0;
         -webkit-transform: translateY(12px);
     }
-    to {
-        opacity: 1;
-        -webkit-transform: translateY(0);
-    }
 }
 
+/* No fill-mode: after the animation the node carries no transform, so text in it stays selectable. */
 html[data-zenvi-webkit="1"] .chat-message {
-    -webkit-animation: chat-message-enter-wk 0.3s ease forwards;
-    animation: chat-message-enter-wk 0.3s ease forwards;
+    -webkit-animation: chat-message-enter-wk 0.3s ease;
+    animation: chat-message-enter-wk 0.3s ease;
+}
+
+html[data-zenvi-webkit="1"] #chat-messages,
+html[data-zenvi-webkit="1"] #chat-messages * {
+    -webkit-user-select: text;
+    user-select: text;
 }
 
 /* Glow: WebKit-safe pulse (no conic-gradient / @property) */
