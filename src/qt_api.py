@@ -121,6 +121,21 @@ def isdeleted(obj):
     return not mod.isValid(obj)
 
 
+def release_to_cpp(obj):
+    """Give a parentless Qt object's lifetime to C++, so Python never destroys it.
+
+    For a QThread still stuck in a job at shutdown: destroying a running
+    QThread aborts the process ("QThread: Destroyed while thread is still
+    running"), so it is left for process exit instead. Returns True when
+    ownership moved (SIP bindings only).
+    """
+    backend, mod = _load_sip_like()
+    if backend == "sip" and mod is not None:
+        mod.transferto(obj, None)
+        return True
+    return False
+
+
 def modifiers_has(modifiers, flag):
     """Return True if a modifier flag is set on a modifiers bitmask."""
     try:
@@ -2769,6 +2784,23 @@ def __getattr__(name: str) -> Any:
                 QtTest = None
             if QtTest is not None and hasattr(QtTest, "QAbstractItemModelTester"):
                 return QtTest.QAbstractItemModelTester
+        except Exception:
+            pass
+    if name in ("QLocalServer", "QLocalSocket"):
+        # QtNetwork is loaded on demand: only the single-instance handoff uses it.
+        try:
+            if QT_API == "pyqt6":
+                import PyQt6.QtNetwork as QtNetwork  # type: ignore
+            elif QT_API == "pyside6":
+                import PySide6.QtNetwork as QtNetwork  # type: ignore
+            elif QT_API == "pyqt5":
+                import PyQt5.QtNetwork as QtNetwork  # type: ignore
+            else:
+                QtNetwork = None
+            if QtNetwork is not None:
+                value = getattr(QtNetwork, name)
+                globals()[name] = value
+                return value
         except Exception:
             pass
     for module in _MODULES:

@@ -84,7 +84,10 @@ def test_freeze_uses_absolute_trim_end_for_right_side_split_clip(timeline_module
     )
     app = types.SimpleNamespace(
         project=types.SimpleNamespace(get=lambda key: {"num": 30, "den": 1} if key == "fps" else None),
-        updates=types.SimpleNamespace(apply_last_action_to_history=lambda _data: None),
+        # transaction_id: the menu handlers join an in-flight undo group
+        # (updates.nested_transaction) and read it.
+        updates=types.SimpleNamespace(apply_last_action_to_history=lambda _data: None, transaction_id=None,
+                                      ignore_history=False),
     )
 
     with patch.object(timeline_module.Clip, "get", return_value=clip), \

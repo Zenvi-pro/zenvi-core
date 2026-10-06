@@ -18,9 +18,12 @@ import importlib.util
 import os
 import pathlib
 import re
+import shutil
 import sys
 import types
 from unittest.mock import MagicMock
+
+import pytest
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if _ROOT not in sys.path:
@@ -137,6 +140,20 @@ class _StubQtApiModule(_StubQtModule):
         return value
 
 
+class _SkipWithoutLibopenshot(importlib.abc.MetaPathFinder):
+    """Real-Qt run without libopenshot: skip the test module that imports it.
+
+    The real-qt-tests CI job has PyQt5 from pip and no libopenshot. A test file
+    that reaches ``import openshot`` (often through src/) without its own
+    importorskip was a collection error there, which failed the whole job.
+    """
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "openshot":
+            pytest.skip("needs libopenshot", allow_module_level=True)
+        return None
+
+
 class _StubPyQt5Finder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     """Resolve any not-yet-stubbed ``PyQt5.*`` import to a MagicMock module.
 
@@ -180,6 +197,8 @@ def _install_stubs():
             raise RuntimeError(
                 "ZENVI_REAL_QT=1 but PyQt5 is not installed in this environment"
             )
+        if importlib.util.find_spec("openshot") is None:
+            sys.meta_path.insert(0, _SkipWithoutLibopenshot())
         return False
 
     pyqt5 = types.ModuleType("PyQt5")
@@ -211,6 +230,23 @@ def _install_stubs():
 _STUBBED = _install_stubs()
 
 
+@pytest.fixture(scope="session")
+def inspect_h264_fixture():
+    """Materialize tests/fixtures/media/h264_720p30_2s.mp4 via ffmpeg if missing."""
+    import pytest
+
+    script = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "generate_inspect_fixtures.py"
+    spec = importlib.util.spec_from_file_location("generate_inspect_fixtures", script)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not on PATH")
+    path = mod.ensure_fixture("h264_720p30_2s.mp4")
+    assert path.exists() and path.stat().st_size > 1024
+    return path
+
+
 # Modules that ask for the *real* Qt with ``pytest.importorskip("PyQt5...")``
 # would silently bind to the stub instead and then fail on things a mock cannot
 # do (subclassing QMainWindow, running an event loop).  They used to skip only
@@ -227,3 +263,18 @@ if _STUBBED:
                 collect_ignore.append(_path.name)
         except OSError:
             continue
+
+
+@pytest.fixture
+def editor():
+    """A headless editor (real project store + undo machinery) for editor-tool tests.
+
+    See tests/editor_tools_harness.py.
+    """
+    from editor_tools_harness import make_editor
+
+    harness = make_editor()
+    try:
+        yield harness
+    finally:
+        harness.stop()

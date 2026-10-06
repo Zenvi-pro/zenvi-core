@@ -37,7 +37,7 @@ import json
 
 from qt_api import QFileDialog, QMessageBox
 
-from classes import info
+from classes import headless, info
 from classes.app import get_app
 from classes.clip_placement import (
     apply_audio_only_clip_overrides,
@@ -47,6 +47,8 @@ from classes.qt_main_thread import invoke_on_gui
 from classes.image_types import get_media_type, is_audio_only_media
 from classes.json_data import JsonDataStore
 from classes.logger import log
+from classes import frame_time as ft
+from classes.clip_utils import project_fps_fraction
 from classes.updates import UpdateInterface
 from classes.assets import (
     get_assets_path,
@@ -76,6 +78,9 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
         # Track changes after save
         self.has_unsaved_changes = False
+
+        # Media paths the last load could not find (see check_if_paths_are_valid)
+        self.last_missing_media = []
 
         # Load default project data on creation
         self.new()
@@ -453,11 +458,20 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
         return profile
 
-    def load(self, file_path, clear_thumbnails=True):
-        """ Load project from file """
+    def load(self, file_path, clear_thumbnails=True, interactive=True):
+        """ Load project from file
+
+        interactive=False never opens the missing-media dialog: files that cannot
+        be relinked silently stay in place and are listed in last_missing_media.
+        """
 
         self.new()
+        self.last_missing_media = []
 
+        if not file_path:
+            # A blank project: the previous one is free for other sessions.
+            from classes import project_lock
+            project_lock.release()
         if file_path:
             log.info("Loading project file: %s", file_path)
 
@@ -515,11 +529,12 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             self.has_unsaved_changes = False
 
             # Check if paths are all valid
-            self.check_if_paths_are_valid()
+            self.check_if_paths_are_valid(interactive=interactive)
 
-            # Clear old thumbnails
+            # Clear old thumbnails (never headless: the default folder belongs
+            # to a desktop window that may be running alongside)
             openshot_thumbnails = info.get_default_path("THUMBNAIL_PATH")
-            if os.path.exists(openshot_thumbnails) and clear_thumbnails:
+            if os.path.exists(openshot_thumbnails) and clear_thumbnails and not headless.is_active():
                 # Clear thumbnails
                 shutil.rmtree(openshot_thumbnails, True)
                 os.mkdir(openshot_thumbnails)
@@ -568,8 +583,8 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                                    "libopenshot": openshot.OPENSHOT_VERSION_FULL}
 
         # Get FPS from project
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
+        fps = project_fps_fraction()
+        fps_float = float(fps)
 
         # Import legacy openshot classes (from version 1.X)
         from classes.legacy.openshot import classes as legacy_classes
@@ -690,9 +705,9 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                             # Video Fade IN
                             if clip.video_fade_in:
                                 # Add keyframes
-                                start = openshot.Point(round(clip.start_time * fps_float) + 1, 0.0, openshot.BEZIER)
+                                start = openshot.Point(ft.keyframe_x(clip.start_time, fps), 0.0, openshot.BEZIER)
                                 start_object = json.loads(start.Json(), strict=False)
-                                end = openshot.Point(round((clip.start_time + clip.video_fade_in_amount) * fps_float) + 1, 1.0, openshot.BEZIER)
+                                end = openshot.Point(ft.keyframe_x(clip.start_time + clip.video_fade_in_amount, fps), 1.0, openshot.BEZIER)
                                 end_object = json.loads(end.Json(), strict=False)
                                 new_clip["alpha"]["Points"].append(start_object)
                                 new_clip["alpha"]["Points"].append(end_object)
@@ -700,9 +715,9 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                             # Video Fade OUT
                             if clip.video_fade_out:
                                 # Add keyframes
-                                start = openshot.Point(round((clip.end_time - clip.video_fade_out_amount) * fps_float) + 1, 1.0, openshot.BEZIER)
+                                start = openshot.Point(ft.keyframe_x(clip.end_time - clip.video_fade_out_amount, fps), 1.0, openshot.BEZIER)
                                 start_object = json.loads(start.Json(), strict=False)
-                                end = openshot.Point(round(clip.end_time * fps_float) + 1, 0.0, openshot.BEZIER)
+                                end = openshot.Point(ft.keyframe_x(clip.end_time, fps), 0.0, openshot.BEZIER)
                                 end_object = json.loads(end.Json(), strict=False)
                                 new_clip["alpha"]["Points"].append(start_object)
                                 new_clip["alpha"]["Points"].append(end_object)
@@ -718,9 +733,9 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                             # Audio Fade IN
                             if clip.audio_fade_in:
                                 # Add keyframes
-                                start = openshot.Point(round(clip.start_time * fps_float) + 1, 0.0, openshot.BEZIER)
+                                start = openshot.Point(ft.keyframe_x(clip.start_time, fps), 0.0, openshot.BEZIER)
                                 start_object = json.loads(start.Json(), strict=False)
-                                end = openshot.Point(round((clip.start_time + clip.video_fade_in_amount) * fps_float) + 1, clip.volume / 100.0, openshot.BEZIER)
+                                end = openshot.Point(ft.keyframe_x(clip.start_time + clip.video_fade_in_amount, fps), clip.volume / 100.0, openshot.BEZIER)
                                 end_object = json.loads(end.Json(), strict=False)
                                 new_clip["volume"]["Points"].append(start_object)
                                 new_clip["volume"]["Points"].append(end_object)
@@ -728,9 +743,9 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                             # Audio Fade OUT
                             if clip.audio_fade_out:
                                 # Add keyframes
-                                start = openshot.Point(round((clip.end_time - clip.video_fade_out_amount) * fps_float) + 1, clip.volume / 100.0, openshot.BEZIER)
+                                start = openshot.Point(ft.keyframe_x(clip.end_time - clip.video_fade_out_amount, fps), clip.volume / 100.0, openshot.BEZIER)
                                 start_object = json.loads(start.Json(), strict=False)
-                                end = openshot.Point(round(clip.end_time * fps_float) + 1, 0.0, openshot.BEZIER)
+                                end = openshot.Point(ft.keyframe_x(clip.end_time, fps), 0.0, openshot.BEZIER)
                                 end_object = json.loads(end.Json(), strict=False)
                                 new_clip["volume"]["Points"].append(start_object)
                                 new_clip["volume"]["Points"].append(end_object)
@@ -757,7 +772,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
                             brightness = openshot.Keyframe()
                             brightness.AddPoint(1, trans_begin_value, openshot.BEZIER)
-                            brightness.AddPoint(round(trans.length * fps_float) + 1, trans_end_value, openshot.BEZIER)
+                            brightness.AddPoint(ft.keyframe_x(trans.length, fps), trans_end_value, openshot.BEZIER)
                             contrast = openshot.Keyframe(trans.softness * 10.0)
 
                             # Create transition dictionary
@@ -1487,11 +1502,13 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         s.set("recent_projects", recent_projects)
         s.save()
 
-    def check_if_paths_are_valid(self):
+    def check_if_paths_are_valid(self, interactive=True):
         """Check if all paths are valid, and prompt to update them if needed.
 
         Shows one dialog: skip all, or pick a single folder and fingerprint-match
         every missing file under it. Cancel keeps files and clips in place.
+        interactive=False behaves like "Skip all" without asking, after the
+        silent media-root relink.
         """
         app = get_app()
         settings = app.get_settings()
@@ -1558,16 +1575,35 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         missing_files.sort(key=lambda item: os.path.basename(item[1]).lower())
         missing_clips.sort(key=lambda item: os.path.basename(item[1]).lower())
 
-        total_missing = len(missing_files) + len(missing_clips)
+        # A moved file is missing once for its Project Files entry and again for
+        # every clip cut from it; the prompt counts and names each path once.
+        missing_paths = []
+        seen_paths = set()
+        for _item, p in missing_files + missing_clips:
+            key = os.path.normcase(os.path.normpath(p))
+            if key not in seen_paths:
+                seen_paths.add(key)
+                missing_paths.append(p)
+
+        total_missing = len(missing_paths)
+        self.last_missing_media = sorted(missing_paths)
         if total_missing == 0:
             return
+        if not interactive:
+            log.info("Opening with %s missing file(s) without prompting", total_missing)
+            return
 
-        sample_names = []
-        for _f, p in (missing_files + missing_clips)[:5]:
-            sample_names.append(os.path.basename(p))
+        sample_names = [os.path.basename(p) for p in missing_paths[:5]]
         sample_text = ", ".join(sample_names)
         if total_missing > 5:
             sample_text = _("%s and %s more") % (sample_text, total_missing - 5)
+
+        if headless.is_active():
+            # Nobody can pick a folder: open as "Skip all" would.
+            headless.report(
+                "the project references %s missing file(s), left missing: %s"
+                % (total_missing, sample_text))
+            return
 
         msg = QMessageBox(dialog_parent)
         msg.setWindowTitle(_("Missing project files"))
@@ -1599,71 +1635,91 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             log.info("Locate folder cancelled; leaving %s missing file(s) in place", total_missing)
             return
 
-        wanted = set()
-        for file, _path in missing_files:
-            fp = file.get("fingerprint")
-            if isinstance(fp, dict) and fp.get("sha256"):
-                wanted.add(fp["sha256"])
-        index = scan_folder_for_fingerprints(folder, wanted=wanted or None)
-        remember_media_root(folder)
-
-        # Also match by basename when fingerprint is missing (legacy projects).
-        basename_hits = {}
-        for root, _dirs, names in os.walk(folder):
-            for name in names:
-                if name not in basename_hits:
-                    basename_hits[name] = os.path.join(root, name)
-
-        def _relink(path, fp):
-            if isinstance(fp, dict) and fp.get("sha256") and fp["sha256"] in index:
-                return index[fp["sha256"]]
-            base = os.path.basename(path or "")
-            if base in basename_hits:
-                hit = basename_hits[base]
-                # Basename-only matching is legacy fallback; when a fingerprint
-                # exists, require a digest match so duplicate names cannot swap media.
+        # Fingerprinting and walking a large or slow folder takes a while: the
+        # worker only reads and returns a plan, and the project is written
+        # here on the calling thread (timers keep running during the scan and
+        # must never see, or autosave, a half-relinked project).
+        def _plan_relinks():
+            wanted = set()
+            for file, _path in missing_files:
+                fp = file.get("fingerprint")
                 if isinstance(fp, dict) and fp.get("sha256"):
-                    stamped = fingerprint(hit)
-                    if stamped and stamped.get("sha256") == fp["sha256"]:
-                        return hit
-                    return None
-                return hit
-            return None
+                    wanted.add(fp["sha256"])
+            index = scan_folder_for_fingerprints(folder, wanted=wanted or None)
 
-        for file, path in missing_files:
-            hit = _relink(path, file.get("fingerprint"))
-            if hit:
-                file["path"] = hit
-                if not file.get("fingerprint"):
-                    stamped = fingerprint(hit)
-                    if stamped:
-                        file["fingerprint"] = stamped
-                if settings:
-                    settings.setDefaultPath(settings.actionType.IMPORT, hit)
-                log.info("Relinked missing file: %s -> %s", path, hit)
+            # Also match by basename when fingerprint is missing (legacy projects).
+            basename_hits = {}
+            for root, _dirs, names in os.walk(folder):
+                for name in names:
+                    if name not in basename_hits:
+                        basename_hits[name] = os.path.join(root, name)
 
-        # Build file_id -> path map after file relinks.
-        file_paths_by_id = {
-            f.get("id"): f.get("path")
-            for f in (self._data.get("files") or [])
-            if f.get("id") and f.get("path") and os.path.exists(f.get("path"))
-        }
-        file_fp_by_id = {
-            f.get("id"): f.get("fingerprint")
-            for f in (self._data.get("files") or [])
-            if f.get("id") and isinstance(f.get("fingerprint"), dict)
-        }
+            def _relink(path, fp):
+                if isinstance(fp, dict) and fp.get("sha256") and fp["sha256"] in index:
+                    return index[fp["sha256"]]
+                base = os.path.basename(path or "")
+                if base in basename_hits:
+                    hit = basename_hits[base]
+                    # Basename-only matching is legacy fallback; when a fingerprint
+                    # exists, require a digest match so duplicate names cannot swap media.
+                    if isinstance(fp, dict) and fp.get("sha256"):
+                        stamped = fingerprint(hit)
+                        if stamped and stamped.get("sha256") == fp["sha256"]:
+                            return hit
+                        return None
+                    return hit
+                return None
 
-        for clip, path in missing_clips:
-            file_id = clip.get("file_id")
-            if file_id and file_id in file_paths_by_id:
-                clip.setdefault("reader", {})["path"] = file_paths_by_id[file_id]
-                log.info("Relinked missing clip via file_id: %s", file_paths_by_id[file_id])
-                continue
-            hit = _relink(path, file_fp_by_id.get(file_id))
-            if hit:
-                clip.setdefault("reader", {})["path"] = hit
+            file_plan = []   # (file, old path, new path, fingerprint to stamp or None)
+            new_path_of = {}
+            for file, path in missing_files:
+                hit = _relink(path, file.get("fingerprint"))
+                if hit:
+                    stamp = None if file.get("fingerprint") else fingerprint(hit)
+                    file_plan.append((file, path, hit, stamp))
+                    new_path_of[id(file)] = hit
+
+            # file_id -> path as it will be once the file relinks are applied.
+            file_paths_by_id = {}
+            file_fp_by_id = {}
+            for f in (self._data.get("files") or []):
+                fid = f.get("id")
+                if not fid:
+                    continue
+                path = new_path_of.get(id(f), f.get("path"))
+                if path and os.path.exists(path):
+                    file_paths_by_id[fid] = path
+                if isinstance(f.get("fingerprint"), dict):
+                    file_fp_by_id[fid] = f.get("fingerprint")
+
+            clip_plan = []   # (clip, old path, new path, matched through its file?)
+            for clip, path in missing_clips:
+                file_id = clip.get("file_id")
+                if file_id and file_id in file_paths_by_id:
+                    clip_plan.append((clip, path, file_paths_by_id[file_id], True))
+                    continue
+                hit = _relink(path, file_fp_by_id.get(file_id))
+                if hit:
+                    clip_plan.append((clip, path, hit, False))
+            return file_plan, clip_plan
+
+        from classes.qt_main_thread import run_off_gui
+
+        file_plan, clip_plan = run_off_gui(_plan_relinks)
+        remember_media_root(folder)
+        for file, path, hit, stamp in file_plan:
+            file["path"] = hit
+            if stamp:
+                file["fingerprint"] = stamp
+            log.info("Relinked missing file: %s -> %s", path, hit)
+        for clip, path, hit, via_file in clip_plan:
+            clip.setdefault("reader", {})["path"] = hit
+            if via_file:
+                log.info("Relinked missing clip via file_id: %s", hit)
+            else:
                 log.info("Relinked missing clip: %s -> %s", path, hit)
+        if settings and file_plan:
+            settings.setDefaultPath(settings.actionType.IMPORT, file_plan[-1][2])
 
     def changed(self, action):
         """ This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface) """

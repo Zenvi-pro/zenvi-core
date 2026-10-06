@@ -246,8 +246,10 @@ class ClipInteractionMixin:
                 initial_start = start
             original_start = float(initial_start)
             duration = end - start
-            target_end = self._snap_time(original_start + duration)
-            target_position = self._snap_time(position)
+            # Quantize as one span so the retimed length keeps its frame count.
+            target_position, _start, target_end = self._quantize_span(
+                position, original_start, original_start + duration
+            )
             if not retime_clip(clip, target_end, target_position, direction=1):
                 return False
             ui_data = clip.data.get("ui")

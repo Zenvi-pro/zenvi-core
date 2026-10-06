@@ -25,7 +25,6 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-import json
 import os
 from urllib.parse import unquote, urlparse
 from xml.dom import minidom, Node
@@ -33,6 +32,8 @@ from xml.dom import minidom, Node
 import openshot
 from qt_api import QFileDialog
 
+from classes import frame_time as ft
+from fractions import Fraction
 from classes import info
 from classes.app import get_app
 from classes.logger import log
@@ -40,6 +41,7 @@ from classes.image_types import get_media_type
 from classes.path_utils import absolute_path_from_export, absolute_media_path
 from classes.query import Clip, Track, File
 from windows.views.find_file import find_missing_file
+from classes.importers.media_probe import probe_clip
 
 
 def _pathurl_to_path(path_url, base_folder):
@@ -249,8 +251,13 @@ def _xml_interp_to_point(value):
     return openshot.LINEAR
 
 
-def import_xml():
-    """Import final cut pro XML file"""
+def import_xml(file_path=None, prompt=True):
+    """Import final cut pro XML file
+
+    With no *file_path*, asks for one (File > Import Project > XML). prompt=False
+    never opens a dialog: missing media is skipped. Returns a summary dict
+    ({"track_numbers", "clip_ids", "missing"}), or None when nothing was chosen.
+    """
     app = get_app()
     _ = app._tr
 
@@ -261,21 +268,25 @@ def import_xml():
     project_width = app.project.get("width") or 1920
     project_height = app.project.get("height") or 1080
 
-    # Get XML path
-    recommended_path = app.project.current_filepath or ""
-    if not recommended_path:
-        recommended_path = info.HOME_PATH
-    else:
-        recommended_path = os.path.dirname(recommended_path)
-    file_path = QFileDialog.getOpenFileName(app.window, _("Import XML..."), recommended_path,
-                                            _("Final Cut Pro (*.xml)"), _("Final Cut Pro (*.xml)"))[0]
+    if file_path is None:
+        # Get XML path
+        recommended_path = app.project.current_filepath or ""
+        if not recommended_path:
+            recommended_path = info.HOME_PATH
+        else:
+            recommended_path = os.path.dirname(recommended_path)
+        file_path = QFileDialog.getOpenFileName(app.window, _("Import XML..."), recommended_path,
+                                                _("Final Cut Pro (*.xml)"), _("Final Cut Pro (*.xml)"))[0]
 
     if not file_path or not os.path.exists(file_path):
         # User canceled dialog
-        return
+        return None
+    summary = {"track_numbers": [], "clip_ids": [], "missing": []}
+    probes = {}
 
-    # Parse XML file
-    xmldoc = minidom.parse(file_path)
+    # Parse XML file (off the GUI thread: a large export takes a while)
+    from classes.qt_main_thread import run_off_gui
+    xmldoc = run_off_gui(minidom.parse, file_path)
     xml_folder = os.path.dirname(os.path.abspath(file_path))
 
     # Build lookup for shared <file> nodes
@@ -347,6 +358,7 @@ def import_xml():
                     track = Track()
                     track.data = {"number": track_number, "y": 0, "label": "XML Import %s" % track_index, "lock": is_locked}
                     track.save()
+                    summary["track_numbers"].append(track_number)
 
             # Loop through clips
             for clip_element in clips_on_track:
@@ -358,21 +370,29 @@ def import_xml():
                 if not clip_path:
                     continue
 
-                clip_path, is_modified, is_skipped = find_missing_file(clip_path)
+                original_clip_path = clip_path
+                clip_path, is_modified, is_skipped = find_missing_file(clip_path, prompt=prompt)
                 if is_skipped:
+                    summary["missing"].append(original_clip_path)
                     continue
 
                 # Check for this path in our existing project data
                 file = File.get(path=clip_path)
 
-                # Load filepath in libopenshot clip object (which will try multiple readers to open it)
-                clip_obj = openshot.Clip(clip_path)
+                # Open the media in libopenshot (off the GUI thread, once per import)
+                try:
+                    clip_json, reader_json = probe_clip(clip_path, probes, openshot)
+                except Exception:
+                    log.warning("Could not open %s" % clip_path, exc_info=1)
+                    summary["missing"].append(original_clip_path)
+                    continue
 
                 if not file:
                     # Get the JSON for the clip's internal reader
                     try:
-                        reader = clip_obj.Reader()
-                        file_data = json.loads(reader.Json())
+                        if reader_json is None:
+                            raise ValueError("no reader for %s" % clip_path)
+                        file_data = reader_json
 
                         # Determine media type
                         file_data["media_type"] = get_media_type(file_data)
@@ -385,6 +405,8 @@ def import_xml():
                         file.save()
                     except Exception:
                         log.warning('Error building File object for %s' % clip_path, exc_info=1)
+                        summary["missing"].append(clip_path)
+                        continue
 
                 if (file.data["media_type"] == "video" or file.data["media_type"] == "image"):
                     # Determine thumb path
@@ -399,7 +421,7 @@ def import_xml():
                 clip_end_value = _float_value(clip_element.getElementsByTagName("out"), 0.0) / fps_float
                 clip_position_value = _float_value(clip_element.getElementsByTagName("start"), 0.0) / fps_float
 
-                clip.data = json.loads(clip_obj.Json())
+                clip.data = clip_json
                 clip.data["file_id"] = file.id
                 clip_name_nodes = clip_element.getElementsByTagName("name")
                 clip_title = _node_text_content(clip_name_nodes[0]) if clip_name_nodes else None
@@ -408,6 +430,10 @@ def import_xml():
                 clip.data["title"] = clip_title
                 clip.data["layer"] = track_number
                 clip.data["image"] = thumb_path
+                fps = Fraction(int(fps_num), int(fps_den))
+                clip_position_value, clip_start_value, clip_end_value = ft.quantize_span(
+                    clip_position_value, clip_start_value, clip_end_value, fps
+                )
                 clip.data["position"] = clip_position_value
                 clip.data["start"] = clip_start_value
                 clip.data["end"] = clip_end_value
@@ -582,6 +608,8 @@ def import_xml():
                     clip.data["volume"] = {"Points": volume_points}
                 # Save clip
                 clip.save()
+                if clip.id not in summary["clip_ids"]:
+                    summary["clip_ids"].append(clip.id)
 
                 if not is_audio_track_list and merge_key:
                     imported_clip_map[merge_key] = clip
@@ -592,3 +620,4 @@ def import_xml():
 
     # Free up DOM memory
     xmldoc.unlink()
+    return summary

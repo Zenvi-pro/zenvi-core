@@ -13,6 +13,7 @@ import pytest
 from classes.export_acceleration.export_tuning import (
     export_cache_bytes,
     get_export_pipeline_profile,
+    media_paths_under_proxy_root,
     uses_mp4_faststart_preset,
 )
 from classes.export_acceleration.hw_decode import (
@@ -30,8 +31,11 @@ from classes.export_acceleration.hw_encode import (
     platform_encoder_candidates,
 )
 from classes.export_acceleration.smart_render import (
+    _time_curve_is_identity,
     analyze_smart_render_spans,
     clip_smart_render_reasons,
+    clip_transform_reasons,
+    decide_smart_render,
 )
 from classes.export_acceleration.background_render import (
     BackgroundRenderManager,
@@ -54,6 +58,24 @@ def test_export_cache_bytes_scales_with_resolution():
     assert hd >= 256 * 1024 * 1024
     assert uhd > hd
     assert uhd <= 2 * 1024 * 1024 * 1024
+
+
+def test_media_paths_under_proxy_root_detects_proxy_only(tmp_path):
+    proxy_root = tmp_path / "optimized"
+    proxy_root.mkdir()
+    original = tmp_path / "clips" / "a.mp4"
+    original.parent.mkdir()
+    original.write_bytes(b"x")
+    proxy = proxy_root / "a_proxy.mp4"
+    proxy.write_bytes(b"y")
+    project = {
+        "files": [{"path": str(original)}],
+        "clips": [{"reader": {"path": str(proxy)}}],
+    }
+    hits = media_paths_under_proxy_root(project, str(proxy_root))
+    assert hits == [str(proxy)]
+    clean = {"files": [{"path": str(original)}], "clips": [{"reader": {"path": str(original)}}]}
+    assert media_paths_under_proxy_root(clean, str(proxy_root)) == []
 
 
 def test_pipeline_profile_serial_on_low_core():
@@ -276,6 +298,44 @@ def test_pipelined_export_cancel():
     assert len(writer.written) < 200
 
 
+def test_cancel_never_closes_a_timeline_a_compositor_is_still_using(monkeypatch):
+    """A worker stuck in GetFrame past the join timeout must keep its timeline open."""
+    from classes.export_acceleration import export_pipeline
+
+    release = threading.Event()
+    busy = threading.Event()
+
+    class _StuckTimeline(_FakeTimeline):
+        closed_while_busy = False
+        in_get_frame = False
+
+        def GetFrame(self, n):
+            self.in_get_frame = True
+            busy.set()
+            release.wait(10)
+            self.in_get_frame = False
+            return _FakeFrame(n)
+
+        def Close(self):
+            if self.in_get_frame:
+                _StuckTimeline.closed_while_busy = True
+
+    monkeypatch.setattr(export_pipeline, "_clone_timeline", lambda *a: (_StuckTimeline(), object()))
+    from dataclasses import replace
+    profile = replace(get_export_pipeline_profile(640, 360, 30), composite_workers=2)
+    try:
+        with pytest.raises(PipelineCancelled):
+            run_pipelined_export(
+                writer=_FakeWriter(), project_data={},
+                video_settings={"width": 640, "height": 360, "fps": {"num": 30, "den": 1}},
+                audio_settings={"sample_rate": 48000, "channels": 2, "channel_layout": 2},
+                start_frame=1, end_frame=50, is_cancelled=busy.is_set, profile=profile,
+            )
+        assert not _StuckTimeline.closed_while_busy
+    finally:
+        release.set()
+
+
 def test_pipelined_export_cancel_via_shared_flag():
     """Mirrors dialog cancel: a shared exporting flag flipped while blocked."""
     timeline = _FakeTimeline(delay=0.02)
@@ -342,8 +402,42 @@ def test_resolve_audio_codec_keeps_libmp3lame(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _clip(path, *, position=0.0, start=0.0, end=2.0, width=1920, height=1080, vcodec="h264"):
+def _pt(y):
+    return {"Points": [{"co": {"X": 1.0, "Y": y}}]}
+
+
+def _identity_color_grade():
     return {
+        "class_name": "ColorGrade",
+        "type": "ColorGrade",
+        "contrast": _pt(0.0),
+        "exposure": _pt(0.0),
+        "temperature": _pt(0.0),
+        "tint": _pt(0.0),
+        "shadows": _pt(0.0),
+        "highlights": _pt(0.0),
+        "vibrance": _pt(0.0),
+        "saturation": _pt(1.0),
+        "mix": _pt(1.0),
+        "lut_intensity": _pt(1.0),
+        "lut_path": "",
+    }
+
+
+def _clip(
+    path,
+    *,
+    position=0.0,
+    start=0.0,
+    end=2.0,
+    width=1920,
+    height=1080,
+    vcodec="h264",
+    with_color_grade=False,
+    source_duration=None,
+):
+    """OpenShot-shaped clip: location/rotation at 0, scale/volume/time/alpha at 1."""
+    clip = {
         "position": position,
         "start": start,
         "end": end,
@@ -353,15 +447,70 @@ def _clip(path, *, position=0.0, start=0.0, end=2.0, width=1920, height=1080, vc
             "height": height,
             "fps": {"num": 30, "den": 1},
             "vcodec": vcodec,
+            "duration": end if source_duration is None else source_duration,
         },
-        "scale_x": {"Points": [{"co": {"X": 1, "Y": 1.0}}]},
-        "scale_y": {"Points": [{"co": {"X": 1, "Y": 1.0}}]},
+        "scale_x": _pt(1.0),
+        "scale_y": _pt(1.0),
+        "location_x": _pt(0.0),
+        "location_y": _pt(0.0),
+        "rotation": _pt(0.0),
+        "shear_x": _pt(0.0),
+        "shear_y": _pt(0.0),
+        "volume": _pt(1.0),
+        "alpha": _pt(1.0),
+        "time": _pt(1.0),
         "effects": [],
     }
+    if with_color_grade:
+        clip["effects"] = [_identity_color_grade()]
+    return clip
 
 
-def test_clip_reasons_for_effect():
-    clip = _clip("/tmp/x.mp4")
+def test_identity_openshot_clip_has_no_transform_reasons(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    clip = _clip(str(path), with_color_grade=True)
+    assert clip_transform_reasons(clip) == []
+    reasons = clip_smart_render_reasons(
+        clip, export_width=1920, export_height=1080, export_fps=30, export_vcodec="libx264"
+    )
+    assert reasons == []
+
+
+def test_location_zero_is_not_translated(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    clip = _clip(str(path))
+    assert "translated" not in clip_transform_reasons(clip)
+    clip["location_x"] = _pt(0.5)
+    assert "translated" in clip_transform_reasons(clip)
+
+
+def test_time_keyframe_identity_not_speed_change(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    clip = _clip(str(path))
+    assert "speed-change" not in clip_transform_reasons(clip)
+    # Y≈X multi-point is forward 1x (post double-reverse).
+    clip["time"] = {"Points": [{"co": {"X": 1, "Y": 1}}, {"co": {"X": 2, "Y": 2}}]}
+    assert "speed-change" not in clip_transform_reasons(clip)
+    clip["time"] = {"Points": [{"co": {"X": 1, "Y": 30}}, {"co": {"X": 30, "Y": 1}}]}
+    assert "speed-change" in clip_transform_reasons(clip)
+
+
+def test_identity_color_grade_allowed_real_grade_blocked(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    clip = _clip(str(path), with_color_grade=True)
+    assert "has-effects" not in clip_transform_reasons(clip)
+    clip["effects"][0]["contrast"] = _pt(0.4)
+    assert "has-effects" in clip_transform_reasons(clip)
+
+
+def test_clip_reasons_for_effect(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    clip = _clip(str(path))
     clip["effects"] = [{"type": "Brightness"}]
     reasons = clip_smart_render_reasons(
         clip, export_width=1920, export_height=1080, export_fps=30, export_vcodec="libx264"
@@ -369,12 +518,24 @@ def test_clip_reasons_for_effect():
     assert "has-effects" in reasons
 
 
-def test_clip_reasons_resolution_mismatch():
-    clip = _clip("/tmp/x.mp4", width=1280, height=720)
+def test_clip_reasons_resolution_mismatch(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    clip = _clip(str(path), width=1280, height=720)
     reasons = clip_smart_render_reasons(
         clip, export_width=1920, export_height=1080, export_fps=30, export_vcodec="libx264"
     )
     assert "resolution-mismatch" in reasons
+
+
+def test_identity_crop_dict_not_cropped(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    clip = _clip(str(path))
+    clip["crop"] = {"x": _pt(0.0), "y": _pt(0.0), "right": _pt(1.0), "bottom": _pt(1.0)}
+    assert "cropped" not in clip_transform_reasons(clip)
+    clip["crop"]["x"] = _pt(0.2)
+    assert "cropped" in clip_transform_reasons(clip)
 
 
 def test_analyze_spans_marks_overlap_as_encode(tmp_path):
@@ -399,7 +560,6 @@ def test_analyze_spans_marks_overlap_as_encode(tmp_path):
         end_frame=90,
     )
     assert any(s.kind == "encode" for s in spans)
-    # Overlap region must not be copy-only for the whole timeline
     assert not all(s.kind == "copy" for s in spans)
 
 
@@ -409,7 +569,7 @@ def test_analyze_eligible_single_clip(tmp_path):
     project = {
         "fps": {"num": 30, "den": 1},
         "duration": 2,
-        "clips": [_clip(str(path))],
+        "clips": [_clip(str(path), with_color_grade=True)],
         "transitions": [],
     }
     spans = analyze_smart_render_spans(
@@ -423,6 +583,109 @@ def test_analyze_eligible_single_clip(tmp_path):
     )
     assert spans
     assert all(s.kind == "copy" for s in spans)
+
+
+def test_decide_full_copy_matched_h264(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    project = {
+        "fps": {"num": 30, "den": 1},
+        "clips": [_clip(str(path))],
+        "transitions": [],
+    }
+    decision = decide_smart_render(
+        project,
+        export_width=1920,
+        export_height=1080,
+        export_fps=30,
+        export_vcodec="libx264",
+        start_frame=1,
+        end_frame=60,
+        export_file_path=str(tmp_path / "out.mp4"),
+    )
+    assert decision.mode == "full_copy"
+
+
+def test_a_hevc_source_in_a_720p_h264_export_is_encoded(tmp_path):
+    """Copying the 1080p HEVC source would ignore the 720p H.264 the user asked for."""
+    path = tmp_path / "phone.mov"
+    path.write_bytes(b"fake")
+    project = {
+        "fps": {"num": 30, "den": 1},
+        "clips": [_clip(str(path), width=1920, height=1080, vcodec="hevc", with_color_grade=True)],
+        "transitions": [],
+    }
+    decision = decide_smart_render(
+        project,
+        export_width=1280,
+        export_height=720,
+        export_fps=30,
+        export_vcodec="libx264",
+        start_frame=1,
+        end_frame=60,
+        export_file_path=str(tmp_path / "out.mp4"),
+        vformat="mp4",
+    )
+    assert decision.mode == "none"
+    assert {"resolution-mismatch", "codec-mismatch"} <= set(decision.reason_counts)
+
+
+def test_decide_blocked_by_real_effect(tmp_path):
+    path = tmp_path / "phone.mov"
+    path.write_bytes(b"fake")
+    clip = _clip(str(path), vcodec="hevc")
+    clip["effects"] = [{"type": "Brightness"}]
+    project = {"fps": {"num": 30, "den": 1}, "clips": [clip], "transitions": []}
+    decision = decide_smart_render(
+        project,
+        export_width=1280,
+        export_height=720,
+        export_fps=30,
+        export_vcodec="libx264",
+        start_frame=1,
+        end_frame=60,
+        export_file_path=str(tmp_path / "out.mp4"),
+    )
+    assert decision.mode == "none"
+
+
+def test_decide_partial_when_second_clip_has_effect(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    clean = _clip(str(path), position=0.0, end=1.0)
+    dirty = _clip(str(path), position=1.0, end=2.0)
+    dirty["effects"] = [{"type": "Brightness"}]
+    project = {
+        "fps": {"num": 30, "den": 1},
+        "clips": [clean, dirty],
+        "transitions": [],
+    }
+    decision = decide_smart_render(
+        project,
+        export_width=1920,
+        export_height=1080,
+        export_fps=30,
+        export_vcodec="libx264",
+        start_frame=1,
+        end_frame=60,
+        export_file_path=str(tmp_path / "out.mp4"),
+        allow_partial=True,
+    )
+    assert decision.mode == "partial"
+    assert any(s.kind == "copy" for s in decision.spans)
+    assert any(s.kind == "encode" for s in decision.spans)
+
+
+def test_trimmed_clip_is_encoded(tmp_path):
+    """-ss/-t with -c copy starts on the keyframe before the cut and overshoots its end."""
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    clip = _clip(str(path), start=1.0, end=3.0)
+    assert "trimmed" in clip_transform_reasons(clip)
+    reasons = clip_smart_render_reasons(
+        clip, export_width=1920, export_height=1080, export_fps=30, export_vcodec="libx264"
+    )
+    assert "trimmed" in reasons
 
 
 # ---------------------------------------------------------------------------
@@ -473,3 +736,92 @@ def test_background_manager_budget_eviction(tmp_path):
     mgr._enforce_budget()
     remaining = list(root.iterdir())
     assert sum(f.stat().st_size for f in remaining) <= 250
+
+
+def test_agent_exports_default_to_the_software_encoder():
+    """exportPreferHardwareEncoder defaults off.
+
+    With libopenshot 1.0 and ffmpeg 9 on macOS, the pipelined headless export
+    handed software frames to h264_videotoolbox and libavcodec aborted the whole
+    app ("Assertion frame->format == AV_PIX_FMT_VIDEOTOOLBOX failed",
+    SIGABRT) on the first agent export. Hardware encode stays one preference away.
+    """
+    path = os.path.join(os.path.dirname(__file__), "..", "src", "settings", "_default.settings")
+    data = json.load(open(path, encoding="utf-8"))
+    pref = next(i for i in data if i.get("setting") == "exportPreferHardwareEncoder")
+    assert pref["value"] is False
+
+
+def test_time_identity_accepts_y_equals_x_and_rejects_reverse():
+    assert _time_curve_is_identity({"Points": [{"co": {"X": 1, "Y": 1}}, {"co": {"X": 30, "Y": 30}}]})
+    assert not _time_curve_is_identity({"Points": [{"co": {"X": 1, "Y": 30}}, {"co": {"X": 30, "Y": 1}}]})
+
+
+def test_decide_half_reversed_format_mismatch_uses_normalize_partial(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    clean = _clip(str(path), position=1.0, start=1.0, end=2.0, width=1920, height=1080, vcodec="h264")
+    dirty = _clip(str(path), position=0.0, start=0.0, end=1.0, width=1920, height=1080, vcodec="h264")
+    dirty["time"] = {"Points": [{"co": {"X": 1, "Y": 30}}, {"co": {"X": 30, "Y": 1}}]}
+    project = {"fps": {"num": 30, "den": 1}, "clips": [dirty, clean], "effects": [], "transitions": []}
+    decision = decide_smart_render(
+        project,
+        export_width=1280,
+        export_height=720,
+        export_fps=30,
+        export_vcodec="libx264",
+        start_frame=1,
+        end_frame=60,
+        export_file_path=str(tmp_path / "out.mp4"),
+        allow_partial=True,
+    )
+    assert decision.mode == "partial", (decision.mode, decision.detail, decision.reason_counts)
+    assert any(s.kind == "normalize" for s in decision.spans)
+    assert any(s.kind == "encode" and "speed-change" in s.reasons for s in decision.spans)
+
+
+def test_parked_timelines_are_closed_once_their_compositor_has_exited():
+    """PR #275 review: a timeline parked after a stuck cancel was kept (with
+    its caches) until the process exited."""
+    import threading
+    import types
+
+    from classes.export_acceleration import export_pipeline
+
+    release = threading.Event()
+    busy = threading.Thread(target=release.wait, daemon=True)
+    busy.start()
+    done = threading.Thread(target=lambda: None)
+    done.start()
+    done.join()
+    closed = []
+    still_busy = types.SimpleNamespace(Close=lambda: closed.append("busy"))
+    finished = types.SimpleNamespace(Close=lambda: closed.append("finished"))
+    export_pipeline._BUSY_TIMELINES[:] = [(busy, still_busy, []), (done, finished, [])]
+    try:
+        export_pipeline._reap_busy_timelines()
+        assert closed == ["finished"]
+        assert [entry[1] for entry in export_pipeline._BUSY_TIMELINES] == [still_busy]
+    finally:
+        release.set()
+        busy.join()
+        export_pipeline._BUSY_TIMELINES[:] = []
+
+
+def test_reaping_a_timeline_another_export_already_reaped_is_harmless(monkeypatch):
+    import threading
+    import types
+
+    from classes.export_acceleration import export_pipeline
+
+    done = threading.Thread(target=lambda: None)
+    done.start()
+    done.join()
+    entry = (done, types.SimpleNamespace(Close=lambda: None), [])
+
+    class _Raced(list):
+        def remove(self, item):  # the other export got there first
+            raise ValueError("list.remove(x): x not in list")
+
+    monkeypatch.setattr(export_pipeline, "_BUSY_TIMELINES", _Raced([entry]))
+    export_pipeline._reap_busy_timelines()

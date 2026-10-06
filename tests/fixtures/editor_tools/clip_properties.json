@@ -1,0 +1,801 @@
+{
+ "alpha": {
+  "choices": [],
+  "closest_point_x": 1.0,
+  "interpolation": 0,
+  "keyframe": true,
+  "max": 1.0,
+  "memo": "",
+  "min": 0.0,
+  "name": "Alpha",
+  "points": 1,
+  "previous_point_x": 1.0,
+  "readonly": false,
+  "type": "float",
+  "value": 1.0
+ },
+ "channel_filter": {
+  "choices": [],
+  "closest_point_x": 1.0,
+  "interpolation": 0,
+  "keyframe": true,
+  "max": 10.0,
+  "memo": "",
+  "min": -1.0,
+  "name": "Channel Filter",
+  "points": 1,
+  "previous_point_x": 1.0,
+  "readonly": false,
+  "type": "int",
+  "value": -1.0
+ },
+ "channel_mapping": {
+  "choices": [],
+  "closest_point_x": 1.0,
+  "interpolation": 0,
+  "keyframe": true,
+  "max": 10.0,
+  "memo": "",
+  "min": -1.0,
+  "name": "Channel Mapping",
+  "points": 1,
+  "previous_point_x": 1.0,
+  "readonly": false,
+  "type": "int",
+  "value": -1.0
+ },
+ "composite": {
+  "choices": [
+   {
+    "name": "Normal",
+    "selected": true,
+    "value": 0
+   },
+   {
+    "name": "Darken",
+    "selected": false,
+    "value": 16
+   },
+   {
+    "name": "Multiply",
+    "selected": false,
+    "value": 13
+   },
+   {
+    "name": "Color Burn",
+    "selected": false,
+    "value": 19
+   },
+   {
+    "name": "Lighten",
+    "selected": false,
+    "value": 17
+   },
+   {
+    "name": "Screen",
+    "selected": false,
+    "value": 14
+   },
+   {
+    "name": "Color Dodge",
+    "selected": false,
+    "value": 18
+   },
+   {
+    "name": "Add",
+    "selected": false,
+    "value": 12
+   },
+   {
+    "name": "Overlay",
+    "selected": false,
+    "value": 15
+   },
+   {
+    "name": "Soft Light",
+    "selected": false,
+    "value": 21
+   },
+   {
+    "name": "Hard Light",
+    "selected": false,
+    "value": 20
+   },
+   {
+    "name": "Difference",
+    "selected": false,
+    "value": 22
+   },
+   {
+    "name": "Exclusion",
+    "selected": false,
+    "value": 23
+   }
+  ],
+  "closest_point_x": -1,
+  "interpolation": 2,
+  "keyframe": false,
+  "max": 12.0,
+  "memo": "",
+  "min": 0.0,
+  "name": "Composite",
+  "points": 0,
+  "previous_point_x": -1,
+  "readonly": false,
+  "type": "int",
+  "value": 0.0
+ },
+ "corner_radius": {
+  "choices": [],
+  "closest_point_x": 1.0,
+  "interpolation": 0,
+  "keyframe": true,
+  "max": 0.5,
+  "memo": "",
+  "min": 0.0,
+  "name": "Corner Radius",
+  "points": 1,
+  "previous_point_x": 1.0,
+  "readonly": false,
+  "type": "float",
+  "value": 0.0
+ },
+ "display": {
+  "choices": [
+   {
+    "name": "None",
+    "selected": true,
+    "value": 0
+   },
+   {
+    "name": "Clip",
+    "selected": false,
+    "value": 1
+   },
+   {
+    "name": "Timeline",
+    "selected": false,
+    "value": 2
+   },
+   {
+    "name": "Both",
+    "selected": false,
+    "value": 3
+   }
+  ],
+  "closest_point_x": -1,
+  "interpolation": 2,
+  "keyframe": false,
+  "max": 3.0,
+  "memo": "",
+  "min": 0.0,
+  "name": "Frame Number",
+  "points": 0,
+  "previous_point_x": -1,
+  "readonly": false,
+  "type": "int",
+  "value": 0.0
+ },
+ "duration": {
+  "choices": [],
+  "closest_point_x": -1,
+  "interpolation": 2,
+  "keyframe": false,
+  "max": 5184000.0,
+  "memo": "",
+  "min": 0.0,
+  "name": "Duration",
+  "points": 0,
+  "previous_point_x": -1,
+  "readonly": true,
+  "type": "float",
+  "value": 0.0
+ },
+ "end": {
+  "choices": [],
+  "closest_point_x": -1,
+  "interpolation": 2,
+  "keyframe": false,
+  "max": 5184000.0,
+  "memo": "",
+  "min": 0.0,
+  "name": "End",
+  "points": 0,
+  "previous_point_x": -1,
+  "readonly": false,
+  "type": "float",
+  "value": 0.0
+ },
+ "gravity": {
+  "choices": [
+   {
+    "name": "Top Left",
+    "selected": false,
+    "value": 0
+   },
+   {
+    "name": "Top Center",
+    "selected": false,
+    "value": 1
+   },
+   {
+    "name": "Top Right",
+    "selected": false,
+    "value": 2
+   },
+   {
+    "name": "Left",
+    "selected": false,
+    "value": 3
+   },
+   {
+    "name": "Center",
+    "selected": true,
+    "value": 4
+   },
+   {
+    "name": "Right",
+    "selected": false,
+    "value": 5
+   },
+   {
+    "name": "Bottom Left",
+    "selected": false,
+    "value": 6
+   },
+   {
+    "name": "Bottom Center",
+    "selected": false,
+    "value": 7
+   },
+   {
+    "name": "Bottom Right",
+    "selected": false,
+    "value": 8
+   }
+  ],
+  "closest_point_x": -1,
+  "interpolation": 2,
+  "keyframe": false,
+  "max": 8.0,
+  "memo": "",
+  "min": 0.0,
+  "name": "Gravity",
+  "points": 0,
+  "previous_point_x": -1,
+  "readonly": false,
+  "type": "int",
+  "value": 4.0
+ },
+ "has_audio": {
+  "choices": [
+   {
+    "name": "Auto",
+    "selected": true,
+    "value": -1
+   },
+   {
+    "name": "Off",
+    "selected": false,
+    "value": 0
+   },
+   {
+    "name": "On",
+    "selected": false,
+    "value": 1
+   }
+  ],
+  "closest_point_x": 1.0,
+  "interpolation": 0,
+  "keyframe": true,
+  "max": 1.0,
+  "memo": "",
+  "min": -1.0,
+  "name": "Enable Audio",
+  "points": 1,
+  "previous_point_x": 1.0,
+  "readonly": false,
+  "type": "int",
+  "value": -1.0
+ },
+ "has_video": {
+  "choices": [
+   {
+    "name": "Auto",
+    "selected": true,
+    "value": -1
+   },
+   {
+    "name": "Off",
+    "selected": false,
+    "value": 0
+   },
+   {
+    "name": "On",
+    "selected": false,
+    "value": 1
+   }
+  ],
+  "closest_point_x": 1.0,
+  "interpolation": 0,
+  "keyframe": true,
+  "max": 1.0,
+  "memo": "",
+  "min": -1.0,
+  "name": "Enable Video",
+  "points": 1,
+  "previous_point_x": 1.0,
+  "readonly": false,
+  "type": "int",
+  "value": -1.0
+ },
+ "layer": {
+  "choices": [],
+  "closest_point_x": -1,
+  "interpolation": 2,
+  "keyframe": false,
+  "max": 20.0,
+  "memo": "",
+  "min": 0.0,
+  "name": "Track",
+  "points": 0,
+  "previous_point_x": -1,
+  "readonly": false,
+  "type": "int",
+  "value": 0.0
+ },
+ "location_x": {
+  "choices": [],
+  "closest_point_x": 1.0,
+  "interpolation": 0,
+  "keyframe": true,
+  "max": 1.0,
+  "memo": "",
+  "min": -1.0,
+  "name": "Location X",
+  "points": 1,
+  "previous_point_x": 1.0,
+  "readonly": false,
+  "type": "float",
+  "value": 0.0
+ },
+ "location_y": {
+  "choices": [],
+  "closest_point_x": 1.0,
+  "interpolation": 0,
+  "keyframe": true,
+  "max": 1.0,
+  "memo": "",
+  "min": -1.0,
+  "name": "Location Y",
+  "points": 1,
+  "previous_point_x": 1.0,
+  "readonly": false,
+  "type": "float",
+  "value": 0.0
+ },
+ "margin": {
+  "choices": [],
+  "closest_point_x": 1.0,
+  "interpolation": 0,
+  "keyframe": true,
+  "max": 0.5,
+  "memo": "",
+  "min": 0.0,
+  "name": "Margin",
+  "points": 1,
+  "previous_point_x": 1.0,
+  "readonly": false,
+  "type": "float",
+  "value": 0.0
+ },
+ "mixing": {
+  "choices": [
+   {
+    "name": "None",
+    "selected": true,
+    "value": 0
+   },
+   {
+    "name": "Average",
+    "selected": false,
+    "value": 1
+   },
+   {
+    "name": "Reduce",
+    "selected": false,
+    "value": 2
+   }
+  ],
+  "closest_point_x": -1,
+  "interpolation": 2,
+  "keyframe": false,
+  "max": 2.0,
+  "memo": "",
+  "min": 0.0,
+  "name": "Volume Mixing",
+  "points": 0,
+  "previous_point_x": -1,
+  "readonly": false,
+  "type": "int",
+  "value": 0.0
+ },
+ "origin_x": {
+  "choices": [],
+  "closest_point_x": 1.0,
+  "interpolation": 0,
+  "keyframe": true,
+  "max": 1.0,
+  "memo": "",
+  "min": 0.0,
+  "name": "Origin X",
+  "points": 1,
+  "previous_point_x": 1.0,
+  "readonly": false,
+  "type": "float",
+  "value": 0.5
+ },
+ "origin_y": {
+  "choices": [],
+  "closest_point_x": 1.0,
+  "interpolation": 0,
+  "keyframe": true,
+  "max": 1.0,
+  "memo": "",
+  "min": 0.0,
+  "name": "Origin Y",
+  "points": 1,
+  "previous_point_x": 1.0,
+  "readonly": false,
+  "type": "float",
+  "value": 0.5
+ },
+ "parentObjectId": {
+  "choices": [],
+  "closest_point_x": -1,
+  "interpolation": 2,
+  "keyframe": false,
+  "max": -1.0,
+  "memo": "",
+  "min": -1.0,
+  "name": "Parent",
+  "points": 0,
+  "previous_point_x": -1,
+  "readonly": false,
+  "type": "string",
+  "value": 0.0
+ },
+ "position": {
+  "choices": [],
+  "closest_point_x": -1,
+  "interpolation": 2,
+  "keyframe": false,
+  "max": 5184000.0,
+  "memo": "",
+  "min": 0.0,
+  "name": "Position",
+  "points": 0,
+  "previous_point_x": -1,
+  "readonly": false,
+  "type": "float",
+  "value": 0.0
+ },
+ "rotation": {
+  "choices": [],
+  "closest_point_x": -1.0,
+  "interpolation": 0,
+  "keyframe": false,
+  "max": 360.0,
+  "memo": "",
+  "min": -360.0,
+  "name": "Rotation",
+  "points": 0,
+  "previous_point_x": -1.0,
+  "readonly": false,
+  "type": "float",
+  "value": 0.0
+ },
+ "scale": {
+  "choices": [
+   {
+    "name": "Crop",
+    "selected": false,
+    "value": 0
+   },
+   {
+    "name": "Best Fit",
+    "selected": true,
+    "value": 1
+   },
+   {
+    "name": "Stretch",
+    "selected": false,
+    "value": 2
+   },
+   {
+    "name": "None",
+    "selected": false,
+    "value": 3
+   }
+  ],
+  "closest_point_x": -1,
+  "interpolation": 2,
+  "keyframe": false,
+  "max": 3.0,
+  "memo": "",
+  "min": 0.0,
+  "name": "Scale",
+  "points": 0,
+  "previous_point_x": -1,
+  "readonly": false,
+  "type": "int",
+  "value": 1.0
+ },
+ "scale_x": {
+  "choices": [],
+  "closest_point_x": 1.0,
+  "interpolation": 0,
+  "keyframe": true,
+  "max": 1.0,
+  "memo": "",
+  "min": 0.0,
+  "name": "Scale X",
+  "points": 1,
+  "previous_point_x": 1.0,
+  "readonly": false,
+  "type": "float",
+  "value": 1.0
+ },
+ "scale_y": {
+  "choices": [],
+  "closest_point_x": 1.0,
+  "interpolation": 0,
+  "keyframe": true,
+  "max": 1.0,
+  "memo": "",
+  "min": 0.0,
+  "name": "Scale Y",
+  "points": 1,
+  "previous_point_x": 1.0,
+  "readonly": false,
+  "type": "float",
+  "value": 1.0
+ },
+ "shear_x": {
+  "choices": [],
+  "closest_point_x": 1.0,
+  "interpolation": 0,
+  "keyframe": true,
+  "max": 1.0,
+  "memo": "",
+  "min": -1.0,
+  "name": "Shear X",
+  "points": 1,
+  "previous_point_x": 1.0,
+  "readonly": false,
+  "type": "float",
+  "value": 0.0
+ },
+ "shear_y": {
+  "choices": [],
+  "closest_point_x": 1.0,
+  "interpolation": 0,
+  "keyframe": true,
+  "max": 1.0,
+  "memo": "",
+  "min": -1.0,
+  "name": "Shear Y",
+  "points": 1,
+  "previous_point_x": 1.0,
+  "readonly": false,
+  "type": "float",
+  "value": 0.0
+ },
+ "start": {
+  "choices": [],
+  "closest_point_x": -1,
+  "interpolation": 2,
+  "keyframe": false,
+  "max": 5184000.0,
+  "memo": "",
+  "min": 0.0,
+  "name": "Start",
+  "points": 0,
+  "previous_point_x": -1,
+  "readonly": false,
+  "type": "float",
+  "value": 0.0
+ },
+ "time": {
+  "choices": [],
+  "closest_point_x": 1.0,
+  "interpolation": 0,
+  "keyframe": true,
+  "max": 5184000.0,
+  "memo": "",
+  "min": 0.0,
+  "name": "Time",
+  "points": 1,
+  "previous_point_x": 1.0,
+  "readonly": false,
+  "type": "float",
+  "value": 1.0
+ },
+ "volume": {
+  "choices": [],
+  "closest_point_x": 1.0,
+  "interpolation": 0,
+  "keyframe": true,
+  "max": 1.0,
+  "memo": "",
+  "min": 0.0,
+  "name": "Volume",
+  "points": 1,
+  "previous_point_x": 1.0,
+  "readonly": false,
+  "type": "float",
+  "value": 1.0
+ },
+ "wave_color": {
+  "alpha": {
+   "choices": [],
+   "closest_point_x": 1.0,
+   "interpolation": 0,
+   "keyframe": true,
+   "max": 255.0,
+   "memo": "",
+   "min": 0.0,
+   "name": "Alpha",
+   "points": 1,
+   "previous_point_x": 1.0,
+   "readonly": false,
+   "type": "float",
+   "value": 255.0
+  },
+  "blue": {
+   "choices": [],
+   "closest_point_x": 1.0,
+   "interpolation": 0,
+   "keyframe": true,
+   "max": 255.0,
+   "memo": "",
+   "min": 0.0,
+   "name": "Blue",
+   "points": 1,
+   "previous_point_x": 1.0,
+   "readonly": false,
+   "type": "float",
+   "value": 255.0
+  },
+  "choices": [],
+  "closest_point_x": 1.0,
+  "green": {
+   "choices": [],
+   "closest_point_x": 1.0,
+   "interpolation": 0,
+   "keyframe": true,
+   "max": 255.0,
+   "memo": "",
+   "min": 0.0,
+   "name": "Green",
+   "points": 1,
+   "previous_point_x": 1.0,
+   "readonly": false,
+   "type": "float",
+   "value": 123.0
+  },
+  "interpolation": 0,
+  "keyframe": true,
+  "max": 255.0,
+  "memo": "",
+  "min": 0.0,
+  "name": "Wave Color",
+  "points": 1,
+  "previous_point_x": 1.0,
+  "readonly": false,
+  "red": {
+   "choices": [],
+   "closest_point_x": 1.0,
+   "interpolation": 0,
+   "keyframe": true,
+   "max": 255.0,
+   "memo": "",
+   "min": 0.0,
+   "name": "Red",
+   "points": 1,
+   "previous_point_x": 1.0,
+   "readonly": false,
+   "type": "float",
+   "value": 0.0
+  },
+  "type": "color",
+  "value": 0.0
+ },
+ "waveform": {
+  "choices": [
+   {
+    "name": "Yes",
+    "selected": false,
+    "value": 1
+   },
+   {
+    "name": "No",
+    "selected": true,
+    "value": 0
+   }
+  ],
+  "closest_point_x": -1,
+  "interpolation": 2,
+  "keyframe": false,
+  "max": 1.0,
+  "memo": "",
+  "min": 0.0,
+  "name": "Waveform",
+  "points": 0,
+  "previous_point_x": -1,
+  "readonly": false,
+  "type": "int",
+  "value": 0.0
+ },
+ "waveform_mode": {
+  "choices": [
+   {
+    "name": "Waveform",
+    "selected": false,
+    "value": 0
+   },
+   {
+    "name": "Filled Waveform",
+    "selected": true,
+    "value": 1
+   },
+   {
+    "name": "Bars",
+    "selected": false,
+    "value": 2
+   },
+   {
+    "name": "Radial",
+    "selected": false,
+    "value": 3
+   },
+   {
+    "name": "Radial Bars",
+    "selected": false,
+    "value": 8
+   },
+   {
+    "name": "Spectrum",
+    "selected": false,
+    "value": 4
+   },
+   {
+    "name": "Phase Scope",
+    "selected": false,
+    "value": 5
+   },
+   {
+    "name": "Particles",
+    "selected": false,
+    "value": 6
+   },
+   {
+    "name": "VU Meter",
+    "selected": false,
+    "value": 7
+   }
+  ],
+  "closest_point_x": -1,
+  "interpolation": 2,
+  "keyframe": false,
+  "max": 8.0,
+  "memo": "",
+  "min": 0.0,
+  "name": "Waveform Mode",
+  "points": 0,
+  "previous_point_x": -1,
+  "readonly": false,
+  "type": "int",
+  "value": 1.0
+ }
+}
