@@ -6079,8 +6079,9 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
 
         try:
             log.info("Downloading video from URL: %s → %s", video_url, dest_path)
+            from classes.web_video_ingest import open_public_url
             req = urllib.request.Request(video_url, headers={"User-Agent": "ZenviApp/1.0"})
-            with urllib.request.urlopen(req, timeout=300) as response, open(dest_path, "wb") as out:
+            with open_public_url(req, timeout=300) as response, open(dest_path, "wb") as out:
                 while True:
                     chunk = response.read(65536)
                     if not chunk:
@@ -6479,7 +6480,7 @@ def _ingest_web_video_impl(
             raw_name = lower.rsplit("/", 1)[-1] or "video.mp4"
             dest = os.path.join(tmp_dir, raw_name)
             req = urllib.request.Request(raw_url, headers={"User-Agent": "ZenviApp/1.0"})
-            with urllib.request.urlopen(req, timeout=300) as response, open(dest, "wb") as out:
+            with wvi.open_public_url(req, timeout=300) as response, open(dest, "wb") as out:
                 while True:
                     chunk = response.read(65536)
                     if not chunk:
