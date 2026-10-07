@@ -336,10 +336,10 @@ def test_asking_again_after_approval_does_not_queue_a_second_time(library):
     assert r["files"][0]["state"] == "approved" and library.queued == ["L1"]
 
 
-def test_it_refuses_when_the_new_index_is_off(library, monkeypatch):
+def test_it_refuses_when_there_is_no_running_editor_index(library, monkeypatch):
     monkeypatch.setattr(flags, "v2_enabled", lambda: False)
     out = REGISTRY["index_long_file_tool"].func(file_ids=["L1"])
-    assert out.startswith("Error") and "media-index-v2" in out
+    assert out.startswith("Error") and "media index" in out
 
 
 def test_nothing_waiting_says_so(library):

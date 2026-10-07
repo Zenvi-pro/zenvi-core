@@ -392,13 +392,13 @@ def index_long_file(file_ids=None, file_query="", approve=False):
     AI after a yes, because describing one takes several cloud passes and uses credits. Call with approve=false to see
     how many passes and the most it can cost (a ceiling: the real charge follows what the AI used and is usually lower);
     ask the user; then call with approve=true. Each pass is charged on its own, so an interrupted run never repays what
-    already finished. Needs media-index-v2 on.
+    already finished.
     """
     from classes.indexing_status import SKIP_LONG
     from classes.media_index import longfile
     from classes.media_index.flags import v2_enabled
     if not v2_enabled():
-        raise ToolError("long files can only be described with media-index-v2 turned on (Preferences)")
+        raise ToolError("long files can only be described while the editor is running with its media index")
     shelf = default_shelf()
     rows, to_queue = [], []
     for f in resolve_files(file_ids, file_query):
@@ -664,7 +664,7 @@ def plan_clamped(strips, hi):
 
 
 # ---------------------------------------------------------------------------
-# The older search tools, answered from the local index when media-index-v2 is on
+# The older search tools, answered from the local index
 # ---------------------------------------------------------------------------
 
 def _mmss(sec):

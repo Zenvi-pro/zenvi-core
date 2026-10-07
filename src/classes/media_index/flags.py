@@ -1,22 +1,20 @@
 """
  @file
- @brief The ``media-index-v2`` preference: off means the app behaves exactly as before.
+ @brief Media index v2 is how indexing works, not a preference; only people recognition is opt-in.
 """
 
 from __future__ import annotations
 
-SETTING = "media-index-v2"
-
 
 def v2_enabled() -> bool:
-    """True when the user turned the media index v2 analysis on (default: off).
+    """True whenever the application is running: the index v2 analysis is always on.
 
-    Safe to call without an application (headless tests, scripts): that reads as off.
+    Without an application (headless tests, scripts) this reads as off, and tests switch it with ``monkeypatch``.
     """
     try:
         from classes.app import get_settings
 
-        return bool(get_settings().get(SETTING))
+        return get_settings() is not None
     except Exception:
         return False
 
