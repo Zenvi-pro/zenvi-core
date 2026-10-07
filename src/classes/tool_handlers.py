@@ -3036,7 +3036,8 @@ def search_clips(query="", top_k="5", look_for="", **_kw) -> str:
         if info.get("error") and not info.get("index_id"):
             return (
                 f"Error: {info['error']} "
-                "Index/summarize project videos first, then search again."
+                "That is the cloud search; the local index is separate. Use search_footage_tool (speech, shots, colour, "
+                "quality, and descriptions once they are built) and index_status_tool to see what each file has."
             )
         index_id = str(info.get("index_id") or "").strip()
         if not index_id:
@@ -8226,7 +8227,11 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
             duration_seconds=duration,
         )
         if blocked:
-            return _as_error(blocked)
+            # Only the paid AI description pass is blocked. The local analysis runs on import without it, so say what still works.
+            return _as_error(
+                f"{blocked} Only the AI picture descriptions need this; the local analysis (shots, colour, sound, speech) "
+                "does not, so search_footage_tool with filters and get_transcript_tool still work."
+            )
 
         from classes.project_tl_index import build_project_index_name
 
