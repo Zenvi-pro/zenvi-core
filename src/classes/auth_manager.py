@@ -121,13 +121,14 @@ class AuthManager:
         try:
             if os.path.exists(AUTH_FILE):
                 with open(AUTH_FILE, "r", encoding="utf-8") as fh:
-                    self._session = json.load(fh)
+                    self._session = self._with_identity(json.load(fh))
                 return self._session
         except Exception as exc:
             log.warning("Could not load Zenvi auth session: %s", exc)
         return None
 
     def save_session(self, session: dict) -> None:
+        session = self._with_identity(session)
         try:
             os.makedirs(info.USER_PATH, exist_ok=True)
             with open(AUTH_FILE, "w", encoding="utf-8") as fh:
@@ -154,17 +155,41 @@ class AuthManager:
     # ── Token helpers ─────────────────────────────────────────────────────────
 
     @staticmethod
-    def _decode_jwt_exp(token: str) -> int | None:
-        """Extract the ``exp`` claim from a JWT using stdlib only."""
+    def _jwt_claims(token: str) -> dict:
+        """Decode a JWT's payload using stdlib only (no signature check)."""
         try:
             payload_b64 = token.split(".")[1]
             padding = 4 - len(payload_b64) % 4
             if padding != 4:
                 payload_b64 += "=" * padding
             payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-            return payload.get("exp")
+            return payload if isinstance(payload, dict) else {}
         except Exception:
-            return None
+            return {}
+
+    @classmethod
+    def _decode_jwt_exp(cls, token: str) -> int | None:
+        """Extract the ``exp`` claim from a JWT using stdlib only."""
+        return cls._jwt_claims(token).get("exp")
+
+    @classmethod
+    def _with_identity(cls, session: dict) -> dict:
+        """Fill a missing user_id / user_email from the access token's claims.
+
+        The browser flow's poll_desktop_auth_session row carries only the
+        tokens, and the credits badge keys its balance on user_id.
+        """
+        if not isinstance(session, dict):
+            return session
+        if session.get("user_id") and session.get("user_email"):
+            return session
+        claims = cls._jwt_claims(session.get("access_token") or "")
+        filled = dict(session)
+        if not filled.get("user_id") and claims.get("sub"):
+            filled["user_id"] = claims["sub"]
+        if not filled.get("user_email") and claims.get("email"):
+            filled["user_email"] = claims["email"]
+        return filled
 
     def _refresh_session(self) -> bool:
         """Use the stored refresh_token to obtain a new access_token.
@@ -289,7 +314,7 @@ class AuthManager:
                     if resp.status_code == 200:
                         rows = resp.json()
                         if rows and isinstance(rows, list) and rows[0].get("authenticated"):
-                            session = rows[0]
+                            session = self._with_identity(rows[0])
                             self.save_session(session)
                             on_success(session)
                             return

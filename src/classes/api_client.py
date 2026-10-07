@@ -32,6 +32,11 @@ import uuid
 from typing import Any, Dict, List, Optional, Callable, Tuple
 from classes.logger import log
 
+# Shown when a paid action cannot run because of the login. The wording matters: the plan runner treats
+# "login required" / "unauthorized" as an auth failure to report, never as a step to repair with another tool.
+LOGIN_REQUIRED_MESSAGE = "Login required: sign in to Zenvi (Zenvi menu > Sign in), then run this again."
+SESSION_REJECTED_MESSAGE = "Unauthorized: Zenvi did not accept your login (the session may have expired). Sign in again, then run this again."
+
 from classes.zenvi_env import load_zenvi_dotenv
 
 load_zenvi_dotenv()
@@ -1136,12 +1141,15 @@ class ZenviBackendClient:
         return urlparse(self.base_url).hostname in ("localhost", "127.0.0.1", "::1")
 
     def generate_video(self, prompt: str, duration_seconds: int = 5, **kwargs) -> Dict[str, Any]:
-        """Generate a video from a text prompt (Kling O1 Pro via Runware).
+        """Generate a video from a text prompt (the backend picks the managed provider; 2-15 s).
 
         Supported kwargs: mode, frame_images_paths, seed_video_file_id,
                           keep_original_sound, width, height, input_video_url,
                           provider. ``provider_key`` (BYOK) travels as a header only.
         """
+        if not self._auth_token():
+            # Nothing to send: say so now instead of waiting for the server's 401 (which a plan would try to "repair").
+            return {"error": LOGIN_REQUIRED_MESSAGE, "auth": True}
         try:
             provider_key = kwargs.pop("provider_key", None)
             if provider_key and not self._provider_key_transport_ok():
@@ -1152,6 +1160,9 @@ class ZenviBackendClient:
             r = self.session.post(
                 f"{self.api_url}/generation/video", json=payload, headers=headers, timeout=600,
             )
+            if r.status_code == 401:
+                log.warning("Video generation rejected the login (401)")
+                return {"error": SESSION_REJECTED_MESSAGE, "auth": True}
             r.raise_for_status()
             data = r.json()
             if not isinstance(data, dict):

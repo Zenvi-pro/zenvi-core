@@ -848,7 +848,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # If filesView doesn't have focus, duplicate timeline selections
         # at the current cursor position
         else:
-            self.copyAll()
+            # Not copyAll(): a highlighted chat transcript would take that Copy and
+            # pasteAll() would paste stale clipboard content.
+            self.timeline.Copy_Triggered(MenuCopy.ALL, self.selected_clips, self.selected_transitions, [])
             self.pasteAll()
 
     def actionClearWaveformData_trigger(self):
@@ -5266,8 +5268,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         chat = getattr(self, "dockAIChat", None)
         view = getattr(chat, "_chat_view", None) if chat is not None else None
         under_mouse = bool(view is not None and view.underMouse())
+        timeline_has_selection = bool(getattr(self, "selected_clips", None) or getattr(self, "selected_transitions", None))
         return dispatch_chat_edit_action(
-            chat, name, QApplication.focusWidget(), under_mouse
+            chat, name, QApplication.focusWidget(), under_mouse, timeline_has_selection
         )
 
     def selectAll(self):
@@ -5296,7 +5299,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         """Copy and remove the currently selected clip/transition"""
         if self._dispatch_chat_edit_action("cut"):
             return
-        self.copyAll()
+        # Not copyAll(): it would hand a highlighted chat transcript the Copy and
+        # leave the clips deleted without ever reaching the clipboard.
+        self.timeline.Copy_Triggered(MenuCopy.ALL, self.selected_clips, self.selected_transitions, [])
         self.deleteItem()
 
     def pasteAll(self):

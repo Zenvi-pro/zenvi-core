@@ -1000,6 +1000,22 @@ def _snap_kling_o1_duration(duration):
     return 5
 
 
+# Managed generation (Grok Imagine) takes any whole-second length in this range.
+_GENERATION_MIN_SECONDS = 2
+_GENERATION_MAX_SECONDS = 15
+# Video edits keep the input's length, which the provider caps at 8.7 s.
+_GENERATION_EDIT_MAX_SECONDS = 8.0
+
+
+def _clamp_generation_duration(duration, default=5):
+    """Whole seconds within the managed provider's 2-15 s range; default when unset or unparseable."""
+    try:
+        val = int(float(duration))
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return max(_GENERATION_MIN_SECONDS, min(_GENERATION_MAX_SECONDS, val))
+
+
 def _kling_o1_output_dims(width, height):
     """Snap arbitrary dimensions to Kling O1 Pro supported output or video-edit range."""
     w = int(width or 1920)
@@ -6673,8 +6689,8 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
     """Generate a short AI video clip from a text prompt (cloud text-to-video, uses credits) and place it on the timeline.
 
     For "generate a 5 second shot of waves at sunset", "make an AI b-roll of a busy city".
-    Duration snaps to 5 or 10 seconds; the frame follows the project's aspect (16:9, 9:16 or
-    square). position_seconds (timeline seconds) inserts it there and moves later clips on
+    duration_seconds is any whole number from 2 to 15 (default 5); the clip is 720p and follows
+    the project's aspect (16:9, 9:16 or square). position_seconds (timeline seconds) inserts it there and moves later clips on
     that track right to make room; without it the clip goes after the last clip on the track.
     Returns the placement line with timeline_clip_id. The generation, import and placement
     are one undo step. Not for local ComfyUI (create_media_with_comfyui_tool).
@@ -6690,14 +6706,7 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
         return plan_err
 
     explicit_dur = str(duration_seconds or "").strip()
-    if explicit_dur:
-        try:
-            duration = _snap_kling_o1_duration(int(float(explicit_dur)))
-        except (TypeError, ValueError):
-            duration = _KLING_O1_DEFAULT_T2V_DURATION
-    else:
-        # Default 5s unless user explicitly requests 10s in chat (passed via duration_seconds).
-        duration = _KLING_O1_DEFAULT_T2V_DURATION
+    duration = _clamp_generation_duration(explicit_dur, default=_KLING_O1_DEFAULT_T2V_DURATION)
     t2v_w, t2v_h = _project_kling_o1_t2v_dims()
 
     output_path = _canonical_media_path(_output_path_for_generated_video())
@@ -6800,7 +6809,7 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
                     position_seconds=position_seconds or "",
                     track=track or "",
                     query=prompt,
-                    duration_seconds=explicit_dur,
+                    duration_seconds=str(duration) if explicit_dur else "",
                     transaction_id=_composite_tid,
                 )
             finally:
@@ -7147,10 +7156,10 @@ def replace_object_in_clip(
         return "Error: Could not find source video for selected clip."
     source_path = source_file.absolute_path()
 
-    # Default 5s segment for V2V edit; honor duration_seconds when set (max 10s).
+    # Default 5s segment for V2V edit; honor duration_seconds when set (max 8s).
     if str(duration_seconds).strip():
         try:
-            extract_dur = min(float(duration_seconds), 10.0, clip_duration)
+            extract_dur = min(float(duration_seconds), _GENERATION_EDIT_MAX_SECONDS, clip_duration)
         except (TypeError, ValueError):
             extract_dur = min(5.0, clip_duration)
     else:
@@ -7256,10 +7265,12 @@ def generate_transition_clip(
     clip_a_query="",
     clip_b_query="",
     prompt_hint="",
+    duration_seconds="",
     **_kw,
 ) -> str:
-    """Join two neighbouring clips on one track with a 5 s AI morph (cloud generation, uses credits).
+    """Join two neighbouring clips on one track with an AI morph (cloud generation, uses credits).
 
+    duration_seconds is the morph's length, any whole number from 2 to 15 (default 5).
     The last frame of clip A morphs into the first frame of clip B; A, the morph and B are baked
     into one new clip that replaces both (and any transition at their cut) in one undo step, and
     later clips on the track move right to make room. Pass clip_a_id/clip_b_id (any order) or
@@ -7319,7 +7330,7 @@ def generate_transition_clip(
             "The movement should feel organic and cinematic, with no abrupt cuts."
         )
 
-    morph_duration = _snap_kling_o1_duration(5)
+    morph_duration = _clamp_generation_duration(duration_seconds)
 
     # Scale extracted frames to project dimensions for consistent morph output
     t2v_w, t2v_h = _project_kling_o1_t2v_dims()
@@ -7821,7 +7832,7 @@ def modify_clip(
 ) -> str:
     """AI-edit footage in a timeline clip (cloud video-to-video, uses credits): replace an object/look, or insert a new shot.
 
-    mode="replace": regenerates the clip's first duration_seconds (default 5, max 10) with the
+    mode="replace": regenerates the clip's first duration_seconds (default 5, max 8) with the
     change in description ("make the car red"); that part of the clip is replaced and the rest
     of the original continues after it. mode="insert": finds the moment described by the clip's
     index (or 80 % in), generates a ~3-5 s continuation shot and bakes it into the clip with
