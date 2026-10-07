@@ -11,8 +11,8 @@ People identity (the `media-index-people` preference, off by default) runs three
 | WeSpeaker ResNet34-LM `voxceleb_resnet34_LM.onnx` | telling voices apart | 27 MB | **CC BY 4.0** | Hugging Face, `Wespeaker/wespeaker-voxceleb-resnet34-LM` |
 
 **Attribution (required by CC BY 4.0):** "WeSpeaker ResNet34 speaker model (Wespeaker project, trained on VoxCeleb2), CC BY 4.0".
-The same text is returned by `people_status_tool` (`attributions`). It should also appear in the About dialog when the voice model
-is offered to users; the dialog's credits list is upstream OpenShot's developer list and was not changed.
+The same text is returned by `people_status_tool` (`attributions`) and shown in the About dialog (`classes/media_index/credits.py` is the one
+list both read); the dialog's Credits button is still upstream OpenShot's developer list.
 
 The face and voice recognisers were trained on public face and voice datasets; their terms are the model authors', linked above.
 Any change of model needs a new pinned hash, a new calibration (`tests/eval/people_eval.py`, `tests/eval/voice_eval.py`, results in
@@ -30,4 +30,4 @@ remove everything.
 Positions in a clip's tags are named offline from `src/classes/media_index/data/places.tsv.gz`, built by `scripts/build_gazetteer.py` from
 GeoNames' `cities15000` and `countryInfo` (places with more than 15,000 people, or capitals; about 580 KB). GeoNames data is licensed
 **CC BY 4.0**: credit "Place names: GeoNames (geonames.org), CC BY 4.0" (returned by `get_project_overview_tool` as `trip.place_names`;
-it should also appear in the About dialog). Lookups never touch the network, and a position far from any listed place stays a coordinate.
+it also appears in the About dialog). Lookups never touch the network, and a position far from any listed place stays a coordinate.
