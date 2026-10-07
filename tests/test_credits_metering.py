@@ -269,6 +269,12 @@ def test_a_balance_refresh_fetches_off_the_calling_thread_and_repaints(tmp_path,
 
     assert heard.wait(5)
     assert threading.current_thread() not in fetched_on
+    # The listener fires before the balance is persisted: let that write land
+    # in tmp_path before monkeypatch restores the real CREDITS_FILE.
+    for thread in threading.enumerate():
+        if thread.name == "billing-refresh":
+            thread.join(5)
+    assert (tmp_path / "zenvi_credits.json").exists()
 
 
 # ── the chat turn ──────────────────────────────────────────────────────────

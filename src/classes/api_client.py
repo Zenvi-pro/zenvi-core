@@ -1119,7 +1119,7 @@ class ZenviBackendClient:
         return urlparse(self.base_url).hostname in ("localhost", "127.0.0.1", "::1")
 
     def generate_video(self, prompt: str, duration_seconds: int = 5, **kwargs) -> Dict[str, Any]:
-        """Generate a video from a text prompt (Kling O1 Pro via Runware).
+        """Generate a video from a text prompt (the backend picks the managed provider; 2-15 s).
 
         Supported kwargs: mode, frame_images_paths, seed_video_file_id,
                           keep_original_sound, width, height, input_video_url,
