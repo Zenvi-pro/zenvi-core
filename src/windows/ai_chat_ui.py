@@ -269,6 +269,7 @@ def _is_planning_tool_allowed(tool_name: str) -> bool:
 _PLANNING_STEP_HINTS = {
     "generate_video_and_add_to_timeline_tool": "video_gen",
     "generate_video_tool": "video_gen",
+    "generate_image_and_add_to_timeline_tool": "image_gen",
     "generate_tts_and_add_to_timeline_tool": "tts",
     "modify_clip_tool": "clip_edit",
     "import_stock_media_tool": "stock_video",
