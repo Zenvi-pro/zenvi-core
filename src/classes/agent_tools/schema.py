@@ -344,6 +344,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "clip_a_query": _str(),
         "clip_b_query": _str(),
         "prompt_hint": _str(),
+        "duration_seconds": _str_or_num(),
     }),
     "list_transitions_tool": _obj({
         "category": _str(description="'all' (default), 'common' or 'extra'."),

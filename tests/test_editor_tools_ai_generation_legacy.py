@@ -301,6 +301,42 @@ def test_generate_transition_end_to_end(editor, generation, tmp_path):
     assert editor.undo_steps_since_mark() == 1
 
 
+@pytest.mark.parametrize("asked, sent", [("", 5), ("7", 7), ("12.4", 12), ("1", 2), ("40", 15), ("soon", 5),
+                                         ("inf", 5)])
+def test_generate_video_sends_any_duration_from_2_to_15_seconds(editor, generation, monkeypatch, asked, sent):
+    placed = {}
+    monkeypatch.setattr(th, "add_clip_to_timeline", lambda **kw: placed.update(kw) or "Error: not placing here")
+    editor.call("generate_video_and_add_to_timeline_tool", prompt="waves", duration_seconds=asked)
+    assert generation.client.generate_video.call_args.kwargs["duration_seconds"] == sent
+    # Placement keeps exactly what was generated (never trims a paid second away).
+    assert placed["duration_seconds"] == (str(sent) if asked else "")
+
+
+@pytest.mark.parametrize("asked, sent", [(None, 5), ("3", 3), ("60", 15)])
+def test_generate_transition_morph_length_is_variable(editor, generation, tmp_path, asked, sent):
+    pa, pb = tmp_path / "a.mp4", tmp_path / "b.mp4"
+    pa.write_bytes(b"a")
+    pb.write_bytes(b"b")
+    a = editor.add_clip(editor.add_file("video", path=str(pa), duration=20), position=0.0, layer=L1, end=4.0)
+    b = editor.add_clip(editor.add_file("video", path=str(pb), duration=20), position=4.0, layer=L1, end=3.0)
+    args = {} if asked is None else {"duration_seconds": asked}
+    editor.call("generate_transition_clip_tool", clip_a_id=a, clip_b_id=b, **args)
+    call = generation.client.generate_video.call_args.kwargs
+    assert call["mode"] == "frame_morph" and call["duration_seconds"] == sent
+
+
+def test_modify_clip_replace_never_sends_more_than_the_8s_edit_limit(editor, generation, monkeypatch, tmp_path):
+    src = tmp_path / "source.mp4"
+    src.write_bytes(b"src")
+    c = editor.add_clip(editor.add_file("video", path=str(src), duration=30), position=0.0, layer=L1, end=20.0)
+    extracted = []
+    real = th._ffmpeg_run
+    monkeypatch.setattr(th, "_ffmpeg_run", lambda args: (extracted.append(args), real(args))[1])
+    editor.call("modify_clip_tool", mode="replace", description="make the car red", timeline_clip_id=c,
+                duration_seconds="15")
+    assert extracted[0][extracted[0].index("-t") + 1] == "8.0"
+
+
 def test_generate_video_ripple_and_placement_are_one_step(editor, generation, monkeypatch):
     video = editor.add_file("video", duration=30)
     first = editor.add_clip(video, position=0.0, layer=L1, end=4.0)
