@@ -52,13 +52,6 @@
    "output_path": "str",
    "show_dialog": "str"
   },
-  "fetch_motion_graphics_video_tool": {
-   "label": "str",
-   "render_job_id": "str",
-   "segment_urls": "Optional[list[str]]",
-   "supabase_path": "str",
-   "supabase_url": "str"
-  },
   "generate_transition_clip_tool": {
    "clip_a_id": "str",
    "clip_a_query": "str",

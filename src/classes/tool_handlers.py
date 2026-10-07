@@ -5513,47 +5513,6 @@ def _stamp_generated_video_metadata(file_obj, prompt=""):
         return False
 
 
-def _download_motion_graphics_file(url, default_name="motion_segment.mp4"):
-    """Download a Supabase video to a fresh temp path. Returns (dest_path, size_mb)."""
-    import tempfile
-    import urllib.request
-    from urllib.parse import unquote
-
-    url_path = url.split("?")[0].rstrip("/")
-    raw_name = unquote(url_path.split("/")[-1] or default_name)
-    root, ext = os.path.splitext(raw_name)
-    if ext.lower() not in (".mp4", ".webm", ".mov", ".mkv", ".avi"):
-        # Infer from URL path fragments
-        lower = url_path.lower()
-        if lower.endswith(".webm") or "/output.webm" in lower:
-            ext = ".webm"
-        else:
-            ext = ".mp4"
-        raw_name = f"{root or 'motion_segment'}{ext}"
-
-    tmp_dir = tempfile.mkdtemp(prefix="zenvi_hyperframes_")
-    dest_path = os.path.join(tmp_dir, raw_name)
-
-    log.info("Downloading HyperFrames video from Supabase: %s → %s", url, dest_path)
-    req = urllib.request.Request(url, headers={"User-Agent": "ZenviApp/1.0"})
-    with urllib.request.urlopen(req, timeout=300) as response, open(dest_path, "wb") as out:
-        while True:
-            chunk = response.read(65536)
-            if not chunk:
-                break
-            out.write(chunk)
-
-    size_mb = os.path.getsize(dest_path) / (1024 * 1024)
-    size_bytes = os.path.getsize(dest_path)
-    if size_bytes <= 0:
-        raise ValueError(f"Downloaded file is empty (0 bytes): {dest_path}")
-    if size_mb < 0.1:
-        log.info("Download complete: %s (%.0f KB)", dest_path, size_bytes / 1024.0)
-    else:
-        log.info("Download complete: %s (%.1f MB)", dest_path, size_mb)
-    return dest_path, size_mb
-
-
 def _stamp_motion_graphics_file_metadata(file_obj, label="", transparent=None):
     """Agent-facing metadata only — does not enqueue Gemini indexing."""
     if not file_obj:
@@ -5605,412 +5564,13 @@ def _stamp_motion_graphics_file_metadata(file_obj, label="", transparent=None):
         log.warning("Could not stamp motion-graphics metadata: %s", exc)
 
 
-def _resolve_motion_graphics_label_from_job(render_job_id="", fallback=""):
-    """When the agent omits label=, recover summary from HyperFrames job status.
-
-    Returns (label, job_meta_dict).
-    """
-    job_id = (render_job_id or "").strip()
-    if not job_id:
-        return (fallback or "").strip(), {}
-    import json
-    import urllib.request
-
-    api = os.environ.get(
-        "HYPERFRAMES_URL",
-        os.environ.get("REMOTION_URL", "http://localhost:4500/api/v1"),
-    ).rstrip("/")
-    for kind in ("motion", "demo"):
-        try:
-            req = urllib.request.Request(
-                f"{api}/{kind}/jobs/{job_id}",
-                headers={"User-Agent": "ZenviApp/1.0"},
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read().decode() or "{}")
-            summary = str(data.get("summary") or "").strip()
-            if summary:
-                return summary, data
-            titles = data.get("segment_titles") or []
-            block_id = data.get("block_id") or ""
-            if titles or block_id:
-                title0 = titles[0] if titles else ""
-                transparent = data.get("transparent")
-                bits = []
-                if block_id:
-                    bits.append(f"HyperFrames {block_id}")
-                else:
-                    bits.append("HyperFrames motion graphic")
-                if title0 and title0 not in ("motion", block_id):
-                    bits.append(str(title0))
-                if transparent:
-                    bits.append("transparent overlay")
-                label = ": ".join(bits[:2]) + (f" ({bits[2]})" if len(bits) > 2 else "")
-                return label, data
-            return (fallback or "").strip(), data
-        except Exception as exc:
-            log.debug("MG label lookup %s/%s failed: %s", kind, job_id, exc)
-    return (fallback or "").strip(), {}
-
-
-def _download_and_import_one(url, label="", job_transparent=None):
-    """Download one Supabase video and import it as a project file (skip_indexing).
-
-    Returns (file_id, size_mb, error, transparent_ok, pix_fmt).
-    job_transparent: when True, force alpha-preserving import and fail closed (no opaque MP4).
-    """
-    try:
-        last_err = None
-        dest_path = None
-        size_mb = 0.0
-        for attempt in (1, 2):
-            try:
-                dest_path, size_mb = _download_motion_graphics_file(url)
-                break
-            except Exception as e:
-                last_err = e
-                log.warning("Download attempt %d failed for %s: %s", attempt, url, e)
-        if dest_path is None:
-            return "", 0.0, f"download failed: {last_err}", False, ""
-
-        try:
-            if job_transparent is True:
-                preserve_alpha = True
-            elif job_transparent is False:
-                preserve_alpha = False
-            else:
-                preserve_alpha = _looks_like_alpha_video(dest_path)
-
-            f, err = _import_generated_video(dest_path, preserve_alpha=preserve_alpha)
-            if err:
-                return "", size_mb, f"import failed: {err}", False, ""
-        finally:
-            _cleanup_scratch_parent(dest_path, "zenvi_hyperframes_")
-
-        imported_path = None
-        try:
-            imported_path = f.absolute_path() if f and hasattr(f, "absolute_path") else None
-        except Exception:
-            imported_path = None
-        if not imported_path and f and isinstance(getattr(f, "data", None), dict):
-            imported_path = f.data.get("path")
-
-        pix_fmt = _ffprobe_pix_fmt(imported_path) if imported_path else ""
-        alpha_mode = _ffprobe_alpha_mode(imported_path) if imported_path else ""
-        # libvpx VP9 WebM probes as yuv420p + ALPHA_MODE=1 (never yuva*). Accept that
-        # when decoded pixels actually have transparency.
-        transparent_ok = bool(imported_path and _openshot_transparent_ok(imported_path))
-        stamp_transparent = (
-            bool(job_transparent) if job_transparent is not None else transparent_ok
-        )
-        probe_note = f"pix_fmt={pix_fmt or 'unknown'} alpha_mode={alpha_mode or 'none'}"
-        if job_transparent and not transparent_ok:
-            return (
-                "",
-                size_mb,
-                (
-                    f"transparent job imported without usable VP9 alpha ({probe_note}) "
-                    "— re-compose as WebM; refusing solid plate"
-                ),
-                False,
-                pix_fmt,
-            )
-
-        _stamp_motion_graphics_file_metadata(f, label=label, transparent=stamp_transparent)
-        # Encode probe bits into pix_fmt field for fetch messaging: "yuva420p;alpha_mode=1"
-        probe_field = pix_fmt or "unknown"
-        if alpha_mode:
-            probe_field = f"{probe_field};alpha_mode={alpha_mode}"
-        return (f.id if f else ""), size_mb, None, transparent_ok or stamp_transparent, probe_field
-    except Exception as e:
-        log.error("download/import failed for %s: %s", url, e, exc_info=True)
-        return "", 0.0, str(e), False, ""
-
-
-def _motion_graphics_cleanup_storage(supabase_path="", render_job_id=""):
-    """Best-effort DELETE {HYPERFRAMES_URL}/cleanup. Non-critical — failures are logged only."""
-    import json
-    import urllib.request
-
-    if not (supabase_path or render_job_id):
-        return
-    api = os.environ.get(
-        "HYPERFRAMES_URL",
-        os.environ.get("REMOTION_URL", "http://localhost:4500/api/v1"),
-    ).rstrip("/")
-    try:
-        payload = {}
-        if supabase_path:
-            payload["supabase_path"] = supabase_path
-        if render_job_id:
-            payload["job_id"] = render_job_id
-        body = json.dumps(payload).encode()
-        cleanup_req = urllib.request.Request(
-            f"{api}/cleanup",
-            data=body,
-            method="DELETE",
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(cleanup_req, timeout=60) as cleanup_resp:
-            log.info("Supabase cleanup after import: %s", cleanup_resp.read().decode()[:500])
-    except Exception as cleanup_err:
-        log.warning("Supabase cleanup failed (non-critical): %s", cleanup_err)
-
-
-# Session-scoped URL → file_id so package/hand re-fetch is idempotent.
-_MG_IMPORTED_URLS: dict = {}
-
-
-def fetch_motion_graphics_video(
-    segment_urls=None,
-    supabase_url="",
-    supabase_path="",
-    render_job_id="",
-    label="",
-    **_kw,
-) -> str:
-    """Import rendered HyperFrames motion/demo segments into the project files panel.
-
-    Preferred: pass segment_urls — the ordered list of per-segment Supabase URLs.
-    Each segment is imported as its own clip; storage is cleaned up once after success.
-    Imports use skip_indexing=True (no Gemini summarize). Optional label stamps short_summary.
-
-    Legacy: pass a single supabase_url to import one video.
-    """
-    import json
-    import re
-
-    global _MG_IMPORTED_URLS
-
-    _GENERIC_LABELS = (
-        "hyperframes motion graphic",
-        "motion graphic",
-        "motion",
-    )
-
-    def _norm_url(u: str) -> str:
-        return (u or "").strip().split("?")[0].rstrip("/")
-
-    def _already_imported(urls: list):
-        ids = []
-        for u in urls:
-            fid = _MG_IMPORTED_URLS.get(_norm_url(u))
-            if not fid:
-                return None
-            ids.append(fid)
-        if not ids:
-            return None
-        return (
-            f"Already imported file_id={ids[0]} (file_ids: {ids}) — "
-            "place only if missing. Do NOT re-download these URLs."
-        )
-
-    def _is_generic(text: str) -> bool:
-        return (text or "").strip().lower() in _GENERIC_LABELS
-
-    job_meta = {}
-    stamp_label = (label or "").strip()
-    recovered = ""
-    if render_job_id:
-        recovered, job_meta = _resolve_motion_graphics_label_from_job(
-            render_job_id, fallback=stamp_label
-        )
-        # Prefer explicit agent label; else job.summary; never keep generic when job has better text
-        if not stamp_label:
-            stamp_label = recovered
-        elif _is_generic(stamp_label) and recovered and not _is_generic(recovered):
-            stamp_label = recovered
-    if not stamp_label:
-        stamp_label = "HyperFrames motion graphic"
-
-    job_transparent = job_meta.get("transparent")
-    if job_transparent is not None:
-        job_transparent = bool(job_transparent)
-
-    generic = _is_generic(stamp_label)
-    generic_warn = ""
-    if generic:
-        if render_job_id and job_meta.get("summary"):
-            # Job had summary but we somehow still stamped generic — surface loudly
-            generic_warn = (
-                " ⚠️ short_summary is still generic despite job.summary — "
-                "pass label= from compose suggested_label."
-            )
-        else:
-            generic_warn = (
-                " ⚠️ short_summary is generic — pass label= from compose suggested_label "
-                "(or ensure render_job_id is set so job.summary can be recovered)."
-            )
-
-    # The LLM may pass segment_urls as a JSON-encoded string.
-    if isinstance(segment_urls, str):
-        try:
-            segment_urls = json.loads(segment_urls)
-        except Exception:
-            segment_urls = [segment_urls]
-    segment_urls = [u.strip() for u in (segment_urls or []) if isinstance(u, str) and u.strip()]
-
-    # Prefer WebM when job is transparent but URLs still point at .mp4
-    if job_transparent and segment_urls:
-        fixed = []
-        for u in segment_urls:
-            if u.split("?")[0].lower().endswith(".mp4"):
-                webm = re.sub(r"\.mp4(\?|$)", r".webm\1", u, count=1, flags=re.I)
-                log.warning(
-                    "Job %s is transparent but URL is MP4 — trying WebM: %s",
-                    render_job_id,
-                    webm,
-                )
-                fixed.append(webm)
-            else:
-                fixed.append(u)
-        segment_urls = fixed
-
-    if segment_urls:
-        cached = _already_imported(segment_urls)
-        if cached:
-            return cached
-
-    # ---- Multi-segment import (preferred) ----
-    if segment_urls:
-        # Deterministic timeline order: sort by the numeric index in segment_NN.mp4,
-        # independent of the order the agent passed the URLs in.
-        def _seg_index(u):
-            name = u.split("?")[0].rsplit("/", 1)[-1]
-            m = re.search(r"segment[_-]?(\d+)", name, re.IGNORECASE)
-            return int(m.group(1)) if m else 1_000_000
-
-        ordered = sorted(enumerate(segment_urls), key=lambda iu: (_seg_index(iu[1]), iu[0]))
-
-        file_ids = []
-        failures = []  # (original_index, url, error)
-        total_mb = 0.0
-        any_transparent_ok = False
-        last_pix_fmt = ""
-        for orig_i, url in ordered:
-            path_base = url.lower().split("?")[0]
-            if job_transparent and path_base.endswith(".mp4"):
-                failures.append(
-                    (
-                        orig_i,
-                        url,
-                        "transparent job URL is .mp4 and WebM rewrite failed — "
-                        "re-compose as WebM; refusing opaque MP4 import",
-                    )
-                )
-                continue
-
-            file_id, size_mb, err, transparent_ok, pix_fmt = _download_and_import_one(
-                url, label=stamp_label, job_transparent=job_transparent
-            )
-            # Fail-closed: never import opaque MP4 as success for transparent jobs
-            if err and job_transparent and path_base.endswith(".webm"):
-                failures.append(
-                    (
-                        orig_i,
-                        url,
-                        f"{err} — re-compose WebM (no opaque MP4 fallback)",
-                    )
-                )
-                log.warning("Segment %d transparent WebM import failed (no MP4 fallback): %s", orig_i, err)
-                continue
-            if err:
-                failures.append((orig_i, url, err))
-                log.warning("Segment %d import failed: %s", orig_i, err)
-            else:
-                file_ids.append(file_id)
-                total_mb += size_mb
-                any_transparent_ok = any_transparent_ok or bool(transparent_ok)
-                if pix_fmt:
-                    last_pix_fmt = pix_fmt
-                _MG_IMPORTED_URLS[_norm_url(url)] = file_id
-
-        n = len(segment_urls)
-        if failures:
-            # Leave storage intact so the failed segments can be re-fetched without a re-render.
-            failed_lines = "\n".join(f"  [{i}] {u} ({e})" for i, u, e in failures)
-            return (
-                f"Error: Imported only {len(file_ids)}/{n} motion segments; {len(failures)} failed. "
-                f"Storage was NOT cleaned up so you can retry the failed ones. "
-                f"file_ids: {file_ids}\nFailed segments:\n{failed_lines}{generic_warn}"
-            )
-
-        # All segments imported — clean up Supabase storage once.
-        _motion_graphics_cleanup_storage(render_job_id=render_job_id, supabase_path=supabase_path)
-        alpha_note = (
-            "Transparent WebM alpha preserved — place as overlay on a HIGHER track than footage."
-            if any_transparent_ok or job_transparent
-            else "Opaque MP4 — prefer standalone/mid-layer placement away from hero peaks."
-        )
-        probe_bits = (
-            f" transparent_ok={str(any_transparent_ok).lower()}"
-            f" pix_fmt={last_pix_fmt or 'unknown'}"
-        )
-        return (
-            f"✅ Imported {len(file_ids)}/{n} HyperFrames segments as separate clips "
-            f"(file_id={file_ids[0]}, file_ids: {file_ids}, total {total_mb:.1f} MB). "
-            f"Indexing skipped (motion_graphics tag).{probe_bits}. {alpha_note}\n"
-            "MUST call place_motion_graphic_tool(file_id=..., mode=overlay|gap|cut_in) "
-            "for each file_id (transparent → mode=overlay high track; opaque → mode=gap or cut_in). "
-            "Do not use add_clip_to_timeline_tool for MG renders."
-            f"{generic_warn}"
-        )
-
-    # ---- Legacy single-video import (back-compat) ----
-    supabase_url = (supabase_url or "").strip()
-    if not supabase_url:
-        return "Error: segment_urls or supabase_url is required."
-
-    if job_transparent and supabase_url.split("?")[0].lower().endswith(".mp4"):
-        supabase_url = re.sub(r"\.mp4(\?|$)", r".webm\1", supabase_url, count=1, flags=re.I)
-
-    if job_transparent and supabase_url.split("?")[0].lower().endswith(".mp4"):
-        return (
-            "Error: transparent job URL is still .mp4 after WebM rewrite — "
-            "re-compose as WebM; refusing opaque MP4 import."
-            f"{generic_warn}"
-        )
-
-    cached_one = _already_imported([supabase_url])
-    if cached_one:
-        return cached_one
-
-    file_id, size_mb, err, transparent_ok, pix_fmt = _download_and_import_one(
-        supabase_url, label=stamp_label, job_transparent=job_transparent
-    )
-    if err:
-        return f"Error importing video: {err}{generic_warn}"
-    _MG_IMPORTED_URLS[_norm_url(supabase_url)] = file_id
-    _motion_graphics_cleanup_storage(supabase_path=supabase_path, render_job_id=render_job_id)
-    alpha_note = (
-        "Transparent WebM alpha preserved — overlay on a HIGHER track than footage."
-        if transparent_ok or job_transparent
-        else "Opaque MP4 — prefer standalone/mid-layer placement away from hero peaks."
-    )
-    return (
-        f"✅ HyperFrames motion graphic imported into project files "
-        f"(file_id={file_id}, size: {size_mb:.1f} MB). Indexing skipped (motion_graphics tag). "
-        f"transparent_ok={str(bool(transparent_ok)).lower()} pix_fmt={pix_fmt or 'unknown'}. "
-        f"{alpha_note}\n"
-        "MUST call place_motion_graphic_tool(file_id=..., mode=overlay|gap|cut_in) "
-        "with the placement mode above. Do not use add_clip_to_timeline_tool for MG renders."
-        f"{generic_warn}"
-    )
-
-
-# Hard-cut alias kept only so any stale backend tool name still resolves during one deploy.
-fetch_remotion_video_from_supabase = fetch_motion_graphics_video
-_download_remotion_file = _download_motion_graphics_file
-_remotion_cleanup_storage = _motion_graphics_cleanup_storage
-
-
 _KLING_O1_DEFAULT_T2V_DURATION = 5
 
 
 def import_video_url_and_add_to_timeline(video_url="", track="", position_seconds="", **_kw) -> str:
     """Download a video from a public URL, import it into project files, and place it on the timeline.
 
-    Used for server-rendered clips (e.g. Manim) delivered as a public URL. One shot:
+    Used for clips delivered as a public URL. One shot:
     download → re-encode/import (via _import_generated_video) → add_clip_to_timeline.
     YouTube page URLs are not direct files — use ingest_web_video_tool instead.
     """
@@ -6429,7 +5989,7 @@ def _ingest_web_video_impl(
     else:
         write_subs_flag = str(write_subs).strip().lower() in ("1", "true", "yes", "on")
 
-    # Direct file URL (mp4/mov/…) — keep existing Manim path; do not force yt-dlp.
+    # Direct file URL (mp4/mov/…): download it as is; do not force yt-dlp.
     lower = raw_url.split("?")[0].lower()
     if any(lower.endswith(ext) for ext in (".mp4", ".mov", ".webm", ".mkv", ".avi")):
         try:
@@ -8472,7 +8032,7 @@ def propose_overlay_windows(beat_count="4", prefer_transparent="true", **_kw) ->
     windows[{t, score, avoid, prefer, scene_label, track_hint, confidence,
     suggest_transparent, layout_region}].
 
-    Agent must: bake layout_region into session/draft.html; publish with matching
+    Agent must: bake layout_region into the composition; render with the matching
     transparent flag; place via place_motion_graphic_tool (overlay|gap|cut_in).
     """
     import json
@@ -8712,10 +8272,10 @@ def propose_overlay_windows(beat_count="4", prefer_transparent="true", **_kw) ->
         "windows": out_windows,
         "guidance": (
             "For each beat: decide transparent vs opaque first. "
-            "layout_region → bake into session/draft.html "
+            "layout_region → bake into the composition "
             "(lower_third/corner_* = non-blocking overlay HTML; full_frame = sting; "
             "mid_plate = opaque plate). "
-            "publish_session_draft_tool(transparent=true|false) matching suggest_transparent. "
+            "render_motion_graphic_tool(transparent=true|false) matching suggest_transparent. "
             "Then place_motion_graphic_tool(mode=overlay|gap|cut_in) — never stack opaque "
             "plates over hero footage with add_clip on the top overlay track."
         ),
@@ -8793,6 +8353,12 @@ def place_motion_graphic(
         primary_layer = nums[0]
         mid_layer = nums[len(nums) // 2] if len(nums) > 1 else nums[0]
         overlay_layer = nums[-1]
+        new_overlay_track = False
+        clips_raw = [
+            dict(c.data or {})
+            for c in Clip.filter()
+            if isinstance(getattr(c, "data", None), dict)
+        ]
 
         if str(track or "").strip():
             resolved, err = normalize_track_or_layer_arg(str(track).strip(), layers)
@@ -8806,12 +8372,6 @@ def place_motion_graphic(
         else:
             track_num = int(primary_layer)
 
-        clips_raw = [
-            dict(c.data or {})
-            for c in Clip.filter()
-            if isinstance(getattr(c, "data", None), dict)
-        ]
-
         if mode_s == "overlay":
             if not is_transparent:
                 return (
@@ -8822,6 +8382,22 @@ def place_motion_graphic(
                 )
             if track_num < mid_layer:
                 track_num = int(overlay_layer)
+            # An overlay never shares a lane with a clip in its window, nor sits under
+            # the picture -- whichever track was asked for. Keep the asked-for track
+            # when it is free, unlocked and above the picture; otherwise take the lowest
+            # such track, or add one on top (same rule as titles' plan_overlay_track).
+            from classes.editor_tools.titles_text_common import _is_visual
+
+            def _taken(layer, clips):
+                return primary_track_overlaps(clips, layer=layer, t0=t, t1=t + dur)
+
+            locked = {int(L["number"]) for L in layers if isinstance(L, dict) and L.get("lock")}
+            picture = [c for c in clips_raw if _is_visual(c)]
+            floor = max((n for n in nums if _taken(n, picture)), default=-1)
+            usable = [n for n in nums if n > floor and n not in locked and not _taken(n, clips_raw)]
+            if track_num not in usable:
+                new_overlay_track = not usable
+                track_num = int(usable[0]) if usable else int(overlay_layer) + 1000000
         else:
             # gap / cut_in → opaque path
             if is_transparent:
@@ -8847,8 +8423,16 @@ def place_motion_graphic(
         )
 
         shift_box = [[]]
+        new_lane = [None]
 
         def _ripple_and_stamp():
+            if new_overlay_track:
+                from classes.query import Track
+
+                lane = Track()
+                lane.data = {"number": int(track_num), "y": 0, "label": "", "lock": False}   # a plain track, like Add Track
+                lane.save()
+                new_lane[0] = lane
             if mode_s == "cut_in":
                 shifts = ripple_positions(
                     clips_raw, layer=int(primary_layer), t=t, delta=dur
@@ -8911,6 +8495,11 @@ def place_motion_graphic(
                     _run_on_main_thread(_undo_ripple)
                 except Exception as undo_exc:
                     log.warning("cut_in ripple rollback failed: %s", undo_exc)
+            if new_lane[0] is not None:
+                try:
+                    _run_on_main_thread(new_lane[0].delete)
+                except Exception as undo_exc:
+                    log.warning("could not remove the unused overlay track: %s", undo_exc)
             return result
         return (
             f"{result} [mg_place mode={mode_s} layout_region={region or 'n/a'} "
@@ -8927,8 +8516,7 @@ def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
     return (
         "Error: suggest_motion_graphics_placements_tool is removed. "
         "Call propose_overlay_windows_tool(beat_count=...) for timing/layout_region, "
-        "edit session/draft.html (lint optional), publish_session_draft_tool, "
-        "fetch_motion_graphics_video_tool, then place_motion_graphic_tool(mode=overlay|gap|cut_in). "
+        "author the composition with the hyperframes tools, render_motion_graphic_tool, then place_motion_graphic_tool(mode=overlay|gap|cut_in). "
         "Never put the creative brief into on-screen title text."
     )
 
@@ -11797,9 +11385,6 @@ AGENT_TOOL_HANDLERS = {
     "suggest_motion_graphics_placements_tool": suggest_motion_graphics_placements,
     "propose_overlay_windows_tool": propose_overlay_windows,
     "place_motion_graphic_tool": place_motion_graphic,
-    # Remotion / HyperFrames
-    "fetch_motion_graphics_video_tool": fetch_motion_graphics_video,
-    "fetch_remotion_video_from_supabase_tool": fetch_motion_graphics_video,
     # Video generation / AI edit
     "generate_video_and_add_to_timeline_tool": generate_video_and_add_to_timeline,
     "modify_clip_tool": modify_clip,
@@ -11881,8 +11466,6 @@ TOOL_DISPLAY_LABELS = {
     "suggest_motion_graphics_placements_tool": "Suggest MG placements (deprecated)",
     "propose_overlay_windows_tool": "Propose overlay windows",
     "place_motion_graphic_tool": "Place motion graphic",
-    "fetch_motion_graphics_video_tool": "Fetch HyperFrames video",
-    "fetch_remotion_video_from_supabase_tool": "Fetch HyperFrames video",
     "generate_video_and_add_to_timeline_tool": "Generate video",
     "modify_clip_tool": "AI edit clip",
     "generate_transition_clip_tool": "Bake A + morph + B",
@@ -11914,25 +11497,19 @@ assert set(TOOL_DISPLAY_LABELS) == set(AGENT_TOOL_HANDLERS), (
 # appear as tool_started titles over the WebSocket.
 _EXTRA_TOOL_DISPLAY_LABELS = {
     "motion-graphics-agent": "Motion graphics",
-    "publish_session_draft_tool": "Publish motion graphic",
-    "lint_session_draft_tool": "Lint draft",
-    "product_demo": "Product demo",
-    "plan_product_demo_tool": "Plan product demo",
-    "render_product_demo_tool": "Render product demo",
-    "check_motion_graphics_health_tool": "Motion graphics health",
-    "get_motion_graphics_job_status_tool": "Motion job status",
     # The assistant harness contributes its own tool names to the transcript.
-    # `task` is the orchestrator handing work to a specialist; the file and
-    # shell tools only ever run inside the motion-graphics sandbox, on
-    # session/draft.html. Left to the generic fallback these read as "Task",
-    # "Bash" and "Edit" -- a coding runtime showing through a video editor.
+    # `task` is the orchestrator handing work to a specialist. The file and
+    # shell tools are denied to the assistant, but a refused call still lands
+    # in the transcript, and a CLI chat backend runs its own. Left to the
+    # generic fallback these read as "Task", "Bash" and "Edit" -- a coding
+    # runtime showing through a video editor.
     "task": "Handing off to a specialist",
-    "bash": "Building the motion graphic",
-    "edit": "Editing the motion graphic",
-    "write": "Writing the motion graphic",
-    "read": "Reading the motion graphic",
-    "glob": "Looking through motion graphic files",
-    "grep": "Searching the motion graphic",
+    "bash": "Running a command",
+    "edit": "Editing a file",
+    "write": "Writing a file",
+    "read": "Reading a file",
+    "glob": "Looking through files",
+    "grep": "Searching files",
     "question": "Asking you a question",
     "todowrite": "Updating the task list",
     # Denied to the assistant, but a refused call still lands in the transcript.
@@ -12024,9 +11601,6 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     "split_file_add_clip_tool",
     "add_clip_to_timeline_tool",
     "propose_overlay_windows_tool",
-    # HyperFrames download + alpha re-encode can take a while.
-    "fetch_motion_graphics_video_tool",
-    "fetch_remotion_video_from_supabase_tool",
     "ingest_web_video_tool",
     "inspect_timeline_tool",
     "inspect_media_tool",

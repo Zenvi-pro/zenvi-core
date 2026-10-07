@@ -402,20 +402,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "layout_region": _str(),
         "query": _str(),
     }),
-    "fetch_motion_graphics_video_tool": _obj({
-        "segment_urls": _url_list(),
-        "supabase_url": _str(),
-        "supabase_path": _str(),
-        "render_job_id": _str(),
-        "label": _str(),
-    }),
-    "fetch_remotion_video_from_supabase_tool": _obj({
-        "segment_urls": _url_list(),
-        "supabase_url": _str(),
-        "supabase_path": _str(),
-        "render_job_id": _str(),
-        "label": _str(),
-    }),
     "generate_video_and_add_to_timeline_tool": _obj({
         "prompt": _str(),
         "position_seconds": _str_or_num(),
