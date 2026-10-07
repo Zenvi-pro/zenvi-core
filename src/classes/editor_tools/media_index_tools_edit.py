@@ -33,24 +33,32 @@ def _index_provider():
     return index_for
 
 
-def _music_beats(music_clip_id, on):
+def _music_beats(music_clip_id, on, own_clip_id=""):
     """(timeline clips, clip objects, the music clip, its tempo, its beats on the timeline's clock) for the music to cut to.
 
-    The music is the clip asked for, else the longest music clip with a detected tempo. Raises a ToolError saying what is
-    missing (no music, no steady beat, no beat inside the part that is on the timeline).
+    The music is the clip asked for (any clip with sound: a video can carry the music), else the longest music clip with a
+    detected tempo, else, when *own_clip_id* is given, that clip itself if its own sound has a tempo (cutting a clip to its
+    own music). Raises a ToolError saying what is missing (no music, no steady beat, no beat inside the part that is on the timeline).
     """
     clips, _project, objs = build_timeline()
     index_for = _index_provider()
-    beds = [c for c in clips if c.role == "music" and c.length > 0]
+
+    def tempo_of(c):
+        return ((getattr(index_for(c), "audio", None) or {}).get("tempo") or {}).get("beats")
+
     if music_clip_id:
-        bed = next((c for c in beds if c.id == str(music_clip_id)), None)
+        bed = next((c for c in clips if c.id == str(music_clip_id) and c.has_audio and c.length > 0), None)
         if bed is None:
-            raise ToolError(f"{music_clip_id!r} is not a music clip on the timeline (analyze_timeline_audio_tool lists them)")
+            raise ToolError(f"{music_clip_id!r} is not a clip with sound on the timeline (analyze_timeline_audio_tool lists them)")
     else:
-        with_tempo = [c for c in beds if ((getattr(index_for(c), "audio", None) or {}).get("tempo") or {}).get("beats")]
-        if not with_tempo:
+        with_tempo = [c for c in clips if c.role == "music" and c.length > 0 and tempo_of(c)]
+        own = next((c for c in clips if c.id == str(own_clip_id) and c.has_audio and c.length > 0 and tempo_of(c)), None) if own_clip_id else None
+        if with_tempo:
+            bed = max(with_tempo, key=lambda c: c.length)
+        elif own is not None:
+            bed = own
+        else:
             raise ToolError("no music with a detected tempo is on the timeline: add music and let it finish indexing, or the track has no steady beat")
-        bed = max(with_tempo, key=lambda c: c.length)
     audio = getattr(index_for(bed), "audio", None) or {}
     tempo = audio.get("tempo") or {}
     if not tempo.get("beats"):
@@ -156,7 +164,7 @@ def slice_on_beats(timeline_clip_id, music_clip_id="", on="beat", every=1, from_
     """
     from classes.editor_tools._registry import REGISTRY
 
-    clips, objs, _bed, tempo, beats = _music_beats(music_clip_id, on)
+    clips, objs, _bed, tempo, beats = _music_beats(music_clip_id, on, own_clip_id=timeline_clip_id)
     target = next((c for c in clips if c.id == str(timeline_clip_id) and c.kind in ("video", "image") and c.length > 0), None)
     if target is None:
         raise ToolError(f"{timeline_clip_id!r} is not a picture clip on the timeline (list_clips_tool lists them)")
