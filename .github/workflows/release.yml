@@ -5,8 +5,9 @@
 # installers and publishes them as a GitHub Release so the in-app auto-updater
 # can pick them up.
 #
-# A push to an rc-v* branch runs the same builds but publishes a draft release
-# ("<branch>-test", replaced on every push). Drafts are visible only to people
+# A push to the releases branch (an RC PR squash-merged, or a direct commit)
+# runs the same builds but publishes a draft release ("releases-test", replaced
+# on every push). Drafts are visible only to people
 # with write access and never reach /releases/latest, so the website and the
 # auto-updater ignore them; download the installers there to test before tagging.
 #
@@ -21,9 +22,9 @@ name: Zenvi Production Release
 on:
   push:
     tags: ["v*.*.*"]
-    branches: ["rc-v*"]
+    branches: ["releases"]
 
-# A newer push to an rc branch supersedes the build still running for it.
+# A newer push to releases supersedes the build still running for it.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: ${{ github.ref_type == 'branch' }}
@@ -1429,7 +1430,7 @@ jobs:
             gh api -X DELETE "repos/${{ github.repository }}/git/refs/tags/production" || true
           fi
 
-      - name: Remove the previous test release for this rc branch
+      - name: Remove the previous test release
         if: github.ref_type == 'branch'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
