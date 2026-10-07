@@ -12,7 +12,7 @@ import tempfile
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from classes.editor_tools._base import ToolError, boolean, enum, integer, number, obj, ok, string
+from classes.editor_tools._base import ToolError, boolean, enum, get_app, integer, number, obj, ok, string
 from classes.editor_tools._registry import REGISTRY, editor_tool
 from classes.editor_tools.media_files import _display_name, resolve_files
 from classes.editor_tools.media_index_tools import _index_for, project_indexes
@@ -361,6 +361,19 @@ def music_fit(profile, *, bpm_min=None, bpm_max=None, seconds=None, energy=""):
     return musicfit.music_fit(profile, bpm_min=bpm_min, bpm_max=bpm_max, seconds=seconds, energy=energy)
 
 
+def _no_audio_analysis(f) -> ToolError:
+    """Why a file has no audio analysis and what to do: it is being analysed right now (wait), or it never will be (import it again)."""
+    name = _display_name(f.data)
+    try:
+        model = get_app().window.files_model
+        busy = bool(model.is_file_indexing(str(f.id)) or model.is_file_queued(str(f.id)))
+    except Exception:
+        busy = False
+    if busy:
+        return ToolError(f"{name!r} is still being analysed (its sound takes a few seconds): call wait_until_project_indexed_tool, then try again")
+    return ToolError(f"{name!r} has no audio analysis and is not being analysed: remove it from the project and import it again so it is indexed")
+
+
 @editor_tool(
     "analyze_music_tool",
     covers=("index.music",),
@@ -387,7 +400,7 @@ def analyze_music(file_id="", file_query="", describe=False, bpm_min=None, bpm_m
     f = resolve_files([file_id] if file_id else None, file_query)[0]
     fi = _index_for(f)
     if fi is None or not fi.layers.get(S.LAYER_AUDIO):
-        raise ToolError(f"{_display_name(f.data)!r} has no audio analysis yet; index_status_tool shows progress")
+        raise _no_audio_analysis(f)
     profile = music_profile_of(fi)
     out: Dict[str, Any] = {"file_id": str(f.id), "profile": profile}
     if describe or fi.music_desc:

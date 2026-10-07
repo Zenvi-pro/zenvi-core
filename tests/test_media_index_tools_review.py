@@ -318,10 +318,23 @@ def test_music_description_failures_become_actionable_errors(footage, monkeypatc
     assert out.startswith("Error") and fragment in out
 
 
-def test_an_unanalysed_file_is_an_error(footage, monkeypatch, tmp_path):
+def test_an_unanalysed_file_that_is_not_being_analysed_says_to_import_it_again(footage, monkeypatch, tmp_path):
     music_env(monkeypatch, footage, tmp_path)
     monkeypatch.setattr(TR, "_index_for", lambda f: None)
-    assert "no audio analysis" in REGISTRY["analyze_music_tool"].func(file_id="M1")
+    monkeypatch.setattr(TR, "get_app", lambda: SimpleNamespace(window=SimpleNamespace(
+        files_model=SimpleNamespace(is_file_indexing=lambda fid: False, is_file_queued=lambda fid: False))))
+    out = REGISTRY["analyze_music_tool"].func(file_id="M1")
+    assert out.startswith("Error") and "no audio analysis" in out and "import it again" in out
+
+
+def test_a_file_still_being_analysed_says_to_wait_for_it_not_that_it_failed(footage, monkeypatch, tmp_path):
+    music_env(monkeypatch, footage, tmp_path)
+    monkeypatch.setattr(TR, "_index_for", lambda f: None)
+    for busy in ({"is_file_indexing": lambda fid: True, "is_file_queued": lambda fid: False},
+                 {"is_file_indexing": lambda fid: False, "is_file_queued": lambda fid: True}):
+        monkeypatch.setattr(TR, "get_app", lambda busy=busy: SimpleNamespace(window=SimpleNamespace(files_model=SimpleNamespace(**busy))))
+        out = REGISTRY["analyze_music_tool"].func(file_id="M1")
+        assert out.startswith("Error") and "still being analysed" in out and "wait_until_project_indexed_tool" in out
 
 
 def test_a_kept_description_is_shown_without_asking_the_cloud_again(footage, monkeypatch, tmp_path):
