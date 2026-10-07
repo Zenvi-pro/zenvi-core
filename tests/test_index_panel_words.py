@@ -1,4 +1,4 @@
-"""The Index dock lists transcript words, so it must ask get_transcript for them.
+"""The Index dock reads transcript words, so it must ask get_transcript for them.
 
 get_transcript's default receipt is compact (data.script only, no words), and
 the dock showed "0 words" for a transcribed clip.
@@ -28,10 +28,11 @@ def _receipt(words):
 def _panel(added):
     panel = SimpleNamespace(
         _app=SimpleNamespace(project=SimpleNamespace(_data={})),
-        _list=SimpleNamespace(clear=lambda: added.clear(), addItem=added.append),
         _status=MagicMock(),
         _generation=None,
+        _fps=lambda: 30.0,
     )
+    panel._show_words = lambda model: (added.clear(), added.extend(model["words"]))      # what the reader would display
     panel._project_token = lambda: index_panel.IndexPanel._project_token(panel)
     panel._load_transcript = lambda token=None: index_panel.IndexPanel._load_transcript(panel, token)
     panel._populate = lambda raw, token=None: index_panel.IndexPanel._populate(panel, raw, token)
