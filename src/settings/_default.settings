@@ -550,6 +550,22 @@
     "setting": "automatic_transitions"
   },
   {
+    "value": false,
+    "title": "Media Index v2 (beta): analyse shots, colour and audio on import",
+    "type": "bool",
+    "restart": false,
+    "category": "General",
+    "setting": "media-index-v2"
+  },
+  {
+    "value": false,
+    "title": "Media Index v2: recognise people (faces and voices stay on this computer; needs a one-time model download)",
+    "type": "bool",
+    "restart": false,
+    "category": "General",
+    "setting": "media-index-people"
+  },
+  {
     "value": true,
     "title": "Native timeline",
     "type": "bool",

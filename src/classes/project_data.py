@@ -559,6 +559,12 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             # Apply default audio playback settings to this data structure
             self.apply_default_audio_settings()
 
+        # Index entries saved next to the project (Collect Media) join the shelf, so a
+        # project moved to another machine is not indexed, or paid for, again.
+        if file_path:
+            from classes.media_index.project_sync import import_project_index_in_background
+            import_project_index_in_background(file_path)
+
         # Get app, and distribute all project data through update manager
         get_app().updates.load(self._data)
 

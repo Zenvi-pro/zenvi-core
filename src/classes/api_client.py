@@ -59,6 +59,28 @@ def _refresh_credits_after_backend_billing() -> None:
         log.debug("credits refresh after a backend-billed request failed: %s", exc)
 
 
+def _v2_refusal(response) -> dict:
+    """A 402, 403 or 429 from the media index v2 routes as ``{"error", ...}`` with a flag saying which.
+
+    ``credits``: the account is out of credits; ``rate_limited`` (and ``retry_after`` seconds): too many requests or the
+    daily limit; ``forbidden``: the upload or job belongs to another account. The server's own message is kept.
+    """
+    try:
+        detail = (response.json() or {}).get("detail")
+    except Exception:  # noqa: BLE001
+        detail = None
+    detail = detail if isinstance(detail, dict) else {}
+    message = str(detail.get("message") or "")
+    if response.status_code == 402:
+        return {"credits": True, "error": message or "Out of credits for media indexing. Upgrade your plan or add credits to continue."}
+    if response.status_code == 429:
+        out = {"rate_limited": True, "error": message or "Too many media index requests. Try again shortly."}
+        if detail.get("retry_after") is not None:
+            out["retry_after"] = detail["retry_after"]
+        return out
+    return {"forbidden": True, "error": message or "The media index refused this request."}
+
+
 class ZenviBackendClient:
     """HTTP/WebSocket client for the Zenvi backend API."""
 
@@ -1278,6 +1300,109 @@ class ZenviBackendClient:
             meta = self._empty_ai_metadata()
             meta["error"] = str(exc)
             return meta
+
+    def restore_index(
+        self,
+        ai_metadata: Dict[str, Any],
+        *,
+        file_id: str,
+        project_id: str,
+        index_name: str,
+        filename: str = "",
+        media_type: str = "video",
+        duration_sec: float = 0.0,
+        session=None,
+    ) -> Dict[str, Any]:
+        """Search-index an already-finished analysis under a new file/project (no re-analysis).
+
+        Returns ``{"success": True}`` or ``{"success": False, "error": ..., "unsupported": bool}``.
+        ``unsupported`` is set when the backend has no such route (an older server): the caller
+        then indexes normally instead of treating it as a failure.
+        """
+        payload = {
+            "file_id": str(file_id or ""),
+            "project_id": str(project_id or ""),
+            "index_name": str(index_name or ""),
+            "filename": str(filename or ""),
+            "media_type": str(media_type or "video"),
+            "duration_sec": float(duration_sec or 0.0),
+            "ai_metadata": ai_metadata,
+        }
+        try:
+            s = session or self.session
+            r = s.post(f"{self.api_url}/indexing/restore", json=payload, timeout=180)
+            if r.status_code in (404, 405):
+                return {"success": False, "unsupported": True, "error": "backend has no /indexing/restore"}
+            r.raise_for_status()
+            data = r.json() if isinstance(r.json(), dict) else {}
+            if data.get("success"):
+                return {"success": True, "video_id": data.get("video_id") or file_id,
+                        "index_id": data.get("index_id") or index_name}
+            return {"success": False, "unsupported": False, "error": data.get("error") or "restore failed"}
+        except Exception as exc:
+            log.warning("restore_index failed: %s", exc)
+            return {"success": False, "unsupported": False, "error": str(exc)}
+
+    # -- media index v2 -----------------------------------------------------------------
+    def _v2(self, method: str, path: str, payload: Optional[Dict[str, Any]] = None, *,
+            timeout: float = 60, session=None) -> Dict[str, Any]:
+        """Call /index/v2/<path>. Never raises: errors come back as ``{"error": ...}`` and
+        ``unsupported`` marks a backend that has no v2 routes (the caller then uses v1)."""
+        try:
+            s = session or self.session
+            url = f"{self.api_url}/index/v2{path}"
+            r = s.get(url, timeout=timeout) if method == "GET" else s.post(url, json=payload or {}, timeout=timeout)
+            if r.status_code in (404, 405):
+                return {"unsupported": True, "error": "this backend has no media index v2"}
+            if r.status_code == 401:
+                return {"auth": True, "error": "sign in to use the media index"}
+            if r.status_code in (402, 403, 429):
+                return _v2_refusal(r)
+            r.raise_for_status()
+            data = r.json()
+            if not isinstance(data, dict):
+                return {"error": "unexpected response"}
+            billing = data.get("billing") or (data.get("result") or {}).get("billing")
+            if isinstance(billing, dict) and billing.get("credits"):
+                _refresh_credits_after_backend_billing()          # the backend charged for this: repaint the badge
+            return data
+        except Exception as exc:
+            log.warning("media index v2 %s %s failed: %s", method, path, exc)
+            return {"error": str(exc)}
+
+    def v2_upload_session(self, file_id: str, filename: str, total_size: int, mime_type: str = "video/mp4",
+                          session=None) -> Dict[str, Any]:
+        return self._v2("POST", "/upload-session", {"file_id": file_id, "filename": filename,
+                                                    "total_size": int(total_size), "mime_type": mime_type}, session=session)
+
+    def v2_understand(self, file_name: str, file_uri: str, shots: List[Dict[str, Any]],
+                      transcript: List[Dict[str, Any]], mime_type: str = "video/mp4",
+                      media_type: str = "video", session=None) -> Dict[str, Any]:
+        return self._v2("POST", "/understand", {"file_name": file_name, "file_uri": file_uri, "mime_type": mime_type,
+                                                "media_type": media_type, "shots": shots, "transcript": transcript},
+                        timeout=120, session=session)
+
+    def v2_describe_audio(self, file_name: str, file_uri: str, duration_seconds: float, windows: List[Dict[str, Any]],
+                          mime_type: str = "audio/aac", session=None) -> Dict[str, Any]:
+        return self._v2("POST", "/describe-audio", {"file_name": file_name, "file_uri": file_uri, "mime_type": mime_type,
+                                                    "duration_seconds": float(duration_seconds), "windows": windows},
+                        timeout=120, session=session)
+
+    def v2_listen(self, file_name: str, file_uri: str, duration_seconds: float, context: Optional[Dict[str, Any]] = None,
+                  mime_type: str = "audio/aac", session=None) -> Dict[str, Any]:
+        return self._v2("POST", "/listen", {"file_name": file_name, "file_uri": file_uri, "mime_type": mime_type,
+                                            "duration_seconds": float(duration_seconds), "context": context or {}},
+                        timeout=120, session=session)
+
+    def v2_job(self, job_id: str, session=None) -> Dict[str, Any]:
+        return self._v2("GET", f"/job/{job_id}", timeout=15, session=session)
+
+    def v2_embed(self, items: List[Dict[str, Any]], dims: int = 768, task_type: Optional[str] = None,
+                 session=None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"items": items, "dims": int(dims)}
+        if task_type:
+            payload["task_type"] = task_type
+        return self._v2("POST", "/embed", payload, timeout=180, session=session)
 
     def is_indexing_configured(self) -> bool:
         """Check whether the backend has video indexing configured."""

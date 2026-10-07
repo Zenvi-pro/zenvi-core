@@ -68,3 +68,7 @@ sentry-sdk
 
 # Web / YouTube ingest for Assistant + MCP (pinned release, not a git fork).
 yt-dlp>=2024.8.6,<2027
+
+# Vector search over the saved media index (classes/media_index/search.py).
+# Required, not optional: a pure-Python scan of a large library takes seconds.
+numpy>=1.26

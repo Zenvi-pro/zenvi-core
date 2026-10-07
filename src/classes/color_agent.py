@@ -726,6 +726,36 @@ def _hist_mean(bins: list) -> Optional[float]:
     return weighted / total
 
 
+def _hist_total(bins: Any) -> float:
+    """Number of pixels a histogram was built from (its bins sum to the frame's pixel count)."""
+    try:
+        return float(sum(float(b) for b in (bins or [])))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def clipped_fraction(value: Any, pixels: float) -> Optional[float]:
+    """Clipped shadows/highlights as a 0..1 fraction of the frame.
+
+    libopenshot's FrameScope reports these as pixel COUNTS (3836 clipped pixels in a
+    640x360 frame). Everything downstream (look distance, the grade solver, the
+    over-grade check) treats them as fractions, so a raw count made a pixel or two of
+    difference swamp every other term. Counts are integers above 1, fractions are
+    within 0..1, so a value over 1 is a count; an integer-valued 1.0 is one pixel.
+    """
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if v <= 0.0:
+        return 0.0
+    if pixels > 0.0 and (v > 1.0 or v == 1.0):
+        return min(1.0, v / pixels)
+    return min(1.0, v)
+
+
 def summarize_scope_video(video: Optional[dict]) -> dict:
     """Compact FrameScope video payload → agent-facing inspect JSON."""
     if not isinstance(video, dict) or not video.get("present"):
@@ -733,11 +763,12 @@ def summarize_scope_video(video: Optional[dict]) -> dict:
 
     summary = {"present": True}
     scope_summary = video.get("summary") if isinstance(video.get("summary"), dict) else {}
-    summary["avg_luma"] = scope_summary.get("avg_luma")
-    summary["clipped_shadows"] = scope_summary.get("clipped_shadows")
-    summary["clipped_highlights"] = scope_summary.get("clipped_highlights")
-
     hist = video.get("histogram") if isinstance(video.get("histogram"), dict) else {}
+    summary["avg_luma"] = scope_summary.get("avg_luma")
+    pixels = _hist_total(hist.get("luma"))
+    summary["clipped_shadows"] = clipped_fraction(scope_summary.get("clipped_shadows"), pixels)
+    summary["clipped_highlights"] = clipped_fraction(scope_summary.get("clipped_highlights"), pixels)
+
     channel_means = {}
     for channel in ("luma", "red", "green", "blue"):
         mean = _hist_mean(list(hist.get(channel) or []))

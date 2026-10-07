@@ -106,3 +106,37 @@ def test_result_for_a_closed_project_is_dropped():
     assert added == []
     assert panel._loading is False
     panel._status.setText.assert_called_with("Project changed. Press Refresh.")
+
+
+def test_delete_people_data_asks_first_and_deletes_off_the_gui_thread():
+    import threading
+    from classes.media_index import people
+    seen = {}
+    status = MagicMock()
+    panel = SimpleNamespace(_status=status, _confirm_delete_people=lambda: False)
+    panel._delete_people_worker = lambda: index_panel.IndexPanel._delete_people_worker(panel)
+    with patch.object(people, "delete_all", side_effect=lambda **k: seen.setdefault("n", 1) and {"scans": 2, "registry": True, "models": 0}):
+        index_panel.IndexPanel.delete_people_data(panel)
+        assert "n" not in seen and not status.setText.called, "declining deletes nothing"
+        panel._confirm_delete_people = lambda: True
+        started = []
+        real = threading.Thread
+
+        def capture(*a, **k):
+            t = real(*a, **k)
+            started.append(t)
+            return t
+
+        with patch.object(index_panel.threading, "Thread", capture), patch("classes.qt_main_thread.invoke_on_gui", lambda f, *a, **k: f(*a, **k)):
+            index_panel.IndexPanel.delete_people_data(panel)
+            started[0].join(5)
+    assert seen == {"n": 1} and started[0].name == "index_panel_delete_people"
+    assert status.setText.call_args_list[-1].args[0] == "Deleted 2 face scan(s) and the people list."
+
+
+def test_a_failing_delete_is_reported_not_raised():
+    status = MagicMock()
+    panel = SimpleNamespace(_status=status)
+    with patch("classes.media_index.people.delete_all", side_effect=OSError("disk busy")), patch("classes.qt_main_thread.invoke_on_gui", lambda f, *a, **k: f(*a, **k)):
+        index_panel.IndexPanel._delete_people_worker(panel)
+    assert "disk busy" in status.setText.call_args.args[0]

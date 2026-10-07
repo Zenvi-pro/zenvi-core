@@ -71,6 +71,7 @@
     "undo": [],
     "redo": []
   },
+  "edit_brief": {},
   "version" : { "openshot-qt" : "0.0.0",
                 "libopenshot" : "0.0.0" }
 }

@@ -3020,6 +3020,25 @@ def search_clips(query="", top_k="5", look_for="", **_kw) -> str:
         k = 5
     k = max(1, min(k, 20))
 
+    only_files = _kw.get("_only_files")          # set on the second pass below: answer only for these files
+    if only_files is None:
+        try:
+            from classes.editor_tools.media_index_tools import legacy_search_clips, v1_only_file_ids
+            local = legacy_search_clips(q, k, str(look_for or "").strip(), _detect_ordinal(q))
+            if local is not None:
+                # Footage the local index does not cover is still searchable through the original project index.
+                try:
+                    extra_ids = v1_only_file_ids() if not local.startswith("Error") else set()
+                    more = search_clips(query=q, top_k=top_k, look_for=look_for, _only_files=extra_ids) if extra_ids else ""
+                except Exception:
+                    log.warning("search_clips: the original index could not add to the local answer", exc_info=True)
+                    more = ""
+                if more and not more.startswith(("Error", "No index matches")):
+                    return more if local.startswith("No index matches") else local + "\n" + more
+                return local
+        except Exception:
+            log.warning("search_clips: the local media index could not answer; using the project index", exc_info=True)
+
     try:
         from collections import defaultdict
 
@@ -3072,8 +3091,13 @@ def search_clips(query="", top_k="5", look_for="", **_kw) -> str:
                 continue
             vid = str(r.get("video_id") or "").strip()
             fid, fname = map_search_hit_to_file(r, video_map)
+            if only_files is not None and fid not in only_files:
+                continue
             key = fid or vid or fname or "unknown"
             grouped[key].append({**r, "_file_id": fid, "_fname": fname, "_vid": vid})
+        if not grouped:
+            return f"No index matches for '{q}' in this project's index."
+        results = [h for hits in grouped.values() for h in hits]
 
         lines = [
             f"Found {len(results)} match(es) across {len(grouped)} project media item(s) "
@@ -3243,6 +3267,14 @@ def search_clip_scenes(
         nth = _parse_occurrence(str(_kw.get("occurrence", "0")), query)
         # Why the index could not answer, so a fallback result (or none) says so.
         index_notes = []
+
+        try:
+            from classes.editor_tools.media_index_tools import legacy_search_in_clip
+            local = legacy_search_in_clip(_semantic_search_query(query), k, ctx.file_id, clip_start, clip_end, clip_name)
+            if local is not None:
+                return local
+        except Exception:
+            log.warning("search_clip_scenes: the local media index could not answer", exc_info=True)
 
         # TwelveLabs search (parent index + trim window)
         if not client.is_indexing_configured():

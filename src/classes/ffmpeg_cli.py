@@ -110,6 +110,15 @@ def run_ffmpeg(args: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
     return subprocess.run(resolve_ffmpeg_args(args), **_windows_kwargs(kwargs))
 
 
+def popen_ffmpeg(args: Sequence[str], **kwargs: Any) -> subprocess.Popen:
+    """subprocess.Popen for ffmpeg/ffprobe without flashing a Windows console.
+
+    For callers that stream a result (raw frames or samples on stdout) instead of
+    waiting for the process to finish.
+    """
+    return subprocess.Popen(resolve_ffmpeg_args(args), **_windows_kwargs(kwargs))
+
+
 def run_ffmpeg_with_progress(
     args: Sequence[str],
     *,

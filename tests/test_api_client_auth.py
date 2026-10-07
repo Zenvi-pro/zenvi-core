@@ -73,3 +73,63 @@ def test_parallel_indexing_session_also_carries_bearer():
     with patch.object(api_client.ZenviBackendClient, "_auth_token", staticmethod(lambda: "jwt-1")):
         s = c._new_http_session()
     assert s.headers["Authorization"] == "Bearer jwt-1"
+
+
+# ============================ media index v2: what a refused request looks like to the editor ============================
+class _Reply:
+    def __init__(self, status, body=None):
+        self.status_code = status
+        self._body = body
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("no json")
+        return self._body
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+def _v2_reply(reply):
+    c = _client()
+
+    class Session:
+        def post(self, *a, **k):
+            return reply
+
+        get = post
+
+    return c._v2("POST", "/understand", {}, session=Session())
+
+
+def test_a_402_is_out_of_credits_with_the_servers_message():
+    out = _v2_reply(_Reply(402, {"detail": {"code": "insufficient_credits", "message": "Out of credits for video indexing. Need 18, have 3."}}))
+    assert out == {"credits": True, "error": "Out of credits for video indexing. Need 18, have 3."}
+
+
+def test_a_402_without_a_message_still_says_what_happened():
+    out = _v2_reply(_Reply(402, None))
+    assert out["credits"] is True and "credits" in out["error"].lower()
+
+
+def test_a_429_says_when_to_come_back():
+    out = _v2_reply(_Reply(429, {"detail": {"code": "rate_limited", "message": "Too many embed requests this hour.", "retry_after": 120}}))
+    assert out == {"rate_limited": True, "error": "Too many embed requests this hour.", "retry_after": 120}
+
+
+def test_a_403_is_a_refusal_not_a_request_to_sign_in():
+    out = _v2_reply(_Reply(403, {"detail": {"code": "not_owner", "message": "That upload belongs to another account."}}))
+    assert out == {"forbidden": True, "error": "That upload belongs to another account."} and "auth" not in out
+
+
+def test_a_401_still_asks_the_user_to_sign_in():
+    assert _v2_reply(_Reply(401, {"detail": "no"}))["auth"] is True
+
+
+def test_the_credits_badge_is_refreshed_only_when_the_backend_really_charged():
+    for body, expected in (({"job_id": "j", "billing": {"credits": 5, "basis": "tokens"}}, 1), ({"status": "done", "result": {"billing": {"credits": 3}}}, 1),
+                           ({"status": "done", "result": {"billing": {"credits": 0}}}, 0), ({"vectors": []}, 0)):
+        with patch.object(api_client, "_refresh_credits_after_backend_billing") as refresh:
+            assert _v2_reply(_Reply(200, body)) == body
+        assert refresh.call_count == expected, body
