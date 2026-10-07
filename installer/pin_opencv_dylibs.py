@@ -12,6 +12,12 @@ Run this after freeze and before ``fix_rpath``: for every non-system dylib an
 OpenCV library references by absolute path, overwrite the bundled copies of
 that basename with the referenced file and pull in any of its own dependencies
 the bundle is missing.
+
+This only decides WHICH file is bundled. References to it are still host paths
+(Homebrew is not under /usr/local on arm64, so ``fix_rpath`` leaves them); the
+pass that follows freeze rewrites them to ``@loader_path``: the "Fix Mach-O
+rpath references" step in release.yml and ``fix_macos_dylib_paths.py`` in
+scripts/build-local-mac.sh.
 """
 
 import os
