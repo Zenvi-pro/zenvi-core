@@ -8113,7 +8113,8 @@ def resummarize_project_file(file_id: str = "", **kwargs) -> str:
         def _kick_off_summarize():
             try:
                 files_model = _get_app().window.files_model
-                files_model._index_file_async(file_id, summarize_only=True)
+                # There is no summarize-only run any more: re-index to refresh it.
+                files_model._index_file_async(file_id, force=True)
             except Exception as exc:
                 log.warning("resummarize_project_file: failed to start summarize: %s", exc)
 
@@ -8134,12 +8135,14 @@ def resummarize_project_file(file_id: str = "", **kwargs) -> str:
 
 
 def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> str:
-    """Re-index an existing project file in TwelveLabs.
+    """Re-index a project file and refresh its descriptions and transcript.
 
-    Skips when the file is already indexed unless force=true.
-    Runs entirely on a worker thread.  Only the brief project-data reads
-    (file path, duration, project id) are marshalled to the Qt main
-    thread; the long-running reindex upload runs off the GUI thread.
+    Skips a file whose last index finished cleanly unless force=true; a failed
+    or interrupted index always runs again. The fresh analysis is stored the
+    way an import stores it. Runs entirely on a worker thread.  Only the brief
+    project-data reads (file path, duration, project id) and storing the
+    result are marshalled to the Qt main thread; the long-running reindex
+    upload runs off the GUI thread.
     """
     try:
         if not file_id:
@@ -8151,7 +8154,7 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
 
         def _read_project_state():
             from classes.query import File
-            from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
+            from classes.twelvelabs_match import get_index_block, index_is_complete
             f = File.get(id=file_id)
             if not f:
                 return None
@@ -8161,14 +8164,15 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
             except Exception:
                 pass
             ai = f.data.get("ai_metadata") if isinstance(f.data.get("ai_metadata"), dict) else {}
-            tl = ai.get("twelvelabs") if isinstance(ai.get("twelvelabs"), dict) else {}
+            tl = get_index_block(ai)
             return {
                 "path": f.data.get("path", ""),
                 "duration": f.data.get("duration", 0) or 0,
                 "project_id": project_id,
                 "existing_index_id": tl.get("index_id") or "",
                 "twelvelabs": tl,
-                "already_indexed": twelvelabs_is_indexed(tl),
+                # Ready handles left by a failed run do not count as indexed.
+                "already_indexed": index_is_complete(ai),
             }
 
         state = _run_on_main_thread(_read_project_state, timeout=10)
@@ -8180,7 +8184,7 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
             return (
                 f"File {file_id} is already indexed "
                 f"(index_id={tl.get('index_id', '')}, video_id={tl.get('video_id', '')}). "
-                "Pass force=true only when the file was replaced or indexing failed."
+                "Pass force=true to index it again, e.g. after the media file was replaced."
             )
 
         MAX_SECONDS = 30 * 60
@@ -8226,76 +8230,57 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
                 duration_seconds=duration,
             )
 
-            def _persist_index_metadata():
-                from classes.query import File
-                f = File.get(id=file_id)
-                if not f:
-                    return
-                ai = f.data.get("ai_metadata") if isinstance(f.data.get("ai_metadata"), dict) else {}
-                index_block = {
-                    "status": "ready",
-                    "index_id": result.get("index_id", ""),
-                    "video_id": result.get("video_id", ""),
-                    "index_name": index_name,
-                    "provider": "gemini",
-                }
-                ai["index"] = index_block
-                ai["twelvelabs"] = dict(index_block)  # legacy key for older readers
-                f.data["ai_metadata"] = ai
-                f.save()
-
-            _run_on_main_thread(_persist_index_metadata, timeout=10)
-
             video_id = str(result.get("video_id") or "")
-            summarize_note = ""
-            if video_id:
-                summarized = client.summarize_indexed_video(
-                    video_id,
-                    file_id=file_id,
-                    index_id=str(result.get("index_id") or ""),
-                    index_name=index_name,
-                )
-                if isinstance(summarized, dict) and summarized.get("analyzed"):
-                    def _persist_summary():
-                        from classes.query import File
-                        f = File.get(id=file_id)
-                        if not f:
-                            return
-                        tl = {
-                            "status": "ready",
-                            "index_id": result.get("index_id", ""),
-                            "video_id": video_id,
-                            "index_name": index_name,
-                            "provider": "gemini",
-                        }
-                        summarized["index"] = {
-                            **(summarized.get("index") or {}),
-                            **tl,
-                        }
-                        summarized["twelvelabs"] = {
-                            **(summarized.get("twelvelabs") or {}),
-                            **tl,
-                        }
-                        f.data["ai_metadata"] = summarized
-                        f.save()
+            index_block = {
+                "status": "ready",
+                "index_id": result.get("index_id", ""),
+                "video_id": video_id,
+                "index_name": index_name,
+                "provider": "gemini",
+            }
+            # The indexing job returns the whole fresh analysis (description,
+            # scenes, transcript cues); Gemini has no separate summarize step.
+            fresh = result.get("ai_metadata")
+            metadata = dict(fresh) if isinstance(fresh, dict) else {}
+            metadata["index"] = {**(metadata.get("index") or {}), **index_block}
+            metadata["twelvelabs"] = dict(metadata["index"])  # legacy key for older readers
+            _run_on_main_thread(_store_indexing_result, file_id, metadata, timeout=10)
 
-                    _run_on_main_thread(_persist_summary, timeout=10)
-                    summarize_note = " Gemini Flash summary updated."
-                else:
-                    summarize_note = (
-                        f" Warning: the index is ready but refreshing the summary failed: "
-                        f"{(summarized or {}).get('error', 'unknown')}"
-                    )
-
+            note = "" if metadata.get("analyzed") else " No description came back with the new index."
             return (
                 f"Re-indexing complete for file {file_id}. "
                 f"index_id={result.get('index_id', '')}  video_id={video_id}."
-                f"{summarize_note}"
+                f"{note}"
             )
-        return f"Error: Re-indexing failed: {result.get('error', result.get('message', 'unknown'))}"
+
+        failure = result if isinstance(result, dict) else {}
+        reason = failure.get("error") or failure.get("message") or "unknown"
+        fail_block = {
+            "status": "failed",
+            "error": reason,
+            "index_name": index_name,
+            "provider": "gemini",
+        }
+        # Record this attempt's error, so the file does not keep showing the last one.
+        _run_on_main_thread(
+            _store_indexing_result,
+            file_id,
+            {"error": reason, "index": fail_block, "twelvelabs": dict(fail_block)},
+            timeout=10,
+        )
+        return f"Error: Re-indexing failed: {reason}"
     except Exception as e:
         log.error("reindex_project_file: %s", e, exc_info=True)
         return f"Error: {e}"
+
+
+def _store_indexing_result(file_id, metadata):
+    """Main thread: store an indexing outcome exactly as an import's indexing result."""
+    files_model = getattr(getattr(_get_app(), "window", None), "files_model", None)
+    if files_model is None:
+        log.warning("No Project Files model; indexing result for %s was not stored", file_id)
+        return
+    files_model.apply_indexing_result(file_id, metadata)
 
 
 def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:

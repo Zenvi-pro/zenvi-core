@@ -1382,6 +1382,7 @@ class ZenviBackendClient:
             filename=os.path.basename(file_path) if file_path else "",
             existing_index_id=existing_index_id or None,
             session=session,
+            force=bool(force),
         )
         if result.get("index_id"):
             return {
@@ -1389,6 +1390,8 @@ class ZenviBackendClient:
                 "file_id": file_id,
                 "index_id": result.get("index_id"),
                 "video_id": result.get("video_id"),
+                # The fresh analysis; callers store it like an import's result.
+                "ai_metadata": result.get("ai_metadata"),
             }
         return {
             "success": False,
