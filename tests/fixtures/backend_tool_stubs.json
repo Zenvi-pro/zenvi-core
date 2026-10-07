@@ -64,6 +64,7 @@
    "clip_a_query": "str",
    "clip_b_id": "str",
    "clip_b_query": "str",
+   "duration_seconds": "str",
    "prompt_hint": "str"
   },
   "generate_tts_and_add_to_timeline_tool": {

@@ -193,8 +193,14 @@ class SettingStore(JsonDataStore):
                         and item.get("setting") == "exportDownloadsDefaultApplied"
                         for item in user_settings
                     )
+                new_keys = {name: self.get(name) for name in ("actionRedo", "actionAddTrack")}
                 # Merge sources, excluding user settings not found in default
                 self._data = self.merge_settings(default_settings, user_settings)
+                # Ctrl+Y used to add a track and Redo was Ctrl+Shift+Z only: a
+                # shortcut still on its old default follows the new one.
+                for name, old in (("actionRedo", "Ctrl+Shift+Z"), ("actionAddTrack", "Ctrl+Y")):
+                    if self.get(name) == old:
+                        self.set(name, new_keys[name])
             except Exception as ex:
                 log.error("Error loading settings file: %s", ex)
                 if self.app:
