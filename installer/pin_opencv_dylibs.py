@@ -41,8 +41,9 @@ def otool_dependencies(path):
 
 
 def _is_external(dep):
+    name = os.path.basename(dep)
     return (os.path.isabs(dep) and not dep.startswith(SYSTEM_PREFIXES)
-            and not os.path.basename(dep).startswith(SKIP_PREFIXES))
+            and not name.startswith(SKIP_PREFIXES) and "opencv" not in name)
 
 
 def _bundled_copies(frozen_dir, name):
