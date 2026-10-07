@@ -5,6 +5,12 @@
 # installers and publishes them as a GitHub Release so the in-app auto-updater
 # can pick them up.
 #
+# A push to the releases branch (an RC PR squash-merged, or a direct commit)
+# runs the same builds but publishes a draft release ("releases-test", replaced
+# on every push). Drafts are visible only to people
+# with write access and never reach /releases/latest, so the website and the
+# auto-updater ignore them; download the installers there to test before tagging.
+#
 # Asset naming convention expected by the auto-updater:
 #   Linux   → Zenvi-v<VER>-x86_64.AppImage
 #   macOS   → Zenvi-v<VER>-x86_64.dmg   (Intel)
@@ -16,6 +22,12 @@ name: Zenvi Production Release
 on:
   push:
     tags: ["v*.*.*"]
+    branches: ["releases"]
+
+# A newer push to releases supersedes the build still running for it.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type == 'branch' }}
 
 permissions:
   contents: write # needed for creating releases & uploading assets
@@ -63,6 +75,7 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.version }}
       tag: ${{ steps.ver.outputs.tag }}
+      name: ${{ steps.ver.outputs.name }}
     steps:
       - uses: actions/checkout@v4
 
@@ -75,12 +88,17 @@ jobs:
           m = re.search(r'VERSION\s*=\s*\"([^\"]+)\"', text)
           print(m.group(1))
           ")
-          if [ "${GITHUB_REF_NAME}" != "v${VER}" ]; then
+          if [ "${GITHUB_REF_TYPE}" = "branch" ]; then
+            echo "tag=${GITHUB_REF_NAME}-test" >> "$GITHUB_OUTPUT"
+            echo "name=Zenvi ${GITHUB_REF_NAME} test build (${GITHUB_SHA::7})" >> "$GITHUB_OUTPUT"
+          elif [ "${GITHUB_REF_NAME}" != "v${VER}" ]; then
             echo "::error::Tag ${GITHUB_REF_NAME} does not match version v${VER}"
             exit 1
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "name=Zenvi v${VER}" >> "$GITHUB_OUTPUT"
           fi
           echo "version=$VER" >> "$GITHUB_OUTPUT"
-          echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           echo "### Version: $VER" >> "$GITHUB_STEP_SUMMARY"
 
   # ── 2. Linux build (AppImage + .deb) ──────────────────────────────────
@@ -164,8 +182,8 @@ jobs:
           cp "$DESKTOP" "$APPDIR/zenvi.desktop"
           [ -f "$APPDATA" ] && cp "$APPDATA" "$APPDIR/usr/share/metainfo/"
 
-          # Icon (same branding as installer/dmg-icon.png)
-          ICON="installer/dmg-icon.png"
+          # Icon (the 256px Zenvi app icon)
+          ICON="xdg/icon/256/zenvi.png"
           if [ ! -f "$ICON" ]; then
             echo "::error::Missing packaging icon: $ICON"
             exit 1
@@ -229,8 +247,8 @@ jobs:
           fi
           cp "$DESKTOP" "$DEB_DIR/usr/share/applications/"
 
-          # Icon (same branding as installer/dmg-icon.png)
-          ICON="installer/dmg-icon.png"
+          # Icon (the 256px Zenvi app icon)
+          ICON="xdg/icon/256/zenvi.png"
           if [ ! -f "$ICON" ]; then
             echo "::error::Missing packaging icon: $ICON"
             exit 1
@@ -1412,11 +1430,18 @@ jobs:
             gh api -X DELETE "repos/${{ github.repository }}/git/refs/tags/production" || true
           fi
 
+      - name: Remove the previous test release
+        if: github.ref_type == 'branch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete "$TAG" --yes || true
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
-          name: "Zenvi v${{ env.VER }}"
+          target_commitish: ${{ github.sha }}
+          name: ${{ needs.version.outputs.name }}
           body: |
             ## Downloads
 
@@ -1433,7 +1458,7 @@ jobs:
             ## Checksums
 
             See `SHA256SUMS.txt` for verification.
-          draft: false
+          draft: ${{ github.ref_type == 'branch' }}
           prerelease: false
           files: dist/*
           generate_release_notes: true
