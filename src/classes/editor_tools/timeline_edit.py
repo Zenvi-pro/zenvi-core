@@ -736,6 +736,13 @@ def slice_clips(at_seconds=-1.0, timeline_clip_ids=[], clip_query="", track="", 
         s, e = span(data)
         return s + tol < t < e - tol
 
+    shortest = 2 * frame_seconds()
+
+    def leaves_sliver(data):
+        """A cut that would leave a piece under two frames long: nobody means that, it is a cut placed on an edge."""
+        s, e = span(data)
+        return t - s < shortest or e - t < shortest
+
     scope = (scope or "").strip().lower()
     skipped = []
     trans = []
@@ -745,6 +752,11 @@ def slice_clips(at_seconds=-1.0, timeline_clip_ids=[], clip_query="", track="", 
             if not inside(c.data):
                 s, e = span(c.data)
                 raise ToolError(f"{title(c)!r} ({s:.2f}-{e:.2f} s) is not under {t:.2f} s; cut inside the clip")
+            if leaves_sliver(c.data):
+                s, e = span(c.data)
+                raise ToolError(f"cutting {title(c)!r} ({s:.2f}-{e:.2f} s) at {t:.3f} s would leave a piece of {min(t - s, e - t):.3f} s, "
+                                "under two frames. To cut where someone starts or stops talking, get the exact time from "
+                                "get_voice_edges_tool (or refine_cut_tool for a picture cut); to shorten a clip use trim_clips_tool")
         require_unlocked({int(c.data.get("layer") or 0) for c in clips})
         if scope == "selected" and include_transitions:
             sel = set(getattr(get_app().window, "selected_transitions", []) or [])
@@ -753,7 +765,7 @@ def slice_clips(at_seconds=-1.0, timeline_clip_ids=[], clip_query="", track="", 
         wanted = {resolve_layer(track)} if scope == "track" else {int(t_.get("number") or 0) for t_ in layers()}
         if scope == "track":
             require_unlocked(wanted)
-        clips = [c for c in Clip.filter() if int(c.data.get("layer") or 0) in wanted and inside(c.data)]
+        clips = [c for c in Clip.filter() if int(c.data.get("layer") or 0) in wanted and inside(c.data) and not leaves_sliver(c.data)]
         if include_transitions:
             trans = [tr for tr in Transition.filter() if int(tr.data.get("layer") or 0) in wanted and inside(tr.data)]
         for item in [c for c in clips if is_locked(int(c.data.get("layer") or 0))]:

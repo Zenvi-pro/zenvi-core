@@ -338,6 +338,22 @@ def test_slice_one_clip_keep_both(ed):
     assert ed.clip(right) is None and ed.clip(a)["end"] == 4.0
 
 
+def test_a_cut_that_would_leave_a_sliver_is_refused_with_the_tool_to_use_instead(ed):
+    a = ed.add_clip(ed.add_file("video", duration=5.0), position=0.0, end=5.0, layer=T1)
+    refused(ed, ed.call("slice_clips_tool", timeline_clip_ids=[a], at_seconds=0.033), "under two frames", "get_voice_edges_tool")
+    refused(ed, ed.call("slice_clips_tool", timeline_clip_ids=[a], at_seconds=4.97), "under two frames")
+    receipt(ed.call("slice_clips_tool", timeline_clip_ids=[a], at_seconds=0.5))        # a real cut still works
+    one_step(ed)
+
+
+def test_slicing_everything_leaves_alone_a_clip_the_cut_would_only_graze(ed):
+    f = ed.add_file("video", duration=10.0)
+    grazed = ed.add_clip(f, position=0.0, end=4.0, layer=T1)          # ends 0.02 s after the cut
+    cut = ed.add_clip(f, position=0.0, end=10.0, layer=T2)
+    receipt(ed.call("slice_clips_tool", scope="all", at_seconds=3.98))
+    assert ed.fake.calls[-1][2] == [cut] and grazed not in ed.fake.calls[-1][2]
+
+
 def test_slice_at_playhead_and_keep_right_ripple(ed):
     a, b = _seq(ed, 2)
     ed.window.preview_thread.player.Position.return_value = 31  # frame 31 = 1.0 s
