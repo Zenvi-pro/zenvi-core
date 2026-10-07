@@ -1279,12 +1279,19 @@ def list_layers(**_kw) -> str:
         lock_by_num = {
             int(L.get("number") or 0): bool(L.get("lock", False)) for L in layers
         }
+        sync_by_num = {
+            int(L.get("number") or 0): (
+                bool(L["sync_locked"]) if "sync_locked" in L else True
+            )
+            for L in layers
+        }
         n = len(stack)
         bottom = stack[0] if stack else {}
         top = stack[-1] if stack else {}
         lines = [
             f"Layers ({n}). Z-ORDER uses layer_number only (higher covers lower). "
-            "Track labels/names are cosmetic — they can be anything and do NOT imply priority.",
+            "Track labels/names are cosmetic — they can be anything and do NOT imply priority. "
+            "sync_locked defaults true (ripple shifts this track with picture).",
             f"BOTTOM (drawn under): layer_number={bottom.get('layer_number')} "
             f"label={bottom.get('label')!r}",
             f"TOP (covers all below): layer_number={top.get('layer_number')} "
@@ -1296,7 +1303,8 @@ def list_layers(**_kw) -> str:
                 f"  layer_number={e['layer_number']} ui_track={e['ui_track']} "
                 f"z_from_bottom={e['z_from_bottom']} label={e.get('label')!r} "
                 f"track_id={e.get('track_id')!r} "
-                f"lock={lock_by_num.get(e['layer_number'], False)}"
+                f"lock={lock_by_num.get(e['layer_number'], False)} "
+                f"sync_locked={sync_by_num.get(e['layer_number'], True)}"
             )
         lines.append(f"TRACK_STACK_JSON={track_stack_json(layers)}")
         return "\n".join(lines)
@@ -9461,6 +9469,11 @@ AGENT_TOOL_HANDLERS.update({name: spec.func for name, spec in _EDITOR_TOOL_SPECS
 # One source of truth for an editor tool's arguments: its registry schema is the
 # one execute_tool validates against and the MCP server advertises.
 _TOOL_SCHEMAS.update({name: spec.schema for name, spec in _EDITOR_TOOL_SPECS.items()})
+# Phase 7 pro-NLE (edit_ops) — registered from a dedicated module to keep this file smaller.
+from classes.edit_ops_handlers import DISPLAY_LABELS as _EDIT_OPS_LABELS  # noqa: E402
+from classes.edit_ops_handlers import HANDLER_MAP as _EDIT_OPS_HANDLERS  # noqa: E402
+
+AGENT_TOOL_HANDLERS.update(_EDIT_OPS_HANDLERS)
 
 TOOL_HANDLERS = dict(AGENT_TOOL_HANDLERS)
 
@@ -9518,6 +9531,7 @@ TOOL_DISPLAY_LABELS.update(PHASE3_DISPLAY_LABELS)
 TOOL_DISPLAY_LABELS.update(PHASE4_DISPLAY_LABELS)
 TOOL_DISPLAY_LABELS.update(PHASE5_DISPLAY_LABELS)
 TOOL_DISPLAY_LABELS.update({name: spec.label for name, spec in _EDITOR_TOOL_SPECS.items()})
+TOOL_DISPLAY_LABELS.update(_EDIT_OPS_LABELS)
 
 assert set(TOOL_DISPLAY_LABELS) == set(AGENT_TOOL_HANDLERS), (
     "TOOL_DISPLAY_LABELS keys must match AGENT_TOOL_HANDLERS"
