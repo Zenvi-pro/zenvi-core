@@ -1132,6 +1132,32 @@ class ZenviBackendClient:
         finally:
             _refresh_credits_after_backend_billing()
 
+    def generate_image(self, prompt: str, **kwargs) -> Dict[str, Any]:
+        """Generate a still image from a text prompt (Zenvi-managed; charged by the backend).
+
+        Supported kwargs: width, height (only the aspect ratio is used).
+        Returns ``{"image_base64", "mime_type"}`` or ``{"error"}``.
+        """
+        try:
+            r = self.session.post(
+                f"{self.api_url}/generation/image", json={"prompt": prompt, **kwargs}, timeout=300,
+            )
+            if r.status_code in (402, 429):
+                # The backend's credit / tier-cap refusal carries the message to show.
+                detail = (r.json() or {}).get("detail")
+                message = detail.get("message") if isinstance(detail, dict) else detail
+                return {"error": str(message or f"Image generation was refused ({r.status_code}).")}
+            r.raise_for_status()
+            data = r.json()
+            if not isinstance(data, dict):
+                return {"error": "Unexpected response from the Zenvi backend"}
+            return data
+        except Exception as e:
+            log.error("Image generation failed: %s", e)
+            return {"error": str(e)}
+        finally:
+            _refresh_credits_after_backend_billing()
+
     def generate_tts(
         self,
         text: str,
