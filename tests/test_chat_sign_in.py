@@ -172,3 +172,12 @@ def test_the_sign_in_row_is_styled_and_a_finished_chat_replay_does_not_grow_butt
     replay = js()[js().index("window.replayToolBlock"):]
     replay = replay[:replay.index("/* ── Processing state")]
     assert "completeToolBlock(data.call_id, !!ok, '')" in replay, "history replays pass no result text, so no button appears"
+
+
+def test_the_sign_in_button_ignores_log_lines_other_tools_produced():
+    text = js()
+    body = text[text.index("window.completeToolBlock = function"):]
+    body = body[:body.index("window.replayToolBlock")]
+    check = body[body.index("AUTH_FAILURE_RE.test("):body.index("addSignInPrompt(block)")]
+    assert "block.lines).join" not in check and "ownResult" in check
+    assert "indexOf('RESULT:') === 0" in body

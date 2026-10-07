@@ -156,3 +156,14 @@ def test_cut_copies_the_timeline_selection_directly_not_through_chat_copy_routin
     assert "self.copyAll" not in calls
     assert "self.timeline.Copy_Triggered" in calls
     assert "self.deleteItem" in calls
+
+
+def test_duplicate_copies_the_timeline_selection_directly_not_through_chat_copy_routing():
+    import ast
+
+    src = (Path(__file__).resolve().parents[1] / "src" / "windows" / "main_window.py").read_text(encoding="utf-8")
+    fn = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef) and n.name == "actionDuplicate_trigger")
+    calls = {ast.unparse(n.func) for n in ast.walk(fn) if isinstance(n, ast.Call)}
+    assert "self.copyAll" not in calls
+    assert "self.timeline.Copy_Triggered" in calls
+    assert "self.pasteAll" in calls

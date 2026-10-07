@@ -848,7 +848,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # If filesView doesn't have focus, duplicate timeline selections
         # at the current cursor position
         else:
-            self.copyAll()
+            # Not copyAll(): a highlighted chat transcript would take that Copy and
+            # pasteAll() would paste stale clipboard content.
+            self.timeline.Copy_Triggered(MenuCopy.ALL, self.selected_clips, self.selected_transitions, [])
             self.pasteAll()
 
     def actionClearWaveformData_trigger(self):

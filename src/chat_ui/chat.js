@@ -1093,7 +1093,13 @@
         var block = toolBlocks[callId];
         if (block && block.el) {
             block.el.classList.remove('running');
-            if (!ok && AUTH_FAILURE_RE.test(String(summary || '') + '\n' + (block.lines || []).join('\n'))) {
+            // This tool's own result only: block.lines also holds log records that
+            // concurrent tools share, and another tool's login error must not
+            // give this one a Sign in button.
+            var ownResult = (block.lines || []).filter(function (l) {
+                return String(l).indexOf('RESULT:') === 0;
+            }).join('\n');
+            if (!ok && AUTH_FAILURE_RE.test(String(summary || '') + '\n' + ownResult)) {
                 addSignInPrompt(block);
             }
             if (!ok) {
