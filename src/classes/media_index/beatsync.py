@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 DEFAULT_MAX_SHIFT = 0.25
 DEFAULT_MIN_LENGTH = 0.3
+MAX_SLICES = 200
 
 
 @dataclass
@@ -106,3 +107,28 @@ def plan_beat_sync(clips: Sequence[CutClip], beats: Sequence[float], *, max_shif
             moves.append({"layer": layer, "from": round(at, 3), "to": round(target, 3), "delta": round(delta, 3), "earlier": a.id, "later": b.id,
                           "earlier_source_out": round(a.src_out, 4), "later_source_in": round(b.src_in, 4), "later_position": round(b.start, 4)})
     return {"moves": moves, "skipped": skipped, "already_on_beat": on_beat, "cuts": cuts}
+
+
+def plan_beat_slices(beats: Sequence[float], start: float, end: float, *, every: int = 1, frame: float = 1.0 / 30.0,
+                     max_cuts: int = MAX_SLICES) -> Dict[str, Any]:
+    """Where to cut a clip lying over [start, end) (timeline seconds) so each piece runs from one beat to the next.
+
+    Every ``every``-th beat inside the clip becomes a cut, on a whole frame. A beat that would leave a piece shorter
+    than two frames (at either end, or next to the previous cut) is skipped and counted. More than ``max_cuts`` cuts
+    is refused (``too_many``) rather than quietly trimmed: the caller should ask for a coarser cut.
+    """
+    shortest = 2 * frame
+    snapped = sorted({round(b / frame) * frame for b in beats if start < b < end})
+    chosen = snapped[::max(1, int(every))]
+    cuts: List[float] = []
+    skipped = 0
+    last = start
+    for c in chosen:
+        if c - last < shortest or end - c < shortest:
+            skipped += 1
+            continue
+        cuts.append(round(c, 4))
+        last = c
+    if len(cuts) > max_cuts:
+        return {"cuts": [], "skipped_close": skipped, "too_many": len(cuts)}
+    return {"cuts": cuts, "skipped_close": skipped, "too_many": 0}

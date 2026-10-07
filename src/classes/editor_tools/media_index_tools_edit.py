@@ -33,6 +33,37 @@ def _index_provider():
     return index_for
 
 
+def _music_beats(music_clip_id, on):
+    """(timeline clips, clip objects, the music clip, its tempo, its beats on the timeline's clock) for the music to cut to.
+
+    The music is the clip asked for, else the longest music clip with a detected tempo. Raises a ToolError saying what is
+    missing (no music, no steady beat, no beat inside the part that is on the timeline).
+    """
+    clips, _project, objs = build_timeline()
+    index_for = _index_provider()
+    beds = [c for c in clips if c.role == "music" and c.length > 0]
+    if music_clip_id:
+        bed = next((c for c in beds if c.id == str(music_clip_id)), None)
+        if bed is None:
+            raise ToolError(f"{music_clip_id!r} is not a music clip on the timeline (analyze_timeline_audio_tool lists them)")
+    else:
+        with_tempo = [c for c in beds if ((getattr(index_for(c), "audio", None) or {}).get("tempo") or {}).get("beats")]
+        if not with_tempo:
+            raise ToolError("no music with a detected tempo is on the timeline: add music and let it finish indexing, or the track has no steady beat")
+        bed = max(with_tempo, key=lambda c: c.length)
+    audio = getattr(index_for(bed), "audio", None) or {}
+    tempo = audio.get("tempo") or {}
+    if not tempo.get("beats"):
+        raise ToolError(f"{bed.name!r} has no steady tempo, so there is no beat to cut to")
+    source_beats = ((audio.get("music") or {}).get("downbeats") if on == "downbeat" else None) or tempo["beats"]
+    if on == "downbeat" and not (audio.get("music") or {}).get("downbeats"):
+        source_beats = tempo["beats"][::4]
+    beats = sorted(t for t in (bed.to_timeline(x) for x in source_beats if bed.src_in <= x <= bed.src_out) if bed.start <= t <= bed.end)
+    if not beats:
+        raise ToolError("none of the music's beats fall inside the part of it that is on the timeline")
+    return clips, objs, bed, tempo, beats
+
+
 # ============================ sync_cuts_to_beats_tool ============================
 @editor_tool(
     "sync_cuts_to_beats_tool",
@@ -59,28 +90,7 @@ def sync_cuts_to_beats(music_clip_id="", on="beat", max_shift_seconds=0.25, incl
     """
     from classes.clip_utils import clip_time_bounds
 
-    clips, _project, objs = build_timeline()
-    index_for = _index_provider()
-    beds = [c for c in clips if c.role == "music" and c.length > 0]
-    if music_clip_id:
-        bed = next((c for c in beds if c.id == str(music_clip_id)), None)
-        if bed is None:
-            raise ToolError(f"{music_clip_id!r} is not a music clip on the timeline (analyze_timeline_audio_tool lists them)")
-    else:
-        with_tempo = [c for c in beds if ((getattr(index_for(c), "audio", None) or {}).get("tempo") or {}).get("beats")]
-        if not with_tempo:
-            raise ToolError("no music with a detected tempo is on the timeline: add music and let it finish indexing, or the track has no steady beat")
-        bed = max(with_tempo, key=lambda c: c.length)
-    audio = getattr(index_for(bed), "audio", None) or {}
-    tempo = audio.get("tempo") or {}
-    if not tempo.get("beats"):
-        raise ToolError(f"{bed.name!r} has no steady tempo, so there is no beat to cut to")
-    source_beats = ((audio.get("music") or {}).get("downbeats") if on == "downbeat" else None) or tempo["beats"]
-    if on == "downbeat" and not (audio.get("music") or {}).get("downbeats"):
-        source_beats = tempo["beats"][::4]
-    beats = sorted(t for t in (bed.to_timeline(x) for x in source_beats if bed.src_in <= x <= bed.src_out) if bed.start <= t <= bed.end)
-    if not beats:
-        raise ToolError("none of the music's beats fall inside the part of it that is on the timeline")
+    clips, objs, bed, tempo, beats = _music_beats(music_clip_id, on)
 
     cut_clips = []
     for c in clips:
@@ -119,6 +129,63 @@ def sync_cuts_to_beats(music_clip_id="", on="beat", max_shift_seconds=0.25, incl
     extend_timeline()
     refresh()
     return ok(f"Moved {len(plan['moves'])} cut(s) onto the {on}: " + summary_bits + ".", changed=True, **receipt)
+
+
+# ============================ slice_on_beats_tool ============================
+@editor_tool(
+    "slice_on_beats_tool",
+    covers=("index.beat_slice",),
+    label="Slice on the beat",
+    schema=obj({
+        "timeline_clip_id": string("The picture clip (a video or image on the timeline) to cut into pieces.", ""),
+        "music_clip_id": string("Timeline clip id of the music to cut to (default: the longest music clip with a detected tempo).", ""),
+        "on": enum(["beat", "downbeat"], "'beat' = a cut on each beat, 'downbeat' = only the first beat of each bar (calmer).", "beat"),
+        "every": integer("Cut on every Nth beat (2 = every other beat, 4 = about once a bar).", 1, minimum=1, maximum=16),
+        "from_seconds": number("Timeline second to start cutting at (default: the start of the clip).", None, minimum=0),
+        "to_seconds": number("Timeline second to stop cutting at (default: the end of the clip).", None, minimum=0),
+        "dry_run": boolean("Only report where the cuts would go; change nothing.", False),
+    }, required=["timeline_clip_id"]),
+)
+def slice_on_beats(timeline_clip_id, music_clip_id="", on="beat", every=1, from_seconds=None, to_seconds=None, dry_run=False):
+    """Cut one clip into pieces that each run from one beat of the music to the next (a montage from one long shot).
+
+    Use it when the user wants a clip cut to the beat; to tighten cuts that already exist between several clips use
+    sync_cuts_to_beats_tool instead. Cuts land on whole frames, never leave a piece under two frames, and are refused
+    above 200 pieces (ask for a coarser cut: every=2 or 4, or a from/to range). Locked tracks are refused. One undo step.
+    Use dry_run to see where the cuts would go first.
+    """
+    from classes.editor_tools._registry import REGISTRY
+
+    clips, objs, _bed, tempo, beats = _music_beats(music_clip_id, on)
+    target = next((c for c in clips if c.id == str(timeline_clip_id) and c.kind in ("video", "image") and c.length > 0), None)
+    if target is None:
+        raise ToolError(f"{timeline_clip_id!r} is not a picture clip on the timeline (list_clips_tool lists them)")
+    lo = max(target.start, float(from_seconds)) if from_seconds is not None else target.start
+    hi = min(target.end, float(to_seconds)) if to_seconds is not None else target.end
+    if hi <= lo:
+        raise ToolError("the range to cut is empty: from_seconds must be before to_seconds and inside the clip")
+    plan = beatsync.plan_beat_slices([b for b in beats if lo <= b <= hi], target.start, target.end, every=int(every), frame=frame_seconds())
+    if plan["too_many"]:
+        raise ToolError(f"that would make {plan['too_many'] + 1} pieces; ask for fewer (every=2 or 4, or a from_seconds/to_seconds range). Nothing was changed")
+    if not plan["cuts"]:
+        raise ToolError("no beat falls inside that part of the clip, so there is nothing to cut")
+    receipt = dict(cuts=plan["cuts"], pieces=len(plan["cuts"]) + 1, skipped_close=plan["skipped_close"], on=on, every=int(every), bpm=tempo.get("bpm"),
+                   timeline_clip_id=target.id)
+    if dry_run:
+        return ok(f"Would cut {target.name!r} into {receipt['pieces']} pieces on the {on}.", changed=False, dry_run=True, **receipt)
+    require_unlocked({int(objs[target.id].data.get("layer") or 0)})
+    slicer = REGISTRY["slice_clips_tool"].func
+    current, done = target.id, []
+    for t in plan["cuts"]:
+        out = slicer(timeline_clip_ids=[current], at_seconds=t)
+        if str(out).lstrip().startswith("Error"):
+            raise ToolError(f"stopped after {len(done)} of {len(plan['cuts'])} cut(s): {out}")
+        body = json.loads(str(out).partition("\n")[2] or "{}")
+        piece = (body.get("pieces") or [{}])[0]
+        current = piece.get("right") or current
+        done.append(t)
+    refresh()
+    return ok(f"Cut {target.name!r} into {len(done) + 1} pieces on the {on}.", changed=True, **{**receipt, "cuts": done})
 
 
 # ============================ balance_mix_tool ============================

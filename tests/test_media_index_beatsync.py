@@ -10,7 +10,7 @@ import pytest
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
-from classes.media_index.beatsync import CutClip, plan_beat_sync  # noqa: E402
+from classes.media_index.beatsync import CutClip, plan_beat_slices, plan_beat_sync  # noqa: E402
 
 BEATS = [round(0.5 * i, 3) for i in range(0, 40)]
 FRAME = 1.0 / 30.0
@@ -145,3 +145,35 @@ def test_the_input_is_not_modified_and_a_single_clip_has_no_cuts():
     plan(clips)
     assert [(x.start, x.end, x.src_in, x.src_out) for x in clips] == before
     assert plan([c("solo", 0, 5.0)]) == {"moves": [], "skipped": [], "already_on_beat": 0, "cuts": 0}
+
+
+# -- slicing one clip on the beat ----------------------------------------------------------
+def test_a_clip_is_cut_on_every_beat_inside_it():
+    out = plan_beat_slices(BEATS, 1.2, 3.1)
+    assert out["cuts"] == [1.5, 2.0, 2.5, 3.0] and out["too_many"] == 0
+
+
+def test_every_second_or_fourth_beat_gives_longer_pieces():
+    assert plan_beat_slices(BEATS, 0.2, 5.1, every=2)["cuts"] == [0.5, 1.5, 2.5, 3.5, 4.5]
+    assert plan_beat_slices(BEATS, 0.2, 5.1, every=4)["cuts"] == [0.5, 2.5, 4.5]
+
+
+def test_a_beat_at_a_clip_edge_makes_no_sliver_and_is_counted():
+    out = plan_beat_slices(BEATS, 1.5, 3.0)
+    assert out["cuts"] == [2.0, 2.5], "1.5 and 3.0 are the clip's own edges"
+    near = plan_beat_slices(BEATS, 1.48, 3.02)           # edges a frame away from beats: those beats would only make slivers
+    assert near["cuts"] == [2.0, 2.5] and near["skipped_close"] == 2
+
+
+def test_cuts_land_on_whole_frames_and_never_closer_than_two_frames():
+    out = plan_beat_slices([1.01, 1.02, 1.5], 0.0, 3.0)
+    assert out["cuts"] == [round(round(1.01 * 30) / 30, 4), 1.5] and out["skipped_close"] == 1
+
+
+def test_too_many_cuts_is_refused_not_trimmed():
+    out = plan_beat_slices([i * 0.1 for i in range(1, 400)], 0.0, 40.0, max_cuts=50)
+    assert out["cuts"] == [] and out["too_many"] > 50
+
+
+def test_no_beats_inside_means_no_cuts():
+    assert plan_beat_slices(BEATS, 30.0, 31.0)["cuts"] == []

@@ -164,6 +164,7 @@ CAPABILITIES = [
     ("index.harmonize", "media-index", "Color match", "Match the clips of an edit to one reference look with a measured before and after"),
     ("index.audition", "media-index", "Stock music search", "Preview-analyse candidate music and rank it by fit"),
     ("index.beat_sync", "media-index", "Snap cuts to music", "Move the cuts of an edit onto the beat of its music without changing length"),
+    ("index.beat_slice", "media-index", "Slice on the beat", "Cut one clip into pieces that each run from one beat of the music to the next"),
     ("index.balance_mix", "media-index", "Audio mix", "Even out voices, duck music under speech and set the overall loudness in one undo step"),
     ("index.brief", "media-index", "Project notes", "Save and read the plan and intent of an edit with the project"),
     ("index.audio_view", "media-index", "Audio waveform / spectrum", "Spectrogram strip of a file's audio as an image"),

@@ -58,6 +58,82 @@ def snapshot(ed, *ids):
     return {i: {k: ed.clip(i)[k] for k in ("position", "start", "end")} for i in ids}
 
 
+# ============================ slice_on_beats_tool ============================
+@pytest.fixture
+def sliceable(world, monkeypatch):
+    from classes import clip_utils, timeline_ops
+    from timeline_edit_fakes import FakeTimeline, fake_openshot
+    ed = world.editor
+    monkeypatch.setattr(timeline_ops, "openshot", fake_openshot())
+    monkeypatch.setattr(clip_utils, "get_app", lambda: ed.app)
+    ed.fake = FakeTimeline(ed)
+    ed.window.timeline = ed.fake
+    return world
+
+
+def one_long_shot(world, end=8.0):
+    ed = world.editor
+    video = ed.add_file("video", duration=24.5, fingerprint={"sha256": SHA_V})
+    music = ed.add_file("audio", fingerprint={"sha256": SHA_M}, ai_metadata={"analyzed": True})
+    add_music_index(world.shelf)
+    shot_clip = ed.add_clip(video, position=0.0, layer=PICTURE, start=0.0, end=end)
+    bed = ed.add_clip(music, position=0.0, layer=MUSIC, start=0.0, end=40.0)
+    ed.mark()
+    return shot_clip, bed
+
+
+def pieces_of(ed, layer=PICTURE):
+    return sorted(round(c["position"], 3) for c in ed.clips() if c["layer"] == layer)
+
+
+def test_one_clip_is_cut_on_every_beat_in_one_undo_step_and_undo_puts_it_back(sliceable):
+    ed = sliceable.editor
+    shot_clip, _bed = one_long_shot(sliceable)
+    receipt = ed.call_receipt("slice_on_beats_tool", timeline_clip_id=shot_clip)
+    assert receipt["status"] == "applied", receipt
+    assert pieces_of(ed) == [0.0] + [1.0 + 0.5 * i for i in range(14)], "a piece starts at every beat from 1.0 to 7.5"
+    assert receipt["data"]["pieces"] == 15
+    assert ed.undo_steps_since_mark() == 1, "fourteen cuts, one user intent, one undo step"
+    ed.undo()
+    assert pieces_of(ed) == [0.0] and round(ed.clip(shot_clip)["end"], 3) == 8.0
+
+
+def test_every_fourth_beat_makes_longer_pieces(sliceable):
+    ed = sliceable.editor
+    shot_clip, _bed = one_long_shot(sliceable)
+    receipt = ed.call_receipt("slice_on_beats_tool", timeline_clip_id=shot_clip, every=4)
+    assert receipt["status"] == "applied" and pieces_of(ed) == [0.0, 1.0, 3.0, 5.0, 7.0]
+
+
+def test_a_range_limits_where_the_cuts_go(sliceable):
+    ed = sliceable.editor
+    shot_clip, _bed = one_long_shot(sliceable)
+    ed.call_receipt("slice_on_beats_tool", timeline_clip_id=shot_clip, from_seconds=3.0, to_seconds=4.5)
+    assert pieces_of(ed) == [0.0, 3.0, 3.5, 4.0, 4.5]
+
+
+def test_a_dry_run_shows_the_cuts_and_changes_nothing(sliceable):
+    ed = sliceable.editor
+    shot_clip, _bed = one_long_shot(sliceable)
+    receipt = ed.call_receipt("slice_on_beats_tool", timeline_clip_id=shot_clip, dry_run=True)
+    assert receipt["data"]["dry_run"] is True and len(receipt["data"]["cuts"]) == 14
+    assert pieces_of(ed) == [0.0] and ed.undo_steps_since_mark() == 0
+
+
+def test_slicing_refuses_a_locked_track_a_missing_clip_and_missing_music_and_changes_nothing(sliceable):
+    ed = sliceable.editor
+    shot_clip, bed = one_long_shot(sliceable)
+    ed.lock_track(PICTURE)
+    receipt = ed.call_receipt("slice_on_beats_tool", timeline_clip_id=shot_clip)
+    assert receipt["status"] in ("refused", "error") and "locked" in receipt["summary"]
+    ed.lock_track(PICTURE, False)
+    receipt = ed.call_receipt("slice_on_beats_tool", timeline_clip_id="nope")
+    assert receipt["status"] in ("refused", "error") and "not a picture clip" in receipt["summary"]
+    receipt = ed.call_receipt("slice_on_beats_tool", timeline_clip_id=bed)
+    assert receipt["status"] in ("refused", "error") and "not a picture clip" in receipt["summary"], "the song is not something to cut into pictures"
+    assert pieces_of(ed) == [0.0] and ed.undo_steps_since_mark() == 0
+
+
 # ============================ sync_cuts_to_beats_tool ============================
 def test_the_cut_moves_onto_the_beat_in_one_undo_step_and_undo_puts_it_back(world):
     ed = world.editor
