@@ -909,6 +909,11 @@ class ChatBridge(QObject):
         if self.window:
             self.window._sign_in_cli(backend_id)
 
+    @guarded_slot()
+    def signInZenvi(self):
+        if self.window:
+            self.window._sign_in_zenvi()
+
     @guarded_slot(str, result=str)
     def listMentionables(self, query: str = "") -> str:
         if not self.window:
@@ -4254,6 +4259,52 @@ class AIChatWindow(QDockWidget):
             )
         self._set_processing_ui(False)
         self._detect_clis()
+
+    ZENVI_SIGN_IN_WAIT_SECONDS = 300      # the browser may need a password, a code or a new account: wait for the person
+
+    def _sign_in_zenvi(self):
+        """Open the Zenvi website sign-in in the browser; when it finishes, bring the app back to the front.
+
+        No dialog and no Qt thread: AuthManager opens the same sign-in page the login dialog uses and waits for the session
+        on a plain Python thread; the result comes back to the GUI thread through a queued call. (The login dialog starts and
+        stops Qt threads of its own, and tearing it down from here ended in "QThread: Destroyed while thread is still running".)
+        """
+        if getattr(self, "_zenvi_sign_in_waiting", False):
+            return                                           # one at a time: the first browser tab is still open
+        from classes.auth_manager import AuthManager
+
+        auth = AuthManager.instance()
+        self._zenvi_sign_in_waiting = True
+
+        def report(ok: bool, email: str = ""):
+            QMetaObject.invokeMethod(self, "_on_zenvi_sign_in_done", Qt.QueuedConnection, Q_ARG(bool, bool(ok)), Q_ARG(str, email or ""))
+
+        try:
+            _url, state = auth.start_auth_flow()
+            auth.poll_for_session(
+                state,
+                on_success=lambda session: report(True, str((session or {}).get("user_email") or "")),
+                on_timeout=lambda: report(False),
+                timeout=self.ZENVI_SIGN_IN_WAIT_SECONDS,
+            )
+        except Exception:
+            log.warning("could not start the Zenvi sign-in", exc_info=True)
+            report(False)
+
+    @pyqtSlot(bool, str)
+    def _on_zenvi_sign_in_done(self, ok: bool, email: str = ""):
+        self._zenvi_sign_in_waiting = False
+        if ok:
+            try:
+                main = self.window() if callable(getattr(self, "window", None)) else None
+                if main is not None:
+                    main.raise_()
+                    main.activateWindow()
+                self.refresh_credits_for_account()
+            except Exception:
+                log.debug("returning to the app after sign-in failed", exc_info=True)
+        if self._use_web_ui:
+            self._run_js("if(window.onZenviSignInResult) onZenviSignInResult(%s, %s);" % (json.dumps(bool(ok)), json.dumps(email or "")))
 
     def _sign_in_cli(self, backend_id: str):
         """Open Claude's browser login; on success auto-retry the pending message."""
