@@ -357,3 +357,11 @@ def test_audio_mix_speech_windows_best_prefers_cues():
     windows, src = am.speech_windows_best(clip, meta, media_path="")
     assert src == "transcript_cues"
     assert windows
+
+
+def test_transcript_results_say_word_times_are_not_cut_points():
+    from classes.agent_tools.transcript import _transcript_notes
+
+    for for_edit in (True, False):
+        text = " ".join(_transcript_notes(for_edit=for_edit))
+        assert "get_voice_edges_tool" in text and "never slice at a word time" in text
