@@ -77,8 +77,8 @@ SERVER_INSTRUCTIONS = (
     "um_uh is allowed). After cuts, call get_transcript_tool again — stale "
     "indices are refused. add_captions_tool burns timed dialogue; "
     "export_captions_tool writes SRT/VTT. diarize_media_tool labels speakers "
-    "offline. detect_beats_tool finds music beats. search_media_local_tool is "
-    "on-device visual search; search_footage_tool searches everything the index knows (what happens, what is said, how it looks); search_clips_tool remains the cloud tier."
+    "offline. detect_beats_tool finds music beats. "
+    "search_footage_tool searches everything the index knows (what happens, what is said, how it looks); search_clips_tool remains the cloud tier."
 )
 
 # The editing playbook (how to finish a whole piece) is one text shared with the Zenvi Assistant; see classes.edit_playbook.

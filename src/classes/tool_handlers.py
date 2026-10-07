@@ -12006,7 +12006,6 @@ READ_ONLY_TOOLS = frozenset({
     "transcribe_media_tool",
     "detect_beats_tool",
     "diarize_media_tool",
-    "search_media_local_tool",
     "export_captions_tool",
 }) | frozenset(name for name, spec in _EDITOR_TOOL_SPECS.items() if spec.read_only)
 
@@ -12063,7 +12062,6 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     "duck_under_speech_tool",
     "detect_beats_tool",
     "diarize_media_tool",
-    "search_media_local_tool",
 }) | frozenset(name for name, spec in _EDITOR_TOOL_SPECS.items() if spec.background_safe)
 
 # Tools whose main-thread work can legitimately run far longer than

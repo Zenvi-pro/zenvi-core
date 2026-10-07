@@ -15,7 +15,6 @@ from classes.agent_tools.speech_extra import (
     diarize_media,
     export_captions,
     remove_silence,
-    search_media_local,
 )
 from classes.agent_tools.titles import add_title
 from classes.agent_tools.transcript import get_transcript, remove_words, transcribe_media
@@ -44,7 +43,6 @@ PHASE5_HANDLERS = {
     "export_captions_tool": export_captions,
     "detect_beats_tool": detect_beats_tool_handler,
     "diarize_media_tool": diarize_media,
-    "search_media_local_tool": search_media_local,
 }
 
 PHASE3_DISPLAY_LABELS = {
@@ -68,5 +66,4 @@ PHASE5_DISPLAY_LABELS = {
     "export_captions_tool": "Export captions",
     "detect_beats_tool": "Detect beats",
     "diarize_media_tool": "Diarize speakers",
-    "search_media_local_tool": "Search media (local)",
 }

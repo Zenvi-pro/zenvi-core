@@ -72,6 +72,19 @@ def test_search_returns_moments_with_file_and_times(env):
     assert env.queries[-1] == "lake view" and r["total"] >= 1 and r["next"] is None
 
 
+def test_a_description_search_with_no_descriptions_says_why_and_does_not_pay_to_embed(env):
+    out = REGISTRY["search_footage_tool"].func(query="lake view", file_ids=["F2"])
+    assert out.startswith("Error") and "descriptions" in out and "filters" in out
+    assert env.queries == [], "nothing was sent to be embedded"
+
+
+def test_files_that_cannot_match_a_description_are_named_next_to_the_results(env):
+    _, r = call("search_footage_tool", query="lake view")
+    assert r["not_described"] == ["partial.mp4"] and r["hits"][0]["file_id"] == "F1"
+    _, plain = call("search_footage_tool", filters={"camera_move": "pan"})
+    assert "not_described" not in plain, "a filter search never needed descriptions"
+
+
 def test_files_without_an_index_are_reported_not_hidden(env):
     _, r = call("search_footage_tool", query="lake view")
     assert r["not_indexed"] == ["new.mp4"] and all(h["file_id"] == "F1" for h in r["hits"])

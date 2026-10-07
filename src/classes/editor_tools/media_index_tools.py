@@ -180,6 +180,15 @@ def search_footage(query="", look_for="", reference_file_id="", reference_start=
     person_note = {}
     if person:
         filters["person_shots"], person_note = _person_shots(files, str(person))
+    # Searching by description ranks against the descriptions the cloud pass writes. A file without them cannot match
+    # a query, and when none has them the question cannot be answered, so say that instead of paying to embed it.
+    described = [f for f in files if f.text_matrix is not None or f.image_matrix is not None]
+    not_described = [f.name for f in files if f not in described]
+    if query and not described:
+        raise ToolError(f"none of the {len(files)} indexed file(s) has picture or speech descriptions yet, so a description search "
+                        "cannot find anything (they are built in the cloud after sign-in and need indexing minutes or credits; "
+                        "index_status_tool shows each file). Searching with filters (camera move, colour, duration, talking) or a "
+                        "reference clip still works, and get_transcript_tool reads what was said")
     qv = embed_query(query) if query else None
     ref_vec = ref_look = None
     if reference_file_id:
@@ -206,7 +215,8 @@ def search_footage(query="", look_for="", reference_file_id="", reference_start=
         summary = "no matches" + (" (a weak match is treated as none; try other words or fewer filters)" if result["ranked"] or query else "")
     extra = {"person": person_note["who"], "unsure_shots": person_note["unsure_shots"],
              "heard_only_shots": person_note["heard_only_shots"]} if person_note else {}
-    return ok(summary, hits=hits, total=result["total"], next=result["next"], not_indexed=missing[:20], **extra)
+    return ok(summary, hits=hits, total=result["total"], next=result["next"], not_indexed=missing[:20],
+              **({"not_described": not_described[:20]} if query and not_described else {}), **extra)
 
 
 def _files_in_place(files, query: str):
