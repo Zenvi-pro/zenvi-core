@@ -29,7 +29,7 @@ import os
 import sys
 from time import strftime
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 # libopenshot 1.0.0 ships the 4.0-era effects and the corrected Crop location math.
 MINIMUM_LIBOPENSHOT_VERSION = "1.0.0"
 DATE = "20260813000000"
