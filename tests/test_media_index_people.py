@@ -303,6 +303,55 @@ def test_a_cancelled_scan_saves_nothing(blocks_video, monkeypatch):
     assert P.load_scan(SHA) is None and not P.has_data()
 
 
+# ============================ erasing while a scan runs ============================
+def one_face(monkeypatch):
+    monkeypatch.setattr(faces, "detect", lambda *_a, **_k: [{"box": [10.0, 10.0, 60.0, 60.0], "score": 0.95, "kps": faces.TEMPLATE[:5]}])
+    monkeypatch.setattr(faces, "embed", lambda *_a, **_k: unit(0))
+
+
+def test_a_scan_running_while_people_data_is_erased_brings_nothing_back(monkeypatch):
+    one_face(monkeypatch)
+    frame = np.zeros((90, 160, 3), np.uint8)
+
+    def erased_halfway(*_a, **_k):
+        yield 0.5, frame
+        P.delete_all()                      # the user erases everything while the scan is still going
+        yield 1.0, frame
+
+    monkeypatch.setattr(P, "stream_frames", erased_halfway)
+    with pytest.raises(InterruptedError):
+        P.scan_file("/x.mp4", SHA, [{"id": 0, "start": 0.0, "end": 3.0}], 3.0, (160, 90), detector=object(), recogniser=object())
+    assert P.load_scan(SHA) is None and not P.has_data()
+
+
+def test_people_registered_after_an_erase_are_refused_too(monkeypatch):
+    one_face(monkeypatch)
+    monkeypatch.setattr(P, "stream_frames", lambda *a, **k: iter([(0.5, np.zeros((90, 160, 3), np.uint8)), (1.0, np.zeros((90, 160, 3), np.uint8))]))
+    epoch = P._epoch()
+    scan = P.scan_file("/x.mp4", SHA, [{"id": 0, "start": 0.0, "end": 3.0}], 3.0, (160, 90), detector=object(), recogniser=object(), epoch=epoch)
+    assert scan["tracks"]
+    P.delete_all()                          # erased between the scan finishing and the people being registered
+    with pytest.raises(InterruptedError):
+        P.assign_new_faces(SHA, scan, epoch=epoch)
+    with pytest.raises(InterruptedError):
+        P.assign_new_voices(SHA, {"speakers": []}, epoch=epoch)
+    assert not P.has_data()
+
+
+def test_a_voice_scan_started_before_an_erase_saves_nothing(monkeypatch):
+    epoch = P._epoch()
+    P.delete_all()
+    with pytest.raises(InterruptedError):
+        P.scan_voices("/x.mp4", SHA, [], 3.0, epoch=epoch)
+    assert P.load_voice_scan(SHA) is None and not P.has_data()
+
+
+def test_scans_that_start_after_an_erase_work_normally(monkeypatch):
+    P.delete_all()
+    P.scan_voices("/x.mp4", SHA, [], 3.0)
+    assert P.load_voice_scan(SHA) is not None
+
+
 # ============================ the models ============================
 def fake_fetch(blobs):
     def fetch(url):

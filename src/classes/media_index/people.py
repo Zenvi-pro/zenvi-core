@@ -36,6 +36,18 @@ MIN_LINK_SECONDS = 10.0     # a voice and a face are linked only after this long
 LINK_RATIO = 0.7            # ... and only when that face is alone on screen for at least this share of all the time the voice speaks (so a narrator
                             # speaking over footage of someone is not taken for them)
 _lock = threading.RLock()
+_erased = 0     # bumped each time the user erases people data; a scan that began before that must never write afterwards
+
+
+def _epoch() -> int:
+    with _lock:
+        return _erased
+
+
+def _still_wanted(epoch: Optional[int]) -> None:
+    """Raise (call under ``_lock``) if people data was erased since *epoch*, so a scan that was running cannot bring it back."""
+    if epoch is not None and epoch != _erased:
+        raise InterruptedError("people data was erased while this was running; nothing was saved")
 
 
 # ============================ where it lives ============================
@@ -290,13 +302,14 @@ def stream_frames(path: str, times: Sequence[float], size: Tuple[int, int], star
 
 def scan_file(path: str, sha: str, shots: Sequence[Dict[str, Any]], duration: float, size: Tuple[int, int], *, start_time: float = 0.0,
               detector: Any = None, recogniser: Any = None, should_cancel: Optional[Callable[[], bool]] = None,
-              on_progress: Optional[Callable[[float], None]] = None) -> Dict[str, Any]:
+              on_progress: Optional[Callable[[float], None]] = None, epoch: Optional[int] = None) -> Dict[str, Any]:
     """Look for faces through a file and save what was found (tracks with vectors) under the people folder.
 
     Blocks on decode and inference: call it from a worker. Raises ``people_models.PeopleUnavailable`` when the models or runtime are
     missing, and InterruptedError when cancelled (nothing is saved then).
     """
     from classes.media_index import people_models as pm
+    epoch = _epoch() if epoch is None else epoch
     det = detector or pm.session("detector")
     rec = recogniser or pm.session("recognizer")
     times = sample_plan(shots, duration)
@@ -319,6 +332,7 @@ def scan_file(path: str, sha: str, shots: Sequence[Dict[str, Any]], duration: fl
         raise InterruptedError("people scan cancelled")
     scan = build_scan(detections, shots, done, duration)
     with _lock:
+        _still_wanted(epoch)
         _write_json(_scan_path(sha), scan)
     log.info("scanned %d frame(s) of a file, %d track(s)", done, len(scan["tracks"]))
     return scan
@@ -332,14 +346,15 @@ def scan_video(path: str, sha: str, shots: Sequence[Dict[str, Any]], duration: f
     the runtime or models are missing, and InterruptedError when cancelled.
     """
     from classes.media_index.probe import analysis_size, probe_media
+    epoch = _epoch()
     pr = probe_media(path)
     v = pr.get("video") or {}
     size = analysis_size(int(v.get("width") or 0), int(v.get("height") or 0), FRAME_LONG_EDGE)
     if not size:
         raise RuntimeError("could not read the picture of this file")
     scan = scan_file(path, sha, shots, duration or float(pr.get("duration") or 0.0), size, start_time=float(pr.get("start_time") or 0.0),
-                     should_cancel=should_cancel, on_progress=on_progress)
-    return {"scan": scan, "assigned": assign_new_faces(sha, scan)}
+                     should_cancel=should_cancel, on_progress=on_progress, epoch=epoch)
+    return {"scan": scan, "assigned": assign_new_faces(sha, scan, epoch=epoch)}
 
 
 def load_scan(sha: str) -> Optional[Dict[str, Any]]:
@@ -362,13 +377,14 @@ def resolve_tracks(sha: str, scan: Dict[str, Any], reg: Dict[str, Any]) -> List[
     return out
 
 
-def assign_new_faces(sha: str, scan: Dict[str, Any]) -> Dict[str, int]:
+def assign_new_faces(sha: str, scan: Dict[str, Any], *, epoch: Optional[int] = None) -> Dict[str, int]:
     """Give each recognisable track that matches nobody a new unnamed person (a number to refer to), and grow known people's exemplars.
 
     Tracks that are only 'unsure' are left alone: a possible match is reported, never merged. Returns counts.
     """
     counts = {"matched": 0, "new": 0, "unsure": 0}
     with _lock:
+        _still_wanted(epoch)
         reg = load_registry()
         for tr in scan.get("tracks", []):
             key = f"{sha[:16]}:{tr['id']}"
@@ -494,12 +510,13 @@ def build_voice_scan(labels: Sequence[int], words: Sequence[Any], speakers: Sequ
 
 
 def scan_voices(path: str, sha: str, words: Sequence[Any], duration: float, *, session: Any = None,
-                should_cancel: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
+                should_cancel: Optional[Callable[[], bool]] = None, epoch: Optional[int] = None) -> Dict[str, Any]:
     """Tell the voices in a file apart, from its transcript's word times, and save them. Blocks on decode and inference.
 
     Raises ``people_models.PeopleUnavailable`` (no runtime or voice model), RuntimeError (audio unreadable) and InterruptedError.
     """
     from classes.media_index import people_models as pm, voiceprint as vp
+    epoch = _epoch() if epoch is None else epoch
     if not words:
         scan = build_voice_scan([], [], [], duration)       # nothing said: save that, so the file is not looked at again
     else:
@@ -520,6 +537,7 @@ def scan_voices(path: str, sha: str, words: Sequence[Any], duration: float, *, s
     if should_cancel and should_cancel():
         raise InterruptedError("voice scan cancelled")
     with _lock:
+        _still_wanted(epoch)
         _write_json(_voice_path(sha), scan)
     log.info("heard %d voice(s) in a file", len(scan["speakers"]))
     return scan
@@ -532,8 +550,9 @@ def scan_file_voices(path: str, sha: str, duration: float, shelf: Any, *, should
     """
     from types import SimpleNamespace
     words = [SimpleNamespace(startSec=float(w["startSec"]), endSec=float(w["endSec"])) for w in (shelf.read_json(sha, "speech.json") or {}).get("words") or []]
-    scan = scan_voices(path, sha, words, duration, should_cancel=should_cancel)
-    return {"scan": scan, "assigned": assign_new_voices(sha, scan) if words else {"matched": 0, "new": 0, "unsure": 0}, "had_speech": bool(words)}
+    epoch = _epoch()
+    scan = scan_voices(path, sha, words, duration, should_cancel=should_cancel, epoch=epoch)
+    return {"scan": scan, "assigned": assign_new_voices(sha, scan, epoch=epoch) if words else {"matched": 0, "new": 0, "unsure": 0}, "had_speech": bool(words)}
 
 
 def resolve_speakers(sha: str, vscan: Dict[str, Any], reg: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -550,10 +569,11 @@ def resolve_speakers(sha: str, vscan: Dict[str, Any], reg: Dict[str, Any]) -> Li
     return out
 
 
-def assign_new_voices(sha: str, vscan: Dict[str, Any]) -> Dict[str, int]:
+def assign_new_voices(sha: str, vscan: Dict[str, Any], *, epoch: Optional[int] = None) -> Dict[str, int]:
     """Give each voice that matches nobody a new unnamed person and grow known voices (never merging a merely unsure one)."""
     counts = {"matched": 0, "new": 0, "unsure": 0}
     with _lock:
+        _still_wanted(epoch)
         reg = load_registry()
         for sp in vscan.get("speakers", []):
             key = f"{sha[:16]}:{sp['id']}"
@@ -683,8 +703,10 @@ def shots_with(reg: Dict[str, Any], person_ids: Sequence[str], scans: Dict[str, 
 # ============================ delete everything ============================
 def delete_all(include_models: bool = False) -> Dict[str, Any]:
     """Remove every face scan and the registry (and optionally the downloaded models). Returns what was removed."""
+    global _erased
     removed = {"scans": 0, "registry": False, "models": 0}
     with _lock:
+        _erased += 1                  # scans that started earlier see this and write nothing
         root = people_root()
         for folder in ("files", "voices"):
             try:
