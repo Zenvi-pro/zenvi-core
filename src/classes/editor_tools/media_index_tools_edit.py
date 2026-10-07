@@ -36,9 +36,10 @@ def _index_provider():
 def _music_beats(music_clip_id, on, own_clip_id=""):
     """(timeline clips, clip objects, the music clip, its tempo, its beats on the timeline's clock) for the music to cut to.
 
-    The music is the clip asked for (any clip with sound: a video can carry the music), else the longest music clip with a
-    detected tempo, else, when *own_clip_id* is given, that clip itself if its own sound has a tempo (cutting a clip to its
-    own music). Raises a ToolError saying what is missing (no music, no steady beat, no beat inside the part that is on the timeline).
+    The music is the clip asked for, else the longest music clip with a detected tempo. Slicing a clip passes *own_clip_id*,
+    which relaxes that: a video can carry the music, so the named clip may be any clip with sound, and with none named the
+    clip being cut is used itself when its own sound has a tempo. Raises a ToolError saying what is missing (no music, no
+    steady beat, no beat inside the part that is on the timeline).
     """
     clips, _project, objs = build_timeline()
     index_for = _index_provider()
@@ -46,10 +47,11 @@ def _music_beats(music_clip_id, on, own_clip_id=""):
     def tempo_of(c):
         return ((getattr(index_for(c), "audio", None) or {}).get("tempo") or {}).get("beats")
 
+    slicing = bool(own_clip_id)
     if music_clip_id:
-        bed = next((c for c in clips if c.id == str(music_clip_id) and c.has_audio and c.length > 0), None)
+        bed = next((c for c in clips if c.id == str(music_clip_id) and c.length > 0 and (c.has_audio if slicing else c.role == "music")), None)
         if bed is None:
-            raise ToolError(f"{music_clip_id!r} is not a clip with sound on the timeline (analyze_timeline_audio_tool lists them)")
+            raise ToolError(f"{music_clip_id!r} is not a {'clip with sound' if slicing else 'music clip'} on the timeline (analyze_timeline_audio_tool lists them)")
     else:
         with_tempo = [c for c in clips if c.role == "music" and c.length > 0 and tempo_of(c)]
         own = next((c for c in clips if c.id == str(own_clip_id) and c.has_audio and c.length > 0 and tempo_of(c)), None) if own_clip_id else None
