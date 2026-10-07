@@ -66,8 +66,16 @@ def test_the_place_radius_is_adjustable():
 
 def test_clips_without_a_time_are_listed_apart_and_clips_without_a_position_have_no_place():
     out = trip.trip_outline([f("dated", "2024-05-01T09:00:00+00:00"), f("nodate", None, SF), f("junk", "yesterday")])
-    assert out["undated"] == ["nodate", "junk"] and out["days"][0]["file_ids"] == ["dated"] and out["places"] == []
+    assert out["undated"] == ["nodate", "junk"] and out["days"][0]["file_ids"] == ["dated"]
     assert out["files_with_position"] == 1
+    assert [p["file_ids"] for p in out["places"]] == [["nodate"]], "a position is enough to have a place, even with no time"
+    assert out["places"][0]["first_seen"] is None
+
+
+def test_an_undated_clip_joins_the_place_the_dated_ones_made():
+    out = trip.trip_outline([f("a", "2024-05-01T09:00:00+00:00", SF, 2.0), f("lost", None, SF_NEAR, 1.0)])
+    assert len(out["places"]) == 1 and out["places"][0]["file_ids"] == ["a", "lost"] and out["places"][0]["minutes"] == 3.0
+    assert out["places"][0]["first_seen"] == "2024-05-01T09:00:00+00:00" and out["days"][0]["file_ids"] == ["a"]
 
 
 def test_minutes_are_totalled_per_day_and_per_place():

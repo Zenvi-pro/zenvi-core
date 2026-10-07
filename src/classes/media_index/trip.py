@@ -36,8 +36,8 @@ def trip_outline(files: Sequence[Dict[str, Any]], *, day_gap_hours: float = DAY_
                  place_radius_km: float = PLACE_RADIUS_KM) -> Dict[str, Any]:
     """Days and places for ``files``: dicts with ``file_id``, ``captured_at`` (ISO), ``gps`` and ``duration``.
 
-    Files without a capture time are listed under ``undated`` (their order is unknown); files with a time
-    but no position simply have no place.
+    Files without a capture time are listed under ``undated`` (their order is unknown) but still belong to a place
+    when they have a position; files with a time but no position simply have no place.
     """
     dated, undated = [], []
     for f in files:
@@ -77,13 +77,17 @@ def trip_outline(files: Sequence[Dict[str, Any]], *, day_gap_hours: float = DAY_
         f["_place"] = pid
         last = when
 
+    for _, f in undated:                       # no time, but a position: the place still counts (after the dated ones set the clusters)
+        f["_place"] = place_of(f.get("gps"))
+
+    located = dated + undated
     out_places = []
     for p in places:
-        members = [f["file_id"] for _, f in dated if f.get("_place") == p["id"]]
-        out_places.append({"id": p["id"], "lat": round(p["lat"], 5), "lon": round(p["lon"], 5), "file_ids": members,
-                           "first_seen": next(f["captured_at"] for _, f in dated if f.get("_place") == p["id"]),
-                           "minutes": round(sum(float(f.get("duration") or 0.0) for _, f in dated if f.get("_place") == p["id"]) / 60.0, 2)})
-    for _, f in dated:
+        mine = [f for _, f in located if f.get("_place") == p["id"]]
+        out_places.append({"id": p["id"], "lat": round(p["lat"], 5), "lon": round(p["lon"], 5), "file_ids": [f["file_id"] for f in mine],
+                           "first_seen": next((f["captured_at"] for _, f in dated if f.get("_place") == p["id"]), None),
+                           "minutes": round(sum(float(f.get("duration") or 0.0) for f in mine) / 60.0, 2)})
+    for _, f in located:
         f.pop("_place", None)
     return {"days": days, "places": out_places, "undated": [f["file_id"] for _, f in undated],
             "files_with_position": sum(1 for _, f in dated if f.get("gps")) + sum(1 for _, f in undated if f.get("gps"))}

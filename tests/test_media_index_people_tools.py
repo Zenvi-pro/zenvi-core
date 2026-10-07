@@ -368,12 +368,11 @@ def test_the_list_shows_speaking_time_and_a_voice_that_goes_with_a_face(env):
     assert "embedding" not in out and "voices" not in out.replace("has_voice", "")
 
 
-def test_search_by_person_includes_shots_where_their_voice_is_heard_and_says_so(env):
+def test_search_by_person_means_on_screen_and_only_counts_shots_where_just_their_voice_is_heard(env):
     seed(env, {SHA1: [unit(0), unit(1)]})              # faces: person 1 in shot 0, person 2 in shot 1
     seed_voices(SHA1, ("S1", unit(0, 256)), segments=[(11.0, 19.0, "S1")])        # a voice heard during shot 1
     P.merge_people("P1", "P3")                         # the user says that voice is person 1's
     P.name_person("P1", "Sam")
     _, r = tcall("search_footage_tool", person="sam")
-    by_shot = {h["shot_id"]: h for h in r["hits"]}
-    assert set(by_shot) == {0, 1} and by_shot[0]["person_heard"] is False and by_shot[1]["person_heard"] is True
-    assert by_shot[1]["person_confidence"] == 1.0
+    assert [h["shot_id"] for h in r["hits"]] == [0], "shot 1 shows someone else: Sam is only heard there"
+    assert r["hits"][0]["person_confidence"] == 1.0 and r["heard_only_shots"] == 1

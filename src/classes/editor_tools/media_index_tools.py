@@ -150,7 +150,8 @@ def restrict_files(files, captured_after: str, captured_before: str, place_id: i
                             minimum=-1),
         "place": string("Only footage shot in a place by name ('Lisbon', 'Tokyo', 'Portugal'); names come from get_project_overview_tool's trip.places.", ""),
         "person": string("Only shots this person is on screen in: a name the user gave (list_people_tool) or an id like P3. Needs the people "
-                         "preference and a people scan. A possible match is left out and counted in `unsure_shots`.", ""),
+                         "preference and a people scan. A possible match is left out and counted in `unsure_shots`; shots where only their "
+                         "voice is heard (a narrator over other footage) are left out and counted in `heard_only_shots`.", ""),
         "limit": integer("Most results to return.", 10, minimum=1, maximum=50),
         "cursor": integer("Where to continue: the `next` of the previous result.", 0, minimum=0),
     }),
@@ -200,11 +201,11 @@ def search_footage(query="", look_for="", reference_file_id="", reference_start=
     if person_note:
         for h, raw in zip(hits, result["hits"]):
             h["person_confidence"] = person_note["confidence"].get(raw["sha"], {}).get(raw["shot_id"])
-            h["person_heard"] = raw["shot_id"] in person_note["by_voice"].get(raw["sha"], ())
     summary = f"{result['total']} match(es)" + (f", showing {len(hits)}" if len(hits) < result["total"] else "")
     if not hits:
         summary = "no matches" + (" (a weak match is treated as none; try other words or fewer filters)" if result["ranked"] or query else "")
-    extra = {"person": person_note["who"], "unsure_shots": person_note["unsure_shots"]} if person_note else {}
+    extra = {"person": person_note["who"], "unsure_shots": person_note["unsure_shots"],
+             "heard_only_shots": person_note["heard_only_shots"]} if person_note else {}
     return ok(summary, hits=hits, total=result["total"], next=result["next"], not_indexed=missing[:20], **extra)
 
 
@@ -253,13 +254,11 @@ def _person_shots(files, person: str):
             got = pp.speaking_shots(fi.sha, vscan, reg, [p["id"] for p in found], fi.shots)
             if got:
                 spoken[fi.sha] = got
-    for sha, got in spoken.items():                     # a person whose voice is heard in a shot counts as there, said to be by voice
-        merged = by_sha.setdefault(sha, {})
-        for shot_id, conf in got.items():
-            merged[shot_id] = max(merged.get(shot_id, 0.0), conf)
+    # Hearing someone is not seeing them (a narrator speaks over other footage): voice-only shots are counted, not returned.
+    heard_only = sum(1 for sha, got in spoken.items() for shot_id in got if shot_id not in by_sha.get(sha, {}))
     by_file = {fi.file_id: set(by_sha.get(fi.sha, {})) for fi in files}
     note = {"who": {"ids": [p["id"] for p in found], "name": found[0].get("name"), "not_scanned": unscanned[:12] or None},
-            "unsure_shots": unsure, "confidence": by_sha, "by_voice": {sha: set(g) for sha, g in spoken.items()}}
+            "unsure_shots": unsure, "confidence": by_sha, "heard_only_shots": heard_only}
     return by_file, note
 
 
