@@ -25,10 +25,11 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-import time
 import threading
 import openshot  # Python module for libopenshot (required video editing module installed separately)
+from qt_api import QTimer
 
+from classes import crash_handler
 from classes.updates import UpdateInterface
 from classes.logger import log
 from classes.app import get_app
@@ -57,6 +58,10 @@ class TimelineSync(UpdateInterface):
         # Create an instance of a libopenshot Timeline object
         self.timeline = openshot.Timeline(width, height, openshot.Fraction(fps["num"], fps["den"]),
                                           sample_rate, channels, channel_layout)
+        # The first Timeline installs libopenshot's CrashHandler, which also
+        # traps SIGPIPE; hand SIGPIPE back to Python so a client that resets
+        # a local socket cannot end the app (see crash_handler.ignore_sigpipe).
+        crash_handler.ignore_sigpipe()
         self.timeline.info.channel_layout = channel_layout
         self.timeline.info.has_audio = True
         self.timeline.info.has_video = True
@@ -84,11 +89,20 @@ class TimelineSync(UpdateInterface):
             return
 
         with self.timeline_lock:
-            # Disable video caching temporarily
-            caching_value = openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING
-            openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
+            # Enter edit mode for property updates — disable caching until the user seeks or plays.
+            # Only "update" actions represent manual property edits; structural changes like
+            # inserting/deleting clips should not interrupt caching. Also skip during playback
+            # so live property tweaks don't kill an in-progress cache fill.
+            if action and action.type == "update":
+                try:
+                    is_playing = self.window.preview_thread.player.Mode() == openshot.PLAYBACK_PLAY
+                except Exception:
+                    is_playing = False
+                if not is_playing:
+                    openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
 
             try:
+                proxy_service = getattr(self.window, "proxy_service", None)
                 if action.type == "load":
                     # Clear any selections in UI (since we are clearing the timeline)
                     self.window.clearSelections()
@@ -98,7 +112,10 @@ class TimelineSync(UpdateInterface):
                     self.timeline.Clear()
 
                     # This JSON is initially loaded to libopenshot to update the timeline
-                    self.timeline.SetJson(action.json(only_value=True))
+                    payload = action.json(only_value=True)
+                    if proxy_service:
+                        payload = proxy_service.rewrite_json_for_preview(payload)
+                    self.timeline.SetJson(payload)
                     self.timeline.Open()  # Re-Open the Timeline reader
 
                     # The timeline's profile changed, so update all clips
@@ -108,11 +125,17 @@ class TimelineSync(UpdateInterface):
                     self.window.SeekSignal.emit(1)
 
                     # Refresh current frame (since the entire timeline was updated)
-                    self.window.refreshFrameSignal.emit()
+                    if getattr(self.window, "_project_loading", False):
+                        self.window._pending_project_open_refresh = True
+                    else:
+                        self.window.refreshFrameSignal.emit()
 
                 else:
                     # This JSON DIFF is passed to libopenshot to update the timeline
-                    self.timeline.ApplyJsonDiff(action.json(is_array=True))
+                    payload = action.json(is_array=True)
+                    if proxy_service:
+                        payload = proxy_service.rewrite_json_for_preview(payload)
+                    self.timeline.ApplyJsonDiff(payload)
 
                     # Clear frame cache so the next render picks up the new clip data
                     # (without this, libopenshot serves the cached pre-change frame)
@@ -125,19 +148,32 @@ class TimelineSync(UpdateInterface):
                 log.error("Error applying JSON to timeline object in libopenshot: %s. %s" %
                          (e, action.json(is_array=True)))
 
-            # Resume video caching original value
-            openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = caching_value
+            # Cache stays off — re-enabled when the user seeks or starts playback
 
     def MaxSizeChangedCB(self, new_size):
         """Callback for max sized change (i.e. max size of video widget)"""
-        while not self.window.initialized:
-            log.info('Waiting for main window to initialize before calling SetMaxSize')
-            time.sleep(0.5)
+        if not self.window.initialized:
+            log.info('Deferring SetMaxSize until main window initialization completes')
+            self.window._pending_preview_size = new_size
+            QTimer.singleShot(0, self.window._finish_pending_preview_resize)
+            return
+
+        if getattr(self.window, "_dock_interaction_active", False):
+            self.window._pending_preview_size = new_size
+            return
 
         # Increase based on DPI
         device_pixel_ratio = self.window.devicePixelRatioF()
         scaled_width = round(new_size.width() * device_pixel_ratio)
         scaled_height = round(new_size.height() * device_pixel_ratio)
+
+        if scaled_width < 1 or scaled_height < 1:
+            log.info(
+                "Skipping preview max size update for invalid size: %sx%s",
+                scaled_width,
+                scaled_height,
+            )
+            return
 
         log.info(f"Adjusting max size of preview image: {scaled_width}x{scaled_height}")
 
@@ -156,5 +192,17 @@ class TimelineSync(UpdateInterface):
                 # Clear timeline preview cache (since our video size has changed)
                 self.timeline.ClearAllCache(True)
 
+            if getattr(self.window, "_project_loading", False):
+                self.window._pending_project_open_refresh = True
+                return
+
             # Refresh current frame (since the entire timeline was updated)
             self.window.refreshFrameSignal.emit()
+
+    def GetLastFrame(self):
+        """Return the last seekable/playable frame on the timeline."""
+        try:
+            max_frame = max(1, int(self.timeline.GetMaxFrame()))
+        except Exception:
+            return 1
+        return max(1, max_frame - 1)

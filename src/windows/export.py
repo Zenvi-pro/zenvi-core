@@ -31,6 +31,7 @@ import os
 import time
 import tempfile
 import math
+from contextlib import contextmanager
 
 import openshot
 
@@ -42,21 +43,107 @@ except ImportError:
 
 from xml.parsers.expat import ExpatError
 
-from PyQt5.QtCore import Qt, QCoreApplication, QTimer, QSize, pyqtSignal, pyqtSlot
-from PyQt5.QtWidgets import (
+from qt_api import Qt, QCoreApplication, QTimer, QSize, QPoint, pyqtSignal, pyqtSlot
+from qt_api import (
     QMessageBox, QDialog, QFileDialog, QDialogButtonBox, QPushButton, QWidget, QLineEdit, QComboBox, QSpinBox, QCheckBox
 )
-from PyQt5.QtGui import QIcon
+from qt_api import QIcon
 from functools import partial
-from classes import info
+from classes import info, tabstops
 from classes import ui_util
 from classes import openshot_rc  # noqa
 from classes.logger import log
 from classes.app import get_app
 from classes.metrics import track_metric_screen, track_metric_error
 from classes.query import File
+from classes.qt_main_thread import call_on_gui, invoke_on_gui
 
 import json
+
+try:
+    from classes.export_acceleration.export_tuning import (
+        export_cache_bytes,
+        get_export_pipeline_profile,
+        media_paths_under_proxy_root,
+        uses_mp4_faststart_preset,
+    )
+    from classes.export_acceleration.export_pipeline import (
+        PipelineCancelled,
+        run_pipelined_export,
+    )
+    from classes.export_acceleration.hw_encode import maybe_apply_hardware_bitrate
+    from classes.export_acceleration.hw_decode import force_software_decode
+    from classes.export_acceleration.smart_render import (
+        analyze_smart_render_spans,
+        decide_smart_render,
+        try_smart_render_export,
+    )
+except Exception:  # pragma: no cover - import soft-fail for partial installs
+    export_cache_bytes = None
+    get_export_pipeline_profile = None
+    media_paths_under_proxy_root = None
+    uses_mp4_faststart_preset = None
+    PipelineCancelled = Exception
+    run_pipelined_export = None
+    maybe_apply_hardware_bitrate = None
+    force_software_decode = None
+    analyze_smart_render_spans = None
+    decide_smart_render = None
+    try_smart_render_export = None
+
+# On its own, so an unrelated acceleration import failing cannot skip the trial.
+try:
+    from classes.export_acceleration.hw_encode import safe_video_encoder
+except Exception:  # pragma: no cover
+    safe_video_encoder = None
+
+MAX_FPS_SPINBOX_VALUE = 2147483647
+
+
+def pause_window_auto_save():
+    """Stop the main-window auto-save timer. Returns True if it was running."""
+    try:
+        window = get_app().window
+        timer = getattr(window, "auto_save_timer", None) if window is not None else None
+        if timer is not None and timer.isActive():
+            timer.stop()
+            return True
+    except Exception:
+        log.debug("Could not pause auto-save during export", exc_info=True)
+    return False
+
+
+def resume_window_auto_save(was_active):
+    """Restart the main-window auto-save timer if it was running before export."""
+    if not was_active:
+        return
+    try:
+        window = get_app().window
+        timer = getattr(window, "auto_save_timer", None) if window is not None else None
+        if timer is not None:
+            timer.start()
+    except Exception:
+        log.debug("Could not resume auto-save after export", exc_info=True)
+
+
+def friendly_export_error(error_type_str):
+    """Turn a libopenshot/FFmpeg exception string into text the user can act on."""
+    raw = str(error_type_str or "")
+    if "> " in raw:
+        raw = raw.split("> ")[0].replace("<", "")
+    raw = raw.strip() or str(error_type_str)
+    lower = raw.lower()
+    if "audio codec" in lower:
+        hint = "The selected audio codec is not available. Try a different audio codec, or export Video Only."
+    elif "video codec" in lower or "could not open" in lower:
+        hint = "The selected video codec or profile could not be opened. Try a different format, codec, or resolution."
+    elif "profile" in lower or "invalid" in lower:
+        hint = "The selected export profile or resolution is not compatible with this project. Choose a matching profile and try again."
+    else:
+        hint = None
+    if hint:
+        return "%s\n\n%s" % (raw, hint)
+    return raw
 
 
 class Export(QDialog):
@@ -75,6 +162,8 @@ class Export(QDialog):
         # Load UI from designer & init
         ui_util.load_ui(self, self.ui_path)
         ui_util.init_ui(self)
+        self._setup_toolbox_tab_order()
+        self.exportTabs.tabBar().setFocusPolicy(Qt.StrongFocus)
 
         # get translations & settings
         _ = get_app()._tr
@@ -199,6 +288,9 @@ class Export(QDialog):
             self.channel_layout_choices.append(layout[0])
             self.cboChannelLayout.addItem(layout[1], layout[0])
 
+        self.txtFrameRateNum.setMaximum(MAX_FPS_SPINBOX_VALUE)
+        self.txtFrameRateDen.setMaximum(MAX_FPS_SPINBOX_VALUE)
+
         # Connect signals
         self.btnBrowse.clicked.connect(functools.partial(self.btnBrowse_clicked))
         self.cboSimpleProjectType.currentIndexChanged.connect(
@@ -295,6 +387,73 @@ class Export(QDialog):
         # Load previous settings (if any)
         self.load_settings()
 
+        self.exportTabs.currentChanged.connect(self._apply_tab_order)
+        self.toolBox.currentChanged.connect(self._apply_tab_order)
+        self._apply_tab_order()
+        self.txtFileName.setFocus()
+
+    def _apply_tab_order(self):
+        current_tab = self.exportTabs.currentWidget()
+        if current_tab is None:
+            current_tab = self.exportTabs.widget(self.exportTabs.currentIndex())
+        if current_tab is None:
+            return
+
+        ordered = [
+            self.txtFileName,
+            self.txtExportFolder,
+            self.btnBrowse,
+            self.exportTabs,
+        ]
+
+        if current_tab is self.Advanced:
+            tab_widgets = self._collect_toolbox_tab_order(self.toolBox)
+        else:
+            tab_widgets = tabstops.collect_focusable_from_layout(
+                current_tab.layout(), self, include_hidden=True
+            )
+
+        ordered.extend(tab_widgets)
+
+        ordered.extend(
+            [
+                self.restore_defaults_button,
+                self.cancel_button,
+                self.export_button,
+                self.close_button,
+            ]
+        )
+
+        def _apply_and_wrap():
+            ordered_unique = []
+            seen = set()
+            for widget in ordered:
+                if widget is None or widget in seen:
+                    continue
+                ordered_unique.append(widget)
+                seen.add(widget)
+
+            for first, second in zip(ordered_unique, ordered_unique[1:]):
+                tabstops.safe_set_tab_order(first, second)
+
+            # Wrap back to the first field after the last visible button.
+            first_visible = ordered_unique[0] if ordered_unique else None
+            for last_visible in reversed(ordered_unique):
+                if last_visible.isVisibleTo(self) and last_visible.isEnabled():
+                    break
+            else:
+                last_visible = None
+
+            if first_visible and last_visible:
+                tabstops.safe_set_tab_order(last_visible, first_visible)
+
+            self._tab_order_list = [
+                w for w in ordered_unique
+                if w.isVisibleTo(self) and w.isEnabled() and w.focusPolicy() != Qt.NoFocus
+            ]
+
+        QTimer.singleShot(0, _apply_and_wrap)
+
     def restore_defaults(self):
         """
         Restore defaults by closing and reopening the dialog.
@@ -329,14 +488,28 @@ class Export(QDialog):
     def updateProgressBar(self, title_message, start_frame, end_frame, current_frame, format_of_progress_string):
         """Update progress bar during exporting"""
         if end_frame - start_frame > 0:
-            percentage_string = format_of_progress_string % (( current_frame - start_frame ) / ( end_frame - start_frame ) * 100)
+            percent = ((current_frame - start_frame) / (end_frame - start_frame) * 100)
+            # Guard against swapped/out-of-range frame args (never show >100%).
+            percent = max(0.0, min(100.0, percent))
+            try:
+                percentage_string = format_of_progress_string % percent
+            except (TypeError, ValueError):
+                # Callers must pass a %-format like "%4.1f%% "; tolerate literals.
+                percentage_string = "%4.1f%% " % percent
         else:
             percentage_string = "100%"
-        self.progressExportVideo.setValue(int(current_frame))
+        # Keep the bar within its configured range even if a caller mis-orders args.
+        try:
+            bar_min = self.progressExportVideo.minimum()
+            bar_max = self.progressExportVideo.maximum()
+            clamped = max(bar_min, min(bar_max, int(current_frame)))
+        except Exception:
+            clamped = int(current_frame)
+        self.progressExportVideo.setValue(clamped)
         self.progressExportVideo.setFormat(percentage_string)
         self.setWindowTitle("%s %s" % (percentage_string, title_message))
 
-    def updateChannels(self):
+    def updateChannels(self, *_args):
         """Update the # of channels to match the channel layout"""
         log.info("updateChannels")
         channels = self.txtChannels.value()
@@ -356,8 +529,18 @@ class Export(QDialog):
         # Update channels to match layout
         self.txtChannels.setValue(channels)
 
-    def updateFrameRate(self, set_limits=True):
+    def updateFrameRate(self, *args, set_limits=True):
         """Callback for changing the frame rate"""
+        # Qt change signals may pass the new value/index. Treat those as
+        # signal payloads, not as the internal set_limits flag.
+        if args and isinstance(args[0], bool):
+            set_limits = args[0]
+            args = args[1:]
+        elif not isinstance(set_limits, bool):
+            set_limits = True
+
+        self.update_frame_rate_display()
+
         # Adjust the main timeline reader
         self.timeline.info.width = self.txtWidth.value()
         self.timeline.info.height = self.txtHeight.value()
@@ -398,6 +581,12 @@ class Export(QDialog):
         new_fps_float = float(self.txtFrameRateNum.value()) / float(self.txtFrameRateDen.value())
         self.export_fps_factor = new_fps_float / current_fps_float
         self.original_fps_factor = current_fps_float / new_fps_float
+
+    def update_frame_rate_display(self):
+        """Show the current FPS fraction as a calculated float."""
+        fps_den = self.txtFrameRateDen.value() or 1
+        fps_float = self.txtFrameRateNum.value() / fps_den
+        self.lblFrameRateValueDisplay.setText(f"= {fps_float:.2f}")
 
     def cboSimpleProjectType_index_changed(self, widget, index):
         selected_project = widget.itemData(index)
@@ -827,6 +1016,153 @@ class Export(QDialog):
         self.export_button.setEnabled(True)
         self.btnBrowse.setEnabled(True)
 
+    def _cleanup_export_resources(self):
+        """Close the export timeline, drop the cache thread and restore the preview cache. Idempotent.
+
+        Called once the dialog is done exporting: after a successful (or
+        headless) run_export(), and from reject() (e.g. when the user closes the
+        finished-export dialog); the guard below stops the second call from
+        re-invoking native Close()/ClearAllCache() on an already-closed Timeline,
+        which corrupts the heap on some platforms. A failed export only calls
+        _end_export_attempt(), so the dialog can try again.
+        """
+        if getattr(self, "_export_cleaned_up", False):
+            return
+        self._export_cleaned_up = True
+        try:
+            timeline = getattr(self, "timeline", None)
+            if timeline is not None:
+                try:
+                    timeline.Close()
+                except Exception:
+                    pass
+                try:
+                    timeline.ClearAllCache()
+                except Exception:
+                    pass
+        except Exception:
+            log.warning("Export timeline cleanup failed", exc_info=True)
+        try:
+            openshot.Settings.Instance().HIGH_QUALITY_SCALING = False
+        except Exception:
+            pass
+        try:
+            if getattr(self, "cache_thread", None):
+                self.cache_thread.StopThread(10000)
+                self.cache_thread.Reader(None)
+                self.cache_thread = None
+        except Exception:
+            log.warning("Export cache thread cleanup failed", exc_info=True)
+        try:
+            window = get_app().window
+            old_cache = getattr(self, "old_cache_object", None)
+            if window is not None and old_cache is not None:
+                window.timeline_sync.timeline.SetCache(old_cache)
+                window.cache_object = old_cache
+        except Exception:
+            log.warning("Failed to restore preview cache after export", exc_info=True)
+
+    def _end_export_attempt(self):
+        """Stop this attempt's cache thread, keeping what the dialog needs to try again.
+
+        A failed export leaves the dialog open so the user can change the
+        settings and export again, which needs the export timeline it opened
+        (still open) and its cache thread (stopped, not dropped).
+        """
+        try:
+            if getattr(self, "cache_thread", None):
+                self.cache_thread.StopThread(10000)
+                self.cache_thread.Reader(None)
+        except Exception:
+            log.warning("Export cache thread stop failed", exc_info=True)
+
+    def _reset_for_retry(self):
+        """Undo what a failed attempt did to the export timeline before the next one."""
+        unscaled = getattr(self, "_unscaled_project", None)
+        if unscaled is not None:
+            # That attempt rescaled self.project's keyframes to its export fps.
+            self.project = copy.deepcopy(unscaled)
+            self.timeline.SetJson(json.dumps(self.project._data))
+        # Frames cached at the last attempt's size or fps must not be reused.
+        self.timeline.ClearAllCache()
+
+    def _present_export_error(self, friendly_error):
+        """Show a retryable export error on the GUI thread. Never closes the dialog."""
+        _ = get_app()._tr
+        retry_hint = _("You can change the export settings and try again.")
+
+        def _show():
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle(_("Export Error"))
+            msg.setText(_("Sorry, there was an error exporting your video:\n%s") % friendly_error)
+            msg.setInformativeText(retry_hint)
+            msg.exec_()
+
+        invoke_on_gui(_show, context=self)
+
+    def _present_encoder_fallback(self, hardware_codec, software_codec):
+        """Tell the user their hardware preset is exporting in software. Dialog only."""
+        if getattr(self, "_headless", False):
+            return
+        _ = get_app()._tr
+
+        def _show():
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Information)
+            msg.setWindowTitle(_("Hardware Encoder Unavailable"))
+            msg.setText(
+                _("The %(hardware)s encoder could not encode a test frame on this computer, "
+                  "so this video will be exported with %(software)s instead.")
+                % {"hardware": hardware_codec, "software": software_codec})
+            msg.exec_()
+
+        invoke_on_gui(_show, context=self)
+
+    def _show_export_finished(self):
+        """Dialog-only success UI. Headless export just returns.
+
+        Correct UX: either auto-close, or keep the dialog with Done (not Cancel).
+        Never leave Cancel/Export active after the file is written — that makes
+        close ask to cancel even though the export already finished.
+        """
+        if getattr(self, "_headless", False):
+            return
+        if not hasattr(self, "cancel_button") or self.cancel_button is None:
+            return
+
+        # Leave "exporting" before swapping buttons so X/Done never prompt cancel.
+        self.exporting = False
+
+        if self.s.get("show_finished_window"):
+            self.cancel_button.setVisible(False)
+            self.export_button.setVisible(False)
+            self.close_button.setVisible(True)
+            from qt_api import QPalette
+            p = QPalette()
+            p.setColor(QPalette.Highlight, Qt.green)
+            self.progressExportVideo.setPalette(p)
+            self.enableControls()
+            self.show()
+            log.info("Export finished UI: Done button ready")
+        else:
+            super(Export, self).accept()
+
+    def _complete_export_success(self, export_file_path):
+        """Emit ExportEnded and show finished UI once (safe after smart render)."""
+        if getattr(self, "_export_success_ui_done", False):
+            return
+        self._export_success_ui_done = True
+        try:
+            self.ExportEnded.emit(export_file_path)
+        except Exception:
+            log.warning("ExportEnded emit failed", exc_info=True)
+        try:
+            self._show_export_finished()
+        except Exception:
+            log.warning("Export finished UI failed", exc_info=True)
+            self.exporting = False
+
     def run_export(self, export_file_path, video_settings, audio_settings, export_type,
                    video_bitrate_text=None, profile_path_for_rescale=None):
         """
@@ -847,83 +1183,289 @@ class Export(QDialog):
         if video_bitrate_text is None:
             video_bitrate_text = ""
 
+        # A headless export runs on a worker thread while the editor stays in
+        # use: no widget, timer or event pump may be touched from here.
+        headless = getattr(self, "_headless", False)
+
         # Progress bar if present
-        if hasattr(self, 'progressExportVideo') and self.progressExportVideo is not None:
+        if not headless and hasattr(self, 'progressExportVideo') and self.progressExportVideo is not None:
             self.progressExportVideo.setMinimum(int(video_settings.get("start_frame")))
             self.progressExportVideo.setMaximum(int(video_settings.get("end_frame")))
             self.progressExportVideo.setValue(int(video_settings.get("start_frame")))
 
-        # Set lossless cache settings (temporarily)
-        export_cache_object = openshot.CacheMemory(250 * 1024 * 1024)
-        self.timeline.SetCache(export_cache_object)
+        owns_pause = not getattr(self, "_auto_save_paused", False)
+        if owns_pause:
+            self._auto_save_was_active = False if headless else pause_window_auto_save()
+            self._auto_save_paused = True
+            # Reset per-export-attempt guards. Only the top-level call (not
+            # the audio-codec-failure retry recursion below) should do this,
+            # which is exactly what owns_pause already distinguishes.
+            self._fps_rescaled = False
+            self._export_success_ui_done = False
 
-        # Compute export_fps_factor from project and video_settings
-        current_fps = get_app().project.get("fps") or {"num": 30, "den": 1}
-        current_fps_float = float(current_fps.get("num", 30)) / float(current_fps.get("den", 1) or 1)
-        fps_num = video_settings.get("fps", {}).get("num", 30)
-        fps_den = video_settings.get("fps", {}).get("den", 1) or 1
-        new_fps_float = float(fps_num) / float(fps_den)
-        export_fps_factor = new_fps_float / current_fps_float
-
-        # Rescale all keyframes (if needed)
-        if export_fps_factor != 1.0:
-            self.project.rescale_keyframes(export_fps_factor)
-            path_to_use = profile_path_for_rescale
-            if not path_to_use and hasattr(self, 'cboSimpleVideoProfile') and self.cboSimpleVideoProfile is not None:
-                path_to_use = self.cboSimpleVideoProfile.currentData()
-            if not path_to_use:
-                # Resolve from project profile name
-                profile_name = get_app().project.get("profile")
-                for folder in [info.USER_PROFILES_PATH, info.PROFILES_PATH]:
-                    if not os.path.isdir(folder):
-                        continue
-                    for f in os.listdir(folder):
-                        p = os.path.join(folder, f)
-                        if os.path.isfile(p):
-                            try:
-                                prof = openshot.Profile(p)
-                                if prof.info.description == profile_name:
-                                    path_to_use = p
-                                    break
-                            except Exception:
-                                pass
-                    if path_to_use:
-                        break
-            if path_to_use:
-                profile = openshot.Profile(path_to_use)
-                self.project.apply_profile(profile)
-                self.timeline.SetJson(json.dumps(self.project._data))
-
-        # Set timeline info from settings (no UI dependency)
-        self.timeline.info.width = video_settings.get("width")
-        self.timeline.info.height = video_settings.get("height")
-        self.timeline.info.fps.num = video_settings.get("fps", {}).get("num", 30)
-        self.timeline.info.fps.den = video_settings.get("fps", {}).get("den", 1) or 1
-        self.timeline.info.sample_rate = audio_settings.get("sample_rate", 48000)
-        self.timeline.info.channels = audio_settings.get("channels", 2)
-        self.timeline.info.channel_layout = audio_settings.get("channel_layout", openshot.LAYOUT_STEREO)
-        if self.timeline.info.sample_rate == 0 or self.timeline.info.channels == 0:
-            self.timeline.info.has_audio = False
-        else:
-            self.timeline.info.has_audio = True
-        # Headless export: force no audio before cache/writer so we never open an audio codec.
-        if getattr(self, "_headless", False):
-            self.timeline.info.has_audio = False
-
-        # Set MaxSize and apply mappers
-        self.timeline.SetMaxSize(video_settings.get("width"), video_settings.get("height"))
-        self.timeline.ApplyMapperToClips()
-
-        max_frame = 0
-        format_of_progress_string = "%4.1f%% "
-        fps_encode = 0
-
-        # Start video cache thread
-        self.cache_thread.Reader(self.timeline)
-        self.cache_thread.setSpeed(1)
-        self.cache_thread.StartThread()
-
+        retried_as_video_only = False
+        export_ok = False
         try:
+            if owns_pause and getattr(self, "_export_attempted", False):
+                self._reset_for_retry()
+            self._export_attempted = True
+
+            # Size export cache from resolution (was a flat 250 MB — too small for 4K).
+            width_for_cache = int(video_settings.get("width") or 1920)
+            height_for_cache = int(video_settings.get("height") or 1080)
+            cache_size = (
+                export_cache_bytes(width_for_cache, height_for_cache)
+                if export_cache_bytes
+                else 250 * 1024 * 1024
+            )
+            export_cache_object = openshot.CacheMemory(int(cache_size))
+            # Hold a Python reference for the export lifetime (SWIG lifetime hazard).
+            self._export_cache_object = export_cache_object
+            self.timeline.SetCache(export_cache_object)
+
+            # Compute export_fps_factor from project and video_settings
+            current_fps = get_app().project.get("fps") or {"num": 30, "den": 1}
+            current_fps_float = float(current_fps.get("num", 30)) / float(current_fps.get("den", 1) or 1)
+            fps_num = video_settings.get("fps", {}).get("num", 30)
+            fps_den = video_settings.get("fps", {}).get("den", 1) or 1
+            new_fps_float = float(fps_num) / float(fps_den)
+            export_fps_factor = new_fps_float / current_fps_float
+
+            # Rescale all keyframes (if needed). Guarded so the audio-codec-
+            # failure retry (which recurses into this same function) doesn't
+            # scale an already-rescaled project a second time.
+            if export_fps_factor != 1.0:
+                if not getattr(self, "_fps_rescaled", False):
+                    if getattr(self, "_unscaled_project", None) is None:
+                        self._unscaled_project = copy.deepcopy(self.project)
+                    self.project.rescale_keyframes(export_fps_factor)
+                    self._fps_rescaled = True
+                path_to_use = profile_path_for_rescale
+                if (not path_to_use and not headless
+                        and hasattr(self, 'cboSimpleVideoProfile') and self.cboSimpleVideoProfile is not None):
+                    path_to_use = self.cboSimpleVideoProfile.currentData()
+                if not path_to_use:
+                    # Resolve from project profile name
+                    profile_name = get_app().project.get("profile")
+                    for folder in [info.USER_PROFILES_PATH, info.PROFILES_PATH]:
+                        if not os.path.isdir(folder):
+                            continue
+                        for f in os.listdir(folder):
+                            p = os.path.join(folder, f)
+                            if os.path.isfile(p):
+                                try:
+                                    prof = openshot.Profile(p)
+                                    if prof.info.description == profile_name:
+                                        path_to_use = p
+                                        break
+                                except Exception:
+                                    pass
+                        if path_to_use:
+                            break
+                if path_to_use:
+                    profile = openshot.Profile(path_to_use)
+                    self.project.apply_profile(profile)
+                    self.timeline.SetJson(json.dumps(self.project._data))
+
+            # Set timeline info from settings (no UI dependency)
+            self.timeline.info.width = video_settings.get("width")
+            self.timeline.info.height = video_settings.get("height")
+            self.timeline.info.fps.num = video_settings.get("fps", {}).get("num", 30)
+            self.timeline.info.fps.den = video_settings.get("fps", {}).get("den", 1) or 1
+            self.timeline.info.sample_rate = audio_settings.get("sample_rate", 48000)
+            self.timeline.info.channels = audio_settings.get("channels", 2)
+            self.timeline.info.channel_layout = audio_settings.get("channel_layout", openshot.LAYOUT_STEREO)
+            if self.timeline.info.sample_rate == 0 or self.timeline.info.channels == 0:
+                self.timeline.info.has_audio = False
+            else:
+                self.timeline.info.has_audio = True
+
+            # Set MaxSize and apply mappers
+            self.timeline.SetMaxSize(video_settings.get("width"), video_settings.get("height"))
+            self.timeline.ApplyMapperToClips()
+
+            # Export must read originals, never Optimize Preview proxy files.
+            if media_paths_under_proxy_root:
+                try:
+                    proxy_hits = media_paths_under_proxy_root(
+                        self.project._data, getattr(info, "PROXY_PATH", None)
+                    )
+                    if proxy_hits:
+                        log.warning(
+                            "Export project data references Optimize Preview proxy paths "
+                            "(should use originals): %s",
+                            proxy_hits[:5],
+                        )
+                except Exception:
+                    log.debug("Proxy-path export check failed", exc_info=True)
+
+            max_frame = 0
+            format_of_progress_string = "%4.1f%% "
+            fps_encode = 0
+
+            # Smart render: full copy, or partial copy+encode.
+            smart_enabled = bool(
+                try_smart_render_export
+                and decide_smart_render
+                and (self.s.get("exportSmartRender") if self.s else True)
+                and export_type in [_("Video & Audio"), _("Video Only")]
+            )
+            if smart_enabled:
+                _sf = int(video_settings.get("start_frame"))
+                _ef = int(video_settings.get("end_frame"))
+                _fps_num = int((video_settings.get("fps") or {}).get("num", 30))
+                _fps_den = int((video_settings.get("fps") or {}).get("den", 1) or 1)
+                # Show progress before any smart-render work — encode_span runs on
+                # this thread and used to leave Cancel frozen with no updates.
+                self.ExportStarted.emit(export_file_path, _sf, _ef)
+                try:
+                    from PyQt5.QtWidgets import QApplication
+                except Exception:
+                    QApplication = None
+
+                _smart_t0 = time.time()
+                _smart_last_frame = _sf
+
+                def _smart_progress(frame):
+                    """ExportFrame(title, start, end, current, format) — keep order exact."""
+                    nonlocal _smart_last_frame
+                    frame = int(frame)
+                    _smart_last_frame = frame
+                    title = ""
+                    try:
+                        elapsed = max(0.001, time.time() - _smart_t0)
+                        done = max(0, frame - _sf)
+                        total = max(1, _ef - _sf)
+                        if done > 0:
+                            fps_now = done / elapsed
+                            remain = max(0, int((_ef - frame) / max(0.001, fps_now)))
+                            title = titlestring(remain, fps_now, "Remaining")
+                    except Exception:
+                        title = ""
+                    try:
+                        self.ExportFrame.emit(title, _sf, _ef, frame, "%4.1f%% ")
+                    except Exception:
+                        pass
+                    # Dialog only: a headless export must not pump the GUI
+                    # (queued agent calls would run in the middle of it).
+                    if QApplication is not None and not getattr(self, "_headless", False):
+                        QApplication.processEvents()
+
+                def _encode_smart_span(span_start, span_end, out_path):
+                    """Encode one timeline span into out_path for partial smart render."""
+                    try:
+                        writer = openshot.FFmpegWriter(out_path)
+                        vc = video_settings.get("vcodec") or "libx264"
+                        if not isinstance(vc, str):
+                            vc = str(vc)
+                        pr_dict = video_settings.get("pixel_ratio") or {}
+                        video_bps = _parse_bitrate_to_bps(video_settings.get("video_bitrate"))
+                        if export_type in [_("Video & Audio"), _("Video Only")]:
+                            writer.SetVideoOptions(
+                                True,
+                                vc,
+                                openshot.Fraction(_fps_num, _fps_den),
+                                int(video_settings.get("width")),
+                                int(video_settings.get("height")),
+                                openshot.Fraction(
+                                    int(pr_dict.get("num", 1)),
+                                    int(pr_dict.get("den", 1) or 1),
+                                ),
+                                False,
+                                False,
+                                video_bps,
+                            )
+                        if export_type in [_("Video & Audio"), _("Audio Only")]:
+                            ac = audio_settings.get("acodec") or "aac"
+                            if not isinstance(ac, str):
+                                ac = str(ac)
+                            audio_bps = _parse_bitrate_to_bps(audio_settings.get("audio_bitrate"))
+                            writer.SetAudioOptions(
+                                True,
+                                ac,
+                                int(audio_settings.get("sample_rate", 48000)),
+                                int(audio_settings.get("channels", 2)),
+                                int(audio_settings.get(
+                                    "channel_layout", openshot.LAYOUT_STEREO
+                                )),
+                                audio_bps,
+                            )
+                        writer.Open()
+                        span_start = int(span_start)
+                        span_end = int(span_end)
+                        _smart_progress(span_start)
+                        # Every frame: reverse GetFrame can take long; keep Cancel alive.
+                        for frame in range(span_start, span_end + 1):
+                            if not self.exporting:
+                                writer.Close()
+                                return False
+                            writer.WriteFrame(self.timeline.GetFrame(frame))
+                            _smart_progress(frame)
+                        writer.Close()
+                        return os.path.isfile(out_path) and os.path.getsize(out_path) > 0
+                    except Exception:
+                        log.warning(
+                            "Smart-render encode_span failed (%s-%s)",
+                            span_start,
+                            span_end,
+                            exc_info=True,
+                        )
+                        return False
+
+                result = try_smart_render_export(
+                    self.project._data,
+                    export_file_path=export_file_path,
+                    video_settings=video_settings,
+                    start_frame=_sf,
+                    end_frame=_ef,
+                    encode_span=_encode_smart_span,
+                    enabled=True,
+                    allow_partial=True,
+                    # A Video Only export drops the source audio from copies.
+                    audio_settings=audio_settings if export_type == _("Video & Audio") else None,
+                    progress_cb=_smart_progress,
+                    cancel_cb=lambda: not self.exporting,
+                )
+                if result:
+                    max_frame = _ef
+                    end_time_export = time.time()
+                    start_time_export = end_time_export
+                    fps_encode = 0
+                    mode = result.get("mode") or "full_copy"
+                    log.info("Smart render (%s) succeeded: %s", mode, result)
+                    # File is already written. Finish UI here so a later cleanup
+                    # hang/exception cannot leave Cancel stuck at 100%.
+                    export_ok = True
+                    try:
+                        _smart_progress(max_frame)
+                    except Exception:
+                        log.warning(
+                            "Smart render progress update failed after success",
+                            exc_info=True,
+                        )
+                    self._complete_export_success(export_file_path)
+                    if QApplication is not None and not getattr(self, "_headless", False):
+                        QApplication.processEvents()
+                    return
+
+            # Prefer pipelined export when enabled (default on). Kill switch:
+            # Preferences → Performance → "Pipelined Export".
+            # Decided before starting VideoCacheThread so pipeline and cache
+            # never contend on the same Timeline.GetFrame.
+            use_pipeline = bool(
+                run_pipelined_export
+                and get_export_pipeline_profile
+                and (self.s.get("exportPipelined") if self.s else True)
+            )
+            if export_type == _("Image Sequence") or export_type == _("Audio Only"):
+                use_pipeline = False
+
+            # Serial path only: cache thread seeks ahead of the encode loop.
+            if not use_pipeline and self.cache_thread:
+                self.cache_thread.Reader(self.timeline)
+                self.cache_thread.setSpeed(1)
+                self.cache_thread.StartThread()
+
             w = openshot.FFmpegWriter(export_file_path)
 
             if export_type in [_("Video & Audio"), _("Video Only"), _("Image Sequence")]:
@@ -931,6 +1473,26 @@ class Export(QDialog):
                 vc = video_settings.get("vcodec") or "libx264"
                 if not isinstance(vc, str):
                     vc = str(vc)
+                # FFmpeg can list a hardware encoder that then aborts the whole
+                # app on its first frame, so try it in a child process first.
+                if safe_video_encoder is not None:
+                    headless = getattr(self, "_headless", False)
+                    safe_vc = safe_video_encoder(
+                        vc, poll=None if headless else QCoreApplication.processEvents)
+                    if not self.exporting:
+                        # Cancelled while the trial ran: stop before the writer opens a file.
+                        if headless:
+                            return
+                        if getattr(self, "_export_cancel_confirmed", False):
+                            self._export_cancel_confirmed = False
+                            super(Export, self).reject()
+                        else:
+                            self.enableControls()
+                        return
+                    if safe_vc != vc:
+                        self._present_encoder_fallback(vc, safe_vc)
+                        vc = safe_vc
+                        video_settings = dict(video_settings, vcodec=vc)
                 fps_dict = video_settings.get("fps") or {}
                 fps_num = int(fps_dict.get("num", 30))
                 fps_den = int(fps_dict.get("den", 1) or 1)
@@ -951,10 +1513,11 @@ class Export(QDialog):
                 )
 
             in_audio_block = export_type in [_("Video & Audio"), _("Audio Only")]
-            # Headless export (e.g. from AI chat): skip audio to avoid "Could not open audio codec" on systems
-            # where no encoder works reliably; export video-only so the user always gets a file.
-            headless_skip_audio = getattr(self, "_headless", False)
-            if in_audio_block and not headless_skip_audio:
+            # Headless exports keep their audio: an unattended run is verified by
+            # the transcript of what it produced, so a silent file fails the
+            # check. A codec that genuinely cannot open is still caught below and
+            # retried as Video Only, which is what that fallback is for.
+            if in_audio_block:
                 ac = audio_settings.get("acodec") or "aac"
                 if not isinstance(ac, str):
                     ac = str(ac)
@@ -975,8 +1538,6 @@ class Export(QDialog):
                 else:
                     # No audio codec available; tell timeline we have no audio so writer/encode loop don't expect it.
                     self.timeline.info.has_audio = False
-            elif in_audio_block and headless_skip_audio:
-                self.timeline.info.has_audio = False
 
             w.PrepareStreams()
 
@@ -984,15 +1545,31 @@ class Export(QDialog):
                 w.AddSphericalMetadata("equirectangular", 0.0, 0.0, 0.0)
 
             if export_type in [_("Audio Only")]:
-                w.SetOption(openshot.AUDIO_STREAM, "muxing_preset", "mp4_faststart")
+                if not uses_mp4_faststart_preset or uses_mp4_faststart_preset(
+                    video_settings.get("vformat")
+                ):
+                    w.SetOption(openshot.AUDIO_STREAM, "muxing_preset", "mp4_faststart")
             else:
-                w.SetOption(openshot.VIDEO_STREAM, "muxing_preset", "mp4_faststart")
+                if not uses_mp4_faststart_preset or uses_mp4_faststart_preset(
+                    video_settings.get("vformat")
+                ):
+                    w.SetOption(openshot.VIDEO_STREAM, "muxing_preset", "mp4_faststart")
                 if "crf" in video_bitrate_text:
                     w.SetOption(openshot.VIDEO_STREAM, "crf", str(_parse_bitrate_to_bps(video_settings.get("video_bitrate"))))
                 elif "cqp" in video_bitrate_text:
                     w.SetOption(openshot.VIDEO_STREAM, "cqp", str(_parse_bitrate_to_bps(video_settings.get("video_bitrate"))))
                 elif "qp" in video_bitrate_text:
                     w.SetOption(openshot.VIDEO_STREAM, "qp", str(_parse_bitrate_to_bps(video_settings.get("video_bitrate"))))
+
+                # Improve compression efficiency for software codecs by using
+                # a longer GOP and allowing B-frames.
+                # Keep this limited to software encoders to avoid hardware-
+                # specific capability mismatches.
+                vcodec = (video_settings.get("vcodec") or "").lower()
+                if vcodec in {"libx264", "libx265", "libvpx-vp9"}:
+                    w.SetOption(openshot.VIDEO_STREAM, "g", "48")
+                    w.SetOption(openshot.VIDEO_STREAM, "allow_b_frames", "1")
+                    w.SetOption(openshot.VIDEO_STREAM, "max_b_frames", "3")
 
             w.Open()
 
@@ -1005,46 +1582,157 @@ class Export(QDialog):
             last_exported_time = time.time()
             last_displayed_exported_portion = 0.0
 
-            for frame in range(video_settings.get("start_frame"), video_settings.get("end_frame") + 1):
-                end_time_export = time.time()
-                if ((frame % progressstep) == 0) or ((end_time_export - last_exported_time) > 1):
-                    current_exported_portion = (frame - start_frame_export) * 1.0 / (end_frame_export - start_frame_export)
+            if use_pipeline:
+                fps_dict = video_settings.get("fps") or {}
+                frame_rate = float(fps_dict.get("num", 30)) / float(fps_dict.get("den", 1) or 1)
+                enable_parallel = bool(self.s.get("exportParallelComposite")) if self.s else False
+                video_settings = dict(video_settings)
+                video_settings["_enable_parallel_composite"] = enable_parallel
+                pipeline_profile = get_export_pipeline_profile(
+                    int(video_settings.get("width", 1920)),
+                    int(video_settings.get("height", 1080)),
+                    frame_rate,
+                    enable_parallel_composite=enable_parallel,
+                )
+
+                def _on_progress(frame, encode_fps):
+                    nonlocal max_frame, fps_encode, last_exported_time, last_displayed_exported_portion, format_of_progress_string
+                    max_frame = frame
+                    fps_encode = encode_fps
+                    now = time.time()
+                    current_exported_portion = (frame - start_frame_export) * 1.0 / max(
+                        1, (end_frame_export - start_frame_export)
+                    )
                     if (current_exported_portion - last_displayed_exported_portion) > 0.0:
-                        digits_after_decimalpoint = math.ceil(-2.0 - math.log10(current_exported_portion - last_displayed_exported_portion))
+                        digits_after_decimalpoint = math.ceil(
+                            -2.0 - math.log10(current_exported_portion - last_displayed_exported_portion)
+                        )
                     else:
                         digits_after_decimalpoint = 1
                     digits_after_decimalpoint = max(1, min(5, digits_after_decimalpoint))
                     last_displayed_exported_portion = current_exported_portion
                     format_of_progress_string = "%4." + str(digits_after_decimalpoint) + "f%% "
-                    last_exported_time = time.time()
-                    if (frame - start_frame_export) != 0 and (end_time_export - start_time_export) != 0:
-                        seconds_left = round((start_time_export - end_time_export) * (frame - end_frame_export) / (frame - start_frame_export))
-                        fps_encode = (frame - start_frame_export) / (end_time_export - start_time_export)
-                        if frame == end_frame_export:
-                            title_message = _("Finalizing video export, please wait...")
-                        else:
-                            title_message = titlestring(seconds_left, fps_encode, "Remaining")
+                    last_exported_time = now
+                    if (frame - start_frame_export) != 0 and encode_fps > 0:
+                        remaining_frames = end_frame_export - frame
+                        seconds_left = int(remaining_frames / encode_fps)
+                        title_message = titlestring(seconds_left, encode_fps, "Remaining")
                     else:
                         title_message = ""
                     self.ExportFrame.emit(
                         title_message,
-                        video_settings.get("start_frame"),
-                        video_settings.get("end_frame"),
+                        start_frame_export,
+                        end_frame_export,
                         frame,
-                        format_of_progress_string
+                        format_of_progress_string,
                     )
-                    QCoreApplication.processEvents()
 
-                max_frame = frame
-                w.WriteFrame(self.timeline.GetFrame(frame))
-                if self.cache_thread:
-                    self.cache_thread.Seek(frame)
+                def _is_cancelled():
+                    # Pipeline blocks the dialog thread; pump Qt so Cancel can
+                    # set self.exporting = False (same role as serial processEvents).
+                    if not getattr(self, "_headless", False):
+                        QCoreApplication.processEvents()
+                    return not self.exporting
 
-                if not self.exporting:
-                    break
+                try:
+                    metrics = run_pipelined_export(
+                        writer=w,
+                        project_data=self.project._data,
+                        video_settings=video_settings,
+                        audio_settings=audio_settings,
+                        start_frame=start_frame_export,
+                        end_frame=end_frame_export,
+                        is_cancelled=_is_cancelled,
+                        on_progress=_on_progress,
+                        profile=pipeline_profile,
+                        existing_timeline=self.timeline,
+                        existing_cache=export_cache_object,
+                    )
+                    max_frame = end_frame_export
+                    fps_encode = float(metrics.get("fps") or fps_encode or 0)
+                    end_time_export = time.time()
+                    log.info(
+                        "Pipelined export done: profile=%s workers=%s fps=%.1f",
+                        metrics.get("profile"),
+                        metrics.get("workers"),
+                        fps_encode,
+                    )
+                except PipelineCancelled:
+                    end_time_export = time.time()
+                    log.info("Pipelined export cancelled")
+                    try:
+                        w.Close()
+                    except Exception:
+                        pass
+                    export_ok = False
+                    if not getattr(self, "_headless", False):
+                        if getattr(self, "_export_cancel_confirmed", False):
+                            self._export_cancel_confirmed = False
+                            self._cleanup_export_resources()
+                            super(Export, self).reject()
+                        else:
+                            self.enableControls()
+                    return
+                except Exception as pipe_exc:
+                    # Do not fall back mid-write — the file may already contain
+                    # partial frames. Surface the error like the serial path.
+                    log.error("Pipelined export failed: %s", pipe_exc, exc_info=True)
+                    raise
+
+            if not use_pipeline:
+                for frame in range(video_settings.get("start_frame"), video_settings.get("end_frame") + 1):
+                    end_time_export = time.time()
+                    if ((frame % progressstep) == 0) or ((end_time_export - last_exported_time) > 1):
+                        current_exported_portion = (frame - start_frame_export) * 1.0 / (end_frame_export - start_frame_export)
+                        if (current_exported_portion - last_displayed_exported_portion) > 0.0:
+                            digits_after_decimalpoint = math.ceil(-2.0 - math.log10(current_exported_portion - last_displayed_exported_portion))
+                        else:
+                            digits_after_decimalpoint = 1
+                        digits_after_decimalpoint = max(1, min(5, digits_after_decimalpoint))
+                        last_displayed_exported_portion = current_exported_portion
+                        format_of_progress_string = "%4." + str(digits_after_decimalpoint) + "f%% "
+                        last_exported_time = time.time()
+                        if (frame - start_frame_export) != 0 and (end_time_export - start_time_export) != 0:
+                            seconds_left = round((start_time_export - end_time_export) * (frame - end_frame_export) / (frame - start_frame_export))
+                            fps_encode = (frame - start_frame_export) / (end_time_export - start_time_export)
+                            if frame == end_frame_export:
+                                title_message = _("Finalizing video export, please wait...")
+                            else:
+                                title_message = titlestring(seconds_left, fps_encode, "Remaining")
+                        else:
+                            title_message = ""
+                        self.ExportFrame.emit(
+                            title_message,
+                            video_settings.get("start_frame"),
+                            video_settings.get("end_frame"),
+                            frame,
+                            format_of_progress_string
+                        )
+                        # Serial path still runs on the UI thread for the dialog;
+                        # processEvents keeps the cancel button alive.
+                        if not headless:
+                            QCoreApplication.processEvents()
+
+                    max_frame = frame
+                    try:
+                        w.WriteFrame(self.timeline.GetFrame(frame))
+                    except Exception as frame_exc:
+                        # Hardware decode can fail mid-export; drop to software and retry once.
+                        if force_software_decode and "decode" in str(frame_exc).lower():
+                            log.warning("Frame decode failed; forcing software decode and retrying")
+                            force_software_decode()
+                            w.WriteFrame(self.timeline.GetFrame(frame))
+                        else:
+                            raise
+                    if self.cache_thread:
+                        self.cache_thread.Seek(frame)
+
+                    if not self.exporting:
+                        break
 
             w.Close()
 
+            end_time_export = time.time()
             seconds_run = round((end_time_export - start_time_export))
             title_message = titlestring(seconds_run, fps_encode, "Elapsed")
             self.ExportFrame.emit(
@@ -1054,6 +1742,11 @@ class Export(QDialog):
                 max_frame,
                 format_of_progress_string
             )
+            # ExportEnded is emitted once, after cleanup, below (guarded by
+            # export_ok) -- do not also emit it here, or successful exports
+            # fire the signal (and any connected "export finished" UI/hooks)
+            # twice.
+            export_ok = True
 
         except Exception as e:
             error_type_str = str(e)
@@ -1062,6 +1755,7 @@ class Export(QDialog):
             if "audio codec" in error_type_str.lower() and export_type in [_("Video & Audio"), _("Audio Only")]:
                 log.info("Audio codec failed, retrying export as video only")
                 self.timeline.info.has_audio = False
+                retried_as_video_only = True
                 self.run_export(
                     export_file_path,
                     video_settings,
@@ -1072,41 +1766,112 @@ class Export(QDialog):
                 )
                 return
             track_metric_error("export-error-%s" % error_type_str[:50])
-            friendly_error = error_type_str.split("> ")[0].replace("<", "") if "> " in error_type_str else error_type_str
-            if hasattr(self, 'cancel_button'):
-                msg = QMessageBox()
-                msg.setWindowTitle(_("Export Error"))
-                msg.setText(_("Sorry, there was an error exporting your video: \n%s") % friendly_error)
-                msg.exec_()
+            friendly_error = friendly_export_error(error_type_str)
+            if getattr(self, "_headless", False):
+                raise
+            if hasattr(self, 'cancel_button') and self.cancel_button is not None:
+                self._present_export_error(friendly_error)
+                self.enableControls()
+                self.exporting = False
             else:
                 raise
+        finally:
+            try:
+                if not retried_as_video_only:
+                    if export_ok or getattr(self, "_headless", False):
+                        self._cleanup_export_resources()
+                    else:
+                        # The dialog stays open for another try.
+                        self._end_export_attempt()
+            except Exception:
+                log.warning("Export cleanup failed", exc_info=True)
+            if owns_pause:
+                try:
+                    resume_window_auto_save(getattr(self, "_auto_save_was_active", False))
+                except Exception:
+                    log.warning("Failed to resume autosave after export", exc_info=True)
+                self._auto_save_paused = False
 
-        self.ExportEnded.emit(export_file_path)
-        self.timeline.Close()
-        self.timeline.ClearAllCache()
-        openshot.Settings.Instance().HIGH_QUALITY_SCALING = False
-        if self.cache_thread:
-            self.cache_thread.StopThread(10000)
-            self.cache_thread.Reader(None)
-            self.cache_thread = None
-        get_app().window.timeline_sync.timeline.SetCache(self.old_cache_object)
-        get_app().window.cache_object = self.old_cache_object
+        if export_ok:
+            self._complete_export_success(export_file_path)
 
-        # Dialog-only: show finished state or close (skip when headless)
-        if getattr(self, "_headless", False):
-            return
-        if hasattr(self, 'cancel_button') and self.cancel_button is not None:
-            if self.s.get("show_finished_window") and self.exporting:
-                self.cancel_button.setVisible(False)
-                self.export_button.setVisible(False)
-                self.close_button.setVisible(True)
-                from PyQt5.QtGui import QPalette
-                p = QPalette()
-                p.setColor(QPalette.Highlight, Qt.green)
-                self.progressExportVideo.setPalette(p)
-                self.show()
+    def _setup_toolbox_tab_order(self):
+        toolbox = self.toolBox
+        toolbox.setFocusPolicy(Qt.NoFocus)
+
+        for child in toolbox.findChildren(QWidget):
+            if child.metaObject().className() == "QToolBoxButton":
+                child.setFocusPolicy(Qt.TabFocus)
+
+    def focusNextPrevChild(self, forward):
+        tab_list = getattr(self, "_tab_order_list", None)
+        if not tab_list:
+            return super().focusNextPrevChild(forward)
+
+        current = self.focusWidget()
+        if current is self.exportTabs.tabBar():
+            current = self.exportTabs
+
+        if current not in tab_list:
+            target = tab_list[0] if forward else tab_list[-1]
+            if target is self.exportTabs:
+                self.exportTabs.tabBar().setFocus()
             else:
-                super(Export, self).accept()
+                target.setFocus()
+            return True
+
+        index = tab_list.index(current)
+        if forward:
+            index = (index + 1) % len(tab_list)
+        else:
+            index = (index - 1) % len(tab_list)
+        target = tab_list[index]
+        if target is self.exportTabs:
+            self.exportTabs.tabBar().setFocus()
+        else:
+            target.setFocus()
+        return True
+
+    def _collect_toolbox_tab_order(self, toolbox):
+        if toolbox is None:
+            return []
+
+        buttons = []
+        for child in toolbox.findChildren(QWidget):
+            if child.metaObject().className() == "QToolBoxButton":
+                buttons.append(child)
+
+        if not buttons:
+            return []
+
+        buttons.sort(key=lambda button: button.pos().y())
+        ordered = []
+        current_index = toolbox.currentIndex()
+
+        for index, button in enumerate(buttons):
+            ordered.append(button)
+            if index != current_index:
+                continue
+            page = toolbox.widget(index)
+            page_widgets = tabstops.collect_focusable_from_layout(
+                page.layout(), self, include_hidden=True
+            )
+            ordered.extend(self._sort_widgets_by_position(page_widgets))
+
+        return ordered
+
+    def _sort_widgets_by_position(self, widgets):
+        if not widgets:
+            return []
+
+        def _pos_key(widget):
+            try:
+                pos = widget.mapTo(self, QPoint(0, 0))
+                return (pos.y(), pos.x())
+            except Exception:
+                return (0, 0)
+
+        return sorted(widgets, key=_pos_key)
 
     def accept(self):
         """ Start exporting video """
@@ -1157,7 +1922,7 @@ class Export(QDialog):
 
         # Determine final exported file path (and replace blank paths with default ones)
         default_filename = "Untitled Project"
-        default_folder = os.path.join(info.HOME_PATH)
+        default_folder = os.path.join(info.DOWNLOADS_PATH)
         if export_type == _("Image Sequence"):
             file_name_with_ext = "%s%s" % (self.txtFileName.text().strip() or default_filename, self.txtImageFormat.text().strip())
         else:
@@ -1341,17 +2106,14 @@ class Export(QDialog):
             if result == QMessageBox.No:
                 # Resume export
                 return
-
-        # Return scale mode to lower quality scaling (for faster previews)
-        openshot.Settings.Instance().HIGH_QUALITY_SCALING = False
+            # Signal cancel before tearing down the timeline/cache so pipelined
+            # workers can stop GetFrame/WriteFrame without racing Close().
+            self.exporting = False
+            self._export_cancel_confirmed = True
+            return
 
         # Stop cache thread and restore project cache
-        if self.cache_thread:
-            self.cache_thread.StopThread(10000)
-            self.cache_thread.Reader(None)
-            self.cache_thread = None
-        get_app().window.timeline_sync.timeline.SetCache(self.old_cache_object)
-        get_app().window.cache_object = self.old_cache_object
+        self._cleanup_export_resources()
 
         # Cancel dialog
         self.exporting = False
@@ -1359,31 +2121,28 @@ class Export(QDialog):
 
     def calculate_all_formats_bitrate(self, quality_key):
         """Calculate a bitrate using bits-per-pixel guidance for All Formats presets."""
-        quality_bpp = {
-            "Low": 0.055,    # midpoint of 0.045 - 0.055
-            "Med": 0.08,     # midpoint of 0.065 - 0.08
-            "High": 0.12     # midpoint of 0.10 - 0.12
-        }
-        target_bpp = quality_bpp.get(quality_key)
-        if target_bpp is None:
-            return None
-
-        width = self.txtWidth.value()
-        height = self.txtHeight.value()
+        from classes.export_presets import all_formats_bitrate
         fps_den = self.txtFrameRateDen.value() or 1
         fps = self.txtFrameRateNum.value() / fps_den
+        return all_formats_bitrate(self.txtWidth.value(), self.txtHeight.value(), fps, quality_key)
 
-        if not width or not height or not fps:
-            return None
-
-        bitrate_bits_per_sec = width * height * fps * target_bpp
-        bitrate_mbps = bitrate_bits_per_sec / 1_000_000.0
-        return f"{bitrate_mbps:.2f} Mb/s"
+    @staticmethod
+    def _is_quality_mode_rate(rate_text):
+        """Return True if a preset rate uses quality-mode units (crf/cqp/qp)."""
+        from classes.export_presets import is_quality_mode_rate
+        return is_quality_mode_rate(rate_text)
 
     def update_all_formats_bitrates(self):
         """Refresh dynamic video bitrates when using All Formats presets."""
         _ = get_app()._tr
         if self.cboSimpleProjectType.currentData() != _("All Formats"):
+            return
+
+        # Keep explicit quality-mode presets (crf/cqp/qp) untouched.
+        # Dynamic bpp-based Mbps values are only for bitrate-mode presets.
+        if any(self._is_quality_mode_rate(v) for v in getattr(self, "vbr", {}).values()):
+            return
+        if self._is_quality_mode_rate(self.txtVideoBitRate.text()):
             return
 
         dynamic_vbr = {}
@@ -1442,30 +2201,39 @@ def _resolve_audio_codec(preferred):
     Resolve requested audio codec to one that is available on this system.
     Prevents "Could not open audio codec" when the preferred codec (e.g. aac)
     is not available in the current FFmpeg build. Works cross-platform (Linux, Windows, macOS).
-    Uses the same order as the UI profile logic: libfaac, libvo_aacenc, aac, ac3 (first valid wins).
     Returns a string codec name valid for openshot.FFmpegWriter, or None if no codec is available
     (caller should skip SetAudioOptions and export video-only).
     """
     preferred = (preferred or "aac").strip()
     if not preferred:
         preferred = "aac"
-    # Use same order as UI profile (export.py preset loading): libfaac, libvo_aacenc, then ac3.
-    # Do not use "aac" here — IsValidCodec("aac") is often True but Open() fails ("Could not open audio codec").
-    # Only use codecs that typically work at Open(); if none are valid, return None (export video-only).
-    aac_order = ("libfaac", "libvo_aacenc", "ac3", "libfdk_aac", "libmp3lame")
-    if preferred.lower() == "aac" or preferred in aac_order:
-        for codec in aac_order:
+    # AAC family aliases only. libmp3lame must NOT be listed here: including it
+    # made "libmp3lame" (MOV default) remap to "aac", which combined with
+    # mp4_faststart / non-MP4 muxers has crashed FFmpegWriter natively on Windows.
+    aac_aliases = ("aac", "libfdk_aac", "libvo_aacenc", "libfaac")
+    # When the user asked for AAC, prefer real AAC encoders; libmp3lame then ac3
+    # are last-resort fallbacks (ac3-in-mp4 plays silent in many players).
+    aac_fallback_order = (
+        "libfdk_aac",
+        "aac",
+        "libvo_aacenc",
+        "libfaac",
+        "libmp3lame",
+        "ac3",
+    )
+    if preferred.lower() in aac_aliases:
+        for codec in aac_fallback_order:
             if openshot.FFmpegWriter.IsValidCodec(codec):
                 if codec != preferred:
                     log.info("Audio codec %s resolved to %s", preferred, codec)
                 return codec
         # No audio codec available; return None so caller skips audio (export video-only).
-        log.info("No audio codec available (tried %s), exporting video only", list(aac_order))
+        log.info("No audio codec available (tried %s), exporting video only", list(aac_fallback_order))
         return None
     preferred_valid = openshot.FFmpegWriter.IsValidCodec(preferred)
     if preferred_valid:
         return preferred
-    for codec in aac_order:
+    for codec in aac_fallback_order:
         if codec != preferred and openshot.FFmpegWriter.IsValidCodec(codec):
             log.info("Audio codec %s not available, using %s", preferred, codec)
             return codec
@@ -1510,6 +2278,15 @@ def get_default_export_settings():
         "topfirst": False,
         "spherical": False,
     }
+    # Headless/agent path: optionally prefer a validated hardware encoder.
+    # Interactive final delivery still defaults to software unless the user
+    # picks a HW preset. Kill switch: exportPreferHardwareEncoder.
+    try:
+        prefer_hw = bool(settings.get("exportPreferHardwareEncoder"))
+    except Exception:
+        prefer_hw = False
+    if prefer_hw and maybe_apply_hardware_bitrate is not None:
+        video_settings = maybe_apply_hardware_bitrate(video_settings, prefer_hardware=True)
     audio_settings = {
         "acodec": "aac",
         "sample_rate": sample_rate,
@@ -1556,6 +2333,9 @@ def get_default_export_settings():
     # Apply chat overrides (set via set_export_setting)
     overrides = project.get("export_overrides") or {}
     for k, v in overrides.items():
+        if v is None:
+            # Cleared override (project data merges dicts, so keys are nulled, not removed)
+            continue
         if k in ("width", "height", "start_frame", "end_frame"):
             video_settings[k] = v
         elif k == "fps_num":
@@ -1574,21 +2354,83 @@ def get_default_export_settings():
             audio_settings["channels"] = v
         elif k in ("output_path", "path"):
             default_path = v
+        elif k == "video_bitrate":
+            video_settings["video_bitrate"] = v
+        elif k == "audio_bitrate":
+            audio_settings["audio_bitrate"] = v
+        elif k == "channel_layout":
+            audio_settings["channel_layout"] = v
+        elif k == "export_type" and v in export_type_options:
+            export_type = v
 
     return video_settings, audio_settings, export_type, default_path
 
 
-def export_video_headless(export_file_path, video_settings=None, audio_settings=None, export_type=None):
+# Headless (assistant) exports in flight. They encode on a worker thread, so the
+# editor can be closed, or the tool call can time out, while one is still running.
+_headless_exports = []
+# Building the Export (loading its UI, opening the export timeline) waits for the GUI thread.
+_HEADLESS_SETUP_TIMEOUT = 120
+
+
+def cancel_headless_exports(wait_seconds=0):
+    """Ask running headless exports to stop and wait up to *wait_seconds* for them.
+
+    Returns True once none is left. Safe on the GUI thread: a cancelled export
+    winds down without it.
     """
-    Run export without showing the dialog. Call from main thread.
+    for win in list(_headless_exports):
+        win.exporting = False
+    deadline = time.time() + wait_seconds
+    while _headless_exports and time.time() < deadline:
+        time.sleep(0.05)
+    return not _headless_exports
+
+
+@contextmanager
+def _headless_export():
+    """An Export for a headless render: built on the GUI thread (it is a QDialog)
+    and deleted there, whichever thread runs the encode."""
+    def _make():
+        # Shutdown cancels the exports registered here, from this same thread:
+        # one that registers later would encode while libopenshot is torn down.
+        if getattr(getattr(get_app(), "window", None), "shutting_down", False) is True:
+            raise RuntimeError("the editor is closing")
+        win = Export()
+        win.exporting = True
+        win._headless = True
+        _headless_exports.append(win)
+        return win
+
+    win = call_on_gui(_make, timeout=_HEADLESS_SETUP_TIMEOUT)
+    try:
+        yield win
+    finally:
+        _headless_exports.remove(win)
+        win.deleteLater()
+
+
+def export_video_headless(export_file_path, video_settings=None, audio_settings=None, export_type=None,
+                          video_bitrate_text=None, profile_path_for_rescale=None):
+    """
+    Run export without showing the dialog. Call from a worker thread (a QThread, see
+    editor_tools.project_export_render.run_on_qthread): the encode runs on the caller's
+    thread and only the Export object is built on the GUI thread, so the editor stays
+    responsive. Called on the GUI thread it still works, and blocks it for the whole render.
     If video_settings, audio_settings, or export_type is None, use default/last-used from project.
-    Returns None on success; raises or returns error message on failure.
+    video_bitrate_text is the rate as the dialog shows it ("23 crf", "8 Mb/s"); when omitted it
+    comes from a string video_bitrate, so crf/cqp/qp presets encode in quality mode (they were
+    encoded at a literal 23 bits/s before). Returns None on success; raises or returns error
+    message on failure.
     """
     from classes.app import get_app
     app = get_app()
     _ = app._tr
 
     vs, as_, et, default_path = get_default_export_settings()
+    # Remember whether the caller chose a range or we fell back to the project's
+    # stored one, which is often a stale default.
+    use_default_range = video_settings is None
     if video_settings is None:
         video_settings = vs
     if audio_settings is None:
@@ -1598,7 +2440,10 @@ def export_video_headless(export_file_path, video_settings=None, audio_settings=
     if not export_file_path:
         export_file_path = default_path
     if not export_file_path:
-        export_file_path = os.path.join(info.HOME_PATH, "export.mp4")
+        export_file_path = os.path.join(info.DOWNLOADS_PATH, "export.mp4")
+    if video_bitrate_text is None:
+        raw_rate = video_settings.get("video_bitrate")
+        video_bitrate_text = raw_rate.strip().lower() if isinstance(raw_rate, str) else ""
 
     # Ensure directory exists
     export_dir = os.path.dirname(export_file_path)
@@ -1613,57 +2458,61 @@ def export_video_headless(export_file_path, video_settings=None, audio_settings=
     if File.get(path=export_file_path):
         return _("Output path is an input file. Choose a different path.")
 
-    win = Export()
-    win.exporting = True
-    win._headless = True
-    # Headless: always export video-only to avoid "Could not open audio codec".
-    if export_type in [_("Video & Audio"), _("Audio Only")]:
-        export_type = _("Video Only")
-    # Use timeline length for end_frame if not set
-    try:
-        max_frame = win.timeline.GetMaxFrame()
-        if not video_settings.get("end_frame") or video_settings.get("end_frame") < video_settings.get("start_frame", 1):
-            video_settings["end_frame"] = max_frame
-        if video_settings.get("start_frame", 1) >= video_settings["end_frame"]:
-            return _("Invalid range of frames to export.")
-    except Exception:
-        pass
-    try:
-        win.run_export(
-            export_file_path,
-            video_settings,
-            audio_settings,
-            export_type,
-            video_bitrate_text="",
-            profile_path_for_rescale=None,
-        )
-    except Exception as e:
-        err = str(e)
-        err_lower = err.lower()
-        # If opening the audio codec failed, retry with Video Only so the user still gets a video file.
-        audio_codec_failed = (
-            "audio codec" in err_lower or "open audio codec" in err_lower or "could not open" in err_lower and "audio" in err_lower
-        )
-        if audio_codec_failed and export_type in [_("Video & Audio"), _("Audio Only")]:
+    with _headless_export() as win:
+        # Audio is kept rather than pre-emptively stripped: an unattended export is
+        # verified by its transcript, so a silent file fails the check. A genuinely
+        # failing audio codec is still retried as Video Only below.
+        try:
+            max_frame = win.timeline.GetMaxFrame()
+            if use_default_range and max_frame:
+                # The project's stored range is frequently a stale default (e.g. 300
+                # frames) that would silently truncate the export to a few seconds,
+                # so fit it to the timeline we are actually exporting.
+                video_settings = dict(video_settings)
+                video_settings["start_frame"] = 1
+                video_settings["end_frame"] = max_frame
+            elif not video_settings.get("end_frame") or video_settings.get("end_frame") < video_settings.get("start_frame", 1):
+                video_settings["end_frame"] = max_frame
+            if video_settings.get("start_frame", 1) >= video_settings["end_frame"]:
+                return _("Invalid range of frames to export.")
+        except Exception:
+            pass
+        try:
+            win.run_export(
+                export_file_path,
+                video_settings,
+                audio_settings,
+                export_type,
+                video_bitrate_text=video_bitrate_text,
+                profile_path_for_rescale=profile_path_for_rescale,
+            )
+        except Exception as e:
+            err = str(e)
+            err_lower = err.lower()
+            # If opening the audio codec failed, retry with Video Only so the user still gets a video file.
+            audio_codec_failed = (
+                "audio codec" in err_lower or "open audio codec" in err_lower or "could not open" in err_lower and "audio" in err_lower
+            )
+            if not (audio_codec_failed and export_type in [_("Video & Audio"), _("Audio Only")]):
+                return err
             log.info("Headless export: audio codec failed (%s), retrying as Video Only", err.strip())
             try:
-                win2 = Export()
-                win2.exporting = True
-                win2._headless = True
-                max_frame = win2.timeline.GetMaxFrame()
-                if not video_settings.get("end_frame") or video_settings["end_frame"] < video_settings.get("start_frame", 1):
-                    video_settings = dict(video_settings)
-                    video_settings["end_frame"] = max_frame
-                win2.run_export(
-                    export_file_path,
-                    video_settings,
-                    audio_settings,
-                    _("Video Only"),
-                    video_bitrate_text="",
-                    profile_path_for_rescale=None,
-                )
+                with _headless_export() as win2:
+                    max_frame = win2.timeline.GetMaxFrame()
+                    if not video_settings.get("end_frame") or video_settings["end_frame"] < video_settings.get("start_frame", 1):
+                        video_settings = dict(video_settings)
+                        video_settings["end_frame"] = max_frame
+                    win2.run_export(
+                        export_file_path,
+                        video_settings,
+                        audio_settings,
+                        _("Video Only"),
+                        video_bitrate_text=video_bitrate_text,
+                        profile_path_for_rescale=profile_path_for_rescale,
+                    )
             except Exception:
                 return err
-            return None
-        return err
+        if not win.exporting:
+            # cancel_headless_exports(): the file on disk is incomplete.
+            return _("The export was cancelled.")
     return None

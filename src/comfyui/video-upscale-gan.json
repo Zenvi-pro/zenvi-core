@@ -1,0 +1,86 @@
+{
+  "action_icon": "ai-action-upscale.svg",
+  "menu_category": "enhance",
+  "menu_order": 10,
+  "name": "Increase Resolution (4x)",
+  "open_dialog": false,
+  "output_type": "video",
+  "template_id": "video-upscale-gan",
+  "workflow": {
+    "1": {
+      "class_type": "LoadVideo",
+      "inputs": {
+        "file": "/tmp/input.mp4"
+      }
+    },
+    "2": {
+      "class_type": "Video Slice",
+      "inputs": {
+        "duration": 10.0,
+        "start_time": 0.0,
+        "strict_duration": false,
+        "video": [
+          "1",
+          0
+        ]
+      }
+    },
+    "3": {
+      "class_type": "GetVideoComponents",
+      "inputs": {
+        "video": [
+          "2",
+          0
+        ]
+      }
+    },
+    "4": {
+      "class_type": "UpscaleModelLoader",
+      "inputs": {
+        "model_name": "RealESRGAN_x4plus.safetensors"
+      }
+    },
+    "5": {
+      "class_type": "ImageUpscaleWithModel",
+      "inputs": {
+        "image": [
+          "3",
+          0
+        ],
+        "upscale_model": [
+          "4",
+          0
+        ]
+      }
+    },
+    "6": {
+      "class_type": "CreateVideo",
+      "inputs": {
+        "audio": [
+          "3",
+          1
+        ],
+        "fps": [
+          "3",
+          2
+        ],
+        "images": [
+          "5",
+          0
+        ]
+      }
+    },
+    "7": {
+      "class_type": "SaveVideo",
+      "inputs": {
+        "codec": "auto",
+        "filename_prefix": "video/openshot_gen",
+        "format": "auto",
+        "video": [
+          "6",
+          0
+        ]
+      }
+    }
+  }
+}

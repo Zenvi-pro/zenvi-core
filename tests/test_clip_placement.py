@@ -9,7 +9,18 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from classes.clip_placement import compute_clip_trim_bounds, default_underlay_layer_number
+from classes.clip_placement import (
+    DEFAULT_WATCH_QUERY,
+    blind_trim_rejected,
+    butt_against_previous_clip,
+    compute_clip_trim_bounds,
+    default_underlay_layer_number,
+    end_bounds_keep_window,
+    file_looks_like_image,
+    placement_watch_query,
+    should_watch_placement,
+    source_window_for_file,
+)
 
 
 def test_trim_duration_three_seconds():
@@ -35,3 +46,130 @@ def test_empty_video_track_defaults_to_lowest_layer():
         {"number": 3000000, "label": "mid"},
     ]
     assert default_underlay_layer_number(layers) == 1000000
+
+
+def test_file_window_prefers_start_end_over_parent_duration():
+    start, end = source_window_for_file({"start": 12.0, "end": 18.0, "duration": 30.0})
+    assert abs(start - 12.0) < 1e-9
+    assert abs(end - 18.0) < 1e-9
+
+
+def test_trim_subclip_does_not_exceed_file_end():
+    src_start, src_end = source_window_for_file({"start": 12.0, "end": 18.0, "duration": 30.0})
+    start, end = compute_clip_trim_bounds(
+        src_end - src_start, trim_start=0.0, trim_dur=10.0, file_start=src_start,
+    )
+    assert start >= 12.0 - 1e-9
+    assert end <= 18.0 + 1e-9
+
+
+def test_watch_query_prefers_prompt_then_summary():
+    data = {
+        "name": "clip.mp4",
+        "ai_metadata": {"prompt": "a cat waving", "short_summary": "pet clip"},
+    }
+    assert placement_watch_query(data) == "a cat waving"
+    assert placement_watch_query(data, query="handshake") == "handshake"
+
+
+def test_watch_query_uses_layout_region_before_filename():
+    data = {"path": "/tmp/out.webm", "ai_metadata": {"transparent": True}}
+    assert placement_watch_query(data, extra="lower_third") == "lower third"
+
+
+def test_watch_query_falls_back_to_default():
+    assert placement_watch_query({}) == DEFAULT_WATCH_QUERY
+
+
+def test_file_looks_like_image_by_ext_and_media_type():
+    assert file_looks_like_image({"path": "/x.png"})
+    assert file_looks_like_image({"media_type": "image", "path": "/x"})
+    assert not file_looks_like_image({"path": "/x.mp4"})
+
+
+def test_should_watch_short_unindexed_video():
+    assert should_watch_placement(window_sec=5.0) is True
+    assert should_watch_placement(window_sec=5.0, is_audio=True) is False
+    assert should_watch_placement(window_sec=5.0, is_image=True) is False
+    assert should_watch_placement(window_sec=5.0, skip_explicit_times=True) is False
+
+
+def test_should_watch_skips_already_watched_subclip_unless_query():
+    assert should_watch_placement(
+        window_sec=6.0, is_already_watched_subclip=True, explicit_query=False,
+    ) is False
+    assert should_watch_placement(
+        window_sec=6.0, is_already_watched_subclip=True, explicit_query=True,
+    ) is True
+
+
+def test_should_watch_skips_long_untrimmed_file():
+    assert should_watch_placement(window_sec=120.0) is False
+    assert should_watch_placement(window_sec=6.0) is True
+
+
+def test_blind_duration_trim_on_full_file_is_rejected():
+    assert blind_trim_rejected(trim_dur=60.0, watched_start=None) is True
+
+
+def test_explicit_keep_window_is_not_a_blind_trim():
+    # start_seconds + end_seconds names both edges - the form the old error
+    # message demanded, so it must never be what arms the guard (#167).
+    assert blind_trim_rejected(
+        trim_dur=5.0, watched_start=None, has_explicit_end=True,
+    ) is False
+
+
+def test_explicit_in_point_is_not_a_first_n_seconds_trim():
+    assert blind_trim_rejected(
+        trim_dur=5.0, watched_start=None, has_explicit_start=True,
+    ) is False
+
+
+def test_times_named_only_in_the_query_do_not_exempt_a_duration_trim():
+    # The query text never moves the in-point, so start=0 + duration really is
+    # the first N seconds however the query describes it - keep blocking it.
+    assert blind_trim_rejected(trim_dur=5.0, watched_start=None) is True
+
+
+def test_watched_or_exempt_media_is_not_a_blind_trim():
+    assert blind_trim_rejected(trim_dur=5.0, watched_start=2.0) is False
+    assert blind_trim_rejected(trim_dur=5.0, watched_start=None, is_audio=True) is False
+    assert blind_trim_rejected(trim_dur=5.0, watched_start=None, is_image=True) is False
+    assert blind_trim_rejected(trim_dur=5.0, watched_start=None, is_subclip=True) is False
+
+
+def test_no_trim_at_all_is_not_a_blind_trim():
+    assert blind_trim_rejected(trim_dur=None, watched_start=None) is False
+    assert blind_trim_rejected(trim_dur=0.0, watched_start=None) is False
+
+
+def test_end_seconds_alone_bounds_the_window():
+    assert end_bounds_keep_window(15.0, None, 20.0) is True
+    assert end_bounds_keep_window(0.0, None, None) is False
+
+
+def test_end_seconds_that_agrees_with_the_duration_bounds_the_window():
+    # start=0 + end=8.5 + duration=8.5 names both edges of 0-8.5; treating the
+    # end as overridden rejected it with "pass start_seconds and end_seconds".
+    assert end_bounds_keep_window(0.0, 8.5, 8.5) is True
+    assert end_bounds_keep_window(2.2, 5.8, 8.0) is True  # 8.0 - 2.2 != 5.8 in floats
+    assert end_bounds_keep_window(12.345, 6.57, 18.912) is True  # rounded duration
+
+
+def test_end_seconds_a_different_duration_overrides_is_not_a_bound():
+    assert end_bounds_keep_window(0.0, 5.0, 20.0) is False
+    assert end_bounds_keep_window(15.0, 4.0, 20.0) is False
+
+
+def test_butt_moves_only_a_position_planned_on_a_resized_clips_end():
+    resized = [(5.8, 5.3)]  # planned to end at 5.8s, snapping made it end at 5.3s
+    assert butt_against_previous_clip(5.8, resized) == 5.3
+    assert butt_against_previous_clip(5.85, resized) == 5.3  # rounded plan
+    assert butt_against_previous_clip(6.3, resized) == 6.3   # deliberate gap
+    assert butt_against_previous_clip(4.8, resized) == 4.8   # deliberate overlap
+    assert butt_against_previous_clip(5.8, []) == 5.8
+
+
+def test_butt_picks_the_nearest_planned_end():
+    assert butt_against_previous_clip(9.0, [(9.05, 8.7), (8.98, 9.4)]) == 9.4

@@ -43,6 +43,10 @@
     const gapLogClose = document.getElementById('chat-gap-log-close');
     const gapLogListEl = document.getElementById('chat-gap-log-list');
     if (gapLogOverlay) document.body.appendChild(gapLogOverlay);
+    const historyOverlay = document.getElementById('chat-history-overlay');
+    const historyClose = document.getElementById('chat-history-close');
+    const historyListEl = document.getElementById('chat-history-list');
+    if (historyOverlay) document.body.appendChild(historyOverlay);
     const messagesEl = document.getElementById('chat-messages');
     const cliEmptyStateEl = document.getElementById('chat-cli-empty-state');
     const inputEl = document.getElementById('chat-input');
@@ -221,6 +225,8 @@
     var thinkingBlockBody = null;
     var thinkingBlockHeader = null;
     var thinkingBlockCollapsed = false;
+    var thinkingBlockStartedAt = null; // when the current Thinking block opened
+    var proseCommittedBelowThinking = false; // a text bubble was frozen under the block
     var firstAnswerTokenReceived = false;
 
     var ACTIVITY_SPINNER_SVG = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none">' +
@@ -246,6 +252,249 @@
         return div.innerHTML;
     }
 
+    function attrEscape(s) {
+        if (!s) return '';
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/</g, '&lt;');
+    }
+
+    var attachRowEl = document.getElementById('chat-attach-row');
+    window._chatAttachments = [];
+
+    window.setChatAttachments = function (list) {
+        window._chatAttachments = Array.isArray(list) ? list : [];
+        renderAttachChips();
+    };
+
+    function renderAttachChips() {
+        if (!attachRowEl) return;
+        var list = window._chatAttachments || [];
+        if (!list.length) {
+            attachRowEl.className = 'chat-attach-row';
+            attachRowEl.innerHTML = '';
+            return;
+        }
+        attachRowEl.className = 'chat-attach-row has-items';
+        var html = '';
+        for (var i = 0; i < list.length; i++) {
+            var a = list[i] || {};
+            html += '<span class="chat-attach-chip">'
+                + '<span class="chat-attach-chip-kind">' + escapeHtml(a.kind || 'file') + '</span>'
+                + '<span class="chat-attach-chip-name">' + escapeHtml(a.name || '') + '</span>'
+                + '<button type="button" class="chat-attach-chip-remove" data-id="'
+                + attrEscape(a.id || '') + '" aria-label="Remove">&times;</button>'
+                + '</span>';
+        }
+        attachRowEl.innerHTML = html;
+        attachRowEl.onclick = function (ev) {
+            var btn = ev.target && ev.target.closest ? ev.target.closest('.chat-attach-chip-remove') : null;
+            if (!btn) return;
+            var id = btn.getAttribute('data-id') || '';
+            getBridge(function (bridge) {
+                if (bridge && bridge.removeAttachment) bridge.removeAttachment(id);
+            });
+        };
+    }
+
+    var mentionPaletteEl = null;
+    var mentionPaletteOpen = false;
+    var mentionActiveIndex = -1;
+    var mentionQuery = '';
+    var mentionMatches = [];
+    var mentionFetchTimer = null;
+
+    function mentionQueryAtCursor(val, cursor) {
+        var before = (val || '').slice(0, cursor);
+        var m = before.match(/(^|[\s])@([^\s@]*)$/);
+        if (!m) return null;
+        return { start: before.length - m[2].length - 1, query: m[2] };
+    }
+
+    function ensureMentionPaletteEl() {
+        if (mentionPaletteEl) return mentionPaletteEl;
+        var inner = document.querySelector('.chat-input-glow-inner');
+        if (!inner) return null;
+        var el = document.createElement('div');
+        el.id = 'chat-mention-palette';
+        el.className = 'chat-mention-palette';
+        el.setAttribute('role', 'listbox');
+        el.setAttribute('aria-label', 'File mentions');
+        el.style.display = 'none';
+        inner.appendChild(el);
+        mentionPaletteEl = el;
+        return el;
+    }
+
+    function setMentionArmed(armed) {
+        getBridge(function (bridge) {
+            if (bridge && bridge.setMentionArmed) {
+                bridge.setMentionArmed(armed ? 'true' : 'false');
+            }
+        });
+    }
+
+    function hideMentionPalette() {
+        mentionPaletteOpen = false;
+        mentionActiveIndex = -1;
+        if (mentionPaletteEl) {
+            mentionPaletteEl.style.display = 'none';
+            mentionPaletteEl.innerHTML = '';
+        }
+    }
+
+    function closeMentionPalette() {
+        if (mentionFetchTimer) {
+            clearTimeout(mentionFetchTimer);
+            mentionFetchTimer = null;
+        }
+        hideMentionPalette();
+        mentionQuery = '';
+        mentionMatches = [];
+        setMentionArmed(false);
+    }
+
+    function fetchMentionables(query, cb) {
+        getBridge(function (bridge) {
+            if (!bridge || !bridge.listMentionables) {
+                cb([]);
+                return;
+            }
+            var q = query || '';
+            var isWebKit = document.documentElement.getAttribute('data-zenvi-webkit') === '1';
+            function parse(raw) {
+                try {
+                    if (typeof raw === 'string') return JSON.parse(raw || '[]');
+                    if (Array.isArray(raw)) return raw;
+                } catch (e) {}
+                return [];
+            }
+            if (isWebKit || !window.qt || !window.qt.webChannelTransport) {
+                try { cb(parse(bridge.listMentionables(q))); }
+                catch (e) { cb([]); }
+                return;
+            }
+            try {
+                bridge.listMentionables(q, function (raw) { cb(parse(raw)); });
+            } catch (e) {
+                try { cb(parse(bridge.listMentionables(q))); }
+                catch (e2) { cb([]); }
+            }
+        });
+    }
+
+    function renderMentionPalette() {
+        var el = ensureMentionPaletteEl();
+        if (!el) return;
+        if (!mentionMatches.length) {
+            el.innerHTML = '<div class="chat-command-empty">No project files</div>';
+            mentionActiveIndex = -1;
+            return;
+        }
+        if (mentionActiveIndex < 0 || mentionActiveIndex >= mentionMatches.length) {
+            mentionActiveIndex = 0;
+        }
+        var html = '';
+        for (var i = 0; i < mentionMatches.length; i++) {
+            var item = mentionMatches[i];
+            var active = i === mentionActiveIndex;
+            html += '<button type="button" class="chat-mention-item' + (active ? ' active' : '') + '"'
+                + ' role="option" aria-selected="' + (active ? 'true' : 'false') + '"'
+                + ' data-index="' + i + '">'
+                + '<span class="chat-mention-kind">' + escapeHtml(item.kind || 'file') + '</span>'
+                + '<span class="chat-mention-name">' + escapeHtml(item.name || '') + '</span>'
+                + '</button>';
+        }
+        el.innerHTML = html;
+        el.onclick = function (ev) {
+            var btn = ev.target && ev.target.closest ? ev.target.closest('.chat-mention-item') : null;
+            if (!btn) return;
+            var idx = parseInt(btn.getAttribute('data-index') || '-1', 10);
+            if (!isNaN(idx)) selectMentionIndex(idx);
+        };
+    }
+
+    function openMentionPalette(query) {
+        var el = ensureMentionPaletteEl();
+        if (!el) return;
+        mentionPaletteOpen = true;
+        mentionQuery = query || '';
+        setMentionArmed(true);
+        el.style.display = 'block';
+        if (mentionFetchTimer) clearTimeout(mentionFetchTimer);
+        mentionFetchTimer = setTimeout(function () {
+            fetchMentionables(mentionQuery, function (list) {
+                mentionMatches = list || [];
+                renderMentionPalette();
+            });
+        }, 40);
+    }
+
+    function replaceMentionToken(name) {
+        if (!inputEl) return;
+        var val = inputEl.value || '';
+        var cursor = typeof inputEl.selectionStart === 'number' ? inputEl.selectionStart : val.length;
+        var q = mentionQueryAtCursor(val, cursor);
+        var token = '@' + name + ' ';
+        if (q) {
+            inputEl.value = val.slice(0, q.start) + token + val.slice(cursor);
+            var pos = q.start + token.length;
+            try { inputEl.setSelectionRange(pos, pos); } catch (e) {}
+        } else {
+            inputEl.value = (val ? val.replace(/\s*$/, ' ') : '') + token;
+        }
+        try { inputEl.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
+        adjustTextareaHeight();
+        inputEl.focus();
+    }
+
+    function selectMentionIndex(idx) {
+        if (!mentionMatches.length) return;
+        var safeIdx = Math.max(0, Math.min(idx, mentionMatches.length - 1));
+        var item = mentionMatches[safeIdx];
+        if (!item) return;
+        replaceMentionToken(item.name || '');
+        closeMentionPalette();
+        getBridge(function (bridge) {
+            if (bridge && bridge.addMention && item.file_id) {
+                bridge.addMention(String(item.file_id));
+            }
+        });
+    }
+
+    function maybeUpdateMentionPalette() {
+        if (!inputEl) {
+            closeMentionPalette();
+            return;
+        }
+        var val = inputEl.value || '';
+        var cursor = typeof inputEl.selectionStart === 'number' ? inputEl.selectionStart : val.length;
+        var q = mentionQueryAtCursor(val, cursor);
+        if (!q) {
+            if (mentionPaletteOpen) closeMentionPalette();
+            else setMentionArmed(false);
+            return;
+        }
+        openMentionPalette(q.query);
+    }
+
+    window.insertChatMention = function (token, mode) {
+        if (!inputEl || !token) return;
+        var name = String(token).replace(/^@/, '');
+        if (mode === 'replace' || mentionPaletteOpen) {
+            replaceMentionToken(name);
+            closeMentionPalette();
+            return;
+        }
+        var val = inputEl.value || '';
+        var tokenText = '@' + name;
+        if (val.indexOf(tokenText) !== -1) return;
+        inputEl.value = (val && !/\s$/.test(val) ? val + ' ' : val) + tokenText + ' ';
+        try { inputEl.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
+        adjustTextareaHeight();
+    };
+
     function removePlaceholder() {
         const ph = messagesEl.querySelector('.chat-placeholder');
         if (ph) ph.remove();
@@ -256,16 +505,30 @@
         return el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
     }
 
+    // Pinned state is sampled when the list scrolls, i.e. before new content
+    // lands. Measuring only after an append treats any reply taller than the
+    // threshold as "the user scrolled away" and leaves it below the fold.
+    var pinnedToBottom = true;
+    if (messagesEl) {
+        messagesEl.addEventListener('scroll', function () {
+            pinnedToBottom = isPinnedToBottom(messagesEl);
+        });
+    }
+
     function scrollToBottomIfPinned() {
-        if (messagesEl && isPinnedToBottom(messagesEl)) {
+        if (messagesEl && (pinnedToBottom || isPinnedToBottom(messagesEl))) {
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
     }
+    // Resizing / floating the dock must not strand the newest message.
+    window.addEventListener('resize', scrollToBottomIfPinned);
 
     function openThinkingBlock() {
         if (thinkingBlockEl) return;
         thinkingBlockCollapsed = false;
         firstAnswerTokenReceived = false;
+        thinkingBlockStartedAt = Date.now();
+        proseCommittedBelowThinking = false;
         thinkingBlockEl = document.createElement('div');
         thinkingBlockEl.className = 'chat-thinking-block expanded';
         thinkingBlockHeader = document.createElement('button');
@@ -314,6 +577,36 @@
     }
 
     window.collapseThinkingBlock = collapseThinkingBlock;
+
+    function thinkingElapsedMs() {
+        var since = thinkingBlockStartedAt || processingStartTime;
+        return since ? (Date.now() - since) : 0;
+    }
+
+    // Close out the current Thinking block so the next one can open further
+    // down the transcript. A still-open block with nothing in it is removed
+    // (same rule as end of turn); anything else collapses to its "Thought for
+    // Ns" summary. Finished tool blocks stay registered so a late
+    // completeToolBlock can still find them.
+    function retireThinkingBlock() {
+        if (!thinkingBlockEl) return;
+        var hasTools = thinkingBlockBody && thinkingBlockBody.querySelector('.chat-tool-block');
+        var hasSteps = activitySteps.length > 0;
+        if (!hasTools && !hasSteps && !thinkingBlockCollapsed) {
+            if (thinkingBlockEl.parentNode) thinkingBlockEl.remove();
+        } else {
+            collapseThinkingBlock(thinkingElapsedMs());
+        }
+        thinkingBlockEl = null;
+        thinkingBlockBody = null;
+        thinkingBlockHeader = null;
+        thinkingBlockCollapsed = false;
+        thinkingBlockStartedAt = null;
+        proseCommittedBelowThinking = false;
+        activityContainer = null;
+        activitySteps = [];
+        currentReasoningStep = null;
+    }
 
     function setInputIdle(idle) {
         const container = document.querySelector('.chat-container');
@@ -453,8 +746,7 @@
         if (!firstAnswerTokenReceived) {
             firstAnswerTokenReceived = true;
             clearReasoningStep();
-            var elapsed = processingStartTime ? (Date.now() - processingStartTime) : 0;
-            collapseThinkingBlock(elapsed);
+            collapseThinkingBlock(thinkingElapsedMs());
         }
         if (!streamingMessageEl) {
             streamingMessageEl = document.createElement('div');
@@ -471,10 +763,40 @@
         }
     };
 
+    // Freeze the prose streamed so far as a finished bubble. The next token
+    // starts a new bubble below whatever tool activity comes in between, so
+    // one turn reads: text, tools, text, tools, text.
+    window.commitStreamingSegment = function (bodyHtml) {
+        if (streamFlushScheduled) flushStreamingBuffer();
+        if (!streamingMessageEl) {
+            if (!bodyHtml) return;
+            // Tokens were withheld while tools ran; paint the segment now.
+            removePlaceholder();
+            streamingMessageEl = document.createElement('div');
+            streamingMessageEl.className = 'chat-message chat-message-enter';
+            streamingMessageEl.innerHTML = '<div class="chat-message-body"></div>';
+            messagesEl.appendChild(streamingMessageEl);
+        }
+        var body = streamingMessageEl.querySelector('.chat-message-body');
+        if (body && bodyHtml) body.innerHTML = bodyHtml;
+        streamingMessageEl.classList.remove('chat-message-streaming');
+        streamingMessageEl = null;
+        streamingBuffer = '';
+        streamMdEl = null;
+        streamFlushScheduled = false;
+        if (thinkingBlockEl) proseCommittedBelowThinking = true;
+        scrollToBottomIfPinned();
+    };
+
     window.reopenThinkingForTools = function () {
-        // Pre-tool tokens collapsed thinking early — reopen while tools run.
+        // Tools are starting (again). If prose was already frozen under the
+        // current Thinking block, that block is finished: retire it and open
+        // a new one after the prose so the order on screen matches the turn.
         firstAnswerTokenReceived = false;
         streamingSuppressed = false;
+        if (thinkingBlockEl && proseCommittedBelowThinking) {
+            retireThinkingBlock();
+        }
         if (thinkingBlockEl) {
             thinkingBlockCollapsed = false;
             thinkingBlockEl.classList.add('expanded');
@@ -709,10 +1031,77 @@
         scrollToBottomIfPinned();
     };
 
+    /* A tool that failed because nobody is signed in gets a Sign in button right there (the browser opens the website
+       sign-in; the app comes back to the front when it finishes), then a Continue button to carry on. */
+    var AUTH_FAILURE_RE = /login required|unauthori[sz]ed|not authenticated|sign in to zenvi/i;
+    var signInPrompts = [];
+
+    function addSignInPrompt(block) {
+        if (!block || block.signIn) return;
+        var row = document.createElement('div');
+        row.className = 'chat-signin-row';
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'chat-signin-btn';
+        btn.textContent = 'Sign in';
+        var status = document.createElement('span');
+        status.className = 'chat-signin-status';
+        row.appendChild(btn);
+        row.appendChild(status);
+        block.el.appendChild(row);
+        block.signIn = { row: row, btn: btn, status: status };
+        signInPrompts.push(block.signIn);
+        btn.addEventListener('click', function () {
+            if (btn.getAttribute('data-mode') === 'continue') {
+                btn.disabled = true;
+                getBridge(function (bridge) {
+                    if (bridge) bridge.sendMessage('I have signed in. Please continue where you left off.', modelSelect.value || '', currentAgentMode);
+                });
+                return;
+            }
+            btn.disabled = true;
+            btn.textContent = 'Opening browser\u2026';
+            status.textContent = 'Finish signing in on the Zenvi website. This returns here by itself.';
+            status.className = 'chat-signin-status';
+            getBridge(function (bridge) {
+                if (bridge && bridge.signInZenvi) bridge.signInZenvi();
+            });
+        });
+        scrollToBottomIfPinned();
+    }
+
+    window.onZenviSignInResult = function (ok, email) {
+        signInPrompts.forEach(function (p) {
+            if (!p.btn.isConnected) return;
+            if (ok) {
+                p.status.textContent = 'Signed in' + (email ? ' as ' + email : '') + '.';
+                p.status.className = 'chat-signin-status ok';
+                p.btn.textContent = 'Continue';
+                p.btn.setAttribute('data-mode', 'continue');
+                p.btn.disabled = false;
+            } else {
+                p.status.textContent = 'Sign-in was not finished.';
+                p.status.className = 'chat-signin-status error';
+                p.btn.textContent = 'Sign in';
+                p.btn.removeAttribute('data-mode');
+                p.btn.disabled = false;
+            }
+        });
+    };
+
     window.completeToolBlock = function (callId, ok, summary) {
         var block = toolBlocks[callId];
         if (block && block.el) {
             block.el.classList.remove('running');
+            // This tool's own result only: block.lines also holds log records that
+            // concurrent tools share, and another tool's login error must not
+            // give this one a Sign in button.
+            var ownResult = (block.lines || []).filter(function (l) {
+                return String(l).indexOf('RESULT:') === 0;
+            }).join('\n');
+            if (!ok && AUTH_FAILURE_RE.test(String(summary || '') + '\n' + ownResult)) {
+                addSignInPrompt(block);
+            }
             if (!ok) {
                 // Keep failed tools visible so args/results can be inspected.
                 block.el.classList.add('error', 'has-logs');
@@ -792,7 +1181,7 @@
                 }
             });
             if (!firstAnswerTokenReceived && thinkingBlockEl && processingStartTime) {
-                collapseThinkingBlock(Date.now() - processingStartTime);
+                collapseThinkingBlock(thinkingElapsedMs());
             }
             window.resetStreamingMessage();
             if (thinkingBlockEl && thinkingBlockBody) {
@@ -809,6 +1198,8 @@
             activitySteps = [];
             toolBlocks = {};
             currentReasoningStep = null;
+            thinkingBlockStartedAt = null;
+            proseCommittedBelowThinking = false;
             if (processingStartTime) {
                 lastRunTimestamp = Date.now();
                 processingStartTime = null;
@@ -1288,7 +1679,9 @@
             const surf = vars['chat-surface'] || vars['chat-preamble-bg'] || bg;
             const muted = vars['chat-muted'] || vars['chat-placeholder'] || '#6b7280';
             const acc = vars['chat-accent'] || '#4d9cf6';
-            const codeBg = vars['chat-code-bg'] || '#252525';
+            // ponytail: "light" = bg hex starts c-f; read real luminance if a mid-tone theme appears.
+            const light = /^#[c-f]/i.test(bg);
+            const codeBg = vars['chat-code-bg'] || (light ? 'rgba(0,0,0,0.07)' : '#252525');
 
             document.body.style.background = bg;
             document.body.style.color = tx;
@@ -1303,12 +1696,12 @@
                 tabBar.style.background = bg;
                 tabBar.style.borderBottom = '1px solid ' + br;
             }
-            const preamble = document.getElementById('chat-preamble-label');
-            const preambleRow = preamble ? preamble.parentElement : null;
-            if (preambleRow) {
-                preambleRow.style.background = surf;
-                preambleRow.style.color = tx;
-            }
+            // Dark themes keep the dock's own #0d0d0d; a light theme (Retro) must
+            // not end up with dark panels under its dark text.
+            document.documentElement.style.setProperty('--chat-wk-bg', light ? bg : '#0d0d0d');
+            // Themes without their own surface colour (Retro, Humanity) otherwise
+            // keep the #0d0d0d boot default.
+            document.documentElement.style.setProperty('--chat-surface', surf);
             const glowInner = document.querySelector('.chat-input-glow-inner');
             if (glowInner) {
                 glowInner.style.background = inp;
@@ -1338,13 +1731,18 @@
     window.clearMessages = function () {
         typingEl = null;
         messagesEl.innerHTML = '';
+        // A new transcript (tab switch, restore) opens at its newest message,
+        // whatever the previous one was scrolled to.
+        pinnedToBottom = true;
     };
 
     function sendMessage() {
         const text = (inputEl.value || '').trim();
-        if (!text) return;
+        var attachments = window._chatAttachments || [];
+        if (!text && !attachments.length) return;
         exitIdle();
         closeCommandPalette();
+        closeMentionPalette();
         getBridge(function (bridge) {
             if (!bridge) return;
             bridge.sendMessage(text, modelSelect.value || '', currentAgentMode);
@@ -1732,6 +2130,41 @@
     }
 
     inputEl.addEventListener('keydown', function (e) {
+        if (mentionPaletteOpen) {
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (mentionMatches.length) {
+                    mentionActiveIndex = (mentionActiveIndex + 1) % mentionMatches.length;
+                    renderMentionPalette();
+                }
+                return;
+            }
+            if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (mentionMatches.length) {
+                    mentionActiveIndex = (mentionActiveIndex - 1 + mentionMatches.length) % mentionMatches.length;
+                    renderMentionPalette();
+                }
+                return;
+            }
+            if (e.key === 'Enter' || e.key === 'Tab') {
+                if (mentionMatches.length && mentionActiveIndex >= 0) {
+                    e.preventDefault();
+                    selectMentionIndex(mentionActiveIndex);
+                    return;
+                }
+                closeMentionPalette();
+                if (e.key === 'Tab') {
+                    e.preventDefault();
+                    return;
+                }
+            }
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                closeMentionPalette();
+                return;
+            }
+        }
         if (commandPaletteOpen) {
             var matches = getCommandMatches(commandQuery);
             if (e.key === 'ArrowDown') {
@@ -1780,11 +2213,18 @@
         var val = inputEl.value || '';
         adjustTextareaHeight();
         maybeUpdateCommandPaletteFromValue(val);
+        maybeUpdateMentionPalette();
         if (val.trim().length > 0) hideOverlay();
     });
 
     // Close command palette on outside click (but keep model menu behavior intact)
     document.addEventListener('mousedown', function (e) {
+        if (mentionPaletteOpen && mentionPaletteEl) {
+            var t = e.target;
+            if (!mentionPaletteEl.contains(t) && !inputEl.contains(t)) {
+                hideMentionPalette();
+            }
+        }
         if (!commandPaletteOpen || !commandPaletteEl) return;
         var t = e.target;
         if (commandPaletteEl.contains(t) || inputEl.contains(t)) return;
@@ -1807,6 +2247,20 @@
     if (inputOverlay) inputOverlay.classList.add('hidden');
     syncTextareaMaskForOverlay();
 
+    document.addEventListener('dragover', function (e) {
+        if (e.dataTransfer && e.dataTransfer.types) {
+            var types = Array.prototype.slice.call(e.dataTransfer.types);
+            if (types.indexOf('Files') !== -1) {
+                e.preventDefault();
+            }
+        }
+    }, true);
+    document.addEventListener('drop', function (e) {
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+            e.preventDefault();
+        }
+    }, true);
+
     getBridge(function (bridge) {
         if (bridge && bridge.ready) bridge.ready();
     });
@@ -1823,6 +2277,8 @@
             thinkingBlockBody = null;
             thinkingBlockHeader = null;
             thinkingBlockCollapsed = false;
+            thinkingBlockStartedAt = null;
+            proseCommittedBelowThinking = false;
             firstAnswerTokenReceived = false;
             window.resetStreamingMessage();
             overlayVisible = true;
@@ -1863,9 +2319,13 @@
     };
 
     function renderTabs() {
-        // Remove all existing tab buttons (keep the "+" button)
+        // Remove all existing tab buttons (keep the "+" button). Qt WebKit has
+        // no NodeList.forEach, so walk the collection with an index loop (same
+        // pattern as the model-list code above).
         var existing = tabBarEl.querySelectorAll('.chat-tab');
-        existing.forEach(function (el) { el.remove(); });
+        for (var ei = existing.length - 1; ei >= 0; ei--) {
+            existing[ei].remove();
+        }
 
         // Always show the tab bar so the "+" new chat button is visible (Cursor-style).
         tabBarEl.style.display = 'flex';
@@ -1894,8 +2354,13 @@
             btn.innerHTML = processingDot + badge + titleSpan + closeBtn;
 
             btn.addEventListener('click', function (e) {
-                if (e.target.classList.contains('chat-tab-close') || e.target.closest('.chat-tab-close')) {
-                    return; // handled by close button
+                // Clicks on the close control are handled by its own listener
+                // (which stops propagation). Walk parents by hand — Qt WebKit
+                // has no Element.closest.
+                var t = e.target;
+                while (t && t !== btn) {
+                    if (t.classList && t.classList.contains('chat-tab-close')) return;
+                    t = t.parentNode;
                 }
                 unreadSessions[tab.id] = false;
                 getBridge(function (bridge) {
@@ -1915,7 +2380,7 @@
                 });
             }
 
-            tabBarEl.insertBefore(btn, tabAddBtn);
+            tabBarEl.insertBefore(btn, document.getElementById('chat-tab-history') || tabAddBtn);
         });
     }
 
@@ -1927,6 +2392,62 @@
         });
     });
 
+    function openChatHistory() {
+        if (!historyOverlay) return;
+        historyOverlay.style.display = 'flex';
+        getBridge(function (bridge) {
+            if (bridge && bridge.getClosedSessions) bridge.getClosedSessions();
+        });
+    }
+
+    function closeChatHistory() {
+        if (historyOverlay) historyOverlay.style.display = 'none';
+    }
+
+    var historyBtn = document.getElementById('chat-tab-history');
+    if (historyBtn) {
+        historyBtn.addEventListener('click', openChatHistory);
+    }
+    if (historyClose) historyClose.addEventListener('click', closeChatHistory);
+    if (historyOverlay) {
+        historyOverlay.addEventListener('click', function (e) {
+            if (e.target === historyOverlay) closeChatHistory();
+        });
+    }
+
+    window.setClosedSessions = function (entriesJson) {
+        if (!historyListEl) return;
+        var entries = [];
+        try { entries = JSON.parse(entriesJson) || []; } catch (e) { entries = []; }
+        historyListEl.innerHTML = '';
+        if (!entries.length) {
+            var empty = document.createElement('div');
+            empty.className = 'chat-gap-log-empty';
+            empty.textContent = 'No previous chats.';
+            historyListEl.appendChild(empty);
+            return;
+        }
+        entries.forEach(function (entry) {
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'chat-history-entry';
+            var when = '';
+            if (entry.updated_at) {
+                try { when = new Date(entry.updated_at).toLocaleString(); } catch (err) { when = ''; }
+            }
+            btn.innerHTML =
+                '<span class="chat-history-entry-title">' + escapeHtml(entry.title || 'New Chat') + '</span>' +
+                (when ? '<span class="chat-history-entry-time">' + escapeHtml(when) + '</span>' : '');
+            btn.addEventListener('click', function () {
+                closeChatHistory();
+                getBridge(function (bridge) {
+                    if (bridge && bridge.reopenSession) bridge.reopenSession(entry.id);
+                });
+            });
+            historyListEl.appendChild(btn);
+        });
+    };
+
     // Populate the agent backend selector and react to changes. The hidden native
     // <select> stays the single source of truth (read by Python via QWebChannel).
     // The visible picker lives in the main window toolbar next to Save — see
@@ -1936,15 +2457,24 @@
     // CLI availability, keyed by backend id: {installed, version} | undefined (unknown yet).
     // Pushed from Python (windows.agent_runners.detect_cli) via window.setCliStatus.
     var cliStatus = {};
-    var CLI_BINARY_NAMES = { claude_code: 'claude', codex: 'codex' };
+
+    function findBackend(id) {
+        return backendItems.find(function (b) { return b.id === id; });
+    }
 
     function findBackendName(id) {
-        var item = backendItems.find(function (b) { return b.id === id; });
+        var item = findBackend(id);
         return item ? item.name : (id || 'Zenvi Assistant');
     }
 
+    // Python's backend list names each CLI agent's executable (agent_runners.CLI_RUNNERS).
+    function cliBinaryName(id) {
+        var item = findBackend(id);
+        return item && item.cli ? item.cli : '';
+    }
+
     function isCliBackend(id) {
-        return id === 'claude_code' || id === 'codex';
+        return !!cliBinaryName(id);
     }
 
     // Empty state (calm, not an error) shown instead of messages when the active
@@ -1963,7 +2493,7 @@
             cliEmptyStateEl.removeAttribute('data-connect-for');
             cliEmptyStateEl.innerHTML = '<div>' + escapeHtml(
                 findBackendName(id) + " CLI not found. Install it and make sure '" +
-                (CLI_BINARY_NAMES[id] || id) + "' is on your PATH, then try again."
+                (cliBinaryName(id) || id) + "' is on your PATH, then try again."
             ) + '</div>';
             cliEmptyStateEl.style.display = 'flex';
             messagesEl.style.display = 'none';
@@ -2030,7 +2560,7 @@
         var list = [];
         try { list = JSON.parse(backendsJson); } catch (e) { list = []; }
         backendItems = list.map(function (b) {
-            return { id: b.id || '', name: b.name || b.id || '' };
+            return { id: b.id || '', name: b.name || b.id || '', cli: b.cli || '' };
         });
         var current = backendSelect.value;
         backendSelect.innerHTML = '';
@@ -2041,6 +2571,9 @@
             backendSelect.appendChild(opt);
         });
         if (current) backendSelect.value = current;
+        // Which backends are CLIs comes from this list, and CLI status can
+        // land before it does.
+        updateCliEmptyState();
     };
 
     if (backendSelect) {

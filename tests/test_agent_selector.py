@@ -1,7 +1,7 @@
 """Toolbar agent selector: the flow button and its popup panel.
 
 These pin the invariants that are cheap to assert and expensive to notice
-breaking by eye — stable toolbar width, exact CSS easing, a popup that cannot
+breaking by eye ΓÇö stable toolbar width, exact CSS easing, a popup that cannot
 resize or escape the screen, and the held state that survives the mouse grab
 a Qt.Popup takes when it opens.
 """
@@ -11,7 +11,9 @@ import sys
 
 import pytest
 
-pytest.importorskip("PyQt5.QtCore")
+from _qt_support import skip_without_pyqt5  # noqa: E402
+
+skip_without_pyqt5()
 from PyQt5.QtCore import QPoint, QRect, Qt  # noqa: E402
 from PyQt5.QtWidgets import QApplication, QMainWindow  # noqa: E402
 
@@ -29,13 +31,14 @@ def qapp():
 
 
 class FakeChat:
-    """Stands in for AIChatWindow — the panel and button only read this much."""
+    """Stands in for AIChatWindow ΓÇö the panel and button only read this much."""
 
     def __init__(self, status=None, active=CLAUDE):
         self.status = status if status is not None else {}
         self.active = active
         self.detects = 0
         self.connects = []
+        self.shown = 0
 
     def active_backend(self):
         return self.active
@@ -51,6 +54,12 @@ class FakeChat:
 
     def _connect_cli(self, backend_id):
         self.connects.append(backend_id)
+
+    def show(self):
+        self.shown += 1
+
+    def raise_(self):
+        pass
 
 
 def _window(chat):
@@ -69,11 +78,11 @@ MISSING = {
 }
 
 
-# ── Easing ─────────────────────────────────────────────────────────────────
+# ΓöÇΓöÇ Easing ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 def test_easing_curves_match_the_css_including_overshoot(qapp):
     """The whole motion design rests on Qt reproducing cubic-bezier() exactly,
-    overshoot included — a clamped curve would silently flatten the arrows."""
+    overshoot included ΓÇö a clamped curve would silently flatten the arrows."""
     from windows.agent_selector_button import (
         CURVE_ARROW, CURVE_INK, CURVE_LABEL, CURVE_RADIUS,
     )
@@ -101,7 +110,7 @@ def test_only_the_monotonic_curve_is_ever_inverted(qapp):
             target, abs=1e-3)
 
 
-# ── Button ─────────────────────────────────────────────────────────────────
+# ΓöÇΓöÇ Button ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 def test_width_is_identical_for_every_backend_name(qapp):
     """Otherwise picking "Codex" after "Zenvi Assistant" reflows the toolbar."""
@@ -190,7 +199,19 @@ def test_label_follows_the_active_tab(qapp):
     assert button.text() == "Claude Code"
 
 
-# ── Panel ──────────────────────────────────────────────────────────────────
+def test_choosing_an_agent_brings_a_closed_chat_back(qapp):
+    """Closing the chat's last tab hides its dock; the toolbar is the way back."""
+    from windows.agent_selector_button import AgentSelectorButton
+
+    chat = FakeChat(CONNECTED, active=CLAUDE)
+    button = AgentSelectorButton(_window(chat))
+    button._choose(CODEX)
+    assert chat.active == CODEX
+    assert chat.shown == 1
+    assert button.text() == "Codex"
+
+
+# ΓöÇΓöÇ Panel ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 def _panel(chat):
     from windows.agent_panel import AgentPanel
@@ -201,7 +222,7 @@ def _panel(chat):
 
 
 def test_panel_height_never_changes_between_states(qapp):
-    """It is a popup under the cursor — resizing while open would move the rows
+    """It is a popup under the cursor ΓÇö resizing while open would move the rows
     out from under the pointer."""
     heights = set()
 
@@ -238,6 +259,126 @@ def test_panel_reports_each_status(qapp):
     # The built-in assistant is always ready and never offers Connect.
     assert panel._rows["zenvi"].word.text() == "ready"
     assert not panel._rows["zenvi"].action.isVisible()
+
+
+def test_every_cli_backend_comes_from_the_runner_registry(qapp):
+    """One CLI_RUNNERS entry is all a new agent CLI needs on this side."""
+    from windows.agent_panel import CLI_BINARIES
+    from windows.agent_runners import CLI_RUNNERS
+    from windows.ai_chat_ui import BACKENDS
+
+    assert [b["id"] for b in BACKENDS] == ["zenvi", "claude_code", "codex", "cursor_cli",
+                                           "opencode", "hermes"]
+    for row in BACKENDS[1:]:
+        runner = CLI_RUNNERS[row["id"]]
+        assert row == {"id": runner.BACKEND_ID, "name": runner.DISPLAY_NAME,
+                       "cli": runner.CLI_NAME}
+        assert callable(runner.register)
+    assert "cli" not in BACKENDS[0], "the built-in assistant is not a CLI"
+    assert CLI_BINARIES == {b: r.CLI_NAME for b, r in CLI_RUNNERS.items()}
+    # chat.js reads the executable and CLI-ness from that list.
+    source = open(os.path.join(os.path.dirname(__file__), "..", "src", "chat_ui",
+                               "chat.js"), encoding="utf-8").read()
+    assert "claude_code" not in source and "cursor_cli" not in source
+
+
+def test_cursor_cli_row_follows_install_and_connect_status(qapp):
+    """Cursor CLI is a selectable backend with the same status dots as Codex."""
+    from windows.ai_chat_ui import BACKENDS
+
+    assert any(b["id"] == "cursor_cli" and b["name"] == "Cursor CLI" for b in BACKENDS)
+
+    connected = {
+        "cursor_cli": {"installed": True, "version": "2026.09.10", "registered": True},
+    }
+    panel = _panel(FakeChat(connected, active="cursor_cli"))
+    assert panel._rows["cursor_cli"].word.text() == "connected"
+    assert "2026.09.10" in panel._rows["cursor_cli"].desc.text()
+
+    missing = {"cursor_cli": {"installed": False, "version": None, "registered": False}}
+    panel = _panel(FakeChat(missing))
+    assert panel._rows["cursor_cli"].word.text() == "not installed"
+    assert "cursor-agent" in panel._rows["cursor_cli"].desc.text()
+
+    unregistered = {
+        "cursor_cli": {"installed": True, "version": "2026.09.10", "registered": False},
+    }
+    panel = _panel(FakeChat(unregistered))
+    assert panel._rows["cursor_cli"].word.text() == "not connected"
+    assert panel._rows["cursor_cli"].action.isVisible() or not panel.isVisible()
+
+
+def test_footer_points_at_the_model_pill_only_when_it_has_models(qapp, monkeypatch):
+    """Codex has no list until the backend serves one, so its own config picks
+    the model; Cursor always offers at least "CLI default"."""
+    import windows.agent_runners as ar
+    monkeypatch.setattr(ar, "_cli_lineups", {})
+    ar.set_live_lineups({})
+    try:
+        assert "own config" in _panel(FakeChat(CONNECTED, active=CODEX)).footer.text()
+        ar.set_live_lineups({CODEX: [{"id": "gpt-5.3-codex", "name": "GPT-5.3 Codex"}]})
+        assert "chat panel" in _panel(FakeChat(CONNECTED, active=CODEX)).footer.text()
+    finally:
+        ar.set_live_lineups({})
+    connected = {"cursor_cli": {"installed": True, "version": "2026.09.18", "registered": True}}
+    assert "chat panel" in _panel(FakeChat(connected, active="cursor_cli")).footer.text()
+    assert "chat panel" in _panel(FakeChat(CONNECTED, active=CLAUDE)).footer.text()
+
+
+def test_opencode_row_follows_install_and_connect_status(qapp):
+    """OpenCode is a selectable backend with the same status dots as Codex."""
+    from windows.ai_chat_ui import BACKENDS
+
+    assert any(b["id"] == "opencode" and b["name"] == "OpenCode" for b in BACKENDS)
+
+    connected = {"opencode": {"installed": True, "version": "1.18.32", "registered": True}}
+    panel = _panel(FakeChat(connected, active="opencode"))
+    assert panel._rows["opencode"].word.text() == "connected"
+    assert "1.18.32" in panel._rows["opencode"].desc.text()
+    assert "chat panel" in panel.footer.text(), "OpenCode always offers CLI default"
+
+    missing = {"opencode": {"installed": False, "version": None, "registered": False}}
+    panel = _panel(FakeChat(missing))
+    assert panel._rows["opencode"].word.text() == "not installed"
+    assert "opencode" in panel._rows["opencode"].desc.text()
+
+    unregistered = {"opencode": {"installed": True, "version": "1.18.32", "registered": False}}
+    panel = _panel(FakeChat(unregistered))
+    assert panel._rows["opencode"].word.text() == "not connected"
+
+
+def test_connecting_an_agent_does_not_select_it(qapp):
+    """Seen in the app: after Connect on OpenCode, its radio and the active
+    agent's were both filled until the next status refresh."""
+    panel = _panel(FakeChat(CONNECTED, active=CLAUDE))
+    panel._on_connect_requested(CODEX)
+    panel.on_connect_result(CODEX, True, "Updated config.toml. Before running codex, run:\nexport X=1")
+    assert panel._rows[CODEX].word.text() == "connected"
+    assert panel._rows[CODEX].property("selected") is False
+    assert panel._rows[CLAUDE].property("selected") is True
+
+
+def test_hermes_row_follows_install_and_connect_status(qapp):
+    """Hermes is a selectable backend with the same status dots as Codex."""
+    from windows.ai_chat_ui import BACKENDS
+
+    assert any(b["id"] == "hermes" and b["name"] == "Hermes" for b in BACKENDS)
+
+    connected = {"hermes": {"installed": True, "registered": True,
+                            "version": "Hermes Agent v0.15.2 (2026.5.29.2)\nProject: /x"}}
+    panel = _panel(FakeChat(connected, active="hermes"))
+    assert panel._rows["hermes"].word.text() == "connected"
+    assert "v0.15.2" in panel._rows["hermes"].desc.text()
+    assert "chat panel" in panel.footer.text(), "Hermes always offers CLI default"
+
+    missing = {"hermes": {"installed": False, "version": None, "registered": False}}
+    panel = _panel(FakeChat(missing))
+    assert panel._rows["hermes"].word.text() == "not installed"
+    assert "hermes" in panel._rows["hermes"].desc.text()
+
+    unregistered = {"hermes": {"installed": True, "version": "0.15.2", "registered": False}}
+    panel = _panel(FakeChat(unregistered))
+    assert panel._rows["hermes"].word.text() == "not connected"
 
 
 def test_selected_row_tracks_the_active_backend(qapp):
@@ -326,13 +467,13 @@ def test_tool_count_is_computed_not_hard_coded(qapp):
     assert _editor_tool_count() == len(AGENT_TOOL_HANDLERS)
 
 
-# ── Shutdown guard ─────────────────────────────────────────────────────────
+# ΓöÇΓöÇ Shutdown guard ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 def test_getattr_on_a_deleted_widget_raises(qapp):
     """The premise of the closeEvent guard.
 
     getattr(obj, name, default) does NOT swallow the RuntimeError sip raises for
-    a destroyed C++ object — it propagates. main_window.closeEvent relied on the
+    a destroyed C++ object ΓÇö it propagates. main_window.closeEvent relied on the
     default and so aborted mid-shutdown, skipping thread teardown (including the
     agent CLI subprocesses) and killing the process with
     "QThread: Destroyed while thread is still running".
@@ -359,12 +500,18 @@ def test_close_event_guards_the_timeline_shutdown(qapp):
 
     path = os.path.join(os.path.dirname(__file__), "..", "src", "windows", "main_window.py")
     source = open(path).read()
-    body = source[source.index("def closeEvent"):]
+    # Thumbnail shutdown lives in _shutdown_sequence, which closeEvent always calls.
+    body = source[source.index("def _shutdown_sequence"):]
     body = body[:body.index("\n    def ", 1)]
 
     call = body.index("thumbnail_manager.shutdown()")
     before = body[:call]
     guard = before.rindex("try:")
     assert "except" in body[call:], "thumbnail shutdown is not inside a try/except"
-    assert re.search(r"try:\s*\n\s+timeline_widget = getattr", before[guard:]), \
-        "the getattr that raises must itself be inside the try"
+    # Other statements may open the block (the qt_api isdeleted import does),
+    # as long as every line up to the getattr is indented under the try.
+    line_start = before.rindex("\n", 0, guard) + 1
+    assert re.match(
+        r"([ \t]*)try:[ \t]*\n(?:\1[ \t][^\n]*\n|\n)*?\1[ \t]+timeline_widget = getattr",
+        before[line_start:],
+    ), "the getattr that raises must itself be inside the try"

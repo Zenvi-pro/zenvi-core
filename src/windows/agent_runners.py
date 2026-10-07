@@ -3,10 +3,10 @@
 Each runner is a ``QObject`` worker (moved onto a ``QThread`` by
 ``AIChatWindow._make_worker``) that exposes the *same* six signals and the
 ``run_request(...)`` / ``clear_session()`` slots as the built-in
-``AIChatWorker`` — so the existing chat rendering works unchanged regardless of
+``AIChatWorker`` ΓÇö so the existing chat rendering works unchanged regardless of
 which backend produced the events.
 
-The CLI runners (Claude Code, Codex) spawn the agent CLI as a headless
+The CLI runners (Claude Code, Codex, Cursor CLI) spawn the agent CLI as a headless
 subprocess in streaming-JSON mode and point it at the in-app MCP server
 (:mod:`classes.agent_mcp_server`) so the agent can drive the editor using the
 same tools the built-in assistant uses. They keep their own file/shell/web
@@ -15,16 +15,21 @@ tools too (full agent abilities).
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
+import sys
+import threading
+import time
 import uuid
 
-from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
+from qt_api import QObject, pyqtSignal, pyqtSlot
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +37,9 @@ log = logging.getLogger(__name__)
 # Backend identifiers (kept in sync with ai_chat_ui constants).
 BACKEND_CLAUDE = "claude_code"
 BACKEND_CODEX = "codex"
+BACKEND_CURSOR = "cursor_cli"
+BACKEND_OPENCODE = "opencode"
+BACKEND_HERMES = "hermes"
 
 
 # Models offered in the chat model picker per backend, in menu order. ``id`` is
@@ -39,16 +47,106 @@ BACKEND_CODEX = "codex"
 # full model name or a latest-alias ("opus", "sonnet"), and we use full names so
 # the picker keeps meaning the same model after a new release ships.
 #
+# The lineup the user sees comes from the Zenvi backend's ``GET /models/cli``
+# whenever it has answered (``set_live_lineups``): the backend builds it from
+# each provider's live model list, so a release shows up in the picker the
+# next time it refreshes, with no desktop update.  Each runner's ``MODELS`` is
+# the built-in fallback for when the backend is unreachable or too old to
+# serve the route.
+#
 # A backend with an empty list hides the model pill and lets the CLI use
-# whatever its own config selects — that is the case for Codex, whose model
-# lineup we do not track here.
+# whatever its own config selects. Codex's built-in list is empty because we
+# do not track the OpenAI lineup here; the live one fills it in.
+_live_lineups: dict = {}
+_live_lineups_lock = threading.Lock()
+
+_PICKER_KEYS = ("id", "name", "provider", "featured", "rank", "tags", "default")
+
+
+def _clean_lineup(rows) -> list:
+    """Keep only well-formed picker entries; the backend payload is data."""
+    out = []
+    seen = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        mid = row.get("id")
+        if not isinstance(mid, str) or not mid or mid in seen:
+            continue
+        seen.add(mid)
+        entry = {k: row[k] for k in _PICKER_KEYS if k in row}
+        entry.setdefault("name", mid)
+        out.append(entry)
+    return out
+
+
+def set_live_lineups(lineups: dict) -> None:
+    """Install the backend-served lineups (``{backend_id: [entries]}``).
+
+    An empty or missing list for a backend means "nothing to offer", and the
+    built-in list takes over for it; passing ``{}`` clears everything.
+    """
+    cleaned = {}
+    for backend, rows in (lineups or {}).items():
+        rows = _clean_lineup(rows)
+        if rows:
+            cleaned[backend] = rows
+    with _live_lineups_lock:
+        _live_lineups.clear()
+        _live_lineups.update(cleaned)
+
+
+def live_lineup_for(backend: str) -> list:
+    """The backend-served list for *backend*, or ``[]`` when none has landed."""
+    with _live_lineups_lock:
+        return [dict(m) for m in _live_lineups.get(backend, [])]
+
+
+# The picker entry that passes no --model, so the CLI's own config decides
+# (issue #136: a clear choice instead of a hidden pill).
+CLI_DEFAULT_MODEL_ID = "cli-default"
+
+
+def _cli_default_entry(uses: str = "") -> dict:
+    """"CLI default", tagged with the model the CLI says it would use."""
+    entry = {"id": CLI_DEFAULT_MODEL_ID, "name": "CLI default", "rank": 0,
+             "featured": True, "default": True}
+    if uses:
+        entry["tags"] = [uses]
+    return entry
+
+
+# Lineups a CLI reported about itself (``cursor-agent models``), for a backend
+# whose models depend on the user's account. The backend's lineup still wins.
+_cli_lineups: dict = {}
+
+
+def set_cli_lineup(backend: str, rows) -> bool:
+    """Install what *backend*'s CLI listed; True when that changed the list.
+
+    An empty list is ignored so a failed read keeps the previous lineup.
+    """
+    rows = _clean_lineup(rows)
+    if not rows:
+        return False
+    with _live_lineups_lock:
+        if _cli_lineups.get(backend) == rows:
+            return False
+        _cli_lineups[backend] = rows
+    return True
+
+
 def models_for_backend(backend: str) -> list:
     """Model-picker entries for *backend* (see ``setModels`` in chat.js)."""
-    if backend == BACKEND_CLAUDE:
-        return [dict(m) for m in ClaudeCodeRunner.MODELS]
-    if backend == BACKEND_CODEX:
-        return [dict(m) for m in CodexRunner.MODELS]
-    return []
+    live = live_lineup_for(backend)
+    if live:
+        return live
+    with _live_lineups_lock:
+        listed = [dict(m) for m in _cli_lineups.get(backend, [])]
+    if listed:
+        return listed
+    runner = CLI_RUNNERS.get(backend)
+    return [dict(m) for m in runner.MODELS] if runner else []
 
 
 def _resolved_home() -> str:
@@ -70,7 +168,7 @@ def _cli_install_dirs() -> list:
 
     Codex's Windows installer puts ``codex.exe`` under
     ``~/.codex/packages/standalone/current/bin`` and does *not* always add
-    that folder to PATH — so ``shutil.which("codex")`` fails even when the
+    that folder to PATH ΓÇö so ``shutil.which("codex")`` fails even when the
     CLI is installed and logged in.
     """
     home = _resolved_home()
@@ -78,17 +176,179 @@ def _cli_install_dirs() -> list:
     if home:
         dirs.append(os.path.join(home, ".local", "bin"))
         dirs.append(os.path.join(home, ".codex", "packages", "standalone", "current", "bin"))
+        # OpenCode's official install script.
+        dirs.append(os.path.join(home, ".opencode", "bin"))
     appdata = os.environ.get("APPDATA") or (
         os.path.join(home, "AppData", "Roaming") if home else ""
     )
     if appdata:
         dirs.append(os.path.join(appdata, "npm"))
+    # nvm-windows keeps npm globals in its node folder, not %APPDATA%/npm.
+    if os.environ.get("NVM_SYMLINK"):
+        dirs.append(os.environ["NVM_SYMLINK"])
     local = os.environ.get("LOCALAPPDATA") or (
         os.path.join(home, "AppData", "Local") if home else ""
     )
     if local:
         dirs.append(os.path.join(local, "Microsoft", "WinGet", "Links"))
     return dirs
+
+
+def _in_cursor_install(path: str) -> bool:
+    """True if *path* is, or links to, a file inside a Cursor agent install."""
+    folders = re.split(r"[\\/]", os.path.dirname(os.path.realpath(path)))
+    return "cursor-agent" in (f.lower() for f in folders)
+
+
+def _cursor_cli_candidates() -> list:
+    """Where the Cursor installers put the CLI, for when it is not on PATH.
+
+    macOS/Linux: ``~/.local/bin/{cursor-agent,agent}``, symlinks into
+    ``~/.local/share/cursor-agent/versions/<version>/``. Windows:
+    ``%LOCALAPPDATA%\\cursor-agent\\{cursor-agent,agent}.cmd``. A GUI app's
+    PATH often has neither folder. (The ``.ps1`` launchers beside the
+    ``.cmd`` ones are left out: Popen cannot start a PowerShell script.)
+    """
+    home = _resolved_home()
+    out = []
+    if home:
+        out.append(os.path.join(home, ".local", "bin", "cursor-agent"))
+        out.append(os.path.join(home, ".local", "bin", "agent"))
+    local = os.environ.get("LOCALAPPDATA") or (
+        os.path.join(home, "AppData", "Local") if home else ""
+    )
+    if local:
+        root = os.path.join(local, "cursor-agent")
+        out += [os.path.join(root, name) for name in (
+            "cursor-agent.cmd", "cursor-agent.exe", "agent.cmd", "agent.exe")]
+    if home:
+        # The ~/.local/bin links are gone but a version is still installed;
+        # version folders are named by date, so the newest sorts last.
+        versions = os.path.join(home, ".local", "share", "cursor-agent", "versions")
+        try:
+            names = sorted((n for n in os.listdir(versions) if not n.startswith(".")),
+                           reverse=True)
+        except OSError:
+            names = []
+        out += [os.path.join(versions, name, "cursor-agent") for name in names]
+    return out
+
+
+def _which_cursor_cli():
+    """Find Cursor's CLI, never some other program that happens to be named ``agent``.
+
+    ``cursor-agent`` is Cursor's own name. ``agent`` is the alias Cursor's
+    docs now lead with, but it is too generic to trust unless it resolves
+    into a Cursor install.
+    """
+    exts = ("", ".cmd", ".exe") if os.name == "nt" else ("",)
+    for ext in exts:
+        found = shutil.which("cursor-agent" + ext)
+        if found:
+            return found
+    for ext in exts:
+        found = shutil.which("agent" + ext)
+        if found and _in_cursor_install(found):
+            return found
+    for path in _cursor_cli_candidates():
+        if not os.path.isfile(path):
+            continue
+        if os.path.basename(path).lower().startswith("cursor-agent") or _in_cursor_install(path):
+            return path
+    return None
+
+
+def _bash_major(path):
+    """Major version of a bash binary, or 0 if it cannot be probed."""
+    try:
+        result = subprocess.run(
+            [path, "-c", 'printf %s "${BASH_VERSINFO[0]}"'],
+            capture_output=True, text=True, timeout=2,
+        )
+        return int((result.stdout or "").strip() or 0)
+    except Exception:
+        return 0
+
+
+def _bash_candidates():
+    """Possible bash binaries; Homebrew/local first so they beat /bin/bash 3.2."""
+    home = _resolved_home()
+    out = ["/opt/homebrew/bin/bash", "/usr/local/bin/bash"]
+    if home:
+        out.append(os.path.join(home, ".local", "bin", "bash"))
+    which = shutil.which("bash")
+    if which:
+        out.append(which)
+    seen = set()
+    uniq = []
+    for path in out:
+        if path not in seen:
+            seen.add(path)
+            uniq.append(path)
+    return uniq
+
+
+@functools.lru_cache(maxsize=1)
+def _resolve_cli_bash():
+    """A bash ΓëÑ4 binary for Claude Code's Bash tool, or None.
+
+    macOS ``/bin/bash`` is 3.2 (no associative arrays). Pointing
+    ``CLAUDE_CODE_SHELL`` at it would break ``declare -A``. Claude Code's
+    documented override is ``CLAUDE_CODE_SHELL``; ``$SHELL`` alone is often
+    ignored in favour of zsh auto-detection.
+    """
+    if os.name == "nt":
+        return None
+    for path in _bash_candidates():
+        if not os.path.isfile(path) or not os.access(path, os.X_OK):
+            continue
+        if _bash_major(path) >= 4:
+            return path
+    return None
+
+
+def _agent_import_prompt() -> str:
+    """Shared import steering for Claude (append) and Codex (message prefix)."""
+    return (
+        "Importing local media (import_files_tool):\n"
+        "- To put files into Project Files you MUST call import_files_tool. "
+        "list_files_tool only lists media already in the project — it never "
+        "imports from disk.\n"
+        "- If the user named a folder (Downloads, Desktop, a path, or "
+        "\"folder X in Downloads\"), call import_files_tool with that folder "
+        "and dry_run=true IMMEDIATELY. Do NOT ask for individual file paths "
+        "when they named a folder. Do NOT use Glob, Read, Bash, or "
+        "list_files_tool to preflight — Zenvi resolves the path.\n"
+        "- Bare names work: folder=\"Downloads\" or folder=\"Desktop\". "
+        "For “all videos”, pass media_types=video (skips images/audio).\n"
+        "- Windows: prefer C:/Users/.../folder (forward slashes). Git Bash "
+        "/c/Users/... also works. Never invent /mnt/c/... mounts.\n"
+        "- For vague asks inside Desktop/Downloads/Movies/Videos/Documents/"
+        "Pictures only, you may Glob those folders, then call "
+        "import_files_tool with the path you found (dry_run=true first).\n"
+        "- For folders or bulk asks: dry_run=true → show preview → ask the "
+        "user → dry_run=false. If the tool returns multiple candidates or "
+        "not found, ask the user — do not guess."
+    )
+
+
+def _agent_bash_prompt():
+    """Recipes the Claude Code Bash tool has already failed on (HEIC, zsh)."""
+    return (
+        "Media conversion (Bash tool):\n"
+        "- HEIC/HEIF stills: never ffmpeg -vf on the HEIC itself. ffmpeg 7 "
+        "decodes HEIC through a complex filtergraph; combining that with -vf "
+        "fails with 'Simple and complex filtering cannot be used together'.\n"
+        "- macOS: sips -s format jpeg IN.HEIC --out OUT.jpg, then scale the "
+        "jpeg with -vf if needed.\n"
+        "- Fallback: ffmpeg -i IN.HEIC -filter_complex "
+        "'[0:v:0]scale=W:-2[o]' -map '[o]' -frames:v 1 -update 1 -y OUT.jpg\n"
+        "- This Bash tool may still run zsh on macOS. Never use bash "
+        "${!assoc[@]} key expansion (zsh reports 'bad substitution'). "
+        "Iterate a plain path list, or zsh: "
+        'for name in "${(@k)files}"; do ...; done.\n'
+        + _agent_import_prompt()
+    )
 
 
 def _cli_child_env(extra=None):
@@ -107,20 +367,48 @@ def _cli_child_env(extra=None):
             env.setdefault("HOMEPATH", tail)
         env.setdefault("APPDATA", os.path.join(home, "AppData", "Roaming"))
         env.setdefault("LOCALAPPDATA", os.path.join(home, "AppData", "Local"))
+    # Claude Code auto-detects zsh on macOS; bash ΓëÑ4 makes ${!files[@]} work.
+    # Do not clobber a user-set CLAUDE_CODE_SHELL.
+    if "CLAUDE_CODE_SHELL" not in env:
+        bash = _resolve_cli_bash()
+        if bash:
+            env["CLAUDE_CODE_SHELL"] = bash
+            env["SHELL"] = bash
     if extra:
         env.update(extra)
     return env
 
 
+def _add_dir_args():
+    """``--add-dir`` flags for typical footage folders (Desktop, Downloads, ΓÇª).
+
+    cwd stays the project / agent_workspace so the CLI is not rooted at
+    ``$HOME``; these extra dirs let Glob/Read see local media the user points at.
+    """
+    try:
+        from classes.file_drop import media_add_dirs
+        dirs = media_add_dirs(_resolved_home())
+    except Exception:
+        dirs = []
+    args = []
+    for path in dirs:
+        args.extend(["--add-dir", path])
+    return args
+
+
 def _which_cli(binary_name: str):
-    """Locate ``claude`` / ``codex`` on PATH or in known install dirs."""
+    """Locate ``claude`` / ``codex`` / ``cursor-agent`` on PATH or in known install dirs."""
+    if binary_name == "cursor-agent":
+        return _which_cursor_cli()
     found = shutil.which(binary_name)
     if found:
         return found
     names = [binary_name]
     if os.name == "nt":
-        names.extend([binary_name + ".exe", binary_name + ".cmd", binary_name + ".bat"])
-        for name in names[1:]:
+        # Launchers first: npm puts an extension-less sh script beside
+        # ``<name>.cmd`` and Windows cannot run it.
+        names = [binary_name + ".exe", binary_name + ".cmd", binary_name + ".bat", binary_name]
+        for name in names[:3]:
             found = shutil.which(name)
             if found:
                 return found
@@ -140,7 +428,7 @@ def _agent_mcp_dir() -> str:
 
 
 def _project_cwd() -> str:
-    """Working directory for the agent — the current project's folder if any.
+    """Working directory for the agent ΓÇö the current project's folder if any.
 
     With no saved project the fallback is a scratch folder under the user's
     Zenvi data dir, never ``$HOME``: these CLIs run with approvals and sandbox
@@ -195,6 +483,12 @@ def _is_registered(binary_name: str) -> bool:
         return _claude_is_registered()
     if binary_name == "codex":
         return _codex_is_registered()
+    if binary_name == "cursor-agent":
+        return _cursor_is_registered()
+    if binary_name == "opencode":
+        return _opencode_is_registered()
+    if binary_name == "hermes":
+        return _hermes_is_registered()
     return False
 
 
@@ -207,19 +501,39 @@ def _claude_is_registered() -> bool:
 
     ``claude mcp list`` also reports this, but it live health-checks every
     configured server (including ones needing OAuth) before printing
-    anything — slow and network-dependent, and observed to occasionally
+    anything ΓÇö slow and network-dependent, and observed to occasionally
     exceed a reasonable subprocess timeout right after a fresh registration,
     which would misreport a real registration as absent. Reading the config
     file is instant and has no such race.
     """
+    return _claude_entry() is not None or _claude_is_registered_via_cli()
+
+
+def _claude_entry() -> dict | None:
+    """Return the ``zenvi`` mcpServers entry from ``~/.claude.json``, or None."""
     try:
         with open(_claude_config_path(), "r", encoding="utf-8") as fh:
             data = json.load(fh)
-        if "zenvi" in (data.get("mcpServers") or {}):
-            return True
+        entry = (data.get("mcpServers") or {}).get("zenvi")
+        return entry if isinstance(entry, dict) else None
     except Exception:
-        pass
-    return _claude_is_registered_via_cli()
+        return None
+
+
+def _claude_registration_matches(port: int, token: str) -> bool:
+    """True when Claude already points at this live MCP URL + bearer token."""
+    entry = _claude_entry()
+    if not entry:
+        return False
+    want_url = "http://127.0.0.1:%d/mcp" % port
+    url = str(entry.get("url") or entry.get("serverUrl") or "").rstrip("/")
+    if url != want_url.rstrip("/"):
+        return False
+    headers = entry.get("headers") or {}
+    if not isinstance(headers, dict):
+        return False
+    auth = str(headers.get("Authorization") or headers.get("authorization") or "")
+    return auth.strip() == ("Bearer %s" % token)
 
 
 def _claude_is_registered_via_cli() -> bool:
@@ -256,7 +570,7 @@ def register_claude(port: int, token: str):
     """Register Zenvi's MCP server with the ``claude`` CLI (user scope).
 
     Idempotent: removes any prior ``zenvi`` registration first (ignoring
-    failure — it's fine if none existed) so re-running this after the port
+    failure ΓÇö it's fine if none existed) so re-running this after the port
     changed (e.g. a fallback-port restart) cleanly replaces the old entry
     rather than erroring on a duplicate name.
 
@@ -282,6 +596,22 @@ def register_claude(port: int, token: str):
         return False, str(e)
 
 
+def ensure_claude_registered(port: int, token: str):
+    """Auto-wire Claude Code to the live Zenvi MCP when the CLI is installed.
+
+    Skips ``mcp remove``/``add`` when the existing user-scope entry already
+    matches this port + token (Palmier-style: app up ⇒ Claude can call tools).
+
+    Returns ``(ok, message, changed)``.
+    """
+    if not _which_cli("claude"):
+        return False, "Claude Code CLI not found on PATH.", False
+    if _claude_registration_matches(port, token):
+        return True, "Claude Code already connected to Zenvi MCP.", False
+    ok, message = register_claude(port, token)
+    return ok, message, bool(ok)
+
+
 _CODEX_SECTION_HEADER = "[mcp_servers.zenvi_editor]"
 
 
@@ -293,14 +623,21 @@ def _codex_desired_section(port: int) -> str:
     ) % (_CODEX_SECTION_HEADER, port)
 
 
+def _token_env_command(name: str, token: str) -> str:
+    """The command that sets *name* in the user's own shell before they launch a CLI."""
+    if sys.platform == "win32":
+        return 'PowerShell: $env:%s="%s"\nCommand Prompt: set %s=%s' % (name, token, name, token)
+    return "export %s=%s" % (name, token)
+
+
 def register_codex(port: int, token: str):
     """Write/update the ``[mcp_servers.zenvi_editor]`` table in
     ``~/.codex/config.toml`` (Codex has no CLI command for registering an
-    HTTP-transport MCP server — only stdio servers via ``codex mcp add``;
+    HTTP-transport MCP server ΓÇö only stdio servers via ``codex mcp add``;
     confirmed against the current Codex CLI docs).
 
     Validates the file both before and after editing, and writes a
-    ``.zenvi-backup`` copy first — this mutates a config file we don't fully
+    ``.zenvi-backup`` copy first ΓÇö this mutates a config file we don't fully
     control the rest of the schema/contents of, so failing safe matters more
     than convenience here.
 
@@ -354,9 +691,437 @@ def register_codex(port: int, token: str):
         return False, "Failed to write ~/.codex/config.toml: %s" % e
 
     return True, (
-        "Updated ~/.codex/config.toml. Before running codex, run:\n"
-        "export ZENVI_MCP_TOKEN=%s"
-    ) % token
+        "Updated ~/.codex/config.toml. Before running codex, run:\n%s"
+    ) % _token_env_command("ZENVI_MCP_TOKEN", token)
+
+
+# The one entry in ~/.cursor/mcp.json that is Zenvi's. A server the user
+# named "zenvi" is theirs, not ours.
+_CURSOR_MCP_NAME = "zenvi-editor"
+
+
+def _cursor_mcp_path() -> str:
+    return os.path.join(_resolved_home(), ".cursor", "mcp.json")
+
+
+def _cursor_is_registered() -> bool:
+    path = _cursor_mcp_path()
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return _CURSOR_MCP_NAME in (data.get("mcpServers") or {})
+    except Exception:
+        return False
+
+
+# cursor-agent expands ${env:NAME} in headers, so the bearer token never has to
+# sit in a file the Cursor editor shares. CursorCliRunner sets the variable.
+_CURSOR_TOKEN_ENV = "ZENVI_MCP_TOKEN"
+
+
+def _cursor_server_entry(port: int) -> dict:
+    return {
+        "url": "http://127.0.0.1:%d/mcp" % port,
+        "headers": {"Authorization": "Bearer ${env:%s}" % _CURSOR_TOKEN_ENV},
+    }
+
+
+def _write_with_mode(path: str, text: str, mode: int) -> None:
+    """Write *path* with *mode* from the start, not the umask's 0644 first."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.chmod(path, mode)   # O_CREAT's mode only applies to a file it creates
+
+
+def register_cursor(port: int, token: str):
+    """Write or replace Zenvi's HTTP server in ``~/.cursor/mcp.json``.
+
+    Cursor's CLI has no ``mcp add`` for an HTTP server; it reads this file,
+    which the Cursor editor reads too. Only the ``zenvi-editor`` entry is
+    touched: it is added, or updated in place when a restart moved the port,
+    and every other server is left as it was. An entry that is already
+    current is not rewritten, so the check CursorCliRunner makes before each
+    turn costs one read. Invalid JSON is refused, never repaired. The entry
+    names the token by environment variable (``$ZENVI_MCP_TOKEN``), like the
+    Codex registration, rather than storing it.
+
+    The file holds other servers' secrets, so the ``.zenvi-backup`` copy (of
+    the file as it was before Zenvi first changed it) and the new file keep
+    its permissions (0600 when it is new), and the new content is staged next
+    to it and moved into place rather than written over it. A symlinked
+    mcp.json (dotfiles) is updated through the link.
+
+    Returns ``(ok, message)``.
+    """
+    path = os.path.realpath(_cursor_mcp_path())
+    connected = (
+        "Connected. Before running cursor-agent yourself, run:\n%s"
+        % _token_env_command(_CURSOR_TOKEN_ENV, token)
+    )
+    original = ""
+    data = {}
+    mode = 0o600
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                original = fh.read()
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+        except Exception as e:
+            return False, "Failed to read ~/.cursor/mcp.json: %s" % e
+        if original.strip():
+            try:
+                data = json.loads(original)
+            except Exception as e:
+                return False, "~/.cursor/mcp.json has invalid JSON, not touching it: %s" % e
+            if not isinstance(data, dict):
+                return False, "~/.cursor/mcp.json is not a JSON object, not touching it."
+
+    servers = data.get("mcpServers")
+    if servers is None:
+        servers = {}
+        data["mcpServers"] = servers
+    if not isinstance(servers, dict):
+        return False, "~/.cursor/mcp.json mcpServers is not an object, not touching it."
+
+    entry = _cursor_server_entry(port)
+    if servers.get(_CURSOR_MCP_NAME) == entry:
+        return True, connected
+    servers[_CURSOR_MCP_NAME] = entry
+
+    staged = path + ".zenvi-tmp"
+    backup = path + ".zenvi-backup"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        # Only the first: later port moves would back up our own edit.
+        if original and not os.path.exists(backup):
+            _write_with_mode(backup, original, mode)
+        _write_with_mode(staged, json.dumps(data, indent=2) + "\n", mode)
+        os.replace(staged, path)
+    except Exception as e:
+        try:
+            os.remove(staged)
+        except OSError:
+            pass
+        return False, "Failed to write ~/.cursor/mcp.json: %s" % e
+
+    return True, connected
+
+
+def _opencode_config_dir() -> str:
+    """OpenCode's global config folder (it honours ``XDG_CONFIG_HOME`` on every OS)."""
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(_resolved_home(), ".config")
+    return os.path.join(base, "opencode")
+
+
+def _opencode_is_registered() -> bool:
+    """OpenCode merges ``opencode.json`` and ``opencode.jsonc``; the latter may
+    carry comments, so look for the server key rather than parse JSON. Comments
+    are dropped first (strings kept whole) so a commented-out entry does not count."""
+    for name in ("opencode.json", "opencode.jsonc"):
+        try:
+            with open(os.path.join(_opencode_config_dir(), name), "r", encoding="utf-8") as fh:
+                text = re.sub(r'("(?:\\.|[^"\\])*")|//[^\n]*|/\*.*?\*/',
+                              lambda m: m.group(1) or "", fh.read(), flags=re.S)
+                if re.search(r'"zenvi_editor"\s*:', text):
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def _opencode_server_entry(url: str) -> dict:
+    # ``{env:...}`` is OpenCode's config substitution: the token stays out of
+    # the file and is read from the environment at launch (as Codex does).
+    return {
+        "type": "remote",
+        "url": url,
+        "headers": {"Authorization": "Bearer {env:ZENVI_MCP_TOKEN}"},
+        "enabled": True,
+    }
+
+
+def register_opencode(port: int, token: str):
+    """Upsert ``mcp.zenvi_editor`` in OpenCode's global ``opencode.json`` (Connect).
+
+    Zenvi's own turns do not need this: they pass a scoped ``OPENCODE_CONFIG``
+    (see OpenCodeRunner). This is for running ``opencode`` yourself. OpenCode
+    has no command that adds a remote MCP server non-interactively, and it
+    merges ``opencode.json`` with the user's ``opencode.jsonc``, so only the
+    plain-JSON file is edited and every other key and server is left as it
+    was. Like register_cursor: a file that does not parse is refused, a
+    current entry is not rewritten, and the file (which usually holds
+    provider API keys) keeps its permissions, is replaced atomically, and
+    gets a one-time ``.zenvi-backup``.
+
+    Returns ``(ok, message)``.
+    """
+    path = os.path.realpath(os.path.join(_opencode_config_dir(), "opencode.json"))
+    done = (
+        "Updated %s. Before running opencode, run:\n%s"
+    ) % (path, _token_env_command("ZENVI_MCP_TOKEN", token))
+    original = ""
+    data = {}
+    mode = 0o600
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                original = fh.read()
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+        except Exception as e:
+            return False, "Failed to read %s: %s" % (path, e)
+        try:
+            data = json.loads(original) if original.strip() else {}
+        except Exception as e:
+            return False, "%s is not valid JSON, not touching it: %s" % (path, e)
+        if not isinstance(data, dict):
+            return False, "%s is not a JSON object, not touching it." % path
+
+    mcp = data.get("mcp")
+    if mcp is None:
+        mcp = {}
+        data["mcp"] = mcp
+    if not isinstance(mcp, dict):
+        return False, "%s: \"mcp\" is not an object, not touching it." % path
+    entry = _opencode_server_entry("http://127.0.0.1:%d/mcp" % port)
+    if mcp.get("zenvi_editor") == entry:
+        return True, done
+    mcp["zenvi_editor"] = entry
+
+    staged = path + ".zenvi-tmp"
+    backup = path + ".zenvi-backup"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if original and not os.path.exists(backup):
+            _write_with_mode(backup, original, mode)
+        _write_with_mode(staged, json.dumps(data, indent=2) + "\n", mode)
+        os.replace(staged, path)
+    except Exception as e:
+        try:
+            os.remove(staged)
+        except OSError:
+            pass
+        return False, "Failed to write %s: %s" % (path, e)
+    return True, done
+
+
+def _hermes_config_path() -> str:
+    home = os.environ.get("HERMES_HOME") or os.path.join(_resolved_home(), ".hermes")
+    return os.path.join(home, "config.yaml")
+
+
+def _hermes_is_registered() -> bool:
+    """Look for ``zenvi_editor`` under the top-level ``mcp_servers`` block of
+    Hermes' ``config.yaml`` (no YAML parser here, and none is needed)."""
+    try:
+        with open(_hermes_config_path(), "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except Exception:
+        return False
+    block = re.search(r"(?m)^mcp_servers:[^\n]*\n((?:[ \t]+[^\n]*\n|[ \t]*\n)*)", text + "\n")
+    return bool(block and re.search(r"(?m)^[ \t]+zenvi_editor:", block.group(1)))
+
+
+def register_hermes(port: int, token: str):
+    """Upsert ``mcp_servers.zenvi_editor`` in Hermes' ``config.yaml`` (Connect).
+
+    Zenvi's own turns do not need this: HermesRunner hands the server to each
+    ACP session. This is for running ``hermes`` yourself. ``hermes mcp add`` is
+    interactive, but ``hermes config set`` edits a dotted key in place and
+    keeps every other server, so Hermes does the YAML editing itself; running
+    it again after a port change just overwrites the url. The header uses
+    Hermes' ``${VAR}`` expansion, so the token never lands in the file (as
+    with Codex).
+
+    Returns ``(ok, message)``.
+    """
+    hermes = _which_cli("hermes") or "hermes"
+    settings = (
+        ("mcp_servers.zenvi_editor.url", "http://127.0.0.1:%d/mcp" % port),
+        ("mcp_servers.zenvi_editor.headers.Authorization", "Bearer ${ZENVI_MCP_TOKEN}"),
+    )
+    try:
+        for key, value in settings:
+            result = subprocess.run(
+                [hermes, "config", "set", key, value],
+                # Explicit UTF-8: a GUI-launched app often has no LANG, and
+                # text=True then decodes Hermes' "✓ Set ..." as ASCII and fails.
+                capture_output=True, encoding="utf-8", errors="replace",
+                timeout=30, stdin=subprocess.DEVNULL,
+                # The home HermesRunner and _hermes_is_registered use.
+                env=_cli_child_env(),
+            )
+            if result.returncode != 0:
+                return False, (result.stderr or result.stdout or "hermes config set failed").strip()
+    except Exception as e:
+        return False, str(e)
+    return True, (
+        "Updated %s. Before running hermes, run:\n%s"
+    ) % (_hermes_config_path(), _token_env_command("ZENVI_MCP_TOKEN", token))
+
+
+# `cursor-agent models` prints "<id> - <name>" per model, flagging the one the
+# CLI uses when no --model is given with "(current)" and Cursor's own pick
+# with "(default)". Some names end in zero-width spaces.
+_CURSOR_MODEL_LINE = re.compile(r"^([A-Za-z0-9][\w.\-]*) - (.+)$")
+_CURSOR_MODEL_FLAGS = re.compile(
+    r"\s*\(((?:current|default)(?:\s*,\s*(?:current|default))*)\)\s*$")
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def parse_cursor_models(text: str) -> list:
+    """Picker entries from ``cursor-agent models`` output, in the CLI's order.
+
+    "CLI default" comes first and is preselected, tagged with the model the
+    CLI says it would use. The list depends on the account and runs to
+    hundreds of ids, so nothing else is featured; search reaches the rest.
+    """
+    rows, seen = [], set()
+    current = fallback = ""
+    for line in _ANSI.sub("", text or "").splitlines():
+        match = _CURSOR_MODEL_LINE.match(line.replace("​", "").strip())
+        if not match or match.group(1) in seen:
+            continue
+        mid, name = match.group(1), match.group(2)
+        seen.add(mid)
+        flags = set()
+        marks = _CURSOR_MODEL_FLAGS.search(name)
+        if marks:
+            flags = {f.strip() for f in marks.group(1).split(",")}
+            name = name[:marks.start()]
+        name = " ".join(name.split()) or mid
+        rows.append({"id": mid, "name": name, "rank": len(rows) + 1, "featured": False})
+        if "current" in flags and not current:
+            current = name
+        if "default" in flags and not fallback:
+            fallback = name
+    if not rows:
+        return []
+    return [_cli_default_entry(current or fallback)] + rows
+
+
+def _models_command_output(argv) -> str:
+    """stdout of a CLI's list-models command, or "" when it failed."""
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    try:
+        result = subprocess.run(
+            argv, capture_output=True, encoding="utf-8", errors="replace",
+            timeout=30, env=_cli_child_env(), **kwargs,
+        )
+    except Exception:
+        log.debug("%s failed", " ".join(argv[1:]), exc_info=True)
+        return ""
+    if result.returncode != 0:
+        log.debug("%s exited %s", " ".join(argv[1:]), result.returncode)
+        return ""
+    return result.stdout or ""
+
+
+def probe_cursor_models(cli: str) -> list:
+    """Ask ``cursor-agent models`` for this account's lineup (a network call)."""
+    return parse_cursor_models(_models_command_output([cli, "models"]))
+
+
+def parse_opencode_models(text: str) -> list:
+    """Picker entries from ``opencode models``: one ``provider/model`` per line.
+
+    The list follows the providers the user signed in to. It marks no default,
+    so "CLI default" (whatever opencode.json picks) leads and is preselected.
+    """
+    rows, seen = [], set()
+    for line in _ANSI.sub("", text or "").splitlines():
+        mid = line.strip()
+        if "/" not in mid or " " in mid or mid in seen:
+            continue
+        seen.add(mid)
+        provider, _, name = mid.partition("/")
+        rows.append({"id": mid, "name": name, "provider": provider,
+                     "rank": len(rows) + 1, "featured": False})
+    return [_cli_default_entry()] + rows if rows else []
+
+
+def probe_opencode_models(cli: str) -> list:
+    """Ask ``opencode models`` which models the signed-in providers offer."""
+    return parse_opencode_models(_models_command_output([cli, "models"]))
+
+
+# A CLI's model list is re-read on this cadence (the same as the backend
+# lineups) or when its binary / version changes. A read that failed (logged
+# out, offline) is retried on the next CLI detection, which runs every 60 s.
+CLI_MODELS_TTL_S = 15 * 60
+CLI_MODELS_RETRY_S = 55
+_cli_models_read: dict = {}     # backend -> {"key", "at", "ok"}
+_cli_models_lock = threading.Lock()
+
+
+def refresh_cli_models(backend: str, version) -> bool:
+    """Re-read *backend*'s model list if it is due; True when the lineup changed.
+
+    For runners with a ``list_models`` hook. Blocking (runs the CLI); a failed
+    read keeps the lineup already shown.
+    """
+    runner = CLI_RUNNERS.get(backend)
+    if runner is None or runner.list_models is None:
+        return False
+    cli = _which_cli(runner.CLI_NAME)
+    if not cli:
+        return False
+    key = (cli, version or "")
+    now = time.monotonic()
+    with _cli_models_lock:
+        last = _cli_models_read.setdefault(backend, {"key": None, "at": 0.0, "ok": False})
+        wait = CLI_MODELS_TTL_S if last["ok"] else CLI_MODELS_RETRY_S
+        if last["key"] == key and now - last["at"] < wait:
+            return False
+        last["key"], last["at"] = key, now
+    rows = runner.list_models(cli)
+    with _cli_models_lock:
+        _cli_models_read[backend]["ok"] = bool(rows)
+    return set_cli_lineup(backend, rows)
+
+
+# (workspace, server url, token) combinations already approved this session.
+_cursor_approved: set = set()
+_cursor_approved_lock = threading.Lock()
+
+
+def _approve_cursor_mcp(cli: str, cwd: str, env: dict, url: str) -> bool:
+    """Approve zenvi-editor, and only it, for workspace *cwd*; True if it took.
+
+    ``--approve-mcps`` would approve every server the workspace declares, and
+    the workspace is the user's project folder: whatever a downloaded
+    project's .cursor/mcp.json names would start unattended. Approvals are
+    stored per workspace and keyed on the server's resolved config (URL, and
+    the header after ${env:} expansion), so this runs with the token in *env*,
+    again when the port moves, and otherwise once per session. The CLI exits 0
+    even for a server it cannot find, so its answer is read as well.
+    Blocking: it runs the CLI.
+    """
+    key = (cwd, url, env.get(_CURSOR_TOKEN_ENV, ""))
+    with _cursor_approved_lock:
+        if key in _cursor_approved:
+            return True
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    try:
+        result = subprocess.run(
+            [cli, "mcp", "enable", _CURSOR_MCP_NAME], capture_output=True,
+            encoding="utf-8", errors="replace", timeout=60, cwd=cwd, env=env, **kwargs,
+        )
+    except Exception:
+        log.warning("cursor-agent mcp enable failed", exc_info=True)
+        return False
+    answer = (result.stdout or "") + (result.stderr or "")
+    if result.returncode != 0 or "approved" not in answer.lower():
+        log.warning("cursor-agent mcp enable did not approve zenvi-editor: %s",
+                    answer.strip()[:200])
+        return False
+    with _cursor_approved_lock:
+        _cursor_approved.add(key)
+    return True
 
 
 class BaseAgentRunner(QObject):
@@ -370,7 +1135,7 @@ class BaseAgentRunner(QObject):
     tool_log = pyqtSignal(str, str)            # call_id, line
     tool_completed = pyqtSignal(str, bool, str)  # call_id, ok, result_text
     # Declared for signature parity with AIChatWorker so AIChatWindow can
-    # connect the same slots to every backend. CLI backends never emit it —
+    # connect the same slots to every backend. CLI backends never emit it ΓÇö
     # planning mode is a Zenvi-backend feature, and these agents do their own
     # planning internally.
     plan_event = pyqtSignal(str, str)          # event_type, payload_json
@@ -381,7 +1146,15 @@ class BaseAgentRunner(QObject):
 
     CLI_NAME = ""        # executable, e.g. "claude"
     DISPLAY_NAME = ""    # human label, e.g. "Claude Code"
-    MODELS: list = []    # model-picker entries; empty = use the CLI's own default
+    BACKEND_ID = ""      # picker/backend id, e.g. BACKEND_CLAUDE
+    MODELS: list = []    # built-in model-picker entries; the live lineup wins
+    # Stop whatever the CLI left in its process group once it exits. Off by
+    # default; see CursorCliRunner.
+    REAP_ON_EXIT = False
+    # No stdin: there is no one to type into it, and ``opencode run`` blocks
+    # reading an inherited one. A CLI that talks over stdin (HermesRunner's
+    # ACP) sets PIPE and starts the conversation in _after_launch.
+    STDIN = subprocess.DEVNULL
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -453,10 +1226,27 @@ class BaseAgentRunner(QObject):
         if proc and proc.poll() is None:
             # Signal the whole process group, not just the CLI: these agents
             # spawn their own children (shells, language servers, MCP clients),
-            # and terminating the parent alone leaves those running — they keep
+            # and terminating the parent alone leaves those running ΓÇö they keep
             # driving the editor through the MCP server after the user pressed
             # Stop. run_request starts the child in its own session so this
             # group id is ours to kill.
+            if sys.platform == "win32":
+                try:
+                    subprocess.call(
+                        ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    return
+                except Exception:
+                    pass
+                for send in (proc.terminate, proc.kill):
+                    try:
+                        send()
+                        return
+                    except Exception:
+                        continue
+                return
             for send in (
                 lambda: os.killpg(os.getpgid(proc.pid), signal.SIGTERM),
                 proc.terminate,
@@ -468,6 +1258,20 @@ class BaseAgentRunner(QObject):
                 except Exception:
                     continue
 
+    def _reap_process_group(self):
+        """SIGTERM anything still in the finished CLI's process group.
+
+        run_request starts the CLI in its own session, so the group is ours.
+        POSIX only: on Windows the tree cannot be found once its root exits.
+        """
+        proc = self._proc
+        if proc is None or sys.platform == "win32":
+            return
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except OSError:
+            pass   # nothing left in the group
+
     @property
     def _aborted(self) -> bool:
         """True when nothing more should be emitted for the current request."""
@@ -475,7 +1279,7 @@ class BaseAgentRunner(QObject):
 
     # Signature must match AIChatWorker.run_request exactly: AIChatWindow
     # dispatches through QMetaObject.invokeMethod with five Q_ARG(str, ...),
-    # and Qt resolves the slot by its registered signature — a shorter one is
+    # and Qt resolves the slot by its registered signature ΓÇö a shorter one is
     # simply never found and the request silently does nothing.
     @pyqtSlot(str, str, str, str, str)
     def run_request(self, text: str, model_id: str, agent_mode: str = "agent",
@@ -530,8 +1334,9 @@ class BaseAgentRunner(QObject):
 
         try:
             argv = self._build_argv(text)
-            self._proc = subprocess.Popen(
-                argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            popen_kwargs = dict(
+                stdin=self.STDIN,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 # Explicit UTF-8, not text=True's locale-dependent default: a
                 # GUI-launched app's environment often lacks LANG/LC_ALL, which
                 # can silently resolve to ASCII and crash on the CLI's normal
@@ -540,10 +1345,16 @@ class BaseAgentRunner(QObject):
                 # U+FFFD instead of killing the whole read loop.
                 encoding="utf-8", errors="replace",
                 bufsize=1, env=self._build_env(), cwd=cwd,
+            )
+            if sys.platform == "win32":
+                flags = subprocess.CREATE_NEW_PROCESS_GROUP
+                no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                popen_kwargs["creationflags"] = flags | no_window
+            else:
                 # Own process group so cancel() can signal the CLI *and* every
                 # child it spawned (see cancel()).
-                start_new_session=True,
-            )
+                popen_kwargs["start_new_session"] = True
+            self._proc = subprocess.Popen(argv, **popen_kwargs)
         except Exception as e:
             if not self._aborted:
                 self._emit_error("Failed to launch %s: %s" % (self.DISPLAY_NAME, e))
@@ -554,6 +1365,7 @@ class BaseAgentRunner(QObject):
         # after a clean turn) is what makes Stop mid-turn recoverable.
         self._cli_started = True
         self._emit_cli_session()
+        self._after_launch(text)
 
         try:
             for line in self._proc.stdout:
@@ -565,7 +1377,7 @@ class BaseAgentRunner(QObject):
                 try:
                     ev = json.loads(line)
                 except Exception:
-                    # Non-JSON log noise (CLI diagnostics) — keep a short tail
+                    # Non-JSON log noise (CLI diagnostics) ΓÇö keep a short tail
                     # so we can surface something useful if the run fails.
                     self._stderr_tail.append(line)
                     self._stderr_tail = self._stderr_tail[-8:]
@@ -588,6 +1400,8 @@ class BaseAgentRunner(QObject):
         except Exception:
             log.warning("%s did not exit within 5s of closing stdout",
                         self.DISPLAY_NAME)
+        if self.REAP_ON_EXIT:
+            self._reap_process_group()
 
         if self._aborted:
             return
@@ -628,14 +1442,24 @@ class BaseAgentRunner(QObject):
         """Keep *model_id* only if it is one this backend actually offers.
 
         Tabs remember the model the picker last had, and that picker is shared
-        with the other backends — so a tab switched from Zenvi to Claude Code
+        with the other backends ΓÇö so a tab switched from Zenvi to Claude Code
         can arrive holding a Zenvi model id, which the CLI would reject.
         """
-        if not model_id or not self.MODELS:
+        offered = models_for_backend(self.BACKEND_ID)
+        if not model_id or not offered or model_id == CLI_DEFAULT_MODEL_ID:
             return ""
-        return model_id if any(m["id"] == model_id for m in self.MODELS) else ""
+        return model_id if any(m["id"] == model_id for m in offered) else ""
 
     # -- subclass hooks ----------------------------------------------------
+    @staticmethod
+    def register(port: int, token: str):
+        """Give this CLI Zenvi's MCP server (Connect). Returns ``(ok, message)``."""
+        raise NotImplementedError
+
+    # ``list_models(cli) -> picker entries`` for a CLI that can list its own
+    # models (see refresh_cli_models); None when it cannot.
+    list_models = None
+
     def _ensure_ready(self):
         """Return an error string if the backend can't run, else None."""
         return None
@@ -646,6 +1470,9 @@ class BaseAgentRunner(QObject):
     def _build_argv(self, text: str):
         raise NotImplementedError
 
+    def _after_launch(self, text: str):
+        """Called once the CLI is running (a stdin protocol starts here)."""
+
     def _handle_event(self, ev: dict):
         raise NotImplementedError
 
@@ -655,10 +1482,14 @@ class ClaudeCodeRunner(BaseAgentRunner):
 
     CLI_NAME = "claude"
     DISPLAY_NAME = "Claude Code"
+    BACKEND_ID = BACKEND_CLAUDE
+    register = staticmethod(register_claude)
 
-    # ``rank`` orders the picker, ``featured`` decides whether an entry shows
-    # before the menu's "show all" toggle — same contract as the Zenvi model
-    # list the backend serves (see setModels in chat.js).
+    # Built-in fallback lineup, used until the backend's live list lands (see
+    # ``models_for_backend``). ``rank`` orders the picker, ``featured`` decides
+    # whether an entry shows before the menu's "show all" toggle, the same
+    # contract as the Zenvi model list the backend serves (see setModels in
+    # chat.js).
     MODELS = [
         {"id": "claude-opus-5",   "name": "Opus 5",   "provider": "anthropic",
          "rank": 10, "featured": True, "default": True,
@@ -691,10 +1522,12 @@ class ClaudeCodeRunner(BaseAgentRunner):
             "--output-format", "stream-json", "--verbose", "--include-partial-messages",
             "--mcp-config", cfg, "--strict-mcp-config",
             # The agent is driving the editor on the user's behalf from inside
-            # the app — there is no terminal to answer a permission prompt, so
+            # the app ΓÇö there is no terminal to answer a permission prompt, so
             # a prompt would just hang the turn until it times out.
             "--dangerously-skip-permissions",
+            "--append-system-prompt", _agent_bash_prompt(),
         ]
+        argv += _add_dir_args()
         if self._model_id:
             argv += ["--model", self._model_id]
         if self._cli_started and self._cli_session_id:
@@ -772,7 +1605,10 @@ class CodexRunner(BaseAgentRunner):
 
     CLI_NAME = "codex"
     DISPLAY_NAME = "Codex"
-    # Left empty on purpose: we do not track the Codex model lineup, so the
+    BACKEND_ID = BACKEND_CODEX
+    register = staticmethod(register_codex)
+    # No built-in lineup: we do not track OpenAI's models here. The backend's
+    # live list (``set_live_lineups``) fills the picker; until it lands the
     # picker stays hidden and the CLI uses whatever its own config selects.
     MODELS: list = []
 
@@ -781,12 +1617,30 @@ class CodexRunner(BaseAgentRunner):
         "local_shell_call", "web_search",
     }
     _MSG_ITEM_TYPES = {"assistant_message", "agent_message", "message"}
+    # The prompt goes in through stdin ("-"), not argv: any local process can
+    # read another's command line.
+    STDIN = subprocess.PIPE
 
     def _build_env(self):
         extra = {}
         if self._server is not None and self._server.token:
             extra["ZENVI_MCP_TOKEN"] = self._server.token
         return _cli_child_env(extra)
+
+    def _after_launch(self, text: str):
+        proc, prompt = self._proc, self._stdin_prompt
+
+        def _send():
+            try:
+                proc.stdin.write(prompt)
+                proc.stdin.close()
+            except Exception:
+                # Codex already exited; the base read loop reports its output.
+                log.debug("codex stdin write failed", exc_info=True)
+
+        # Not on this thread: a prompt larger than the pipe buffer would block
+        # here while Codex blocks writing the stdout nobody reads yet.
+        threading.Thread(target=_send, name="codex-stdin", daemon=True).start()
 
     def _build_argv(self, text: str):
         url = self._server.url() if self._server else ""
@@ -797,13 +1651,19 @@ class CodexRunner(BaseAgentRunner):
         ]
         if self._model_id:
             common += ["--model", self._model_id]
+        common += _add_dir_args()
         # Unlike Claude, Codex will not take an id we invent -- it mints its own
         # and reports it as ``thread.started``.  Resuming a seeded placeholder
         # would just fail, so wait until we have heard a real one.
         cli = self._cli_path or self.CLI_NAME
         if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
-            return [cli, "exec", "resume", self._cli_session_id, *common, text]
-        return [cli, "exec", *common, text]
+            # The thread already holds the steering from its first turn.
+            self._stdin_prompt = text or ""
+            return [cli, "exec", "resume", self._cli_session_id, *common, "-"]
+        # Codex has no --append-system-prompt; prefix import steering so it
+        # does not Glob /mnt/c the way Claude did before the Claude prompt fix.
+        self._stdin_prompt = _agent_import_prompt() + "\n\n" + (text or "")
+        return [cli, "exec", *common, "-"]
 
     def _handle_event(self, ev: dict):
         etype = ev.get("type")
@@ -863,6 +1723,686 @@ class CodexRunner(BaseAgentRunner):
                 self.tool_started.emit(rid, "thinking", "{}")
                 self.tool_log.emit(rid, txt)
                 self.tool_completed.emit(rid, True, "")
+
+
+class CursorCliRunner(BaseAgentRunner):
+    """Drives the Cursor agent CLI (`cursor-agent -p --output-format stream-json`)."""
+
+    CLI_NAME = "cursor-agent"
+    DISPLAY_NAME = "Cursor CLI"
+    BACKEND_ID = BACKEND_CURSOR
+    register = staticmethod(register_cursor)
+    list_models = staticmethod(probe_cursor_models)
+    # The models depend on the Cursor account, so the picker shows what
+    # `cursor-agent models` lists (refresh_cli_models). Until it has, the
+    # only choice is to leave the model to the CLI's own config.
+    MODELS = [_cli_default_entry()]
+    # cursor-agent exits without stopping the stdio MCP servers and the worker
+    # it started, so every finished turn would leave them running.
+    REAP_ON_EXIT = True
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._think_seq = 0
+        self._begin_turn()
+
+    def _begin_turn(self):
+        """Drop the previous turn's stream state (each run opens with ``init``)."""
+        self._think_id = ""
+        self._think_open = False
+        # Prose between two tool starts: the unit the chat freezes into its own
+        # bubble when a tool begins (AIChatWindow._on_tool_started).
+        self._segments = []
+        self._segment = ""
+        # Text of the message streaming now, which the CLI then repeats whole.
+        self._message = ""
+
+    def _ensure_ready(self):
+        if self._server is None:
+            return "Could not start the editor tool server."
+        ok, message = register_cursor(self._server.port, self._server.token)
+        if not ok:
+            return message
+        cwd = self._cli_cwd or _project_cwd()
+        if not _approve_cursor_mcp(
+            self._cli_path or self.CLI_NAME, cwd, self._build_env(), self._server.url(),
+        ):
+            # No blanket --approve-mcps fallback: it would also start every
+            # server this project's .cursor/mcp.json declares.
+            return (
+                "Cursor CLI did not approve the Zenvi editor tools for this project. "
+                "Run `cursor-agent mcp enable zenvi-editor` in %s, then try again." % cwd
+            )
+        return None
+
+    def _build_env(self):
+        # register_cursor's entry sends "Bearer ${env:ZENVI_MCP_TOKEN}".
+        extra = {}
+        if self._server is not None and self._server.token:
+            extra[_CURSOR_TOKEN_ENV] = self._server.token
+        return _cli_child_env(extra)
+
+    def _build_argv(self, text: str):
+        argv = [
+            self._cli_path or self.CLI_NAME, "-p",
+            "--output-format", "stream-json",
+            "--stream-partial-output",
+            "--force", "--trust",
+            "--workspace", self._cli_cwd or _project_cwd(),
+        ]
+        if self._model_id:
+            argv += ["--model", self._model_id]
+        argv += _add_dir_args()
+        # Cursor mints the conversation id and reports it in ``init``, so only
+        # an id heard from the CLI is resumed, never the placeholder we seed.
+        if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
+            argv += ["--resume", self._cli_session_id]
+        argv.append(text)
+        return argv
+
+    def _handle_event(self, ev: dict):
+        etype = ev.get("type")
+        if etype == "system" and ev.get("subtype") == "init":
+            self._begin_turn()
+            session_id = ev.get("session_id") or ""
+            if session_id:
+                self._cli_session_id = session_id
+                self._cli_id_from_cli = True
+                self._emit_cli_session()
+            return
+        if etype == "assistant":
+            self._handle_assistant(ev)
+            return
+        if etype == "thinking":
+            self._handle_thinking(ev)
+            return
+        if etype == "tool_call":
+            self._handle_tool_call(ev)
+            return
+        if etype == "result":
+            self._close_thinking()
+            if ev.get("is_error"):
+                self._last_error = ev.get("result") or "The agent reported an error."
+            else:
+                # Not ``result`` itself: it glues the turn's messages together
+                # with no separator, so the chat could not tell which of them it
+                # has already shown (AIChatWindow._final_segment_text).
+                self._emit_response(self._final_text or ev.get("result") or "")
+            return
+        if etype == "error":
+            self._last_error = ev.get("message") or self._last_error
+
+    def _handle_assistant(self, ev: dict):
+        text = "".join(
+            block.get("text") or ""
+            for block in (ev.get("message") or {}).get("content") or []
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+        if not text:
+            return
+        # --stream-partial-output streams a message as deltas and then sends it
+        # again whole. Deltas carry a timestamp and no model_call_id; the repeat
+        # has a model_call_id or no timestamp. Only a repeat of exactly what
+        # streamed is dropped, so nothing is lost if the CLI stops repeating.
+        partial = "timestamp_ms" in ev and "model_call_id" not in ev
+        if not partial and self._message and text.strip() == self._message.strip():
+            self._message = ""
+            return
+        self._message += text
+        self._segment += text
+        self._final_text = "\n\n".join(self._segments + [self._segment])
+        self.token_received.emit(text)
+
+    def _start_block(self, call_id: str, name: str, args: dict):
+        """Emit ``tool_started``, closing the prose segment the way the chat does."""
+        if self._segment.strip():
+            self._segments.append(self._segment)
+        self._segment = ""
+        self.tool_started.emit(call_id, name, json.dumps(args, default=str))
+
+    def _close_thinking(self):
+        if self._think_open:
+            self.tool_completed.emit(self._think_id, True, "")
+            self._think_open = False
+
+    def _handle_thinking(self, ev: dict):
+        subtype = ev.get("subtype")
+        if subtype == "delta":
+            if not self._think_open:
+                self._think_seq += 1
+                self._think_id = "think_%d" % self._think_seq
+                self._think_open = True
+                self._start_block(self._think_id, "thinking", {})
+            self.tool_log.emit(self._think_id, ev.get("text") or "")
+            return
+        if subtype == "completed":
+            self._close_thinking()
+
+    def _handle_tool_call(self, ev: dict):
+        subtype = ev.get("subtype")
+        call_id = ev.get("call_id") or ""
+        kind, payload = _cursor_tool_payload(ev.get("tool_call"))
+        if subtype == "started":
+            self._close_thinking()
+            # A tool call ends the message that was streaming.
+            self._message = ""
+            name, args = _cursor_tool_start(kind, payload)
+            self._start_block(call_id, name, args)
+            return
+        if subtype == "completed":
+            ok, text = _cursor_tool_result(payload.get("result"))
+            self.tool_completed.emit(call_id, ok, text)
+
+
+# Cursor's own tools, keyed by their ``<kind>ToolCall`` field. Spelled out so
+# the chat reads them as work on the user's files: bare "read", "edit", "glob"
+# and "grep" are the Zenvi Assistant harness's motion-graphics tools as far as
+# humanize_tool_name is concerned.
+_CURSOR_TOOL_NAMES = {
+    "shell": "run_shell_command",
+    "read": "read_file",
+    "edit": "edit_file",
+    "write": "write_file",
+    "delete": "delete_file",
+    "grep": "search_files",
+    "glob": "find_files",
+    "ls": "list_directory",
+    "getMcpTools": "look_up_tools",
+}
+
+# Arguments that say what a Cursor tool is working on. The rest are CLI
+# bookkeeping (shell parse trees, call ids, sandbox flags).
+_CURSOR_ARG_KEYS = (
+    "command", "path", "targetDirectory", "globPattern", "pattern", "query",
+    "searchTerm", "url", "server", "toolName",
+)
+
+
+def _cursor_tool_payload(tool_call):
+    """``(kind, payload)`` of a ``tool_call`` field, e.g. ``("mcp", {...})``."""
+    if not isinstance(tool_call, dict):
+        return "", {}
+    for key, value in tool_call.items():
+        if isinstance(key, str) and key.endswith("ToolCall") and isinstance(value, dict):
+            return key[: -len("ToolCall")], value
+    tool = tool_call.get("tool")   # {"tool": {"case": "...ToolCall", "value": {...}}}
+    if isinstance(tool, dict) and isinstance(tool.get("value"), dict):
+        case = str(tool.get("case") or "")
+        return (case[: -len("ToolCall")] if case.endswith("ToolCall") else case), tool["value"]
+    return "", tool_call
+
+
+def _cursor_tool_start(kind: str, payload: dict):
+    """The tool name the chat labels, and the arguments worth showing."""
+    args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
+    if kind == "mcp":
+        # args.name is "<server>-<tool>"; toolName is the tool alone.
+        name = args.get("toolName") or ""
+        if not name:
+            name = str(args.get("name") or "")
+            server = args.get("providerIdentifier") or args.get("serverIdentifier") or ""
+            if server and name.startswith(server + "-"):
+                name = name[len(server) + 1:]
+        inner = args.get("args") if isinstance(args.get("args"), dict) else {}
+        return _strip_mcp_prefix(str(name)) or "mcp_tool", inner
+    if kind:
+        name = _CURSOR_TOOL_NAMES.get(kind) or re.sub(r"(?<!^)(?=[A-Z])", "_", kind).lower()
+        return name, {k: args[k] for k in _CURSOR_ARG_KEYS if args.get(k) not in (None, "")}
+    name = payload.get("name") or "tool"
+    raw = payload.get("arguments") or payload.get("args") or {}
+    return _strip_mcp_prefix(str(name)), raw if isinstance(raw, dict) else {}
+
+
+def _cursor_tool_result(result):
+    """``(ok, text)`` for a finished Cursor tool call.
+
+    The CLI wraps a result in one key: ``success`` (an MCP tool that raised
+    is still a ``success``, with ``isError``), or ``error`` / ``spawnError`` /
+    ``rejected`` and the like when the call itself failed. Flags such as
+    ``isBackground`` can sit next to it.
+    """
+    if result is None:
+        return True, ""
+    if not isinstance(result, dict):
+        return True, str(result)
+    if "success" in result:
+        body = result.get("success")
+        if not isinstance(body, dict):
+            return True, "" if body is None else str(body)
+        ok = body.get("isError") is not True and body.get("exitCode") in (None, 0)
+        if "content" in body:
+            return ok, _cursor_content_text(body.get("content"))
+        for key in ("interleavedOutput", "stdout", "output", "text"):
+            if body.get(key):
+                return ok, str(body[key])
+        return ok, json.dumps(body, default=str)
+    for kind, body in result.items():
+        if isinstance(body, dict):
+            message = body.get("error") or body.get("message") or body.get("reason") or ""
+            return False, str(message or kind)
+        if isinstance(body, str) and body:
+            return False, body
+    return True, ""
+
+
+def _cursor_content_text(content) -> str:
+    """A result's ``content``: a string, or MCP items with the text one level
+    deeper than usual (``{"text": {"text": "..."}}``)."""
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if isinstance(text, dict):
+                text = text.get("text")
+            if isinstance(text, str) and text:
+                parts.append(text)
+        return "\n".join(parts)
+    return _content_to_text(content)
+
+
+# Agent CLIs' own file and shell tools, renamed so the chat reads them as work
+# on the user's files: under bare names like "read" or "bash"
+# humanize_tool_name labels them as the Zenvi Assistant harness's
+# motion-graphics steps (that harness runs on OpenCode). OpenCode and Hermes.
+_PLAIN_TOOL_NAMES = {
+    "bash": "run_shell_command",
+    "read": "read_file",
+    "edit": "edit_file",
+    "multiedit": "edit_file",
+    "patch": "edit_file",
+    "write": "write_file",
+    "glob": "find_files",
+    "grep": "search_files",
+    "list": "list_directory",
+}
+
+
+class OpenCodeRunner(BaseAgentRunner):
+    """Drives SST OpenCode (`opencode run --format json`)."""
+
+    CLI_NAME = "opencode"
+    DISPLAY_NAME = "OpenCode"
+    BACKEND_ID = BACKEND_OPENCODE
+    register = staticmethod(register_opencode)
+    list_models = staticmethod(probe_opencode_models)
+    # The models follow the user's signed-in providers, so the picker shows
+    # what `opencode models` lists; until then only "CLI default".
+    MODELS = [_cli_default_entry()]
+
+    # OpenCode names MCP tools ``<server>_<tool>``.
+    _MCP_PREFIX = "zenvi_editor_"
+
+    def _build_env(self):
+        extra = {}
+        if self._server is not None:
+            # Merged over the user's own config, so their other MCP servers
+            # stay available -- the equivalent of Claude's --mcp-config.
+            extra["OPENCODE_CONFIG"] = _write_opencode_mcp_config(self._server)
+            if self._server.token:
+                extra["ZENVI_MCP_TOKEN"] = self._server.token
+        return _cli_child_env(extra)
+
+    def _build_argv(self, text: str):
+        argv = [
+            _opencode_native(self._cli_path or self.CLI_NAME), "run", "--format", "json",
+            # No terminal to answer a permission prompt (see Claude's
+            # --dangerously-skip-permissions).
+            "--auto", "--thinking",
+        ]
+        if self._model_id:
+            argv += ["--model", self._model_id]
+        # Like Codex, OpenCode mints its own session id ("ses_..."), and
+        # --session with any other id fails with "Session not found".
+        if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
+            argv += ["--session", self._cli_session_id]
+        argv.append(text)
+        return argv
+
+    def _handle_event(self, ev: dict):
+        sid = ev.get("sessionID") or ""
+        if sid and not self._cli_id_from_cli:
+            self._cli_session_id = sid
+            self._cli_id_from_cli = True
+            self._emit_cli_session()
+        etype = ev.get("type")
+        part = ev.get("part") or {}
+        if etype == "text":
+            # Parts arrive whole. The separator is streamed too, so the chat's
+            # copy of the turn matches the joined reply (_final_segment_text).
+            txt = part.get("text") or ""
+            if txt:
+                if self._final_text:
+                    self._final_text += "\n\n"
+                    self.token_received.emit("\n\n")
+                self._final_text += txt
+                self.token_received.emit(txt)
+            return
+        if etype == "reasoning":
+            txt = part.get("text") or ""
+            if txt:
+                rid = "think_%s" % (part.get("id") or "0")
+                self.tool_started.emit(rid, "thinking", "{}")
+                self.tool_log.emit(rid, txt)
+                self.tool_completed.emit(rid, True, "")
+            return
+        if etype == "tool_use":
+            # Emitted once, when the call has already finished.
+            state = part.get("state") or {}
+            call_id = part.get("callID") or part.get("id") or ""
+            name = part.get("tool") or "tool"
+            if name.startswith(self._MCP_PREFIX):
+                name = name[len(self._MCP_PREFIX):]
+            else:
+                name = _PLAIN_TOOL_NAMES.get(name, name)
+            args = state.get("input")
+            self.tool_started.emit(call_id, name,
+                                   json.dumps(args if isinstance(args, dict) else {}, default=str))
+            ok = state.get("status") != "error"
+            out = state.get("output") if ok else state.get("error")
+            self.tool_completed.emit(call_id, ok, str(out or ""))
+            return
+        if etype == "error":
+            err = ev.get("error") or {}
+            self._last_error = ((err.get("data") or {}).get("message")
+                                or err.get("name") or "The agent reported an error.")
+            # The turn failed: text streamed before the error is not its answer.
+            self._final_text = ""
+
+
+def _opencode_native(cli: str) -> str:
+    """The binary behind npm's ``opencode.cmd`` shim, when there is one.
+
+    A ``.cmd`` runs through cmd.exe, which re-parses the prompt argument and
+    mangles quotes, ``&`` and ``%`` in it; the npm package ships a native exe.
+    """
+    if cli.lower().endswith(".cmd"):
+        native = os.path.join(os.path.dirname(cli), "node_modules", "opencode-ai",
+                              "bin", "opencode.exe")
+        if os.path.isfile(native):
+            return native
+    return cli
+
+
+def _write_opencode_mcp_config(server) -> str:
+    """Write the scoped ``OPENCODE_CONFIG`` file pointing at the in-app MCP server.
+
+    It names the token by environment variable only, so it holds no secret.
+    """
+    cfg = {"mcp": {"zenvi_editor": _opencode_server_entry(server.url())}}
+    path = os.path.abspath(os.path.join(_agent_mcp_dir(), "opencode_mcp.json"))
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh)
+    return path
+
+
+class HermesRunner(BaseAgentRunner):
+    """Drives Nous Research Hermes Agent over ACP (``hermes acp``).
+
+    Hermes has no streaming-JSON print mode (``-z`` prints only the final
+    text), so this speaks the Agent Client Protocol instead: newline-delimited
+    JSON-RPC on stdin/stdout. One process per turn -- initialize, open or
+    reload the session with the editor's MCP server, prompt, then close stdin
+    so Hermes exits and the base read loop ends.
+    """
+
+    CLI_NAME = "hermes"
+    DISPLAY_NAME = "Hermes"
+    BACKEND_ID = BACKEND_HERMES
+    register = staticmethod(register_hermes)
+    # Hermes lists its models only inside an ACP session, so the picker offers
+    # its own config's choice.
+    MODELS = [_cli_default_entry()]
+    STDIN = subprocess.PIPE
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._think_seq = 0
+        self._reset_protocol()
+
+    def _reset_protocol(self):
+        self._rpc_id = 0
+        self._pending: dict = {}      # request id -> method
+        self._prompt = ""
+        self._prompting = False
+        self._think_id = ""
+        # Prose between two tool starts, the unit the chat freezes into a
+        # bubble when a tool begins (see CursorCliRunner).
+        self._segments: list = []
+        self._segment = ""
+
+    def _build_env(self):
+        # hermes acp also loads config.yaml, where Connect wrote
+        # ``Bearer ${ZENVI_MCP_TOKEN}`` (see register_hermes).
+        extra = {}
+        if self._server is not None and self._server.token:
+            extra["ZENVI_MCP_TOKEN"] = self._server.token
+        return _cli_child_env(extra)
+
+    def _build_argv(self, text: str):
+        # The prompt travels over ACP (see _after_launch), never through argv.
+        return [self._cli_path or self.CLI_NAME, "acp", "--accept-hooks"]
+
+    def _after_launch(self, text: str):
+        self._reset_protocol()
+        self._prompt = text
+        self._request("initialize", {"protocolVersion": 1, "clientCapabilities": {}})
+
+    # -- JSON-RPC plumbing -------------------------------------------------
+    def _write(self, msg: dict):
+        try:
+            self._proc.stdin.write(json.dumps(msg) + "\n")
+            self._proc.stdin.flush()
+        except Exception:
+            # Hermes already exited (e.g. missing ACP extras); its output and
+            # exit code are reported by the base read loop.
+            log.debug("hermes stdin write failed", exc_info=True)
+
+    def _request(self, method: str, params: dict):
+        self._rpc_id += 1
+        self._pending[self._rpc_id] = method
+        self._write({"jsonrpc": "2.0", "id": self._rpc_id, "method": method, "params": params})
+
+    def _finish(self):
+        try:
+            self._proc.stdin.close()
+        except Exception:
+            pass
+
+    def _mcp_servers(self) -> list:
+        # Passed per session, so the token only ever travels over the pipe.
+        return [{
+            "type": "http", "name": "zenvi_editor", "url": self._server.url(),
+            "headers": [{"name": "Authorization", "value": "Bearer %s" % self._server.token}],
+        }]
+
+    def _new_session(self):
+        self._request("session/new", {"cwd": self._cli_cwd, "mcpServers": self._mcp_servers()})
+
+    def _send_prompt(self, session_id: str):
+        self._prompting = True
+        self._request("session/prompt", {
+            "sessionId": session_id, "prompt": [{"type": "text", "text": self._prompt}]})
+
+    # -- events ------------------------------------------------------------
+    def _handle_event(self, ev: dict):
+        method = ev.get("method")
+        if method:
+            if "id" in ev:
+                self._answer(ev)
+            elif method == "session/update" and self._prompting:
+                # Updates before the prompt are session/load replaying history
+                # the chat already shows.
+                self._handle_update((ev.get("params") or {}).get("update") or {})
+            return
+
+        kind = self._pending.pop(ev.get("id"), None)
+        if kind is None:
+            return
+        if "error" in ev and kind == "session/load":
+            # The stored conversation is gone: start a new one instead.
+            self._new_session()
+            return
+        if "error" in ev:
+            err = ev.get("error") or {}
+            data = err.get("data")
+            self._last_error = ((data.get("details") if isinstance(data, dict) else "")
+                                or err.get("message") or "Hermes reported an error.")
+            self._finish()
+            return
+        result = ev.get("result") or {}
+        if kind == "initialize":
+            # Like Codex, Hermes mints its own ids; only reload one it gave us.
+            if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
+                self._request("session/load", {
+                    "sessionId": self._cli_session_id, "cwd": self._cli_cwd,
+                    "mcpServers": self._mcp_servers()})
+            else:
+                self._new_session()
+        elif kind == "session/load":
+            # An unknown id comes back as an empty result: start over.
+            if result:
+                self._send_prompt(self._cli_session_id)
+            else:
+                self._new_session()
+        elif kind == "session/new":
+            session_id = result.get("sessionId") or ""
+            if not session_id:
+                self._last_error = "Hermes did not start a session."
+                self._finish()
+                return
+            self._cli_session_id = session_id
+            self._cli_id_from_cli = True
+            self._emit_cli_session()
+            self._send_prompt(session_id)
+        elif kind == "session/prompt":
+            self._prompting = False
+            self._close_thinking()
+            stop = result.get("stopReason") or "end_turn"
+            if stop == "end_turn" or (stop == "cancelled" and self._cancelled):
+                self._emit_response(self._final_text)
+            else:
+                # Text streamed before a refusal or a limit is not a finished answer.
+                self._final_text = ""
+                self._last_error = ("Hermes declined to answer." if stop == "refusal"
+                                    else "Hermes stopped before finishing (%s)." % stop)
+            self._finish()
+
+    def _answer(self, ev: dict):
+        """Reply to a request Hermes makes of us, so the turn never waits on it."""
+        if ev.get("method") == "session/request_permission":
+            # No one is there to click a permission dialog (see Claude's
+            # --dangerously-skip-permissions). Only ever this once: allow_always
+            # would write a standing rule into the user's own Hermes config.
+            options = (ev.get("params") or {}).get("options") or []
+            allow = next((o for o in options if o.get("kind") == "allow_once"), None)
+            outcome = ({"outcome": "selected", "optionId": allow.get("optionId")}
+                       if allow else {"outcome": "cancelled"})
+            self._write({"jsonrpc": "2.0", "id": ev.get("id"), "result": {"outcome": outcome}})
+            return
+        self._write({"jsonrpc": "2.0", "id": ev.get("id"),
+                     "error": {"code": -32601, "message": "Method not found"}})
+
+    def _start_block(self, call_id: str, name: str, args: dict):
+        if self._segment.strip():
+            self._segments.append(self._segment)
+        self._segment = ""
+        self.tool_started.emit(call_id, name, json.dumps(args, default=str))
+
+    def _close_thinking(self):
+        if self._think_id:
+            self.tool_completed.emit(self._think_id, True, "")
+            self._think_id = ""
+
+    def _handle_update(self, update: dict):
+        kind = update.get("sessionUpdate")
+        if kind == "agent_thought_chunk":
+            txt = (update.get("content") or {}).get("text") or ""
+            if txt:
+                if not self._think_id:
+                    self._think_seq += 1
+                    self._think_id = "think_%d" % self._think_seq
+                    self._start_block(self._think_id, "thinking", {})
+                self.tool_log.emit(self._think_id, txt)
+            return
+        if kind == "agent_message_chunk":
+            self._close_thinking()
+            txt = (update.get("content") or {}).get("text") or ""
+            if txt:
+                self._segment += txt
+                # Joined at tool boundaries, as the chat commits the prose, so
+                # the end-of-turn reply renders only what is new (#200).
+                self._final_text = "\n\n".join(self._segments + [self._segment])
+                self.token_received.emit(txt)
+            return
+        if kind == "tool_call":
+            self._close_thinking()
+            args = update.get("rawInput")
+            self._start_block(update.get("toolCallId") or "",
+                              _hermes_tool_name(update.get("title")),
+                              args if isinstance(args, dict) else {})
+            return
+        if kind == "tool_call_update":
+            status = update.get("status")
+            if status in ("completed", "failed"):
+                ok, text = _hermes_tool_result(update)
+                self.tool_completed.emit(update.get("toolCallId") or "", ok, text)
+
+
+def _hermes_tool_name(title) -> str:
+    """The tool name in a Hermes tool_call title.
+
+    Editor tools come as ``mcp__zenvi_editor__<tool>``; Hermes' own as
+    ``<tool>: <what it is doing>`` ("python: import json").
+    """
+    name = str(title or "tool").split(":", 1)[0].strip() or "tool"
+    if name.startswith("mcp_zenvi_editor_"):          # older Hermes releases
+        return name[len("mcp_zenvi_editor_"):]
+    if name.startswith("mcp__"):
+        return _strip_mcp_prefix(name)
+    return _PLAIN_TOOL_NAMES.get(name, name)
+
+
+def _hermes_tool_result(update: dict):
+    """``(ok, text)`` of a finished Hermes tool call.
+
+    Hermes wraps an MCP tool's answer in an ``<untrusted_tool_result>`` block
+    with a warning paragraph, and reports a tool that raised as "completed"
+    with ``{"error": ...}`` inside; only that tells the two apart.
+    """
+    ok = update.get("status") == "completed"
+    parts = []
+    for item in update.get("content") or []:
+        if isinstance(item, dict):
+            inner = item.get("content")
+            if isinstance(inner, dict) and inner.get("text"):
+                parts.append(inner["text"])
+    text = "\n".join(parts) or str(update.get("rawOutput") or "")
+    match = re.search(r"<untrusted_tool_result[^>]*>\n(.*?)\n?</untrusted_tool_result>",
+                      text, re.S)
+    if not match:
+        return ok, text
+    body = match.group(1).split("\n\n", 1)[-1].strip()   # drop the warning
+    try:
+        payload = json.loads(body)
+    except Exception:
+        return ok, body
+    if isinstance(payload, dict) and payload.get("error"):
+        return False, str(payload["error"])
+    if isinstance(payload, dict) and "result" in payload:
+        result = payload["result"]
+        return ok, result if isinstance(result, str) else json.dumps(result, default=str)
+    return ok, body
+
+
+# Every CLI chat backend, in the order the agent picker lists them. The chat
+# window builds its backend list, worker factory, CLI detection and Connect from
+# this, so adding a CLI is its runner class plus one entry here.
+CLI_RUNNERS = {
+    runner.BACKEND_ID: runner
+    for runner in (ClaudeCodeRunner, CodexRunner, CursorCliRunner, OpenCodeRunner, HermesRunner)
+}
 
 
 # ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ import time
 import uuid
 
 from classes import info
+from classes.logger import log
 
 GAP_LOG_PATH = os.path.join(info.USER_PATH, "agent_tool_gaps.jsonl")
 
@@ -50,6 +51,18 @@ _GAP_RULES = [
         "if_missing": ("add_title_tool",),
         "capability": "no tool for headless title/text-overlay creation (only via the Title editor dialog)",
     },
+    {
+        "keywords": (
+            "look at the timeline",
+            "does it overlap",
+            "storyboard",
+            "what does this look like",
+            "inspect the timeline",
+            "see the frame",
+        ),
+        "if_missing": ("inspect_timeline_tool",),
+        "capability": "no tool for composited timeline vision (inspect_timeline_tool)",
+    },
 ]
 
 
@@ -60,7 +73,8 @@ def classify_gap(request_text: str):
     text = request_text.lower()
     try:
         available = _tool_names()
-    except Exception:
+    except ImportError as exc:
+        log.warning("classify_gap: tool registry unavailable: %s", exc)
         return None
     for rule in _GAP_RULES:
         if any(k in text for k in rule["keywords"]) and not any(t in available for t in rule["if_missing"]):

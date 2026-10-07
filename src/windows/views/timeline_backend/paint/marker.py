@@ -25,10 +25,23 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import QRectF
-from PyQt5.QtGui import QPainter
+from qt_api import QColor, QFont, QFontMetrics, QPen, QPixmap, QRectF, Qt
+from qt_api import QPainter
 
 from .base import BasePainter
+
+# Marker color tags (classes.track_ops.MARKER_COLORS). "blue" -- the Add Marker
+# default -- keeps the theme's icon; other tags tint it.
+MARKER_TINTS = {
+    "red": "#e5484d",
+    "green": "#30a46c",
+    "yellow": "#f5d90a",
+    "orange": "#f76b15",
+    "purple": "#8e4ec6",
+    "pink": "#e93d82",
+    "white": "#ffffff",
+}
+NAME_MAX_WIDTH = 140.0
 
 
 class MarkerPainter(BasePainter):
@@ -40,6 +53,34 @@ class MarkerPainter(BasePainter):
         if pix and not pix.isNull():
             self.icon_pix = self.scaled_pixmap(pix, width, height)
         self.icon_width, self.icon_height = self.logical_size(self.icon_pix)
+        self._tinted = {}
+        ruler = getattr(self.w.theme, "ruler", None)
+        color = getattr(ruler, "font_color", None)
+        self.name_pen = QPen(color if isinstance(color, QColor) and color.isValid() else QColor("#ffffff"))
+        self.name_font = QFont()
+        size = getattr(ruler, "font_size", 0) or 0
+        if size:
+            self.name_font.setPointSize(int(size))
+
+    def _icon_for(self, marker_obj):
+        """The marker icon, tinted by the marker's color tag."""
+        data = getattr(marker_obj, "data", None) or {}
+        color = str(data.get("vector") or "").strip().lower()
+        tint = MARKER_TINTS.get(color)
+        if not tint:
+            return self.icon_pix
+        cached = self._tinted.get(color)
+        if cached is None:
+            cached = QPixmap(self.icon_pix.size())
+            cached.setDevicePixelRatio(self.icon_pix.devicePixelRatio())
+            cached.fill(Qt.transparent)
+            tp = QPainter(cached)
+            tp.drawPixmap(0, 0, self.icon_pix)
+            tp.setCompositionMode(QPainter.CompositionMode_SourceIn)
+            tp.fillRect(cached.rect(), QColor(tint))
+            tp.end()
+            self._tinted[color] = cached
+        return cached
 
     def paint(self, painter: QPainter):
         self.w.geometry.ensure()
@@ -59,11 +100,27 @@ class MarkerPainter(BasePainter):
         painter.save()
         painter.setClipRect(ruler_area)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        for mr in markers:
-            if not isinstance(mr, dict):
+        metrics = QFontMetrics(self.name_font)
+        drawn = [mr for mr in markers
+                 if isinstance(mr, dict) and mr.get("icon_rect") and not mr["icon_rect"].isNull()]
+        drawn.sort(key=lambda mr: mr["icon_rect"].left())
+        for index, mr in enumerate(drawn):
+            icon_rect = mr["icon_rect"]
+            marker_obj = mr.get("marker")
+            painter.drawPixmap(icon_rect.topLeft(), self._icon_for(marker_obj))
+            name = str((getattr(marker_obj, "data", None) or {}).get("name") or "").strip()
+            if not name:
                 continue
-            icon_rect = mr.get("icon_rect")
-            if not icon_rect or icon_rect.isNull():
+            # The name runs up to the next marker's icon, never over it.
+            room = NAME_MAX_WIDTH
+            if index + 1 < len(drawn):
+                room = min(room, drawn[index + 1]["icon_rect"].left() - icon_rect.right() - 6.0)
+            if room < 12.0:
                 continue
-            painter.drawPixmap(icon_rect.topLeft(), self.icon_pix)
+            text = metrics.elidedText(name, Qt.ElideRight, int(room))
+            painter.setFont(self.name_font)
+            painter.setPen(self.name_pen)
+            painter.drawText(
+                QRectF(icon_rect.right() + 2.0, icon_rect.top(), room, icon_rect.height()),
+                Qt.AlignLeft | Qt.AlignVCenter, text)
         painter.restore()

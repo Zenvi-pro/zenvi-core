@@ -148,6 +148,15 @@ def test_timeline_clip_id_takes_priority():
     assert result.clip is mock_clip
 
 
+def test_timeline_clip_id_miss_errors():
+    """Unknown id must fail loudly, never fall through to query/playhead matching."""
+    with _resolver_env({}):
+        result = resolve_timeline_clip(timeline_clip_id="clip-gone")
+    assert not result.ok
+    assert result.clip is None
+    assert "No timeline clip with id=" in result.error
+
+
 def test_single_clip_shortcut_without_query():
     ctx = _make_context("only", "Solo Clip")
     with _patch_contexts([ctx]):
@@ -211,6 +220,17 @@ def test_position_near_disambiguates():
             result = resolve_timeline_clip(clip_query="ball", position_near=45.0)
     assert result.ok
     assert result.clip.id == "b"
+
+
+def test_empty_position_near_does_not_crash():
+    ai = {"analyzed": True, "tags": {"objects": ["ball"]}, "description": "ball"}
+    contexts = [_make_context("a", "A", position=0.0, ai=ai, source_end=20.0)]
+    with _patch_contexts(contexts):
+        with _resolver_env({"a": MagicMock(id="a")}):
+            with patch("classes.clip_resolver._playhead_position", return_value=1.0):
+                result = resolve_timeline_clip(clip_query="ball", position_near="")
+    assert result.ok
+    assert result.clip.id == "a"
 
 
 def test_resolve_clip_pair_by_adjacent_queries():
@@ -351,6 +371,7 @@ if __name__ == "__main__":
     test_same_file_same_track_two_placements()
     test_prefer_track_hard_filter()
     test_position_near_disambiguates()
+    test_empty_position_near_does_not_crash()
     test_resolve_clip_pair_by_adjacent_queries()
     test_pair_same_file_sequential_trims()
     test_resolve_clip_pair_by_explicit_ids()

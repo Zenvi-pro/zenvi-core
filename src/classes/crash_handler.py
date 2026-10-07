@@ -41,6 +41,7 @@
 # to the GUI thread (sys.excepthook also fires on QThread worker threads).
 
 import os
+import signal
 import sys
 import threading
 import traceback
@@ -170,6 +171,59 @@ def report(exc_type, exc_value, exc_tb, context="unhandled exception", show_dial
         _reporting.active = False
 
 
+def report_message(summary, details="", context="runtime warning", show_dialog=True):
+    """Log a non-exception failure (Qt thread warnings, NSException) and optionally surface it."""
+    class _RuntimeNotice(Exception):
+        pass
+
+    notice = _RuntimeNotice(summary if not details else "%s\n%s" % (summary, details))
+    report(_RuntimeNotice, notice, None, context=context, show_dialog=show_dialog)
+
+
+def notify_with_guard(notify_impl, receiver, event):
+    """Run QApplication.notify, converting Python exceptions into a dialog.
+
+    Used by OpenShotApp.notify on macOS, Windows, and Linux. Does not catch
+    native abort/NSException; those must be prevented by keeping Qt GUI work
+    on the GUI thread.
+    """
+    try:
+        return notify_impl(receiver, event)
+    except Exception:
+        report(*sys.exc_info(), context="Qt event")
+        return False
+
+
+QT_THREAD_AFFINITY_DIALOG = (
+    "Timers cannot be started from another thread",
+    "Cannot create children for a parent that is in a different thread",
+)
+
+QT_THREAD_AFFINITY_LOG_ONLY = (
+    "Timers cannot be stopped from another thread",
+    "QObject::~QObject: Timers cannot be stopped from another thread",
+)
+
+
+def report_qt_thread_warning(message):
+    """Log (and for the dangerous cases, surface) Qt thread-affinity warnings."""
+    text = str(message or "")
+    if any(marker in text for marker in QT_THREAD_AFFINITY_DIALOG):
+        report_message(text, context="Qt thread-affinity error", show_dialog=True)
+        return True
+    if any(marker in text for marker in QT_THREAD_AFFINITY_LOG_ONLY):
+        log = _log()
+        if log is not None:
+            try:
+                log.error("Qt thread-affinity: %s", text)
+            except Exception:
+                _fallback_write("Qt thread-affinity: %s" % text)
+        else:
+            _fallback_write("Qt thread-affinity: %s" % text)
+        return True
+    return False
+
+
 def _report_to_sentry(exc_type, exc_value, exc_tb):
     try:
         import sentry_sdk
@@ -204,8 +258,8 @@ def _should_show_dialog(tb_text):
 def _queue_dialog(summary, tb_text, blocking=False):
     """Show the error dialog on the GUI thread, if there is a GUI to show it on."""
     try:
-        from PyQt5.QtCore import QCoreApplication, QThread, QTimer
-        from PyQt5.QtWidgets import QApplication
+        from qt_api import QCoreApplication, QThread
+        from qt_api import QApplication
     except Exception:
         return
 
@@ -246,13 +300,12 @@ def _queue_dialog(summary, tb_text, blocking=False):
     def _show():
         _show_dialog(summary, tb_text)
 
-    # sys.excepthook also fires on QThread workers, and widgets are main-thread
-    # only -- the 3-argument singleShot runs the callable in the context
-    # object's thread, which for the QApplication is always the GUI thread.
-    # Deferring also keeps us from opening a nested event loop from inside a
-    # paint or timer handler, which is where these exceptions often originate.
+    # Widgets are main-thread only. Off-thread reports go through the GUI
+    # dispatcher; on the GUI thread we still defer so we don't exec_() a
+    # nested dialog from inside a paint or timer handler.
     try:
-        QTimer.singleShot(0, app, _show)
+        from classes.qt_main_thread import invoke_on_gui
+        invoke_on_gui(_show, defer=True)
     except Exception:
         _fallback_write("crash_handler could not queue the error dialog:\n"
                         + traceback.format_exc())
@@ -268,7 +321,7 @@ def _is_headless_platform(app):
 def _show_dialog(summary, tb_text):
     """Non-fatal error dialog. Never raises, never exits the app."""
     try:
-        from PyQt5.QtWidgets import QApplication, QMessageBox
+        from qt_api import QApplication, QMessageBox
 
         if QApplication.instance() is None:
             return
@@ -329,10 +382,8 @@ def _threading_excepthook(args):
         return
     thread = getattr(args, "thread", None)
     name = getattr(thread, "name", "?")
-    # Background-thread failures are logged but never pop a dialog: they are
-    # usually a cancelled network or indexing job, not something the user can act on.
     report(exc_type, getattr(args, "exc_value", None), getattr(args, "exc_traceback", None),
-           context="unhandled exception in thread %r" % name, show_dialog=False)
+           context="unhandled exception in thread %r" % name, show_dialog=True)
 
 
 def _unraisablehook(args):
@@ -361,12 +412,99 @@ def _unraisablehook(args):
            context=context, show_dialog=False)
 
 
+_native_handlers_installed = False
+_ns_uncaught_handler_ref = None
+
+
+def _cf_string_to_py(cf_str):
+    """Best-effort CFString -> Python str. Never raises."""
+    if not cf_str:
+        return ""
+    try:
+        import ctypes
+        import ctypes.util
+
+        lib_name = ctypes.util.find_library("CoreFoundation")
+        cf = ctypes.cdll.LoadLibrary(
+            lib_name or "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+        buf = ctypes.create_string_buffer(4096)
+        cf.CFStringGetCString.argtypes = [
+            ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
+        cf.CFStringGetCString.restype = ctypes.c_bool
+        if cf.CFStringGetCString(cf_str, buf, 4096, 0x08000100):
+            return buf.value.decode("utf-8", errors="replace")
+    except Exception:
+        pass
+    return ""
+
+
+def _ns_exception_handler(exc):
+    """NSUncaughtExceptionHandler: log and queue a dialog; do not swallow abort()."""
+    text = "Uncaught NSException"
+    try:
+        import ctypes
+        import ctypes.util
+
+        lib_name = ctypes.util.find_library("CoreFoundation")
+        cf = ctypes.cdll.LoadLibrary(
+            lib_name or "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+        cf.CFCopyDescription.argtypes = [ctypes.c_void_p]
+        cf.CFCopyDescription.restype = ctypes.c_void_p
+        cf.CFRelease.argtypes = [ctypes.c_void_p]
+        desc = cf.CFCopyDescription(exc)
+        parsed = _cf_string_to_py(desc)
+        if desc:
+            try:
+                cf.CFRelease(desc)
+            except Exception:
+                pass
+        if parsed:
+            text = parsed
+    except Exception:
+        pass
+    try:
+        report_message(text, context="uncaught NSException", show_dialog=True)
+    except Exception:
+        _fallback_write("uncaught NSException: %s" % text)
+
+
+def install_native_exception_handlers():
+    """Install OS-specific last-resort handlers. Idempotent. No-op off macOS."""
+    global _native_handlers_installed, _ns_uncaught_handler_ref
+    if _native_handlers_installed:
+        return True
+    if sys.platform != "darwin":
+        return False
+    try:
+        import ctypes
+        import ctypes.util
+
+        lib_name = ctypes.util.find_library("Foundation")
+        foundation = ctypes.cdll.LoadLibrary(
+            lib_name or "/System/Library/Frameworks/Foundation.framework/Foundation")
+        handler_type = ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+        _ns_uncaught_handler_ref = handler_type(_ns_exception_handler)
+        foundation.NSSetUncaughtExceptionHandler.argtypes = [handler_type]
+        foundation.NSSetUncaughtExceptionHandler.restype = None
+        foundation.NSSetUncaughtExceptionHandler(_ns_uncaught_handler_ref)
+        _native_handlers_installed = True
+        return True
+    except Exception:
+        _fallback_write("Failed to install NSUncaughtExceptionHandler:\n" + traceback.format_exc())
+        return False
+
+
 def enable_faulthandler():
     """Dump native (SIGSEGV/SIGABRT) stacks somewhere they can actually be read.
 
     faulthandler defaults to sys.stderr, which is None in frozen GUI builds --
     faulthandler.enable() then raises and we got no native crash dumps at all on
     Windows. Point it at a file whenever stderr is missing.
+
+    On Windows the file is used even when stderr exists: the native audio and
+    preview threads raise benign, handled COM exceptions (0x8001010e
+    RPC_E_WRONG_THREAD) that faulthandler reports as "fatal", and concurrent
+    dumps interleave into unreadable garbage in the app log.
     """
     global _faulthandler_stream
 
@@ -375,7 +513,7 @@ def enable_faulthandler():
     except Exception:
         return False
 
-    if getattr(sys, "stderr", None) is not None:
+    if sys.platform != "win32" and getattr(sys, "stderr", None) is not None:
         try:
             faulthandler.enable(all_threads=True)
             return True
@@ -393,6 +531,33 @@ def enable_faulthandler():
     except Exception:
         _faulthandler_stream = None
         return False
+
+
+def ignore_sigpipe():
+    """Make a write to a closed socket raise BrokenPipeError instead of ending the app.
+
+    Python ignores SIGPIPE at startup, but libopenshot's CrashHandler -- which
+    the first openshot.Timeline installs -- catches SIGPIPE and exit()s with
+    status 13. The editor serves local sockets (the thumbnail server, the
+    in-app MCP server), so one client resetting its connection took the whole
+    app down. Call this right after the first Timeline is created: libopenshot
+    installs its handlers once per process, so later Timelines and readers do
+    not undo it. Returns True when SIGPIPE is ignored; there is no SIGPIPE on
+    Windows.
+    """
+    sigpipe = getattr(signal, "SIGPIPE", None)
+    if sigpipe is None:
+        return False
+    try:
+        signal.signal(sigpipe, signal.SIG_IGN)
+    except (ValueError, OSError):
+        # signal.signal() only works on the main thread
+        log = _log()
+        if log is not None:
+            log.warning("Could not ignore SIGPIPE; a client resetting a local "
+                        "connection can end the app", exc_info=True)
+        return False
+    return True
 
 
 def install():
@@ -426,6 +591,8 @@ def install():
     if hasattr(sys, "unraisablehook"):
         _prev_unraisablehook = sys.unraisablehook
         sys.unraisablehook = _unraisablehook
+
+    install_native_exception_handlers()
 
     _installed = True
     return True

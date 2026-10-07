@@ -2,6 +2,54 @@
 
 from __future__ import annotations
 
+import math
+
+from classes import frame_time as ft
+
+WATCH_MAX_WINDOW_SEC = 45.0
+DEFAULT_WATCH_QUERY = "the main visible action in this clip"
+_IMAGE_EXTS = frozenset({"png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"})
+
+
+def quantize_placement_seconds(start_sec, end_sec, fps=None, position=None):
+    """Snap placement start/end (and optional position) to project frames."""
+    if fps is None:
+        try:
+            from classes.clip_utils import project_fps_fraction
+            fps = project_fps_fraction()
+        except Exception:
+            from fractions import Fraction
+            fps = Fraction(30, 1)
+    if position is None:
+        _pos, start_q, end_q = ft.quantize_span(0.0, float(start_sec or 0.0), float(end_sec or 0.0), fps)
+        return start_q, end_q
+    pos_q, start_q, end_q = ft.quantize_span(
+        float(position or 0.0), float(start_sec or 0.0), float(end_sec or 0.0), fps
+    )
+    return pos_q, start_q, end_q
+
+
+def source_window_for_file(file_data, *, eps: float = 1e-3) -> tuple:
+    """Prefer file start/end over parent duration (subclips store both)."""
+    data = file_data if isinstance(file_data, dict) else {}
+    f_start = float(data.get("start", 0.0) or 0.0)
+    f_end = float(data.get("end", 0.0) or 0.0)
+    if f_end > f_start + eps:
+        return f_start, f_end
+    try:
+        file_dur = float(data.get("duration", 0) or 0)
+    except (TypeError, ValueError):
+        file_dur = 0.0
+    if file_dur <= f_start + eps:
+        reader = data.get("reader") if isinstance(data.get("reader"), dict) else {}
+        try:
+            file_dur = float(reader.get("duration") or 0)
+        except (TypeError, ValueError):
+            file_dur = 0.0
+    if file_dur > f_start + eps:
+        return f_start, file_dur
+    return f_start, f_start + 0.1
+
 
 def compute_clip_trim_bounds(
     source_len: float,
@@ -32,9 +80,287 @@ def compute_clip_trim_bounds(
     return start_sec, end_sec
 
 
-def default_underlay_layer_number(layers, *, audio: bool = False) -> int:
+# A planned position this close to where the clip before it was planned to end
+# was planned against that clip (agents round their arithmetic).
+PLANNED_POSITION_TOLERANCE_SEC = 0.1
+
+
+def butt_against_previous_clip(
+    position: float, resized, *, tolerance: float = PLANNED_POSITION_TOLERANCE_SEC,
+) -> float:
+    """Timeline position that closes the gap or overlap a resized clip left behind.
+
+    Snapping a placement onto phrase edges (or a watch trimming it) changes its
+    length after the caller already planned where the next clip goes, so that
+    planned position lands a fraction of a second off the clip before it: a
+    black gap, or an overlap. *resized* holds (planned_end, actual_end) timeline
+    seconds for clips on the same track whose length changed that way. A
+    position on one of those planned ends moves to where that clip really ends;
+    any other position - a deliberate gap or overlap included - is kept.
+    """
+    best = None
+    for planned_end, actual_end in resized or ():
+        miss = abs(float(position) - float(planned_end))
+        if miss <= tolerance and (best is None or miss < best[0]):
+            best = (miss, float(actual_end))
+    return best[1] if best is not None else position
+
+
+def default_underlay_layer_number(layers) -> int:
     """Lowest layer_number (bottom underlay). Used when track= is omitted."""
-    del audio
     if not layers:
         return 1
     return int(min(layers, key=lambda l: l.get("number", 0)).get("number", 1))
+
+
+def apply_audio_only_clip_overrides(clip_data, file_data, *, constant_interpolation, scale_none) -> bool:
+    """Stop an audio-only file from compositing an (often cover-art) video frame.
+
+    Same override the Split Audio menu applies — see Split_Audio_Triggered and
+    https://github.com/OpenShot/openshot-qt/issues/2882. Returns True when the
+    clip was audio-only and got the overrides.
+    """
+    from classes.image_types import is_audio_only_media
+
+    if not isinstance(clip_data, dict) or not is_audio_only_media(file_data):
+        return False
+    clip_data["has_video"] = {
+        "Points": [{"co": {"X": 1.0, "Y": 0.0}, "interpolation": int(constant_interpolation)}]
+    }
+    clip_data["scale"] = scale_none
+    reader = clip_data.get("reader")
+    if isinstance(reader, dict):
+        reader["has_video"] = False
+    return True
+
+
+def repair_audio_only_project_data(data, *, constant_interpolation, scale_none) -> int:
+    """Clear has_video on audio-only files and every clip that reads them.
+
+    Projects saved before the cover-art fix carry has_video=True on the file and
+    on clips already placed, so reopening one still blacks out lower layers.
+    Returns the number of clips repaired.
+    """
+    from classes.image_types import is_audio_only_media
+
+    if not isinstance(data, dict):
+        return 0
+
+    audio_files = {}
+    for file_data in data.get("files") or []:
+        if not isinstance(file_data, dict) or not is_audio_only_media(file_data):
+            continue
+        file_data["has_video"] = False
+        audio_files[str(file_data.get("id") or "")] = file_data
+    if not audio_files:
+        return 0
+
+    repaired = 0
+    for clip_data in data.get("clips") or []:
+        if not isinstance(clip_data, dict):
+            continue
+        reader = clip_data.get("reader")
+        reader = reader if isinstance(reader, dict) else {}
+        file_data = audio_files.get(str(clip_data.get("file_id") or reader.get("id") or ""))
+        if file_data and apply_audio_only_clip_overrides(
+            clip_data, file_data,
+            constant_interpolation=constant_interpolation, scale_none=scale_none,
+        ):
+            repaired += 1
+    return repaired
+
+
+def _seconds_float(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+_SECONDS_SUFFIXES = ("seconds", "second", "secs", "sec", "s")
+
+
+def parse_timecode_token(token: object) -> float | None:
+    """Seconds for 'SS', 'M:SS' or 'H:M:SS' tokens, else None."""
+    if isinstance(token, (int, float)):
+        return _seconds_float(token)
+    if not isinstance(token, str):
+        return None
+    token = token.strip()
+    if not token:
+        return None
+    if ":" not in token:
+        return _seconds_float(token)
+    parts = token.split(":")
+    if len(parts) > 3:
+        return None
+    nums = []
+    for part in parts:
+        value = _seconds_float(part)
+        if value is None:
+            return None
+        nums.append(value)
+    if len(nums) == 2:
+        return nums[0] * 60.0 + nums[1]
+    return nums[0] * 3600.0 + nums[1] * 60.0 + nums[2]
+
+
+def parse_seconds_arg(value: object, *, default: float | None = None, field: str = "") -> float | None:
+    """Parse an agent-supplied time argument into seconds.
+
+    Blank means "not supplied" and yields *default*. Anything that is not a time
+    raises ValueError naming the raw value, so callers can answer with a usable
+    "Error: ..." instead of a bare `could not convert string to float`.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        raise ValueError(f"{field or 'value'}={value!r} is not a time in seconds")
+    if isinstance(value, (int, float)):
+        parsed = _seconds_float(value)
+        if parsed is None or not math.isfinite(parsed):
+            raise ValueError(f"{field or 'value'}={value!r} is not a time in seconds")
+        return parsed
+    text = str(value).strip()
+    if not text:
+        return default
+    lowered = text.lower().replace(",", "")
+    for suffix in _SECONDS_SUFFIXES:
+        if lowered.endswith(suffix) and len(lowered) > len(suffix):
+            lowered = lowered[: -len(suffix)].strip()
+            break
+    parsed = parse_timecode_token(lowered)
+    if parsed is None or not math.isfinite(parsed):
+        raise ValueError(
+            f"{field or 'value'}={value!r} is not a time in seconds "
+            "(use seconds like 12 or 12.5, or a timecode like 0:12)"
+        )
+    return parsed
+
+
+def file_looks_like_image(file_data) -> bool:
+    data = file_data if isinstance(file_data, dict) else {}
+    if str(data.get("media_type") or "").lower() == "image":
+        return True
+    path = str(data.get("path") or data.get("name") or "")
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    return ext in _IMAGE_EXTS
+
+
+def _basename_stem(name: str) -> str:
+    base = str(name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    if "." in base:
+        base = base.rsplit(".", 1)[0]
+    return base.replace("_", " ").replace("-", " ").strip()
+
+
+def placement_watch_query(file_data, query="", *, extra="") -> str:
+    """Query for vision-watch before place. Indexing is not required."""
+    q = str(query or "").strip()
+    if q:
+        return q[:200]
+    data = file_data if isinstance(file_data, dict) else {}
+    ai = data.get("ai_metadata") if isinstance(data.get("ai_metadata"), dict) else {}
+    for key in ("prompt", "short_summary", "description"):
+        text = str(ai.get(key) or "").strip()
+        if text:
+            return text[:200]
+    extra_s = str(extra or "").replace("_", " ").strip()
+    if extra_s:
+        return extra_s[:200]
+    tags = data.get("tags")
+    if isinstance(tags, str):
+        tag_s = tags.replace(",", " ").strip()
+    elif isinstance(tags, list):
+        tag_s = " ".join(str(t) for t in tags if str(t).strip()).strip()
+    else:
+        tag_s = ""
+    if tag_s:
+        return tag_s[:200]
+    stem = _basename_stem(str(data.get("name") or data.get("path") or ""))
+    if stem:
+        return stem[:200]
+    return DEFAULT_WATCH_QUERY
+
+
+def should_watch_placement(
+    *,
+    is_audio: bool = False,
+    is_image: bool = False,
+    skip_explicit_times: bool = False,
+    is_already_watched_subclip: bool = False,
+    explicit_query: bool = False,
+    window_sec: float = 0.0,
+    max_window_sec: float = WATCH_MAX_WINDOW_SEC,
+) -> bool:
+    """Watch a bounded candidate window before place (AI gen, MG, stock, short footage).
+
+    Skip audio/images, explicit 'from Xs to Ys', untrimmed long files, and
+    place_moment subclips that were already watched unless a new query is given.
+    """
+    if is_audio or is_image or skip_explicit_times:
+        return False
+    if is_already_watched_subclip and not explicit_query:
+        return False
+    try:
+        span = float(window_sec or 0.0)
+    except (TypeError, ValueError):
+        span = 0.0
+    return 1e-3 < span <= float(max_window_sec) + 1e-6
+
+
+# A duration_seconds this close to end_seconds - start_seconds names the same
+# out-point (agents round), so the two describe one keep window.
+KEEP_WINDOW_AGREE_SEC = 0.05
+
+
+def end_bounds_keep_window(trim_start, trim_dur, trim_end, *, tolerance=KEEP_WINDOW_AGREE_SEC) -> bool:
+    """True when end_seconds sets the out-point of a placement.
+
+    duration_seconds wins when both are given, so an end_seconds it overrides is
+    a leftover argument, not a boundary. One that agrees with start + duration
+    names the same out-point: the caller named both edges, and treating it as
+    overridden rejected the very keep window the error then asked for.
+    """
+    if trim_end is None:
+        return False
+    if trim_dur is None:
+        return True
+    try:
+        return abs((float(trim_end) - float(trim_start or 0.0)) - float(trim_dur)) <= tolerance
+    except (TypeError, ValueError):
+        return False
+
+
+def blind_trim_rejected(
+    *,
+    trim_dur,
+    watched_start,
+    has_explicit_end: bool = False,
+    has_explicit_start: bool = False,
+    is_audio: bool = False,
+    is_image: bool = False,
+    is_subclip: bool = False,
+) -> bool:
+    """True when a trim has no boundary information behind it at all.
+
+    Only a blind "keep the first N seconds" duration trim on a full file is
+    worth blocking. A watch is not the only source of boundaries: a caller that
+    named an edge (start_seconds or end_seconds) has bounded the window itself,
+    and the watch is deliberately skipped on dialogue-heavy windows because
+    transcript cues are the better boundary. Rejecting those made the error
+    unsatisfiable - it demanded the keep window that armed it.
+
+    Times named in the query text alone do not count: nothing reads them back
+    into the in-point, so honouring them would place the first N seconds while
+    claiming to place the named range.
+    """
+    if watched_start is not None or has_explicit_end or has_explicit_start:
+        return False
+    if is_audio or is_image or is_subclip:
+        return False
+    try:
+        span = float(trim_dur) if trim_dur is not None else 0.0
+    except (TypeError, ValueError):
+        span = 0.0
+    return span > 0

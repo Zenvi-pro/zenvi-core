@@ -29,8 +29,102 @@
 
 from classes.logger import log
 from classes.app import get_app
+import contextlib
 import json
+import os
+import sys
+import threading
+import traceback
 import uuid
+
+# Dev-only frame-alignment guard: warn once per call site when a mutation
+# writes position/start/end off a project frame boundary. Never raises.
+_FRAME_GUARD_WARNED = set()
+_TIMING_KEYS = ("position", "start", "end")
+
+
+def _frame_guard_enabled():
+    if os.environ.get("ZENVI_FRAME_GUARD", "").strip() in ("1", "true", "True", "yes"):
+        return True
+    if os.environ.get("ZENVI_FRAME_GUARD", "").strip() in ("0", "false", "False", "no"):
+        return False
+    return not getattr(sys, "frozen", False)
+
+
+def _guard_timing_values(action_type, key, values):
+    """Log when clip/transition timing fields are off the project frame grid."""
+    if action_type == "load" or not _frame_guard_enabled():
+        return
+    if not isinstance(values, dict):
+        return
+
+    path0 = ""
+    if isinstance(key, (list, tuple)) and key:
+        path0 = str(key[0]).lower()
+    elif isinstance(key, str):
+        path0 = key.lower()
+    if path0 not in ("clips", "transitions"):
+        return
+    if not any(field in values for field in _TIMING_KEYS):
+        return
+
+    try:
+        from classes.clip_utils import project_fps_fraction
+        from classes import frame_time as ft
+        fps = project_fps_fraction()
+    except Exception:
+        return
+
+    offenders = []
+    for field in _TIMING_KEYS:
+        if field not in values:
+            continue
+        try:
+            seconds = float(values[field])
+        except (TypeError, ValueError):
+            continue
+        if not ft.is_aligned(seconds, fps):
+            offenders.append(f"{field}={seconds!r}")
+    if not offenders:
+        return
+
+    site = "unknown"
+    for frame in reversed(traceback.extract_stack(limit=20)):
+        if "updates.py" in frame.filename:
+            continue
+        site = f"{frame.filename}:{frame.lineno}"
+        break
+    if site in _FRAME_GUARD_WARNED:
+        return
+    _FRAME_GUARD_WARNED.add(site)
+    log.warning(
+        "frame_time guard: off-grid %s write at %s (%s)",
+        "/".join(offenders),
+        site,
+        path0,
+    )
+
+
+def reset_frame_guard_warnings():
+    """Clear the once-per-site warning set (tests only)."""
+    _FRAME_GUARD_WARNED.clear()
+
+
+@contextlib.contextmanager
+def nested_transaction(updates):
+    """Group mutations into one undo step; join an outer tid when already set.
+
+    Yields the active transaction id. Restores the previous ``transaction_id``
+    on exit (so nested callers and processEvents side-effects cannot leave a
+    cleared tid that would mint one-step-per-mutation undos).
+    """
+    caller_tid = updates.transaction_id
+    tid = caller_tid or str(uuid.uuid4())
+    updates.transaction_id = tid
+    try:
+        yield tid
+    finally:
+        updates.transaction_id = caller_tid
 
 
 class UpdateWatcher:
@@ -145,11 +239,42 @@ class UpdateManager:
         self.actionHistory = []  # List of actions performed to current state
         self.redoHistory = []  # List of actions undone
         self.currentStatus = [None, None]  # Status of Undo and Redo buttons (true/false for should be enabled)
-        self.ignore_history = False  # Ignore saving actions to history, to prevent a huge undo/redo list
         self.last_action = None  # The last action processed
         self.pending_action = None  # Last action not added to actionHistory list
-        self.transaction_id = None  # The current transaction id to be attached to any UpdateActions created
         self.data_version = 0  # Incremented on every dispatch to invalidate caches
+
+        # transaction_id and ignore_history are per-thread (see the properties
+        # below).  Agent tool calls arrive one worker thread each
+        # (api_client._spawn_tool_worker) and the prompt tells the agent to fire
+        # independent timeline edits in parallel, so a single shared field would
+        # let two concurrent operations merge into one undo step -- or tear each
+        # other's group apart.  The Qt main thread keeps its own slot, so every
+        # GUI path behaves exactly as it did before.
+        self._tls = threading.local()
+        # Guard against re-entrant undo/redo while processEvents() runs mid-step.
+        self._undo_redo_busy = False
+
+    @property
+    def transaction_id(self):
+        """Id attached to UpdateActions created by *this* thread, or None.
+
+        None means UpdateAction mints its own uuid, i.e. the mutation is its
+        own undo step.
+        """
+        return getattr(self._tls, "transaction_id", None)
+
+    @transaction_id.setter
+    def transaction_id(self, value):
+        self._tls.transaction_id = value
+
+    @property
+    def ignore_history(self):
+        """Whether *this* thread's mutations skip the undo history."""
+        return getattr(self._tls, "ignore_history", False)
+
+    @ignore_history.setter
+    def ignore_history(self, value):
+        self._tls.ignore_history = value
 
     def load_history(self, project):
         """Load history from project"""
@@ -283,78 +408,112 @@ class UpdateManager:
 
         return reverse
 
+    @staticmethod
+    def _tail_transaction(history):
+        """Return every action sharing the last transaction id, newest first.
+
+        Deliberately NOT limited to the contiguous tail.  A composite operation
+        mutates across several main-thread hops, and a second operation's hops
+        can land between them -- background-safe tools do their network work off
+        the Qt thread and marshal each mutation over separately, so the history
+        for two concurrent operations interleaves as A, B, A.  Taking only the
+        contiguous run would undo that last A and leave the first one applied,
+        which is precisely the half-undone edit this module exists to prevent.
+
+        Grouping by id across the whole history is safe because ids are uuid4
+        and minted per tool call (tool_handlers.execute_tool) or per composite
+        (_new_transaction_id), so a stale id never reappears by accident.
+        """
+        if not history:
+            return []
+        tid = history[-1].transaction
+        return [a for a in reversed(history) if a.transaction == tid]
+
     def undo(self):
         """ Undo the last UpdateAction (and notify all listeners and watchers).
             Continue until all identical transaction ids have been found. """
-        # Get all actions with the same transaction id as the last one, in reverse order
-        last_transaction = self.actionHistory[-1].transaction if self.actionHistory else None
-        last_transactions = [a for a in reversed(self.actionHistory) if a.transaction == last_transaction]
-        remove_selection = any(a.type == "insert" for a in last_transactions)
+        if self._undo_redo_busy:
+            return
+        self._undo_redo_busy = True
+        try:
+            # Snapshot first, then remove from history before any processEvents()
+            # so a nested Ctrl+Z cannot remove the same actions twice.
+            last_transactions = self._tail_transaction(self.actionHistory)
+            if not last_transactions:
+                return
+            remove_selection = any(a.type == "insert" for a in last_transactions)
 
-        if remove_selection:
-            # Remove selections for any items about to be deleted
-            for action in last_transactions:
-                if action.type == "insert":
-                    object_id = action.values.get("id", None)
-                    get_app().window.removeSelection(object_id, None)
+            for last_action in last_transactions:
+                try:
+                    self.actionHistory.remove(last_action)
+                except ValueError:
+                    continue
+                self.redoHistory.append(last_action.copy())
 
-            # Force property and selection timers to fire
-            get_app().window.show_property_timer.stop()
-            get_app().window.show_property_timer.timeout.emit()
-            get_app().window.selection_timer.stop()
-            get_app().window.selection_timer.timeout.emit()
-            get_app().processEvents()
-
-        # Iterate each action in this transaction
-        for index, last_action in enumerate(last_transactions):
-            self.actionHistory.remove(last_action)
-
-            # Copy action
-            last_action = last_action.copy()
-
-            # Add action to redo list
-            self.redoHistory.append(last_action)
             self.pending_action = None
-            # Get reverse of last action and perform it
-            reverse = self.get_reverse_action(last_action)
 
-            # Ignore updates to UI on all actions except last one
-            ignore_refresh = (index != len(last_transactions) - 1)
-            get_app().window.IgnoreUpdates.emit(ignore_refresh, True)
+            if remove_selection:
+                # Remove selections for any items about to be deleted
+                for action in last_transactions:
+                    if action.type == "insert":
+                        object_id = action.values.get("id", None)
+                        get_app().window.removeSelection(object_id, None)
 
-            # Perform next undo action
-            self.dispatch_action(reverse)
+                # Force property and selection timers to fire
+                get_app().window.show_property_timer.stop()
+                get_app().window.show_property_timer.timeout.emit()
+                get_app().window.selection_timer.stop()
+                get_app().window.selection_timer.timeout.emit()
+                get_app().processEvents()
 
-            # Verify selections are still valid objects
-            get_app().window.verifySelections()
+            # Iterate each action in this transaction
+            for index, last_action in enumerate(last_transactions):
+                reverse = self.get_reverse_action(last_action)
+
+                # Ignore updates to UI on all actions except last one
+                ignore_refresh = (index != len(last_transactions) - 1)
+                get_app().window.IgnoreUpdates.emit(ignore_refresh, True)
+
+                # Perform next undo action
+                self.dispatch_action(reverse)
+
+                # Verify selections are still valid objects
+                get_app().window.verifySelections()
+        finally:
+            self._undo_redo_busy = False
 
     def redo(self):
         """ Redo the last UpdateAction (and notify all listeners and watchers).
             Continue until all identical transaction ids have been found. """
-        # Get all actions with the same transaction id as the last one, in reverse order
-        last_transaction = self.redoHistory[-1].transaction if self.redoHistory else None
-        last_transactions = [a for a in reversed(self.redoHistory) if a.transaction == last_transaction]
+        if self._undo_redo_busy:
+            return
+        self._undo_redo_busy = True
+        try:
+            last_transactions = self._tail_transaction(self.redoHistory)
+            if not last_transactions:
+                return
 
-        # Iterate through each action in this transaction
-        for index, next_action in enumerate(last_transactions):
-            self.redoHistory.remove(next_action)
+            prepared = []
+            for next_action in last_transactions:
+                try:
+                    self.redoHistory.remove(next_action)
+                except ValueError:
+                    continue
+                action = next_action.copy()
+                # Remove ID from insert (if found)
+                if action.type == "insert" and isinstance(action.key[-1], dict) and "id" in action.key[-1]:
+                    action.key = action.key[:-1]
+                self.actionHistory.append(action)
+                prepared.append(action)
 
-            # Copy action
-            next_action = next_action.copy()
-
-            # Remove ID from insert (if found)
-            if next_action.type == "insert" and isinstance(next_action.key[-1], dict) and "id" in next_action.key[-1]:
-                next_action.key = next_action.key[:-1]
-
-            self.actionHistory.append(next_action)
             self.pending_action = None
 
-            # Ignore updates to UI on all actions except last one
-            ignore_refresh = (index != len(last_transactions) - 1)
-            get_app().window.IgnoreUpdates.emit(ignore_refresh, True)
-
-            # Perform next redo action
-            self.dispatch_action(next_action)
+            for index, next_action in enumerate(prepared):
+                ignore_refresh = (index != len(prepared) - 1)
+                get_app().window.IgnoreUpdates.emit(ignore_refresh, True)
+                self.dispatch_action(next_action)
+        finally:
+            self._undo_redo_busy = False
 
     # Carry out an action on all listeners
     def dispatch_action(self, action):
@@ -366,6 +525,15 @@ class UpdateManager:
         # let earlier listeners (or worker threads sharing the QueryObject cache) snapshot
         # stale data under the new version, causing a one-update-behind ("previous drag")
         # desync in downstream consumers such as the timeline overview/zoom slider.
+
+        log.debug(
+            "Dispatch action: type=%s key=%s ignore_history=%s transaction=%s",
+            action.type,
+            action.key,
+            self.ignore_history,
+            action.transaction,
+        )
+
         try:
             # Loop through all listeners
             for listener in self.updateListeners:
@@ -401,6 +569,7 @@ class UpdateManager:
         """ Insert a new UpdateAction into the UpdateManager
         (this action will then be distributed to all listeners) """
 
+        _guard_timing_values('insert', key, values)
         self.last_action = UpdateAction('insert', key, values, transaction=self.transaction_id)
         if self.ignore_history:
             self.pending_action = self.last_action
@@ -414,6 +583,7 @@ class UpdateManager:
         """ Update the UpdateManager with an UpdateAction
         (this action will then be distributed to all listeners) """
 
+        _guard_timing_values('update', key, values)
         self.last_action = UpdateAction('update', key, values, transaction=self.transaction_id)
         if self.ignore_history:
             self.pending_action = self.last_action

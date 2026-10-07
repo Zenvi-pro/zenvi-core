@@ -25,7 +25,7 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import QRectF
+from qt_api import QRectF
 
 
 class TransitionInteractionMixin:
@@ -44,6 +44,7 @@ class TransitionInteractionMixin:
     def _trigger_transition_menu_icon(self, pos):
         for rect, tran, _selected in self.geometry.iter_transitions(reverse=True):
             if self._transition_menu_rect(rect).contains(pos) and hasattr(self.win, "timeline"):
+                self._select_timeline_item(tran.id, "transition", True)
                 self.win.timeline.ShowTransitionMenu(tran.id)
                 return True
         return False

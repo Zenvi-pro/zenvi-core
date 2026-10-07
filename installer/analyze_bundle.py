@@ -10,7 +10,7 @@ for root, dirs, files in os.walk(os.path.join(PATH, 'build', 'OpenShot Video Edi
     for basename in files:
         file_path = os.path.join(root, basename)
 
-        output = str(subprocess.Popen(["oTool", "-L", file_path], stdout=subprocess.PIPE).communicate()[0])
+        output = str(subprocess.Popen(["otool", "-L", file_path], stdout=subprocess.PIPE).communicate()[0])
         if "is not an object file" not in output:
             dependency_path = output.replace('\\n','').split('\\t')[1].split(' ')[0]
             dependency_version = output.replace('\\n','').split('\\t')[1].split(' (')[1].replace(')','')

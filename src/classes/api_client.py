@@ -32,11 +32,29 @@ import uuid
 from typing import Any, Dict, List, Optional, Callable, Tuple
 from classes.logger import log
 
+# Shown when a paid action cannot run because of the login. The wording matters: the plan runner treats
+# "login required" / "unauthorized" as an auth failure to report, never as a step to repair with another tool.
+LOGIN_REQUIRED_MESSAGE = "Login required: sign in to Zenvi (Zenvi menu > Sign in), then run this again."
+SESSION_REJECTED_MESSAGE = "Unauthorized: Zenvi did not accept your login (the session may have expired). Sign in again, then run this again."
+
 from classes.zenvi_env import load_zenvi_dotenv
 
 load_zenvi_dotenv()
 
 _DEFAULT_BACKEND_URL = "https://api.zenvi.pro"
+
+
+def _refresh_credits_after_backend_billing() -> None:
+    """Repaint the credits badge after a request the backend bills itself.
+
+    /generation/video and /generation/morph deduct (or refund) before they
+    answer, so the balance is final by the time the request returns.
+    """
+    try:
+        from classes.credits_client import credits
+        credits.refresh_balance()
+    except Exception as exc:
+        log.debug("credits refresh after a backend-billed request failed: %s", exc)
 
 
 class ZenviBackendClient:
@@ -98,7 +116,13 @@ class ZenviBackendClient:
 
     @property
     def session(self):
-        """Lazy-create a requests.Session."""
+        """Lazy-create a requests.Session and keep its bearer token current.
+
+        Paid backend routes (/search, /generation/*, /research/*) reject any
+        request without ``Authorization: Bearer <jwt>``. The token is re-read
+        on every access so a refreshed or cleared login is picked up without
+        rebuilding the session.
+        """
         if self._session is None:
             try:
                 import requests
@@ -111,7 +135,16 @@ class ZenviBackendClient:
             except ImportError:
                 log.error("requests library is required for ZenviBackendClient")
                 raise
+        self._apply_bearer(self._session)
         return self._session
+
+    def _apply_bearer(self, session) -> None:
+        """Set or clear the Authorization header from the current login."""
+        token = self._auth_token()
+        if token:
+            session.headers["Authorization"] = f"Bearer {token}"
+        else:
+            session.headers.pop("Authorization", None)
 
     def auth_token(self) -> Optional[str]:
         """Current user JWT for backend usage/credits tracking."""
@@ -293,6 +326,44 @@ class ZenviBackendClient:
             log.error("Failed to list models: %s", e)
             return []
 
+    def fetch_model_catalog(self) -> Dict[str, Any]:
+        """The whole ``GET /models`` payload: ``models`` plus ``default_model_id``.
+
+        One round trip for callers that want both, instead of ``list_models``
+        followed by ``get_default_model_id`` hitting the endpoint twice.
+        Returns ``{}`` on any failure.
+        """
+        try:
+            r = self.session.get(f"{self.api_url}/models", timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            log.error("Failed to fetch model catalog: %s", e)
+            return {}
+
+    def list_cli_models(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Model-picker lineups for the CLI agent backends, keyed by backend id
+        (``claude_code``, ``codex``), from ``GET /models/cli``.
+
+        Built by the backend from each provider's live model list, so a new
+        release reaches the picker without a desktop update. Entries follow
+        the picker contract (id/name/featured/rank/tags/default) with bare
+        ids ready for the CLI's ``--model`` flag. ``{}`` on any failure, and
+        an older backend without the route answers the same way; callers keep
+        their built-in list in both cases.
+        """
+        try:
+            r = self.session.get(f"{self.api_url}/models/cli", timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            if not isinstance(data, dict):
+                return {}
+            return {k: v for k, v in data.items() if isinstance(v, list)}
+        except Exception as e:
+            log.debug("CLI model lineups unavailable: %s", e)
+            return {}
+
     def get_default_model_id(self) -> str:
         """Get the default model ID."""
         try:
@@ -353,6 +424,7 @@ class ZenviBackendClient:
         action: Optional[str] = None,
         plan_id: Optional[str] = None,
         on_plan_event: Optional[Callable] = None,
+        images: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[str]:
         """
         Send a chat message via WebSocket with tool delegation support.
@@ -360,6 +432,9 @@ class ZenviBackendClient:
         Each incoming ``tool_call`` is dispatched to its own worker thread so
         the agent can fan out N concurrent tool calls and we ack them as soon
         as each one finishes.  The recv loop never blocks on tool execution.
+
+        *images* (optional) are vision parts for the current turn only
+        (``[{name, mime_type, image_base64, ...}]``).
         """
         try:
             import websocket
@@ -404,6 +479,8 @@ class ZenviBackendClient:
                 payload_data["action"] = action
             if plan_id:
                 payload_data["plan_id"] = plan_id
+            if images:
+                payload_data["images"] = list(images)
             _ws_send({"type": "user_message", "data": payload_data})
 
             # Track outstanding tool worker threads so we can drain them
@@ -434,16 +511,40 @@ class ZenviBackendClient:
                         )
                     except Exception as exc:  # noqa: BLE001
                         log.error("Tool execution error: %s", exc)
-                        result = f"Tool execution error: {exc}"
+                        # Must start with "Error" -- the bridge never populates
+                        # a separate `error` field, so the backend classifies a
+                        # failed tool call purely by this prefix
+                        # (api/routes/chat.py). "Tool execution error: ..."
+                        # sailed through as a success, and a crashed undo was
+                        # reported to the user as done.
+                        result = f"Error: tool execution failed: {exc}"
                     text = str(result) if result is not None else ""
-                    if text and not text.startswith("Error"):
+                    from classes.agent_tools.output import get_last_output, ws_images
+                    from classes.agent_tools.receipt import is_error_result, parse_receipt
+                    if text and not is_error_result(text):
                         last_tool_result_holder[0] = text
+                    # Backend classifies failures by an Error: prefix on `result`
+                    # (no separate error field). Success stays full receipt JSON.
+                    wire = text
+                    receipt = parse_receipt(text)
+                    if receipt and receipt.get("status") in ("error", "refused"):
+                        wire = str(receipt.get("summary") or text)
+                    payload = {
+                        "call_id": call_data.get("call_id", ""),
+                        "result": wire,
+                    }
+                    # Sidecar for Assistant vision (backend forwards when ready).
+                    try:
+                        last = get_last_output()
+                        if last is not None:
+                            images = ws_images(last)
+                            if images:
+                                payload["images"] = images
+                    except Exception:
+                        pass
                     _ws_send({
                         "type": "tool_result",
-                        "data": {
-                            "call_id": call_data.get("call_id", ""),
-                            "result": text,
-                        },
+                        "data": payload,
                     })
 
                 t = threading.Thread(target=_runner, daemon=True, name="zenvi-tool-worker")
@@ -622,14 +723,19 @@ class ZenviBackendClient:
         video_id: Optional[str] = None,
         page_limit: Optional[int] = None,
         media_type: Optional[str] = None,
+        look_for: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Search for clips matching a query."""
+        """Search for clips matching a query. look_for: on_screen | spoken | None (both)."""
         try:
             effective_top_k = top_k
             if page_limit and page_limit > effective_top_k:
                 effective_top_k = min(int(page_limit), 50)
             effective_top_k = min(effective_top_k, 50)
-            payload: Dict[str, Any] = {"query": query, "top_k": effective_top_k}
+            payload: Dict[str, Any] = {
+                "query": query,
+                "top_k": effective_top_k,
+                "for_place": True,
+            }
             if index_id:
                 payload["index_id"] = index_id
             if video_id:
@@ -638,12 +744,57 @@ class ZenviBackendClient:
                 payload["page_limit"] = page_limit
             if media_type:
                 payload["media_type"] = media_type
+            if look_for:
+                payload["look_for"] = look_for
             r = self.session.post(f"{self.api_url}/search", json=payload, timeout=30)
             r.raise_for_status()
             return r.json()
         except Exception as e:
             log.error("Search failed: %s", e)
             return {"results": [], "error": str(e)}
+
+    def watch_window(
+        self,
+        query: str,
+        window_start: float,
+        window_end: float,
+        frames: List[Dict[str, Any]],
+        fallback_cut: Optional[float] = None,
+        fallback_in: Optional[float] = None,
+        fallback_out: Optional[float] = None,
+        sparse: bool = False,
+        orientation_role: bool = False,
+        source_class: str = "",
+    ) -> Dict[str, Any]:
+        """Vision-confirm a cut time from a small JPEG set. Frames stay off chat."""
+        try:
+            payload: Dict[str, Any] = {
+                "query": query or "",
+                "window_start": float(window_start),
+                "window_end": float(window_end),
+                "frames": list(frames or []),
+                "sparse": bool(sparse),
+                "orientation_role": bool(orientation_role),
+            }
+            if source_class:
+                payload["source_class"] = str(source_class)
+            if fallback_cut is not None:
+                payload["fallback_cut"] = float(fallback_cut)
+            if fallback_in is not None:
+                payload["fallback_in"] = float(fallback_in)
+            if fallback_out is not None:
+                payload["fallback_out"] = float(fallback_out)
+            r = self.session.post(
+                f"{self.api_url}/indexing/watch-window",
+                json=payload,
+                timeout=60,
+            )
+            r.raise_for_status()
+            data = r.json() if isinstance(r.json(), dict) else {}
+            return data if isinstance(data, dict) else {"error": "bad watch-window response"}
+        except Exception as e:
+            log.error("watch-window failed: %s", e)
+            return {"error": str(e)}
 
     # ------------------------------------------------------------------
     # Indexing
@@ -657,6 +808,7 @@ class ZenviBackendClient:
             s.verify = False
             import urllib3
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        self._apply_bearer(s)
         return s
 
     def start_direct_indexing_job(
@@ -738,19 +890,23 @@ class ZenviBackendClient:
             plan = plan_data.get("chunks") or []
             if not plan:
                 return {"success": False, "error": "Empty chunk plan from backend"}
+            max_height = int(plan_data.get("index_max_height") or 720)
 
             if progress_callback:
                 progress_callback("chunking", 5)
             chunk_infos, work_dir, chunk_err = extract_chunks(
-                file_path, plan, media_type=mt,
+                file_path, plan, media_type=mt, max_height=max_height,
             )
             if chunk_err:
                 return {"success": False, "error": chunk_err}
 
-            job_id = ""
+            job_id = str(uuid.uuid4())
             uploaded_chunks = []
             total = len(chunk_infos)
-            for i, info in enumerate(chunk_infos):
+            done_count = [0]
+
+            def _upload_one(info: Dict[str, Any]) -> Dict[str, Any]:
+                hs = s if total == 1 else self._new_http_session()
                 mime = str(info.get("mime_type") or guess_mime(info["path"], mt))
                 payload: Dict[str, Any] = {
                     "file_id": fid,
@@ -763,25 +919,23 @@ class ZenviBackendClient:
                     "chunk_index": int(info["chunk_index"]),
                     "start_ts": float(info["start"]),
                     "end_ts": float(info["end"]),
+                    "job_id": job_id,
                 }
-                if job_id:
-                    payload["job_id"] = job_id
                 if existing_index_id:
                     payload["existing_index_id"] = existing_index_id
 
-                r = s.post(f"{self.api_url}/indexing/upload-session", json=payload, timeout=60)
+                r = hs.post(f"{self.api_url}/indexing/upload-session", json=payload, timeout=60)
                 r.raise_for_status()
                 session_data = r.json()
                 if session_data.get("error"):
-                    return {"success": False, "error": session_data["error"]}
-                job_id = str(session_data.get("job_id") or job_id)
+                    raise RuntimeError(session_data["error"])
                 upload_url = str(session_data.get("upload_url") or "")
                 if not upload_url:
                     urls = session_data.get("presigned_urls") or []
                     if urls:
                         upload_url = str(urls[0].get("url") or "")
-                if not job_id or not upload_url:
-                    return {"success": False, "error": "Invalid upload-session response"}
+                if not upload_url:
+                    raise RuntimeError("Invalid upload-session response")
 
                 file_info, up_err = upload_file_to_gemini_resumable(
                     info["path"],
@@ -789,9 +943,12 @@ class ZenviBackendClient:
                     mime_type=mime,
                 )
                 if up_err:
-                    return {"success": False, "error": up_err}
+                    raise RuntimeError(up_err)
 
-                uploaded_chunks.append({
+                done_count[0] += 1
+                if progress_callback and total > 0:
+                    progress_callback("uploading", int(done_count[0] * 80 / total))
+                return {
                     "chunk_index": int(info["chunk_index"]),
                     "gemini_file_name": str(file_info.get("name") or ""),
                     "gemini_file_uri": str(file_info.get("uri") or ""),
@@ -800,9 +957,15 @@ class ZenviBackendClient:
                     "size": int(info["size"]),
                     "mime_type": mime,
                     "media_type": mt,
-                })
-                if progress_callback and total > 0:
-                    progress_callback("uploading", int((i + 1) * 80 / total))
+                }
+
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            workers = min(8, max(1, total))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futs = [pool.submit(_upload_one, info) for info in chunk_infos]
+                for fut in as_completed(futs):
+                    uploaded_chunks.append(fut.result())
+            uploaded_chunks.sort(key=lambda c: int(c.get("chunk_index") or 0))
 
             cr = s.post(
                 f"{self.api_url}/indexing/upload-complete",
@@ -862,19 +1025,30 @@ class ZenviBackendClient:
     def _poll_indexing_job(
         self,
         job_id: str,
-        max_wait: int = 1800,
-        poll_interval: int = 10,
+        max_wait: int = 21600,
+        poll_interval: int = 3,
         progress_callback: Optional[Callable[[str, int], None]] = None,
         session=None,
+        max_unreachable: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Poll /indexing/job/{job_id} until the job finishes or max_wait seconds pass.
+
+        Gives up once every poll has failed for max_unreachable seconds straight
+        (ZENVI_INDEX_UNREACHABLE_SEC, default 180), so a lost backend surfaces an
+        error while a brief network blip or a backend redeploy does not.
 
         Always uses a dedicated HTTP session — the shared client session is not
         safe for concurrent QThread indexing workers.
         """
         import time
+        if max_unreachable is None:
+            try:
+                max_unreachable = int(os.environ.get("ZENVI_INDEX_UNREACHABLE_SEC", "180"))
+            except ValueError:
+                max_unreachable = 180
         s = session or self._new_http_session()
         deadline = time.time() + max_wait
+        unreachable_since = None
         while time.time() < deadline:
             if progress_callback:
                 progress_callback("indexing", -1)
@@ -882,6 +1056,7 @@ class ZenviBackendClient:
                 r = s.get(f"{self.api_url}/indexing/job/{job_id}", timeout=15)
                 r.raise_for_status()
                 data = r.json()
+                unreachable_since = None
                 status = data.get("status", "running")
                 if status == "done":
                     result = data.get("result")
@@ -907,6 +1082,21 @@ class ZenviBackendClient:
                         "message": f"Job {job_id} not found on backend",
                     }
             except Exception as e:
+                code = getattr(getattr(e, "response", None), "status_code", None)
+                if code is not None and code < 500:
+                    err = f"Indexing status check failed: HTTP {code}"
+                    log.error(err)
+                    return {"success": False, "error": err, "message": err}
+                now = time.time()
+                if unreachable_since is None:
+                    unreachable_since = now
+                if now - unreachable_since >= max_unreachable:
+                    if code is not None:
+                        err = f"Backend returned HTTP {code} for {max_unreachable}s while indexing"
+                    else:
+                        err = f"Backend unreachable for {max_unreachable}s while indexing: {e}"
+                    log.error(err)
+                    return {"success": False, "error": err, "message": err}
                 log.warning("Indexing poll error (will retry): %s", e)
             time.sleep(poll_interval)
         return {
@@ -919,20 +1109,28 @@ class ZenviBackendClient:
     # Video Generation
     # ------------------------------------------------------------------
     def generate_video(self, prompt: str, duration_seconds: int = 5, **kwargs) -> Dict[str, Any]:
-        """Generate a video from a text prompt (Kling O1 Pro via Runware).
+        """Generate a video from a text prompt (the backend picks the managed provider; 2-15 s).
 
         Supported kwargs: mode, frame_images_paths, seed_video_file_id,
                           keep_original_sound, width, height, input_video_url.
         """
+        if not self._auth_token():
+            # Nothing to send: say so now instead of waiting for the server's 401 (which a plan would try to "repair").
+            return {"error": LOGIN_REQUIRED_MESSAGE, "auth": True}
         try:
             payload = {"prompt": prompt, "duration_seconds": duration_seconds}
             payload.update(kwargs)
             r = self.session.post(f"{self.api_url}/generation/video", json=payload, timeout=600)
+            if r.status_code == 401:
+                log.warning("Video generation rejected the login (401)")
+                return {"error": SESSION_REJECTED_MESSAGE, "auth": True}
             r.raise_for_status()
             return r.json()
         except Exception as e:
             log.error("Video generation failed: %s", e)
             return {"error": str(e)}
+        finally:
+            _refresh_credits_after_backend_billing()
 
     def generate_tts(
         self,
@@ -972,6 +1170,8 @@ class ZenviBackendClient:
         except Exception as e:
             log.error("Morph video generation failed: %s", e)
             return {"error": str(e)}
+        finally:
+            _refresh_credits_after_backend_billing()
 
     # ------------------------------------------------------------------
     # Indexing & Pegasus summarize (for files_model)
@@ -1133,9 +1333,38 @@ class ZenviBackendClient:
         }
 
     def freesound_download(self, sound_id: int, preview_url: str, filename: str = "") -> Dict[str, Any]:
-        """Download a Freesound preview MP3 from the CDN URL to the local machine."""
+        """Download a Freesound preview to the local machine.
+
+        Freesound serves each sound in several preview renditions and any one of
+        them can 404 while the others are fine, so fall back through the variants
+        instead of failing the whole stock_music run.
+        """
         hint = filename or f"freesound_{sound_id}"
-        return self._download_url_to_temp(preview_url, ".mp3", filename_hint=hint, timeout=180)
+        url = str(preview_url or "").strip()
+        if not url:
+            return {"success": False, "error": "No preview URL"}
+
+        candidates = [url]
+        for old_part, new_part in (
+            ("-hq.mp3", "-lq.mp3"), ("-lq.mp3", "-hq.mp3"),
+            ("-hq.ogg", "-lq.ogg"), ("-lq.ogg", "-hq.ogg"),
+        ):
+            if old_part in url:
+                candidates.append(url.replace(old_part, new_part))
+        # Different container as a last resort.
+        if "-hq.mp3" in url:
+            candidates.append(url.replace("-hq.mp3", "-hq.ogg"))
+
+        last = {"success": False, "error": "No preview URL"}
+        for candidate in candidates:
+            ext = ".ogg" if candidate.endswith(".ogg") else ".mp3"
+            last = self._download_url_to_temp(
+                candidate, ext, filename_hint=hint, timeout=180,
+            )
+            if last.get("success"):
+                return last
+            log.warning("Freesound preview failed (%s): %s", candidate, last.get("error"))
+        return last
 
 
 # Singleton

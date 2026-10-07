@@ -35,6 +35,42 @@ from classes import info
 from classes.app import get_app
 from classes.logger import log
 from classes.json_data import JsonDataStore
+import openshot
+
+# Thread counts the app used before OpenShot #5990 made libopenshot detect them.
+LEGACY_OMP_THREADS = 12
+LEGACY_FF_THREADS = 8
+
+
+def lib_default_thread_counts():
+    """Return (omp_threads, ffmpeg_threads) defaults for this libopenshot build.
+
+    libopenshot 1.0 exposes runtime-detected defaults (DefaultOMPThreads /
+    DefaultFFThreads). Older builds (Zenvi currently ships 0.5.x) do not, so fall
+    back to the legacy constants instead of crashing at startup.
+    """
+    omp_threads, ff_threads = LEGACY_OMP_THREADS, LEGACY_FF_THREADS
+    try:
+        lib_settings = openshot.Settings.Instance()
+    except Exception:
+        return omp_threads, ff_threads
+    try:
+        default_omp = getattr(lib_settings, "DefaultOMPThreads", None)
+        if callable(default_omp):
+            omp_threads = int(default_omp()) or omp_threads
+        default_ff = getattr(lib_settings, "DefaultFFThreads", None)
+        if callable(default_ff):
+            ff_threads = int(default_ff()) or ff_threads
+    except Exception:
+        log.debug("libopenshot thread defaults unavailable; using legacy values", exc_info=True)
+    return omp_threads, ff_threads
+
+
+def apply_openmp_settings(lib_settings):
+    """Push OMP_THREADS into OpenMP when this libopenshot build supports it (1.0+)."""
+    apply_fn = getattr(lib_settings, "ApplyOpenMPSettings", None)
+    if callable(apply_fn):
+        apply_fn()
 
 
 class SettingStore(JsonDataStore):
@@ -61,6 +97,49 @@ class SettingStore(JsonDataStore):
         self.data_type = "user settings"
         self.settings_filename = "openshot.settings"
         self.defaults_path = os.path.join(info.PATH, 'settings', '_default.settings')
+        # True for a headless session: it reads the user's preferences but must
+        # never write them -- a desktop window running alongside owns the file,
+        # and whichever process saved last would silently undo the other.
+        self.read_only = False
+
+    def write_to_file(self, file_path, data, path_mode="ignore", previous_path=None):
+        """Write settings JSON to disk, unless this store is read-only."""
+        if self.read_only:
+            log.debug("Settings are read-only in this session; not writing %s", file_path)
+            return None
+        return super().write_to_file(file_path, data, path_mode, previous_path)
+
+    def _apply_runtime_defaults(self, settings_list):
+        """Overlay runtime-detected libopenshot defaults onto selected settings."""
+        omp_threads, ff_threads = lib_default_thread_counts()
+        runtime_defaults = {
+            "omp_threads_number": omp_threads,
+            "ff_threads_number": ff_threads,
+        }
+
+        for item in settings_list:
+            setting_name = item.get("setting")
+            if setting_name in runtime_defaults:
+                item["value"] = runtime_defaults[setting_name]
+
+        return settings_list
+
+    def has_user_value(self, key):
+        """Return True when the user settings file contains an explicit value for key."""
+        key = key.lower()
+        file_path = os.path.join(info.USER_PATH, self.settings_filename)
+        if not os.path.exists(os.fsencode(file_path)):
+            return False
+
+        try:
+            user_settings = self.read_from_file(file_path)
+        except Exception:
+            return False
+
+        for item in user_settings:
+            if item.get("setting", "").lower() == key and "value" in item:
+                return True
+        return False
 
     def get_all_settings(self):
         """ Get the entire list of settings (with all metadata) """
@@ -81,11 +160,11 @@ class SettingStore(JsonDataStore):
         if key in user_values:
             user_values[key].update({"value": value})
         else:
-            log.warn(
+            log.warning(
                 "{} key '{}' not valid. The following are valid: {}".format(
                     self.data_type,
                     key,
-                    list(self._data.keys()),
+                    list(user_values.keys()),
                 ))
 
     def load(self):
@@ -93,7 +172,9 @@ class SettingStore(JsonDataStore):
         Creates user settings if missing. """
 
         # try to load default settings, on failure will raise exception to caller
-        default_settings = self.read_from_file(self.defaults_path)
+        default_settings = self._apply_runtime_defaults(
+            self.read_from_file(self.defaults_path)
+        )
         self._data = default_settings
 
         # Try to find user settings dir, give up if it's not there
@@ -102,16 +183,40 @@ class SettingStore(JsonDataStore):
 
         # Load or create user settings
         file_path = os.path.join(info.USER_PATH, self.settings_filename)
+        user_had_downloads_flag = False
         if os.path.exists(os.fsencode(file_path)):
             try:
                 user_settings = self.read_from_file(file_path)
+                if isinstance(user_settings, list):
+                    user_had_downloads_flag = any(
+                        isinstance(item, dict)
+                        and item.get("setting") == "exportDownloadsDefaultApplied"
+                        for item in user_settings
+                    )
+                new_keys = {name: self.get(name) for name in ("actionRedo", "actionAddTrack")}
                 # Merge sources, excluding user settings not found in default
                 self._data = self.merge_settings(default_settings, user_settings)
+                # Ctrl+Y used to add a track and Redo was Ctrl+Shift+Z only: a
+                # shortcut still on its old default follows the new one.
+                for name, old in (("actionRedo", "Ctrl+Shift+Z"), ("actionAddTrack", "Ctrl+Y")):
+                    if self.get(name) == old:
+                        self.set(name, new_keys[name])
             except Exception as ex:
                 log.error("Error loading settings file: %s", ex)
                 if self.app:
                     # We have a parent, ask to show a message box
                     self.app.settings_load_error(file_path)
+
+            # Existing installs defaulted Video Export to Project Folder.
+            # One-time: switch them to Recent Folder (Downloads fallback).
+            if not user_had_downloads_flag:
+                self.set("locationExportType", self.pathType.RECENT.value)
+                self.set("exportDownloadsDefaultApplied", True)
+
+        # Hardware decode auto-detect is intentionally NOT done here.
+        # settings.load() runs before libopenshot/Qt are fully ready, so the
+        # probe can falsely fail and lock in software decode. MainWindow runs
+        # it after openshot.Settings is live (see _maybe_auto_detect_hw_decode).
 
         # Return success of saving user settings file back after merge
         return self.write_to_file(file_path, self._data)
@@ -131,12 +236,18 @@ class SettingStore(JsonDataStore):
         Return True if any settings with 'restart: True' are changed.
         """
         log.info(f"Restoring defaults for category: {category_filter or 'all categories'}")
-        preserve_keys = ['unique_install_id', 'tutorial_ids', 'tutorial_enabled', 'send_metrics', 'recent_projects']
+        preserve_keys = [
+            'unique_install_id', 'tutorial_ids', 'tutorial_enabled', 'send_metrics',
+            'recent_projects', 'restore_project_path', 'restore_draft_history_key',
+            'custom_views', 'active_custom_view', 'active_builtin_view',
+        ]
 
         requires_restart = False  # Track if any setting requires a restart
 
         try:
-            default_settings = self.read_from_file(self.defaults_path)
+            default_settings = self._apply_runtime_defaults(
+                self.read_from_file(self.defaults_path)
+            )
         except Exception as ex:
             log.error(f"Error loading default settings: {ex}")
             return False
@@ -247,6 +358,11 @@ class SettingStore(JsonDataStore):
             default_path = os.path.dirname(default_path)
 
         if not (default_path and os.path.exists(default_path)):
+            if action == self.actionType.EXPORT:
+                downloads = getattr(info, "DOWNLOADS_PATH", "") or ""
+                if downloads and os.path.exists(downloads):
+                    log.debug("Default path invalid. Falling back to Downloads")
+                    return downloads
             log.debug("Default path invalid. Falling back to home directory")
             return os.path.expanduser("~")
 

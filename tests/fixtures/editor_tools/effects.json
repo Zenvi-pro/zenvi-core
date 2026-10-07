@@ -1,0 +1,8599 @@
+{
+ "AnalogTape": {
+  "apply_before_clip": true,
+  "bleed": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.6499999761581421
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "class_name": "AnalogTape",
+  "description": "Vintage home video wobble, bleed, and grain.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "MMDHQTQL",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Analog Tape",
+  "noise": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.5
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "seed_offset": 0,
+  "softness": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.4000000059604645
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "start": 0.0,
+  "static_bands": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.20000000298023224
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "stripe": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.25
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "tracking": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.550000011920929
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "type": "AnalogTape"
+ },
+ "AudioVisualization": {
+  "apply_before_clip": true,
+  "background": 4,
+  "channel_layout": 0,
+  "class_name": "AudioVisualization",
+  "color": {
+   "alpha": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "blue": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "green": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 170.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "red": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 68.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   }
+  },
+  "color_mode": 0,
+  "color_spread": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.6000000238418579
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "description": "Render waveform, spectrum, and other transparent audio visualizations.",
+  "detail": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.75
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "duration": 0.0,
+  "end": 0.0,
+  "frequency_high": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "frequency_low": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "glow": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.25
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "BAM442SP",
+  "intensity": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Audio Visualization",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "smoothing": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.3499999940395355
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "start": 0.0,
+  "style": 0,
+  "type": "AudioVisualization",
+  "visualization_type": 0
+ },
+ "Bars": {
+  "apply_before_clip": true,
+  "bottom": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.10000000149011612
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "class_name": "Bars",
+  "color": {
+   "alpha": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "blue": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 0.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "green": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 0.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "red": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 0.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   }
+  },
+  "description": "Add colored bars around your video.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "HST7B00V",
+  "layer": 0,
+  "left": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Bars",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "right": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "start": 0.0,
+  "top": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.10000000149011612
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "type": "Bars"
+ },
+ "BeatSync": {
+  "apply_before_clip": true,
+  "attack_ms": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 10.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "class_name": "BeatSync",
+  "decay_ms": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 200.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "description": "Generates an audio-reactive color flash layer, synchronized to the beat.",
+  "duration": 0.0,
+  "end": 0.0,
+  "frequency_high": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "frequency_low": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "high_color": {
+   "alpha": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "blue": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "green": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "red": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   }
+  },
+  "id": "NGDQ03J5",
+  "intensity": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 2.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "invert": false,
+  "layer": 0,
+  "low_color": {
+   "alpha": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "blue": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 0.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "green": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 0.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "red": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 0.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   }
+  },
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Beat Sync",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "response_curve": {
+   "enabled": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 1.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "nodes": [
+    {
+     "handle_type": 0,
+     "id": 0,
+     "interpolation": 1,
+     "left_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "left_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     }
+    },
+    {
+     "handle_type": 0,
+     "id": 1,
+     "interpolation": 1,
+     "left_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "left_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "start": 0.0,
+  "threshold": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.10000000149011612
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "type": "BeatSync"
+ },
+ "Blur": {
+  "apply_before_clip": true,
+  "bottom": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "class_name": "Blur",
+  "description": "Adjust the blur of the frame's image.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "horizontal_radius": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 6.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "id": "SBP5NV1L",
+  "iterations": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 3.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "layer": 0,
+  "left": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Blur",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "right": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "sigma": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 3.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "start": 0.0,
+  "top": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "type": "Blur",
+  "vertical_radius": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 6.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  }
+ },
+ "Brightness": {
+  "apply_before_clip": true,
+  "brightness": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "class_name": "Brightness",
+  "contrast": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 3.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "description": "Adjust the brightness and contrast of the frame's image.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "G5A951JM",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Brightness & Contrast",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "start": 0.0,
+  "type": "Brightness"
+ },
+ "Caption": {
+  "apply_before_clip": true,
+  "background": {
+   "alpha": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "blue": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 0.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "green": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 0.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "red": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 0.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   }
+  },
+  "background_alpha": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "background_corner": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 10.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "background_padding": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 20.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "bottom": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "caption_font": "sans",
+  "caption_text": "00:00:00:000 --> 00:10:00:000\nEdit this caption with our caption editor",
+  "class_name": "Caption",
+  "color": {
+   "alpha": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "blue": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "green": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "red": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   }
+  },
+  "description": "Add text captions on top of your video.",
+  "duration": 0.0,
+  "end": 0.0,
+  "fade_in": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "fade_out": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "font_alpha": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "font_size": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 30.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "5SQWNND4",
+  "layer": 0,
+  "left": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.10000000149011612
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "line_spacing": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Caption",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "right": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.10000000149011612
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "start": 0.0,
+  "stroke": {
+   "alpha": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "blue": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 169.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "green": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 169.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "red": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 169.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   }
+  },
+  "stroke_width": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.5
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "top": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.75
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "type": "Caption"
+ },
+ "ChromaKey": {
+  "apply_before_clip": true,
+  "class_name": "ChromaKey",
+  "color": {
+   "alpha": {
+    "Points": []
+   },
+   "blue": {
+    "Points": []
+   },
+   "green": {
+    "Points": []
+   },
+   "red": {
+    "Points": []
+   }
+  },
+  "description": "Replaces the color (or chroma) of the frame with transparency (i.e. keys out the color).",
+  "duration": 0.0,
+  "end": 0.0,
+  "fuzz": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 20.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "halo": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 10.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "WJ38KNXI",
+  "keymethod": 11,
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Chroma Key (Greenscreen)",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "start": 0.0,
+  "type": "ChromaKey"
+ },
+ "ColorGrade": {
+  "apply_before_clip": true,
+  "class_name": "ColorGrade",
+  "contrast": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "curve_all": {
+   "enabled": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 1.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "nodes": [
+    {
+     "handle_type": 0,
+     "id": 0,
+     "interpolation": 1,
+     "left_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "left_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     }
+    },
+    {
+     "handle_type": 0,
+     "id": 1,
+     "interpolation": 1,
+     "left_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "left_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "curve_blue": {
+   "enabled": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 1.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "nodes": [
+    {
+     "handle_type": 0,
+     "id": 0,
+     "interpolation": 1,
+     "left_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "left_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     }
+    },
+    {
+     "handle_type": 0,
+     "id": 1,
+     "interpolation": 1,
+     "left_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "left_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "curve_green": {
+   "enabled": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 1.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "nodes": [
+    {
+     "handle_type": 0,
+     "id": 0,
+     "interpolation": 1,
+     "left_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "left_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     }
+    },
+    {
+     "handle_type": 0,
+     "id": 1,
+     "interpolation": 1,
+     "left_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "left_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "curve_red": {
+   "enabled": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 1.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "nodes": [
+    {
+     "handle_type": 0,
+     "id": 0,
+     "interpolation": 1,
+     "left_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "left_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     }
+    },
+    {
+     "handle_type": 0,
+     "id": 1,
+     "interpolation": 1,
+     "left_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "left_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "description": "Unified color grading effect with curves, wheels and LUT support.",
+  "duration": 0.0,
+  "end": 0.0,
+  "exposure": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "highlights": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "id": "BFWNYPPQ",
+  "layer": 0,
+  "lut_intensity": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "lut_path": "",
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "mix": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "name": "Color Grade",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "saturation": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "shadows": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "start": 0.0,
+  "temperature": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "tint": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "type": "ColorGrade",
+  "vibrance": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "wheels": {
+   "enabled": true,
+   "enabled_keyframes": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 1.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "global": {
+    "amount": 0.0,
+    "amount_keyframes": {
+     "Points": [
+      {
+       "co": {
+        "X": 1.0,
+        "Y": 0.0
+       },
+       "handle_left": {
+        "X": 0.5,
+        "Y": 1.0
+       },
+       "handle_right": {
+        "X": 0.5,
+        "Y": 0.0
+       },
+       "handle_type": 0,
+       "interpolation": 0
+      }
+     ]
+    },
+    "color": "#ffffff",
+    "color_keyframes": {
+     "alpha": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 255.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "blue": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 255.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "green": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 255.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "red": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 255.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     }
+    },
+    "luma": 0.0,
+    "luma_keyframes": {
+     "Points": [
+      {
+       "co": {
+        "X": 1.0,
+        "Y": 0.0
+       },
+       "handle_left": {
+        "X": 0.5,
+        "Y": 1.0
+       },
+       "handle_right": {
+        "X": 0.5,
+        "Y": 0.0
+       },
+       "handle_type": 0,
+       "interpolation": 0
+      }
+     ]
+    }
+   },
+   "highlights": {
+    "amount": 0.0,
+    "amount_keyframes": {
+     "Points": [
+      {
+       "co": {
+        "X": 1.0,
+        "Y": 0.0
+       },
+       "handle_left": {
+        "X": 0.5,
+        "Y": 1.0
+       },
+       "handle_right": {
+        "X": 0.5,
+        "Y": 0.0
+       },
+       "handle_type": 0,
+       "interpolation": 0
+      }
+     ]
+    },
+    "color": "#ffffff",
+    "color_keyframes": {
+     "alpha": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 255.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "blue": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 255.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "green": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 255.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "red": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 255.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     }
+    },
+    "luma": 0.0,
+    "luma_keyframes": {
+     "Points": [
+      {
+       "co": {
+        "X": 1.0,
+        "Y": 0.0
+       },
+       "handle_left": {
+        "X": 0.5,
+        "Y": 1.0
+       },
+       "handle_right": {
+        "X": 0.5,
+        "Y": 0.0
+       },
+       "handle_type": 0,
+       "interpolation": 0
+      }
+     ]
+    }
+   },
+   "midtones": {
+    "amount": 0.0,
+    "amount_keyframes": {
+     "Points": [
+      {
+       "co": {
+        "X": 1.0,
+        "Y": 0.0
+       },
+       "handle_left": {
+        "X": 0.5,
+        "Y": 1.0
+       },
+       "handle_right": {
+        "X": 0.5,
+        "Y": 0.0
+       },
+       "handle_type": 0,
+       "interpolation": 0
+      }
+     ]
+    },
+    "color": "#ffffff",
+    "color_keyframes": {
+     "alpha": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 255.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "blue": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 255.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "green": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 255.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "red": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 255.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     }
+    },
+    "luma": 0.0,
+    "luma_keyframes": {
+     "Points": [
+      {
+       "co": {
+        "X": 1.0,
+        "Y": 0.0
+       },
+       "handle_left": {
+        "X": 0.5,
+        "Y": 1.0
+       },
+       "handle_right": {
+        "X": 0.5,
+        "Y": 0.0
+       },
+       "handle_type": 0,
+       "interpolation": 0
+      }
+     ]
+    }
+   },
+   "shadows": {
+    "amount": 0.0,
+    "amount_keyframes": {
+     "Points": [
+      {
+       "co": {
+        "X": 1.0,
+        "Y": 0.0
+       },
+       "handle_left": {
+        "X": 0.5,
+        "Y": 1.0
+       },
+       "handle_right": {
+        "X": 0.5,
+        "Y": 0.0
+       },
+       "handle_type": 0,
+       "interpolation": 0
+      }
+     ]
+    },
+    "color": "#ffffff",
+    "color_keyframes": {
+     "alpha": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 255.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "blue": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 255.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "green": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 255.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "red": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 255.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     }
+    },
+    "luma": 0.0,
+    "luma_keyframes": {
+     "Points": [
+      {
+       "co": {
+        "X": 1.0,
+        "Y": 0.0
+       },
+       "handle_left": {
+        "X": 0.5,
+        "Y": 1.0
+       },
+       "handle_right": {
+        "X": 0.5,
+        "Y": 0.0
+       },
+       "handle_type": 0,
+       "interpolation": 0
+      }
+     ]
+    }
+   }
+  }
+ },
+ "ColorMap": {
+  "apply_before_clip": true,
+  "class_name": "ColorMap",
+  "description": "Adjust colors using 3D LUT lookup tables (.cube format)",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "Q75W7KMJ",
+  "intensity": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "intensity_b": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "intensity_g": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "intensity_r": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "layer": 0,
+  "lut_path": "",
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Color Map / Lookup",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "start": 0.0,
+  "type": "ColorMap"
+ },
+ "ColorShift": {
+  "alpha_x": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "alpha_y": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "apply_before_clip": true,
+  "blue_x": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "blue_y": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "class_name": "ColorShift",
+  "description": "Shift the colors of an image up, down, left, and right (with infinite wrapping).",
+  "duration": 0.0,
+  "end": 0.0,
+  "green_x": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "green_y": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "RUVNTDOR",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Color Shift",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "red_x": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "red_y": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "start": 0.0,
+  "type": "ColorShift"
+ },
+ "Compressor": {
+  "apply_before_clip": true,
+  "attack": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "bypass": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "class_name": "Compressor",
+  "description": "Reduce the volume of loud sounds or amplify quiet sounds.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": true,
+  "has_tracked_object": false,
+  "has_video": false,
+  "id": "XOCK1884",
+  "layer": 0,
+  "makeup_gain": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Compressor",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "ratio": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "release": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "start": 0.0,
+  "threshold": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": -10.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "type": "Compressor"
+ },
+ "Crop": {
+  "apply_before_clip": true,
+  "bottom": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "class_name": "Crop",
+  "description": "Crop out any part of your video.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "YU67TF6T",
+  "layer": 0,
+  "left": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Crop",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "resize": false,
+  "right": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "start": 0.0,
+  "top": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "type": "Crop",
+  "x": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "y": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  }
+ },
+ "Deinterlace": {
+  "apply_before_clip": true,
+  "class_name": "Deinterlace",
+  "description": "Remove interlacing from a video (i.e. even or odd horizontal lines)",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "G2OYIEED",
+  "isOdd": true,
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Deinterlace",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "start": 0.0,
+  "type": "Deinterlace"
+ },
+ "Delay": {
+  "apply_before_clip": true,
+  "class_name": "Delay",
+  "delay_time": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "description": "Adjust the synchronism between the audio and video track.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": true,
+  "has_tracked_object": false,
+  "has_video": false,
+  "id": "IN25PHVL",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Delay",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "start": 0.0,
+  "type": "Delay"
+ },
+ "DenoiseImage": {
+  "apply_before_clip": true,
+  "class_name": "DenoiseImage",
+  "color_noise": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.699999988079071
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "description": "Reduces visible grain and color speckles in video frames.",
+  "detail": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.5
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "9UVOD8TQ",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "motion_safety": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.699999988079071
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "name": "Denoise Image",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "response_curve": {
+   "enabled": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 1.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "nodes": [
+    {
+     "handle_type": 0,
+     "id": 0,
+     "interpolation": 1,
+     "left_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "left_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     }
+    },
+    {
+     "handle_type": 0,
+     "id": 1,
+     "interpolation": 1,
+     "left_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "left_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.550000011920929
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     }
+    },
+    {
+     "handle_type": 0,
+     "id": 2,
+     "interpolation": 1,
+     "left_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "left_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.5
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "right_handle_y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "x": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 1.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "y": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.20000000298023224
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "start": 0.0,
+  "strength": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.7799999713897705
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "temporal": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.3499999940395355
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "type": "DenoiseImage"
+ },
+ "Displace": {
+  "apply_before_clip": true,
+  "brightness": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "class_name": "Displace",
+  "contrast": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "description": "Use a grayscale image or video to warp the frame in the horizontal and vertical directions.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "horizontal": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.05000000074505806
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "id": "BNK07EST",
+  "invert": false,
+  "layer": 0,
+  "map_reader": {},
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Displacement Map",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "replace_image": false,
+  "start": 0.0,
+  "strength": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "type": "Displace",
+  "vertical": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  }
+ },
+ "Distortion": {
+  "apply_before_clip": true,
+  "class_name": "Distortion",
+  "description": "Alter the audio by clipping the signal.",
+  "distortion_type": 0,
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": true,
+  "has_tracked_object": false,
+  "has_video": false,
+  "id": "9HR99Q2F",
+  "input_gain": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 10.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Distortion",
+  "order": 0,
+  "output_gain": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": -10.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "parent_effect_id": "",
+  "position": 0.0,
+  "start": 0.0,
+  "tone": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 5.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "type": "Distortion"
+ },
+ "Echo": {
+  "apply_before_clip": true,
+  "class_name": "Echo",
+  "description": "Reflection of sound with a delay after the direct sound.",
+  "duration": 0.0,
+  "echo_time": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.10000000149011612
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "end": 0.0,
+  "feedback": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.5
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "has_audio": true,
+  "has_tracked_object": false,
+  "has_video": false,
+  "id": "XNH6XAQE",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "mix": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.5
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "name": "Echo",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "start": 0.0,
+  "type": "Echo"
+ },
+ "Expander": {
+  "apply_before_clip": true,
+  "attack": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "bypass": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "class_name": "Expander",
+  "description": "Louder parts of audio becomes relatively louder and quieter parts becomes quieter.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": true,
+  "has_tracked_object": false,
+  "has_video": false,
+  "id": "R3O3UX0P",
+  "layer": 0,
+  "makeup_gain": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Expander",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "ratio": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "release": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "start": 0.0,
+  "threshold": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": -10.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "type": "Expander"
+ },
+ "FilmGrain": {
+  "amount": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.25
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "apply_before_clip": true,
+  "class_name": "FilmGrain",
+  "clump": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.20000000298023224
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "coherence": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.550000011920929
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "color_amount": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.20000000298023224
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "color_variation": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.3499999940395355
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "description": "Film-inspired grain texture with tonal, color, and temporal controls.",
+  "duration": 0.0,
+  "end": 0.0,
+  "evolution": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.6499999761581421
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "highlights": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.550000011920929
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "id": "YAHOUBOW",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "midtones": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "name": "Film Grain",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "seed": 1,
+  "shadows": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.800000011920929
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "size": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.20000000298023224
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "softness": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.25
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "start": 0.0,
+  "type": "FilmGrain"
+ },
+ "Glow": {
+  "apply_before_clip": false,
+  "blur_radius": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 20.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "class_name": "Glow",
+  "color": {
+   "alpha": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "blue": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 194.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "green": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 244.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "red": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   }
+  },
+  "description": "Add an outer or inner glow based on visible pixels.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "LCTYJY2S",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "mode": 0,
+  "name": "Glow",
+  "opacity": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.44999998807907104
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "spread": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.10000000149011612
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "start": 0.0,
+  "type": "Glow"
+ },
+ "Hue": {
+  "apply_before_clip": true,
+  "class_name": "Hue",
+  "description": "Adjust the hue / color of the frame's image.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "hue": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "id": "FA86651W",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Hue",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "start": 0.0,
+  "type": "Hue"
+ },
+ "LensFlare": {
+  "apply_before_clip": true,
+  "brightness": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "class_name": "LensFlare",
+  "color": {
+   "alpha": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "blue": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "green": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "red": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   }
+  },
+  "description": "Simulate sunlight hitting a lens with flares and spectral colors.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "USTAUIP7",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Lens Flare",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "size": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "spread": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "start": 0.0,
+  "type": "LensFlare",
+  "x": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": -0.5
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "y": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": -0.5
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  }
+ },
+ "Mask": {
+  "apply_before_clip": true,
+  "brightness": {
+   "Points": []
+  },
+  "class_name": "Mask",
+  "contrast": {
+   "Points": []
+  },
+  "description": "Uses a grayscale mask image to gradually wipe / transition between 2 images.",
+  "duration": 0.0,
+  "end": 0.0,
+  "fade_audio_hint": false,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "IRPAZAWE",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Alpha Mask / Wipe Transition",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "replace_image": false,
+  "start": 0.0,
+  "type": "Mask"
+ },
+ "Negate": {
+  "apply_before_clip": true,
+  "class_name": "Negate",
+  "description": "Negates the colors, producing a negative of the image.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "I34AQ49J",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Negative",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "start": 0.0,
+  "type": "Negate"
+ },
+ "Noise": {
+  "apply_before_clip": true,
+  "class_name": "Noise",
+  "description": "Random signal having equal intensity at different frequencies.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": true,
+  "has_tracked_object": false,
+  "has_video": false,
+  "id": "NXQ4L9AY",
+  "layer": 0,
+  "level": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 30.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Noise",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "start": 0.0,
+  "type": "Noise"
+ },
+ "ObjectDetection": {
+  "apply_before_clip": true,
+  "class_name": "ObjectDetection",
+  "confidence_threshold": 0.25,
+  "description": "Detect objects through the video.",
+  "display_box_text": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "display_boxes": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": true,
+  "has_video": true,
+  "id": "KBBFB62E",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Object Detector",
+  "objects": null,
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "protobuf_data_path": "",
+  "selected_object_index": -1,
+  "start": 0.0,
+  "type": "ObjectDetection"
+ },
+ "ObjectMask": {
+  "apply_before_clip": true,
+  "class_name": "ObjectMask",
+  "description": "Create and draw a segmentation mask for a prompted object.",
+  "draw_mask": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": true,
+  "has_video": true,
+  "id": "TGEZ4P5L",
+  "layer": 0,
+  "mask_alpha": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.47058823704719543
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "mask_color": {
+   "alpha": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "blue": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 237.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "green": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 160.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "red": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 83.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   }
+  },
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Object Mask",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "protobuf_data_path": "",
+  "start": 0.0,
+  "stroke_alpha": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "stroke_color": {
+   "alpha": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "blue": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "green": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "red": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   }
+  },
+  "stroke_width": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 3.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "type": "ObjectMask"
+ },
+ "Outline": {
+  "apply_before_clip": true,
+  "class_name": "Outline",
+  "color": {
+   "alpha": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "blue": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "green": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "red": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   }
+  },
+  "description": "Add outline around any image or text.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "C660RLM8",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Outline",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "start": 0.0,
+  "type": "Outline",
+  "width": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  }
+ },
+ "ParametricEQ": {
+  "apply_before_clip": true,
+  "class_name": "ParametricEQ",
+  "description": "Filter that allows you to adjust the volume level of a frequency in the audio track.",
+  "duration": 0.0,
+  "end": 0.0,
+  "filter_type": 0,
+  "frequency": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 500.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "gain": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "has_audio": true,
+  "has_tracked_object": false,
+  "has_video": false,
+  "id": "EG9VV2IA",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Parametric EQ",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "q_factor": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "start": 0.0,
+  "type": "ParametricEQ"
+ },
+ "Pixelate": {
+  "apply_before_clip": true,
+  "bottom": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "class_name": "Pixelate",
+  "description": "Pixelate (increase or decrease) the number of visible pixels.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "QF6LQG4F",
+  "layer": 0,
+  "left": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Pixelate",
+  "order": 0,
+  "parent_effect_id": "",
+  "pixelization": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.5
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "position": 0.0,
+  "right": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "start": 0.0,
+  "top": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "type": "Pixelate"
+ },
+ "Robotization": {
+  "apply_before_clip": true,
+  "class_name": "Robotization",
+  "description": "Transform the voice present in an audio track into a robotic voice effect.",
+  "duration": 0.0,
+  "end": 0.0,
+  "fft_size": 4,
+  "has_audio": true,
+  "has_tracked_object": false,
+  "has_video": false,
+  "hop_size": 0,
+  "id": "Z84RVPID",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Robotization",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "start": 0.0,
+  "type": "Robotization",
+  "window_type": 0
+ },
+ "Saturation": {
+  "apply_before_clip": true,
+  "class_name": "Saturation",
+  "description": "Adjust the color saturation.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "2T24XSX0",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Color Saturation",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "saturation": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "saturation_B": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "saturation_G": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "saturation_R": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "start": 0.0,
+  "type": "Saturation"
+ },
+ "Shadow": {
+  "angle": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 60.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "apply_before_clip": false,
+  "blur_radius": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 18.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "class_name": "Shadow",
+  "color": {
+   "alpha": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "blue": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 0.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "green": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 0.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "red": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 0.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   }
+  },
+  "description": "Add a soft drop shadow based on visible pixels.",
+  "distance": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 10.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "LWUFT1Q3",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Shadow",
+  "opacity": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.6000000238418579
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "spread": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.11999999731779099
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "start": 0.0,
+  "type": "Shadow"
+ },
+ "Sharpen": {
+  "amount": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 10.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "apply_before_clip": true,
+  "channel": 1,
+  "class_name": "Sharpen",
+  "description": "Boost edge contrast to make video details look crisper.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "4R748KEO",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "mode": 0,
+  "name": "Sharpen",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "radius": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 3.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "start": 0.0,
+  "threshold": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "type": "Sharpen"
+ },
+ "Shift": {
+  "apply_before_clip": true,
+  "class_name": "Shift",
+  "description": "Shift the image up, down, left, and right (with infinite wrapping).",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "T2NSQBTH",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Shift",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "start": 0.0,
+  "type": "Shift",
+  "x": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "y": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  }
+ },
+ "SphericalProjection": {
+  "apply_before_clip": true,
+  "class_name": "SphericalProjection",
+  "description": "Flatten and reproject 360\u00b0 or fisheye inputs into a rectilinear view with yaw, pitch, roll, and FOV. Supports Equirect and multiple fisheye lens models.",
+  "duration": 0.0,
+  "end": 0.0,
+  "fov": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 90.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "EVN0H365",
+  "in_fov": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 180.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "input_model": 0,
+  "interpolation": 3,
+  "invert": 0,
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Spherical Projection",
+  "order": 0,
+  "parent_effect_id": "",
+  "pitch": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "position": 0.0,
+  "projection_mode": 0,
+  "roll": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "start": 0.0,
+  "type": "SphericalProjection",
+  "yaw": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  }
+ },
+ "Stabilizer": {
+  "apply_before_clip": true,
+  "class_name": "Stabilizer",
+  "description": "Stabilize video clip to remove undesired shaking and jitter.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "ACXNSKA4",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Stabilizer",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "protobuf_data_path": "",
+  "start": 0.0,
+  "type": "Stabilizer",
+  "zoom": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  }
+ },
+ "Timer": {
+  "apply_before_clip": true,
+  "background": {
+   "alpha": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "blue": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 0.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "green": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 0.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "red": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 0.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   }
+  },
+  "background_alpha": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.44999998807907104
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "background_corner": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 6.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "background_padding": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 14.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "clamp": 1,
+  "class_name": "Timer",
+  "color": {
+   "alpha": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "blue": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "green": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "red": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   }
+  },
+  "description": "Render a styled count up, count down, clock, timecode, or frame number overlay.",
+  "duration": 0.0,
+  "end": 0.0,
+  "end_time": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "font_alpha": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 1.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "font_name": "sans",
+  "font_size": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 48.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "format": 0,
+  "gravity": 7,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "HZHIUP0M",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "mode": 0,
+  "name": "Timer",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "prefix": "",
+  "show_background": 1,
+  "start": 0.0,
+  "start_time": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "stroke": {
+   "alpha": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 255.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "blue": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 0.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "green": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 0.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   },
+   "red": {
+    "Points": [
+     {
+      "co": {
+       "X": 1.0,
+       "Y": 0.0
+      },
+      "handle_left": {
+       "X": 0.5,
+       "Y": 1.0
+      },
+      "handle_right": {
+       "X": 0.5,
+       "Y": 0.0
+      },
+      "handle_type": 0,
+      "interpolation": 0
+     }
+    ]
+   }
+  },
+  "stroke_width": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 2.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "suffix": "",
+  "time_source": 1,
+  "type": "Timer",
+  "x_offset": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "y_offset": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  }
+ },
+ "Tracker": {
+  "BaseFPS": {
+   "den": 1,
+   "num": 1
+  },
+  "TimeScale": 1.0,
+  "apply_before_clip": true,
+  "class_name": "Tracker",
+  "description": "Track the selected bounding box through the video.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": true,
+  "has_video": true,
+  "id": "VABJK4BP",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Tracker",
+  "objects": {
+   "VABJK4BP-0": {
+    "BaseFPS": {
+     "den": 1,
+     "num": 1
+    },
+    "TimeScale": 1.0,
+    "background": {
+     "alpha": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 255.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "blue": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 255.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "green": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "red": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     }
+    },
+    "background_alpha": {
+     "Points": [
+      {
+       "co": {
+        "X": 1.0,
+        "Y": 0.0
+       },
+       "handle_left": {
+        "X": 0.5,
+        "Y": 1.0
+       },
+       "handle_right": {
+        "X": 0.5,
+        "Y": 0.0
+       },
+       "handle_type": 0,
+       "interpolation": 0
+      }
+     ]
+    },
+    "background_corner": {
+     "Points": [
+      {
+       "co": {
+        "X": 1.0,
+        "Y": 12.0
+       },
+       "handle_left": {
+        "X": 0.5,
+        "Y": 1.0
+       },
+       "handle_right": {
+        "X": 0.5,
+        "Y": 0.0
+       },
+       "handle_type": 0,
+       "interpolation": 0
+      }
+     ]
+    },
+    "box_id": "VABJK4BP-0",
+    "delta_x": {
+     "Points": [
+      {
+       "co": {
+        "X": 1.0,
+        "Y": 0.0
+       },
+       "handle_left": {
+        "X": 0.5,
+        "Y": 1.0
+       },
+       "handle_right": {
+        "X": 0.5,
+        "Y": 0.0
+       },
+       "handle_type": 0,
+       "interpolation": 0
+      }
+     ]
+    },
+    "delta_y": {
+     "Points": [
+      {
+       "co": {
+        "X": 1.0,
+        "Y": 0.0
+       },
+       "handle_left": {
+        "X": 0.5,
+        "Y": 1.0
+       },
+       "handle_right": {
+        "X": 0.5,
+        "Y": 0.0
+       },
+       "handle_type": 0,
+       "interpolation": 0
+      }
+     ]
+    },
+    "draw_box": {
+     "Points": [
+      {
+       "co": {
+        "X": 1.0,
+        "Y": 1.0
+       },
+       "handle_left": {
+        "X": 0.5,
+        "Y": 1.0
+       },
+       "handle_right": {
+        "X": 0.5,
+        "Y": 0.0
+       },
+       "handle_type": 0,
+       "interpolation": 0
+      }
+     ]
+    },
+    "draw_text": {
+     "Points": [
+      {
+       "co": {
+        "X": 1.0,
+        "Y": 1.0
+       },
+       "handle_left": {
+        "X": 0.5,
+        "Y": 1.0
+       },
+       "handle_right": {
+        "X": 0.5,
+        "Y": 0.0
+       },
+       "handle_type": 0,
+       "interpolation": 0
+      }
+     ]
+    },
+    "scale_x": {
+     "Points": [
+      {
+       "co": {
+        "X": 1.0,
+        "Y": 1.0
+       },
+       "handle_left": {
+        "X": 0.5,
+        "Y": 1.0
+       },
+       "handle_right": {
+        "X": 0.5,
+        "Y": 0.0
+       },
+       "handle_type": 0,
+       "interpolation": 0
+      }
+     ]
+    },
+    "scale_y": {
+     "Points": [
+      {
+       "co": {
+        "X": 1.0,
+        "Y": 1.0
+       },
+       "handle_left": {
+        "X": 0.5,
+        "Y": 1.0
+       },
+       "handle_right": {
+        "X": 0.5,
+        "Y": 0.0
+       },
+       "handle_type": 0,
+       "interpolation": 0
+      }
+     ]
+    },
+    "stroke": {
+     "alpha": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 255.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "blue": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 255.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "green": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     },
+     "red": {
+      "Points": [
+       {
+        "co": {
+         "X": 1.0,
+         "Y": 0.0
+        },
+        "handle_left": {
+         "X": 0.5,
+         "Y": 1.0
+        },
+        "handle_right": {
+         "X": 0.5,
+         "Y": 0.0
+        },
+        "handle_type": 0,
+        "interpolation": 0
+       }
+      ]
+     }
+    },
+    "stroke_alpha": {
+     "Points": [
+      {
+       "co": {
+        "X": 1.0,
+        "Y": 0.699999988079071
+       },
+       "handle_left": {
+        "X": 0.5,
+        "Y": 1.0
+       },
+       "handle_right": {
+        "X": 0.5,
+        "Y": 0.0
+       },
+       "handle_type": 0,
+       "interpolation": 0
+      }
+     ]
+    },
+    "stroke_width": {
+     "Points": [
+      {
+       "co": {
+        "X": 1.0,
+        "Y": 2.0
+       },
+       "handle_left": {
+        "X": 0.5,
+        "Y": 1.0
+       },
+       "handle_right": {
+        "X": 0.5,
+        "Y": 0.0
+       },
+       "handle_type": 0,
+       "interpolation": 0
+      }
+     ]
+    },
+    "visible": {
+     "Points": [
+      {
+       "co": {
+        "X": 1.0,
+        "Y": 1.0
+       },
+       "handle_left": {
+        "X": 0.5,
+        "Y": 1.0
+       },
+       "handle_right": {
+        "X": 0.5,
+        "Y": 0.0
+       },
+       "handle_type": 0,
+       "interpolation": 0
+      }
+     ]
+    }
+   }
+  },
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "protobuf_data_path": "",
+  "start": 0.0,
+  "type": "Tracker"
+ },
+ "Wave": {
+  "amplitude": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.30000001192092896
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "apply_before_clip": true,
+  "class_name": "Wave",
+  "description": "Distort the frame's image into a wave pattern.",
+  "duration": 0.0,
+  "end": 0.0,
+  "has_audio": false,
+  "has_tracked_object": false,
+  "has_video": true,
+  "id": "KV7UIKFL",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "multiplier": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.20000000298023224
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "name": "Wave",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "shift_x": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.0
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "speed_y": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.20000000298023224
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  },
+  "start": 0.0,
+  "type": "Wave",
+  "wavelength": {
+   "Points": [
+    {
+     "co": {
+      "X": 1.0,
+      "Y": 0.05999999865889549
+     },
+     "handle_left": {
+      "X": 0.5,
+      "Y": 1.0
+     },
+     "handle_right": {
+      "X": 0.5,
+      "Y": 0.0
+     },
+     "handle_type": 0,
+     "interpolation": 0
+    }
+   ]
+  }
+ },
+ "Whisperization": {
+  "apply_before_clip": true,
+  "class_name": "Whisperization",
+  "description": "Transform the voice present in an audio track into a whispering voice effect.",
+  "duration": 0.0,
+  "end": 0.0,
+  "fft_size": 4,
+  "has_audio": true,
+  "has_tracked_object": false,
+  "has_video": false,
+  "hop_size": 2,
+  "id": "AF76BY5C",
+  "layer": 0,
+  "mask_invert": false,
+  "mask_loop_mode": 0,
+  "mask_reader": {},
+  "mask_source_id": "",
+  "mask_time_mode": 1,
+  "name": "Whisperization",
+  "order": 0,
+  "parent_effect_id": "",
+  "position": 0.0,
+  "start": 0.0,
+  "type": "Whisperization",
+  "window_type": 0
+ }
+}
