@@ -220,6 +220,7 @@ def _backend(monkeypatch, response):
         session.post.return_value.json.return_value = response
     client._session = session
     monkeypatch.setattr(client, "_apply_bearer", lambda s: None)
+    monkeypatch.setattr(client, "_auth_token", lambda: "jwt")        # signed in: the request is made
     return client
 
 
@@ -387,3 +388,29 @@ def test_the_badge_refreshes_after_a_background_tab_reply(chat_ui):
 
     assert win._sessions["s2"]["messages"]
     assert win.refreshes == 1
+
+
+def test_video_generation_without_a_login_says_so_before_any_request(monkeypatch):
+    from classes.api_client import LOGIN_REQUIRED_MESSAGE, ZenviBackendClient
+    client = ZenviBackendClient.__new__(ZenviBackendClient)
+    client.api_url = "http://backend.test/api/v1"
+    session = MagicMock()
+    client._session = session
+    monkeypatch.setattr(client, "_auth_token", lambda: None)
+    out = client.generate_video("a paper plane", duration_seconds=5)
+    assert out == {"error": LOGIN_REQUIRED_MESSAGE, "auth": True} and not session.post.called
+    assert out["error"].startswith("Login required") and "sign in" in out["error"]
+
+
+def test_a_rejected_login_is_reported_as_unauthorized_not_as_a_raw_http_error(monkeypatch):
+    from classes.api_client import SESSION_REJECTED_MESSAGE, ZenviBackendClient
+    client = ZenviBackendClient.__new__(ZenviBackendClient)
+    client.api_url = "http://backend.test/api/v1"
+    session = MagicMock()
+    session.post.return_value.status_code = 401
+    client._session = session
+    monkeypatch.setattr(client, "_auth_token", lambda: "stale")
+    monkeypatch.setattr(client, "_apply_bearer", lambda s: None)
+    out = client.generate_video("a paper plane", duration_seconds=5)
+    assert out == {"error": SESSION_REJECTED_MESSAGE, "auth": True} and "401" not in out["error"] and "Sign in again" in out["error"]
+    session.post.return_value.raise_for_status.assert_not_called()
