@@ -88,8 +88,12 @@ def song(tmp_path_factory):
 
 
 def duration_of(path):
-    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path], capture_output=True, text=True)
-    return float(out.stdout.strip())
+    """The real length: decode it. A raw ADTS file has no duration header, so ffprobe only estimates it from the bitrate
+    (about 1.5% short, and it varies with the ffmpeg build), which made this test fail on the CI runner."""
+    out = subprocess.run([mf.need_ffmpeg(), "-v", "error", "-i", path, "-f", "null", "-", "-progress", "pipe:1", "-nostats"],
+                         capture_output=True, text=True)
+    micros = [int(line.split("=")[1]) for line in out.stdout.splitlines() if line.startswith("out_time_us=")]
+    return micros[-1] / 1e6
 
 
 def test_the_audio_proxy_is_small_mono_aac_and_carries_no_tags(song, tmp_path):
