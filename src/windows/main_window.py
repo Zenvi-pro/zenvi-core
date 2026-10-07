@@ -5297,7 +5297,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         """Copy and remove the currently selected clip/transition"""
         if self._dispatch_chat_edit_action("cut"):
             return
-        self.copyAll()
+        # Not copyAll(): it would hand a highlighted chat transcript the Copy and
+        # leave the clips deleted without ever reaching the clipboard.
+        self.timeline.Copy_Triggered(MenuCopy.ALL, self.selected_clips, self.selected_transitions, [])
         self.deleteItem()
 
     def pasteAll(self):

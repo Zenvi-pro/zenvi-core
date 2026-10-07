@@ -145,3 +145,14 @@ def test_dragging_text_over_the_chat_is_never_taken_as_a_file_drop():
     ids = SimpleNamespace(mimeData=lambda: SimpleNamespace(text=lambda: '["F1"]', hasUrls=lambda: False, urls=lambda: [], hasFormat=lambda f: False,
                                                            formats=lambda: ["text/plain"]), accept=lambda: calls.append("accept"), ignore=lambda: None, setDropAction=lambda a: None)
     assert W._accept_chat_file_drag(ids) is True and calls[-1] == "accept", "project file ids are still accepted"
+
+
+def test_cut_copies_the_timeline_selection_directly_not_through_chat_copy_routing():
+    import ast
+
+    src = (Path(__file__).resolve().parents[1] / "src" / "windows" / "main_window.py").read_text(encoding="utf-8")
+    cut = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef) and n.name == "cutAll")
+    calls = {ast.unparse(n.func) for n in ast.walk(cut) if isinstance(n, ast.Call)}
+    assert "self.copyAll" not in calls
+    assert "self.timeline.Copy_Triggered" in calls
+    assert "self.deleteItem" in calls
