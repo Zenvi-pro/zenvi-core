@@ -341,6 +341,27 @@ def test_a_failed_vector_drops_its_row_and_keeps_the_index_aligned(video, prepar
     assert shelf.layer(SHA, "vectors")["failed"] == 1
 
 
+def test_vectors_that_left_passages_out_are_tried_again_but_only_twice(video, prepared):
+    shelf, probe = prepared
+    flaky = lambda: FakeClient(fail_embed=lambda item: item.get("text", "").startswith("Hello"))   # noqa: E731
+    cloud.compute_cloud(flaky(), video, probe, SHA, shelf, uploader=uploader)
+    assert shelf.layer_ready(SHA, "vectors"), "what was embedded stays searchable"
+    assert not cloud.is_settled(shelf, SHA, "vectors"), "the missing passage gets another go"
+    retry = flaky()
+    cloud.compute_cloud(retry, video, probe, SHA, shelf, uploader=uploader)
+    assert retry.calls, "the second run embeds again"
+    assert cloud.is_settled(shelf, SHA, "vectors"), "two attempts is the limit, so a passage that always fails is not re-bought forever"
+    third = flaky()
+    out = cloud.compute_cloud(third, video, probe, SHA, shelf, uploader=uploader)
+    assert out["layers"]["vectors"] == "cached" and third.calls == []
+
+
+def test_a_clean_run_is_settled_at_once(video, prepared):
+    shelf, probe = prepared
+    cloud.compute_cloud(FakeClient(), video, probe, SHA, shelf, uploader=uploader)
+    assert cloud.is_settled(shelf, SHA, "vectors")
+
+
 def test_a_watch_failure_returns_the_reason_and_saves_nothing(video, prepared):
     shelf, probe = prepared
     client = FakeClient(job_states=[{"status": "failed", "result": {"error": "quota exceeded"}}])

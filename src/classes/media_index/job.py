@@ -193,6 +193,11 @@ class IndexingJob:
         if not sha:
             return False
         shelf = default_shelf()
+        from classes.media_index.reuse import same_footage
+        if not same_footage(shelf, sha, media_type=media_type, duration=duration):
+            # Two different files can in theory share a fingerprint; never describe this one with the other's layers.
+            log.warning("Saved index for %s was made from different footage; indexing it the original way", file_path)
+            return False
 
         def ready(layer):
             # any saved version counts: an older cloud layer is kept, not paid for again

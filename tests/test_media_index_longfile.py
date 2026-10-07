@@ -137,6 +137,24 @@ def test_a_long_file_is_described_in_chunks_each_with_its_own_proxy_and_shifted_
     assert small.shelf.read_json(SHA, "watch_partial.json") == {}, "nothing half-done is left behind"
 
 
+class ForgetfulClient(ChunkClient):
+    """A backend that, once, answers for fewer shots than it was asked about."""
+
+    def v2_job(self, job_id, session=None):
+        reply = super().v2_job(job_id, session)
+        if self.n == 1:
+            reply["result"]["shots"] = [s for s in reply["result"]["shots"] if s["id"] != 2]
+        return reply
+
+
+def test_a_shot_the_backend_leaves_out_is_recorded_as_missing_not_described(small):
+    out = cloud.run_watch(ForgetfulClient(), "/m/long.mp4", PROBE, "F1", structure(10), SPEECH, uploader=upload_ok, resume=(small.shelf, SHA))
+    assert [s["id"] for s in out["shots"]] == list(range(10)), "every shot, in order, the left-out one included"
+    left_out = out["shots"][2]
+    assert left_out.get("missing") is True and "description" not in left_out
+    assert out["missing"] == 1
+
+
 def test_a_short_file_is_still_one_upload(small, monkeypatch):
     monkeypatch.setattr(longfile, "LONG_SECONDS", 1000.0)
     client = ChunkClient()

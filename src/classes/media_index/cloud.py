@@ -34,6 +34,7 @@ UNREACHABLE_SECONDS = 180.0
 MAX_WAIT_SECONDS = 30 * 60
 EMBED_BATCH = 48
 READY = "ready"
+MAX_VECTOR_ATTEMPTS = 2
 
 
 class Cancelled(Exception):
@@ -111,7 +112,10 @@ def is_settled(shelf: Any, sha: str, layer: str) -> bool:
     row = shelf.layer(sha, layer) or {}
     status = row.get("status")
     if status == READY:
-        return True
+        # Vectors that left some passages out stay searchable but are tried again, twice at most, so one rate-limited
+        # batch does not leave shots out of semantic search for good and a passage that always fails is not re-bought forever.
+        partial = layer == S.LAYER_VECTORS and int(row.get("failed") or 0) > 0
+        return not (partial and int(row.get("attempts") or 1) < MAX_VECTOR_ATTEMPTS)
     if status == S.NOT_APPLICABLE:
         return not (layer == S.LAYER_VECTORS and row.get("had_speech") is False and shelf.layer_ready(sha, S.LAYER_SPEECH))
     return False
@@ -345,10 +349,14 @@ def run_watch_chunked(client: Any, path: str, probe: Dict[str, Any], file_id: st
             fail = {k: v for k, v in part.items() if k in PASS_UP}
             fail["error"] = f"chunk {chunk['index'] + 1} of {len(chunks)}: " + str(fail.get("error") or "no descriptions came back")
             return fail
+        returned = {int(s["id"]) for s in part["shots"]}
+        for sid in chunk["shot_ids"]:          # a shot the backend left out is recorded as missing, never as described
+            if sid not in returned:
+                part["shots"].append({"id": sid, "start": by_id[sid]["start"], "end": by_id[sid]["end"], "missing": True})
         done[key] = {"shots": part["shots"], "usage": part.get("usage") or {}}
         if resume:
             resume[0].write_json(resume[1], "watch_partial.json", {"plan": plan, "version": version, "done": done})
-    merged = [shot for chunk in chunks for shot in done[str(chunk["index"])]["shots"]]
+    merged = [shot for chunk in chunks for shot in sorted(done[str(chunk["index"])]["shots"], key=lambda s: int(s["id"]))]
     usage = {"prompt_tokens": 0, "output_tokens": 0, "batches": 0, "model": None, "chunks": len(chunks)}
     for part in done.values():
         u = part["usage"]
@@ -493,7 +501,9 @@ def compute_cloud(client: Any, path: str, probe: Dict[str, Any], sha: str, shelf
     shelf.write_bytes(sha, "vectors_image.f16", i_blob)
     shelf.write_json(sha, "vectors_index.json", {"version": S.LAYER_VERSIONS[S.LAYER_VECTORS], "dims": S.EMBED_DIMS,
                                                   "text": t_rows, "image": i_rows, "errors": errors[:20]})
+    previous = shelf.layer(sha, S.LAYER_VECTORS) or {}
     shelf.set_layer(sha, S.LAYER_VECTORS, version=S.LAYER_VERSIONS[S.LAYER_VECTORS], status=READY,
-                    text=len(t_rows), image=len(i_rows), failed=len(text_rows) + len(image_rows) - len(t_rows) - len(i_rows))
+                    text=len(t_rows), image=len(i_rows), failed=len(text_rows) + len(image_rows) - len(t_rows) - len(i_rows),
+                    attempts=int(previous.get("attempts") or 0) + 1)
     layers[S.LAYER_VECTORS] = READY
     return {"layers": layers, "usage": usage, "watch": watch, "errors": errors}

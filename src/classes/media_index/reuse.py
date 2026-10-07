@@ -33,6 +33,20 @@ def durations_match(saved: Any, current: Any, media_type: str) -> bool:
     return abs(saved - current) <= max(_DURATION_ABS_TOLERANCE, _DURATION_REL_TOLERANCE * max(saved, current))
 
 
+def same_footage(shelf: Shelf, fingerprint: Any, *, media_type: str, duration: float) -> bool:
+    """False when the layers saved under this fingerprint were made from different footage (another type or length).
+
+    Nothing saved yet counts as the same, so a first analysis is never held back.
+    """
+    manifest = shelf.read_json(fingerprint, "manifest.json") or {}
+    source = manifest.get("source")
+    if not isinstance(source, dict) or not source:
+        return True
+    if str(source.get("media_type") or "video") != str(media_type or "video"):
+        return False
+    return durations_match(source.get("duration"), duration, str(media_type or "video"))
+
+
 def reusable_analysis(shelf: Shelf, fingerprint: Any, *, media_type: str,
                       duration: float) -> Optional[Dict[str, Any]]:
     """The saved analysis for this content, or None when it must be made again."""

@@ -11,7 +11,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from classes.media_index.reuse import durations_match, restored_metadata, reusable_analysis  # noqa: E402
+from classes.media_index.reuse import durations_match, restored_metadata, reusable_analysis, same_footage  # noqa: E402
 from classes.media_index.store import Shelf  # noqa: E402
 
 FP = "c" * 64
@@ -121,3 +121,16 @@ def test_a_restored_analysis_reads_as_indexed_in_the_badge():
     from classes.twelvelabs_match import twelvelabs_is_indexed
 
     assert twelvelabs_is_indexed(got["index"])
+
+
+# -- two files that share a fingerprint must not share layers ---------------------------
+def test_layers_made_from_other_footage_are_not_the_same_footage(tmp_path):
+    s = Shelf(str(tmp_path / "idx"))
+    s.set_source(FP, media_type="video", duration=30.0)
+    assert same_footage(s, FP, media_type="video", duration=30.2)
+    assert not same_footage(s, FP, media_type="video", duration=75.0)
+    assert not same_footage(s, FP, media_type="audio", duration=30.0)
+
+
+def test_nothing_saved_yet_never_holds_back_a_first_analysis(tmp_path):
+    assert same_footage(Shelf(str(tmp_path / "idx")), FP, media_type="video", duration=30.0)
