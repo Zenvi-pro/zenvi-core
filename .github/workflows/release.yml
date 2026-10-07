@@ -92,13 +92,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        run: |
-          sudo add-apt-repository -y ppa:openshot.developers/libopenshot-daily
-          sudo apt-get update
-          sudo apt-get install -y \
-            libopenshot-audio-dev libopenshot-dev python3-openshot \
-            libfuse2 desktop-file-utils
+      # Built from source (not the apt PPA) so the version is the same v1.0.0 as
+      # the macOS and Windows jobs; the script fails if it is below the app's
+      # MINIMUM_LIBOPENSHOT_VERSION. Also installs libfuse2 and desktop-file-utils.
+      - name: Build libopenshot from source
+        run: bash installer/ci-linux-libopenshot.sh
 
       - name: Install Python dependencies
         run: |
@@ -442,6 +440,13 @@ jobs:
           echo "ZENVI_OPENSHOT_PYROOT=$PYROOT" >> $GITHUB_ENV
           echo "ZENVI_OPENSHOT_INSTALL=$INSTALL_PREFIX" >> $GITHUB_ENV
           echo "DYLD_LIBRARY_PATH=$INSTALL_PREFIX/lib:${DYLD_LIBRARY_PATH:-}" >> $GITHUB_ENV
+
+          # Hard check, independent of dlopen: the installed library file carries
+          # its version (libopenshot.1.0.0.dylib). Fail the build if it is older
+          # than the app's MINIMUM_LIBOPENSHOT_VERSION.
+          LIB_VER=$(ls "$INSTALL_PREFIX"/lib/libopenshot.[0-9]*.[0-9]*.[0-9]*.dylib 2>/dev/null | head -1 | sed -E 's/.*libopenshot\.([0-9]+\.[0-9]+\.[0-9]+)\.dylib/\1/')
+          [ -n "$LIB_VER" ] || { echo "::error::no versioned libopenshot dylib found in $INSTALL_PREFIX/lib"; exit 1; }
+          python3 installer/check_libopenshot_version.py --version "$LIB_VER"
 
           # Verify the binding is importable (soft check — freeze.py uses filesystem
           # discovery via ZENVI_OPENSHOT_PYROOT, so a dlopen failure here is non-fatal)
