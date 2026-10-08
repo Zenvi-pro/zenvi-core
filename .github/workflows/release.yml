@@ -5,6 +5,12 @@
 # installers and publishes them as a GitHub Release so the in-app auto-updater
 # can pick them up.
 #
+# A push to the releases branch (an RC PR squash-merged, or a direct commit)
+# runs the same builds but publishes a draft release ("releases-test", replaced
+# on every push). Drafts are visible only to people
+# with write access and never reach /releases/latest, so the website and the
+# auto-updater ignore them; download the installers there to test before tagging.
+#
 # Asset naming convention expected by the auto-updater:
 #   Linux   → Zenvi-v<VER>-x86_64.AppImage
 #   macOS   → Zenvi-v<VER>-x86_64.dmg   (Intel)
@@ -16,6 +22,12 @@ name: Zenvi Production Release
 on:
   push:
     tags: ["v*.*.*"]
+    branches: ["releases"]
+
+# A newer push to releases supersedes the build still running for it.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type == 'branch' }}
 
 permissions:
   contents: write # needed for creating releases & uploading assets
@@ -63,6 +75,7 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.version }}
       tag: ${{ steps.ver.outputs.tag }}
+      name: ${{ steps.ver.outputs.name }}
     steps:
       - uses: actions/checkout@v4
 
@@ -75,12 +88,17 @@ jobs:
           m = re.search(r'VERSION\s*=\s*\"([^\"]+)\"', text)
           print(m.group(1))
           ")
-          if [ "${GITHUB_REF_NAME}" != "v${VER}" ]; then
+          if [ "${GITHUB_REF_TYPE}" = "branch" ]; then
+            echo "tag=${GITHUB_REF_NAME}-test" >> "$GITHUB_OUTPUT"
+            echo "name=Zenvi ${GITHUB_REF_NAME} test build (${GITHUB_SHA::7})" >> "$GITHUB_OUTPUT"
+          elif [ "${GITHUB_REF_NAME}" != "v${VER}" ]; then
             echo "::error::Tag ${GITHUB_REF_NAME} does not match version v${VER}"
             exit 1
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "name=Zenvi v${VER}" >> "$GITHUB_OUTPUT"
           fi
           echo "version=$VER" >> "$GITHUB_OUTPUT"
-          echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           echo "### Version: $VER" >> "$GITHUB_STEP_SUMMARY"
 
   # ── 2. Linux build (AppImage + .deb) ──────────────────────────────────
@@ -92,13 +110,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        run: |
-          sudo add-apt-repository -y ppa:openshot.developers/libopenshot-daily
-          sudo apt-get update
-          sudo apt-get install -y \
-            libopenshot-audio-dev libopenshot-dev python3-openshot \
-            libfuse2 desktop-file-utils
+      # Built from source (not the apt PPA) so the version is the same v1.0.0 as
+      # the macOS and Windows jobs; the script fails if it is below the app's
+      # MINIMUM_LIBOPENSHOT_VERSION. Also installs libfuse2 and desktop-file-utils.
+      - name: Build libopenshot from source
+        run: bash installer/ci-linux-libopenshot.sh
 
       - name: Install Python dependencies
         run: |
@@ -442,6 +458,13 @@ jobs:
           echo "ZENVI_OPENSHOT_PYROOT=$PYROOT" >> $GITHUB_ENV
           echo "ZENVI_OPENSHOT_INSTALL=$INSTALL_PREFIX" >> $GITHUB_ENV
           echo "DYLD_LIBRARY_PATH=$INSTALL_PREFIX/lib:${DYLD_LIBRARY_PATH:-}" >> $GITHUB_ENV
+
+          # Hard check, independent of dlopen: the installed library file carries
+          # its version (libopenshot.1.0.0.dylib). Fail the build if it is older
+          # than the app's MINIMUM_LIBOPENSHOT_VERSION.
+          LIB_VER=$(ls "$INSTALL_PREFIX"/lib/libopenshot.[0-9]*.[0-9]*.[0-9]*.dylib 2>/dev/null | head -1 | sed -E 's/.*libopenshot\.([0-9]+\.[0-9]+\.[0-9]+)\.dylib/\1/')
+          [ -n "$LIB_VER" ] || { echo "::error::no versioned libopenshot dylib found in $INSTALL_PREFIX/lib"; exit 1; }
+          python3 installer/check_libopenshot_version.py --version "$LIB_VER"
 
           # Verify the binding is importable (soft check — freeze.py uses filesystem
           # discovery via ZENVI_OPENSHOT_PYROOT, so a dlopen failure here is non-fatal)
@@ -1344,7 +1367,15 @@ jobs:
   # are still published.
   release:
     needs: [version, build-linux, build-macos, build-windows, unit-tests]
-    if: always() && needs.version.result == 'success'
+    # A tag release goes to /releases/latest, which the website and every installed
+    # app trust, so it needs all three platforms. v1.2.0 skipped this check, shipped
+    # Windows-only as "Latest" after the Linux and macOS builds failed, and left
+    # every Mac and Linux user with nothing to update to.
+    if: >-
+      always() && needs.version.result == 'success' &&
+      needs.build-linux.result == 'success' &&
+      needs.build-macos.result == 'success' &&
+      needs.build-windows.result == 'success'
     runs-on: ubuntu-latest
     env:
       VER: ${{ needs.version.outputs.version }}
@@ -1412,11 +1443,18 @@ jobs:
             gh api -X DELETE "repos/${{ github.repository }}/git/refs/tags/production" || true
           fi
 
+      - name: Remove the previous test release
+        if: github.ref_type == 'branch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete "$TAG" --yes || true
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
-          name: "Zenvi v${{ env.VER }}"
+          target_commitish: ${{ github.sha }}
+          name: ${{ needs.version.outputs.name }}
           body: |
             ## Downloads
 
@@ -1433,7 +1471,7 @@ jobs:
             ## Checksums
 
             See `SHA256SUMS.txt` for verification.
-          draft: false
+          draft: ${{ github.ref_type == 'branch' }}
           prerelease: false
           files: dist/*
           generate_release_notes: true
