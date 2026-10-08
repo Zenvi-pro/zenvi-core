@@ -1125,6 +1125,18 @@ if sys.platform == "darwin":
     # Mac issues with frozen folder and *.app folder
     # We need to rewrite many dependency paths and library IDs
     from installer.fix_qt5_rpath import *
+    from installer.pin_opencv_dylibs import pin_opencv_dylibs
+    # cx_Freeze keeps one copy per dylib name; make it the one OpenCV links
+    # (a stale libtiff otherwise fails with "Symbol not found: _TIFFOpen...").
+    for frozen_path in os.listdir(build_path):
+        _frozen_dir = None
+        if frozen_path.startswith("exe"):
+            _frozen_dir = os.path.join(build_path, frozen_path)
+        elif frozen_path.endswith(".app"):
+            _frozen_dir = os.path.join(build_path, frozen_path, "Contents", "MacOS")
+        if _frozen_dir:
+            for changed in pin_opencv_dylibs(_frozen_dir):
+                log.info("Pinned OpenCV dependency: %s", changed)
     for frozen_path in os.listdir(build_path):
             if frozen_path.startswith("exe"):
                 fix_rpath(os.path.join(build_path, frozen_path))

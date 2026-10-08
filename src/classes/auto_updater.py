@@ -19,6 +19,7 @@
 import os
 import json
 import platform
+import re
 import threading
 import time
 import hashlib
@@ -34,6 +35,7 @@ from classes.update_installer import (
     discard_staged_update,
     has_pending_update as installer_has_pending_update,
     is_version_newer,
+    parse_version,
     read_manifest,
 )
 
@@ -42,9 +44,19 @@ from classes.update_installer import (
 # Constants
 # ---------------------------------------------------------------------------
 
-GITHUB_API_URL = (
-    "https://api.github.com/repos/{repo}/releases/latest"
-)
+# ZENVI_GITHUB_API_BASE points the updater at a local mock of the GitHub API so
+# the whole check/download/install flow can be tested without publishing anything.
+_API_BASE = os.environ.get("ZENVI_GITHUB_API_BASE", "https://api.github.com").rstrip("/")
+GITHUB_API_URL = _API_BASE + "/repos/{repo}/releases/latest"
+GITHUB_RELEASES_URL = _API_BASE + "/repos/{repo}/releases?per_page=30"
+
+# Opt-in channel for testing the updater against release-candidate builds.
+# ZENVI_UPDATE_CHANNEL=rc also considers the prerelease the release workflow
+# publishes on every push to the releases branch. That is a prerelease, so
+# /releases/latest (the website and the default channel) never returns it.
+UPDATE_CHANNEL_ENV = "ZENVI_UPDATE_CHANNEL"
+RC_RELEASE_TAG = "releases-test"
+_ASSET_VERSION_RE = re.compile(r"Zenvi-v(\d+(?:\.\d+)+)-")
 
 # How long to wait after app launch before first check (seconds)
 INITIAL_DELAY = 15
@@ -63,6 +75,40 @@ PROGRESS_INDETERMINATE = -1
 # ---------------------------------------------------------------------------
 # Platform helpers
 # ---------------------------------------------------------------------------
+
+def update_channel():
+    """Return "rc" when the user opted into release candidates, else "stable"."""
+    value = os.environ.get(UPDATE_CHANNEL_ENV, "").strip().lower()
+    return "rc" if value in ("rc", "beta", "test") else "stable"
+
+
+def release_version(release):
+    """Version of a release payload: the tag, else the installer file names.
+
+    The RC prerelease reuses one tag (``releases-test``), so its version only
+    exists in the asset names (``Zenvi-v1.2.1-x86_64.dmg``).
+    """
+    tag = (release.get("tag_name") or "").lstrip("v")
+    if tag and parse_version(tag) != (0,):
+        return tag
+    for asset in release.get("assets", []):
+        match = _ASSET_VERSION_RE.match(asset.get("name", ""))
+        if match:
+            return match.group(1)
+    return ""
+
+
+def pick_release(stable, releases):
+    """Newest of the stable release and the RC prerelease (stable wins ties)."""
+    best, best_version = stable, release_version(stable) if stable else ""
+    for rel in releases or []:
+        if rel.get("draft") or rel.get("tag_name") != RC_RELEASE_TAG:
+            continue
+        version = release_version(rel)
+        if version and (not best_version or is_version_newer(version, best_version)):
+            best, best_version = rel, version
+    return best, best_version
+
 
 def _platform_asset_suffix():
     """Return the expected asset file suffix for the running platform."""
@@ -228,31 +274,40 @@ class AutoUpdater:
 
         Returns (release_dict_or_None, latest_version_str_or_empty).
         """
-        url = GITHUB_API_URL.format(repo=info.GITHUB_REPO)
-        try:
-            resp = requests.get(
-                url,
-                headers={
-                    "Accept": "application/vnd.github.v3+json",
-                    "User-Agent": f"Zenvi/{info.VERSION}",
-                },
-                timeout=30,
-            )
-        except requests.RequestException as exc:
-            log.warning("AutoUpdater: Network error checking for updates: %s", exc)
+        headers = {
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": f"Zenvi/{info.VERSION}",
+        }
+        rc = update_channel() == "rc"
+        stable = self._get_json(GITHUB_API_URL.format(repo=info.GITHUB_REPO), headers)
+        release, latest_version = stable, release_version(stable) if stable else ""
+        if rc:
+            releases = self._get_json(
+                GITHUB_RELEASES_URL.format(repo=info.GITHUB_REPO), headers)
+            if isinstance(releases, list):
+                release, latest_version = pick_release(stable, releases)
+                log.info("AutoUpdater: rc channel selected %s", latest_version or "nothing")
+        if release is None:
             return None, ""
-
-        if resp.status_code != 200:
-            log.warning("AutoUpdater: GitHub API returned HTTP %d", resp.status_code)
-            return None, ""
-
-        release = resp.json()
-        tag = release.get("tag_name", "")
-        latest_version = tag.lstrip("v")
         if latest_version:
-            info.ERROR_REPORT_STABLE_VERSION = latest_version
+            # Sentry treats "running the stable version" as production; an RC
+            # must not be reported as the stable version.
+            if not rc:
+                info.ERROR_REPORT_STABLE_VERSION = latest_version
             self._emit_version_signal(latest_version)
         return release, latest_version
+
+    @staticmethod
+    def _get_json(url, headers):
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+        except requests.RequestException as exc:
+            log.warning("AutoUpdater: Network error checking for updates: %s", exc)
+            return None
+        if resp.status_code != 200:
+            log.warning("AutoUpdater: GitHub API returned HTTP %d", resp.status_code)
+            return None
+        return resp.json()
 
     def _check_and_download(self, release, latest_version):
         """Download the platform asset from an already-fetched release payload."""
@@ -421,7 +476,7 @@ class AutoUpdater:
 
     def _emit_version_signal(self, version):
         """Emit the existing FoundVersionSignal so the UI shows 'Update Available'."""
-        if version:
+        if version and update_channel() != "rc":
             info.ERROR_REPORT_STABLE_VERSION = version
         window = self._main_window()
         if window:

@@ -5435,7 +5435,7 @@ def _import_generated_video(video_path, *, preserve_alpha=None):
     return f, None
 
 
-def _stamp_generated_video_metadata(file_obj, prompt=""):
+def _stamp_generated_video_metadata(file_obj, prompt="", source="ai_video_generation"):
     """Agent-facing metadata for an AI-generated clip — does not enqueue Gemini.
 
     Generated media is imported with skip_indexing=True, so without this the
@@ -5466,7 +5466,7 @@ def _stamp_generated_video_metadata(file_obj, prompt=""):
         ai["description"] = summary[:400]
         # analyzed=True so get_effective_ai_metadata / Scene panel show the text.
         ai["analyzed"] = True
-        ai["source"] = "ai_video_generation"
+        ai["source"] = source
         file_obj.data["ai_metadata"] = ai
         if not file_obj.data.get("name"):
             file_obj.data["name"] = summary[:120]
@@ -6244,6 +6244,98 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
             if not stamped:
                 return (
                     f"{msg} Warning: the generated clip's metadata (name, tags, summary) "
+                    f"could not be saved for file_id={f.id}; it may be missing after reload."
+                )
+            return msg
+        except Exception as e:
+            return f"Error: {e}"
+    finally:
+        _resume_auto_save(auto_save_was_active)
+
+
+def generate_image_and_add_to_timeline(prompt="", duration_seconds="", position_seconds="", track="", **_kw) -> str:
+    """Generate an AI still image from a text prompt (cloud text-to-image, uses credits) and place it on the timeline.
+
+    For "generate an image of a red fox in snow", "make an AI picture for the intro". The image
+    follows the project's aspect (16:9, 9:16 or square) and stays on screen for duration_seconds
+    (default 5). position_seconds and track place it like add_clip_to_timeline_tool; other clips
+    are not moved. Returns the placement line with timeline_clip_id; the import and the placement
+    are one undo step. Not for video (generate_video_and_add_to_timeline_tool) or local ComfyUI
+    (create_media_with_comfyui_tool).
+    """
+    if QThread is None or QEventLoop is None:
+        return "Error: Requires a Qt binding."
+    app = _get_app()
+    prompt = (prompt or "").strip()
+    if len(prompt) < 2:
+        return "Error: Prompt must be at least 2 characters."
+    try:
+        seconds = parse_seconds_arg(duration_seconds, default=5.0, field="duration_seconds")
+    except ValueError as exc:
+        return f"Error: {exc}"
+    if seconds <= 0:
+        return "Error: duration_seconds must be greater than 0."
+    width, height = _project_kling_o1_t2v_dims()
+
+    auto_save_was_active = _pause_auto_save()
+    try:
+        from classes.api_client import get_backend_client
+        result = get_backend_client().generate_image(prompt, width=width, height=height)
+        err = result.get("error") or ""
+        if err:
+            return f"Error: {err}"
+
+        import base64
+        import binascii
+        from classes.assets import durable_media_path
+        try:
+            image_bytes = base64.b64decode(result.get("image_base64") or "", validate=True)
+        except (binascii.Error, ValueError):
+            image_bytes = b""
+        if not image_bytes:
+            return "Error: The backend returned no image data."
+        ext = {"image/png": ".png", "image/webp": ".webp"}.get(str(result.get("mime_type") or "").lower(), ".jpg")
+        output_path = _canonical_media_path(durable_media_path(ext=ext))
+        try:
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            with open(output_path, "wb") as fh:
+                fh.write(image_bytes)
+        except OSError as exc:
+            return f"Error: Could not save the generated image: {exc}"
+
+        try:
+            # The import and the placement are one user action: join the tool call's
+            # transaction (execute_tool) so they undo as ONE step.
+            tid = app.updates.transaction_id or _new_transaction_id()
+
+            def _import():
+                from classes.editor_tools.titles_text_common import import_media_file
+                return import_media_file(output_path)
+
+            f = _run_on_main_thread(_atomic(app, _import, tid=tid), timeout=30)
+            if not f:
+                return "Error: Image generated but failed to import into project files."
+            stamped = _stamp_generated_video_metadata(f, prompt, source="ai_image_generation")
+
+            msg = add_clip_to_timeline(
+                file_id=f.id,
+                position_seconds=position_seconds or "",
+                track=track or "",
+                query=prompt,
+                duration_seconds=f"{seconds:g}",
+                transaction_id=tid,
+            )
+            if not msg or str(msg).lower().startswith("error"):
+                return (
+                    f"Error: Image imported (file_id={f.id}) but timeline placement failed: "
+                    f"{msg or 'unknown'}. "
+                    f"Do NOT regenerate — call add_clip_to_timeline_tool(file_id='{f.id}', "
+                    f"track=<layer_number from list_layers_tool>, position_seconds=..., "
+                    f"duration_seconds={seconds:g})."
+                )
+            if not stamped:
+                return (
+                    f"{msg} Warning: the generated image's metadata (name, tags, summary) "
                     f"could not be saved for file_id={f.id}; it may be missing after reload."
                 )
             return msg
@@ -9427,6 +9519,7 @@ AGENT_TOOL_HANDLERS = {
     "fetch_remotion_video_from_supabase_tool": fetch_motion_graphics_video,
     # Video generation / AI edit
     "generate_video_and_add_to_timeline_tool": generate_video_and_add_to_timeline,
+    "generate_image_and_add_to_timeline_tool": generate_image_and_add_to_timeline,
     "modify_clip_tool": modify_clip,
     "generate_transition_clip_tool": generate_transition_clip,
     # OpenShot transitions (mask/dissolve)
@@ -9502,6 +9595,7 @@ TOOL_DISPLAY_LABELS = {
     "fetch_motion_graphics_video_tool": "Fetch HyperFrames video",
     "fetch_remotion_video_from_supabase_tool": "Fetch HyperFrames video",
     "generate_video_and_add_to_timeline_tool": "Generate video",
+    "generate_image_and_add_to_timeline_tool": "Generate image",
     "modify_clip_tool": "AI edit clip",
     "generate_transition_clip_tool": "Bake A + morph + B",
     "list_transitions_tool": "List transitions",
@@ -9618,6 +9712,7 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     "import_stock_media_tool",
     # Long-running Runware/ffmpeg work; Qt timeline touches are marshalled internally.
     "generate_video_and_add_to_timeline_tool",
+    "generate_image_and_add_to_timeline_tool",
     "modify_clip_tool",
     "generate_transition_clip_tool",
     # Network search against project TwelveLabs index (File reads are read-only).

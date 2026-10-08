@@ -374,7 +374,9 @@ def _apply_macos(filepath, filename):
             _log("No .app bundle found inside DMG")
             return False
 
-        dest = os.path.join("/Applications", os.path.basename(app_bundle))
+        # ZENVI_UPDATE_APPLICATIONS_DIR lets tests install into a sandbox folder.
+        apps_dir = os.environ.get("ZENVI_UPDATE_APPLICATIONS_DIR") or "/Applications"
+        dest = os.path.join(apps_dir, os.path.basename(app_bundle))
         dest_new = dest + ".new"
         dest_bak = dest + ".bak"
 
