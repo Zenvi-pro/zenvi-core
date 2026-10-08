@@ -1275,8 +1275,10 @@ def parse_claude_models(text: str) -> list:
     """Picker entries from Claude Code's answer to a stream-json ``initialize``.
 
     The CLI lists what this account may pick (``/model``): ``value`` is what
-    ``--model`` takes, ``description`` leads with the model's name. Its
-    "default" entry becomes "CLI default", tagged with what that resolves to.
+    ``--model`` takes and ``displayName`` names it. ``description`` is a blurb
+    that only sometimes leads with the versioned name ("Sonnet 5 · ..."), so
+    it is used just when it does. The "default" entry (listed first) becomes
+    "CLI default", tagged with the listed model it resolves to.
     """
     models = None
     for line in (text or "").splitlines():
@@ -1288,25 +1290,29 @@ def parse_claude_models(text: str) -> list:
             reply = ev.get("response") or {}
             models = (reply.get("response") or reply).get("models")
             break
-    rows, seen, default_name, default_efforts = [], set(), "", []
+    rows, seen, default_name, default_resolves, default_efforts = [], set(), "", None, []
     for m in models if isinstance(models, list) else []:
         if not isinstance(m, dict) or not isinstance(m.get("value"), str) or not m["value"]:
             continue
         mid = m["value"]
-        name = (str(m.get("description") or "").split("\u00b7")[0].strip()
-                or m.get("displayName") or mid)
         efforts = _effort_levels(m.get("supportedEffortLevels")) if m.get("supportsEffort") else []
         if mid == "default":
-            default_name, default_efforts = name, efforts
+            default_resolves, default_efforts = m.get("resolvedModel"), efforts
             continue
         if mid in seen:
             continue
         seen.add(mid)
+        name = str(m.get("displayName") or "").strip() or mid
+        lead = str(m.get("description") or "").split("\u00b7")[0].strip()
+        if lead.lower().startswith(name.lower()):
+            name = lead
         row = {"id": mid, "name": name, "provider": "anthropic",
                "rank": len(rows) + 1, "featured": True}
         if efforts:
             row["efforts"] = efforts
         rows.append(row)
+        if default_resolves and m.get("resolvedModel") == default_resolves:
+            default_name = default_name or name
     return [_cli_default_entry(default_name, default_efforts)] + rows if rows else []
 
 

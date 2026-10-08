@@ -2578,9 +2578,10 @@ def test_opencode_native_is_the_binary_the_shim_really_runs(tmp_path):
 
 
 CLAUDE_INIT = {"type": "control_response", "response": {"subtype": "success", "response": {"models": [
-    {"value": "default", "displayName": "Default (recommended)",
+    {"value": "default", "displayName": "Default (recommended)", "resolvedModel": "claude-sonnet-5",
      "description": "Sonnet 5 \u00b7 Efficient for routine tasks"},
-    {"value": "sonnet", "displayName": "Sonnet", "description": "Sonnet 5 \u00b7 Efficient"},
+    {"value": "sonnet", "displayName": "Sonnet", "resolvedModel": "claude-sonnet-5",
+     "description": "Sonnet 5 \u00b7 Efficient"},
     {"value": "claude-fable-5-1[1m]", "displayName": "Fable",
      "description": "Fable 5.1 \u00b7 Most capable \u00b7 Requires usage credits"},
     {"value": "haiku", "displayName": "Haiku", "description": "Haiku 4.5 \u00b7 Fastest"},
@@ -2599,6 +2600,25 @@ def test_parse_claude_models_reads_what_the_installed_cli_offers():
     assert [r["name"] for r in rows[1:]] == ["Sonnet 5", "Fable 5.1", "Haiku 4.5"]
     assert parse_claude_models('{"type":"system"}\n') == []
     assert parse_claude_models("") == []
+
+
+def test_claude_models_are_named_by_the_cli_not_by_its_blurbs():
+    """Some Claude Code builds describe a model without naming it ("For complex
+    tasks"); the picker then listed the blurbs instead of the models."""
+    from windows.agent_runners import parse_claude_models
+
+    init = {"type": "control_response", "response": {"subtype": "success", "response": {"models": [
+        {"value": "default", "displayName": "Default (recommended)", "resolvedModel": "claude-opus-5-5",
+         "description": "Use the default model (currently Opus 5.5) · $4/$20 per Mtok"},
+        {"value": "opus", "displayName": "Opus", "resolvedModel": "claude-opus-5-5",
+         "description": "For complex work and everyday tasks"},
+        {"value": "sonnet", "displayName": "Sonnet", "resolvedModel": "claude-sonnet-5-5",
+         "description": "Sonnet 5.5 · Efficient for routine tasks"},
+        {"value": "haiku", "description": "Fastest for quick answers"},
+    ]}}}
+    rows = parse_claude_models(json.dumps(init))
+    assert [r["name"] for r in rows] == ["CLI default", "Opus", "Sonnet 5.5", "haiku"]
+    assert rows[0]["tags"] == ["Opus"], "the model the default resolves to, not its blurb"
 
 
 def test_claude_code_lists_its_own_models_and_passes_them_on(qapp, fresh_cursor_lineup, monkeypatch):
