@@ -30,7 +30,12 @@
     const modelSelect = document.getElementById('chat-model-select');
     const backendSelect = document.getElementById('chat-backend-select');
     const modelTrigger = document.getElementById('chat-model-trigger');
-    const effortSelect = document.getElementById('chat-effort-select');
+    const effortBox = document.getElementById('chat-model-effort');
+    const effortName = document.getElementById('chat-effort-name');
+    const effortDots = document.getElementById('chat-effort-dots');
+    const ultracodeRow = document.getElementById('chat-ultracode-row');
+    const ultracodeToggle = document.getElementById('chat-ultracode-toggle');
+    const cliModeBtn = document.getElementById('chat-cli-mode');
     const modelLabel = document.getElementById('chat-model-label');
     const modelMenu = document.getElementById('chat-model-menu');
     const modelSearch = document.getElementById('chat-model-search');
@@ -1235,7 +1240,13 @@
     }
 
     function getModelIcon(modelId) {
-        var provider = detectProvider(modelId);
+        // The provider the list states wins: a CLI's own ids ("opus",
+        // "sonnet") say nothing about who makes the model.
+        var provider = '';
+        for (var i = 0; i < modelItems.length; i++) {
+            if (modelItems[i].id === modelId) provider = modelItems[i].provider || '';
+        }
+        if (!PROVIDER_ICONS[provider]) provider = detectProvider(modelId);
         return PROVIDER_ICONS[provider] || PROVIDER_ICONS['default'];
     }
 
@@ -1394,44 +1405,120 @@
         renderEffortPicker();
     }
 
-    /* Effort levels belong to a model, so the picker follows the model pill:
-       hidden when the model lists none (always the case for Zenvi Assistant).
-       The level last picked for a model is kept for this page's lifetime. */
+    /* Effort levels, Ultracode and permission modes belong to a model, as its
+       CLI lists them (setModels); a model that lists none (always the case
+       for Zenvi Assistant) shows none. Drawn by hand, not with a native
+       <select>: Qt WebKit and QtWebEngine render that one differently.
+       What was picked is kept for this page's lifetime: the effort (or
+       Ultracode) per model, the mode for every model that offers it. */
     var effortByModel = {};
+    var cliMode = '';
+    var ULTRACODE = 'ultracode';
+    var MODE_LABELS = { bypass: 'Bypass', auto: 'Auto', plan: 'Plan',
+                        workspace: 'Workspace', readonly: 'Read-only' };
 
-    function renderEffortPicker() {
-        if (!effortSelect) return;
-        var efforts = [];
+    function selectedItem() {
         for (var i = 0; i < modelItems.length; i++) {
-            if (modelItems[i].id === selectedModelId) efforts = modelItems[i].efforts || [];
+            if (modelItems[i].id === selectedModelId) return modelItems[i];
         }
-        effortSelect.innerHTML = '';
-        if (!efforts.length) {
-            effortSelect.style.display = 'none';
-            return;
+        return null;
+    }
+
+    // The picked model's plain levels, and whether it also takes Ultracode.
+    function effortChoices() {
+        var item = selectedItem();
+        var all = item ? item.efforts : [];
+        var levels = [];
+        for (var i = 0; i < all.length; i++) {
+            if (all[i] !== ULTRACODE) levels.push(all[i]);
         }
-        var names = [''].concat(efforts);
-        for (var j = 0; j < names.length; j++) {
-            var opt = document.createElement('option');
-            opt.value = names[j];
-            opt.textContent = names[j] ? 'Effort: ' + names[j] : 'Effort: default';
-            effortSelect.appendChild(opt);
-        }
-        var kept = effortByModel[selectedModelId] || '';
-        effortSelect.value = efforts.indexOf(kept) >= 0 ? kept : '';
-        effortSelect.style.display = '';
+        return { levels: levels, ultracode: levels.length !== all.length };
     }
 
     function pickedEffort() {
-        if (!effortSelect || effortSelect.style.display === 'none') return '';
-        return effortSelect.value || '';
+        var item = selectedItem();
+        var kept = effortByModel[selectedModelId] || '';
+        return item && item.efforts.indexOf(kept) >= 0 ? kept : '';
     }
 
-    if (effortSelect) {
-        effortSelect.addEventListener('change', function () {
-            effortByModel[selectedModelId] = effortSelect.value || '';
+    function buildEffortDot(name, active) {
+        var dot = document.createElement('button');
+        dot.type = 'button';
+        dot.className = 'chat-effort-dot' + (active ? ' active' : '');
+        dot.title = name || 'auto';
+        dot.setAttribute('role', 'radio');
+        dot.setAttribute('aria-checked', active ? 'true' : 'false');
+        dot.setAttribute('aria-label', 'Effort ' + (name || 'auto'));
+        dot.addEventListener('click', function () {
+            effortByModel[selectedModelId] = name;
+            renderEffortPicker();
+        });
+        return dot;
+    }
+
+    function renderEffortPicker() {
+        var item = selectedItem();
+        var c = effortChoices();
+        var picked = pickedEffort();
+        if (effortBox) effortBox.style.display = (c.levels.length || c.ultracode) ? '' : 'none';
+        // "auto" passes no level at all: the CLI decides.
+        if (effortName) effortName.textContent = '(' + (picked || 'auto') + ')';
+        if (effortDots) {
+            effortDots.innerHTML = '';
+            var names = [''].concat(c.levels);
+            for (var j = 0; j < names.length; j++) {
+                effortDots.appendChild(buildEffortDot(names[j], picked === names[j]));
+            }
+        }
+        if (ultracodeRow) ultracodeRow.style.display = c.ultracode ? '' : 'none';
+        if (ultracodeToggle) {
+            ultracodeToggle.className = 'chat-switch' + (picked === ULTRACODE ? ' on' : '');
+            ultracodeToggle.setAttribute('aria-checked', picked === ULTRACODE ? 'true' : 'false');
+        }
+        if (modelLabel && item) {
+            modelLabel.textContent = item.name + (picked ? ' · ' + picked : '');
+        }
+        renderCliMode();
+    }
+
+    if (ultracodeToggle) {
+        ultracodeToggle.addEventListener('click', function () {
+            effortByModel[selectedModelId] = pickedEffort() === ULTRACODE ? '' : ULTRACODE;
+            renderEffortPicker();
         });
     }
+    // A click redraws the dots, so its target is gone by the time the
+    // document handler asks whether it was inside the menu: stop it here.
+    if (effortBox) effortBox.addEventListener('click', function (e) { e.stopPropagation(); });
+
+    function cliModes() {
+        var item = selectedItem();
+        return item ? item.modes : [];
+    }
+
+    function pickedCliMode() {
+        return cliModes().indexOf(cliMode) >= 0 ? cliMode : '';
+    }
+
+    function renderCliMode() {
+        if (!cliModeBtn) return;
+        var modes = cliModes();
+        var mode = pickedCliMode() || modes[0] || '';
+        cliModeBtn.style.display = modes.length > 1 ? '' : 'none';
+        cliModeBtn.textContent = MODE_LABELS[mode] || mode;
+        cliModeBtn.setAttribute('data-mode', mode);
+    }
+
+    // Shift+Tab or a click steps to the picked model's next mode.
+    function cycleCliMode() {
+        var modes = cliModes();
+        if (modes.length < 2) return false;
+        cliMode = modes[(Math.max(0, modes.indexOf(cliMode)) + 1) % modes.length];
+        renderCliMode();
+        return true;
+    }
+
+    if (cliModeBtn) cliModeBtn.addEventListener('click', cycleCliMode);
 
     function openMenu() {
         if (menuOpen) return;
@@ -1567,6 +1654,7 @@
                 rank: typeof item.rank === 'number' ? item.rank : 500,
                 tags: Array.isArray(item.tags) ? item.tags : [],
                 efforts: Array.isArray(item.efforts) ? item.efforts : [],
+                modes: Array.isArray(item.modes) ? item.modes : [],
                 available: item.available === undefined ? true : !!item.available
             };
         });
@@ -1721,6 +1809,7 @@
         closeMentionPalette();
         getBridge(function (bridge) {
             if (!bridge) return;
+            if (bridge.setCliMode) bridge.setCliMode(pickedCliMode());
             var effort = pickedEffort();
             if (effort && bridge.sendMessageWithEffort) {
                 bridge.sendMessageWithEffort(text, modelSelect.value || '', currentAgentMode, effort);
@@ -2111,6 +2200,19 @@
     }
 
     inputEl.addEventListener('keydown', function (e) {
+        if (e.key === 'Tab' && e.shiftKey) {
+            // As in the CLIs: Shift+Tab steps through the modes (Plan/Agent
+            // for Zenvi Assistant). With no mode to step, it stays a Shift+Tab.
+            var stepped = cycleCliMode();
+            if (!stepped && modeToggleEl && modeToggleEl.style.display !== 'none') {
+                onModeButtonClick(currentAgentMode === 'planning' ? 'agent' : 'planning');
+                stepped = true;
+            }
+            if (stepped) {
+                e.preventDefault();
+                return;
+            }
+        }
         if (mentionPaletteOpen) {
             if (e.key === 'ArrowDown') {
                 e.preventDefault();

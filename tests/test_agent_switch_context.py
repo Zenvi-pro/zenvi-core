@@ -6,6 +6,7 @@ a bounded recap of the turns it has not seen.
 """
 
 import sys
+import types
 from unittest.mock import MagicMock
 
 import pytest
@@ -228,8 +229,39 @@ def test_the_chat_page_has_an_effort_picker_wired_to_the_bridge():
     root = os.path.join(os.path.dirname(__file__), "..", "src", "chat_ui")
     html = open(os.path.join(root, "index.html"), encoding="utf-8").read()
     js = open(os.path.join(root, "chat.js"), encoding="utf-8").read()
-    assert 'id="chat-effort-select"' in html
     assert "sendMessageWithEffort" in js and "efforts" in js
+    # Our own controls, not a native <select>: Qt WebKit (Windows) and
+    # QtWebEngine (macOS, Linux) draw that one differently.
+    assert "chat-effort-select" not in html and "chat-effort-select" not in js
+    assert 'id="chat-effort-dots"' in html and 'id="chat-ultracode-toggle"' in html
+    assert 'id="chat-cli-mode"' in html and "setCliMode" in js and "shiftKey" in js
+
+
+def test_the_picked_mode_goes_to_a_cli_agent_only(window_cls, monkeypatch):
+    import windows.ai_chat_ui as ui
+
+    def worker_for(backend):
+        monkeypatch.setattr(ui, "QMetaObject", MagicMock())
+        monkeypatch.setattr(ui, "Q_ARG", lambda *a: a)
+        worker = MagicMock()
+        win = MagicMock()
+        win._cli_mode = "plan"
+        win._active_session.return_value = {"backend": backend, "worker": worker}
+        win.is_processing = False
+        win._try_local_command.return_value = False
+        win._handoff_prefix.return_value = ""
+        win._prepend_editor_snapshot.side_effect = lambda t: t
+        win._resolve_agent_mode.return_value = "agent"
+        assert window_cls._dispatch_user_message(win, "hi", "m") is True
+        return worker
+
+    assert worker_for("claude_code")._pending_mode == "plan"
+    assert worker_for("zenvi")._pending_mode == ""
+
+    bridge = ui.ChatBridge.__new__(ui.ChatBridge)
+    bridge.window = types.SimpleNamespace(_cli_mode="")
+    ui.ChatBridge.setCliMode(bridge, "auto")
+    assert bridge.window._cli_mode == "auto"
 
 
 def test_the_retry_after_a_claude_sign_in_keeps_the_effort(window_cls, monkeypatch):

@@ -2833,3 +2833,105 @@ def test_a_turn_uses_the_effort_the_chat_left_for_it_once(qapp, fresh_cursor_lin
     assert runner._effort == "high" and runner._pending_effort == ""
     runner.run_request("hi", "b")
     assert runner._effort == "", "the next turn does not inherit it"
+
+
+# ── Ultracode and permission modes, as each CLI offers them (#147) ─────────
+
+def _claude_probe_text(applied):
+    init = {"type": "control_response", "response": {"request_id": "zenvi-models", "response": {"models": [
+        {"value": "default", "displayName": "Default", "resolvedModel": "o", "supportsEffort": True,
+         "supportedEffortLevels": ["low", "high"], "supportsAutoMode": True},
+        {"value": "opus", "displayName": "Opus", "resolvedModel": "o", "supportsEffort": True,
+         "supportedEffortLevels": ["low", "high"], "supportsAutoMode": True},
+        {"value": "haiku", "displayName": "Haiku"},
+    ]}}}
+    settings = {"type": "control_response", "response": {"request_id": "zenvi-settings",
+                                                         "response": {"applied": applied}}}
+    return json.dumps(init) + "\n" + json.dumps(settings) + "\n"
+
+
+def test_claude_offers_ultracode_and_modes_only_as_the_cli_reports_them():
+    import windows.agent_runners as ar
+
+    rows = {r["id"]: r for r in ar.parse_claude_models(
+        _claude_probe_text({"ultracode": False, "ultracodeAvailable": True}))}
+    assert rows["opus"]["efforts"] == ["low", "high", "ultracode"]
+    assert rows["cli-default"]["efforts"] == ["low", "high", "ultracode"]
+    assert rows["opus"]["modes"] == ["bypass", "auto", "plan"]
+    assert rows["cli-default"]["modes"] == ["bypass", "auto", "plan"]
+    # No effort levels: no ultracode. No auto mode: it is not offered.
+    assert "efforts" not in rows["haiku"] and rows["haiku"]["modes"] == ["bypass", "plan"]
+
+    # An older CLI answers get_settings without ultracodeAvailable (or not at all).
+    for text in (_claude_probe_text({"ultracode": False}), _claude_probe_text(None),
+                 _claude_probe_text({}).splitlines()[0]):
+        assert ar.parse_claude_models(text)[1]["efforts"] == ["low", "high"]
+
+
+def test_modes_reach_the_picker_and_only_an_offered_one_is_passed_on(qapp, fresh_cursor_lineup):
+    ar = fresh_cursor_lineup
+    ar.set_cli_lineup(ar.BACKEND_CLAUDE, ar.parse_claude_models(_claude_probe_text({})))
+    rows = {m["id"]: m for m in ar.models_for_backend(ar.BACKEND_CLAUDE)}
+    assert rows["haiku"]["modes"] == ["bypass", "plan"]
+    runner = ar.ClaudeCodeRunner()
+    runner._model_id = "haiku"
+    assert runner._coerce_mode("plan") == "plan"
+    assert runner._coerce_mode("auto") == "", "opus takes auto, haiku does not"
+    assert runner._coerce_mode("nonsense") == "" and runner._coerce_mode(None) == ""
+    # The other harnesses list theirs too; Hermes and Cursor have none.
+    assert ar.parse_opencode_models("a/b\n")[1]["modes"] == ["bypass", "plan"]
+    assert ar.parse_codex_models(CODEX_EFFORT_CATALOG)[1]["modes"] == ["bypass", "workspace", "readonly"]
+    assert ar.HermesRunner()._coerce_mode("plan") == ""
+
+
+def test_each_cli_gets_ultracode_and_the_mode_in_its_own_dialect(qapp, monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: [])
+    monkeypatch.setattr(ar, "_write_claude_mcp_config", lambda server: "/tmp/cfg.json")
+    monkeypatch.setattr(ar, "_agent_mcp_dir", lambda: str(tmp_path))
+
+    claude = ar.ClaudeCodeRunner()
+    claude._cli_session_id = "s1"
+    argv = claude._build_argv("hi")
+    assert "--dangerously-skip-permissions" in argv and "--permission-mode" not in argv
+    assert "--settings" not in argv
+    claude._mode, claude._effort = "plan", "ultracode"
+    argv = claude._build_argv("hi")
+    assert argv[argv.index("--permission-mode") + 1] == "plan"
+    assert "--dangerously-skip-permissions" not in argv
+    # Ultracode is a setting, not an --effort level.
+    assert "--effort" not in argv
+    assert json.load(open(argv[argv.index("--settings") + 1])) == {"ultracode": True}
+
+    codex = ar.CodexRunner()
+    codex._server = None
+    assert "--dangerously-bypass-approvals-and-sandbox" in codex._build_argv("hi")
+    # As -c settings: `codex exec resume` takes no --sandbox.
+    codex._mode = "readonly"
+    argv = codex._build_argv("hi")
+    assert argv[argv.index('sandbox_mode="read-only"') - 1] == "-c"
+    assert "--dangerously-bypass-approvals-and-sandbox" not in argv
+    codex._mode = "workspace"
+    assert 'sandbox_mode="workspace-write"' in codex._build_argv("hi")
+
+    opencode = ar.OpenCodeRunner()
+    assert "--agent" not in opencode._build_argv("hi")
+    opencode._mode = "plan"
+    argv = opencode._build_argv("hi")
+    assert argv[argv.index("--agent") + 1] == "plan" and argv[-1] == "hi"
+
+
+def test_a_turn_uses_the_mode_the_chat_left_for_it_once(qapp, fresh_cursor_lineup, monkeypatch):
+    ar = fresh_cursor_lineup
+    ar.set_cli_lineup(ar.BACKEND_CODEX, ar.parse_codex_models(CODEX_EFFORT_CATALOG))
+    runner = ar.CodexRunner()
+    runner._pending_mode = "readonly"
+    monkeypatch.setattr(ar, "_which_cli", lambda name: None)   # stop before launching
+    import classes.agent_mcp_server as mcp
+    monkeypatch.setattr(mcp, "get_mcp_server", lambda: types.SimpleNamespace(
+        start=lambda: types.SimpleNamespace(token="t", port=1, url=lambda: "u")))
+    runner.run_request("hi", "b")
+    assert runner._mode == "readonly" and runner._pending_mode == ""
+    runner.run_request("hi", "b")
+    assert runner._mode == "", "the next turn does not inherit it"

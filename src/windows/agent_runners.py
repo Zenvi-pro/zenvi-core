@@ -60,7 +60,22 @@ _live_lineups_lock = threading.Lock()
 
 # ``efforts`` lists the reasoning-effort levels a model takes, as its CLI
 # names them; the chat shows an effort picker beside the model pill for it.
-_PICKER_KEYS = ("id", "name", "provider", "featured", "rank", "tags", "default", "efforts")
+# ``modes`` lists the permission modes a turn on it can run in (MODE_*), the
+# first being the one a turn gets when none is picked.
+_PICKER_KEYS = ("id", "name", "provider", "featured", "rank", "tags", "default", "efforts",
+                "modes")
+
+# Permission modes, by what the CLI does with them. No "ask every time" mode:
+# a turn runs headless, so there is no one to answer a prompt.
+MODE_BYPASS = "bypass"          # everything allowed (what every turn used to do)
+MODE_AUTO = "auto"              # Claude Code: a classifier decides per action
+MODE_PLAN = "plan"              # plan, change nothing
+MODE_WORKSPACE = "workspace"    # Codex: shell writes only inside the project
+MODE_READONLY = "readonly"      # Codex: shell cannot write at all
+
+# Claude Code's "ultracode" rides along as one more effort level, as the CLI
+# itself has it (``/effort ultracode``).
+EFFORT_ULTRACODE = "ultracode"
 
 
 def _clean_lineup(rows) -> list:
@@ -107,7 +122,7 @@ def live_lineup_for(backend: str) -> list:
 CLI_DEFAULT_MODEL_ID = "cli-default"
 
 
-def _cli_default_entry(uses: str = "", efforts=None) -> dict:
+def _cli_default_entry(uses: str = "", efforts=None, modes=None) -> dict:
     """"CLI default", tagged with the model the CLI says it would use."""
     entry = {"id": CLI_DEFAULT_MODEL_ID, "name": "CLI default", "rank": 0,
              "featured": True, "default": True}
@@ -115,6 +130,8 @@ def _cli_default_entry(uses: str = "", efforts=None) -> dict:
         entry["tags"] = [uses]
     if efforts:
         entry["efforts"] = list(efforts)
+    if modes:
+        entry["modes"] = list(modes)
     return entry
 
 
@@ -1272,7 +1289,8 @@ def probe_cursor_models(cli: str) -> list:
 
 
 def parse_claude_models(text: str) -> list:
-    """Picker entries from Claude Code's answer to a stream-json ``initialize``.
+    """Picker entries from Claude Code's answers to a stream-json ``initialize``
+    and ``get_settings`` (the second says whether ultracode can be turned on).
 
     The CLI lists what this account may pick (``/model``): ``value`` is what
     ``--model`` takes and ``displayName`` names it. ``description`` is a blurb
@@ -1280,7 +1298,7 @@ def parse_claude_models(text: str) -> list:
     it is used just when it does. The "default" entry (listed first) becomes
     "CLI default", tagged with the listed model it resolves to.
     """
-    models = None
+    models, ultracode = None, False
     for line in (text or "").splitlines():
         try:
             ev = json.loads(line)
@@ -1288,16 +1306,26 @@ def parse_claude_models(text: str) -> list:
             continue
         if isinstance(ev, dict) and ev.get("type") == "control_response":
             reply = ev.get("response") or {}
-            models = (reply.get("response") or reply).get("models")
-            break
-    rows, seen, default_name, default_resolves, default_efforts = [], set(), "", None, []
+            reply = reply.get("response") or reply
+            if not isinstance(reply, dict):
+                continue
+            if models is None:
+                models = reply.get("models")
+            applied = reply.get("applied")
+            if isinstance(applied, dict):
+                ultracode = applied.get("ultracodeAvailable") is True
+    rows, seen, default_name, default_resolves = [], set(), "", None
+    default_efforts, default_modes = [], []
     for m in models if isinstance(models, list) else []:
         if not isinstance(m, dict) or not isinstance(m.get("value"), str) or not m["value"]:
             continue
         mid = m["value"]
         efforts = _effort_levels(m.get("supportedEffortLevels")) if m.get("supportsEffort") else []
+        if efforts and ultracode:
+            efforts.append(EFFORT_ULTRACODE)
+        modes = [MODE_BYPASS] + ([MODE_AUTO] if m.get("supportsAutoMode") else []) + [MODE_PLAN]
         if mid == "default":
-            default_resolves, default_efforts = m.get("resolvedModel"), efforts
+            default_resolves, default_efforts, default_modes = m.get("resolvedModel"), efforts, modes
             continue
         if mid in seen:
             continue
@@ -1307,13 +1335,15 @@ def parse_claude_models(text: str) -> list:
         if lead.lower().startswith(name.lower()):
             name = lead
         row = {"id": mid, "name": name, "provider": "anthropic",
-               "rank": len(rows) + 1, "featured": True}
+               "rank": len(rows) + 1, "featured": True, "modes": modes}
         if efforts:
             row["efforts"] = efforts
         rows.append(row)
         if default_resolves and m.get("resolvedModel") == default_resolves:
             default_name = default_name or name
-    return [_cli_default_entry(default_name, default_efforts)] + rows if rows else []
+    if not rows:
+        return []
+    return [_cli_default_entry(default_name, default_efforts, default_modes)] + rows
 
 
 def _acp_style_probe(argv, requests, done, timeout: float = 60.0) -> str:
@@ -1369,8 +1399,13 @@ def probe_claude_models(cli: str) -> list:
         [cli, "-p", "--input-format", "stream-json", "--output-format", "stream-json",
          "--verbose"],
         [{"type": "control_request", "request_id": "zenvi-models",
-          "request": {"subtype": "initialize"}}],
-        lambda ev: ev.get("type") == "control_response" or None)
+          "request": {"subtype": "initialize"}},
+         {"type": "control_request", "request_id": "zenvi-settings",
+          "request": {"subtype": "get_settings"}}],
+        # Answered in order. A CLI that never answers the second is cut off by
+        # the probe's timeout and still gets its models read.
+        lambda ev: (ev.get("type") == "control_response"
+                    and (ev.get("response") or {}).get("request_id") == "zenvi-settings") or None)
     return parse_claude_models(text)
 
 
@@ -1438,7 +1473,8 @@ def parse_codex_models(text: str) -> list:
             continue
         seen.add(m["slug"])
         row = {"id": m["slug"], "name": m.get("display_name") or m["slug"],
-               "rank": len(rows) + 1, "featured": len(rows) < _FEATURED_FROM_CLI}
+               "rank": len(rows) + 1, "featured": len(rows) < _FEATURED_FROM_CLI,
+               "modes": list(CodexRunner.MODES)}
         levels = m.get("supported_reasoning_levels")
         efforts = _effort_levels([l.get("effort") for l in levels if isinstance(l, dict)]
                                  if isinstance(levels, list) else [])
@@ -1451,7 +1487,7 @@ def parse_codex_models(text: str) -> list:
     # ours to read: offer only the levels every listed model takes.
     shared = [e for e in rows[0].get("efforts", [])
               if all(e in r.get("efforts", []) for r in rows)]
-    return [_cli_default_entry(efforts=shared)] + rows
+    return [_cli_default_entry(efforts=shared, modes=CodexRunner.MODES)] + rows
 
 
 def probe_codex_models(cli: str) -> list:
@@ -1503,11 +1539,12 @@ def parse_opencode_models(text: str, efforts=None) -> list:
         seen.add(mid)
         provider, _, name = mid.partition("/")
         row = {"id": mid, "name": name, "provider": provider,
-               "rank": len(rows) + 1, "featured": len(rows) < _FEATURED_FROM_CLI}
+               "rank": len(rows) + 1, "featured": len(rows) < _FEATURED_FROM_CLI,
+               "modes": list(OpenCodeRunner.MODES)}
         if (efforts or {}).get(mid):
             row["efforts"] = list(efforts[mid])
         rows.append(row)
-    return [_cli_default_entry()] + rows if rows else []
+    return [_cli_default_entry(modes=OpenCodeRunner.MODES)] + rows if rows else []
 
 
 def probe_opencode_models(cli: str) -> list:
@@ -1651,6 +1688,8 @@ class BaseAgentRunner(QObject):
         self._model_id = ""
         self._effort = ""              # reasoning effort for this turn ("" = CLI's own)
         self._pending_effort = ""
+        self._mode = ""                # permission mode for this turn ("" = MODE_BYPASS)
+        self._pending_mode = ""
         self._server = None
         self._responded = False
         self._final_text = ""
@@ -1767,6 +1806,7 @@ class BaseAgentRunner(QObject):
         # Left by AIChatWindow just before this call, for this turn only (the
         # slot's signature is shared with AIChatWorker, which has no effort).
         self._effort, self._pending_effort = self._coerce_effort(self._pending_effort), ""
+        self._mode, self._pending_mode = self._coerce_mode(self._pending_mode), ""
         self._responded = False
         self._final_text = ""
         self._last_error = ""
@@ -1954,12 +1994,19 @@ class BaseAgentRunner(QObject):
         The picker is shared across models and backends like the model pill
         is, and a CLI rejects a level its model does not take.
         """
-        if not effort or not isinstance(effort, str):
+        return self._offered("efforts", effort)
+
+    def _coerce_mode(self, mode) -> str:
+        """Keep *mode* only if the model this turn runs on lists it."""
+        return self._offered("modes", mode)
+
+    def _offered(self, key: str, value) -> str:
+        if not value or not isinstance(value, str):
             return ""
         wanted = self._model_id or CLI_DEFAULT_MODEL_ID
         for m in models_for_backend(self.BACKEND_ID):
             if m["id"] == wanted:
-                return effort if effort in (m.get("efforts") or []) else ""
+                return value if value in (m.get(key) or []) else ""
         return ""
 
     # -- subclass hooks ----------------------------------------------------
@@ -2065,18 +2112,26 @@ class ClaudeCodeRunner(BaseAgentRunner):
             self._cli_path or self.CLI_NAME, "-p",
             "--output-format", "stream-json", "--verbose", "--include-partial-messages",
             "--mcp-config", cfg, "--strict-mcp-config",
-            # The agent is driving the editor on the user's behalf from inside
-            # the app ΓÇö there is no terminal to answer a permission prompt, so
-            # a prompt would just hang the turn until it times out.
-            "--dangerously-skip-permissions",
             # From a file, like the prompt on stdin: npm installs Claude Code as
             # claude.cmd, and cmd.exe cuts a command line at its first newline.
             "--append-system-prompt-file", _write_claude_system_prompt(),
         ]
+        # The agent is driving the editor on the user's behalf from inside the
+        # app: there is no terminal to answer a permission prompt, so a
+        # prompt would just hang the turn until it times out. Auto and plan
+        # never prompt either.
+        if self._mode in (MODE_AUTO, MODE_PLAN):
+            argv += ["--permission-mode", self._mode]
+        else:
+            argv.append("--dangerously-skip-permissions")
         argv += _add_dir_args()
         if self._model_id:
             argv += ["--model", self._model_id]
-        if self._effort:
+        if self._effort == EFFORT_ULTRACODE:
+            # A setting, not an --effort level. From a file for the same
+            # reason as the system prompt: cmd.exe mangles quoted JSON.
+            argv += ["--settings", _write_claude_ultracode_settings()]
+        elif self._effort:
             argv += ["--effort", self._effort]
         if self._cli_started and self._cli_session_id:
             argv += ["--resume", self._cli_session_id]
@@ -2162,6 +2217,9 @@ class CodexRunner(BaseAgentRunner):
     # Until it has, the picker offers only "CLI default".
     MODELS = [_cli_default_entry()]
     list_models = staticmethod(probe_codex_models)
+    # Mode -> the sandbox_mode it sets for model-run shell commands.
+    _SANDBOX = {MODE_WORKSPACE: "workspace-write", MODE_READONLY: "read-only"}
+    MODES = (MODE_BYPASS, MODE_WORKSPACE, MODE_READONLY)
     # The prompt goes in through stdin ("-"), not argv.
     STDIN = subprocess.PIPE
 
@@ -2179,8 +2237,13 @@ class CodexRunner(BaseAgentRunner):
 
     def _build_argv(self, text: str):
         url = self._server.url() if self._server else ""
+        # `exec` never asks for approval; the mode picks the shell sandbox. As
+        # a -c setting, because `exec resume` takes no --sandbox.
+        sandbox = self._SANDBOX.get(self._mode)
         common = [
-            "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check",
+            "--json", "--skip-git-repo-check",
+        ] + (["-c", 'sandbox_mode="%s"' % sandbox] if sandbox
+             else ["--dangerously-bypass-approvals-and-sandbox"]) + [
             "-c", 'mcp_servers.zenvi_editor.url="%s"' % url,
             "-c", 'mcp_servers.zenvi_editor.bearer_token_env_var="ZENVI_MCP_TOKEN"',
         ]
@@ -2571,6 +2634,7 @@ class OpenCodeRunner(BaseAgentRunner):
     BACKEND_ID = BACKEND_OPENCODE
     register = staticmethod(register_opencode)
     list_models = staticmethod(probe_opencode_models)
+    MODES = (MODE_BYPASS, MODE_PLAN)
     # The models follow the user's signed-in providers, so the picker shows
     # what `opencode models` lists; until then only "CLI default".
     MODELS = [_cli_default_entry()]
@@ -2595,6 +2659,8 @@ class OpenCodeRunner(BaseAgentRunner):
             # --dangerously-skip-permissions).
             "--auto", "--thinking",
         ]
+        if self._mode == MODE_PLAN:
+            argv += ["--agent", "plan"]     # OpenCode's read-only agent
         if self._model_id:
             # OpenCode calls an effort level a variant: provider/model#variant.
             argv += ["--model", self._model_id + ("#" + self._effort if self._effort else "")]
@@ -2995,6 +3061,14 @@ def _write_claude_mcp_config(server) -> str:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as fh:
         json.dump(cfg, fh)
+    return path
+
+
+def _write_claude_ultracode_settings() -> str:
+    """Write the settings file that turns ultracode on and return its path."""
+    path = os.path.abspath(os.path.join(_agent_mcp_dir(), "claude_ultracode.json"))
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"ultracode": True}, fh)
     return path
 
 

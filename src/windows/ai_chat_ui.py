@@ -758,6 +758,12 @@ class ChatBridge(QObject):
             self.window._handle_web_send_message(
                 text.strip(), model_id or "", mode, effort=effort or "")
 
+    @guarded_slot(str)
+    def setCliMode(self, mode: str):
+        """The permission mode picked for CLI agents' turns ("" = their default)."""
+        if self.window:
+            self.window._cli_mode = mode or ""
+
     @guarded_slot(str, str)
     def executePlan(self, plan_id: str, model_id: str):
         if self.window:
@@ -3457,6 +3463,7 @@ class AIChatWindow(QDockWidget):
         # no per-effort pricing to keep (#147).
         is_cli = sess.get("backend", BACKEND_ZENVI) != BACKEND_ZENVI
         worker._pending_effort = (effort or "") if is_cli else ""
+        worker._pending_mode = (getattr(self, "_cli_mode", "") or "") if is_cli else ""
         self._set_processing_ui(True)
         QMetaObject.invokeMethod(
             worker,
