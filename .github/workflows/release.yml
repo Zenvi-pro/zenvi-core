@@ -1362,7 +1362,15 @@ jobs:
   # are still published.
   release:
     needs: [version, build-linux, build-macos, build-windows, unit-tests]
-    if: always() && needs.version.result == 'success'
+    # A tag release goes to /releases/latest, which the website and every installed
+    # app trust, so it needs all three platforms. v1.2.0 skipped this check, shipped
+    # Windows-only as "Latest" after the Linux and macOS builds failed, and left
+    # every Mac and Linux user with nothing to update to.
+    if: >-
+      always() && needs.version.result == 'success' &&
+      needs.build-linux.result == 'success' &&
+      needs.build-macos.result == 'success' &&
+      needs.build-windows.result == 'success'
     runs-on: ubuntu-latest
     env:
       VER: ${{ needs.version.outputs.version }}
