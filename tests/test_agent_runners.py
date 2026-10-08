@@ -2718,3 +2718,220 @@ def test_claude_command_line_survives_a_cmd_launcher(qapp, monkeypatch, tmp_path
             break
         time.sleep(0.01)
     assert runner._proc.stdin.data == prompt and runner._proc.stdin.closed
+
+
+# ── Effort picker for the CLI harnesses (#147) ────────────────────────────
+
+CLAUDE_EFFORT_INIT = json.dumps({"type": "control_response", "response": {"response": {"models": [
+    {"value": "default", "description": "Sonnet 5 \u00b7 Efficient",
+     "supportsEffort": True, "supportedEffortLevels": ["low", "medium", "high"]},
+    {"value": "opus", "description": "Opus 5 \u00b7 Best", "supportsEffort": True,
+     "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
+    {"value": "haiku", "description": "Haiku 4.5 \u00b7 Fastest"},
+    {"value": "odd", "description": "Odd", "supportsEffort": False,
+     "supportedEffortLevels": ["low"]},
+]}}})
+
+CODEX_EFFORT_CATALOG = json.dumps({"models": [
+    {"slug": "a", "display_name": "A", "visibility": "list", "priority": 1,
+     "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}, {"effort": "ultra"}]},
+    {"slug": "b", "display_name": "B", "visibility": "list", "priority": 2,
+     "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}, "junk", {"x": 1}]},
+]})
+
+
+def test_each_cli_reports_the_effort_levels_of_its_models(tmp_path):
+    import windows.agent_runners as ar
+
+    claude = {r["id"]: r.get("efforts") for r in ar.parse_claude_models(CLAUDE_EFFORT_INIT)}
+    assert claude == {"cli-default": ["low", "medium", "high"],   # what the default resolves to
+                      "opus": ["low", "medium", "high", "xhigh", "max"],
+                      "haiku": None, "odd": None}
+
+    codex = {r["id"]: r.get("efforts") for r in ar.parse_codex_models(CODEX_EFFORT_CATALOG)}
+    assert codex["a"] == ["low", "high", "ultra"] and codex["b"] == ["low", "high"]
+    # "CLI default" could be either model: only what every one of them takes.
+    assert codex["cli-default"] == ["low", "high"]
+
+    cache = tmp_path / "models.json"
+    cache.write_text(json.dumps({
+        "openai": {"models": {"gpt-5.5": {"reasoning_options": [
+            {"type": "toggle"}, {"type": "effort", "values": ["none", "low", "high"]}]}}},
+        "opencode": {"models": {"big-pickle": {"reasoning_options": []}, "old": {}}},
+    }))
+    efforts = ar._opencode_efforts(str(cache))
+    assert efforts == {"openai/gpt-5.5": ["none", "low", "high"]}
+    rows = {r["id"]: r.get("efforts") for r in ar.parse_opencode_models(
+        "openai/gpt-5.5\nopencode/big-pickle\n", efforts)}
+    assert rows == {"cli-default": None, "openai/gpt-5.5": ["none", "low", "high"],
+                    "opencode/big-pickle": None}
+    assert ar._opencode_efforts(str(tmp_path / "missing.json")) == {}
+    cache.write_text("not json")
+    assert ar._opencode_efforts(str(cache)) == {}
+
+
+def test_efforts_reach_the_picker(fresh_cursor_lineup):
+    ar = fresh_cursor_lineup
+    ar.set_cli_lineup(ar.BACKEND_CODEX, ar.parse_codex_models(CODEX_EFFORT_CATALOG))
+    rows = {m["id"]: m for m in ar.models_for_backend(ar.BACKEND_CODEX)}
+    assert rows["a"]["efforts"] == ["low", "high", "ultra"]
+
+
+def test_only_an_effort_the_chosen_model_offers_is_passed_on(qapp, fresh_cursor_lineup):
+    ar = fresh_cursor_lineup
+    ar.set_cli_lineup(ar.BACKEND_CODEX, ar.parse_codex_models(CODEX_EFFORT_CATALOG))
+    runner = ar.CodexRunner()
+    runner._model_id = "b"
+    assert runner._coerce_effort("high") == "high"
+    assert runner._coerce_effort("ultra") == "", "model a's level, not b's"
+    assert runner._coerce_effort("") == "" and runner._coerce_effort(None) == ""
+    runner._model_id = ""                      # "CLI default"
+    assert runner._coerce_effort("low") == "low" and runner._coerce_effort("ultra") == ""
+    # A harness whose models list no levels never passes one.
+    assert ar.HermesRunner()._coerce_effort("high") == ""
+
+
+def test_each_cli_gets_the_effort_in_its_own_dialect(qapp, monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: [])
+    monkeypatch.setattr(ar, "_write_claude_mcp_config", lambda server: "/tmp/cfg.json")
+    monkeypatch.setattr(ar, "_agent_mcp_dir", lambda: str(tmp_path))
+
+    claude = ar.ClaudeCodeRunner()
+    claude._cli_session_id = "s1"
+    assert "--effort" not in claude._build_argv("hi")
+    claude._effort = "xhigh"
+    argv = claude._build_argv("hi")
+    assert argv[argv.index("--effort") + 1] == "xhigh"
+
+    codex = ar.CodexRunner()
+    codex._server = None
+    assert not [a for a in codex._build_argv("hi") if "reasoning_effort" in a]
+    codex._effort = "high"
+    argv = codex._build_argv("hi")
+    assert argv[argv.index('model_reasoning_effort="high"') - 1] == "-c"
+
+    opencode = ar.OpenCodeRunner()
+    opencode._model_id, opencode._effort = "openai/gpt-5.5", "high"
+    argv = opencode._build_argv("hi")
+    assert argv[argv.index("--model") + 1] == "openai/gpt-5.5#high"
+    opencode._model_id = ""                    # no model picked: nothing to hang it on
+    assert "--model" not in opencode._build_argv("hi")
+
+
+def test_a_turn_uses_the_effort_the_chat_left_for_it_once(qapp, fresh_cursor_lineup, monkeypatch):
+    ar = fresh_cursor_lineup
+    ar.set_cli_lineup(ar.BACKEND_CODEX, ar.parse_codex_models(CODEX_EFFORT_CATALOG))
+    runner = ar.CodexRunner()
+    runner._pending_effort = "high"
+    monkeypatch.setattr(ar, "_which_cli", lambda name: None)   # stop before launching
+    import classes.agent_mcp_server as mcp
+    monkeypatch.setattr(mcp, "get_mcp_server", lambda: types.SimpleNamespace(
+        start=lambda: types.SimpleNamespace(token="t", port=1, url=lambda: "u")))
+    runner.run_request("hi", "b")
+    assert runner._effort == "high" and runner._pending_effort == ""
+    runner.run_request("hi", "b")
+    assert runner._effort == "", "the next turn does not inherit it"
+
+
+# ── Ultracode and permission modes, as each CLI offers them (#147) ─────────
+
+def _claude_probe_text(applied):
+    init = {"type": "control_response", "response": {"request_id": "zenvi-models", "response": {"models": [
+        {"value": "default", "displayName": "Default", "resolvedModel": "o", "supportsEffort": True,
+         "supportedEffortLevels": ["low", "high"], "supportsAutoMode": True},
+        {"value": "opus", "displayName": "Opus", "resolvedModel": "o", "supportsEffort": True,
+         "supportedEffortLevels": ["low", "high"], "supportsAutoMode": True},
+        {"value": "haiku", "displayName": "Haiku"},
+    ]}}}
+    settings = {"type": "control_response", "response": {"request_id": "zenvi-settings",
+                                                         "response": {"applied": applied}}}
+    return json.dumps(init) + "\n" + json.dumps(settings) + "\n"
+
+
+def test_claude_offers_ultracode_and_modes_only_as_the_cli_reports_them():
+    import windows.agent_runners as ar
+
+    rows = {r["id"]: r for r in ar.parse_claude_models(
+        _claude_probe_text({"ultracode": False, "ultracodeAvailable": True}))}
+    assert rows["opus"]["efforts"] == ["low", "high", "ultracode"]
+    assert rows["cli-default"]["efforts"] == ["low", "high", "ultracode"]
+    assert rows["opus"]["modes"] == ["bypass", "auto", "plan"]
+    assert rows["cli-default"]["modes"] == ["bypass", "auto", "plan"]
+    # No effort levels: no ultracode. No auto mode: it is not offered.
+    assert "efforts" not in rows["haiku"] and rows["haiku"]["modes"] == ["bypass", "plan"]
+
+    # An older CLI answers get_settings without ultracodeAvailable (or not at all).
+    for text in (_claude_probe_text({"ultracode": False}), _claude_probe_text(None),
+                 _claude_probe_text({}).splitlines()[0]):
+        assert ar.parse_claude_models(text)[1]["efforts"] == ["low", "high"]
+
+
+def test_modes_reach_the_picker_and_only_an_offered_one_is_passed_on(qapp, fresh_cursor_lineup):
+    ar = fresh_cursor_lineup
+    ar.set_cli_lineup(ar.BACKEND_CLAUDE, ar.parse_claude_models(_claude_probe_text({})))
+    rows = {m["id"]: m for m in ar.models_for_backend(ar.BACKEND_CLAUDE)}
+    assert rows["haiku"]["modes"] == ["bypass", "plan"]
+    runner = ar.ClaudeCodeRunner()
+    runner._model_id = "haiku"
+    assert runner._coerce_mode("plan") == "plan"
+    assert runner._coerce_mode("auto") == "", "opus takes auto, haiku does not"
+    assert runner._coerce_mode("nonsense") == "" and runner._coerce_mode(None) == ""
+    # The other harnesses list theirs too; Hermes and Cursor have none.
+    assert ar.parse_opencode_models("a/b\n")[1]["modes"] == ["bypass", "plan"]
+    assert ar.parse_codex_models(CODEX_EFFORT_CATALOG)[1]["modes"] == ["bypass", "workspace", "readonly"]
+    assert ar.HermesRunner()._coerce_mode("plan") == ""
+
+
+def test_each_cli_gets_ultracode_and_the_mode_in_its_own_dialect(qapp, monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: [])
+    monkeypatch.setattr(ar, "_write_claude_mcp_config", lambda server: "/tmp/cfg.json")
+    monkeypatch.setattr(ar, "_agent_mcp_dir", lambda: str(tmp_path))
+
+    claude = ar.ClaudeCodeRunner()
+    claude._cli_session_id = "s1"
+    argv = claude._build_argv("hi")
+    assert "--dangerously-skip-permissions" in argv and "--permission-mode" not in argv
+    assert "--settings" not in argv
+    claude._mode, claude._effort = "plan", "ultracode"
+    argv = claude._build_argv("hi")
+    assert argv[argv.index("--permission-mode") + 1] == "plan"
+    assert "--dangerously-skip-permissions" not in argv
+    # Ultracode is a setting, not an --effort level.
+    assert "--effort" not in argv
+    assert json.load(open(argv[argv.index("--settings") + 1])) == {"ultracode": True}
+
+    codex = ar.CodexRunner()
+    codex._server = None
+    assert "--dangerously-bypass-approvals-and-sandbox" in codex._build_argv("hi")
+    # As -c settings: `codex exec resume` takes no --sandbox.
+    codex._mode = "readonly"
+    argv = codex._build_argv("hi")
+    assert argv[argv.index('sandbox_mode="read-only"') - 1] == "-c"
+    assert "--dangerously-bypass-approvals-and-sandbox" not in argv
+    codex._mode = "workspace"
+    assert 'sandbox_mode="workspace-write"' in codex._build_argv("hi")
+
+    opencode = ar.OpenCodeRunner()
+    assert "--agent" not in opencode._build_argv("hi")
+    opencode._mode = "plan"
+    argv = opencode._build_argv("hi")
+    assert argv[argv.index("--agent") + 1] == "plan" and argv[-1] == "hi"
+
+
+def test_a_turn_uses_the_mode_the_chat_left_for_it_once(qapp, fresh_cursor_lineup, monkeypatch):
+    ar = fresh_cursor_lineup
+    ar.set_cli_lineup(ar.BACKEND_CODEX, ar.parse_codex_models(CODEX_EFFORT_CATALOG))
+    runner = ar.CodexRunner()
+    runner._pending_mode = "readonly"
+    monkeypatch.setattr(ar, "_which_cli", lambda name: None)   # stop before launching
+    import classes.agent_mcp_server as mcp
+    monkeypatch.setattr(mcp, "get_mcp_server", lambda: types.SimpleNamespace(
+        start=lambda: types.SimpleNamespace(token="t", port=1, url=lambda: "u")))
+    runner.run_request("hi", "b")
+    assert runner._mode == "readonly" and runner._pending_mode == ""
+    runner.run_request("hi", "b")
+    assert runner._mode == "", "the next turn does not inherit it"
