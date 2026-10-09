@@ -1538,7 +1538,8 @@ def test_parse_cursor_models_reads_the_real_listing():
     ]
     # Preselected, and says what the CLI resolves it to.
     assert rows[0] == {"id": "cli-default", "name": "CLI default", "rank": 0,
-                       "featured": True, "default": True, "tags": ["Auto"]}
+                       "featured": True, "default": True, "tags": ["Auto"],
+                       "modes": ["bypass", "plan"]}
     # The menu opens on a short list, not on "CLI default" alone; search
     # reaches the rest.
     assert [r["id"] for r in rows if r["featured"]] == [r["id"] for r in rows[:9]]
@@ -3132,3 +3133,50 @@ def test_a_plan_turn_never_runs_as_an_ordinary_one(qapp, fresh_cursor_lineup, mo
         start=lambda: types.SimpleNamespace(token="t", port=1, url=lambda: "u")))
     runner.run_request("hi", "b")
     assert not launched and len(errors) == 1 and "plan" in errors[0].lower()
+
+
+def test_cursor_cli_plans_in_its_own_plan_mode(qapp, monkeypatch, tmp_path):
+    """Cursor CLI has `--mode plan`, so it gets the Plan/Agent toggle too."""
+    import windows.agent_runners as ar
+
+    rows = ar.parse_cursor_models(open(os.path.join(_FIX, "cursor_models.txt"),
+                                       encoding="utf-8").read())
+    assert rows[0]["id"] == "cli-default" and all(
+        r["modes"] == ["bypass", "plan"] for r in rows)
+
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: [])
+    runner = ar.CursorCliRunner()
+    runner._mcp_approved = True
+    runner._cli_cwd = str(tmp_path)
+    assert "--mode" not in runner._build_argv("hi")
+    runner._mode = ar.MODE_PLAN
+    argv = runner._build_argv("hi")
+    assert argv[argv.index("--mode") + 1] == "plan"
+
+
+def test_cursors_plan_is_shown_as_its_reply(qapp):
+    """In plan mode Cursor hands the plan to a createPlan tool call and replies
+    with a line about it, so the chat showed a tool block and no plan."""
+    import windows.agent_runners as ar
+
+    runner = ar.CursorCliRunner()
+    tools, replies = [], []
+    runner.tool_started.connect(lambda *a: tools.append(a))
+    runner.tool_completed.connect(lambda *a: tools.append(a))
+    runner.response_ready.connect(replies.append)
+    call = {"createPlanToolCall": {"args": {"plan": "# Trim the intro\n\n1. Cut 0-10s."}}}
+    for ev in (
+        {"type": "system", "subtype": "init", "session_id": "c1"},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "Drafting a plan."}]}},
+        {"type": "tool_call", "subtype": "started", "call_id": "t1", "tool_call": call},
+        {"type": "tool_call", "subtype": "completed", "call_id": "t1", "tool_call": call},
+        {"type": "result", "subtype": "success", "result": "Drafting a plan."},
+    ):
+        runner._handle_event(ev)
+    assert tools == [], "the plan is not a tool block"
+    assert replies == ["Drafting a plan.\n\n# Trim the intro\n\n1. Cut 0-10s."]
+
+    # A createPlan call with no plan text in it is still shown, as a tool.
+    runner._handle_event({"type": "tool_call", "subtype": "started", "call_id": "t2",
+                          "tool_call": {"createPlanToolCall": {"args": {}}}})
+    assert len(tools) == 1

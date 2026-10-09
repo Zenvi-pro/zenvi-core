@@ -1311,14 +1311,15 @@ def parse_cursor_models(text: str) -> list:
             name = name[:marks.start()]
         name = " ".join(name.split()) or mid
         rows.append({"id": mid, "name": name, "rank": len(rows) + 1,
-                     "featured": len(rows) < _FEATURED_FROM_CLI})
+                     "featured": len(rows) < _FEATURED_FROM_CLI,
+                     "modes": list(CursorCliRunner.MODES)})
         if "current" in flags and not current:
             current = name
         if "default" in flags and not fallback:
             fallback = name
     if not rows:
         return []
-    return [_cli_default_entry(current or fallback)] + rows
+    return [_cli_default_entry(current or fallback, modes=CursorCliRunner.MODES)] + rows
 
 
 def _models_command_output(argv, attempts: int = 2) -> str:
@@ -2433,6 +2434,7 @@ class CursorCliRunner(BaseAgentRunner):
     BACKEND_ID = BACKEND_CURSOR
     register = staticmethod(register_cursor)
     list_models = staticmethod(probe_cursor_models)
+    MODES = (MODE_BYPASS, MODE_PLAN)
     # The models depend on the Cursor account, so the picker shows what
     # `cursor-agent models` lists (refresh_cli_models). Until it has, the
     # only choice is to leave the model to the CLI's own config.
@@ -2493,6 +2495,8 @@ class CursorCliRunner(BaseAgentRunner):
             argv.append("--approve-mcps")
         if self._model_id:
             argv += ["--model", self._model_id]
+        if self._mode == MODE_PLAN:
+            argv += ["--mode", "plan"]
         argv += _add_dir_args()
         # Cursor mints the conversation id and reports it in ``init``, so only
         # an id heard from the CLI is resumed, never the placeholder we seed.
@@ -2586,6 +2590,20 @@ class CursorCliRunner(BaseAgentRunner):
         subtype = ev.get("subtype")
         call_id = ev.get("call_id") or ""
         kind, payload = _cursor_tool_payload(ev.get("tool_call"))
+        if kind == "createPlan":
+            # Plan mode hands the plan to this tool and replies with a line
+            # about it: the plan is what the user asked for, so it is prose.
+            # A call with no plan text in it is shown like any other tool.
+            args = payload.get("args")
+            plan = args.get("plan") if isinstance(args, dict) else ""
+            if isinstance(plan, str) and plan.strip():
+                if subtype == "started":
+                    self._close_thinking()
+                    self._message = ""
+                    self._handle_assistant({"message": {"content": [{
+                        "type": "text",
+                        "text": ("\n\n" if self._segment.strip() else "") + plan.strip()}]}})
+                return
         if subtype == "started":
             self._close_thinking()
             # A tool call ends the message that was streaming.
