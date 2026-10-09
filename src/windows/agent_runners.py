@@ -471,7 +471,7 @@ CLI_AUTH_REQUIRED = "CLI_AUTH_REQUIRED"
 
 
 def is_cli_auth_error(text: str) -> bool:
-    """True when CLI output means Anthropic/Claude login is missing or expired."""
+    """True when CLI output means the CLI's login is missing or expired."""
     low = str(text or "").strip().lower()
     if not low:
         return False
@@ -486,6 +486,7 @@ def is_cli_auth_error(text: str) -> bool:
         "authentication_error",
         "could not be refreshed",
         "auth login",
+        "codex login",
     )
     return any(n in low for n in needles)
 
@@ -534,51 +535,104 @@ def claude_is_logged_in() -> bool | None:
     return None
 
 
-def start_claude_auth_login() -> tuple[bool, str]:
-    """Launch ``claude auth login`` (opens the browser). Returns (ok, message)."""
-    cli = _which_cli("claude")
+def codex_is_logged_in() -> bool | None:
+    """True/False from ``codex login status``; None when that is no answer:
+    the probe could not run, the CLI is too old to have it, or an API key in
+    the environment signs Codex in (the status ignores those).
+    """
+    cli = _which_cli("codex")
+    if not cli or os.environ.get("OPENAI_API_KEY") or os.environ.get("CODEX_API_KEY"):
+        return None
+    try:
+        result = subprocess.run(
+            [cli, "login", "status"],
+            capture_output=True, text=True, timeout=8,
+            env=_cli_child_env(),
+        )
+    except Exception:
+        return None
+    if result.returncode == 0:
+        return True
+    said = ((result.stdout or "") + (result.stderr or "")).lower()
+    return False if "not logged in" in said else None
+
+
+# The CLIs that sign in through the browser: executable, the arguments that
+# start the sign-in, and how to ask whether it is signed in. The others
+# (OpenCode, Hermes) sign in through prompts in a terminal, and Cursor CLI is
+# not here until its flow has been tried.
+CLI_LOGINS = {
+    BACKEND_CLAUDE: ("claude", ("auth", "login"), lambda: claude_is_logged_in()),
+    BACKEND_CODEX: ("codex", ("login",), lambda: codex_is_logged_in()),
+}
+
+# The sign-in each backend has waiting on its browser, so a second click
+# replaces it instead of leaving two.
+_login_procs: dict = {}
+
+
+def cli_is_logged_in(backend: str) -> bool | None:
+    """Whether *backend*'s CLI is signed in; None when unknown or not asked."""
+    login = CLI_LOGINS.get(backend)
+    return login[2]() if login else None
+
+
+def start_cli_login(backend: str) -> tuple[bool, str]:
+    """Run the CLI's own sign-in (it opens the browser) and wait for it.
+
+    Blocking, up to five minutes. Returns (ok, message).
+    """
+    runner = CLI_RUNNERS.get(backend)
+    name = runner.DISPLAY_NAME if runner else backend
+    login = CLI_LOGINS.get(backend)
+    if not login:
+        return False, "%s signs in from its own CLI in a terminal." % name
+    binary, args, logged_in = login
+    cli = _which_cli(binary)
     if not cli:
-        return False, "Claude Code CLI not found on PATH."
+        return False, "%s CLI not found on PATH." % name
+    stale = _login_procs.pop(backend, None)
+    if stale is not None:
+        try:
+            stale.kill()
+        except Exception:
+            pass
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
     try:
         proc = subprocess.Popen(
-            [cli, "auth", "login"],
+            [cli, *args],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
             env=_cli_child_env(),
             start_new_session=True,
+            **kwargs,
         )
     except Exception as e:
-        return False, "Could not start Claude sign-in: %s" % e
-    # Poll until logged in or the login process exits / times out (~5 min).
-    deadline = time.time() + 300
-    while time.time() < deadline:
-        logged = claude_is_logged_in()
-        if logged is True:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
-            return True, "Signed in to Claude."
-        if proc.poll() is not None:
-            if claude_is_logged_in() is True:
-                return True, "Signed in to Claude."
-            err = ""
-            try:
-                err = (proc.stderr.read() or b"").decode("utf-8", "replace").strip()
-            except Exception:
-                pass
-            return False, err or (
-                "Sign-in did not finish. Complete it in the browser, then try again."
-            )
-        time.sleep(1.5)
+        return False, "Could not start %s sign-in: %s" % (name, e)
+    _login_procs[backend] = proc
     try:
-        proc.terminate()
-    except Exception:
-        pass
-    if claude_is_logged_in() is True:
-        return True, "Signed in to Claude."
-    return False, "Sign-in timed out. Finish in the browser, then try again."
+        deadline = time.time() + 300
+        while time.time() < deadline:
+            if logged_in() is True:
+                return True, "Signed in to %s." % name
+            if _login_procs.get(backend) is not proc:
+                return False, ""        # replaced by a newer sign-in
+            if proc.poll() is not None:
+                if logged_in() is True:
+                    return True, "Signed in to %s." % name
+                return False, "Sign-in did not finish. Complete it in the browser, then try again."
+            time.sleep(1.5)
+        return False, "Sign-in timed out. Finish in the browser, then try again."
+    finally:
+        if _login_procs.get(backend) is proc:
+            del _login_procs[backend]
+        try:
+            proc.kill()
+        except Exception:
+            pass
 
 
 def _cli_child_env(extra=None):
@@ -597,7 +651,16 @@ def _cli_child_env(extra=None):
             env.setdefault("HOMEPATH", tail)
         env.setdefault("APPDATA", os.path.join(home, "AppData", "Roaming"))
         env.setdefault("LOCALAPPDATA", os.path.join(home, "AppData", "Local"))
+    if os.name == "nt":
+        # An MSYS2 login shell drops these two. A CLI then cannot start a
+        # program by name: Claude Code's sign-in never opens the browser.
+        env.setdefault("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        env.setdefault("COMSPEC", os.path.join(
+            env.get("SYSTEMROOT") or r"C:\Windows", "System32", "cmd.exe"))
     # Claude Code auto-detects zsh on macOS; bash ΓëÑ4 makes ${!files[@]} work.
+    # Claude Code's own switch for dynamic workflows: without it an account
+    # that has them off is told Ultracode is unavailable (see the effort picker).
+    env.setdefault("CLAUDE_CODE_WORKFLOWS", "1")
     # Do not clobber a user-set CLAUDE_CODE_SHELL.
     if "CLAUDE_CODE_SHELL" not in env:
         bash = _resolve_cli_bash()
@@ -700,12 +763,15 @@ def detect_cli(binary_name: str) -> dict:
     offload this to a background thread (see ``AIChatWindow``'s detection
     worker) rather than call it directly.
 
-    For ``claude``, also reports ``logged_in`` (True/False/None).
+    For a CLI with a browser sign-in (CLI_LOGINS), also reports ``logged_in``
+    (True/False/None).
     """
     cli = _which_cli(binary_name)
+    logged_in = next((probe for name, _args, probe in CLI_LOGINS.values()
+                      if name == binary_name), None)
     if not cli:
         out = {"installed": False, "version": None, "registered": False}
-        if binary_name == "claude":
+        if logged_in:
             out["logged_in"] = None
         return out
     version = None
@@ -721,8 +787,8 @@ def detect_cli(binary_name: str) -> dict:
         "version": version,
         "registered": _is_registered(binary_name),
     }
-    if binary_name == "claude":
-        out["logged_in"] = claude_is_logged_in()
+    if logged_in:
+        out["logged_in"] = logged_in()
     return out
 
 
@@ -1957,17 +2023,17 @@ class BaseAgentRunner(QObject):
     def _emit_auth_required(self, text: str = ""):
         self._responded = True
         if not self._aborted:
-            self.auth_required.emit(
-                text or "Claude Code needs you to sign in again."
-            )
+            if not text or text == CLI_AUTH_REQUIRED:
+                text = "%s needs you to sign in again." % self.DISPLAY_NAME
+            self.auth_required.emit(text)
 
     def _emit_error(self, text: str):
         if self._aborted:
             return
         blob = text or "Unknown error."
-        # Claude OAuth recovery only — Codex/Cursor "authenticate" errors
-        # must not open the Claude Sign-in card.
-        if self.BACKEND_ID == BACKEND_CLAUDE and (
+        # Only for a CLI the chat can sign in again (CLI_LOGINS): the others
+        # keep the plain error.
+        if self.BACKEND_ID in CLI_LOGINS and (
             is_cli_auth_error(blob)
             or any(is_cli_auth_error(line) for line in self._stderr_tail)
         ):
@@ -2023,6 +2089,8 @@ class BaseAgentRunner(QObject):
 
     def _ensure_ready(self):
         """Return an error string if the backend can't run, else None."""
+        if cli_is_logged_in(self.BACKEND_ID) is False:
+            return CLI_AUTH_REQUIRED
         return None
 
     def _build_env(self):
@@ -2098,12 +2166,6 @@ class ClaudeCodeRunner(BaseAgentRunner):
         super().__init__(parent)
         self._open_blocks: dict = {}   # stream_event block index -> {"kind","call_id"}
         self._think_seq = 0
-
-    def _ensure_ready(self):
-        logged = claude_is_logged_in()
-        if logged is False:
-            return CLI_AUTH_REQUIRED
-        return None
 
     def _build_argv(self, text: str):
         cfg = _write_claude_mcp_config(self._server)
@@ -2653,8 +2715,14 @@ class OpenCodeRunner(BaseAgentRunner):
         return _cli_child_env(extra)
 
     def _build_argv(self, text: str):
+        cli = _opencode_native(self._cli_path or self.CLI_NAME)
         argv = [
-            _opencode_native(self._cli_path or self.CLI_NAME), "run", "--format", "json",
+            cli, "run",
+            # OpenCode 2 hands `run` to a background service that keeps the
+            # config and environment it was started with, so this turn's
+            # OPENCODE_CONFIG and token (_build_env) would not reach it.
+        ] + (["--standalone"] if _opencode_has_standalone(cli) else []) + [
+            "--format", "json",
             # No terminal to answer a permission prompt (see Claude's
             # --dangerously-skip-permissions).
             "--auto", "--thinking",
@@ -2744,6 +2812,27 @@ def _opencode_native(cli: str) -> str:
             if os.path.isfile(native):
                 return native
     return cli
+
+
+# Whether each opencode executable's `run` takes --standalone (OpenCode 2).
+_opencode_standalone: dict = {}
+
+
+def _opencode_has_standalone(cli: str) -> bool:
+    if cli not in _opencode_standalone:
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        try:
+            result = subprocess.run(
+                [cli, "run", "--help"], capture_output=True, encoding="utf-8",
+                errors="replace", timeout=20, env=_cli_child_env(), **kwargs)
+        except Exception:
+            return False        # not an answer: ask again next turn
+        if result.returncode != 0:
+            return False
+        _opencode_standalone[cli] = "--standalone" in (result.stdout or "") + (result.stderr or "")
+    return _opencode_standalone[cli]
 
 
 def _write_opencode_mcp_config(server) -> str:

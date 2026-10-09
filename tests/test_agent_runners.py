@@ -125,7 +125,10 @@ def test_detect_cli_installed_version_check_fails(monkeypatch):
     monkeypatch.setattr(ar.shutil, "which", lambda name: "/usr/local/bin/" + name)
     monkeypatch.setattr(ar.subprocess, "run", _raise)
     monkeypatch.setattr(ar, "_is_registered", lambda name: False)
-    assert ar.detect_cli("codex") == {"installed": True, "version": None, "registered": False}
+    assert ar.detect_cli("codex") == {"installed": True, "version": None, "registered": False,
+                                      "logged_in": None}
+    # A CLI with no browser sign-in reports no login state at all.
+    assert "logged_in" not in ar.detect_cli("opencode")
 
 
 # --- registration detection + connect flow (Phase 8) -----------------------
@@ -859,17 +862,117 @@ def test_emit_error_routes_auth_to_auth_required(qapp):
     assert not any(e[0] == "error" for e in events)
 
 
-def test_emit_error_codex_auth_stays_on_error_occurred(qapp):
-    """Codex authenticate failures must not open the Claude Sign-in card."""
-    from windows.agent_runners import CodexRunner
+def test_an_expired_login_asks_for_sign_in_on_every_cli_that_has_one(qapp, monkeypatch):
+    """Codex gets the same Sign-in card as Claude Code; a CLI that signs in
+    through terminal prompts (OpenCode) keeps the plain error."""
+    import windows.agent_runners as ar
 
-    runner = CodexRunner()
-    events = []
-    runner.auth_required.connect(lambda t: events.append(("auth", t)))
-    runner.error_occurred.connect(lambda t: events.append(("error", t)))
-    runner._emit_error("Failed to authenticate: OAuth session expired")
-    assert events and events[0][0] == "error"
-    assert not any(e[0] == "auth" for e in events)
+    def events_of(runner, text):
+        events = []
+        runner.auth_required.connect(lambda t: events.append(("auth", t)))
+        runner.error_occurred.connect(lambda t: events.append(("error", t)))
+        runner._emit_error(text)
+        return events
+
+    expired = ("Your access token could not be refreshed because your refresh token "
+               "was already used. Please log out and sign in again.")
+    assert events_of(ar.CodexRunner(), expired) == [("auth", expired)]
+    assert events_of(ar.OpenCodeRunner(), expired) == [("error", expired)]
+
+    monkeypatch.setattr(ar, "codex_is_logged_in", lambda: False)
+    assert ar.CodexRunner()._ensure_ready() == ar.CLI_AUTH_REQUIRED
+    monkeypatch.setattr(ar, "codex_is_logged_in", lambda: None)
+    assert ar.CodexRunner()._ensure_ready() is None
+    assert ar.OpenCodeRunner()._ensure_ready() is None
+    # The card names the CLI that needs it.
+    runner, said = ar.CodexRunner(), []
+    runner.auth_required.connect(said.append)
+    runner._emit_auth_required(ar.CLI_AUTH_REQUIRED)
+    assert said == ["Codex needs you to sign in again."]
+
+
+def test_codex_login_state_is_its_status_exit_code(monkeypatch):
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_which_cli", lambda name: "/bin/" + name)
+    seen = []
+
+    def run(argv, **kw):
+        seen.append(argv)
+        return types.SimpleNamespace(returncode=run.code, stdout="", stderr=run.err)
+
+    monkeypatch.setattr(ar.subprocess, "run", run)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CODEX_API_KEY", raising=False)
+    run.code, run.err = 0, "Logged in using ChatGPT"
+    assert ar.codex_is_logged_in() is True and seen[-1] == ["/bin/codex", "login", "status"]
+    run.code, run.err = 1, "Not logged in"
+    assert ar.codex_is_logged_in() is False
+    # Anything else is not an answer: an old CLI without `login status` must
+    # not lock its user out of every turn.
+    run.code, run.err = 2, "error: unrecognized subcommand 'status'"
+    assert ar.codex_is_logged_in() is None
+    # Nor is "not logged in" when an API key does the signing in.
+    run.code, run.err = 1, "Not logged in"
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    assert ar.codex_is_logged_in() is None
+    monkeypatch.delenv("OPENAI_API_KEY")
+    monkeypatch.setattr(ar, "_which_cli", lambda name: None)
+    assert ar.codex_is_logged_in() is None
+
+
+def test_sign_in_runs_the_clis_own_login_and_waits_for_it(monkeypatch):
+    import windows.agent_runners as ar
+
+    procs = []
+
+    class FakeProc:
+        def __init__(self, argv, **kw):
+            self.argv, self.kw, self.killed = argv, kw, False
+            self.stderr = None
+            procs.append(self)
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            self.killed = True
+
+    monkeypatch.setattr(ar, "_which_cli", lambda name: "/bin/" + name)
+    monkeypatch.setattr(ar.subprocess, "Popen", FakeProc)
+    monkeypatch.setattr(ar.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ar, "_login_procs", {})
+    answers = iter([False, False, True])
+    monkeypatch.setattr(ar, "codex_is_logged_in", lambda: next(answers))
+    assert ar.start_cli_login(ar.BACKEND_CODEX) == (True, "Signed in to Codex.")
+    assert procs[0].argv == ["/bin/codex", "login"]
+    assert procs[0].killed, "the login process does not outlive the sign-in"
+
+    # A second click while the first sign-in is still waiting replaces it.
+    monkeypatch.setattr(ar, "claude_is_logged_in", lambda: True)
+    stale = FakeProc(["stale"])
+    ar._login_procs[ar.BACKEND_CLAUDE] = stale
+    assert ar.start_cli_login(ar.BACKEND_CLAUDE)[0] is True
+    assert stale.killed and procs[-1].argv == ["/bin/claude", "auth", "login"]
+
+    ok, message = ar.start_cli_login(ar.BACKEND_OPENCODE)
+    assert ok is False and "OpenCode" in message
+
+
+def test_windows_children_can_find_programs_by_name(monkeypatch):
+    """An MSYS2 login shell drops PATHEXT and COMSPEC. Without PATHEXT Claude
+    Code cannot start the browser for its sign-in, and just waits."""
+    import windows.agent_runners as ar
+
+    if os.name != "nt":
+        pytest.skip("Windows environment variables")
+    monkeypatch.delenv("PATHEXT", raising=False)
+    monkeypatch.delenv("COMSPEC", raising=False)
+    env = {k.upper(): v for k, v in ar._cli_child_env().items()}
+    assert ".EXE" in env["PATHEXT"].upper().split(";")
+    assert env["COMSPEC"].lower().endswith("cmd.exe")
+    monkeypatch.setenv("PATHEXT", ".EXE;.FOO")
+    assert ar._cli_child_env()["PATHEXT"] == ".EXE;.FOO", "the user's own is kept"
 
 
 def test_cli_child_env_sets_claude_code_shell_for_bash4(monkeypatch):
@@ -2935,3 +3038,44 @@ def test_a_turn_uses_the_mode_the_chat_left_for_it_once(qapp, fresh_cursor_lineu
     assert runner._mode == "readonly" and runner._pending_mode == ""
     runner.run_request("hi", "b")
     assert runner._mode == "", "the next turn does not inherit it"
+
+
+def test_opencode_v2_turns_run_on_a_private_server(qapp, monkeypatch):
+    """OpenCode 2 sends `run` to a background service that keeps the config
+    and environment it started with, so the turn's own OPENCODE_CONFIG (the
+    editor's MCP server and token) never reached it: the agent had no editor
+    tools. --standalone gives the turn its own server; OpenCode 1 has no such
+    flag and no such service."""
+    import windows.agent_runners as ar
+
+    asked = []
+
+    def run(argv, **kw):
+        asked.append(argv)
+        return types.SimpleNamespace(returncode=0, stderr="", stdout=run.help)
+
+    monkeypatch.setattr(ar.subprocess, "run", run)
+    monkeypatch.setattr(ar, "_opencode_standalone", {})
+    runner = ar.OpenCodeRunner()
+    runner._cli_path = "/bin/opencode"
+
+    run.help = "  --standalone   Run with a private server instead of the background service\n"
+    argv = runner._build_argv("hi")
+    assert argv[1:3] == ["run", "--standalone"] and argv[-1] == "hi"
+    runner._build_argv("again")
+    assert len(asked) == 1 and asked[0][1:] == ["run", "--help"], "asked once per CLI"
+
+    monkeypatch.setattr(ar, "_opencode_standalone", {})
+    run.help = "  --format   json\n"
+    assert "--standalone" not in runner._build_argv("hi")
+
+
+def test_claude_code_is_started_with_workflows_on_so_ultracode_is_offered(monkeypatch):
+    """Claude Code reports Ultracode as unavailable while its dynamic workflows
+    are off for the account; this is its own switch for them."""
+    import windows.agent_runners as ar
+
+    monkeypatch.delenv("CLAUDE_CODE_WORKFLOWS", raising=False)
+    assert ar._cli_child_env()["CLAUDE_CODE_WORKFLOWS"] == "1"
+    monkeypatch.setenv("CLAUDE_CODE_WORKFLOWS", "0")
+    assert ar._cli_child_env()["CLAUDE_CODE_WORKFLOWS"] == "0", "the user's own choice is kept"

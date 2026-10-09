@@ -4286,9 +4286,12 @@ class AIChatWindow(QDockWidget):
 
     @pyqtSlot(str)
     def _on_auth_required(self, text: str):
-        """Claude Code OAuth missing/expired — guided Sign-in card, not a raw dump."""
+        """A CLI's login is missing/expired — guided Sign-in card, not a raw dump."""
         sid = getattr(self.sender(), "_session_id", self._active_sid)
         sess = self._sessions.get(sid) if sid else None
+        backend = (sess or {}).get("backend") or BACKEND_CLAUDE
+        runner = CLI_RUNNERS.get(backend)
+        notice = "%s needs you to sign in again." % (runner.DISPLAY_NAME if runner else backend)
         if sess is not None:
             sess["processing"] = False
             self._reset_turn_segments(sess)
@@ -4321,26 +4324,24 @@ class AIChatWindow(QDockWidget):
             self._run_js("if(window.resetStreamingMessage) window.resetStreamingMessage();")
             self._run_js(
                 "if(window.showCliAuthRecovery) showCliAuthRecovery(%s, %s);"
-                % (json.dumps(BACKEND_CLAUDE), json.dumps(
-                    "Claude Code needs you to sign in again. Your last request was not run."
-                ))
+                % (json.dumps(backend), json.dumps(notice + " Your last request was not run."))
             )
         else:
             self._add_system_msg(
-                "Claude Code needs you to sign in again. "
-                "Run: claude auth login — then retry your message."
+                notice + " Sign in from its CLI, then retry your message."
             )
         self._set_processing_ui(False)
         self._detect_clis()
 
     def _sign_in_cli(self, backend_id: str):
-        """Open Claude's browser login; on success auto-retry the pending message."""
-        if backend_id != BACKEND_CLAUDE:
+        """Open the CLI's browser login; on success auto-retry the pending message."""
+        from windows.agent_runners import CLI_LOGINS
+        if backend_id not in CLI_LOGINS:
             if self._use_web_ui:
                 self._run_js(
                     "if(window.onCliAuthResult) onCliAuthResult(%s, %s, %s);"
                     % (json.dumps(backend_id), json.dumps(False),
-                       json.dumps("Sign-in is only available for Claude Code."))
+                       json.dumps("Sign in from this agent's own CLI in a terminal."))
                 )
             return
 
@@ -4349,8 +4350,10 @@ class AIChatWindow(QDockWidget):
 
         def run():
             try:
-                from windows.agent_runners import start_claude_auth_login
-                ok, message = start_claude_auth_login()
+                from windows.agent_runners import start_cli_login
+                ok, message = start_cli_login(backend_id)
+                if not ok and not message:
+                    return      # replaced by a newer click, which reports
             except Exception as e:
                 log.debug("sign_in_cli failed: %s", e, exc_info=True)
                 ok, message = False, str(e)
@@ -4376,7 +4379,7 @@ class AIChatWindow(QDockWidget):
             return
         sid = session_id or self._active_sid
         sess = self._sessions.get(sid) if sid else None
-        if not sess or sess.get("backend") != BACKEND_CLAUDE:
+        if not sess or sess.get("backend") != backend_id:
             return
         pending = sess.pop("pending_retry", None)
         sess.pop("pending_retry_text", None)

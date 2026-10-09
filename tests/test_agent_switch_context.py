@@ -291,3 +291,46 @@ def test_the_retry_after_a_claude_sign_in_keeps_the_effort(window_cls, monkeypat
     assert sess["pending_retry"]["effort"] == "xhigh"
     window_cls._on_sign_in_result(win, "claude_code", True, "ok", "s1")
     assert worker._pending_effort == "xhigh"
+
+
+def test_sign_in_recovery_is_for_the_cli_the_chat_is_on(window_cls, monkeypatch):
+    """Codex's expired login gets its own card, sign-in and retry, not Claude's."""
+    import windows.ai_chat_ui as ui
+    import windows.agent_runners as ar
+
+    worker = MagicMock()
+    worker._session_id = "s1"
+    sess = {"backend": "codex", "worker": worker, "last_user_text": "hi"}
+    win = MagicMock()
+    win._sessions = {"s1": sess}
+    win._active_sid = "s1"
+    win._use_web_ui = True
+    win._user_cancelled = False
+    win.is_processing = False
+    win.sender.return_value = worker
+    window_cls._on_auth_required(win, "Codex needs you to sign in again.")
+    card = [c.args[0] for c in win._run_js.call_args_list if "showCliAuthRecovery" in c.args[0]]
+    assert card and '"codex"' in card[0] and "Codex needs you to sign in again." in card[0]
+    assert "Claude" not in card[0]
+
+    started = []
+    monkeypatch.setattr(ar, "start_cli_login", lambda backend: started.append(backend) or (True, "ok"))
+    monkeypatch.setattr(ui, "QMetaObject", MagicMock())
+    monkeypatch.setattr(ui, "Q_ARG", lambda *a: a)
+    monkeypatch.setattr(ui.threading, "Thread", lambda target, **kw: types.SimpleNamespace(start=target))
+    window_cls._sign_in_cli(win, "codex")
+    assert started == ["codex"]
+    # A CLI with no browser sign-in is told so instead of spinning.
+    win._run_js.reset_mock()
+    window_cls._sign_in_cli(win, "opencode")
+    assert started == ["codex"] and "false" in win._run_js.call_args.args[0]
+
+    window_cls._on_sign_in_result(win, "codex", True, "ok", "s1")
+    assert win._dispatch_user_message.call_args.args[0] == "hi", "the pending message is retried"
+
+
+def test_the_chat_page_names_no_cli_in_its_sign_in_flow():
+    import os
+    js = open(os.path.join(os.path.dirname(__file__), "..", "src", "chat_ui", "chat.js"),
+              encoding="utf-8").read()
+    assert "Sign in to Claude" not in js and "claude_code" not in js
