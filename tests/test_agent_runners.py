@@ -3079,3 +3079,38 @@ def test_claude_code_is_started_with_workflows_on_so_ultracode_is_offered(monkey
     assert ar._cli_child_env()["CLAUDE_CODE_WORKFLOWS"] == "1"
     monkeypatch.setenv("CLAUDE_CODE_WORKFLOWS", "0")
     assert ar._cli_child_env()["CLAUDE_CODE_WORKFLOWS"] == "0", "the user's own choice is kept"
+
+
+def test_opencode_effort_levels_are_the_variants_opencode_itself_lists(monkeypatch):
+    """OpenCode 2 builds each model's variants itself (`opencode api
+    model.list`); the models.dev catalogue it caches lists fewer, so models
+    with an effort choice in OpenCode showed none here."""
+    import windows.agent_runners as ar
+
+    listing = json.dumps({"data": [
+        {"providerID": "opencode-go", "modelID": "deepseek-v4.1-flash",
+         "variants": [{"id": "low"}, {"id": "high"}, {"id": "max"}, {"id": "low"}, "junk", {}]},
+        {"providerID": "openrouter", "modelID": "xiaomi/mimo-v2.6-pro",
+         "variants": [{"id": "none"}, {"id": "thinking"}]},
+        {"providerID": "opencode", "modelID": "big-pickle", "variants": []},
+        {"modelID": "no-provider"}, "junk",
+    ]})
+    assert ar.parse_opencode_variants(listing) == {
+        "opencode-go/deepseek-v4.1-flash": ["low", "high", "max"],
+        "openrouter/xiaomi/mimo-v2.6-pro": ["none", "thinking"],
+        "opencode/big-pickle": [],
+    }
+    # Not an answer (OpenCode 1 has no `api` command): the catalogue is used.
+    for text in ("", "<!doctype html>", json.dumps({"data": "x"}), json.dumps([1]),
+                 json.dumps({"data": []}), json.dumps({"data": ["junk"]})):
+        assert ar.parse_opencode_variants(text) is None
+
+    outputs = {"models": "opencode-go/deepseek-v4.1-flash\nopencode/big-pickle\n", "api": listing}
+    monkeypatch.setattr(ar, "_models_command_output", lambda argv, attempts=2: outputs[argv[1]])
+    monkeypatch.setattr(ar, "_opencode_efforts", lambda path: {"opencode/big-pickle": ["high"]})
+    rows = {r["id"]: r.get("efforts") for r in ar.probe_opencode_models("opencode")}
+    assert rows["opencode-go/deepseek-v4.1-flash"] == ["low", "high", "max"]
+    assert rows["opencode/big-pickle"] is None, "OpenCode's own answer wins over the catalogue"
+    outputs["api"] = ""
+    rows = {r["id"]: r.get("efforts") for r in ar.probe_opencode_models("opencode")}
+    assert rows["opencode/big-pickle"] == ["high"] and rows["opencode-go/deepseek-v4.1-flash"] is None

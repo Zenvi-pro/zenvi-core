@@ -1613,10 +1613,36 @@ def parse_opencode_models(text: str, efforts=None) -> list:
     return [_cli_default_entry(modes=OpenCodeRunner.MODES)] + rows if rows else []
 
 
+def parse_opencode_variants(text: str):
+    """``{"provider/model": [variant ids]}`` from ``opencode api model.list``,
+    or None when that is no answer (OpenCode 1 has no ``api`` command, or
+    the list came back empty)."""
+    try:
+        models = json.loads(text or "")["data"]
+    except Exception:
+        return None
+    if not isinstance(models, list):
+        return None
+    out = {}
+    for m in models:
+        if not isinstance(m, dict) or not m.get("providerID") or not m.get("modelID"):
+            continue
+        variants = m.get("variants")
+        out["%s/%s" % (m["providerID"], m["modelID"])] = _effort_levels(
+            [v.get("id") for v in variants if isinstance(v, dict)]
+            if isinstance(variants, list) else [])
+    return out or None
+
+
 def probe_opencode_models(cli: str) -> list:
-    """Ask ``opencode models`` which models the signed-in providers offer."""
-    return parse_opencode_models(_models_command_output([cli, "models"]),
-                                 _opencode_efforts(_opencode_models_cache()))
+    """Ask ``opencode models`` which models the signed-in providers offer, and
+    OpenCode which variants (effort levels) each takes. It works those out
+    itself; its models.dev catalogue lists fewer and is only the fallback."""
+    efforts = parse_opencode_variants(
+        _models_command_output([cli, "api", "model.list"], attempts=1))
+    if efforts is None:
+        efforts = _opencode_efforts(_opencode_models_cache())
+    return parse_opencode_models(_models_command_output([cli, "models"]), efforts)
 
 
 # A CLI's model list is re-read on this cadence (the same as the backend
