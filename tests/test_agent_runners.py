@@ -3180,3 +3180,40 @@ def test_cursors_plan_is_shown_as_its_reply(qapp):
     runner._handle_event({"type": "tool_call", "subtype": "started", "call_id": "t2",
                           "tool_call": {"createPlanToolCall": {"args": {}}}})
     assert len(tools) == 1
+
+
+def test_cursor_cli_has_a_sign_in_too(qapp, monkeypatch):
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_which_cli", lambda name: "/bin/" + name)
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    seen = []
+
+    def run(argv, **kw):
+        seen.append(argv)
+        return types.SimpleNamespace(returncode=0, stderr="", stdout=run.out)
+
+    monkeypatch.setattr(ar.subprocess, "run", run)
+    run.out = 'noise\n{"status": "authenticated", "isAuthenticated": true}\n'
+    assert ar.cursor_is_logged_in() is True
+    assert seen[-1] == ["/bin/cursor-agent", "status", "--format", "json"]
+    run.out = '{"status": "unauthenticated", "isAuthenticated": false}'
+    assert ar.cursor_is_logged_in() is False
+    # No answer is not "signed out": an old CLI, or an API key doing the signing in.
+    run.out = "Logged in as someone"
+    assert ar.cursor_is_logged_in() is None
+    run.out = '{"isAuthenticated": false}'
+    monkeypatch.setenv("CURSOR_API_KEY", "k")
+    assert ar.cursor_is_logged_in() is None
+    monkeypatch.delenv("CURSOR_API_KEY")
+
+    assert ar.CLI_LOGINS[ar.BACKEND_CURSOR][:2] == ("cursor-agent", ("login",))
+    assert ar.cli_is_logged_in(ar.BACKEND_CURSOR) is False
+    assert ar.detect_cli("cursor-agent")["logged_in"] is False
+    assert ar.is_cli_auth_error("Authentication required. Please run 'agent login' first.")
+    # An expired Cursor login opens the Sign-in card, like Claude Code's and Codex's.
+    runner, events = ar.CursorCliRunner(), []
+    runner.auth_required.connect(lambda t: events.append("auth"))
+    runner.error_occurred.connect(lambda t: events.append("error"))
+    runner._emit_error("Authentication required. Please run 'agent login' first.")
+    assert events == ["auth"]

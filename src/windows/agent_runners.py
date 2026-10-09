@@ -487,6 +487,7 @@ def is_cli_auth_error(text: str) -> bool:
         "could not be refreshed",
         "auth login",
         "codex login",
+        "agent login",
     )
     return any(n in low for n in needles)
 
@@ -557,13 +558,37 @@ def codex_is_logged_in() -> bool | None:
     return False if "not logged in" in said else None
 
 
+def cursor_is_logged_in() -> bool | None:
+    """True/False from ``cursor-agent status --format json``; None when that
+    is no answer (the probe could not run, or an API key signs Cursor in)."""
+    cli = _which_cli("cursor-agent")
+    if not cli or os.environ.get("CURSOR_API_KEY"):
+        return None
+    try:
+        result = subprocess.run(
+            [cli, "status", "--format", "json"],
+            capture_output=True, text=True, timeout=15,
+            env=_cli_child_env(),
+        )
+    except Exception:
+        return None
+    for line in ((result.stdout or "").strip(), *(result.stdout or "").splitlines()):
+        try:
+            answer = json.loads(line).get("isAuthenticated")
+        except Exception:
+            continue
+        if isinstance(answer, bool):
+            return answer
+    return None
+
+
 # The CLIs that sign in through the browser: executable, the arguments that
 # start the sign-in, and how to ask whether it is signed in. The others
-# (OpenCode, Hermes) sign in through prompts in a terminal, and Cursor CLI is
-# not here until its flow has been tried.
+# (OpenCode, Hermes) sign in through prompts in a terminal.
 CLI_LOGINS = {
     BACKEND_CLAUDE: ("claude", ("auth", "login"), lambda: claude_is_logged_in()),
     BACKEND_CODEX: ("codex", ("login",), lambda: codex_is_logged_in()),
+    BACKEND_CURSOR: ("cursor-agent", ("login",), lambda: cursor_is_logged_in()),
 }
 
 # The sign-in each backend has waiting on its browser, so a second click
@@ -2463,6 +2488,9 @@ class CursorCliRunner(BaseAgentRunner):
         self._message = ""
 
     def _ensure_ready(self):
+        not_ready = super()._ensure_ready()
+        if not_ready:
+            return not_ready
         if self._server is None:
             return "Could not start the editor tool server."
         ok, message = register_cursor(self._server.port, self._server.token)
