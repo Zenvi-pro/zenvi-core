@@ -1898,7 +1898,8 @@ class BaseAgentRunner(QObject):
         # Left by AIChatWindow just before this call, for this turn only (the
         # slot's signature is shared with AIChatWorker, which has no effort).
         self._effort, self._pending_effort = self._coerce_effort(self._pending_effort), ""
-        self._mode, self._pending_mode = self._coerce_mode(self._pending_mode), ""
+        asked_mode = self._pending_mode
+        self._mode, self._pending_mode = self._coerce_mode(asked_mode), ""
         self._responded = False
         self._final_text = ""
         self._last_error = ""
@@ -1927,6 +1928,14 @@ class BaseAgentRunner(QObject):
         except Exception as e:
             log.error("MCP server start failed: %s", e, exc_info=True)
             self._emit_error("Could not start the editor tool server: %s" % e)
+            return
+
+        if asked_mode == MODE_PLAN and self._mode != MODE_PLAN:
+            # Plan promises that nothing gets changed: never fall back to a
+            # turn with full permissions.
+            self._emit_error(
+                "%s has no plan mode for this model. Switch to Agent, or pick "
+                "another model." % self.DISPLAY_NAME)
             return
 
         self._cli_path = _which_cli(self.CLI_NAME)

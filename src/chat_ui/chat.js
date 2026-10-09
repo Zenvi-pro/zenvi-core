@@ -1496,26 +1496,59 @@
         return item ? item.modes : [];
     }
 
+    // The permission modes the pill steps through. Plan is not one of them:
+    // it is the Plan/Agent toggle, the same one Zenvi Assistant has.
+    function pillModes() {
+        var modes = cliModes();
+        var out = [];
+        for (var i = 0; i < modes.length; i++) {
+            if (modes[i] !== 'plan') out.push(modes[i]);
+        }
+        return out;
+    }
+
     function pickedCliMode() {
-        return cliModes().indexOf(cliMode) >= 0 ? cliMode : '';
+        return pillModes().indexOf(cliMode) >= 0 ? cliMode : '';
     }
 
     function renderCliMode() {
         if (!cliModeBtn) return;
-        var modes = cliModes();
+        var modes = pillModes();
         var mode = pickedCliMode() || modes[0] || '';
         cliModeBtn.style.display = modes.length > 1 ? '' : 'none';
         cliModeBtn.textContent = MODE_LABELS[mode] || mode;
         cliModeBtn.setAttribute('data-mode', mode);
+        // Whether Plan is offered follows the picked model too.
+        if (backendSelect) applyBackendChrome(backendSelect.value);
     }
 
-    // Shift+Tab or a click steps to the picked model's next mode.
+    // A click steps to the picked model's next permission mode.
     function cycleCliMode() {
-        var modes = cliModes();
+        var modes = pillModes();
         if (modes.length < 2) return false;
         cliMode = modes[(Math.max(0, modes.indexOf(cliMode)) + 1) % modes.length];
         renderCliMode();
         return true;
+    }
+
+    // Shift+Tab, as in the CLIs: through the permission modes, then Plan,
+    // then round again. False when there is nothing to step.
+    function stepMode() {
+        var modes = pillModes();
+        var canPlan = modeToggleEl && modeToggleEl.style.display !== 'none';
+        if (currentAgentMode === 'planning') {
+            cliMode = modes[0] || '';
+            renderCliMode();
+            onModeButtonClick('agent');
+            return true;
+        }
+        var at = Math.max(0, modes.indexOf(cliMode));
+        if (at < modes.length - 1) return cycleCliMode();
+        if (canPlan) {
+            onModeButtonClick('planning');
+            return true;
+        }
+        return cycleCliMode();
     }
 
     if (cliModeBtn) cliModeBtn.addEventListener('click', cycleCliMode);
@@ -1914,7 +1947,8 @@
             '<span class="chat-plan-chip-badge chat-plan-chip-badge-' + escapeHtml(status.toLowerCase()) + '">' + escapeHtml(status) + '</span>' +
             (progress ? '<span class="chat-plan-chip-progress" id="chat-plan-chip-progress">' + escapeHtml(progress) + '</span>' : '') +
             '<div class="chat-plan-chip-actions">' +
-            '<button type="button" class="chat-plan-chip-open" id="chat-plan-chip-open">Open Plan</button>';
+            // A CLI agent's plan is its reply above: no steps for the plan dock.
+            (plan.cli ? '' : '<button type="button" class="chat-plan-chip-open" id="chat-plan-chip-open">Open Plan</button>');
         if (status === 'READY') {
             html += '<button type="button" class="chat-plan-chip-exec" id="chat-plan-chip-exec">Execute</button>';
         } else if (status === 'COMPLETED' && unfinished.length > 0 && !allSucceeded) {
@@ -2201,14 +2235,8 @@
 
     inputEl.addEventListener('keydown', function (e) {
         if (e.key === 'Tab' && e.shiftKey) {
-            // As in the CLIs: Shift+Tab steps through the modes (Plan/Agent
-            // for Zenvi Assistant). With no mode to step, it stays a Shift+Tab.
-            var stepped = cycleCliMode();
-            if (!stepped && modeToggleEl && modeToggleEl.style.display !== 'none') {
-                onModeButtonClick(currentAgentMode === 'planning' ? 'agent' : 'planning');
-                stepped = true;
-            }
-            if (stepped) {
+            // With no mode to step, it stays a Shift+Tab.
+            if (stepMode()) {
                 e.preventDefault();
                 return;
             }
@@ -2755,14 +2783,15 @@
     // Per-backend chrome. The model pill follows whether this backend offers a
     // lineup at all (Python pushes a fresh setModels on every backend/tab
     // change; an empty list means "let the CLI pick"). The Plan/Agent toggle is
-    // Zenvi-only — planning is a backend feature the CLI agents don't have; see
-    // AIChatWindow._resolve_agent_mode.
+    // for Zenvi Assistant and for a CLI agent whose picked model has a plan mode.
     function applyBackendChrome(id) {
         var isZenvi = (id === 'zenvi' || !id);
+        // A CLI agent plans in its own plan mode, when the picked model has one.
+        var canPlan = isZenvi || cliModes().indexOf('plan') >= 0;
         if (modelTrigger) modelTrigger.style.display = modelItems.length ? '' : 'none';
-        if (modeToggleEl) modeToggleEl.style.display = isZenvi ? '' : 'none';
-        if (!isZenvi) {
-            if (currentAgentMode !== 'agent') setAgentModeUI('agent');
+        if (modeToggleEl) modeToggleEl.style.display = canPlan ? '' : 'none';
+        if (!canPlan) {
+            if (currentAgentMode !== 'agent') onModeButtonClick('agent');
             if (window.setPlanChip) window.setPlanChip(null);
         }
     }

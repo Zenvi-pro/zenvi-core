@@ -1284,7 +1284,8 @@ class AIChatWindow(QDockWidget):
         sess["thread"] = thread
         sess["backend"] = backend
         if backend != BACKEND_ZENVI:
-            # See _resolve_agent_mode: CLI backends have no planning mode.
+            # A newly attached CLI agent starts in Agent mode with no plan:
+            # its own plan mode is offered once its models are known.
             sess["agent_mode"] = "agent"
             sess["current_plan"] = None
         if session_id == self._active_sid:
@@ -3406,11 +3407,9 @@ class AIChatWindow(QDockWidget):
 
     def _resolve_agent_mode(self, agent_mode: str = None) -> str:
         sess = self._active_session() or {}
-        # Planning mode is a Zenvi-backend feature (the plan events come over
-        # the WebSocket). CLI agents plan internally and never emit them, so
-        # honouring a stale "planning" here would only mislabel the turn.
-        if sess.get("backend", BACKEND_ZENVI) != BACKEND_ZENVI:
-            return "agent"
+        # One toggle for every agent: Zenvi Assistant plans on the backend
+        # (plan events over the WebSocket), a CLI agent in its own plan mode
+        # (see _dispatch_user_message).
         if agent_mode in ("planning", "agent"):
             return agent_mode
         return sess.get("agent_mode", "agent")
@@ -3463,7 +3462,12 @@ class AIChatWindow(QDockWidget):
         # no per-effort pricing to keep (#147).
         is_cli = sess.get("backend", BACKEND_ZENVI) != BACKEND_ZENVI
         worker._pending_effort = (effort or "") if is_cli else ""
-        worker._pending_mode = (getattr(self, "_cli_mode", "") or "") if is_cli else ""
+        # Plan on the Plan/Agent toggle is the CLI's own plan mode, and wins
+        # over the permission pill. (Zenvi Assistant plans on the backend.)
+        planning = is_cli and mode == "planning"
+        sess["cli_planning"] = planning
+        worker._pending_mode = (
+            ("plan" if planning else getattr(self, "_cli_mode", "") or "") if is_cli else "")
         self._set_processing_ui(True)
         QMetaObject.invokeMethod(
             worker,
@@ -3528,12 +3532,40 @@ class AIChatWindow(QDockWidget):
             self._persist_session(self._active_sid, agent_mode=sess["agent_mode"])
         self._save_chat_sessions_store()
 
+    def _cli_plan_ready(self, sid: str):
+        """A CLI agent answered a Plan turn: show the plan chip Zenvi
+        Assistant's plans get, so the plan can be executed from it."""
+        sess = self._sessions.get(sid) or {}
+        if not sess.pop("cli_planning", False):
+            return
+        runner = CLI_RUNNERS.get(sess.get("backend"))
+        plan = {
+            "plan_id": "cli", "status": "ready", "steps": [], "cli": True,
+            "title": "%s plan" % (runner.DISPLAY_NAME if runner else "Agent"),
+        }
+        sess["current_plan"] = plan
+        if sid == self._active_sid and self._use_web_ui:
+            self._run_js("if(window.setPlanChip) window.setPlanChip(%s);" % json.dumps(plan))
+
     def _execute_plan(self, plan_id: str, model_id: str):
         """Run deterministic plan executor via backend."""
         if self.is_processing:
             self._run_js("alert('Processing previous message...');")
             return
         sess = self._active_session()
+        if sess.get("backend", BACKEND_ZENVI) != BACKEND_ZENVI:
+            # A CLI agent's plan lives in its own conversation: carrying it
+            # out is that conversation's next turn, in Agent mode.
+            if not (sess.get("current_plan") or {}).get("cli") or plan_id not in ("", "cli"):
+                return      # e.g. the plan dock still showing another chat's plan
+            sess["current_plan"] = None
+            if self._use_web_ui:
+                self._run_js("if(window.setPlanChip) window.setPlanChip(null);")
+            self._set_agent_mode("agent")
+            self._handle_web_send_message(
+                "Carry out the plan.", sess.get("last_user_model_id") or "", "agent",
+                effort=sess.get("last_user_effort") or "")
+            return
         worker = sess.get("worker")
         if worker is None or not getattr(worker, "_backend_session_id", None):
             self._run_js("alert('Start planning in this chat tab first so the plan is linked to a session.');")
@@ -4186,6 +4218,11 @@ class AIChatWindow(QDockWidget):
                 # tracked inside chat.js.
                 if not self._use_web_ui:
                     self._sessions[sid]["unread"] = True
+            if (stopped or not (text or "").strip()
+                    or self.sender() is not self._sessions[sid].get("worker")):
+                self._sessions[sid].pop("cli_planning", None)
+            else:
+                self._cli_plan_ready(sid)
         if sid == self._active_sid:
             if self._user_cancelled:
                 self._user_cancelled = False

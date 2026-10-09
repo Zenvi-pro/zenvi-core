@@ -3114,3 +3114,21 @@ def test_opencode_effort_levels_are_the_variants_opencode_itself_lists(monkeypat
     outputs["api"] = ""
     rows = {r["id"]: r.get("efforts") for r in ar.probe_opencode_models("opencode")}
     assert rows["opencode/big-pickle"] == ["high"] and rows["opencode-go/deepseek-v4.1-flash"] is None
+
+
+def test_a_plan_turn_never_runs_as_an_ordinary_one(qapp, fresh_cursor_lineup, monkeypatch):
+    """Plan mode promises nothing gets changed. A model that has no plan mode
+    must refuse the turn, not quietly run it with full permissions."""
+    ar = fresh_cursor_lineup
+    ar.set_cli_lineup(ar.BACKEND_CODEX, ar.parse_codex_models(CODEX_EFFORT_CATALOG))
+    runner = ar.CodexRunner()
+    errors = []
+    runner.error_occurred.connect(errors.append)
+    runner._pending_mode = ar.MODE_PLAN
+    launched = []
+    monkeypatch.setattr(ar, "_which_cli", lambda name: launched.append(name))
+    import classes.agent_mcp_server as mcp
+    monkeypatch.setattr(mcp, "get_mcp_server", lambda: types.SimpleNamespace(
+        start=lambda: types.SimpleNamespace(token="t", port=1, url=lambda: "u")))
+    runner.run_request("hi", "b")
+    assert not launched and len(errors) == 1 and "plan" in errors[0].lower()

@@ -334,3 +334,78 @@ def test_the_chat_page_names_no_cli_in_its_sign_in_flow():
     js = open(os.path.join(os.path.dirname(__file__), "..", "src", "chat_ui", "chat.js"),
               encoding="utf-8").read()
     assert "Sign in to Claude" not in js and "claude_code" not in js
+
+
+# ── Plan mode for CLI agents, on Zenvi Assistant's own Plan/Agent toggle ────
+
+def _cli_window(backend="claude_code", **sess_extra):
+    worker = MagicMock()
+    worker._session_id = "s1"
+    sess = dict({"backend": backend, "worker": worker}, **sess_extra)
+    win = MagicMock()
+    win._sessions = {"s1": sess}
+    win._active_sid = "s1"
+    win._active_session.return_value = sess
+    win._cli_mode = "auto"
+    win._use_web_ui = True
+    win._user_cancelled = False
+    win.is_processing = False
+    win.sender.return_value = worker
+    win._try_local_command.return_value = False
+    win._handoff_prefix.return_value = ""
+    win._prepend_editor_snapshot.side_effect = lambda t: t
+    win._resolve_agent_mode.side_effect = (
+        lambda m=None: m if m in ("planning", "agent") else sess.get("agent_mode", "agent"))
+    return win, sess, worker
+
+
+def test_plan_on_the_toggle_is_the_cli_agents_plan_mode(window_cls, monkeypatch):
+    import windows.ai_chat_ui as ui
+    monkeypatch.setattr(ui, "QMetaObject", MagicMock())
+    monkeypatch.setattr(ui, "Q_ARG", lambda *a: a)
+
+    win, sess, worker = _cli_window(agent_mode="planning")
+    assert window_cls._dispatch_user_message(win, "hi", "m") is True
+    assert worker._pending_mode == "plan", "Plan wins over the permission pill"
+    win, sess, worker = _cli_window(agent_mode="agent")
+    window_cls._dispatch_user_message(win, "hi", "m")
+    assert worker._pending_mode == "auto"
+    # What the page sent with the message wins over what the session remembers.
+    window_cls._dispatch_user_message(win, "hi", "m", agent_mode="planning")
+    assert worker._pending_mode == "plan"
+    win, sess, worker = _cli_window(backend="zenvi", agent_mode="planning")
+    window_cls._dispatch_user_message(win, "hi", "m")
+    assert worker._pending_mode == "", "Zenvi Assistant plans on the backend"
+
+
+def test_a_cli_plan_gets_the_plan_chip_and_execute_carries_it_out(window_cls, monkeypatch):
+    import windows.ai_chat_ui as ui
+    monkeypatch.setattr(ui, "QMetaObject", MagicMock())
+    monkeypatch.setattr(ui, "Q_ARG", lambda *a: a)
+
+    win, sess, worker = _cli_window(agent_mode="planning")
+    window_cls._dispatch_user_message(win, "trim the intro", "opus")
+    window_cls._cli_plan_ready(win, "s1")
+    plan = sess["current_plan"]
+    assert plan["status"] == "ready" and plan["cli"] is True
+    assert any("setPlanChip" in c.args[0] and '"cli": true' in c.args[0]
+               for c in win._run_js.call_args_list)
+    # An ordinary turn leaves no plan behind.
+    win2, sess2, _ = _cli_window(agent_mode="agent")
+    window_cls._dispatch_user_message(win2, "hi", "opus")
+    window_cls._cli_plan_ready(win2, "s1")
+    assert not sess2.get("current_plan")
+
+    # Execute: the same conversation, now in Agent mode.
+    window_cls._execute_plan(win, "", "")
+    assert sess["current_plan"] is None
+    win._set_agent_mode.assert_called_with("agent")
+    sent = win._handle_web_send_message.call_args
+    assert "plan" in sent.args[0].lower() and sent.args[1] == "opus" and sent.args[2] == "agent"
+
+
+def test_the_chat_page_offers_plan_to_a_cli_agent_that_has_it():
+    import os
+    js = open(os.path.join(os.path.dirname(__file__), "..", "src", "chat_ui", "chat.js"),
+              encoding="utf-8").read()
+    assert "canPlan" in js and "plan.cli" in js
