@@ -1037,10 +1037,77 @@
         scrollToBottomIfPinned();
     };
 
+    /* A tool that failed because nobody is signed in gets a Sign in button right there (the browser opens the website
+       sign-in; the app comes back to the front when it finishes), then a Continue button to carry on. */
+    var AUTH_FAILURE_RE = /login required|unauthori[sz]ed|not authenticated|sign in to zenvi/i;
+    var signInPrompts = [];
+
+    function addSignInPrompt(block) {
+        if (!block || block.signIn) return;
+        var row = document.createElement('div');
+        row.className = 'chat-signin-row';
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'chat-signin-btn';
+        btn.textContent = 'Sign in';
+        var status = document.createElement('span');
+        status.className = 'chat-signin-status';
+        row.appendChild(btn);
+        row.appendChild(status);
+        block.el.appendChild(row);
+        block.signIn = { row: row, btn: btn, status: status };
+        signInPrompts.push(block.signIn);
+        btn.addEventListener('click', function () {
+            if (btn.getAttribute('data-mode') === 'continue') {
+                btn.disabled = true;
+                getBridge(function (bridge) {
+                    if (bridge) bridge.sendMessage('I have signed in. Please continue where you left off.', modelSelect.value || '', currentAgentMode);
+                });
+                return;
+            }
+            btn.disabled = true;
+            btn.textContent = 'Opening browser\u2026';
+            status.textContent = 'Finish signing in on the Zenvi website. This returns here by itself.';
+            status.className = 'chat-signin-status';
+            getBridge(function (bridge) {
+                if (bridge && bridge.signInZenvi) bridge.signInZenvi();
+            });
+        });
+        scrollToBottomIfPinned();
+    }
+
+    window.onZenviSignInResult = function (ok, email) {
+        signInPrompts.forEach(function (p) {
+            if (!p.btn.isConnected) return;
+            if (ok) {
+                p.status.textContent = 'Signed in' + (email ? ' as ' + email : '') + '.';
+                p.status.className = 'chat-signin-status ok';
+                p.btn.textContent = 'Continue';
+                p.btn.setAttribute('data-mode', 'continue');
+                p.btn.disabled = false;
+            } else {
+                p.status.textContent = 'Sign-in was not finished.';
+                p.status.className = 'chat-signin-status error';
+                p.btn.textContent = 'Sign in';
+                p.btn.removeAttribute('data-mode');
+                p.btn.disabled = false;
+            }
+        });
+    };
+
     window.completeToolBlock = function (callId, ok, summary) {
         var block = toolBlocks[callId];
         if (block && block.el) {
             block.el.classList.remove('running');
+            // This tool's own result only: block.lines also holds log records that
+            // concurrent tools share, and another tool's login error must not
+            // give this one a Sign in button.
+            var ownResult = (block.lines || []).filter(function (l) {
+                return String(l).indexOf('RESULT:') === 0;
+            }).join('\n');
+            if (!ok && AUTH_FAILURE_RE.test(String(summary || '') + '\n' + ownResult)) {
+                addSignInPrompt(block);
+            }
             if (!ok) {
                 // Keep failed tools visible so args/results can be inspected.
                 block.el.classList.add('error', 'has-logs');

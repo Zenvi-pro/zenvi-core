@@ -66,3 +66,6 @@ graphify_output/
 # gstack
 .gstack/
 native/apple-speech-asr/.build/
+
+# Bundled by installer/build-whisper-cli.sh at release time
+src/whisper/

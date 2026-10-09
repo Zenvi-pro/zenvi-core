@@ -20,6 +20,9 @@ from classes.agent_tools.speech_extra import (
 from classes.agent_tools.titles import add_title
 from classes.agent_tools.transcript import get_transcript, remove_words, transcribe_media
 
+# DEAD CODE (PR #216 review): every PHASE3_HANDLERS entry and "add_captions_tool" in
+# PHASE5_HANDLERS (plus their display labels) are overridden by editor tools of the
+# same name in tool_handlers, so they never run. Remove them with their modules.
 PHASE3_HANDLERS = {
     "add_effect_tool": add_effect,
     "add_title_tool": add_title,

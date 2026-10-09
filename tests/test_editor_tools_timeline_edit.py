@@ -4,6 +4,7 @@ Every mutating call is exactly one undo step; every refusal adds none.
 """
 
 import json
+import os
 
 import pytest
 
@@ -551,9 +552,9 @@ def test_add_clips_paints_stills_and_transitions_on_the_gui_thread(ed, monkeypat
     img = ed.add_file("image")
     receipt(ed.call("add_clips_to_timeline_tool", file_ids=[video, img], transition="fade", image_seconds=3))
     painted = [(name, arg) for name, arg in hopped if name in ("clip_json", "transition_reader_json")]
-    assert ("clip_json", "/media/sample_image.jpg") in painted
+    assert ("clip_json", os.path.abspath("/media/sample_image.jpg")) in painted  # resolved media path
     assert any(name == "transition_reader_json" and arg.endswith("fade.svg") for name, arg in painted)
-    assert ("clip_json", "/media/sample_video.mp4") not in painted
+    assert ("clip_json", os.path.abspath("/media/sample_video.mp4")) not in painted
 
 
 def test_background_tools_wait_long_enough_for_each_hop(ed, monkeypatch):

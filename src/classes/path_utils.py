@@ -97,6 +97,10 @@ def absolute_media_path(path_value, project_file=None):
 
     if os.path.isabs(normalized):
         return os.path.normpath(normalized)
+    if normalized.startswith("/"):
+        # Rooted without a drive (Windows): on the current drive, not inside the
+        # project folder. Python 3.13+ isabs() no longer counts it as absolute.
+        return os.path.abspath(normalized)
 
     base_folder = _project_folder(project_file)
     return os.path.normpath(os.path.join(base_folder, normalized))
