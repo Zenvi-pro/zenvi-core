@@ -47,20 +47,35 @@ BACKEND_HERMES = "hermes"
 # full model name or a latest-alias ("opus", "sonnet"), and we use full names so
 # the picker keeps meaning the same model after a new release ships.
 #
-# The lineup the user sees comes from the Zenvi backend's ``GET /models/cli``
-# whenever it has answered (``set_live_lineups``): the backend builds it from
-# each provider's live model list, so a release shows up in the picker the
-# next time it refreshes, with no desktop update.  Each runner's ``MODELS`` is
-# the built-in fallback for when the backend is unreachable or too old to
-# serve the route.
+# Where the lineup comes from, first hit wins: what the installed CLI lists
+# about itself (``set_cli_lineup``, every runner has a ``list_models``), then
+# the Zenvi backend's ``GET /models/cli`` (``set_live_lineups``), then each
+# runner's built-in ``MODELS``. The last two only show while the CLI has not
+# answered (not signed in, still starting).
 #
-# A backend with an empty list hides the model pill and lets the CLI use
-# whatever its own config selects. Codex's built-in list is empty because we
-# do not track the OpenAI lineup here; the live one fills it in.
+# A backend with an empty list hides the model pill. Every runner that can
+# list its models carries a "CLI default" entry until the CLI has answered.
 _live_lineups: dict = {}
 _live_lineups_lock = threading.Lock()
 
-_PICKER_KEYS = ("id", "name", "provider", "featured", "rank", "tags", "default")
+# ``efforts`` lists the reasoning-effort levels a model takes, as its CLI
+# names them; the chat shows an effort picker beside the model pill for it.
+# ``modes`` lists the permission modes a turn on it can run in (MODE_*), the
+# first being the one a turn gets when none is picked.
+_PICKER_KEYS = ("id", "name", "provider", "featured", "rank", "tags", "default", "efforts",
+                "modes")
+
+# Permission modes, by what the CLI does with them. No "ask every time" mode:
+# a turn runs headless, so there is no one to answer a prompt.
+MODE_BYPASS = "bypass"          # everything allowed (what every turn used to do)
+MODE_AUTO = "auto"              # Claude Code: a classifier decides per action
+MODE_PLAN = "plan"              # plan, change nothing
+MODE_WORKSPACE = "workspace"    # Codex: shell writes only inside the project
+MODE_READONLY = "readonly"      # Codex: shell cannot write at all
+
+# Claude Code's "ultracode" rides along as one more effort level, as the CLI
+# itself has it (``/effort ultracode``).
+EFFORT_ULTRACODE = "ultracode"
 
 
 def _clean_lineup(rows) -> list:
@@ -107,17 +122,32 @@ def live_lineup_for(backend: str) -> list:
 CLI_DEFAULT_MODEL_ID = "cli-default"
 
 
-def _cli_default_entry(uses: str = "") -> dict:
+def _cli_default_entry(uses: str = "", efforts=None, modes=None) -> dict:
     """"CLI default", tagged with the model the CLI says it would use."""
     entry = {"id": CLI_DEFAULT_MODEL_ID, "name": "CLI default", "rank": 0,
              "featured": True, "default": True}
     if uses:
         entry["tags"] = [uses]
+    if efforts:
+        entry["efforts"] = list(efforts)
+    if modes:
+        entry["modes"] = list(modes)
     return entry
 
 
-# Lineups a CLI reported about itself (``cursor-agent models``), for a backend
-# whose models depend on the user's account. The backend's lineup still wins.
+def _effort_levels(values) -> list:
+    """Effort names out of a CLI's listing: non-empty strings, no repeats."""
+    out = []
+    for value in values if isinstance(values, list) else []:
+        if isinstance(value, str) and value and value not in out:
+            out.append(value)
+    return out
+
+
+# Lineups a CLI reported about itself (``cursor-agent models``,
+# ``opencode models``, ``codex debug models``, Claude Code's ``initialize``,
+# Hermes' ACP session): the user's own install knows which ids it accepts, so
+# this beats the backend's lineup.
 _cli_lineups: dict = {}
 
 
@@ -138,13 +168,13 @@ def set_cli_lineup(backend: str, rows) -> bool:
 
 def models_for_backend(backend: str) -> list:
     """Model-picker entries for *backend* (see ``setModels`` in chat.js)."""
-    live = live_lineup_for(backend)
-    if live:
-        return live
     with _live_lineups_lock:
         listed = [dict(m) for m in _cli_lineups.get(backend, [])]
     if listed:
         return listed
+    live = live_lineup_for(backend)
+    if live:
+        return live
     runner = CLI_RUNNERS.get(backend)
     return [dict(m) for m in runner.MODELS] if runner else []
 
@@ -192,6 +222,66 @@ def _cli_install_dirs() -> list:
     if local:
         dirs.append(os.path.join(local, "Microsoft", "WinGet", "Links"))
     return dirs
+
+
+def _expand_path_value(value: str, variables: dict) -> list:
+    """Folders of a registry ``Path`` value, with its ``%VAR%`` parts filled in."""
+    def fill(match):
+        name = match.group(1)
+        found = variables.get(name.upper()) or os.environ.get(name)
+        return found if found else match.group(0)
+
+    out = []
+    for part in (value or "").split(";"):
+        part = re.sub(r"%([^%;]+)%", fill, part.strip())
+        if part and "%" not in part:
+            out.append(part)
+    return out
+
+
+@functools.lru_cache(maxsize=1)
+def _windows_path_dirs() -> tuple:
+    """The user's and machine's PATH as Windows stores them.
+
+    run-zenvi-core.sh starts the editor with ``env -i`` and an MSYS shell does
+    not inherit the Windows PATH, so node / npm / nvm folders (where OpenCode
+    and Codex's npm builds live) are missing from ``os.environ`` although
+    every other program on the machine sees them.
+    """
+    if sys.platform != "win32":
+        return ()
+    try:
+        import winreg
+    except Exception:
+        return ()
+    keys = ((winreg.HKEY_CURRENT_USER, "Environment"),
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"))
+    variables, paths = {}, []
+    for root, sub in keys:
+        try:
+            with winreg.OpenKey(root, sub) as key:
+                index = 0
+                while True:
+                    try:
+                        name, value, _ = winreg.EnumValue(key, index)
+                    except OSError:
+                        break
+                    index += 1
+                    if not isinstance(value, str):
+                        continue
+                    if name.upper() == "PATH":
+                        paths.append(value)
+                    else:
+                        variables.setdefault(name.upper(), value)
+        except OSError:
+            continue
+    out = []
+    for value in paths:
+        for folder in _expand_path_value(value, variables):
+            if folder not in out:
+                out.append(folder)
+    return tuple(out)
 
 
 def _in_cursor_install(path: str) -> bool:
@@ -381,7 +471,7 @@ CLI_AUTH_REQUIRED = "CLI_AUTH_REQUIRED"
 
 
 def is_cli_auth_error(text: str) -> bool:
-    """True when CLI output means Anthropic/Claude login is missing or expired."""
+    """True when CLI output means the CLI's login is missing or expired."""
     low = str(text or "").strip().lower()
     if not low:
         return False
@@ -396,6 +486,8 @@ def is_cli_auth_error(text: str) -> bool:
         "authentication_error",
         "could not be refreshed",
         "auth login",
+        "codex login",
+        "agent login",
     )
     return any(n in low for n in needles)
 
@@ -444,51 +536,128 @@ def claude_is_logged_in() -> bool | None:
     return None
 
 
-def start_claude_auth_login() -> tuple[bool, str]:
-    """Launch ``claude auth login`` (opens the browser). Returns (ok, message)."""
-    cli = _which_cli("claude")
+def codex_is_logged_in() -> bool | None:
+    """True/False from ``codex login status``; None when that is no answer:
+    the probe could not run, the CLI is too old to have it, or an API key in
+    the environment signs Codex in (the status ignores those).
+    """
+    cli = _which_cli("codex")
+    if not cli or os.environ.get("OPENAI_API_KEY") or os.environ.get("CODEX_API_KEY"):
+        return None
+    try:
+        result = subprocess.run(
+            [cli, "login", "status"],
+            capture_output=True, text=True, timeout=8,
+            env=_cli_child_env(),
+        )
+    except Exception:
+        return None
+    if result.returncode == 0:
+        return True
+    said = ((result.stdout or "") + (result.stderr or "")).lower()
+    return False if "not logged in" in said else None
+
+
+def cursor_is_logged_in() -> bool | None:
+    """True/False from ``cursor-agent status --format json``; None when that
+    is no answer (the probe could not run, or an API key signs Cursor in)."""
+    cli = _which_cli("cursor-agent")
+    if not cli or os.environ.get("CURSOR_API_KEY"):
+        return None
+    try:
+        result = subprocess.run(
+            [cli, "status", "--format", "json"],
+            capture_output=True, text=True, timeout=15,
+            env=_cli_child_env(),
+        )
+    except Exception:
+        return None
+    for line in ((result.stdout or "").strip(), *(result.stdout or "").splitlines()):
+        try:
+            answer = json.loads(line).get("isAuthenticated")
+        except Exception:
+            continue
+        if isinstance(answer, bool):
+            return answer
+    return None
+
+
+# The CLIs that sign in through the browser: executable, the arguments that
+# start the sign-in, and how to ask whether it is signed in. The others
+# (OpenCode, Hermes) sign in through prompts in a terminal.
+CLI_LOGINS = {
+    BACKEND_CLAUDE: ("claude", ("auth", "login"), lambda: claude_is_logged_in()),
+    BACKEND_CODEX: ("codex", ("login",), lambda: codex_is_logged_in()),
+    BACKEND_CURSOR: ("cursor-agent", ("login",), lambda: cursor_is_logged_in()),
+}
+
+# The sign-in each backend has waiting on its browser, so a second click
+# replaces it instead of leaving two.
+_login_procs: dict = {}
+
+
+def cli_is_logged_in(backend: str) -> bool | None:
+    """Whether *backend*'s CLI is signed in; None when unknown or not asked."""
+    login = CLI_LOGINS.get(backend)
+    return login[2]() if login else None
+
+
+def start_cli_login(backend: str) -> tuple[bool, str]:
+    """Run the CLI's own sign-in (it opens the browser) and wait for it.
+
+    Blocking, up to five minutes. Returns (ok, message).
+    """
+    runner = CLI_RUNNERS.get(backend)
+    name = runner.DISPLAY_NAME if runner else backend
+    login = CLI_LOGINS.get(backend)
+    if not login:
+        return False, "%s signs in from its own CLI in a terminal." % name
+    binary, args, logged_in = login
+    cli = _which_cli(binary)
     if not cli:
-        return False, "Claude Code CLI not found on PATH."
+        return False, "%s CLI not found on PATH." % name
+    stale = _login_procs.pop(backend, None)
+    if stale is not None:
+        try:
+            stale.kill()
+        except Exception:
+            pass
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
     try:
         proc = subprocess.Popen(
-            [cli, "auth", "login"],
+            [cli, *args],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
             env=_cli_child_env(),
             start_new_session=True,
+            **kwargs,
         )
     except Exception as e:
-        return False, "Could not start Claude sign-in: %s" % e
-    # Poll until logged in or the login process exits / times out (~5 min).
-    deadline = time.time() + 300
-    while time.time() < deadline:
-        logged = claude_is_logged_in()
-        if logged is True:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
-            return True, "Signed in to Claude."
-        if proc.poll() is not None:
-            if claude_is_logged_in() is True:
-                return True, "Signed in to Claude."
-            err = ""
-            try:
-                err = (proc.stderr.read() or b"").decode("utf-8", "replace").strip()
-            except Exception:
-                pass
-            return False, err or (
-                "Sign-in did not finish. Complete it in the browser, then try again."
-            )
-        time.sleep(1.5)
+        return False, "Could not start %s sign-in: %s" % (name, e)
+    _login_procs[backend] = proc
     try:
-        proc.terminate()
-    except Exception:
-        pass
-    if claude_is_logged_in() is True:
-        return True, "Signed in to Claude."
-    return False, "Sign-in timed out. Finish in the browser, then try again."
+        deadline = time.time() + 300
+        while time.time() < deadline:
+            if logged_in() is True:
+                return True, "Signed in to %s." % name
+            if _login_procs.get(backend) is not proc:
+                return False, ""        # replaced by a newer sign-in
+            if proc.poll() is not None:
+                if logged_in() is True:
+                    return True, "Signed in to %s." % name
+                return False, "Sign-in did not finish. Complete it in the browser, then try again."
+            time.sleep(1.5)
+        return False, "Sign-in timed out. Finish in the browser, then try again."
+    finally:
+        if _login_procs.get(backend) is proc:
+            del _login_procs[backend]
+        try:
+            proc.kill()
+        except Exception:
+            pass
 
 
 def _cli_child_env(extra=None):
@@ -507,13 +676,28 @@ def _cli_child_env(extra=None):
             env.setdefault("HOMEPATH", tail)
         env.setdefault("APPDATA", os.path.join(home, "AppData", "Roaming"))
         env.setdefault("LOCALAPPDATA", os.path.join(home, "AppData", "Local"))
+    if os.name == "nt":
+        # An MSYS2 login shell drops these two. A CLI then cannot start a
+        # program by name: Claude Code's sign-in never opens the browser.
+        env.setdefault("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        env.setdefault("COMSPEC", os.path.join(
+            env.get("SYSTEMROOT") or r"C:\Windows", "System32", "cmd.exe"))
     # Claude Code auto-detects zsh on macOS; bash ΓëÑ4 makes ${!files[@]} work.
+    # Claude Code's own switch for dynamic workflows: without it an account
+    # that has them off is told Ultracode is unavailable (see the effort picker).
+    env.setdefault("CLAUDE_CODE_WORKFLOWS", "1")
     # Do not clobber a user-set CLAUDE_CODE_SHELL.
     if "CLAUDE_CODE_SHELL" not in env:
         bash = _resolve_cli_bash()
         if bash:
             env["CLAUDE_CODE_SHELL"] = bash
             env["SHELL"] = bash
+    # What the CLI itself starts (node behind an npm shim, git, ffmpeg) is
+    # looked up on PATH, which a stripped launch lost (see _windows_path_dirs).
+    have = [d for d in (env.get("PATH") or "").split(os.pathsep) if d]
+    missing = [d for d in _windows_path_dirs() if d not in have]
+    if missing:
+        env["PATH"] = os.pathsep.join(have + missing)
     if extra:
         env.update(extra)
     return env
@@ -552,7 +736,7 @@ def _which_cli(binary_name: str):
             found = shutil.which(name)
             if found:
                 return found
-    for directory in _cli_install_dirs():
+    for directory in list(_cli_install_dirs()) + list(_windows_path_dirs()):
         for name in names:
             candidate = os.path.join(directory, name)
             if os.path.isfile(candidate):
@@ -604,18 +788,21 @@ def detect_cli(binary_name: str) -> dict:
     offload this to a background thread (see ``AIChatWindow``'s detection
     worker) rather than call it directly.
 
-    For ``claude``, also reports ``logged_in`` (True/False/None).
+    For a CLI with a browser sign-in (CLI_LOGINS), also reports ``logged_in``
+    (True/False/None).
     """
     cli = _which_cli(binary_name)
+    logged_in = next((probe for name, _args, probe in CLI_LOGINS.values()
+                      if name == binary_name), None)
     if not cli:
         out = {"installed": False, "version": None, "registered": False}
-        if binary_name == "claude":
+        if logged_in:
             out["logged_in"] = None
         return out
     version = None
     try:
         result = subprocess.run(
-            [cli, "--version"], capture_output=True, text=True, timeout=3
+            [cli, "--version"], capture_output=True, text=True, timeout=10
         )
         version = (result.stdout or result.stderr or "").strip() or None
     except Exception:
@@ -625,8 +812,8 @@ def detect_cli(binary_name: str) -> dict:
         "version": version,
         "registered": _is_registered(binary_name),
     }
-    if binary_name == "claude":
-        out["logged_in"] = claude_is_logged_in()
+    if logged_in:
+        out["logged_in"] = logged_in()
     return out
 
 
@@ -1058,7 +1245,15 @@ def register_opencode(port: int, token: str):
 
 
 def _hermes_config_path() -> str:
-    home = os.environ.get("HERMES_HOME") or os.path.join(_resolved_home(), ".hermes")
+    """Hermes' config.yaml: ``$HERMES_HOME``, else ``%LOCALAPPDATA%\\hermes`` on
+    Windows and ``~/.hermes`` elsewhere (hermes_constants.get_hermes_home)."""
+    home = (os.environ.get("HERMES_HOME") or "").strip()
+    if not home and sys.platform == "win32":
+        local = (os.environ.get("LOCALAPPDATA") or "").strip() or os.path.join(
+            _resolved_home(), "AppData", "Local")
+        home = os.path.join(local, "hermes")
+    if not home:
+        home = os.path.join(_resolved_home(), ".hermes")
     return os.path.join(home, "config.yaml")
 
 
@@ -1121,12 +1316,17 @@ _CURSOR_MODEL_FLAGS = re.compile(
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 
+# How many of a CLI's own models the picker shows before "search N more".
+_FEATURED_FROM_CLI = 8
+
+
 def parse_cursor_models(text: str) -> list:
     """Picker entries from ``cursor-agent models`` output, in the CLI's order.
 
     "CLI default" comes first and is preselected, tagged with the model the
     CLI says it would use. The list depends on the account and runs to
-    hundreds of ids, so nothing else is featured; search reaches the rest.
+    hundreds of ids, so the menu opens on the CLI's first few and search
+    reaches the rest.
     """
     rows, seen = [], set()
     current = fallback = ""
@@ -1142,33 +1342,44 @@ def parse_cursor_models(text: str) -> list:
             flags = {f.strip() for f in marks.group(1).split(",")}
             name = name[:marks.start()]
         name = " ".join(name.split()) or mid
-        rows.append({"id": mid, "name": name, "rank": len(rows) + 1, "featured": False})
+        rows.append({"id": mid, "name": name, "rank": len(rows) + 1,
+                     "featured": len(rows) < _FEATURED_FROM_CLI,
+                     "modes": list(CursorCliRunner.MODES)})
         if "current" in flags and not current:
             current = name
         if "default" in flags and not fallback:
             fallback = name
     if not rows:
         return []
-    return [_cli_default_entry(current or fallback)] + rows
+    return [_cli_default_entry(current or fallback, modes=CursorCliRunner.MODES)] + rows
 
 
-def _models_command_output(argv) -> str:
-    """stdout of a CLI's list-models command, or "" when it failed."""
+def _models_command_output(argv, attempts: int = 2) -> str:
+    """stdout of a CLI's list-models command, or "" when it failed.
+
+    A CLI's first start after boot can fail or stall (it opens its own
+    database, refreshes a login), so one failed run is retried.
+    """
     kwargs = {}
     if sys.platform == "win32":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-    try:
-        result = subprocess.run(
-            argv, capture_output=True, encoding="utf-8", errors="replace",
-            timeout=30, env=_cli_child_env(), **kwargs,
-        )
-    except Exception:
-        log.debug("%s failed", " ".join(argv[1:]), exc_info=True)
-        return ""
-    if result.returncode != 0:
-        log.debug("%s exited %s", " ".join(argv[1:]), result.returncode)
-        return ""
-    return result.stdout or ""
+    name = " ".join(argv[1:])
+    for attempt in range(attempts):
+        if attempt:
+            time.sleep(2)
+        try:
+            result = subprocess.run(
+                argv, capture_output=True, encoding="utf-8", errors="replace",
+                timeout=45, env=_cli_child_env(), **kwargs,
+            )
+        except Exception:
+            log.warning("%s failed (attempt %d)", name, attempt + 1, exc_info=True)
+            continue
+        if result.returncode == 0 and result.stdout:
+            return result.stdout
+        log.warning("%s exited %s (attempt %d): %s", name, result.returncode,
+                    attempt + 1, (result.stderr or "").strip()[-200:])
+    return ""
 
 
 def probe_cursor_models(cli: str) -> list:
@@ -1176,7 +1387,244 @@ def probe_cursor_models(cli: str) -> list:
     return parse_cursor_models(_models_command_output([cli, "models"]))
 
 
-def parse_opencode_models(text: str) -> list:
+def parse_claude_models(text: str) -> list:
+    """Picker entries from Claude Code's answers to a stream-json ``initialize``
+    and ``get_settings`` (the second says whether ultracode can be turned on).
+
+    The CLI lists what this account may pick (``/model``): ``value`` is what
+    ``--model`` takes and ``displayName`` names it. ``description`` is a blurb
+    that only sometimes leads with the versioned name ("Sonnet 5 · ..."), so
+    it is used just when it does. The "default" entry (listed first) becomes
+    "CLI default", tagged with the listed model it resolves to.
+    """
+    models, ultracode = None, False
+    for line in (text or "").splitlines():
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(ev, dict) and ev.get("type") == "control_response":
+            reply = ev.get("response") or {}
+            reply = reply.get("response") or reply
+            if not isinstance(reply, dict):
+                continue
+            if models is None:
+                models = reply.get("models")
+            applied = reply.get("applied")
+            if isinstance(applied, dict):
+                ultracode = applied.get("ultracodeAvailable") is True
+    rows, seen, default_name, default_resolves = [], set(), "", None
+    default_efforts, default_modes = [], []
+    for m in models if isinstance(models, list) else []:
+        if not isinstance(m, dict) or not isinstance(m.get("value"), str) or not m["value"]:
+            continue
+        mid = m["value"]
+        efforts = _effort_levels(m.get("supportedEffortLevels")) if m.get("supportsEffort") else []
+        if efforts and ultracode:
+            efforts.append(EFFORT_ULTRACODE)
+        modes = [MODE_BYPASS] + ([MODE_AUTO] if m.get("supportsAutoMode") else []) + [MODE_PLAN]
+        if mid == "default":
+            default_resolves, default_efforts, default_modes = m.get("resolvedModel"), efforts, modes
+            continue
+        if mid in seen:
+            continue
+        seen.add(mid)
+        name = str(m.get("displayName") or "").strip() or mid
+        lead = str(m.get("description") or "").split("\u00b7")[0].strip()
+        if lead.lower().startswith(name.lower()):
+            name = lead
+        row = {"id": mid, "name": name, "provider": "anthropic",
+               "rank": len(rows) + 1, "featured": True, "modes": modes}
+        if efforts:
+            row["efforts"] = efforts
+        rows.append(row)
+        if default_resolves and m.get("resolvedModel") == default_resolves:
+            default_name = default_name or name
+    if not rows:
+        return []
+    return [_cli_default_entry(default_name, default_efforts, default_modes)] + rows
+
+
+def _acp_style_probe(argv, requests, done, timeout: float = 60.0) -> str:
+    """Run a CLI that talks JSON lines over stdio, send *requests* (the next
+    one each time *done* says "more"), and return what it printed.
+
+    *done(line_dict)* returns True to stop, a dict to send next, else None.
+    """
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    try:
+        proc = subprocess.Popen(
+            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            encoding="utf-8", errors="replace", bufsize=1, env=_cli_child_env(), **kwargs)
+    except Exception:
+        log.warning("%s failed to start", " ".join(argv[1:]), exc_info=True)
+        return ""
+    killer = threading.Timer(timeout, proc.kill)
+    killer.daemon = True
+    killer.start()
+    out = []
+    try:
+        for msg in requests:
+            proc.stdin.write(json.dumps(msg) + "\n")
+        proc.stdin.flush()
+        for line in proc.stdout:
+            out.append(line)
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            step = done(ev) if isinstance(ev, dict) else None
+            if step is True:
+                break
+            if isinstance(step, dict):
+                proc.stdin.write(json.dumps(step) + "\n")
+                proc.stdin.flush()
+    except Exception:
+        log.debug("%s probe failed", " ".join(argv[1:]), exc_info=True)
+    finally:
+        killer.cancel()
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    return "".join(out)
+
+
+def probe_claude_models(cli: str) -> list:
+    """Ask the installed Claude Code which models it offers (no turn is run)."""
+    text = _acp_style_probe(
+        [cli, "-p", "--input-format", "stream-json", "--output-format", "stream-json",
+         "--verbose"],
+        [{"type": "control_request", "request_id": "zenvi-models",
+          "request": {"subtype": "initialize"}},
+         {"type": "control_request", "request_id": "zenvi-settings",
+          "request": {"subtype": "get_settings"}}],
+        # Answered in order. A CLI that never answers the second is cut off by
+        # the probe's timeout and still gets its models read.
+        lambda ev: (ev.get("type") == "control_response"
+                    and (ev.get("response") or {}).get("request_id") == "zenvi-settings") or None)
+    return parse_claude_models(text)
+
+
+def parse_hermes_models(state) -> list:
+    """Picker entries from the ``models`` block of Hermes' ACP session answer."""
+    if not isinstance(state, dict):
+        return []
+    rows, seen, current = [], set(), ""
+    for m in state.get("availableModels") or []:
+        mid = m.get("modelId") if isinstance(m, dict) else None
+        if not isinstance(mid, str) or not mid or mid in seen:
+            continue
+        seen.add(mid)
+        name = m.get("name") or mid
+        row = {"id": mid, "name": name, "rank": len(rows) + 1, "featured": len(rows) < 12}
+        provider = re.match(r"Provider: ([^\u2022]+)", str(m.get("description") or ""))
+        if provider:
+            row["provider"] = provider.group(1).strip()
+        if mid == state.get("currentModelId"):
+            current = name
+        rows.append(row)
+    return [_cli_default_entry(current)] + rows if rows else []
+
+
+def probe_hermes_models(cli: str) -> list:
+    """Open an ACP session just to read which models Hermes' provider offers.
+
+    ponytail: this leaves one empty session in Hermes' history per read, so it
+    runs once per CLI version (LIST_MODELS_ONCE); turns refresh the list too.
+    """
+    found = {}
+
+    def done(ev):
+        if ev.get("id") == 1 and "result" in ev:
+            return {"jsonrpc": "2.0", "id": 2, "method": "session/new",
+                    "params": {"cwd": _project_cwd(), "mcpServers": []}}
+        if ev.get("id") in (1, 2):
+            found.update((ev.get("result") or {}).get("models") or {})
+            return True
+        return None
+
+    _acp_style_probe(
+        [cli, "acp", "--accept-hooks"],
+        [{"jsonrpc": "2.0", "id": 1, "method": "initialize",
+          "params": {"protocolVersion": 1, "clientCapabilities": {}}}],
+        done, timeout=90.0)
+    return parse_hermes_models(found)
+
+
+def parse_codex_models(text: str) -> list:
+    """Picker entries from ``codex debug models``: the visible models, by priority.
+
+    "CLI default" (whatever ~/.codex/config.toml picks) leads and is preselected.
+    """
+    try:
+        models = json.loads(text or "")["models"]
+    except Exception:
+        return []
+    shown = [m for m in models if isinstance(m, dict) and m.get("visibility") == "list"
+             and isinstance(m.get("slug"), str) and m["slug"]]
+    shown.sort(key=lambda m: m["priority"] if isinstance(m.get("priority"), (int, float)) else 1e9)
+    rows, seen = [], set()
+    for m in shown:
+        if m["slug"] in seen:
+            continue
+        seen.add(m["slug"])
+        row = {"id": m["slug"], "name": m.get("display_name") or m["slug"],
+               "rank": len(rows) + 1, "featured": len(rows) < _FEATURED_FROM_CLI,
+               "modes": list(CodexRunner.MODES)}
+        levels = m.get("supported_reasoning_levels")
+        efforts = _effort_levels([l.get("effort") for l in levels if isinstance(l, dict)]
+                                 if isinstance(levels, list) else [])
+        if efforts:
+            row["efforts"] = efforts
+        rows.append(row)
+    if not rows:
+        return []
+    # "CLI default" is whichever of these config.toml names, which is not
+    # ours to read: offer only the levels every listed model takes.
+    shared = [e for e in rows[0].get("efforts", [])
+              if all(e in r.get("efforts", []) for r in rows)]
+    return [_cli_default_entry(efforts=shared, modes=CodexRunner.MODES)] + rows
+
+
+def probe_codex_models(cli: str) -> list:
+    """Ask ``codex debug models`` for the catalogue this install ships."""
+    return parse_codex_models(_models_command_output([cli, "debug", "models"]))
+
+
+def _opencode_models_cache() -> str:
+    """OpenCode's copy of the models.dev catalogue (XDG cache, on Windows too)."""
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(_resolved_home(), ".cache")
+    return os.path.join(base, "opencode", "models.json")
+
+
+def _opencode_efforts(path: str) -> dict:
+    """``{"provider/model": [levels]}`` from OpenCode's model catalogue cache.
+
+    ``opencode models`` prints ids only; the levels a model takes (its
+    ``#variant``) are in the catalogue it downloaded.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            catalog = json.load(fh)
+    except Exception:
+        return {}
+    out = {}
+    for provider, entry in catalog.items() if isinstance(catalog, dict) else []:
+        models = entry.get("models") if isinstance(entry, dict) else None
+        for mid, model in models.items() if isinstance(models, dict) else []:
+            options = model.get("reasoning_options") if isinstance(model, dict) else None
+            for option in options if isinstance(options, list) else []:
+                if isinstance(option, dict) and option.get("type") == "effort":
+                    levels = _effort_levels(option.get("values"))
+                    if levels:
+                        out["%s/%s" % (provider, mid)] = levels
+    return out
+
+
+def parse_opencode_models(text: str, efforts=None) -> list:
     """Picker entries from ``opencode models``: one ``provider/model`` per line.
 
     The list follows the providers the user signed in to. It marks no default,
@@ -1189,14 +1637,45 @@ def parse_opencode_models(text: str) -> list:
             continue
         seen.add(mid)
         provider, _, name = mid.partition("/")
-        rows.append({"id": mid, "name": name, "provider": provider,
-                     "rank": len(rows) + 1, "featured": False})
-    return [_cli_default_entry()] + rows if rows else []
+        row = {"id": mid, "name": name, "provider": provider,
+               "rank": len(rows) + 1, "featured": len(rows) < _FEATURED_FROM_CLI,
+               "modes": list(OpenCodeRunner.MODES)}
+        if (efforts or {}).get(mid):
+            row["efforts"] = list(efforts[mid])
+        rows.append(row)
+    return [_cli_default_entry(modes=OpenCodeRunner.MODES)] + rows if rows else []
+
+
+def parse_opencode_variants(text: str):
+    """``{"provider/model": [variant ids]}`` from ``opencode api model.list``,
+    or None when that is no answer (OpenCode 1 has no ``api`` command, or
+    the list came back empty)."""
+    try:
+        models = json.loads(text or "")["data"]
+    except Exception:
+        return None
+    if not isinstance(models, list):
+        return None
+    out = {}
+    for m in models:
+        if not isinstance(m, dict) or not m.get("providerID") or not m.get("modelID"):
+            continue
+        variants = m.get("variants")
+        out["%s/%s" % (m["providerID"], m["modelID"])] = _effort_levels(
+            [v.get("id") for v in variants if isinstance(v, dict)]
+            if isinstance(variants, list) else [])
+    return out or None
 
 
 def probe_opencode_models(cli: str) -> list:
-    """Ask ``opencode models`` which models the signed-in providers offer."""
-    return parse_opencode_models(_models_command_output([cli, "models"]))
+    """Ask ``opencode models`` which models the signed-in providers offer, and
+    OpenCode which variants (effort levels) each takes. It works those out
+    itself; its models.dev catalogue lists fewer and is only the fallback."""
+    efforts = parse_opencode_variants(
+        _models_command_output([cli, "api", "model.list"], attempts=1))
+    if efforts is None:
+        efforts = _opencode_efforts(_opencode_models_cache())
+    return parse_opencode_models(_models_command_output([cli, "models"]), efforts)
 
 
 # A CLI's model list is re-read on this cadence (the same as the backend
@@ -1225,7 +1704,8 @@ def refresh_cli_models(backend: str, version) -> bool:
     with _cli_models_lock:
         last = _cli_models_read.setdefault(backend, {"key": None, "at": 0.0, "ok": False})
         wait = CLI_MODELS_TTL_S if last["ok"] else CLI_MODELS_RETRY_S
-        if last["key"] == key and now - last["at"] < wait:
+        if last["key"] == key and (now - last["at"] < wait
+                                   or (last["ok"] and runner.LIST_MODELS_ONCE)):
             return False
         last["key"], last["at"] = key, now
     rows = runner.list_models(cli)
@@ -1331,6 +1811,10 @@ class BaseAgentRunner(QObject):
         self._proc = None
         self._cli_path = ""
         self._model_id = ""
+        self._effort = ""              # reasoning effort for this turn ("" = CLI's own)
+        self._pending_effort = ""
+        self._mode = ""                # permission mode for this turn ("" = MODE_BYPASS)
+        self._pending_mode = ""
         self._server = None
         self._responded = False
         self._final_text = ""
@@ -1444,6 +1928,11 @@ class BaseAgentRunner(QObject):
         # for signature parity and otherwise ignored.
         self._cancelled = False
         self._model_id = self._coerce_model(model_id)
+        # Left by AIChatWindow just before this call, for this turn only (the
+        # slot's signature is shared with AIChatWorker, which has no effort).
+        self._effort, self._pending_effort = self._coerce_effort(self._pending_effort), ""
+        asked_mode = self._pending_mode
+        self._mode, self._pending_mode = self._coerce_mode(asked_mode), ""
         self._responded = False
         self._final_text = ""
         self._last_error = ""
@@ -1472,6 +1961,14 @@ class BaseAgentRunner(QObject):
         except Exception as e:
             log.error("MCP server start failed: %s", e, exc_info=True)
             self._emit_error("Could not start the editor tool server: %s" % e)
+            return
+
+        if asked_mode == MODE_PLAN and self._mode != MODE_PLAN:
+            # Plan promises that nothing gets changed: never fall back to a
+            # turn with full permissions.
+            self._emit_error(
+                "%s has no plan mode for this model. Switch to Agent, or pick "
+                "another model." % self.DISPLAY_NAME)
             return
 
         self._cli_path = _which_cli(self.CLI_NAME)
@@ -1594,17 +2091,17 @@ class BaseAgentRunner(QObject):
     def _emit_auth_required(self, text: str = ""):
         self._responded = True
         if not self._aborted:
-            self.auth_required.emit(
-                text or "Claude Code needs you to sign in again."
-            )
+            if not text or text == CLI_AUTH_REQUIRED:
+                text = "%s needs you to sign in again." % self.DISPLAY_NAME
+            self.auth_required.emit(text)
 
     def _emit_error(self, text: str):
         if self._aborted:
             return
         blob = text or "Unknown error."
-        # Claude OAuth recovery only — Codex/Cursor "authenticate" errors
-        # must not open the Claude Sign-in card.
-        if self.BACKEND_ID == BACKEND_CLAUDE and (
+        # Only for a CLI the chat can sign in again (CLI_LOGINS): the others
+        # keep the plain error.
+        if self.BACKEND_ID in CLI_LOGINS and (
             is_cli_auth_error(blob)
             or any(is_cli_auth_error(line) for line in self._stderr_tail)
         ):
@@ -1625,6 +2122,27 @@ class BaseAgentRunner(QObject):
             return ""
         return model_id if any(m["id"] == model_id for m in offered) else ""
 
+    def _coerce_effort(self, effort) -> str:
+        """Keep *effort* only if the model this turn runs on lists it.
+
+        The picker is shared across models and backends like the model pill
+        is, and a CLI rejects a level its model does not take.
+        """
+        return self._offered("efforts", effort)
+
+    def _coerce_mode(self, mode) -> str:
+        """Keep *mode* only if the model this turn runs on lists it."""
+        return self._offered("modes", mode)
+
+    def _offered(self, key: str, value) -> str:
+        if not value or not isinstance(value, str):
+            return ""
+        wanted = self._model_id or CLI_DEFAULT_MODEL_ID
+        for m in models_for_backend(self.BACKEND_ID):
+            if m["id"] == wanted:
+                return value if value in (m.get(key) or []) else ""
+        return ""
+
     # -- subclass hooks ----------------------------------------------------
     @staticmethod
     def register(port: int, token: str):
@@ -1634,9 +2152,13 @@ class BaseAgentRunner(QObject):
     # ``list_models(cli) -> picker entries`` for a CLI that can list its own
     # models (see refresh_cli_models); None when it cannot.
     list_models = None
+    # Read the list once per CLI version instead of every 15 minutes.
+    LIST_MODELS_ONCE = False
 
     def _ensure_ready(self):
         """Return an error string if the backend can't run, else None."""
+        if cli_is_logged_in(self.BACKEND_ID) is False:
+            return CLI_AUTH_REQUIRED
         return None
 
     def _build_env(self):
@@ -1647,6 +2169,27 @@ class BaseAgentRunner(QObject):
 
     def _after_launch(self, text: str):
         """Called once the CLI is running (a stdin protocol starts here)."""
+
+    def _send_prompt_on_stdin(self, prompt: str):
+        """Write *prompt* to the CLI's stdin and close it.
+
+        argv is no place for a prompt on Windows: a ``.cmd`` launcher runs
+        through cmd.exe, which cuts an argument at its first newline, and any
+        local process can read another's command line.
+        """
+        proc = self._proc
+
+        def _send():
+            try:
+                proc.stdin.write(prompt)
+                proc.stdin.close()
+            except Exception:
+                # The CLI already exited; the read loop reports its output.
+                log.debug("%s stdin write failed", self.CLI_NAME, exc_info=True)
+
+        # Not on this thread: a prompt larger than the pipe buffer would block
+        # here while the CLI blocks writing the stdout nobody reads yet.
+        threading.Thread(target=_send, name="cli-stdin", daemon=True).start()
 
     def _handle_event(self, ev: dict):
         raise NotImplementedError
@@ -1659,9 +2202,11 @@ class ClaudeCodeRunner(BaseAgentRunner):
     DISPLAY_NAME = "Claude Code"
     BACKEND_ID = BACKEND_CLAUDE
     register = staticmethod(register_claude)
+    list_models = staticmethod(probe_claude_models)
+    STDIN = subprocess.PIPE
 
-    # Built-in fallback lineup, used until the backend's live list lands (see
-    # ``models_for_backend``). ``rank`` orders the picker, ``featured`` decides
+    # Built-in fallback lineup, used until the installed CLI has listed its
+    # own (see ``models_for_backend``). ``rank`` orders the picker, ``featured`` decides
     # whether an entry shows before the menu's "show all" toggle, the same
     # contract as the Zenvi model list the backend serves (see setModels in
     # chat.js).
@@ -1690,32 +2235,42 @@ class ClaudeCodeRunner(BaseAgentRunner):
         self._open_blocks: dict = {}   # stream_event block index -> {"kind","call_id"}
         self._think_seq = 0
 
-    def _ensure_ready(self):
-        logged = claude_is_logged_in()
-        if logged is False:
-            return CLI_AUTH_REQUIRED
-        return None
-
     def _build_argv(self, text: str):
         cfg = _write_claude_mcp_config(self._server)
         argv = [
-            self._cli_path or self.CLI_NAME, "-p", text,
+            # No prompt argument: `-p` reads it from stdin (_after_launch).
+            self._cli_path or self.CLI_NAME, "-p",
             "--output-format", "stream-json", "--verbose", "--include-partial-messages",
             "--mcp-config", cfg, "--strict-mcp-config",
-            # The agent is driving the editor on the user's behalf from inside
-            # the app ΓÇö there is no terminal to answer a permission prompt, so
-            # a prompt would just hang the turn until it times out.
-            "--dangerously-skip-permissions",
-            "--append-system-prompt", _claude_code_system_prompt(),
+            # From a file, like the prompt on stdin: npm installs Claude Code as
+            # claude.cmd, and cmd.exe cuts a command line at its first newline.
+            "--append-system-prompt-file", _write_claude_system_prompt(),
         ]
+        # The agent is driving the editor on the user's behalf from inside the
+        # app: there is no terminal to answer a permission prompt, so a
+        # prompt would just hang the turn until it times out. Auto and plan
+        # never prompt either.
+        if self._mode in (MODE_AUTO, MODE_PLAN):
+            argv += ["--permission-mode", self._mode]
+        else:
+            argv.append("--dangerously-skip-permissions")
         argv += _add_dir_args()
         if self._model_id:
             argv += ["--model", self._model_id]
+        if self._effort == EFFORT_ULTRACODE:
+            # A setting, not an --effort level. From a file for the same
+            # reason as the system prompt: cmd.exe mangles quoted JSON.
+            argv += ["--settings", _write_claude_ultracode_settings()]
+        elif self._effort:
+            argv += ["--effort", self._effort]
         if self._cli_started and self._cli_session_id:
             argv += ["--resume", self._cli_session_id]
         else:
             argv += ["--session-id", self._cli_session_id]
         return argv
+
+    def _after_launch(self, text: str):
+        self._send_prompt_on_stdin(text or "")
 
     def _handle_event(self, ev: dict):
         etype = ev.get("type")
@@ -1788,10 +2343,13 @@ class CodexRunner(BaseAgentRunner):
     DISPLAY_NAME = "Codex"
     BACKEND_ID = BACKEND_CODEX
     register = staticmethod(register_codex)
-    # No built-in lineup: we do not track OpenAI's models here. The backend's
-    # live list (``set_live_lineups``) fills the picker; until it lands the
-    # picker stays hidden and the CLI uses whatever its own config selects.
-    MODELS: list = []
+    # No built-in lineup: the installed Codex lists its own (refresh_cli_models).
+    # Until it has, the picker offers only "CLI default".
+    MODELS = [_cli_default_entry()]
+    list_models = staticmethod(probe_codex_models)
+    # Mode -> the sandbox_mode it sets for model-run shell commands.
+    _SANDBOX = {MODE_WORKSPACE: "workspace-write", MODE_READONLY: "read-only"}
+    MODES = (MODE_BYPASS, MODE_WORKSPACE, MODE_READONLY)
 
     _TOOL_ITEM_TYPES = {
         "command_execution", "mcp_tool_call", "tool_call", "function_call",
@@ -1808,43 +2366,39 @@ class CodexRunner(BaseAgentRunner):
             extra["ZENVI_MCP_TOKEN"] = self._server.token
         return _cli_child_env(extra)
 
-    def _after_launch(self, text: str):
-        proc, prompt = self._proc, self._stdin_prompt
-
-        def _send():
-            try:
-                proc.stdin.write(prompt)
-                proc.stdin.close()
-            except Exception:
-                # Codex already exited; the base read loop reports its output.
-                log.debug("codex stdin write failed", exc_info=True)
-
-        # Not on this thread: a prompt larger than the pipe buffer would block
-        # here while Codex blocks writing the stdout nobody reads yet.
-        threading.Thread(target=_send, name="codex-stdin", daemon=True).start()
-
     def _build_argv(self, text: str):
         url = self._server.url() if self._server else ""
+        # `exec` never asks for approval; the mode picks the shell sandbox. As
+        # a -c setting, because `exec resume` takes no --sandbox.
+        sandbox = self._SANDBOX.get(self._mode)
         common = [
-            "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check",
+            "--json", "--skip-git-repo-check",
+        ] + (["-c", 'sandbox_mode="%s"' % sandbox] if sandbox
+             else ["--dangerously-bypass-approvals-and-sandbox"]) + [
             "-c", 'mcp_servers.zenvi_editor.url="%s"' % url,
             "-c", 'mcp_servers.zenvi_editor.bearer_token_env_var="ZENVI_MCP_TOKEN"',
         ]
         if self._model_id:
             common += ["--model", self._model_id]
-        common += _add_dir_args()
+        if self._effort:
+            common += ["-c", 'model_reasoning_effort="%s"' % self._effort]
         # Unlike Claude, Codex will not take an id we invent -- it mints its own
         # and reports it as ``thread.started``.  Resuming a seeded placeholder
         # would just fail, so wait until we have heard a real one.
         cli = self._cli_path or self.CLI_NAME
         if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
-            # The thread already holds the steering from its first turn.
+            # The thread already holds the steering from its first turn, and
+            # the folders: `exec resume` has no --add-dir (it exits 2).
             self._stdin_prompt = text or ""
             return [cli, "exec", "resume", self._cli_session_id, *common, "-"]
         # Codex has no --append-system-prompt; prefix import steering so it
         # does not Glob /mnt/c the way Claude did before the Claude prompt fix.
+        # The prompt goes in through stdin ("-"), see _send_prompt_on_stdin.
         self._stdin_prompt = _agent_import_prompt() + "\n\n" + (text or "")
-        return [cli, "exec", *common, "-"]
+        return [cli, "exec", *common, *_add_dir_args(), "-"]
+
+    def _after_launch(self, text: str):
+        self._send_prompt_on_stdin(self._stdin_prompt)
 
     def _handle_event(self, ev: dict):
         etype = ev.get("type")
@@ -1914,6 +2468,7 @@ class CursorCliRunner(BaseAgentRunner):
     BACKEND_ID = BACKEND_CURSOR
     register = staticmethod(register_cursor)
     list_models = staticmethod(probe_cursor_models)
+    MODES = (MODE_BYPASS, MODE_PLAN)
     # The models depend on the Cursor account, so the picker shows what
     # `cursor-agent models` lists (refresh_cli_models). Until it has, the
     # only choice is to leave the model to the CLI's own config.
@@ -1921,6 +2476,8 @@ class CursorCliRunner(BaseAgentRunner):
     # cursor-agent exits without stopping the stdio MCP servers and the worker
     # it started, so every finished turn would leave them running.
     REAP_ON_EXIT = True
+    # On Windows the CLI is a .cmd, which would cut the prompt at a newline.
+    STDIN = subprocess.PIPE
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1939,6 +2496,9 @@ class CursorCliRunner(BaseAgentRunner):
         self._message = ""
 
     def _ensure_ready(self):
+        not_ready = super()._ensure_ready()
+        if not_ready:
+            return not_ready
         if self._server is None:
             return "Could not start the editor tool server."
         ok, message = register_cursor(self._server.port, self._server.token)
@@ -1973,13 +2533,18 @@ class CursorCliRunner(BaseAgentRunner):
         ]
         if self._model_id:
             argv += ["--model", self._model_id]
+        if self._mode == MODE_PLAN:
+            argv += ["--mode", "plan"]
         argv += _add_dir_args()
         # Cursor mints the conversation id and reports it in ``init``, so only
         # an id heard from the CLI is resumed, never the placeholder we seed.
         if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
             argv += ["--resume", self._cli_session_id]
-        argv.append(text)
+        # No prompt argument: `-p` then reads it from stdin (_after_launch).
         return argv
+
+    def _after_launch(self, text: str):
+        self._send_prompt_on_stdin(text or "")
 
     def _handle_event(self, ev: dict):
         etype = ev.get("type")
@@ -2063,6 +2628,20 @@ class CursorCliRunner(BaseAgentRunner):
         subtype = ev.get("subtype")
         call_id = ev.get("call_id") or ""
         kind, payload = _cursor_tool_payload(ev.get("tool_call"))
+        if kind == "createPlan":
+            # Plan mode hands the plan to this tool and replies with a line
+            # about it: the plan is what the user asked for, so it is prose.
+            # A call with no plan text in it is shown like any other tool.
+            args = payload.get("args")
+            plan = args.get("plan") if isinstance(args, dict) else ""
+            if isinstance(plan, str) and plan.strip():
+                if subtype == "started":
+                    self._close_thinking()
+                    self._message = ""
+                    self._handle_assistant({"message": {"content": [{
+                        "type": "text",
+                        "text": ("\n\n" if self._segment.strip() else "") + plan.strip()}]}})
+                return
         if subtype == "started":
             self._close_thinking()
             # A tool call ends the message that was streaming.
@@ -2208,6 +2787,7 @@ class OpenCodeRunner(BaseAgentRunner):
     BACKEND_ID = BACKEND_OPENCODE
     register = staticmethod(register_opencode)
     list_models = staticmethod(probe_opencode_models)
+    MODES = (MODE_BYPASS, MODE_PLAN)
     # The models follow the user's signed-in providers, so the picker shows
     # what `opencode models` lists; until then only "CLI default".
     MODELS = [_cli_default_entry()]
@@ -2226,14 +2806,23 @@ class OpenCodeRunner(BaseAgentRunner):
         return _cli_child_env(extra)
 
     def _build_argv(self, text: str):
+        cli = _opencode_native(self._cli_path or self.CLI_NAME)
         argv = [
-            _opencode_native(self._cli_path or self.CLI_NAME), "run", "--format", "json",
+            cli, "run",
+            # OpenCode 2 hands `run` to a background service that keeps the
+            # config and environment it was started with, so this turn's
+            # OPENCODE_CONFIG and token (_build_env) would not reach it.
+        ] + (["--standalone"] if _opencode_has_standalone(cli) else []) + [
+            "--format", "json",
             # No terminal to answer a permission prompt (see Claude's
             # --dangerously-skip-permissions).
             "--auto", "--thinking",
         ]
+        if self._mode == MODE_PLAN:
+            argv += ["--agent", "plan"]     # OpenCode's read-only agent
         if self._model_id:
-            argv += ["--model", self._model_id]
+            # OpenCode calls an effort level a variant: provider/model#variant.
+            argv += ["--model", self._model_id + ("#" + self._effort if self._effort else "")]
         # Like Codex, OpenCode mints its own session id ("ses_..."), and
         # --session with any other id fails with "Session not found".
         if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
@@ -2299,11 +2888,44 @@ def _opencode_native(cli: str) -> str:
     mangles quotes, ``&`` and ``%`` in it; the npm package ships a native exe.
     """
     if cli.lower().endswith(".cmd"):
-        native = os.path.join(os.path.dirname(cli), "node_modules", "opencode-ai",
-                              "bin", "opencode.exe")
-        if os.path.isfile(native):
-            return native
+        folder = os.path.dirname(cli)
+        candidates = []
+        try:
+            with open(cli, "r", encoding="utf-8", errors="replace") as fh:
+                # What the shim itself starts: an update can move the package
+                # (opencode-ai -> @opencode/cli) and leave the old exe behind.
+                named = re.search(r'"%dp0%[\\/]+([^"]+\.exe)"', fh.read())
+            if named:
+                candidates.append(os.path.join(folder, *re.split(r"[\\/]+", named.group(1))))
+        except OSError:
+            pass
+        candidates.append(os.path.join(folder, "node_modules", "opencode-ai",
+                                       "bin", "opencode.exe"))
+        for native in candidates:
+            if os.path.isfile(native):
+                return native
     return cli
+
+
+# Whether each opencode executable's `run` takes --standalone (OpenCode 2).
+_opencode_standalone: dict = {}
+
+
+def _opencode_has_standalone(cli: str) -> bool:
+    if cli not in _opencode_standalone:
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        try:
+            result = subprocess.run(
+                [cli, "run", "--help"], capture_output=True, encoding="utf-8",
+                errors="replace", timeout=20, env=_cli_child_env(), **kwargs)
+        except Exception:
+            return False        # not an answer: ask again next turn
+        if result.returncode != 0:
+            return False
+        _opencode_standalone[cli] = "--standalone" in (result.stdout or "") + (result.stderr or "")
+    return _opencode_standalone[cli]
 
 
 def _write_opencode_mcp_config(server) -> str:
@@ -2332,9 +2954,11 @@ class HermesRunner(BaseAgentRunner):
     DISPLAY_NAME = "Hermes"
     BACKEND_ID = BACKEND_HERMES
     register = staticmethod(register_hermes)
-    # Hermes lists its models only inside an ACP session, so the picker offers
-    # its own config's choice.
+    # Hermes lists its models only inside an ACP session (probe_hermes_models,
+    # and every turn's session answer); until then its own config's choice.
     MODELS = [_cli_default_entry()]
+    list_models = staticmethod(probe_hermes_models)
+    LIST_MODELS_ONCE = True
     STDIN = subprocess.PIPE
 
     def __init__(self, parent=None):
@@ -2401,6 +3025,15 @@ class HermesRunner(BaseAgentRunner):
     def _new_session(self):
         self._request("session/new", {"cwd": self._cli_cwd, "mcpServers": self._mcp_servers()})
 
+    def _begin_prompt(self, session_id: str, result: dict):
+        """The session is open: note its models, pick ours, then prompt."""
+        set_cli_lineup(self.BACKEND_ID, parse_hermes_models(result.get("models")))
+        if self._model_id:
+            self._request("session/set_model",
+                          {"sessionId": session_id, "modelId": self._model_id})
+        else:
+            self._send_prompt(session_id)
+
     def _send_prompt(self, session_id: str):
         self._prompting = True
         self._request("session/prompt", {
@@ -2425,6 +3058,10 @@ class HermesRunner(BaseAgentRunner):
             # The stored conversation is gone: start a new one instead.
             self._new_session()
             return
+        if "error" in ev and kind == "session/set_model":
+            # Hermes no longer offers that model: its own default answers.
+            self._send_prompt(self._cli_session_id)
+            return
         if "error" in ev:
             err = ev.get("error") or {}
             data = err.get("data")
@@ -2444,7 +3081,7 @@ class HermesRunner(BaseAgentRunner):
         elif kind == "session/load":
             # An unknown id comes back as an empty result: start over.
             if result:
-                self._send_prompt(self._cli_session_id)
+                self._begin_prompt(self._cli_session_id, result)
             else:
                 self._new_session()
         elif kind == "session/new":
@@ -2456,7 +3093,9 @@ class HermesRunner(BaseAgentRunner):
             self._cli_session_id = session_id
             self._cli_id_from_cli = True
             self._emit_cli_session()
-            self._send_prompt(session_id)
+            self._begin_prompt(session_id, result)
+        elif kind == "session/set_model":
+            self._send_prompt(self._cli_session_id)
         elif kind == "session/prompt":
             self._prompting = False
             self._close_thinking()
@@ -2608,6 +3247,22 @@ def _write_claude_mcp_config(server) -> str:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as fh:
         json.dump(cfg, fh)
+    return path
+
+
+def _write_claude_ultracode_settings() -> str:
+    """Write the settings file that turns ultracode on and return its path."""
+    path = os.path.abspath(os.path.join(_agent_mcp_dir(), "claude_ultracode.json"))
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"ultracode": True}, fh)
+    return path
+
+
+def _write_claude_system_prompt() -> str:
+    """Write Claude's appended system prompt to a file and return its path."""
+    path = os.path.abspath(os.path.join(_agent_mcp_dir(), "claude_system_prompt.txt"))
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(_claude_code_system_prompt())
     return path
 
 

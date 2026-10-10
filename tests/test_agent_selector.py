@@ -308,21 +308,19 @@ def test_cursor_cli_row_follows_install_and_connect_status(qapp):
     assert panel._rows["cursor_cli"].action.isVisible() or not panel.isVisible()
 
 
-def test_footer_points_at_the_model_pill_only_when_it_has_models(qapp, monkeypatch):
-    """Codex has no list until the backend serves one, so its own config picks
-    the model; Cursor always offers at least "CLI default"."""
+def test_footer_points_at_the_model_pill_for_every_harness(qapp, monkeypatch):
+    """Every harness offers at least "CLI default" (#136), so the model is
+    always picked in the chat panel."""
     import windows.agent_runners as ar
     monkeypatch.setattr(ar, "_cli_lineups", {})
     ar.set_live_lineups({})
-    try:
-        assert "own config" in _panel(FakeChat(CONNECTED, active=CODEX)).footer.text()
-        ar.set_live_lineups({CODEX: [{"id": "gpt-5.3-codex", "name": "GPT-5.3 Codex"}]})
-        assert "chat panel" in _panel(FakeChat(CONNECTED, active=CODEX)).footer.text()
-    finally:
-        ar.set_live_lineups({})
+    assert "chat panel" in _panel(FakeChat(CONNECTED, active=CODEX)).footer.text()
     connected = {"cursor_cli": {"installed": True, "version": "2026.09.18", "registered": True}}
     assert "chat panel" in _panel(FakeChat(connected, active="cursor_cli")).footer.text()
     assert "chat panel" in _panel(FakeChat(CONNECTED, active=CLAUDE)).footer.text()
+    # Even with nothing listed, the panel never claims the pill is missing.
+    monkeypatch.setattr(ar, "models_for_backend", lambda backend: [])
+    assert "chat panel" in _panel(FakeChat(CONNECTED, active=CODEX)).footer.text()
 
 
 def test_opencode_row_follows_install_and_connect_status(qapp):

@@ -30,6 +30,12 @@
     const modelSelect = document.getElementById('chat-model-select');
     const backendSelect = document.getElementById('chat-backend-select');
     const modelTrigger = document.getElementById('chat-model-trigger');
+    const effortBox = document.getElementById('chat-model-effort');
+    const effortName = document.getElementById('chat-effort-name');
+    const effortDots = document.getElementById('chat-effort-dots');
+    const ultracodeRow = document.getElementById('chat-ultracode-row');
+    const ultracodeToggle = document.getElementById('chat-ultracode-toggle');
+    const cliModeBtn = document.getElementById('chat-cli-mode');
     const modelLabel = document.getElementById('chat-model-label');
     const modelMenu = document.getElementById('chat-model-menu');
     const modelSearch = document.getElementById('chat-model-search');
@@ -1301,7 +1307,13 @@
     }
 
     function getModelIcon(modelId) {
-        var provider = detectProvider(modelId);
+        // The provider the list states wins: a CLI's own ids ("opus",
+        // "sonnet") say nothing about who makes the model.
+        var provider = '';
+        for (var i = 0; i < modelItems.length; i++) {
+            if (modelItems[i].id === modelId) provider = modelItems[i].provider || '';
+        }
+        if (!PROVIDER_ICONS[provider]) provider = detectProvider(modelId);
         return PROVIDER_ICONS[provider] || PROVIDER_ICONS['default'];
     }
 
@@ -1457,7 +1469,156 @@
         if (modelLabel) modelLabel.textContent = name || id || 'Model';
         updateTriggerIcon(id);
         renderMenu();
+        renderEffortPicker();
     }
+
+    /* Effort levels, Ultracode and permission modes belong to a model, as its
+       CLI lists them (setModels); a model that lists none (always the case
+       for Zenvi Assistant) shows none. Drawn by hand, not with a native
+       <select>: Qt WebKit and QtWebEngine render that one differently.
+       What was picked is kept for this page's lifetime: the effort (or
+       Ultracode) per model, the mode for every model that offers it. */
+    var effortByModel = {};
+    var cliMode = '';
+    var ULTRACODE = 'ultracode';
+    var MODE_LABELS = { bypass: 'Bypass', auto: 'Auto', plan: 'Plan',
+                        workspace: 'Workspace', readonly: 'Read-only' };
+
+    function selectedItem() {
+        for (var i = 0; i < modelItems.length; i++) {
+            if (modelItems[i].id === selectedModelId) return modelItems[i];
+        }
+        return null;
+    }
+
+    // The picked model's plain levels, and whether it also takes Ultracode.
+    function effortChoices() {
+        var item = selectedItem();
+        var all = item ? item.efforts : [];
+        var levels = [];
+        for (var i = 0; i < all.length; i++) {
+            if (all[i] !== ULTRACODE) levels.push(all[i]);
+        }
+        return { levels: levels, ultracode: levels.length !== all.length };
+    }
+
+    function pickedEffort() {
+        var item = selectedItem();
+        var kept = effortByModel[selectedModelId] || '';
+        return item && item.efforts.indexOf(kept) >= 0 ? kept : '';
+    }
+
+    function buildEffortDot(name, active) {
+        var dot = document.createElement('button');
+        dot.type = 'button';
+        dot.className = 'chat-effort-dot' + (active ? ' active' : '');
+        dot.title = name || 'auto';
+        dot.setAttribute('role', 'radio');
+        dot.setAttribute('aria-checked', active ? 'true' : 'false');
+        dot.setAttribute('aria-label', 'Effort ' + (name || 'auto'));
+        dot.addEventListener('click', function () {
+            effortByModel[selectedModelId] = name;
+            renderEffortPicker();
+        });
+        return dot;
+    }
+
+    function renderEffortPicker() {
+        var item = selectedItem();
+        var c = effortChoices();
+        var picked = pickedEffort();
+        if (effortBox) effortBox.style.display = (c.levels.length || c.ultracode) ? '' : 'none';
+        // "auto" passes no level at all: the CLI decides.
+        if (effortName) effortName.textContent = '(' + (picked || 'auto') + ')';
+        if (effortDots) {
+            effortDots.innerHTML = '';
+            var names = [''].concat(c.levels);
+            for (var j = 0; j < names.length; j++) {
+                effortDots.appendChild(buildEffortDot(names[j], picked === names[j]));
+            }
+        }
+        if (ultracodeRow) ultracodeRow.style.display = c.ultracode ? '' : 'none';
+        if (ultracodeToggle) {
+            ultracodeToggle.className = 'chat-switch' + (picked === ULTRACODE ? ' on' : '');
+            ultracodeToggle.setAttribute('aria-checked', picked === ULTRACODE ? 'true' : 'false');
+        }
+        if (modelLabel && item) {
+            modelLabel.textContent = item.name + (picked ? ' · ' + picked : '');
+        }
+        renderCliMode();
+    }
+
+    if (ultracodeToggle) {
+        ultracodeToggle.addEventListener('click', function () {
+            effortByModel[selectedModelId] = pickedEffort() === ULTRACODE ? '' : ULTRACODE;
+            renderEffortPicker();
+        });
+    }
+    // A click redraws the dots, so its target is gone by the time the
+    // document handler asks whether it was inside the menu: stop it here.
+    if (effortBox) effortBox.addEventListener('click', function (e) { e.stopPropagation(); });
+
+    function cliModes() {
+        var item = selectedItem();
+        return item ? item.modes : [];
+    }
+
+    // The permission modes the pill steps through. Plan is not one of them:
+    // it is the Plan/Agent toggle, the same one Zenvi Assistant has.
+    function pillModes() {
+        var modes = cliModes();
+        var out = [];
+        for (var i = 0; i < modes.length; i++) {
+            if (modes[i] !== 'plan') out.push(modes[i]);
+        }
+        return out;
+    }
+
+    function pickedCliMode() {
+        return pillModes().indexOf(cliMode) >= 0 ? cliMode : '';
+    }
+
+    function renderCliMode() {
+        if (!cliModeBtn) return;
+        var modes = pillModes();
+        var mode = pickedCliMode() || modes[0] || '';
+        cliModeBtn.style.display = modes.length > 1 ? '' : 'none';
+        cliModeBtn.textContent = MODE_LABELS[mode] || mode;
+        cliModeBtn.setAttribute('data-mode', mode);
+        // Whether Plan is offered follows the picked model too.
+        if (backendSelect) applyBackendChrome(backendSelect.value);
+    }
+
+    // A click steps to the picked model's next permission mode.
+    function cycleCliMode() {
+        var modes = pillModes();
+        if (modes.length < 2) return false;
+        cliMode = modes[(Math.max(0, modes.indexOf(cliMode)) + 1) % modes.length];
+        renderCliMode();
+        return true;
+    }
+
+    // Shift+Tab, as in the CLIs: through the permission modes, then Plan,
+    // then round again. False when there is nothing to step.
+    function stepMode() {
+        var modes = pillModes();
+        var canPlan = modeToggleEl && modeToggleEl.style.display !== 'none';
+        if (currentAgentMode === 'planning') {
+            cliMode = modes[0] || '';
+            renderCliMode();
+            onModeButtonClick('agent');
+            return true;
+        }
+        var at = Math.max(0, modes.indexOf(cliMode));
+        if (at < modes.length - 1) return cycleCliMode();
+        if (canPlan) {
+            onModeButtonClick('planning');
+            return true;
+        }
+        return cycleCliMode();
+    }
+
+    if (cliModeBtn) cliModeBtn.addEventListener('click', cycleCliMode);
 
     function openMenu() {
         if (menuOpen) return;
@@ -1592,6 +1753,8 @@
                 featured: item.featured === undefined ? true : !!item.featured,
                 rank: typeof item.rank === 'number' ? item.rank : 500,
                 tags: Array.isArray(item.tags) ? item.tags : [],
+                efforts: Array.isArray(item.efforts) ? item.efforts : [],
+                modes: Array.isArray(item.modes) ? item.modes : [],
                 available: item.available === undefined ? true : !!item.available
             };
         });
@@ -1615,6 +1778,7 @@
         if (!picked && modelItems.length) picked = modelItems[0];
         if (picked) selectModel(picked.id, picked.name);
         else if (modelLabel) modelLabel.textContent = 'Model';
+        renderEffortPicker();
         // Python pushes a new list on every backend/tab change, and whether the
         // pill shows at all depends on that list — see applyBackendChrome.
         if (backendSelect) applyBackendChrome(backendSelect.value);
@@ -1745,7 +1909,13 @@
         closeMentionPalette();
         getBridge(function (bridge) {
             if (!bridge) return;
-            bridge.sendMessage(text, modelSelect.value || '', currentAgentMode);
+            if (bridge.setCliMode) bridge.setCliMode(pickedCliMode());
+            var effort = pickedEffort();
+            if (effort && bridge.sendMessageWithEffort) {
+                bridge.sendMessageWithEffort(text, modelSelect.value || '', currentAgentMode, effort);
+            } else {
+                bridge.sendMessage(text, modelSelect.value || '', currentAgentMode);
+            }
             inputEl.value = '';
             adjustTextareaHeight();
         });
@@ -1844,7 +2014,8 @@
             '<span class="chat-plan-chip-badge chat-plan-chip-badge-' + escapeHtml(status.toLowerCase()) + '">' + escapeHtml(status) + '</span>' +
             (progress ? '<span class="chat-plan-chip-progress" id="chat-plan-chip-progress">' + escapeHtml(progress) + '</span>' : '') +
             '<div class="chat-plan-chip-actions">' +
-            '<button type="button" class="chat-plan-chip-open" id="chat-plan-chip-open">Open Plan</button>';
+            // A CLI agent's plan is its reply above: no steps for the plan dock.
+            (plan.cli ? '' : '<button type="button" class="chat-plan-chip-open" id="chat-plan-chip-open">Open Plan</button>');
         if (status === 'READY') {
             html += '<button type="button" class="chat-plan-chip-exec" id="chat-plan-chip-exec">Execute</button>';
         } else if (status === 'COMPLETED' && unfinished.length > 0 && !allSucceeded) {
@@ -2130,6 +2301,13 @@
     }
 
     inputEl.addEventListener('keydown', function (e) {
+        if (e.key === 'Tab' && e.shiftKey) {
+            // With no mode to step, it stays a Shift+Tab.
+            if (stepMode()) {
+                e.preventDefault();
+                return;
+            }
+        }
         if (mentionPaletteOpen) {
             if (e.key === 'ArrowDown') {
                 e.preventDefault();
@@ -2499,8 +2677,9 @@
             messagesEl.style.display = 'none';
             return;
         }
-        // Claude Code Anthropic login (before MCP Connect).
-        if (id === 'claude_code' && info.logged_in === false) {
+        // The CLI's own login (before MCP Connect). Only a CLI the app can
+        // sign in reports logged_in at all.
+        if (info.logged_in === false) {
             cliEmptyStateEl.style.display = 'flex';
             messagesEl.style.display = 'none';
             if (cliEmptyStateEl.getAttribute('data-connect-for') === id + ':auth') return;
@@ -2508,15 +2687,15 @@
             cliEmptyStateEl.innerHTML =
                 '<div class="chat-cli-connect-msg">' + escapeHtml(findBackendName(id)) +
                 ' needs you to sign in again.</div>' +
-                '<button type="button" id="chat-cli-connect-btn" class="chat-cli-connect-btn">Sign in to Claude</button>' +
+                '<button type="button" id="chat-cli-connect-btn" class="chat-cli-connect-btn">' +
+                escapeHtml(signInLabel(id)) + '</button>' +
                 '<div id="chat-cli-connect-status" class="chat-cli-connect-status"></div>';
             var authBtn = document.getElementById('chat-cli-connect-btn');
             if (authBtn) {
                 authBtn.addEventListener('click', function () {
-                    authBtn.disabled = true;
-                    authBtn.textContent = 'Opening browser…';
+                    authBtn.textContent = SIGN_IN_AGAIN;
                     var statusEl = document.getElementById('chat-cli-connect-status');
-                    if (statusEl) { statusEl.textContent = ''; statusEl.className = 'chat-cli-connect-status'; }
+                    if (statusEl) { statusEl.textContent = SIGN_IN_WAITING; statusEl.className = 'chat-cli-connect-status'; }
                     getBridge(function (bridge) {
                         if (bridge && bridge.signInCli) bridge.signInCli(id);
                     });
@@ -2559,6 +2738,15 @@
         messagesEl.style.display = '';
     }
 
+    // The button stays live while waiting: a second click starts the
+    // sign-in over (Python drops the first one).
+    var SIGN_IN_WAITING = 'Finish signing in in your browser.';
+    var SIGN_IN_AGAIN = 'Open the sign-in page again';
+
+    function signInLabel(id) {
+        return 'Sign in to ' + findBackendName(id);
+    }
+
     window.showCliAuthRecovery = function (backendId, message) {
         if (!messagesEl) return;
         var existing = document.getElementById('chat-cli-auth-recovery');
@@ -2567,22 +2755,20 @@
         card.id = 'chat-cli-auth-recovery';
         card.className = 'chat-cli-auth-recovery';
         card.innerHTML =
-            '<div class="chat-cli-connect-msg">' + escapeHtml(message ||
-                'Claude Code needs you to sign in again. Your last request was not run.') +
-            '</div>' +
-            '<button type="button" id="chat-cli-auth-btn" class="chat-cli-connect-btn">Sign in to Claude</button>' +
+            '<div class="chat-cli-connect-msg">' + escapeHtml(message || '') + '</div>' +
+            '<button type="button" id="chat-cli-auth-btn" class="chat-cli-connect-btn">' +
+            escapeHtml(signInLabel(backendId)) + '</button>' +
             '<div id="chat-cli-auth-status" class="chat-cli-connect-status"></div>';
         messagesEl.appendChild(card);
         messagesEl.scrollTop = messagesEl.scrollHeight;
         var btn = document.getElementById('chat-cli-auth-btn');
         if (btn) {
             btn.addEventListener('click', function () {
-                btn.disabled = true;
-                btn.textContent = 'Opening browser…';
+                btn.textContent = SIGN_IN_AGAIN;
                 var statusEl = document.getElementById('chat-cli-auth-status');
-                if (statusEl) { statusEl.textContent = ''; statusEl.className = 'chat-cli-connect-status'; }
+                if (statusEl) { statusEl.textContent = SIGN_IN_WAITING; statusEl.className = 'chat-cli-connect-status'; }
                 getBridge(function (bridge) {
-                    if (bridge && bridge.signInCli) bridge.signInCli(backendId || 'claude_code');
+                    if (bridge && bridge.signInCli) bridge.signInCli(backendId);
                 });
             });
         }
@@ -2599,7 +2785,7 @@
         }
         if (btn && !ok) {
             btn.disabled = false;
-            btn.textContent = 'Sign in to Claude';
+            btn.textContent = signInLabel(backendId);
         }
         if (ok) {
             var card = document.getElementById('chat-cli-auth-recovery');
@@ -2664,14 +2850,15 @@
     // Per-backend chrome. The model pill follows whether this backend offers a
     // lineup at all (Python pushes a fresh setModels on every backend/tab
     // change; an empty list means "let the CLI pick"). The Plan/Agent toggle is
-    // Zenvi-only — planning is a backend feature the CLI agents don't have; see
-    // AIChatWindow._resolve_agent_mode.
+    // for Zenvi Assistant and for a CLI agent whose picked model has a plan mode.
     function applyBackendChrome(id) {
         var isZenvi = (id === 'zenvi' || !id);
+        // A CLI agent plans in its own plan mode, when the picked model has one.
+        var canPlan = isZenvi || cliModes().indexOf('plan') >= 0;
         if (modelTrigger) modelTrigger.style.display = modelItems.length ? '' : 'none';
-        if (modeToggleEl) modeToggleEl.style.display = isZenvi ? '' : 'none';
-        if (!isZenvi) {
-            if (currentAgentMode !== 'agent') setAgentModeUI('agent');
+        if (modeToggleEl) modeToggleEl.style.display = canPlan ? '' : 'none';
+        if (!canPlan) {
+            if (currentAgentMode !== 'agent') onModeButtonClick('agent');
             if (window.setPlanChip) window.setPlanChip(null);
         }
     }

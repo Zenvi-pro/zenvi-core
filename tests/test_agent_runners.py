@@ -28,6 +28,15 @@ def qapp():
     yield app
 
 
+@pytest.fixture(autouse=True)
+def _isolated_from_this_machine(monkeypatch):
+    """No test may see the CLIs really installed here or another test's lineup."""
+    import windows.agent_runners as ar
+    monkeypatch.setattr(ar, "_windows_path_dirs", lambda: ())
+    monkeypatch.setattr(ar, "_cli_lineups", {})
+    monkeypatch.setattr(ar, "_cli_models_read", {})
+
+
 def _collect(runner):
     events = []
     runner.token_received.connect(lambda t: events.append(("token", t)))
@@ -116,7 +125,10 @@ def test_detect_cli_installed_version_check_fails(monkeypatch):
     monkeypatch.setattr(ar.shutil, "which", lambda name: "/usr/local/bin/" + name)
     monkeypatch.setattr(ar.subprocess, "run", _raise)
     monkeypatch.setattr(ar, "_is_registered", lambda name: False)
-    assert ar.detect_cli("codex") == {"installed": True, "version": None, "registered": False}
+    assert ar.detect_cli("codex") == {"installed": True, "version": None, "registered": False,
+                                      "logged_in": None}
+    # A CLI with no browser sign-in reports no login state at all.
+    assert "logged_in" not in ar.detect_cli("opencode")
 
 
 # --- registration detection + connect flow (Phase 8) -----------------------
@@ -499,7 +511,8 @@ def test_models_for_backend_matches_the_picker_contract(qapp):
     assert len({m["id"] for m in claude}) == len(claude), "duplicate model ids"
     assert sum(1 for m in claude if m.get("default")) == 1
 
-    assert models_for_backend(BACKEND_CODEX) == []
+    # Codex and Cursor list their own models; built in is only "CLI default".
+    assert [m["id"] for m in models_for_backend(BACKEND_CODEX)] == ["cli-default"]
     # Cursor's real list comes from the CLI; built in is only "CLI default".
     assert [m["id"] for m in models_for_backend(BACKEND_CURSOR)] == ["cli-default"]
     assert models_for_backend("zenvi") == []
@@ -791,7 +804,7 @@ def test_agent_bash_prompt_covers_heic_and_zsh():
     assert "HEIC" in text
 
 
-def test_claude_argv_appends_system_prompt(qapp, monkeypatch):
+def test_claude_argv_appends_system_prompt(qapp, monkeypatch, tmp_path):
     import windows.agent_runners as ar
     from windows.agent_runners import ClaudeCodeRunner, _claude_code_system_prompt
 
@@ -799,9 +812,12 @@ def test_claude_argv_appends_system_prompt(qapp, monkeypatch):
     runner = ClaudeCodeRunner()
     runner._session_id = "s7"
     runner._cli_session_id = "s7"
+    monkeypatch.setattr(ar, "_agent_mcp_dir", lambda: str(tmp_path))
     argv = runner._build_argv("hi")
-    assert "--append-system-prompt" in argv
-    prompt = argv[argv.index("--append-system-prompt") + 1]
+    # From a file: the prompt is many lines, and an npm install's claude.cmd
+    # would cut the whole command line at the first of them.
+    with open(argv[argv.index("--append-system-prompt-file") + 1], encoding="utf-8") as fh:
+        prompt = fh.read()
     assert prompt == _claude_code_system_prompt()
     assert "ingest_web_video_tool" in prompt
     assert "ToolSearch" in prompt
@@ -847,17 +863,117 @@ def test_emit_error_routes_auth_to_auth_required(qapp):
     assert not any(e[0] == "error" for e in events)
 
 
-def test_emit_error_codex_auth_stays_on_error_occurred(qapp):
-    """Codex authenticate failures must not open the Claude Sign-in card."""
-    from windows.agent_runners import CodexRunner
+def test_an_expired_login_asks_for_sign_in_on_every_cli_that_has_one(qapp, monkeypatch):
+    """Codex gets the same Sign-in card as Claude Code; a CLI that signs in
+    through terminal prompts (OpenCode) keeps the plain error."""
+    import windows.agent_runners as ar
 
-    runner = CodexRunner()
-    events = []
-    runner.auth_required.connect(lambda t: events.append(("auth", t)))
-    runner.error_occurred.connect(lambda t: events.append(("error", t)))
-    runner._emit_error("Failed to authenticate: OAuth session expired")
-    assert events and events[0][0] == "error"
-    assert not any(e[0] == "auth" for e in events)
+    def events_of(runner, text):
+        events = []
+        runner.auth_required.connect(lambda t: events.append(("auth", t)))
+        runner.error_occurred.connect(lambda t: events.append(("error", t)))
+        runner._emit_error(text)
+        return events
+
+    expired = ("Your access token could not be refreshed because your refresh token "
+               "was already used. Please log out and sign in again.")
+    assert events_of(ar.CodexRunner(), expired) == [("auth", expired)]
+    assert events_of(ar.OpenCodeRunner(), expired) == [("error", expired)]
+
+    monkeypatch.setattr(ar, "codex_is_logged_in", lambda: False)
+    assert ar.CodexRunner()._ensure_ready() == ar.CLI_AUTH_REQUIRED
+    monkeypatch.setattr(ar, "codex_is_logged_in", lambda: None)
+    assert ar.CodexRunner()._ensure_ready() is None
+    assert ar.OpenCodeRunner()._ensure_ready() is None
+    # The card names the CLI that needs it.
+    runner, said = ar.CodexRunner(), []
+    runner.auth_required.connect(said.append)
+    runner._emit_auth_required(ar.CLI_AUTH_REQUIRED)
+    assert said == ["Codex needs you to sign in again."]
+
+
+def test_codex_login_state_is_its_status_exit_code(monkeypatch):
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_which_cli", lambda name: "/bin/" + name)
+    seen = []
+
+    def run(argv, **kw):
+        seen.append(argv)
+        return types.SimpleNamespace(returncode=run.code, stdout="", stderr=run.err)
+
+    monkeypatch.setattr(ar.subprocess, "run", run)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CODEX_API_KEY", raising=False)
+    run.code, run.err = 0, "Logged in using ChatGPT"
+    assert ar.codex_is_logged_in() is True and seen[-1] == ["/bin/codex", "login", "status"]
+    run.code, run.err = 1, "Not logged in"
+    assert ar.codex_is_logged_in() is False
+    # Anything else is not an answer: an old CLI without `login status` must
+    # not lock its user out of every turn.
+    run.code, run.err = 2, "error: unrecognized subcommand 'status'"
+    assert ar.codex_is_logged_in() is None
+    # Nor is "not logged in" when an API key does the signing in.
+    run.code, run.err = 1, "Not logged in"
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    assert ar.codex_is_logged_in() is None
+    monkeypatch.delenv("OPENAI_API_KEY")
+    monkeypatch.setattr(ar, "_which_cli", lambda name: None)
+    assert ar.codex_is_logged_in() is None
+
+
+def test_sign_in_runs_the_clis_own_login_and_waits_for_it(monkeypatch):
+    import windows.agent_runners as ar
+
+    procs = []
+
+    class FakeProc:
+        def __init__(self, argv, **kw):
+            self.argv, self.kw, self.killed = argv, kw, False
+            self.stderr = None
+            procs.append(self)
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            self.killed = True
+
+    monkeypatch.setattr(ar, "_which_cli", lambda name: "/bin/" + name)
+    monkeypatch.setattr(ar.subprocess, "Popen", FakeProc)
+    monkeypatch.setattr(ar.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ar, "_login_procs", {})
+    answers = iter([False, False, True])
+    monkeypatch.setattr(ar, "codex_is_logged_in", lambda: next(answers))
+    assert ar.start_cli_login(ar.BACKEND_CODEX) == (True, "Signed in to Codex.")
+    assert procs[0].argv == ["/bin/codex", "login"]
+    assert procs[0].killed, "the login process does not outlive the sign-in"
+
+    # A second click while the first sign-in is still waiting replaces it.
+    monkeypatch.setattr(ar, "claude_is_logged_in", lambda: True)
+    stale = FakeProc(["stale"])
+    ar._login_procs[ar.BACKEND_CLAUDE] = stale
+    assert ar.start_cli_login(ar.BACKEND_CLAUDE)[0] is True
+    assert stale.killed and procs[-1].argv == ["/bin/claude", "auth", "login"]
+
+    ok, message = ar.start_cli_login(ar.BACKEND_OPENCODE)
+    assert ok is False and "OpenCode" in message
+
+
+def test_windows_children_can_find_programs_by_name(monkeypatch):
+    """An MSYS2 login shell drops PATHEXT and COMSPEC. Without PATHEXT Claude
+    Code cannot start the browser for its sign-in, and just waits."""
+    import windows.agent_runners as ar
+
+    if os.name != "nt":
+        pytest.skip("Windows environment variables")
+    monkeypatch.delenv("PATHEXT", raising=False)
+    monkeypatch.delenv("COMSPEC", raising=False)
+    env = {k.upper(): v for k, v in ar._cli_child_env().items()}
+    assert ".EXE" in env["PATHEXT"].upper().split(";")
+    assert env["COMSPEC"].lower().endswith("cmd.exe")
+    monkeypatch.setenv("PATHEXT", ".EXE;.FOO")
+    assert ar._cli_child_env()["PATHEXT"] == ".EXE;.FOO", "the user's own is kept"
 
 
 def test_cli_child_env_sets_claude_code_shell_for_bash4(monkeypatch):
@@ -975,7 +1091,7 @@ def test_missing_or_empty_live_list_falls_back_to_the_built_in_one(qapp, clear_l
     set_live_lineups({BACKEND_CLAUDE: [], BACKEND_CODEX: []})
     assert [m["id"] for m in models_for_backend(BACKEND_CLAUDE)] == \
         [m["id"] for m in ClaudeCodeRunner.MODELS]
-    assert models_for_backend(BACKEND_CODEX) == []
+    assert [m["id"] for m in models_for_backend(BACKEND_CODEX)] == ["cli-default"]
 
     set_live_lineups({})
     assert len(models_for_backend(BACKEND_CLAUDE)) == len(ClaudeCodeRunner.MODELS)
@@ -1178,7 +1294,7 @@ def test_cursor_argv_is_headless_and_hides_model(qapp, monkeypatch):
     assert argv[argv.index("--workspace") + 1] == r"C:\proj"
     assert argv[argv.index("--resume") + 1] == "cur-abc-123"
     assert argv[argv.index("--add-dir") + 1] == "C:/footage"
-    assert argv[-1] == "make a cut"
+    assert "make a cut" not in argv, "the prompt goes in on stdin"
     assert "--model" not in argv
     assert [m["id"] for m in runner.MODELS] == ["cli-default"]
 
@@ -1421,8 +1537,12 @@ def test_parse_cursor_models_reads_the_real_listing():
     ]
     # Preselected, and says what the CLI resolves it to.
     assert rows[0] == {"id": "cli-default", "name": "CLI default", "rank": 0,
-                       "featured": True, "default": True, "tags": ["Auto"]}
-    assert [r["id"] for r in rows if r["featured"]] == ["cli-default"], "search reaches the rest"
+                       "featured": True, "default": True, "tags": ["Auto"],
+                       "modes": ["bypass", "plan"]}
+    # The menu opens on a short list, not on "CLI default" alone; search
+    # reaches the rest.
+    assert [r["id"] for r in rows if r["featured"]] == [r["id"] for r in rows[:9]]
+    assert rows[9]["featured"] is False
     assert not any(r.get("default") for r in rows[1:])
     names = {r["id"]: r["name"] for r in rows}
     assert names["auto"] == "Auto"                                   # flags stripped
@@ -1478,9 +1598,10 @@ def test_cursor_lineup_reaches_the_model_flag(qapp, fresh_cursor_lineup, monkeyp
     # "CLI default" leaves the choice to the CLI's own config.
     runner._model_id = runner._coerce_model("cli-default")
     assert runner._model_id == "" and "--model" not in runner._build_argv("hi")
-    # The backend's lineup, when it serves one, still wins (#202).
+    # What the CLI listed beats the backend's lineup (#136).
     ar.set_live_lineups({ar.BACKEND_CURSOR: [{"id": "composer-2.5", "name": "Composer"}]})
-    assert [m["id"] for m in ar.models_for_backend(ar.BACKEND_CURSOR)] == ["composer-2.5"]
+    assert [m["id"] for m in ar.models_for_backend(ar.BACKEND_CURSOR)] == [
+        "auto", "claude-opus-5-5-high"]
 
 
 # ── Cursor: approve zenvi-editor alone, token from the environment ────────
@@ -1950,7 +2071,7 @@ def test_parse_opencode_models_reads_the_real_listing():
     assert [r["id"] for r in rows[1:3]] == ["opencode/big-pickle",
                                            "opencode/ling-3.0-flash-fin-free"]
     assert rows[1]["name"] == "big-pickle" and rows[1]["provider"] == "opencode"
-    assert [r["id"] for r in rows if r.get("featured")] == ["cli-default"]
+    assert [r["id"] for r in rows if r.get("featured")] == [r["id"] for r in rows[:9]]
     assert parse_opencode_models("Error: something\n") == []
 
 
@@ -2338,13 +2459,14 @@ def test_hermes_tool_names(title, name):
     assert "motion graphic" not in humanize_tool_name(name).lower()
 
 
-def test_only_stdin_protocols_keep_stdin_open(qapp):
-    """Hermes (ACP) and Codex (the prompt) write to stdin; every other CLI gets
-    none (``opencode run`` blocks on one)."""
+def test_only_clis_that_are_written_to_keep_stdin_open(qapp):
+    """A CLI nobody writes to gets no stdin (``opencode run`` blocks on one).
+    Hermes speaks ACP on it; Claude Code, Codex and Cursor take their prompt
+    from it."""
     import subprocess
-    from windows.agent_runners import CLI_RUNNERS, CodexRunner, HermesRunner
+    from windows.agent_runners import CLI_RUNNERS, OpenCodeRunner
     for backend, runner in CLI_RUNNERS.items():
-        expected = subprocess.PIPE if runner in (HermesRunner, CodexRunner) else subprocess.DEVNULL
+        expected = subprocess.DEVNULL if runner is OpenCodeRunner else subprocess.PIPE
         assert runner.STDIN == expected, backend
 
 
@@ -2380,6 +2502,747 @@ def test_register_hermes_decodes_its_output_as_utf8(monkeypatch):
     for _, kw in calls:
         assert kw.get("encoding") == "utf-8" and kw.get("errors") == "replace"
         assert "text" not in kw
+
+
+# ── Model lineups come from the installed harness (#136) ──────────────────
+
+CODEX_CATALOG = json.dumps({"models": [
+    {"slug": "gpt-5.5", "display_name": "GPT-5.5", "visibility": "list", "priority": 13},
+    {"slug": "gpt-reserve", "display_name": "GPT-Reserve", "visibility": "hide", "priority": 4},
+    {"slug": "gpt-5.6-terra", "display_name": "GPT-5.6-Terra", "visibility": "list", "priority": 8},
+    {"slug": "gpt-5.6-terra", "display_name": "dup", "visibility": "list", "priority": 9},
+    {"display_name": "no slug", "visibility": "list", "priority": 1},
+]})
+
+
+def test_parse_codex_models_lists_visible_models_by_priority():
+    from windows.agent_runners import parse_codex_models
+
+    rows = parse_codex_models(CODEX_CATALOG)
+    assert [r["id"] for r in rows] == ["cli-default", "gpt-5.6-terra", "gpt-5.5"]
+    assert rows[1]["name"] == "GPT-5.6-Terra"
+    assert rows[0].get("default") is True and sum(1 for r in rows if r.get("default")) == 1
+
+
+@pytest.mark.parametrize("text", ["", "not json", "[]", '{"models": []}',
+                                  '{"models": [{"slug": "x", "visibility": "hide"}]}'])
+def test_parse_codex_models_gives_nothing_for_junk_or_an_empty_catalog(text):
+    from windows.agent_runners import parse_codex_models
+    assert parse_codex_models(text) == []
+
+
+def test_every_harness_with_a_model_command_can_list_its_own_models():
+    import windows.agent_runners as ar
+    for backend in (ar.BACKEND_CODEX, ar.BACKEND_CURSOR, ar.BACKEND_OPENCODE):
+        assert ar.CLI_RUNNERS[backend].list_models is not None, backend
+
+
+def test_probe_codex_models_runs_codex_debug_models(monkeypatch):
+    import windows.agent_runners as ar
+    seen = []
+    monkeypatch.setattr(ar, "_models_command_output",
+                        lambda argv: seen.append(argv) or CODEX_CATALOG)
+    assert [r["id"] for r in ar.probe_codex_models("/bin/codex")][1:] == ["gpt-5.6-terra", "gpt-5.5"]
+    assert seen == [["/bin/codex", "debug", "models"]]
+
+
+def test_the_installed_cli_lineup_beats_the_zenvi_backends(fresh_cursor_lineup):
+    """The user's own CLI knows which ids it accepts; the API only fills gaps."""
+    ar = fresh_cursor_lineup
+    ar.set_live_lineups({ar.BACKEND_CODEX: [{"id": "from-api", "name": "API"}]})
+    assert [m["id"] for m in ar.models_for_backend(ar.BACKEND_CODEX)] == ["from-api"]
+    ar.set_cli_lineup(ar.BACKEND_CODEX, [{"id": "gpt-5.5", "name": "GPT-5.5"}])
+    assert [m["id"] for m in ar.models_for_backend(ar.BACKEND_CODEX)] == ["gpt-5.5"]
+
+
+def test_codex_lineup_is_asked_of_the_cli_and_reaches_the_model_flag(
+        qapp, fresh_cursor_lineup, monkeypatch):
+    ar = fresh_cursor_lineup
+    monkeypatch.setattr(ar, "_which_cli", lambda name: "/bin/codex")
+    monkeypatch.setattr(ar.CodexRunner, "list_models",
+                        staticmethod(lambda cli: ar.parse_codex_models(CODEX_CATALOG)))
+    assert ar.refresh_cli_models(ar.BACKEND_CODEX, "0.151.0") is True
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: [])
+    runner = ar.CodexRunner()
+    runner._server = None
+    runner._model_id = runner._coerce_model("gpt-5.6-terra")
+    argv = runner._build_argv("hi")
+    assert argv[argv.index("--model") + 1] == "gpt-5.6-terra"
+
+
+def test_a_models_command_that_fails_once_is_retried(monkeypatch):
+    import subprocess
+    import windows.agent_runners as ar
+    runs = []
+
+    def fake_run(argv, **kw):
+        runs.append(argv)
+        code = 1 if len(runs) == 1 else 0
+        return subprocess.CompletedProcess(argv, code, stdout="" if code else "ok\n", stderr="boom")
+
+    monkeypatch.setattr(ar.subprocess, "run", fake_run)
+    monkeypatch.setattr(ar.time, "sleep", lambda s: None)
+    assert ar._models_command_output(["x", "models"]) == "ok\n"
+    assert len(runs) == 2
+
+
+def test_a_models_command_that_keeps_failing_gives_up_with_nothing(monkeypatch):
+    import subprocess
+    import windows.agent_runners as ar
+    monkeypatch.setattr(ar.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, 1, "", "e"))
+    monkeypatch.setattr(ar.time, "sleep", lambda s: None)
+    assert ar._models_command_output(["x", "models"]) == ""
+
+
+@pytest.mark.parametrize("backend", ["codex", "cursor_cli", "opencode", "hermes", "claude_code"])
+def test_a_model_id_from_another_harness_is_never_passed_on(qapp, fresh_cursor_lineup, backend):
+    ar = fresh_cursor_lineup
+    ar.set_cli_lineup("codex", [{"id": "gpt-5.5", "name": "GPT-5.5"}])
+    ar.set_cli_lineup("opencode", [{"id": "openai/gpt-5.5", "name": "gpt-5.5"}])
+    runner = ar.CLI_RUNNERS[backend]()
+    assert runner._coerce_model("gpt-5.5") == ("gpt-5.5" if backend == "codex" else "")
+    assert runner._coerce_model("openai/gpt-5.5") == ("openai/gpt-5.5" if backend == "opencode" else "")
+    assert runner._coerce_model("anthropic/claude-opus-5-5") == ""
+
+
+# ── Harness fixes found while verifying #136 (#281, #265) ─────────────────
+
+def test_codex_resume_never_passes_add_dir(qapp, monkeypatch):
+    """`codex exec resume` has no --add-dir: every follow-up turn exited 2 (#281)."""
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: ["--add-dir", "C:/footage"])
+    runner = ar.CodexRunner()
+    runner._server = None
+    assert "--add-dir" in runner._build_argv("first")
+    runner._cli_started = runner._cli_id_from_cli = True
+    runner._cli_session_id = "thread-1"
+    argv = runner._build_argv("again")
+    assert argv[1:4] == ["exec", "resume", "thread-1"]
+    assert "--add-dir" not in argv
+    # The prompt is read from stdin ("-"), so a .cmd launcher cannot cut it.
+    assert argv[-1] == "-" and runner._stdin_prompt.endswith("again")
+
+
+def test_which_cli_reads_the_windows_path_a_stripped_launch_lost(monkeypatch, tmp_path):
+    """run-zenvi-core.sh starts the editor with `env -i`, so PATH and
+    NVM_SYMLINK are gone; the user's real PATH is still in the registry (#265)."""
+    import windows.agent_runners as ar
+
+    name = "opencode.cmd" if os.name == "nt" else "opencode"
+    node = tmp_path / "nodejs"
+    node.mkdir()
+    (node / name).write_bytes(b"")
+    monkeypatch.setattr(ar.shutil, "which", lambda n, **kw: None)
+    monkeypatch.setattr(ar, "_cli_install_dirs", lambda: [])
+    monkeypatch.setattr(ar, "_windows_path_dirs", lambda: [str(node)])
+    assert ar._which_cli("opencode") == os.path.join(str(node), name)
+    # ...and the CLI's own children (node, git) resolve from it too.
+    assert str(node) in ar._cli_child_env()["PATH"].split(os.pathsep)
+
+
+def test_windows_path_dirs_expand_registry_variables():
+    import windows.agent_runners as ar
+
+    dirs = ar._expand_path_value(
+        r"%NVM_SYMLINK%;C:\Tools;;%NOPE%\bin", {"NVM_SYMLINK": r"C:\nvm4w\nodejs"})
+    assert dirs[:2] == [r"C:\nvm4w\nodejs", r"C:\Tools"]
+    assert not [d for d in dirs if d.startswith(r"C:\nvm4w") is False and "%" in d and "NVM" in d]
+
+
+def test_cursor_prompt_goes_through_stdin_not_the_cmd_launcher(qapp, monkeypatch):
+    """cursor-agent.cmd runs through cmd.exe, which cuts an argument at its
+    first newline: Cursor only ever saw "[Editor snapshot]" (#265)."""
+    import subprocess
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: [])
+    runner = ar.CursorCliRunner()
+    runner._cli_cwd = "/proj"
+    prompt = "[Editor snapshot]\nclips: 0\n\nmake a cut"
+    argv = runner._build_argv(prompt)
+    assert prompt not in argv and not [a for a in argv if "\n" in a]
+    assert runner.STDIN == subprocess.PIPE
+
+    import time
+
+    class _Raw:
+        data, closed = "", False
+
+        def write(self, text):
+            self.data += text
+
+        def close(self):
+            self.closed = True
+
+    runner._proc = types.SimpleNamespace(stdin=_Raw())
+    runner._after_launch(prompt)
+    for _ in range(200):
+        if runner._proc.stdin.closed:
+            break
+        time.sleep(0.01)
+    assert runner._proc.stdin.data == prompt
+    assert runner._proc.stdin.closed, "EOF tells the CLI the prompt is complete"
+
+
+def test_opencode_native_is_the_binary_the_shim_really_runs(tmp_path):
+    """npm kept an old `opencode-ai` exe beside the new `@opencode/cli` one;
+    running the stale one failed with "Token refresh failed: 401"."""
+    import windows.agent_runners as ar
+
+    old = tmp_path / "node_modules" / "opencode-ai" / "bin"
+    new = tmp_path / "node_modules" / "@opencode" / "cli" / "bin"
+    old.mkdir(parents=True)
+    new.mkdir(parents=True)
+    (old / "opencode.exe").write_bytes(b"")
+    (new / "opencode.exe").write_bytes(b"")
+    shim = tmp_path / "opencode.cmd"
+    shim.write_text('@ECHO off\r\nCALL :find_dp0\r\n'
+                    '"%dp0%\\node_modules\\@opencode\\cli\\bin\\opencode.exe"   %*\r\n')
+    assert os.path.normpath(ar._opencode_native(str(shim))) == str(new / "opencode.exe")
+
+    # A shim that names no exe: the legacy location still works.
+    shim.write_text('@ECHO off\r\nnode "%dp0%\\x.js" %*\r\n')
+    assert os.path.normpath(ar._opencode_native(str(shim))) == str(old / "opencode.exe")
+    assert ar._opencode_native("/usr/bin/opencode") == "/usr/bin/opencode"
+
+
+CLAUDE_INIT = {"type": "control_response", "response": {"subtype": "success", "response": {"models": [
+    {"value": "default", "displayName": "Default (recommended)", "resolvedModel": "claude-sonnet-5",
+     "description": "Sonnet 5 \u00b7 Efficient for routine tasks"},
+    {"value": "sonnet", "displayName": "Sonnet", "resolvedModel": "claude-sonnet-5",
+     "description": "Sonnet 5 \u00b7 Efficient"},
+    {"value": "claude-fable-5-1[1m]", "displayName": "Fable",
+     "description": "Fable 5.1 \u00b7 Most capable \u00b7 Requires usage credits"},
+    {"value": "haiku", "displayName": "Haiku", "description": "Haiku 4.5 \u00b7 Fastest"},
+    {"displayName": "no value"}, "junk",
+]}}}
+
+
+def test_parse_claude_models_reads_what_the_installed_cli_offers():
+    """Claude Code lists its models in the reply to a stream-json `initialize`."""
+    from windows.agent_runners import parse_claude_models
+
+    lines = '{"type":"system"}\nnot json\n' + json.dumps(CLAUDE_INIT) + "\n"
+    rows = parse_claude_models(lines)
+    assert [r["id"] for r in rows] == ["cli-default", "sonnet", "claude-fable-5-1[1m]", "haiku"]
+    assert rows[0]["tags"] == ["Sonnet 5"], "what the CLI's own default resolves to"
+    assert [r["name"] for r in rows[1:]] == ["Sonnet 5", "Fable 5.1", "Haiku 4.5"]
+    assert parse_claude_models('{"type":"system"}\n') == []
+    assert parse_claude_models("") == []
+
+
+def test_claude_models_are_named_by_the_cli_not_by_its_blurbs():
+    """Some Claude Code builds describe a model without naming it ("For complex
+    tasks"); the picker then listed the blurbs instead of the models."""
+    from windows.agent_runners import parse_claude_models
+
+    init = {"type": "control_response", "response": {"subtype": "success", "response": {"models": [
+        {"value": "default", "displayName": "Default (recommended)", "resolvedModel": "claude-opus-5-5",
+         "description": "Use the default model (currently Opus 5.5) · $4/$20 per Mtok"},
+        {"value": "opus", "displayName": "Opus", "resolvedModel": "claude-opus-5-5",
+         "description": "For complex work and everyday tasks"},
+        {"value": "sonnet", "displayName": "Sonnet", "resolvedModel": "claude-sonnet-5-5",
+         "description": "Sonnet 5.5 · Efficient for routine tasks"},
+        {"value": "haiku", "description": "Fastest for quick answers"},
+    ]}}}
+    rows = parse_claude_models(json.dumps(init))
+    assert [r["name"] for r in rows] == ["CLI default", "Opus", "Sonnet 5.5", "haiku"]
+    assert rows[0]["tags"] == ["Opus"], "the model the default resolves to, not its blurb"
+
+
+def test_claude_code_lists_its_own_models_and_passes_them_on(qapp, fresh_cursor_lineup, monkeypatch):
+    ar = fresh_cursor_lineup
+    assert ar.ClaudeCodeRunner.list_models is not None
+    ar.set_cli_lineup(ar.BACKEND_CLAUDE, ar.parse_claude_models(json.dumps(CLAUDE_INIT)))
+    runner = ar.ClaudeCodeRunner()
+    assert runner._coerce_model("claude-fable-5-1[1m]") == "claude-fable-5-1[1m]"
+    assert runner._coerce_model("cli-default") == ""
+
+
+def test_hermes_home_follows_the_platform(monkeypatch, tmp_path):
+    """Hermes keeps config.yaml under %LOCALAPPDATA%\\hermes on Windows, so
+    Connect wrote a file Hermes never read."""
+    import windows.agent_runners as ar
+
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr(ar, "_resolved_home", lambda: str(tmp_path))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    monkeypatch.setattr(ar.sys, "platform", "win32")
+    assert ar._hermes_config_path() == os.path.join(str(tmp_path / "Local"), "hermes", "config.yaml")
+    monkeypatch.setattr(ar.sys, "platform", "linux")
+    assert ar._hermes_config_path() == os.path.join(str(tmp_path), ".hermes", "config.yaml")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "custom"))
+    assert ar._hermes_config_path() == os.path.join(str(tmp_path / "custom"), "config.yaml")
+
+
+HERMES_MODELS = {"availableModels": [
+    {"modelId": "opencode-go:kimi-k2.6", "name": "kimi-k2.6",
+     "description": "Provider: OpenCode Go \u2022 current"},
+    {"modelId": "opencode-go:glm-5.2", "name": "glm-5.2", "description": "Provider: OpenCode Go"},
+    {"name": "no id"},
+], "currentModelId": "opencode-go:kimi-k2.6"}
+
+
+def test_hermes_lineup_comes_from_its_acp_session(qapp, fresh_cursor_lineup):
+    ar = fresh_cursor_lineup
+    rows = ar.parse_hermes_models(HERMES_MODELS)
+    assert [r["id"] for r in rows] == ["cli-default", "opencode-go:kimi-k2.6", "opencode-go:glm-5.2"]
+    assert rows[0]["tags"] == ["kimi-k2.6"] and rows[1]["provider"] == "OpenCode Go"
+    assert ar.parse_hermes_models({}) == [] and ar.parse_hermes_models(None) == []
+
+    # A turn's session/new answer refreshes the picker for free.
+    runner = _hermes("hi")
+    runner._handle_event({"jsonrpc": "2.0", "id": 1, "result": {}})
+    runner._handle_event({"jsonrpc": "2.0", "id": 2,
+                          "result": {"sessionId": "s1", "models": HERMES_MODELS}})
+    assert [m["id"] for m in ar.models_for_backend(ar.BACKEND_HERMES)][1:] == [
+        "opencode-go:kimi-k2.6", "opencode-go:glm-5.2"]
+    assert _sent(runner)[-1]["method"] == "session/prompt", "no model picked: straight to the prompt"
+
+
+def test_hermes_sets_the_picked_model_before_prompting(qapp, fresh_cursor_lineup):
+    ar = fresh_cursor_lineup
+    ar.set_cli_lineup(ar.BACKEND_HERMES, ar.parse_hermes_models(HERMES_MODELS))
+    runner = _hermes("hi")
+    runner._model_id = runner._coerce_model("opencode-go:glm-5.2")
+    runner._handle_event({"jsonrpc": "2.0", "id": 1, "result": {}})
+    runner._handle_event({"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "s1"}})
+    set_model = _sent(runner)[-1]
+    assert set_model["method"] == "session/set_model"
+    assert set_model["params"] == {"sessionId": "s1", "modelId": "opencode-go:glm-5.2"}
+    runner._handle_event({"jsonrpc": "2.0", "id": set_model["id"], "result": {}})
+    prompt = _sent(runner)[-1]
+    assert prompt["method"] == "session/prompt" and prompt["params"]["sessionId"] == "s1"
+
+
+def test_claude_command_line_survives_a_cmd_launcher(qapp, monkeypatch, tmp_path):
+    """npm installs Claude Code as claude.cmd, and cmd.exe cuts a command line
+    at its first newline: nothing multi-line may travel in argv."""
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_write_claude_mcp_config", lambda server: "/tmp/cfg.json")
+    monkeypatch.setattr(ar, "_agent_mcp_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: [])
+    runner = ar.ClaudeCodeRunner()
+    runner._cli_session_id = "s1"
+    prompt = "[Editor snapshot]\nclips: 0\n\nmake a cut"
+    argv = runner._build_argv(prompt)
+    assert "-p" in argv and prompt not in argv
+    assert not [a for a in argv if "\n" in a]
+
+    class _Raw:
+        data, closed = "", False
+
+        def write(self, text):
+            self.data += text
+
+        def close(self):
+            self.closed = True
+
+    import time
+    runner._proc = types.SimpleNamespace(stdin=_Raw())
+    runner._after_launch(prompt)
+    for _ in range(200):
+        if runner._proc.stdin.closed:
+            break
+        time.sleep(0.01)
+    assert runner._proc.stdin.data == prompt and runner._proc.stdin.closed
+
+
+# ── Effort picker for the CLI harnesses (#147) ────────────────────────────
+
+CLAUDE_EFFORT_INIT = json.dumps({"type": "control_response", "response": {"response": {"models": [
+    {"value": "default", "description": "Sonnet 5 \u00b7 Efficient",
+     "supportsEffort": True, "supportedEffortLevels": ["low", "medium", "high"]},
+    {"value": "opus", "description": "Opus 5 \u00b7 Best", "supportsEffort": True,
+     "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
+    {"value": "haiku", "description": "Haiku 4.5 \u00b7 Fastest"},
+    {"value": "odd", "description": "Odd", "supportsEffort": False,
+     "supportedEffortLevels": ["low"]},
+]}}})
+
+CODEX_EFFORT_CATALOG = json.dumps({"models": [
+    {"slug": "a", "display_name": "A", "visibility": "list", "priority": 1,
+     "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}, {"effort": "ultra"}]},
+    {"slug": "b", "display_name": "B", "visibility": "list", "priority": 2,
+     "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}, "junk", {"x": 1}]},
+]})
+
+
+def test_each_cli_reports_the_effort_levels_of_its_models(tmp_path):
+    import windows.agent_runners as ar
+
+    claude = {r["id"]: r.get("efforts") for r in ar.parse_claude_models(CLAUDE_EFFORT_INIT)}
+    assert claude == {"cli-default": ["low", "medium", "high"],   # what the default resolves to
+                      "opus": ["low", "medium", "high", "xhigh", "max"],
+                      "haiku": None, "odd": None}
+
+    codex = {r["id"]: r.get("efforts") for r in ar.parse_codex_models(CODEX_EFFORT_CATALOG)}
+    assert codex["a"] == ["low", "high", "ultra"] and codex["b"] == ["low", "high"]
+    # "CLI default" could be either model: only what every one of them takes.
+    assert codex["cli-default"] == ["low", "high"]
+
+    cache = tmp_path / "models.json"
+    cache.write_text(json.dumps({
+        "openai": {"models": {"gpt-5.5": {"reasoning_options": [
+            {"type": "toggle"}, {"type": "effort", "values": ["none", "low", "high"]}]}}},
+        "opencode": {"models": {"big-pickle": {"reasoning_options": []}, "old": {}}},
+    }))
+    efforts = ar._opencode_efforts(str(cache))
+    assert efforts == {"openai/gpt-5.5": ["none", "low", "high"]}
+    rows = {r["id"]: r.get("efforts") for r in ar.parse_opencode_models(
+        "openai/gpt-5.5\nopencode/big-pickle\n", efforts)}
+    assert rows == {"cli-default": None, "openai/gpt-5.5": ["none", "low", "high"],
+                    "opencode/big-pickle": None}
+    assert ar._opencode_efforts(str(tmp_path / "missing.json")) == {}
+    cache.write_text("not json")
+    assert ar._opencode_efforts(str(cache)) == {}
+
+
+def test_efforts_reach_the_picker(fresh_cursor_lineup):
+    ar = fresh_cursor_lineup
+    ar.set_cli_lineup(ar.BACKEND_CODEX, ar.parse_codex_models(CODEX_EFFORT_CATALOG))
+    rows = {m["id"]: m for m in ar.models_for_backend(ar.BACKEND_CODEX)}
+    assert rows["a"]["efforts"] == ["low", "high", "ultra"]
+
+
+def test_only_an_effort_the_chosen_model_offers_is_passed_on(qapp, fresh_cursor_lineup):
+    ar = fresh_cursor_lineup
+    ar.set_cli_lineup(ar.BACKEND_CODEX, ar.parse_codex_models(CODEX_EFFORT_CATALOG))
+    runner = ar.CodexRunner()
+    runner._model_id = "b"
+    assert runner._coerce_effort("high") == "high"
+    assert runner._coerce_effort("ultra") == "", "model a's level, not b's"
+    assert runner._coerce_effort("") == "" and runner._coerce_effort(None) == ""
+    runner._model_id = ""                      # "CLI default"
+    assert runner._coerce_effort("low") == "low" and runner._coerce_effort("ultra") == ""
+    # A harness whose models list no levels never passes one.
+    assert ar.HermesRunner()._coerce_effort("high") == ""
+
+
+def test_each_cli_gets_the_effort_in_its_own_dialect(qapp, monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: [])
+    monkeypatch.setattr(ar, "_write_claude_mcp_config", lambda server: "/tmp/cfg.json")
+    monkeypatch.setattr(ar, "_agent_mcp_dir", lambda: str(tmp_path))
+
+    claude = ar.ClaudeCodeRunner()
+    claude._cli_session_id = "s1"
+    assert "--effort" not in claude._build_argv("hi")
+    claude._effort = "xhigh"
+    argv = claude._build_argv("hi")
+    assert argv[argv.index("--effort") + 1] == "xhigh"
+
+    codex = ar.CodexRunner()
+    codex._server = None
+    assert not [a for a in codex._build_argv("hi") if "reasoning_effort" in a]
+    codex._effort = "high"
+    argv = codex._build_argv("hi")
+    assert argv[argv.index('model_reasoning_effort="high"') - 1] == "-c"
+
+    opencode = ar.OpenCodeRunner()
+    opencode._model_id, opencode._effort = "openai/gpt-5.5", "high"
+    argv = opencode._build_argv("hi")
+    assert argv[argv.index("--model") + 1] == "openai/gpt-5.5#high"
+    opencode._model_id = ""                    # no model picked: nothing to hang it on
+    assert "--model" not in opencode._build_argv("hi")
+
+
+def test_a_turn_uses_the_effort_the_chat_left_for_it_once(qapp, fresh_cursor_lineup, monkeypatch):
+    ar = fresh_cursor_lineup
+    ar.set_cli_lineup(ar.BACKEND_CODEX, ar.parse_codex_models(CODEX_EFFORT_CATALOG))
+    runner = ar.CodexRunner()
+    runner._pending_effort = "high"
+    monkeypatch.setattr(ar, "_which_cli", lambda name: None)   # stop before launching
+    import classes.agent_mcp_server as mcp
+    monkeypatch.setattr(mcp, "get_mcp_server", lambda: types.SimpleNamespace(
+        start=lambda: types.SimpleNamespace(token="t", port=1, url=lambda: "u")))
+    runner.run_request("hi", "b")
+    assert runner._effort == "high" and runner._pending_effort == ""
+    runner.run_request("hi", "b")
+    assert runner._effort == "", "the next turn does not inherit it"
+
+
+# ── Ultracode and permission modes, as each CLI offers them (#147) ─────────
+
+def _claude_probe_text(applied):
+    init = {"type": "control_response", "response": {"request_id": "zenvi-models", "response": {"models": [
+        {"value": "default", "displayName": "Default", "resolvedModel": "o", "supportsEffort": True,
+         "supportedEffortLevels": ["low", "high"], "supportsAutoMode": True},
+        {"value": "opus", "displayName": "Opus", "resolvedModel": "o", "supportsEffort": True,
+         "supportedEffortLevels": ["low", "high"], "supportsAutoMode": True},
+        {"value": "haiku", "displayName": "Haiku"},
+    ]}}}
+    settings = {"type": "control_response", "response": {"request_id": "zenvi-settings",
+                                                         "response": {"applied": applied}}}
+    return json.dumps(init) + "\n" + json.dumps(settings) + "\n"
+
+
+def test_claude_offers_ultracode_and_modes_only_as_the_cli_reports_them():
+    import windows.agent_runners as ar
+
+    rows = {r["id"]: r for r in ar.parse_claude_models(
+        _claude_probe_text({"ultracode": False, "ultracodeAvailable": True}))}
+    assert rows["opus"]["efforts"] == ["low", "high", "ultracode"]
+    assert rows["cli-default"]["efforts"] == ["low", "high", "ultracode"]
+    assert rows["opus"]["modes"] == ["bypass", "auto", "plan"]
+    assert rows["cli-default"]["modes"] == ["bypass", "auto", "plan"]
+    # No effort levels: no ultracode. No auto mode: it is not offered.
+    assert "efforts" not in rows["haiku"] and rows["haiku"]["modes"] == ["bypass", "plan"]
+
+    # An older CLI answers get_settings without ultracodeAvailable (or not at all).
+    for text in (_claude_probe_text({"ultracode": False}), _claude_probe_text(None),
+                 _claude_probe_text({}).splitlines()[0]):
+        assert ar.parse_claude_models(text)[1]["efforts"] == ["low", "high"]
+
+
+def test_modes_reach_the_picker_and_only_an_offered_one_is_passed_on(qapp, fresh_cursor_lineup):
+    ar = fresh_cursor_lineup
+    ar.set_cli_lineup(ar.BACKEND_CLAUDE, ar.parse_claude_models(_claude_probe_text({})))
+    rows = {m["id"]: m for m in ar.models_for_backend(ar.BACKEND_CLAUDE)}
+    assert rows["haiku"]["modes"] == ["bypass", "plan"]
+    runner = ar.ClaudeCodeRunner()
+    runner._model_id = "haiku"
+    assert runner._coerce_mode("plan") == "plan"
+    assert runner._coerce_mode("auto") == "", "opus takes auto, haiku does not"
+    assert runner._coerce_mode("nonsense") == "" and runner._coerce_mode(None) == ""
+    # The other harnesses list theirs too; Hermes and Cursor have none.
+    assert ar.parse_opencode_models("a/b\n")[1]["modes"] == ["bypass", "plan"]
+    assert ar.parse_codex_models(CODEX_EFFORT_CATALOG)[1]["modes"] == ["bypass", "workspace", "readonly"]
+    assert ar.HermesRunner()._coerce_mode("plan") == ""
+
+
+def test_each_cli_gets_ultracode_and_the_mode_in_its_own_dialect(qapp, monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: [])
+    monkeypatch.setattr(ar, "_write_claude_mcp_config", lambda server: "/tmp/cfg.json")
+    monkeypatch.setattr(ar, "_agent_mcp_dir", lambda: str(tmp_path))
+
+    claude = ar.ClaudeCodeRunner()
+    claude._cli_session_id = "s1"
+    argv = claude._build_argv("hi")
+    assert "--dangerously-skip-permissions" in argv and "--permission-mode" not in argv
+    assert "--settings" not in argv
+    claude._mode, claude._effort = "plan", "ultracode"
+    argv = claude._build_argv("hi")
+    assert argv[argv.index("--permission-mode") + 1] == "plan"
+    assert "--dangerously-skip-permissions" not in argv
+    # Ultracode is a setting, not an --effort level.
+    assert "--effort" not in argv
+    assert json.load(open(argv[argv.index("--settings") + 1])) == {"ultracode": True}
+
+    codex = ar.CodexRunner()
+    codex._server = None
+    assert "--dangerously-bypass-approvals-and-sandbox" in codex._build_argv("hi")
+    # As -c settings: `codex exec resume` takes no --sandbox.
+    codex._mode = "readonly"
+    argv = codex._build_argv("hi")
+    assert argv[argv.index('sandbox_mode="read-only"') - 1] == "-c"
+    assert "--dangerously-bypass-approvals-and-sandbox" not in argv
+    codex._mode = "workspace"
+    assert 'sandbox_mode="workspace-write"' in codex._build_argv("hi")
+
+    opencode = ar.OpenCodeRunner()
+    assert "--agent" not in opencode._build_argv("hi")
+    opencode._mode = "plan"
+    argv = opencode._build_argv("hi")
+    assert argv[argv.index("--agent") + 1] == "plan" and argv[-1] == "hi"
+
+
+def test_a_turn_uses_the_mode_the_chat_left_for_it_once(qapp, fresh_cursor_lineup, monkeypatch):
+    ar = fresh_cursor_lineup
+    ar.set_cli_lineup(ar.BACKEND_CODEX, ar.parse_codex_models(CODEX_EFFORT_CATALOG))
+    runner = ar.CodexRunner()
+    runner._pending_mode = "readonly"
+    monkeypatch.setattr(ar, "_which_cli", lambda name: None)   # stop before launching
+    import classes.agent_mcp_server as mcp
+    monkeypatch.setattr(mcp, "get_mcp_server", lambda: types.SimpleNamespace(
+        start=lambda: types.SimpleNamespace(token="t", port=1, url=lambda: "u")))
+    runner.run_request("hi", "b")
+    assert runner._mode == "readonly" and runner._pending_mode == ""
+    runner.run_request("hi", "b")
+    assert runner._mode == "", "the next turn does not inherit it"
+
+
+def test_opencode_v2_turns_run_on_a_private_server(qapp, monkeypatch):
+    """OpenCode 2 sends `run` to a background service that keeps the config
+    and environment it started with, so the turn's own OPENCODE_CONFIG (the
+    editor's MCP server and token) never reached it: the agent had no editor
+    tools. --standalone gives the turn its own server; OpenCode 1 has no such
+    flag and no such service."""
+    import windows.agent_runners as ar
+
+    asked = []
+
+    def run(argv, **kw):
+        asked.append(argv)
+        return types.SimpleNamespace(returncode=0, stderr="", stdout=run.help)
+
+    monkeypatch.setattr(ar.subprocess, "run", run)
+    monkeypatch.setattr(ar, "_opencode_standalone", {})
+    runner = ar.OpenCodeRunner()
+    runner._cli_path = "/bin/opencode"
+
+    run.help = "  --standalone   Run with a private server instead of the background service\n"
+    argv = runner._build_argv("hi")
+    assert argv[1:3] == ["run", "--standalone"] and argv[-1] == "hi"
+    runner._build_argv("again")
+    assert len(asked) == 1 and asked[0][1:] == ["run", "--help"], "asked once per CLI"
+
+    monkeypatch.setattr(ar, "_opencode_standalone", {})
+    run.help = "  --format   json\n"
+    assert "--standalone" not in runner._build_argv("hi")
+
+
+def test_claude_code_is_started_with_workflows_on_so_ultracode_is_offered(monkeypatch):
+    """Claude Code reports Ultracode as unavailable while its dynamic workflows
+    are off for the account; this is its own switch for them."""
+    import windows.agent_runners as ar
+
+    monkeypatch.delenv("CLAUDE_CODE_WORKFLOWS", raising=False)
+    assert ar._cli_child_env()["CLAUDE_CODE_WORKFLOWS"] == "1"
+    monkeypatch.setenv("CLAUDE_CODE_WORKFLOWS", "0")
+    assert ar._cli_child_env()["CLAUDE_CODE_WORKFLOWS"] == "0", "the user's own choice is kept"
+
+
+def test_opencode_effort_levels_are_the_variants_opencode_itself_lists(monkeypatch):
+    """OpenCode 2 builds each model's variants itself (`opencode api
+    model.list`); the models.dev catalogue it caches lists fewer, so models
+    with an effort choice in OpenCode showed none here."""
+    import windows.agent_runners as ar
+
+    listing = json.dumps({"data": [
+        {"providerID": "opencode-go", "modelID": "deepseek-v4.1-flash",
+         "variants": [{"id": "low"}, {"id": "high"}, {"id": "max"}, {"id": "low"}, "junk", {}]},
+        {"providerID": "openrouter", "modelID": "xiaomi/mimo-v2.6-pro",
+         "variants": [{"id": "none"}, {"id": "thinking"}]},
+        {"providerID": "opencode", "modelID": "big-pickle", "variants": []},
+        {"modelID": "no-provider"}, "junk",
+    ]})
+    assert ar.parse_opencode_variants(listing) == {
+        "opencode-go/deepseek-v4.1-flash": ["low", "high", "max"],
+        "openrouter/xiaomi/mimo-v2.6-pro": ["none", "thinking"],
+        "opencode/big-pickle": [],
+    }
+    # Not an answer (OpenCode 1 has no `api` command): the catalogue is used.
+    for text in ("", "<!doctype html>", json.dumps({"data": "x"}), json.dumps([1]),
+                 json.dumps({"data": []}), json.dumps({"data": ["junk"]})):
+        assert ar.parse_opencode_variants(text) is None
+
+    outputs = {"models": "opencode-go/deepseek-v4.1-flash\nopencode/big-pickle\n", "api": listing}
+    monkeypatch.setattr(ar, "_models_command_output", lambda argv, attempts=2: outputs[argv[1]])
+    monkeypatch.setattr(ar, "_opencode_efforts", lambda path: {"opencode/big-pickle": ["high"]})
+    rows = {r["id"]: r.get("efforts") for r in ar.probe_opencode_models("opencode")}
+    assert rows["opencode-go/deepseek-v4.1-flash"] == ["low", "high", "max"]
+    assert rows["opencode/big-pickle"] is None, "OpenCode's own answer wins over the catalogue"
+    outputs["api"] = ""
+    rows = {r["id"]: r.get("efforts") for r in ar.probe_opencode_models("opencode")}
+    assert rows["opencode/big-pickle"] == ["high"] and rows["opencode-go/deepseek-v4.1-flash"] is None
+
+
+def test_a_plan_turn_never_runs_as_an_ordinary_one(qapp, fresh_cursor_lineup, monkeypatch):
+    """Plan mode promises nothing gets changed. A model that has no plan mode
+    must refuse the turn, not quietly run it with full permissions."""
+    ar = fresh_cursor_lineup
+    ar.set_cli_lineup(ar.BACKEND_CODEX, ar.parse_codex_models(CODEX_EFFORT_CATALOG))
+    runner = ar.CodexRunner()
+    errors = []
+    runner.error_occurred.connect(errors.append)
+    runner._pending_mode = ar.MODE_PLAN
+    launched = []
+    monkeypatch.setattr(ar, "_which_cli", lambda name: launched.append(name))
+    import classes.agent_mcp_server as mcp
+    monkeypatch.setattr(mcp, "get_mcp_server", lambda: types.SimpleNamespace(
+        start=lambda: types.SimpleNamespace(token="t", port=1, url=lambda: "u")))
+    runner.run_request("hi", "b")
+    assert not launched and len(errors) == 1 and "plan" in errors[0].lower()
+
+
+def test_cursor_cli_plans_in_its_own_plan_mode(qapp, monkeypatch, tmp_path):
+    """Cursor CLI has `--mode plan`, so it gets the Plan/Agent toggle too."""
+    import windows.agent_runners as ar
+
+    rows = ar.parse_cursor_models(open(os.path.join(_FIX, "cursor_models.txt"),
+                                       encoding="utf-8").read())
+    assert rows[0]["id"] == "cli-default" and all(
+        r["modes"] == ["bypass", "plan"] for r in rows)
+
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: [])
+    runner = ar.CursorCliRunner()
+    runner._mcp_approved = True
+    runner._cli_cwd = str(tmp_path)
+    assert "--mode" not in runner._build_argv("hi")
+    runner._mode = ar.MODE_PLAN
+    argv = runner._build_argv("hi")
+    assert argv[argv.index("--mode") + 1] == "plan"
+
+
+def test_cursors_plan_is_shown_as_its_reply(qapp):
+    """In plan mode Cursor hands the plan to a createPlan tool call and replies
+    with a line about it, so the chat showed a tool block and no plan."""
+    import windows.agent_runners as ar
+
+    runner = ar.CursorCliRunner()
+    tools, replies = [], []
+    runner.tool_started.connect(lambda *a: tools.append(a))
+    runner.tool_completed.connect(lambda *a: tools.append(a))
+    runner.response_ready.connect(replies.append)
+    call = {"createPlanToolCall": {"args": {"plan": "# Trim the intro\n\n1. Cut 0-10s."}}}
+    for ev in (
+        {"type": "system", "subtype": "init", "session_id": "c1"},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "Drafting a plan."}]}},
+        {"type": "tool_call", "subtype": "started", "call_id": "t1", "tool_call": call},
+        {"type": "tool_call", "subtype": "completed", "call_id": "t1", "tool_call": call},
+        {"type": "result", "subtype": "success", "result": "Drafting a plan."},
+    ):
+        runner._handle_event(ev)
+    assert tools == [], "the plan is not a tool block"
+    assert replies == ["Drafting a plan.\n\n# Trim the intro\n\n1. Cut 0-10s."]
+
+    # A createPlan call with no plan text in it is still shown, as a tool.
+    runner._handle_event({"type": "tool_call", "subtype": "started", "call_id": "t2",
+                          "tool_call": {"createPlanToolCall": {"args": {}}}})
+    assert len(tools) == 1
+
+
+def test_cursor_cli_has_a_sign_in_too(qapp, monkeypatch):
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_which_cli", lambda name: "/bin/" + name)
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    seen = []
+
+    def run(argv, **kw):
+        seen.append(argv)
+        return types.SimpleNamespace(returncode=0, stderr="", stdout=run.out)
+
+    monkeypatch.setattr(ar.subprocess, "run", run)
+    run.out = 'noise\n{"status": "authenticated", "isAuthenticated": true}\n'
+    assert ar.cursor_is_logged_in() is True
+    assert seen[-1] == ["/bin/cursor-agent", "status", "--format", "json"]
+    run.out = '{"status": "unauthenticated", "isAuthenticated": false}'
+    assert ar.cursor_is_logged_in() is False
+    # No answer is not "signed out": an old CLI, or an API key doing the signing in.
+    run.out = "Logged in as someone"
+    assert ar.cursor_is_logged_in() is None
+    run.out = '{"isAuthenticated": false}'
+    monkeypatch.setenv("CURSOR_API_KEY", "k")
+    assert ar.cursor_is_logged_in() is None
+    monkeypatch.delenv("CURSOR_API_KEY")
+
+    assert ar.CLI_LOGINS[ar.BACKEND_CURSOR][:2] == ("cursor-agent", ("login",))
+    assert ar.cli_is_logged_in(ar.BACKEND_CURSOR) is False
+    assert ar.detect_cli("cursor-agent")["logged_in"] is False
+    assert ar.is_cli_auth_error("Authentication required. Please run 'agent login' first.")
+    # An expired Cursor login opens the Sign-in card, like Claude Code's and Codex's.
+    runner, events = ar.CursorCliRunner(), []
+    runner.auth_required.connect(lambda t: events.append("auth"))
+    runner.error_occurred.connect(lambda t: events.append("error"))
+    runner._emit_error("Authentication required. Please run 'agent login' first.")
+    assert events == ["auth"]
 
 
 def test_codex_sends_the_import_guidance_once_per_session(qapp):
