@@ -2350,8 +2350,6 @@ class CodexRunner(BaseAgentRunner):
     # Mode -> the sandbox_mode it sets for model-run shell commands.
     _SANDBOX = {MODE_WORKSPACE: "workspace-write", MODE_READONLY: "read-only"}
     MODES = (MODE_BYPASS, MODE_WORKSPACE, MODE_READONLY)
-    # The prompt goes in through stdin ("-"), not argv.
-    STDIN = subprocess.PIPE
 
     _TOOL_ITEM_TYPES = {
         "command_execution", "mcp_tool_call", "tool_call", "function_call",
