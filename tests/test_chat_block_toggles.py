@@ -66,7 +66,7 @@ window.addToolBlock({ call_id: 't1', title: 'List files', args_detail: '{}' });
 var oldTool = toolBlocks.t1;
 setToolBlockExpanded(oldTool, false);
 
-// End of turn 1, as setProcessing(false) leaves it: collapsed, state dropped.
+// Turn 1 ends and the next one starts: collapsed, tool registry emptied, globals released.
 oldThinking.classList.remove('expanded');
 oldBody.style.display = 'none';
 thinkingBlockEl = thinkingBlockBody = thinkingBlockHeader = activityContainer = null;
@@ -87,12 +87,12 @@ out.newStillUntouched = open(newThinking);
 oldTool.header.click();
 out.oldToolOpened = open(oldTool.el) && oldTool.body.style.display === 'block';
 oldTool.header.click();
-out.oldToolClosed = !open(oldTool.el);
+out.oldToolClosed = !open(oldTool.el) && oldTool.body.style.display === 'none';
 
 // No turn running at all: the last turn's block still toggles.
 thinkingBlockEl = thinkingBlockBody = thinkingBlockHeader = null;
 oldHeader.click();
-out.opensWhenIdle = open(oldThinking);
+out.opensWhenIdle = open(oldThinking) && oldBody.style.display === 'block';
 console.log(JSON.stringify(out));
 """
 
