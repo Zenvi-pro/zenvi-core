@@ -210,9 +210,9 @@ def _subject_coverage(project: str, media: str, at: float) -> Optional[float]:
         with _probe_lock:
             _run(project, "ffmpeg", ["-y", "-v", "error", "-ss", str(at), "-i", media, "-frames:v", "1",
                                      "probe-frame.png"], 300, inputs=[media])
-            _run(project, "hyperframes", ["remove-background", "probe-frame.png", "-o", "renders/probe-cut.png"],
+            _run(project, "hyperframes", ["remove-background", "probe-frame.png", "-o", "probe-cut.png"],
                  600)
-            out = _run(project, "ffmpeg", ["-v", "info", "-i", "renders/probe-cut.png", "-vf",
+            out = _run(project, "ffmpeg", ["-v", "info", "-i", "probe-cut.png", "-vf",
                                            "alphaextract,signalstats,metadata=print:key=lavfi.signalstats.YAVG",
                                            "-f", "null", "-"], 300)
         return float(_ALPHA_RE.findall(out)[-1]) / 255.0
