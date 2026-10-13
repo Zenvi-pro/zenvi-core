@@ -49,6 +49,7 @@ class CaptionsDock(QWidget):
         self._clip_id = ""
         self._busy = False
         self._subjects = {}                    # clip id -> has a speaker in shot
+        self._words_for = ""                   # the clip whose words were last read
         self._stage, self._seconds = "", 0     # what the running job is doing, and for how long
         self._clock = QTimer(self)
         self._clock.setInterval(1000)
@@ -216,6 +217,7 @@ class CaptionsDock(QWidget):
     def _on_words_loaded(self, clip_id, text, message):
         self._busy = False
         self._clock.stop()
+        self._words_for = clip_id
         if clip_id == self._clip_id:
             if text:
                 self.wordsEdit.setPlainText(text)
@@ -253,7 +255,6 @@ class CaptionsDock(QWidget):
         self._busy = False
         self._clock.stop()
         self.statusLabel.setText(message)
-        if self._clip_id and not self.wordsEdit.toPlainText():      # the selection moved on during the job
+        if self._clip_id and self._words_for != self._clip_id:      # the selection moved on during the job
             self.load_words()
-            self.statusLabel.setText(message)
         self._refresh_enabled()

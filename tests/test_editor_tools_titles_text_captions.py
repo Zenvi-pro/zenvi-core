@@ -352,6 +352,10 @@ def test_a_failed_placement_puts_the_old_captions_back(editor, studio, monkeypat
     assert out.startswith("Error") and "locked" in out
     listing = _receipt(editor.call("list_captions_tool"))["captions"]
     assert [(c["style"], c["role"]) for c in listing] == [("highlight", "captions")]      # none of the new pair
+    from classes.query import File
+    styles = [f.data["ai_metadata"]["captions"]["style"] for f in File.filter()
+              if "captions" in (f.data.get("ai_metadata") or {})]
+    assert styles == ["highlight"]                                                        # nor their files
 
 
 def test_a_failed_subject_check_does_not_rule_the_speaker_out(editor, studio, monkeypatch):

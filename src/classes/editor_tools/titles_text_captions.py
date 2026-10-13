@@ -111,7 +111,7 @@ def _whisper_words(clip) -> List[dict]:
     try:
         stat = os.stat(media)                           # replaced or re-exported media is read again
         kept = os.path.join(hf.project_dir(project), "words-%d-%d-%d-%d.json" % (
-            start * 1000, duration * 1000, stat.st_size, stat.st_mtime))
+            start * 1000, duration * 1000, stat.st_size, stat.st_mtime_ns))
         with _speech_lock:
             fresh = os.path.join(hf.project_dir(project), "transcript.json")
             if not os.path.isfile(kept):
@@ -368,29 +368,39 @@ def build_captions(clip, style: str = cap.DEFAULT_STYLE, behind_subject: bool = 
     subject = behind_subject and _import_overlay(os.path.join(root, subject_rel.replace("/", os.sep)),
                                                  "Subject: " + title, dict(info, role="subject"))
     previous = on_main(lambda: [copy.deepcopy(c.data) for c, _info in _caption_clips(clip_id)])
+    tracks = on_main(lambda: {int(t.get("number") or 0) for t in th()._get_app().project.get("layers") or []})
     removed = _remove(clip_id)                           # one caption track per clip: this replaces the last
     placed = []
     try:
         receipt = _place_overlays(clip, caption_file, subject, start, duration, project, out_rel, placed)
     except Exception:
-        on_main(_put_back, placed, previous)             # a failed placement leaves the old captions as they were
+        # A failed placement leaves the project as it was: old captions, no new files, no spare track.
+        on_main(_put_back, placed, previous, [caption_file, subject], tracks)
         raise
     receipt.update({"clip_id": clip_id, "style": style, "words": len(words), "replaced": removed,
                     "behind_subject": bool(behind_subject)})
     return receipt
 
 
-def _put_back(placed: list, previous: list):
-    from classes.query import Clip
+def _put_back(placed: list, previous: list, files: list, tracks: set):
+    from classes.query import Clip, Track
 
     for cid in placed:
         new = Clip.get(id=cid)
         if new:
             new.delete()
+    for f in files:
+        if f:
+            f.delete()
     for data in previous:
         old = Clip()
         old.data = {k: v for k, v in data.items() if k != "id"}
         old.save()
+    used = {int(c.data.get("layer") or 0) for c in Clip.filter()}
+    for track in Track.filter():                         # a lane the failed placement added and left empty
+        number = int(track.data.get("number") or 0)
+        if number not in tracks and number not in used:
+            track.delete()
 
 
 def _place_overlays(clip, caption_file, subject, start, duration, project, out_rel, placed) -> dict:
