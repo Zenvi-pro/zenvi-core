@@ -235,6 +235,23 @@ def find_program(name: str) -> Optional[str]:
     return found
 
 
+def whisper_dir() -> Optional[str]:
+    """Folder of a whisper.cpp ``whisper-cli`` (what ``hyperframes transcribe`` drives), or None.
+
+    On PATH, or in a sibling MSYS2 environment of this Python (the editor runs from
+    mingw64, where the package may only be installed for ucrt64).
+    """
+    found = shutil.which("whisper-cli")
+    if found:
+        return os.path.dirname(found)
+    if sys.platform == "win32":
+        root = os.path.dirname(sys.base_prefix)
+        for prefix in ("mingw64", "ucrt64", "clang64"):
+            if os.path.isfile(os.path.join(root, prefix, "bin", "whisper-cli.exe")):
+                return os.path.join(root, prefix, "bin")
+    return None
+
+
 def _cli_version() -> Optional[str]:
     if not os.path.isfile(cli_script()):
         return None
@@ -366,7 +383,8 @@ def _environment(node: Optional[str], isolated: bool = True) -> dict:
     for exe in (node, find_program("ffmpeg")):
         if exe:
             extra.append(os.path.dirname(exe))
-    env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")])
+    # whisper.cpp goes last: its folder may hold another toolchain's DLLs.
+    env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")] + [d for d in (whisper_dir(),) if d])
     # ``init`` would otherwise install skills into the user's own Claude Code / Cursor config.
     env["HYPERFRAMES_SKIP_SKILLS"] = "1"
     env["DO_NOT_TRACK"] = "1"

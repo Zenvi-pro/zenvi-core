@@ -32,12 +32,14 @@ def studio(editor, tmp_path, monkeypatch):
     media.write_bytes(b"0" * 64)
     video = editor.add_file("video", path=str(media))
     clip = editor.add_clip(video, position=10.0, layer=L1, start=2.0, end=7.0)       # 5 s on the timeline
-    state = SimpleNamespace(commands=[], placed=[], place_kwargs=[], clip=clip, words=[
+    state = SimpleNamespace(commands=[], placed=[], place_kwargs=[], clip=clip, tmp=tmp_path, words=[
         {"text": "Hello", "timelineStartSec": 10.2, "timelineEndSec": 10.6},
         {"text": "there", "timelineStartSec": 10.6, "timelineEndSec": 11.1},
         {"text": "world", "timelineStartSec": 12.0, "timelineEndSec": 12.5},
     ])
     monkeypatch.setattr(captions, "transcript_words", lambda clip: state.words)
+    monkeypatch.setattr(captions, "_subject_coverage", lambda project, media, at: 0.4)     # a speaker is in shot
+    monkeypatch.setattr(captions, "_visible_band", lambda project, rel: None)
 
     def fake_run(project, program, args, **kw):
         state.commands.append((program, list(args)))
@@ -208,3 +210,70 @@ def test_the_dock_shows_the_receipt_summary_not_the_raw_receipt():
     assert status_line("Error: no clip") == "Error: no clip"
     source = open(os.path.join(os.path.dirname(__file__), "..", "src", "windows", "views", "captions_dock.py")).read()
     assert "PyQt5" not in source                    # qt_api picks the binding
+
+
+def test_overlays_are_placed_whole_with_no_visual_search(editor, studio):
+    # The placement "watch" trimmed a 20 s caption render to 2-18 s: two seconds late and four short.
+    editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True)
+    assert [kw.get("full_file") for kw in studio.place_kwargs] == ["true", "true"]
+
+
+def test_the_cutout_sits_exactly_over_the_speaker_and_the_captions_rise_behind_them(editor, studio, monkeypatch):
+    from classes.query import Clip
+    source = Clip.get(id=studio.clip)
+    source.data.update({"scale": 0, "gravity": 4, "location_x": {"Points": [{"co": {"X": 1, "Y": 0.1}}]}})
+    source.save()
+    monkeypatch.setattr(captions, "_visible_band", lambda project, rel: (0.75, 0.87))      # a pill near the bottom
+
+    r = _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True))
+    subject, overlay = editor.clip(r["subject_clip_id"]), editor.clip(r["timeline_clip_id"])
+    assert subject["scale"] == 0 and subject["location_x"]["Points"][0]["co"]["Y"] == 0.1
+    lift = overlay["location_y"]["Points"][0]["co"]["Y"]
+    assert lift == pytest.approx(captions.BEHIND_SUBJECT_CENTRE - 0.81)                    # up, to head height
+
+    plain = _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip))
+    assert editor.clip(plain["timeline_clip_id"])["location_y"]["Points"][0]["co"]["Y"] == 0.0
+
+
+def test_with_no_speaker_in_shot_the_captions_go_on_top_as_usual(editor, studio, monkeypatch):
+    monkeypatch.setattr(captions, "_subject_coverage", lambda project, media, at: 0.0)
+    from classes.query import Clip
+    assert captions.has_subject(Clip.get(id=studio.clip)) is False
+    r = _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True))
+    assert r["behind_subject"] is False and "subject_clip_id" not in r and len(studio.placed) == 1
+    assert not any(a[0] == "remove-background" for _p, a in studio.commands)
+
+
+def test_whisper_cpp_times_the_words_when_zenvis_recogniser_is_missing(editor, studio, monkeypatch):
+    from classes.agent_tools import transcript
+    from classes.agent_tools.receipt import ToolReceipt
+    from classes.query import Clip
+
+    monkeypatch.undo()
+    monkeypatch.setattr(hf, "home", lambda: str(studio.tmp / "hyperframes"))
+    monkeypatch.setattr(transcript, "get_transcript", lambda **kw: ToolReceipt.error(
+        "get_transcript_tool", "Error: faster-whisper is not installed").to_json())
+    monkeypatch.setattr(tool_handlers, "_clip_transcript_cues", lambda clip_id: [
+        {"text": "evenly spread guess", "source_start": 2.0, "source_end": 7.0}])
+    monkeypatch.setattr(hf, "whisper_dir", lambda: "/opt/whisper")
+    ran = []
+
+    def fake_run(project, program, args, **kw):
+        ran.append((program, list(args)))
+        os.makedirs(hf.project_dir(project), exist_ok=True)
+        if args[0] == "transcribe":
+            open(os.path.join(hf.project_dir(project), "transcript.json"), "w").write(json.dumps(
+                [{"text": "Hello", "start": 0.31, "end": 0.52}, {"text": "there", "start": 0.6, "end": 1.0}]))
+        return 0, "ok"
+
+    monkeypatch.setattr(hf, "run", fake_run)
+    words = captions.clip_caption_words(Clip.get(id=studio.clip))
+    assert words == [{"text": "Hello", "start": 0.31, "end": 0.52}, {"text": "there", "start": 0.6, "end": 1.0}]
+    cut = [a for p, a in ran if p == "ffmpeg"][0]
+    assert cut[cut.index("-ss") + 1] == "2.0" and cut[cut.index("-t") + 1] == "5.0"       # the clip's own audio
+    captions.clip_caption_words(Clip.get(id=studio.clip))
+    assert len([a for _p, a in ran if a[0] == "transcribe"]) == 1                          # kept for next time
+
+    monkeypatch.setattr(hf, "whisper_dir", lambda: None)                                   # none installed: fall back
+    other = editor.add_clip(Clip.get(id=studio.clip).data["file_id"], position=30.0, layer=L1, start=2.0, end=7.0)
+    assert [w["text"] for w in captions.clip_caption_words(Clip.get(id=other))] == ["evenly", "spread", "guess"]

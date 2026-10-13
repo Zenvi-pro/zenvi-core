@@ -39,12 +39,14 @@ class CaptionsDock(QWidget):
 
     finished = pyqtSignal(str)                 # status line of a finished tool call
     wordsLoaded = pyqtSignal(str, str, str)    # clip id, words, status line
+    subjectChecked = pyqtSignal(str, bool)     # clip id, whether there is a speaker to put captions behind
 
     def __init__(self, parent=None):
         super().__init__(parent)
         _ = get_app()._tr
         self._clip_id = ""
         self._busy = False
+        self._subjects = {}                    # clip id -> has a speaker in shot
 
         self.clipLabel = QLabel(_("Select a clip with speech on the timeline."))
         self.clipLabel.setWordWrap(True)
@@ -80,6 +82,7 @@ class CaptionsDock(QWidget):
         self.removeButton.clicked.connect(self.remove)
         self.finished.connect(self._on_finished)
         self.wordsLoaded.connect(self._on_words_loaded)
+        self.subjectChecked.connect(self._on_subject_checked)
         get_app().window.SelectionChanged.connect(self.selection_changed)
         self._show_style_hint()
         self.selection_changed()
@@ -98,7 +101,36 @@ class CaptionsDock(QWidget):
             _ = get_app()._tr
             self.clipLabel.setText(_("Captions for: %s") % (clip.data.get("title") or clip_id) if clip
                                    else _("Select a clip with speech on the timeline."))
+            if clip_id in self._subjects:
+                self._on_subject_checked(clip_id, self._subjects[clip_id])
+            elif clip:
+                self._on_subject_checked(clip_id, True)          # offered until the check says otherwise
+                threading.Thread(target=self._check_subject, args=(clip_id,), name="zenvi-captions-dock",
+                                 daemon=True).start()
         self._refresh_enabled()
+
+    def _check_subject(self, clip_id):
+        from classes.editor_tools import titles_text_captions as tool
+        from classes.query import Clip
+        try:
+            clip = Clip.get(id=clip_id)
+            found = bool(clip) and tool.has_subject(clip)
+        except Exception:
+            log.warning("Captions dock: could not check the clip for a speaker", exc_info=True)
+            return
+        self.subjectChecked.emit(clip_id, found)
+
+    def _on_subject_checked(self, clip_id, found):
+        self._subjects[clip_id] = found
+        if clip_id != self._clip_id:                    # the selection may have moved on meanwhile
+            return
+        _ = get_app()._tr
+        self.behindSubject.setEnabled(found)
+        if not found:
+            self.behindSubject.setChecked(False)
+        self.behindSubject.setToolTip(
+            _("Cuts the speaker out and places them on a track above the captions.") if found
+            else _("No speaker was found in this clip, so there is nobody to put the captions behind."))
 
     def _refresh_enabled(self):
         ready = bool(self._clip_id) and not self._busy

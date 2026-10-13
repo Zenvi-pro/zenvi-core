@@ -25,6 +25,7 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
+import math
 import os
 from collections import OrderedDict
 from operator import itemgetter
@@ -392,6 +393,9 @@ class PropertiesModel(updates.UpdateInterface):
 
             # Determine the frame needed for this clip (based on the position on the timeline)
             time_diff = (requested_time - clip.Position()) + clip.Start()
+            if not math.isfinite(time_diff):
+                # The selected clip was just replaced or removed (e.g. captions re-rendered during playback).
+                return
             new_frame_number = round(time_diff * fps_float) + 1
             if new_frame_number != self.frame_number:
                 # If frame # has changed

@@ -313,3 +313,15 @@ def test_a_nonsense_duration_limit_falls_back_to_a_minute(limit):
         th.place_motion_graphic(file_id="F1", position_seconds="0", duration_seconds="240", mode="overlay",
                                 max_duration_seconds=limit)
     assert add_clip.call_args.kwargs["duration_seconds"] == "60.0"
+
+
+def test_full_file_places_the_whole_render_without_a_watch():
+    # Captions must land frame-exact: the visual watch moved a 20 s render to its 2-18 s.
+    f = _file(transparent=True, duration=20.0)
+    app = _layers_app()
+    patches = _patch_place(f, [], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        th.place_motion_graphic(file_id="F1", position_seconds="0", duration_seconds="20", mode="overlay",
+                                max_duration_seconds=20.0, full_file="true")
+    kwargs = add_clip.call_args.kwargs
+    assert kwargs["full_file"] == "true" and float(kwargs["end_seconds"]) == 20.0

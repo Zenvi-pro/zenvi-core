@@ -8459,6 +8459,9 @@ def place_motion_graphic(
             position_seconds=str(t),
             track=str(track_num),
             duration_seconds=str(dur),
+            # full_file: the whole render, frame-exact, no visual search (captions are timed to speech).
+            end_seconds=str(dur) if _kw.get("full_file") else "",
+            full_file=str(_kw.get("full_file") or ""),
             query=watch_query,
             chat_session_id=_kw.get("chat_session_id", ""),
             transaction_id=_composite_tid,

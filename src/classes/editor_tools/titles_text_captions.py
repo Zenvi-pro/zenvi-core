@@ -12,6 +12,8 @@ only the import, the metadata stamp and the timeline edits hop to the GUI thread
 
 from __future__ import annotations
 
+import copy
+import json
 import os
 import re
 import time
@@ -32,11 +34,31 @@ from classes.editor_tools._base import (
     th,
 )
 from classes.editor_tools._registry import editor_tool
+from classes.logger import log
 
 SOURCE = "hyperframes_captions"
 RENDER_TIMEOUT = 1800
 MATTE_TIMEOUT = 3600
+BEHIND_SUBJECT_CENTRE = 0.42          # share of the frame height the captions centre on behind a speaker
+SUBJECT_COVERAGE = (0.03, 0.9)        # share of the frame a cut-out covers when there is a subject to cut out
+# What makes the cut-out sit exactly over the footage it was cut from.
+_GEOMETRY = ("scale", "gravity", "scale_x", "scale_y", "location_x", "location_y", "rotation",
+             "shear_x", "shear_y", "origin_x", "origin_y")
 _CLIP_ID_RE = re.compile(r"timeline_clip_id=([A-Za-z0-9]+)")
+_BBOX_RE = re.compile(r"\by1:(\d+) y2:(\d+)")
+_ALPHA_RE = re.compile(r"YAVG=([0-9.]+)")
+
+
+def _project(clip_id) -> str:
+    return "captions-" + re.sub(r"[^a-z0-9]", "", str(clip_id).lower())[:40]
+
+
+def _media(clip) -> str:
+    from classes.query import File
+
+    f = File.get(id=str(clip.data.get("file_id") or ""))
+    path = f.absolute_path() if f else ""
+    return path if path and os.path.isfile(path) else ""
 
 
 def _run(project: str, program: str, args: list, timeout: int, inputs=()) -> str:
@@ -64,11 +86,37 @@ def _indexed_words(clip) -> List[dict]:
             for w in cap.cue_words(cues)]
 
 
+def _whisper_words(clip) -> List[dict]:
+    """The clip's words timed by whisper.cpp (``hyperframes transcribe``); [] when it is not installed or fails."""
+    media = _media(clip)
+    if not media or not hf.whisper_dir():
+        return []
+    position, _end, duration = clip_extent(clip.data)
+    start = float(clip.data.get("start") or 0.0)
+    project = _project(clip.id)
+    kept = os.path.join(hf.project_dir(project), "words-%d-%d.json" % (start * 1000, duration * 1000))
+    try:
+        if not os.path.isfile(kept):
+            _run(project, "ffmpeg", ["-y", "-v", "error", "-ss", str(start), "-t", str(duration), "-i", media,
+                                     "-vn", "-ac", "1", "-ar", "16000", "speech.wav"], RENDER_TIMEOUT, inputs=[media])
+            # ponytail: whisper's default English model; pass --model/--language when other languages matter.
+            _run(project, "hyperframes", ["transcribe", "speech.wav", "--json"], RENDER_TIMEOUT)
+            os.replace(os.path.join(hf.project_dir(project), "transcript.json"), kept)
+        with open(kept, encoding="utf-8") as fh:
+            entries = json.load(fh)
+        return [{"text": w["text"], "timelineStartSec": position + float(w["start"]),
+                 "timelineEndSec": position + float(w["end"])} for w in entries if str(w.get("text") or "").strip()]
+    except (ToolError, hf.HyperframesError, OSError, KeyError, TypeError, ValueError) as exc:
+        log.warning("Captions: whisper.cpp could not time the words: %s", exc)
+        return []
+
+
 def transcript_words(clip) -> List[dict]:
     """The clip's spoken words in timeline seconds.
 
-    Word-timed from Zenvi's on-device recogniser; when that is not installed or
-    fails, phrase-timed from the transcript stored when the file was indexed.
+    Word-timed from Zenvi's on-device recogniser, else from whisper.cpp; when
+    neither is installed, phrase-timed from the transcript stored when the file
+    was indexed (its words are spread evenly, so they only roughly follow speech).
     """
     from classes.agent_tools.receipt import parse_receipt
     from classes.agent_tools.transcript import get_transcript
@@ -80,6 +128,7 @@ def transcript_words(clip) -> List[dict]:
     words = []
     for entry in (receipt.get("data") or {}).get("clips") or []:
         words.extend(entry.get("words") or [])
+    words = words or _whisper_words(clip)
     if words:
         return words
     indexed = _indexed_words(clip)
@@ -133,10 +182,66 @@ def _import_overlay(path: str, label: str, info: dict):
     return f
 
 
+def _subject_coverage(project: str, media: str, at: float) -> Optional[float]:
+    """Share of the frame at *at* seconds that the matting keeps (0 = nothing to cut out); None if unknown."""
+    try:
+        _run(project, "ffmpeg", ["-y", "-v", "error", "-ss", str(at), "-i", media, "-frames:v", "1",
+                                 "probe-frame.png"], 300, inputs=[media])
+        _run(project, "hyperframes", ["remove-background", "probe-frame.png", "-o", "renders/probe-cut.png"], 600)
+        out = _run(project, "ffmpeg", ["-v", "info", "-i", "renders/probe-cut.png", "-vf",
+                                       "alphaextract,signalstats,metadata=print:key=lavfi.signalstats.YAVG",
+                                       "-f", "null", "-"], 300)
+        return float(_ALPHA_RE.findall(out)[-1]) / 255.0
+    except (ToolError, hf.HyperframesError, IndexError, ValueError) as exc:
+        log.warning("Captions: could not check the shot for a subject: %s", exc)
+        return None
+
+
+def has_subject(clip) -> bool:
+    """Whether the middle of the clip shows something the matting can cut out to put captions behind.
+
+    ponytail: one frame, and any salient foreground counts (the matting does not know
+    people from objects); sample more frames or add a person detector if that matters.
+    """
+    media = _media(clip)
+    if not media:
+        return False
+    _start, _end, duration = clip_extent(clip.data)
+    coverage = _subject_coverage(_project(clip.id), media, float(clip.data.get("start") or 0.0) + duration / 2.0)
+    return coverage is None or SUBJECT_COVERAGE[0] <= coverage <= SUBJECT_COVERAGE[1]
+
+
+def _visible_band(project: str, rel: str) -> Optional[tuple]:
+    """(top, bottom) of everything a transparent render draws, as shares of its height."""
+    try:
+        out = _run(project, "ffmpeg", ["-v", "info", "-c:v", "libvpx-vp9", "-i", rel, "-vf",
+                                       "fps=1,alphaextract,scale=-2:1000,bbox", "-f", "null", "-"], RENDER_TIMEOUT)
+    except (ToolError, hf.HyperframesError):
+        return None
+    rows = [(int(a), int(b)) for a, b in _BBOX_RE.findall(out)]
+    return (min(a for a, _b in rows) / 1000.0, max(b for _a, b in rows) / 1000.0) if rows else None
+
+
+def _set_geometry(clip_id: str, values: dict):
+    def _apply():
+        from classes.query import Clip
+
+        placed = Clip.get(id=clip_id)
+        if placed:
+            placed.data.update(copy.deepcopy(values))
+            placed.save()
+
+    on_main(_apply)
+
+
+def _static(value) -> bool:
+    return not isinstance(value, dict) or len(value.get("Points") or []) <= 1
+
+
 def _place(file_id: str, start: float, duration: float) -> str:
     result = th().place_motion_graphic(file_id=file_id, position_seconds=str(start),
                                        duration_seconds=str(duration), mode="overlay",
-                                       max_duration_seconds=duration)
+                                       max_duration_seconds=duration, full_file="true")
     if str(result).startswith("Error"):
         raise ToolError(str(result).removeprefix("Error: "))
     found = _CLIP_ID_RE.search(str(result))
@@ -171,16 +276,10 @@ def build_captions(clip, style: str = cap.DEFAULT_STYLE, behind_subject: bool = 
         words = cap.retime_words(words, text)
     if not words:
         raise ToolError("no spoken words were found in this clip, so there is nothing to caption")
-    media = ""
-    if behind_subject:
-        from classes.query import File
+    behind_subject = bool(behind_subject) and has_subject(clip)      # nobody in shot: plain captions
+    media = _media(clip)
 
-        f = File.get(id=str(clip.data.get("file_id") or ""))
-        media = f.absolute_path() if f else ""
-        if not media or not os.path.isfile(media):
-            raise ToolError("the clip's media file was not found, so the speaker cannot be cut out")
-
-    project = "captions-" + re.sub(r"[^a-z0-9]", "", clip_id.lower())[:40]
+    project = _project(clip_id)
     root = hf.project_dir(project)
     if not os.path.isfile(os.path.join(root, "hyperframes.json")):
         _run(project, "hyperframes", ["init", ".", "--example", "blank", "--non-interactive"], 300)
@@ -222,6 +321,17 @@ def build_captions(clip, style: str = cap.DEFAULT_STYLE, behind_subject: bool = 
         # Placed after the captions, so the placement rule puts it on the track above them.
         receipt["subject_clip_id"] = _place(subject.id, start, duration)
         receipt["subject_file_id"] = subject.id
+        # The cut-out covers the footage exactly: same fit and transform. Animated ones are
+        # left alone -- their keyframes count from the footage's own in-point, not the cut-out's.
+        _set_geometry(receipt["subject_clip_id"], {k: clip.data[k] for k in _GEOMETRY
+                                                   if k in clip.data and _static(clip.data[k])})
+        # Bottom-of-frame captions would hide behind the body; lift them to head height,
+        # where the speaker overlaps them and the ends stay readable.
+        band = _visible_band(project, out_rel)
+        if band:
+            lift = BEHIND_SUBJECT_CENTRE - (band[0] + band[1]) / 2.0
+            _set_geometry(receipt["timeline_clip_id"],
+                          {"location_y": {"Points": [{"co": {"X": 1.0, "Y": lift}, "interpolation": 0}]}})
     return receipt
 
 
@@ -258,8 +368,12 @@ def add_captions(timeline_clip_id="", clip_query="", style=cap.DEFAULT_STYLE, be
     """
     clip = on_main(resolve_clip, timeline_clip_id, clip_query)
     r = build_captions(clip, style, bool(behind_subject), text)
-    return ok("Added %d-word '%s' captions above the clip%s." % (
-        r["words"], cap.STYLES[style]["label"], ", with the subject in front of them" if behind_subject else ""), **r)
+    note = ""
+    if r["behind_subject"]:
+        note = ", with the subject in front of them"
+    elif behind_subject:
+        note = "; no speaker was found in the shot, so they sit on top"
+    return ok("Added %d-word '%s' captions above the clip%s." % (r["words"], cap.STYLES[style]["label"], note), **r)
 
 
 @editor_tool(
