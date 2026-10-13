@@ -180,6 +180,8 @@ def test_status_and_install_plan(home, monkeypatch):
     (home / "speech").mkdir()
     for path in (hf.speech_engine(), hf.speech_model()):
         open(path, "wb").write(b"0")
+    assert hf.status()["speech"] is False           # files that are not the pinned ones do not count
+    monkeypatch.setattr(hf, "speech_ready", lambda: True)
     st = hf.status()
     assert st["speech"] is True and hf.install_plan(st, platform="win32") == []
     # the larger recogniser is opt-in, installed by the CLI itself (prebuilt, no compiler)
@@ -229,8 +231,9 @@ def test_the_speech_recogniser_is_a_pinned_checksummed_download(home, monkeypatc
     for platform, machine in (("win32", "AMD64"), ("darwin", "arm64"), ("linux", "x86_64"), ("linux", "aarch64")):
         files = hf._speech_downloads(platform, machine)
         assert len(files) == 2 and all(len(sha) == 64 and "/resolve/main/" not in url for url, _name, sha in files)
-    with pytest.raises(hf.HyperframesError, match="no speech recogniser"):
-        hf._speech_downloads("darwin", "x86_64")
+    for platform, machine in (("darwin", "x86_64"), ("linux", "armv7l"), ("linux", "i686")):
+        with pytest.raises(hf.HyperframesError, match="no speech recogniser"):
+            hf._speech_downloads(platform, machine)
 
     payload = {"engine": b"MZ engine", "model": b"cact model"}
     good = [("https://x/engine", os.path.basename(hf.speech_engine()), hashlib.sha256(payload["engine"]).hexdigest()),
@@ -245,11 +248,17 @@ def test_the_speech_recogniser_is_a_pinned_checksummed_download(home, monkeypatc
     hf.install_speech()
     assert hf.speech_ready() and open(hf.speech_model(), "rb").read() == b"cact model"
 
+    # A different program left where the engine lives is neither trusted nor run: it is replaced.
+    open(hf.speech_engine(), "wb").write(b"MZ planted program")
+    assert not hf.speech_ready()
+    with pytest.raises(hf.HyperframesError, match="not installed"):
+        hf.transcribe("speech.wav")
+    hf.install_speech()
+    assert hf.speech_ready() and open(hf.speech_engine(), "rb").read() == b"MZ engine"
+
 
 def test_transcribe_runs_the_private_engine_and_returns_timed_words(home, monkeypatch, tmp_path):
-    (home / "speech").mkdir()
-    for path in (hf.speech_engine(), hf.speech_model()):
-        open(path, "wb").write(b"0")
+    monkeypatch.setattr(hf, "speech_ready", lambda: True)
     seen = {}
 
     def fake_run(argv, **kw):
@@ -281,3 +290,8 @@ def test_nothing_builds_whisper(home):
         hf.check_command("demo", "hyperframes", ["transcribe", "speech.wav", "--engine", "auto"])
     assert hf.check_command("demo", "hyperframes", ["transcribe", "speech.wav", "--engine", "parakeet"])
     assert hf.check_command("demo", "hyperframes", ["transcribe", "speech.wav", "--engine=parakeet", "--json"])
+    for sneaky in (["--engine", "parakeet", "--engine", "whisper"], ["--engine=parakeet", "-e", "whisper"],
+                   ["--engine", "parakeet", "-e=whisper"], ["--engine", "parakeet", "--eng", "whisper"],
+                   ["--engine", "parakeet", "--model", "large-v3"]):
+        with pytest.raises(hf.HyperframesError, match="parakeet"):
+            hf.check_command("demo", "hyperframes", ["transcribe", "speech.wav"] + sneaky)

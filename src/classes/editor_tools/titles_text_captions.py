@@ -48,8 +48,9 @@ _GEOMETRY = ("scale", "gravity", "scale_x", "scale_y", "location_x", "location_y
 _CLIP_ID_RE = re.compile(r"timeline_clip_id=([A-Za-z0-9]+)")
 _BBOX_RE = re.compile(r"\by1:(\d+) y2:(\d+)")
 _ALPHA_RE = re.compile(r"YAVG=([0-9.]+)")
-_SILENCE_RE = re.compile(r"silence_start: ([0-9.]+).*?silence_end: ([0-9.]+)", re.DOTALL)
-PAUSE = "silencedetect=noise=-32dB:d=0.25"      # what counts as a pause between words
+_SILENCE_RE = re.compile(r"silence_start=([0-9.]+).*?silence_end=([0-9.]+)", re.DOTALL)
+# What counts as a pause between words. Written to a file: a long clip's log would be cut short.
+PAUSE = "silencedetect=noise=-32dB:d=0.25,ametadata=mode=print:file=silences.txt"
 
 # A clip's project folder is shared by the dock's checks and a running caption job.
 _probe_lock, _speech_lock = threading.Lock(), threading.Lock()
@@ -152,11 +153,12 @@ def _speech_words(clip) -> List[dict]:
 def _silences(project: str, media: str, start: float, duration: float) -> List[tuple]:
     """The pauses in a stretch of the media's sound, in seconds from *start*; [] if they cannot be measured."""
     try:
-        out = _run(project, "ffmpeg", ["-v", "info", "-ss", str(start), "-t", str(duration), "-i", media, "-vn",
-                                       "-af", PAUSE, "-f", "null", "-"], RENDER_TIMEOUT, inputs=[media])
-    except (ToolError, hf.HyperframesError):
+        _run(project, "ffmpeg", ["-y", "-v", "error", "-ss", str(start), "-t", str(duration), "-i", media, "-vn",
+                                 "-af", PAUSE, "-f", "null", "-"], RENDER_TIMEOUT, inputs=[media])
+        with open(os.path.join(hf.project_dir(project), "silences.txt"), encoding="utf-8", errors="replace") as fh:
+            return [(float(a), float(b)) for a, b in _SILENCE_RE.findall(fh.read())]
+    except (ToolError, hf.HyperframesError, OSError):
         return []
-    return [(float(a), float(b)) for a, b in _SILENCE_RE.findall(out)]
 
 
 def transcript_words(clip) -> List[dict]:

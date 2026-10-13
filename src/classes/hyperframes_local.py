@@ -38,6 +38,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import threading
 import urllib.request
 import zipfile
 from typing import Callable, Iterable, List, Optional, Tuple
@@ -260,8 +261,35 @@ def speech_model() -> str:
     return os.path.join(home(), "speech", SPEECH_MODEL[2])
 
 
+_verified: dict = {}                  # path -> (size, mtime_ns, sha256) of the last file hashed there
+_speech_install_lock = threading.Lock()
+
+
+def _sha256(path: str) -> str:
+    """SHA-256 of a regular file ('' for anything else); remembered until the file changes."""
+    try:
+        if os.path.islink(path) or not os.path.isfile(path):
+            return ""
+        stat = os.stat(path)
+        seen = _verified.get(path)
+        if not seen or seen[:2] != (stat.st_size, stat.st_mtime_ns):
+            sha = hashlib.sha256()
+            with open(path, "rb") as fh:
+                for block in iter(lambda: fh.read(1 << 20), b""):
+                    sha.update(block)
+            seen = _verified[path] = (stat.st_size, stat.st_mtime_ns, sha.hexdigest())
+        return seen[2]
+    except OSError:
+        return ""
+
+
 def speech_ready() -> bool:
-    return os.path.isfile(speech_engine()) and os.path.isfile(speech_model())
+    """Both files are there and are the pinned ones: the engine is a program Zenvi runs."""
+    try:
+        return all(_sha256(os.path.join(home(), "speech", name)) == digest
+                   for _url, name, digest in _speech_downloads())
+    except HyperframesError:
+        return False
 
 
 def _parakeet_model() -> str:
@@ -386,11 +414,11 @@ def install_node() -> str:
 
 def _speech_downloads(platform: Optional[str] = None, machine: Optional[str] = None) -> List[tuple]:
     """(url, file name, sha256) of the speech engine for this computer and of the model."""
-    platform = platform or sys.platform
-    arch = "arm64" if (machine or _platform.machine()).lower() in ("arm64", "aarch64") else "x64"
+    platform, machine = platform or sys.platform, (machine or _platform.machine()).lower()
+    arch = {"arm64": "arm64", "aarch64": "arm64", "amd64": "x64", "x86_64": "x64", "x64": "x64"}.get(machine)
     engine = SPEECH_ENGINES.get(("linux" if platform.startswith("linux") else platform, arch))
     if not engine:
-        raise HyperframesError("no speech recogniser is published for this computer (%s %s)" % (platform, arch))
+        raise HyperframesError("no speech recogniser is published for this computer (%s %s)" % (platform, machine))
     repo, revision, name, digest = SPEECH_MODEL
     return [(SPEECH_SOURCE % ("needle3", SPEECH_ENGINE_REVISION, engine[0]), os.path.basename(engine[0]), engine[1]),
             (SPEECH_SOURCE % (repo, revision, name), name, digest)]
@@ -400,27 +428,29 @@ def install_speech() -> None:
     """Download the speech engine and model into ``speech/``. Nothing is kept unless its checksum matches."""
     folder = os.path.join(home(), "speech")
     os.makedirs(folder, exist_ok=True)
-    for url, name, digest in _speech_downloads():
-        target, partial = os.path.join(folder, name), os.path.join(folder, name + ".partial")
-        if os.path.isfile(target):
-            continue
-        try:
-            sha = hashlib.sha256()
-            with _fetch(url) as response, open(partial, "wb") as out:
-                for block in iter(lambda: response.read(1 << 20), b""):
-                    sha.update(block)
-                    out.write(block)
-            if sha.hexdigest() != digest:
-                raise HyperframesError("the speech recogniser download (%s) did not match its pinned checksum; "
-                                       "try again" % name)
-            os.replace(partial, target)
-        except OSError as exc:
-            raise HyperframesError("could not download the speech recogniser (%s): %s" % (name, exc))
-        finally:
-            if os.path.exists(partial):
-                os.remove(partial)
-    if sys.platform != "win32":
-        os.chmod(speech_engine(), 0o755)
+    with _speech_install_lock:                          # setup and a first caption may both get here
+        for url, name, digest in _speech_downloads():
+            target, partial = os.path.join(folder, name), os.path.join(folder, name + ".partial")
+            if _sha256(target) == digest:               # anything else there is replaced, never trusted
+                continue
+            try:
+                if os.path.lexists(partial):
+                    os.remove(partial)                  # never write through a link someone left here
+                with _fetch(url) as response, open(partial, "xb") as out:
+                    shutil.copyfileobj(response, out, 1 << 20)
+                if _sha256(partial) != digest:          # what is on disk, not what went past
+                    raise HyperframesError("the speech recogniser download (%s) did not match its pinned "
+                                           "checksum; try again" % name)
+                if sys.platform != "win32":
+                    os.chmod(partial, 0o755)
+                if os.path.lexists(target):
+                    os.remove(target)
+                os.replace(partial, target)
+            except OSError as exc:
+                raise HyperframesError("could not download the speech recogniser (%s): %s" % (name, exc))
+            finally:
+                if os.path.lexists(partial):
+                    os.remove(partial)
 
 
 def transcribe(wav: str, timeout: float = SPEECH_TIMEOUT) -> List[dict]:
@@ -570,9 +600,10 @@ def check_command(project: str, program: str, args: Iterable[str], inputs: Itera
                                % (sub, ", ".join(sorted(CLI_SUBCOMMANDS))))
     if program == "hyperframes" and sub == "transcribe":
         # Any other engine falls back to whisper.cpp, which the CLI clones and compiles when it is missing.
-        engine = next((a.split("=", 1)[1] if "=" in a else (args[i + 1] if i + 1 < len(args) else "")
-                       for i, a in enumerate(args) if a in ("--engine", "-e") or a.startswith("--engine=")), "")
-        if engine != "parakeet":
+        # Exactly one spelling is accepted, so a second or abbreviated flag cannot override it.
+        flags = [(a, args[i + 1] if i + 1 < len(args) else "") for i, a in enumerate(args)
+                 if a.startswith(("-e", "--e")) or a == "-m" or a.startswith("--m")]
+        if not flags or any(a != "--engine=parakeet" and (a, value) != ("--engine", "parakeet") for a, value in flags):
             raise HyperframesError("hyperframes transcribe runs here only with --engine parakeet (install it with "
                                    "hyperframes_setup_tool accurate_speech=true); for captions use add_captions_tool")
     out = list(args)
