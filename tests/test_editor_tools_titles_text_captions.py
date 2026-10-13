@@ -336,3 +336,28 @@ def test_the_dock_loads_words_on_selection_and_can_caption_everything():
     selection = source[source.index("def selection_changed"):source.index("def _check_subject")]
     assert "self.load_words()" in selection
     assert '"whole_project": True' in source and "tool.on_progress" in source
+
+
+@pytest.mark.parametrize("fail_on", [1, 2])
+def test_a_failed_placement_puts_the_old_captions_back(editor, studio, monkeypatch, fail_on):
+    _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, style="highlight"))
+    real_place, calls = tool_handlers.place_motion_graphic, []
+
+    def flaky(**kw):
+        calls.append(kw)
+        return "Error: the timeline is locked" if len(calls) == fail_on else real_place(**kw)
+
+    monkeypatch.setattr(tool_handlers, "place_motion_graphic", flaky)
+    out = editor.call("add_captions_tool", timeline_clip_id=studio.clip, style="kinetic-slam", behind_subject=True)
+    assert out.startswith("Error") and "locked" in out
+    listing = _receipt(editor.call("list_captions_tool"))["captions"]
+    assert [(c["style"], c["role"]) for c in listing] == [("highlight", "captions")]      # none of the new pair
+
+
+def test_a_failed_subject_check_does_not_rule_the_speaker_out(editor, studio, monkeypatch):
+    from classes.query import Clip
+    answers = iter([None, 0.0, 0.0])
+    monkeypatch.setattr(captions, "_subject_coverage", lambda project, media, at: next(answers))
+    assert captions.has_subject(Clip.get(id=studio.clip)) is False       # one failure, two empty frames
+    monkeypatch.setattr(captions, "_subject_coverage", lambda project, media, at: None)
+    assert captions.has_subject(Clip.get(id=studio.clip)) is True        # nothing could be checked

@@ -120,6 +120,8 @@ class CaptionsDock(QWidget):
                 self._on_subject_checked(clip_id, True)          # offered until the check says otherwise
                 threading.Thread(target=self._check_subject, args=(clip_id,), name="zenvi-captions-dock",
                                  daemon=True).start()
+            else:
+                self.behindSubject.setEnabled(True)     # nothing selected: the choice is for the whole project
             if clip:
                 self.load_words()                       # the words are there to read and fix straight away
         self._refresh_enabled()
@@ -140,9 +142,7 @@ class CaptionsDock(QWidget):
         if clip_id != self._clip_id:                    # the selection may have moved on meanwhile
             return
         _ = get_app()._tr
-        self.behindSubject.setEnabled(found)
-        if not found:
-            self.behindSubject.setChecked(False)
+        self.behindSubject.setEnabled(found)             # stays ticked: it still applies to the whole project
         self.behindSubject.setToolTip(
             _("Cuts the speaker out and places them on a track above the captions.") if found
             else _("No speaker was found in this clip, so there is nobody to put the captions behind."))
@@ -232,7 +232,7 @@ class CaptionsDock(QWidget):
         self._run(_("Rendering captions on this computer..."), "add_captions_tool", {
             "timeline_clip_id": self._clip_id,
             "style": self.styleCombo.currentData(),
-            "behind_subject": self.behindSubject.isChecked(),
+            "behind_subject": self.behindSubject.isChecked() and self.behindSubject.isEnabled(),
             "text": self.wordsEdit.toPlainText().strip(),
         })
 
@@ -241,7 +241,8 @@ class CaptionsDock(QWidget):
         self._run(_("Captioning the whole project..."), "add_captions_tool", {
             "whole_project": True,
             "style": self.styleCombo.currentData(),
-            "behind_subject": self.behindSubject.isChecked() and self.behindSubject.isEnabled(),
+            # Per clip the tool leaves out the cut-out where nobody is on camera.
+            "behind_subject": self.behindSubject.isChecked(),
         }, needs_clip=False)
 
     def remove(self):
@@ -252,4 +253,7 @@ class CaptionsDock(QWidget):
         self._busy = False
         self._clock.stop()
         self.statusLabel.setText(message)
+        if self._clip_id and not self.wordsEdit.toPlainText():      # the selection moved on during the job
+            self.load_words()
+            self.statusLabel.setText(message)
         self._refresh_enabled()

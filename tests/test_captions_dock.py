@@ -1,0 +1,107 @@
+"""The Captions dock, as real Qt widgets over a fake project (run with ZENVI_REAL_QT=1).
+
+Words load when a clip is selected, "Behind the speaker" is offered only where
+someone is on camera, and a running job shows its stage with a clock.
+"""
+
+import os
+import time
+import types
+
+import pytest
+
+from _qt_support import skip_without_pyqt5  # noqa: E402
+
+if os.environ.get("ZENVI_REAL_QT") != "1":
+    pytest.skip("needs real Qt widgets (ZENVI_REAL_QT=1)", allow_module_level=True)
+skip_without_pyqt5()
+from PyQt5.QtCore import QObject, pyqtSignal  # noqa: E402
+from PyQt5.QtWidgets import QApplication  # noqa: E402
+
+
+class _Window(QObject):
+    SelectionChanged = pyqtSignal()
+    selected_clips = []
+
+
+@pytest.fixture
+def dock(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    from classes import query, tool_handlers
+    from classes.editor_tools import titles_text_captions as tool
+    from windows.views import captions_dock
+
+    window = _Window()
+    clips = {cid: types.SimpleNamespace(id=cid, data={"title": cid.lower() + ".mp4"}) for cid in ("A", "B")}
+    state = types.SimpleNamespace(app=app, window=window, loads=[], calls=[], tool=tool)
+
+    def words(clip):
+        state.loads.append(clip.id)
+        time.sleep(0.2)
+        return [{"text": "hello"}, {"text": clip.id}]
+
+    def execute(name, args):
+        state.calls.append((name, args))
+        tool.on_progress("Cutting out the speaker...")
+        time.sleep(1.3)
+        return "Done."
+
+    monkeypatch.setattr(captions_dock, "get_app", lambda: types.SimpleNamespace(_tr=lambda s: s, window=window))
+    monkeypatch.setattr(query.Clip, "get", staticmethod(lambda id=None, **kw: clips.get(id)))
+    monkeypatch.setattr(tool, "clip_caption_words", words)
+    monkeypatch.setattr(tool, "has_subject", lambda clip: clip.id == "A")      # nobody on camera in B
+    monkeypatch.setattr(tool, "on_progress", None)
+    monkeypatch.setattr(tool_handlers, "execute_tool", execute)
+    state.dock = captions_dock.CaptionsDock()
+    return state
+
+
+def _pump(app, seconds):
+    end = time.time() + seconds
+    while time.time() < end:
+        app.processEvents()
+        time.sleep(0.01)
+
+
+def _select(state, *ids):
+    state.window.selected_clips = list(ids)
+    state.window.SelectionChanged.emit()
+
+
+def test_words_load_on_selection_and_follow_the_selection(dock):
+    d = dock.dock
+    assert not d.generateButton.isEnabled() and d.projectButton.isEnabled()
+    _select(dock, "A")
+    assert d._busy and "speech" in d.statusLabel.text()
+    _select(dock, "B")                                   # moved on while A was still being read
+    _pump(dock.app, 1.0)
+    assert dock.loads == ["A", "B"] and d.wordsEdit.toPlainText() == "hello B"
+    assert not d._busy and d.generateButton.isEnabled()
+
+
+def test_behind_the_speaker_is_offered_only_where_someone_is_on_camera(dock):
+    d = dock.dock
+    d.behindSubject.setChecked(True)
+    _select(dock, "B")
+    _pump(dock.app, 0.6)
+    assert not d.behindSubject.isEnabled()
+    d.generateButton.click()
+    _pump(dock.app, 1.6)
+    assert dock.calls[-1][1]["behind_subject"] is False          # not for this clip
+    d.projectButton.click()
+    _pump(dock.app, 1.6)
+    assert dock.calls[-1][1] == {"whole_project": True, "style": "pill-karaoke", "behind_subject": True}
+    _select(dock, "A")
+    _pump(dock.app, 0.6)
+    assert d.behindSubject.isEnabled()
+
+
+def test_a_running_job_shows_its_stage_and_a_clock(dock):
+    d = dock.dock
+    d.projectButton.click()
+    _pump(dock.app, 1.15)
+    text = d.statusLabel.text()
+    assert text.startswith("Cutting out the speaker...") and text.endswith("0:01"), text
+    assert not d.projectButton.isEnabled()
+    _pump(dock.app, 0.6)
+    assert d.statusLabel.text() == "Done." and d.projectButton.isEnabled()

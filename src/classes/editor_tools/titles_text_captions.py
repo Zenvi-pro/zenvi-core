@@ -16,6 +16,7 @@ import copy
 import json
 import os
 import re
+import threading
 import time
 from typing import List, Optional
 
@@ -48,6 +49,8 @@ _CLIP_ID_RE = re.compile(r"timeline_clip_id=([A-Za-z0-9]+)")
 _BBOX_RE = re.compile(r"\by1:(\d+) y2:(\d+)")
 _ALPHA_RE = re.compile(r"YAVG=([0-9.]+)")
 
+# A clip's project folder is shared by the dock's checks and a running caption job.
+_probe_lock, _speech_lock = threading.Lock(), threading.Lock()
 on_progress = None       # set by the Captions dock: called with one line per stage, from the worker thread
 
 
@@ -105,19 +108,27 @@ def _whisper_words(clip) -> List[dict]:
     position, _end, duration = clip_extent(clip.data)
     start = float(clip.data.get("start") or 0.0)
     project = _project(clip.id)
-    kept = os.path.join(hf.project_dir(project), "words-%d-%d.json" % (start * 1000, duration * 1000))
     try:
-        if not os.path.isfile(kept):
-            _run(project, "ffmpeg", ["-y", "-v", "error", "-ss", str(start), "-t", str(duration), "-i", media,
-                                     "-vn", "-ac", "1", "-ar", "16000", "speech.wav"], RENDER_TIMEOUT, inputs=[media])
-            # ponytail: whisper's default English model; pass --model/--language when other languages matter.
-            _run(project, "hyperframes", ["transcribe", "speech.wav", "--json"], RENDER_TIMEOUT)
-            os.replace(os.path.join(hf.project_dir(project), "transcript.json"), kept)
-        with open(kept, encoding="utf-8") as fh:
-            entries = json.load(fh)
-        return [{"text": w["text"], "timelineStartSec": position + float(w["start"]),
-                 "timelineEndSec": position + float(w["end"])} for w in entries if str(w.get("text") or "").strip()]
-    except (ToolError, hf.HyperframesError, OSError, KeyError, TypeError, ValueError) as exc:
+        stat = os.stat(media)                           # replaced or re-exported media is read again
+        kept = os.path.join(hf.project_dir(project), "words-%d-%d-%d-%d.json" % (
+            start * 1000, duration * 1000, stat.st_size, stat.st_mtime))
+        with _speech_lock:
+            fresh = os.path.join(hf.project_dir(project), "transcript.json")
+            if not os.path.isfile(kept):
+                _run(project, "ffmpeg", ["-y", "-v", "error", "-ss", str(start), "-t", str(duration), "-i", media,
+                                         "-vn", "-ac", "1", "-ar", "16000", "speech.wav"], RENDER_TIMEOUT,
+                     inputs=[media])
+                # ponytail: whisper's default English model; pass --model/--language when other languages matter.
+                _run(project, "hyperframes", ["transcribe", "speech.wav", "--json"], RENDER_TIMEOUT)
+            with open(kept if os.path.isfile(kept) else fresh, encoding="utf-8") as fh:
+                entries = json.load(fh)
+            words = [{"text": w["text"], "timelineStartSec": position + float(w["start"]),
+                      "timelineEndSec": position + float(w["end"])}
+                     for w in entries if str(w.get("text") or "").strip()]
+            if not os.path.isfile(kept):                # kept only once it is known to be usable
+                os.replace(fresh, kept)
+        return words
+    except (ToolError, hf.HyperframesError, OSError, KeyError, TypeError, ValueError, AttributeError) as exc:
         log.warning("Captions: whisper.cpp could not time the words: %s", exc)
         return []
 
@@ -196,12 +207,14 @@ def _import_overlay(path: str, label: str, info: dict):
 def _subject_coverage(project: str, media: str, at: float) -> Optional[float]:
     """Share of the frame at *at* seconds that the matting keeps (0 = nothing to cut out); None if unknown."""
     try:
-        _run(project, "ffmpeg", ["-y", "-v", "error", "-ss", str(at), "-i", media, "-frames:v", "1",
-                                 "probe-frame.png"], 300, inputs=[media])
-        _run(project, "hyperframes", ["remove-background", "probe-frame.png", "-o", "renders/probe-cut.png"], 600)
-        out = _run(project, "ffmpeg", ["-v", "info", "-i", "renders/probe-cut.png", "-vf",
-                                       "alphaextract,signalstats,metadata=print:key=lavfi.signalstats.YAVG",
-                                       "-f", "null", "-"], 300)
+        with _probe_lock:
+            _run(project, "ffmpeg", ["-y", "-v", "error", "-ss", str(at), "-i", media, "-frames:v", "1",
+                                     "probe-frame.png"], 300, inputs=[media])
+            _run(project, "hyperframes", ["remove-background", "probe-frame.png", "-o", "renders/probe-cut.png"],
+                 600)
+            out = _run(project, "ffmpeg", ["-v", "info", "-i", "renders/probe-cut.png", "-vf",
+                                           "alphaextract,signalstats,metadata=print:key=lavfi.signalstats.YAVG",
+                                           "-f", "null", "-"], 300)
         return float(_ALPHA_RE.findall(out)[-1]) / 255.0
     except (ToolError, hf.HyperframesError, IndexError, ValueError) as exc:
         log.warning("Captions: could not check the shot for a subject: %s", exc)
@@ -239,11 +252,13 @@ def has_subject(clip) -> bool:
         return people > 0
     _start, _end, duration = clip_extent(clip.data)
     source_start = float(clip.data.get("start") or 0.0)
+    seen = []
     for share in (0.5, 0.2, 0.8):
         coverage = _subject_coverage(_project(clip.id), media, source_start + duration * share)
-        if coverage is None or SUBJECT_COVERAGE[0] <= coverage <= SUBJECT_COVERAGE[1]:
+        if coverage is not None and SUBJECT_COVERAGE[0] <= coverage <= SUBJECT_COVERAGE[1]:
             return True
-    return False
+        seen.append(coverage)
+    return all(c is None for c in seen)                  # the check itself failed: do not rule it out
 
 
 def _visible_band(project: str, rel: str) -> Optional[tuple]:
@@ -352,13 +367,39 @@ def build_captions(clip, style: str = cap.DEFAULT_STYLE, behind_subject: bool = 
     caption_file = _import_overlay(os.path.join(root, out_rel.replace("/", os.sep)), "Captions: " + title, info)
     subject = behind_subject and _import_overlay(os.path.join(root, subject_rel.replace("/", os.sep)),
                                                  "Subject: " + title, dict(info, role="subject"))
+    previous = on_main(lambda: [copy.deepcopy(c.data) for c, _info in _caption_clips(clip_id)])
     removed = _remove(clip_id)                           # one caption track per clip: this replaces the last
-    receipt = {"timeline_clip_id": _place(caption_file.id, start, duration), "file_id": caption_file.id,
-               "clip_id": clip_id, "style": style, "words": len(words), "replaced": removed,
-               "behind_subject": bool(behind_subject)}
+    placed = []
+    try:
+        receipt = _place_overlays(clip, caption_file, subject, start, duration, project, out_rel, placed)
+    except Exception:
+        on_main(_put_back, placed, previous)             # a failed placement leaves the old captions as they were
+        raise
+    receipt.update({"clip_id": clip_id, "style": style, "words": len(words), "replaced": removed,
+                    "behind_subject": bool(behind_subject)})
+    return receipt
+
+
+def _put_back(placed: list, previous: list):
+    from classes.query import Clip
+
+    for cid in placed:
+        new = Clip.get(id=cid)
+        if new:
+            new.delete()
+    for data in previous:
+        old = Clip()
+        old.data = {k: v for k, v in data.items() if k != "id"}
+        old.save()
+
+
+def _place_overlays(clip, caption_file, subject, start, duration, project, out_rel, placed) -> dict:
+    receipt = {"timeline_clip_id": _place(caption_file.id, start, duration), "file_id": caption_file.id}
+    placed.append(receipt["timeline_clip_id"])
     if subject:
         # Placed after the captions, so the placement rule puts it on the track above them.
         receipt["subject_clip_id"] = _place(subject.id, start, duration)
+        placed.append(receipt["subject_clip_id"])
         receipt["subject_file_id"] = subject.id
         # The cut-out covers the footage exactly: same fit and transform. Animated ones are
         # left alone -- their keyframes count from the footage's own in-point, not the cut-out's.
