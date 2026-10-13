@@ -30,7 +30,7 @@ def studio(editor, tmp_path, monkeypatch):
     monkeypatch.setattr(hf, "status", lambda: {"ready": True})
     media = tmp_path / "interview.mp4"
     media.write_bytes(b"0" * 64)
-    video = editor.add_file("video", path=str(media))
+    video = editor.add_file("video", path=str(media), has_audio=True)
     clip = editor.add_clip(video, position=10.0, layer=L1, start=2.0, end=7.0)       # 5 s on the timeline
     state = SimpleNamespace(commands=[], placed=[], place_kwargs=[], clip=clip, tmp=tmp_path, words=[
         {"text": "Hello", "timelineStartSec": 10.2, "timelineEndSec": 10.6},
@@ -298,3 +298,41 @@ def test_whisper_cpp_times_the_words_when_zenvis_recogniser_is_missing(editor, s
     monkeypatch.setattr(hf, "whisper_dir", lambda: None)                                   # none installed: fall back
     other = editor.add_clip(Clip.get(id=studio.clip).data["file_id"], position=30.0, layer=L1, start=2.0, end=7.0)
     assert [w["text"] for w in captions.clip_caption_words(Clip.get(id=other))] == ["evenly", "spread", "guess"]
+
+
+def test_the_whole_project_is_captioned_clip_by_clip(editor, studio):
+    from classes.query import Clip
+    file_id = Clip.get(id=studio.clip).data["file_id"]
+    silent = editor.add_clip(file_id, position=30.0, layer=L1, start=0.0, end=4.0)      # no words fall in it
+
+    r = _receipt(editor.call("add_captions_tool", whole_project=True, style="highlight"))
+    assert [c["clip_id"] for c in r["captioned"]] == [studio.clip]
+    assert [(s["clip_id"], "no spoken words" in s["reason"]) for s in r["skipped"]] == [(silent, True)]
+    assert len(studio.placed) == 1
+
+    # Again: the caption overlay is not itself a clip to caption, and the old captions are replaced.
+    again = _receipt(editor.call("add_captions_tool", whole_project=True))
+    assert [c["clip_id"] for c in again["captioned"]] == [studio.clip] and again["captioned"][0]["replaced"] == 1
+    assert len(_receipt(editor.call("list_captions_tool"))["captions"]) == 1
+
+    studio.words = []
+    out = editor.call("add_captions_tool", whole_project=True)
+    assert out.startswith("Error") and "no spoken words" in out
+
+
+def test_each_stage_is_reported_while_captions_are_built(editor, studio, monkeypatch):
+    stages = []
+    monkeypatch.setattr(captions, "on_progress", stages.append)
+    editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True)
+    joined = " | ".join(stages).lower()
+    assert joined.index("speech") < joined.index("rendering") < joined.index("cutting out") < joined.index("placing")
+
+    monkeypatch.setattr(captions, "on_progress", lambda message: 1 / 0)          # a broken listener is not fatal
+    assert not editor.call("add_captions_tool", timeline_clip_id=studio.clip).startswith("Error")
+
+
+def test_the_dock_loads_words_on_selection_and_can_caption_everything():
+    source = open(os.path.join(os.path.dirname(__file__), "..", "src", "windows", "views", "captions_dock.py")).read()
+    selection = source[source.index("def selection_changed"):source.index("def _check_subject")]
+    assert "self.load_words()" in selection
+    assert '"whole_project": True' in source and "tool.on_progress" in source

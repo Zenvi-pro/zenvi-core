@@ -48,6 +48,17 @@ _CLIP_ID_RE = re.compile(r"timeline_clip_id=([A-Za-z0-9]+)")
 _BBOX_RE = re.compile(r"\by1:(\d+) y2:(\d+)")
 _ALPHA_RE = re.compile(r"YAVG=([0-9.]+)")
 
+on_progress = None       # set by the Captions dock: called with one line per stage, from the worker thread
+
+
+def _stage(message: str):
+    log.info("Captions: %s", message)
+    if on_progress:
+        try:
+            on_progress(message)
+        except Exception:
+            log.debug("Captions: progress listener failed", exc_info=True)
+
 
 def _project(clip_id) -> str:
     return "captions-" + re.sub(r"[^a-z0-9]", "", str(clip_id).lower())[:40]
@@ -295,6 +306,7 @@ def build_captions(clip, style: str = cap.DEFAULT_STYLE, behind_subject: bool = 
                         "caption it before changing the speed")
     clip_id = str(clip.id)
     start, _end, duration = clip_extent(clip.data)
+    _stage("Reading the clip's speech...")
     words = clip_caption_words(clip)
     if text.strip():
         words = cap.retime_words(words, text)
@@ -323,14 +335,17 @@ def build_captions(clip, style: str = cap.DEFAULT_STYLE, behind_subject: bool = 
 
     stamp = time.time_ns() // 1000000
     out_rel, subject_rel = "renders/captions-%d.webm" % stamp, "renders/subject-%d.webm" % stamp
+    _stage("Rendering the captions...")
     _run(project, "hyperframes", ["render", ".", "-c", rel, "--format", "webm", "-o", out_rel, "--quiet"],
          RENDER_TIMEOUT)
     if behind_subject:
+        _stage("Cutting out the speaker (the slow part: minutes for each minute of video)...")
         _run(project, "ffmpeg", ["-y", "-v", "error", "-ss", str(float(clip.data.get("start") or 0.0)),
                                  "-t", str(duration), "-i", media, "-an", "-c:v", "libx264", "-crf", "18",
                                  "subject-source.mp4"], RENDER_TIMEOUT, inputs=[media])
         _run(project, "hyperframes", ["remove-background", "subject-source.mp4", "-o", subject_rel], MATTE_TIMEOUT)
 
+    _stage("Placing the captions on the timeline...")
     title = str(clip.data.get("title") or clip_id)
     info = {"clip_id": clip_id, "style": style, "behind_subject": bool(behind_subject), "role": "captions",
             "text": " ".join(w["text"] for w in words)}
@@ -374,11 +389,14 @@ def build_captions(clip, style: str = cap.DEFAULT_STYLE, behind_subject: bool = 
                                   "the track above the captions. Slower (subject matting).", False),
         "text": string("Corrected caption text, to fix what the transcript got wrong. Keep the word count to "
                        "keep each word's timing.", ""),
+        "whole_project": boolean("Caption every clip on the timeline that has speech, in one call (no clip id "
+                                 "needed). Clips with no spoken words are skipped and listed.", False),
     }),
     background_safe=True,
     covers=("caption.add",),
 )
-def add_captions(timeline_clip_id="", clip_query="", style=cap.DEFAULT_STYLE, behind_subject=False, text=""):
+def add_captions(timeline_clip_id="", clip_query="", style=cap.DEFAULT_STYLE, behind_subject=False, text="",
+                 whole_project=False):
     """Add animated captions of what is said in a clip, word-timed, as an overlay on a track above it.
 
     The words come from Zenvi's on-device transcript of the clip, the look from a
@@ -390,8 +408,11 @@ def add_captions(timeline_clip_id="", clip_query="", style=cap.DEFAULT_STYLE, be
     so call this again to change the style or to fix words with text=. One undo
     step removes them.
 
-    Example: {"clip_query": "the interview", "style": "highlight"}.
+    Example: {"clip_query": "the interview", "style": "highlight"}; the whole edit at once:
+    {"whole_project": true, "style": "highlight"}.
     """
+    if whole_project:
+        return _caption_project(style, bool(behind_subject))
     clip = on_main(resolve_clip, timeline_clip_id, clip_query)
     r = build_captions(clip, style, bool(behind_subject), text)
     note = ""
@@ -400,6 +421,38 @@ def add_captions(timeline_clip_id="", clip_query="", style=cap.DEFAULT_STYLE, be
     elif behind_subject:
         note = "; no speaker was found in the shot, so they sit on top"
     return ok("Added %d-word '%s' captions above the clip%s." % (r["words"], cap.STYLES[style]["label"], note), **r)
+
+
+def _speech_clips() -> list:
+    """Timeline clips that can carry speech, in playing order: everything with sound that is not an overlay."""
+    from classes.query import Clip
+
+    overlays = {str(c.id) for c, _info in _caption_clips()}
+    clips = [c for c in Clip.filter() if str(c.id) not in overlays
+             and (c.data.get("reader") or {}).get("has_audio") is not False]
+    return sorted(clips, key=lambda c: (float(c.data.get("position") or 0.0), -int(c.data.get("layer") or 0)))
+
+
+def _caption_project(style: str, behind_subject: bool):
+    """Caption every clip with speech. One clip failing (no words, changed speed) does not stop the rest."""
+    clips = on_main(_speech_clips)
+    if not clips:
+        raise ToolError("there are no clips with sound on the timeline to caption")
+    captioned, skipped = [], []
+    for n, clip in enumerate(clips, 1):
+        title = str(clip.data.get("title") or clip.id)
+        _stage("Clip %d of %d: %s" % (n, len(clips), title))
+        try:
+            captioned.append(dict(build_captions(clip, style, behind_subject), title=title))
+        except ToolError as exc:
+            skipped.append({"clip_id": str(clip.id), "title": title, "reason": str(exc)})
+    if not captioned:
+        raise ToolError("no clip could be captioned: " + "; ".join(
+            "%s: %s" % (s["title"], s["reason"]) for s in skipped[:5]))
+    return ok("Captioned %d of %d clip(s) with '%s' captions%s." % (
+        len(captioned), len(clips), cap.STYLES.get(style, {}).get("label", style),
+        "; %d skipped (no speech found or not captionable)" % len(skipped) if skipped else ""),
+        captioned=captioned, skipped=skipped, style=style)
 
 
 @editor_tool(

@@ -11,6 +11,7 @@ import threading
 
 from qt_api import (
     pyqtSignal,
+    QTimer,
     QCheckBox,
     QComboBox,
     QHBoxLayout,
@@ -40,6 +41,7 @@ class CaptionsDock(QWidget):
     finished = pyqtSignal(str)                 # status line of a finished tool call
     wordsLoaded = pyqtSignal(str, str, str)    # clip id, words, status line
     subjectChecked = pyqtSignal(str, bool)     # clip id, whether there is a speaker to put captions behind
+    progress = pyqtSignal(str)                 # the stage a running caption job has reached
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -47,6 +49,9 @@ class CaptionsDock(QWidget):
         self._clip_id = ""
         self._busy = False
         self._subjects = {}                    # clip id -> has a speaker in shot
+        self._stage, self._seconds = "", 0     # what the running job is doing, and for how long
+        self._clock = QTimer(self)
+        self._clock.setInterval(1000)
 
         self.clipLabel = QLabel(_("Select a clip with speech on the timeline."))
         self.clipLabel.setWordWrap(True)
@@ -63,6 +68,8 @@ class CaptionsDock(QWidget):
         self.loadButton = QPushButton(_("Load words"))
         self.generateButton = QPushButton(_("Generate captions"))
         self.removeButton = QPushButton(_("Remove"))
+        self.projectButton = QPushButton(_("Caption whole project"))
+        self.projectButton.setToolTip(_("Captions every clip on the timeline that has speech, in this style."))
         self.statusLabel = QLabel()
         self.statusLabel.setWordWrap(True)
 
@@ -74,12 +81,18 @@ class CaptionsDock(QWidget):
         for widget in (self.clipLabel, self.styleCombo, self.styleHint, self.behindSubject, self.wordsEdit):
             layout.addWidget(widget)
         layout.addLayout(buttons)
+        layout.addWidget(self.projectButton)
         layout.addWidget(self.statusLabel)
 
         self.styleCombo.currentIndexChanged.connect(self._show_style_hint)
         self.loadButton.clicked.connect(self.load_words)
         self.generateButton.clicked.connect(self.generate)
         self.removeButton.clicked.connect(self.remove)
+        self.projectButton.clicked.connect(self.generate_project)
+        self.progress.connect(self._on_progress)
+        self._clock.timeout.connect(self._tick)
+        from classes.editor_tools import titles_text_captions as tool
+        tool.on_progress = self.progress.emit           # emitted from the worker thread, delivered here
         self.finished.connect(self._on_finished)
         self.wordsLoaded.connect(self._on_words_loaded)
         self.subjectChecked.connect(self._on_subject_checked)
@@ -107,6 +120,8 @@ class CaptionsDock(QWidget):
                 self._on_subject_checked(clip_id, True)          # offered until the check says otherwise
                 threading.Thread(target=self._check_subject, args=(clip_id,), name="zenvi-captions-dock",
                                  daemon=True).start()
+            if clip:
+                self.load_words()                       # the words are there to read and fix straight away
         self._refresh_enabled()
 
     def _check_subject(self, clip_id):
@@ -136,6 +151,25 @@ class CaptionsDock(QWidget):
         ready = bool(self._clip_id) and not self._busy
         for widget in (self.loadButton, self.generateButton, self.removeButton):
             widget.setEnabled(ready)
+        self.projectButton.setEnabled(not self._busy)
+
+    # -- status: the stage a job is at, with a running clock so a long one is visibly alive ----
+
+    def _begin(self, status):
+        self._busy = True
+        self._stage, self._seconds = status, 0
+        self.statusLabel.setText(status)
+        self._clock.start()
+        self._refresh_enabled()
+
+    def _on_progress(self, message):
+        if self._busy:
+            self._stage = get_app()._tr(message)
+            self._tick(0)
+
+    def _tick(self, step=1):
+        self._seconds += step
+        self.statusLabel.setText("%s  %d:%02d" % (self._stage, self._seconds // 60, self._seconds % 60))
 
     def _show_style_hint(self):
         style = cap.STYLES.get(self.styleCombo.currentData() or "", {})
@@ -143,12 +177,10 @@ class CaptionsDock(QWidget):
 
     # -- actions (the tools do the work, off the GUI thread) ------------------
 
-    def _run(self, status, tool_name, args):
-        if self._busy or not self._clip_id:
+    def _run(self, status, tool_name, args, needs_clip=True):
+        if self._busy or (needs_clip and not self._clip_id):
             return
-        self._busy = True
-        self._refresh_enabled()
-        self.statusLabel.setText(status)
+        self._begin(status)
 
         def work():
             from classes.tool_handlers import execute_tool
@@ -164,10 +196,8 @@ class CaptionsDock(QWidget):
     def load_words(self):
         if self._busy or not self._clip_id:
             return
-        self._busy = True
-        self._refresh_enabled()
         _ = get_app()._tr
-        self.statusLabel.setText(_("Reading the clip's speech..."))
+        self._begin(_("Reading the clip's speech..."))
         clip_id = self._clip_id
 
         def work():
@@ -185,10 +215,16 @@ class CaptionsDock(QWidget):
 
     def _on_words_loaded(self, clip_id, text, message):
         self._busy = False
-        if clip_id == self._clip_id:                    # the selection may have moved on meanwhile
+        self._clock.stop()
+        if clip_id == self._clip_id:
             if text:
                 self.wordsEdit.setPlainText(text)
             self.statusLabel.setText(message)
+        elif self._clip_id:                             # the selection moved on meanwhile: read that clip now
+            self.load_words()
+            return
+        else:
+            self.statusLabel.clear()
         self._refresh_enabled()
 
     def generate(self):
@@ -200,11 +236,20 @@ class CaptionsDock(QWidget):
             "text": self.wordsEdit.toPlainText().strip(),
         })
 
+    def generate_project(self):
+        _ = get_app()._tr
+        self._run(_("Captioning the whole project..."), "add_captions_tool", {
+            "whole_project": True,
+            "style": self.styleCombo.currentData(),
+            "behind_subject": self.behindSubject.isChecked() and self.behindSubject.isEnabled(),
+        }, needs_clip=False)
+
     def remove(self):
         _ = get_app()._tr
         self._run(_("Removing captions..."), "remove_captions_tool", {"timeline_clip_id": self._clip_id})
 
     def _on_finished(self, message):
         self._busy = False
+        self._clock.stop()
         self.statusLabel.setText(message)
         self._refresh_enabled()
