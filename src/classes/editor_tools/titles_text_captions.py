@@ -102,26 +102,38 @@ def _indexed_words(clip) -> List[dict]:
             for w in cap.cue_words(cues)]
 
 
-def _whisper_words(clip) -> List[dict]:
-    """The clip's words timed by whisper.cpp (``hyperframes transcribe``); [] when it is not installed or fails."""
+def _speech_words(clip) -> List[dict]:
+    """The clip's words timed on this computer; [] when no recogniser can be had or it fails.
+
+    Whistle (small, downloaded on first use) unless the larger Parakeet was installed,
+    which ``hyperframes transcribe`` runs.
+    """
     media = _media(clip)
-    if not media or not hf.whisper_dir():
+    if not media:
         return []
+    engine = "parakeet" if hf.status().get("parakeet") else "whistle"
     position, _end, duration = clip_extent(clip.data)
     start = float(clip.data.get("start") or 0.0)
     project = _project(clip.id)
     try:
         stat = os.stat(media)                           # replaced or re-exported media is read again
-        kept = os.path.join(hf.project_dir(project), "words-%d-%d-%d-%d.json" % (
-            start * 1000, duration * 1000, stat.st_size, stat.st_mtime_ns))
+        kept = os.path.join(hf.project_dir(project), "words-%s-%d-%d-%d-%d.json" % (
+            engine, start * 1000, duration * 1000, stat.st_size, stat.st_mtime_ns))
         with _speech_lock:
             fresh = os.path.join(hf.project_dir(project), "transcript.json")
             if not os.path.isfile(kept):
                 _run(project, "ffmpeg", ["-y", "-v", "error", "-ss", str(start), "-t", str(duration), "-i", media,
                                          "-vn", "-ac", "1", "-ar", "16000", "speech.wav"], RENDER_TIMEOUT,
                      inputs=[media])
-                # ponytail: whisper's default English model; pass --model/--language when other languages matter.
-                _run(project, "hyperframes", ["transcribe", "speech.wav", "--json"], RENDER_TIMEOUT)
+                if engine == "parakeet":
+                    _run(project, "hyperframes", ["transcribe", "speech.wav", "--engine", "parakeet", "--json"],
+                         RENDER_TIMEOUT)
+                else:
+                    if not hf.speech_ready():
+                        _stage("Downloading the speech recogniser (18 MB, one time)...")
+                        hf.install_speech()
+                    with open(fresh, "w", encoding="utf-8") as fh:
+                        json.dump(hf.transcribe(os.path.join(hf.project_dir(project), "speech.wav")), fh)
             with open(kept if os.path.isfile(kept) else fresh, encoding="utf-8") as fh:
                 entries = json.load(fh)
             spoken = [{"text": w["text"], "start": float(w["start"]), "end": float(w["end"])}
@@ -133,7 +145,7 @@ def _whisper_words(clip) -> List[dict]:
                 os.replace(fresh, kept)
         return words
     except (ToolError, hf.HyperframesError, OSError, KeyError, TypeError, ValueError, AttributeError) as exc:
-        log.warning("Captions: whisper.cpp could not time the words: %s", exc)
+        log.warning("Captions: the %s recogniser could not time the words: %s", engine, exc)
         return []
 
 
@@ -150,8 +162,8 @@ def _silences(project: str, media: str, start: float, duration: float) -> List[t
 def transcript_words(clip) -> List[dict]:
     """The clip's spoken words in timeline seconds.
 
-    Word-timed from Zenvi's on-device recogniser, else from whisper.cpp; when
-    neither is installed, phrase-timed from the transcript stored when the file
+    Word-timed from Zenvi's on-device recogniser, else from the recogniser
+    HyperFrames setup installs; when neither works, phrase-timed from the transcript stored when the file
     was indexed (its words are spread evenly, so they only roughly follow speech).
     """
     from classes.agent_tools.receipt import parse_receipt
@@ -164,7 +176,7 @@ def transcript_words(clip) -> List[dict]:
     words = []
     for entry in (receipt.get("data") or {}).get("clips") or []:
         words.extend(entry.get("words") or [])
-    words = words or _whisper_words(clip)
+    words = words or _speech_words(clip)
     if words:
         return words
     indexed = _indexed_words(clip)

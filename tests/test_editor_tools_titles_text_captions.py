@@ -265,7 +265,7 @@ def test_the_files_index_says_whether_anyone_is_on_camera(editor, studio, monkey
     assert probes == [4.5, 3.0, 6.0]                                  # three frames across the clip
 
 
-def test_whisper_cpp_times_the_words_when_zenvis_recogniser_is_missing(editor, studio, monkeypatch):
+def test_the_bundled_recogniser_times_the_words_when_zenvis_own_is_missing(editor, studio, monkeypatch):
     from classes.agent_tools import transcript
     from classes.agent_tools.receipt import ToolReceipt
     from classes.query import Clip
@@ -276,26 +276,43 @@ def test_whisper_cpp_times_the_words_when_zenvis_recogniser_is_missing(editor, s
         "get_transcript_tool", "Error: faster-whisper is not installed").to_json())
     monkeypatch.setattr(tool_handlers, "_clip_transcript_cues", lambda clip_id: [
         {"text": "evenly spread guess", "source_start": 2.0, "source_end": 7.0}])
-    monkeypatch.setattr(hf, "whisper_dir", lambda: "/opt/whisper")
-    ran = []
+    ran, heard, state = [], [], {"speech": False, "parakeet": False, "installable": True}
 
     def fake_run(project, program, args, **kw):
         ran.append((program, list(args)))
         os.makedirs(hf.project_dir(project), exist_ok=True)
         if args[0] == "transcribe":
             open(os.path.join(hf.project_dir(project), "transcript.json"), "w").write(json.dumps(
-                [{"text": "Hello", "start": 0.31, "end": 0.52}, {"text": "there", "start": 0.6, "end": 1.0}]))
+                [{"text": "Hello,", "start": 0.3, "end": 0.5}, {"text": "there.", "start": 0.6, "end": 1.1}]))
         return 0, "ok"
 
+    def fake_install():
+        if not state["installable"]:
+            raise hf.HyperframesError("no speech recogniser is published for this computer")
+        state["speech"] = True
+
     monkeypatch.setattr(hf, "run", fake_run)
+    monkeypatch.setattr(hf, "status", lambda: dict(state, ready=True))
+    monkeypatch.setattr(hf, "speech_ready", lambda: state["speech"])
+    monkeypatch.setattr(hf, "install_speech", fake_install)
+    monkeypatch.setattr(hf, "transcribe", lambda wav: heard.append(wav) or [
+        {"text": "hello", "start": 0.31, "end": 0.52}, {"text": "there", "start": 0.6, "end": 1.0}])
+
     words = captions.clip_caption_words(Clip.get(id=studio.clip))
-    assert words == [{"text": "Hello", "start": 0.31, "end": 0.52}, {"text": "there", "start": 0.6, "end": 1.0}]
+    assert words == [{"text": "hello", "start": 0.31, "end": 0.52}, {"text": "there", "start": 0.6, "end": 1.0}]
+    assert state["speech"] is True                                                         # fetched on first use
     cut = [a for p, a in ran if p == "ffmpeg"][0]
     assert cut[cut.index("-ss") + 1] == "2.0" and cut[cut.index("-t") + 1] == "5.0"       # the clip's own audio
     captions.clip_caption_words(Clip.get(id=studio.clip))
-    assert len([a for _p, a in ran if a[0] == "transcribe"]) == 1                          # kept for next time
+    assert len(heard) == 1 and not any(a[0] == "transcribe" for _p, a in ran)              # kept for next time
 
-    monkeypatch.setattr(hf, "whisper_dir", lambda: None)                                   # none installed: fall back
+    state["parakeet"] = True                                    # the larger recogniser, once installed, is used
+    words = captions.clip_caption_words(Clip.get(id=studio.clip))
+    assert [w["text"] for w in words] == ["Hello,", "there."] and len(heard) == 1
+    asked = [a for _p, a in ran if a[0] == "transcribe"][0]
+    assert asked[asked.index("--engine") + 1] == "parakeet"
+
+    state.update(speech=False, parakeet=False, installable=False)                          # neither: fall back
     other = editor.add_clip(Clip.get(id=studio.clip).data["file_id"], position=30.0, layer=L1, start=2.0, end=7.0)
     assert [w["text"] for w in captions.clip_caption_words(Clip.get(id=other))] == ["evenly", "spread", "guess"]
 

@@ -175,7 +175,17 @@ def test_status_and_install_plan(home, monkeypatch):
     (home / "install.json").write_text(json.dumps({"browser": str(home / "chrome")}))
     st = hf.status()
     assert st["ready"] is True and st["cli"] == hf.CLI_VERSION and st["skills"] == 1
-    assert hf.install_plan(st, platform="win32") == []
+    # the speech recogniser is part of setup, but nothing that renders waits for it
+    assert st["speech"] is False and [s["id"] for s in hf.install_plan(st, platform="win32")] == ["speech"]
+    (home / "speech").mkdir()
+    for path in (hf.speech_engine(), hf.speech_model()):
+        open(path, "wb").write(b"0")
+    st = hf.status()
+    assert st["speech"] is True and hf.install_plan(st, platform="win32") == []
+    # the larger recogniser is opt-in, installed by the CLI itself (prebuilt, no compiler)
+    assert st["parakeet"] is False
+    assert [s["argv"] for s in hf.install_plan(st, platform="win32", parakeet=True)] == [
+        ["hyperframes", "models", "install", "parakeet"]]
     hf.remember(node=st["node"])
     assert json.loads((home / "install.json").read_text())["node"] == "/opt/node"
 
@@ -208,3 +218,66 @@ def test_node_is_downloaded_into_the_private_folder_and_checksum_checked(home, m
     assert hf.install_node() == str(home / "node" / "node.exe")
     assert (home / "node" / "node.exe").read_bytes() == b"MZ"
     assert json.loads((home / "install.json").read_text())["node"] == str(home / "node" / "node.exe")
+
+
+# -- speech -------------------------------------------------------------------
+
+def test_the_speech_recogniser_is_a_pinned_checksummed_download(home, monkeypatch):
+    import hashlib
+    import io
+
+    for platform, machine in (("win32", "AMD64"), ("darwin", "arm64"), ("linux", "x86_64"), ("linux", "aarch64")):
+        files = hf._speech_downloads(platform, machine)
+        assert len(files) == 2 and all(len(sha) == 64 and "/resolve/main/" not in url for url, _name, sha in files)
+    with pytest.raises(hf.HyperframesError, match="no speech recogniser"):
+        hf._speech_downloads("darwin", "x86_64")
+
+    payload = {"engine": b"MZ engine", "model": b"cact model"}
+    good = [("https://x/engine", os.path.basename(hf.speech_engine()), hashlib.sha256(payload["engine"]).hexdigest()),
+            ("https://x/model", "whistle.cact", hashlib.sha256(payload["model"]).hexdigest())]
+    monkeypatch.setattr(hf, "_fetch", lambda url: io.BytesIO(payload[url.rsplit("/", 1)[1]]))
+    monkeypatch.setattr(hf, "_speech_downloads", lambda *a: [good[0], ("https://x/model", "whistle.cact", "0" * 64)])
+    with pytest.raises(hf.HyperframesError, match="checksum"):
+        hf.install_speech()
+    assert not hf.speech_ready() and not list((home / "speech").glob("*.partial"))
+
+    monkeypatch.setattr(hf, "_speech_downloads", lambda *a: good)
+    hf.install_speech()
+    assert hf.speech_ready() and open(hf.speech_model(), "rb").read() == b"cact model"
+
+
+def test_transcribe_runs_the_private_engine_and_returns_timed_words(home, monkeypatch, tmp_path):
+    (home / "speech").mkdir()
+    for path in (hf.speech_engine(), hf.speech_model()):
+        open(path, "wb").write(b"0")
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen.update(argv=argv, **kw)
+        body = json.dumps({"text": "hello there", "language": "en", "words": [
+            {"word": "hello", "start": 0.32, "end": 0.56, "probability": 0.9},
+            {"word": "there", "start": 0.56, "end": 0.96, "probability": 0.8}]})
+        return type("P", (), {"returncode": seen.get("code", 0), "stdout": body, "stderr": "loading\n"})()
+
+    monkeypatch.setattr(hf.subprocess, "run", fake_run)
+    wav = str(tmp_path / "speech.wav")
+    assert hf.transcribe(wav) == [{"text": "hello", "start": 0.32, "end": 0.56},
+                                  {"text": "there", "start": 0.56, "end": 0.96}]
+    assert seen["argv"][0] == hf.speech_engine() and "--audio-word-timestamps" in seen["argv"]
+    assert seen["argv"][seen["argv"].index("--model") + 1] == hf.speech_model()
+    assert seen.get("shell", False) is False
+
+    seen["code"] = 3
+    with pytest.raises(hf.HyperframesError, match="exit code 3"):
+        hf.transcribe(wav)
+
+
+def test_nothing_builds_whisper(home):
+    # `hyperframes transcribe` falls back to cloning and compiling whisper.cpp when none is installed.
+    assert not hasattr(hf, "whisper_dir")
+    with pytest.raises(hf.HyperframesError, match="parakeet"):
+        hf.check_command("demo", "hyperframes", ["transcribe", "speech.wav"])
+    with pytest.raises(hf.HyperframesError, match="parakeet"):
+        hf.check_command("demo", "hyperframes", ["transcribe", "speech.wav", "--engine", "auto"])
+    assert hf.check_command("demo", "hyperframes", ["transcribe", "speech.wav", "--engine", "parakeet"])
+    assert hf.check_command("demo", "hyperframes", ["transcribe", "speech.wav", "--engine=parakeet", "--json"])
