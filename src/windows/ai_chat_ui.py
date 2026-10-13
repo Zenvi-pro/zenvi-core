@@ -3568,9 +3568,11 @@ class AIChatWindow(QDockWidget):
             if self._use_web_ui:
                 self._run_js("if(window.setPlanChip) window.setPlanChip(null);")
             self._set_agent_mode("agent")
-            self._handle_web_send_message(
-                "Carry out the plan.", sess.get("last_user_model_id") or "", "agent",
-                effort=sess.get("last_user_effort") or "")
+            # Straight to the dispatcher: the composer's send would spend the
+            # files staged for the user's next message on this one.
+            self._dispatch_user_message(
+                "Carry out the plan.", sess.get("last_user_model_id") or "",
+                agent_mode="agent", effort=sess.get("last_user_effort") or "")
             return
         worker = sess.get("worker")
         if worker is None or not getattr(worker, "_backend_session_id", None):

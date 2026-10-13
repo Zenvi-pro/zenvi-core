@@ -2646,8 +2646,7 @@ def test_windows_path_dirs_expand_registry_variables():
 
     dirs = ar._expand_path_value(
         r"%NVM_SYMLINK%;C:\Tools;;%NOPE%\bin", {"NVM_SYMLINK": r"C:\nvm4w\nodejs"})
-    assert dirs[:2] == [r"C:\nvm4w\nodejs", r"C:\Tools"]
-    assert not [d for d in dirs if d.startswith(r"C:\nvm4w") is False and "%" in d and "NVM" in d]
+    assert dirs == [r"C:\nvm4w\nodejs", r"C:\Tools"], "the unresolved %NOPE% entry is dropped"
 
 
 def test_cursor_prompt_goes_through_stdin_not_the_cmd_launcher(qapp, monkeypatch):
@@ -2944,8 +2943,20 @@ def test_each_cli_gets_the_effort_in_its_own_dialect(qapp, monkeypatch, tmp_path
 
     opencode = ar.OpenCodeRunner()
     opencode._model_id, opencode._effort = "openai/gpt-5.5", "high"
+    cli = ar._opencode_native(opencode.CLI_NAME)
+    monkeypatch.setattr(ar, "_opencode_standalone", {cli: True})      # OpenCode 2
     argv = opencode._build_argv("hi")
-    assert argv[argv.index("--model") + 1] == "openai/gpt-5.5#high"
+    assert argv[argv.index("--model") + 1] == "openai/gpt-5.5#high" and "--variant" not in argv
+    monkeypatch.setattr(ar, "_opencode_standalone", {cli: False})     # OpenCode 1
+    argv = opencode._build_argv("hi")
+    assert argv[argv.index("--model") + 1] == "openai/gpt-5.5"
+    assert argv[argv.index("--variant") + 1] == "high"
+    # Version unknown (its --help failed): OpenCode 2's form, which is the
+    # installed base. --variant there would be rejected outright.
+    monkeypatch.setattr(ar, "_opencode_standalone", {})
+    monkeypatch.setattr(ar, "_opencode_has_standalone", lambda cli: False)
+    argv = opencode._build_argv("hi")
+    assert argv[argv.index("--model") + 1] == "openai/gpt-5.5#high" and "--variant" not in argv
     opencode._model_id = ""                    # no model picked: nothing to hang it on
     assert "--model" not in opencode._build_argv("hi")
 
@@ -3160,6 +3171,19 @@ def test_a_plan_turn_never_runs_as_an_ordinary_one(qapp, fresh_cursor_lineup, mo
     runner.run_request("hi", "b")
     assert not launched and len(errors) == 1 and "plan" in errors[0].lower()
 
+    # The same for any mode that promises limits. Before the CLI has listed
+    # its models nothing is known to be offered, and "readonly" must not
+    # become a turn with the sandbox off.
+    ar._cli_lineups.pop(ar.BACKEND_CODEX, None)
+    for mode in (ar.MODE_READONLY, ar.MODE_WORKSPACE, ar.MODE_AUTO):
+        runner._pending_mode = mode
+        runner.run_request("hi", "")
+    assert not launched and len(errors) == 4
+    # Asking for no limits is never refused.
+    runner._pending_mode = ar.MODE_BYPASS
+    runner.run_request("hi", "")
+    assert launched == ["codex"]
+
 
 def test_cursor_cli_plans_in_its_own_plan_mode(qapp, monkeypatch, tmp_path):
     """Cursor CLI has `--mode plan`, so it gets the Plan/Agent toggle too."""
@@ -3366,3 +3390,26 @@ def test_codex_prompt_goes_through_stdin_not_argv(qapp):
         assert runner._proc.stdin.closed and runner._proc.stdin.sent.endswith("my private prompt")
         # Import steering only on the first turn; the thread keeps it.
         assert (runner._proc.stdin.sent == "my private prompt") is resumed
+
+
+def test_a_model_probe_reaps_the_cli_it_killed(monkeypatch):
+    """Without a wait() after kill() each probe left a zombie on POSIX, and
+    Claude Code is probed every 15 minutes."""
+    import windows.agent_runners as ar
+
+    calls = []
+
+    class FakeProc:
+        def __init__(self, *a, **kw):
+            self.stdin = types.SimpleNamespace(write=lambda s: None, flush=lambda: None)
+            self.stdout = iter(['{"type": "control_response"}\n'])
+
+        def kill(self):
+            calls.append("kill")
+
+        def wait(self, timeout=None):
+            calls.append("wait")
+
+    monkeypatch.setattr(ar.subprocess, "Popen", FakeProc)
+    ar._acp_style_probe(["cli"], [{}], lambda ev: True)
+    assert calls == ["kill", "wait"]

@@ -1599,8 +1599,10 @@
     }
 
     // Shift+Tab, as in the CLIs: through the permission modes, then Plan,
-    // then round again. False when there is nothing to step.
+    // then round again. False when there is nothing to step, and always for
+    // Zenvi Assistant, where Shift+Tab stays the way out of the message box.
     function stepMode() {
+        if (!cliModes().length) return false;
         var modes = pillModes();
         var canPlan = modeToggleEl && modeToggleEl.style.display !== 'none';
         if (currentAgentMode === 'planning') {
@@ -2302,11 +2304,10 @@
 
     inputEl.addEventListener('keydown', function (e) {
         if (e.key === 'Tab' && e.shiftKey) {
-            // With no mode to step, it stays a Shift+Tab.
-            if (stepMode()) {
-                e.preventDefault();
-                return;
-            }
+            // With no mode to step, it stays a plain Shift+Tab (focus moves
+            // on); either way it is not a Tab for the palettes below.
+            if (stepMode()) e.preventDefault();
+            return;
         }
         if (mentionPaletteOpen) {
             if (e.key === 'ArrowDown') {

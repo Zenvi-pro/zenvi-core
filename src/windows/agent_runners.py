@@ -1487,6 +1487,7 @@ def _acp_style_probe(argv, requests, done, timeout: float = 60.0) -> str:
         killer.cancel()
         try:
             proc.kill()
+            proc.wait(timeout=5)    # reap it: no zombie per probe on POSIX
         except Exception:
             pass
     return "".join(out)
@@ -1963,12 +1964,13 @@ class BaseAgentRunner(QObject):
             self._emit_error("Could not start the editor tool server: %s" % e)
             return
 
-        if asked_mode == MODE_PLAN and self._mode != MODE_PLAN:
-            # Plan promises that nothing gets changed: never fall back to a
-            # turn with full permissions.
+        if asked_mode and asked_mode != MODE_BYPASS and self._mode != asked_mode:
+            # Plan and the restricted modes promise limits: never fall back to
+            # a turn with full permissions. (Nothing is on offer until the CLI
+            # has listed its models.)
             self._emit_error(
-                "%s has no plan mode for this model. Switch to Agent, or pick "
-                "another model." % self.DISPLAY_NAME)
+                "%s has no %s mode for this model. Pick another mode or "
+                "another model." % (self.DISPLAY_NAME, asked_mode))
             return
 
         self._cli_path = _which_cli(self.CLI_NAME)
@@ -2821,8 +2823,13 @@ class OpenCodeRunner(BaseAgentRunner):
         if self._mode == MODE_PLAN:
             argv += ["--agent", "plan"]     # OpenCode's read-only agent
         if self._model_id:
-            # OpenCode calls an effort level a variant: provider/model#variant.
-            argv += ["--model", self._model_id + ("#" + self._effort if self._effort else "")]
+            # OpenCode calls an effort level a variant. OpenCode 2 takes it as
+            # provider/model#variant; OpenCode 1 as --variant, used only when
+            # the CLI is known to be one (not when its --help gave no answer).
+            if self._effort and _opencode_standalone.get(cli) is False:
+                argv += ["--model", self._model_id, "--variant", self._effort]
+            else:
+                argv += ["--model", self._model_id + ("#" + self._effort if self._effort else "")]
         # Like Codex, OpenCode mints its own session id ("ses_..."), and
         # --session with any other id fails with "Session not found".
         if self._cli_started and self._cli_id_from_cli and self._cli_session_id:

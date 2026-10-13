@@ -397,11 +397,18 @@ def test_a_cli_plan_gets_the_plan_chip_and_execute_carries_it_out(window_cls, mo
     assert not sess2.get("current_plan")
 
     # Execute: the same conversation, now in Agent mode.
+    sess["attachments"] = ["staged.mp4"]
+    sess["last_user_effort"] = "high"
+    win._dispatch_user_message = MagicMock()
     window_cls._execute_plan(win, "", "")
     assert sess["current_plan"] is None
     win._set_agent_mode.assert_called_with("agent")
-    sent = win._handle_web_send_message.call_args
-    assert "plan" in sent.args[0].lower() and sent.args[1] == "opus" and sent.args[2] == "agent"
+    sent = win._dispatch_user_message.call_args
+    assert "plan" in sent.args[0].lower() and sent.args[1] == "opus"
+    assert sent.kwargs["agent_mode"] == "agent" and sent.kwargs["effort"] == "high"
+    # Files staged for the user's next message are not spent on this one.
+    win._handle_web_send_message.assert_not_called()
+    assert sess["attachments"] == ["staged.mp4"]
 
 
 def test_the_chat_page_offers_plan_to_a_cli_agent_that_has_it():
