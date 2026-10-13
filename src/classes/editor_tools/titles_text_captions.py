@@ -197,18 +197,42 @@ def _subject_coverage(project: str, media: str, at: float) -> Optional[float]:
         return None
 
 
-def has_subject(clip) -> bool:
-    """Whether the middle of the clip shows something the matting can cut out to put captions behind.
+def _people_on_camera(clip) -> Optional[int]:
+    """The most people in shot at once during the clip, from the file's indexed chapters; None if not recorded."""
+    from classes.query import File
 
-    ponytail: one frame, and any salient foreground counts (the matting does not know
-    people from objects); sample more frames or add a person detector if that matters.
+    f = File.get(id=str(clip.data.get("file_id") or ""))
+    chapters = ((f.data.get("ai_metadata") or {}).get("chapters") if f else None) or []
+    start, end = float(clip.data.get("start") or 0.0), float(clip.data.get("end") or 0.0)
+    counts = [int(c["people"]) for c in chapters if isinstance(c, dict) and isinstance(c.get("people"), int)
+              and float(c.get("start") or 0.0) < end and float(c.get("end") or 0.0) > start]
+    return max(counts) if counts else None
+
+
+def has_subject(clip) -> bool:
+    """Whether anyone is in shot at some point in the clip, so captions can go behind them.
+
+    A speaker who walks in or out, or several speakers, need nothing more: the cut-out
+    is made frame by frame, so it holds whoever is there and is empty when nobody is.
+    The answer comes from the file's index (people per chapter); a file indexed before
+    that was recorded is checked by cutting out three of its frames instead.
+
+    ponytail: that fallback counts any salient foreground, not only people; re-index the
+    file for the real answer.
     """
     media = _media(clip)
     if not media:
         return False
+    people = _people_on_camera(clip)
+    if people is not None:
+        return people > 0
     _start, _end, duration = clip_extent(clip.data)
-    coverage = _subject_coverage(_project(clip.id), media, float(clip.data.get("start") or 0.0) + duration / 2.0)
-    return coverage is None or SUBJECT_COVERAGE[0] <= coverage <= SUBJECT_COVERAGE[1]
+    source_start = float(clip.data.get("start") or 0.0)
+    for share in (0.5, 0.2, 0.8):
+        coverage = _subject_coverage(_project(clip.id), media, source_start + duration * share)
+        if coverage is None or SUBJECT_COVERAGE[0] <= coverage <= SUBJECT_COVERAGE[1]:
+            return True
+    return False
 
 
 def _visible_band(project: str, rel: str) -> Optional[tuple]:
@@ -360,7 +384,9 @@ def add_captions(timeline_clip_id="", clip_query="", style=cap.DEFAULT_STYLE, be
     The words come from Zenvi's on-device transcript of the clip, the look from a
     HyperFrames caption style (karaoke pill, highlight sweep, kinetic slam, ...),
     and the render happens on this computer. Use behind_subject=true for captions
-    that sit behind the speaker. Captioning a clip again replaces its captions,
+    that sit behind the speaker: only when someone is on camera in the clip (see the
+    file's chapters), never for b-roll, screen recordings or graphics. People coming
+    and going, or several speakers, are fine. Captioning a clip again replaces its captions,
     so call this again to change the style or to fix words with text=. One undo
     step removes them.
 

@@ -244,6 +244,27 @@ def test_with_no_speaker_in_shot_the_captions_go_on_top_as_usual(editor, studio,
     assert not any(a[0] == "remove-background" for _p, a in studio.commands)
 
 
+def test_the_files_index_says_whether_anyone_is_on_camera(editor, studio, monkeypatch):
+    from classes.query import Clip, File
+    probes = []
+    monkeypatch.setattr(captions, "_subject_coverage", lambda project, media, at: probes.append(at) or 0.0)
+    clip = Clip.get(id=studio.clip)                                   # plays 2.0-7.0 of the file
+    f = File.get(id=clip.data["file_id"])
+
+    def indexed(chapters):
+        f.data["ai_metadata"] = {"chapters": chapters}
+        f.save()
+        return captions.has_subject(Clip.get(id=studio.clip))
+
+    # The speaker walks in half way, then two people: any of it is enough, and no frame is probed.
+    assert indexed([{"start": 0, "end": 4, "people": 0}, {"start": 4, "end": 9, "people": 2}]) is True
+    assert indexed([{"start": 0, "end": 9, "people": 0}]) is False                     # b-roll throughout
+    assert indexed([{"start": 0, "end": 2, "people": 1}, {"start": 2, "end": 9, "people": 0}]) is False
+    assert probes == []
+    assert indexed([{"start": 0, "end": 9, "title": "indexed before people was recorded"}]) is False
+    assert probes == [4.5, 3.0, 6.0]                                  # three frames across the clip
+
+
 def test_whisper_cpp_times_the_words_when_zenvis_recogniser_is_missing(editor, studio, monkeypatch):
     from classes.agent_tools import transcript
     from classes.agent_tools.receipt import ToolReceipt
