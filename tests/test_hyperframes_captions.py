@@ -153,3 +153,18 @@ def test_phrase_cues_become_evenly_spaced_words():
 def test_a_word_cannot_close_the_script_element():
     html = cap.compile_composition(COMPONENT, [{"text": "</script><b>x", "start": 0.0, "end": 0.5}], 2.0)
     assert "</script><b>" not in html and "<\\/script>" in html
+
+
+def test_a_word_does_not_stay_lit_through_a_pause():
+    # Whisper stretches a word across the silence after it; the highlight then runs through the pause.
+    words = [{"text": "breaks", "start": 3.88, "end": 4.4}, {"text": "between", "start": 4.46, "end": 5.68},
+             {"text": "work", "start": 5.68, "end": 5.92}, {"text": "late", "start": 6.3, "end": 6.9}]
+    out = cap.trim_to_speech(words, [(4.68, 5.37), (6.08, 6.67), (9.0, 9.1)])
+    assert out[0] == words[0]                                        # untouched: no silence inside it
+    assert out[1] == {"text": "between", "start": 4.46, "end": 4.68}   # ends where the pause begins
+    assert out[2] == words[2]
+    assert out[3] == {"text": "late", "start": 6.67, "end": 6.9}       # timed inside a pause: starts after it
+    assert cap.trim_to_speech(words, []) == words
+    # A silence that would swallow the whole word is ignored rather than deleting it.
+    assert cap.trim_to_speech([{"text": "uh", "start": 1.0, "end": 1.2}], [(0.9, 1.3)]) == [
+        {"text": "uh", "start": 1.0, "end": 1.2}]

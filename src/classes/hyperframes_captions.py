@@ -120,6 +120,25 @@ def clip_words(transcript_words: List[dict], clip_start: float, clip_end: float)
     return out
 
 
+def trim_to_speech(words: List[dict], silences: List[tuple]) -> List[dict]:
+    """*words* cut back so none is lit during a pause.
+
+    Recognisers stretch a word over the silence next to it. A word that runs into
+    a silence ends where the silence starts; one timed to start inside a silence
+    starts where it ends. A change that would leave nothing of the word is skipped.
+    """
+    out = []
+    for word in words:
+        start, end = float(word["start"]), float(word["end"])
+        for quiet_from, quiet_to in silences:
+            if quiet_from <= start < quiet_to < end:
+                start = quiet_to
+            elif start < quiet_from < end:
+                end = quiet_from
+        out.append(dict(word, start=round(start, 3), end=round(end, 3)) if end > start else word)
+    return out
+
+
 def retime_words(words: List[dict], text: str) -> List[dict]:
     """*words* with their text replaced by the user's edited *text*.
 
