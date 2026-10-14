@@ -295,3 +295,40 @@ def test_nothing_builds_whisper(home):
                    ["--engine", "parakeet", "--model", "large-v3"]):
         with pytest.raises(hf.HyperframesError, match="parakeet"):
             hf.check_command("demo", "hyperframes", ["transcribe", "speech.wav"] + sneaky)
+
+
+def test_a_computer_whistle_has_no_engine_for_gets_parakeet_by_default(home, monkeypatch):
+    # Intel Macs: Cactus publishes no standalone engine, sherpa-onnx (Parakeet) does run there.
+    assert [hf.speech_supported(p, m) for p, m in (
+        ("win32", "AMD64"), ("linux", "x86_64"), ("linux", "aarch64"), ("darwin", "arm64"), ("darwin", "x86_64"),
+    )] == [True, True, True, True, False]
+    ready = {"node": "/opt/node", "cli": hf.CLI_VERSION, "browser": "/chrome", "skills": 1, "speech": False,
+             "parakeet": False}
+    monkeypatch.setattr(hf._platform, "machine", lambda: "x86_64")
+    steps = hf.install_plan(ready, platform="darwin")
+    assert [s["id"] for s in steps] == ["parakeet"] and steps[0]["argv"][-3:] == ["models", "install", "parakeet"]
+    assert hf.install_plan(dict(ready, parakeet=True), platform="darwin") == []
+    assert [s["id"] for s in hf.install_plan(ready, platform="linux")] == ["speech"]      # everyone else: Whistle
+    monkeypatch.setattr(hf._platform, "machine", lambda: "arm64")
+    assert [s["id"] for s in hf.install_plan(ready, platform="darwin")] == ["speech"]
+
+
+def test_parakeet_is_installed_by_the_cli_into_zenvis_folder(home, monkeypatch):
+    with pytest.raises(hf.HyperframesError, match="hyperframes_setup_tool"):
+        hf.install_parakeet()                                     # the CLI itself is not there yet
+    (home / "node_modules" / "hyperframes" / "dist").mkdir(parents=True)
+    (home / "node_modules" / "hyperframes" / "dist" / "cli.js").write_text("//")
+    monkeypatch.setattr(hf, "find_program", lambda name: "/opt/%s" % name)
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen.update(argv=argv, **kw)
+        return type("P", (), {"returncode": seen.get("code", 0), "stdout": "", "stderr": "no network"})()
+
+    monkeypatch.setattr(hf.subprocess, "run", fake_run)
+    hf.install_parakeet()
+    assert seen["argv"][0] == "/opt/node" and seen["argv"][2:] == ["models", "install", "parakeet"]
+    assert seen["env"]["HOME"] == str(home)                       # the model lands under Zenvi's folder
+    seen["code"] = 1
+    with pytest.raises(hf.HyperframesError, match="no network"):
+        hf.install_parakeet()

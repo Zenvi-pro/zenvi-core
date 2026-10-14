@@ -276,7 +276,7 @@ def test_the_bundled_recogniser_times_the_words_when_zenvis_own_is_missing(edito
         "get_transcript_tool", "Error: faster-whisper is not installed").to_json())
     monkeypatch.setattr(tool_handlers, "_clip_transcript_cues", lambda clip_id: [
         {"text": "evenly spread guess", "source_start": 2.0, "source_end": 7.0}])
-    ran, heard, state = [], [], {"speech": False, "parakeet": False, "installable": True}
+    ran, heard, state = [], [], {"speech": False, "parakeet": False, "installable": True, "whistle_here": True}
 
     def fake_run(project, program, args, **kw):
         ran.append((program, list(args)))
@@ -295,6 +295,8 @@ def test_the_bundled_recogniser_times_the_words_when_zenvis_own_is_missing(edito
     monkeypatch.setattr(hf, "status", lambda: dict(state, ready=True))
     monkeypatch.setattr(hf, "speech_ready", lambda: state["speech"])
     monkeypatch.setattr(hf, "install_speech", fake_install)
+    monkeypatch.setattr(hf, "speech_supported", lambda: state["whistle_here"])
+    monkeypatch.setattr(hf, "install_parakeet", lambda: state.update(parakeet=True))
     monkeypatch.setattr(hf, "transcribe", lambda wav: heard.append(wav) or [
         {"text": "hello", "start": 0.31, "end": 0.52}, {"text": "there", "start": 0.6, "end": 1.0}])
 
@@ -312,7 +314,13 @@ def test_the_bundled_recogniser_times_the_words_when_zenvis_own_is_missing(edito
     asked = [a for _p, a in ran if a[0] == "transcribe"][0]
     assert asked[asked.index("--engine") + 1] == "parakeet"
 
-    state.update(speech=False, parakeet=False, installable=False)                          # neither: fall back
+    # A computer Whistle has no engine for (Intel Mac): Parakeet is fetched and used instead.
+    state.update(speech=False, parakeet=False, whistle_here=False)
+    mac = editor.add_clip(Clip.get(id=studio.clip).data["file_id"], position=50.0, layer=L1, start=2.0, end=7.0)
+    assert [w["text"] for w in captions.clip_caption_words(Clip.get(id=mac))] == ["Hello,", "there."]
+    assert state["parakeet"] is True and state["speech"] is False and len(heard) == 1
+
+    state.update(speech=False, parakeet=False, installable=False, whistle_here=True)       # neither: fall back
     other = editor.add_clip(Clip.get(id=studio.clip).data["file_id"], position=30.0, layer=L1, start=2.0, end=7.0)
     assert [w["text"] for w in captions.clip_caption_words(Clip.get(id=other))] == ["evenly", "spread", "guess"]
 

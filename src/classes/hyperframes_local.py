@@ -66,6 +66,7 @@ SPEECH_ENGINES = {          # (platform, architecture) -> (path in Cactus-Comput
     ("linux", "x64"): ("linux-x86_64/needle", "3531889c4d677acc47905b21c79741b52fd9af2c54ba177f54f83c0bc12e84c7"),
     ("linux", "arm64"): ("linux-arm64/needle", "ab21ca5272e7699ed4972246d95e75dd09a7b81f5ef8b8a6262e6ff57c600593"),
 }
+PARAKEET_INSTALL = ("models", "install", "parakeet")   # prebuilt sherpa-onnx runtime + model, by the CLI
 SPEECH_THREADS = 8                    # the engine's own default stops at 4; 8 nearly halved the time on a laptop
 SPEECH_TIMEOUT = 3600
 
@@ -292,6 +293,15 @@ def speech_ready() -> bool:
         return False
 
 
+def speech_supported(platform: Optional[str] = None, machine: Optional[str] = None) -> bool:
+    """Whether Whistle has an engine for this computer. Where it has none (Intel Macs), Parakeet is the recogniser."""
+    try:
+        _speech_downloads(platform, machine)
+        return True
+    except HyperframesError:
+        return False
+
+
 def _parakeet_model() -> str:
     """Where ``hyperframes models install parakeet`` puts the model (under the CLI's own cache)."""
     return os.path.join(home(), ".cache", "hyperframes", "parakeet", "parakeet-tdt-0.6b-v3-int8", "encoder.int8.onnx")
@@ -363,12 +373,13 @@ def install_plan(st: dict, platform: Optional[str] = None, captions: bool = Fals
     if captions and not st.get("caption_helpers"):
         steps.append({"id": "captions", "label": "Install the caption preview helpers",
                       "argv": ["npm", "install", "--save-exact", "--no-audit", "--no-fund", *CAPTION_PACKAGES]})
-    if not st.get("speech"):
+    whistle = speech_supported(platform)
+    if whistle and not st.get("speech"):
         steps.append({"id": "speech", "label": "Download the speech recogniser captions use (Whistle, 18 MB)"})
-    if parakeet and not st.get("parakeet"):
-        steps.append({"id": "parakeet", "label": "Download the higher-accuracy speech recogniser (Parakeet, "
-                                                 "about 900 MB)",
-                      "argv": ["hyperframes", "models", "install", "parakeet"]})
+    if (parakeet or not whistle) and not st.get("parakeet"):
+        steps.append({"id": "parakeet", "label": "Download the %s (Parakeet, about 900 MB)" % (
+            "higher-accuracy speech recogniser" if whistle else "speech recogniser captions use"),
+                      "argv": ["hyperframes", *PARAKEET_INSTALL]})
     return steps
 
 
@@ -451,6 +462,17 @@ def install_speech() -> None:
             finally:
                 if os.path.lexists(partial):
                     os.remove(partial)
+
+
+def install_parakeet() -> None:
+    """Have the CLI download its Parakeet recogniser (runtime and model) into Zenvi's folder."""
+    node = find_program("node")
+    if not node or not os.path.isfile(cli_script()):
+        raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
+    code, out = _exec([node, cli_script(), *PARAKEET_INSTALL], home(), node, INSTALL_TIMEOUT)
+    if code != 0:
+        raise HyperframesError("could not install the Parakeet speech recogniser (exit code %d): %s"
+                               % (code, out[-1500:]))
 
 
 def transcribe(wav: str, timeout: float = SPEECH_TIMEOUT) -> List[dict]:

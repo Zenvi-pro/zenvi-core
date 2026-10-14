@@ -107,12 +107,14 @@ def _speech_words(clip) -> List[dict]:
     """The clip's words timed on this computer; [] when no recogniser can be had or it fails.
 
     Whistle (small, downloaded on first use) unless the larger Parakeet was installed,
-    which ``hyperframes transcribe`` runs.
+    which ``hyperframes transcribe`` runs. Where Whistle has no engine (Intel Macs),
+    Parakeet is the recogniser and is downloaded on first use instead.
     """
     media = _media(clip)
     if not media:
         return []
-    engine = "parakeet" if hf.status().get("parakeet") else "whistle"
+    installed = bool(hf.status().get("parakeet"))
+    engine = "parakeet" if installed or not hf.speech_supported() else "whistle"
     position, _end, duration = clip_extent(clip.data)
     start = float(clip.data.get("start") or 0.0)
     project = _project(clip.id)
@@ -127,6 +129,9 @@ def _speech_words(clip) -> List[dict]:
                                          "-vn", "-ac", "1", "-ar", "16000", "speech.wav"], RENDER_TIMEOUT,
                      inputs=[media])
                 if engine == "parakeet":
+                    if not installed:
+                        _stage("Downloading the speech recogniser (about 900 MB, one time)...")
+                        hf.install_parakeet()
                     _run(project, "hyperframes", ["transcribe", "speech.wav", "--engine", "parakeet", "--json"],
                          RENDER_TIMEOUT)
                 else:
