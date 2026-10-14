@@ -140,14 +140,16 @@ def recognisers(dock, monkeypatch):
 
 
 def _pick(state, name):
+    """What a user's click does: select the entry and report it as activated (even the current one)."""
     combo = state.dock.recogniserCombo
     combo.setCurrentIndex(combo.findData(name))
+    combo.activated.emit(combo.currentIndex())
 
 
 def test_the_recogniser_picker_shows_what_is_installed_and_installs_on_request(recognisers):
     s = recognisers
     combo = s.dock.recogniserCombo
-    assert combo.isVisible() or not combo.isHidden()
+    assert not combo.isHidden() and not s.dock.recogniserLabel.isHidden()
     assert combo.currentData() == "whistle"
     assert "installed" in combo.itemText(combo.findData("whistle")).lower()
     assert "900 mb" in combo.itemText(combo.findData("parakeet")).lower()            # a download, with its size
@@ -166,6 +168,27 @@ def test_the_recogniser_picker_shows_what_is_installed_and_installs_on_request(r
     _pick(s, "whistle")                                        # installed: switching is immediate, nothing asked
     _pump(s.app, 0.2)
     assert s.chosen == "whistle" and len(s.asked) == 2 and s.installs == ["parakeet"]
+
+    # The chosen recogniser's files were deleted: it shows as a download, and picking it again fetches it.
+    s.installed["whistle"] = False
+    s.dock._fill_recognisers()
+    assert "18 mb" in combo.itemText(combo.findData("whistle")).lower()
+    _pick(s, "whistle")
+    _pump(s.app, 0.8)
+    assert s.installs == ["parakeet", "whistle"] and s.chosen == "whistle"
+
+
+def test_the_download_question_already_counts_as_busy(recognisers):
+    s = recognisers
+
+    def ask(parent, label):
+        s.busy_while_asking = s.dock._busy and not s.dock.generateButton.isEnabled()
+        return False
+
+    from windows.views import captions_dock
+    captions_dock._confirm_download = ask
+    _pick(s, "parakeet")
+    assert s.busy_while_asking and not s.dock._busy
 
 
 def test_a_failed_install_keeps_the_previous_recogniser(recognisers):

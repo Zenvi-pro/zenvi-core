@@ -293,7 +293,7 @@ def test_the_bundled_recogniser_times_the_words_when_zenvis_own_is_missing(edito
 
     monkeypatch.setattr(hf, "run", fake_run)
     monkeypatch.setattr(hf, "status", lambda: dict(state, ready=True))
-    monkeypatch.setattr(hf, "speech_ready", lambda: state["speech"])
+    monkeypatch.setattr(hf, "speech_ready", lambda fresh=False: state["speech"])
     monkeypatch.setattr(hf, "install_speech", fake_install)
     monkeypatch.setattr(hf, "speech_supported", lambda: state["whistle_here"])
     monkeypatch.setattr(hf, "install_parakeet", lambda: state.update(parakeet=True))

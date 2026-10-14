@@ -27,9 +27,6 @@ from classes import hyperframes_local as hf
 from classes.app import get_app
 from classes.logger import log
 
-# The recognisers the dock offers: what each is like, and how big a first download it is.
-RECOGNISERS = (("whistle", "Whistle: fast, small", "18 MB"),
-               ("parakeet", "Parakeet: more accurate, slower on short clips", "about 900 MB"))
 
 
 def _confirm_download(parent, label) -> bool:
@@ -111,7 +108,7 @@ class CaptionsDock(QWidget):
         layout.addWidget(self.statusLabel)
 
         self.styleCombo.currentIndexChanged.connect(self._show_style_hint)
-        self.recogniserCombo.currentIndexChanged.connect(self._recogniser_picked)
+        self.recogniserCombo.activated.connect(self._recogniser_picked)    # user picks, including the current one
         self.recogniserInstalled.connect(self._on_recogniser_installed)
         self.loadButton.clicked.connect(self.load_words)
         self.generateButton.clicked.connect(self.generate)
@@ -130,36 +127,46 @@ class CaptionsDock(QWidget):
 
     # -- speech recogniser ---------------------------------------------------
 
+    def _recognisers(self) -> dict:
+        """recogniser -> (what it is like, how big a first download it is), translated."""
+        _ = get_app()._tr
+        return {"whistle": (_("Whistle: fast, small"), _("18 MB")),
+                "parakeet": (_("Parakeet: more accurate, slower on short clips"), _("about 900 MB"))}
+
     def _fill_recognisers(self):
         """One entry per recogniser, saying whether it is installed or how big its download is."""
         _ = get_app()._tr
-        st = hf.status()
+        st = hf.status()                                # the files are hashed: a deleted one shows as a download
         installed = {"whistle": bool(st.get("speech")), "parakeet": bool(st.get("parakeet"))}
         combo = self.recogniserCombo
         combo.blockSignals(True)
         combo.clear()
-        for name, label, size in RECOGNISERS:
-            combo.addItem("%s (%s)" % (_(label), _("installed") if installed[name] else _("download %s") % size),
-                          name)
-        combo.setCurrentIndex(max(0, combo.findData(hf.recogniser())))
+        for name, (label, size) in self._recognisers().items():
+            combo.addItem("%s (%s)" % (label, _("installed") if installed[name] else _("download %s") % size), name)
+        combo.setCurrentIndex(max(0, combo.findData(st.get("recogniser") or hf.recogniser())))
         combo.blockSignals(False)
         self._installed = installed
 
     def _recogniser_picked(self, *_args):
         name = self.recogniserCombo.currentData()
-        if not name or name == hf.recogniser() or self._busy:
-            if self._busy:
-                self._fill_recognisers()                # one job at a time: put the picker back
+        if not name or self._busy:
+            self._fill_recognisers()                    # one job at a time: put the picker back
             return
+        self._fill_recognisers()                        # what is installed now, not when the dock was built
+        self.recogniserCombo.setCurrentIndex(self.recogniserCombo.findData(name))
         if self._installed.get(name):
             hf.choose_recogniser(name)
             return
-        label = dict((n, "%s (%s)" % (get_app()._tr(lab), size)) for n, lab, size in RECOGNISERS)[name]
-        if not _confirm_download(self, label):
+        _ = get_app()._tr
+        label, size = self._recognisers()[name]
+        self._busy = True                               # before the dialog: it runs its own event loop
+        self._refresh_enabled()
+        if not _confirm_download(self, "%s (%s)" % (label, size)):
+            self._busy = False
+            self._refresh_enabled()
             self._fill_recognisers()                    # declined: back to the one in use
             return
-        _ = get_app()._tr
-        self._begin(_("Downloading %s...") % label)
+        self._begin(_("Downloading %s (%s)...") % (label, size))
 
         def work():
             try:
@@ -180,9 +187,11 @@ class CaptionsDock(QWidget):
             self.statusLabel.setText(_("The speech recogniser could not be downloaded: %s") % error)
         else:
             hf.choose_recogniser(name)
-            self.statusLabel.setText(_("Captions now use %s.") % name.capitalize())
+            self.statusLabel.setText(_("Captions now use %s.") % self._recognisers()[name][0])
         self._fill_recognisers()
         self._refresh_enabled()
+        if self._clip_id and self._words_for != self._clip_id:      # the selection moved on during the download
+            self.load_words()
 
     # -- selection ----------------------------------------------------------
 

@@ -353,5 +353,12 @@ def test_the_users_choice_of_recogniser_is_remembered(home, monkeypatch):
         hf.choose_recogniser("whisper")
     hf.choose_recogniser("whistle")
     assert hf.recogniser() == "whistle"
+    hf.remember(node="/opt/node")                                        # other keys survive, nothing half-written
+    assert json.loads((home / "install.json").read_text()) == {"recogniser": "whistle", "node": "/opt/node"}
+    assert not list(home.glob("*.partial"))
+    # Parakeet chosen but not installed: setup offers it even without accurate_speech.
+    ready = {"node": 1, "cli": hf.CLI_VERSION, "browser": 1, "skills": 1, "speech": True, "parakeet": False}
+    assert [s["id"] for s in hf.install_plan(dict(ready, recogniser="parakeet"))] == ["parakeet"]
+    assert hf.install_plan(dict(ready, recogniser="whistle")) == []
     monkeypatch.setattr(hf, "speech_supported", lambda *a: False)       # Intel Mac: there is no choice
     assert hf.recogniser() == "parakeet"

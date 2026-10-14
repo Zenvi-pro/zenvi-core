@@ -141,7 +141,7 @@ def _speech_words(clip) -> List[dict]:
                     _run(project, "hyperframes", ["transcribe", "speech.wav", "--engine", "parakeet", "--json"],
                          RENDER_TIMEOUT)
                 else:
-                    if not hf.speech_ready():
+                    if not hf.speech_ready(fresh=True):
                         _stage("Downloading the speech recogniser (18 MB, one time)...")
                         hf.install_speech()
                     with open(fresh, "w", encoding="utf-8") as fh:

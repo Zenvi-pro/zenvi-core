@@ -87,8 +87,8 @@ def _status_line(st: dict) -> str:
              "ffmpeg " + ("found" if st["ffmpeg"] else "MISSING"),
              "bash " + ("found" if st["bash"] else "missing (skill .sh scripts unavailable)"),
              "caption helpers " + ("installed" if st["caption_helpers"] else "not installed"),
-             "speech recogniser in use " + hf.recogniser().capitalize()
-             + (" (installed)" if st.get("parakeet" if hf.recogniser() == "parakeet" else "speech")
+             "speech recogniser in use " + str(st.get("recogniser") or "whistle").capitalize()
+             + (" (installed)" if st.get("parakeet" if st.get("recogniser") == "parakeet" else "speech")
                 else " (not installed yet)")]
     return "; ".join(parts)
 

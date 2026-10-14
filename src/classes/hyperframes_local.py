@@ -183,6 +183,9 @@ def _install_file() -> str:
     return os.path.join(home(), "install.json")
 
 
+_install_file_lock = threading.Lock()
+
+
 def _remembered() -> dict:
     try:
         with open(_install_file(), encoding="utf-8") as fh:
@@ -194,11 +197,14 @@ def _remembered() -> dict:
 
 def remember(**values) -> None:
     """Save found/installed paths so the next run does not search again."""
-    data = _remembered()
-    data.update({k: v for k, v in values.items() if v})
     os.makedirs(home(), exist_ok=True)
-    with open(_install_file(), "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2)
+    with _install_file_lock:                            # the dock and setup can both write it
+        data = _remembered()
+        data.update({k: v for k, v in values.items() if v})
+        partial = _install_file() + ".partial"
+        with open(partial, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+        os.replace(partial, _install_file())            # a reader sees the old file or the new one, never half
 
 
 def _private_node() -> str:
@@ -263,7 +269,9 @@ def speech_model() -> str:
 
 
 _verified: dict = {}                  # path -> (size, mtime_ns, sha256) of the last file hashed there
-_speech_install_lock = threading.Lock()
+# Held to hash, replace or run the speech files; reentrant because transcribe hashes while holding it.
+# (On Windows a file being hashed cannot be replaced, so nothing hashes while an install swaps them.)
+_speech_install_lock = threading.RLock()
 
 
 def _sha256(path: str, fresh: bool = False) -> str:
@@ -272,17 +280,18 @@ def _sha256(path: str, fresh: bool = False) -> str:
     *fresh* reads the file again whatever was remembered: size and time can be made to match.
     """
     try:
-        if os.path.islink(path) or not os.path.isfile(path):
-            return ""
-        stat = os.stat(path)
-        seen = _verified.get(path)
-        if fresh or not seen or seen[:2] != (stat.st_size, stat.st_mtime_ns):
-            sha = hashlib.sha256()
-            with open(path, "rb") as fh:
-                for block in iter(lambda: fh.read(1 << 20), b""):
-                    sha.update(block)
-            seen = _verified[path] = (stat.st_size, stat.st_mtime_ns, sha.hexdigest())
-        return seen[2]
+        with _speech_install_lock:
+            if os.path.islink(path) or not os.path.isfile(path):
+                return ""
+            stat = os.stat(path)
+            seen = _verified.get(path)
+            if fresh or not seen or seen[:2] != (stat.st_size, stat.st_mtime_ns):
+                sha = hashlib.sha256()
+                with open(path, "rb") as fh:
+                    for block in iter(lambda: fh.read(1 << 20), b""):
+                        sha.update(block)
+                seen = _verified[path] = (stat.st_size, stat.st_mtime_ns, sha.hexdigest())
+            return seen[2]
     except OSError:
         return ""
 
@@ -356,6 +365,7 @@ def status() -> dict:
         "caption_helpers": captions,
         "speech": speech_ready(),
         "parakeet": os.path.isfile(_parakeet_model()),
+        "recogniser": recogniser(),
     }
 
 
@@ -396,7 +406,7 @@ def install_plan(st: dict, platform: Optional[str] = None, captions: bool = Fals
     whistle = speech_supported(platform)
     if whistle and not st.get("speech"):
         steps.append({"id": "speech", "label": "Download the speech recogniser captions use (Whistle, 18 MB)"})
-    if (parakeet or not whistle) and not st.get("parakeet"):
+    if (parakeet or not whistle or st.get("recogniser") == "parakeet") and not st.get("parakeet"):
         steps.append({"id": "parakeet", "label": "Download the %s (Parakeet, about 900 MB)" % (
             "higher-accuracy speech recogniser" if whistle else "speech recogniser captions use"),
                       "argv": ["hyperframes", *PARAKEET_INSTALL]})
