@@ -130,6 +130,12 @@ def _speech_words(clip) -> List[dict]:
                      inputs=[media])
                 if engine == "parakeet":
                     if not installed:
+                        # Too large to fetch unasked: the same confirmation the setup tool shows.
+                        from classes.editor_tools import ai_generation_hyperframes as setup
+
+                        wanted = [s for s in hf.install_plan(hf.status(), parakeet=True) if s["id"] == "parakeet"]
+                        if not setup._ask_install_consent(wanted):
+                            raise ToolError("the speech recogniser download was declined")
                         _stage("Downloading the speech recogniser (about 900 MB, one time)...")
                         hf.install_parakeet()
                     _run(project, "hyperframes", ["transcribe", "speech.wav", "--engine", "parakeet", "--json"],

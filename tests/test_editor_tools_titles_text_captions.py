@@ -314,9 +314,17 @@ def test_the_bundled_recogniser_times_the_words_when_zenvis_own_is_missing(edito
     asked = [a for _p, a in ran if a[0] == "transcribe"][0]
     assert asked[asked.index("--engine") + 1] == "parakeet"
 
-    # A computer Whistle has no engine for (Intel Mac): Parakeet is fetched and used instead.
+    # A computer Whistle has no engine for (Intel Mac): Parakeet is used instead, and because it
+    # is a 900 MB download the user is asked first.
+    from classes.editor_tools import ai_generation_hyperframes as setup
     state.update(speech=False, parakeet=False, whistle_here=False)
+    asked = []
+    monkeypatch.setattr(hf, "install_plan", lambda st, **kw: [{"id": "parakeet", "label": "Parakeet, 900 MB"}])
+    monkeypatch.setattr(setup, "_ask_install_consent", lambda steps: asked.append(steps) or False)
     mac = editor.add_clip(Clip.get(id=studio.clip).data["file_id"], position=50.0, layer=L1, start=2.0, end=7.0)
+    assert [w["text"] for w in captions.clip_caption_words(Clip.get(id=mac))] == ["evenly", "spread", "guess"]
+    assert state["parakeet"] is False and asked[0][0]["id"] == "parakeet"          # declined: nothing fetched
+    monkeypatch.setattr(setup, "_ask_install_consent", lambda steps: True)
     assert [w["text"] for w in captions.clip_caption_words(Clip.get(id=mac))] == ["Hello,", "there."]
     assert state["parakeet"] is True and state["speech"] is False and len(heard) == 1
 

@@ -121,7 +121,9 @@ def hyperframes_setup(install=False, captions=False, accurate_speech=False):
     if not steps:
         return ok("HyperFrames is ready. " + _status_line(st), **st)
     if not install:
-        return ok("HyperFrames is NOT ready: " + _status_line(st) + ". Call hyperframes_setup_tool with "
+        # Rendering does not wait for the speech recogniser; only captions' word timing does.
+        state = "can render, but setup is not complete" if st["ready"] else "is NOT ready"
+        return ok("HyperFrames " + state + ": " + _status_line(st) + ". Call hyperframes_setup_tool with "
                   "install=true to install: " + "; ".join(s["label"] for s in steps) + ".", **st)
     if not _ask_install_consent(steps):
         raise ToolError("the user declined the HyperFrames install; motion graphics, product demos and "

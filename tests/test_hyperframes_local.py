@@ -256,9 +256,19 @@ def test_the_speech_recogniser_is_a_pinned_checksummed_download(home, monkeypatc
     hf.install_speech()
     assert hf.speech_ready() and open(hf.speech_engine(), "rb").read() == b"MZ engine"
 
+    # Same size, same timestamp: the remembered hash is not trusted for a file about to be run.
+    stat = os.stat(hf.speech_engine())
+    open(hf.speech_engine(), "wb").write(b"MZ ENGINE")
+    os.utime(hf.speech_engine(), ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    ran = []
+    monkeypatch.setattr(hf.subprocess, "run", lambda *a, **kw: ran.append(a))
+    with pytest.raises(hf.HyperframesError, match="not installed"):
+        hf.transcribe("speech.wav")
+    assert ran == []
+
 
 def test_transcribe_runs_the_private_engine_and_returns_timed_words(home, monkeypatch, tmp_path):
-    monkeypatch.setattr(hf, "speech_ready", lambda: True)
+    monkeypatch.setattr(hf, "speech_ready", lambda fresh=False: True)
     seen = {}
 
     def fake_run(argv, **kw):

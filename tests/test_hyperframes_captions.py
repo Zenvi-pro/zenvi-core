@@ -165,7 +165,7 @@ def test_a_word_does_not_stay_lit_through_a_pause():
     assert out[2] == words[2]
     assert out[3] == {"text": "late", "start": 6.67, "end": 6.9}       # timed inside a pause: starts after it
     assert cap.trim_to_speech(words, []) == words
-    # Two silences that touch are one pause: the word starts after both, not between them.
+    # Two silences that touch act as one pause, in whatever order they are listed.
     assert cap.trim_to_speech([{"text": "so", "start": 1.0, "end": 4.5}], [(2.0, 4.0), (0.5, 2.0)]) == [
         {"text": "so", "start": 4.0, "end": 4.5}]
     # A silence that would swallow the whole word is ignored rather than deleting it.

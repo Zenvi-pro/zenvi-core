@@ -266,14 +266,17 @@ _verified: dict = {}                  # path -> (size, mtime_ns, sha256) of the 
 _speech_install_lock = threading.Lock()
 
 
-def _sha256(path: str) -> str:
-    """SHA-256 of a regular file ('' for anything else); remembered until the file changes."""
+def _sha256(path: str, fresh: bool = False) -> str:
+    """SHA-256 of a regular file ('' for anything else); remembered until the file changes.
+
+    *fresh* reads the file again whatever was remembered: size and time can be made to match.
+    """
     try:
         if os.path.islink(path) or not os.path.isfile(path):
             return ""
         stat = os.stat(path)
         seen = _verified.get(path)
-        if not seen or seen[:2] != (stat.st_size, stat.st_mtime_ns):
+        if fresh or not seen or seen[:2] != (stat.st_size, stat.st_mtime_ns):
             sha = hashlib.sha256()
             with open(path, "rb") as fh:
                 for block in iter(lambda: fh.read(1 << 20), b""):
@@ -284,10 +287,10 @@ def _sha256(path: str) -> str:
         return ""
 
 
-def speech_ready() -> bool:
+def speech_ready(fresh: bool = False) -> bool:
     """Both files are there and are the pinned ones: the engine is a program Zenvi runs."""
     try:
-        return all(_sha256(os.path.join(home(), "speech", name)) == digest
+        return all(_sha256(os.path.join(home(), "speech", name), fresh) == digest
                    for _url, name, digest in _speech_downloads())
     except HyperframesError:
         return False
@@ -454,9 +457,7 @@ def install_speech() -> None:
                                            "checksum; try again" % name)
                 if sys.platform != "win32":
                     os.chmod(partial, 0o755)
-                if os.path.lexists(target):
-                    os.remove(target)
-                os.replace(partial, target)
+                os.replace(partial, target)             # in one step: a failure leaves what was there
             except OSError as exc:
                 raise HyperframesError("could not download the speech recogniser (%s): %s" % (name, exc))
             finally:
@@ -481,13 +482,14 @@ def transcribe(wav: str, timeout: float = SPEECH_TIMEOUT) -> List[dict]:
     Not an assistant command: Zenvi runs it on audio it extracted itself. Audio of any
     length is accepted (the engine windows it); seven European languages, detected.
     """
-    if not speech_ready():
-        raise HyperframesError("the speech recogniser is not installed; call hyperframes_setup_tool")
     argv = [speech_engine(), "--model", speech_model(), "--audio", wav, "--audio-word-timestamps",
             "--threads", str(max(1, min(SPEECH_THREADS, os.cpu_count() or 4)))]
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=timeout, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+        with _speech_install_lock:                      # no install swaps the files between the check and the run
+            if not speech_ready(fresh=True):            # hashed again each run: this file is executed
+                raise HyperframesError("the speech recogniser is not installed; call hyperframes_setup_tool")
+            proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                  timeout=timeout, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
     except subprocess.TimeoutExpired:
         raise HyperframesError("the speech recogniser did not finish within %d s" % timeout)
     except OSError as exc:

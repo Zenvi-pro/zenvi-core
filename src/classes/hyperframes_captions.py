@@ -127,16 +127,10 @@ def trim_to_speech(words: List[dict], silences: List[tuple]) -> List[dict]:
     a silence ends where the silence starts; one timed to start inside a silence
     starts where it ends. A change that would leave nothing of the word is skipped.
     """
-    pauses: List[list] = []
-    for quiet_from, quiet_to in sorted(silences):       # touching or overlapping silences are one pause
-        if pauses and quiet_from <= pauses[-1][1] + 0.01:
-            pauses[-1][1] = max(pauses[-1][1], quiet_to)
-        else:
-            pauses.append([quiet_from, quiet_to])
     out = []
     for word in words:
         start, end = float(word["start"]), float(word["end"])
-        for quiet_from, quiet_to in pauses:
+        for quiet_from, quiet_to in sorted(silences):   # in order, so back-to-back silences act as one pause
             if quiet_from <= start < quiet_to < end:
                 start = quiet_to
             elif start < quiet_from < end:
