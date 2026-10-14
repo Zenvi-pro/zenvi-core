@@ -305,6 +305,23 @@ def speech_supported(platform: Optional[str] = None, machine: Optional[str] = No
         return False
 
 
+RECOGNISERS = ("whistle", "parakeet")
+
+
+def recogniser() -> str:
+    """The recogniser captions use: the user's choice, Whistle by default, Parakeet where Whistle has no engine."""
+    if not speech_supported():
+        return "parakeet"
+    chosen = _remembered().get("recogniser")
+    return chosen if chosen in RECOGNISERS else "whistle"
+
+
+def choose_recogniser(name: str) -> None:
+    if name not in RECOGNISERS:
+        raise HyperframesError("recogniser must be one of %s; got %r" % (", ".join(RECOGNISERS), name))
+    remember(recogniser=name)
+
+
 def _parakeet_model() -> str:
     """Where ``hyperframes models install parakeet`` puts the model (under the CLI's own cache)."""
     return os.path.join(home(), ".cache", "hyperframes", "parakeet", "parakeet-tdt-0.6b-v3-int8", "encoder.int8.onnx")
@@ -590,6 +607,8 @@ def install(captions: bool = False, progress: Optional[Callable[[str], None]] = 
             remember(browser=lines[-1] if code == 0 and lines else "")
     st = status()
     remember(node=st["node"], bash=st["bash"])
+    if parakeet and st["parakeet"]:
+        choose_recogniser("parakeet")                   # asked for better accuracy: use it
     return st
 
 

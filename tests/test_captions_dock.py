@@ -105,3 +105,83 @@ def test_a_running_job_shows_its_stage_and_a_clock(dock):
     assert not d.projectButton.isEnabled()
     _pump(dock.app, 0.6)
     assert d.statusLabel.text() == "Done." and d.projectButton.isEnabled()
+
+
+@pytest.fixture
+def recognisers(dock, monkeypatch):
+    from classes import hyperframes_local as hf
+    from windows.views import captions_dock
+
+    state = types.SimpleNamespace(chosen="whistle", installed={"whistle": True, "parakeet": False}, supported=True,
+                                  asked=[], answer=False, installs=[], fail=False)
+
+    def install(name):
+        def run():
+            time.sleep(0.2)
+            if state.fail:
+                raise hf.HyperframesError("no network")
+            state.installs.append(name)
+            state.installed[name] = True
+        return run
+
+    monkeypatch.setattr(hf, "recogniser", lambda: state.chosen if state.supported else "parakeet")
+    monkeypatch.setattr(hf, "choose_recogniser", lambda name: setattr(state, "chosen", name))
+    monkeypatch.setattr(hf, "speech_supported", lambda *a: state.supported)
+    monkeypatch.setattr(hf, "speech_ready", lambda fresh=False: state.installed["whistle"])
+    monkeypatch.setattr(hf, "status", lambda: {"ready": True, "speech": state.installed["whistle"],
+                                               "parakeet": state.installed["parakeet"]})
+    monkeypatch.setattr(hf, "install_speech", install("whistle"))
+    monkeypatch.setattr(hf, "install_parakeet", install("parakeet"))
+    monkeypatch.setattr(captions_dock, "_confirm_download",
+                        lambda parent, label: state.asked.append(label) or state.answer)
+    state.dock = captions_dock.CaptionsDock()
+    state.app = dock.app
+    return state
+
+
+def _pick(state, name):
+    combo = state.dock.recogniserCombo
+    combo.setCurrentIndex(combo.findData(name))
+
+
+def test_the_recogniser_picker_shows_what_is_installed_and_installs_on_request(recognisers):
+    s = recognisers
+    combo = s.dock.recogniserCombo
+    assert combo.isVisible() or not combo.isHidden()
+    assert combo.currentData() == "whistle"
+    assert "installed" in combo.itemText(combo.findData("whistle")).lower()
+    assert "900 mb" in combo.itemText(combo.findData("parakeet")).lower()            # a download, with its size
+
+    _pick(s, "parakeet")                                       # not installed: asked first; declining changes nothing
+    _pump(s.app, 0.3)
+    assert s.asked and s.installs == [] and combo.currentData() == "whistle" and s.chosen == "whistle"
+
+    s.answer = True
+    _pick(s, "parakeet")
+    assert s.dock._busy and "parakeet" in s.dock.statusLabel.text().lower()
+    _pump(s.app, 0.8)
+    assert s.installs == ["parakeet"] and s.chosen == "parakeet" and not s.dock._busy
+    assert "installed" in combo.itemText(combo.findData("parakeet")).lower()
+
+    _pick(s, "whistle")                                        # installed: switching is immediate, nothing asked
+    _pump(s.app, 0.2)
+    assert s.chosen == "whistle" and len(s.asked) == 2 and s.installs == ["parakeet"]
+
+
+def test_a_failed_install_keeps_the_previous_recogniser(recognisers):
+    s = recognisers
+    s.answer, s.fail = True, True
+    _pick(s, "parakeet")
+    _pump(s.app, 0.8)
+    assert s.chosen == "whistle" and s.dock.recogniserCombo.currentData() == "whistle"
+    assert "no network" in s.dock.statusLabel.text()
+
+
+def test_an_intel_mac_has_no_choice_to_make(dock, monkeypatch):
+    from classes import hyperframes_local as hf
+    from windows.views import captions_dock
+
+    monkeypatch.setattr(hf, "speech_supported", lambda *a: False)
+    monkeypatch.setattr(hf, "status", lambda: {"ready": True, "speech": False, "parakeet": False})
+    d = captions_dock.CaptionsDock()
+    assert d.recogniserCombo.isHidden() and d.recogniserLabel.isHidden()

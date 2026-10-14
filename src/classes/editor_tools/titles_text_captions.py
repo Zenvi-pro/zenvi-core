@@ -106,15 +106,15 @@ def _indexed_words(clip) -> List[dict]:
 def _speech_words(clip) -> List[dict]:
     """The clip's words timed on this computer; [] when no recogniser can be had or it fails.
 
-    Whistle (small, downloaded on first use) unless the larger Parakeet was installed,
-    which ``hyperframes transcribe`` runs. Where Whistle has no engine (Intel Macs),
-    Parakeet is the recogniser and is downloaded on first use instead.
+    The recogniser the user picked in the Captions dock: Whistle (small, downloaded on
+    first use) by default, or the larger Parakeet, which ``hyperframes transcribe`` runs.
+    Where Whistle has no engine (Intel Macs) Parakeet is the only one.
     """
     media = _media(clip)
     if not media:
         return []
     installed = bool(hf.status().get("parakeet"))
-    engine = "parakeet" if installed or not hf.speech_supported() else "whistle"
+    engine = hf.recogniser()
     position, _end, duration = clip_extent(clip.data)
     start = float(clip.data.get("start") or 0.0)
     project = _project(clip.id)

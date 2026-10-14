@@ -23,8 +23,24 @@ from qt_api import (
 )
 
 from classes import hyperframes_captions as cap
+from classes import hyperframes_local as hf
 from classes.app import get_app
 from classes.logger import log
+
+# The recognisers the dock offers: what each is like, and how big a first download it is.
+RECOGNISERS = (("whistle", "Whistle: fast, small", "18 MB"),
+               ("parakeet", "Parakeet: more accurate, slower on short clips", "about 900 MB"))
+
+
+def _confirm_download(parent, label) -> bool:
+    from qt_api import QMessageBox
+
+    _ = get_app()._tr
+    return QMessageBox.question(
+        parent, _("Download speech recogniser"),
+        _("%s is not on this computer yet. Download it now? It is a one-time download and is "
+          "used for caption word timing from then on.") % label,
+        QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) == QMessageBox.Yes
 
 
 def status_line(out: str) -> str:
@@ -42,6 +58,7 @@ class CaptionsDock(QWidget):
     wordsLoaded = pyqtSignal(str, str, str)    # clip id, words, status line
     subjectChecked = pyqtSignal(str, bool)     # clip id, whether there is a speaker to put captions behind
     progress = pyqtSignal(str)                 # the stage a running caption job has reached
+    recogniserInstalled = pyqtSignal(str, str)  # recogniser, error ('' when it installed)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -73,19 +90,29 @@ class CaptionsDock(QWidget):
         self.projectButton.setToolTip(_("Captions every clip on the timeline that has speech, in this style."))
         self.statusLabel = QLabel()
         self.statusLabel.setWordWrap(True)
+        self.recogniserLabel = QLabel(_("Speech recogniser"))
+        self.recogniserCombo = QComboBox()
+        self.recogniserCombo.setToolTip(_("Times each spoken word for the captions. Both run on this computer."))
+        self._fill_recognisers()
+        if not hf.speech_supported():                   # Intel Macs: Parakeet is the only one there is
+            self.recogniserLabel.hide()
+            self.recogniserCombo.hide()
 
         buttons = QHBoxLayout()
         for button in (self.loadButton, self.generateButton, self.removeButton):
             buttons.addWidget(button)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        for widget in (self.clipLabel, self.styleCombo, self.styleHint, self.behindSubject, self.wordsEdit):
+        for widget in (self.clipLabel, self.styleCombo, self.styleHint, self.behindSubject, self.recogniserLabel,
+                       self.recogniserCombo, self.wordsEdit):
             layout.addWidget(widget)
         layout.addLayout(buttons)
         layout.addWidget(self.projectButton)
         layout.addWidget(self.statusLabel)
 
         self.styleCombo.currentIndexChanged.connect(self._show_style_hint)
+        self.recogniserCombo.currentIndexChanged.connect(self._recogniser_picked)
+        self.recogniserInstalled.connect(self._on_recogniser_installed)
         self.loadButton.clicked.connect(self.load_words)
         self.generateButton.clicked.connect(self.generate)
         self.removeButton.clicked.connect(self.remove)
@@ -100,6 +127,62 @@ class CaptionsDock(QWidget):
         get_app().window.SelectionChanged.connect(self.selection_changed)
         self._show_style_hint()
         self.selection_changed()
+
+    # -- speech recogniser ---------------------------------------------------
+
+    def _fill_recognisers(self):
+        """One entry per recogniser, saying whether it is installed or how big its download is."""
+        _ = get_app()._tr
+        st = hf.status()
+        installed = {"whistle": bool(st.get("speech")), "parakeet": bool(st.get("parakeet"))}
+        combo = self.recogniserCombo
+        combo.blockSignals(True)
+        combo.clear()
+        for name, label, size in RECOGNISERS:
+            combo.addItem("%s (%s)" % (_(label), _("installed") if installed[name] else _("download %s") % size),
+                          name)
+        combo.setCurrentIndex(max(0, combo.findData(hf.recogniser())))
+        combo.blockSignals(False)
+        self._installed = installed
+
+    def _recogniser_picked(self, *_args):
+        name = self.recogniserCombo.currentData()
+        if not name or name == hf.recogniser() or self._busy:
+            if self._busy:
+                self._fill_recognisers()                # one job at a time: put the picker back
+            return
+        if self._installed.get(name):
+            hf.choose_recogniser(name)
+            return
+        label = dict((n, "%s (%s)" % (get_app()._tr(lab), size)) for n, lab, size in RECOGNISERS)[name]
+        if not _confirm_download(self, label):
+            self._fill_recognisers()                    # declined: back to the one in use
+            return
+        _ = get_app()._tr
+        self._begin(_("Downloading %s...") % label)
+
+        def work():
+            try:
+                (hf.install_parakeet if name == "parakeet" else hf.install_speech)()
+                error = ""
+            except Exception as exc:
+                log.warning("Captions dock: could not install the %s recogniser", name, exc_info=True)
+                error = str(exc) or exc.__class__.__name__
+            self.recogniserInstalled.emit(name, error)
+
+        threading.Thread(target=work, name="zenvi-captions-dock", daemon=True).start()
+
+    def _on_recogniser_installed(self, name, error):
+        self._busy = False
+        self._clock.stop()
+        _ = get_app()._tr
+        if error:
+            self.statusLabel.setText(_("The speech recogniser could not be downloaded: %s") % error)
+        else:
+            hf.choose_recogniser(name)
+            self.statusLabel.setText(_("Captions now use %s.") % name.capitalize())
+        self._fill_recognisers()
+        self._refresh_enabled()
 
     # -- selection ----------------------------------------------------------
 
@@ -153,6 +236,7 @@ class CaptionsDock(QWidget):
         for widget in (self.loadButton, self.generateButton, self.removeButton):
             widget.setEnabled(ready)
         self.projectButton.setEnabled(not self._busy)
+        self.recogniserCombo.setEnabled(not self._busy)
 
     # -- status: the stage a job is at, with a running clock so a long one is visibly alive ----
 

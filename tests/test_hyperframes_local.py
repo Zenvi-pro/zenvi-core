@@ -342,3 +342,16 @@ def test_parakeet_is_installed_by_the_cli_into_zenvis_folder(home, monkeypatch):
     seen["code"] = 1
     with pytest.raises(hf.HyperframesError, match="no network"):
         hf.install_parakeet()
+
+
+def test_the_users_choice_of_recogniser_is_remembered(home, monkeypatch):
+    assert hf.recogniser() == "whistle"                                  # the default
+    hf.choose_recogniser("parakeet")
+    assert hf.recogniser() == "parakeet"
+    assert json.loads((home / "install.json").read_text())["recogniser"] == "parakeet"
+    with pytest.raises(hf.HyperframesError, match="whistle"):
+        hf.choose_recogniser("whisper")
+    hf.choose_recogniser("whistle")
+    assert hf.recogniser() == "whistle"
+    monkeypatch.setattr(hf, "speech_supported", lambda *a: False)       # Intel Mac: there is no choice
+    assert hf.recogniser() == "parakeet"

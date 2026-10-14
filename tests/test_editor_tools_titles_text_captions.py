@@ -308,7 +308,12 @@ def test_the_bundled_recogniser_times_the_words_when_zenvis_own_is_missing(edito
     captions.clip_caption_words(Clip.get(id=studio.clip))
     assert len(heard) == 1 and not any(a[0] == "transcribe" for _p, a in ran)              # kept for next time
 
-    state["parakeet"] = True                                    # the larger recogniser, once installed, is used
+    monkeypatch.setattr(hf, "recogniser", lambda: "parakeet" if state.get("chosen") else
+                        "whistle" if state["whistle_here"] else "parakeet")
+    state["parakeet"] = True
+    words = captions.clip_caption_words(Clip.get(id=studio.clip))
+    assert [w["text"] for w in words] == ["hello", "there"] and len(heard) == 1          # installed, not chosen
+    state["chosen"] = True                                      # the user picked the larger recogniser
     words = captions.clip_caption_words(Clip.get(id=studio.clip))
     assert [w["text"] for w in words] == ["Hello,", "there."] and len(heard) == 1
     asked = [a for _p, a in ran if a[0] == "transcribe"][0]
@@ -328,7 +333,7 @@ def test_the_bundled_recogniser_times_the_words_when_zenvis_own_is_missing(edito
     assert [w["text"] for w in captions.clip_caption_words(Clip.get(id=mac))] == ["Hello,", "there."]
     assert state["parakeet"] is True and state["speech"] is False and len(heard) == 1
 
-    state.update(speech=False, parakeet=False, installable=False, whistle_here=True)       # neither: fall back
+    state.update(speech=False, parakeet=False, installable=False, whistle_here=True, chosen=False)  # neither: fall back
     other = editor.add_clip(Clip.get(id=studio.clip).data["file_id"], position=30.0, layer=L1, start=2.0, end=7.0)
     assert [w["text"] for w in captions.clip_caption_words(Clip.get(id=other))] == ["evenly", "spread", "guess"]
 
