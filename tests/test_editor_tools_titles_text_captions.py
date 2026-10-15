@@ -133,6 +133,7 @@ def test_behind_the_subject_adds_a_cutout_above_the_captions(editor, studio):
     r = _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True))
     trim = [a for p, a in studio.commands if p == "ffmpeg"][0]
     assert trim[trim.index("-ss") + 1] == "2.0" and trim[trim.index("-t") + 1] == "5.0"     # the clip's own range
+    assert trim[trim.index("-fps_mode") + 1] == "cfr" and "/" in trim[trim.index("-r") + 1]  # the project's rate
     assert [m[1] for m in studio.mattes] == ["subject-source.mp4"]                          # RVM by default
     assert not any(a[0] == "remove-background" for _p, a in studio.commands)
     captions_clip, subject_clip = editor.clip(r["timeline_clip_id"]), editor.clip(r["subject_clip_id"])
@@ -437,10 +438,14 @@ def test_the_cut_out_falls_back_to_hyperframes_own_and_can_be_chosen(editor, stu
     monkeypatch.setattr(hf, "matting", lambda: "rvm")
     monkeypatch.setattr(hf, "rvm_ready", lambda: bool(fetched))
     monkeypatch.setattr(hf, "install_rvm", lambda: fetched.append(1))
-    monkeypatch.setattr(hf, "matte", lambda project, src, out, timeout=0: studio.mattes.append(src) or {
-        "frames": 1, "provider": "cpu", "ms_per_frame": 1} if os.makedirs(os.path.dirname(
-            os.path.join(hf.project_dir(project), out)), exist_ok=True) or not open(
-            os.path.join(hf.project_dir(project), out), "wb").write(b"0" * 64) else {})
+    def matte(project, src, out, timeout=0):
+        path = os.path.join(hf.project_dir(project), out)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "wb").write(b"0" * 64)
+        studio.mattes.append(src)
+        return {"frames": 1, "provider": "cpu", "ms_per_frame": 1}
+
+    monkeypatch.setattr(hf, "matte", matte)
     studio.commands.clear()
     _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True))
     assert fetched == [1] and not any(a[0] == "remove-background" for _p, a in studio.commands)

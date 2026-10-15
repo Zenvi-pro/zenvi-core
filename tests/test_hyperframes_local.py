@@ -389,7 +389,7 @@ def test_rvm_is_pulled_on_this_computer_pinned_and_with_the_shared_onnx_runtime(
 
     def fake_exec(argv, cwd, node, timeout, isolated=True):
         ran.append((argv, isolated))
-        manifest = os.path.join(hf._ort_dir(), "package.json")
+        manifest = os.path.join(hf._ort_module(), "package.json")      # what require() finds
         os.makedirs(os.path.dirname(manifest), exist_ok=True)
         open(manifest, "w").write("{}")
         return 0, "added 3 packages"
@@ -412,7 +412,11 @@ def test_rvm_is_pulled_on_this_computer_pinned_and_with_the_shared_onnx_runtime(
 
 
 def test_matte_runs_the_runner_with_the_private_node_and_reports_the_device(home, monkeypatch):
-    monkeypatch.setattr(hf, "rvm_ready", lambda: True)
+    monkeypatch.setattr(hf, "_ort_installed", lambda: True)
+    monkeypatch.setattr(hf, "RVM_MODEL", ("https://x/rvm.onnx", "rvm.onnx",
+                                          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"))
+    os.makedirs(os.path.dirname(hf.rvm_model()))
+    open(hf.rvm_model(), "wb").write(b"abc")                                      # sha256("abc")
     monkeypatch.setattr(hf, "find_program", lambda name: "/opt/%s" % name)
     os.makedirs(hf.project_dir("cap"))
     seen = {}
@@ -433,3 +437,11 @@ def test_matte_runs_the_runner_with_the_private_node_and_reports_the_device(home
         hf.matte("cap", "subject-source.mp4", "renders/subject.webm")
     with pytest.raises(hf.HyperframesError):
         hf.matte("cap", "../outside.mp4", "renders/subject.webm")             # paths stay in the project
+    # a model swapped for other bytes of the same size and time is refused before Node loads it
+    stat = os.stat(hf.rvm_model())
+    open(hf.rvm_model(), "wb").write(b"abd")
+    os.utime(hf.rvm_model(), ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    seen.clear()
+    with pytest.raises(hf.HyperframesError, match="not installed"):
+        hf.matte("cap", "subject-source.mp4", "renders/subject.webm")
+    assert "argv" not in seen

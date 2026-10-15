@@ -363,8 +363,16 @@ def _ort_module() -> str:
     return os.path.join(_ort_dir(), "node_modules", "onnxruntime-node")
 
 
-def rvm_ready() -> bool:
-    return _sha256(rvm_model()) == RVM_MODEL[2] and os.path.isfile(os.path.join(_ort_dir(), "package.json"))
+_ort_install_lock = threading.Lock()
+
+
+def _ort_installed() -> bool:
+    """The module itself, as ``require`` and HyperFrames' loader see it (an interrupted npm leaves only the prefix)."""
+    return os.path.isfile(os.path.join(_ort_module(), "package.json"))
+
+
+def rvm_ready(fresh: bool = False) -> bool:
+    return _sha256(rvm_model(), fresh) == RVM_MODEL[2] and _ort_installed()
 
 
 def _u2net_model() -> str:
@@ -554,17 +562,18 @@ def install_rvm() -> None:
     """Download the RVM model, and the ONNX runtime the way HyperFrames installs it, if either is missing."""
     url, name, digest = RVM_MODEL
     _download_pinned(os.path.dirname(rvm_model()), [(url, name, digest)], "speaker cut-out model")
-    if os.path.isfile(os.path.join(_ort_dir(), "package.json")):
-        return
-    node = find_program("node")
-    if not node:
-        raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
-    code, out = _exec(_node_tool(node, "npm") + ["install", "onnxruntime-node@" + ORT_VERSION, "--prefix",
-                                                  _ort_dir(), "--no-audit", "--no-fund"],
-                      home(), node, INSTALL_TIMEOUT, isolated=False)
-    if code != 0:
-        raise HyperframesError("could not install the ONNX runtime the speaker cut-out runs on (exit code %d): %s"
-                               % (code, out[-1500:]))
+    with _ort_install_lock:                             # two caption jobs must not run npm into one folder
+        if _ort_installed():
+            return
+        node = find_program("node")
+        if not node:
+            raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
+        code, out = _exec(_node_tool(node, "npm") + ["install", "onnxruntime-node@" + ORT_VERSION, "--prefix",
+                                                      _ort_dir(), "--no-audit", "--no-fund"],
+                          home(), node, INSTALL_TIMEOUT, isolated=False)
+        if code != 0 or not _ort_installed():
+            raise HyperframesError("could not install the ONNX runtime the speaker cut-out runs on (exit code %d): %s"
+                                   % (code, out[-1500:]))
 
 
 def matte(project: str, source: str, output: str, timeout: float = SPEECH_TIMEOUT) -> dict:
@@ -573,7 +582,7 @@ def matte(project: str, source: str, output: str, timeout: float = SPEECH_TIMEOU
     On the GPU where the ONNX runtime has one (DirectML on Windows, CoreML on Apple Silicon,
     CUDA on Linux), else the CPU. Returns ``{frames, provider, ms_per_frame}``.
     """
-    if not rvm_ready():
+    if not rvm_ready(fresh=True):                       # hashed again: what Node is about to load
         raise HyperframesError("the speaker cut-out model is not installed")
     root = project_dir(project)
     for path in (source, output):

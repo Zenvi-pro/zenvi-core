@@ -311,6 +311,13 @@ def _visible_band(project: str, rel: str) -> Optional[tuple]:
     return (min(a for a, _b in rows) / 1000.0, max(b for _a, b in rows) / 1000.0) if rows else None
 
 
+def _project_fps() -> str:
+    from classes.clip_utils import project_fps_fraction
+
+    fps = project_fps_fraction()
+    return "%d/%d" % (fps.numerator, fps.denominator)
+
+
 def _cut_out(project: str, source: str, output: str) -> None:
     """The speaker cut-out: RVM (fetched on first use) unless HyperFrames' own was picked or RVM fails."""
     if hf.matting() == "rvm":
@@ -411,9 +418,13 @@ def build_captions(clip, style: str = cap.DEFAULT_STYLE, behind_subject: bool = 
          RENDER_TIMEOUT)
     if behind_subject:
         _stage("Cutting out the speaker (the slow part: minutes for each minute of video)...")
+        # At the project's own constant frame rate: a variable-rate phone clip otherwise comes out of
+        # the cut-out a different length, and it no longer sits on the footage.
+        fps = on_main(_project_fps)
         _run(project, "ffmpeg", ["-y", "-v", "error", "-ss", str(float(clip.data.get("start") or 0.0)),
-                                 "-t", str(duration), "-i", media, "-an", "-c:v", "libx264", "-crf", "18",
-                                 "subject-source.mp4"], RENDER_TIMEOUT, inputs=[media])
+                                 "-t", str(duration), "-i", media, "-an", "-fps_mode", "cfr", "-r", fps,
+                                 "-c:v", "libx264", "-crf", "18", "subject-source.mp4"], RENDER_TIMEOUT,
+             inputs=[media])
         _cut_out(project, "subject-source.mp4", subject_rel)
 
     _stage("Placing the captions on the timeline...")
