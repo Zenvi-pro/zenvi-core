@@ -4530,6 +4530,27 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Add timeline toolbar to web frame
         self.frameWeb.addWidget(self.timelineToolbar)
 
+    def zenvi_session_ended(self):
+        """The auth server rejected the stored sign-in (it was revoked or expired).
+
+        Explains and waits for a click before opening the browser, and keeps
+        the editor open if the user would rather sign in later.
+        """
+        if getattr(self, "_session_ended_prompt_open", False) or self.shutting_down:
+            return
+        self._session_ended_prompt_open = True
+        try:
+            from windows.login_window import LoginWindow
+            login_dlg = LoginWindow(
+                parent=None,
+                auto_open_browser=False,
+                message="Your Zenvi sign-in has ended",
+            )
+            if login_dlg.exec_() == LoginWindow.Accepted and getattr(self, "dockAIChat", None):
+                self.dockAIChat.refresh_credits_for_account()
+        finally:
+            self._session_ended_prompt_open = False
+
     def logout_clicked(self, checked=False):
         """Sign the current user out of their Zenvi account."""
         reply = QMessageBox.question(
@@ -4545,10 +4566,12 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         from classes.auth_manager import AuthManager
         AuthManager.instance().clear_session()
 
-        # Hide main window and re-show login dialog
+        # Hide main window and re-show login dialog. The browser opens only
+        # when asked: it may still be signed in to the account just left.
         self.hide()
         from windows.login_window import LoginWindow
-        login_dlg = LoginWindow(parent=None)
+        login_dlg = LoginWindow(parent=None, auto_open_browser=False,
+                                message="You're signed out of Zenvi")
         result = login_dlg.exec_()
         if result == LoginWindow.Accepted:
             self.show()
