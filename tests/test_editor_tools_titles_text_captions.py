@@ -32,7 +32,7 @@ def studio(editor, tmp_path, monkeypatch):
     media.write_bytes(b"0" * 64)
     video = editor.add_file("video", path=str(media), has_audio=True)
     clip = editor.add_clip(video, position=10.0, layer=L1, start=2.0, end=7.0)       # 5 s on the timeline
-    state = SimpleNamespace(commands=[], placed=[], place_kwargs=[], clip=clip, tmp=tmp_path, words=[
+    state = SimpleNamespace(commands=[], placed=[], place_kwargs=[], clip=clip, tmp=tmp_path, mattes=[], words=[
         {"text": "Hello", "timelineStartSec": 10.2, "timelineEndSec": 10.6},
         {"text": "there", "timelineStartSec": 10.6, "timelineEndSec": 11.1},
         {"text": "world", "timelineStartSec": 12.0, "timelineEndSec": 12.5},
@@ -40,6 +40,17 @@ def studio(editor, tmp_path, monkeypatch):
     monkeypatch.setattr(captions, "transcript_words", lambda clip: state.words)
     monkeypatch.setattr(captions, "_subject_coverage", lambda project, media, at: 0.4)     # a speaker is in shot
     monkeypatch.setattr(captions, "_visible_band", lambda project, rel: None)
+
+    def fake_matte(project, src, out, timeout=0):
+        state.mattes.append((project, src, out))
+        path = os.path.join(hf.project_dir(project), out)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "wb").write(b"\x1a\x45\xdf\xa3" + b"0" * 512)
+        return {"frames": 125, "provider": "dml", "ms_per_frame": 40}
+
+    monkeypatch.setattr(hf, "matting", lambda: "rvm")
+    monkeypatch.setattr(hf, "rvm_ready", lambda: True)
+    monkeypatch.setattr(hf, "matte", fake_matte)
 
     def fake_run(project, program, args, **kw):
         state.commands.append((program, list(args)))
@@ -122,7 +133,8 @@ def test_behind_the_subject_adds_a_cutout_above_the_captions(editor, studio):
     r = _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True))
     trim = [a for p, a in studio.commands if p == "ffmpeg"][0]
     assert trim[trim.index("-ss") + 1] == "2.0" and trim[trim.index("-t") + 1] == "5.0"     # the clip's own range
-    assert any(a[0] == "remove-background" for _p, a in studio.commands)
+    assert [m[1] for m in studio.mattes] == ["subject-source.mp4"]                          # RVM by default
+    assert not any(a[0] == "remove-background" for _p, a in studio.commands)
     captions_clip, subject_clip = editor.clip(r["timeline_clip_id"]), editor.clip(r["subject_clip_id"])
     assert subject_clip["layer"] > captions_clip["layer"] > L1
     assert editor.file(r["subject_file_id"])["ai_metadata"]["captions"]["role"] == "subject"
@@ -174,6 +186,8 @@ def test_a_failed_subject_cutout_leaves_the_existing_captions_in_place(editor, s
         return real_run(project, program, args, **kw)
 
     monkeypatch.setattr(hf, "run", failing_matte)
+    monkeypatch.setattr(hf, "matte", lambda *a, **k: (_ for _ in ()).throw(hf.HyperframesError("no GPU")))
+    # RVM fails, so HyperFrames' own is tried, and that fails too
     out = editor.call("add_captions_tool", timeline_clip_id=studio.clip, style="highlight", behind_subject=True)
     assert out.startswith("Error") and "model download failed" in out
     assert editor.clip(first["timeline_clip_id"]) is not None           # nothing was replaced
@@ -403,3 +417,30 @@ def test_a_failed_subject_check_does_not_rule_the_speaker_out(editor, studio, mo
     assert captions.has_subject(Clip.get(id=studio.clip)) is False       # one failure, two empty frames
     monkeypatch.setattr(captions, "_subject_coverage", lambda project, media, at: None)
     assert captions.has_subject(Clip.get(id=studio.clip)) is True        # nothing could be checked
+
+
+def test_the_cut_out_falls_back_to_hyperframes_own_and_can_be_chosen(editor, studio, monkeypatch):
+    def broken(project, src, out, timeout=0):
+        raise hf.HyperframesError("the GPU driver crashed")
+
+    monkeypatch.setattr(hf, "matte", broken)
+    r = _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True))
+    assert "subject_clip_id" in r and any(a[0] == "remove-background" for _p, a in studio.commands)
+
+    studio.commands.clear()
+    monkeypatch.setattr(hf, "matting", lambda: "u2net")                  # the user picked HyperFrames' own
+    _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True))
+    assert any(a[0] == "remove-background" for _p, a in studio.commands)
+
+    # RVM chosen but not on this computer yet: it is fetched first (small, like the speech model)
+    fetched = []
+    monkeypatch.setattr(hf, "matting", lambda: "rvm")
+    monkeypatch.setattr(hf, "rvm_ready", lambda: bool(fetched))
+    monkeypatch.setattr(hf, "install_rvm", lambda: fetched.append(1))
+    monkeypatch.setattr(hf, "matte", lambda project, src, out, timeout=0: studio.mattes.append(src) or {
+        "frames": 1, "provider": "cpu", "ms_per_frame": 1} if os.makedirs(os.path.dirname(
+            os.path.join(hf.project_dir(project), out)), exist_ok=True) or not open(
+            os.path.join(hf.project_dir(project), out), "wb").write(b"0" * 64) else {})
+    studio.commands.clear()
+    _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True))
+    assert fetched == [1] and not any(a[0] == "remove-background" for _p, a in studio.commands)

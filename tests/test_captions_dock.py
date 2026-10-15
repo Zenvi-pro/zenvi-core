@@ -200,6 +200,39 @@ def test_a_failed_install_keeps_the_previous_recogniser(recognisers):
     assert "no network" in s.dock.statusLabel.text()
 
 
+def test_the_cut_out_picker_shows_only_for_behind_the_speaker(recognisers, monkeypatch):
+    from classes import hyperframes_local as hf
+
+    s = recognisers
+    matte = {"chosen": "rvm", "installed": {"rvm": False, "u2net": True}}
+    monkeypatch.setattr(hf, "matting", lambda: matte["chosen"])
+    monkeypatch.setattr(hf, "choose_matting", lambda name: matte.update(chosen=name))
+    monkeypatch.setattr(hf, "install_rvm", lambda: time.sleep(0.2) or matte["installed"].update(rvm=True))
+    monkeypatch.setattr(hf, "status", lambda: {"ready": True, "speech": True, "parakeet": False,
+                                               "recogniser": "whistle", "matting": matte["chosen"],
+                                               "rvm": matte["installed"]["rvm"], "u2net": matte["installed"]["u2net"]})
+    d = s.dock
+    d._fill_picker("matting")
+    combo = d.mattingCombo
+    d.behindSubject.setChecked(False)
+    assert combo.isHidden() and d.mattingLabel.isHidden()
+    d.behindSubject.setChecked(True)
+    assert not combo.isHidden() and not d.mattingLabel.isHidden()
+    assert combo.currentData() == "rvm" and "download" in combo.itemText(combo.findData("rvm")).lower()
+    assert "installed" in combo.itemText(combo.findData("u2net")).lower()
+
+    combo.setCurrentIndex(combo.findData("u2net"))              # installed: switches at once
+    combo.activated.emit(combo.currentIndex())
+    assert matte["chosen"] == "u2net" and s.asked == []
+
+    s.answer = True                                              # RVM: asked, downloaded, then used
+    combo.setCurrentIndex(combo.findData("rvm"))
+    combo.activated.emit(combo.currentIndex())
+    _pump(s.app, 0.8)
+    assert s.asked and matte["chosen"] == "rvm" and matte["installed"]["rvm"] is True
+    assert "installed" in combo.itemText(combo.findData("rvm")).lower()
+
+
 def test_an_intel_mac_has_no_choice_to_make(dock, monkeypatch):
     from classes import hyperframes_local as hf
     from windows.views import captions_dock

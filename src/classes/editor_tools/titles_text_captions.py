@@ -311,6 +311,23 @@ def _visible_band(project: str, rel: str) -> Optional[tuple]:
     return (min(a for a, _b in rows) / 1000.0, max(b for _a, b in rows) / 1000.0) if rows else None
 
 
+def _cut_out(project: str, source: str, output: str) -> None:
+    """The speaker cut-out: RVM (fetched on first use) unless HyperFrames' own was picked or RVM fails."""
+    if hf.matting() == "rvm":
+        try:
+            if not hf.rvm_ready():
+                _stage("Downloading the speaker cut-out model (15 MB, one time)...")
+                hf.install_rvm()
+            report = hf.matte(project, source, output, MATTE_TIMEOUT)
+            log.info("Captions: speaker cut out with RVM on %s, %s ms a frame",
+                     report.get("provider"), report.get("ms_per_frame"))
+            return
+        except hf.HyperframesError as exc:
+            log.warning("Captions: RVM could not cut the speaker out (%s); using HyperFrames' own", exc)
+            _stage("Cutting out the speaker with HyperFrames' own model (slower)...")
+    _run(project, "hyperframes", ["remove-background", source, "-o", output], MATTE_TIMEOUT)
+
+
 def _set_geometry(clip_id: str, values: dict):
     def _apply():
         from classes.query import Clip
@@ -397,7 +414,7 @@ def build_captions(clip, style: str = cap.DEFAULT_STYLE, behind_subject: bool = 
         _run(project, "ffmpeg", ["-y", "-v", "error", "-ss", str(float(clip.data.get("start") or 0.0)),
                                  "-t", str(duration), "-i", media, "-an", "-c:v", "libx264", "-crf", "18",
                                  "subject-source.mp4"], RENDER_TIMEOUT, inputs=[media])
-        _run(project, "hyperframes", ["remove-background", "subject-source.mp4", "-o", subject_rel], MATTE_TIMEOUT)
+        _cut_out(project, "subject-source.mp4", subject_rel)
 
     _stage("Placing the captions on the timeline...")
     title = str(clip.data.get("title") or clip_id)

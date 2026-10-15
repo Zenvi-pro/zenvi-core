@@ -55,7 +55,7 @@ class CaptionsDock(QWidget):
     wordsLoaded = pyqtSignal(str, str, str)    # clip id, words, status line
     subjectChecked = pyqtSignal(str, bool)     # clip id, whether there is a speaker to put captions behind
     progress = pyqtSignal(str)                 # the stage a running caption job has reached
-    recogniserInstalled = pyqtSignal(str, str)  # recogniser, error ('' when it installed)
+    modelInstalled = pyqtSignal(str, str, str)  # picker, model, error ('' when it installed)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -90,7 +90,13 @@ class CaptionsDock(QWidget):
         self.recogniserLabel = QLabel(_("Speech recogniser"))
         self.recogniserCombo = QComboBox()
         self.recogniserCombo.setToolTip(_("Times each spoken word for the captions. Both run on this computer."))
-        self._fill_recognisers()
+        self.mattingLabel = QLabel(_("Cut-out model"))
+        self.mattingCombo = QComboBox()
+        self.mattingCombo.setToolTip(_("Cuts the speaker out of the clip. Both run on this computer."))
+        self._installed = {}
+        self._fill_picker("recogniser")
+        self._fill_picker("matting")
+        self._show_matting()
         if not hf.speech_supported():                   # Intel Macs: Parakeet is the only one there is
             self.recogniserLabel.hide()
             self.recogniserCombo.hide()
@@ -100,16 +106,19 @@ class CaptionsDock(QWidget):
             buttons.addWidget(button)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        for widget in (self.clipLabel, self.styleCombo, self.styleHint, self.behindSubject, self.recogniserLabel,
-                       self.recogniserCombo, self.wordsEdit):
+        for widget in (self.clipLabel, self.styleCombo, self.styleHint, self.behindSubject, self.mattingLabel,
+                       self.mattingCombo, self.recogniserLabel, self.recogniserCombo, self.wordsEdit):
             layout.addWidget(widget)
         layout.addLayout(buttons)
         layout.addWidget(self.projectButton)
         layout.addWidget(self.statusLabel)
 
         self.styleCombo.currentIndexChanged.connect(self._show_style_hint)
-        self.recogniserCombo.activated.connect(self._recogniser_picked)    # user picks, including the current one
-        self.recogniserInstalled.connect(self._on_recogniser_installed)
+        # activated: what the user picks, including the entry already shown
+        self.recogniserCombo.activated.connect(lambda *_a: self._picker_picked("recogniser"))
+        self.mattingCombo.activated.connect(lambda *_a: self._picker_picked("matting"))
+        self.modelInstalled.connect(self._on_model_installed)
+        self.behindSubject.toggled.connect(self._show_matting)
         self.loadButton.clicked.connect(self.load_words)
         self.generateButton.clicked.connect(self.generate)
         self.removeButton.clicked.connect(self.remove)
@@ -125,70 +134,96 @@ class CaptionsDock(QWidget):
         self._show_style_hint()
         self.selection_changed()
 
-    # -- speech recogniser ---------------------------------------------------
+    # -- model pickers: speech recogniser and speaker cut-out ----------------
 
-    def _recognisers(self) -> dict:
-        """recogniser -> (what it is like, how big a first download it is), translated."""
+    def _pickers(self) -> dict:
+        """picker -> its combo, and per model: label, what a first use downloads, how to fetch it (None:
+        HyperFrames fetches it itself on first use), and how status() says it is installed. Translated."""
         _ = get_app()._tr
-        return {"whistle": (_("Whistle: fast, small"), _("18 MB")),
-                "parakeet": (_("Parakeet: more accurate, slower on short clips"), _("about 900 MB"))}
+        return {
+            "recogniser": {"combo": self.recogniserCombo, "choose": hf.choose_recogniser, "current": "recogniser",
+                           "what": _("speech recogniser"), "models": {
+                "whistle": (_("Whistle: fast, small"), _("download 18 MB"), hf.install_speech, "speech"),
+                "parakeet": (_("Parakeet: more accurate, slower on short clips"), _("download about 900 MB"),
+                             hf.install_parakeet, "parakeet")}},
+            "matting": {"combo": self.mattingCombo, "choose": hf.choose_matting, "current": "matting",
+                        "what": _("cut-out model"), "models": {
+                "rvm": (_("RVM: fast, steady, uses the GPU"), _("download 15 MB + ONNX runtime"),
+                        hf.install_rvm, "rvm"),
+                "u2net": (_("HyperFrames built-in (U2-Net): slower"), _("downloads 176 MB on first use"),
+                          None, "u2net")}},
+        }
 
     def _fill_recognisers(self):
-        """One entry per recogniser, saying whether it is installed or how big its download is."""
+        self._fill_picker("recogniser")
+
+    def _fill_picker(self, kind):
+        """One entry per model, saying whether it is installed or what using it first downloads."""
         _ = get_app()._tr
+        spec = self._pickers()[kind]
         st = hf.status()                                # the files are hashed: a deleted one shows as a download
-        installed = {"whistle": bool(st.get("speech")), "parakeet": bool(st.get("parakeet"))}
-        combo = self.recogniserCombo
+        installed = {name: bool(st.get(key)) for name, (_l, _s, _i, key) in spec["models"].items()}
+        combo = spec["combo"]
         combo.blockSignals(True)
         combo.clear()
-        for name, (label, size) in self._recognisers().items():
-            combo.addItem("%s (%s)" % (label, _("installed") if installed[name] else _("download %s") % size), name)
-        combo.setCurrentIndex(max(0, combo.findData(st.get("recogniser") or hf.recogniser())))
+        for name, (label, size, _install, _key) in spec["models"].items():
+            combo.addItem("%s (%s)" % (label, _("installed") if installed[name] else size), name)
+        combo.setCurrentIndex(max(0, combo.findData(st.get(spec["current"]))))
         combo.blockSignals(False)
-        self._installed = installed
+        self._installed[kind] = installed
 
-    def _recogniser_picked(self, *_args):
-        name = self.recogniserCombo.currentData()
-        if not name or self._busy:
-            self._fill_recognisers()                    # one job at a time: put the picker back
+    def _show_matting(self, *_args):
+        """The cut-out model only matters with the speaker cut out."""
+        shown = self.behindSubject.isChecked()
+        self.mattingLabel.setVisible(shown)
+        self.mattingCombo.setVisible(shown)
+        if shown:
+            self._fill_picker("matting")
+
+    def _picker_picked(self, kind):
+        spec = self._pickers()[kind]
+        combo = spec["combo"]
+        name = combo.currentData()
+        self._fill_picker(kind)                         # what is installed now, not when the dock was built
+        if not name or self._busy:                      # one job at a time: the picker stays as it was
             return
-        self._fill_recognisers()                        # what is installed now, not when the dock was built
-        self.recogniserCombo.setCurrentIndex(self.recogniserCombo.findData(name))
-        if self._installed.get(name):
-            hf.choose_recogniser(name)
+        combo.setCurrentIndex(combo.findData(name))
+        label, size, install, _key = spec["models"][name]
+        if self._installed[kind].get(name) or install is None:
+            spec["choose"](name)
             return
         _ = get_app()._tr
-        label, size = self._recognisers()[name]
         self._busy = True                               # before the dialog: it runs its own event loop
         self._refresh_enabled()
         if not _confirm_download(self, "%s (%s)" % (label, size)):
             self._busy = False
             self._refresh_enabled()
-            self._fill_recognisers()                    # declined: back to the one in use
+            self._fill_picker(kind)                     # declined: back to the one in use
             return
         self._begin(_("Downloading %s (%s)...") % (label, size))
 
         def work():
             try:
-                (hf.install_parakeet if name == "parakeet" else hf.install_speech)()
+                install()
                 error = ""
             except Exception as exc:
-                log.warning("Captions dock: could not install the %s recogniser", name, exc_info=True)
+                log.warning("Captions dock: could not install %s", name, exc_info=True)
                 error = str(exc) or exc.__class__.__name__
-            self.recogniserInstalled.emit(name, error)
+            self.modelInstalled.emit(kind, name, error)
 
         threading.Thread(target=work, name="zenvi-captions-dock", daemon=True).start()
 
-    def _on_recogniser_installed(self, name, error):
+    def _on_model_installed(self, kind, name, error):
         self._busy = False
         self._clock.stop()
         _ = get_app()._tr
+        spec = self._pickers()[kind]
         if error:
-            self.statusLabel.setText(_("The speech recogniser could not be downloaded: %s") % error)
+            self.statusLabel.setText(_("The %s could not be downloaded: %s") % (spec["what"], error))
         else:
-            hf.choose_recogniser(name)
-            self.statusLabel.setText(_("Captions now use %s.") % self._recognisers()[name][0])
-        self._fill_recognisers()
+            spec["choose"](name)
+            self.statusLabel.setText(_("Now using %s.") % spec["models"][name][0])
+        self._fill_picker(kind)
         self._refresh_enabled()
         if self._clip_id and self._words_for != self._clip_id:      # the selection moved on during the download
             self.load_words()
@@ -246,6 +281,7 @@ class CaptionsDock(QWidget):
             widget.setEnabled(ready)
         self.projectButton.setEnabled(not self._busy)
         self.recogniserCombo.setEnabled(not self._busy)
+        self.mattingCombo.setEnabled(not self._busy)
 
     # -- status: the stage a job is at, with a running clock so a long one is visibly alive ----
 

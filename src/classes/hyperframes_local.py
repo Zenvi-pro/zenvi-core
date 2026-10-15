@@ -6,6 +6,7 @@ keeps a private install under ``~/.openshot_qt/hyperframes``:
 
     node/             a portable Node.js, unless a recent one is already installed
     speech/           the Whistle speech recogniser: one small engine and one model file
+    matting/          the RVM model that cuts a speaker out of a clip (run by hyperframes_rvm.cjs)
     node_modules/     the pinned CLI (``npm install``)
     .agents/skills/   the HyperFrames skills the assistant follows (read-only)
     .cache/           the Chrome build, fonts and models the CLI downloads
@@ -66,6 +67,13 @@ SPEECH_ENGINES = {          # (platform, architecture) -> (path in Cactus-Comput
     ("linux", "x64"): ("linux-x86_64/needle", "3531889c4d677acc47905b21c79741b52fd9af2c54ba177f54f83c0bc12e84c7"),
     ("linux", "arm64"): ("linux-arm64/needle", "ab21ca5272e7699ed4972246d95e75dd09a7b81f5ef8b8a6262e6ff57c600593"),
 }
+# Cutting a speaker out: Robust Video Matting (GPL-3.0, like Zenvi), 15 MB, pinned like the speech files.
+# It runs on the ONNX runtime HyperFrames installs for its own (U^2-Net) cut-out, in the same folder.
+RVM_MODEL = ("https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3_fp32.onnx",
+             "rvm_mobilenetv3_fp32.onnx", "88d4531297118f595bf2fd60f6f566aec2e559393802d1f436c380f0cbbd2828")
+ORT_VERSION = "1.21.1"                # hyperframes@CLI_VERSION's optionalDependencies pin
+MATTERS = ("rvm", "u2net")
+RVM_RUNNER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hyperframes_rvm.cjs")
 PARAKEET_INSTALL = ("models", "install", "parakeet")   # prebuilt sherpa-onnx runtime + model, by the CLI
 SPEECH_THREADS = 8                    # the engine's own default stops at 4; 8 nearly halved the time on a laptop
 SPEECH_TIMEOUT = 3600
@@ -331,6 +339,39 @@ def choose_recogniser(name: str) -> None:
     remember(recogniser=name)
 
 
+def matting() -> str:
+    """How a speaker is cut out: ``rvm`` (default) or HyperFrames' own ``u2net``."""
+    chosen = _remembered().get("matting")
+    return chosen if chosen in MATTERS else "rvm"
+
+
+def choose_matting(name: str) -> None:
+    if name not in MATTERS:
+        raise HyperframesError("matting must be one of %s; got %r" % (", ".join(MATTERS), name))
+    remember(matting=name)
+
+
+def rvm_model() -> str:
+    return os.path.join(home(), "matting", RVM_MODEL[1])
+
+
+def _ort_dir() -> str:
+    return os.path.join(home(), ".cache", "hyperframes", "optional", "onnxruntime-node@" + ORT_VERSION)
+
+
+def _ort_module() -> str:
+    return os.path.join(_ort_dir(), "node_modules", "onnxruntime-node")
+
+
+def rvm_ready() -> bool:
+    return _sha256(rvm_model()) == RVM_MODEL[2] and os.path.isfile(os.path.join(_ort_dir(), "package.json"))
+
+
+def _u2net_model() -> str:
+    """Where ``hyperframes remove-background`` keeps its model (it downloads it on first use)."""
+    return os.path.join(home(), ".cache", "hyperframes", "background-removal", "models", "u2net_human_seg.onnx")
+
+
 def _parakeet_model() -> str:
     """Where ``hyperframes models install parakeet`` puts the model (under the CLI's own cache)."""
     return os.path.join(home(), ".cache", "hyperframes", "parakeet", "parakeet-tdt-0.6b-v3-int8", "encoder.int8.onnx")
@@ -366,6 +407,9 @@ def status() -> dict:
         "speech": speech_ready(),
         "parakeet": os.path.isfile(_parakeet_model()),
         "recogniser": recogniser(),
+        "matting": matting(),
+        "rvm": rvm_ready(),
+        "u2net": os.path.isfile(_u2net_model()),
     }
 
 
@@ -467,10 +511,13 @@ def _speech_downloads(platform: Optional[str] = None, machine: Optional[str] = N
 
 def install_speech() -> None:
     """Download the speech engine and model into ``speech/``. Nothing is kept unless its checksum matches."""
-    folder = os.path.join(home(), "speech")
+    _download_pinned(os.path.join(home(), "speech"), _speech_downloads(), "speech recogniser")
+
+
+def _download_pinned(folder: str, files: List[tuple], what: str) -> None:
     os.makedirs(folder, exist_ok=True)
     with _speech_install_lock:                          # setup and a first caption may both get here
-        for url, name, digest in _speech_downloads():
+        for url, name, digest in files:
             target, partial = os.path.join(folder, name), os.path.join(folder, name + ".partial")
             if _sha256(target) == digest:               # anything else there is replaced, never trusted
                 continue
@@ -480,13 +527,13 @@ def install_speech() -> None:
                 with _fetch(url) as response, open(partial, "xb") as out:
                     shutil.copyfileobj(response, out, 1 << 20)
                 if _sha256(partial) != digest:          # what is on disk, not what went past
-                    raise HyperframesError("the speech recogniser download (%s) did not match its pinned "
-                                           "checksum; try again" % name)
+                    raise HyperframesError("the %s download (%s) did not match its pinned checksum; try again"
+                                           % (what, name))
                 if sys.platform != "win32":
                     os.chmod(partial, 0o755)
                 os.replace(partial, target)             # in one step: a failure leaves what was there
             except OSError as exc:
-                raise HyperframesError("could not download the speech recogniser (%s): %s" % (name, exc))
+                raise HyperframesError("could not download the %s (%s): %s" % (what, name, exc))
             finally:
                 if os.path.lexists(partial):
                     os.remove(partial)
@@ -501,6 +548,50 @@ def install_parakeet() -> None:
     if code != 0:
         raise HyperframesError("could not install the Parakeet speech recogniser (exit code %d): %s"
                                % (code, out[-1500:]))
+
+
+def install_rvm() -> None:
+    """Download the RVM model, and the ONNX runtime the way HyperFrames installs it, if either is missing."""
+    url, name, digest = RVM_MODEL
+    _download_pinned(os.path.dirname(rvm_model()), [(url, name, digest)], "speaker cut-out model")
+    if os.path.isfile(os.path.join(_ort_dir(), "package.json")):
+        return
+    node = find_program("node")
+    if not node:
+        raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
+    code, out = _exec(_node_tool(node, "npm") + ["install", "onnxruntime-node@" + ORT_VERSION, "--prefix",
+                                                  _ort_dir(), "--no-audit", "--no-fund"],
+                      home(), node, INSTALL_TIMEOUT, isolated=False)
+    if code != 0:
+        raise HyperframesError("could not install the ONNX runtime the speaker cut-out runs on (exit code %d): %s"
+                               % (code, out[-1500:]))
+
+
+def matte(project: str, source: str, output: str, timeout: float = SPEECH_TIMEOUT) -> dict:
+    """Cut the subject out of *source* into a transparent WebM *output* (both in the project) with RVM.
+
+    On the GPU where the ONNX runtime has one (DirectML on Windows, CoreML on Apple Silicon,
+    CUDA on Linux), else the CPU. Returns ``{frames, provider, ms_per_frame}``.
+    """
+    if not rvm_ready():
+        raise HyperframesError("the speaker cut-out model is not installed")
+    root = project_dir(project)
+    for path in (source, output):
+        _check_value(project, "ffmpeg", "", path, ())
+    node, ffmpeg = find_program("node"), find_program("ffmpeg")
+    if not node or not ffmpeg:
+        raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
+    os.makedirs(os.path.dirname(os.path.join(root, output)) or root, exist_ok=True)
+    code, out = _exec([node, RVM_RUNNER, _ort_module(), rvm_model(), ffmpeg, source, output], root, node, timeout)
+    if code != 0:
+        raise HyperframesError("the speaker cut-out failed (exit code %d): %s" % (code, out[-800:]))
+    for line in reversed(out.splitlines()):             # the runtime's own warnings come after it (stderr)
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except ValueError:
+                break
+    raise HyperframesError("the speaker cut-out finished without a report: %s" % out[-400:])
 
 
 def transcribe(wav: str, timeout: float = SPEECH_TIMEOUT) -> List[dict]:

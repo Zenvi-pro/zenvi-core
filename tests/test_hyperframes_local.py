@@ -362,3 +362,74 @@ def test_the_users_choice_of_recogniser_is_remembered(home, monkeypatch):
     assert hf.install_plan(dict(ready, recogniser="whistle")) == []
     monkeypatch.setattr(hf, "speech_supported", lambda *a: False)       # Intel Mac: there is no choice
     assert hf.recogniser() == "parakeet"
+
+
+# -- speaker cut-out ------------------------------------------------------------
+
+def test_rvm_is_the_default_cut_out_and_the_choice_is_remembered(home):
+    assert hf.matting() == "rvm"
+    hf.choose_matting("u2net")
+    assert hf.matting() == "u2net"
+    with pytest.raises(hf.HyperframesError, match="rvm"):
+        hf.choose_matting("birefnet")
+    st = hf.status()
+    assert st["matting"] == "u2net" and st["rvm"] is False and st["u2net"] is False
+
+
+def test_rvm_is_pulled_on_this_computer_pinned_and_with_the_shared_onnx_runtime(home, monkeypatch):
+    import hashlib
+    import io
+
+    payload = b"onnx model bytes"
+    monkeypatch.setattr(hf, "RVM_MODEL", ("https://x/rvm.onnx", "rvm.onnx", hashlib.sha256(payload).hexdigest()))
+    monkeypatch.setattr(hf, "_fetch", lambda url: io.BytesIO(payload))
+    monkeypatch.setattr(hf, "find_program", lambda name: "/opt/%s" % name)
+    monkeypatch.setattr(hf, "_node_tool", lambda node, name: [node, "npm-cli.js"])
+    ran = []
+
+    def fake_exec(argv, cwd, node, timeout, isolated=True):
+        ran.append((argv, isolated))
+        manifest = os.path.join(hf._ort_dir(), "package.json")
+        os.makedirs(os.path.dirname(manifest), exist_ok=True)
+        open(manifest, "w").write("{}")
+        return 0, "added 3 packages"
+
+    monkeypatch.setattr(hf, "_exec", fake_exec)
+    assert not hf.rvm_ready()
+    hf.install_rvm()
+    assert hf.rvm_ready() and open(hf.rvm_model(), "rb").read() == payload
+    argv, isolated = ran[0]
+    # the same install HyperFrames does for its own cut-out, into the same folder, so it is shared
+    assert argv[2:5] == ["install", "onnxruntime-node@" + hf.ORT_VERSION, "--prefix"]
+    assert argv[5] == os.path.join(str(home), ".cache", "hyperframes", "optional", "onnxruntime-node@" + hf.ORT_VERSION)
+    assert isolated is False                                   # npm keeps the user's proxy settings
+    hf.install_rvm()
+    assert len(ran) == 1                                       # nothing fetched twice
+
+    # the pinned digest guards the model like the speech engine's
+    open(hf.rvm_model(), "wb").write(b"something else")
+    assert not hf.rvm_ready()
+
+
+def test_matte_runs_the_runner_with_the_private_node_and_reports_the_device(home, monkeypatch):
+    monkeypatch.setattr(hf, "rvm_ready", lambda: True)
+    monkeypatch.setattr(hf, "find_program", lambda name: "/opt/%s" % name)
+    os.makedirs(hf.project_dir("cap"))
+    seen = {}
+
+    def fake_exec(argv, cwd, node, timeout, isolated=True):
+        seen.update(argv=argv, cwd=cwd)
+        return seen.get("code", 0), '{"frames": 240, "provider": "dml", "ms_per_frame": 385}\n[W:onnxruntime] Some nodes were not assigned'
+
+    monkeypatch.setattr(hf, "_exec", fake_exec)
+    assert hf.matte("cap", "subject-source.mp4", "renders/subject.webm") == {
+        "frames": 240, "provider": "dml", "ms_per_frame": 385}
+    argv = seen["argv"]
+    assert argv[0] == "/opt/node" and argv[1].endswith("hyperframes_rvm.cjs") and os.path.isfile(argv[1])
+    assert argv[2:] == [hf._ort_module(), hf.rvm_model(), "/opt/ffmpeg", "subject-source.mp4", "renders/subject.webm"]
+    assert seen["cwd"] == hf.project_dir("cap")
+    seen["code"] = 1
+    with pytest.raises(hf.HyperframesError, match="exit code 1"):
+        hf.matte("cap", "subject-source.mp4", "renders/subject.webm")
+    with pytest.raises(hf.HyperframesError):
+        hf.matte("cap", "../outside.mp4", "renders/subject.webm")             # paths stay in the project
