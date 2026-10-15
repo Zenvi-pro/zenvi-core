@@ -408,6 +408,12 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "track": _str(),
         "duration_seconds": _str_or_num(),
     }, required=["prompt"]),
+    "generate_image_and_add_to_timeline_tool": _obj({
+        "prompt": _str(),
+        "position_seconds": _str_or_num(),
+        "track": _str(),
+        "duration_seconds": _str_or_num(),
+    }, required=["prompt"]),
     "modify_clip_tool": _obj({
         "mode": _str(description="'replace' (default) or another handler mode."),
         "description": _str(),
@@ -426,6 +432,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "clip_a_query": _str(),
         "clip_b_query": _str(),
         "prompt_hint": _str(),
+        "duration_seconds": _str_or_num(),
     }),
     "list_transitions_tool": _obj({
         "category": _str(description="'all' (default), 'common' or 'extra'."),

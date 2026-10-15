@@ -42,7 +42,7 @@
 # Environment:
 #   ZENVI_DEPS             install prefix                 (default: $HOME/zenvi-deps)
 #   SRC_DIR                where to clone the sources     (default: $HOME/src)
-#   LIBOPENSHOT_TAG        libopenshot tag to build       (default: v0.5.0)
+#   LIBOPENSHOT_TAG        libopenshot tag to build       (default: v1.0.0)
 #   LIBOPENSHOT_AUDIO_TAG  libopenshot-audio tag to build (default: $LIBOPENSHOT_TAG)
 #   ZENVI_OPENCV           ON|OFF, build the OpenCV effects (Tracker, Object
 #                          Detector, Stabilizer) against Homebrew opencv@4
@@ -59,7 +59,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PATCH_DIR="$REPO_ROOT/installer/mac-patches"
 ZENVI_DEPS="${ZENVI_DEPS:-$HOME/zenvi-deps}"
 SRC_DIR="${SRC_DIR:-$HOME/src}"
-TAG="${LIBOPENSHOT_TAG:-v0.5.0}"
+TAG="${LIBOPENSHOT_TAG:-v1.0.0}"
 AUDIO_TAG="${LIBOPENSHOT_AUDIO_TAG:-$TAG}"
 OPENCV="${ZENVI_OPENCV:-ON}"
 EXTRA_CXX_FLAGS="${ZENVI_CXX_FLAGS:-}"

@@ -1000,6 +1000,22 @@ def _snap_kling_o1_duration(duration):
     return 5
 
 
+# Managed generation (Grok Imagine) takes any whole-second length in this range.
+_GENERATION_MIN_SECONDS = 2
+_GENERATION_MAX_SECONDS = 15
+# Video edits keep the input's length, which the provider caps at 8.7 s.
+_GENERATION_EDIT_MAX_SECONDS = 8.0
+
+
+def _clamp_generation_duration(duration, default=5):
+    """Whole seconds within the managed provider's 2-15 s range; default when unset or unparseable."""
+    try:
+        val = int(float(duration))
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return max(_GENERATION_MIN_SECONDS, min(_GENERATION_MAX_SECONDS, val))
+
+
 def _kling_o1_output_dims(width, height):
     """Snap arbitrary dimensions to Kling O1 Pro supported output or video-edit range."""
     w = int(width or 1920)
@@ -5446,7 +5462,7 @@ def _import_generated_video(video_path, *, preserve_alpha=None):
     return f, None
 
 
-def _stamp_generated_video_metadata(file_obj, prompt=""):
+def _stamp_generated_video_metadata(file_obj, prompt="", source="ai_video_generation"):
     """Agent-facing metadata for an AI-generated clip — does not enqueue Gemini.
 
     Generated media is imported with skip_indexing=True, so without this the
@@ -5477,7 +5493,7 @@ def _stamp_generated_video_metadata(file_obj, prompt=""):
         ai["description"] = summary[:400]
         # analyzed=True so get_effective_ai_metadata / Scene panel show the text.
         ai["analyzed"] = True
-        ai["source"] = "ai_video_generation"
+        ai["source"] = source
         file_obj.data["ai_metadata"] = ai
         if not file_obj.data.get("name"):
             file_obj.data["name"] = summary[:120]
@@ -6201,8 +6217,8 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
     """Generate a short AI video clip from a text prompt (cloud text-to-video, uses credits) and place it on the timeline.
 
     For "generate a 5 second shot of waves at sunset", "make an AI b-roll of a busy city".
-    Duration snaps to 5 or 10 seconds; the frame follows the project's aspect (16:9, 9:16 or
-    square). position_seconds (timeline seconds) inserts it there and moves later clips on
+    duration_seconds is any whole number from 2 to 15 (default 5); the clip is 720p and follows
+    the project's aspect (16:9, 9:16 or square). position_seconds (timeline seconds) inserts it there and moves later clips on
     that track right to make room; without it the clip goes after the last clip on the track.
     Returns the placement line with timeline_clip_id. The generation, import and placement
     are one undo step. Not for local ComfyUI (create_media_with_comfyui_tool).
@@ -6218,14 +6234,7 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
         return plan_err
 
     explicit_dur = str(duration_seconds or "").strip()
-    if explicit_dur:
-        try:
-            duration = _snap_kling_o1_duration(int(float(explicit_dur)))
-        except (TypeError, ValueError):
-            duration = _KLING_O1_DEFAULT_T2V_DURATION
-    else:
-        # Default 5s unless user explicitly requests 10s in chat (passed via duration_seconds).
-        duration = _KLING_O1_DEFAULT_T2V_DURATION
+    duration = _clamp_generation_duration(explicit_dur, default=_KLING_O1_DEFAULT_T2V_DURATION)
     t2v_w, t2v_h = _project_kling_o1_t2v_dims()
 
     output_path = _canonical_media_path(_output_path_for_generated_video())
@@ -6328,7 +6337,7 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
                     position_seconds=position_seconds or "",
                     track=track or "",
                     query=prompt,
-                    duration_seconds=explicit_dur,
+                    duration_seconds=str(duration) if explicit_dur else "",
                     transaction_id=_composite_tid,
                 )
             finally:
@@ -6353,6 +6362,98 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
             if not stamped:
                 return (
                     f"{msg} Warning: the generated clip's metadata (name, tags, summary) "
+                    f"could not be saved for file_id={f.id}; it may be missing after reload."
+                )
+            return msg
+        except Exception as e:
+            return f"Error: {e}"
+    finally:
+        _resume_auto_save(auto_save_was_active)
+
+
+def generate_image_and_add_to_timeline(prompt="", duration_seconds="", position_seconds="", track="", **_kw) -> str:
+    """Generate an AI still image from a text prompt (cloud text-to-image, uses credits) and place it on the timeline.
+
+    For "generate an image of a red fox in snow", "make an AI picture for the intro". The image
+    follows the project's aspect (16:9, 9:16 or square) and stays on screen for duration_seconds
+    (default 5). position_seconds and track place it like add_clip_to_timeline_tool; other clips
+    are not moved. Returns the placement line with timeline_clip_id; the import and the placement
+    are one undo step. Not for video (generate_video_and_add_to_timeline_tool) or local ComfyUI
+    (create_media_with_comfyui_tool).
+    """
+    if QThread is None or QEventLoop is None:
+        return "Error: Requires a Qt binding."
+    app = _get_app()
+    prompt = (prompt or "").strip()
+    if len(prompt) < 2:
+        return "Error: Prompt must be at least 2 characters."
+    try:
+        seconds = parse_seconds_arg(duration_seconds, default=5.0, field="duration_seconds")
+    except ValueError as exc:
+        return f"Error: {exc}"
+    if seconds <= 0:
+        return "Error: duration_seconds must be greater than 0."
+    width, height = _project_kling_o1_t2v_dims()
+
+    auto_save_was_active = _pause_auto_save()
+    try:
+        from classes.api_client import get_backend_client
+        result = get_backend_client().generate_image(prompt, width=width, height=height)
+        err = result.get("error") or ""
+        if err:
+            return f"Error: {err}"
+
+        import base64
+        import binascii
+        from classes.assets import durable_media_path
+        try:
+            image_bytes = base64.b64decode(result.get("image_base64") or "", validate=True)
+        except (binascii.Error, ValueError):
+            image_bytes = b""
+        if not image_bytes:
+            return "Error: The backend returned no image data."
+        ext = {"image/png": ".png", "image/webp": ".webp"}.get(str(result.get("mime_type") or "").lower(), ".jpg")
+        output_path = _canonical_media_path(durable_media_path(ext=ext))
+        try:
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            with open(output_path, "wb") as fh:
+                fh.write(image_bytes)
+        except OSError as exc:
+            return f"Error: Could not save the generated image: {exc}"
+
+        try:
+            # The import and the placement are one user action: join the tool call's
+            # transaction (execute_tool) so they undo as ONE step.
+            tid = app.updates.transaction_id or _new_transaction_id()
+
+            def _import():
+                from classes.editor_tools.titles_text_common import import_media_file
+                return import_media_file(output_path)
+
+            f = _run_on_main_thread(_atomic(app, _import, tid=tid), timeout=30)
+            if not f:
+                return "Error: Image generated but failed to import into project files."
+            stamped = _stamp_generated_video_metadata(f, prompt, source="ai_image_generation")
+
+            msg = add_clip_to_timeline(
+                file_id=f.id,
+                position_seconds=position_seconds or "",
+                track=track or "",
+                query=prompt,
+                duration_seconds=f"{seconds:g}",
+                transaction_id=tid,
+            )
+            if not msg or str(msg).lower().startswith("error"):
+                return (
+                    f"Error: Image imported (file_id={f.id}) but timeline placement failed: "
+                    f"{msg or 'unknown'}. "
+                    f"Do NOT regenerate — call add_clip_to_timeline_tool(file_id='{f.id}', "
+                    f"track=<layer_number from list_layers_tool>, position_seconds=..., "
+                    f"duration_seconds={seconds:g})."
+                )
+            if not stamped:
+                return (
+                    f"{msg} Warning: the generated image's metadata (name, tags, summary) "
                     f"could not be saved for file_id={f.id}; it may be missing after reload."
                 )
             return msg
@@ -6675,10 +6776,10 @@ def replace_object_in_clip(
         return "Error: Could not find source video for selected clip."
     source_path = source_file.absolute_path()
 
-    # Default 5s segment for V2V edit; honor duration_seconds when set (max 10s).
+    # Default 5s segment for V2V edit; honor duration_seconds when set (max 8s).
     if str(duration_seconds).strip():
         try:
-            extract_dur = min(float(duration_seconds), 10.0, clip_duration)
+            extract_dur = min(float(duration_seconds), _GENERATION_EDIT_MAX_SECONDS, clip_duration)
         except (TypeError, ValueError):
             extract_dur = min(5.0, clip_duration)
     else:
@@ -6784,10 +6885,12 @@ def generate_transition_clip(
     clip_a_query="",
     clip_b_query="",
     prompt_hint="",
+    duration_seconds="",
     **_kw,
 ) -> str:
-    """Join two neighbouring clips on one track with a 5 s AI morph (cloud generation, uses credits).
+    """Join two neighbouring clips on one track with an AI morph (cloud generation, uses credits).
 
+    duration_seconds is the morph's length, any whole number from 2 to 15 (default 5).
     The last frame of clip A morphs into the first frame of clip B; A, the morph and B are baked
     into one new clip that replaces both (and any transition at their cut) in one undo step, and
     later clips on the track move right to make room. Pass clip_a_id/clip_b_id (any order) or
@@ -6847,7 +6950,7 @@ def generate_transition_clip(
             "The movement should feel organic and cinematic, with no abrupt cuts."
         )
 
-    morph_duration = _snap_kling_o1_duration(5)
+    morph_duration = _clamp_generation_duration(duration_seconds)
 
     # Scale extracted frames to project dimensions for consistent morph output
     t2v_w, t2v_h = _project_kling_o1_t2v_dims()
@@ -7349,7 +7452,7 @@ def modify_clip(
 ) -> str:
     """AI-edit footage in a timeline clip (cloud video-to-video, uses credits): replace an object/look, or insert a new shot.
 
-    mode="replace": regenerates the clip's first duration_seconds (default 5, max 10) with the
+    mode="replace": regenerates the clip's first duration_seconds (default 5, max 8) with the
     change in description ("make the car red"); that part of the clip is replaced and the rest
     of the original continues after it. mode="insert": finds the moment described by the clip's
     index (or 80 % in), generates a ~3-5 s continuation shot and bakes it into the clip with
@@ -11387,6 +11490,7 @@ AGENT_TOOL_HANDLERS = {
     "place_motion_graphic_tool": place_motion_graphic,
     # Video generation / AI edit
     "generate_video_and_add_to_timeline_tool": generate_video_and_add_to_timeline,
+    "generate_image_and_add_to_timeline_tool": generate_image_and_add_to_timeline,
     "modify_clip_tool": modify_clip,
     "generate_transition_clip_tool": generate_transition_clip,
     # OpenShot transitions (mask/dissolve)
@@ -11466,6 +11570,7 @@ TOOL_DISPLAY_LABELS = {
     "propose_overlay_windows_tool": "Propose overlay windows",
     "place_motion_graphic_tool": "Place motion graphic",
     "generate_video_and_add_to_timeline_tool": "Generate video",
+    "generate_image_and_add_to_timeline_tool": "Generate image",
     "modify_clip_tool": "AI edit clip",
     "generate_transition_clip_tool": "Bake A + morph + B",
     "list_transitions_tool": "List transitions",
@@ -11589,6 +11694,7 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     "import_stock_media_tool",
     # Long-running Runware/ffmpeg work; Qt timeline touches are marshalled internally.
     "generate_video_and_add_to_timeline_tool",
+    "generate_image_and_add_to_timeline_tool",
     "modify_clip_tool",
     "generate_transition_clip_tool",
     # Network search against project TwelveLabs index (File reads are read-only).

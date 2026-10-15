@@ -94,8 +94,8 @@ LAUNCHER
     fi
     cp "$DESKTOP" "$DEB_DIR/usr/share/applications/"
 
-    # Icon (same branding as installer/dmg-icon.png)
-    ICON="installer/dmg-icon.png"
+    # Icon (the 256px Zenvi app icon)
+    ICON="xdg/icon/256/zenvi.png"
     if [ ! -f "$ICON" ]; then
         echo "ERROR: Missing packaging icon: $ICON"
         exit 1
