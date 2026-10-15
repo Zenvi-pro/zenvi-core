@@ -93,6 +93,14 @@ def remove_silence(
             "remove_silence_tool", "Error: Invalid numeric arguments.",
         ).to_json()
 
+    from classes.speech.map_timeline import is_retimed
+    if is_retimed(clip):
+        # Same packing as remove_words: source seconds, wrong on a retimed clip.
+        return ToolReceipt.refused(
+            "remove_silence_tool",
+            "Error: this clip has a speed change or time curve; reset its speed "
+            "(Time > Normal) before removing silence.",
+        ).to_json()
     pos = float(clip.get("position") or 0)
     start = float(clip.get("start") or 0)
     end = float(clip.get("end") or start)
@@ -467,11 +475,14 @@ def search_media_local(
         app = get_app()
         index = get_visual_index()
         project = _snapshot(app)
+        project_ids = set()
         for fdata in project.get("files") or []:
             if not isinstance(fdata, dict):
                 continue
             path = str(fdata.get("path") or "")
             fid = str(fdata.get("id") or "")
+            if fid:
+                project_ids.add(fid)
             if path and os.path.isfile(path):
                 try:
                     index.upsert_file(fid, path)
@@ -481,12 +492,13 @@ def search_media_local(
         try:
             for fobj in File.filter():
                 if fobj and isinstance(fobj.data, dict):
+                    project_ids.add(str(fobj.id))
                     p = str(fobj.data.get("path") or "")
                     if p and os.path.isfile(p):
                         index.upsert_file(str(fobj.id), p)
         except Exception:
             pass
-        hits = index.search(q, top_k=k)
+        hits = index.search(q, top_k=k, file_ids=project_ids)
     except Exception as exc:
         return ToolReceipt.error(
             "search_media_local_tool", f"Error: Local search failed: {exc}",

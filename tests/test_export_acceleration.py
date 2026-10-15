@@ -298,6 +298,44 @@ def test_pipelined_export_cancel():
     assert len(writer.written) < 200
 
 
+def test_cancel_never_closes_a_timeline_a_compositor_is_still_using(monkeypatch):
+    """A worker stuck in GetFrame past the join timeout must keep its timeline open."""
+    from classes.export_acceleration import export_pipeline
+
+    release = threading.Event()
+    busy = threading.Event()
+
+    class _StuckTimeline(_FakeTimeline):
+        closed_while_busy = False
+        in_get_frame = False
+
+        def GetFrame(self, n):
+            self.in_get_frame = True
+            busy.set()
+            release.wait(10)
+            self.in_get_frame = False
+            return _FakeFrame(n)
+
+        def Close(self):
+            if self.in_get_frame:
+                _StuckTimeline.closed_while_busy = True
+
+    monkeypatch.setattr(export_pipeline, "_clone_timeline", lambda *a: (_StuckTimeline(), object()))
+    from dataclasses import replace
+    profile = replace(get_export_pipeline_profile(640, 360, 30), composite_workers=2)
+    try:
+        with pytest.raises(PipelineCancelled):
+            run_pipelined_export(
+                writer=_FakeWriter(), project_data={},
+                video_settings={"width": 640, "height": 360, "fps": {"num": 30, "den": 1}},
+                audio_settings={"sample_rate": 48000, "channels": 2, "channel_layout": 2},
+                start_frame=1, end_frame=50, is_cancelled=busy.is_set, profile=profile,
+            )
+        assert not _StuckTimeline.closed_while_busy
+    finally:
+        release.set()
+
+
 def test_pipelined_export_cancel_via_shared_flag():
     """Mirrors dialog cancel: a shared exporting flag flipped while blocked."""
     timeline = _FakeTimeline(delay=0.02)
@@ -740,3 +778,50 @@ def test_decide_half_reversed_format_mismatch_uses_normalize_partial(tmp_path):
     assert decision.mode == "partial", (decision.mode, decision.detail, decision.reason_counts)
     assert any(s.kind == "normalize" for s in decision.spans)
     assert any(s.kind == "encode" and "speed-change" in s.reasons for s in decision.spans)
+
+
+def test_parked_timelines_are_closed_once_their_compositor_has_exited():
+    """PR #275 review: a timeline parked after a stuck cancel was kept (with
+    its caches) until the process exited."""
+    import threading
+    import types
+
+    from classes.export_acceleration import export_pipeline
+
+    release = threading.Event()
+    busy = threading.Thread(target=release.wait, daemon=True)
+    busy.start()
+    done = threading.Thread(target=lambda: None)
+    done.start()
+    done.join()
+    closed = []
+    still_busy = types.SimpleNamespace(Close=lambda: closed.append("busy"))
+    finished = types.SimpleNamespace(Close=lambda: closed.append("finished"))
+    export_pipeline._BUSY_TIMELINES[:] = [(busy, still_busy, []), (done, finished, [])]
+    try:
+        export_pipeline._reap_busy_timelines()
+        assert closed == ["finished"]
+        assert [entry[1] for entry in export_pipeline._BUSY_TIMELINES] == [still_busy]
+    finally:
+        release.set()
+        busy.join()
+        export_pipeline._BUSY_TIMELINES[:] = []
+
+
+def test_reaping_a_timeline_another_export_already_reaped_is_harmless(monkeypatch):
+    import threading
+    import types
+
+    from classes.export_acceleration import export_pipeline
+
+    done = threading.Thread(target=lambda: None)
+    done.start()
+    done.join()
+    entry = (done, types.SimpleNamespace(Close=lambda: None), [])
+
+    class _Raced(list):
+        def remove(self, item):  # the other export got there first
+            raise ValueError("list.remove(x): x not in list")
+
+    monkeypatch.setattr(export_pipeline, "_BUSY_TIMELINES", _Raced([entry]))
+    export_pipeline._reap_busy_timelines()

@@ -548,6 +548,7 @@ def test_cancel_does_not_disable_the_tab_for_later_messages(qapp, monkeypatch):
     assert [e[1] for e in events if e[0] == "response_ready"] == ["ok"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="process groups are POSIX; Windows uses taskkill /T, tested separately")
 def test_cancel_signals_the_whole_process_group(qapp, monkeypatch):
     """The CLI spawns children that keep driving the editor through MCP, so
     Stop has to take down the group, not just the CLI process."""
@@ -1172,8 +1173,8 @@ def test_cursor_argv_is_headless_and_hides_model(qapp, monkeypatch):
     assert "--stream-partial-output" in argv
     assert "--force" in argv
     assert "--trust" in argv
-    # Not approved yet (no _ensure_ready ran): every server would be, as before.
-    assert "--approve-mcps" in argv
+    # Never the blanket approval: it would start every server the project declares.
+    assert "--approve-mcps" not in argv
     assert argv[argv.index("--workspace") + 1] == r"C:\proj"
     assert argv[argv.index("--resume") + 1] == "cur-abc-123"
     assert argv[argv.index("--add-dir") + 1] == "C:/footage"
@@ -1181,8 +1182,6 @@ def test_cursor_argv_is_headless_and_hides_model(qapp, monkeypatch):
     assert "--model" not in argv
     assert [m["id"] for m in runner.MODELS] == ["cli-default"]
 
-    runner._mcp_approved = True   # zenvi-editor alone was approved
-    assert "--approve-mcps" not in runner._build_argv("make a cut")
 
 
 def _cursor_home(monkeypatch, tmp_path, which=None):
@@ -1285,7 +1284,7 @@ def test_register_cursor_writes_bearer_and_updates_port(monkeypatch, tmp_path):
     # The token is named, not stored: cursor-agent expands ${env:...}.
     assert server["headers"]["Authorization"] == "Bearer ${env:ZENVI_MCP_TOKEN}"
     assert "tok123" not in cfg.read_text()
-    assert "export ZENVI_MCP_TOKEN=tok123" in message
+    assert "ZENVI_MCP_TOKEN=tok123" in message
     assert data["mcpServers"]["other"]["command"] == "npx"
     assert (tmp_path / "mcp.json.zenvi-backup").exists()
     assert ar._cursor_is_registered() is True
@@ -1555,6 +1554,22 @@ def test_cursor_turn_carries_the_token_and_approves_before_launch(qapp, monkeypa
     assert "--approve-mcps" not in runner._build_argv("hi")
 
 
+def test_cursor_turn_stops_when_zenvi_editor_alone_cannot_be_approved(qapp, monkeypatch):
+    """Review #216: the fallback approved every MCP server the project declares."""
+    import windows.agent_runners as ar
+    monkeypatch.setattr(ar, "register_cursor", lambda port, token: (True, "ok"))
+    monkeypatch.setattr(ar, "_approve_cursor_mcp", lambda *a: False)
+    runner = ar.CursorCliRunner()
+    runner._server = types.SimpleNamespace(port=7434, token="tok",
+                                           url=lambda: "http://127.0.0.1:7434/mcp")
+    runner._cli_path = "/bin/cursor-agent"
+    runner._cli_cwd = "/proj"
+
+    message = runner._ensure_ready()
+    assert message and "cursor-agent mcp enable zenvi-editor" in message
+    assert "--approve-mcps" not in runner._build_argv("hi")
+
+
 @pytest.mark.skipif(os.name == "nt", reason="process groups are POSIX")
 def test_cursor_turn_leaves_nothing_running_after_the_cli_exits(qapp, monkeypatch, tmp_path):
     """cursor-agent exits without stopping the MCP servers it started; seen in
@@ -1766,6 +1781,17 @@ def test_opencode_is_registered_reads_json_and_jsonc(monkeypatch, tmp_path):
     (tmp_path / "opencode.jsonc").write_text(
         '{\n  // mine\n  "mcp": {"zenvi_editor": {"type": "remote"}}\n}\n')
     assert ar._is_registered("opencode") is True
+
+
+def test_a_commented_out_opencode_entry_is_not_registered(monkeypatch, tmp_path):
+    """Review #216: a // or /* */ commented zenvi_editor showed as connected."""
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_opencode_config_dir", lambda: str(tmp_path))
+    (tmp_path / "opencode.jsonc").write_text(
+        '{\n  "mcp": {\n    // "zenvi_editor": {"type": "remote"},\n'
+        '    /* "zenvi_editor": {} */\n    "other": {"url": "http://x//y"}\n  }\n}\n')
+    assert ar._is_registered("opencode") is False
 
 
 def test_register_opencode_creates_new_file(monkeypatch, tmp_path):
@@ -2312,12 +2338,13 @@ def test_hermes_tool_names(title, name):
     assert "motion graphic" not in humanize_tool_name(name).lower()
 
 
-def test_only_hermes_keeps_stdin_open(qapp):
-    """Every other CLI gets no stdin (``opencode run`` blocks on one)."""
+def test_only_stdin_protocols_keep_stdin_open(qapp):
+    """Hermes (ACP) and Codex (the prompt) write to stdin; every other CLI gets
+    none (``opencode run`` blocks on one)."""
     import subprocess
-    from windows.agent_runners import CLI_RUNNERS, HermesRunner
+    from windows.agent_runners import CLI_RUNNERS, CodexRunner, HermesRunner
     for backend, runner in CLI_RUNNERS.items():
-        expected = subprocess.PIPE if runner is HermesRunner else subprocess.DEVNULL
+        expected = subprocess.PIPE if runner in (HermesRunner, CodexRunner) else subprocess.DEVNULL
         assert runner.STDIN == expected, backend
 
 
@@ -2353,3 +2380,126 @@ def test_register_hermes_decodes_its_output_as_utf8(monkeypatch):
     for _, kw in calls:
         assert kw.get("encoding") == "utf-8" and kw.get("errors") == "replace"
         assert "text" not in kw
+
+
+def test_codex_sends_the_import_guidance_once_per_session(qapp):
+    """Review #216: every resumed Codex turn re-sent the whole guidance block."""
+    from windows.agent_runners import CodexRunner, _agent_import_prompt
+
+    runner = CodexRunner()
+    guidance = _agent_import_prompt()
+    runner._build_argv("cut the intro")
+    first = runner._stdin_prompt
+    assert first.startswith(guidance) and first.endswith("cut the intro")
+
+    runner._cli_started = True
+    runner._cli_id_from_cli = True
+    runner._cli_session_id = "thread-1"
+    resumed = runner._build_argv("now add music")
+    assert "resume" in resumed and runner._stdin_prompt == "now add music"
+
+
+# --- review follow-ups (PR #216) -------------------------------------------
+
+def test_opencode_text_then_error_is_reported_as_a_failure(qapp):
+    """Review #216: run_request preferred the partial text over the error."""
+    from windows.agent_runners import OpenCodeRunner
+    runner = OpenCodeRunner()
+    runner._handle_event({"type": "text", "part": {"text": "Cutting the intro"}})
+    runner._handle_event({"type": "error", "error": {"data": {"message": "rate limited"}}})
+    # run_request reports _last_error only when there is no _final_text.
+    assert runner._final_text == ""
+    assert runner._last_error == "rate limited"
+
+
+@pytest.mark.parametrize("stop_reason, expect_error", [
+    ("end_turn", None),
+    ("refusal", "declined"),
+    ("max_tokens", "max_tokens"),
+    ("max_turn_requests", "max_turn_requests"),
+])
+def test_hermes_only_end_turn_is_a_finished_answer(qapp, stop_reason, expect_error):
+    """Review #216: a refusal or a cut-off turn after some text looked successful."""
+    runner = _hermes()
+    events = _collect(runner)
+    runner._pending[99] = "session/prompt"
+    runner._final_text = "Here is half an answer"
+    runner._handle_event({"jsonrpc": "2.0", "id": 99, "result": {"stopReason": stop_reason}})
+    responses = [e for e in events if e[0] == "response_ready"]
+    if expect_error is None:
+        assert responses == [("response_ready", "Here is half an answer")]
+    else:
+        # run_request then reports _last_error, since no answer text is left.
+        assert not responses and runner._final_text == ""
+        assert expect_error in runner._last_error
+
+
+def test_hermes_never_picks_an_allow_always_permission(qapp):
+    """Review #216: a persistent allow, listed first, was selected for the user."""
+    runner = _hermes()
+    runner._handle_event({"jsonrpc": "2.0", "id": 7, "method": "session/request_permission",
+                          "params": {"sessionId": "s", "options": [
+                              {"optionId": "always", "kind": "allow_always", "name": "Always"},
+                              {"optionId": "once", "kind": "allow_once", "name": "Once"}]}})
+    assert _sent(runner)[-1]["result"] == {"outcome": {"outcome": "selected", "optionId": "once"}}
+
+    runner._handle_event({"jsonrpc": "2.0", "id": 8, "method": "session/request_permission",
+                          "params": {"sessionId": "s", "options": [
+                              {"optionId": "always", "kind": "allow_always", "name": "Always"}]}})
+    assert _sent(runner)[-1]["result"] == {"outcome": {"outcome": "cancelled"}}
+
+
+@pytest.mark.parametrize("platform, expected", [
+    ("win32", '$env:ZENVI_MCP_TOKEN="tok123"'),
+    ("linux", "export ZENVI_MCP_TOKEN=tok123"),
+    ("darwin", "export ZENVI_MCP_TOKEN=tok123"),
+])
+def test_connect_token_instructions_match_the_users_shell(qapp, monkeypatch, platform, expected):
+    """Review #216: Windows users were told to run ``export``, which neither
+    PowerShell nor Command Prompt accepts."""
+    import windows.agent_runners as ar
+    monkeypatch.setattr(ar.sys, "platform", platform)
+    text = ar._token_env_command("ZENVI_MCP_TOKEN", "tok123")
+    assert expected in text
+    if platform == "win32":
+        assert "export" not in text and "set ZENVI_MCP_TOKEN=tok123" in text
+
+
+def test_codex_prompt_goes_through_stdin_not_argv(qapp):
+    """PR #275 review: argv is readable by every local process; the prompt is
+    written to the CLI's stdin instead, on the first turn and on a resume."""
+    import io
+    import subprocess
+    import time
+
+    from windows.agent_runners import CodexRunner
+
+    class _Server:
+        token = "tok"
+
+        def url(self):
+            return "http://127.0.0.1:7434/mcp"
+
+    class _Stdin(io.StringIO):
+        def close(self):
+            self.sent = self.getvalue()
+            super().close()
+
+    assert CodexRunner.STDIN == subprocess.PIPE
+    runner = CodexRunner()
+    runner._server = _Server()
+    for resumed in (False, True):
+        if resumed:
+            runner._cli_started = runner._cli_id_from_cli = True
+            runner._cli_session_id = "thread-1"
+        argv = runner._build_argv("my private prompt")
+        assert argv[-1] == "-" and not any("private" in a for a in argv)
+        assert ("resume" in argv) is resumed
+        runner._proc = type("P", (), {"stdin": _Stdin()})()
+        runner._after_launch("my private prompt")
+        deadline = time.time() + 5  # written on a helper thread
+        while not runner._proc.stdin.closed and time.time() < deadline:
+            time.sleep(0.01)
+        assert runner._proc.stdin.closed and runner._proc.stdin.sent.endswith("my private prompt")
+        # Import steering only on the first turn; the thread keeps it.
+        assert (runner._proc.stdin.sent == "my private prompt") is resumed

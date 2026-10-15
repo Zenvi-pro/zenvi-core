@@ -459,6 +459,12 @@ def resolve_agent_import_target(path: str, home: str | None = None) -> dict:
     adjacent = find_adjacent_paths(raw, home=home)
     # Drop the non-existent exact path if it somehow appeared.
     adjacent = [p for p in adjacent if os.path.exists(p)]
+    if len(adjacent) == 1 and ("/" in raw or "\\" in raw):
+        # An explicit path names its folder: a same-named file in another
+        # folder (Downloads, Desktop...) may be a different file, so ask.
+        parent = os.path.dirname(os.path.abspath(exact or raw))
+        if os.path.normcase(os.path.dirname(adjacent[0])) != os.path.normcase(parent):
+            return {"status": "ambiguous", "candidates": adjacent, "from": raw, "elsewhere": True}
     if len(adjacent) == 1:
         return {
             "status": "ok",

@@ -895,6 +895,15 @@ def remove_words(
                 f"{record.generation}"
             )
 
+    from classes.speech.map_timeline import is_retimed
+    if is_retimed(clip):
+        # Fragments are packed in source seconds; on a retimed clip that
+        # spaces them (and ripples later clips) wrongly.
+        return ToolReceipt.refused(
+            "remove_words_tool",
+            "Error: this clip has a speed change or time curve; reset its speed "
+            "(Time > Normal) before removing words.",
+        ).to_json()
     pos = float(clip.get("position") or 0)
     start = float(clip.get("start") or 0)
     end = float(clip.get("end") or start)

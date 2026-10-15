@@ -85,3 +85,78 @@ def test_noop_mutation():
     receipt = mutation_result(snap, snap, tool="t", summary="same", status="unchanged", undo_steps=1)
     assert receipt.undoSteps == 0
     assert receipt.clips == []
+
+
+# --- review follow-ups (PR #216): receipts the agent updates its state from ---
+
+import pytest  # noqa: E402
+
+
+class _Project:
+    def __init__(self, data):
+        self._data = data
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+
+def _run(monkeypatch, tool_name, data, history, edit):
+    from types import SimpleNamespace
+
+    from classes.agent_tools import execute
+
+    app = SimpleNamespace(project=_Project(data), updates=SimpleNamespace(actionHistory=history))
+
+    def handler(**_kw):
+        edit(data, history)
+        return "Done."
+
+    monkeypatch.setattr(execute, "_HANDLERS", {tool_name: handler})
+    monkeypatch.setattr(execute, "_GET_APP", lambda: app)
+    monkeypatch.setattr(execute, "_QTHREAD", None)
+    monkeypatch.setattr(execute, "_UNGROUPED", frozenset({tool_name}))
+    monkeypatch.setattr(execute, "_READ_ONLY", frozenset())
+    return execute.execute_tool_rich(tool_name, {}).receipt
+
+
+def _clip(cid, position=0.0, start=0.0, end=2.0, layer=1):
+    return {"id": cid, "position": position, "start": start, "end": end, "layer": layer}
+
+
+def test_an_undo_receipt_reports_what_the_undo_changed(monkeypatch):
+    data = {"fps": {"num": 30, "den": 1}, "clips": [_clip("a"), _clip("b", position=2.0)]}
+
+    def undo(d, history):
+        history.pop()
+        d["clips"] = [c for c in d["clips"] if c["id"] != "b"]
+
+    receipt = _run(monkeypatch, "undo_tool", data, ["add b"], undo)
+    assert receipt.status == "applied"
+    assert receipt.removedClipIds == ["b"]
+    assert receipt.undoSteps == 0  # an undo adds nothing to undo
+
+
+def test_a_slipped_clip_is_reported_as_changed(monkeypatch):
+    data = {"fps": {"num": 30, "den": 1}, "clips": [_clip("a", start=0.0, end=2.0)]}
+
+    def slip(d, history):
+        history.append("slip")
+        d["clips"][0].update(start=1.0, end=3.0)  # same place and length, new in-point
+
+    receipt = _run(monkeypatch, "fake_slip_tool", data, [], slip)
+    assert [c["id"] for c in receipt.clips] == ["a"]
+    assert receipt.clips[0]["start"] == 1.0
+
+
+def test_new_tracks_and_markers_are_in_the_receipt(monkeypatch):
+    data = {"fps": {"num": 30, "den": 1}, "clips": [], "layers": [{"id": "L1", "number": 1}],
+            "markers": []}
+
+    def add(d, history):
+        history.append("add")
+        d["layers"].append({"id": "L2", "number": 2})
+        d["markers"].append({"id": "M1", "position": 1.5})
+
+    receipt = _run(monkeypatch, "fake_track_tool", data, [], add)
+    assert [t["id"] for t in receipt.createdTracks] == ["L2"]
+    assert [m["id"] for m in receipt.markers] == ["M1"]
