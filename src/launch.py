@@ -140,25 +140,6 @@ try:
 except Exception:
     pass
 
-# Apply a staged update from a previous session (no PyQt required).
-# Only for packaged/frozen builds: an unpackaged `python src/launch.py` dev
-# run has no separate install directory to apply into, and letting it run
-# the updater just swaps the dev's local checkout out for a downloaded
-# release build on every launch.
-if getattr(sys, "frozen", False):
-    try:
-        from classes import update_installer
-
-        if update_installer.has_pending_update():
-            if update_installer.apply_pending_update():
-                sys.exit(0)
-    except Exception:
-        # Startup stays best-effort -- a broken staged update must not block
-        # launching -- but the failure has to be visible, or an update that
-        # never applies looks like the updater silently doing nothing.
-        # App logging isn't configured this early, so this goes to stderr.
-        logging.getLogger(__name__).exception("Failed to apply the pending update")
-
 # Install the process-wide crash handlers before anything else can raise.
 # Frozen builds are GUI binaries with no stdout/stderr (cx_Freeze base="Win32GUI"
 # on Windows, a .app bundle on macOS), so without these an unhandled traceback
@@ -286,6 +267,33 @@ def _report_startup_failure(context):
         pass
 
 
+def _install_staged_update():
+    """Hand a staged update to the installer helper and exit, if there is one.
+
+    Called once this launch is known to be the only desktop window: a second
+    launch only hands its files to the first, and a --headless session never
+    installs anything. The helper waits for this process to exit, installs,
+    and opens Zenvi again.
+    Only for packaged/frozen builds: an unpackaged `python src/launch.py` dev
+    run has no separate install directory to apply into.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        from classes import update_installer
+
+        if update_installer.has_pending_update(for_launch=True) and \
+                update_installer.apply_pending_update(wait_pid=os.getpid()):
+            sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception:
+        # Startup stays best-effort -- a broken staged update must not block
+        # launching -- but the failure has to be visible, or an update that
+        # never applies looks like the updater silently doing nothing.
+        logger.exception("Failed to apply the pending update")
+
+
 def main():
     """"Initialize settings (not implemented) and create main window/application."""
 
@@ -359,6 +367,14 @@ def main():
             # Not being able to look must never stop Zenvi from starting.
             logger.warning("Could not check for a running Zenvi", exc_info=True)
             outcome, detail = single_instance.NOT_RUNNING, ""
+        if outcome != single_instance.NOT_RUNNING:
+            # A window that is quitting (e.g. the one that just restarted to
+            # update) may still answer, or hold its socket without answering:
+            # start a window of our own once it is gone.
+            name = single_instance.server_name(info.USER_PATH)
+            if single_instance.went_away(name):
+                print("The running Zenvi quit; starting a new window", file=sys.stderr)
+                outcome = single_instance.NOT_RUNNING
         if outcome == single_instance.DELIVERED:
             print("Zenvi is already running; handed over %s" % (", ".join(launch_paths) or "focus"))
             sys.exit(0)
@@ -366,6 +382,9 @@ def main():
             print("Zenvi is already running but did not take the request (%s): %s"
                   % (outcome, detail), file=sys.stderr)
             sys.exit(1)
+
+        # This is the only window: install a staged update before going on.
+        _install_staged_update()
 
     # Normal startup, print module path and lauch application
     print(f"Loaded modules from: {info.PATH}")
