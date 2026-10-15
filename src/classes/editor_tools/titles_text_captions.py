@@ -16,6 +16,7 @@ import copy
 import json
 import os
 import re
+import shutil
 import threading
 import time
 from typing import List, Optional
@@ -396,7 +397,14 @@ def build_captions(clip, style: str = cap.DEFAULT_STYLE, behind_subject: bool = 
     project = _project(clip_id)
     root = hf.project_dir(project)
     if not os.path.isfile(os.path.join(root, "hyperframes.json")):
-        _run(project, "hyperframes", ["init", ".", "--example", "blank", "--non-interactive"], 300)
+        # init refuses a non-empty folder, and the clip's cached words are already in this one
+        scaffold = project + "-init"
+        shutil.rmtree(hf.project_dir(scaffold), ignore_errors=True)
+        _run(scaffold, "hyperframes", ["init", ".", "--example", "blank", "--non-interactive"], 300)
+        os.makedirs(root, exist_ok=True)
+        for name in os.listdir(hf.project_dir(scaffold)):
+            os.replace(os.path.join(hf.project_dir(scaffold), name), os.path.join(root, name))
+        os.rmdir(hf.project_dir(scaffold))
     rel = "compositions/components/%s.html" % component
     source = os.path.join(root, "captions", component + ".source.html")
     if not os.path.isfile(source):                      # keep the component as published; compile from it

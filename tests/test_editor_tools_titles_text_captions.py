@@ -57,6 +57,8 @@ def studio(editor, tmp_path, monkeypatch):
         root = hf.project_dir(project)
         if args[0] == "init":
             os.makedirs(root, exist_ok=True)
+            if os.listdir(root):                      # like the real CLI
+                return 1, "Directory already exists and is not empty: ."
             open(os.path.join(root, "hyperframes.json"), "w").write("{}")
         elif args[0] == "add":
             path = os.path.join(root, "compositions", "components", args[1] + ".html")
@@ -115,6 +117,16 @@ def test_captions_are_rendered_from_the_clips_own_words_and_placed_over_it(edito
     assert f["ai_metadata"]["captions"] == {"clip_id": studio.clip, "style": "highlight", "behind_subject": False,
                                             "role": "captions", "text": "Hello there world"}
     assert f["ai_metadata"]["source"] == "hyperframes_captions" and r["words"] == 3
+
+
+def test_a_cached_transcript_in_the_clips_folder_does_not_block_the_first_render(editor, studio):
+    root = hf.project_dir("captions-" + studio.clip.lower())
+    os.makedirs(root)
+    open(os.path.join(root, "speech.wav"), "wb").write(b"0" * 64)       # the Captions dock read the words first
+
+    _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, style="highlight"))
+
+    assert os.path.isfile(os.path.join(root, "hyperframes.json")) and os.path.isfile(os.path.join(root, "speech.wav"))
 
 
 def test_captioning_again_replaces_the_captions_and_can_fix_words(editor, studio):
