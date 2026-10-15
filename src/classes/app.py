@@ -582,6 +582,10 @@ class OpenShotApp(QApplication):
         # the permission is in place before the user first taps Import Files.
         QTimer.singleShot(500, request_android_storage_permission_if_needed)
 
+        # Logged once the event loop runs with the window up: the auto-update
+        # end-to-end test (installer/e2e_update_test.py) waits for this line.
+        QTimer.singleShot(0, lambda: log.info("Zenvi %s is ready", info.VERSION))
+
         # Files later launches hand over are opened from here on, after
         # startup's own project (below) is in place.
         self._external_paths_ready = True
