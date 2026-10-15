@@ -86,7 +86,10 @@ def _status_line(st: dict) -> str:
              "%d skills" % st["skills"],
              "ffmpeg " + ("found" if st["ffmpeg"] else "MISSING"),
              "bash " + ("found" if st["bash"] else "missing (skill .sh scripts unavailable)"),
-             "caption helpers " + ("installed" if st["caption_helpers"] else "not installed")]
+             "caption helpers " + ("installed" if st["caption_helpers"] else "not installed"),
+             "speech recogniser in use " + str(st.get("recogniser") or "whistle").capitalize()
+             + (" (installed)" if st.get("parakeet" if st.get("recogniser") == "parakeet" else "speech")
+                else " (not installed yet)")]
     return "; ".join(parts)
 
 
@@ -97,11 +100,14 @@ def _status_line(st: dict) -> str:
         "install": boolean("true installs whatever is missing (the user is asked to confirm first). "
                            "false only reports.", False),
         "captions": boolean("Also install the caption preview helpers the embedded-captions skill needs.", False),
+        "accurate_speech": boolean("Also download the larger, more accurate speech recogniser for captions "
+                                   "(Parakeet, about 900 MB; slower on short clips). Only when the user asks for "
+                                   "better caption accuracy.", False),
     }),
     background_safe=True,
     covers=("ai.hyperframes",),
 )
-def hyperframes_setup(install=False, captions=False):
+def hyperframes_setup(install=False, captions=False, accurate_speech=False):
     """Check, and with install=true install, HyperFrames on this computer (Node.js, the CLI, Chrome, the skills).
 
     Call it first whenever another hyperframes tool says HyperFrames is not set
@@ -111,17 +117,20 @@ def hyperframes_setup(install=False, captions=False):
     graphics need it.
     """
     st = hf.status()
-    steps = hf.install_plan(st, captions=bool(captions))
+    wanted = {"captions": bool(captions), "parakeet": bool(accurate_speech)}
+    steps = hf.install_plan(st, **wanted)
     if not steps:
         return ok("HyperFrames is ready. " + _status_line(st), **st)
     if not install:
-        return ok("HyperFrames is NOT ready: " + _status_line(st) + ". Call hyperframes_setup_tool with "
+        # Rendering does not wait for the speech recogniser; only captions' word timing does.
+        state = "can render, but setup is not complete" if st["ready"] else "is NOT ready"
+        return ok("HyperFrames " + state + ": " + _status_line(st) + ". Call hyperframes_setup_tool with "
                   "install=true to install: " + "; ".join(s["label"] for s in steps) + ".", **st)
     if not _ask_install_consent(steps):
         raise ToolError("the user declined the HyperFrames install; motion graphics, product demos and "
                         "HyperFrames captions are unavailable until it is installed")
-    st = _guard(hf.install, captions=bool(captions))
-    left = hf.install_plan(st, captions=bool(captions))
+    st = _guard(hf.install, **wanted)
+    left = hf.install_plan(st, **wanted)
     if left:
         raise ToolError("setup finished but is still missing: " + "; ".join(s["label"] for s in left))
     return ok("HyperFrames installed and ready. " + _status_line(st), **st)

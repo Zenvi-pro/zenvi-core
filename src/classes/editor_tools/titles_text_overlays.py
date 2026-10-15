@@ -110,7 +110,7 @@ def add_timer(mode="count_down", position_seconds=0.0, duration_seconds=0.0, cou
 
     def _precheck():
         # one GUI hop: fonts, the libopenshot Timer (refuses here when the build lacks it; made
-        # on the GUI thread, see add_captions_tool), and where an overlay would go
+        # on the GUI thread), and where an overlay would go
         template = new_effect_json("Timer")
         if attach_id:
             from classes.query import Clip

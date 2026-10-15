@@ -25,48 +25,13 @@
  """
 
 import logging
-import json
 from fractions import Fraction
 from typing import Any, Mapping, Optional, Tuple
 
-import openshot
 
 from classes.app import get_app
 
 logger = logging.getLogger(__name__)
-
-
-def apply_file_caption_to_clip(clip_data: Any, file_obj: Any, *, dedupe: bool = True) -> bool:
-    """Attach a Caption effect to clip_data when file metadata includes caption text."""
-    if not isinstance(clip_data, Mapping):
-        return False
-    file_data = getattr(file_obj, "data", None)
-    if not isinstance(file_data, Mapping):
-        return False
-    caption_text = str(file_data.get("caption", "") or "").strip()
-    if not caption_text:
-        return False
-
-    effects = clip_data.get("effects")
-    if not isinstance(effects, list):
-        effects = list(effects) if effects else []
-        clip_data["effects"] = effects
-
-    if dedupe:
-        for effect in effects:
-            if not isinstance(effect, Mapping):
-                continue
-            if str(effect.get("class_name", "")).lower() == "caption":
-                existing_text = str(effect.get("caption_text", "") or "").strip()
-                if existing_text == caption_text:
-                    return False
-
-    caption_effect = openshot.EffectInfo().CreateEffect("Caption")
-    caption_effect.Id(get_app().project.generate_id())
-    caption_json = json.loads(caption_effect.Json())
-    caption_json["caption_text"] = caption_text
-    effects.append(caption_json)
-    return True
 
 
 def _as_mapping(candidate: Any) -> Mapping[str, Any]:

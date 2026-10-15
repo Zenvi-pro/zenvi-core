@@ -1372,37 +1372,6 @@ class PropertiesTableView(QTableView):
         elif self.property_type == "colorgrade_wheels":
             self._open_wheels_editor(cur_property)
 
-    def caption_text_updated(self, new_caption_text, caption_model_row):
-        """Caption text has been updated in the caption editor, and needs saving"""
-        if caption_model_row is None:
-            # Ignore blank selections
-            return
-
-        caption_model_label = caption_model_row[0]
-        caption_model_value = caption_model_row[1]
-
-        # Verify label has not been deleted
-        if (caption_model_label and isdeleted(caption_model_label)) or \
-                (caption_model_value and isdeleted(caption_model_value)):
-            log.debug("Property has been deleted, skipping")
-            return
-
-        # Get data model and selection
-        cur_property = caption_model_label.data()
-        property_type = cur_property[1]["type"]
-
-        # Save caption text
-        if property_type == "caption" and cur_property[1].get('memo') != new_caption_text:
-            self.start_transaction(caption_model_value)
-            self.update_in_progress = True
-            self.clip_properties_model.value_updated(caption_model_value, value=new_caption_text)
-
-    def caption_text_committed(self, caption_model_row):
-        """Finalize a batch of live Caption editor updates into one undo action."""
-        if caption_model_row is None:
-            return
-        if self.update_in_progress:
-            self.finalize_transaction()
 
     def select_item(self, selection):
         """Update the selected items in the properties window"""
@@ -2050,8 +2019,6 @@ class PropertiesTableView(QTableView):
         get_app().window.InsertKeyframe.connect(self.Insert_Action_Triggered)
         self.doubleClicked.connect(self.doubleClickedCB)
         self.loadProperties.connect(self.select_item)
-        get_app().window.CaptionTextUpdated.connect(self.caption_text_updated)
-        get_app().window.CaptionTextCommitted.connect(self.caption_text_committed)
 
         self.color_grade_wheels_dock = QDockWidget(get_app()._tr("Color Wheels"), self.win)
         self.color_grade_wheels_dock.setObjectName("dockColorGradeWheels")

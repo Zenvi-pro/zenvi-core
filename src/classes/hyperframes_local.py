@@ -5,6 +5,8 @@ the open-source ``hyperframes`` CLI (Node + headless Chrome + ffmpeg). Zenvi
 keeps a private install under ``~/.openshot_qt/hyperframes``:
 
     node/             a portable Node.js, unless a recent one is already installed
+    speech/           the Whistle speech recogniser: one small engine and one model file
+    matting/          the RVM model that cuts a speaker out of a clip (run by hyperframes_rvm.cjs)
     node_modules/     the pinned CLI (``npm install``)
     .agents/skills/   the HyperFrames skills the assistant follows (read-only)
     .cache/           the Chrome build, fonts and models the CLI downloads
@@ -37,6 +39,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import threading
 import urllib.request
 import zipfile
 from typing import Callable, Iterable, List, Optional, Tuple
@@ -50,6 +53,30 @@ NODE_DIST = "https://nodejs.org/dist/latest-v%d.x/" % NODE_MAJOR
 SKILLS_SOURCE = "heygen-com/hyperframes"
 # Helpers the embedded-captions skill's preview/measure scripts require.
 CAPTION_PACKAGES = ("sharp@0.35.3", "puppeteer@25.8.0", "gsap@3.15.0")
+
+# Speech-to-text for captions: Cactus Whistle (Apache-2.0), a prebuilt engine and a 17 MB
+# model. Both are pinned to a revision and a SHA-256, like the Node.js download.
+SPEECH_SOURCE = "https://huggingface.co/Cactus-Compute/%s/resolve/%s/%s"
+SPEECH_MODEL = ("whistle", "ca5287601bef25af26dcf2e1b2bdc0843a7c19e5", "whistle.cact",
+                "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb")
+SPEECH_ENGINE_REVISION = "93e88ede867e4311c39151285e74df513e4b835b"
+SPEECH_ENGINES = {          # (platform, architecture) -> (path in Cactus-Compute/needle3, sha256)
+    ("win32", "x64"): ("windows-x86_64/needle.exe", "47cd411a022d22e393d87ce091848fd446e6d25df2ce31b12a7328337557c85b"),
+    ("win32", "arm64"): ("windows-arm64/needle.exe", "5bc31642787b85cd64ac56d75368ec0b23f595ea6cb8bdfd091aa2575971cbd8"),
+    ("darwin", "arm64"): ("macos-arm64/needle", "1e7e698b492904a92496e2b168844a3101e671928ffa6372970d897512251c48"),
+    ("linux", "x64"): ("linux-x86_64/needle", "3531889c4d677acc47905b21c79741b52fd9af2c54ba177f54f83c0bc12e84c7"),
+    ("linux", "arm64"): ("linux-arm64/needle", "ab21ca5272e7699ed4972246d95e75dd09a7b81f5ef8b8a6262e6ff57c600593"),
+}
+# Cutting a speaker out: Robust Video Matting (GPL-3.0, like Zenvi), 15 MB, pinned like the speech files.
+# It runs on the ONNX runtime HyperFrames installs for its own (U^2-Net) cut-out, in the same folder.
+RVM_MODEL = ("https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3_fp32.onnx",
+             "rvm_mobilenetv3_fp32.onnx", "88d4531297118f595bf2fd60f6f566aec2e559393802d1f436c380f0cbbd2828")
+ORT_VERSION = "1.21.1"                # hyperframes@CLI_VERSION's optionalDependencies pin
+MATTERS = ("rvm", "u2net")
+RVM_RUNNER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hyperframes_rvm.cjs")
+PARAKEET_INSTALL = ("models", "install", "parakeet")   # prebuilt sherpa-onnx runtime + model, by the CLI
+SPEECH_THREADS = 8                    # the engine's own default stops at 4; 8 nearly halved the time on a laptop
+SPEECH_TIMEOUT = 3600
 
 PROGRAMS = ("hyperframes", "node", "bash", "ffmpeg", "ffprobe")
 # Authoring, checking and rendering. Not here: anything that uploads (publish,
@@ -164,6 +191,9 @@ def _install_file() -> str:
     return os.path.join(home(), "install.json")
 
 
+_install_file_lock = threading.Lock()
+
+
 def _remembered() -> dict:
     try:
         with open(_install_file(), encoding="utf-8") as fh:
@@ -175,11 +205,14 @@ def _remembered() -> dict:
 
 def remember(**values) -> None:
     """Save found/installed paths so the next run does not search again."""
-    data = _remembered()
-    data.update({k: v for k, v in values.items() if v})
     os.makedirs(home(), exist_ok=True)
-    with open(_install_file(), "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2)
+    with _install_file_lock:                            # the dock and setup can both write it
+        data = _remembered()
+        data.update({k: v for k, v in values.items() if v})
+        partial = _install_file() + ".partial"
+        with open(partial, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+        os.replace(partial, _install_file())            # a reader sees the old file or the new one, never half
 
 
 def _private_node() -> str:
@@ -235,6 +268,123 @@ def find_program(name: str) -> Optional[str]:
     return found
 
 
+def speech_engine() -> str:
+    return os.path.join(home(), "speech", "needle.exe" if sys.platform == "win32" else "needle")
+
+
+def speech_model() -> str:
+    return os.path.join(home(), "speech", SPEECH_MODEL[2])
+
+
+_verified: dict = {}                  # path -> (size, mtime_ns, sha256) of the last file hashed there
+# Held to hash, replace or run the speech files; reentrant because transcribe hashes while holding it.
+# (On Windows a file being hashed cannot be replaced, so nothing hashes while an install swaps them.)
+_speech_install_lock = threading.RLock()
+
+
+def _sha256(path: str, fresh: bool = False) -> str:
+    """SHA-256 of a regular file ('' for anything else); remembered until the file changes.
+
+    *fresh* reads the file again whatever was remembered: size and time can be made to match.
+    """
+    try:
+        with _speech_install_lock:
+            if os.path.islink(path) or not os.path.isfile(path):
+                return ""
+            stat = os.stat(path)
+            seen = _verified.get(path)
+            if fresh or not seen or seen[:2] != (stat.st_size, stat.st_mtime_ns):
+                sha = hashlib.sha256()
+                with open(path, "rb") as fh:
+                    for block in iter(lambda: fh.read(1 << 20), b""):
+                        sha.update(block)
+                seen = _verified[path] = (stat.st_size, stat.st_mtime_ns, sha.hexdigest())
+            return seen[2]
+    except OSError:
+        return ""
+
+
+def speech_ready(fresh: bool = False) -> bool:
+    """Both files are there and are the pinned ones: the engine is a program Zenvi runs."""
+    try:
+        return all(_sha256(os.path.join(home(), "speech", name), fresh) == digest
+                   for _url, name, digest in _speech_downloads())
+    except HyperframesError:
+        return False
+
+
+def speech_supported(platform: Optional[str] = None, machine: Optional[str] = None) -> bool:
+    """Whether Whistle has an engine for this computer. Where it has none (Intel Macs), Parakeet is the recogniser."""
+    try:
+        _speech_downloads(platform, machine)
+        return True
+    except HyperframesError:
+        return False
+
+
+RECOGNISERS = ("whistle", "parakeet")
+
+
+def recogniser() -> str:
+    """The recogniser captions use: the user's choice, Whistle by default, Parakeet where Whistle has no engine."""
+    if not speech_supported():
+        return "parakeet"
+    chosen = _remembered().get("recogniser")
+    return chosen if chosen in RECOGNISERS else "whistle"
+
+
+def choose_recogniser(name: str) -> None:
+    if name not in RECOGNISERS:
+        raise HyperframesError("recogniser must be one of %s; got %r" % (", ".join(RECOGNISERS), name))
+    remember(recogniser=name)
+
+
+def matting() -> str:
+    """How a speaker is cut out: ``rvm`` (default) or HyperFrames' own ``u2net``."""
+    chosen = _remembered().get("matting")
+    return chosen if chosen in MATTERS else "rvm"
+
+
+def choose_matting(name: str) -> None:
+    if name not in MATTERS:
+        raise HyperframesError("matting must be one of %s; got %r" % (", ".join(MATTERS), name))
+    remember(matting=name)
+
+
+def rvm_model() -> str:
+    return os.path.join(home(), "matting", RVM_MODEL[1])
+
+
+def _ort_dir() -> str:
+    return os.path.join(home(), ".cache", "hyperframes", "optional", "onnxruntime-node@" + ORT_VERSION)
+
+
+def _ort_module() -> str:
+    return os.path.join(_ort_dir(), "node_modules", "onnxruntime-node")
+
+
+_ort_install_lock = threading.Lock()
+
+
+def _ort_installed() -> bool:
+    """The module itself, as ``require`` and HyperFrames' loader see it (an interrupted npm leaves only the prefix)."""
+    return os.path.isfile(os.path.join(_ort_module(), "package.json"))
+
+
+def rvm_ready(fresh: bool = False) -> bool:
+    return _sha256(rvm_model(), fresh) == RVM_MODEL[2] and _ort_installed()
+
+
+def _u2net_model() -> str:
+    """Where ``hyperframes remove-background`` keeps its model (it downloads it on first use)."""
+    return os.path.join(home(), ".cache", "hyperframes", "background-removal", "models", "u2net_human_seg.onnx")
+
+
+def _parakeet_model() -> str:
+    """Where ``hyperframes models install parakeet`` puts the model (under the CLI's own cache)."""
+    return os.path.join(home(), ".cache", "hyperframes", "parakeet", "parakeet-tdt-0.6b-v3-int8", "encoder.int8.onnx")
+
+
 def _cli_version() -> Optional[str]:
     if not os.path.isfile(cli_script()):
         return None
@@ -262,6 +412,12 @@ def status() -> dict:
         "bash": find_program("bash"),
         "ffmpeg": find_program("ffmpeg"),
         "caption_helpers": captions,
+        "speech": speech_ready(),
+        "parakeet": os.path.isfile(_parakeet_model()),
+        "recogniser": recogniser(),
+        "matting": matting(),
+        "rvm": rvm_ready(),
+        "u2net": os.path.isfile(_u2net_model()),
     }
 
 
@@ -278,7 +434,8 @@ def _node_asset(platform: Optional[str] = None, machine: Optional[str] = None) -
     return "%s-%s.tar.gz" % ("darwin" if platform == "darwin" else "linux", arch)
 
 
-def install_plan(st: dict, platform: Optional[str] = None, captions: bool = False) -> List[dict]:
+def install_plan(st: dict, platform: Optional[str] = None, captions: bool = False,
+                 parakeet: bool = False) -> List[dict]:
     """The steps still needed, in order. ``argv`` starting with npm/npx/hyperframes
     is resolved against the Node found at run time (step one may download it)."""
     steps: List[dict] = []
@@ -298,6 +455,13 @@ def install_plan(st: dict, platform: Optional[str] = None, captions: bool = Fals
     if captions and not st.get("caption_helpers"):
         steps.append({"id": "captions", "label": "Install the caption preview helpers",
                       "argv": ["npm", "install", "--save-exact", "--no-audit", "--no-fund", *CAPTION_PACKAGES]})
+    whistle = speech_supported(platform)
+    if whistle and not st.get("speech"):
+        steps.append({"id": "speech", "label": "Download the speech recogniser captions use (Whistle, 18 MB)"})
+    if (parakeet or not whistle or st.get("recogniser") == "parakeet") and not st.get("parakeet"):
+        steps.append({"id": "parakeet", "label": "Download the %s (Parakeet, about 900 MB)" % (
+            "higher-accuracy speech recogniser" if whistle else "speech recogniser captions use"),
+                      "argv": ["hyperframes", *PARAKEET_INSTALL]})
     return steps
 
 
@@ -339,6 +503,132 @@ def install_node() -> str:
             os.remove(archive)
     remember(node=_private_node())
     return _private_node()
+
+
+def _speech_downloads(platform: Optional[str] = None, machine: Optional[str] = None) -> List[tuple]:
+    """(url, file name, sha256) of the speech engine for this computer and of the model."""
+    platform, machine = platform or sys.platform, (machine or _platform.machine()).lower()
+    arch = {"arm64": "arm64", "aarch64": "arm64", "amd64": "x64", "x86_64": "x64", "x64": "x64"}.get(machine)
+    engine = SPEECH_ENGINES.get(("linux" if platform.startswith("linux") else platform, arch))
+    if not engine:
+        raise HyperframesError("no speech recogniser is published for this computer (%s %s)" % (platform, machine))
+    repo, revision, name, digest = SPEECH_MODEL
+    return [(SPEECH_SOURCE % ("needle3", SPEECH_ENGINE_REVISION, engine[0]), os.path.basename(engine[0]), engine[1]),
+            (SPEECH_SOURCE % (repo, revision, name), name, digest)]
+
+
+def install_speech() -> None:
+    """Download the speech engine and model into ``speech/``. Nothing is kept unless its checksum matches."""
+    _download_pinned(os.path.join(home(), "speech"), _speech_downloads(), "speech recogniser")
+
+
+def _download_pinned(folder: str, files: List[tuple], what: str) -> None:
+    os.makedirs(folder, exist_ok=True)
+    with _speech_install_lock:                          # setup and a first caption may both get here
+        for url, name, digest in files:
+            target, partial = os.path.join(folder, name), os.path.join(folder, name + ".partial")
+            if _sha256(target) == digest:               # anything else there is replaced, never trusted
+                continue
+            try:
+                if os.path.lexists(partial):
+                    os.remove(partial)                  # never write through a link someone left here
+                with _fetch(url) as response, open(partial, "xb") as out:
+                    shutil.copyfileobj(response, out, 1 << 20)
+                if _sha256(partial) != digest:          # what is on disk, not what went past
+                    raise HyperframesError("the %s download (%s) did not match its pinned checksum; try again"
+                                           % (what, name))
+                if sys.platform != "win32":
+                    os.chmod(partial, 0o755)
+                os.replace(partial, target)             # in one step: a failure leaves what was there
+            except OSError as exc:
+                raise HyperframesError("could not download the %s (%s): %s" % (what, name, exc))
+            finally:
+                if os.path.lexists(partial):
+                    os.remove(partial)
+
+
+def install_parakeet() -> None:
+    """Have the CLI download its Parakeet recogniser (runtime and model) into Zenvi's folder."""
+    node = find_program("node")
+    if not node or not os.path.isfile(cli_script()):
+        raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
+    code, out = _exec([node, cli_script(), *PARAKEET_INSTALL], home(), node, INSTALL_TIMEOUT)
+    if code != 0:
+        raise HyperframesError("could not install the Parakeet speech recogniser (exit code %d): %s"
+                               % (code, out[-1500:]))
+
+
+def install_rvm() -> None:
+    """Download the RVM model, and the ONNX runtime the way HyperFrames installs it, if either is missing."""
+    url, name, digest = RVM_MODEL
+    _download_pinned(os.path.dirname(rvm_model()), [(url, name, digest)], "speaker cut-out model")
+    with _ort_install_lock:                             # two caption jobs must not run npm into one folder
+        if _ort_installed():
+            return
+        node = find_program("node")
+        if not node:
+            raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
+        code, out = _exec(_node_tool(node, "npm") + ["install", "onnxruntime-node@" + ORT_VERSION, "--prefix",
+                                                      _ort_dir(), "--no-audit", "--no-fund"],
+                          home(), node, INSTALL_TIMEOUT, isolated=False)
+        if code != 0 or not _ort_installed():
+            raise HyperframesError("could not install the ONNX runtime the speaker cut-out runs on (exit code %d): %s"
+                                   % (code, out[-1500:]))
+
+
+def matte(project: str, source: str, output: str, timeout: float = SPEECH_TIMEOUT) -> dict:
+    """Cut the subject out of *source* into a transparent WebM *output* (both in the project) with RVM.
+
+    On the GPU where the ONNX runtime has one (DirectML on Windows, CoreML on Apple Silicon,
+    CUDA on Linux), else the CPU. Returns ``{frames, provider, ms_per_frame}``.
+    """
+    if not rvm_ready(fresh=True):                       # hashed again: what Node is about to load
+        raise HyperframesError("the speaker cut-out model is not installed")
+    root = project_dir(project)
+    for path in (source, output):
+        _check_value(project, "ffmpeg", "", path, ())
+    node, ffmpeg = find_program("node"), find_program("ffmpeg")
+    if not node or not ffmpeg:
+        raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
+    os.makedirs(os.path.dirname(os.path.join(root, output)) or root, exist_ok=True)
+    code, out = _exec([node, RVM_RUNNER, _ort_module(), rvm_model(), ffmpeg, source, output], root, node, timeout)
+    if code != 0:
+        raise HyperframesError("the speaker cut-out failed (exit code %d): %s" % (code, out[-800:]))
+    for line in reversed(out.splitlines()):             # the runtime's own warnings come after it (stderr)
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except ValueError:
+                break
+    raise HyperframesError("the speaker cut-out finished without a report: %s" % out[-400:])
+
+
+def transcribe(wav: str, timeout: float = SPEECH_TIMEOUT) -> List[dict]:
+    """Words of a WAV file as ``[{text, start, end}]`` (seconds), from the private Whistle engine.
+
+    Not an assistant command: Zenvi runs it on audio it extracted itself. Audio of any
+    length is accepted (the engine windows it); seven European languages, detected.
+    """
+    argv = [speech_engine(), "--model", speech_model(), "--audio", wav, "--audio-word-timestamps",
+            "--threads", str(max(1, min(SPEECH_THREADS, os.cpu_count() or 4)))]
+    try:
+        with _speech_install_lock:                      # no install swaps the files between the check and the run
+            if not speech_ready(fresh=True):            # hashed again each run: this file is executed
+                raise HyperframesError("the speech recogniser is not installed; call hyperframes_setup_tool")
+            proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                  timeout=timeout, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        raise HyperframesError("the speech recogniser did not finish within %d s" % timeout)
+    except OSError as exc:
+        raise HyperframesError("could not start the speech recogniser: %s" % exc)
+    if proc.returncode != 0:
+        raise HyperframesError("the speech recogniser failed (exit code %d): %s"
+                               % (proc.returncode, _clean(proc.stderr or proc.stdout)[-800:]))
+    try:
+        words = json.loads(proc.stdout).get("words") or []
+        return [{"text": str(w["word"]), "start": float(w["start"]), "end": float(w["end"])} for w in words]
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise HyperframesError("the speech recogniser returned something unreadable: %s" % exc)
 
 
 def _node_tool(node: str, name: str) -> List[str]:
@@ -394,14 +684,15 @@ def _exec(argv: List[str], cwd: str, node: Optional[str], timeout: float,
     return proc.returncode, _clean((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else ""))
 
 
-def install(captions: bool = False, progress: Optional[Callable[[str], None]] = None) -> dict:
+def install(captions: bool = False, progress: Optional[Callable[[str], None]] = None,
+            parakeet: bool = False) -> dict:
     """Run every missing step of :func:`install_plan`; returns the new status."""
     os.makedirs(home(), exist_ok=True)
     package = os.path.join(home(), "package.json")
     if not os.path.isfile(package):
         with open(package, "w", encoding="utf-8") as fh:
             json.dump({"name": "zenvi-hyperframes", "private": True}, fh)
-    for step in install_plan(status(), captions=captions):
+    for step in install_plan(status(), captions=captions, parakeet=parakeet):
         if progress:
             progress(step["label"])
         log.info("HyperFrames setup: %s", step["label"])
@@ -410,6 +701,9 @@ def install(captions: bool = False, progress: Optional[Callable[[str], None]] = 
                 install_node()
             except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
                 raise HyperframesError("could not download Node.js: %s" % exc)
+            continue
+        if step["id"] == "speech":
+            install_speech()
             continue
         node, argv = find_program("node"), list(step["argv"])
         own_cli = argv[0] == "hyperframes"
@@ -423,6 +717,8 @@ def install(captions: bool = False, progress: Optional[Callable[[str], None]] = 
             remember(browser=lines[-1] if code == 0 and lines else "")
     st = status()
     remember(node=st["node"], bash=st["bash"])
+    if parakeet and st["parakeet"]:
+        choose_recogniser("parakeet")                   # asked for better accuracy: use it
     return st
 
 
@@ -455,6 +751,14 @@ def check_command(project: str, program: str, args: Iterable[str], inputs: Itera
     if program == "hyperframes" and sub not in CLI_SUBCOMMANDS:
         raise HyperframesError("hyperframes %r is not available here; allowed: %s"
                                % (sub, ", ".join(sorted(CLI_SUBCOMMANDS))))
+    if program == "hyperframes" and sub == "transcribe":
+        # Any other engine falls back to whisper.cpp, which the CLI clones and compiles when it is missing.
+        # Exactly one spelling is accepted, so a second or abbreviated flag cannot override it.
+        flags = [(a, args[i + 1] if i + 1 < len(args) else "") for i, a in enumerate(args)
+                 if a.startswith(("-e", "--e")) or a == "-m" or a.startswith("--m")]
+        if not flags or any(a != "--engine=parakeet" and (a, value) != ("--engine", "parakeet") for a, value in flags):
+            raise HyperframesError("hyperframes transcribe runs here only with --engine parakeet (install it with "
+                                   "hyperframes_setup_tool accurate_speech=true); for captions use add_captions_tool")
     out = list(args)
     if program in SCRIPT_PROGRAMS:
         if not sub or sub.startswith("-"):
