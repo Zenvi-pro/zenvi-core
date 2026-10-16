@@ -163,7 +163,7 @@ export UNITTEST_DIR="${MSYS2_ROOT_WIN}\usr"
 # libopenshot-audio with it when the old build no longer loads.
 LIBOPENSHOT_SRC="$DEPS_DIR/libopenshot"
 BINDINGS_DIR="$LIBOPENSHOT_SRC/build/bindings/python"
-PREROLL_PATCH="$REPO_ROOT_UNIX/installer/mac-patches/libopenshot-v1.0.0-discard-preroll.patch"
+PREROLL_PATCH="$REPO_ROOT_UNIX/installer/mac-patches/libopenshot-v1.0.1-discard-preroll.patch"
 LIBOPENSHOT_OK=""
 REBUILD_AUDIO=""
 if find "$BINDINGS_DIR" -iname 'openshot.py' 2>/dev/null | grep -q .; then
@@ -171,6 +171,10 @@ if find "$BINDINGS_DIR" -iname 'openshot.py' 2>/dev/null | grep -q .; then
         LIBOPENSHOT_OK=1
     elif ! PYTHONPATH="$BINDINGS_DIR" /mingw64/bin/python.exe -c "import openshot" 2>/dev/null; then
         echo "The existing libopenshot build no longer loads -- rebuilding it and libopenshot-audio."
+        REBUILD_AUDIO=1
+    elif ! PYTHONPATH="$BINDINGS_DIR" /mingw64/bin/python.exe -c "import openshot, sys; sys.exit(tuple(int(n) for n in openshot.OPENSHOT_VERSION_FULL.split('-')[0].split('.')) < (1, 0, 1))" 2>/dev/null; then
+        # libopenshot 1.0.1 needs OpenShotAudio 1.0.1, so both are rebuilt.
+        echo "The existing libopenshot build is older than 1.0.1 -- rebuilding it and libopenshot-audio."
         REBUILD_AUDIO=1
     else
         echo "The existing libopenshot build has no OpenCV effects -- rebuilding it."
@@ -195,6 +199,8 @@ if [ -n "$REBUILD_AUDIO" ] || ! find /usr/include /usr/lib -maxdepth 2 -iname '*
     cd "$DEPS_DIR"
     [ -z "$REBUILD_AUDIO" ] || rm -rf libopenshot-audio/build
     [ -d libopenshot-audio ] || git clone https://github.com/OpenShot/libopenshot-audio.git
+    git -C libopenshot-audio fetch -q --tags origin
+    git -C libopenshot-audio checkout -q -f v1.0.1
     cd libopenshot-audio
 
     rm -rf build
@@ -242,6 +248,8 @@ echo "--- [5/6] libopenshot ---"
 if [ -z "$LIBOPENSHOT_OK" ]; then
     cd "$DEPS_DIR"
     [ -d libopenshot ] || git clone https://github.com/OpenShot/libopenshot.git
+    git -C libopenshot fetch -q --tags origin
+    git -C libopenshot checkout -q -f v1.0.1    # -f: drops the patches applied by an earlier run
     cd libopenshot
 
     # FFmpeg 7+ compat patch (OpenShot/libopenshot PR #1088): MSYS2 ships a
@@ -270,7 +278,7 @@ if [ -z "$LIBOPENSHOT_OK" ]; then
 
     # Zenvi source fix, not yet upstream: without it the first frame of a
     # stream-copy trimmed MP4 decodes the whole file and comes back black.
-    # Written against v1.0.0; it also applies to the default branch built here.
+    # Written against v1.0.0, kept for v1.0.1, the tag built here.
     # Skipped if already applied; the setup stops if upstream changed the code.
     bash "$REPO_ROOT_UNIX/installer/apply-libopenshot-patches.sh" . "$PREROLL_PATCH"
 

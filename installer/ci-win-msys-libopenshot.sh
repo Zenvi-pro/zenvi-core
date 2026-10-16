@@ -2,7 +2,7 @@
 # MSYS2 UCRT64: unittest-cpp + libopenshot-audio + libopenshot (see README.md "MSYS2 (Windows)").
 #
 # Environment:
-#   LIBOPENSHOT_TAG        libopenshot tag        (default: v1.0.0)
+#   LIBOPENSHOT_TAG        libopenshot tag        (default: v1.0.1)
 #   LIBOPENSHOT_AUDIO_TAG  libopenshot-audio tag  (default: $LIBOPENSHOT_TAG)
 #   ZENVI_OPENCV           ON|OFF, OpenCV effects (Tracker, Object Detector,
 #                          Stabilizer) via mingw-w64-ucrt-x86_64-opencv (default: ON).
@@ -10,7 +10,7 @@
 set -euo pipefail
 export PATH="/ucrt64/bin:$PATH"
 
-LIBOPENSHOT_TAG="${LIBOPENSHOT_TAG:-v1.0.0}"
+LIBOPENSHOT_TAG="${LIBOPENSHOT_TAG:-v1.0.1}"
 LIBOPENSHOT_AUDIO_TAG="${LIBOPENSHOT_AUDIO_TAG:-$LIBOPENSHOT_TAG}"
 ZENVI_OPENCV="${ZENVI_OPENCV:-ON}"
 PATCH_DIR="${GITHUB_WORKSPACE}/installer/mac-patches"
@@ -49,7 +49,7 @@ if [[ ! -f /usr/lib/libUnitTest++.a ]] && [[ ! -f /usr/lib/libUnitTest++.dll.a ]
   cmake --install build
 fi
 
-# libopenshot-audio → /usr (libopenshot 1.0.0 requires OpenShotAudio >= 1.0.0); disable ASIO (no Steinberg SDK on CI)
+# libopenshot-audio → /usr (libopenshot 1.0.1 requires OpenShotAudio >= 1.0.1); disable ASIO (no Steinberg SDK on CI)
 git clone --depth 1 --branch "${LIBOPENSHOT_AUDIO_TAG}" https://github.com/OpenShot/libopenshot-audio.git "${DEPS}/libopenshot-audio"
 AUDIO_SRC="${DEPS}/libopenshot-audio"
 apply_patches "${AUDIO_SRC}" "libopenshot-audio-${LIBOPENSHOT_AUDIO_TAG}"
@@ -69,8 +69,7 @@ cmake --install "${AUDIO_SRC}/build"
 # libopenshot → /ucrt64 + FFmpeg 7+ compat patches (upstream may already include some)
 git clone --depth 1 --branch "${LIBOPENSHOT_TAG}" https://github.com/OpenShot/libopenshot.git "${DEPS}/libopenshot"
 export LOS="${DEPS}/libopenshot"
-# Tag-locked source patches (v1.0.0: the non-crop location fix from libopenshot
-# develop, and the stream-copy trim pre-roll fix).
+# Tag-locked source patches (v1.0.1: the stream-copy trim pre-roll fix).
 apply_patches "${LOS}" "libopenshot-${LIBOPENSHOT_TAG}"
 find "${LOS}" \( -name "CMakeLists.txt" -o -name "*.cmake" \) -print0 | \
   xargs -0 -r grep -l "avresample" 2>/dev/null | while read -r f; do
