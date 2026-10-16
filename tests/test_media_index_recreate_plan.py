@@ -160,3 +160,18 @@ def test_a_stock_query_drops_the_animation_words_and_adds_the_lighting():
     assert "anime" not in q.lower() and "person" in q and q.startswith("dark moody")
     assert mref.stock_query_for("A wide shot of a street", {"avg_luma": 0.8}).startswith("bright")
     assert mref.stock_query_for("", None) == "footage"
+
+
+def test_a_shot_that_nothing_in_the_footage_resembles_stands_out_from_shots_that_all_have_a_close_match():
+    good = {i: 0.95 for i in range(10)}
+    assert mref.unmatchable_shots({**good, 5: 0.75}) == {5: 0.2}
+    assert mref.unmatchable_shots({i: 0.62 + 0.01 * (i % 3) for i in range(10)}) == {}          # everything matches equally badly: nothing stands out
+    assert mref.unmatchable_shots({0: 0.9, 1: 0.5}) == {}                                          # too few shots to say
+
+
+def test_a_returning_image_may_use_the_same_footage_even_when_that_file_plays_next_to_it():
+    ref = reference(4, kind_of=lambda i: [0, 1, 2, 0][i])
+    pool = [make_file("a", [(0, 4), (4, 8)], kind_of=lambda i: [0, 2][i]), make_file("b", [(0, 4)], kind_of=lambda i: 1)]
+    plan = mref.plan_recreation(ref, pool)
+    last = plan["shots"][3]
+    assert last["repeat_of"] == 0 and last["choice"]["file_id"] == "a" and last["choice"]["source_shot"] == plan["shots"][0]["choice"]["source_shot"]

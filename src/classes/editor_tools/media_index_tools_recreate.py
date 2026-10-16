@@ -888,10 +888,21 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pic
     every_raw = [x[5]["raw_picture"] for sc, _c in slot_info.values() for x in sc if x[5].get("raw_picture") is not None]
     pool_at = {f.file_id: i for i, f in enumerate(pool)}
     row_of = {i: r for i, _a, _b, r in slots}
+    best_raw = {sid: max((x[5]["raw_picture"] for x in sc if x[5].get("raw_picture") is not None), default=None) for sid, (sc, _c) in slot_info.items()}
+    nothing_like = mref.unmatchable_shots({k: v for k, v in best_raw.items() if v is not None})
     for shot_id, (scored, covering) in slot_info.items():
         mine = [x[5]["raw_picture"] for x in scored if x[0] == pool_at.get(covering.file_id) and x[1] < covering.src_out - 1e-6
                 and x[2] > covering.src_in + 1e-6 and x[5].get("raw_picture") is not None]
         fit = mref.picture_fit(every_raw, max(mine)) if mine else None
+        if shot_id in nothing_like and (row_of.get(shot_id) or {}).get("repeat_of") is None:
+            picture.append(0.15)
+            findings.setdefault(shot_id, []).append(f"nothing in the footage looks like this shot (its best match trails the other shots' by {nothing_like[shot_id]:.2f}): "
+                                                    "use stock, or leave it out and say so")
+            desc = ((row_of.get(shot_id) or {}).get("description") or "").strip()
+            if desc:
+                query = mref.stock_query_for(desc, (next((x for x in ref.shots if int(x["id"]) == int(shot_id)), None) or {}).get("look"))
+                fixes[shot_id] = f"search_stock_video_tool(query='{query}') then build_recreation_tool(overrides=[...], only_shots=[{shot_id}])"
+            continue
         if fit is None:                                                # no picture vectors for this file: fall back to how it ranks on look and camera
             rank = ranks.get(shot_id)
             picture.append(0.5 if rank is None else (1.0 if rank >= WEAK_RANK else rank / WEAK_RANK))

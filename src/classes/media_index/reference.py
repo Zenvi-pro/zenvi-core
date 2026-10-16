@@ -129,6 +129,8 @@ MIN_PLAN_SCORE = 0.45          # under this a choice is weak: look for stock or 
 BUCKET_SECONDS = 0.25          # reuse is counted per quarter second of source footage
 MAX_WINDOWS_PER_SHOT = 12
 FIT_MIN = 0.50                 # a pick looks like its reference shot only when its picture similarity is at least this far from the typical pair toward the best pair
+UNMATCHABLE_MIN_GAP = 0.06    # a shot whose best picture match trails the typical shot's best by more than this ...
+UNMATCHABLE_SPREADS = 1.5      # ... and by more than this many spreads of all the shots' bests has nothing like it in the footage
 REPEAT_MIN_GAP = 3             # a repeat comes back at least this many shots later
 REPEAT_COSINE = 0.93           # two reference shots this alike are the same image coming back: only then may a source moment be used again
 PICTURE_SPREAD_FLOOR = 0.03    # picture similarity spreads about this much across real footage; less than that is noise and must not be blown up
@@ -244,6 +246,17 @@ def stock_query_for(description: str, look: Optional[Dict[str, Any]] = None, lim
     return " ".join(([tone] if tone else []) + words)
 
 
+def unmatchable_shots(best_by_shot: Dict[int, float]) -> Dict[int, float]:
+    """Shots whose best match anywhere in the footage is far below what other shots find: {shot: how far below}. When most shots have a
+    close match and one has none, that shot's footage is simply not there, however good its best of a poor lot looks against its own options."""
+    values = np.array([v for v in best_by_shot.values() if v is not None], dtype=np.float64)
+    if len(values) < 4:
+        return {}
+    median = float(np.median(values))
+    margin = max(UNMATCHABLE_MIN_GAP, UNMATCHABLE_SPREADS * float(values.std()))
+    return {k: round(median - v, 3) for k, v in best_by_shot.items() if v is not None and median - v > margin}
+
+
 def picture_fit(raw_values: Sequence[float], value: Optional[float]) -> Optional[float]:
     """How far *value* (a raw picture similarity) is from the typical shot/window pair toward the best ones: 0 = typical, 1 = as alike as the
     best 5% of all pairs. Judged against every pair, not the shot's own options, so the best of a poor lot does not score well. None when unknown."""
@@ -330,7 +343,7 @@ def plan_recreation(ref: FileIndex, files: Sequence[FileIndex], start: Optional[
         base = chosen.get(sj)
         if base is None:
             continue
-        same = [c for c in by_slot.get(si, []) if c[2] == base[2] and abs(c[3] - base[3]) <= 1.0 and not next_to_same_file(c)]
+        same = [c for c in by_slot.get(si, []) if c[2] == base[2] and abs(c[3] - base[3]) <= 1.0]
         if same:
             chosen[si] = same[0]
             file_uses[base[2]] = file_uses.get(base[2], 0) + 1
@@ -346,6 +359,11 @@ def plan_recreation(ref: FileIndex, files: Sequence[FileIndex], start: Optional[
                     buckets[(c[2], k)] = buckets.get((c[2], k), 0) + 1
                 break
     every_raw = [c[6]["raw_picture"] for c in candidates if c[6].get("raw_picture") is not None]
+    best_raw: Dict[int, float] = {}
+    for c in candidates:
+        if c[6].get("raw_picture") is not None:
+            best_raw[c[1]] = max(best_raw.get(c[1], -1.0), c[6]["raw_picture"])
+    nothing_like = unmatchable_shots(best_raw)
     rows: List[Dict[str, Any]] = []
     for si, (shot, a, b) in enumerate(slots):
         watch = shot.get("watch") or {}
@@ -360,7 +378,9 @@ def plan_recreation(ref: FileIndex, files: Sequence[FileIndex], start: Optional[
                              "source_shot": pick[5], "parts": pick[6]}
             fit = picture_fit(every_raw, pick[6].get("raw_picture"))
             row["choice"]["picture_fit"] = fit
-            row["status"] = "matched" if pick[0] >= min_score and (fit is None or fit >= FIT_MIN or si in repeats) else "weak"
+            row["status"] = "matched" if pick[0] >= min_score and (fit is None or fit >= FIT_MIN or si in repeats) and si not in nothing_like else "weak"
+            if si in nothing_like:
+                row["nothing_like_it"] = nothing_like[si]
             if si in repeats:
                 row["repeat_of"] = slots[repeats[si]][0]["id"]
             taken = {(pick[2], pick[3])}
