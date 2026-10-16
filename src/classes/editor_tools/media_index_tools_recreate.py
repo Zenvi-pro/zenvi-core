@@ -30,7 +30,11 @@ _PLANS: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 
 # areas of the check, with how much each counts towards the overall score; the recreation passes when the overall score is at least
 # PASS_SCORE and no area is below AREA_FLOOR
-AREA_WEIGHT = {"timing": 0.25, "coverage": 0.15, "variety": 0.20, "picture": 0.15, "look": 0.15, "sound": 0.10}
+AREA_WEIGHT = {"timing": 0.22, "coverage": 0.13, "variety": 0.18, "picture": 0.15, "look": 0.12, "sound": 0.08, "framing": 0.12}
+ZOOM_PER_STEP = 0.45             # extra zoom for each step of tightness the reference is tighter than the footage
+MAX_ZOOM = 2.2                   # past this a 1080p source is visibly soft in a 720p-1080p project
+MIN_ZOOM = 1.08                  # under this a zoom is not worth making
+FRAMING_OK = 0.85                # a clip is framed as asked when its zoom reaches this share of the wanted zoom
 PASS_SCORE, AREA_FLOOR = 80.0, 60.0
 WEAK_RANK = 0.30                 # a placed window ranked in the bottom 30% of the candidates for its shot is a weak pick
 LOOK_CLOSE = 0.25                # a clip matches the reference shot's look when the gap in brightness, colour cast, saturation and contrast is under this
@@ -294,6 +298,65 @@ def _clear_slots(layer: int, spans: List[Tuple[float, float]]) -> int:
     return len(ids)
 
 
+def _wanted_zoom(ref_type: Optional[str], src_type: Optional[str]) -> float:
+    """The zoom (1 = none) that makes footage framed as *src_type* read as *ref_type*: only ever in (a wide shot cannot be pulled back)."""
+    want, have = mref.tightness(ref_type), mref.tightness(src_type)
+    if want is None or have is None or want <= have:
+        return 1.0
+    zoom = min(MAX_ZOOM, 1.0 + ZOOM_PER_STEP * (want - have))
+    return zoom if zoom >= MIN_ZOOM else 1.0
+
+
+def _source_type_at(by_id: Dict[str, Any], file_id: str, t: float) -> Optional[str]:
+    fi = by_id.get(file_id)
+    shot = fi.shot_at(t) if fi is not None else None
+    return ((shot or {}).get("watch") or {}).get("shot_type")
+
+
+def _subject_zoom_values(clip_id: str, file_id: str, start: float, end: float, zoom: float) -> Optional[Dict[str, Any]]:
+    """Clip properties that zoom into the footage and keep its subject (found by saliency and faces) in shot: crop-to-fill, scale, and the
+    shift that puts the subject at the middle, kept inside the picture. None when the picture cannot be read."""
+    from classes.editor_tools import clip_props_model as cpm
+    from classes.editor_tools.media_index_tools_precision import _frame_aspect
+    from classes.editor_tools.project_export_profiles import GRAVITY_CENTER, SCALE_CROP, _source_aspect
+    from classes.media_index import framing
+    from classes.path_utils import absolute_media_path
+    from classes.query import Clip, File
+    clip, f = Clip.get(id=clip_id), File.get(id=file_id)
+    if clip is None or f is None:
+        return None
+    path = absolute_media_path(f.data.get("path")) or str(f.data.get("path") or "")
+    try:
+        found = framing.framing_of(path, start, end, 1.0 / zoom, "x", samples=3)
+        xs = sorted(r["x"] for r in found["samples"])
+        ys = sorted(r["y"] for r in found["samples"])
+        sx, sy = xs[len(xs) // 2], ys[len(ys) // 2]
+    except Exception:  # noqa: BLE001 - an unreadable frame means a centred zoom, not a failed build
+        sx = sy = 0.5
+        found = {"confidence": 0.0, "sure": False}
+    source_aspect, frame_aspect = _source_aspect(clip.data or {}) or 0.0, _frame_aspect("project")
+    vis_x = min(1.0, frame_aspect / source_aspect) if source_aspect else 1.0           # share of the source's width / height left after crop-to-fill
+    vis_y = min(1.0, source_aspect / frame_aspect) if source_aspect else 1.0
+    fx = 0.5 + (sx - 0.5) / vis_x
+    fy = 0.5 + (sy - 0.5) / vis_y
+    reach = (zoom - 1.0) / 2.0
+    shift_x = max(-reach, min(reach, -(fx - 0.5) * zoom))
+    shift_y = max(-reach, min(reach, -(fy - 0.5) * zoom))
+
+    def curve(value: float) -> Dict[str, Any]:
+        return {"Points": [cpm.make_point(1, round(float(value), 4), cpm.BEZIER)]}
+
+    return {"values": {"scale": SCALE_CROP, "gravity": GRAVITY_CENTER, "scale_x": curve(zoom), "scale_y": curve(zoom),
+                       "location_x": curve(shift_x), "location_y": curve(shift_y)},
+            "zoom": round(zoom, 2), "subject": [round(sx, 3), round(sy, 3)], "sure": bool(found.get("sure"))}
+
+
+def _applied_zoom(clip_id: str) -> float:
+    from classes.query import Clip
+    clip = Clip.get(id=clip_id)
+    return keyframe_value((clip.data or {}).get("scale_x") if clip else None, 1.0)
+
+
 def _ensure_track(name: str) -> None:
     from classes.query import Track
     if not any(str((t.data or {}).get("label") or "") == name for t in Track.filter()):
@@ -315,10 +378,11 @@ def _ensure_track(name: str) -> None:
         }, required=["reference_shot", "file_id", "in"]), "Swap the source of some shots (from a check's fixes, or stock you imported); remembered for later builds.", []),
         "grade": boolean("Grade every clip towards its reference shot's measured look (brightness, colour, contrast).", True),
         "song": boolean("Put the reference's own audio on a Song track (its picture hidden) and silence the footage's own sound.", True),
+        "framing": boolean("Zoom into footage that is framed wider than the reference shot (a close-up made from a wide shot), keeping the subject centred.", True),
     }),
     background_safe=True,
 )
-def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=True):
+def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=True, framing=True):
     """Place a recreation plan on the timeline: each source window at the reference's exact cut time and length, on a Recreation track,
     in one undoable step. Each clip is graded towards its reference shot's measured look (grade), the reference's audio goes under it
     on a Song track and the footage's own sound is switched off (song). With overrides it swaps the source of the named shots; with
@@ -392,6 +456,28 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
                 _call("color_grade_clip_tool", timeline_clip_ids=ids, reset=True, **dict(params))
                 graded += len(ids)
 
+        zoomed = []
+        if framing:
+            from classes.editor_tools import clip_props
+            pending = []
+            for r in todo:
+                shot_id = r["reference_shot"]
+                c = _effective(r, plan)
+                zoom = _wanted_zoom(r.get("shot_type"), _source_type_at(by_id, c["file_id"], float(c["in"]) + slot_len[shot_id] / 2.0))
+                if zoom > 1.0 and shot_id in placed_ids:
+                    values = _subject_zoom_values(placed_ids[shot_id], c["file_id"], starts[shot_id], starts[shot_id] + slot_len[shot_id], zoom)
+                    if values:
+                        pending.append((placed_ids[shot_id], values["values"]))
+                        zoomed.append({"reference_shot": shot_id, "zoom": values["zoom"], "subject": values["subject"], "sure": values["sure"]})
+
+            def apply_framing() -> None:
+                with clip_props._transaction():
+                    for clip_id, values in pending:
+                        clip_props.save_clip_values(clip_id, values)
+            if pending:
+                on_main(apply_framing, timeout=BATCH_HOP_TIMEOUT)
+        plan["zoomed"] = {z["reference_shot"]: z for z in zoomed} if wanted is None else {**plan.get("zoomed", {}), **{z["reference_shot"]: z for z in zoomed}}
+
         song_note = ""
         if song and not plan["song_clip"]:
             ref = by_id.get(plan["reference_file_id"])
@@ -411,18 +497,18 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
         if song and placed_ids:
             _call("set_clip_audio_video_tool", timeline_clip_ids=list(placed_ids.values()), audio="off")
 
-        return placed_ids, replaced, graded, song_note
+        return placed_ids, replaced, graded, song_note, zoomed
 
-    placed_ids, replaced, graded, song_note = _in_one_batch(run)
+    placed_ids, replaced, graded, song_note, zoomed = _in_one_batch(run)
 
     unfilled = [r["reference_shot"] for r in plan["rows"] if not _effective(r, plan)]
     from classes.editor_tools import playback_health
     playback_note = playback_health.start_preview_copies({_effective(r, plan)["file_id"] for r in todo}, len(placed_ids))
     layer_now = _layer_of(plan["track_name"])
     playback_note += playback_health.stacked_tracks_note(layer_now, min(snap(r["start"]) for r in todo), max(snap(r["end"]) for r in todo))
-    return ok(f"Placed {len(placed_ids)} shot(s) on track '{plan['track_name']}' (replaced {replaced}), graded {graded}.{song_note}"
+    return ok(f"Placed {len(placed_ids)} shot(s) on track '{plan['track_name']}' (replaced {replaced}), graded {graded}, zoomed in on {len(zoomed)} to match the reference's framing.{song_note}"
               + (f" Unfilled: {unfilled}." if unfilled else "") + playback_note,
-              plan_id=plan["id"], placed=len(placed_ids), replaced=replaced, graded=graded, unfilled=unfilled,
+              plan_id=plan["id"], placed=len(placed_ids), replaced=replaced, graded=graded, zoomed=zoomed, unfilled=unfilled,
               next="check_recreation_tool(plan_id) scores it against the reference; fix the shots it names, then check again.")
 
 
@@ -554,6 +640,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
     slot_info: Dict[int, Tuple[List[tuple], Any]] = {}
     proposed: Dict[int, str] = {}
     look_misses: List[int] = []
+    framing_scores: List[float] = []
     ranks: Dict[int, Optional[float]] = {}
     moments: Counter = Counter()                                    # filled once every slot is read; swaps book into it
 
@@ -588,6 +675,16 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
             buckets[(covering.file_id, k)] += 1
         cand = by_id.get(covering.file_id)
         shot = next((s for s in ref.shots if int(s["id"]) == int(shot_id)), None)
+        ref_type = ((shot or {}).get("watch") or {}).get("shot_type")
+        wanted_zoom = _wanted_zoom(ref_type, _source_type_at(by_id, covering.file_id, (covering.src_in + covering.src_out) / 2.0))
+        if mref.tightness(ref_type) is not None:
+            applied = _applied_zoom(covering.id)
+            if wanted_zoom <= 1.0 or applied >= wanted_zoom * FRAMING_OK:
+                framing_scores.append(1.0)
+            else:
+                framing_scores.append(max(0.0, (applied - 1.0) / max(wanted_zoom - 1.0, 1e-6)))
+                findings.setdefault(shot_id, []).append(f"framed wider than the reference ({ref_type}): needs about {wanted_zoom:.1f}x zoom, has {applied:.1f}x")
+                fixes.setdefault(shot_id, "build_recreation_tool(framing=true, only_shots=[%d])" % shot_id)
         if cand is not None and shot is not None and cand in pool:
             scored = mref.scored_windows(ref, shot, float(b) - float(a), pool)
             slot_info[shot_id] = (scored, covering)
@@ -693,14 +790,15 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
     if audible:
         sound -= min(0.5, audible / max(1, len(pictures)))
     areas = {"timing": _grade_score(timing), "coverage": _grade_score(coverage), "variety": round(100.0 * max(0.0, 1.0 - variety_penalty), 1),
-             "picture": _grade_score(picture) if picture else 50.0, "look": _grade_score(look_scores) if look_scores else 50.0, "sound": round(100.0 * max(0.0, sound), 1)}
+             "picture": _grade_score(picture) if picture else 50.0, "look": _grade_score(look_scores) if look_scores else 50.0, "sound": round(100.0 * max(0.0, sound), 1),
+             "framing": _grade_score(framing_scores) if framing_scores else 100.0}
     overall = round(sum(areas[k] * w for k, w in AREA_WEIGHT.items()), 1)
     passed = overall >= PASS_SCORE and min(areas.values()) >= AREA_FLOOR
     ref_transitions = sorted((s for s in ref.shots if (s.get("opens_with") or {}).get("kind") in ("fade", "dissolve")), key=lambda s: s["start"])
     failing = [{"reference_shot": sid, "time": _mmss(next(a for i, a, _b, _r in slots if i == sid)), "problems": probs, "fix": fixes.get(sid)}
                for sid, probs in sorted(findings.items())][:20]
     head = (f"{'PASS' if passed else 'NOT YET'}: overall {overall} (timing {areas['timing']}, coverage {areas['coverage']}, variety {areas['variety']}, "
-            f"picture {areas['picture']}, look {areas['look']}, sound {areas['sound']}); {len(findings)} shot(s) to fix.")
+            f"picture {areas['picture']}, look {areas['look']}, sound {areas['sound']}, framing {areas['framing']}); {len(findings)} shot(s) to fix.")
     return ok(head + (f" {len(skipped)} shot(s) skipped on purpose: {skipped[:12]}." if skipped else ""), passed=passed, overall=overall, areas=areas, skipped=skipped, failing=failing, failing_total=len(findings),
               variety={"most_uses_of_one_moment": reuse_max, "clips_twice_in_a_row": back_to_back, "biggest_share_of_one_file": round(share, 2),
                        "files_used": len(uses)},

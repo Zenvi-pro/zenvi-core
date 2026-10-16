@@ -26,8 +26,7 @@ SHOT = 1.0
 DARK, BRIGHT = 0.1, 0.9
 
 
-@pytest.fixture
-def studio(editor, tmp_path, monkeypatch):
+def make_studio(editor, tmp_path, monkeypatch, ref_type="", src_type=""):
     from classes import clip_utils, timeline_ops
     from classes.editor_tools import media_index_tools as T, media_index_tools_edit as TE, media_index_tools_precision as TX, media_index_tools_review as TR
     from timeline_edit_fakes import FakeTimeline, fake_openshot
@@ -46,16 +45,27 @@ def studio(editor, tmp_path, monkeypatch):
     lumas = [DARK, BRIGHT, DARK, BRIGHT, DARK, BRIGHT]
     ref_sha = sha(80)
     shots = [shot(i, i * SHOT, (i + 1) * SHOT, _look=profile(lumas[i])) for i in range(6)]
-    build(shelf, ref_sha, shots=shots, watch=[w(i, i * SHOT, (i + 1) * SHOT, f"shot {i}") for i in range(6)], duration=6.0)
+    build(shelf, ref_sha, shots=shots, watch=[w(i, i * SHOT, (i + 1) * SHOT, f"shot {i}", shot_type=ref_type) for i in range(6)], duration=6.0)
     ref = editor.add_file("video", duration=6.0, path=str(tmp_path / "ref.mp4"), fingerprint={"sha256": ref_sha}, has_audio=True, channels=2, name="ref.mp4")
     sources = {}
     for n, (name, luma) in enumerate((("dark", DARK), ("bright", BRIGHT), ("mid", 0.5))):
         key = sha(81 + n)
-        build(shelf, key, shots=[shot(0, 0, 12, _look=profile(luma))], watch=[w(0, 0, 12, name)], duration=12.0)
+        build(shelf, key, shots=[shot(0, 0, 12, _look=profile(luma))], watch=[w(0, 0, 12, name, shot_type=src_type)], duration=12.0)
         sources[name] = editor.add_file("video", duration=12.0, path=str(tmp_path / f"{name}.mp4"), fingerprint={"sha256": key}, has_audio=True, channels=2, name=f"{name}.mp4")
     library.clear_cache()
     editor.mark()
     return SimpleNamespace(ed=editor, ref=ref, src=sources, lumas=lumas)
+
+
+@pytest.fixture
+def studio(editor, tmp_path, monkeypatch):
+    return make_studio(editor, tmp_path, monkeypatch)
+
+
+@pytest.fixture
+def closeups(editor, tmp_path, monkeypatch):
+    """A reference made of close-ups and footage that is all wide shots."""
+    return make_studio(editor, tmp_path, monkeypatch, ref_type="close-up", src_type="wide shot")
 
 
 def plan(studio, **kw):
@@ -299,3 +309,49 @@ def test_comparing_shots_shows_the_reference_beside_the_chosen_footage(studio, m
     assert [r["shot"] for r in out["rows"]] == [1, 4] and [e["shot"] for e in out["skipped"]] == [99]
     assert len(seen) == 4 and seen[0][0] == str(studio.ref) and seen[1][0] != str(studio.ref)       # reference tile, then footage tile, per shot
     assert abs(seen[0][1] - (1 * SHOT + SHOT / 2)) < 1e-6                                              # the middle of the reference shot
+
+
+def test_footage_framed_wider_than_the_reference_is_zoomed_in_on_its_subject(closeups, monkeypatch):
+    from classes.editor_tools import media_index_tools_recreate as R
+    monkeypatch.setattr(R, "_subject_zoom_values", lambda clip_id, file_id, start, end, zoom: R_values(zoom))
+    out = build_it(closeups, plan(closeups)["plan_id"])
+    assert len(out["zoomed"]) == 6 and all(abs(z["zoom"] - (1.0 + R.ZOOM_PER_STEP * 2.0)) < 0.01 for z in out["zoomed"])
+    assert all(abs(R._applied_zoom(c["id"]) - 1.9) < 0.01 for c in picture_clips(closeups))
+    assert check(closeups, plan_id=out["plan_id"])["areas"]["framing"] == 100.0
+
+
+def R_values(zoom):
+    from classes.editor_tools import clip_props_model as cpm
+
+    def curve(v):
+        return {"Points": [cpm.make_point(1, v, cpm.BEZIER)]}
+    return {"values": {"scale_x": curve(zoom), "scale_y": curve(zoom), "location_x": curve(0.0), "location_y": curve(0.0)}, "zoom": round(zoom, 2), "subject": [0.5, 0.5], "sure": True}
+
+
+def test_a_close_up_left_wide_is_caught_with_the_call_that_zooms_it(closeups):
+    out = build_it(closeups, plan(closeups)["plan_id"], framing=False)
+    assert out["zoomed"] == []
+    result = check(closeups, plan_id=out["plan_id"])
+    assert result["areas"]["framing"] < 60.0
+    wide = [f for f in result["failing"] if any("framed wider" in p for p in f["problems"])]
+    assert wide and all("framing=true" in f["fix"] for f in wide)
+
+
+def test_zoom_is_never_asked_for_when_the_footage_is_already_as_tight_or_tighter():
+    from classes.editor_tools import media_index_tools_recreate as R
+    assert R._wanted_zoom("close-up", "close-up") == 1.0 and R._wanted_zoom("wide shot", "close-up") == 1.0
+    assert R._wanted_zoom("close-up", "wide shot") == 1.9 and R._wanted_zoom("extreme close-up", "wide") == R.MAX_ZOOM
+    assert R._wanted_zoom("", "wide") == 1.0 and R._wanted_zoom("close-up", "something odd") == 1.0
+
+
+def test_the_subject_is_kept_in_frame_when_zooming_off_centre(editor, monkeypatch):
+    """A subject at the left edge shifts the picture right by at most the zoom's reach, so no border shows."""
+    from classes.editor_tools import media_index_tools_recreate as R
+    from classes.media_index import framing
+    monkeypatch.setattr(framing, "framing_of", lambda *a, **kw: {"samples": [{"x": 0.1, "y": 0.5}] * 3, "confidence": 0.8, "sure": True})
+    fid = editor.add_file("video", duration=5.0, path="/m/a.mp4")
+    clip = editor.add_clip(fid, position=0.0, end=2.0)
+    got = R._subject_zoom_values(clip, fid, 0.0, 2.0, 2.0)
+    from classes.editor_tools.timeline_edit_common import keyframe_value
+    shift = keyframe_value(got["values"]["location_x"])
+    assert 0.0 < shift <= 0.5 + 1e-6 and keyframe_value(got["values"]["location_y"]) == 0.0

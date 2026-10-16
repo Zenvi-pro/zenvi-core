@@ -207,6 +207,27 @@ _ANIMATION_WORDS = {"anime", "animated", "animation", "cartoon", "illustrated", 
 _CHARACTER_WORDS = {"character", "characters"}
 
 
+def tightness(shot_type: Optional[str]) -> Optional[float]:
+    """How tight a framing a shot-type phrase describes, on a rough scale: 4 extreme close-up, 3 close-up, 2 medium, 1.5 full body, 1 wide.
+    None when the phrase says nothing about it."""
+    text = str(shot_type or "").lower()
+    if not text:
+        return None
+    if "extreme" in text and "close" in text or "macro" in text or "detail" in text:
+        return 4.0
+    if "medium close" in text or "bust" in text:
+        return 2.7
+    if "close" in text:
+        return 3.0
+    if "medium" in text or "waist" in text or "cowboy" in text:
+        return 2.0
+    if "full" in text:
+        return 1.5
+    if any(w in text for w in ("wide", "long", "establishing", "aerial", "landscape", "panorama")):
+        return 1.0
+    return None
+
+
 def stock_query_for(description: str, look: Optional[Dict[str, Any]] = None, limit: int = 8) -> str:
     """Words to search real stock footage with for a shot described in the reference: the scene without the animation vocabulary ("anime
     character" becomes "person"), plus "dark" or "bright" from the shot's measured look, since lighting is what a grade cannot supply."""
@@ -330,7 +351,7 @@ def plan_recreation(ref: FileIndex, files: Sequence[FileIndex], start: Optional[
         watch = shot.get("watch") or {}
         desc = watch.get("description") or ""
         row: Dict[str, Any] = {"reference_shot": shot["id"], "start": round(a, 3), "end": round(b, 3), "duration": round(b - a, 3), "description": desc,
-                               "camera": (shot.get("motion") or {}).get("class"), "opens_with": (shot.get("opens_with") or {}).get("kind"),
+                               "camera": (shot.get("motion") or {}).get("class"), "shot_type": watch.get("shot_type") or None, "opens_with": (shot.get("opens_with") or {}).get("kind"),
                                "look": shot.get("look"), "choice": None, "alternatives": []}
         pick = chosen.get(si)
         if pick is not None:
