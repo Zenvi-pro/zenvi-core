@@ -217,7 +217,7 @@ def probe_media(path: str) -> Dict[str, Any]:
     try:
         proc = run_ffmpeg(
             ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", path],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False, timeout=60,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False, timeout=60,
         )
     except FileNotFoundError:
         return {"ok": False, "error": "ffprobe not found"}

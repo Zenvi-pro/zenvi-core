@@ -182,6 +182,12 @@ def get_clip_context(timeline_clip_id, if_edit="", seconds=0.0):
 
 
 # ============================ get_voice_edges_tool ============================
+def _unreadable(probe: Dict[str, Any]) -> str:
+    """Why a file's picture could not be read, in ffprobe's own words when it said anything."""
+    why = str(probe.get("error") or "").strip()
+    return "could not read the picture of this file" + (f": {why}" if why else " (it has no video stream)")
+
+
 def _audio_path(f) -> str:
     from classes.path_utils import absolute_media_path
     return absolute_media_path(f.data.get("path")) or str(f.data.get("path") or "")
@@ -343,7 +349,7 @@ def refine_cut(file_ids=None, file_query="", near_seconds=None, shot_id=None, ra
     shelf = default_shelf()
     probe = probe_media(_audio_path(f))
     if not probe.get("ok") or not probe.get("video"):
-        raise ToolError("could not read the picture of this file")
+        raise ToolError(_unreadable(probe))
     radius = float(radius_seconds)
     if shot_id is not None:
         structure = (shelf.read_json(sha, "structure.json") if sha else None) or {}
@@ -475,7 +481,7 @@ def get_framing(start_seconds, end_seconds, file_ids=None, file_query="", aspect
     probe = probe_media(_audio_path(f))
     video = probe.get("video") or {}
     if not video.get("width") or not video.get("height"):
-        raise ToolError("could not read the picture of this file")
+        raise ToolError(_unreadable(probe))
     source_aspect = video["width"] / video["height"]
     frame_aspect = _frame_aspect(aspect)
     window = _window_of(source_aspect, frame_aspect)
@@ -664,7 +670,7 @@ def _frames_pack(f, start_seconds, end_seconds, per_second=None, count=None, eve
     probe = probe_media(_audio_path(f))
     video = probe.get("video") or {}
     if not video.get("width") or not video.get("height"):
-        raise ToolError("could not read the picture of this file")
+        raise ToolError(_unreadable(probe))
     fps = float(video.get("fps") or 0.0)
     duration = float(probe.get("duration") or 0.0)
     start, end = max(0.0, float(start_seconds)), min(duration, float(end_seconds)) if duration else float(end_seconds)

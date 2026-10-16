@@ -446,7 +446,7 @@ def measure_loudness(path: str) -> Optional[Dict[str, float]]:
         proc = run_ffmpeg(
             ["ffmpeg", "-nostdin", "-hide_banner", "-nostats", "-i", path, "-map", "0:a:0", "-vn",
              "-af", "ebur128=peak=true", "-f", "null", "-"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, check=False, timeout=3600)
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False, timeout=3600)
     except Exception:
         return None
     return parse_ebur128(proc.stderr or "")
