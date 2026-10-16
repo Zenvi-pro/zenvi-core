@@ -45,12 +45,13 @@ def list_line(fi: FileIndex, shot: Dict[str, Any], max_chars: int = 110, look: b
     """
     watch = shot.get("watch") or {}
     kind = ", ".join(x for x in (watch.get("shot_type"), camera(shot)) if x and x != "unknown")
-    said = " ".join(f'"{s["text"]}"' for s in fi.sentences if s["end"] > shot["start"] and s["start"] < shot["end"])
+    # a line is printed once, at the shot it starts in (a sung line spans many shots; repeating it on every row costs tokens and reads as many lines)
+    said = " ".join(f'"{s["text"]}"' for s in fi.sentences if float(shot["start"]) - 1e-6 <= float(s["start"]) < float(shot["end"]) - 1e-6)
     text = str(watch.get("description") or "").strip().split(". ")[0].rstrip(".")
     if len(text) > max_chars:
         text = text[: max_chars - 1].rstrip() + "…"
     line = f"S{shot['id']} {_clock(shot['start'])}-{_clock(shot['end'])} ({float(shot['end']) - float(shot['start']):.1f}s)"
-    line += (" " + kind if kind else "") + opens(shot) + (": " + text if text else "") + unsure(watch)
+    line += (" " + kind if kind else "") + opens(shot) + (": " + text if text else (" [no description]" if watch else "")) + unsure(watch)
     if shot.get("black"):
         line += " [black]"
     if look:
@@ -116,11 +117,12 @@ def look_tag(shot: Dict[str, Any]) -> str:
     return f" | luma {float(profile.get('avg_luma') or 0.0):.2f}" + (" " + palette if palette else "")
 
 
-def repeats_line(fi: FileIndex, threshold: float = 0.85, max_pairs: int = 12) -> str:
-    """Pairs of shots, not next to each other, whose pictures look nearly the same (the same set, the same prop): worth reusing or matching.
+def repeats_line(fi: FileIndex, threshold: float = 0.85, max_pairs: int = 10, min_gap: float = 0.15) -> str:
+    """Pairs of shots far apart in the video (at least *min_gap* of its length) whose pictures look nearly the same: a set, a prop or a
+    motif that comes back, worth reusing or matching. Neighbours are left out on purpose (a scene looks like itself).
 
-    Measured on the saved picture vectors (free). 0.85 is about the top 2% of pairs in a 90 s video; the same two fish at the start
-    and end score 0.86 and 0.87. Empty when the picture layer was not built.
+    Measured on the saved picture vectors (free). On a 90 s video the same two fish at the start and at the end score 0.86 and 0.87.
+    Empty when the picture layer was not built.
     """
     rows, matrix = fi.image_rows, fi.image_matrix
     if matrix is None or not len(rows) or not fi.shots:
@@ -134,12 +136,15 @@ def repeats_line(fi: FileIndex, threshold: float = 0.85, max_pairs: int = 12) ->
     norms = np.linalg.norm(total, axis=1, keepdims=True)
     total = total / np.maximum(norms, 1e-9)
     sim = total @ total.T
-    pairs = [(float(sim[i, j]), i, j) for i in range(n) for j in range(i + 3, n) if norms[i] > 0 and norms[j] > 0 and sim[i, j] >= threshold]
+    mids = [(float(s["start"]) + float(s["end"])) / 2.0 for s in fi.shots]
+    gap = min_gap * max(1e-6, float(fi.shots[-1]["end"]) - float(fi.shots[0]["start"]))
+    pairs = [(float(sim[i, j]), i, j) for i in range(n) for j in range(i + 1, n)
+             if mids[j] - mids[i] >= gap and norms[i] > 0 and norms[j] > 0 and sim[i, j] >= threshold]
     pairs.sort(reverse=True)
     if not pairs:
         return ""
     ids = [int(s["id"]) for s in fi.shots]
-    return "REPEATS (near-identical pictures): " + ", ".join(f"S{ids[i]}~S{ids[j]} {v:.2f}" for v, i, j in sorted(pairs[:max_pairs], key=lambda p: p[1]))
+    return "REPEATS (far apart, nearly the same picture): " + ", ".join(f"S{ids[i]}~S{ids[j]} {v:.2f}" for v, i, j in sorted(pairs[:max_pairs], key=lambda p: p[1]))
 
 
 def music_line(fi: FileIndex) -> str:

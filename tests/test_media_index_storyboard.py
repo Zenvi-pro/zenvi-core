@@ -108,13 +108,20 @@ def test_pictures_can_be_left_out(footage):
 
 
 def test_a_row_is_short_keeps_its_time_and_the_first_sentence_only():
-    fi = SimpleNamespace(sentences=[{"start": 5.0, "end": 6.0, "text": "hello"}])
+    fi = SimpleNamespace(sentences=[{"start": 5.6, "end": 8.0, "text": "hello"}])
     shot = {"id": 3, "start": 5.5, "end": 5.9, "motion": {"class": "handheld"},
             "watch": {"shot_type": "close", "description": "A girl looks down. She is sad and the room is dark " + "x" * 200}}
     row = storyboard.list_line(fi, shot)
     assert row.startswith("S3 0:05.50-0:05.90 (0.4s) close, handheld: A girl looks down") and "sad" not in row and row.endswith('says "hello"')
     long = storyboard.list_line(SimpleNamespace(sentences=[]), {"id": 1, "start": 0, "end": 2, "watch": {"description": "y" * 300}})
     assert len(long) < 160 and "…" in long
+    # a sung line is printed once, at the shot it starts in
+    song = SimpleNamespace(sentences=[{"start": 5.6, "end": 9.0, "text": "la la"}])
+    later = {"id": 4, "start": 6.0, "end": 6.5, "watch": {"description": "x"}}
+    assert 'says "la la"' in storyboard.list_line(song, shot) and "says" not in storyboard.list_line(song, later)
+    # a shot the description pass left out says so
+    assert storyboard.list_line(SimpleNamespace(sentences=[]), {"id": 5, "start": 0, "end": 1, "watch": {"description": "", "missing": True}}).endswith("[no description]")
+    assert "[no description]" not in storyboard.list_line(SimpleNamespace(sentences=[]), {"id": 5, "start": 0, "end": 1})
 
 
 def test_the_keyframe_sheets_come_back_as_pictures_in_the_result(footage):
@@ -174,6 +181,7 @@ def test_near_identical_pictures_far_apart_are_reported_and_neighbours_and_diffe
     fi = SimpleNamespace(shots=shots, image_rows=rows, image_matrix=np.stack([vectors[i] for i in vectors]))
     line = storyboard.repeats_line(fi)
     assert line.startswith("REPEATS") and "S0~S5" in line and "S1~S4" in line and "S2" not in line
+    assert "S0~S1" not in line                                                       # neighbours are left out
     assert storyboard.repeats_line(SimpleNamespace(shots=shots, image_rows=[], image_matrix=None)) == ""
 
 
