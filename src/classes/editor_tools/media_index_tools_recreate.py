@@ -21,7 +21,6 @@ from classes.editor_tools._registry import REGISTRY, editor_tool
 from classes.editor_tools.media_index_tools import _all_files, project_indexes
 from classes.editor_tools.effects_color_looks import _grade_values
 from classes.editor_tools.timeline_edit_common import frame_seconds, keyframe_value, snap
-from classes.logger import log
 from classes.media_index import reference as mref
 
 MAX_PLANS = 6
@@ -197,6 +196,41 @@ def _inside_file(file_id: str, start: float, length: float) -> float:
     return max(lo, min(start, hi - length))
 
 
+def _layer_of(name: str) -> int:
+    from classes.query import Track
+    return next((int((t.data or {}).get("number") or 0) for t in Track.filter() if str((t.data or {}).get("label") or "") == name), 0)
+
+
+def _clip_rows_on(layer: int) -> List[Tuple[str, float, float]]:
+    from classes.query import Clip
+    from classes import audio_mix as am
+    rows = []
+    for c in Clip.filter():
+        data = c.data or {}
+        if layer and int(data.get("layer") or 0) == layer:
+            start, end = am.clip_timeline_extent(data)
+            rows.append((str(c.id), float(start), float(end)))
+    return rows
+
+
+def _clear_track(name: str, layer: int) -> int:
+    """Remove every clip on the named track; returns how many were removed."""
+    count = len(_clip_rows_on(layer))
+    if count:
+        gone = th().delete_clips_on_track(track=name)
+        if str(gone).startswith("Error"):
+            raise ToolError(f"could not clear the {name} track: {gone}")
+    return count
+
+
+def _clear_slots(layer: int, spans: List[Tuple[float, float]]) -> int:
+    """Remove the clips on the track that sit in any of these time spans (a rebuild replaces its own slots)."""
+    ids = [cid for cid, a, b in _clip_rows_on(layer) if any(a < hi - 1e-6 and b > lo + 1e-6 for lo, hi in spans)]
+    for cid in ids:
+        th().delete_from_timeline(timeline_clip_id=cid)
+    return len(ids)
+
+
 def _ensure_track(name: str) -> None:
     from classes.query import Track
     if not any(str((t.data or {}).get("label") or "") == name for t in Track.filter()):
@@ -247,12 +281,13 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
     by_id = {f.file_id: f for f in files}
     frame = frame_seconds()
 
-    stale = [plan["placed"][r["reference_shot"]] for r in todo if r["reference_shot"] in plan["placed"]]
-    for clip_id in stale:
-        gone = th().delete_from_timeline(timeline_clip_id=clip_id)          # one clip at a time; a clip already removed is not an error
-        if str(gone).startswith("Error"):
-            log.debug("clip %s was already gone: %s", clip_id, gone)
     _ensure_track(plan["track_name"])
+    layer = _layer_of(plan["track_name"])
+    if wanted is None:
+        replaced = _clear_track(plan["track_name"], layer)           # a full build starts from an empty Recreation track (it is ours by name)
+        plan["placed"] = {}
+    else:
+        replaced = _clear_slots(layer, [(snap(r["start"]), snap(r["end"])) for r in todo])     # a rebuild replaces just those shots, even if the plan was lost
 
     # place in contiguous runs; each clip's length is the difference of the snapped slot boundaries, so rounding never drifts
     runs: List[List[Dict[str, Any]]] = []
@@ -262,16 +297,21 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
         else:
             runs.append([r])
     placed_ids: Dict[int, str] = {}
-    for run in runs:
-        items = []
-        for r in run:
-            c = _effective(r, plan)
-            length = snap(r["end"]) - snap(r["start"])
-            start = _inside_file(c["file_id"], float(c["in"]), length)
-            items.append({"file_id": c["file_id"], "source_start": round(start, 3), "source_end": round(start + length, 3)})
-        data = _call("add_clips_to_timeline_tool", items=items, track=plan["track_name"], start_seconds=snap(run[0]["start"]), allow_overlap=False)
-        for r, clip in zip(run, data.get("clips") or []):
-            placed_ids[r["reference_shot"]] = str(clip["timeline_clip_id"])
+    try:
+        for run in runs:
+            items = []
+            for r in run:
+                c = _effective(r, plan)
+                length = snap(r["end"]) - snap(r["start"])
+                start = _inside_file(c["file_id"], float(c["in"]), length)
+                items.append({"file_id": c["file_id"], "source_start": round(start, 3), "source_end": round(start + length, 3)})
+            data = _call("add_clips_to_timeline_tool", items=items, track=plan["track_name"], start_seconds=snap(run[0]["start"]), allow_overlap=False)
+            for r, clip in zip(run, data.get("clips") or []):
+                placed_ids[r["reference_shot"]] = str(clip["timeline_clip_id"])
+    except Exception:
+        for clip_id in placed_ids.values():                            # a build that fails leaves nothing half-placed behind
+            th().delete_from_timeline(timeline_clip_id=clip_id)
+        raise
     plan["placed"].update(placed_ids)
 
     graded = 0
@@ -301,9 +341,9 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
         _call("set_clip_audio_video_tool", timeline_clip_ids=list(placed_ids.values()), audio="off")
 
     unfilled = [r["reference_shot"] for r in plan["rows"] if not _effective(r, plan)]
-    return ok(f"Placed {len(placed_ids)} shot(s) on track '{plan['track_name']}' (replaced {len(stale)}), graded {graded}.{song_note}"
+    return ok(f"Placed {len(placed_ids)} shot(s) on track '{plan['track_name']}' (replaced {replaced}), graded {graded}.{song_note}"
               + (f" Unfilled: {unfilled}." if unfilled else ""),
-              plan_id=plan["id"], placed=len(placed_ids), replaced=len(stale), graded=graded, unfilled=unfilled,
+              plan_id=plan["id"], placed=len(placed_ids), replaced=replaced, graded=graded, unfilled=unfilled,
               next="check_recreation_tool(plan_id) scores it against the reference; fix the shots it names, then check again.")
 
 

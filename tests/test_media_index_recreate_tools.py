@@ -182,3 +182,42 @@ def test_a_window_that_runs_past_the_end_of_the_file_is_pulled_back_inside_it(st
     assert out["placed"] == 6
     first = picture_clips(studio)[0]
     assert first["end"] <= 12.0 + 1e-6 and abs((first["end"] - first["start"]) - SHOT) < 1e-6
+
+
+def test_building_again_after_the_plan_was_lost_clears_the_old_clips_instead_of_colliding_with_them(studio):
+    """Seen live: a failed first build left clips on the Recreation track, the rebuild (new plan) then refused to overlap them."""
+    build_it(studio, plan(studio)["plan_id"])
+    from classes.editor_tools import media_index_tools_recreate as R
+    R._PLANS.clear()                                                  # what an editor restart does
+    again = build_it(studio, plan(studio)["plan_id"])
+    assert again["placed"] == 6 and again["replaced"] == 6
+    assert len([c for c in picture_clips(studio)]) == 6
+
+
+def test_a_rebuild_of_one_shot_replaces_only_that_slot_even_without_the_old_plan(studio):
+    build_it(studio, plan(studio)["plan_id"])
+    from classes.editor_tools import media_index_tools_recreate as R
+    R._PLANS.clear()
+    pid = plan(studio)["plan_id"]
+    out = build_it(studio, pid, only_shots=[3])
+    assert out["placed"] == 1 and out["replaced"] == 1 and len(picture_clips(studio)) == 6
+
+
+def test_a_build_that_fails_part_way_leaves_nothing_half_placed(studio, monkeypatch):
+    from classes.editor_tools import media_index_tools_recreate as R
+    pid = plan(studio)["plan_id"]
+    real = R._call
+    state = {"n": 0}
+
+    def flaky(tool, /, **kw):
+        if tool == "add_clips_to_timeline_tool" and kw.get("track") == R.TRACK_NAME:
+            state["n"] += 1
+            if state["n"] == 2:
+                raise R.ToolError("simulated failure on the second run")
+        return real(tool, **kw)
+
+    monkeypatch.setattr(R, "_call", flaky)
+    # make two separate runs: an unfilled shot in the middle splits the contiguous run in two
+    R._PLANS[pid]["rows"][2]["choice"] = None
+    assert studio.ed.call_receipt("build_recreation_tool", plan_id=pid)["status"] == "error"
+    assert picture_clips(studio) == []
