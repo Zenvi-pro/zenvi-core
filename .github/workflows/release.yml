@@ -296,23 +296,20 @@ jobs:
             Zenvi-v*.deb
 
   # ── 3. macOS build (.dmg) ─────────────────────────────────────────────
-  # Produces two DMGs: Intel (x86_64) and Apple Silicon (arm64).
-  # Both jobs run on macos-15 (Apple Silicon). macos-13 (last Intel runner)
-  # was retired by GitHub. x86_64 build uses Rosetta 2 Python (architecture: x64)
-  # so cx_Freeze produces an x86_64-native frozen app that runs on Intel Macs.
-  # arm64 build uses the native Apple Silicon Python.
+  # Produces two DMGs: Intel (x86_64) and Apple Silicon (arm64), each built
+  # natively: x86_64 on GitHub's Intel image (macos-15-intel), arm64 on Apple
+  # Silicon. Both build libopenshot from source with the matching Python ABI.
   #
-  # arm64: libopenshot is built from source with matching Python ABI and bundled.
-  # x86_64: libopenshot is NOT bundled (cross-compiling C++ via Rosetta is complex;
-  # Homebrew Qt5/FFmpeg bottles are arm64-only on macos-15 runners).
-  # Full x86_64 video support will come with proper Intel build infrastructure.
+  # The x86_64 build used to run on an Apple Silicon runner with "x64" Python,
+  # which still produced arm64 binaries and no libopenshot: v1.2.1's Intel DMG
+  # could not start on any Intel Mac. verify-arch below now refuses such a build.
   build-macos:
     needs: version
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15   # Apple Silicon; x64 Python via Rosetta → x86_64 app
+          - runner: macos-15-intel   # Intel: native x86_64 Python, Homebrew and libopenshot
             arch: x86_64
           - runner: macos-14   # macOS 14 Sonoma arm64; targets macOS 14+ users
             arch: arm64
@@ -323,8 +320,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # x86_64: force Rosetta Python so the frozen app is x86_64.
-      - name: Set up Python 3.11 (x86_64, via Rosetta)
+      - name: Set up Python 3.11 (x86_64)
         if: matrix.arch == 'x86_64'
         uses: actions/setup-python@v5
         with:
@@ -347,8 +343,7 @@ jobs:
       # That only reproduced on a warm cache, which is why the first run of a new
       # cache key passed and the next one failed.
       # cppzmq provides zmq.hpp C++ header (separate from zeromq's libzmq/zmq.h)
-      - name: Install Homebrew dependencies (arm64 only)
-        if: matrix.arch == 'arm64'
+      - name: Install Homebrew dependencies
         run: |
           set -eo pipefail
           brew install swig zeromq cppzmq libsamplerate qt@5 || true
@@ -362,19 +357,16 @@ jobs:
           brew unlink qt@5 || true
           brew install opencv@4 protobuf
 
-      # Build libopenshot from source only for arm64 (native build, no cross-compilation).
-      # x86_64 skips this: cross-compiling C++ for x86_64 via Rosetta is complex and
-      # the Homebrew Qt5/ffmpeg bottles are arm64-only on macos-15 runners.
+      # Built natively on each runner (no cross-compilation).
       - name: Cache libopenshot build
         id: cache-libopenshot
-        if: matrix.arch == 'arm64'
         uses: actions/cache@v4
         with:
           path: /tmp/libopenshot-install
-          key: libopenshot-v1.0.0-audio-v1.0.0-opencv4-arm64-macos14-py311-v1-${{ hashFiles('installer/mac-patches/**', 'installer/patch-libopenshot-ffmpeg.py', 'installer/apply-libopenshot-patches.sh') }}
+          key: libopenshot-v1.0.0-audio-v1.0.0-opencv4-${{ matrix.arch }}-${{ matrix.runner }}-py311-v1-${{ hashFiles('installer/mac-patches/**', 'installer/patch-libopenshot-ffmpeg.py', 'installer/apply-libopenshot-patches.sh') }}
 
-      - name: Build libopenshot from source (arm64 only)
-        if: matrix.arch == 'arm64' && steps.cache-libopenshot.outputs.cache-hit != 'true'
+      - name: Build libopenshot from source
+        if: steps.cache-libopenshot.outputs.cache-hit != 'true'
         run: |
           set -eo pipefail
           INSTALL_PREFIX="/tmp/libopenshot-install"
@@ -460,8 +452,7 @@ jobs:
           cmake --build /tmp/libopenshot/build --parallel $(sysctl -n hw.logicalcpu)
           cmake --install /tmp/libopenshot/build
 
-      - name: Verify libopenshot Python bindings (arm64)
-        if: matrix.arch == 'arm64'
+      - name: Verify libopenshot Python bindings
         run: |
           INSTALL_PREFIX="/tmp/libopenshot-install"
           PYVER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
@@ -541,8 +532,7 @@ jobs:
       #   Referenced from: libssl.3.dylib
       #   Expected in: libcrypto.3.dylib
       # Fix: after freeze, replace libcrypto with the one from the same source as libssl.
-      - name: Fix OpenSSL dylib mismatch in frozen build (arm64)
-        if: matrix.arch == 'arm64'
+      - name: Fix OpenSSL dylib mismatch in frozen build
         run: |
           set -eo pipefail
           FROZEN_DIR=$(find build -maxdepth 1 -type d -name 'exe.*' | head -1)
@@ -665,8 +655,7 @@ jobs:
       # but does NOT rewrite the references in _openshot.so.
       # This step rewrites all absolute, non-system dep references to @loader_path
       # so they resolve correctly inside the frozen app bundle.
-      - name: Fix Mach-O rpath references in frozen build (arm64)
-        if: matrix.arch == 'arm64'
+      - name: Fix Mach-O rpath references in frozen build
         run: |
           set -eo pipefail
           FROZEN_DIR=$(find build -maxdepth 1 -type d -name 'exe.*' | head -1)
@@ -809,8 +798,7 @@ jobs:
                       print(f"Fixed @rpath/{soname} in {os.path.basename(openshot_so)} -> @loader_path/{rel}")
           PYEOF
 
-      - name: Verify openshot bindings in frozen build (arm64)
-        if: matrix.arch == 'arm64'
+      - name: Verify openshot bindings in frozen build
         run: |
           FROZEN_DIR=$(find build -maxdepth 1 -type d -name 'exe.*' | head -1)
           [ -n "$FROZEN_DIR" ] || { echo "No frozen dir"; exit 0; }
