@@ -732,15 +732,18 @@ def _frames_pack(f, start_seconds, end_seconds, per_second=None, count=None, eve
                        "exact time, up to 300 shots in one call (the cheap way to take in a whole video).", "full"),
         "pictures": boolean("Also make the keyframe pictures (one per shot, 48 a sheet). Look at them when a description matters: the text is a model's "
                             "reading and can be wrong about hair colour, who is who and small details.", True),
+        "look": boolean("Add each shot's brightness and three main colours to its row (list mode; measured, a few tokens a row).", False),
         "tile_width": integer("Width of each keyframe in pixels.", 320, minimum=96, maximum=640),
     }),
     read_only=True,
 )
-def storyboard(file_ids=None, file_query="", start_seconds=0, detail="full", pictures=True, tile_width=320):
+def storyboard(file_ids=None, file_query="", start_seconds=0, detail="full", pictures=True, look=False, tile_width=320):
     """Understand or recreate a video in ONE call: every shot with its exact start and end, camera move, shot type and (when the picture
     layer was built) what happens, plus one stamped keyframe per shot. The cuts are exact and free; this is the first call for "describe
     this video", "what happens scene by scene" or "recreate this". Never sample frames at a fixed interval to find cuts. Use detail=list
-    for a whole video in one call: one row per shot, each with its own time, so keep every row (do not merge quick shots into ranges).
+    for a whole video in one call: one row per shot, each with its own time, so keep every row (do not merge quick shots into ranges). A row marked
+    [unsure] has a description that hedges: look at its picture. Camera speeds are fractions of the frame a second. Header lines give the cut rhythm,
+    the song's sections and pairs of near-identical shots.
     The keyframe sheets come back as pictures: look at them before relying on a description. For one shot's detail use get_moment_tool; for the exact
     cut frame use refine_cut_tool.
     """
@@ -754,9 +757,9 @@ def storyboard(file_ids=None, file_query="", start_seconds=0, detail="full", pic
     shots, next_start = board.page(fi.shots, float(start_seconds or 0.0), per_page=board.MAX_LIST_SHOTS if as_list else contact.MAX_TILES)
     if not shots:
         raise ToolError("no shots at or after that time")
-    rows = [board.list_line(fi, s) for s in shots] if as_list else [dossier.shot_lines(fi, s) for s in shots]
-    summary = board.cut_summary(fi)
-    lines = dossier.header(fi) + ([summary] if summary else []) + rows
+    rows = [board.list_line(fi, s, look=bool(look)) for s in shots] if as_list else [dossier.shot_lines(fi, s) for s in shots]
+    extra = [x for x in (board.speech_line(fi), board.cut_summary(fi), board.rhythm_line(fi), board.music_line(fi), board.repeats_line(fi)) if x]
+    lines = dossier.header(fi) + extra + rows
     if next_start is not None:
         lines.append(f"... more shots; call again with start_seconds={next_start:.2f}")
     sheets = _keyframe_sheets(f, fi, shelf, shots, int(tile_width)) if pictures else []
@@ -845,6 +848,56 @@ def _save_picture(shelf, sha, entry, name, picture, tiles) -> str:
         os.remove(tmp)
     shelf.write_json(sha, name + ".json", {"tiles": tiles})
     return os.path.join(entry, name + ".png")
+
+
+# ============================ get_lyrics_tool ============================
+@editor_tool(
+    "get_lyrics_tool",
+    covers=("index.lyrics",),
+    label="Lyrics and words in another language",
+    schema=obj({
+        **FILE_TARGET,
+        "language": string("BCP-47 locale of the vocals, for example ja-JP, ko-KR, zh-CN, es-ES, fr-FR. Empty: taken from the script of the file name "
+                           "(Japanese kana, Hangul, Cyrillic and so on).", ""),
+    }),
+    read_only=True,
+)
+def get_lyrics(file_ids=None, file_query="", language=""):
+    """The words sung or spoken in a language the machine does not listen for by default, transcribed on this computer (free, no upload) and
+    kept with the file's index, so storyboard_tool then shows them against each shot. Use it when a song or a talk came back with no words,
+    or with the wrong ones. It is a machine transcription of singing: lines can be wrong, and each Japanese or Chinese character is timed
+    on its own. It only replaces the saved transcript when it finds more words.
+    """
+    from classes.media_index import library, speech_facts
+    f = resolve_files(file_ids, file_query)[0]
+    if str(f.data.get("media_type") or "video") == "image":
+        raise ToolError("an image has no sound")
+    path = _audio_path(f)
+    probe = probe_media(path)
+    if not probe.get("ok") or not probe.get("has_audio"):
+        raise ToolError("that file has no sound to transcribe" if probe.get("ok") else _unreadable(probe))
+    locale = str(language or "").strip() or next(iter(speech_facts.language_hints(path)), "")
+    if not locale:
+        raise ToolError("say which language the vocals are in, for example language=ja-JP (ko-KR, zh-CN, es-ES, fr-FR, de-DE): it is not clear from the file name")
+    shelf = default_shelf()
+    sha = sha_of(f.data.get("fingerprint"))
+    structure = (shelf.read_json(sha, "structure.json") if sha else None) or {}
+    try:
+        layer, replaced = speech_facts.transcribe_in_language(path, probe, sha, shelf, locale, shots=structure.get("shots"))
+    except (RuntimeError, OSError) as exc:
+        raise ToolError(f"could not transcribe in {locale}: {exc}")
+    library.clear_cache()
+    lines = [f"[{_clock_text(s['start'])}-{_clock_text(s['end'])}] {s['text']}" for s in (layer.get("sentences") or [])[:150]]
+    words = len(layer.get("words") or [])
+    head = (f"{words} words in {layer.get('language') or locale}, saved with the index." if replaced
+            else f"kept the saved transcript ({words} words): the {locale} pass did not find more.")
+    return ok(head, file_id=str(f.id), language=layer.get("language") or locale, words=words, replaced=replaced, lyrics=lines,
+              note="machine transcription of singing or speech: check by ear before relying on exact wording")
+
+
+def _clock_text(seconds: float) -> str:
+    seconds = max(0.0, float(seconds))
+    return f"{int(seconds // 60)}:{seconds % 60:05.2f}"
 
 
 # ============================ get_moment_tool ============================

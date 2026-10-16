@@ -40,6 +40,9 @@ class FileIndex:
     technical: Dict[str, Any] = field(default_factory=dict)
     shots: List[Dict[str, Any]] = field(default_factory=list)
     sentences: List[Dict[str, Any]] = field(default_factory=list)
+    speech_language: str = ""
+    speech_words: int = 0
+    speech_retried: str = ""          # the language it was re-transcribed in when the first pass found next to nothing
     audio: Dict[str, Any] = field(default_factory=dict)
     look_file: Dict[str, Any] = field(default_factory=dict)
     pipeline: Dict[str, Any] = field(default_factory=dict)
@@ -114,6 +117,9 @@ def load_file_index(shelf: Shelf, sha: str, *, file_id: str = "", name: str = ""
             "speech": per_shot.get(str(sid)),
         })
     fi.sentences = list((speech or {}).get("sentences") or [])
+    fi.speech_language = str((speech or {}).get("language") or "")
+    fi.speech_words = len((speech or {}).get("words") or [])
+    fi.speech_retried = str((speech or {}).get("retried_language") or "")
     sharps = [s["sharpness"] for s in fi.shots if s.get("sharpness") is not None]
     median = float(np.median(sharps)) if sharps else None
     windows = fi.audio.get("windows") or []

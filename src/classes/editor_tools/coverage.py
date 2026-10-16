@@ -147,6 +147,7 @@ CAPABILITIES = [
     ("index.context", "media-index", "Timeline", "What is under, above and around a clip, and what a delete, trim or lengthen would move"),
     ("index.frames", "media-index", "Preview / storyboard", "Frames of a range as one readable picture, each stamped with its exact time and frame, at two zoom levels"),
     ("index.storyboard", "media-index", "Storyboard", "A video as its shots in one call: exact cuts, what each shot is, and one stamped keyframe per shot"),
+    ("index.lyrics", "media-index", "Lyrics", "The words sung or spoken in another language, transcribed on this computer and shown against each shot"),
     ("index.moment", "media-index", "Preview / storyboard", "Everything about one range of a file in one bounded call: frames, shots, words, quality and look, timeline context"),
     ("index.people", "media-index", "Project Files", "Who is on screen: faces found and named by the user, on this computer only, with confidence and unsure; search by person; delete all"),
     ("index.people_locate", "media-index", "Project Files", "Where a named person is on screen, with a handoff to the masking tools (blur, highlight, cut out, replace)"),

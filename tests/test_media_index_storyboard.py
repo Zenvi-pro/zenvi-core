@@ -136,3 +136,90 @@ def test_a_row_names_a_transition_that_is_not_a_cut_and_the_summary_counts_how_s
     assert "[fade in]" in storyboard.list_line(fi, shots[2]) and "in]" not in storyboard.list_line(fi, shots[1])
     assert storyboard.cut_summary(fi) == "CUTS 1 hard, 1 fade, 1 dissolve; 2 of 3 land on a beat (120 BPM)"
     assert storyboard.cut_summary(SimpleNamespace(shots=shots[:1], audio={})) == ""
+
+
+def test_camera_moves_carry_their_speed_only_when_measured_with_confidence():
+    pan = {"motion": {"class": "pan", "direction": "left", "pan_speed": 0.2574, "confidence": 0.67}}
+    assert storyboard.camera(pan) == "pan left 0.26/s"
+    assert storyboard.camera({"motion": {"class": "tilt", "direction": "down", "tilt_speed": -0.1571, "confidence": 0.57}}) == "tilt down 0.16/s"
+    assert storyboard.camera({"motion": {"class": "zoom_out", "zoom_rate": -0.524, "confidence": 0.53}}) == "zoom_out 0.52/s"
+    assert storyboard.camera({"motion": {"class": "pan", "direction": "right", "pan_speed": 0.05, "confidence": 0.1}}) == "pan"
+    assert storyboard.camera({"motion": {"class": "handheld", "confidence": 0.9}}) == "handheld"
+    assert storyboard.camera({}) == ""
+
+
+def test_a_hedging_description_is_marked_unsure_and_a_plain_one_is_not():
+    assert storyboard.unsure({"description": "An abstract glowing shape resembling a mouth"}) == " [unsure]"
+    assert storyboard.unsure({"description": "A package or object with red hearts"}) == " [unsure]"
+    assert storyboard.unsure({"description": "Two stylized fish swim on white"}) == ""
+
+
+def test_look_is_brightness_and_the_three_main_colours():
+    shot = {"look": {"present": True, "avg_luma": 0.2987}, "look_extras": {"palette": [{"hex": "#0b1116"}, {"hex": "#ede9e9"}, {"hex": "#413e3b"}, {"hex": "#000000"}]}}
+    assert storyboard.look_tag(shot) == " | luma 0.30 #0b1116 #ede9e9 #413e3b"
+    assert storyboard.look_tag({}) == ""
+
+
+def _vector(*parts):
+    import numpy as np
+    return np.array(parts, dtype=np.float32)
+
+
+def test_near_identical_pictures_far_apart_are_reported_and_neighbours_and_different_ones_are_not():
+    import numpy as np
+    same, other = _vector(1, 0, 0, 0), _vector(0, 1, 0, 0)
+    shots = [{"id": i, "start": float(i), "end": float(i + 1)} for i in range(6)]
+    vectors = {0: same, 1: other, 2: _vector(0, 0, 1, 0), 3: _vector(0, 0, 0, 1), 4: other + _vector(0.05, 0, 0, 0), 5: same * 0.999 + _vector(0, 0.01, 0, 0)}
+    rows = [{"shot": i} for i in vectors]
+    fi = SimpleNamespace(shots=shots, image_rows=rows, image_matrix=np.stack([vectors[i] for i in vectors]))
+    line = storyboard.repeats_line(fi)
+    assert line.startswith("REPEATS") and "S0~S5" in line and "S1~S4" in line and "S2" not in line
+    assert storyboard.repeats_line(SimpleNamespace(shots=shots, image_rows=[], image_matrix=None)) == ""
+
+
+def test_music_sections_name_the_shots_they_cover_and_the_rhythm_says_how_it_speeds_up():
+    shots = [{"id": i, "start": float(i * 2), "end": float(i * 2 + 2)} for i in range(6)] + [{"id": 6 + i, "start": 12.0 + i, "end": 12.5 + i} for i in range(6)]
+    fi = SimpleNamespace(shots=shots, audio={"music": {"sections": [{"start": 0.0, "end": 12.0, "label": "steady"}, {"start": 12.0, "end": 18.0, "label": "peak"}]}})
+    assert storyboard.music_line(fi) == "MUSIC 0:00.0-0:12.0 steady S0-S5; 0:12.0-0:18.0 peak S6-S11"
+    rhythm = storyboard.rhythm_line(fi)
+    assert "6 of 12 under a second" in rhythm and "first, middle, last third average 2.0s," in rhythm and rhythm.endswith("0.5s")
+    assert storyboard.rhythm_line(SimpleNamespace(shots=shots[:3])) == ""
+
+
+def test_lyrics_are_transcribed_in_the_named_language_kept_and_shown_against_the_shots(editor, tmp_path, monkeypatch):
+    import subprocess
+    from classes.editor_tools import media_index_tools as T, media_index_tools_precision as TX
+    from classes.speech.cache import TranscriptRecord, Word, file_identity
+    try:
+        corpus.ffmpeg()
+    except RuntimeError:
+        pytest.skip("needs ffmpeg")
+    library.clear_cache()
+    shelf = Shelf(str(tmp_path / "shelf"))
+    for module in (T, TX):
+        monkeypatch.setattr(module, "default_shelf", lambda: shelf)
+    monkeypatch.setattr("classes.path_utils.absolute_media_path", lambda p: p, raising=False)
+    silent, _truth = corpus.hard_cuts(seconds=2.0)
+    video = tmp_path / "song.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(silent), "-f", "lavfi", "-i", "sine=d=12", "-shortest", "-c:v", "copy", "-c:a", "aac", str(video)], check=True)
+    key = sha(72)
+    done = facts.compute_facts(str(video), fingerprint={"sha256": key}, shelf=shelf, media_type="video", run_speech=False)
+    assert done["layers"].get("structure") == "ready", done
+    fid = editor.add_file("video", duration=12.0, path=str(video), fingerprint={"sha256": key}, has_audio=True)
+    library.clear_cache()
+    calls = []
+
+    def fake(path, **kw):
+        calls.append(kw.get("language"))
+        abspath, size, mtime = file_identity(path)
+        words = [Word(c, 2.3 + i * 0.3, 2.55 + i * 0.3, 0.8) for i, c in enumerate("心のなかで")]
+        return TranscriptRecord(path=abspath, size=size, mtimeNs=mtime, modelId="apple-speech-analyzer", language=kw.get("language") or "en-US",
+                                words=words, generation=1, transcriptionSource="local-apple")
+
+    monkeypatch.setattr("classes.speech.asr.transcribe_file", fake)
+    data = receipt_data(editor, "get_lyrics_tool", file_ids=[fid], language="ja-JP")
+    assert calls == ["ja-JP"] and data["words"] == 5 and data["replaced"] is True and data["lyrics"][0].endswith("心のなかで")
+    board = receipt_data(editor, "storyboard_tool", file_ids=[fid], detail="list", pictures=False)["notes"]
+    assert "SPEECH ja-JP: 5 words" in board and 'says "心のなかで"' in board
+    quiet = editor.call_receipt("get_lyrics_tool", file_ids=[fid])
+    assert quiet["status"] == "error" and "language" in quiet["summary"]

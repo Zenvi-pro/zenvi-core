@@ -183,6 +183,13 @@ def _cache_model_id(engine: str, model_id: str) -> str:
     return (model_id or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
 
 
+def _engine_language(engine: str, lang_key: str):
+    """What each engine takes for a language: Apple a locale (ja-JP), whisper the two-letter code (ja); None means detect."""
+    if lang_key == "auto":
+        return None
+    return lang_key if engine == "apple" else lang_key.split("-")[0]
+
+
 def transcribe_file(
     media_path: str,
     *,
@@ -232,7 +239,7 @@ def transcribe_file(
             try:
                 words, detected = engine_obj.transcribe(
                     wav_path,
-                    language=None if lang_key == "auto" else lang_key,
+                    language=_engine_language(resolved, lang_key),
                     token=tok,
                 )
             except Exception as exc:
@@ -250,7 +257,7 @@ def transcribe_file(
                         engine_obj = _whisper_transcriber(model_id)
                     words, detected = engine_obj.transcribe(
                         wav_path,
-                        language=None if lang_key == "auto" else lang_key,
+                        language=_engine_language("whisper", lang_key),
                         token=tok,
                     )
                 else:

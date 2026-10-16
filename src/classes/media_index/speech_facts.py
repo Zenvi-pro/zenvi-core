@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional
+import os
+import re
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from classes.logger import log
 from classes.media_index import schema as S
@@ -27,6 +29,11 @@ SPEECH_JOIN_GAP = 0.4          # pauses shorter than this are still one stretch 
 MAX_TRANSCRIBE_SECONDS = 60 * 60
 
 
+# Scripts written without spaces between words: kana, han characters, hangul syllables are joined as they come (a song's characters
+# arrive one at a time). Thai is the same.
+_UNSPACED = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\u0e00-\u0e7f]")
+
+
 def _text_of(words: List[Dict[str, Any]]) -> str:
     out = ""
     for w in words:
@@ -34,7 +41,7 @@ def _text_of(words: List[Dict[str, Any]]) -> str:
         if not piece:
             continue
         # engines differ: some words carry their leading space, some punctuation stands alone
-        if out and piece[:1] not in ".,!?;:%)" and not out.endswith(("(", "$")):
+        if out and piece[:1] not in ".,!?;:%)。、！？" and not out.endswith(("(", "$")) and not (_UNSPACED.match(out[-1]) or _UNSPACED.match(piece[:1])):
             out += " "
         out += piece
     return out
@@ -65,7 +72,7 @@ def sentences_from_words(words: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             if gap >= SENTENCE_GAP_SECONDS or changed or len(current) >= SENTENCE_MAX_WORDS or span > SENTENCE_MAX_SECONDS:
                 flush()
         current.append(w)
-        if str(w.get("text") or "").rstrip().endswith((".", "?", "!")):
+        if str(w.get("text") or "").rstrip().endswith((".", "?", "!", "。", "！", "？")):
             flush()
     flush()
     return out
@@ -178,7 +185,15 @@ def load_or_transcribe(
         saved = shelf.read_json(sha, "speech.json")
         if isinstance(saved, dict) and isinstance(saved.get("words"), list):
             _prime_path_cache(path, saved, cache)
-            return saved
+            if transcribe is None:
+                from classes.speech.asr import transcribe_file as default_transcribe
+            else:
+                default_transcribe = transcribe
+            tried_before = saved.get("language_tried")
+            better = with_better_language(path, saved, duration, default_transcribe, cache, token)
+            if better is not saved or better.get("language_tried") != tried_before:
+                _save_layer(shelf, sha, better)
+            return better
 
     if transcribe is None:
         from classes.speech.asr import transcribe_file
@@ -193,9 +208,113 @@ def load_or_transcribe(
     except Exception as exc:
         log.info("Transcription unavailable for %s: %s", path, exc)
         return {"version": S.LAYER_VERSIONS[S.LAYER_SPEECH], "unavailable": str(exc)[:300]}
-    layer = _record_to_layer(record, duration)
+    layer = with_better_language(path, _record_to_layer(record, duration), duration, transcribe, cache, token)
     if sha:
-        shelf.write_json(sha, "speech.json", layer)
-        shelf.set_layer(sha, S.LAYER_SPEECH, version=S.LAYER_VERSIONS[S.LAYER_SPEECH], status="ready",
-                        model=layer["model"], engine=layer["engine"], words=len(layer["words"]))
+        _save_layer(shelf, sha, layer)
     return layer
+
+
+def _save_layer(shelf: Shelf, sha: str, layer: Dict[str, Any]) -> None:
+    if not sha:
+        return
+    shelf.write_json(sha, "speech.json", layer)
+    shelf.set_layer(sha, S.LAYER_SPEECH, version=S.LAYER_VERSIONS[S.LAYER_SPEECH], status="ready",
+                    model=layer.get("model", ""), engine=layer.get("engine", ""), words=len(layer.get("words") or []))
+
+
+# ---------------------------------------------------------------- language ---
+# The engine listens in the machine's language unless told otherwise, so a song or a talk in another language comes back empty
+# (Apple's engine returned 0 words for a Japanese ending, and 243 characters with locale ja-JP). Trying every language per file would
+# be slow and can make the system fetch a language model for each, so the language comes from a clue the file already carries: the
+# script its file name is written in. One retry, and only for a file whose first pass found next to nothing.
+_SCRIPT_LOCALES = (
+    (re.compile(r"[\u3040-\u30ff]"), "ja-JP"),
+    (re.compile(r"[\uac00-\ud7af]"), "ko-KR"),
+    (re.compile(r"[\u0400-\u04ff]"), "ru-RU"),
+    (re.compile(r"[\u0600-\u06ff]"), "ar-SA"),
+    (re.compile(r"[\u0e00-\u0e7f]"), "th-TH"),
+    (re.compile(r"[\u0900-\u097f]"), "hi-IN"),
+    (re.compile(r"[\u0590-\u05ff]"), "he-IL"),
+    (re.compile(r"[\u0370-\u03ff]"), "el-GR"),
+    (re.compile(r"[\u3400-\u9fff]"), "zh-CN"),     # han with no kana: Chinese (a Japanese title almost always has kana)
+)
+MIN_RETRY_WORDS = 8
+
+
+def language_hints(path: str) -> List[str]:
+    """The locale the script of the file's name points to ([] for a Latin-script name). Kana means Japanese even when kanji are present,
+    so the first script that matches decides and no second language is tried."""
+    name = os.path.basename(str(path or ""))
+    return next(([locale] for pattern, locale in _SCRIPT_LOCALES if pattern.search(name)), [])
+
+
+def _same_language(a: Any, b: Any) -> bool:
+    return str(a or "").lower().split("-")[0] == str(b or "").lower().split("-")[0] and bool(a) and bool(b)
+
+
+def _sparse(word_count: int, duration: float) -> bool:
+    """Next to nothing heard in a file long enough to hold speech: under about six words a minute."""
+    return duration >= 8.0 and word_count * 60.0 / duration < 6.0
+
+
+def _transcribe_in(transcribe: Callable[..., Any], path: str, language: str, cache: Any, token: Any) -> Any:
+    kwargs: Dict[str, Any] = {"token": token, "language": language}
+    if cache is not None:
+        kwargs["cache"] = cache
+    return transcribe(path, **kwargs)
+
+
+def with_better_language(path: str, layer: Dict[str, Any], duration: float, transcribe: Callable[..., Any], cache: Any, token: Any) -> Dict[str, Any]:
+    """*layer*, or a transcript in the language the file name points to when the first pass found next to nothing (one try, once ever)."""
+    if layer.get("language_tried") is not None or layer.get("skipped") or layer.get("unavailable"):
+        return layer
+    count = len(layer.get("words") or [])
+    if not _sparse(count, duration):
+        return layer
+    hints = [h for h in language_hints(path) if not _same_language(h, layer.get("language"))]
+    if not hints:
+        return layer
+    best, tried = layer, []
+    for hint in hints:
+        tried.append(hint)
+        try:
+            record = _transcribe_in(transcribe, path, hint, cache, token)
+        except InterruptedError:
+            raise
+        except Exception as exc:
+            log.info("Transcription in %s unavailable for %s: %s", hint, path, exc)
+            continue
+        candidate = _record_to_layer(record, duration)
+        if len(candidate["words"]) >= MIN_RETRY_WORDS and len(candidate["words"]) > 2 * count:
+            candidate["retried_language"] = hint
+            best = candidate
+            break
+    best["language_tried"] = tried
+    return best
+
+
+def transcribe_in_language(path: str, probe: Dict[str, Any], sha: str, shelf: Shelf, language: str, *, shots: Optional[List[Dict[str, Any]]] = None,
+                           transcribe: Optional[Callable[..., Any]] = None, cache: Any = None, token: Any = None) -> Tuple[Dict[str, Any], bool]:
+    """Transcribe in the language asked for and keep it on the shelf when it found more words than what is saved.
+
+    Returns (the layer now on the shelf, whether it was replaced). For a song this is the lyrics; the words come back timed one
+    character or word at a time.
+    """
+    duration = float((probe or {}).get("duration") or 0.0)
+    if transcribe is None:
+        from classes.speech.asr import transcribe_file
+        transcribe = transcribe_file
+    record = _transcribe_in(transcribe, path, language, cache, token)
+    candidate = _record_to_layer(record, duration)
+    candidate["retried_language"] = language
+    candidate["language_tried"] = [language]
+    saved = shelf.read_json(sha, "speech.json") if sha and shelf.layer_ready(sha, S.LAYER_SPEECH) else None
+    if isinstance(saved, dict) and len(saved.get("words") or []) >= len(candidate["words"]):
+        return saved, False
+    if shots:
+        candidate["per_shot"] = {str(k): v for k, v in per_shot_speech(candidate["words"], shots).items()}
+    if sha:
+        shelf.write_json(sha, "speech.json", candidate)
+        shelf.set_layer(sha, S.LAYER_SPEECH, version=S.LAYER_VERSIONS[S.LAYER_SPEECH], status="ready",
+                        model=candidate["model"], engine=candidate["engine"], words=len(candidate["words"]))
+    return candidate, True
