@@ -10,6 +10,7 @@ import argparse
 import glob
 import os
 import shutil
+import stat
 import subprocess  # nosec B404 - macOS packaging uses fixed local tooling.
 import sys
 
@@ -98,7 +99,14 @@ def stage_opencv_dylibs(opencv_root, stage_dir, only_names=None):
     for dylib in dylibs:
         staged = os.path.join(stage_dir, os.path.basename(dylib))
         print(f"Staging OpenCV dylib: {dylib} -> {staged}")
+        # A warm libopenshot cache restores the previous run's copies, which
+        # may be read-only (Homebrew installs dylibs 0444): copying over one
+        # failed with PermissionError on every build after the first.
+        if os.path.lexists(staged):
+            os.unlink(staged)
         shutil.copy2(dylib, staged)
+        # install_name_tool rewrites the staged copy in place.
+        os.chmod(staged, os.stat(staged).st_mode | stat.S_IWUSR)
 
 
 def rewrite_opencv_dependencies(path, stage_dir):
