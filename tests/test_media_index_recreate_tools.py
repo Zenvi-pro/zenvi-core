@@ -132,6 +132,13 @@ def test_the_check_catches_the_same_clip_used_over_and_over(studio):
     assert result["passed"] is False
     later = [f for f in result["failing"] if any("same moment" in p for p in f["problems"])]
     assert len(later) >= 3 and all(f["fix"] and "overrides=[" in f["fix"] for f in later)          # each later use comes with a swap to apply
+    # a suggested swap never names the file of the shot before or after it (that would trade one flaw for another: a back-to-back repeat)
+    import re
+    files_at = {i: c["file_id"] for i, c in enumerate(picture_clips(studio))}
+    for f in later:
+        shot = int(re.search(r"reference_shot:(\d+)", f["fix"]).group(1))
+        file_id = re.search(r"file_id:'(\w+)'", f["fix"]).group(1)
+        assert file_id not in {files_at.get(shot - 1), files_at.get(shot + 1)}
 
 
 def test_an_override_swaps_the_source_of_one_shot_and_is_remembered(studio):
