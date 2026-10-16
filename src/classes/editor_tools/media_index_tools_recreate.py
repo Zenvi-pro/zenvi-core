@@ -19,7 +19,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from classes.editor_tools._base import ToolError, array, boolean, enum, integer, number, obj, ok, string, th
 from classes.editor_tools._registry import REGISTRY, editor_tool
 from classes.editor_tools.media_index_tools import _all_files, project_indexes
-from classes.editor_tools.timeline_edit_common import frame_seconds, snap
+from classes.editor_tools.effects_color_looks import _grade_values
+from classes.editor_tools.timeline_edit_common import frame_seconds, keyframe_value, snap
 from classes.logger import log
 from classes.media_index import reference as mref
 
@@ -269,7 +270,7 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
             if values and r["reference_shot"] in placed_ids:
                 groups.setdefault(tuple(sorted(values.items())), []).append(placed_ids[r["reference_shot"]])
         for params, ids in groups.items():
-            _call("color_grade_clip_tool", timeline_clip_ids=ids, **dict(params))
+            _call("color_grade_clip_tool", timeline_clip_ids=ids, reset=True, **dict(params))
             graded += len(ids)
 
     song_note = ""
@@ -295,6 +296,36 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
 
 
 # ============================ check ============================
+def _applied_grade(clip_id: str) -> Optional[Dict[str, float]]:
+    """The Color Grade values a timeline clip carries, or None when it has none."""
+    from classes.query import Clip
+    clip = Clip.get(id=clip_id)
+    for effect in ((clip.data or {}).get("effects") or []) if clip is not None else []:
+        if effect.get("class_name") == "ColorGrade":
+            return _grade_values(effect)
+    return None
+
+
+def _is_muted(clip_id: str) -> bool:
+    """True when the clip's own sound is switched off (set_clip_audio_video audio='off' stores has_audio as 0)."""
+    from classes.query import Clip
+    clip = Clip.get(id=clip_id)
+    return clip is not None and keyframe_value((clip.data or {}).get("has_audio")) == 0.0
+
+
+def _predicted_look(src_look: Optional[Dict[str, Any]], grade: Optional[Dict[str, float]]) -> Optional[Dict[str, Any]]:
+    """The look a source shot should have once a grade is applied, using the inverse of the mapping build_recreation_tool grades with."""
+    if not src_look:
+        return None
+    out = dict(src_look)
+    if grade:
+        out["avg_luma"] = min(1.0, max(0.0, float(src_look.get("avg_luma") or 0.0) * 2.0 ** (float(grade.get("exposure") or 0.0) / 0.8)))
+        out["sat_proxy"] = float(src_look.get("sat_proxy") or 0.0) * float(grade.get("saturation") or 0.0)
+        out["warm_cool"] = float(src_look.get("warm_cool") or 0.0) + float(grade.get("temperature") or 0.0) / 2.0
+        out["contrast_span"] = float(src_look.get("contrast_span") or 0.0) + float(grade.get("contrast") or 0.0) / 1.5
+    return out
+
+
 def _grade_score(parts: List[float]) -> float:
     return round(100.0 * sum(parts) / len(parts), 1) if parts else 0.0
 
@@ -387,20 +418,18 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
                         fixes[shot_id] = (f"overrides=[{{reference_shot:{shot_id}, file_id:'{pool[x[0]].file_id}', in:{x[1]:.2f}}}], only_shots=[{shot_id}]")
             src_look = (cand.shot_at((covering.src_in + covering.src_out) / 2.0) or {}).get("look")
             ref_look = (shot or {}).get("look")
-            has_grade = any("ColorGrade" in e for e in covering.effects)
-            graded += 1 if has_grade else 0
+            grade = _applied_grade(covering.id)
+            graded += 1 if grade else 0
             dist = None
             if ref_look and src_look:
                 from classes import color_agent as ca
-                dist = ca.look_profile_distance(src_look, ref_look)
-            if has_grade:
-                look_scores.append(1.0)                                   # graded towards the reference by build_recreation_tool
-            elif dist is None:
+                dist = ca.look_profile_distance(_predicted_look(src_look, grade) or {}, ref_look)
+            if dist is None:
                 look_scores.append(0.5)
             else:
                 look_scores.append(1.0 if dist < LOOK_CLOSE else max(0.0, 1.0 - (dist - LOOK_CLOSE) / 0.8))
                 if dist >= LOOK_CLOSE:
-                    findings.setdefault(shot_id, []).append("not graded and its look is far from the reference's")
+                    findings.setdefault(shot_id, []).append(f"look is {dist:.2f} from the reference's" + (" even with its grade" if grade else " and it is not graded"))
                     fixes.setdefault(shot_id, "build_recreation_tool(grade=true, only_shots=[%d])" % shot_id)
 
     reuse_max = max(buckets.values(), default=0)
@@ -424,7 +453,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
             break
 
     song_present = any(c.start <= 0.5 and c.length >= 0.8 * max(b for _i, _a, b, _r in slots) for c in ref_clips)
-    audible = sum(1 for c in pictures if c.has_audio and (c.gain_db is None or c.gain_db > -60.0))
+    audible = sum(1 for c in pictures if not _is_muted(c.id))
     sound = 1.0 if song_present else 0.4
     if audible:
         sound -= min(0.5, audible / max(1, len(pictures)))

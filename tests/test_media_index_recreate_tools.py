@@ -47,12 +47,12 @@ def studio(editor, tmp_path, monkeypatch):
     ref_sha = sha(80)
     shots = [shot(i, i * SHOT, (i + 1) * SHOT, _look=profile(lumas[i])) for i in range(6)]
     build(shelf, ref_sha, shots=shots, watch=[w(i, i * SHOT, (i + 1) * SHOT, f"shot {i}") for i in range(6)], duration=6.0)
-    ref = editor.add_file("video", duration=6.0, path=str(tmp_path / "ref.mp4"), fingerprint={"sha256": ref_sha}, has_audio=True, name="ref.mp4")
+    ref = editor.add_file("video", duration=6.0, path=str(tmp_path / "ref.mp4"), fingerprint={"sha256": ref_sha}, has_audio=True, channels=2, name="ref.mp4")
     sources = {}
     for n, (name, luma) in enumerate((("dark", DARK), ("bright", BRIGHT), ("mid", 0.5))):
         key = sha(81 + n)
         build(shelf, key, shots=[shot(0, 0, 12, _look=profile(luma))], watch=[w(0, 0, 12, name)], duration=12.0)
-        sources[name] = editor.add_file("video", duration=12.0, path=str(tmp_path / f"{name}.mp4"), fingerprint={"sha256": key}, has_audio=True, name=f"{name}.mp4")
+        sources[name] = editor.add_file("video", duration=12.0, path=str(tmp_path / f"{name}.mp4"), fingerprint={"sha256": key}, has_audio=True, channels=2, name=f"{name}.mp4")
     library.clear_cache()
     editor.mark()
     return SimpleNamespace(ed=editor, ref=ref, src=sources, lumas=lumas)
@@ -154,3 +154,22 @@ def test_a_missing_plan_and_a_missing_reference_are_errors_that_say_what_to_do(s
     assert studio.ed.call_receipt("build_recreation_tool")["status"] == "error"
     assert studio.ed.call_receipt("plan_recreation_tool", reference_file_id="nope")["status"] == "error"
     assert studio.ed.call_receipt("check_recreation_tool", reference_file_id=studio.ref)["status"] == "error"          # nothing built yet
+
+
+def test_a_grade_that_pushes_the_footage_away_from_the_reference_look_is_flagged_not_rewarded(studio):
+    """The old run graded every clip with one generic 'moody' grade and the first checker gave that full marks for being graded."""
+    pid = plan(studio)["plan_id"]
+    build_it(studio, pid)
+    assert check(studio, plan_id=pid)["areas"]["look"] == 100.0
+    ids = [c["id"] for c in picture_clips(studio)]
+    receipt_data(studio.ed, "color_grade_clip_tool", timeline_clip_ids=ids, exposure=2.0, reset=True)          # far brighter than the dark shots
+    bad = check(studio, plan_id=pid)
+    assert bad["areas"]["look"] < 100.0 and any("look is" in " ".join(f["problems"]) for f in bad["failing"])
+
+
+def test_footage_with_its_own_sound_left_on_lowers_the_sound_score(studio):
+    pid = plan(studio)["plan_id"]
+    build_it(studio, pid)
+    assert check(studio, plan_id=pid)["areas"]["sound"] == 100.0
+    receipt_data(studio.ed, "set_clip_audio_video_tool", timeline_clip_ids=[c["id"] for c in picture_clips(studio)], audio="on")
+    assert check(studio, plan_id=pid)["areas"]["sound"] < 100.0
