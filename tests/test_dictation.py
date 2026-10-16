@@ -137,9 +137,16 @@ class FakeMic:
             os.close(self._write)
             self.returncode = 1
 
-    def speak(self, seconds, level=3000):           # speech RMS; a quiet laptop room measured ~430
-        os.write(self._write, (level.to_bytes(2, "little") + (-level).to_bytes(2, "little", signed=True))
-                 * int(8000 * seconds))
+    def _tone(self, seconds, levels):
+        for i in range(int(10 * seconds)):            # 100 ms at a time, cycling through *levels*
+            level = levels[i % len(levels)]
+            os.write(self._write, (level.to_bytes(2, "little") + (-level).to_bytes(2, "little", signed=True)) * 800)
+
+    def speak(self, seconds, level=3000):           # syllables and the gaps between them
+        self._tone(seconds, [level, level // 10])
+
+    def hum(self, seconds, level):                  # a room with nobody talking: the same level throughout
+        self._tone(seconds, [level])
 
     def poll(self):
         return self.returncode
@@ -210,17 +217,61 @@ def test_no_live_words_when_the_recogniser_is_too_slow_for_it(monkeypatch):
     assert texts == [("1.0 seconds", True)]
 
 
-def test_a_quiet_room_is_no_words_not_a_recogniser_hallucination(monkeypatch):
+@pytest.mark.parametrize("level", [430, 1500])    # a quiet laptop room; a fan right by the mic
+def test_a_room_with_nobody_talking_is_no_words_not_a_recogniser_hallucination(monkeypatch, level):
     mic = FakeMic()
     session, texts, errors, done = _session(monkeypatch, mic)
     heard = []
     monkeypatch.setattr(dictation, "transcribe", lambda pcm, parakeet=None: heard.append(pcm) or "Thank you.")
     session.start()
-    mic.speak(1.0, level=430)
+    mic.hum(1.0, level)
     threading.Event().wait(0.3)
     session.stop()
     assert done.wait(5)
     assert texts == [("", True)] and heard == []
+
+
+def test_a_quiet_microphone_still_hears_speech(monkeypatch):
+    """A laptop array mic: the room ~80 RMS, a spoken "hello" only ~500 (measured, 2026-10-16)."""
+    mic = FakeMic()
+    session, texts, errors, done = _session(monkeypatch, mic, live=False)
+    session.start()
+    mic.hum(0.5, 80)
+    mic.speak(1.0, level=500)
+    threading.Event().wait(0.3)
+    session.stop()
+    assert done.wait(5)
+    assert texts == [("1.5 seconds", True)]
+
+
+def test_digital_silence_while_the_mic_wakes_up_is_not_a_noise_floor(monkeypatch):
+    mic = FakeMic()
+    session, texts, errors, done = _session(monkeypatch, mic, live=False)
+    monkeypatch.setattr(dictation, "transcribe", lambda pcm, parakeet=None: "Thank you.")
+    session.start()
+    mic.hum(0.5, 0)                                   # dshow hands over zeros before the first samples
+    mic.hum(1.0, 430)
+    threading.Event().wait(0.3)
+    session.stop()
+    assert done.wait(5)
+    assert texts == [("", True)]
+
+
+@pytest.mark.parametrize("room", [
+    # the same laptop mic with nobody talking, measured: its noise suppression zeroes the quiet,
+    # so the room comes through as bursts, one of them a single 100 ms knock at 621
+    [0, 0, 0, 30, 26, 17, 84, 204, 108, 161, 102, 305, 145, 148, 212, 75, 80, 207, 198, 135, 69, 107, 77,
+     185, 117, 137, 118, 326, 108, 4, 0, 7, 0, 2, 128, 347, 212, 621, 373, 236],
+    [0, 0, 0, 0, 1, 1, 0, 249, 40, 212, 95, 19, 11, 55, 179, 57, 130, 151, 6, 90, 233, 151, 16, 119, 207],
+])
+def test_room_noise_on_a_noise_suppressed_mic_is_not_speech(room):
+    assert dictation.heard_speech(room) is False
+
+
+def test_hello_on_that_mic_is_speech():
+    hello = [0, 0, 10, 47, 65, 70, 7, 3, 0, 48, 1077, 968, 1249, 1038, 535, 388, 563, 505, 656, 410, 476, 381,
+             404, 398, 471, 460, 404, 476, 291, 330, 395, 189, 125, 80, 328, 517, 493, 328, 366, 306]
+    assert dictation.heard_speech(hello) is True
 
 
 def test_a_microphone_that_cannot_open_is_an_error_not_silence(monkeypatch):
