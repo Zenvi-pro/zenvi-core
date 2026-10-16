@@ -243,8 +243,9 @@ def repeated_shots(ref: FileIndex, shots: Sequence[Dict[str, Any]]) -> Dict[int,
             continue
         best, best_cos = None, REPEAT_COSINE
         for j in range(i - REPEAT_MIN_GAP + 1):                       # a similar shot right next to it is just a similar angle, not the image coming back
-            if vecs[j] is not None and j not in out:
-                cos = float(np.dot(v, vecs[j]))
+            other = vecs[j]
+            if other is not None and j not in out:
+                cos = float(np.dot(v, other))
                 if cos >= best_cos:
                     best, best_cos = j, cos
         if best is not None:

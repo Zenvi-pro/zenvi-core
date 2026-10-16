@@ -110,3 +110,17 @@ The earlier Claude Code run (before these tools): 85 placements took over two mi
 What the real run found that the synthetic tests had not (each now has a regression test): the index said a clip ran 0.03 s past the end the editor could use; a failed build left clips that blocked the retry; one tool call per grade made the build take 160 s (now one batch, 18 s); a swap suggested in the same pass could land next to the same file or reuse a moment (swaps now book their own picks). The check's look score was first fooled by any grade existing; it now compares the look the grade would produce with the reference's.
 
 Not measured or not built: a fresh Claude Code session on the same prompt; credits charged for stock and for the description pass; fades/dissolves are listed by the check but not built; undo of an 80-clip build is slow (about 0.4 s per clip); the look is predicted from the grade, not measured from a render.
+
+### Same project, after making the recreation honest (no repeated footage, absolute match test, pictures)
+
+The 99.1 above was too kind: it allowed each moment twice, filled gaps by reusing footage, and judged a pick only against the other options for its shot. The check now fails any footage shown again unless the reference itself repeats an image, judges picture match against every shot/window pair, and reports shots left out on purpose. Re-scored on the same project:
+
+| Step | Overall | Picture | Variety | Notes |
+|---|---|---|---|---|
+| Own footage only, nothing repeated | 78.1 | 10.2 | 60.0 | 8 clips cover about 47 s of the 85 s: 24 shots matched, 36 weak, 20 left out |
+| + 25 stock clips found by scene description | 87.4 | 25.2 | 97.5 | 80 shots placed, most uses of one moment 1, 33 clips used (8 yours, 25 stock) |
+
+Looking at `compare_recreation_tool` pictures: the stock picks are real matches (clapperboard, fish tank, a woman in red with a cake, a close-up face); the park footage against dark close-up anime portraits is the weak part, and the check says so. The footage is the limit there, not repetition.
+
+Not done: close-up framing from wide footage (crop and zoom keyframes), smoother per-scene grading, vision-model review of flagged shots, proxies for playback.
+

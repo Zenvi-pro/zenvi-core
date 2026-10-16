@@ -633,7 +633,8 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
             findings.setdefault(shot_id, []).append(f"does not look like the reference shot (picture match {fit:.2f}; needs {mref.FIT_MIN:.2f})")
             desc = ((row_of.get(shot_id) or {}).get("description") or "").strip()
             if desc:
-                fixes.setdefault(shot_id, f"search_stock_video_tool(query='{' '.join(desc.split()[:12])}') then build_recreation_tool(overrides=[...], only_shots=[{shot_id}])")
+                query = mref.stock_query_for(desc, (next((x for x in ref.shots if int(x["id"]) == int(shot_id)), None) or {}).get("look"))
+                fixes.setdefault(shot_id, f"search_stock_video_tool(query='{query}') then build_recreation_tool(overrides=[...], only_shots=[{shot_id}])")
 
     reuse_max = max(buckets.values(), default=0)
     uses = Counter(placed_files)
