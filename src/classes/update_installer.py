@@ -39,6 +39,7 @@ import hashlib
 import json
 import os
 import platform
+import posixpath
 import shutil
 import subprocess
 import sys
@@ -814,16 +815,17 @@ def _running_bundle():
 def _macos_install_target():
     """The bundle the update replaces: the one Zenvi runs from, unless macOS
     runs it from a read-only place (the disk image, App Translocation)."""
+    # macOS paths, also when a test runs this on another platform.
     apps_dir = os.environ.get("ZENVI_UPDATE_APPLICATIONS_DIR")
     if apps_dir:
-        return os.path.join(apps_dir, "Zenvi.app")
+        return posixpath.join(apps_dir, "Zenvi.app")
     bundle = _running_bundle()
     if bundle and "/AppTranslocation/" not in bundle and not bundle.startswith("/Volumes/"):
         return bundle
-    if bundle and bundle.startswith("/Volumes/") and os.access(os.path.dirname(bundle), os.W_OK):
+    if bundle and bundle.startswith("/Volumes/") and os.access(posixpath.dirname(bundle), os.W_OK):
         # A writable external drive, not a mounted disk image.
         return bundle
-    return os.path.join("/Applications", os.path.basename(bundle) if bundle else "Zenvi.app")
+    return posixpath.join("/Applications", posixpath.basename(bundle) if bundle else "Zenvi.app")
 
 
 def _apply_macos(filepath, filename, version="", wait_pid=None, attempts=1, open_cmd="/usr/bin/open"):
