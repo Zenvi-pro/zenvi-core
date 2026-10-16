@@ -139,11 +139,13 @@ class About(QDialog):
             'begin_year': '2008',
             'current_year': str(datetime.datetime.today().year)
             }
+        from classes.media_index.credits import credits_html
         about_html = '''
             <div align="center" style="">
               <p style="font-size:11pt; font-weight: 300;">%s</p>
+              %s
             </div>
-            ''' % (description_text,)
+            ''' % (description_text, credits_html())
         company_html = '''
             <div style="font-weight:400;" align="right">
               %s<br>

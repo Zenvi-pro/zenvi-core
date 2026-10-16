@@ -28,6 +28,7 @@ files_model = importlib.import_module("windows.models.files_model")
 
 from classes import credits_client as cc  # noqa: E402
 from classes.api_client import ZenviBackendClient  # noqa: E402
+from classes.media_index.job import IndexingJob  # noqa: E402
 
 READY = {"success": True, "index_id": "zenvi-p1", "video_id": "f1",
          "ai_metadata": {"analyzed": True, "short_summary": "a street at night"}}
@@ -36,6 +37,9 @@ READY = {"success": True, "index_id": "zenvi-p1", "video_id": "f1",
 def _index(monkeypatch, *, result=READY, ai_metadata=None, blocked=None):
     """Run one BackendIndexingWorker synchronously; return (charges, client)."""
     charges = []
+    # Pin the machine out of the test: a session on disk (or none, in CI) must not decide
+    # whether indexing runs, and nothing may be written to the real media index.
+    monkeypatch.setattr(IndexingJob, "_signed_in", staticmethod(lambda: True))
     monkeypatch.setattr(cc, "check_operation", lambda *a, **k: (blocked is None, 1000, blocked))
     monkeypatch.setattr(cc, "charge_operation_on_success", lambda *a, **k: charges.append((a, k)))
     client = MagicMock()

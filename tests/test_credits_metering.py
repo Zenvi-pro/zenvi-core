@@ -197,6 +197,16 @@ def test_a_failed_reindex_is_not_charged(monkeypatch, charges):
     assert charges == []
 
 
+def test_a_reindex_blocked_by_the_monthly_limit_says_what_still_works(monkeypatch, charges):
+    monkeypatch.setattr(cc, "check_operation", lambda *a, **k: (False, 0, "Monthly indexing limit reached (6 minutes on free plan)."))
+    out, client = _reindex(monkeypatch, result={"success": True})
+
+    assert out.startswith("Error") and "Monthly indexing limit reached" in out
+    assert "search_footage_tool" in out and "get_transcript_tool" in out, "the Assistant must not conclude nothing can be searched"
+    client.reindex_video.assert_not_called()
+    assert charges == []
+
+
 def test_an_indexed_clip_is_not_reindexed_or_charged(monkeypatch, charges):
     ready = {"twelvelabs": {"status": "ready", "index_id": "zenvi-p1", "video_id": "v1"}}
     out, client = _reindex(monkeypatch, result={"success": True}, ai_metadata=ready)

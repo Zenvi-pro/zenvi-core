@@ -568,3 +568,51 @@ def test_download_skips_cache_when_height_too_low(tmp_path, monkeypatch):
     assert meta.get("from_cache") is not True
     assert meta["height"] == 1080
     assert meta["requested_height"] == 1080
+
+
+# -- a public URL must not be able to send the download to a private address -------------
+def test_a_redirect_to_a_private_or_loopback_address_is_refused_not_followed():
+    import http.server
+    import threading
+    import urllib.request
+
+    from classes.web_video_ingest import open_public_url
+
+    class Redirect(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/secret":
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"internal")
+                return
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.1:%d/secret" % self.server.server_port)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Redirect)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        req = urllib.request.Request("http://127.0.0.1:%d/video.mp4" % server.server_port)
+        with pytest.raises(WebVideoIngestError, match="private or local"):
+            open_public_url(req, timeout=5)
+        with urllib.request.urlopen(req, timeout=5) as plain:       # what the code did before: it followed the redirect
+            assert plain.read() == b"internal"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_redirect_to_a_public_address_is_still_followed(monkeypatch):
+    import socket
+    import urllib.request
+
+    from classes import web_video_ingest as wvi
+
+    monkeypatch.setattr(socket, "getaddrinfo", lambda host, *_a, **_k: [(2, 1, 6, "", ("93.184.216.34", 0))])
+    handler = wvi._PublicOnlyRedirects()
+    req = urllib.request.Request("https://cdn.example.org/a.mp4")
+    new = handler.redirect_request(req, None, 302, "Found", {}, "https://media.example.org/a.mp4")
+    assert new is not None and new.full_url == "https://media.example.org/a.mp4"

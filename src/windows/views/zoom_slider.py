@@ -39,7 +39,7 @@ from qt_api import QSizePolicy, QWidget
 
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
-from classes import updates
+from classes import update_batch, updates
 
 
 def _event_posf(event):
@@ -121,7 +121,20 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
 
         # A committed change ends any live drag mirroring; recompute from persisted data.
         self._drag_overrides = None
+        if update_batch.active():
+            self._recompute_after_batch = True        # one rebuild when the batch ends, not one per change
+            return
         self._schedule_recompute()
+
+    def _flush_batch(self):
+        """End of an update batch: rebuild the minimap once if anything changed during it."""
+        from qt_api import isdeleted
+        if isdeleted(self):
+            update_batch.unregister(self._flush_batch)
+            return
+        if self._recompute_after_batch:
+            self._recompute_after_batch = False
+            self._schedule_recompute()
 
     def apply_drag_overrides(self, overrides):
         """Mirror the timeline's live drag overrides on the minimap.
@@ -715,6 +728,10 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
 
         # Live drag overrides mirrored from the timeline track (or None when idle)
         self._drag_overrides = None
+
+        # Changes made inside an update batch rebuild the minimap once, when the batch ends
+        self._recompute_after_batch = False
+        update_batch.register(self._flush_batch)
 
         # Coalescing latest-wins recompute pipeline (keeps geometry off the GUI thread)
         self._recompute_queue = CoalescingRecomputeQueue()

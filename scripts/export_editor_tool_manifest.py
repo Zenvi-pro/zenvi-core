@@ -41,8 +41,10 @@ def build_manifest() -> dict:
             "input_schema": spec.schema,
             "covers": list(spec.covers),
         })
+    from classes.edit_playbook import playbook_manifest
+
     return {"manifest_version": MANIFEST_VERSION, "source": "zenvi-core src/classes/editor_tools",
-            "tools": tools}
+            "playbook": playbook_manifest(), "tools": tools}
 
 
 def main() -> int:

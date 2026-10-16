@@ -16,7 +16,6 @@ from classes.speech.diarize import WindowClusterDiarize, speaker_turns
 from classes.speech.cache import Word
 from classes.speech.runtime import CancelToken
 from classes.speech.vad import EnergyVad, silence_ranges_from_speech
-from classes.speech.visual_index import HashEmbedder, VisualIndex, reset_visual_index_for_tests
 from classes.speech.beats import EnergyBeatEngine
 from classes.speech.word_ranges import compact_fragments_after_remove
 
@@ -121,30 +120,6 @@ def test_beats_detect_something(tmp_path):
     result = EnergyBeatEngine().detect(str(wav), token=CancelToken())
     assert "beats" in result
     assert "bpm" in result
-
-
-def test_visual_index_search(tmp_path):
-    reset_visual_index_for_tests(VisualIndex(root=str(tmp_path / "idx")))
-    idx = VisualIndex(root=str(tmp_path / "idx"))
-    a = tmp_path / "a.bin"
-    b = tmp_path / "b.bin"
-    a.write_bytes(b"red car photo data AAA")
-    b.write_bytes(b"blue ocean other BBB")
-    idx.upsert_file("f1", str(a))
-    idx.upsert_file("f2", str(b))
-    hits = idx.search("red car", top_k=2)
-    assert len(hits) == 2
-    assert hits[0]["provider"] == "local"
-    # Same query embedding should prefer a over random — hash stub may not
-    # be semantic; just ensure deterministic ordering for same query.
-    hits2 = idx.search("red car", top_k=2)
-    assert [h["fileId"] for h in hits] == [h["fileId"] for h in hits2]
-    reset_visual_index_for_tests(None)
-
-
-def test_hash_embedder_normalized():
-    v = HashEmbedder().embed_text("hello")
-    assert abs(sum(x * x for x in v) - 1.0) < 1e-6
 
 
 def test_remove_silence_tool_mocked(tmp_path):
@@ -276,23 +251,6 @@ def test_export_captions_writes_srt(tmp_path):
     assert "Hi" in out.read_text(encoding="utf-8")
 
 
-def test_search_media_local_tool(tmp_path):
-    reset_visual_index_for_tests(VisualIndex(root=str(tmp_path / "idx")))
-    media = tmp_path / "shot.bin"
-    media.write_bytes(b"harbor sunset frame")
-    project = {"files": [{"id": "f1", "path": str(media)}], "clips": [], "fps": {"num": 30, "den": 1}}
-    app = MagicMock()
-    with patch("classes.app.get_app", return_value=app), \
-         patch("classes.agent_tools.inspect_render.snapshot_project", return_value=project), \
-         patch("classes.query.File.filter", return_value=[]):
-        from classes.agent_tools.speech_extra import search_media_local
-        raw = search_media_local(query="harbor", top_k=3)
-    receipt = parse_receipt(raw)
-    assert receipt["status"] == "applied"
-    assert receipt["data"]["provider"] == "local"
-    reset_visual_index_for_tests(None)
-
-
 def test_detect_beats_tool(tmp_path):
     wav = tmp_path / "m.wav"
     _write_tone_wav(wav, seconds=1.5, amp=10000)
@@ -367,7 +325,6 @@ def test_all_phase5_tools_registered():
         "export_captions_tool",
         "detect_beats_tool",
         "diarize_media_tool",
-        "search_media_local_tool",
     ]
     for name in names:
         assert name in th.AGENT_TOOL_HANDLERS, name
@@ -402,39 +359,9 @@ def test_audio_mix_speech_windows_best_prefers_cues():
     assert windows
 
 
-def test_search_media_local_only_returns_the_open_projects_media(tmp_path):
-    """Review #216: the shared index returned another project's files and paths."""
-    idx = VisualIndex(root=str(tmp_path / "idx"))
-    reset_visual_index_for_tests(idx)
-    other = tmp_path / "other_project_secret.bin"
-    other.write_bytes(b"harbor sunset frame")
-    idx.upsert_file("OTHER", str(other))
-    mine = tmp_path / "shot.bin"
-    mine.write_bytes(b"harbor at dusk")
-    project = {"files": [{"id": "f1", "path": str(mine)}], "clips": [], "fps": {"num": 30, "den": 1}}
-    with patch("classes.app.get_app", return_value=MagicMock()), \
-         patch("classes.agent_tools.inspect_render.snapshot_project", return_value=project), \
-         patch("classes.query.File.filter", return_value=[]):
-        from classes.agent_tools.speech_extra import search_media_local
-        receipt = parse_receipt(search_media_local(query="harbor", top_k=5))
-    assert [h["fileId"] for h in receipt["data"]["hits"]] == ["f1"]
-    reset_visual_index_for_tests(None)
+def test_transcript_results_say_word_times_are_not_cut_points():
+    from classes.agent_tools.transcript import _transcript_notes
 
-
-def test_visual_index_follows_a_file_id_to_its_new_path(tmp_path):
-    """PR #275 review: a copied project keeps its file ids; a hit for one must
-    not come back with the other project's path."""
-    import os
-
-    idx = VisualIndex(root=str(tmp_path / "idx"))
-    first = tmp_path / "a" / "shot.bin"
-    second = tmp_path / "b" / "shot.bin"
-    for path in (first, second):
-        path.parent.mkdir()
-        path.write_bytes(b"harbor at dusk")
-    st = first.stat()
-    os.utime(second, ns=(st.st_atime_ns, st.st_mtime_ns))
-    idx.upsert_file("f1", str(first))
-    entry = idx.upsert_file("f1", str(second))
-    assert entry.path == os.path.abspath(str(second))
-    assert [h["path"] for h in idx.search("harbor", file_ids={"f1"})] == [os.path.abspath(str(second))]
+    for for_edit in (True, False):
+        text = " ".join(_transcript_notes(for_edit=for_edit))
+        assert "get_voice_edges_tool" in text and "never slice at a word time" in text

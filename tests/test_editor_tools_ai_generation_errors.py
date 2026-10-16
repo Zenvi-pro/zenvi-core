@@ -234,7 +234,6 @@ def test_import_video_url_checks_the_track_before_downloading(editor, monkeypatc
 
 def test_import_video_url_placement_failure_is_an_error(editor, monkeypatch, tmp_path):
     import io
-    import urllib.request
 
     from classes.query import File
 
@@ -245,7 +244,7 @@ def test_import_video_url_placement_failure_is_an_error(editor, monkeypatch, tmp
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Resp(b"video-bytes"))
+    monkeypatch.setattr("classes.web_video_ingest.open_public_url", lambda *a, **k: _Resp(b"video-bytes"))
 
     def fake_import(path, preserve_alpha=None):
         f = File()

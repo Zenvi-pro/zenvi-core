@@ -77,6 +77,10 @@ def copy_media_into_project(files, project_file_path, app_root=None):
             skipped.append(abs_src)
         moves.append((file.get("id"), abs_src, dest))
 
+    # The media index goes with the media, so the collected project needs no re-indexing.
+    from classes.media_index.project_sync import export_index_for_files
+    export_index_for_files(files, project_file_path)
+
     return copied, skipped, errors, moves
 
 

@@ -1,4 +1,4 @@
-"""The Index dock lists transcript words, so it must ask get_transcript for them.
+"""The Index dock reads transcript words, so it must ask get_transcript for them.
 
 get_transcript's default receipt is compact (data.script only, no words), and
 the dock showed "0 words" for a transcribed clip.
@@ -28,10 +28,11 @@ def _receipt(words):
 def _panel(added):
     panel = SimpleNamespace(
         _app=SimpleNamespace(project=SimpleNamespace(_data={})),
-        _list=SimpleNamespace(clear=lambda: added.clear(), addItem=added.append),
         _status=MagicMock(),
         _generation=None,
+        _fps=lambda: 30.0,
     )
+    panel._show_words = lambda model: (added.clear(), added.extend(model["words"]))      # what the reader would display
     panel._project_token = lambda: index_panel.IndexPanel._project_token(panel)
     panel._load_transcript = lambda token=None: index_panel.IndexPanel._load_transcript(panel, token)
     panel._populate = lambda raw, token=None: index_panel.IndexPanel._populate(panel, raw, token)
@@ -106,3 +107,37 @@ def test_result_for_a_closed_project_is_dropped():
     assert added == []
     assert panel._loading is False
     panel._status.setText.assert_called_with("Project changed. Press Refresh.")
+
+
+def test_delete_people_data_asks_first_and_deletes_off_the_gui_thread():
+    import threading
+    from classes.media_index import people
+    seen = {}
+    status = MagicMock()
+    panel = SimpleNamespace(_status=status, _confirm_delete_people=lambda: False)
+    panel._delete_people_worker = lambda: index_panel.IndexPanel._delete_people_worker(panel)
+    with patch.object(people, "delete_all", side_effect=lambda **k: seen.setdefault("n", 1) and {"scans": 2, "registry": True, "models": 0}):
+        index_panel.IndexPanel.delete_people_data(panel)
+        assert "n" not in seen and not status.setText.called, "declining deletes nothing"
+        panel._confirm_delete_people = lambda: True
+        started = []
+        real = threading.Thread
+
+        def capture(*a, **k):
+            t = real(*a, **k)
+            started.append(t)
+            return t
+
+        with patch.object(index_panel.threading, "Thread", capture), patch("classes.qt_main_thread.invoke_on_gui", lambda f, *a, **k: f(*a, **k)):
+            index_panel.IndexPanel.delete_people_data(panel)
+            started[0].join(5)
+    assert seen == {"n": 1} and started[0].name == "index_panel_delete_people"
+    assert status.setText.call_args_list[-1].args[0] == "Deleted 2 face scan(s) and the people list."
+
+
+def test_a_failing_delete_is_reported_not_raised():
+    status = MagicMock()
+    panel = SimpleNamespace(_status=status)
+    with patch("classes.media_index.people.delete_all", side_effect=OSError("disk busy")), patch("classes.qt_main_thread.invoke_on_gui", lambda f, *a, **k: f(*a, **k)):
+        index_panel.IndexPanel._delete_people_worker(panel)
+    assert "disk busy" in status.setText.call_args.args[0]

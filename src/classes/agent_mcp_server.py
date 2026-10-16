@@ -48,8 +48,9 @@ SERVER_INSTRUCTIONS = (
     "indexes shifted. If watchSuggested is non-null, call inspect_timeline_tool "
     "with that object (clipId/start/end) — or with startFrame/endFrame — before "
     "claiming the edit is correct; you will receive composited JPEG frames with "
-    "a 0–1 top-left coordinate grid. Use inspect_media_tool (prefer overview=true "
-    "first on long files) before describing footage; never guess from filenames. "
+    "a 0–1 top-left coordinate grid. To describe, summarise or recreate footage call "
+    "storyboard_tool first (detail=list for the whole video in one call: a row per shot with its own exact time; keep every row; open the keyframe picture before trusting a description): every cut is exact. Use inspect_media_tool only for "
+    "a spot check or a file with no shot list yet; never sample frames at a fixed interval to find cuts, and never guess from filenames. "
     "Do not shell ffmpeg for frames. Do not use watch_clip_window_tool for "
     "verification — that path is Assistant place/slice backend confirm and does "
     "not return images to you. To cut at a known source time, pass start_seconds "
@@ -71,15 +72,20 @@ SERVER_INSTRUCTIONS = (
     "(never suggest Whisper/Rev/Otter/external ASR). It returns spoken words "
     "in project frames (never put ASR inside inspect_*). On macOS, engine=auto "
     "prefers Apple SpeechAnalyzer when the helper is present (macOS 26+); "
-    "Windows and older Macs use faster-whisper. Pass engine=whisper or "
+    "Windows and older Macs use whisper.cpp. Pass engine=whisper or "
     "engine=apple to pin. Tighten pacing with remove_silence_tool "
     "first, then remove_words_tool (pass transcriptGeneration; fillerPreset "
     "um_uh is allowed). After cuts, call get_transcript_tool again — stale "
     "indices are refused. add_captions_tool burns timed dialogue; "
     "export_captions_tool writes SRT/VTT. diarize_media_tool labels speakers "
-    "offline. detect_beats_tool finds music beats. search_media_local_tool is "
-    "on-device visual search; search_clips_tool remains the cloud TwelveLabs tier."
+    "offline. detect_beats_tool finds music beats. "
+    "To recreate a video from the user's footage run the loop: plan_recreation_tool, build_recreation_tool, check_recreation_tool, fix what the check names, check again; never place it by length alone. search_footage_tool searches everything the index knows (what happens, what is said, how it looks); search_clips_tool remains the cloud tier."
 )
+
+# The editing playbook (how to finish a whole piece) is one text shared with the Zenvi Assistant; see classes.edit_playbook.
+from classes.edit_playbook import PLAYBOOK  # noqa: E402
+
+SERVER_INSTRUCTIONS = SERVER_INSTRUCTIONS + "\n\n" + PLAYBOOK
 
 # Preferred port: stable across restarts so a CLI registered once (e.g.
 # ``claude mcp add zenvi --transport http http://127.0.0.1:7434/mcp``) keeps

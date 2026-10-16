@@ -814,7 +814,7 @@ def _ffmpeg_run(args):
     try:
         p = run_ffmpeg(
             args,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         if p.returncode != 0:
             return False, (p.stderr or p.stdout or "ffmpeg failed")
@@ -832,7 +832,7 @@ def _ffprobe_video_duration(path) -> float:
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", path],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         val = (p.stdout or "").strip()
         if val and val != "N/A":
@@ -841,7 +841,7 @@ def _ffprobe_video_duration(path) -> float:
         p2 = run_ffmpeg(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", path],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         val2 = (p2.stdout or "").strip()
         return float(val2) if val2 and val2 != "N/A" else 0.0
@@ -854,7 +854,7 @@ def _ffprobe_has_audio(path):
         p = run_ffmpeg(
             ["ffprobe", "-v", "error", "-select_streams", "a",
              "-show_entries", "stream=index", "-of", "csv=p=0", path],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         return bool((p.stdout or "").strip())
     except Exception:
@@ -3020,6 +3020,25 @@ def search_clips(query="", top_k="5", look_for="", **_kw) -> str:
         k = 5
     k = max(1, min(k, 20))
 
+    only_files = _kw.get("_only_files")          # set on the second pass below: answer only for these files
+    if only_files is None:
+        try:
+            from classes.editor_tools.media_index_tools import legacy_search_clips, v1_only_file_ids
+            local = legacy_search_clips(q, k, str(look_for or "").strip(), _detect_ordinal(q))
+            if local is not None:
+                # Footage the local index does not cover is still searchable through the original project index.
+                try:
+                    extra_ids = v1_only_file_ids() if not local.startswith("Error") else set()
+                    more = search_clips(query=q, top_k=top_k, look_for=look_for, _only_files=extra_ids) if extra_ids else ""
+                except Exception:
+                    log.warning("search_clips: the original index could not add to the local answer", exc_info=True)
+                    more = ""
+                if more and not more.startswith(("Error", "No index matches")):
+                    return more if local.startswith("No index matches") else local + "\n" + more
+                return local
+        except Exception:
+            log.warning("search_clips: the local media index could not answer; using the project index", exc_info=True)
+
     try:
         from collections import defaultdict
 
@@ -3033,7 +3052,8 @@ def search_clips(query="", top_k="5", look_for="", **_kw) -> str:
         if info.get("error") and not info.get("index_id"):
             return (
                 f"Error: {info['error']} "
-                "Index/summarize project videos first, then search again."
+                "That is the cloud search; the local index is separate. Use search_footage_tool (speech, shots, colour, "
+                "quality, and descriptions once they are built) and index_status_tool to see what each file has."
             )
         index_id = str(info.get("index_id") or "").strip()
         if not index_id:
@@ -3072,8 +3092,13 @@ def search_clips(query="", top_k="5", look_for="", **_kw) -> str:
                 continue
             vid = str(r.get("video_id") or "").strip()
             fid, fname = map_search_hit_to_file(r, video_map)
+            if only_files is not None and fid not in only_files:
+                continue
             key = fid or vid or fname or "unknown"
             grouped[key].append({**r, "_file_id": fid, "_fname": fname, "_vid": vid})
+        if not grouped:
+            return f"No index matches for '{q}' in this project's index."
+        results = [h for hits in grouped.values() for h in hits]
 
         lines = [
             f"Found {len(results)} match(es) across {len(grouped)} project media item(s) "
@@ -3243,6 +3268,14 @@ def search_clip_scenes(
         nth = _parse_occurrence(str(_kw.get("occurrence", "0")), query)
         # Why the index could not answer, so a fallback result (or none) says so.
         index_notes = []
+
+        try:
+            from classes.editor_tools.media_index_tools import legacy_search_in_clip
+            local = legacy_search_in_clip(_semantic_search_query(query), k, ctx.file_id, clip_start, clip_end, clip_name)
+            if local is not None:
+                return local
+        except Exception:
+            log.warning("search_clip_scenes: the local media index could not answer", exc_info=True)
 
         # TwelveLabs search (parent index + trim window)
         if not client.is_indexing_configured():
@@ -4662,7 +4695,7 @@ def _ffprobe_video_size(path):
                 "-show_entries", "stream=width,height",
                 "-of", "csv=s=x:p=0", path,
             ],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         w, h = (int(v) for v in (p.stdout or "").strip().splitlines()[0].split("x")[:2])
     except Exception:
@@ -4688,7 +4721,7 @@ def _ffprobe_pix_fmt(path) -> str:
                 "-show_entries", "stream=pix_fmt",
                 "-of", "default=noprint_wrappers=1:nokey=1", path,
             ],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         return (p.stdout or "").strip().lower()
     except Exception:
@@ -4704,7 +4737,7 @@ def _ffprobe_alpha_mode(path) -> str:
                 "-show_entries", "stream_tags=alpha_mode,ALPHA_MODE",
                 "-of", "default=noprint_wrappers=1:nokey=1", path,
             ],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         for line in (p.stdout or "").splitlines():
             val = line.strip().lower()
@@ -6063,8 +6096,9 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
 
         try:
             log.info("Downloading video from URL: %s → %s", video_url, dest_path)
+            from classes.web_video_ingest import open_public_url
             req = urllib.request.Request(video_url, headers={"User-Agent": "ZenviApp/1.0"})
-            with urllib.request.urlopen(req, timeout=300) as response, open(dest_path, "wb") as out:
+            with open_public_url(req, timeout=300) as response, open(dest_path, "wb") as out:
                 while True:
                     chunk = response.read(65536)
                     if not chunk:
@@ -6463,7 +6497,7 @@ def _ingest_web_video_impl(
             raw_name = lower.rsplit("/", 1)[-1] or "video.mp4"
             dest = os.path.join(tmp_dir, raw_name)
             req = urllib.request.Request(raw_url, headers={"User-Agent": "ZenviApp/1.0"})
-            with urllib.request.urlopen(req, timeout=300) as response, open(dest, "wb") as out:
+            with wvi.open_public_url(req, timeout=300) as response, open(dest, "wb") as out:
                 while True:
                     chunk = response.read(65536)
                     if not chunk:
@@ -7923,8 +7957,13 @@ def modify_clip(
 def download_pexels_video_tool(video_id: str = "", link: str = "", filename: str = "", **kwargs) -> str:
     """Download a Pexels MP4 from the search-result link to the local machine."""
     try:
+        if not link and str(video_id).strip().isdigit():
+            # a clip found with search_stock_video_tool in this session: its link was remembered, so the id is enough
+            from classes.editor_tools.ai_generation_stock import remembered_link
+            link = remembered_link(video_id)
         if not link:
-            return "Error: link is required (use the MP4 URL from search_pexels_videos_tool)."
+            return ("Error: no link for that clip. Find one with search_stock_video_tool (or search_pexels_videos_tool), "
+                    "then pass its video_id here, or pass its link.")
         from classes.credits_client import charge_operation_on_success, check_operation
 
         _, _, blocked = check_operation("stock_add", "stock media download")
@@ -8225,10 +8264,34 @@ def resummarize_project_file(file_id: str = "", **kwargs) -> str:
         return f"Error: {e}"
 
 
-def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> str:
-    """Re-index an existing project file in TwelveLabs.
+def _queue_missing_index_layers(file_id: str) -> str:
+    """Send a file with missing index layers through the same indexing job an import uses; "" when that does not apply.
 
-    Skips when the file is already indexed unless force=true.
+    The job builds the free local layers first, then the paid description layer only if the account allows it, and it never pays for a
+    layer already saved. (The upload below is the older index; on its own it left the shelf empty and charged separately.)
+    """
+    from classes.editor_tools.media_index_tools import missing_layers
+    from classes.media_index.flags import v2_enabled
+    from classes.query import File
+    f = File.get(id=file_id)
+    if not f or not v2_enabled():
+        return ""
+    missing = missing_layers(f.data)
+    if not missing:
+        return ""
+    files_model = _get_app().window.files_model
+    if files_model.is_file_indexing(file_id) or files_model.is_file_queued(file_id):
+        return f"File {file_id} is already being indexed (missing: {', '.join(missing)}). Call wait_until_project_indexed_tool, then index_status_tool."
+    files_model._index_file_async(file_id)
+    return (f"File {file_id} queued for indexing (missing: {', '.join(missing)}). The free local layers (shots, colour, sound, speech) come first; "
+            "the AI picture descriptions follow only if the account has indexing allowance, and nothing already saved is paid for again. "
+            "Call wait_until_project_indexed_tool, then index_status_tool to see what is ready.")
+
+
+def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> str:
+    """Index a project file whose index is incomplete: queues it through the normal indexing job (local layers first, then the AI
+    descriptions if the account allows). A file whose index is complete is refreshed with the older upload; skipped when it is already
+    indexed unless force=true.
     Runs entirely on a worker thread.  Only the brief project-data reads
     (file path, duration, project id) are marshalled to the Qt main
     thread; the long-running reindex upload runs off the GUI thread.
@@ -8267,6 +8330,10 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
         if state is None:
             return f"Error: File not found (id={file_id})."
 
+        queued = _run_on_main_thread(_queue_missing_index_layers, file_id, timeout=10)
+        if queued:
+            return queued
+
         if state.get("already_indexed") and not force_reindex:
             tl = state.get("twelvelabs") or {}
             return (
@@ -8296,7 +8363,11 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
             duration_seconds=duration,
         )
         if blocked:
-            return _as_error(blocked)
+            # Only the paid AI description pass is blocked. The local analysis runs on import without it, so say what still works.
+            return _as_error(
+                f"{blocked} Only the AI picture descriptions need this; the local analysis (shots, colour, sound, speech) "
+                "does not, so search_footage_tool with filters and get_transcript_tool still work."
+            )
 
         from classes.project_tl_index import build_project_index_name
 
@@ -12078,7 +12149,6 @@ READ_ONLY_TOOLS = frozenset({
     "transcribe_media_tool",
     "detect_beats_tool",
     "diarize_media_tool",
-    "search_media_local_tool",
     "export_captions_tool",
 }) | frozenset(name for name, spec in _EDITOR_TOOL_SPECS.items() if spec.read_only)
 
@@ -12136,7 +12206,6 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     "duck_under_speech_tool",
     "detect_beats_tool",
     "diarize_media_tool",
-    "search_media_local_tool",
 }) | frozenset(name for name, spec in _EDITOR_TOOL_SPECS.items() if spec.background_safe)
 
 # Tools whose main-thread work can legitimately run far longer than

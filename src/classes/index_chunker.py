@@ -98,7 +98,7 @@ def _probe_duration(path: str) -> float:
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            encoding="utf-8", errors="replace",
             check=False,
         )
         return float((proc.stdout or "0").strip() or 0)

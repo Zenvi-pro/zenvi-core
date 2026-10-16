@@ -680,12 +680,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "modelId": _str(),
     }),
 
-    "search_media_local_tool": _obj({
-        "query": _str(description="Visual / semantic query."),
-        "top_k": _int(minimum=1, maximum=50),
-        "provider": _str(description="local or auto."),
-    }, required=["query"]),
-
 }
 
 
