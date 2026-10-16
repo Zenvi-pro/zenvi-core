@@ -5832,6 +5832,17 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             return
         self.run_js(JS_SCOPE_SELECTOR + ".refreshTimeline();")
 
+    def _delete_on_shutdown(self):
+        """Delete the timeline once the editor's last window has closed.
+
+        Qt also reports the last window closed when the sign-in dialog closes
+        while the main window is hidden behind it (Log Out, then sign in
+        again). The timeline is still in use then, and deleting it destroys
+        its running thumbnail thread, which aborts the process.
+        """
+        if self.window.shutting_down:
+            self.deleteLater()
+
     def __init__(self, window):
         if ViewClass == TimelineWidget:
             TimelineWidget.__init__(self)
@@ -5882,7 +5893,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Connect shutdown signals
         app.aboutToQuit.connect(self.redraw_audio_timer.stop)
         app.aboutToQuit.connect(self.cache_renderer.stop)
-        app.lastWindowClosed.connect(self.deleteLater)
+        app.lastWindowClosed.connect(self._delete_on_shutdown)
 
         # Delay the start of cache rendering
         QTimer.singleShot(1500, self.cache_renderer.start)

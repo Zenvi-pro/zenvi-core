@@ -164,8 +164,8 @@ jobs:
           cp "$DESKTOP" "$APPDIR/zenvi.desktop"
           [ -f "$APPDATA" ] && cp "$APPDATA" "$APPDIR/usr/share/metainfo/"
 
-          # Icon (same branding as installer/dmg-icon.png)
-          ICON="installer/dmg-icon.png"
+          # Icon (the 256px Zenvi app icon)
+          ICON="xdg/icon/256/zenvi.png"
           if [ ! -f "$ICON" ]; then
             echo "::error::Missing packaging icon: $ICON"
             exit 1
@@ -229,8 +229,8 @@ jobs:
           fi
           cp "$DESKTOP" "$DEB_DIR/usr/share/applications/"
 
-          # Icon (same branding as installer/dmg-icon.png)
-          ICON="installer/dmg-icon.png"
+          # Icon (the 256px Zenvi app icon)
+          ICON="xdg/icon/256/zenvi.png"
           if [ ! -f "$ICON" ]; then
             echo "::error::Missing packaging icon: $ICON"
             exit 1
