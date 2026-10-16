@@ -110,7 +110,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Built from source (not the apt PPA) so the version is the same v1.0.0 as
+      # Built from source (not the apt PPA) so the version is the same v1.0.1 as
       # the macOS and Windows jobs; the script fails if it is below the app's
       # MINIMUM_LIBOPENSHOT_VERSION. Also installs libfuse2 and desktop-file-utils.
       - name: Build libopenshot from source
@@ -352,7 +352,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/libopenshot-install
-          key: libopenshot-v1.0.0-audio-v1.0.0-opencv4-arm64-macos14-py311-v1-${{ hashFiles('installer/mac-patches/**', 'installer/patch-libopenshot-ffmpeg.py', 'installer/apply-libopenshot-patches.sh') }}
+          key: libopenshot-v1.0.1-audio-v1.0.1-opencv4-arm64-macos14-py311-v1-${{ hashFiles('installer/mac-patches/**', 'installer/patch-libopenshot-ffmpeg.py', 'installer/apply-libopenshot-patches.sh') }}
 
       - name: Build libopenshot from source (arm64 only)
         if: matrix.arch == 'arm64' && steps.cache-libopenshot.outputs.cache-hit != 'true'
@@ -364,8 +364,8 @@ jobs:
           QT5_PREFIX="$(brew --prefix qt@5)"
           LIBOMP_PREFIX="$(brew --prefix libomp)"
 
-          LIBOPENSHOT_TAG=v1.0.0
-          LIBOPENSHOT_AUDIO_TAG=v1.0.0
+          LIBOPENSHOT_TAG=v1.0.1
+          LIBOPENSHOT_AUDIO_TAG=v1.0.1
           PATCH_DIR="$GITHUB_WORKSPACE/installer/mac-patches"
 
           # Apply every installer/mac-patches/<prefix>-*.patch (tag-locked names,
@@ -384,12 +384,11 @@ jobs:
             bash "$GITHUB_WORKSPACE/installer/apply-libopenshot-patches.sh" "$src_dir" "${patches[@]}"
           }
 
-          # Build libopenshot-audio (libopenshot 1.0.0 requires OpenShotAudio >= 1.0.0)
+          # Build libopenshot-audio (libopenshot 1.0.1 requires OpenShotAudio >= 1.0.1)
           git clone --depth=1 --branch "$LIBOPENSHOT_AUDIO_TAG" \
             https://github.com/OpenShot/libopenshot-audio.git /tmp/libopenshot-audio
 
-          # Mac patches: removes -framework AGL (Apple removed AGL in macOS 10.14;
-          # modern SDKs do not provide it) — still needed at v1.0.0.
+          # libopenshot-audio patches (none at v1.0.1: upstream dropped -framework AGL).
           apply_patches /tmp/libopenshot-audio "libopenshot-audio-${LIBOPENSHOT_AUDIO_TAG}"
 
           cmake -S /tmp/libopenshot-audio -B /tmp/libopenshot-audio/build \
@@ -402,9 +401,7 @@ jobs:
           git clone --depth=1 --branch "$LIBOPENSHOT_TAG" \
             https://github.com/OpenShot/libopenshot.git /tmp/libopenshot
 
-          # Tag-locked source patches: libopenshot-v1.0.0-noncrop-location.patch
-          # (the post-1.0.0 upstream fix keeping non-Crop location_x/y canvas-relative)
-          # and libopenshot-v1.0.0-discard-preroll.patch (stream-copy trims start at
+          # Tag-locked source patches: libopenshot-v1.0.1-discard-preroll.patch (stream-copy trims start at
           # their first shown frame instead of decoding the whole file to a black one).
           apply_patches /tmp/libopenshot "libopenshot-${LIBOPENSHOT_TAG}"
 
@@ -460,7 +457,7 @@ jobs:
           echo "DYLD_LIBRARY_PATH=$INSTALL_PREFIX/lib:${DYLD_LIBRARY_PATH:-}" >> $GITHUB_ENV
 
           # Hard check, independent of dlopen: the installed library file carries
-          # its version (libopenshot.1.0.0.dylib). Fail the build if it is older
+          # its version (libopenshot.1.0.1.dylib). Fail the build if it is older
           # than the app's MINIMUM_LIBOPENSHOT_VERSION.
           LIB_VER=$(ls "$INSTALL_PREFIX"/lib/libopenshot.[0-9]*.[0-9]*.[0-9]*.dylib 2>/dev/null | head -1 | sed -E 's/.*libopenshot\.([0-9]+\.[0-9]+\.[0-9]+)\.dylib/\1/')
           [ -n "$LIB_VER" ] || { echo "::error::no versioned libopenshot dylib found in $INSTALL_PREFIX/lib"; exit 1; }
@@ -745,10 +742,10 @@ jobs:
                   if openshot_so:
                       break
 
-          # Versioned sonames referenced by _openshot.so (libopenshot.31.dylib and
-          # libopenshot-audio.10.dylib for the 1.0.0 pair). Read them from the
+          # Versioned sonames referenced by _openshot.so (libopenshot.32.dylib and
+          # libopenshot-audio.10.dylib for the 1.0.1 pair). Read them from the
           # binary so a tag bump does not silently break the bundle; fall back to
-          # the 1.0.0 values if otool gives nothing.
+          # the 1.0.1 values if otool gives nothing.
           soname_re = re.compile(r'^(libopenshot(?:-audio)?)\.(\d+)\.dylib$')
           soname_fixups = []
           for dep in (get_deps(openshot_so) if openshot_so else []):
@@ -757,9 +754,9 @@ jobs:
                   soname_fixups.append((m.group(0), m.group(1)))
           if not soname_fixups:
               soname_fixups = [('libopenshot-audio.10.dylib', 'libopenshot-audio'),
-                               ('libopenshot.31.dylib', 'libopenshot')]
+                               ('libopenshot.32.dylib', 'libopenshot')]
           for soname, prefix in soname_fixups:
-              # Prefer the full-version dylib (libopenshot.1.0.0.dylib), then the
+              # Prefer the full-version dylib (libopenshot.1.0.1.dylib), then the
               # unversioned name.
               src = None
               versioned = sorted(glob.glob(os.path.join(FROZEN_DIR, '**', prefix + '.*.*.*.dylib'),
@@ -1172,7 +1169,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .ci-deps/openshot-bundle
-          key: windows-msys2-libopenshot-v1.0.0-opencv-v2-ucrt-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh', 'installer/ci-win-msys-packages.sh', 'installer/patch-libopenshot-ffmpeg.py', 'installer/patch-libopenshot-opencv5.py', 'installer/apply-libopenshot-patches.sh', 'installer/mac-patches/**') }}
+          key: windows-msys2-libopenshot-v1.0.1-opencv-v2-ucrt-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh', 'installer/ci-win-msys-packages.sh', 'installer/patch-libopenshot-ffmpeg.py', 'installer/patch-libopenshot-opencv5.py', 'installer/apply-libopenshot-patches.sh', 'installer/mac-patches/**') }}
 
       - name: Build unittest-cpp, libopenshot-audio, libopenshot (MSYS2 / README)
         if: steps.cache-libopenshot-win.outputs.cache-hit != 'true'
