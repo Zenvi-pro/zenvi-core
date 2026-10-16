@@ -128,6 +128,9 @@ WEIGHT_PICTURE, WEIGHT_LOOK, WEIGHT_MOTION = 0.60, 0.25, 0.15
 MIN_PLAN_SCORE = 0.45          # under this a choice is weak: look for stock or another source
 BUCKET_SECONDS = 0.25          # reuse is counted per quarter second of source footage
 MAX_WINDOWS_PER_SHOT = 12
+FIT_MIN = 0.50                 # a pick looks like its reference shot only when its picture similarity is at least this far from the typical pair toward the best pair
+REPEAT_MIN_GAP = 3             # a repeat comes back at least this many shots later
+REPEAT_COSINE = 0.93           # two reference shots this alike are the same image coming back: only then may a source moment be used again
 PICTURE_SPREAD_FLOOR = 0.03    # picture similarity spreads about this much across real footage; less than that is noise and must not be blown up
 
 
@@ -185,7 +188,7 @@ def scored_windows(ref: FileIndex, shot: Dict[str, Any], need: float, pool_files
     for fi_index, w_in, w_out, src_id, pic, look, motion in raw:
         pic_n = 0.5 if pic is None else 1.0 / (1.0 + float(np.exp(-1.2 * (pic - mean) / std)))
         out.append((fi_index, w_in, w_out, src_id, WEIGHT_PICTURE * pic_n + WEIGHT_LOOK * look + WEIGHT_MOTION * motion,
-                    {"picture": round(pic_n, 3), "look": round(look, 3), "motion": round(motion, 3)}))
+                    {"picture": round(pic_n, 3), "look": round(look, 3), "motion": round(motion, 3), "raw_picture": None if pic is None else round(pic, 4)}))
     return out
 
 
@@ -200,8 +203,37 @@ def rank_of_window(scored: Sequence[tuple], file_index: int, w_in: float, w_out:
     return round(sum(1 for x in scored if x[4] <= best_of_mine) / len(scored), 3)
 
 
+def picture_fit(raw_values: Sequence[float], value: Optional[float]) -> Optional[float]:
+    """How far *value* (a raw picture similarity) is from the typical shot/window pair toward the best ones: 0 = typical, 1 = as alike as the
+    best 5% of all pairs. Judged against every pair, not the shot's own options, so the best of a poor lot does not score well. None when unknown."""
+    if value is None or not len(raw_values):
+        return None
+    arr = np.asarray(raw_values, dtype=np.float64)
+    typical, best = float(np.median(arr)), float(np.percentile(arr, 95))
+    return round(float(np.clip((value - typical) / max(best - typical, PICTURE_SPREAD_FLOOR / 2), -1.0, 1.5)), 3)
+
+
+def repeated_shots(ref: FileIndex, shots: Sequence[Dict[str, Any]]) -> Dict[int, int]:
+    """{index of a reference shot: index of an earlier one it repeats}: the same image coming back (a chorus, a reused cut) is the only
+    case where a recreation should show the same footage again."""
+    vecs = [_shot_query_vector(ref, s) for s in shots]
+    out: Dict[int, int] = {}
+    for i, v in enumerate(vecs):
+        if v is None:
+            continue
+        best, best_cos = None, REPEAT_COSINE
+        for j in range(i - REPEAT_MIN_GAP + 1):                       # a similar shot right next to it is just a similar angle, not the image coming back
+            if vecs[j] is not None and j not in out:
+                cos = float(np.dot(v, vecs[j]))
+                if cos >= best_cos:
+                    best, best_cos = j, cos
+        if best is not None:
+            out[i] = best
+    return out
+
+
 def plan_recreation(ref: FileIndex, files: Sequence[FileIndex], start: Optional[float] = None, end: Optional[float] = None,
-                    max_reuse: int = 2, min_score: float = MIN_PLAN_SCORE, alternatives: int = 2) -> Dict[str, Any]:
+                    max_reuse: int = 1, min_score: float = MIN_PLAN_SCORE, alternatives: int = 2) -> Dict[str, Any]:
     """Choose a source window for every shot of *ref*, using each other file's own saved facts (no cloud call)."""
     pool_files = [f for f in files if f.sha != ref.sha]
     lo = 0.0 if start is None else float(start)
@@ -234,9 +266,10 @@ def plan_recreation(ref: FileIndex, files: Sequence[FileIndex], start: Optional[
     def next_to_same_file(c: tuple) -> bool:
         return any(chosen.get(n) is not None and chosen[n][2] == c[2] for n in (c[1] - 1, c[1] + 1))
 
-    for reuse_limit, use_cap, no_repeat in ((1, True, True), (max(1, max_reuse), False, True), (max(1, max_reuse) + 1, False, False)):
+    rep = repeated_shots(ref, [t[0] for t in slots])
+    for reuse_limit, use_cap, no_repeat in ((1, True, True), (1, False, True), (1, False, False)) + (((max_reuse, False, True),) if max_reuse > 1 else ()):
         for c in candidates:
-            if c[1] in chosen or c[0] <= 0:
+            if c[1] in chosen or c[0] <= 0 or c[1] in rep:
                 continue
             if reuse_of(c) >= reuse_limit or (use_cap and file_uses.get(c[2], 0) >= soft_cap) or (no_repeat and next_to_same_file(c)):
                 continue
@@ -248,6 +281,29 @@ def plan_recreation(ref: FileIndex, files: Sequence[FileIndex], start: Optional[
     by_slot: Dict[int, List[tuple]] = {}
     for c in candidates:
         by_slot.setdefault(c[1], []).append(c)
+
+    # a reference shot that is the same image coming back reuses the footage chosen for its first showing (the only reuse allowed)
+    repeats: Dict[int, int] = {}
+    for si, sj in sorted(rep.items()):
+        base = chosen.get(sj)
+        if base is None:
+            continue
+        same = [c for c in by_slot.get(si, []) if c[2] == base[2] and abs(c[3] - base[3]) <= 1.0 and not next_to_same_file(c)]
+        if same:
+            chosen[si] = same[0]
+            file_uses[base[2]] = file_uses.get(base[2], 0) + 1
+            repeats[si] = sj
+    for si in rep:                                             # a repeat whose first showing found nothing is placed like any other shot
+        if si in chosen:
+            continue
+        for c in by_slot.get(si, []):
+            if c[0] > 0 and reuse_of(c) < 1 and not next_to_same_file(c):
+                chosen[si] = c
+                file_uses[c[2]] = file_uses.get(c[2], 0) + 1
+                for k in spans(c):
+                    buckets[(c[2], k)] = buckets.get((c[2], k), 0) + 1
+                break
+    every_raw = [c[6]["raw_picture"] for c in candidates if c[6].get("raw_picture") is not None]
     rows: List[Dict[str, Any]] = []
     for si, (shot, a, b) in enumerate(slots):
         watch = shot.get("watch") or {}
@@ -260,7 +316,11 @@ def plan_recreation(ref: FileIndex, files: Sequence[FileIndex], start: Optional[
             cand = pool_files[pick[2]]
             row["choice"] = {"file_id": cand.file_id, "name": cand.name, "in": pick[3], "out": pick[4], "score": round(pick[0], 3),
                              "source_shot": pick[5], "parts": pick[6]}
-            row["status"] = "matched" if pick[0] >= min_score else "weak"
+            fit = picture_fit(every_raw, pick[6].get("raw_picture"))
+            row["choice"]["picture_fit"] = fit
+            row["status"] = "matched" if pick[0] >= min_score and (fit is None or fit >= FIT_MIN or si in repeats) else "weak"
+            if si in repeats:
+                row["repeat_of"] = slots[repeats[si]][0]["id"]
             taken = {(pick[2], pick[3])}
         else:
             row["status"] = "short_only" if not by_slot.get(si) and any(

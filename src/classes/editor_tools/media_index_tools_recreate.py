@@ -113,13 +113,13 @@ def _row_line(row: Dict[str, Any], plan: Dict[str, Any]) -> str:
     schema=obj({
         "reference_file_id": string("The video to recreate (a project file with a saved index)."),
         "source_file_ids": array({"type": "string"}, "Only use these project files as footage (default: every indexed video except the reference).", []),
-        "max_reuse": integer("Most times the same moment of a source clip may be used.", 2, minimum=1, maximum=4),
+        "max_reuse": integer("Most times the same moment of a source clip may be used. 1 (default): never, except where the reference itself repeats an image.", 1, minimum=1, maximum=3),
         "stock": enum(["auto", "off"], "auto: for shots nothing fits, look for stock clips to suggest (needs sign-in); off: do not.", "auto"),
         "max_stock_searches": integer("Most stock searches to make, for the shots that fit worst.", 10, minimum=0, maximum=25),
     }, required=["reference_file_id"]),
     read_only=True,
 )
-def plan_recreation(reference_file_id, source_file_ids=[], max_reuse=2, stock="auto", max_stock_searches=10):
+def plan_recreation(reference_file_id, source_file_ids=[], max_reuse=1, stock="auto", max_stock_searches=10):
     """Plan a recreation of a reference video, every shot at once, from the project's own footage. For each reference shot it chooses a
     window of your clips (in/out seconds of exactly the shot's length) by how its picture, measured look and camera move compare, and
     hands windows out under limits: the same moment is not reused beyond max_reuse, no clip plays twice in a row, no clip takes more than
@@ -467,7 +467,7 @@ def _moment_keys(file_id: str, start: float, length: float) -> List[Tuple[str, i
 def _swap_fix(shot_id: int, scored: List[tuple], pool: List[Any], covering: Any, moments: Counter, prefer: str, next_to: set,
               proposed: Dict[int, str]) -> Optional[str]:
     """The build_recreation_tool call that swaps this shot's clip for the best other window ("look": the one whose look is closest; "any": the
-    best overall). It skips the moment already used, any moment already used twice, and the file of a neighbouring shot, and it books its own
+    best overall). It skips the moment already used, any moment already used, and the file of a neighbouring shot, and it books its own
     pick in *moments* and *proposed* so the next suggestion in the same pass sees it."""
     length = covering.src_out - covering.src_in
     best, best_key = None, -1.0
@@ -477,8 +477,8 @@ def _swap_fix(shot_id: int, scored: List[tuple], pool: List[Any], covering: Any,
             continue                                                      # the same file as a neighbouring shot would be a back-to-back repeat
         if f.file_id == covering.file_id and abs(w_in - covering.src_in) < 0.5:
             continue                                                      # the moment it already uses
-        if any(moments[key] >= 2 for key in _moment_keys(f.file_id, w_in, length)):
-            continue                                                      # a moment already used as often as allowed
+        if any(moments[key] >= 1 for key in _moment_keys(f.file_id, w_in, length)):
+            continue                                                      # footage already shown (the swap must be a fresh moment)
         key = (2.0 * parts["look"] + score) if prefer == "look" else score
         if key > best_key:
             best, best_key = (f.file_id, w_in), key
@@ -526,12 +526,14 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
     clips, _tracks, transitions, _opacity, _links = _timeline_facts()
     ref_clips = [c for c in clips if c.file_id == ref.file_id]
     pictures = [c for c in clips if c.kind in ("video", "image") and c.file_id != ref.file_id]
+    skipped: List[int] = []
     if plan:
         from classes.query import Track
         layer_of = next((int((t.data or {}).get("number") or 0) for t in Track.filter() if str((t.data or {}).get("label") or "") == plan["track_name"]), 0)
         if layer_of:
             pictures = [c for c in pictures if c.layer == layer_of]
-        slots = [(r["reference_shot"], r["start"], r["end"], r) for r in plan["rows"]]
+        slots = [(r["reference_shot"], r["start"], r["end"], r) for r in plan["rows"] if _effective(r, plan)]
+        skipped = [r["reference_shot"] for r in plan["rows"] if not _effective(r, plan)]          # left out on purpose, and reported as such
     else:
         slots = [(s["id"], max(float(s["start"]), 0.0), float(s["end"]), None) for s in ref.shots
                  if float(s["end"]) - float(s["start"]) >= mref.MIN_REFERENCE_SHOT and not s.get("black")]
@@ -548,6 +550,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
     slot_info: Dict[int, Tuple[List[tuple], Any]] = {}
     proposed: Dict[int, str] = {}
     look_misses: List[int] = []
+    ranks: Dict[int, Optional[float]] = {}
     moments: Counter = Counter()                                    # filled once every slot is read; swaps book into it
 
     def neighbour_files(shot_id: int) -> set:
@@ -585,8 +588,8 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
             scored = mref.scored_windows(ref, shot, float(b) - float(a), pool)
             slot_info[shot_id] = (scored, covering)
             rank = mref.rank_of_window(scored, pool.index(cand), covering.src_in, covering.src_out)
+            ranks[shot_id] = rank
             if rank is not None:
-                picture.append(1.0 if rank >= WEAK_RANK else rank / WEAK_RANK)
                 if rank < WEAK_RANK:
                     better = [x for x in sorted(scored, key=lambda x: -x[4]) if pool[x[0]].file_id != covering.file_id][:1]
                     findings.setdefault(shot_id, []).append(f"weak pick (ranks {int(rank * 100)}% among the footage)")
@@ -611,17 +614,49 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
                     else:
                         fixes.setdefault(shot_id, "build_recreation_tool(grade=true, only_shots=[%d])" % shot_id)
 
+    # picture: how alike each placed window is to its reference shot, measured against every shot/window pair (not just the shot's own options),
+    # so a "best of a poor lot" cannot pass
+    every_raw = [x[5]["raw_picture"] for sc, _c in slot_info.values() for x in sc if x[5].get("raw_picture") is not None]
+    pool_at = {f.file_id: i for i, f in enumerate(pool)}
+    row_of = {i: r for i, _a, _b, r in slots}
+    for shot_id, (scored, covering) in slot_info.items():
+        mine = [x[5]["raw_picture"] for x in scored if x[0] == pool_at.get(covering.file_id) and x[1] < covering.src_out - 1e-6
+                and x[2] > covering.src_in + 1e-6 and x[5].get("raw_picture") is not None]
+        fit = mref.picture_fit(every_raw, max(mine)) if mine else None
+        if fit is None:                                                # no picture vectors for this file: fall back to how it ranks on look and camera
+            rank = ranks.get(shot_id)
+            picture.append(0.5 if rank is None else (1.0 if rank >= WEAK_RANK else rank / WEAK_RANK))
+        elif (row_of.get(shot_id) or {}).get("repeat_of") is not None or fit >= mref.FIT_MIN:
+            picture.append(1.0)
+        else:
+            picture.append(max(0.0, fit / mref.FIT_MIN) ** 2)
+            findings.setdefault(shot_id, []).append(f"does not look like the reference shot (picture match {fit:.2f}; needs {mref.FIT_MIN:.2f})")
+            desc = ((row_of.get(shot_id) or {}).get("description") or "").strip()
+            if desc:
+                fixes.setdefault(shot_id, f"search_stock_video_tool(query='{' '.join(desc.split()[:12])}') then build_recreation_tool(overrides=[...], only_shots=[{shot_id}])")
+
     reuse_max = max(buckets.values(), default=0)
     uses = Counter(placed_files)
     share = max(uses.values(), default=0) / max(1, len(placed_files))
     back_to_back = sum(1 for x, y in zip(placed_files, placed_files[1:]) if x == y)
     variety_penalty = 0.0
-    if reuse_max > 2:
-        variety_penalty += min(0.5, 0.15 * (reuse_max - 2))
+    repeat_slots = {i for i, _a, _b, r in slots if (r or {}).get("repeat_of") is not None}
+    reused = 0
+    first_seen: set = set()
+    for shot_id, a, _b, _row in slots:
+        c = next((c for c in pictures if c.start <= snap(a) + frame * 0.5 < c.end), None)
+        if c is None:
+            continue
+        keys = [(c.file_id, k) for k in range(int(c.src_in / mref.BUCKET_SECONDS), int(max(c.src_in, c.src_out - 1e-6) / mref.BUCKET_SECONDS) + 1)]
+        if any(k in first_seen for k in keys) and shot_id not in repeat_slots:
+            reused += 1                                                # footage shown again where the reference does not repeat itself
+        first_seen.update(keys)
+    if reused:
+        variety_penalty += min(0.6, 0.1 * reused)
     if share > 0.25:
         variety_penalty += min(0.3, (share - 0.25) * 2.0)
     variety_penalty += min(0.3, back_to_back / max(1, len(placed_files)) * 2.0)
-    overused = {key for key, n in buckets.items() if n > 2}
+    overused = {key for key, n in buckets.items() if n > 1}
     moments.update(buckets)
     if overused:
         seen: Counter = Counter()
@@ -634,7 +669,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
             if not hot:
                 continue
             seen[hot[0]] += 1
-            if seen[hot[0]] > 2:                                       # the first two uses of a moment are fine; later ones should change
+            if seen[hot[0]] > 1 and shot_id not in repeat_slots:      # the first showing is fine; a later one should change unless the reference repeats
                 name = by_id[c.file_id].name[:24] if c.file_id in by_id else c.file_id
                 findings.setdefault(shot_id, []).append(f"same moment of {name} used {buckets[hot[0]]} times")
                 info = slot_info.get(shot_id)
@@ -661,7 +696,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
                for sid, probs in sorted(findings.items())][:20]
     head = (f"{'PASS' if passed else 'NOT YET'}: overall {overall} (timing {areas['timing']}, coverage {areas['coverage']}, variety {areas['variety']}, "
             f"picture {areas['picture']}, look {areas['look']}, sound {areas['sound']}); {len(findings)} shot(s) to fix.")
-    return ok(head, passed=passed, overall=overall, areas=areas, failing=failing, failing_total=len(findings),
+    return ok(head + (f" {len(skipped)} shot(s) skipped on purpose: {skipped[:12]}." if skipped else ""), passed=passed, overall=overall, areas=areas, skipped=skipped, failing=failing, failing_total=len(findings),
               variety={"most_uses_of_one_moment": reuse_max, "clips_twice_in_a_row": back_to_back, "biggest_share_of_one_file": round(share, 2),
                        "files_used": len(uses)},
               graded=graded, slots=len(slots),

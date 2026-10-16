@@ -63,13 +63,30 @@ def test_every_shot_gets_a_window_the_right_length_inside_one_source_shot():
         assert src["start"] - 1e-6 <= c["in"] and c["out"] <= src["end"] + 1e-6
 
 
-def test_the_same_moment_is_not_reused_more_than_the_limit_and_no_file_plays_twice_in_a_row():
-    ref = reference(12, kind_of=lambda i: 0)                        # every shot looks the same: one source is the "best" for all
+def test_a_moment_of_footage_is_used_once_and_no_file_plays_twice_in_a_row():
+    ref = reference(12, kind_of=lambda i: i)                        # twelve different images; every source looks the same: one source is the "best" for all
     pool = [make_file("a", [(0, 12)], kind_of=lambda i: 0), make_file("b", [(0, 12)], kind_of=lambda i: 0), make_file("c", [(0, 12)], kind_of=lambda i: 0)]
-    plan = mref.plan_recreation(ref, pool, max_reuse=2)
-    assert plan["reuse"]["most_uses_of_one_moment"] <= 2
+    plan = mref.plan_recreation(ref, pool)
+    assert plan["reuse"]["most_uses_of_one_moment"] <= 1
     assert plan["reuse"]["same_file_back_to_back"] == 0
     assert plan["reuse"]["files_used"] == 3 and max(plan["reuse"]["uses_per_file"].values()) <= 6
+
+
+def test_footage_is_never_repeated_to_fill_a_gap_it_is_left_unfilled():
+    ref = reference(10, kind_of=lambda i: i)
+    pool = [make_file("a", [(0, 4)], kind_of=lambda i: 0)]          # four seconds of footage for ten one-second shots (plus a lone window for each)
+    plan = mref.plan_recreation(ref, pool)
+    assert plan["reuse"]["most_uses_of_one_moment"] <= 1
+    assert plan["unfilled"] >= 5 and plan["matched"] + plan["weak"] + plan["unfilled"] == 10
+
+
+def test_only_a_reference_image_that_comes_back_reuses_the_same_footage():
+    ref = reference(9, kind_of=lambda i: i % 4 if i < 8 else 0)     # shots 0..3, then the same four again, then shot 0's image a third time
+    pool = [make_file(f"f{k}", [(0, 6)], kind_of=lambda i, k=k: k) for k in range(4)]            # one file per image, so a repeat is not also a back-to-back file
+    plan = mref.plan_recreation(ref, pool)
+    repeats = {r["reference_shot"]: r["repeat_of"] for r in plan["shots"] if r.get("repeat_of") is not None}
+    assert repeats.get(4) == 0 and repeats.get(5) == 1
+    assert all(plan["shots"][i]["choice"]["source_shot"] == plan["shots"][i - 4]["choice"]["source_shot"] for i in (4, 5, 6, 7))
 
 
 def test_a_clearly_better_picture_wins_when_nothing_else_differs():
@@ -127,3 +144,12 @@ def test_rank_of_window_says_how_good_a_placed_window_was_among_the_candidates()
     good = mref.rank_of_window(scored, 0, 0.0, 1.0)
     bad = mref.rank_of_window(scored, 1, 0.0, 1.0)
     assert good > bad and good > 0.9
+
+
+def test_a_shot_nothing_in_the_footage_looks_like_is_weak_even_if_it_is_the_best_of_what_there_is():
+    ref = reference(8, kind_of=lambda i: i % 4)                     # four different images, each twice (the repeats are 4 apart)
+    pool = [make_file(f"f{k}", [(0, 10)], kind_of=lambda i, k=k: k) for k in range(3)]       # footage of the first three images only
+    plan = mref.plan_recreation(ref, pool)
+    status = {r["reference_shot"]: r["status"] for r in plan["shots"]}
+    assert status[0] == status[1] == status[2] == "matched"
+    assert status[3] == "weak" and plan["shots"][3]["choice"]["picture_fit"] < mref.FIT_MIN

@@ -276,3 +276,13 @@ def test_a_build_that_fails_after_clearing_puts_the_old_clips_back(studio, monke
     assert studio.ed.call_receipt("build_recreation_tool", plan_id=pid)["status"] == "error"
     assert [(c["start"], c["end"]) for c in picture_clips(studio)] == before
 
+
+
+def test_a_shot_left_out_on_purpose_is_reported_as_skipped_not_as_missing(studio):
+    from classes.editor_tools import media_index_tools_recreate as R
+    pid = plan(studio)["plan_id"]
+    R._PLANS[pid]["rows"][2]["choice"] = None                        # nothing fits shot 2 and no stock was chosen
+    out = build_it(studio, pid)
+    assert out["placed"] == 5 and out["unfilled"] == [2]
+    result = check(studio, plan_id=pid)
+    assert result["skipped"] == [2] and result["areas"]["coverage"] == 100.0 and "skipped on purpose" in studio.ed.call_receipt("check_recreation_tool", reference_file_id=studio.ref, plan_id=pid)["summary"]
