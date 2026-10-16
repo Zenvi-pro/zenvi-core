@@ -21,6 +21,7 @@ from classes.editor_tools._registry import REGISTRY, editor_tool
 from classes.editor_tools.media_index_tools import _all_files, project_indexes
 from classes.editor_tools.effects_color_looks import _grade_values
 from classes.editor_tools.timeline_edit_common import frame_seconds, keyframe_value, snap
+from classes.logger import log
 from classes.media_index import reference as mref
 
 MAX_PLANS = 6
@@ -42,6 +43,8 @@ SCENE_GAP = 0.30                 # neighbouring reference shots whose looks are 
 RAMP_MIN_STOPS = 0.15            # a within-shot brightness change smaller than this is not worth a ramp
 RAMP_MAX_STOPS = 0.8
 RAMP_MIN_SECONDS = 0.6
+MAX_CUT_ERROR_FRAMES = 6         # one cut further off than this fails the check whatever the average says
+TRANSITION_SECONDS = 0.5         # the longest dissolve or fade the build makes
 BATCH_HOP_TIMEOUT = 180
 BUILD_LEASE_SECONDS = 900.0
 
@@ -441,6 +444,28 @@ def _applied_zoom(clip_id: str) -> float:
     return keyframe_value((clip.data or {}).get("scale_x") if clip else None, 1.0)
 
 
+def _fade_alpha(clip_id: str, frames: int, direction: str, total_frames: int) -> None:
+    """Fade a clip's picture in from black or out to black over *frames*, as opacity keyframes (kept alongside any fade it already has)."""
+    from classes.editor_tools import clip_props, clip_props_model as cpm
+    from classes.query import Clip
+    clip = Clip.get(id=clip_id)
+    if clip is None or total_frames < 3:
+        return
+    frames = max(1, min(frames, total_frames - 1))
+    existing = {int(float(p["co"]["X"])): float(p["co"]["Y"]) for p in ((clip.data or {}).get("alpha") or {}).get("Points", []) if len(((clip.data or {}).get("alpha") or {}).get("Points", [])) > 1}
+    points = dict(existing) if existing else {1: 1.0, total_frames: 1.0}
+    if direction == "in":
+        points.update({1: 0.0, 1 + frames: 1.0})
+    else:
+        points.update({total_frames - frames: 1.0, total_frames: 0.0})
+
+    def apply() -> None:
+        with clip_props._transaction():
+            clip_props.save_clip_values(clip_id, {"alpha": {"Points": [cpm.make_point(x, y, cpm.BEZIER) for x, y in sorted(points.items())]}})
+
+    on_main(apply, timeout=BATCH_HOP_TIMEOUT)
+
+
 def _ensure_track(name: str) -> None:
     from classes.query import Track
     if not any(str((t.data or {}).get("label") or "") == name for t in Track.filter()):
@@ -462,12 +487,13 @@ def _ensure_track(name: str) -> None:
         }, required=["reference_shot", "file_id", "in"]), "Swap the source of some shots (from a check's fixes, or stock you imported); remembered for later builds.", []),
         "grade": boolean("Grade every clip towards its reference shot's measured look (brightness, colour, contrast).", True),
         "song": boolean("Put the reference's own audio on a Song track (its picture hidden) and silence the footage's own sound.", True),
+        "transitions": boolean("Make the reference's dissolves (crossfades) and fades (through black) at the same cuts, kept to the reference's cut times.", True),
         "ramps": boolean("Let each clip's brightness follow the reference shot's own change over its length (a fade up, a flare), as keyframes, and grade the shots of one scene alike.", True),
         "framing": boolean("Zoom into footage that is framed wider than the reference shot (a close-up made from a wide shot), keeping the subject centred.", True),
     }),
     background_safe=True,
 )
-def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=True, framing=True, ramps=True):
+def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=True, framing=True, ramps=True, transitions=True):
     """Place a recreation plan on the timeline: each source window at the reference's exact cut time and length, on a Recreation track,
     in one undoable step. Each clip is graded towards its reference shot's measured look (grade), the reference's audio goes under it
     on a Song track and the footage's own sound is switched off (song). With overrides it swaps the source of the named shots; with
@@ -572,6 +598,30 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
                 on_main(apply_framing, timeout=BATCH_HOP_TIMEOUT)
         plan["zoomed"] = {z["reference_shot"]: z for z in zoomed} if wanted is None else {**plan.get("zoomed", {}), **{z["reference_shot"]: z for z in zoomed}}
 
+        made_transitions, skipped_transitions = 0, 0
+        if transitions:
+            for r in todo:
+                kind = r.get("opens_with")
+                prev_id, cur_id = placed_ids.get(r["reference_shot"] - 1), placed_ids.get(r["reference_shot"])
+                if kind not in ("dissolve", "fade") or not prev_id or not cur_id:
+                    continue
+                span = min(TRANSITION_SECONDS, 0.4 * min(slot_len[r["reference_shot"]], slot_len.get(r["reference_shot"] - 1, TRANSITION_SECONDS)))
+                if span < 3 * frame:
+                    skipped_transitions += 1
+                    continue
+                try:
+                    if kind == "dissolve":
+                        _call("add_transitions_between_clips_tool", timeline_clip_ids=[prev_id, cur_id], transition="fade", duration_seconds=round(span, 3),
+                              method="handles", audio_crossfade=False, replace_existing=True)
+                    else:
+                        half = max(1, int(round(span / 2.0 / frame)))
+                        _fade_alpha(prev_id, half, "out", int(round(slot_len[r["reference_shot"] - 1] / frame)))
+                        _fade_alpha(cur_id, half, "in", int(round(slot_len[r["reference_shot"]] / frame)))
+                    made_transitions += 1
+                except ToolError as exc:
+                    skipped_transitions += 1                                   # e.g. no spare footage around the cut for a crossfade
+                    log.info("no transition at shot %s: %s", r["reference_shot"], exc)
+
         song_note = ""
         if song and not plan["song_clip"]:
             ref = by_id.get(plan["reference_file_id"])
@@ -591,18 +641,18 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
         if song and placed_ids:
             _call("set_clip_audio_video_tool", timeline_clip_ids=list(placed_ids.values()), audio="off")
 
-        return placed_ids, replaced, graded, song_note, zoomed, ramped
+        return placed_ids, replaced, graded, song_note, zoomed, ramped, (made_transitions, skipped_transitions)
 
-    placed_ids, replaced, graded, song_note, zoomed, ramped = _in_one_batch(run)
+    placed_ids, replaced, graded, song_note, zoomed, ramped, (made_t, skipped_t) = _in_one_batch(run)
 
     unfilled = [r["reference_shot"] for r in plan["rows"] if not _effective(r, plan)]
     from classes.editor_tools import playback_health
     playback_note = playback_health.start_preview_copies({_effective(r, plan)["file_id"] for r in todo}, len(placed_ids))
     layer_now = _layer_of(plan["track_name"])
     playback_note += playback_health.stacked_tracks_note(layer_now, min(snap(r["start"]) for r in todo), max(snap(r["end"]) for r in todo))
-    return ok(f"Placed {len(placed_ids)} shot(s) on track '{plan['track_name']}' (replaced {replaced}), graded {graded} ({ramped} with a brightness ramp), zoomed in on {len(zoomed)} to match the reference's framing.{song_note}"
+    return ok(f"Placed {len(placed_ids)} shot(s) on track '{plan['track_name']}' (replaced {replaced}), graded {graded} ({ramped} with a brightness ramp), zoomed in on {len(zoomed)} to match the reference's framing, {made_t} dissolve/fade transition(s) ({skipped_t} skipped).{song_note}"
               + (f" Unfilled: {unfilled}." if unfilled else "") + playback_note,
-              plan_id=plan["id"], placed=len(placed_ids), replaced=replaced, graded=graded, ramped=ramped, zoomed=zoomed, unfilled=unfilled,
+              plan_id=plan["id"], placed=len(placed_ids), replaced=replaced, graded=graded, ramped=ramped, zoomed=zoomed, transitions=made_t, transitions_skipped=skipped_t, unfilled=unfilled,
               next="check_recreation_tool(plan_id) scores it against the reference; fix the shots it names, then check again.")
 
 
@@ -701,7 +751,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
     reused too often, no clip twice in a row), picture (how well each placed window ranks among the footage for its shot), look (each clip
     graded and close to the reference shot's measured look) and sound (the reference's audio present, the footage's own sound off).
     It passes at 80 overall with no area under 60. failing lists the shots to fix, each with what is wrong and the call that fixes it;
-    transitions lists the reference's fades and dissolves, which build_recreation_tool does not make. Run it after every build and
+    transitions lists the reference's fades and dissolves (build_recreation_tool makes them). Run it after every build and
     again after fixes; stop when it passes or three rounds change nothing.
     """
     from classes.editor_tools.media_index_tools_precision import _timeline_facts
@@ -733,6 +783,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
     findings: Dict[int, List[str]] = {}
     fixes: Dict[int, str] = {}
     timing, coverage, picture, look_scores, graded = [], [], [], [], 0
+    worst_cut = 0.0
     buckets: Counter = Counter()
     placed_files: List[str] = []
     slot_info: Dict[int, Tuple[List[tuple], Any]] = {}
@@ -742,13 +793,18 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
     ranks: Dict[int, Optional[float]] = {}
     moments: Counter = Counter()                                    # filled once every slot is read; swaps book into it
 
+    def clip_at(a: float, b: float) -> Any:
+        """The picture clip playing the middle of a slot (the middle, not the start, so a dissolve's overlap cannot pick the neighbour)."""
+        mid = (snap(a) + snap(b)) / 2.0
+        return next((c for c in pictures if c.start <= mid < c.end), None)
+
     def neighbour_files(shot_id: int) -> set:
         order = [i for i, _a, _b, _r in slots]
-        at = {i: proposed.get(i) or next((c.file_id for c in pictures if c.start <= snap(a) + frame * 0.5 < c.end), None) for i, a, _b, _r in slots}
+        at = {i: proposed.get(i) or getattr(clip_at(a, b), "file_id", None) for i, a, b, _r in slots}
         k = order.index(shot_id)
         return {at[order[j]] for j in (k - 1, k + 1) if 0 <= j < len(order) and at[order[j]]}
     for shot_id, a, b, row in slots:
-        covering = next((c for c in pictures if c.start <= snap(a) + frame * 0.5 and c.end > snap(a) + frame * 0.5), None)
+        covering = clip_at(a, b)
         if covering is None:
             coverage.append(0.0)
             slot = snap(a)
@@ -766,9 +822,19 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
         placed_files.append(covering.file_id)
         start_err = abs(covering.start - snap(a)) / frame
         len_err = abs(covering.length - (snap(b) - snap(a))) / frame
+        next_row = next((r2 for i2, _a2, _b2, r2 in slots if i2 == shot_id + 1), None)
+        if (row or {}).get("opens_with") in ("dissolve", "fade") or (next_row or {}).get("opens_with") in ("dissolve", "fade"):   # a transition overlaps its cut by up to half its length each side
+            start_err = max(0.0, start_err - TRANSITION_SECONDS / 2.0 / frame)
+            len_err = max(0.0, len_err - TRANSITION_SECONDS / frame)
         timing.append(1.0 if max(start_err, len_err) <= tol + 1e-6 else max(0.0, 1.0 - (max(start_err, len_err) - tol) / 12.0))
+        worst_cut = max(worst_cut, start_err, len_err)
         if max(start_err, len_err) > tol + 1e-6:
-            findings.setdefault(shot_id, []).append(f"cut {start_err:.0f} frame(s) off, length {len_err:.0f} frame(s) off")
+            shift = snap(a) - covering.start
+            findings.setdefault(shot_id, []).append(f"cut {start_err:.0f} frame(s) {'late' if shift < 0 else 'early'}, length {len_err:.0f} frame(s) off")
+            if len_err <= tol + 1e-6:                                       # right length, wrong place: slide it
+                fixes[shot_id] = f"move_clips_tool(timeline_clip_ids=['{covering.id}'], by_seconds={shift:.3f})"
+            else:
+                fixes[shot_id] = f"build_recreation_tool(only_shots=[{shot_id}])"
         for k in range(int(covering.src_in / mref.BUCKET_SECONDS), int(max(covering.src_in, covering.src_out - 1e-6) / mref.BUCKET_SECONDS) + 1):
             buckets[(covering.file_id, k)] += 1
         cand = by_id.get(covering.file_id)
@@ -843,8 +909,8 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
     repeat_slots = {i for i, _a, _b, r in slots if (r or {}).get("repeat_of") is not None}
     reused = 0
     first_seen: set = set()
-    for shot_id, a, _b, _row in slots:
-        c = next((c for c in pictures if c.start <= snap(a) + frame * 0.5 < c.end), None)
+    for shot_id, a, b, _row in slots:
+        c = clip_at(a, b)
         if c is None:
             continue
         keys = [(c.file_id, k) for k in range(int(c.src_in / mref.BUCKET_SECONDS), int(max(c.src_in, c.src_out - 1e-6) / mref.BUCKET_SECONDS) + 1)]
@@ -860,8 +926,8 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
     moments.update(buckets)
     if overused:
         seen: Counter = Counter()
-        for shot_id, a, _b, _row in slots:
-            c = next((c for c in pictures if c.start <= snap(a) + frame * 0.5 < c.end), None)
+        for shot_id, a, b, _row in slots:
+            c = clip_at(a, b)
             if c is None:
                 continue
             hot = [(c.file_id, k) for k in range(int(c.src_in / mref.BUCKET_SECONDS), int(max(c.src_in, c.src_out - 1e-6) / mref.BUCKET_SECONDS) + 1)
@@ -891,7 +957,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
              "picture": _grade_score(picture) if picture else 50.0, "look": _grade_score(look_scores) if look_scores else 50.0, "sound": round(100.0 * max(0.0, sound), 1),
              "framing": _grade_score(framing_scores) if framing_scores else 100.0}
     overall = round(sum(areas[k] * w for k, w in AREA_WEIGHT.items()), 1)
-    passed = overall >= PASS_SCORE and min(areas.values()) >= AREA_FLOOR
+    passed = overall >= PASS_SCORE and min(areas.values()) >= AREA_FLOOR and worst_cut <= MAX_CUT_ERROR_FRAMES
     ref_transitions = sorted((s for s in ref.shots if (s.get("opens_with") or {}).get("kind") in ("fade", "dissolve")), key=lambda s: s["start"])
     failing = [{"reference_shot": sid, "time": _mmss(next(a for i, a, _b, _r in slots if i == sid)), "problems": probs, "fix": fixes.get(sid)}
                for sid, probs in sorted(findings.items())][:20]

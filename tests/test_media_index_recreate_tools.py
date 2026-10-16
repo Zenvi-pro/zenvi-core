@@ -26,7 +26,7 @@ SHOT = 1.0
 DARK, BRIGHT = 0.1, 0.9
 
 
-def make_studio(editor, tmp_path, monkeypatch, ref_type="", src_type=""):
+def make_studio(editor, tmp_path, monkeypatch, ref_type="", src_type="", opens=None):
     from classes import clip_utils, timeline_ops
     from classes.editor_tools import media_index_tools as T, media_index_tools_edit as TE, media_index_tools_precision as TX, media_index_tools_review as TR
     from timeline_edit_fakes import FakeTimeline, fake_openshot
@@ -44,7 +44,7 @@ def make_studio(editor, tmp_path, monkeypatch, ref_type="", src_type=""):
 
     lumas = [DARK, BRIGHT, DARK, BRIGHT, DARK, BRIGHT]
     ref_sha = sha(80)
-    shots = [shot(i, i * SHOT, (i + 1) * SHOT, _look=profile(lumas[i])) for i in range(6)]
+    shots = [shot(i, i * SHOT, (i + 1) * SHOT, _look=profile(lumas[i]), **({"opens_with": {"kind": opens[i]}} if opens and i in opens else {})) for i in range(6)]
     build(shelf, ref_sha, shots=shots, watch=[w(i, i * SHOT, (i + 1) * SHOT, f"shot {i}", shot_type=ref_type) for i in range(6)], duration=6.0)
     ref = editor.add_file("video", duration=6.0, path=str(tmp_path / "ref.mp4"), fingerprint={"sha256": ref_sha}, has_audio=True, channels=2, name="ref.mp4")
     sources = {}
@@ -66,6 +66,14 @@ def studio(editor, tmp_path, monkeypatch):
 def closeups(editor, tmp_path, monkeypatch):
     """A reference made of close-ups and footage that is all wide shots."""
     return make_studio(editor, tmp_path, monkeypatch, ref_type="close-up", src_type="wide shot")
+
+
+@pytest.fixture
+def cross_cuts(editor, tmp_path, monkeypatch):
+    """A reference that dissolves into shot 2 and fades into shot 4."""
+    studio = make_studio(editor, tmp_path, monkeypatch, opens={2: "dissolve", 4: "fade"})
+    editor.window.timeline._get_transition_reader_json = lambda path: {"path": path, "has_single_image": True, "type": "QtImageReader"}
+    return studio
 
 
 def plan(studio, **kw):
@@ -389,3 +397,26 @@ def test_the_build_ramps_the_shots_the_reference_brightens_or_darkens(studio, mo
     out = build_it(studio, plan(studio)["plan_id"])
     assert out["ramped"] == 2
     assert check(studio, plan_id=out["plan_id"])["areas"]["look"] >= 90.0
+
+
+def test_the_reference_s_dissolves_and_fades_are_built_at_the_same_cuts(cross_cuts):
+    from classes.query import Transition
+    out = build_it(cross_cuts, plan(cross_cuts)["plan_id"])
+    assert out["transitions"] == 2 and out["transitions_skipped"] == 0, out
+    assert len(Transition.filter()) >= 1                                           # the dissolve between shots 1 and 2
+    result = check(cross_cuts, plan_id=out["plan_id"])
+    assert result["areas"]["timing"] == 100.0 and result["areas"]["coverage"] == 100.0
+
+
+def test_transitions_can_be_left_out(cross_cuts):
+    out = build_it(cross_cuts, plan(cross_cuts)["plan_id"], transitions=False)
+    assert out["transitions"] == 0
+
+
+def test_one_cut_far_from_the_reference_fails_the_check_even_when_the_average_is_fine(studio):
+    pid = plan(studio)["plan_id"]
+    build_it(studio, pid)
+    victim = picture_clips(studio)[2]
+    receipt_data(studio.ed, "move_clips_tool", timeline_clip_ids=[victim["id"]], by_seconds=0.3, allow_overlap=True)
+    result = check(studio, plan_id=pid)
+    assert result["overall"] >= 80.0 and result["passed"] is False
