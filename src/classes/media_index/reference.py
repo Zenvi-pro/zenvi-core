@@ -116,3 +116,174 @@ def locate(files: Sequence[FileIndex], what: str, *, kind: str = "auto", start: 
                             "box": o.get("box"), "box_precision": "rough", "confidence": watch.get("confidence")})
     out.sort(key=lambda r: (r["file_id"], r["t"]))
     return out[:limit]
+
+
+# ============================ a whole recreation: who plays each shot ============================
+# `match_reference` ranks candidates one reference shot at a time, so when the footage is small one clip is the best match for most
+# shots (measured on a real project: one 3 s clip was the top match for 41 of 85 shots, and picture similarity only spread from 0.54
+# to 0.65 across all candidates). `plan_recreation` chooses for every shot at once: each candidate window is scored against the shot
+# relative to its alternatives, then windows are handed out best first under limits on how often the same moment and the same file may
+# be used and with no file playing twice in a row.
+WEIGHT_PICTURE, WEIGHT_LOOK, WEIGHT_MOTION = 0.60, 0.25, 0.15
+MIN_PLAN_SCORE = 0.45          # under this a choice is weak: look for stock or another source
+BUCKET_SECONDS = 0.25          # reuse is counted per quarter second of source footage
+MAX_WINDOWS_PER_SHOT = 12
+PICTURE_SPREAD_FLOOR = 0.03    # picture similarity spreads about this much across real footage; less than that is noise and must not be blown up
+
+
+def _look_similarity(a: Optional[Dict[str, Any]], b: Optional[Dict[str, Any]]) -> float:
+    from classes import color_agent as ca
+    d = ca.look_profile_distance(a or {}, b or {})
+    return 0.5 if d is None else 1.0 / (1.0 + 2.0 * float(d))
+
+
+def _motion_match(ref_class: Optional[str], src_class: Optional[str]) -> float:
+    if not ref_class or not src_class or "unknown" in (ref_class, src_class):
+        return 0.5
+    if ref_class == src_class:
+        return 1.0
+    return 0.0 if (ref_class == "static") != (src_class == "static") else 0.4
+
+
+def _windows(src: Dict[str, Any], need: float) -> List[tuple]:
+    """Where inside one source shot a cut of *need* seconds could start: spread across it, never crossing its own cuts."""
+    first, last = float(src["start"]), float(src["end"]) - need
+    if last < first - 1e-6:
+        return []
+    if last - first < 1e-6:
+        return [(first, first + need)]
+    n = min(MAX_WINDOWS_PER_SHOT, max(2, int((last - first) / max(0.4, need * 0.5)) + 1))
+    return [(float(s), float(s) + need) for s in np.linspace(first, last, n)]
+
+
+def scored_windows(ref: FileIndex, shot: Dict[str, Any], need: float, pool_files: Sequence[FileIndex]) -> List[tuple]:
+    """Every window of *need* seconds that could play *shot*, scored: [(file index, in, out, source shot id, score, parts)].
+
+    Picture similarity barely varies across a small bin of footage, so it counts relative to the shot's other candidates; the
+    measured look and the camera move make up the rest. Used by the planner and by the checker (to say how good a placed clip was).
+    """
+    qv = _shot_query_vector(ref, shot)
+    raw: List[tuple] = []
+    for fi_index, cand in enumerate(pool_files):
+        sims = times = None
+        if qv is not None and cand.image_matrix is not None and len(cand.image_rows):
+            sims = cand.image_matrix @ qv
+            times = np.array([float(r["t"]) for r in cand.image_rows])
+        for src in cand.shots:
+            for w_in, w_out in _windows(src, need):
+                pic = None
+                if sims is not None and times is not None:
+                    inside = (times >= w_in) & (times < w_out)
+                    if not inside.any():
+                        inside = (times >= float(src["start"])) & (times < float(src["end"]))
+                    pic = float(sims[inside].mean()) if inside.any() else None
+                raw.append((fi_index, w_in, w_out, src["id"], pic, _look_similarity(shot.get("look"), src.get("look")),
+                            _motion_match((shot.get("motion") or {}).get("class"), (src.get("motion") or {}).get("class"))))
+    pics = np.array([r[4] for r in raw if r[4] is not None], dtype=np.float64)
+    mean, std = (float(pics.mean()), max(float(pics.std()), PICTURE_SPREAD_FLOOR)) if len(pics) else (0.0, 1.0)
+    out = []
+    for fi_index, w_in, w_out, src_id, pic, look, motion in raw:
+        pic_n = 0.5 if pic is None else 1.0 / (1.0 + float(np.exp(-1.2 * (pic - mean) / std)))
+        out.append((fi_index, w_in, w_out, src_id, WEIGHT_PICTURE * pic_n + WEIGHT_LOOK * look + WEIGHT_MOTION * motion,
+                    {"picture": round(pic_n, 3), "look": round(look, 3), "motion": round(motion, 3)}))
+    return out
+
+
+def rank_of_window(scored: Sequence[tuple], file_index: int, w_in: float, w_out: float) -> Optional[float]:
+    """Where a placed window stands among all the candidates for its shot: 1.0 = the best of them, 0.0 = the worst (None when unknown)."""
+    if not scored:
+        return None
+    mine = [x for x in scored if x[0] == file_index and x[1] < w_out - 1e-6 and x[2] > w_in + 1e-6]
+    if not mine:
+        return None
+    best_of_mine = max(x[4] for x in mine)
+    return round(sum(1 for x in scored if x[4] <= best_of_mine) / len(scored), 3)
+
+
+def plan_recreation(ref: FileIndex, files: Sequence[FileIndex], start: Optional[float] = None, end: Optional[float] = None,
+                    max_reuse: int = 2, min_score: float = MIN_PLAN_SCORE, alternatives: int = 2) -> Dict[str, Any]:
+    """Choose a source window for every shot of *ref*, using each other file's own saved facts (no cloud call)."""
+    pool_files = [f for f in files if f.sha != ref.sha]
+    lo = 0.0 if start is None else float(start)
+    hi = float(ref.duration or (ref.shots[-1]["end"] if ref.shots else 0.0)) if end is None else float(end)
+    slots = []
+    for shot in ref.shots_between(lo, hi):
+        a, b = max(float(shot["start"]), lo), min(float(shot["end"]), hi)
+        if b - a >= MIN_REFERENCE_SHOT and not shot.get("black"):
+            slots.append((shot, a, b))
+
+    # every candidate: (score, slot index, file index, window in, window out, source shot id, parts)
+    candidates: List[tuple] = []
+    for si, (shot, a, b) in enumerate(slots):
+        for fi_index, w_in, w_out, src_id, score, parts in scored_windows(ref, shot, b - a, pool_files):
+            candidates.append((score, si, fi_index, round(w_in, 3), round(w_out, 3), src_id, parts))
+    candidates.sort(key=lambda c: -c[0])
+
+    n_files = max(1, len({c[2] for c in candidates}))
+    soft_cap = int(np.ceil(1.25 * len(slots) / n_files)) if slots else 0
+    chosen: Dict[int, tuple] = {}
+    file_uses: Dict[int, int] = {}
+    buckets: Dict[tuple, int] = {}
+
+    def spans(c: tuple) -> range:
+        return range(int(c[3] / BUCKET_SECONDS), int(max(c[3], c[4] - 1e-6) / BUCKET_SECONDS) + 1)
+
+    def reuse_of(c: tuple) -> int:
+        return max((buckets.get((c[2], k), 0) for k in spans(c)), default=0)
+
+    def next_to_same_file(c: tuple) -> bool:
+        return any(chosen.get(n) is not None and chosen[n][2] == c[2] for n in (c[1] - 1, c[1] + 1))
+
+    for reuse_limit, use_cap, no_repeat in ((1, True, True), (max(1, max_reuse), False, True), (max(1, max_reuse) + 1, False, False)):
+        for c in candidates:
+            if c[1] in chosen or c[0] <= 0:
+                continue
+            if reuse_of(c) >= reuse_limit or (use_cap and file_uses.get(c[2], 0) >= soft_cap) or (no_repeat and next_to_same_file(c)):
+                continue
+            chosen[c[1]] = c
+            file_uses[c[2]] = file_uses.get(c[2], 0) + 1
+            for k in spans(c):
+                buckets[(c[2], k)] = buckets.get((c[2], k), 0) + 1
+
+    by_slot: Dict[int, List[tuple]] = {}
+    for c in candidates:
+        by_slot.setdefault(c[1], []).append(c)
+    rows: List[Dict[str, Any]] = []
+    for si, (shot, a, b) in enumerate(slots):
+        watch = shot.get("watch") or {}
+        desc = watch.get("description") or ""
+        row: Dict[str, Any] = {"reference_shot": shot["id"], "start": round(a, 3), "end": round(b, 3), "duration": round(b - a, 3), "description": desc,
+                               "camera": (shot.get("motion") or {}).get("class"), "opens_with": (shot.get("opens_with") or {}).get("kind"),
+                               "look": shot.get("look"), "choice": None, "alternatives": []}
+        pick = chosen.get(si)
+        if pick is not None:
+            cand = pool_files[pick[2]]
+            row["choice"] = {"file_id": cand.file_id, "name": cand.name, "in": pick[3], "out": pick[4], "score": round(pick[0], 3),
+                             "source_shot": pick[5], "parts": pick[6]}
+            row["status"] = "matched" if pick[0] >= min_score else "weak"
+            taken = {(pick[2], pick[3])}
+        else:
+            row["status"] = "short_only" if not by_slot.get(si) and any(
+                f.shots and max(s["end"] - s["start"] for s in f.shots) > 0 for f in pool_files) else "no_match"
+            taken = set()
+        seen_files = {pick[2]} if pick is not None else set()
+        for c in by_slot.get(si, []):
+            if len(row["alternatives"]) >= alternatives:
+                break
+            if (c[2], c[3]) in taken or c[2] in seen_files:
+                continue
+            cand = pool_files[c[2]]
+            row["alternatives"].append({"file_id": cand.file_id, "name": cand.name, "in": c[3], "out": c[4], "score": round(c[0], 3), "source_shot": c[5]})
+            seen_files.add(c[2])
+        if row["status"] != "matched":
+            row["stock_query"] = " ".join((desc or "footage").split()[:14])
+        rows.append(row)
+
+    used = [(pool_files[c[2]].file_id, c[3], c[4]) for c in chosen.values()]
+    counts = {pool_files[k].file_id: v for k, v in sorted(file_uses.items(), key=lambda kv: -kv[1])}
+    adjacent = sum(1 for si in chosen if si + 1 in chosen and chosen[si][2] == chosen[si + 1][2])
+    return {"shots": rows, "total": len(rows), "matched": sum(1 for r in rows if r["status"] == "matched"),
+            "weak": sum(1 for r in rows if r["status"] == "weak"), "unfilled": sum(1 for r in rows if r["choice"] is None),
+            "reuse": {"files_used": len(counts), "uses_per_file": counts, "most_uses_of_one_moment": max(buckets.values(), default=0),
+                      "same_file_back_to_back": adjacent, "slot_seconds": round(sum(b - a for _s, a, b in slots), 2),
+                      "source_seconds": round(sum(u[2] - u[1] for u in used), 2)}}

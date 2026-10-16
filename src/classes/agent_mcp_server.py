@@ -79,7 +79,7 @@ SERVER_INSTRUCTIONS = (
     "indices are refused. add_captions_tool burns timed dialogue; "
     "export_captions_tool writes SRT/VTT. diarize_media_tool labels speakers "
     "offline. detect_beats_tool finds music beats. "
-    "search_footage_tool searches everything the index knows (what happens, what is said, how it looks); search_clips_tool remains the cloud tier."
+    "To recreate a video from the user's footage run the loop: plan_recreation_tool, build_recreation_tool, check_recreation_tool, fix what the check names, check again; never place it by length alone. search_footage_tool searches everything the index knows (what happens, what is said, how it looks); search_clips_tool remains the cloud tier."
 )
 
 # The editing playbook (how to finish a whole piece) is one text shared with the Zenvi Assistant; see classes.edit_playbook.
