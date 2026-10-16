@@ -767,20 +767,30 @@ def storyboard(file_ids=None, file_query="", start_seconds=0, detail="full", pic
               sheets=sheets, image_path=first.get("image_path"), tiles=first.get("tiles"), tile_size=first.get("tile_size"), cached=first.get("cached"))
 
 
-def _show_sheets(sheets: List[Dict[str, Any]]) -> None:
-    """Hand the keyframe sheets to the agent as pictures in the result, so it sees them without opening a file (one JPEG per sheet)."""
+def _sheet_jpeg(path: str) -> bytes:
+    """One keyframe sheet as JPEG bytes: Pillow when it is installed (tests), otherwise Qt, which the app always has."""
     try:
         import io
         from PIL import Image
+        buffer = io.BytesIO()
+        Image.open(path).convert("RGB").save(buffer, "JPEG", quality=80)
+        return buffer.getvalue()
+    except ImportError:
+        from classes.agent_tools.inspect_render import jpeg_bytes_from_qimage
+        from qt_api import QImage
+        image = QImage(path)
+        if image.isNull():
+            raise RuntimeError(f"could not open {path}")
+        return jpeg_bytes_from_qimage(image)
+
+
+def _show_sheets(sheets: List[Dict[str, Any]]) -> None:
+    """Hand the keyframe sheets to the agent as pictures in the result, so it sees them without opening a file."""
+    try:
         from classes.agent_tools.output import ImageBlock, attach_images
-        blocks = []
-        for sheet in sheets:
-            buffer = io.BytesIO()
-            Image.open(sheet["image_path"]).convert("RGB").save(buffer, "JPEG", quality=80)
-            blocks.append(ImageBlock(data=buffer.getvalue()))
-        attach_images(blocks)
+        attach_images([ImageBlock(data=_sheet_jpeg(sheet["image_path"])) for sheet in sheets])
     except Exception:
-        log.debug("storyboard: keyframe sheets not attached as pictures", exc_info=True)   # the path in the result still works
+        log.warning("storyboard: keyframe sheets not attached as pictures; image_path in the result still works", exc_info=True)
 
 
 def _keyframe_sheets(f, fi, shelf, shots, width: int) -> List[Dict[str, Any]]:
