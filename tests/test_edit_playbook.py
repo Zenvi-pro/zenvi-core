@@ -26,7 +26,7 @@ def test_every_tool_the_playbook_names_is_a_real_registered_tool():
 
     named = set(re.findall(r"\b[a-z][a-z_]*_tool\b", P.PLAYBOOK))
     core = {"review_edit_tool", "get_project_overview_tool", "search_footage_tool", "get_segment_dossier_tool", "balance_mix_tool", "harmonize_look_tool",
-            "sync_cuts_to_beats_tool", "slice_on_beats_tool", "audition_music_tool", "analyze_music_tool", "set_edit_brief_tool", "get_edit_brief_tool", "listen_tool"}
+            "sync_cuts_to_beats_tool", "slice_on_beats_tool", "storyboard_tool", "audition_music_tool", "analyze_music_tool", "set_edit_brief_tool", "get_edit_brief_tool", "listen_tool"}
     assert core <= named, f"the playbook must name the tools it relies on: {sorted(core - named)}"
     real = set(REGISTRY) | set(tool_handlers.AGENT_TOOL_HANDLERS)
     assert not named - real, f"the playbook names tools that do not exist: {sorted(named - real)}"

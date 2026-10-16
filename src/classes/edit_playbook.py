@@ -43,6 +43,7 @@ TRUST
 - listen_tool hears gross faults only (buried speech, clipping, noise, dead air); trust review_edit_tool for levels.
 
 PRECISION AND ZOOM (look closer only when it changes the edit)
+- To describe, summarise or recreate a video: call storyboard_tool first (every cut exact, one keyframe per shot, one call). Never sample frames at a fixed interval to find cuts.
 - Numbers first: the dossier, search results, analyze_music_tool and review_edit_tool answer most questions. To judge a found moment use get_moment_tool (one range: frames, words, quality, and what is above, below and around it on the timeline). view_frames_tool zooms: about 1 frame a second to find a moment, 5 to 10 a second or every_frame to choose a cut frame. view_audio_tool only where analyze_music_tool's spectrogramSuggested flags an uncertain section edge, or to check a finished mix (timeline=true).
 - Cuts: refine_cut_tool for the exact frame of a cut; get_voice_edges_tool for where a voice really starts and stops (cut a little after it); find_retakes_tool to pick the best take; get_clip_context_tool before changing a clip (what is under, above and around it, and what would move).
 - Vertical or other shapes: get_framing_tool then reframe_to_subject_tool (it keeps the subject in shot); check_media_health_tool for mixed frame rates, rotation and HDR.

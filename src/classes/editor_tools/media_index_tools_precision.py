@@ -12,7 +12,7 @@ from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.media_files import FILE_TARGET, _display_name, resolve_files
 from classes.editor_tools.media_index_tools import _all_files, _index_for
 from classes.logger import log
-from classes.media_index import context, health
+from classes.media_index import contact, context, health
 from classes.media_index.facts import technical_of
 from classes.media_index.probe import probe_media
 from classes.media_index.store import default_shelf, sha_of
@@ -718,6 +718,87 @@ def _frames_pack(f, start_seconds, end_seconds, per_second=None, count=None, eve
         contact.write_png(path, picture)
     return (f"{len(tiles)} frames of {_display_name(f.data)}, {start:.2f} to {end:.2f} s.",
             dict(file_id=str(f.id), image_path=path, tiles=tiles, tile_size=[width, height], fps=round(fps, 3), cached=False))
+
+
+# ============================ storyboard_tool ============================
+@editor_tool(
+    "storyboard_tool",
+    covers=("index.storyboard",),
+    label="Storyboard of a video",
+    schema=obj({
+        **FILE_TARGET,
+        "start_seconds": number("Where to start, in the file's own seconds (for the next page, use next_start from the last one).", 0, minimum=0),
+        "tile_width": integer("Width of each keyframe in pixels.", 320, minimum=96, maximum=640),
+    }),
+    read_only=True,
+)
+def storyboard(file_ids=None, file_query="", start_seconds=0, tile_width=320):
+    """Understand or recreate a video in ONE call: every shot with its exact start and end, camera move, shot type, look, what is
+    said and (when the picture layer was built) what happens, plus one stamped keyframe per shot as a single picture. The cuts are
+    exact and free; this is the first call for "describe this video", "what happens scene by scene" or "recreate this". Never sample
+    frames at a fixed interval to find cuts. Up to 48 shots a page; next_start says where the next page begins. For one shot's
+    detail use get_moment_tool; for the exact cut frame use refine_cut_tool.
+    """
+    import os
+    from classes.media_index import dossier, storyboard as board
+    shelf = default_shelf()
+    f = resolve_files(file_ids, file_query)[0]
+    fi = _index_for(f, shelf)
+    if fi is None or not fi.shots:
+        raise ToolError("that file has no shot list yet (index_status_tool shows what is still being worked on); wait for it, don't sample frames")
+    shots, next_start = board.page(fi.shots, float(start_seconds or 0.0))
+    if not shots:
+        raise ToolError("no shots at or after that time")
+    probe = probe_media(_audio_path(f))
+    video = probe.get("video") or {}
+    if not video.get("width") or not video.get("height"):
+        raise ToolError(_unreadable(probe))
+    fps = float(video.get("fps") or 0.0)
+    width = int(tile_width)
+    height = max(2, int(round(width * video["height"] / video["width"] / 2)) * 2)
+    times = [board.keyframe_time(s, 1.0 / fps if fps else 0.0) for s in shots]
+    sha = sha_of(f.data.get("fingerprint"))
+    name = f"storyboard_{int(round(float(shots[0]['start']) * 1000))}_{len(shots)}_{width}"
+    entry = shelf.entry_dir(sha, create=True) if sha else None
+    meta = shelf.read_json(sha, name + ".json") if sha else None
+    if entry and meta and shelf.read_bytes(sha, name + ".png"):
+        path, tiles, cached = os.path.join(entry, name + ".png"), meta["tiles"], True
+    else:
+        try:
+            frames, got = contact.decode_frames_at(_audio_path(f), times, (width, height), start_time=float(probe.get("start_time") or 0.0))
+        except RuntimeError as exc:
+            raise ToolError(f"could not read the picture: {exc}")
+        by_time = dict(zip(times, shots))
+        tiles = [{"index": i, "shot": by_time[t]["id"], "t": t, "frame": int(round(t * fps)) if fps else None} for i, t in enumerate(got)]
+        picture = contact.sheet(frames, got, fps, contact.columns_for(width, len(got)))
+        path, cached = _save_picture(shelf, sha, entry, name, picture, tiles), False
+    lines = dossier.header(fi) + [dossier.shot_lines(fi, s) for s in shots]
+    if next_start is not None:
+        lines.append(f"... more shots; call again with start_seconds={next_start:.2f}")
+    return ok(f"{len(shots)} shots of {_display_name(f.data)} from {shots[0]['start']:.2f} s, one keyframe each.", file_id=str(f.id),
+              notes="\n".join(lines), image_path=path, tiles=tiles, tile_size=[width, height], shots_shown=len(shots), total_shots=len(fi.shots),
+              next_start=next_start, cached=cached)
+
+
+def _save_picture(shelf, sha, entry, name, picture, tiles) -> str:
+    """Write the sheet next to the file's other layers (or a temp file when it has no fingerprint); returns its path."""
+    import os
+    import tempfile
+    if not entry:
+        fd, path = tempfile.mkstemp(suffix=".png", prefix="storyboard_")
+        os.close(fd)
+        contact.write_png(path, picture)
+        return path
+    fd, tmp = tempfile.mkstemp(suffix=".png", prefix="storyboard_")
+    os.close(fd)
+    try:
+        contact.write_png(tmp, picture)
+        with open(tmp, "rb") as fh:
+            shelf.write_bytes(sha, name + ".png", fh.read())
+    finally:
+        os.remove(tmp)
+    shelf.write_json(sha, name + ".json", {"tiles": tiles})
+    return os.path.join(entry, name + ".png")
 
 
 # ============================ get_moment_tool ============================

@@ -145,3 +145,30 @@ def sheet(frames: np.ndarray, times: Sequence[float], fps: float, columns: int) 
 
 def columns_for(tile_width: int, count: int) -> int:
     return max(1, min(count, MAX_SHEET_WIDTH // max(1, tile_width), 8))
+
+
+def decode_frames_at(path: str, times: Sequence[float], size: Tuple[int, int], *, start_time: float = 0.0, workers: int = 4
+                     ) -> Tuple[np.ndarray, List[float]]:
+    """One RGB frame at each of *times* (seconds from the file's start), at *size*, in the order given.
+
+    Each time is its own quick seek, so picking one frame per shot costs a frame per shot, not a pass over the file. Times that
+    cannot be read are left out; the returned times are the ones that were. Raises RuntimeError when none could be read.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    w, h = size
+
+    def one(t: float) -> Optional[np.ndarray]:
+        cmd = ["ffmpeg", "-nostdin", "-v", "error", "-ss", f"{max(0.0, float(t) + start_time):.3f}", "-i", path, "-an", "-frames:v", "1",
+               "-vf", f"scale={w}:{h}:flags=area,format=rgb24", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+        proc = run_ffmpeg(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=60)
+        raw = proc.stdout or b""
+        if proc.returncode != 0 or len(raw) < w * h * 3:
+            return None
+        return np.frombuffer(raw[: w * h * 3], dtype=np.uint8).reshape(h, w, 3)
+
+    with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
+        got = list(pool.map(one, times))
+    kept = [(t, g) for t, g in zip(times, got) if g is not None]
+    if not kept:
+        raise RuntimeError("could not read a frame at any of those times")
+    return np.stack([g for _t, g in kept]), [float(t) for t, _g in kept]
