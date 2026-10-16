@@ -2477,6 +2477,11 @@
         return !!cliBinaryName(id);
     }
 
+    // Button label for a CLI agent's own browser sign-in (Claude Code, ChatGPT plan).
+    function signInLabel(id) {
+        return id === 'chatgpt' ? 'Sign in with ChatGPT' : 'Sign in to Claude';
+    }
+
     // Empty state (calm, not an error) shown instead of messages when the active
     // tab's backend is a CLI agent that's missing, signed out, or not yet connected.
     function updateCliEmptyState() {
@@ -2499,16 +2504,18 @@
             messagesEl.style.display = 'none';
             return;
         }
-        // Claude Code Anthropic login (before MCP Connect).
-        if (id === 'claude_code' && info.logged_in === false) {
+        // The agent's own login (Claude Code's Anthropic login, the ChatGPT plan), before MCP Connect.
+        if (info.logged_in === false) {
             cliEmptyStateEl.style.display = 'flex';
             messagesEl.style.display = 'none';
             if (cliEmptyStateEl.getAttribute('data-connect-for') === id + ':auth') return;
             cliEmptyStateEl.setAttribute('data-connect-for', id + ':auth');
             cliEmptyStateEl.innerHTML =
-                '<div class="chat-cli-connect-msg">' + escapeHtml(findBackendName(id)) +
-                ' needs you to sign in again.</div>' +
-                '<button type="button" id="chat-cli-connect-btn" class="chat-cli-connect-btn">Sign in to Claude</button>' +
+                '<div class="chat-cli-connect-msg">' + escapeHtml(id === 'chatgpt'
+                    ? 'Sign in with ChatGPT to run the agent on your ChatGPT plan instead of Zenvi credits.'
+                    : findBackendName(id) + ' needs you to sign in again.') + '</div>' +
+                '<button type="button" id="chat-cli-connect-btn" class="chat-cli-connect-btn">' +
+                escapeHtml(signInLabel(id)) + '</button>' +
                 '<div id="chat-cli-connect-status" class="chat-cli-connect-status"></div>';
             var authBtn = document.getElementById('chat-cli-connect-btn');
             if (authBtn) {
@@ -2570,7 +2577,8 @@
             '<div class="chat-cli-connect-msg">' + escapeHtml(message ||
                 'Claude Code needs you to sign in again. Your last request was not run.') +
             '</div>' +
-            '<button type="button" id="chat-cli-auth-btn" class="chat-cli-connect-btn">Sign in to Claude</button>' +
+            '<button type="button" id="chat-cli-auth-btn" class="chat-cli-connect-btn">' +
+            escapeHtml(signInLabel(backendId || 'claude_code')) + '</button>' +
             '<div id="chat-cli-auth-status" class="chat-cli-connect-status"></div>';
         messagesEl.appendChild(card);
         messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -2599,7 +2607,7 @@
         }
         if (btn && !ok) {
             btn.disabled = false;
-            btn.textContent = 'Sign in to Claude';
+            btn.textContent = signInLabel(backendId);
         }
         if (ok) {
             var card = document.getElementById('chat-cli-auth-recovery');

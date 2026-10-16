@@ -31,6 +31,8 @@ import uuid
 
 from qt_api import QObject, pyqtSignal, pyqtSlot
 
+from classes import chatgpt_plan
+
 log = logging.getLogger(__name__)
 
 
@@ -40,6 +42,7 @@ BACKEND_CODEX = "codex"
 BACKEND_CURSOR = "cursor_cli"
 BACKEND_OPENCODE = "opencode"
 BACKEND_HERMES = "hermes"
+BACKEND_CHATGPT = "chatgpt"
 
 
 # Models offered in the chat model picker per backend, in menu order. ``id`` is
@@ -1217,7 +1220,7 @@ def refresh_cli_models(backend: str, version) -> bool:
     runner = CLI_RUNNERS.get(backend)
     if runner is None or runner.list_models is None:
         return False
-    cli = _which_cli(runner.CLI_NAME)
+    cli = runner.locate_cli()
     if not cli:
         return False
     key = (cli, version or "")
@@ -1443,7 +1446,6 @@ class BaseAgentRunner(QObject):
         # planning flow only; CLI agents plan internally, so they are accepted
         # for signature parity and otherwise ignored.
         self._cancelled = False
-        self._model_id = self._coerce_model(model_id)
         self._responded = False
         self._final_text = ""
         self._last_error = ""
@@ -1474,7 +1476,7 @@ class BaseAgentRunner(QObject):
             self._emit_error("Could not start the editor tool server: %s" % e)
             return
 
-        self._cli_path = _which_cli(self.CLI_NAME)
+        self._cli_path = self.locate_cli()
         if not self._cli_path:
             self._emit_error(
                 "%s CLI not found. Install it and make sure '%s' is on your PATH, "
@@ -1490,6 +1492,8 @@ class BaseAgentRunner(QObject):
                 self._emit_error(ready_err)
             return
 
+        # After the readiness check: ChatGPT's may fetch the account's model list.
+        self._model_id = self._coerce_model(model_id)
         try:
             argv = self._build_argv(text)
             popen_kwargs = dict(
@@ -1634,6 +1638,16 @@ class BaseAgentRunner(QObject):
     # ``list_models(cli) -> picker entries`` for a CLI that can list its own
     # models (see refresh_cli_models); None when it cannot.
     list_models = None
+
+    @classmethod
+    def locate_cli(cls):
+        """The executable to run, or None when it is not installed."""
+        return _which_cli(cls.CLI_NAME)
+
+    @classmethod
+    def detect(cls) -> dict:
+        """Status for the agent picker (see detect_cli). Blocking."""
+        return detect_cli(cls.CLI_NAME)
 
     def _ensure_ready(self):
         """Return an error string if the backend can't run, else None."""
@@ -1832,7 +1846,6 @@ class CodexRunner(BaseAgentRunner):
         ]
         if self._model_id:
             common += ["--model", self._model_id]
-        common += _add_dir_args()
         # Unlike Claude, Codex will not take an id we invent -- it mints its own
         # and reports it as ``thread.started``.  Resuming a seeded placeholder
         # would just fail, so wait until we have heard a real one.
@@ -1844,7 +1857,8 @@ class CodexRunner(BaseAgentRunner):
         # Codex has no --append-system-prompt; prefix import steering so it
         # does not Glob /mnt/c the way Claude did before the Claude prompt fix.
         self._stdin_prompt = _agent_import_prompt() + "\n\n" + (text or "")
-        return [cli, "exec", *common, "-"]
+        # Not on resume: `codex exec resume` rejects --add-dir and exits 2.
+        return [cli, "exec", *common, *_add_dir_args(), "-"]
 
     def _handle_event(self, ev: dict):
         etype = ev.get("type")
@@ -1904,6 +1918,73 @@ class CodexRunner(BaseAgentRunner):
                 self.tool_started.emit(rid, "thinking", "{}")
                 self.tool_log.emit(rid, txt)
                 self.tool_completed.emit(rid, True, "")
+
+
+class ChatGPTPlanRunner(CodexRunner):
+    """The agent on the user's own ChatGPT plan (Sign in with ChatGPT, #274).
+
+    Same ``codex exec`` turns as CodexRunner, but on Zenvi's private Codex copy
+    (classes.chatgpt_plan): its own CODEX_HOME, and the model calls go to the
+    Responses API on the signed-in plan's token instead of a Codex login.
+    """
+
+    DISPLAY_NAME = "ChatGPT (your plan)"
+    BACKEND_ID = BACKEND_CHATGPT
+    list_models = staticmethod(lambda _cli: chatgpt_plan.list_models())
+
+    @staticmethod
+    def register(port: int, token: str):
+        return True, "ChatGPT runs inside Zenvi with its tools already connected."
+
+    @classmethod
+    def locate_cli(cls):
+        return chatgpt_plan.codex_path()
+
+    @classmethod
+    def detect(cls) -> dict:
+        # Nothing to find on PATH: the private Codex is downloaded on first use.
+        signed = chatgpt_plan.signed_in()
+        email = (chatgpt_plan._load().get("email") or "") if signed else ""
+        return {"installed": True, "registered": True, "logged_in": signed,
+                "version": ("Codex %s %s" % (chatgpt_plan.CODEX_VERSION, email)).strip()}
+
+    def _coerce_model(self, model_id: str) -> str:
+        # Never left to Codex: its own default can be refused on a ChatGPT plan
+        # ("not supported when using Codex with a ChatGPT account").
+        offered = models_for_backend(self.BACKEND_ID) or chatgpt_plan.list_models()
+        ids = [m["id"] for m in offered]
+        if model_id in ids:
+            return model_id
+        return next((m["id"] for m in offered if m.get("default")), ids[0] if ids else "")
+
+    def _ensure_ready(self):
+        try:
+            chatgpt_plan.access_token()     # refreshed here, so a dead sign-in asks to sign in
+        except chatgpt_plan.SignInRequired:
+            return CLI_AUTH_REQUIRED
+        except Exception as e:
+            return "Could not reach ChatGPT to refresh your sign-in: %s" % e
+        try:
+            chatgpt_plan.install()
+        except Exception as e:
+            log.warning("ChatGPT: Codex download failed: %s", e, exc_info=True)
+            return "Could not download the ChatGPT agent (Codex %s): %s" % (
+                chatgpt_plan.CODEX_VERSION, e)
+        return None
+
+    def _build_env(self):
+        extra = {}
+        if self._server is not None and self._server.token:
+            extra["ZENVI_MCP_TOKEN"] = self._server.token
+        return chatgpt_plan.child_env(_cli_child_env(extra))
+
+    def _build_argv(self, text: str):
+        argv = super()._build_argv(text)     # ends with "-" (prompt on stdin)
+        return argv[:-1] + chatgpt_plan.provider_args() + argv[-1:]
+
+    def _emit_auth_required(self, text: str = ""):
+        super()._emit_auth_required(
+            "Sign in with ChatGPT to use your ChatGPT plan. Your last request was not run.")
 
 
 class CursorCliRunner(BaseAgentRunner):
@@ -2582,7 +2663,8 @@ def _hermes_tool_result(update: dict):
 # this, so adding a CLI is its runner class plus one entry here.
 CLI_RUNNERS = {
     runner.BACKEND_ID: runner
-    for runner in (ClaudeCodeRunner, CodexRunner, CursorCliRunner, OpenCodeRunner, HermesRunner)
+    for runner in (ClaudeCodeRunner, CodexRunner, CursorCliRunner, OpenCodeRunner, HermesRunner,
+                   ChatGPTPlanRunner)
 }
 
 
