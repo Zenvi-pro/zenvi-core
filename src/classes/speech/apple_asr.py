@@ -107,7 +107,7 @@ class AppleSpeechTranscriber:
             proc = subprocess.run(
                 cmd,
                 capture_output=True,
-                text=True,
+                encoding="utf-8", errors="replace",
                 timeout=3600,
                 check=False,
             )

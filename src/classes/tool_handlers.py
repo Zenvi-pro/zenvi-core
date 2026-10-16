@@ -814,7 +814,7 @@ def _ffmpeg_run(args):
     try:
         p = run_ffmpeg(
             args,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         if p.returncode != 0:
             return False, (p.stderr or p.stdout or "ffmpeg failed")
@@ -832,7 +832,7 @@ def _ffprobe_video_duration(path) -> float:
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", path],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         val = (p.stdout or "").strip()
         if val and val != "N/A":
@@ -841,7 +841,7 @@ def _ffprobe_video_duration(path) -> float:
         p2 = run_ffmpeg(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", path],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         val2 = (p2.stdout or "").strip()
         return float(val2) if val2 and val2 != "N/A" else 0.0
@@ -854,7 +854,7 @@ def _ffprobe_has_audio(path):
         p = run_ffmpeg(
             ["ffprobe", "-v", "error", "-select_streams", "a",
              "-show_entries", "stream=index", "-of", "csv=p=0", path],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         return bool((p.stdout or "").strip())
     except Exception:
@@ -4695,7 +4695,7 @@ def _ffprobe_video_size(path):
                 "-show_entries", "stream=width,height",
                 "-of", "csv=s=x:p=0", path,
             ],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         w, h = (int(v) for v in (p.stdout or "").strip().splitlines()[0].split("x")[:2])
     except Exception:
@@ -4721,7 +4721,7 @@ def _ffprobe_pix_fmt(path) -> str:
                 "-show_entries", "stream=pix_fmt",
                 "-of", "default=noprint_wrappers=1:nokey=1", path,
             ],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         return (p.stdout or "").strip().lower()
     except Exception:
@@ -4737,7 +4737,7 @@ def _ffprobe_alpha_mode(path) -> str:
                 "-show_entries", "stream_tags=alpha_mode,ALPHA_MODE",
                 "-of", "default=noprint_wrappers=1:nokey=1", path,
             ],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         for line in (p.stdout or "").splitlines():
             val = line.strip().lower()

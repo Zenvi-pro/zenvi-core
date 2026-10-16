@@ -23,7 +23,7 @@ def _ffprobe_dimensions(path: str) -> Tuple[int, int]:
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            encoding="utf-8", errors="replace",
             check=False,
         )
         line = (proc.stdout or "").strip().splitlines()
@@ -44,7 +44,7 @@ def _ffprobe_has_audio(path: str) -> bool:
              "-show_entries", "stream=index", "-of", "csv=p=0", path],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            encoding="utf-8", errors="replace",
             check=False,
         )
         return bool((proc.stdout or "").strip())

@@ -263,7 +263,7 @@ def _probe_duration(path: str) -> float:
                 "ffprobe", "-v", "error", "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1", path,
             ],
-            capture_output=True, text=True, check=False,
+            capture_output=True, encoding="utf-8", errors="replace", check=False,
         )
         val = (p.stdout or "").strip()
         if val and val != "N/A":
@@ -321,7 +321,7 @@ def _scene_times(path: str, win_start: float, win_end: float) -> List[float]:
                 "-vf", "select='gt(scene,0.25)',showinfo",
                 "-an", "-f", "null", "-",
             ],
-            capture_output=True, text=True, check=False,
+            capture_output=True, encoding="utf-8", errors="replace", check=False,
         )
         blob = (p.stderr or "") + (p.stdout or "")
     except Exception:

@@ -35,3 +35,23 @@ def test_a_japanese_title_tag_does_not_break_probe_or_loudness(tmp_path):
     out = subprocess.run([sys.executable, "-c", _CHILD.format(src=os.path.abspath(SRC)), str(clip)], env=env,
                          capture_output=True, text=True, timeout=120)
     assert "probe_ok=True" in out.stdout and "loudness=True" in out.stdout, out.stdout + out.stderr
+
+
+_APPLE_CHILD = """
+import sys
+sys.path.insert(0, {src!r})
+from classes.speech.apple_asr import AppleSpeechTranscriber
+from classes.speech.runtime import CancelToken
+words, language = AppleSpeechTranscriber().transcribe("unused.wav", language="ja-JP", token=CancelToken())
+print("words=%d first=%d language=%s" % (len(words), ord(words[0].text), language))   # the code point: this child prints in ASCII too
+"""
+
+
+def test_the_speech_helpers_japanese_answer_is_read_as_utf8_under_an_ascii_locale(tmp_path):
+    """The lyrics of a Japanese song came back as an 'ascii' decode error inside the app, so no lyrics were ever kept."""
+    helper = tmp_path / "zenvi-apple-speech-asr"
+    helper.write_text('#!/bin/sh\nprintf \'{"words":[{"text":"心","startSec":0.0,"endSec":0.5},{"text":"の","startSec":0.5,"endSec":0.9}],"language":"ja-JP"}\'\n', encoding="utf-8")
+    helper.chmod(0o755)
+    env = {"PATH": os.environ["PATH"], "LC_ALL": "C", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0", "ZENVI_APPLE_SPEECH_ASR": str(helper)}
+    out = subprocess.run([sys.executable, "-c", _APPLE_CHILD.format(src=os.path.abspath(SRC))], env=env, capture_output=True, text=True, timeout=60)
+    assert "words=2 first=24515 language=ja-JP" in out.stdout, out.stdout + out.stderr
