@@ -231,7 +231,9 @@ def test_nothing_in_the_face_code_can_reach_the_network_or_the_cloud_client():
         src = (SRC / "classes" / "media_index" / name).read_text()
         for banned in ("urllib", "requests", "http.client", "socket", "api_client", "websocket", "aiohttp", "httpx"):
             assert not re.search(rf"^\s*(import|from)\s+{re.escape(banned)}\b", src, re.M), f"{name} imports {banned}"
-    assert "urllib" in (SRC / "classes" / "media_index" / "people_models.py").read_text(), "only the model download fetches, and only the models"
+    # only the model download fetches, and only the models: people_models itself holds no network code, it uses the shared checked downloader
+    models_src = (SRC / "classes" / "media_index" / "people_models.py").read_text()
+    assert "fetch_verified" in models_src and "urllib" in (SRC / "classes" / "verified_download.py").read_text()
 
 
 def test_scanning_logs_counts_and_never_the_numbers_of_a_face(monkeypatch):

@@ -62,9 +62,9 @@ class FasterWhisperTranscriber:
             from faster_whisper import WhisperModel
         except ImportError as exc:
             raise RuntimeError(
-                "No local speech engine: releases bundle whisper.cpp "
-                "(installer/build-whisper-cli.sh puts it in src/whisper); "
-                "or pip install -r requirements-speech.txt for faster-whisper"
+                "No local speech engine. macOS 26 or later uses the built-in Apple engine; releases bundle whisper.cpp "
+                "(installer/build-whisper-cli.sh puts it in src/whisper), and once whisper-cli is present the speech model "
+                "is downloaded on first use; otherwise pip install -r requirements-speech.txt for faster-whisper"
             ) from exc
         size = _MODEL_SIZES.get(self.model_id, "base")
         self._model = WhisperModel(size, device="cpu", compute_type="int8")
@@ -140,6 +140,13 @@ def make_transcriber(engine: str = "auto", model_id: str = DEFAULT_MODEL_ID) -> 
 def _whisper_transcriber(model_id: str = DEFAULT_MODEL_ID) -> Transcriber:
     """The bundled whisper.cpp when present (every release), else faster-whisper."""
     from classes.speech import whisper_cpp
+    if whisper_cpp.cli_path() and not whisper_cpp.model_path():
+        # The engine is here but its model is not (a lean install): fetch it now, once, rather than failing and asking the user to.
+        from classes.verified_download import DownloadError
+        try:
+            whisper_cpp.ensure_models()
+        except DownloadError as exc:
+            raise RuntimeError(f"the speech model could not be downloaded ({exc}); check the connection and try again") from exc
     if whisper_cpp.available():
         if model_id and model_id != DEFAULT_MODEL_ID:
             log.info("modelId %s ignored: whisper.cpp runs the model it was installed with (%s)",

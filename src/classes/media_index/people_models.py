@@ -10,11 +10,11 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
-import tempfile
 import threading
 from typing import Any, Callable, Dict, Optional
+
+from classes.verified_download import DownloadError, fetch_verified, is_intact
 
 _ZOO = "https://github.com/opencv/opencv_zoo/raw/main/models"
 MODELS: Dict[str, Dict[str, Any]] = {
@@ -42,24 +42,11 @@ def models_dir() -> str:
     return os.path.join(base, "models", "people")
 
 
-def _sha256(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for block in iter(lambda: fh.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
-
-
 def model_path(name: str) -> Optional[str]:
     """The installed model's path when it is there and intact, else None."""
     spec = MODELS[name]
     path = os.path.join(models_dir(), spec["file"])
-    try:
-        if os.path.getsize(path) != spec["bytes"] or _sha256(path) != spec["sha256"]:
-            return None
-    except OSError:
-        return None
-    return path
+    return path if is_intact(path, spec["sha256"], spec["bytes"]) else None
 
 
 def runtime_available() -> bool:
@@ -86,42 +73,30 @@ def download(progress: Optional[Callable[[float], None]] = None, should_cancel: 
     Blocks on the network: call it from a worker, never the GUI thread. ``fetch`` (url -> readable) exists for tests.
     Returns ``{"ok", "installed", "error"}``; a failed or cancelled download leaves nothing half-written.
     """
-    import urllib.request
-    opener = fetch or (lambda url: urllib.request.urlopen(url, timeout=60))
     os.makedirs(models_dir(), exist_ok=True)
     todo = [n for n in MODELS if not model_path(n)]
     total = sum(MODELS[n]["bytes"] for n in todo) or 1
-    done = 0
+    before = 0
     installed = []
     for name in todo:
         spec = MODELS[name]
-        fd, tmp = tempfile.mkstemp(prefix=name + "_", suffix=".part", dir=models_dir())
-        os.close(fd)
+        base = before
+
+        def report(read: int, base: int = base) -> None:
+            if progress:
+                progress(min(1.0, (base + read) / total))
+
         try:
-            with opener(spec["url"]) as resp, open(tmp, "wb") as out:
-                while True:
-                    if should_cancel and should_cancel():
-                        return {"ok": False, "installed": installed, "error": "cancelled"}
-                    block = resp.read(1 << 18)
-                    if not block:
-                        break
-                    out.write(block)
-                    done += len(block)
-                    if progress:
-                        progress(min(1.0, done / total))
-            if os.path.getsize(tmp) != spec["bytes"] or _sha256(tmp) != spec["sha256"]:
+            fetch_verified(spec["url"], os.path.join(models_dir(), spec["file"]), sha256=spec["sha256"], size=spec["bytes"],
+                           progress=report, should_cancel=should_cancel, opener=fetch)
+        except DownloadError as exc:
+            if exc.cancelled:
+                return {"ok": False, "installed": installed, "error": "cancelled"}
+            if "checksum" in str(exc):
                 return {"ok": False, "installed": installed, "error": f"the {name} model did not match its checksum; nothing was installed"}
-            os.replace(tmp, os.path.join(models_dir(), spec["file"]))
-            tmp = ""
-            installed.append(name)
-        except Exception as exc:  # noqa: BLE001 - reported to the caller, which shows it
             return {"ok": False, "installed": installed, "error": f"could not download the {name} model: {exc}"[:200]}
-        finally:
-            if tmp:
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
+        before += spec["bytes"]
+        installed.append(name)
     return {"ok": True, "installed": installed, "error": None}
 
 
