@@ -92,3 +92,26 @@ def test_a_file_without_a_shot_list_is_told_to_wait_not_to_sample(editor, tmp_pa
     fid = editor.add_file("video", duration=10.0, path=str(tmp_path / "x.mp4"), fingerprint={"sha256": sha(71)})
     r = editor.call_receipt("storyboard_tool", file_ids=[fid])
     assert r["status"] == "error" and "wait" in r["summary"] and "sample" in r["summary"]
+
+
+def test_list_gives_a_row_per_shot_each_with_its_own_time_in_one_call(footage):
+    data = receipt_data(footage.ed, "storyboard_tool", file_ids=[footage.fid], detail="list")
+    rows = [line for line in data["notes"].splitlines() if line.startswith("S")]
+    assert len(rows) == data["shots_shown"] == data["total_shots"] == 6 and data["next_start"] is None
+    assert all("(" in r and "s)" in r for r in rows) and rows[0].startswith("S0 0:00.00-")
+    assert len(data["sheets"]) == 1 and data["sheets"][0]["from_shot"] == 0 and data["sheets"][0]["to_shot"] == 5
+
+
+def test_pictures_can_be_left_out(footage):
+    data = receipt_data(footage.ed, "storyboard_tool", file_ids=[footage.fid], detail="list", pictures=False)
+    assert data["sheets"] == [] and data["image_path"] is None and data["shots_shown"] == 6
+
+
+def test_a_row_is_short_keeps_its_time_and_the_first_sentence_only():
+    fi = SimpleNamespace(sentences=[{"start": 5.0, "end": 6.0, "text": "hello"}])
+    shot = {"id": 3, "start": 5.5, "end": 5.9, "motion": {"class": "handheld"},
+            "watch": {"shot_type": "close", "description": "A girl looks down. She is sad and the room is dark " + "x" * 200}}
+    row = storyboard.list_line(fi, shot)
+    assert row.startswith("S3 0:05.50-0:05.90 (0.4s) close, handheld: A girl looks down") and "sad" not in row and row.endswith('says "hello"')
+    long = storyboard.list_line(SimpleNamespace(sentences=[]), {"id": 1, "start": 0, "end": 2, "watch": {"description": "y" * 300}})
+    assert len(long) < 160 and "…" in long

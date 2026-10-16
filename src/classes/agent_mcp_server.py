@@ -49,7 +49,7 @@ SERVER_INSTRUCTIONS = (
     "with that object (clipId/start/end) — or with startFrame/endFrame — before "
     "claiming the edit is correct; you will receive composited JPEG frames with "
     "a 0–1 top-left coordinate grid. To describe, summarise or recreate footage call "
-    "storyboard_tool first: every cut is exact and each shot comes with a keyframe, in one call. Use inspect_media_tool only for "
+    "storyboard_tool first (detail=list for the whole video in one call: a row per shot with its own exact time; keep every row; open the keyframe picture before trusting a description): every cut is exact. Use inspect_media_tool only for "
     "a spot check or a file with no shot list yet; never sample frames at a fixed interval to find cuts, and never guess from filenames. "
     "Do not shell ffmpeg for frames. Do not use watch_clip_window_tool for "
     "verification — that path is Assistant place/slice backend confirm and does "

@@ -728,56 +728,74 @@ def _frames_pack(f, start_seconds, end_seconds, per_second=None, count=None, eve
     schema=obj({
         **FILE_TARGET,
         "start_seconds": number("Where to start, in the file's own seconds (for the next page, use next_start from the last one).", 0, minimum=0),
+        "detail": enum(["full", "list"], "full: each shot with its look, sounds and everything said (48 shots a page). list: one short row per shot with its own "
+                       "exact time, up to 300 shots in one call (the cheap way to take in a whole video).", "full"),
+        "pictures": boolean("Also make the keyframe pictures (one per shot, 48 a sheet). Look at them when a description matters: the text is a model's "
+                            "reading and can be wrong about hair colour, who is who and small details.", True),
         "tile_width": integer("Width of each keyframe in pixels.", 320, minimum=96, maximum=640),
     }),
     read_only=True,
 )
-def storyboard(file_ids=None, file_query="", start_seconds=0, tile_width=320):
-    """Understand or recreate a video in ONE call: every shot with its exact start and end, camera move, shot type, look, what is
-    said and (when the picture layer was built) what happens, plus one stamped keyframe per shot as a single picture. The cuts are
-    exact and free; this is the first call for "describe this video", "what happens scene by scene" or "recreate this". Never sample
-    frames at a fixed interval to find cuts. Up to 48 shots a page; next_start says where the next page begins. For one shot's
-    detail use get_moment_tool; for the exact cut frame use refine_cut_tool.
+def storyboard(file_ids=None, file_query="", start_seconds=0, detail="full", pictures=True, tile_width=320):
+    """Understand or recreate a video in ONE call: every shot with its exact start and end, camera move, shot type and (when the picture
+    layer was built) what happens, plus one stamped keyframe per shot. The cuts are exact and free; this is the first call for "describe
+    this video", "what happens scene by scene" or "recreate this". Never sample frames at a fixed interval to find cuts. Use detail=list
+    for a whole video in one call: one row per shot, each with its own time, so keep every row (do not merge quick shots into ranges).
+    Open the picture(s) (image_path / sheets) before relying on a description. For one shot's detail use get_moment_tool; for the exact
+    cut frame use refine_cut_tool.
     """
-    import os
     from classes.media_index import dossier, storyboard as board
     shelf = default_shelf()
     f = resolve_files(file_ids, file_query)[0]
     fi = _index_for(f, shelf)
     if fi is None or not fi.shots:
         raise ToolError("that file has no shot list yet (index_status_tool shows what is still being worked on); wait for it, don't sample frames")
-    shots, next_start = board.page(fi.shots, float(start_seconds or 0.0))
+    as_list = str(detail) == "list"
+    shots, next_start = board.page(fi.shots, float(start_seconds or 0.0), per_page=board.MAX_LIST_SHOTS if as_list else contact.MAX_TILES)
     if not shots:
         raise ToolError("no shots at or after that time")
+    rows = [board.list_line(fi, s) for s in shots] if as_list else [dossier.shot_lines(fi, s) for s in shots]
+    lines = dossier.header(fi) + rows
+    if next_start is not None:
+        lines.append(f"... more shots; call again with start_seconds={next_start:.2f}")
+    sheets = _keyframe_sheets(f, fi, shelf, shots, int(tile_width)) if pictures else []
+    first = sheets[0] if sheets else {}
+    return ok(f"{len(shots)} shots of {_display_name(f.data)} from {shots[0]['start']:.2f} s" + (", one keyframe each." if sheets else "."), file_id=str(f.id),
+              notes="\n".join(lines), shots_shown=len(shots), total_shots=len(fi.shots), next_start=next_start,
+              sheets=sheets, image_path=first.get("image_path"), tiles=first.get("tiles"), tile_size=first.get("tile_size"), cached=first.get("cached"))
+
+
+def _keyframe_sheets(f, fi, shelf, shots, width: int) -> List[Dict[str, Any]]:
+    """One stamped picture per 48 shots, a frame from the middle of each; kept on the shelf, so asking again is free."""
+    import os
+    from classes.media_index import storyboard as board
     probe = probe_media(_audio_path(f))
     video = probe.get("video") or {}
     if not video.get("width") or not video.get("height"):
         raise ToolError(_unreadable(probe))
     fps = float(video.get("fps") or 0.0)
-    width = int(tile_width)
     height = max(2, int(round(width * video["height"] / video["width"] / 2)) * 2)
-    times = [board.keyframe_time(s, 1.0 / fps if fps else 0.0) for s in shots]
     sha = sha_of(f.data.get("fingerprint"))
-    name = f"storyboard_{int(round(float(shots[0]['start']) * 1000))}_{len(shots)}_{width}"
     entry = shelf.entry_dir(sha, create=True) if sha else None
-    meta = shelf.read_json(sha, name + ".json") if sha else None
-    if entry and meta and shelf.read_bytes(sha, name + ".png"):
-        path, tiles, cached = os.path.join(entry, name + ".png"), meta["tiles"], True
-    else:
-        try:
-            frames, got = contact.decode_frames_at(_audio_path(f), times, (width, height), start_time=float(probe.get("start_time") or 0.0))
-        except RuntimeError as exc:
-            raise ToolError(f"could not read the picture: {exc}")
-        by_time = dict(zip(times, shots))
-        tiles = [{"index": i, "shot": by_time[t]["id"], "t": t, "frame": int(round(t * fps)) if fps else None} for i, t in enumerate(got)]
-        picture = contact.sheet(frames, got, fps, contact.columns_for(width, len(got)))
-        path, cached = _save_picture(shelf, sha, entry, name, picture, tiles), False
-    lines = dossier.header(fi) + [dossier.shot_lines(fi, s) for s in shots]
-    if next_start is not None:
-        lines.append(f"... more shots; call again with start_seconds={next_start:.2f}")
-    return ok(f"{len(shots)} shots of {_display_name(f.data)} from {shots[0]['start']:.2f} s, one keyframe each.", file_id=str(f.id),
-              notes="\n".join(lines), image_path=path, tiles=tiles, tile_size=[width, height], shots_shown=len(shots), total_shots=len(fi.shots),
-              next_start=next_start, cached=cached)
+    out = []
+    for i in range(0, len(shots), contact.MAX_TILES):
+        part = shots[i:i + contact.MAX_TILES]
+        times = [board.keyframe_time(s, 1.0 / fps if fps else 0.0) for s in part]
+        name = f"storyboard_{int(round(float(part[0]['start']) * 1000))}_{len(part)}_{width}"
+        meta = shelf.read_json(sha, name + ".json") if sha else None
+        if entry and meta and shelf.read_bytes(sha, name + ".png"):
+            path, tiles, cached = os.path.join(entry, name + ".png"), meta["tiles"], True
+        else:
+            try:
+                frames, got = contact.decode_frames_at(_audio_path(f), times, (width, height), start_time=float(probe.get("start_time") or 0.0))
+            except RuntimeError as exc:
+                raise ToolError(f"could not read the picture: {exc}")
+            by_time = dict(zip(times, part))
+            tiles = [{"index": j, "shot": by_time[t]["id"], "t": t, "frame": int(round(t * fps)) if fps else None} for j, t in enumerate(got)]
+            picture = contact.sheet(frames, got, fps, contact.columns_for(width, len(got)))
+            path, cached = _save_picture(shelf, sha, entry, name, picture, tiles), False
+        out.append({"image_path": path, "tiles": tiles, "tile_size": [width, height], "from_shot": part[0]["id"], "to_shot": part[-1]["id"], "cached": cached})
+    return out
 
 
 def _save_picture(shelf, sha, entry, name, picture, tiles) -> str:
