@@ -19,7 +19,7 @@ One file, one prompt, measured the same way each time.
 |---|------|-----|-------------|--------------|-------------------------------------------------------|---------------|-----------|---------|
 | 1 | 2026-10-16 | Frames only: 3x `view_frames_tool` (all failed), 1 overview + 6 windows of `inspect_media_tool` | 10 (7 worked) | 73 | 10 / 138,477 / 50,458 / 5,413 | 0 | about 23 scenes, times good to +-1.25 s | Good story, right characters and palette. Missed the fish shots at 7.4 to 7.9 s (placed fish only at the end), most sub-second cuts, no audio, no beat timing, some garbled words. Not enough to recreate. |
 | 2 | 2026-10-16 | Our tool by hand (not an agent run): `storyboard_tool`, 2 pages | 2 | 2 sheets (48 + 37 keyframes) | not an agent run: notes are 24,637 characters (about 6,200 tokens, estimated at 4 characters a token) | 0 for the tool itself (reads the shelf) | 85 shots, exact start and end of each | Every cut, camera move, shot type, look, and a description per shot. Wall time 1.8 s and 1.9 s a page. |
-| 3 | not run yet | Claude Code with the same prompt, after the steering change | | | | | | |
+| 3 | 2026-10-16 | Claude Code, same prompt, after the changes (session abbe3696): `storyboard_tool` page 1 (48 shots) and page 2 (37 shots), tile_width 480 | 2 (0 failed) | 0 (it worked from the text; the keyframe sheets were not opened) | 8 / 114,021 / 35,493 / 3,843 | not measured (needs the account balance before and after) | all 85 shots covered; 37 stated cut times each within about 0.05 s of the structure layer | Much better than run 1 (checked by the watcher against structure.json and watch.json, not by hand). About 20 shots of 0.3 to 0.5 s were grouped into entries without individual times, and a few descriptions inherit the auto-tagging's mistakes (it flagged a 'weapon-like prop' as possibly wrong). No invented scenes found. |
 
 ## What run 1 got wrong, and why
 - The MCP server's own instructions told the agent to start with `inspect_media_tool`; nothing pointed at the index.
@@ -33,6 +33,17 @@ One file, one prompt, measured the same way each time.
 3. The MCP instructions, the shared playbook, and `inspect_media_tool` (its description and a note in its result when the file has a
    shot list) now start from the shot list.
 
+## Run 1 vs run 3
+| | run 1 (frames) | run 3 (index) | change |
+|---|---|---|---|
+| Zenvi calls | 10 (3 failed) | 2 (0 failed) | -8 |
+| images shown | 73 | 0 | -73 |
+| cache read tokens | 138,477 | 114,021 | -18% |
+| cache written tokens | 50,458 | 35,493 | -30% |
+| output tokens | 5,413 | 3,843 | -29% |
+| cuts found / timing | about 23, +-1.25 s | all 85, about 0.05 s | |
+Zenvi credits for the one-time description pass are not measured. They are spent once per file and not again for any later run.
+
 ## Still to do
-- Run 3: same prompt in a fresh Claude Code session; pass = first Zenvi call is `storyboard_tool` (or the dossier), at most about 3 image
-  calls, cut times match the structure layer, and the written result is at least as good as run 1. Add the row, including failures.
+- A single call (or a compact text-only list) for a whole file, so the agent does not page by hand; per-shot times for runs of very short shots.
+- Read the account balance before and after indexing to put a credit figure on the description pass.
