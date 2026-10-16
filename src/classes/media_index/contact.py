@@ -20,6 +20,7 @@ import numpy as np
 from classes.ffmpeg_cli import run_ffmpeg
 
 MAX_TILES = 48
+SEEK_RETRIES = (0.0, 0.2, 0.5)   # seconds to step back when a seek returns no picture
 DEFAULT_TILE_WIDTH = 320
 MIN_TILE_WIDTH, MAX_TILE_WIDTH = 96, 640
 MAX_SHEET_WIDTH = 1920
@@ -157,7 +158,7 @@ def decode_frames_at(path: str, times: Sequence[float], size: Tuple[int, int], *
     from concurrent.futures import ThreadPoolExecutor
     w, h = size
 
-    def one(t: float) -> Optional[np.ndarray]:
+    def attempt(t: float) -> Optional[np.ndarray]:
         cmd = ["ffmpeg", "-nostdin", "-v", "error", "-ss", f"{max(0.0, float(t) + start_time):.3f}", "-i", path, "-an", "-frames:v", "1",
                "-vf", f"scale={w}:{h}:flags=area,format=rgb24", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
         proc = run_ffmpeg(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=60)
@@ -165,6 +166,15 @@ def decode_frames_at(path: str, times: Sequence[float], size: Tuple[int, int], *
         if proc.returncode != 0 or len(raw) < w * h * 3:
             return None
         return np.frombuffer(raw[: w * h * 3], dtype=np.uint8).reshape(h, w, 3)
+
+    def one(t: float) -> Optional[np.ndarray]:
+        # Some phone files give no picture when seeking into their last fraction of a second (seen: 5.1 s into a 5.3 s clip). A frame a
+        # little earlier is the same picture for judging, so step back before giving up.
+        for back in SEEK_RETRIES:
+            got = attempt(t - back) if t - back >= 0.0 or back == 0.0 else None
+            if got is not None:
+                return got
+        return None
 
     with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
         got = list(pool.map(one, times))

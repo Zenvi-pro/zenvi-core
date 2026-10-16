@@ -173,3 +173,24 @@ def test_tiles_start_at_the_start_of_the_range_and_are_evenly_spread_across_it()
     _, times = C.decode_frames(str(path), 4.0, 10.0, (64, 36), rate=8 / 6)
     assert len(times) == 8 and times[0] == pytest.approx(4.0, abs=0.04) and times[-1] < 10.0
     assert np.diff(times).std() < 0.05, "the gaps between tiles are the same, not bunched against the far end"
+
+
+def test_a_seek_that_returns_no_picture_steps_back_a_little_instead_of_giving_up(monkeypatch):
+    """Seen on a real phone clip: 5.1 s into a 5.3 s file gave nothing, 5.0 s gave a frame."""
+    asked = []
+
+    def fake_run(cmd, **kw):
+        t = float(cmd[cmd.index("-ss") + 1])
+        asked.append(round(t, 3))
+        raw = b"" if t > 5.0 else bytes([7]) * (8 * 4 * 3)
+        return SimpleNamespace(returncode=0, stdout=raw, stderr=b"")
+
+    monkeypatch.setattr(C, "run_ffmpeg", fake_run)
+    frames, got = C.decode_frames_at("clip.mp4", [5.1], (8, 4))
+    assert asked == [5.1, 4.9] and got == [5.1] and frames.shape == (1, 4, 8, 3) and int(frames[0, 0, 0, 0]) == 7
+
+
+def test_a_time_with_no_picture_anywhere_is_left_out_and_all_of_them_missing_raises(monkeypatch):
+    monkeypatch.setattr(C, "run_ffmpeg", lambda cmd, **kw: SimpleNamespace(returncode=1, stdout=b"", stderr=b"bad"))
+    with pytest.raises(RuntimeError):
+        C.decode_frames_at("clip.mp4", [1.0, 2.0], (8, 4))
