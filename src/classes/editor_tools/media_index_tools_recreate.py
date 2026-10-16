@@ -407,6 +407,23 @@ def _predicted_look(src_look: Optional[Dict[str, Any]], grade: Optional[Dict[str
     return out
 
 
+def _swap_fix(shot_id: int, scored: List[tuple], pool: List[Any], covering: Any, avoid: set, prefer: str) -> Optional[str]:
+    """The build_recreation_tool call that swaps this shot's clip for the best other window ("look": the one whose look is closest; "any": the best overall)."""
+    best, best_key = None, -1.0
+    for fidx, w_in, _w_out, _src, score, parts in scored:
+        f = pool[fidx]
+        if f.file_id == covering.file_id and abs(w_in - covering.src_in) < 0.5:
+            continue                                                      # the moment it already uses
+        if any((f.file_id, k) in avoid for k in range(int(w_in / mref.BUCKET_SECONDS), int((w_in + (covering.src_out - covering.src_in)) / mref.BUCKET_SECONDS) + 1)):
+            continue                                                      # a moment already used too often
+        key = (2.0 * parts["look"] + score) if prefer == "look" else score
+        if key > best_key:
+            best, best_key = (f.file_id, w_in), key
+    if best is None:
+        return None
+    return f"build_recreation_tool(overrides=[{{reference_shot:{shot_id}, file_id:'{best[0]}', in:{best[1]:.2f}}}], only_shots=[{shot_id}])"
+
+
 def _grade_score(parts: List[float]) -> float:
     return round(100.0 * sum(parts) / len(parts), 1) if parts else 0.0
 
@@ -460,6 +477,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
     timing, coverage, picture, look_scores, graded = [], [], [], [], 0
     buckets: Counter = Counter()
     placed_files: List[str] = []
+    slot_info: Dict[int, Tuple[List[tuple], Any]] = {}
     for shot_id, a, b, row in slots:
         covering = next((c for c in pictures if c.start <= snap(a) + frame * 0.5 and c.end > snap(a) + frame * 0.5), None)
         if covering is None:
@@ -488,6 +506,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
         shot = next((s for s in ref.shots if int(s["id"]) == int(shot_id)), None)
         if cand is not None and shot is not None and cand in pool:
             scored = mref.scored_windows(ref, shot, float(b) - float(a), pool)
+            slot_info[shot_id] = (scored, covering)
             rank = mref.rank_of_window(scored, pool.index(cand), covering.src_in, covering.src_out)
             if rank is not None:
                 picture.append(1.0 if rank >= WEAK_RANK else rank / WEAK_RANK)
@@ -510,7 +529,9 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
                 look_scores.append(1.0 if dist < LOOK_CLOSE else max(0.0, 1.0 - (dist - LOOK_CLOSE) / 0.8))
                 if dist >= LOOK_CLOSE:
                     findings.setdefault(shot_id, []).append(f"look is {dist:.2f} from the reference's" + (" even with its grade" if grade else " and it is not graded"))
-                    fixes.setdefault(shot_id, "build_recreation_tool(grade=true, only_shots=[%d])" % shot_id)
+                    # a grade can only move a look so far: when it already has one, the fix is a source whose own look is closer
+                    swap = _swap_fix(shot_id, scored, pool, covering, set(), "look") if grade else None
+                    fixes.setdefault(shot_id, swap or "build_recreation_tool(grade=true, only_shots=[%d])" % shot_id)
 
     reuse_max = max(buckets.values(), default=0)
     uses = Counter(placed_files)
@@ -522,15 +543,25 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
     if share > 0.25:
         variety_penalty += min(0.3, (share - 0.25) * 2.0)
     variety_penalty += min(0.3, back_to_back / max(1, len(placed_files)) * 2.0)
-    for (fid, _k), n in buckets.items():
-        if n > 2:
-            for shot_id, a, b, _row in slots:
-                c = next((c for c in pictures if c.start <= snap(a) + frame * 0.5 < c.end), None)
-                if c is not None and c.file_id == fid and findings.get(shot_id) is not None or c is None:
-                    continue
-                if c.file_id == fid and (n > 2):
-                    findings.setdefault(shot_id, []).append(f"same moment of {by_id[fid].name[:24] if fid in by_id else fid} used {n} times")
-            break
+    overused = {key for key, n in buckets.items() if n > 2}
+    if overused:
+        seen: Counter = Counter()
+        for shot_id, a, _b, _row in slots:
+            c = next((c for c in pictures if c.start <= snap(a) + frame * 0.5 < c.end), None)
+            if c is None:
+                continue
+            hot = [(c.file_id, k) for k in range(int(c.src_in / mref.BUCKET_SECONDS), int(max(c.src_in, c.src_out - 1e-6) / mref.BUCKET_SECONDS) + 1)
+                   if (c.file_id, k) in overused]
+            if not hot:
+                continue
+            seen[hot[0]] += 1
+            if seen[hot[0]] > 2:                                       # the first two uses of a moment are fine; later ones should change
+                name = by_id[c.file_id].name[:24] if c.file_id in by_id else c.file_id
+                findings.setdefault(shot_id, []).append(f"same moment of {name} used {buckets[hot[0]]} times")
+                info = slot_info.get(shot_id)
+                swap = _swap_fix(shot_id, info[0], pool, info[1], overused, "any") if info else None
+                if swap:
+                    fixes.setdefault(shot_id, swap)
 
     song_present = any(c.start <= 0.5 and c.length >= 0.8 * max(b for _i, _a, b, _r in slots) for c in ref_clips)
     audible = sum(1 for c in pictures if not _is_muted(c.id))
