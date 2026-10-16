@@ -1740,6 +1740,7 @@
         const text = (inputEl.value || '').trim();
         var attachments = window._chatAttachments || [];
         if (!text && !attachments.length) return;
+        endDictation();
         exitIdle();
         closeCommandPalette();
         closeMentionPalette();
@@ -2128,6 +2129,67 @@
     if (traceBtn) {
         traceBtn.addEventListener('click', openAgentTrace);
     }
+
+    // Dictation: Python records and transcribes; the words replace what was spoken so far.
+    const micBtn = document.getElementById('chat-mic-btn');
+    let dictationState = 'off';
+    let dictationPrefix = '';
+    let modePlaceholder = '';     // the Plan/Agent placeholder, put back after a take
+
+    function toggleDictation() {
+        getBridge(function (bridge) {
+            if (bridge && bridge.toggleDictation) bridge.toggleDictation();
+        });
+    }
+
+    window.setDictationState = function (state, message) {
+        if (!micBtn) return;
+        if (state === 'hearing' && dictationState === 'off') return;   // ended by typing or sending
+        if (state === 'listening' && dictationState === 'off') {
+            dictationPrefix = inputEl.value ? inputEl.value.replace(/\s*$/, ' ') : '';
+            modePlaceholder = inputEl.placeholder;
+        }
+        dictationState = state;
+        micBtn.classList.toggle('listening', state === 'listening');
+        micBtn.classList.toggle('hearing', state === 'hearing');
+        micBtn.setAttribute('aria-pressed', state === 'off' ? 'false' : 'true');
+        micBtn.title = state === 'listening' ? 'Stop dictating'
+            : state === 'hearing' ? 'Finishing the words...' : 'Dictate the prompt';
+        if (message) {
+            if (!modePlaceholder) modePlaceholder = inputEl.placeholder;
+            inputEl.placeholder = message;
+            setTimeout(function () {
+                if (dictationState === 'off' && inputEl.placeholder === message) inputEl.placeholder = modePlaceholder;
+            }, 6000);
+        } else if (state === 'listening') {
+            inputEl.placeholder = 'Listening...';
+        } else if (state === 'off' && modePlaceholder) {
+            inputEl.placeholder = modePlaceholder;
+        }
+    };
+
+    window.setDictationText = function (text, final) {
+        if (dictationState === 'off') return;           // the user typed or sent meanwhile: their text wins
+        inputEl.value = dictationPrefix + (text || '');
+        adjustTextareaHeight();
+        if (inputEl.value.trim()) hideOverlay();
+        if (final) {
+            window.setDictationState('off');
+            inputEl.focus();
+        }
+    };
+
+    // Typing or sending ends the take; a transcript arriving later is dropped.
+    function endDictation() {
+        if (dictationState === 'off') return;
+        if (dictationState === 'listening') toggleDictation();
+        window.setDictationState('off');
+    }
+
+    if (micBtn) micBtn.addEventListener('click', toggleDictation);
+    inputEl.addEventListener('input', function (e) {
+        if (e.isTrusted) endDictation();
+    });
 
     inputEl.addEventListener('keydown', function (e) {
         if (mentionPaletteOpen) {
