@@ -203,6 +203,26 @@ def rank_of_window(scored: Sequence[tuple], file_index: int, w_in: float, w_out:
     return round(sum(1 for x in scored if x[4] <= best_of_mine) / len(scored), 3)
 
 
+_ANIMATION_WORDS = {"anime", "animated", "animation", "cartoon", "illustrated", "illustration", "manga", "cel-shaded", "2d", "stylized", "stylised", "drawn", "digital"}
+_CHARACTER_WORDS = {"character", "characters"}
+
+
+def stock_query_for(description: str, look: Optional[Dict[str, Any]] = None, limit: int = 8) -> str:
+    """Words to search real stock footage with for a shot described in the reference: the scene without the animation vocabulary ("anime
+    character" becomes "person"), plus "dark" or "bright" from the shot's measured look, since lighting is what a grade cannot supply."""
+    words = []
+    for w in (description or "footage").replace(",", " ").replace(".", " ").split():
+        low = w.lower().strip("'\"()")
+        if low in _ANIMATION_WORDS:
+            continue
+        words.append("person" if low in _CHARACTER_WORDS else w)
+        if len(words) >= limit:
+            break
+    luma = (look or {}).get("avg_luma")
+    tone = "" if luma is None else ("dark moody" if float(luma) < 0.3 else ("bright" if float(luma) > 0.65 else ""))
+    return " ".join(([tone] if tone else []) + words)
+
+
 def picture_fit(raw_values: Sequence[float], value: Optional[float]) -> Optional[float]:
     """How far *value* (a raw picture similarity) is from the typical shot/window pair toward the best ones: 0 = typical, 1 = as alike as the
     best 5% of all pairs. Judged against every pair, not the shot's own options, so the best of a poor lot does not score well. None when unknown."""
@@ -336,7 +356,7 @@ def plan_recreation(ref: FileIndex, files: Sequence[FileIndex], start: Optional[
             row["alternatives"].append({"file_id": cand.file_id, "name": cand.name, "in": c[3], "out": c[4], "score": round(c[0], 3), "source_shot": c[5]})
             seen_files.add(c[2])
         if row["status"] != "matched":
-            row["stock_query"] = " ".join((desc or "footage").split()[:14])
+            row["stock_query"] = stock_query_for(desc, shot.get("look"))
         rows.append(row)
 
     used = [(pool_files[c[2]].file_id, c[3], c[4]) for c in chosen.values()]

@@ -153,3 +153,10 @@ def test_a_shot_nothing_in_the_footage_looks_like_is_weak_even_if_it_is_the_best
     status = {r["reference_shot"]: r["status"] for r in plan["shots"]}
     assert status[0] == status[1] == status[2] == "matched"
     assert status[3] == "weak" and plan["shots"][3]["choice"]["picture_fit"] < mref.FIT_MIN
+
+
+def test_a_stock_query_drops_the_animation_words_and_adds_the_lighting():
+    q = mref.stock_query_for("Close-up of a female anime character with pink hair, looking down", {"avg_luma": 0.12})
+    assert "anime" not in q.lower() and "person" in q and q.startswith("dark moody")
+    assert mref.stock_query_for("A wide shot of a street", {"avg_luma": 0.8}).startswith("bright")
+    assert mref.stock_query_for("", None) == "footage"
