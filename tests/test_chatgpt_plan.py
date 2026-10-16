@@ -312,3 +312,10 @@ def test_list_models_reads_the_accounts_listed_models(monkeypatch):
 
 def test_list_models_is_empty_when_signed_out():
     assert chatgpt_plan.list_models() == []
+
+
+@pytest.mark.parametrize("reply", [[], {"models": "nope"}, {"models": None}, "text"])
+def test_list_models_ignores_a_malformed_reply(monkeypatch, reply):
+    _signed_in(monkeypatch, expires_in=3600)
+    monkeypatch.setattr(chatgpt_plan, "_get_json", lambda url, token: reply)
+    assert chatgpt_plan.list_models() == []

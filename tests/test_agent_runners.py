@@ -2569,6 +2569,7 @@ def test_chatgpt_runner_asks_for_sign_in_instead_of_running(qapp, monkeypatch):
 
     monkeypatch.setattr(chatgpt_plan, "access_token", signed_out)
     monkeypatch.setattr(chatgpt_plan, "install", lambda: pytest.fail("no download before sign-in"))
+    monkeypatch.setattr(chatgpt_plan, "list_models", lambda: pytest.fail("no model list before sign-in"))
     launched = []
     monkeypatch.setattr(ar.subprocess, "Popen", lambda *a, **k: launched.append(a))
 

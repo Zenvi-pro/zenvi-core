@@ -1446,7 +1446,6 @@ class BaseAgentRunner(QObject):
         # planning flow only; CLI agents plan internally, so they are accepted
         # for signature parity and otherwise ignored.
         self._cancelled = False
-        self._model_id = self._coerce_model(model_id)
         self._responded = False
         self._final_text = ""
         self._last_error = ""
@@ -1493,6 +1492,8 @@ class BaseAgentRunner(QObject):
                 self._emit_error(ready_err)
             return
 
+        # After the readiness check: ChatGPT's may fetch the account's model list.
+        self._model_id = self._coerce_model(model_id)
         try:
             argv = self._build_argv(text)
             popen_kwargs = dict(

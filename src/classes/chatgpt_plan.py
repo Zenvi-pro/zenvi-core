@@ -334,7 +334,8 @@ def list_models():
         log.debug("ChatGPT model list failed: %s", e)
         return []
     rows = []
-    for model in data.get("models") or []:
+    models = data.get("models") if isinstance(data, dict) else None
+    for model in models if isinstance(models, list) else []:
         if isinstance(model, dict) and model.get("visibility") == "list" and model.get("slug"):
             rows.append({"id": model["slug"], "name": model.get("display_name") or model["slug"],
                          "provider": "openai", "rank": len(rows), "featured": True})
