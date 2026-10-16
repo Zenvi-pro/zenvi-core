@@ -636,3 +636,14 @@ def website_language():
         "zh_TW": "zh-hant/",
         "en_US": ""}.get(CURRENT_LANGUAGE,
                          "%s/" % CURRENT_LANGUAGE.split("_")[0].lower())
+
+
+def check_user_path_writable(path=None):
+    """Raise PermissionError if ``path`` (default USER_PATH) is not writable."""
+    import tempfile
+    # Unique name, deleted by the OS on close: concurrent launches and
+    # antivirus handles on a shared probe file reported false errors (#313).
+    path = path or USER_PATH
+    os.makedirs(path, exist_ok=True)
+    with tempfile.TemporaryFile(dir=path):
+        pass
