@@ -749,7 +749,10 @@ def storyboard(file_ids=None, file_query="", start_seconds=0, detail="full", pic
     """
     from classes.media_index import dossier, storyboard as board
     shelf = default_shelf()
-    f = resolve_files(file_ids, file_query)[0]
+    files = resolve_files(file_ids, file_query)
+    if len(files) > 1:
+        return _storyboard_many(files, shelf, bool(look))
+    f = files[0]
     fi = _index_for(f, shelf)
     if fi is None or not fi.shots:
         raise ToolError("that file has no shot list yet (index_status_tool shows what is still being worked on); wait for it, don't sample frames")
@@ -785,6 +788,33 @@ def _sheet_jpeg(path: str) -> bytes:
         if image.isNull():
             raise RuntimeError(f"could not open {path}")
         return jpeg_bytes_from_qimage(image)
+
+
+MAX_STORYBOARD_FILES = 20
+
+
+def _storyboard_many(files, shelf, look: bool) -> str:
+    """Several files at once (a bin of footage): one block per file, one row per shot, no pictures (ask for one file to see its keyframes)."""
+    from classes.media_index import dossier, storyboard as board
+    blocks, listed, total, left_out = [], [], 0, []
+    for f in files[:MAX_STORYBOARD_FILES]:
+        fi = _index_for(f, shelf)
+        name = _display_name(f.data)
+        if fi is None or not fi.shots:
+            blocks.append(f"FILE {name}: no shot list yet (index_status_tool shows what is still being worked on)")
+            continue
+        if total + len(fi.shots) > board.MAX_LIST_SHOTS:
+            left_out.append(name)
+            continue
+        total += len(fi.shots)
+        blocks.append("\n".join(dossier.header(fi) + [board.list_line(fi, s, look=look) for s in fi.shots]))
+        listed.append({"file_id": str(f.id), "name": name, "shots": len(fi.shots)})
+    if len(files) > MAX_STORYBOARD_FILES:
+        left_out += [_display_name(f.data) for f in files[MAX_STORYBOARD_FILES:]]
+    if left_out:
+        blocks.append(f"... {len(left_out)} more file(s) not listed (too many shots for one call): " + ", ".join(left_out[:10]) + ". Ask for them separately.")
+    blocks.append("Rows only here. For a file's keyframe pictures, its rhythm and its song sections, ask for that one file.")
+    return ok(f"{len(listed)} of {len(files)} files, {total} shots.", files=listed, notes="\n\n".join(blocks), shots_shown=total, sheets=[], image_path=None)
 
 
 def _show_sheets(sheets: List[Dict[str, Any]]) -> None:

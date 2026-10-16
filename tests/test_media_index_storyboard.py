@@ -231,3 +231,22 @@ def test_lyrics_are_transcribed_in_the_named_language_kept_and_shown_against_the
     assert "SPEECH ja-JP: 5 words" in board and 'says "心のなかで"' in board
     quiet = editor.call_receipt("get_lyrics_tool", file_ids=[fid])
     assert quiet["status"] == "error" and "language" in quiet["summary"]
+
+
+def test_several_files_are_all_listed_not_just_the_first(footage, tmp_path):
+    from classes.media_index import facts as F
+    other = sha(73)
+    video, _truth = corpus.hard_cuts(seconds=2.0)
+    F.compute_facts(str(video), fingerprint={"sha256": other}, shelf=footage.shelf, media_type="video", run_speech=False)
+    fid2 = footage.ed.add_file("video", duration=12.0, path=str(video), fingerprint={"sha256": other}, name="second.mp4")
+    library.clear_cache()
+    data = receipt_data(footage.ed, "storyboard_tool", file_ids=[footage.fid, fid2], detail="list")
+    assert [f["file_id"] for f in data["files"]] == [footage.fid, fid2] and all(f["shots"] == 6 for f in data["files"])
+    assert data["shots_shown"] == 12 and data["notes"].count("\nS0 ") + data["notes"].startswith("S0 ") >= 2 or data["notes"].count("S5 ") == 2
+    assert data["sheets"] == [] and "ask for that one file" in data["notes"]
+
+
+def test_a_file_in_the_bin_with_no_shot_list_is_named_not_skipped_silently(footage):
+    ghost = footage.ed.add_file("video", duration=5.0, path="/media/ghost.mp4", fingerprint={"sha256": sha(74)})
+    data = receipt_data(footage.ed, "storyboard_tool", file_ids=[footage.fid, ghost])
+    assert "no shot list yet" in data["notes"] and [f["file_id"] for f in data["files"]] == [footage.fid]
