@@ -460,8 +460,16 @@ def _predicted_look(src_look: Optional[Dict[str, Any]], grade: Optional[Dict[str
     return out
 
 
-def _swap_fix(shot_id: int, scored: List[tuple], pool: List[Any], covering: Any, avoid: set, prefer: str, next_to: set, proposed: Dict[int, str]) -> Optional[str]:
-    """The build_recreation_tool call that swaps this shot's clip for the best other window ("look": the one whose look is closest; "any": the best overall)."""
+def _moment_keys(file_id: str, start: float, length: float) -> List[Tuple[str, int]]:
+    return [(file_id, k) for k in range(int(start / mref.BUCKET_SECONDS), int((start + length) / mref.BUCKET_SECONDS) + 1)]
+
+
+def _swap_fix(shot_id: int, scored: List[tuple], pool: List[Any], covering: Any, moments: Counter, prefer: str, next_to: set,
+              proposed: Dict[int, str]) -> Optional[str]:
+    """The build_recreation_tool call that swaps this shot's clip for the best other window ("look": the one whose look is closest; "any": the
+    best overall). It skips the moment already used, any moment already used twice, and the file of a neighbouring shot, and it books its own
+    pick in *moments* and *proposed* so the next suggestion in the same pass sees it."""
+    length = covering.src_out - covering.src_in
     best, best_key = None, -1.0
     for fidx, w_in, _w_out, _src, score, parts in scored:
         f = pool[fidx]
@@ -469,14 +477,18 @@ def _swap_fix(shot_id: int, scored: List[tuple], pool: List[Any], covering: Any,
             continue                                                      # the same file as a neighbouring shot would be a back-to-back repeat
         if f.file_id == covering.file_id and abs(w_in - covering.src_in) < 0.5:
             continue                                                      # the moment it already uses
-        if any((f.file_id, k) in avoid for k in range(int(w_in / mref.BUCKET_SECONDS), int((w_in + (covering.src_out - covering.src_in)) / mref.BUCKET_SECONDS) + 1)):
-            continue                                                      # a moment already used too often
+        if any(moments[key] >= 2 for key in _moment_keys(f.file_id, w_in, length)):
+            continue                                                      # a moment already used as often as allowed
         key = (2.0 * parts["look"] + score) if prefer == "look" else score
         if key > best_key:
             best, best_key = (f.file_id, w_in), key
     if best is None:
         return None
-    proposed[shot_id] = best[0]                                           # later suggestions in this pass treat it as already there
+    for key in _moment_keys(covering.file_id, covering.src_in, length):
+        moments[key] -= 1
+    for key in _moment_keys(best[0], best[1], length):
+        moments[key] += 1
+    proposed[shot_id] = best[0]
     return f"build_recreation_tool(overrides=[{{reference_shot:{shot_id}, file_id:'{best[0]}', in:{best[1]:.2f}}}], only_shots=[{shot_id}])"
 
 
@@ -535,6 +547,8 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
     placed_files: List[str] = []
     slot_info: Dict[int, Tuple[List[tuple], Any]] = {}
     proposed: Dict[int, str] = {}
+    look_misses: List[int] = []
+    moments: Counter = Counter()                                    # filled once every slot is read; swaps book into it
 
     def neighbour_files(shot_id: int) -> set:
         order = [i for i, _a, _b, _r in slots]
@@ -592,9 +606,10 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
                 look_scores.append(1.0 if dist < LOOK_CLOSE else max(0.0, 1.0 - (dist - LOOK_CLOSE) / 0.8))
                 if dist >= LOOK_CLOSE:
                     findings.setdefault(shot_id, []).append(f"look is {dist:.2f} from the reference's" + (" even with its grade" if grade else " and it is not graded"))
-                    # a grade can only move a look so far: when it already has one, the fix is a source whose own look is closer
-                    swap = _swap_fix(shot_id, scored, pool, covering, set(), "look", neighbour_files(shot_id), proposed) if grade else None
-                    fixes.setdefault(shot_id, swap or "build_recreation_tool(grade=true, only_shots=[%d])" % shot_id)
+                    if grade:
+                        look_misses.append(shot_id)                            # a grade can only move a look so far: the fix is a source whose own look is closer (below)
+                    else:
+                        fixes.setdefault(shot_id, "build_recreation_tool(grade=true, only_shots=[%d])" % shot_id)
 
     reuse_max = max(buckets.values(), default=0)
     uses = Counter(placed_files)
@@ -607,6 +622,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
         variety_penalty += min(0.3, (share - 0.25) * 2.0)
     variety_penalty += min(0.3, back_to_back / max(1, len(placed_files)) * 2.0)
     overused = {key for key, n in buckets.items() if n > 2}
+    moments.update(buckets)
     if overused:
         seen: Counter = Counter()
         for shot_id, a, _b, _row in slots:
@@ -622,9 +638,14 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
                 name = by_id[c.file_id].name[:24] if c.file_id in by_id else c.file_id
                 findings.setdefault(shot_id, []).append(f"same moment of {name} used {buckets[hot[0]]} times")
                 info = slot_info.get(shot_id)
-                swap = _swap_fix(shot_id, info[0], pool, info[1], overused, "any", neighbour_files(shot_id), proposed) if info else None
+                swap = _swap_fix(shot_id, info[0], pool, info[1], moments, "any", neighbour_files(shot_id), proposed) if info else None
                 if swap:
                     fixes.setdefault(shot_id, swap)
+
+    for shot_id in look_misses:                                            # after the repeats are settled, so a look swap cannot make a new one
+        info = slot_info.get(shot_id)
+        swap = _swap_fix(shot_id, info[0], pool, info[1], moments, "look", neighbour_files(shot_id), proposed) if info else None
+        fixes.setdefault(shot_id, swap or "build_recreation_tool(grade=true, only_shots=[%d])" % shot_id)
 
     song_present = any(c.start <= 0.5 and c.length >= 0.8 * max(b for _i, _a, b, _r in slots) for c in ref_clips)
     audible = sum(1 for c in pictures if not _is_muted(c.id))
