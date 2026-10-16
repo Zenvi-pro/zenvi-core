@@ -61,6 +61,24 @@ counting how shots join and how many cuts land on a beat. For this file: 77 hard
 beat at 136 BPM (about 19%, below the 27% expected by chance), so this ending's cuts are not locked to the beat. Run 4 (Claude Code
 with these changes) is still to be measured.
 
+## Round after run 4: what was added, and what did not work
+Added (all local, no credits): lyrics, camera speeds on the rows, `[unsure]` on hedging descriptions, `[no description]` on shots the
+description pass left out, a header with the cut rhythm, the song's sections and far-apart look-alike shots, and an opt-in `look` column.
+- **Lyrics.** The speech layer had 0 words for this file because Apple's engine listens in the machine's language. With locale ja-JP the
+  same engine returns 243 characters in about 2 s (20 s of audio took 1.6 s). The language is taken from the script of the file name (kana
+  means Japanese), tried once, and kept on the shelf; `get_lyrics_tool` does it on demand for any locale. It is a machine transcription of
+  singing: parts read as real Japanese, other stretches are garbled, and there is no reference text here to score it against.
+- **Why not try every language.** Apple allows 5 locales at once, and a new language took about 15 s on first use (the system fetching
+  its model), so a blind scan per file would be slow and download models.
+- **Tested and not shipped: description-against-picture agreement.** The description and the keyframe of a shot are both stored as vectors
+  in one space, and matched pairs score 0.43 against 0.30 for mismatched ones. But the five known description errors ranked 9th to 70th
+  of 84 by that score, so it cannot find them. The `[unsure]` mark (the model's own hedging) caught 1 of those 5 plus 3 shots that really are unclear.
+- **Repeats.** The two fish at the start and the end score 0.86 and 0.87. Pairs that are neighbours score higher (a scene resembles itself),
+  so only pairs at least 15% of the video apart are listed; 10 pairs, about 80 tokens.
+- **A second bug of the same family as the Japanese title.** The speech helper's output was also read with the machine's default encoding,
+  so the lyrics failed inside the app with an 'ascii' error while working in a terminal. Every place that reads ffmpeg, ffprobe or the
+  helper as text now reads UTF-8.
+
 ## Run 1 vs run 3
 | | run 1 (frames) | run 3 (index) | change |
 |---|---|---|---|
