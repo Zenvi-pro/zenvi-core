@@ -286,3 +286,16 @@ def test_a_shot_left_out_on_purpose_is_reported_as_skipped_not_as_missing(studio
     assert out["placed"] == 5 and out["unfilled"] == [2]
     result = check(studio, plan_id=pid)
     assert result["skipped"] == [2] and result["areas"]["coverage"] == 100.0 and "skipped on purpose" in studio.ed.call_receipt("check_recreation_tool", reference_file_id=studio.ref, plan_id=pid)["summary"]
+
+
+def test_comparing_shots_shows_the_reference_beside_the_chosen_footage(studio, monkeypatch):
+    import numpy as np
+    from classes.editor_tools import media_index_tools_recreate as R
+    pid = plan(studio)["plan_id"]
+    seen = []
+    monkeypatch.setattr(R, "_tile", lambda f, t: (seen.append((str(f.id), round(t, 2))) or np.zeros((R.TILE_HEIGHT, R.TILE_WIDTH, 3), dtype=np.uint8)))
+    monkeypatch.setattr("classes.editor_tools.media_index_tools_precision._sheet_jpeg", lambda path: b"jpeg")
+    out = receipt_data(studio.ed, "compare_recreation_tool", reference_file_id=studio.ref, shots=[1, 4, 99], plan_id=pid)
+    assert [r["shot"] for r in out["rows"]] == [1, 4] and [e["shot"] for e in out["skipped"]] == [99]
+    assert len(seen) == 4 and seen[0][0] == str(studio.ref) and seen[1][0] != str(studio.ref)       # reference tile, then footage tile, per shot
+    assert abs(seen[0][1] - (1 * SHOT + SHOT / 2)) < 1e-6                                              # the middle of the reference shot
