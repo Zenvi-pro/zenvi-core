@@ -185,7 +185,13 @@ def zenvi_pids():
 def quit_zenvi():
     say("closing Zenvi")
     if SYSTEM == "Darwin":
-        subprocess.run(["osascript", "-e", 'tell application "Zenvi" to quit'], timeout=60)
+        # Cleanup only (every check has passed): a quit request that hangs --
+        # an AppleEvents prompt on some runners -- falls through to a kill.
+        try:
+            subprocess.run(["osascript", "-e", 'tell application "Zenvi" to quit'], timeout=30,
+                           capture_output=True)
+        except subprocess.TimeoutExpired:
+            say("quitting Zenvi through AppleScript timed out; ending it")
     elif SYSTEM == "Windows":
         subprocess.run(["taskkill", "/IM", "zenvi.exe"], capture_output=True)
     else:
