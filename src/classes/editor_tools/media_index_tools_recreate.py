@@ -416,8 +416,12 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
     placed_ids, replaced, graded, song_note = _in_one_batch(run)
 
     unfilled = [r["reference_shot"] for r in plan["rows"] if not _effective(r, plan)]
+    from classes.editor_tools import playback_health
+    playback_note = playback_health.start_preview_copies({_effective(r, plan)["file_id"] for r in todo}, len(placed_ids))
+    layer_now = _layer_of(plan["track_name"])
+    playback_note += playback_health.stacked_tracks_note(layer_now, min(snap(r["start"]) for r in todo), max(snap(r["end"]) for r in todo))
     return ok(f"Placed {len(placed_ids)} shot(s) on track '{plan['track_name']}' (replaced {replaced}), graded {graded}.{song_note}"
-              + (f" Unfilled: {unfilled}." if unfilled else ""),
+              + (f" Unfilled: {unfilled}." if unfilled else "") + playback_note,
               plan_id=plan["id"], placed=len(placed_ids), replaced=replaced, graded=graded, unfilled=unfilled,
               next="check_recreation_tool(plan_id) scores it against the reference; fix the shots it names, then check again.")
 

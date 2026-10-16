@@ -378,8 +378,11 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
     end = max(p["end"] for p in placed)
     how = f", {os.path.splitext(os.path.basename(trans_path))[0]} transitions" if trans_path else (
         ", random transitions" if trans_random else (f", fade {fade}" if fade != "none" else ""))
+    from classes.editor_tools import playback_health
+    copies_note = playback_health.start_preview_copies(
+        [str(getattr(fresh(cid), "data", {}).get("file_id") or "") for cid in clip_ids if fresh(cid)], len(placed))
     return ok(f"Placed {len(placed)} clip(s) on {track_name(layer)} from {start:.2f} s to {end:.2f} s "
-              f"({end - start:.1f} s{how}{fit_note}).",
+              f"({end - start:.1f} s{how}{fit_note}).{copies_note}",
               track=ui_track_number(layer), start=r3(start), end=r3(end), total_seconds=r3(end - start),
               clips=placed, transition_ids=transition_ids, trimmed_file_ids=trimmed_ids,
               overlap_seconds=r3(overlap))
