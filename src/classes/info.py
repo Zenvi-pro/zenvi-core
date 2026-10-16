@@ -29,7 +29,7 @@ import os
 import sys
 from time import strftime
 
-VERSION = "1.2.2"
+VERSION = "1.2.1.1"
 # libopenshot 1.0.0 ships the 4.0-era effects and the corrected Crop location math.
 MINIMUM_LIBOPENSHOT_VERSION = "1.0.0"
 DATE = "20260813000000"
@@ -456,7 +456,7 @@ WEB_BACKEND = 'auto'
 # GitHub repository used for releases checks (required by version/auto-updater).
 # Must be in the form "owner/repo" for the GitHub API URL formatter.
 # Read before BACKEND_URL resolution (which loads .env via api_client).
-GITHUB_REPO = os.getenv("ZENVI_GITHUB_REPO", "Zenvi-pro/zenvi-core")
+GITHUB_REPO = os.getenv("ZENVI_GITHUB_REPO", "jashanpratapsingh/zenvi-core")
 
 
 def _resolve_backend_url():
