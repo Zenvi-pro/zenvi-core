@@ -108,7 +108,10 @@ def _status(stage):
 
 
 def _helper_done(stage):
-    return _status(stage).get("ok") in (True, False) and not (stage / ui._HELPER_SH_NAME).exists()
+    # Each helper deletes its own script, and the lock, as its last steps.
+    return (_status(stage).get("ok") in (True, False)
+            and not any(p.name.startswith("zenvi_update_helper-") for p in stage.iterdir())
+            and not (stage / ".install-lock").exists())
 
 
 # ── macOS ────────────────────────────────────────────────────────────────────
@@ -170,7 +173,8 @@ def test_macos_update_keeps_the_old_app_when_the_image_has_no_zenvi(tmp_path, st
 @posix_only
 @needs_hdiutil
 def test_macos_update_waits_for_another_session_and_postpones(tmp_path, staging, monkeypatch):
-    apps = tmp_path / "Applications"
+    # Regex characters in the path must not hide the other session.
+    apps = tmp_path / "My Apps (old)+1"
     apps.mkdir()
     app = _make_app(apps / "Zenvi.app", "1.0.0")
     # A headless Zenvi session running from the same bundle (as ps and pgrep
@@ -184,12 +188,15 @@ def test_macos_update_waits_for_another_session_and_postpones(tmp_path, staging,
         opener, opened = _fake_opener(tmp_path)
 
         zenvi = _zenvi_stand_in(0.5)
+        ui._record_attempt("9.9.9")
         assert ui._apply_macos(str(dmg), dmg.name, "9.9.9", zenvi.pid, 1, open_cmd=str(opener))
         zenvi.wait()
 
         assert _wait_for(lambda: _helper_done(staging)), (staging / "install.log").read_text()
         assert _status(staging)["ok"] is False
         assert "Another Zenvi session" in _status(staging)["reason"]
+        # Postponing isn't a failed attempt.
+        assert _status(staging)["postponed"] is True and _status(staging)["attempts"] == 0
         assert _version_of(app) == "1.0.0"
         assert session.poll() is None, "the other session must not be touched"
     finally:
@@ -275,18 +282,28 @@ def test_a_zenvi_that_hangs_on_quit_is_ended_so_the_update_still_lands(tmp_path,
 
 # ── The helpers' environment ─────────────────────────────────────────────────
 
+@posix_only
 def test_the_helper_gets_nothing_that_points_into_the_old_installation(monkeypatch):
+    mount = "/tmp/.mount_ZenviAb12"
     env = {
-        "HOME": "/home/u", "PATH": os.pathsep.join(["/tmp/.mount_ZenviAb12/usr/bin", "/home/u/.local/bin"]),
-        "LD_LIBRARY_PATH": "/tmp/.mount_ZenviAb12/usr/lib", "DYLD_LIBRARY_PATH": "/Applications/Zenvi.app/x",
-        "PYTHONPATH": "/x", "PYTHONHOME": "/x", "QT_PLUGIN_PATH": "/x", "QTWEBENGINEPROCESS_PATH": "/x",
-        "APPDIR": "/tmp/.mount_ZenviAb12", "APPIMAGE": "/home/u/Zenvi.AppImage", "LANG": "en_US.UTF-8",
+        "HOME": "/home/u", "LANG": "en_US.UTF-8",
+        "PATH": os.pathsep.join([f"{mount}/usr/bin", "/home/u/.local/bin"]),
+        "LD_LIBRARY_PATH": os.pathsep.join([f"{mount}/usr/lib", f"{mount}/usr/lib/lib"]),
+        "DYLD_LIBRARY_PATH": "/Applications/Zenvi.app/Contents/MacOS",
+        "PYTHONPATH": f"{mount}/usr/lib", "PYTHONHOME": f"{mount}/usr",
+        "QT_PLUGIN_PATH": f"{mount}/usr/plugins",
+        "APPDIR": mount, "APPIMAGE": "/home/u/Zenvi.AppImage",
+        # The user's own: kept.
+        "XDG_DATA_DIRS": os.pathsep.join([f"{mount}/usr/share", "/var/lib/snapd/desktop", "/usr/share"]),
+        "QT_STYLE_OVERRIDE": "fusion", "GTK_THEME": "Adwaita:dark",
     }
-    clean = ui._clean_env(env)
+    clean = ui._clean_env(env, install_dirs=[mount])
     assert clean["HOME"] == "/home/u" and clean["LANG"] == "en_US.UTF-8"
     for key in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "QT_PLUGIN_PATH",
-                "QTWEBENGINEPROCESS_PATH", "APPDIR", "APPIMAGE"):
-        assert key not in clean
+                "APPDIR", "APPIMAGE"):
+        assert key not in clean, key
+    assert clean["XDG_DATA_DIRS"] == os.pathsep.join(["/var/lib/snapd/desktop", "/usr/share"])
+    assert clean["QT_STYLE_OVERRIDE"] == "fusion" and clean["GTK_THEME"] == "Adwaita:dark"
     path = clean["PATH"].split(os.pathsep)
     assert "/home/u/.local/bin" in path
     assert not any(".mount_" in p for p in path)
@@ -308,6 +325,13 @@ def test_launching_stops_retrying_a_version_that_keeps_failing(tmp_path, staging
         assert ui.has_pending_update(for_launch=True)
         assert ui.apply_pending_update(wait_pid=12345)
         ui._record_failure("9.9.9", "the helper failed")
+        # Right after a failure (the helper reopening the old version) a
+        # launch doesn't try again...
+        assert not ui.has_pending_update(for_launch=True)
+        # ...but one later does.
+        status = ui.read_status()
+        status["time"] -= ui.RETRY_LAUNCH_AFTER + 1
+        ui._write_status(status)
 
     assert not ui.has_pending_update(for_launch=True)
     assert not ui.apply_pending_update(wait_pid=12345)
@@ -388,3 +412,75 @@ def test_the_macos_admin_swap_quotes_paths_with_quotes_and_spaces(tmp_path):
     driver.write_text(script + f'\nas_admin /bin/mkdir -p "{target}"\n')
     subprocess.run(["sh", str(driver)], check=True, timeout=30)
     assert target.is_dir()
+
+
+# ── One install at a time ────────────────────────────────────────────────────
+
+@posix_only
+def test_a_second_helper_stops_while_one_is_installing(tmp_path, staging, monkeypatch):
+    marker = tmp_path / "ran.txt"
+    installed = _fake_appimage(tmp_path / "Zenvi.AppImage", "1.0.0", marker)
+    new = _fake_appimage(staging / "Zenvi-v9.9.9-x86_64.AppImage", "9.9.9", marker)
+    _write_manifest(staging, new)
+    monkeypatch.setenv("APPIMAGE", str(installed))
+
+    zenvi = _zenvi_stand_in(2)
+    assert ui._apply_appimage(str(new), "9.9.9", zenvi.pid, 1)
+    time.sleep(0.5)
+    # A second launch during the install (e.g. a double click) starts another.
+    assert ui._apply_appimage(str(new), "9.9.9", zenvi.pid, 1)
+    zenvi.wait()
+
+    assert _wait_for(lambda: _helper_done(staging)), (staging / "install.log").read_text()
+    log = (staging / "install.log").read_text()
+    assert "Another update helper is already installing" in log
+    assert log.count("Installed 9.9.9") == 1
+    assert "9.9.9" in installed.read_text()
+
+
+@posix_only
+def test_a_parent_left_as_a_zombie_counts_as_quit(tmp_path, staging, monkeypatch):
+    marker = tmp_path / "ran.txt"
+    installed = _fake_appimage(tmp_path / "Zenvi.AppImage", "1.0.0", marker)
+    new = _fake_appimage(staging / "Zenvi-v9.9.9-x86_64.AppImage", "9.9.9", marker)
+    _write_manifest(staging, new)
+    monkeypatch.setenv("APPIMAGE", str(installed))
+    monkeypatch.setattr(ui, "APP_EXIT_TIMEOUT", 60)
+
+    zombie = subprocess.Popen([sys.executable, "-c", "pass"])  # exits; never reaped here
+    time.sleep(1)
+    started = time.monotonic()
+    assert ui._apply_appimage(str(new), "9.9.9", zombie.pid, 1)
+    assert _wait_for(lambda: _helper_done(staging), 30), (staging / "install.log").read_text()
+    assert time.monotonic() - started < 20
+    zombie.wait()
+
+
+def test_a_launch_during_an_install_waits_for_it(staging):
+    ui._write_status({"version": "9.9.9", "attempts": 1, "ok": None, "time": int(time.time())})
+    lock = staging / ".install-lock"
+    lock.mkdir()
+    (lock / "pid").write_text(str(os.getpid()))
+    assert ui.install_in_progress()
+
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    (lock / "pid").write_text(str(dead.pid))
+    assert not ui.install_in_progress(), "a helper that died doesn't block launches"
+
+    (lock / "pid").write_text(str(os.getpid()))
+    ui._write_status({"version": "9.9.9", "attempts": 1, "ok": None,
+                      "time": int(time.time()) - ui.INSTALL_STALE_AFTER - 1})
+    assert not ui.install_in_progress(), "nor does a stale attempt"
+
+    ui._write_status({"version": "9.9.9", "attempts": 1, "ok": True, "time": int(time.time())})
+    assert not ui.install_in_progress()
+
+
+def test_each_helper_runs_its_own_script_file(staging, monkeypatch):
+    seen = []
+    monkeypatch.setattr(ui.subprocess, "Popen", lambda cmd, **kw: seen.append(cmd[1]))
+    ui._spawn_posix_helper("echo one", [])
+    ui._spawn_posix_helper("echo two", [])
+    assert len(set(seen)) == 2
+    assert [open(p).read() for p in seen] == ["echo one", "echo two"]

@@ -56,6 +56,8 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 SignedUninstaller=no
 ; SignedUninstallerDir=..\build\
 PrivilegesRequiredOverridesAllowed=commandline
+; One Setup at a time: two updates installing at once would fight over {app}.
+SetupMutex=ZenviSetupMutex,Global\ZenviSetupMutex
 AllowNoIcons=yes
 
 [Languages]

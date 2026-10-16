@@ -44,6 +44,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +184,61 @@ def _write_status(status):
         _log(f"Could not record the update status: {exc}")
 
 
+# A launch right after a failed attempt (often the reopened old version)
+# doesn't try again for this long.
+RETRY_LAUNCH_AFTER = 600
+# An attempt still marked "installing" is taken as running for this long
+# when its helper's pid can't be checked (Windows).
+INSTALL_STALE_AFTER = 900
+_LOCK_DIR_NAME = ".install-lock"
+
+
+def install_in_progress():
+    """True while an installer helper is (likely) still working."""
+    status = read_status()
+    if status.get("ok") is not None:
+        return False
+    try:
+        age = time.time() - float(status.get("time") or 0)
+    except (TypeError, ValueError):
+        return False
+    if age > INSTALL_STALE_AFTER:
+        return False
+    try:
+        with open(os.path.join(UPDATE_STAGING_DIR, _LOCK_DIR_NAME, "pid"), encoding="utf-8") as fh:
+            pid = int(fh.read().strip() or 0)
+    except (OSError, ValueError):
+        # No helper has taken the lock (yet): only a just-started one counts.
+        return age < 30
+    return _pid_alive(pid)
+
+
+def _pid_alive(pid):
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not handle:
+                return False
+            try:
+                code = ctypes.c_ulong()
+                return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+
+
 def install_attempts(version):
     """How many times installing *version* was tried and did not finish."""
     status = read_status()
@@ -237,8 +293,18 @@ def has_pending_update(for_launch=False):
     running = _running_version()
     if staged_ver and running and not is_version_newer(staged_ver, running):
         return False
-    if for_launch and install_attempts(staged_ver) >= MAX_INSTALL_ATTEMPTS:
-        return False
+    if for_launch:
+        if install_attempts(staged_ver) >= MAX_INSTALL_ATTEMPTS:
+            return False
+        status = read_status()
+        try:
+            recent = time.time() - float(status.get("time") or 0) < RETRY_LAUNCH_AFTER
+        except (TypeError, ValueError):
+            recent = False
+        if status.get("version") == staged_ver and status.get("ok") is False and recent:
+            # The helper just reopened this version after a failed or
+            # postponed attempt: don't go straight back into another one.
+            return False
     return True
 
 
@@ -346,14 +412,10 @@ def _show_update_notice(system, version):
 # Helper process environment
 # ---------------------------------------------------------------------------
 
-# Variables the app's launchers point into the installation being replaced.
-# The helper, and the Zenvi it reopens, must not load anything from there.
-_ENV_DROP_PREFIXES = (
-    "DYLD_", "LD_", "PYTHON", "QT_", "QTWEBENGINE", "MAGICK_", "GST_", "GIO_",
-    "GDK_", "GTK_", "GSETTINGS", "GI_TYPELIB", "FONTCONFIG", "OPENSSL_",
-    "SSL_CERT_", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "APPDIR", "APPIMAGE",
-    "ARGV0", "OWD", "PERLLIB", "XDG_DATA_DIRS", "TCL_", "TK_",
-)
+# The AppImage runtime describes the old mount in these; the reopened
+# AppImage sets its own. DYLD_ variables only ever come from launch-mac.
+_ENV_DROP = ("APPDIR", "APPIMAGE", "ARGV0", "OWD", "PYTHONHOME")
+_ENV_DROP_PREFIXES = ("DYLD_",)
 
 
 def _install_dirs():
@@ -370,32 +432,60 @@ def _install_dirs():
     return [os.path.normcase(os.path.abspath(d)) for d in dirs if d]
 
 
-def _clean_env(base=None):
-    """A copy of the environment with nothing pointing into the installation."""
+def _clean_env(base=None, install_dirs=None):
+    """A copy of the environment with nothing pointing into the installation.
+
+    The launchers prepend the install's own folders to LD_LIBRARY_PATH,
+    PYTHONPATH, QT_PLUGIN_PATH, XDG_DATA_DIRS...; the helper, and the Zenvi
+    it reopens, must not load anything from the copy being replaced. Only
+    those entries go: the user's own settings (a snap browser's
+    XDG_DATA_DIRS, their Qt theme, their PATH) stay.
+    """
     env = dict(os.environ if base is None else base)
+    dirs = _install_dirs() if install_dirs is None else install_dirs
+
+    def inside(part):
+        if "/.mount_" in part or "/AppTranslocation/" in part:
+            return True
+        norm = os.path.normcase(os.path.abspath(part))
+        return any(norm == d or norm.startswith(d + os.sep) for d in dirs)
+
     for key in list(env):
-        if key.upper().startswith(_ENV_DROP_PREFIXES):
+        upper = key.upper()
+        if upper in _ENV_DROP or upper.startswith(_ENV_DROP_PREFIXES):
             del env[key]
-    install_dirs = _install_dirs()
-    parts = []
-    for part in env.get("PATH", "").split(os.pathsep):
-        norm = os.path.normcase(os.path.abspath(part)) if part else ""
-        if not part or "/.mount_" in part or any(
-                norm == d or norm.startswith(d + os.sep) for d in install_dirs):
             continue
-        parts.append(part)
+        value = env[key]
+        if not value or not any(sep in value for sep in ("/", "\\")):
+            continue
+        parts = value.split(os.pathsep)
+        kept = [part for part in parts if not (part and inside(part))]
+        if len(kept) == len(parts):
+            continue
+        if any(kept) or upper == "PATH":
+            env[key] = os.pathsep.join(kept)
+        else:
+            del env[key]
     if os.name != "nt":
+        parts = [part for part in env.get("PATH", "").split(os.pathsep) if part]
         for system_dir in ("/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"):
             if system_dir not in parts:
                 parts.append(system_dir)
-    env["PATH"] = os.pathsep.join(parts)
+        env["PATH"] = os.pathsep.join(parts)
     return env
+
+
+def _helper_path(suffix):
+    """A script file of its own for each helper: a second one must never
+    overwrite a script the first is still reading."""
+    return os.path.join(UPDATE_STAGING_DIR, "zenvi_update_helper-%d-%s%s" % (
+        os.getpid(), uuid.uuid4().hex[:12], suffix))
 
 
 def _spawn_posix_helper(script, args):
     """Write *script* to the staging dir and run it with /bin/sh, detached
     from this process (its own session, so it outlives our exit)."""
-    path = os.path.join(UPDATE_STAGING_DIR, _HELPER_SH_NAME)
+    path = _helper_path(".sh")
     try:
         os.makedirs(UPDATE_STAGING_DIR, exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
@@ -432,15 +522,51 @@ json_str() {
     printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\n\r'
 }
 
-status() {  # status true|false "reason"
-    printf '{"version": "%s", "attempts": %s, "ok": %s, "reason": "%s", "time": %s}\n' \
-        "$(json_str "$VERSION")" "$ATTEMPTS" "$1" "$(json_str "$2")" "$(date +%s)" \
+status() {  # status true|false "reason" [postponed]
+    attempts="$ATTEMPTS"
+    postponed=false
+    if [ "$3" = postponed ]; then
+        # Postponing isn't a failed attempt.
+        attempts=$((ATTEMPTS > 0 ? ATTEMPTS - 1 : 0))
+        postponed=true
+    fi
+    printf '{"version": "%s", "attempts": %s, "ok": %s, "postponed": %s, "reason": "%s", "time": %s}\n' \
+        "$(json_str "$VERSION")" "$attempts" "$1" "$postponed" "$(json_str "$2")" "$(date +%s)" \
         > "$STATUS.tmp" 2>/dev/null && mv -f "$STATUS.tmp" "$STATUS" 2>/dev/null
 }
 
+alive() {  # running, and not a zombie its parent hasn't reaped
+    kill -0 "$1" 2>/dev/null || return 1
+    case "$(ps -o stat= -p "$1" 2>/dev/null)" in
+        Z*) return 1 ;;
+    esac
+    return 0
+}
+
+LOCK="$(dirname "$STATUS")/.install-lock"
+take_lock() {  # one installer helper at a time
+    if ! mkdir "$LOCK" 2>/dev/null; then
+        holder=$(cat "$LOCK/pid" 2>/dev/null)
+        if [ -n "$holder" ] && alive "$holder"; then
+            return 1
+        fi
+        rm -rf "$LOCK"
+        mkdir "$LOCK" 2>/dev/null || return 1
+    fi
+    echo $$ > "$LOCK/pid"
+    trap 'rm -rf "$LOCK"' EXIT
+    return 0
+}
+
+if ! take_lock; then
+    log "Another update helper is already installing; this one stops"
+    rm -f "$0"
+    exit 0
+fi
+
 wait_for_exit() {  # Zenvi's pid: wait, then end it if it hangs (it was asked to quit)
     n=0
-    while kill -0 "$1" 2>/dev/null; do
+    while alive "$1"; do
         n=$((n + 1))
         if [ "$n" -ge $((APP_EXIT_TIMEOUT * 5)) ]; then
             log "Zenvi (pid $1) did not quit in ${APP_EXIT_TIMEOUT} s; ending it"
@@ -519,7 +645,7 @@ log "Update helper started for $VERSION; waiting for Zenvi (pid $PID) to quit"
 wait_for_exit "$PID"
 if ! wait_for_others; then
     log "Another Zenvi session is still running from $TARGET; update postponed"
-    status false "Another Zenvi session was still running. Close it and restart Zenvi to update."
+    status false "Another Zenvi session was still running. Close it, then use Restart to Update." postponed
     reopen
     rm -f "$0"
     exit 0
@@ -595,7 +721,7 @@ log "Update helper started for $VERSION; waiting for Zenvi (pid $PID) to quit"
 wait_for_exit "$PID"
 if ! wait_for_others; then
     log "Another Zenvi session is still running ($APP_EXE); update postponed"
-    status false "Another Zenvi session was still running. Close it and restart Zenvi to update."
+    status false "Another Zenvi session was still running. Close it, then use Restart to Update." postponed
     reopen
     rm -f "$0"
     exit 0
@@ -676,7 +802,7 @@ _MACOS_HELPER = r'''#!/bin/sh
 # once Zenvi has quit, then opens Zenvi again.
 PID="$1"; DMG="$2"; TARGET="$3"; MANIFEST="$4"; LOG="$5"; STATUS="$6"
 VERSION="$7"; ATTEMPTS="$8"; APP_EXIT_TIMEOUT="$9"; shift 9
-OTHER_TIMEOUT="$1"; OPEN="$2"; BUNDLE_ID="$3"
+OTHER_TIMEOUT="$1"; OPEN="$2"; BUNDLE_ID="$3"; RUNNING="$4"
 ''' + _SH_COMMON + r'''
 NEW="$TARGET.zenvi-update-new"
 OLD="$TARGET.zenvi-update-old"
@@ -684,14 +810,25 @@ MNT=""
 STAGE=""
 
 other_sessions() {  # Zenvis still running from the bundle being replaced
-    /usr/bin/pgrep -f "^$TARGET/Contents/MacOS/(zenvi|launch-mac)( |\$)" 2>/dev/null
+    # A prefix match on the command line, not a regex: paths may hold ( ) + .
+    /bin/ps -axo pid=,command= 2>/dev/null | while read -r pid cmd; do
+        case "$cmd" in
+            "$TARGET/Contents/MacOS/zenvi"|"$TARGET/Contents/MacOS/zenvi "*|\
+            "$TARGET/Contents/MacOS/launch-mac"|"$TARGET/Contents/MacOS/launch-mac "*)
+                echo "$pid" ;;
+        esac
+    done
 }
 
-reopen() {
-    if [ -n "$OPEN" ] && [ -d "$TARGET" ]; then
-        "$OPEN" "$TARGET" >>"$LOG" 2>&1 || "$OPEN" -n "$TARGET" >>"$LOG" 2>&1
-        log "Reopened $TARGET"
-    fi
+reopen() {  # the installed Zenvi, else the copy that asked for the update
+    [ -n "$OPEN" ] || return
+    for app in "$TARGET" "$RUNNING"; do
+        if [ -n "$app" ] && [ -d "$app" ]; then
+            "$OPEN" "$app" >>"$LOG" 2>&1 || "$OPEN" -n "$app" >>"$LOG" 2>&1
+            log "Reopened $app"
+            return
+        fi
+    done
 }
 
 detach() {
@@ -734,7 +871,7 @@ log "Update helper started for $VERSION; waiting for Zenvi (pid $PID) to quit"
 wait_for_exit "$PID"
 if ! wait_for_others; then
     log "Another Zenvi session is still running from $TARGET; update postponed"
-    status false "Another Zenvi session was still running. Close it and restart Zenvi to update."
+    status false "Another Zenvi session was still running. Close it, then use Restart to Update." postponed
     reopen
     rm -f "$0"
     exit 0
@@ -781,7 +918,8 @@ if [ "$ADMIN" = 0 ]; then
     fi
     mv "$STAGE_NEW" "$TARGET" 2>>"$LOG" || fail "could not move the new version into place"
 else
-    as_admin /bin/sh -c 'rm -rf "$3" && { [ ! -e "$2" ] || mv "$2" "$3"; } && mv "$1" "$2" || { [ -d "$3" ] && [ ! -e "$2" ] && mv "$3" "$2"; exit 1; }' \
+    # One password prompt: swap, then remove the old version, in one go.
+    as_admin /bin/sh -c 'rm -rf "$3" && { [ ! -e "$2" ] || mv "$2" "$3"; } && mv "$1" "$2" || { [ -d "$3" ] && [ ! -e "$2" ] && mv "$3" "$2"; exit 1; }; rm -rf "$3"' \
         sh "$STAGE_NEW" "$TARGET" "$OLD" \
         || fail "the update needs an administrator to install it (the password prompt was cancelled or refused)"
     rm -rf "$STAGE" 2>/dev/null
@@ -792,9 +930,7 @@ status true "installed"
 log "Installed $VERSION into $TARGET"
 reopen
 # The old version goes last, so Zenvi is back on screen without waiting on it.
-if [ -e "$OLD" ]; then
-    rm -rf "$OLD" 2>/dev/null || { [ "$ADMIN" = 1 ] && as_admin /bin/rm -rf "$OLD"; }
-fi
+[ -e "$OLD" ] && rm -rf "$OLD" 2>/dev/null
 rm -f "$0"
 exit 0
 '''
@@ -839,7 +975,7 @@ def _apply_macos(filepath, filename, version="", wait_pid=None, attempts=1, open
     return _spawn_posix_helper(_MACOS_HELPER, [
         wait_pid or os.getpid(), filepath, target, UPDATE_MANIFEST, UPDATE_LOG,
         UPDATE_STATUS, version, attempts, APP_EXIT_TIMEOUT,
-        OTHER_SESSIONS_TIMEOUT, open_cmd or "", _MAC_BUNDLE_ID,
+        OTHER_SESSIONS_TIMEOUT, open_cmd or "", _MAC_BUNDLE_ID, _running_bundle() or "",
     ])
 
 
@@ -962,36 +1098,82 @@ def _build_update_helper_script(filepath, manifest_path, relaunch_target, log_pa
         )
     else:
         relaunch_block = "function Reopen { }\n"
+    expected_exe = _ps_str(relaunch_target) if relaunch_target else "$null"
     wait_parent_block = ""
     if parent_pid:
+        # Not Wait-Process: Zenvi may exit before PowerShell starts, and its
+        # pid be reused by an unrelated program, which must not be waited on
+        # (or ended). A pid whose executable isn't Zenvi's is not Zenvi.
         wait_parent_block = (
             f"Log 'Waiting for parent process {int(parent_pid)} to exit'\n"
-            f"try {{\n"
-            f"    Wait-Process -Id {int(parent_pid)} -Timeout {APP_EXIT_TIMEOUT} "
-            f"-ErrorAction SilentlyContinue\n"
-            f"}} catch {{}}\n"
-            f"if (Get-Process -Id {int(parent_pid)} -ErrorAction SilentlyContinue) {{\n"
-            f"    Log 'Zenvi did not quit in {APP_EXIT_TIMEOUT} s; ending it'\n"
-            f"    Stop-Process -Id {int(parent_pid)} -Force -ErrorAction SilentlyContinue\n"
-            f"    Start-Sleep -Seconds 2\n"
-            f"}}\n"
-            f"Start-Sleep -Milliseconds 400\n"
+            f"$deadline = (Get-Date).AddSeconds({APP_EXIT_TIMEOUT})\n"
+            "while ($true) {\n"
+            f"    $p = Get-Process -Id {int(parent_pid)} -ErrorAction SilentlyContinue\n"
+            "    if (-not $p) { break }\n"
+            "    if ($ZenviExe -and $p.Path -and ($p.Path -ne $ZenviExe)) { break }\n"
+            "    if ((Get-Date) -gt $deadline) {\n"
+            f"        Log 'Zenvi did not quit in {APP_EXIT_TIMEOUT} s; ending it'\n"
+            f"        Stop-Process -Id {int(parent_pid)} -Force -ErrorAction SilentlyContinue\n"
+            "        Start-Sleep -Seconds 2\n"
+            "        break\n"
+            "    }\n"
+            "    Start-Sleep -Milliseconds 300\n"
+            "}\n"
+            "Start-Sleep -Milliseconds 400\n"
+        )
+    other_sessions_block = ""
+    if relaunch_target:
+        # Another Zenvi from this install (a headless session) would be closed
+        # by Setup mid-work: wait for it, else postpone.
+        other_sessions_block = (
+            f"$deadline = (Get-Date).AddSeconds({OTHER_SESSIONS_TIMEOUT})\n"
+            "while (Get-Process -Name zenvi -ErrorAction SilentlyContinue | "
+            "Where-Object { $_.Path -eq $ZenviExe }) {\n"
+            "    if ((Get-Date) -gt $deadline) {\n"
+            "        Log 'Another Zenvi session is still running; update postponed'\n"
+            "        Status $false 'Another Zenvi session was still running. Close it, then use Restart to Update.' $true\n"
+            "        Reopen\n"
+            "        Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue\n"
+            "        exit 0\n"
+            "    }\n"
+            "    Start-Sleep -Milliseconds 500\n"
+            "}\n"
         )
     status_block = ""
     if status_path:
         status_block = (
-            "function Status($ok, $reason) {\n"
-            f"    $s = [ordered]@{{ version = {_ps_str(version)}; attempts = {int(attempts)}; "
-            "ok = $ok; reason = $reason; time = [int][double]::Parse((Get-Date -UFormat %s)) }\n"
+            "function Status($ok, $reason, $postponed = $false) {\n"
+            # Postponing isn't a failed attempt.
+            f"    $attempts = {int(attempts)}\n"
+            "    if ($postponed -and $attempts -gt 0) { $attempts = $attempts - 1 }\n"
+            f"    $s = [ordered]@{{ version = {_ps_str(version)}; attempts = $attempts; "
+            "ok = $ok; postponed = [bool]$postponed; reason = $reason; "
+            "time = [int][double]::Parse((Get-Date -UFormat %s)) }\n"
             f"    $s | ConvertTo-Json | Set-Content -Path {_ps_str(status_path)} "
             "-Encoding UTF8 -ErrorAction SilentlyContinue\n"
             "}\n"
         )
     else:
-        status_block = "function Status($ok, $reason) { }\n"
+        status_block = "function Status($ok, $reason, $postponed = $false) { }\n"
+    lock_block = ""
+    if status_path:
+        lock_dir = os.path.join(os.path.dirname(status_path), _LOCK_DIR_NAME)
+        lock_block = (
+            # One installer helper at a time; the mutex goes with this process.
+            "$mutex = New-Object System.Threading.Mutex($false, 'Local\\ZenviUpdateHelper')\n"
+            "try { $owned = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $owned = $true }\n"
+            "if (-not $owned) {\n"
+            "    Log 'Another update helper is already installing; this one stops'\n"
+            "    Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue\n"
+            "    exit 0\n"
+            "}\n"
+            f"New-Item -ItemType Directory -Force -Path {_ps_str(lock_dir)} | Out-Null\n"
+            f"Set-Content -Path {_ps_str(os.path.join(lock_dir, 'pid'))} -Value $PID -ErrorAction SilentlyContinue\n"
+        )
 
     return (
         "$ErrorActionPreference = 'SilentlyContinue'\n"
+        f"$ZenviExe = {expected_exe}\n"
         "function Log($msg) {\n"
         f"    $line = ('{{0}}  [ZenviUpdater] {{1}}' -f "
         "(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg)\n"
@@ -1002,7 +1184,9 @@ def _build_update_helper_script(filepath, manifest_path, relaunch_target, log_pa
         f"{relaunch_block}"
         "\n"
         "Log 'External updater started'\n"
+        f"{lock_block}"
         f"{wait_parent_block}"
+        f"{other_sessions_block}"
         "try {\n"
         f"{start_process}"
         "    $code = $p.ExitCode\n"
@@ -1050,7 +1234,7 @@ def _spawn_external_updater(filepath, relaunch_target, parent_pid=_AUTO_PARENT_P
     """
     if parent_pid is _AUTO_PARENT_PID:
         parent_pid = os.getpid()
-    script_path = os.path.join(UPDATE_STAGING_DIR, _UPDATE_HELPER_SCRIPT_NAME)
+    script_path = _helper_path(".ps1")
     script = _build_update_helper_script(
         filepath, UPDATE_MANIFEST, relaunch_target, UPDATE_LOG,
         parent_pid=parent_pid, version=version, attempts=attempts,
@@ -1058,7 +1242,9 @@ def _spawn_external_updater(filepath, relaunch_target, parent_pid=_AUTO_PARENT_P
 
     try:
         os.makedirs(UPDATE_STAGING_DIR, exist_ok=True)
-        with open(script_path, "w", encoding="utf-8") as fh:
+        # With a BOM: Windows PowerShell 5.1 reads a .ps1 without one as the
+        # ANSI code page, which garbles paths like C:\\Users\\José.
+        with open(script_path, "w", encoding="utf-8-sig") as fh:
             fh.write(script)
     except OSError as exc:
         _log(f"Failed to write updater helper script: {exc}")
@@ -1196,7 +1382,15 @@ def cleanup_stale_staging():
         path = os.path.join(UPDATE_STAGING_DIR, entry)
         if os.path.normcase(os.path.abspath(path)) in keep or not os.path.isfile(path):
             continue
-        if not (entry.startswith("Zenvi") or entry.endswith((".part", ".tmp"))):
+        if entry.startswith("zenvi_update_helper-"):
+            # Each helper deletes its own script; one left a day later is
+            # from a helper that was killed.
+            try:
+                if time.time() - os.path.getmtime(path) < 86400:
+                    continue
+            except OSError:
+                continue
+        elif not (entry.startswith("Zenvi") or entry.endswith((".part", ".tmp"))):
             continue
         try:
             os.unlink(path)

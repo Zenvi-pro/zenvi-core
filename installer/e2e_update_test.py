@@ -132,8 +132,10 @@ def install(package):
         finally:
             subprocess.run(["hdiutil", "detach", mount, "-quiet", "-force"], timeout=120)
     elif SYSTEM == "Windows":
-        subprocess.run([package, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-"],
-                       check=True, timeout=1200)
+        # /NORESTARTAPPLICATIONS: otherwise the installer opens Zenvi after a
+        # silent install (for 1.0.188's updater), before the test is ready.
+        subprocess.run([package, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+                        "/NORESTARTAPPLICATIONS", "/SP-"], check=True, timeout=1200)
     else:
         os.makedirs(os.path.dirname(LINUX_APPIMAGE), exist_ok=True)
         shutil.copy2(package, LINUX_APPIMAGE)

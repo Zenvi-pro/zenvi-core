@@ -1407,7 +1407,7 @@ jobs:
   # Intel Macs have no runner, so only the arm64 DMG is.
   update-e2e:
     needs: [version, build-linux, build-macos, build-windows]
-    if: always() && needs.version.result == 'success'
+    if: always() && !cancelled() && needs.version.result == 'success'
     strategy:
       fail-fast: false
       matrix:
@@ -1460,7 +1460,8 @@ jobs:
           set -euo pipefail
           TAG=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName || true)
           PREV="${TAG#v}"
-          if [ -z "$TAG" ] || ! python3 -c "import sys; p=lambda v: tuple(int(x) for x in v.split('.')); sys.exit(0 if p(sys.argv[1]) < p(sys.argv[2]) else 1)" "$PREV" "$VER"; then
+          # python, not python3: setup-python provides python on every runner.
+          if [ -z "$TAG" ] || ! python -c "import sys; p=lambda v: tuple(int(x) for x in v.split('.')); sys.exit(0 if p(sys.argv[1]) < p(sys.argv[2]) else 1)" "$PREV" "$VER"; then
             echo "::notice::No published release older than $VER to update from"
             exit 0
           fi

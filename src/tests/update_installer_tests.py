@@ -90,8 +90,24 @@ class UpdateHelperScriptTests(unittest.TestCase):
             r"C:\staged\install.log",
             parent_pid=4242,
         )
-        self.assertIn("Wait-Process -Id 4242", script)
+        self.assertIn("Get-Process -Id 4242", script)
         self.assertIn("External updater started", script)
+
+    def test_one_helper_at_a_time_and_other_sessions_postpone(self):
+        from classes import update_installer as ui
+        script = ui._build_update_helper_script(
+            r"C:\staged\Zenvi-Setup.exe",
+            r"C:\staged\update_manifest.json",
+            r"C:\Program Files\Zenvi\zenvi.exe",
+            r"C:\staged\install.log",
+            parent_pid=4242, status_path=r"C:\staged\update_status.json",
+        )
+        self.assertIn("Local\\ZenviUpdateHelper", script)
+        self.assertIn("Get-Process -Name zenvi", script)
+        self.assertIn("postponed", script)
+        # A reused pid that isn't Zenvi is not waited on (or ended).
+        self.assertIn("$p.Path -ne $ZenviExe", script)
+        self.assertNotIn("Wait-Process", script)
 
     def test_omits_wait_when_no_parent_pid(self):
         from classes import update_installer as ui
@@ -126,17 +142,22 @@ class UpdateHelperScriptTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "win32", "Windows-only")
     def test_script_is_syntactically_valid_powershell(self):
         """Parse (not execute) the generated script with PowerShell's own
-        tokenizer/parser so a real quoting bug would fail this test."""
+        tokenizer/parser so a real quoting bug would fail this test. Every
+        optional part is included: the wait, the lock, the status file and
+        the other-session check."""
         from classes import update_installer as ui
         script = ui._build_update_helper_script(
             r"C:\staged\Zenvi-Setup.exe",
             r"C:\staged\update_manifest.json",
             r"C:\Program Files\Zenvi\zenvi.exe",
             r"C:\staged\install.log",
+            parent_pid=4242, version="9.9.9", attempts=2,
+            status_path=r"C:\Users\José\.openshot_qt\updates\update_status.json",
         )
         fd, path = tempfile.mkstemp(suffix=".ps1")
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            # As _spawn_external_updater writes it: UTF-8 with a BOM.
+            with os.fdopen(fd, "w", encoding="utf-8-sig") as fh:
                 fh.write(script)
             result = subprocess.run(
                 ["powershell.exe", "-NoProfile", "-NonInteractive",
@@ -178,16 +199,17 @@ class SpawnExternalUpdaterTests(unittest.TestCase):
                 r"C:\staged\Zenvi-Setup.exe", r"C:\Program Files\Zenvi\zenvi.exe")
 
         self.assertTrue(ok)
-        script_path = os.path.join(
-            self.tmpdir, self.ui._UPDATE_HELPER_SCRIPT_NAME)
-        self.assertTrue(os.path.isfile(script_path))
-
         mock_popen.assert_called_once()
         args, kwargs = mock_popen.call_args
         cmd = args[0]
         self.assertEqual(cmd[0], "powershell.exe")
         self.assertIn("-File", cmd)
-        self.assertEqual(cmd[cmd.index("-File") + 1], script_path)
+        script_path = cmd[cmd.index("-File") + 1]
+        self.assertTrue(os.path.isfile(script_path))
+        self.assertEqual(os.path.dirname(script_path), self.tmpdir)
+        # With a BOM, or Windows PowerShell 5.1 reads non-ASCII paths as ANSI.
+        with open(script_path, "rb") as fh:
+            self.assertTrue(fh.read().startswith(b"\xef\xbb\xbf"))
         flags = kwargs.get("creationflags")
         self.assertEqual(flags & self.ui._HELPER_CREATIONFLAGS,
                          self.ui._HELPER_CREATIONFLAGS)

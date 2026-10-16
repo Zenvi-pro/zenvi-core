@@ -267,7 +267,7 @@ def _report_startup_failure(context):
         pass
 
 
-def _install_staged_update():
+def _install_staged_update(launch_paths):
     """Hand a staged update to the installer helper and exit, if there is one.
 
     Called once this launch is known to be the only desktop window: a second
@@ -282,7 +282,16 @@ def _install_staged_update():
     try:
         from classes import update_installer
 
-        if update_installer.has_pending_update(for_launch=True) and \
+        if update_installer.install_in_progress():
+            # Opening this copy now would race the helper replacing it; the
+            # helper opens the new Zenvi itself when it's done.
+            import platform
+            manifest = update_installer.read_manifest() or {}
+            update_installer._show_update_notice(platform.system().lower(), manifest.get("version", ""))
+            sys.exit(0)
+        # A launch that opens a file opens it now; the update waits for the
+        # next plain launch or Restart to Update.
+        if not launch_paths and update_installer.has_pending_update(for_launch=True) and \
                 update_installer.apply_pending_update(wait_pid=os.getpid()):
             sys.exit(0)
     except SystemExit:
@@ -367,10 +376,10 @@ def main():
             # Not being able to look must never stop Zenvi from starting.
             logger.warning("Could not check for a running Zenvi", exc_info=True)
             outcome, detail = single_instance.NOT_RUNNING, ""
-        if outcome != single_instance.NOT_RUNNING:
+        if outcome not in (single_instance.NOT_RUNNING, single_instance.DELIVERED):
             # A window that is quitting (e.g. the one that just restarted to
-            # update) may still answer, or hold its socket without answering:
-            # start a window of our own once it is gone.
+            # update) may hold its socket without answering: start a window of
+            # our own once it is gone.
             name = single_instance.server_name(info.USER_PATH)
             if single_instance.went_away(name):
                 print("The running Zenvi quit; starting a new window", file=sys.stderr)
@@ -384,7 +393,7 @@ def main():
             sys.exit(1)
 
         # This is the only window: install a staged update before going on.
-        _install_staged_update()
+        _install_staged_update(launch_paths)
 
     # Normal startup, print module path and lauch application
     print(f"Loaded modules from: {info.PATH}")
