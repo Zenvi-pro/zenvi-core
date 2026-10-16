@@ -8167,10 +8167,34 @@ def resummarize_project_file(file_id: str = "", **kwargs) -> str:
         return f"Error: {e}"
 
 
-def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> str:
-    """Re-index an existing project file in TwelveLabs.
+def _queue_missing_index_layers(file_id: str) -> str:
+    """Send a file with missing index layers through the same indexing job an import uses; "" when that does not apply.
 
-    Skips when the file is already indexed unless force=true.
+    The job builds the free local layers first, then the paid description layer only if the account allows it, and it never pays for a
+    layer already saved. (The upload below is the older index; on its own it left the shelf empty and charged separately.)
+    """
+    from classes.editor_tools.media_index_tools import missing_layers
+    from classes.media_index.flags import v2_enabled
+    from classes.query import File
+    f = File.get(id=file_id)
+    if not f or not v2_enabled():
+        return ""
+    missing = missing_layers(f.data)
+    if not missing:
+        return ""
+    files_model = _get_app().window.files_model
+    if files_model.is_file_indexing(file_id) or files_model.is_file_queued(file_id):
+        return f"File {file_id} is already being indexed (missing: {', '.join(missing)}). Call wait_until_project_indexed_tool, then index_status_tool."
+    files_model._index_file_async(file_id)
+    return (f"File {file_id} queued for indexing (missing: {', '.join(missing)}). The free local layers (shots, colour, sound, speech) come first; "
+            "the AI picture descriptions follow only if the account has indexing allowance, and nothing already saved is paid for again. "
+            "Call wait_until_project_indexed_tool, then index_status_tool to see what is ready.")
+
+
+def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> str:
+    """Index a project file whose index is incomplete: queues it through the normal indexing job (local layers first, then the AI
+    descriptions if the account allows). A file whose index is complete is refreshed with the older upload; skipped when it is already
+    indexed unless force=true.
     Runs entirely on a worker thread.  Only the brief project-data reads
     (file path, duration, project id) are marshalled to the Qt main
     thread; the long-running reindex upload runs off the GUI thread.
@@ -8208,6 +8232,10 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
         state = _run_on_main_thread(_read_project_state, timeout=10)
         if state is None:
             return f"Error: File not found (id={file_id})."
+
+        queued = _run_on_main_thread(_queue_missing_index_layers, file_id, timeout=10)
+        if queued:
+            return queued
 
         if state.get("already_indexed") and not force_reindex:
             tl = state.get("twelvelabs") or {}

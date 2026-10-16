@@ -346,6 +346,23 @@ def get_look_profile(file_id="", file_query="", start=None, end=None, compare_to
     return ok(f"look of {_display_name(f.data)}", **out)
 
 
+def _not_applicable_layers(shelf, sha, ready) -> list:
+    """Layers this file will never have (no speech in a silent clip, no picture in a song)."""
+    return [layer for layer in LAYER_ORDER if not ready[layer] and sha
+            and (shelf.layer(sha, layer) or {}).get("status") == S.NOT_APPLICABLE]
+
+
+def missing_layers(file_data, shelf=None) -> list:
+    """The index layers a file still lacks (and will not simply never have); [] when it is complete or has no fingerprint to look up."""
+    shelf = shelf or default_shelf()
+    sha = sha_of(file_data.get("fingerprint"))
+    if not sha:
+        return []
+    ready = {layer: shelf.layer_ready(sha, layer) for layer in S.LAYER_VERSIONS}
+    na = _not_applicable_layers(shelf, sha, ready)
+    return [layer for layer in LAYER_ORDER if not ready[layer] and layer not in na]
+
+
 @editor_tool(
     "index_status_tool",
     covers=("index.status",),
@@ -375,8 +392,7 @@ def index_status(file_ids=None, only_incomplete=False):
         older = [layer for layer in LAYER_ORDER if ready[layer] and not shelf.layer_ready(sha, layer, version=S.LAYER_VERSIONS[layer])]
         stale = [layer for layer in older if layer not in CLOUD_LAYERS]            # free: refreshed on the next index run
         older_cloud = [layer for layer in older if layer in CLOUD_LAYERS]         # paid: kept as is, newer fields read as unknown
-        na = [layer for layer in LAYER_ORDER if not ready[layer] and sha
-              and (shelf.layer(sha, layer) or {}).get("status") == S.NOT_APPLICABLE]
+        na = _not_applicable_layers(shelf, sha, ready)
         missing = [layer for layer in LAYER_ORDER if not ready[layer] and layer not in na]
         if only_incomplete and not missing:
             continue
