@@ -23,7 +23,7 @@ Usage:
 import logging
 import sys
 
-from qt_api import Qt, QThread, QObject, QTimer, pyqtSignal, pyqtSlot
+from qt_api import Qt, QThread, QObject, QTimer, pyqtSignal, pyqtSlot, isdeleted
 from qt_api import (
     QApplication,
     QDialog,
@@ -38,8 +38,9 @@ from qt_api import (
     QWidget,
 )
 
-from classes.auth_manager import AuthManager, AuthError
+from classes.auth_manager import AuthManager, AuthError, confirmation_code
 from classes import info
+from classes.qt_main_thread import invoke_on_gui
 
 log = logging.getLogger(__name__)
 
@@ -117,6 +118,9 @@ QPushButton#link:hover {{
 
 # ── Background workers ──────────────────────────────────────────────────────
 
+# Sign-in threads that outlived their dialog, kept alive until they finish.
+_orphaned_threads: set = set()
+
 
 class _PasswordWorker(QObject):
     """Calls sign_in or sign_up in a QThread."""
@@ -154,10 +158,6 @@ class LoginWindow(QDialog):
     auth_completed = pyqtSignal(dict)
     auth_cancelled = pyqtSignal()
 
-    # Thread-safe signals from background → main thread
-    _sig_browser_success = pyqtSignal(dict)
-    _sig_browser_timeout = pyqtSignal()
-
     _PAGE_BROWSER = 0
     _PAGE_PASSWORD = 1
 
@@ -179,8 +179,6 @@ class LoginWindow(QDialog):
         self.setStyleSheet(_DIALOG_QSS)
 
         self._build_ui()
-        self._sig_browser_success.connect(self._on_success)
-        self._sig_browser_timeout.connect(self._on_browser_timeout)
 
         if auto_open_browser:
             QTimer.singleShot(0, self._start_browser_flow)
@@ -394,20 +392,33 @@ class LoginWindow(QDialog):
 
         login_url, state = self._auth.start_auth_flow()
         self._url_label.setText(login_url)
+        self._code = confirmation_code(state)
         print(f"[zenvi-auth] browser flow started: {login_url}", file=sys.stderr)
         QTimer.singleShot(1400, self._show_waiting)
 
-        # The poll runs on its own thread; emitting these signals from there
-        # queues the slots onto this dialog's (GUI) thread.
+        # The poll calls back on its own thread, possibly after this dialog
+        # is gone: hop to the GUI thread and check it still exists there.
         self._browser_poll = self._auth.poll_for_session(
             state=state,
-            on_success=self._sig_browser_success.emit,
-            on_timeout=self._sig_browser_timeout.emit,
+            on_success=self._from_poll(self._on_success),
+            on_timeout=self._from_poll(self._on_browser_timeout),
         )
+
+    def _from_poll(self, slot):
+        def call(*args):
+            def run():
+                if not isdeleted(self) and self._browser_poll is not None:
+                    slot(*args)
+            invoke_on_gui(run)
+        return call
 
     def _show_waiting(self) -> None:
         if self._browser_poll is not None:
             self._browser_status.setText("Waiting for authentication…")
+            self._browser_sub.setText(
+                "Approve the sign-in in your browser if it shows the code\n"
+                f"{self._code}\nThis window will close automatically."
+            )
 
     @pyqtSlot()
     def _on_browser_timeout(self) -> None:
@@ -491,9 +502,18 @@ class LoginWindow(QDialog):
             self._browser_poll = None
 
     def _stop_pw_thread(self) -> None:
-        if self._pw_thread and self._pw_thread.isRunning():
-            self._pw_thread.quit()
-            self._pw_thread.wait(1000)
+        thread = self._pw_thread
+        if thread and thread.isRunning():
+            thread.quit()
+            if not thread.wait(1000):
+                # Still inside a network request: let it finish on its own
+                # rather than be destroyed with this dialog while running.
+                thread.setParent(None)
+                _orphaned_threads.add(thread)
+                if self._pw_worker is not None:
+                    _orphaned_threads.add(self._pw_worker)
+                thread.finished.connect(lambda t=thread, w=self._pw_worker: (
+                    _orphaned_threads.discard(t), _orphaned_threads.discard(w)))
         self._pw_thread = None
         self._pw_worker = None
 
@@ -510,13 +530,14 @@ class LoginWindow(QDialog):
         self.accept()
 
     def _cancel(self) -> None:
-        self._stop_browser_thread()
-        self._stop_pw_thread()
-        self.auth_cancelled.emit()
         self.reject()
 
-    def closeEvent(self, event) -> None:
+    def done(self, result) -> None:
+        # Every way out -- Cancel, Escape, the close button, success -- ends
+        # here; WA_DeleteOnClose deletes the dialog right after, so nothing
+        # may still be waiting to call it back.
         self._stop_browser_thread()
         self._stop_pw_thread()
-        self.auth_cancelled.emit()
-        event.accept()
+        if result != QDialog.Accepted:
+            self.auth_cancelled.emit()
+        super().done(result)

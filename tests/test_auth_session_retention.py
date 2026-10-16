@@ -357,3 +357,72 @@ def test_cancelling_one_hand_off_leaves_another_running(auth, monkeypatch):
     assert b_done.wait(5)
     assert not a_done.is_set()
     assert _on_disk()["refresh_token"] == "rb"
+
+
+# ── Races found in review ────────────────────────────────────────────────────
+
+def test_a_failing_refresh_does_not_wipe_a_sign_in_made_meanwhile(auth, monkeypatch):
+    """Refresh in flight, Log Out, sign in again: the old refresh's failure
+    must not clear the new sign-in."""
+    auth.save_session(_session(-60, refresh="old"))
+    server = _server(monkeypatch, answer=FakeResponse(400, {"error_code": "refresh_token_already_used"}),
+                     delay=0.5)
+    heard = []
+    auth.add_revoked_listener(lambda: heard.append(1))
+    worker = threading.Thread(target=auth.is_authenticated)
+    worker.start()
+    while not server.calls:
+        time.sleep(0.01)
+    auth.clear_session()
+    signer = threading.Thread(target=lambda: auth.save_session(_session(3600, refresh="new")))
+    signer.start()
+    worker.join(5)
+    signer.join(10)
+
+    assert _on_disk()["refresh_token"] == "new"
+    assert auth.has_session()
+    assert heard == []
+
+
+def test_a_sign_out_in_another_process_during_a_refresh_stays_signed_out(auth, monkeypatch):
+    auth.save_session(_session(-60))
+
+    def server(url, headers=None, json=None, timeout=None):
+        os.remove(am.AUTH_FILE)          # another process logs out mid-request
+        return FakeAuthServer()(url, headers=headers, json=json, timeout=timeout)
+
+    monkeypatch.setattr(am.requests, "post", server)
+    assert not auth.is_authenticated()
+    assert _on_disk() is None
+
+
+def test_the_gui_thread_never_queues_behind_another_threads_refresh(auth, monkeypatch):
+    auth.save_session(_session(-60))
+    server = _server(monkeypatch, delay=1.5)
+    worker = threading.Thread(target=auth.is_authenticated)
+    worker.start()
+    while not server.calls:
+        time.sleep(0.01)
+
+    # pytest runs this test on the main thread, which is Zenvi's GUI thread.
+    started = time.monotonic()
+    assert auth.get_access_token() is not None
+    assert time.monotonic() - started < 0.5
+    worker.join(5)
+    assert server.calls == ["r1"]
+
+
+# ── The confirmation code ────────────────────────────────────────────────────
+
+def test_the_confirmation_code_matches_the_websites():
+    # src/lib/desktop-handoff.test.ts in zenvi-pro asserts the same values.
+    assert am.confirmation_code("00000000-0000-4000-8000-000000000000") == "5QA-FM2"
+    assert am.confirmation_code("3f2b8c1e-9d4a-4e7b-a1c2-5d6e7f8a9b0c") == "UPJ-EH3"
+
+
+def test_the_sign_in_link_says_this_app_shows_the_code(auth, monkeypatch):
+    opened = []
+    monkeypatch.setattr(am.webbrowser, "open", opened.append)
+    monkeypatch.setattr(am.sys, "platform", "darwin")
+    url, state = auth.start_auth_flow()
+    assert url.endswith(f"/login?state={state}&v=2") and opened == [url]

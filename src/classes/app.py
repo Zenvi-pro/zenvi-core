@@ -563,7 +563,9 @@ class OpenShotApp(QApplication):
             # startup or whenever a refresh later in the session is refused.
             from classes.qt_main_thread import invoke_on_gui
             window = self.window
-            auth.add_revoked_listener(lambda: invoke_on_gui(window.zenvi_session_ended))
+            # Deferred: never run a modal prompt inside whatever GUI code asked
+            # for the token.
+            auth.add_revoked_listener(lambda: invoke_on_gui(window.zenvi_session_ended, defer=True))
             auth.check_session_async()
 
         # Show main window (Win32 HWND icon needed when host is python.exe on Windows).

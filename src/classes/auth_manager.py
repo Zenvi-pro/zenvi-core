@@ -27,6 +27,7 @@ Keeping the session:
 import base64
 import contextlib
 import errno
+import hashlib
 import json
 import logging
 import os
@@ -96,6 +97,7 @@ REFRESH_LOCK_TIMEOUT = 20
 REFRESHED = "refreshed"
 TRANSIENT = "transient"   # offline, timeout, 5xx, 429...: keep the session, retry later
 REVOKED = "revoked"       # the server will never accept this refresh token again
+BUSY = "busy"             # internal: another thread is refreshing right now
 
 # Auth error codes that mean the refresh token is dead for good.
 _REVOKED_ERROR_CODES = frozenset({
@@ -111,6 +113,23 @@ _REVOKED_ERROR_CODES = frozenset({
 
 class AuthError(Exception):
     """Raised when sign-in fails."""
+
+
+# Letters and digits that can't be misread for each other (no I/1, O/0).
+_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def confirmation_code(state: str) -> str:
+    """The code both the app and the website show for a browser sign-in.
+
+    Derived from the state in the URL (the website computes the same, in
+    src/lib/desktop-handoff.ts), so a sign-in link someone else made shows a
+    code that doesn't match the one in the user's Zenvi window.
+    """
+    digest = hashlib.sha256(state.encode("utf-8")).digest()
+    bits = int.from_bytes(digest[:4], "big") >> 2   # 30 bits = 6 characters
+    chars = [_CODE_ALPHABET[(bits >> (5 * (5 - i))) & 31] for i in range(6)]
+    return "".join(chars[:3]) + "-" + "".join(chars[3:])
 
 
 def _refresh_failure_kind(status_code: int, body: dict) -> str:
@@ -307,15 +326,25 @@ class AuthManager:
         """Store a new sign-in (or refreshed tokens) for every Zenvi process."""
         session = self._with_identity(session)
         if getattr(self._file_lock_owner, "held", False):
+            # Inside this thread's own refresh, which holds both locks.
             self._store(session)
             return
-        # A sign-in must not interleave with another process's refresh, which
-        # would write that old sign-in's tokens over this one.
-        with _interprocess_lock(AUTH_LOCK_FILE, 5):
-            self._store(session)
+        # A sign-in must not interleave with a refresh -- this process's, or
+        # another's -- which would then write the old sign-in over this one.
+        with self._refresh_lock:
+            with _interprocess_lock(AUTH_LOCK_FILE, 5):
+                self._store(session)
 
-    def _store(self, session: dict) -> None:
+    def _store(self, session: dict, sign_outs: int | None = None) -> bool:
+        """Make *session* current, on disk and in memory.
+
+        With *sign_outs*, only if nobody signed out since that count was read
+        (checked under the same lock clear_session() takes). Returns whether
+        it was stored.
+        """
         with self._state_lock:
+            if sign_outs is not None and sign_outs != self._sign_out_count:
+                return False
             try:
                 self._write_session_file(session)
                 self._session_on_disk = True
@@ -327,6 +356,7 @@ class AuthManager:
             # the old refresh token is spent either way.
             self._session = session
             self._retry_refresh_at = 0.0
+            return True
 
     def clear_session(self) -> None:
         """Forget the sign-in here and on disk. Never waits for a refresh."""
@@ -430,45 +460,56 @@ class AuthManager:
         return theirs is None or ours is None or theirs >= ours
 
     def _refresh_session(self, seen_refresh_token: str | None = None) -> str:
-        """Trade the refresh token for a new session: REFRESHED, TRANSIENT or REVOKED.
+        """Trade the refresh token for a new session: REFRESHED, TRANSIENT,
+        REVOKED, or BUSY (another thread is refreshing; only on the GUI thread).
 
         *seen_refresh_token* is the token the caller found stale; if another
         thread replaced it while this one waited, that refresh is reused.
         Only REVOKED means the sign-in is over; the caller decides what to do
         with it. Nothing here deletes the session file.
         """
-        with self._refresh_lock:
-            sign_outs = self._sign_out_count
-            current = self._session
-            if current and seen_refresh_token and current.get("refresh_token") != seen_refresh_token \
-                    and self._token_is_fresh(current):
-                return REFRESHED
-            with _interprocess_lock(AUTH_LOCK_FILE, REFRESH_LOCK_TIMEOUT) as lock:
-                self._file_lock_owner.held = lock == LOCK_HELD
-                try:
-                    # Another process (or this one, before a restart) may have
-                    # refreshed already: its token is the live one, ours is spent.
-                    on_disk = self._read_session_file()
-                    with self._state_lock:
-                        current = self._session
-                        if current is not None and self._session_on_disk and not os.path.exists(AUTH_FILE):
-                            # The file this session came from is gone: signed
-                            # out in another Zenvi process. Don't bring it back.
-                            log.info("The Zenvi sign-in was ended by another Zenvi process")
-                            return REVOKED
-                        if self._is_newer_session(on_disk, current):
-                            log.info("Adopting the Zenvi session another process refreshed")
-                            self._session = current = on_disk
-                            self._session_on_disk = True
-                            if self._token_is_fresh(on_disk):
-                                self._retry_refresh_at = 0.0
-                                return REFRESHED
-                    if lock == LOCK_BUSY:
-                        log.warning("Another Zenvi process is still refreshing the session; trying again later")
-                        return TRANSIENT
-                    return self._refresh_with_server(current or {}, sign_outs)
-                finally:
-                    self._file_lock_owner.held = False
+        # The GUI (main) thread never queues behind another thread's refresh:
+        # it goes on with the token it has and leaves the refresh to finish.
+        on_main_thread = threading.current_thread() is threading.main_thread()
+        if not self._refresh_lock.acquire(blocking=not on_main_thread):
+            return BUSY
+        try:
+            return self._refresh_locked(seen_refresh_token, 1 if on_main_thread else REFRESH_LOCK_TIMEOUT)
+        finally:
+            self._refresh_lock.release()
+
+    def _refresh_locked(self, seen_refresh_token, lock_timeout) -> str:
+        sign_outs = self._sign_out_count
+        current = self._session
+        if current and seen_refresh_token and current.get("refresh_token") != seen_refresh_token \
+                and self._token_is_fresh(current):
+            return REFRESHED
+        with _interprocess_lock(AUTH_LOCK_FILE, lock_timeout) as lock:
+            self._file_lock_owner.held = lock == LOCK_HELD
+            try:
+                # Another process (or this one, before a restart) may have
+                # refreshed already: its token is the live one, ours is spent.
+                on_disk = self._read_session_file()
+                with self._state_lock:
+                    current = self._session
+                    if current is not None and self._session_on_disk and not os.path.exists(AUTH_FILE):
+                        # The file this session came from is gone: signed
+                        # out in another Zenvi process. Don't bring it back.
+                        log.info("The Zenvi sign-in was ended by another Zenvi process")
+                        return REVOKED
+                    if self._is_newer_session(on_disk, current):
+                        log.info("Adopting the Zenvi session another process refreshed")
+                        self._session = current = on_disk
+                        self._session_on_disk = True
+                        if self._token_is_fresh(on_disk):
+                            self._retry_refresh_at = 0.0
+                            return REFRESHED
+                if lock == LOCK_BUSY:
+                    log.warning("Another Zenvi process is still refreshing the session; trying again later")
+                    return TRANSIENT
+                return self._refresh_with_server(current or {}, sign_outs)
+            finally:
+                self._file_lock_owner.held = False
 
     def _refresh_with_server(self, session: dict, sign_outs: int) -> str:
         refresh_token = session.get("refresh_token")
@@ -497,17 +538,21 @@ class AuthManager:
             if not access_token:
                 log.warning("Token refresh answered 200 without an access token (keeping the session)")
                 return TRANSIENT
-            if self._sign_out_count != sign_outs:
-                # Signed out while the request was in flight: drop the new tokens.
+            if self._session_on_disk and not os.path.exists(AUTH_FILE):
+                # Signed out in another Zenvi process while the request was
+                # in flight: don't write the sign-in back.
                 return REVOKED
             user = data.get("user") or {}
-            self.save_session({
+            stored = self._store(self._with_identity({
                 "access_token": access_token,
                 "refresh_token": data.get("refresh_token") or refresh_token,
                 "expires_at": data.get("expires_at"),
                 "user_id": user.get("id") or session.get("user_id"),
                 "user_email": user.get("email") or session.get("user_email"),
-            })
+            }), sign_outs=sign_outs)
+            if not stored:
+                # Signed out here while the request was in flight: drop the new tokens.
+                return REVOKED
             log.info("Zenvi access token refreshed")
             return REFRESHED
 
@@ -545,13 +590,22 @@ class AuthManager:
                 return TRANSIENT
             seen = session.get("refresh_token")
         outcome = self._refresh_session(seen)
+        if outcome == BUSY:
+            return TRANSIENT
         if outcome == TRANSIENT:
             self._retry_refresh_at = time.monotonic() + REFRESH_RETRY_AFTER
         elif outcome == REVOKED:
-            had_session = self._session is not None
-            log.info("The Zenvi sign-in has ended; clearing the stored session")
-            self.clear_session()
-            if had_session:
+            with self._state_lock:
+                current = self._session
+                if current is not None and current.get("refresh_token") != seen:
+                    # Signed in again (or refreshed) while this refresh was
+                    # failing: that newer sign-in stands.
+                    return REFRESHED if self._token_is_fresh(current) else TRANSIENT
+                ended = current is not None
+                if ended:
+                    log.info("The Zenvi sign-in has ended; clearing the stored session")
+                    self.clear_session()
+            if ended:
                 self._notify_revoked()
         return outcome
 
@@ -623,7 +677,9 @@ class AuthManager:
         Tries xdg-open first (Linux), then webbrowser as fallback.
         """
         state = str(uuid.uuid4())
-        url = f"{_zenvi_website()}/login?state={state}"
+        # v=2: this app shows confirmation_code(state), so the website may
+        # offer a signed-in browser one-click approval next to the same code.
+        url = f"{_zenvi_website()}/login?state={state}&v=2"
         log.info("Opening auth URL: %s", url)
         opened = False
         if sys.platform.startswith("linux"):
