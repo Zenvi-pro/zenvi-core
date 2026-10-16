@@ -198,6 +198,56 @@ def _inside_file(file_id: str, start: float, length: float) -> float:
     return max(lo, min(start, hi - length))
 
 
+def _aligned_window(file_id: str, start: float, length: float) -> float:
+    """Where a cut of *length* (a whole number of frames) should start in the file: on the frame grid and ending inside the file as the editor sees it.
+
+    Snapping a window's start and end separately can make it a frame longer than its slot, which overlaps its neighbour; a start on the grid
+    plus a length that is a whole number of frames cannot.
+    """
+    from classes.clip_placement import source_window_for_file
+    from classes.query import File
+    f = File.get(id=file_id)
+    lo, hi = source_window_for_file(f.data) if f is not None else (0.0, 1e9)
+    if length > hi - lo + 1e-6:
+        raise ToolError(f"{str((f.data or {}).get('name') or file_id)[:40]} is only {hi - lo:.2f} s long, too short for a {length:.2f} s shot")
+    frame = frame_seconds()
+    st = snap(max(lo, min(start, hi - length)))
+    while st + length > hi + 1e-6 and st - frame >= lo - 1e-6:
+        st = snap(st - frame)
+    return st
+
+
+def _snapshot(layer: int, spans: Optional[List[Tuple[float, float]]] = None) -> List[Dict[str, Any]]:
+    """The clips about to be cleared from the track (all of them, or those in the spans), so a failed build can put them back."""
+    from classes import audio_mix as am
+    from classes.query import Clip
+    rows = []
+    for c in Clip.filter():
+        data = c.data or {}
+        if not layer or int(data.get("layer") or 0) != layer:
+            continue
+        start, end = am.clip_timeline_extent(data)
+        if spans is None or any(start < hi - 1e-6 and end > lo + 1e-6 for lo, hi in spans):
+            rows.append({"file_id": str(data.get("file_id") or ""), "position": float(start), "in": float(data.get("start") or 0.0), "out": float(data.get("end") or 0.0)})
+    return sorted(rows, key=lambda r: r["position"])
+
+
+def _restore(rows: List[Dict[str, Any]], track: str) -> None:
+    """Put cleared clips back where they were (best effort: their grades are not restored)."""
+    runs: List[List[Dict[str, Any]]] = []
+    for r in rows:
+        if runs and abs(r["position"] - (runs[-1][-1]["position"] + runs[-1][-1]["out"] - runs[-1][-1]["in"])) < 0.02:
+            runs[-1].append(r)
+        else:
+            runs.append([r])
+    for run in runs:
+        try:
+            _call("add_clips_to_timeline_tool", items=[{"file_id": r["file_id"], "source_start": r["in"], "source_end": r["out"]} for r in run],
+                  track=track, start_seconds=run[0]["position"], allow_overlap=True)
+        except ToolError:
+            continue
+
+
 def _in_one_batch(fn):
     """Run a build as one batch: the timeline and preview update once at the end, not after every tool call it makes (about 25 colour-grade
     calls alone cost over two minutes when each refreshed the timeline). The batch is closed even when the build fails."""
@@ -295,13 +345,19 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
         by_id = {f.file_id: f for f in files}
         frame = frame_seconds()
 
+        # check every window first, so a build that cannot work stops before it touches the timeline
+        slot_len = {r["reference_shot"]: snap(r["end"]) - snap(r["start"]) for r in todo}
+        starts = {r["reference_shot"]: _aligned_window(_effective(r, plan)["file_id"], float(_effective(r, plan)["in"]), slot_len[r["reference_shot"]]) for r in todo}
+
         _ensure_track(plan["track_name"])
         layer = _layer_of(plan["track_name"])
+        spans = None if wanted is None else [(snap(r["start"]), snap(r["end"])) for r in todo]
+        snapshot = _snapshot(layer, spans)
         if wanted is None:
             replaced = _clear_track(plan["track_name"], layer)           # a full build starts from an empty Recreation track (it is ours by name)
             plan["placed"] = {}
         else:
-            replaced = _clear_slots(layer, [(snap(r["start"]), snap(r["end"])) for r in todo])     # a rebuild replaces just those shots, even if the plan was lost
+            replaced = _clear_slots(layer, spans or [])                  # a rebuild replaces just those shots, even if the plan was lost
 
         # place in contiguous runs; each clip's length is the difference of the snapped slot boundaries, so rounding never drifts
         runs: List[List[Dict[str, Any]]] = []
@@ -313,18 +369,15 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
         placed_ids: Dict[int, str] = {}
         try:
             for run in runs:
-                items = []
-                for r in run:
-                    c = _effective(r, plan)
-                    length = snap(r["end"]) - snap(r["start"])
-                    start = _inside_file(c["file_id"], float(c["in"]), length)
-                    items.append({"file_id": c["file_id"], "source_start": round(start, 3), "source_end": round(start + length, 3)})
+                items = [{"file_id": _effective(r, plan)["file_id"], "source_start": round(starts[r["reference_shot"]], 3),
+                          "source_end": round(starts[r["reference_shot"]] + slot_len[r["reference_shot"]], 3)} for r in run]
                 data = _call("add_clips_to_timeline_tool", items=items, track=plan["track_name"], start_seconds=snap(run[0]["start"]), allow_overlap=False)
                 for r, clip in zip(run, data.get("clips") or []):
                     placed_ids[r["reference_shot"]] = str(clip["timeline_clip_id"])
         except Exception:
-            for clip_id in placed_ids.values():                            # a build that fails leaves nothing half-placed behind
+            for clip_id in placed_ids.values():                            # a build that fails puts the timeline back as it was
                 th().delete_from_timeline(timeline_clip_id=clip_id)
+            _restore(snapshot, plan["track_name"])
             raise
         plan["placed"].update(placed_ids)
 

@@ -251,3 +251,21 @@ def test_a_song_that_cannot_be_added_is_reported_and_the_clips_are_kept(studio, 
     receipt = studio.ed.call_receipt("build_recreation_tool", plan_id=plan(studio)["plan_id"])
     assert receipt["status"] == "applied" and "song was NOT added" in receipt["summary"]
     assert receipt["data"]["placed"] == 6 and len(picture_clips(studio)) == 6
+
+
+def test_a_build_that_fails_after_clearing_puts_the_old_clips_back(studio, monkeypatch):
+    from classes.editor_tools import media_index_tools_recreate as R
+    pid = plan(studio)["plan_id"]
+    build_it(studio, pid)
+    before = [(c["start"], c["end"]) for c in picture_clips(studio)]
+    real = R._call
+
+    def fail_once(tool, /, **kw):
+        if tool == "add_clips_to_timeline_tool" and kw.get("track") == R.TRACK_NAME and not kw.get("allow_overlap"):
+            raise R.ToolError("simulated placement failure")
+        return real(tool, **kw)
+
+    monkeypatch.setattr(R, "_call", fail_once)
+    assert studio.ed.call_receipt("build_recreation_tool", plan_id=pid)["status"] == "error"
+    assert [(c["start"], c["end"]) for c in picture_clips(studio)] == before
+
