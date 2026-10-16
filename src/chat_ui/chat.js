@@ -2142,7 +2142,7 @@
         });
     }
 
-    window.setDictationState = function (state, message) {
+    window.setDictationState = function (state, message, sticky) {
         if (!micBtn) return;
         if (state === 'hearing' && dictationState === 'off') return;   // ended by typing or sending
         if (state === 'listening' && dictationState === 'off') {
@@ -2158,7 +2158,7 @@
         if (message) {
             if (!modePlaceholder) modePlaceholder = inputEl.placeholder;
             inputEl.placeholder = message;
-            setTimeout(function () {
+            if (!sticky) setTimeout(function () {
                 if (dictationState === 'off' && inputEl.placeholder === message) inputEl.placeholder = modePlaceholder;
             }, 6000);
         } else if (state === 'listening') {
@@ -2187,6 +2187,14 @@
     }
 
     if (micBtn) micBtn.addEventListener('click', toggleDictation);
+    const micMenuBtn = document.getElementById('chat-mic-menu-btn');
+    if (micMenuBtn) {
+        micMenuBtn.addEventListener('click', function () {
+            getBridge(function (bridge) {
+                if (bridge && bridge.openDictationMenu) bridge.openDictationMenu();
+            });
+        });
+    }
     inputEl.addEventListener('input', function (e) {
         if (e.isTrusted) endDictation();
     });

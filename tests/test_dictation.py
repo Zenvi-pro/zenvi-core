@@ -166,7 +166,7 @@ def _session(monkeypatch, mic, live=True):
 
     monkeypatch.setattr(dictation.subprocess, "Popen", popen)
     monkeypatch.setattr(dictation, "live_engine", lambda: live)
-    monkeypatch.setattr(dictation, "transcribe", lambda pcm: "%.1f seconds" % (len(pcm) / 32000.0))
+    monkeypatch.setattr(dictation, "transcribe", lambda pcm, parakeet=None: "%.1f seconds" % (len(pcm) / 32000.0))
 
     def on_text(text, final):
         texts.append((text, final))
@@ -214,7 +214,7 @@ def test_a_quiet_room_is_no_words_not_a_recogniser_hallucination(monkeypatch):
     mic = FakeMic()
     session, texts, errors, done = _session(monkeypatch, mic)
     heard = []
-    monkeypatch.setattr(dictation, "transcribe", lambda pcm: heard.append(pcm) or "Thank you.")
+    monkeypatch.setattr(dictation, "transcribe", lambda pcm, parakeet=None: heard.append(pcm) or "Thank you.")
     session.start()
     mic.speak(1.0, level=430)
     threading.Event().wait(0.3)
@@ -237,7 +237,7 @@ def test_stop_lets_go_of_the_microphone_before_the_words_are_heard(monkeypatch):
     session, texts, errors, done = _session(monkeypatch, mic)
     hearing, release = threading.Event(), threading.Event()
 
-    def slow(pcm):                                    # Parakeet takes ~15 s a pass
+    def slow(pcm, parakeet=None):                    # Parakeet takes ~15 s a pass
         hearing.set()
         release.wait(5)
         return "words"
@@ -320,8 +320,18 @@ class _Dock:
         self._dictation = None
         self.dictation_heard = MagicMock()
         self.dictation_failed = MagicMock()
-        for name in ("toggle_dictation", "_on_dictation_heard", "_on_dictation_failed"):
+        self.installed = threading.Event()
+        self.dictation_installed = MagicMock(emit=lambda *a: (self._on_dictation_installed(*a), self.installed.set()))
+        self._dictation_download = ""
+        self.confirmed = []
+        self.answer = True
+        for name in ("toggle_dictation", "_on_dictation_heard", "_on_dictation_failed",
+                     "pick_dictation_engine", "_on_dictation_installed", "_dictation_note"):
             setattr(self, name, types.MethodType(getattr(window_cls, name), self))
+
+    def _confirm_dictation_download(self, label):
+        self.confirmed.append(label)
+        return self.answer
 
     def _run_js(self, code, callback=None):
         self.js.append(code)
@@ -338,7 +348,8 @@ def dock(monkeypatch):
     from windows.ai_chat_ui import AIChatWindow
     from classes import app
     settings = {"dictation-engine": "auto"}
-    monkeypatch.setattr(app, "get_app", lambda: MagicMock(get_settings=lambda: MagicMock(get=settings.get)))
+    monkeypatch.setattr(app, "get_app", lambda: MagicMock(
+        get_settings=lambda: MagicMock(get=settings.get, set=settings.__setitem__)))
     opened = []
     monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or settings.get("opens", True))
     d = _Dock(AIChatWindow)
@@ -402,3 +413,128 @@ def test_mic_button_reports_a_microphone_that_will_not_start(dock, monkeypatch):
     dock.toggle_dictation()
     assert dock._dictation is None
     assert "'off'" in dock.js[-1] and "no microphone" in dock.js[-1]
+
+
+# -- picking the recogniser next to the mic ----------------------------------
+
+@pytest.fixture
+def models(home, monkeypatch):
+    """Whistle installed, Parakeet not, HyperFrames set up; the Captions dock's choice is Whistle."""
+    state = {"recogniser": "whistle", "installs": []}
+
+    def status():          # hashes the speech files under the install lock: never on the GUI thread
+        raise AssertionError("hf.status() from the mic menu")
+
+    def put(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "w").close()
+
+    monkeypatch.setattr(hf, "status", status)
+    monkeypatch.setattr(hf, "recogniser", lambda: state["recogniser"])
+    monkeypatch.setattr(hf, "choose_recogniser", lambda name: state.update(recogniser=name))
+    monkeypatch.setattr(hf, "speech_supported", lambda *a: True)
+    put(hf.speech_model())
+    put(hf.cli_script())
+
+    def installer(key, path):
+        def install():
+            state["installs"].append(key)
+            put(path())
+        return install
+
+    monkeypatch.setattr(hf, "install_speech", installer("speech", hf.speech_model))
+    monkeypatch.setattr(hf, "install_parakeet", installer("parakeet", hf._parakeet_model))
+    return state
+
+
+def test_the_menu_lists_three_engines_with_what_each_needs(models):
+    rows = {e["id"]: e for e in dictation.engines("zenvi", False)}
+    assert list(rows) == ["whistle", "parakeet", "wispr"]
+    assert rows["whistle"]["note"] == "installed" and rows["whistle"]["checked"]
+    assert rows["parakeet"]["note"] == "download about 900 MB" and not rows["parakeet"]["checked"]
+    assert rows["wispr"]["note"] == "get it at wisprflow.ai" and not rows["wispr"]["checked"]
+    rows = {e["id"]: e for e in dictation.engines("auto", True)}
+    assert rows["wispr"]["checked"] and rows["wispr"]["note"] == "installed" and not rows["whistle"]["checked"]
+
+
+def test_whistle_is_not_offered_where_it_has_no_engine(models, monkeypatch):
+    monkeypatch.setattr(hf, "speech_supported", lambda *a: False)       # Intel Macs
+    whistle = dictation.engines("zenvi", False)[0]
+    assert whistle["enabled"] is False
+
+
+def test_picking_an_installed_recogniser_uses_it_at_once(dock, models):
+    dock.pick_dictation_engine("whistle")
+    assert models["recogniser"] == "whistle" and dock.settings["dictation-engine"] == "zenvi"
+    assert dock.confirmed == [] and models["installs"] == []
+
+
+def test_picking_parakeet_asks_then_downloads_then_uses_it(dock, models):
+    dock.pick_dictation_engine("parakeet")
+    assert dock.installed.wait(5)
+    assert dock.confirmed and "900 MB" in dock.confirmed[0]
+    assert models["installs"] == ["parakeet"] and models["recogniser"] == "parakeet"
+    assert dock.settings["dictation-engine"] == "zenvi"
+    assert "Parakeet" in dock.js[-1]                                   # says what it now dictates with
+
+
+def test_declining_the_download_changes_nothing(dock, models):
+    dock.answer = False
+    dock.pick_dictation_engine("parakeet")
+    assert models["installs"] == [] and models["recogniser"] == "whistle"
+    assert dock.settings["dictation-engine"] == "auto"
+
+
+def test_a_failed_download_is_reported_and_keeps_the_old_recogniser(dock, models, monkeypatch):
+    def broken():
+        raise hf.HyperframesError("HyperFrames is not set up on this computer yet")
+
+    monkeypatch.setattr(hf, "install_parakeet", broken)
+    dock.pick_dictation_engine("parakeet")
+    assert dock.installed.wait(5)
+    assert models["recogniser"] == "whistle" and "not set up" in dock.js[-1]
+
+
+def test_picking_wispr_flow_without_it_opens_their_website(dock, models, monkeypatch):
+    monkeypatch.setattr(dictation, "wispr_flow_installed", lambda *a: False)
+    dock.pick_dictation_engine("wispr")
+    assert dock.opened == [dictation.WISPR_FLOW_SITE]
+    assert dock.settings["dictation-engine"] == "auto"
+
+
+def test_picking_wispr_flow_when_installed_uses_it(dock, models, monkeypatch):
+    monkeypatch.setattr(dictation, "wispr_flow_installed", lambda *a: True)
+    dock.pick_dictation_engine("wispr")
+    assert dock.settings["dictation-engine"] == "wispr" and dock.opened == []
+
+
+def test_parakeet_needs_hyperframes_set_up_first(models):
+    os.remove(hf.cli_script())
+    parakeet = dictation.engines("zenvi", False)[1]
+    assert parakeet["enabled"] is False and "HyperFrames" in parakeet["note"]
+
+
+def test_a_take_keeps_the_recogniser_it_started_with(monkeypatch):
+    """Picking Parakeet (or changing it in the Captions dock) mid-take must not move this take to it."""
+    mic = FakeMic()
+    session, texts, errors, done = _session(monkeypatch, mic)
+    monkeypatch.setattr(dictation, "live_engine", lambda: True)
+    engines_used = []
+    monkeypatch.setattr(dictation, "transcribe", lambda pcm, parakeet=None: engines_used.append(parakeet) or "w")
+    monkeypatch.setattr(dictation, "_parakeet", lambda: len(engines_used) > 0)   # switched after the first pass
+    session.start()
+    mic.speak(1.0)
+    for _ in range(100):
+        if len(engines_used) >= 2:
+            break
+        threading.Event().wait(0.02)
+    session.stop()
+    assert done.wait(5)
+    assert set(engines_used) == {False}
+
+
+def test_downloading_note_stays_until_the_download_ends(dock, models):
+    dock.pick_dictation_engine("parakeet")
+    assert dock.installed.wait(5)
+    downloading = next(js for js in dock.js if "Downloading" in js)
+    assert downloading.rstrip(";").endswith("true)")                  # sticky: no 6 s timeout

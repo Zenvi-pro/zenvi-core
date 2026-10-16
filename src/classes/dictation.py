@@ -28,6 +28,7 @@ MAX_SECONDS = 120            # a prompt, not a podcast: recording stops itself h
 SPEECH_RMS = 1000            # 100 ms louder than this is speech (a quiet laptop room measured ~430); calibrate per mic
 PROJECT = "dictation"        # hf.project_dir(PROJECT) holds speech.wav
 WISPR_FLOW_URL = "wispr-flow://start-hands-free"
+WISPR_FLOW_SITE = "https://wisprflow.ai"
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
 _heard = threading.Lock()    # one speech.wav, one recogniser run at a time
 
@@ -79,7 +80,7 @@ def _loud(chunk: bytes) -> bool:
     return bool(samples) and math.sqrt(sum(s * s for s in samples) / len(samples)) >= SPEECH_RMS
 
 
-def transcribe(pcm: bytes) -> str:
+def transcribe(pcm: bytes, parakeet: Optional[bool] = None) -> str:
     """The words in 16 kHz mono 16-bit PCM, as one line of text."""
     with _heard:
         wav = os.path.join(hf.project_dir(PROJECT), "speech.wav")
@@ -89,7 +90,7 @@ def transcribe(pcm: bytes) -> str:
             out.setsampwidth(2)
             out.setframerate(SAMPLE_RATE)
             out.writeframes(pcm)
-        if _parakeet():
+        if _parakeet() if parakeet is None else parakeet:
             code, out = hf.run(PROJECT, "hyperframes", ["transcribe", "speech.wav", "--engine", "parakeet", "--json"],
                                timeout=hf.SPEECH_TIMEOUT)
             if code != 0:
@@ -164,7 +165,7 @@ class Dictation:
                     self._release()
                 reader = threading.Thread(target=self._read, daemon=True)
                 reader.start()
-                live, heard = live_engine(), 0
+                live, heard = live_engine(), 0          # the engine this take started with, kept
                 # ponytail: re-hears the whole prompt each time (Whistle is fast); MAX_SECONDS bounds the cost
                 while not self._stopped.wait(PARTIAL_EVERY):
                     if self._proc.poll() is not None and not reader.is_alive():
@@ -175,7 +176,7 @@ class Dictation:
                     pcm = self._snapshot()
                     if live and self._spoke and len(pcm) > heard:
                         heard = len(pcm)
-                        self._on_text(transcribe(pcm), False)
+                        self._on_text(transcribe(pcm, not live), False)
             self._release()
             reader.join(5)
             try:
@@ -183,7 +184,7 @@ class Dictation:
             except subprocess.TimeoutExpired:
                 self._proc.kill()
             # Recognisers "hear" words like "Thank you." in a quiet room: no speech, no words.
-            self._on_text(transcribe(self._snapshot()) if self._spoke else "", True)
+            self._on_text(transcribe(self._snapshot(), not live) if self._spoke else "", True)
         except Exception as exc:                    # reported in the chat box, never a silent dead mic
             with self._lock:
                 proc = self._proc
@@ -209,3 +210,28 @@ def wispr_flow_installed(platform: str = sys.platform, app_dirs: Optional[List[s
 def use_wispr_flow(choice: str, installed: bool) -> bool:
     """The Dictation setting: auto (Wispr Flow when installed), wispr, or zenvi."""
     return installed and choice in ("auto", "wispr")
+
+
+def engines(choice: str, wispr_installed: bool) -> List[dict]:
+    """The mic menu: each engine, what using it needs, and which one the mic uses now.
+
+    Whistle and Parakeet are the Captions dock's recogniser choice, shared with captions.
+    """
+    # Files, not hf.status(): that hashes them under the install lock, and this runs on the GUI thread.
+    # A damaged file still shows as installed here; using it re-checks the hash.
+    wispr = use_wispr_flow(choice, wispr_installed)
+    current = "wispr" if wispr else hf.recogniser()
+    whistle = hf.speech_supported()
+    parakeet = os.path.isfile(hf._parakeet_model())
+    cli = os.path.isfile(hf.cli_script())          # Parakeet is installed and run by the HyperFrames CLI
+    return [
+        {"id": "whistle", "label": "Whistle: fast, small, words appear as you speak", "enabled": whistle,
+         "note": "installed" if os.path.isfile(hf.speech_model()) else "download 18 MB" if whistle
+         else "not available here", "checked": current == "whistle"},
+        {"id": "parakeet", "label": "Parakeet: more accurate, words appear when you stop",
+         "enabled": parakeet or cli, "checked": current == "parakeet",
+         "note": "installed" if parakeet else "download about 900 MB" if cli
+         else "ask the assistant to set up HyperFrames first"},
+        {"id": "wispr", "label": "Wispr Flow", "enabled": True,
+         "note": "installed" if wispr_installed else "get it at wisprflow.ai", "checked": wispr},
+    ]

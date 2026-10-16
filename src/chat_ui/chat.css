@@ -811,7 +811,8 @@
     transition: background 0.12s, color 0.12s;
 }
 .chat-bottom-icon:hover           { background: var(--chat-button-bg); color: var(--chat-text); }
-.chat-mic-btn.listening           { color: #EF4444; animation: chat-mic-pulse 1.2s ease-in-out infinite; }
+.chat-mic-menu-btn                { width: 18px; }
+.chat-mic-btn.listening          { color: #EF4444; animation: chat-mic-pulse 1.2s ease-in-out infinite; }
 .chat-mic-btn.hearing             { color: var(--chat-accent); opacity: 0.6; }
 @keyframes chat-mic-pulse         { 50% { opacity: 0.45; } }
 .chat-cancel-icon:hover           { color: #ef4444 !important; }

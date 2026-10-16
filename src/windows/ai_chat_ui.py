@@ -793,6 +793,11 @@ class ChatBridge(QObject):
         if self.window:
             self.window.toggle_dictation()
 
+    @guarded_slot()
+    def openDictationMenu(self):
+        if self.window:
+            self.window.open_dictation_menu()
+
     @guarded_slot(str)
     def submitPlanAnswers(self, answers_json: str):
         if not self.window:
@@ -951,6 +956,7 @@ class AIChatWindow(QDockWidget):
 
     dictation_heard = pyqtSignal(str, bool)    # text, final (from the dictation threads)
     dictation_failed = pyqtSignal(str)
+    dictation_installed = pyqtSignal(str, str)   # engine, error ("" when it downloaded)
 
     def __init__(self, parent=None):
         # Titled "Agents": the top selector chooses the backend (Zenvi Assistant,
@@ -982,6 +988,8 @@ class AIChatWindow(QDockWidget):
         self._dictation = None
         self.dictation_heard.connect(self._on_dictation_heard)
         self.dictation_failed.connect(self._on_dictation_failed)
+        self._dictation_download = ""
+        self.dictation_installed.connect(self._on_dictation_installed)
 
         # Per-session state: each entry holds {"worker", "thread", "title",
         # "messages", "processing", "first_prompt_summary"}.
@@ -2464,6 +2472,93 @@ class AIChatWindow(QDockWidget):
         self._add_chrome_msg("Chat started. Ask to list files, add tracks, export video, or describe your project.")
         self._rebuild_widget_tabs()
         self._start_restore_chat_histories_async()
+
+    def open_dictation_menu(self):
+        """The chevron by the mic: Whistle, Parakeet or Wispr Flow, each saying what it needs."""
+        from classes import dictation
+        from classes.app import get_app
+        from qt_api import QCursor
+
+        choice = get_app().get_settings().get("dictation-engine") or "auto"
+        menu = QMenu(self)
+        for engine in dictation.engines(choice, dictation.wispr_flow_installed()):
+            act = menu.addAction("%s (%s)" % (engine["label"], engine["note"]))
+            act.setCheckable(True)
+            act.setChecked(engine["checked"])
+            act.setEnabled(engine["enabled"] and not self._dictation_download)
+            # after exec_ returns: a download dialog opened inside the menu's loop can miss clicks
+            act.triggered.connect(lambda _checked=False, name=engine["id"]: QTimer.singleShot(
+                0, lambda: self.pick_dictation_engine(name)))
+        menu.exec_(QCursor.pos())
+
+    def pick_dictation_engine(self, name):
+        """Use *name* for the mic: Whistle / Parakeet are downloaded first if need be (and become the
+        Captions recogniser too); Wispr Flow not installed opens its website."""
+        from classes import dictation
+        from classes import hyperframes_local as hf
+        from classes.app import get_app
+
+        settings = get_app().get_settings()
+        if name == "wispr":
+            if dictation.wispr_flow_installed():
+                settings.set("dictation-engine", "wispr")
+                settings.save()
+            else:
+                import webbrowser
+
+                webbrowser.open(dictation.WISPR_FLOW_SITE)
+            return
+        engine = next(e for e in dictation.engines("zenvi", False) if e["id"] == name)
+        if engine["note"] == "installed":
+            hf.choose_recogniser(name)
+            settings.set("dictation-engine", "zenvi")
+            settings.save()
+            return
+        if self._dictation_download:
+            return
+        label = "%s (%s)" % (engine["label"].split(":")[0], engine["note"])
+        if not self._confirm_dictation_download(label):
+            return
+        self._dictation_download = name
+        self._dictation_note("Downloading %s..." % label, sticky=True)
+        install = hf.install_speech if name == "whistle" else hf.install_parakeet
+
+        def work():
+            try:
+                install()
+                error = ""
+            except Exception as exc:
+                log.warning("Dictation: could not install %s", name, exc_info=True)
+                error = str(exc) or exc.__class__.__name__
+            self.dictation_installed.emit(name, error)
+
+        threading.Thread(target=work, name="zenvi-dictation-install", daemon=True).start()
+
+    def _confirm_dictation_download(self, label):
+        return QMessageBox.question(
+            self, "Download speech recogniser",
+            "%s is not on this computer yet. Download it now? It is a one-time download, "
+            "also used for caption word timing." % label,
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) == QMessageBox.Yes
+
+    def _on_dictation_installed(self, name, error):
+        from classes import hyperframes_local as hf
+        from classes.app import get_app
+
+        self._dictation_download = ""
+        if error:
+            self._dictation_note("The speech recogniser could not be downloaded: %s" % error)
+            return
+        hf.choose_recogniser(name)
+        get_app().get_settings().set("dictation-engine", "zenvi")
+        get_app().get_settings().save()
+        self._dictation_note("Dictation now uses %s." % name.capitalize())
+
+    def _dictation_note(self, message, sticky=False):
+        """A note in the empty prompt box (unless a take is running); *sticky* stays until the next one."""
+        if not self._dictation:
+            self._run_js("if(window.setDictationState) window.setDictationState('off', %s, %s);"
+                         % (json.dumps(message), "true" if sticky else "false"))
 
     def toggle_dictation(self):
         """Mic button: start or stop speaking the prompt (Wispr Flow instead, when the user has it)."""
