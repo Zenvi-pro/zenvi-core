@@ -25,7 +25,7 @@ W, H, FPS = 1280, 720, 30
 SCENES = {
     0: "testsrc2",
     1: "mandelbrot",
-    2: "gradients",
+    2: "pal75bars",
     3: "rgbtestsrc",
     4: "smptehdbars",
     5: "cellauto",
@@ -52,7 +52,7 @@ def ffmpeg(*args: str) -> None:
 
 
 def segment(path: str, scene: int, seconds: float, tint: str) -> None:
-    vf = f"format=yuv420p" + (f",{tint}" if tint else "")
+    vf = "format=yuv420p" + (f",{tint}" if tint else "")
     source = f"{SCENES[scene]}=size={W}x{H}:rate={FPS}"
     ffmpeg("-f", "lavfi", "-i", source, "-t", f"{seconds:.3f}", "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
            "-pix_fmt", "yuv420p", "-an", path)

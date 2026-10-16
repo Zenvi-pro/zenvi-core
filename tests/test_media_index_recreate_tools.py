@@ -439,3 +439,14 @@ def test_a_picture_that_cannot_be_drawn_never_breaks_the_check(closeups, monkeyp
     monkeypatch.setattr(R, "_tile", lambda f, t: (_ for _ in ()).throw(R.ToolError("cannot read the picture")))
     result = check(closeups, plan_id=out["plan_id"])
     assert result["image_path"] is None and result["failing_total"] == 6
+
+
+def test_building_again_with_a_new_plan_does_not_stack_a_second_copy_of_the_song(studio):
+    from classes.editor_tools import media_index_tools_recreate as R
+    from classes.query import Clip
+    build_it(studio, plan(studio)["plan_id"])
+    R._PLANS.clear()                                                  # an editor restart, or simply planning again
+    build_it(studio, plan(studio)["plan_id"])
+    layer = R._layer_of(R.SONG_TRACK_NAME)
+    songs = [c for c in Clip.filter() if int((c.data or {}).get("layer") or 0) == layer]
+    assert len(songs) == 1

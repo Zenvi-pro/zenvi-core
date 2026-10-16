@@ -631,6 +631,7 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
             if ref is not None:
                 try:
                     _ensure_track(SONG_TRACK_NAME)
+                    _clear_track(SONG_TRACK_NAME, _layer_of(SONG_TRACK_NAME))      # a new plan must not stack another copy of the song on the last one
                     wanted_end = max(float(r["end"]) for r in plan["rows"])
                     usable_end = _inside_file(plan["reference_file_id"], wanted_end, 0.0)        # the editor's usable end of the file, which the index can overrun
                     added = _call("add_clips_to_timeline_tool", items=[{"file_id": plan["reference_file_id"], "source_start": 0.0, "source_end": round(min(wanted_end, usable_end), 3)}],

@@ -1,5 +1,8 @@
 # Media Index v2: manual test script
 
+> The full plan (setup, what is local vs cloud, offline and download checks, the kit with a known right answer, performance, undo, what to
+> record) is in [media-index-testing-guide.md](media-index-testing-guide.md). This page is the short prompt list.
+
 Run these by hand in the app with the Assistant (or Claude Code connected to the editor). The prompts are written the way a person
 types, not the way a test plan reads, so the AI has to work out which tools to use. The right-hand columns are for the tester, not
 for the AI.
@@ -45,10 +48,13 @@ calls, pictures and tokens. Credits: note the balance before and after.
 > and the same overall look. Use my footage as much as you can and trim it however you need. Where I don't have anything that fits,
 > grab stock footage. Tell me at the end what you used where, what you skipped, and why."
 
-- **Should reach for:** `storyboard` (list mode), `get_edit_style`, `search_footage`, `slice_clips`, `add_clips_to_timeline`,
-  `import_stock_media`, `harmonize_look`, `balance_mix`, `review_edit`.
-- **Pass:** cuts land within a frame of the original's cut times; a plain list of which shots came from your clips, which from stock and
-  which were skipped; one undo restores the project; the closing audit has numbers.
+- **Should reach for:** `storyboard` (list mode), `plan_recreation`, `search_stock_video` + `import_stock_media` for shots the plan marks weak,
+  `build_recreation`, `check_recreation`, `compare_recreation` (and it should look at the pictures), rebuilds of only the failing shots,
+  then a closing report.
+- **Pass:** cuts within a frame of the original's; no footage shown twice unless the reference repeats that image; shots nothing fits are
+  stock or reported as skipped (never filled with unrelated footage); a plain list of what came from your clips, from stock, and what was
+  skipped; the check score is quoted; one undo restores the project.
+- Repeat it with the synthetic kit (`scripts/make_recreation_test_kit.py`), where the right answer is known: see the guide.
 
 If AI generation is on and you are happy to spend credits (note your balance first):
 

@@ -124,3 +124,27 @@ Looking at `compare_recreation_tool` pictures: the stock picks are real matches 
 
 Not done: close-up framing from wide footage (crop and zoom keyframes), smoother per-scene grading, vision-model review of flagged shots, proxies for playback.
 
+### Third round: close-ups, smoother grading, transitions, playback, and a kit with a known answer
+
+What changed in the engine: footage framed wider than the reference shot is zoomed in and re-centred on its subject (found by saliency and
+faces); each shot's grade is blended with its scene's neighbours and follows the reference's own brightening or darkening over the shot as
+keyframes; the reference's dissolves and fades are built at the same cuts; the check attaches a picture of its worst shots, flags a shot
+nothing in the footage resembles, scores framing, and fails the run if any one cut is more than 6 frames off.
+
+Real project (anime ending, 8 own clips + 25 stock): 80 shots placed in 49 s (framing and ramps read frames from disk), 31 shots zoomed,
+20 ramped, check 87.2 (picture 25.2 stays low and honest, framing 100). Playback of the new timeline, measured with
+`scripts/bench_playback.py` on the Recreation and Song tracks only, 40 s: originals mean 31.7 ms, 16% of frames over 33 ms, worst 665 ms;
+optimized copies mean 12.8 ms, 2% over, worst 138 ms. The same timeline with an old 85-clip attempt left stacked underneath: 34% over
+(mean 47 ms). Earlier measurement without zoom/ramps: 7% over, worst 470 ms (originals) vs 2%, 165 ms (copies). Cause of the stalls: the first
+frame after each cut seeks into a long-GOP phone file. Fix: the build and large placements start optimized copies for heavy footage and
+name stacked tracks.
+
+Synthetic kit (`scripts/make_recreation_test_kit.py`, 14-shot reference, 6 footage clips, one scene in no footage): plan under a second,
+build 4-5 s, 13 of 14 shots on footage with the same scene, repeats only at the key's repeat shots, shot 5 flagged "nothing in the footage
+looks like this shot", check 95.1, timing 100. Two real bugs found by it and fixed: a repeated image next to the same file was refused,
+and a new plan stacked a second song clip. An animated test pattern (gradients) is not a true repeat; the kit uses a static one.
+
+Still not done: pictures show the raw footage frame (before zoom and grade), not the rendered timeline frame; fades are opacity keyframes,
+dissolves need spare footage around the cut and are skipped when there is none; a fresh Claude Code / Zenvi Assistant run of the same
+prompt is yours to record (guide, section 5).
+
