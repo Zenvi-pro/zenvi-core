@@ -16,7 +16,7 @@ import time
 from collections import Counter, OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
-from classes.editor_tools._base import ToolError, array, boolean, enum, integer, number, obj, ok, string, th
+from classes.editor_tools._base import ToolError, array, boolean, enum, integer, number, obj, ok, on_main, string, th
 from classes.editor_tools._registry import REGISTRY, editor_tool
 from classes.editor_tools.media_index_tools import _all_files, project_indexes
 from classes.editor_tools.effects_color_looks import _grade_values
@@ -33,7 +33,9 @@ _PLANS: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 AREA_WEIGHT = {"timing": 0.25, "coverage": 0.15, "variety": 0.20, "picture": 0.15, "look": 0.15, "sound": 0.10}
 PASS_SCORE, AREA_FLOOR = 80.0, 60.0
 WEAK_RANK = 0.30                 # a placed window ranked in the bottom 30% of the candidates for its shot is a weak pick
-LOOK_CLOSE = 0.35                # a graded clip counts as matching the reference when its look distance is under this
+LOOK_CLOSE = 0.25                # a clip matches the reference shot's look when the gap in brightness, colour cast, saturation and contrast is under this
+BATCH_HOP_TIMEOUT = 180
+BUILD_LEASE_SECONDS = 900.0
 
 
 def _mmss(seconds: float) -> str:
@@ -196,6 +198,17 @@ def _inside_file(file_id: str, start: float, length: float) -> float:
     return max(lo, min(start, hi - length))
 
 
+def _in_one_batch(fn):
+    """Run a build as one batch: the timeline and preview update once at the end, not after every tool call it makes (about 25 colour-grade
+    calls alone cost over two minutes when each refreshed the timeline). The batch is closed even when the build fails."""
+    from classes import update_batch
+    on_main(update_batch.begin, BUILD_LEASE_SECONDS, timeout=BATCH_HOP_TIMEOUT, batch=False)
+    try:
+        return fn()
+    finally:
+        on_main(update_batch.end, timeout=BATCH_HOP_TIMEOUT, batch=False)
+
+
 def _layer_of(name: str) -> int:
     from classes.query import Track
     return next((int((t.data or {}).get("number") or 0) for t in Track.filter() if str((t.data or {}).get("label") or "") == name), 0)
@@ -277,68 +290,77 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
     todo = [r for r in plan["rows"] if _effective(r, plan) and (wanted is None or r["reference_shot"] in wanted)]
     if not todo:
         raise ToolError("nothing to place: every shot in that selection is unfilled (use overrides or a stock clip)")
-    files, _missing = project_indexes()
-    by_id = {f.file_id: f for f in files}
-    frame = frame_seconds()
+    def run():
+        files, _missing = project_indexes()
+        by_id = {f.file_id: f for f in files}
+        frame = frame_seconds()
 
-    _ensure_track(plan["track_name"])
-    layer = _layer_of(plan["track_name"])
-    if wanted is None:
-        replaced = _clear_track(plan["track_name"], layer)           # a full build starts from an empty Recreation track (it is ours by name)
-        plan["placed"] = {}
-    else:
-        replaced = _clear_slots(layer, [(snap(r["start"]), snap(r["end"])) for r in todo])     # a rebuild replaces just those shots, even if the plan was lost
-
-    # place in contiguous runs; each clip's length is the difference of the snapped slot boundaries, so rounding never drifts
-    runs: List[List[Dict[str, Any]]] = []
-    for r in todo:
-        if runs and abs(snap(r["start"]) - snap(runs[-1][-1]["end"])) < frame / 2:
-            runs[-1].append(r)
+        _ensure_track(plan["track_name"])
+        layer = _layer_of(plan["track_name"])
+        if wanted is None:
+            replaced = _clear_track(plan["track_name"], layer)           # a full build starts from an empty Recreation track (it is ours by name)
+            plan["placed"] = {}
         else:
-            runs.append([r])
-    placed_ids: Dict[int, str] = {}
-    try:
-        for run in runs:
-            items = []
-            for r in run:
-                c = _effective(r, plan)
-                length = snap(r["end"]) - snap(r["start"])
-                start = _inside_file(c["file_id"], float(c["in"]), length)
-                items.append({"file_id": c["file_id"], "source_start": round(start, 3), "source_end": round(start + length, 3)})
-            data = _call("add_clips_to_timeline_tool", items=items, track=plan["track_name"], start_seconds=snap(run[0]["start"]), allow_overlap=False)
-            for r, clip in zip(run, data.get("clips") or []):
-                placed_ids[r["reference_shot"]] = str(clip["timeline_clip_id"])
-    except Exception:
-        for clip_id in placed_ids.values():                            # a build that fails leaves nothing half-placed behind
-            th().delete_from_timeline(timeline_clip_id=clip_id)
-        raise
-    plan["placed"].update(placed_ids)
+            replaced = _clear_slots(layer, [(snap(r["start"]), snap(r["end"])) for r in todo])     # a rebuild replaces just those shots, even if the plan was lost
 
-    graded = 0
-    if grade:
-        groups: Dict[Tuple, List[str]] = {}
+        # place in contiguous runs; each clip's length is the difference of the snapped slot boundaries, so rounding never drifts
+        runs: List[List[Dict[str, Any]]] = []
         for r in todo:
-            values = _frame_grade(r.get("look"), _source_look(by_id, _effective(r, plan)))
-            if values and r["reference_shot"] in placed_ids:
-                groups.setdefault(tuple(sorted(values.items())), []).append(placed_ids[r["reference_shot"]])
-        for params, ids in groups.items():
-            _call("color_grade_clip_tool", timeline_clip_ids=ids, reset=True, **dict(params))
-            graded += len(ids)
+            if runs and abs(snap(r["start"]) - snap(runs[-1][-1]["end"])) < frame / 2:
+                runs[-1].append(r)
+            else:
+                runs.append([r])
+        placed_ids: Dict[int, str] = {}
+        try:
+            for run in runs:
+                items = []
+                for r in run:
+                    c = _effective(r, plan)
+                    length = snap(r["end"]) - snap(r["start"])
+                    start = _inside_file(c["file_id"], float(c["in"]), length)
+                    items.append({"file_id": c["file_id"], "source_start": round(start, 3), "source_end": round(start + length, 3)})
+                data = _call("add_clips_to_timeline_tool", items=items, track=plan["track_name"], start_seconds=snap(run[0]["start"]), allow_overlap=False)
+                for r, clip in zip(run, data.get("clips") or []):
+                    placed_ids[r["reference_shot"]] = str(clip["timeline_clip_id"])
+        except Exception:
+            for clip_id in placed_ids.values():                            # a build that fails leaves nothing half-placed behind
+                th().delete_from_timeline(timeline_clip_id=clip_id)
+            raise
+        plan["placed"].update(placed_ids)
 
-    song_note = ""
-    if song and not plan["song_clip"]:
-        ref = by_id.get(plan["reference_file_id"])
-        end = max(float(r["end"]) for r in plan["rows"])
-        if ref is not None:
-            _ensure_track(SONG_TRACK_NAME)
-            added = _call("add_clips_to_timeline_tool", items=[{"file_id": plan["reference_file_id"], "source_start": 0.0, "source_end": round(end, 3)}],
-                          track=SONG_TRACK_NAME, start_seconds=0.0, allow_overlap=True)
-            plan["song_clip"] = str((added.get("clips") or [{}])[0].get("timeline_clip_id") or "")
-            if plan["song_clip"]:
-                _call("set_clip_audio_video_tool", timeline_clip_ids=[plan["song_clip"]], video="off")
-                song_note = f" Song: the reference's audio on track '{SONG_TRACK_NAME}' (picture off)."
-    if song and placed_ids:
-        _call("set_clip_audio_video_tool", timeline_clip_ids=list(placed_ids.values()), audio="off")
+        graded = 0
+        if grade:
+            groups: Dict[Tuple, List[str]] = {}
+            for r in todo:
+                values = _frame_grade(r.get("look"), _source_look(by_id, _effective(r, plan)))
+                if values and r["reference_shot"] in placed_ids:
+                    groups.setdefault(tuple(sorted(values.items())), []).append(placed_ids[r["reference_shot"]])
+            for params, ids in groups.items():
+                _call("color_grade_clip_tool", timeline_clip_ids=ids, reset=True, **dict(params))
+                graded += len(ids)
+
+        song_note = ""
+        if song and not plan["song_clip"]:
+            ref = by_id.get(plan["reference_file_id"])
+            if ref is not None:
+                try:
+                    _ensure_track(SONG_TRACK_NAME)
+                    wanted_end = max(float(r["end"]) for r in plan["rows"])
+                    usable_end = _inside_file(plan["reference_file_id"], wanted_end, 0.0)        # the editor's usable end of the file, which the index can overrun
+                    added = _call("add_clips_to_timeline_tool", items=[{"file_id": plan["reference_file_id"], "source_start": 0.0, "source_end": round(min(wanted_end, usable_end), 3)}],
+                                  track=SONG_TRACK_NAME, start_seconds=0.0, allow_overlap=True)
+                    plan["song_clip"] = str((added.get("clips") or [{}])[0].get("timeline_clip_id") or "")
+                    if plan["song_clip"]:
+                        _call("set_clip_audio_video_tool", timeline_clip_ids=[plan["song_clip"]], video="off")
+                        song_note = f" Song: the reference's audio on track '{SONG_TRACK_NAME}' (picture off)."
+                except ToolError as exc:                                  # the clips are the valuable part: say what failed, keep them
+                    song_note = f" The song was NOT added ({exc}); add the reference's audio yourself."
+        if song and placed_ids:
+            _call("set_clip_audio_video_tool", timeline_clip_ids=list(placed_ids.values()), audio="off")
+
+        return placed_ids, replaced, graded, song_note
+
+    placed_ids, replaced, graded, song_note = _in_one_batch(run)
 
     unfilled = [r["reference_shot"] for r in plan["rows"] if not _effective(r, plan)]
     return ok(f"Placed {len(placed_ids)} shot(s) on track '{plan['track_name']}' (replaced {replaced}), graded {graded}.{song_note}"
@@ -348,6 +370,13 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
 
 
 # ============================ check ============================
+def _look_gap(a: Dict[str, Any], b: Dict[str, Any]) -> Optional[float]:
+    """How far two looks are apart in what a colour grade controls (brightness, colour cast, saturation, contrast); 0 = the same."""
+    parts = [abs(float(a[k]) - float(b[k])) * w for k, w in (("avg_luma", 1.2), ("warm_cool", 1.4), ("sat_proxy", 1.1), ("contrast_span", 1.0))
+             if a.get(k) is not None and b.get(k) is not None]
+    return round(sum(parts), 3) if parts else None
+
+
 def _applied_grade(clip_id: str) -> Optional[Dict[str, float]]:
     """The Color Grade values a timeline clip carries, or None when it has none."""
     from classes.query import Clip
@@ -474,8 +503,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
             graded += 1 if grade else 0
             dist = None
             if ref_look and src_look:
-                from classes import color_agent as ca
-                dist = ca.look_profile_distance(_predicted_look(src_look, grade) or {}, ref_look)
+                dist = _look_gap(_predicted_look(src_look, grade) or {}, ref_look)
             if dist is None:
                 look_scores.append(0.5)
             else:

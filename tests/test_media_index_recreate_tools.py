@@ -221,3 +221,31 @@ def test_a_build_that_fails_part_way_leaves_nothing_half_placed(studio, monkeypa
     R._PLANS[pid]["rows"][2]["choice"] = None
     assert studio.ed.call_receipt("build_recreation_tool", plan_id=pid)["status"] == "error"
     assert picture_clips(studio) == []
+
+
+def test_a_whole_build_updates_the_timeline_once_not_after_every_tool_it_calls(studio):
+    """Seen live: about 25 colour-grade calls, each refreshing the timeline, made one build take 160 s."""
+    from classes import update_batch
+    flushes = []
+    flush = lambda: flushes.append(1)  # noqa: E731
+    update_batch.register(flush)
+    try:
+        build_it(studio, plan(studio)["plan_id"])
+    finally:
+        update_batch.unregister(flush)
+    assert len(flushes) == 1
+
+
+def test_a_song_that_cannot_be_added_is_reported_and_the_clips_are_kept(studio, monkeypatch):
+    from classes.editor_tools import media_index_tools_recreate as R
+    real = R._call
+
+    def no_song(tool, /, **kw):
+        if tool == "add_clips_to_timeline_tool" and kw.get("track") == R.SONG_TRACK_NAME:
+            raise R.ToolError("the reference file is shorter than asked")
+        return real(tool, **kw)
+
+    monkeypatch.setattr(R, "_call", no_song)
+    receipt = studio.ed.call_receipt("build_recreation_tool", plan_id=plan(studio)["plan_id"])
+    assert receipt["status"] == "applied" and "song was NOT added" in receipt["summary"]
+    assert receipt["data"]["placed"] == 6 and len(picture_clips(studio)) == 6
