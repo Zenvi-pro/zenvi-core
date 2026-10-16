@@ -47,7 +47,30 @@ def list_line(fi: FileIndex, shot: Dict[str, Any], max_chars: int = 110) -> str:
     if len(text) > max_chars:
         text = text[: max_chars - 1].rstrip() + "…"
     line = f"S{shot['id']} {_clock(shot['start'])}-{_clock(shot['end'])} ({float(shot['end']) - float(shot['start']):.1f}s)"
-    line += (" " + kind if kind else "") + (": " + text if text else "")
+    line += (" " + kind if kind else "") + opens(shot) + (": " + text if text else "")
     if shot.get("black"):
         line += " [black]"
     return line + (f" says {said}" if said else "")
+
+
+def opens(shot: Dict[str, Any]) -> str:
+    """`` [fade in]`` when a shot is not reached by a plain cut ("cut" is the rule, so it is not repeated on every row)."""
+    kind = str((shot.get("opens_with") or {}).get("kind") or "")
+    return f" [{kind} in]" if kind and kind != "hard" else ""
+
+
+def cut_summary(fi: FileIndex, on_beat: float = 0.06) -> str:
+    """One line: how the shots are joined, and how many cuts land on a beat (a cut is on a beat when within *on_beat* seconds)."""
+    kinds: Dict[str, int] = {}
+    for shot in fi.shots[1:]:
+        kind = str((shot.get("opens_with") or {}).get("kind") or "hard")
+        kinds[kind] = kinds.get(kind, 0) + 1
+    if not kinds:
+        return ""
+    text = "CUTS " + ", ".join(f"{n} {k}" for k, n in sorted(kinds.items(), key=lambda kv: -kv[1]))
+    tempo = (fi.audio or {}).get("tempo") or {}
+    beats = [float(b) for b in tempo.get("beats") or []]
+    if beats and fi.shots[1:]:
+        hits = sum(1 for shot in fi.shots[1:] if min(abs(float(shot["start"]) - b) for b in beats) <= on_beat)
+        text += f"; {hits} of {len(fi.shots) - 1} land on a beat ({float(tempo.get('bpm') or 0):.0f} BPM)"
+    return text

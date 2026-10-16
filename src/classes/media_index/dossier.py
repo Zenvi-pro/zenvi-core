@@ -73,6 +73,8 @@ def shot_lines(fi: FileIndex, shot: Dict[str, Any]) -> str:
         head += " (" + ", ".join(tags) + ")"
     if shot.get("black"):
         head += " BLACK"
+    from classes.media_index.storyboard import opens
+    head += opens(shot)
     parts = [head + (": " + w["description"] if w.get("description") else "")]
     if w.get("actions"):
         parts.append("  does: " + "; ".join(w["actions"]))

@@ -115,3 +115,24 @@ def test_a_row_is_short_keeps_its_time_and_the_first_sentence_only():
     assert row.startswith("S3 0:05.50-0:05.90 (0.4s) close, handheld: A girl looks down") and "sad" not in row and row.endswith('says "hello"')
     long = storyboard.list_line(SimpleNamespace(sentences=[]), {"id": 1, "start": 0, "end": 2, "watch": {"description": "y" * 300}})
     assert len(long) < 160 and "…" in long
+
+
+def test_the_keyframe_sheets_come_back_as_pictures_in_the_result(footage):
+    from classes import tool_handlers
+    out = tool_handlers.execute_tool_rich("storyboard_tool", {"file_ids": [footage.fid], "detail": "list"})
+    assert len(out.images) == 1 and out.images[0].data[:2] == b"\xff\xd8"          # one JPEG, the sheet of six keyframes
+    quiet = tool_handlers.execute_tool_rich("storyboard_tool", {"file_ids": [footage.fid], "pictures": False})
+    assert quiet.images == []
+    other = tool_handlers.execute_tool_rich("list_files_tool", {})
+    assert other.images == []                                                       # nothing leaks into the next call
+
+
+def test_a_row_names_a_transition_that_is_not_a_cut_and_the_summary_counts_how_shots_join():
+    shots = [{"id": 0, "start": 0.0, "end": 2.0, "opens_with": None},
+             {"id": 1, "start": 2.0, "end": 4.0, "opens_with": {"kind": "hard"}},
+             {"id": 2, "start": 4.0, "end": 6.0, "opens_with": {"kind": "fade"}},
+             {"id": 3, "start": 6.0, "end": 8.0, "opens_with": {"kind": "dissolve"}}]
+    fi = SimpleNamespace(shots=shots, sentences=[], audio={"tempo": {"bpm": 120.0, "beats": [2.02, 5.0, 6.01]}})
+    assert "[fade in]" in storyboard.list_line(fi, shots[2]) and "in]" not in storyboard.list_line(fi, shots[1])
+    assert storyboard.cut_summary(fi) == "CUTS 1 hard, 1 fade, 1 dissolve; 2 of 3 land on a beat (120 BPM)"
+    assert storyboard.cut_summary(SimpleNamespace(shots=shots[:1], audio={})) == ""

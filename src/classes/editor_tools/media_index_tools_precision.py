@@ -741,7 +741,7 @@ def storyboard(file_ids=None, file_query="", start_seconds=0, detail="full", pic
     layer was built) what happens, plus one stamped keyframe per shot. The cuts are exact and free; this is the first call for "describe
     this video", "what happens scene by scene" or "recreate this". Never sample frames at a fixed interval to find cuts. Use detail=list
     for a whole video in one call: one row per shot, each with its own time, so keep every row (do not merge quick shots into ranges).
-    Open the picture(s) (image_path / sheets) before relying on a description. For one shot's detail use get_moment_tool; for the exact
+    The keyframe sheets come back as pictures: look at them before relying on a description. For one shot's detail use get_moment_tool; for the exact
     cut frame use refine_cut_tool.
     """
     from classes.media_index import dossier, storyboard as board
@@ -755,14 +755,32 @@ def storyboard(file_ids=None, file_query="", start_seconds=0, detail="full", pic
     if not shots:
         raise ToolError("no shots at or after that time")
     rows = [board.list_line(fi, s) for s in shots] if as_list else [dossier.shot_lines(fi, s) for s in shots]
-    lines = dossier.header(fi) + rows
+    summary = board.cut_summary(fi)
+    lines = dossier.header(fi) + ([summary] if summary else []) + rows
     if next_start is not None:
         lines.append(f"... more shots; call again with start_seconds={next_start:.2f}")
     sheets = _keyframe_sheets(f, fi, shelf, shots, int(tile_width)) if pictures else []
+    _show_sheets(sheets)
     first = sheets[0] if sheets else {}
     return ok(f"{len(shots)} shots of {_display_name(f.data)} from {shots[0]['start']:.2f} s" + (", one keyframe each." if sheets else "."), file_id=str(f.id),
               notes="\n".join(lines), shots_shown=len(shots), total_shots=len(fi.shots), next_start=next_start,
               sheets=sheets, image_path=first.get("image_path"), tiles=first.get("tiles"), tile_size=first.get("tile_size"), cached=first.get("cached"))
+
+
+def _show_sheets(sheets: List[Dict[str, Any]]) -> None:
+    """Hand the keyframe sheets to the agent as pictures in the result, so it sees them without opening a file (one JPEG per sheet)."""
+    try:
+        import io
+        from PIL import Image
+        from classes.agent_tools.output import ImageBlock, attach_images
+        blocks = []
+        for sheet in sheets:
+            buffer = io.BytesIO()
+            Image.open(sheet["image_path"]).convert("RGB").save(buffer, "JPEG", quality=80)
+            blocks.append(ImageBlock(data=buffer.getvalue()))
+        attach_images(blocks)
+    except Exception:
+        log.debug("storyboard: keyframe sheets not attached as pictures", exc_info=True)   # the path in the result still works
 
 
 def _keyframe_sheets(f, fi, shelf, shots, width: int) -> List[Dict[str, Any]]:

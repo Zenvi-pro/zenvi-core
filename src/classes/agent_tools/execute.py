@@ -102,6 +102,7 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
         ToolOutput,
         clear_last_output,
         set_last_output,
+        take_attached_images,
         wrap_str_result,
     )
     from classes.agent_tools.receipt import (
@@ -113,6 +114,7 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
     from classes.agent_tools.snapshot import mutation_result, timeline_snapshot
 
     clear_last_output()
+    take_attached_images()      # nothing left over from an earlier call
 
     handler = _HANDLERS.get(tool_name)
     if not handler:
@@ -149,6 +151,13 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
         public_args["transaction_id"] = transaction_id
 
     def _invoke() -> ToolOutput:
+        out = _invoke_inner()
+        attached = take_attached_images()
+        if attached and not out.images:
+            out = ToolOutput(receipt=out.receipt, images=attached)
+        return out
+
+    def _invoke_inner() -> ToolOutput:
         app = _GET_APP()
         before_len = _history_len(app)
         # The before/after scan only feeds a mutation receipt: read-only calls skip it.
