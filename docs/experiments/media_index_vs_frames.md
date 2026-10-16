@@ -43,6 +43,23 @@ One file, one prompt, measured the same way each time.
 - The song's vocals are not transcribed (the speech layer has 0 words for this file), so no lyrics.
 - The agent never opened the keyframe pictures: the tool gives them as a file path, not as an image in the result.
 
+## Timing accuracy, same method for both final answers
+Every m:ss time in the answer, compared with the nearest real cut in the index.
+| | run 1 (frames) | run 3 (index) |
+|---|---|---|
+| times stated | 76 | 66 |
+| within 0.06 s of a cut | 10 | 56 |
+| within 0.5 s | 58 | 65 |
+| largest error | 2.20 s | 1.37 s (the start of the silence, not a cut) |
+| shots whose own start time is stated | 10 of 85 | 55 of 85 |
+| mentions tempo / silence / snow / blood shots | no / no / no / no | yes / yes / yes / yes |
+
+## Added after run 3
+`storyboard_tool` now returns the keyframe sheets as pictures in the result, names fades and dissolves on the rows, and adds a line
+counting how shots join and how many cuts land on a beat. For this file: 77 hard cuts, 5 fades, 2 dissolves; 16 of 84 cuts land on a
+beat at 136 BPM (about 19%, below the 27% expected by chance), so this ending's cuts are not locked to the beat. Run 4 (Claude Code
+with these changes) is still to be measured.
+
 ## Run 1 vs run 3
 | | run 1 (frames) | run 3 (index) | change |
 |---|---|---|---|
