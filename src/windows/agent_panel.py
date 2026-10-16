@@ -378,6 +378,11 @@ class AgentPanel(QFrame):
                     % binary)
 
         version = _format_version(detected.get("version"))
+        if backend_id == "chatgpt" and detected.get("logged_in") is False:
+            return (COLOR_PARTIAL, self._tr("needs sign-in"), version,
+                    (self._tr("Sign in"), True), False,
+                    self._tr("Sign in with ChatGPT to run the agent on your ChatGPT plan "
+                             "instead of Zenvi credits."))
         if backend_id == "claude_code" and detected.get("logged_in") is False:
             return (COLOR_PARTIAL, self._tr("needs sign-in"), version,
                     (self._tr("Sign in"), True), False,
@@ -467,24 +472,25 @@ class AgentPanel(QFrame):
         chat = self._chat()
         if chat is None:
             return
-        # Sign-in is Anthropic OAuth; Connect is MCP registration — do not mix.
+        # Sign-in is the agent's own login (Anthropic, ChatGPT); Connect is MCP registration — do not mix.
         status = {}
         try:
             status = chat.cli_status() or {}
         except Exception:
             pass
-        if backend_id == "claude_code" and (
-            status.get("claude_code") or {}
+        if backend_id in ("claude_code", "chatgpt") and (
+            status.get(backend_id) or {}
         ).get("logged_in") is False:
             self._connecting = backend_id
             self._connect_error.pop(backend_id, None)
             self.refresh()
-            # Login can take several minutes in the browser.
-            self._connect_timer.start(max(CONNECT_TIMEOUT_MS, 6 * 60 * 1000))
+            # Login can take several minutes in the browser; ChatGPT then downloads Codex (~150 MB).
+            minutes = 15 if backend_id == "chatgpt" else 6
+            self._connect_timer.start(max(CONNECT_TIMEOUT_MS, minutes * 60 * 1000))
             try:
                 chat._sign_in_cli(backend_id)
             except Exception:
-                log.error("Failed to start Claude sign-in for %s", backend_id, exc_info=True)
+                log.error("Failed to start sign-in for %s", backend_id, exc_info=True)
                 self.on_connect_result(backend_id, False, self._tr("Could not start sign-in."))
             return
         self._connecting = backend_id

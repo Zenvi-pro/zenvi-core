@@ -482,6 +482,7 @@ BACKEND_ZENVI = "zenvi"
 BACKEND_CLAUDE = "claude_code"
 BACKEND_CODEX = "codex"
 BACKEND_CURSOR = "cursor_cli"
+BACKEND_CHATGPT = "chatgpt"
 BACKENDS = [{"id": BACKEND_ZENVI, "name": "Zenvi Assistant"}] + [
     {"id": backend, "name": runner.DISPLAY_NAME, "cli": runner.CLI_NAME}
     for backend, runner in CLI_RUNNERS.items()
@@ -3194,11 +3195,7 @@ class AIChatWindow(QDockWidget):
         """Check every agent CLI's availability in a background thread; push to JS."""
         def run():
             try:
-                from windows.agent_runners import detect_cli
-                status = {
-                    backend: detect_cli(runner.CLI_NAME)
-                    for backend, runner in CLI_RUNNERS.items()
-                }
+                status = {backend: runner.detect() for backend, runner in CLI_RUNNERS.items()}
                 QMetaObject.invokeMethod(
                     self,
                     "_on_cli_status",
@@ -4215,7 +4212,10 @@ class AIChatWindow(QDockWidget):
 
     @pyqtSlot(str)
     def _on_auth_required(self, text: str):
-        """Claude Code OAuth missing/expired — guided Sign-in card, not a raw dump."""
+        """Claude Code / ChatGPT sign-in missing or expired — guided Sign-in card, not a raw dump."""
+        backend = getattr(self.sender(), "BACKEND_ID", "") or BACKEND_CLAUDE
+        if backend == BACKEND_CLAUDE:
+            text = "Claude Code needs you to sign in again. Your last request was not run."
         sid = getattr(self.sender(), "_session_id", self._active_sid)
         sess = self._sessions.get(sid) if sid else None
         if sess is not None:
@@ -4249,15 +4249,10 @@ class AIChatWindow(QDockWidget):
             self._run_js("if(window.resetStreamingMessage) window.resetStreamingMessage();")
             self._run_js(
                 "if(window.showCliAuthRecovery) showCliAuthRecovery(%s, %s);"
-                % (json.dumps(BACKEND_CLAUDE), json.dumps(
-                    "Claude Code needs you to sign in again. Your last request was not run."
-                ))
+                % (json.dumps(backend), json.dumps(text))
             )
         else:
-            self._add_system_msg(
-                "Claude Code needs you to sign in again. "
-                "Run: claude auth login — then retry your message."
-            )
+            self._add_system_msg(text)
         self._set_processing_ui(False)
         self._detect_clis()
 
@@ -4308,13 +4303,13 @@ class AIChatWindow(QDockWidget):
             self._run_js("if(window.onZenviSignInResult) onZenviSignInResult(%s, %s);" % (json.dumps(bool(ok)), json.dumps(email or "")))
 
     def _sign_in_cli(self, backend_id: str):
-        """Open Claude's browser login; on success auto-retry the pending message."""
-        if backend_id != BACKEND_CLAUDE:
+        """Open Claude's / ChatGPT's browser login; on success auto-retry the pending message."""
+        if backend_id not in (BACKEND_CLAUDE, BACKEND_CHATGPT):
             if self._use_web_ui:
                 self._run_js(
                     "if(window.onCliAuthResult) onCliAuthResult(%s, %s, %s);"
                     % (json.dumps(backend_id), json.dumps(False),
-                       json.dumps("Sign-in is only available for Claude Code."))
+                       json.dumps("Sign-in is only available for Claude Code and ChatGPT."))
                 )
             return
 
@@ -4323,8 +4318,17 @@ class AIChatWindow(QDockWidget):
 
         def run():
             try:
-                from windows.agent_runners import start_claude_auth_login
-                ok, message = start_claude_auth_login()
+                if backend_id == BACKEND_CHATGPT:
+                    from classes import chatgpt_plan
+                    ok, message = chatgpt_plan.sign_in()
+                    if ok:
+                        try:
+                            chatgpt_plan.install()   # the one-time Codex download, before the first turn
+                        except Exception as e:
+                            ok, message = False, "Signed in, but downloading the ChatGPT agent failed: %s" % e
+                else:
+                    from windows.agent_runners import start_claude_auth_login
+                    ok, message = start_claude_auth_login()
             except Exception as e:
                 log.debug("sign_in_cli failed: %s", e, exc_info=True)
                 ok, message = False, str(e)
@@ -4350,7 +4354,7 @@ class AIChatWindow(QDockWidget):
             return
         sid = session_id or self._active_sid
         sess = self._sessions.get(sid) if sid else None
-        if not sess or sess.get("backend") != BACKEND_CLAUDE:
+        if not sess or sess.get("backend") != backend_id:
             return
         pending = sess.pop("pending_retry", None)
         sess.pop("pending_retry_text", None)
