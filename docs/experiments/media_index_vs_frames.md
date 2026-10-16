@@ -19,6 +19,7 @@ One file, one prompt, measured the same way each time.
 |---|------|-----|-------------|--------------|-------------------------------------------------------|---------------|-----------|---------|
 | 1 | 2026-10-16 | Frames only: 3x `view_frames_tool` (all failed), 1 overview + 6 windows of `inspect_media_tool` | 10 (7 worked) | 73 | 10 / 138,477 / 50,458 / 5,413 | 0 | about 23 scenes, times good to +-1.25 s | Good story, right characters and palette. Missed the fish shots at 7.4 to 7.9 s (placed fish only at the end), most sub-second cuts, no audio, no beat timing, some garbled words. Not enough to recreate. |
 | 2 | 2026-10-16 | Our tool by hand (not an agent run): `storyboard_tool`, 2 pages | 2 | 2 sheets (48 + 37 keyframes) | not an agent run: notes are 24,637 characters (about 6,200 tokens, estimated at 4 characters a token) | 0 for the tool itself (reads the shelf) | 85 shots, exact start and end of each | Every cut, camera move, shot type, look, and a description per shot. Wall time 1.8 s and 1.9 s a page. |
+| 2b | 2026-10-16 | Our tool by hand: `storyboard_tool detail=list` (all 85 shots in one call, plus 2 keyframe sheets) | 1 | 2 sheets | not an agent run: notes are 10,700 characters (about 2,700 tokens at 4 characters a token, estimated) against 24,637 for the full mode in 2 pages | 0 | 85 shots, one row each with its own start, end and length | Same cuts as the full mode in 43% of the text and one call. |
 | 3 | 2026-10-16 | Claude Code, same prompt, after the changes (session abbe3696): `storyboard_tool` page 1 (48 shots) and page 2 (37 shots), tile_width 480 | 2 (0 failed) | 0 (it worked from the text; the keyframe sheets were not opened) | 8 / 114,021 / 35,493 / 3,843 | not measured (needs the account balance before and after) | all 85 shots covered; 37 stated cut times each within about 0.05 s of the structure layer | Much better than run 1 (checked by the watcher against structure.json and watch.json, not by hand). About 20 shots of 0.3 to 0.5 s were grouped into entries without individual times, and a few descriptions inherit the auto-tagging's mistakes (it flagged a 'weapon-like prop' as possibly wrong). No invented scenes found. |
 
 ## What run 1 got wrong, and why
@@ -32,6 +33,15 @@ One file, one prompt, measured the same way each time.
 2. `storyboard_tool`: every shot, exact cuts, one stamped keyframe per shot, paginated, cached.
 3. The MCP instructions, the shared playbook, and `inspect_media_tool` (its description and a note in its result when the file has a
    shot list) now start from the shot list.
+
+## How accurate run 3's answer was (measured against the index)
+- The answer states 66 distinct times. 56 are within 0.06 s of a real cut and 62 within 0.15 s. The rest are section headings rounded to
+  a whole second (0:56, 1:13, 1:24) and the start of the silence (1:28.7), which is not a cut.
+- 55 of the 85 shots have their own start time stated; 11 of the 19 shots shorter than half a second do. The rest are grouped into ranges.
+- Spot check of a descriptions stretch against the frames (shots 3 to 6, 5.5 to 7.2 s): the text matches the picture. "Pink hair" is the
+  side-light on lilac hair, not a mistake.
+- The song's vocals are not transcribed (the speech layer has 0 words for this file), so no lyrics.
+- The agent never opened the keyframe pictures: the tool gives them as a file path, not as an image in the result.
 
 ## Run 1 vs run 3
 | | run 1 (frames) | run 3 (index) | change |
