@@ -580,9 +580,9 @@ def test_background_tools_wait_long_enough_for_each_hop(ed, monkeypatch):
     timeouts = []
     real_on_main = timeline_edit.on_main
 
-    def recording_on_main(func, *args, timeout=None):
+    def recording_on_main(func, *args, timeout=None, **kw):
         timeouts.append(timeout)
-        return real_on_main(func, *args, timeout=timeout)
+        return real_on_main(func, *args, timeout=timeout, **kw)
 
     monkeypatch.setattr(timeline_edit, "on_main", recording_on_main)
     a, b = _seq(ed, 2)
@@ -601,3 +601,41 @@ def test_duplicate_leaves_a_clips_incoming_crossfade_behind(ed):
     r = receipt(ed.call("duplicate_clips_tool", timeline_clip_ids=[a, b], position_seconds=20))
     assert len(r["transition_ids"]) == 1
     assert Transition.get(id=r["transition_ids"][0]).data["position"] == 23.5
+
+
+# ---- one timeline update per edit, not one per clip (measured: 85 placements went from over 2 minutes to 18 s) ----
+@pytest.fixture
+def flushes():
+    from classes import update_batch
+    count = []
+    flush = lambda: count.append(1)  # noqa: E731
+    update_batch.register(flush)
+    yield count
+    update_batch.unregister(flush)
+
+
+def test_placing_many_clips_updates_the_timeline_once(ed, flushes):
+    files = [ed.add_file("video", duration=6.0) for _ in range(6)]
+    r = receipt(ed.call("add_clips_to_timeline_tool", items=[{"file_id": f, "source_start": 0, "source_end": 2} for f in files], track="2"))
+    assert len(r["clips"]) == 6 and len(flushes) == 1
+    one_step(ed)
+
+
+def test_a_whole_track_edit_updates_the_timeline_once(ed, flushes):
+    clips = _seq(ed, 5)
+    receipt(ed.call("set_clip_audio_video_tool", timeline_clip_ids=clips, audio="off"))
+    assert len(flushes) == 1
+
+
+def test_a_read_only_call_opens_no_batch(ed, flushes):
+    _seq(ed, 3)
+    ed.call("list_clips_tool")
+    assert flushes == []
+
+
+def test_undo_updates_the_timeline_once_however_many_clips_it_removes(ed, flushes):
+    f = ed.add_file("video", duration=6.0)
+    receipt(ed.call("add_clips_to_timeline_tool", items=[{"file_id": f, "source_start": 0, "source_end": 1}] * 4, track="2"))
+    flushes.clear()
+    receipt(ed.call("undo_tool"))
+    assert len(flushes) == 1

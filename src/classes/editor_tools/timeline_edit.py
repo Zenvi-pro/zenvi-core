@@ -70,6 +70,7 @@ _RIPPLE_NOTE = "Shift the later clips on the track to follow (close/open the roo
 # seconds on a loaded machine; giving up mid-way would leave a half-done edit
 # (the hop still runs later), so wait well past the 30 s GUI-dispatch default.
 HOP_TIMEOUT = 180
+PLACEMENT_HOP_CLIPS = 8          # clips inserted per GUI-thread hop: short enough that the interface keeps responding
 
 
 def _clips_or_query_given(timeline_clip_ids, clip_query, scope) -> bool:
@@ -354,13 +355,24 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
         require_unlocked([layer])
         return timeline_ops.insert_placement_step(step)
 
+    # One timeline update and one preview refresh for the whole placement (not one per clip), in short GUI-thread hops so the
+    # interface keeps answering; the batch is closed in `finally` even if a hop fails, and its lease ends it if this worker dies.
+    from classes import update_batch
+
+    def _insert_some(group):
+        return [_insert(step) for step in group]
+
     clip_ids, transition_ids = [], []
-    for step in steps:
-        clip_id, transition_id = on_main(_insert, step, timeout=HOP_TIMEOUT)
-        clip_ids.append(clip_id)
-        if transition_id:
-            transition_ids.append(transition_id)
-    on_main(_finish_edit, timeout=HOP_TIMEOUT)
+    on_main(update_batch.begin, timeout=HOP_TIMEOUT, batch=False)
+    try:
+        for i in range(0, len(steps), PLACEMENT_HOP_CLIPS):
+            for clip_id, transition_id in on_main(_insert_some, steps[i:i + PLACEMENT_HOP_CLIPS], timeout=HOP_TIMEOUT):
+                clip_ids.append(clip_id)
+                if transition_id:
+                    transition_ids.append(transition_id)
+        on_main(_finish_edit, timeout=HOP_TIMEOUT)
+    finally:
+        on_main(update_batch.end, timeout=HOP_TIMEOUT, batch=False)
 
     placed = [clip_summary(fresh(cid)) for cid in clip_ids if fresh(cid)]
     end = max(p["end"] for p in placed)

@@ -25,11 +25,12 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
+import json
 import threading
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 from qt_api import QTimer
 
-from classes import crash_handler
+from classes import crash_handler, update_batch
 from classes.updates import UpdateInterface
 from classes.logger import log
 from classes.app import get_app
@@ -74,6 +75,11 @@ class TimelineSync(UpdateInterface):
         with self.timeline_lock:
             self.timeline.Open()
 
+        # Diffs held back while an update batch is open (see classes.update_batch): applied in one call at the end.
+        self._batched_diffs = []
+        self._batched_property_edit = False
+        update_batch.register(self.flush_batch)
+
         # Add self as listener to project data updates (at the beginning of the list)
         # This listener will receive events before others.
         self.app.updates.add_listener(self, 0)
@@ -87,6 +93,14 @@ class TimelineSync(UpdateInterface):
         # Ignore changes that don't affect libopenshot
         if action and len(action.key) >= 1 and action.key[0].lower() in ["files", "history", "markers", "layers", "scale", "profile", "export_settings", "export_overrides", "zenvi_cloud"]:
             return
+
+        if action and action.type != "load" and update_batch.active():
+            # An edit is changing many things: keep the diffs in order and apply them once when it ends.
+            self._batched_diffs.extend(json.loads(self._preview_payload(action.json(is_array=True))))
+            self._batched_property_edit = self._batched_property_edit or action.type == "update"
+            return
+        if action and action.type == "load":
+            self._batched_diffs = []        # a load replaces the whole timeline: held-back diffs would be stale
 
         with self.timeline_lock:
             # Enter edit mode for property updates — disable caching until the user seeks or plays.
@@ -132,10 +146,7 @@ class TimelineSync(UpdateInterface):
 
                 else:
                     # This JSON DIFF is passed to libopenshot to update the timeline
-                    payload = action.json(is_array=True)
-                    if proxy_service:
-                        payload = proxy_service.rewrite_json_for_preview(payload)
-                    self.timeline.ApplyJsonDiff(payload)
+                    self.timeline.ApplyJsonDiff(self._preview_payload(action.json(is_array=True)))
 
                     # Clear frame cache so the next render picks up the new clip data
                     # (without this, libopenshot serves the cached pre-change frame)
@@ -149,6 +160,32 @@ class TimelineSync(UpdateInterface):
                          (e, action.json(is_array=True)))
 
             # Cache stays off — re-enabled when the user seeks or starts playback
+
+    def _preview_payload(self, payload):
+        """The diff as libopenshot should read it (proxy readers swapped in when there are proxies)."""
+        proxy_service = getattr(self.window, "proxy_service", None)
+        return proxy_service.rewrite_json_for_preview(payload) if proxy_service else payload
+
+    def flush_batch(self):
+        """Apply every diff held back during an update batch in one libopenshot call, then refresh the preview once."""
+        diffs, self._batched_diffs = self._batched_diffs, []
+        property_edit, self._batched_property_edit = self._batched_property_edit, False
+        if not diffs:
+            return
+        with self.timeline_lock:
+            if property_edit:
+                try:
+                    is_playing = self.window.preview_thread.player.Mode() == openshot.PLAYBACK_PLAY
+                except Exception:
+                    is_playing = False
+                if not is_playing:
+                    openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
+            try:
+                self.timeline.ApplyJsonDiff(json.dumps(diffs))
+                self.timeline.ClearAllCache(True)
+                self.window.refreshFrameSignal.emit()
+            except Exception as e:
+                log.error("Error applying batched JSON to timeline object in libopenshot: %s" % e)
 
     def MaxSizeChangedCB(self, new_size):
         """Callback for max sized change (i.e. max size of video widget)"""
