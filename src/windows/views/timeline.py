@@ -125,7 +125,7 @@ from .timeline_backend.qwidget import TimelineWidget
 from .timeline_backend.colors import effect_color_hex
 from .menu import StyledContextMenu
 from classes.clip_utils import (
-    clamp_timing_to_media, is_single_image_media, apply_file_caption_to_clip, project_fps_fraction,
+    clamp_timing_to_media, is_single_image_media, project_fps_fraction,
 )
 from classes.keyframe_rules import COPY_KEYFRAME_GROUPS, curve_plateau
 from classes.clip_placement import apply_audio_only_clip_overrides
@@ -5164,10 +5164,6 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Skip clips that are missing a 'reader' attribute
         if not new_clip.get("reader"):
             return  # Skip this clip
-
-        # If the source file has stored caption text (e.g. ComfyUI Whisper
-        # captions), attach a Caption effect to this new clip.
-        apply_file_caption_to_clip(new_clip, file)
 
         # Audio-only media must not composite video (cover-art MP3s otherwise
         # paint an opaque frame over every lower layer)

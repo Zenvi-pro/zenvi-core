@@ -109,8 +109,8 @@ def test_suggest_motion_graphics_placements_deprecated():
     assert "propose_overlay_windows" in out
 
 
-def test_fetch_in_background_safe():
-    assert "fetch_motion_graphics_video_tool" in th.BACKGROUND_SAFE_TOOLS
+def test_render_and_windows_run_off_the_gui_thread():
+    assert "render_motion_graphic_tool" in th.BACKGROUND_SAFE_TOOLS
     assert "propose_overlay_windows_tool" in th.BACKGROUND_SAFE_TOOLS
     assert "propose_overlay_windows_tool" in th.READ_ONLY_TOOLS
 

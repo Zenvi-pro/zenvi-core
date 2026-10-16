@@ -1,366 +1,476 @@
-"""Captions: classes.caption_cues and add/list/edit/remove_captions_tool."""
+"""add / list / remove captions: HyperFrames caption styles from Zenvi's own transcript."""
 
+import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
-from classes import caption_cues
-from classes.caption_cues import Cue
-from titles_text_fakes import receipt, tt  # noqa: F401  (fixture)
+from classes import hyperframes_local as hf
+from classes import tool_handlers
+from classes.editor_tools import REGISTRY
+from classes.editor_tools import titles_text_captions as captions
 
-SRT = """1
-00:00:00,500 --> 00:00:03,000
-Welcome back to my channel.
-
-2
-00:00:03,200 --> 00:00:07,500
-Today we are exploring the city.
-
-3
-00:00:07,700 --> 00:00:11,000
-First stop: my favorite coffee shop.
-"""
+L1, L2, L3 = 1000000, 2000000, 3000000
+COMPONENT = """<div data-composition-id="x" data-duration="8"></div>
+<script>var TRANSCRIPT = [
+  { text: "Every", start: 0.0, end: 0.3 },
+];</script>"""
 
 
-# ---------------------------------------------------------------------------
-# caption_cues
-# ---------------------------------------------------------------------------
-
-def test_caption_text_round_trip_in_the_docks_format():
-    cues = [Cue(0.5, 3.0, "Welcome back"), Cue(3.2, 7.5, "Two\nlines")]
-    text = caption_cues.build_caption_text(cues)
-    assert text.startswith("00:00:00:500 --> 00:00:03:000\nWelcome back\n\n00:00:03:200 --> 00:00:07:500\nTwo\nlines")
-    back = caption_cues.parse_caption_text(text)
-    assert [(c.start, c.end, c.text) for c in back] == [(0.5, 3.0, "Welcome back"), (3.2, 7.5, "Two\nlines")]
-    assert caption_cues.format_time(1.001) == "00:00:01:001"
-    assert caption_cues.format_time(3725.5) == "01:02:05:500"
+def _receipt(out):
+    assert not out.startswith("Error"), out
+    return json.loads(out.split("\n", 1)[1])
 
 
-def test_parser_reads_raw_srt_like_libopenshot_does():
-    cues = caption_cues.parse_caption_text(SRT)
-    assert [c.start for c in cues] == [0.5, 3.2, 7.7]
-    # the SRT index line "2" follows the first cue's text; libopenshot draws only lines longer than 1 char
-    assert caption_cues.drawn_lines(cues[0].text) == ["Welcome back to my channel."]
+@pytest.fixture
+def studio(editor, tmp_path, monkeypatch):
+    """A clip with a transcript, a fake HyperFrames CLI and a recording placement."""
+    monkeypatch.setattr(hf, "home", lambda: str(tmp_path / "hyperframes"))
+    monkeypatch.setattr(hf, "status", lambda: {"ready": True})
+    media = tmp_path / "interview.mp4"
+    media.write_bytes(b"0" * 64)
+    video = editor.add_file("video", path=str(media), has_audio=True)
+    clip = editor.add_clip(video, position=10.0, layer=L1, start=2.0, end=7.0)       # 5 s on the timeline
+    state = SimpleNamespace(commands=[], placed=[], place_kwargs=[], clip=clip, tmp=tmp_path, mattes=[], words=[
+        {"text": "Hello", "timelineStartSec": 10.2, "timelineEndSec": 10.6},
+        {"text": "there", "timelineStartSec": 10.6, "timelineEndSec": 11.1},
+        {"text": "world", "timelineStartSec": 12.0, "timelineEndSec": 12.5},
+    ])
+    monkeypatch.setattr(captions, "transcript_words", lambda clip: state.words)
+    monkeypatch.setattr(captions, "_subject_coverage", lambda project, media, at: 0.4)     # a speaker is in shot
+    monkeypatch.setattr(captions, "_visible_band", lambda project, rel: None)
+
+    def fake_matte(project, src, out, timeout=0):
+        state.mattes.append((project, src, out))
+        path = os.path.join(hf.project_dir(project), out)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "wb").write(b"\x1a\x45\xdf\xa3" + b"0" * 512)
+        return {"frames": 125, "provider": "dml", "ms_per_frame": 40}
+
+    monkeypatch.setattr(hf, "matting", lambda: "rvm")
+    monkeypatch.setattr(hf, "rvm_ready", lambda: True)
+    monkeypatch.setattr(hf, "matte", fake_matte)
+
+    def fake_run(project, program, args, **kw):
+        state.commands.append((program, list(args)))
+        root = hf.project_dir(project)
+        if args[0] == "init":
+            os.makedirs(root, exist_ok=True)
+            if os.listdir(root):                      # like the real CLI
+                return 1, "Directory already exists and is not empty: ."
+            open(os.path.join(root, "hyperframes.json"), "w").write("{}")
+        elif args[0] == "add":
+            path = os.path.join(root, "compositions", "components", args[1] + ".html")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            open(path, "w").write(COMPONENT)
+        elif "-o" in args or args[0] == "remove-background":
+            out = os.path.join(root, args[args.index("-o") + 1])
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            open(out, "wb").write(b"\x1a\x45\xdf\xa3" + b"0" * 512)
+        elif program == "ffmpeg":
+            open(os.path.join(root, args[-1]), "wb").write(b"0" * 64)
+        return 0, "ok"
+
+    def fake_import(path, *, preserve_alpha=None):
+        from classes.query import File
+        return File.get(id=editor.add_file("video", path=path)), None
+
+    def fake_place(file_id="", position_seconds="", duration_seconds="", mode="", **_kw):
+        state.place_kwargs.append(_kw)
+        if str(file_id) == "F-any":
+            return "Added clip to timeline timeline_clip_id=X (watched)."
+        layer = L2 + L1 * len([p for p in state.placed if p["alive"]])
+        cid = editor.add_clip(file_id, position=float(position_seconds), layer=layer, start=0.0,
+                              end=float(duration_seconds))
+        state.placed.append({"clip": cid, "file": file_id, "mode": mode, "alive": True})
+        return "Added clip to timeline timeline_clip_id=%s (watched)." % cid
+
+    monkeypatch.setattr(hf, "run", fake_run)
+    monkeypatch.setattr(tool_handlers, "_import_generated_video", fake_import)
+    monkeypatch.setattr(tool_handlers, "place_motion_graphic", fake_place)
+    return state
 
 
-def test_libopenshot_would_cut_a_cue_at_a_time_in_its_text_and_safe_text_prevents_it():
-    raw = "00:00:01:000 --> 00:00:04:000\nMeet at 10:30 today\n\n"
-    assert caption_cues.parse_caption_text(raw)[0].text == "Meet at"
-    safe, changed = caption_cues.safe_text("Meet at 10:30 today")
-    assert changed and safe == "Meet at 10\u200b:30 today"
-    text = caption_cues.build_caption_text([Cue(1, 4, safe)])
-    assert caption_cues.display_text(caption_cues.parse_caption_text(text)[0].text) == "Meet at 10:30 today"
-    assert caption_cues.display_text("old 10\u223630 style") == "old 10:30 style"
+def _compiled(studio, style="pill-karaoke"):
+    root = hf.project_dir("captions-" + studio.clip.lower())
+    return open(os.path.join(root, "compositions", "components", "caption-%s.html" % style)).read()
 
 
-def test_safe_text_keeps_one_letter_and_note_lines_drawable():
-    safe, changed = caption_cues.safe_text("I\n\nNOTE: this matters")
-    assert changed
-    lines = safe.split("\n")
-    assert caption_cues.drawn_lines(safe) == lines and len(lines) == 2
-    assert caption_cues.display_text(safe) == "I\nNOTE: this matters"
-    assert caption_cues.safe_text("🔥")[0] == "🔥"          # two UTF-16 units: already drawn
+def test_the_old_caption_effect_tools_are_gone():
+    assert {"add_captions_tool", "list_captions_tool", "remove_captions_tool"} <= set(REGISTRY)
+    assert "edit_captions_tool" not in tool_handlers.AGENT_TOOL_HANDLERS
+    assert "srtPath" not in REGISTRY["add_captions_tool"].schema["properties"]
 
 
-def test_subtitle_files_srt_and_vtt():
-    cues = caption_cues.parse_subtitles("﻿" + SRT.replace("\n", "\r\n"))
-    assert [(c.start, c.end) for c in cues] == [(0.5, 3.0), (3.2, 7.5), (7.7, 11.0)]
-    assert cues[2].text == "First stop: my favorite coffee shop."
-    vtt = ("WEBVTT - demo\n\nNOTE made by hand\n\nintro\n00:01.000 --> 00:02.500 align:start position:10%\n"
-           "<b>Hello</b> &amp; welcome\n<i>line two</i>\n\n00:00:03.000 --> 00:00:04.000\n{\\an8}Top\n")
-    v = caption_cues.parse_subtitles(vtt)
-    assert [(c.start, c.end, c.text) for c in v] == [(1.0, 2.5, "Hello & welcome\nline two"), (3.0, 4.0, "Top")]
-    assert caption_cues.parse_subtitles("no timings here") == []
+def test_captions_are_rendered_from_the_clips_own_words_and_placed_over_it(editor, studio):
+    r = _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, style="highlight"))
+
+    html = _compiled(studio, "highlight")
+    assert '"Hello"' in html and '"start": 0.2' in html and 'data-duration="5"' in html and "Every" not in html
+    program, args = [c for c in studio.commands if c[1][0] == "render"][0]
+    assert program == "hyperframes" and args[args.index("--format") + 1] == "webm"
+    assert studio.placed[0]["mode"] == "overlay"
+    placed = editor.clip(r["timeline_clip_id"])
+    assert placed["position"] == 10.0 and placed["end"] - placed["start"] == 5.0
+    f = editor.file(r["file_id"])
+    assert f["ai_metadata"]["captions"] == {"clip_id": studio.clip, "style": "highlight", "behind_subject": False,
+                                            "role": "captions", "text": "Hello there world"}
+    assert f["ai_metadata"]["source"] == "hyperframes_captions" and r["words"] == 3
 
 
-def test_long_transcript_cues_are_phrased():
-    cue = Cue(10.0, 20.0, "so today we are going to walk all the way across the city and find the best coffee")
-    parts = caption_cues.split_cue(cue, max_words=8, max_chars=42)
-    assert len(parts) >= 2
-    assert all(len(p.text.split()) <= 8 and len(p.text) <= 42 for p in parts[:-1])
-    assert parts[0].start == 10.0 and parts[-1].end == 20.0
-    assert all(abs(a.end - b.start) < 1e-9 for a, b in zip(parts, parts[1:]))
-    assert " ".join(p.text for p in parts) == cue.text
-    assert caption_cues.split_cue(Cue(0, 1, "short one"), 8, 42)[0].text == "short one"
+def test_a_cached_transcript_in_the_clips_folder_does_not_block_the_first_render(editor, studio):
+    root = hf.project_dir("captions-" + studio.clip.lower())
+    os.makedirs(root)
+    open(os.path.join(root, "speech.wav"), "wb").write(b"0" * 64)       # the Captions dock read the words first
+
+    _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, style="highlight"))
+
+    assert os.path.isfile(os.path.join(root, "hyperframes.json")) and os.path.isfile(os.path.join(root, "speech.wav"))
 
 
-def test_phrasing_breaks_at_sentences_and_never_leaves_a_lone_word():
-    # found live on the talking head: word-count splitting gave "downtown. The latte art here is" / "incredible."
-    cue = Cue(0, 10, "First stop is my favorite coffee shop downtown. The latte art here is incredible.")
-    texts = [c.text for c in caption_cues.split_cue(cue, 8, 42)]
-    assert texts[-1] == "The latte art here is incredible."
-    assert all(len(t.split()) > 1 for t in texts)
-    assert "downtown. The" not in " | ".join(texts)
+def test_captioning_again_replaces_the_captions_and_can_fix_words(editor, studio):
+    first = _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip))
+    second = _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, style="kinetic-slam",
+                                  text="Hallo there, World"))
+    assert second["replaced"] == 1 and editor.clip(first["timeline_clip_id"]) is None
+    html = _compiled(studio, "kinetic-slam")
+    assert '"Hallo"' in html and '"World"' in html and '"start": 2.0' in html      # timings kept
+    listing = _receipt(editor.call("list_captions_tool"))
+    assert [c["style"] for c in listing["captions"]] == ["kinetic-slam"]
+    assert {"pill-karaoke", "highlight"} <= {s["style"] for s in listing["styles"]}
 
 
-# ---------------------------------------------------------------------------
-# add_captions_tool
-# ---------------------------------------------------------------------------
+def test_behind_the_subject_adds_a_cutout_above_the_captions(editor, studio):
+    r = _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True))
+    trim = [a for p, a in studio.commands if p == "ffmpeg"][0]
+    assert trim[trim.index("-ss") + 1] == "2.0" and trim[trim.index("-t") + 1] == "5.0"     # the clip's own range
+    assert trim[trim.index("-fps_mode") + 1] == "cfr" and "/" in trim[trim.index("-r") + 1]  # the project's rate
+    assert [m[1] for m in studio.mattes] == ["subject-source.mp4"]                          # RVM by default
+    assert not any(a[0] == "remove-background" for _p, a in studio.commands)
+    captions_clip, subject_clip = editor.clip(r["timeline_clip_id"]), editor.clip(r["subject_clip_id"])
+    assert subject_clip["layer"] > captions_clip["layer"] > L1
+    assert editor.file(r["subject_file_id"])["ai_metadata"]["captions"]["role"] == "subject"
 
-def _speaker(tt, position=0.0, start=0.0, end=None, **file_overrides):
-    f = tt.add_file("video", duration=22.7, **file_overrides)
-    return tt.add_clip(f, position=position, start=start, end=end if end is not None else 22.7)
-
-
-def _caption(tt, clip_id, n=0):
-    effects = [e for e in tt.clip(clip_id)["effects"] if e["class_name"] == "Caption"]
-    return effects[n] if len(effects) > n else None
-
-
-def _srt_file(tt):
-    path = tt.tmp_path / "captions.srt"
-    path.write_text(SRT, encoding="utf-8")
-    return str(path)
+    out = _receipt(editor.call("remove_captions_tool", timeline_clip_id=studio.clip))
+    assert out["removed"] == 2 and editor.clip(r["timeline_clip_id"]) is None
+    assert editor.clip(studio.clip) is not None                                  # the footage is untouched
 
 
-def test_cues_on_a_clip_use_timeline_seconds_and_one_undo(tt):
-    clip = _speaker(tt, position=2.0)
-    out = tt.call("add_captions_tool", timeline_clip_id=clip,
-                  cues=[{"start": 3.0, "end": 5.0, "text": "Hello there"}, {"start": 5.5, "end": 7, "text": "Bye"}])
-    rec = receipt(out)
-    assert out.startswith("Added 2 caption(s) from cues on " + clip)
-    effect = _caption(tt, clip)
-    assert effect["apply_before_clip"] is False
-    cues = caption_cues.parse_caption_text(effect["caption_text"])
-    assert [(c.start, c.end) for c in cues] == [(1.0, 3.0), (3.5, 5.0)]     # clip source time
-    assert rec["captioned"][0]["first"] == 3.0 and rec["captioned"][0]["last"] == 7.0
-    assert tt.undo_steps_since_mark() == 1
-    tt.undo()
-    assert _caption(tt, clip) is None
+def test_refusals_leave_the_timeline_alone(editor, studio, monkeypatch):
+    before = len(editor.clips())
+    assert editor.call("add_captions_tool", timeline_clip_id=studio.clip, style="comic-sans").startswith("Error")
+    studio.words = []
+    out = editor.call("add_captions_tool", timeline_clip_id=studio.clip)
+    assert out.startswith("Error") and "no spoken words" in out
+    monkeypatch.setattr(hf, "status", lambda: {"ready": False})
+    out = editor.call("add_captions_tool", timeline_clip_id=studio.clip)
+    assert out.startswith("Error") and "hyperframes_setup_tool" in out
+    assert editor.call("remove_captions_tool").startswith("Error")
+    assert len(editor.clips()) == before and studio.placed == []
 
 
-def test_subtitle_file_on_a_trimmed_clip_keeps_media_time(tt):
-    clip = _speaker(tt, position=5.0, start=1.0, end=9.0)
-    rec = receipt(tt.call("add_captions_tool", srtPath=_srt_file(tt), clipId=clip))
-    cues = caption_cues.parse_caption_text(_caption(tt, clip)["caption_text"])
-    assert [c.start for c in cues] == [0.5, 3.2, 7.7]
-    assert rec["captioned"][0]["first"] == 4.5          # 0.5 s of media at position 5 - trim 1
-    rows = receipt(tt.call("list_captions_tool", timeline_clip_id=clip))["caption_tracks"][0]["cues"]
-    assert [r["visible"] for r in rows] == [True, True, True]
-    assert rows[1]["start"] == 7.2 and rows[1]["source_start"] == 3.2
+def test_without_the_on_device_recogniser_the_indexed_transcript_is_used(editor, studio, monkeypatch):
+    from classes.agent_tools import transcript
+    from classes.agent_tools.receipt import ToolReceipt
+
+    monkeypatch.undo()                                   # the real transcript_words, the rest re-patched below
+    monkeypatch.setattr(hf, "home", lambda: str(studio.tmp / "hyperframes"))   # never the real install
+    monkeypatch.setattr(captions, "_speech_words", lambda clip: [])           # no on-device recogniser here
+    monkeypatch.setattr(transcript, "get_transcript", lambda **kw: ToolReceipt.error(
+        "get_transcript_tool", "Error: faster-whisper is not installed").to_json())
+    # stored at indexing time, in the media's own seconds; the clip plays 2.0-7.0 of it at 10.0 s
+    monkeypatch.setattr(tool_handlers, "_clip_transcript_cues", lambda clip_id: [
+        {"text": "Hello there", "source_start": 3.0, "source_end": 4.0}])
+    from classes.query import Clip
+    words = captions.clip_caption_words(Clip.get(id=studio.clip))
+    assert words == [{"text": "Hello", "start": 1.0, "end": 1.5}, {"text": "there", "start": 1.5, "end": 2.0}]
+
+    monkeypatch.setattr(tool_handlers, "_clip_transcript_cues", lambda clip_id: [])
+    with pytest.raises(captions.ToolError, match="faster-whisper"):
+        captions.clip_caption_words(Clip.get(id=studio.clip))
 
 
-def test_cues_outside_the_clip_are_skipped_or_refused(tt):
-    clip = _speaker(tt, position=0.0, start=0.0, end=4.0)
-    rec = receipt(tt.call("add_captions_tool", srtPath=_srt_file(tt), timeline_clip_id=clip))
-    assert rec["captioned"][0]["cues"] == 2 and "outside" in rec["warnings"][0]
-    tt.mark()
-    out = tt.call("add_captions_tool", timeline_clip_id=clip, cues=[{"start": 30, "end": 31, "text": "late"}])
-    assert out.startswith("Error") and "none of the 1 cue" in out
-    assert tt.undo_steps_since_mark() == 0
+def test_a_failed_subject_cutout_leaves_the_existing_captions_in_place(editor, studio, monkeypatch):
+    first = _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip))
+    real_run = hf.run
+
+    def failing_matte(project, program, args, **kw):
+        if args[0] == "remove-background":
+            return 1, "model download failed"
+        return real_run(project, program, args, **kw)
+
+    monkeypatch.setattr(hf, "run", failing_matte)
+    monkeypatch.setattr(hf, "matte", lambda *a, **k: (_ for _ in ()).throw(hf.HyperframesError("no GPU")))
+    # RVM fails, so HyperFrames' own is tried, and that fails too
+    out = editor.call("add_captions_tool", timeline_clip_id=studio.clip, style="highlight", behind_subject=True)
+    assert out.startswith("Error") and "model download failed" in out
+    assert editor.clip(first["timeline_clip_id"]) is not None           # nothing was replaced
+    assert len(studio.placed) == 1
 
 
-def test_subtitles_without_a_clip_go_on_a_captions_overlay(tt):
-    video = tt.add_file("video", duration=30.0)
-    tt.add_clip(video, position=0.0, layer=1000000)
-    rec = receipt(tt.call("add_captions_tool", srtPath=_srt_file(tt), style="yellow"))
-    entry = rec["captioned"][0]
-    assert entry["overlay"] is True and entry["layer"] == 2000000
-    overlay = tt.clip(entry["timeline_clip_id"])
-    assert overlay["zenvi_role"] == "captions" and overlay["title"] == "Captions"
-    assert overlay["position"] == 0.5 and round(overlay["end"] - overlay["start"], 3) == 10.5
-    cues = caption_cues.parse_caption_text(_caption(tt, overlay["id"])["caption_text"])
-    assert cues[0].start == 0.0 and cues[-1].end == 10.5
-    carrier = tt.file(overlay["file_id"])
-    assert carrier["zenvi_role"] == "text_overlay" and os.path.exists(carrier["path"])
-    assert tt.undo_steps_since_mark() == 1
-    tt.undo()
-    assert tt.clip(overlay["id"]) is None and tt.file(overlay["file_id"]) is None
+def test_retimed_clips_are_refused_instead_of_captioned_out_of_sync(editor, studio):
+    from classes.query import Clip
+    clip = Clip.get(id=studio.clip)
+    clip.data["time"] = {"Points": [{"co": {"X": 1, "Y": 1}}, {"co": {"X": 300, "Y": 150}}]}
+    clip.save()
+    out = editor.call("add_captions_tool", timeline_clip_id=studio.clip)
+    assert out.startswith("Error") and "speed" in out and studio.placed == []
 
 
-def test_captions_from_the_indexed_transcript(tt):
-    ai = {"analyzed": True, "transcript_cues": [
-        {"start": 1.0, "end": 6.0, "text": "so today we are going to walk all the way across the city together"},
-        {"start": 7.0, "end": 8.0, "text": "at 10:30"}]}
-    clip = _speaker(tt, ai_metadata=ai)
-    rec = receipt(tt.call("add_captions_tool", clipId=clip, maxWords=6))
-    cues = caption_cues.parse_caption_text(_caption(tt, clip)["caption_text"])
-    assert rec["source"] == "transcript" and len(cues) >= 3
-    assert all(len(caption_cues.display_text(c.text).split()) <= 6 for c in cues)
-    assert caption_cues.display_text(cues[-1].text) == "at 10:30" and "\u200b:" in cues[-1].text
-    assert any("adjusted" in w for w in rec["warnings"])
+def test_long_clips_are_captioned_for_their_whole_length(editor, studio):
+    assert studio.placed == []
+    captions._place("F-any", 0.0, 240.0)
+    assert studio.place_kwargs[-1]["max_duration_seconds"] >= 240.0
 
 
-def test_transcript_captions_for_every_speech_clip_and_refusal_without_one(tt):
-    ai = {"analyzed": True, "transcript_cues": [{"start": 0.5, "end": 2.0, "text": "hello"}]}
-    a = _speaker(tt, ai_metadata=ai)
-    silent = tt.add_file("video", duration=10.0)
-    tt.add_clip(silent, position=30.0)
-    rec = receipt(tt.call("add_captions_tool"))
-    assert [e["timeline_clip_id"] for e in rec["captioned"]] == [a]
-    tt.mark()
-    out = tt.call("add_captions_tool", timeline_clip_id=tt.clips()[-1]["id"])
-    assert out.startswith("Error") and "no transcript" in out and "cues / srtPath" in out
-    assert tt.undo_steps_since_mark() == 0
+def test_a_failed_subject_import_leaves_no_orphan_caption_file(editor, studio, monkeypatch):
+    from classes.query import File
+
+    real = tool_handlers._import_generated_video
+    monkeypatch.setattr(tool_handlers, "_import_generated_video", lambda path, **kw: (
+        (None, "no alpha channel") if "subject-" in os.path.basename(path) else real(path, **kw)))
+    out = editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True)
+    assert out.startswith("Error") and "no alpha channel" in out
+    assert not [f for f in File.filter() if (f.data.get("ai_metadata") or {}).get("source") == captions.SOURCE]
 
 
-def test_replace_existing_or_add_a_second_track(tt):
-    clip = _speaker(tt)
-    tt.call("add_captions_tool", timeline_clip_id=clip, cues=[{"start": 1, "end": 2, "text": "first"}])
-    tt.call("add_captions_tool", timeline_clip_id=clip, cues=[{"start": 3, "end": 4, "text": "second"}])
-    assert _caption(tt, clip, 1) is None
-    assert caption_cues.parse_caption_text(_caption(tt, clip)["caption_text"])[0].text == "second"
-    tt.call("add_captions_tool", timeline_clip_id=clip, replace_existing=False,
-            cues=[{"start": 5, "end": 6, "text": "third"}])
-    assert _caption(tt, clip, 1) is not None
+def test_a_failed_import_leaves_the_existing_captions_in_place(editor, studio, monkeypatch):
+    first = _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip))
+    monkeypatch.setattr(tool_handlers, "_import_generated_video", lambda path, **kw: (None, "disk full"))
+    out = editor.call("add_captions_tool", timeline_clip_id=studio.clip, style="highlight")
+    assert out.startswith("Error") and "disk full" in out
+    assert editor.clip(first["timeline_clip_id"]) is not None
 
 
-def test_styles_map_to_caption_properties(tt):
-    tt.store._data["width"], tt.store._data["height"] = 1080, 1920
-    clip = _speaker(tt)
-    rec = receipt(tt.call("add_captions_tool", timeline_clip_id=clip, style="reels", uppercase=True,
-                          cues=[{"start": 1, "end": 2, "text": "big words"}]))
-    e = _caption(tt, clip)
-    assert e["caption_font"] == "Arial Black"
-    assert e["stroke_width"]["Points"][0]["co"]["Y"] > 0
-    assert e["background_alpha"]["Points"][0]["co"]["Y"] == 0.0
-    # 0.075 of the 1080 px short side = 81 px; Caption scales by width/600 -> 45
-    assert e["font_size"]["Points"][0]["co"]["Y"] == 45.0
-    assert caption_cues.parse_caption_text(e["caption_text"])[0].text == "BIG WORDS"
-    top_bottom = e["top"]["Points"][0]["co"]["Y"]
-    assert 0.6 < top_bottom < 0.8 and rec["look"]["position"] == "bottom"
-    tt.call("edit_captions_tool", timeline_clip_id=clip, position="top")
-    assert _caption(tt, clip)["top"]["Points"][0]["co"]["Y"] < 0.12
+def test_the_dock_shows_the_receipt_summary_not_the_raw_receipt():
+    from windows.views.captions_dock import status_line
+    receipt = json.dumps({"contract": 3, "status": "ok", "summary": "Captions added.\nmore", "data": {}})
+    assert status_line(receipt) == "Captions added."
+    assert status_line("Error: no clip") == "Error: no clip"
+    source = open(os.path.join(os.path.dirname(__file__), "..", "src", "windows", "views", "captions_dock.py")).read()
+    assert "PyQt5" not in source                    # qt_api picks the binding
 
 
-@pytest.mark.parametrize("args, needle", [
-    ({"cues": [{"start": 1, "end": 2, "text": "a"}], "srtPath": "/x.srt"}, "either cues or srtPath"),
-    ({"srtPath": "/definitely/missing.srt"}, "not found"),
-    ({"cues": [{"start": 2, "end": 1, "text": "a"}]}, "0 <= start < end"),
-    ({"cues": [{"start": 1, "end": 2, "text": " "}]}, "has no text"),
-    ({"cues": [{"start": 1, "end": 2, "text": "a"}], "trackIndex": 1}, "trackIndex"),
-    ({"cues": [{"start": 1, "end": 2, "text": "a"}], "time_base": "source"}, "needs the clip"),
-    ({"style": "comic"}, "must be one of"),
-    ({"cues": [{"start": 1, "end": 2, "text": "a"}], "text_color": "nope"}, "text_color"),
-    ({"clipId": "nope", "cues": [{"start": 1, "end": 2, "text": "a"}]}, "no timeline clip"),
-])
-def test_add_captions_refusals(tt, args, needle):
-    _speaker(tt)
-    tt.mark()
-    out = tt.call("add_captions_tool", **args)
-    assert out.startswith("Error") and needle in out, out
-    assert tt.undo_steps_since_mark() == 0
+def test_overlays_are_placed_whole_with_no_visual_search(editor, studio):
+    # The placement "watch" trimmed a 20 s caption render to 2-18 s: two seconds late and four short.
+    editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True)
+    assert [kw.get("full_file") for kw in studio.place_kwargs] == ["true", "true"]
 
 
-def test_locked_clip_is_refused(tt):
-    clip = _speaker(tt)
-    tt.lock_track(1000000)
-    out = tt.call("add_captions_tool", timeline_clip_id=clip, cues=[{"start": 1, "end": 2, "text": "a"}])
+def test_the_cutout_sits_exactly_over_the_speaker_and_the_captions_rise_behind_them(editor, studio, monkeypatch):
+    from classes.query import Clip
+    source = Clip.get(id=studio.clip)
+    source.data.update({"scale": 0, "gravity": 4, "location_x": {"Points": [{"co": {"X": 1, "Y": 0.1}}]}})
+    source.save()
+    monkeypatch.setattr(captions, "_visible_band", lambda project, rel: (0.75, 0.87))      # a pill near the bottom
+
+    r = _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True))
+    subject, overlay = editor.clip(r["subject_clip_id"]), editor.clip(r["timeline_clip_id"])
+    assert subject["scale"] == 0 and subject["location_x"]["Points"][0]["co"]["Y"] == 0.1
+    lift = overlay["location_y"]["Points"][0]["co"]["Y"]
+    assert lift == pytest.approx(captions.BEHIND_SUBJECT_CENTRE - 0.81)                    # up, to head height
+
+    plain = _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip))
+    assert editor.clip(plain["timeline_clip_id"])["location_y"]["Points"][0]["co"]["Y"] == 0.0
+
+
+def test_with_no_speaker_in_shot_the_captions_go_on_top_as_usual(editor, studio, monkeypatch):
+    monkeypatch.setattr(captions, "_subject_coverage", lambda project, media, at: 0.0)
+    from classes.query import Clip
+    assert captions.has_subject(Clip.get(id=studio.clip)) is False
+    r = _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True))
+    assert r["behind_subject"] is False and "subject_clip_id" not in r and len(studio.placed) == 1
+    assert not any(a[0] == "remove-background" for _p, a in studio.commands)
+
+
+def test_the_files_index_says_whether_anyone_is_on_camera(editor, studio, monkeypatch):
+    from classes.query import Clip, File
+    probes = []
+    monkeypatch.setattr(captions, "_subject_coverage", lambda project, media, at: probes.append(at) or 0.0)
+    clip = Clip.get(id=studio.clip)                                   # plays 2.0-7.0 of the file
+    f = File.get(id=clip.data["file_id"])
+
+    def indexed(chapters):
+        f.data["ai_metadata"] = {"chapters": chapters}
+        f.save()
+        return captions.has_subject(Clip.get(id=studio.clip))
+
+    # The speaker walks in half way, then two people: any of it is enough, and no frame is probed.
+    assert indexed([{"start": 0, "end": 4, "people": 0}, {"start": 4, "end": 9, "people": 2}]) is True
+    assert indexed([{"start": 0, "end": 9, "people": 0}]) is False                     # b-roll throughout
+    assert indexed([{"start": 0, "end": 2, "people": 1}, {"start": 2, "end": 9, "people": 0}]) is False
+    assert probes == []
+    assert indexed([{"start": 0, "end": 9, "title": "indexed before people was recorded"}]) is False
+    assert probes == [4.5, 3.0, 6.0]                                  # three frames across the clip
+
+
+def test_the_bundled_recogniser_times_the_words_when_zenvis_own_is_missing(editor, studio, monkeypatch):
+    from classes.agent_tools import transcript
+    from classes.agent_tools.receipt import ToolReceipt
+    from classes.query import Clip
+
+    monkeypatch.undo()
+    monkeypatch.setattr(hf, "home", lambda: str(studio.tmp / "hyperframes"))
+    monkeypatch.setattr(transcript, "get_transcript", lambda **kw: ToolReceipt.error(
+        "get_transcript_tool", "Error: faster-whisper is not installed").to_json())
+    monkeypatch.setattr(tool_handlers, "_clip_transcript_cues", lambda clip_id: [
+        {"text": "evenly spread guess", "source_start": 2.0, "source_end": 7.0}])
+    ran, heard, state = [], [], {"speech": False, "parakeet": False, "installable": True, "whistle_here": True}
+
+    def fake_run(project, program, args, **kw):
+        ran.append((program, list(args)))
+        os.makedirs(hf.project_dir(project), exist_ok=True)
+        if args[0] == "transcribe":
+            open(os.path.join(hf.project_dir(project), "transcript.json"), "w").write(json.dumps(
+                [{"text": "Hello,", "start": 0.3, "end": 0.5}, {"text": "there.", "start": 0.6, "end": 1.1}]))
+        return 0, "ok"
+
+    def fake_install():
+        if not state["installable"]:
+            raise hf.HyperframesError("no speech recogniser is published for this computer")
+        state["speech"] = True
+
+    monkeypatch.setattr(hf, "run", fake_run)
+    monkeypatch.setattr(hf, "status", lambda: dict(state, ready=True))
+    monkeypatch.setattr(hf, "speech_ready", lambda fresh=False: state["speech"])
+    monkeypatch.setattr(hf, "install_speech", fake_install)
+    monkeypatch.setattr(hf, "speech_supported", lambda: state["whistle_here"])
+    monkeypatch.setattr(hf, "install_parakeet", lambda: state.update(parakeet=True))
+    monkeypatch.setattr(hf, "transcribe", lambda wav: heard.append(wav) or [
+        {"text": "hello", "start": 0.31, "end": 0.52}, {"text": "there", "start": 0.6, "end": 1.0}])
+
+    words = captions.clip_caption_words(Clip.get(id=studio.clip))
+    assert words == [{"text": "hello", "start": 0.31, "end": 0.52}, {"text": "there", "start": 0.6, "end": 1.0}]
+    assert state["speech"] is True                                                         # fetched on first use
+    cut = [a for p, a in ran if p == "ffmpeg"][0]
+    assert cut[cut.index("-ss") + 1] == "2.0" and cut[cut.index("-t") + 1] == "5.0"       # the clip's own audio
+    captions.clip_caption_words(Clip.get(id=studio.clip))
+    assert len(heard) == 1 and not any(a[0] == "transcribe" for _p, a in ran)              # kept for next time
+
+    monkeypatch.setattr(hf, "recogniser", lambda: "parakeet" if state.get("chosen") else
+                        "whistle" if state["whistle_here"] else "parakeet")
+    state["parakeet"] = True
+    words = captions.clip_caption_words(Clip.get(id=studio.clip))
+    assert [w["text"] for w in words] == ["hello", "there"] and len(heard) == 1          # installed, not chosen
+    state["chosen"] = True                                      # the user picked the larger recogniser
+    words = captions.clip_caption_words(Clip.get(id=studio.clip))
+    assert [w["text"] for w in words] == ["Hello,", "there."] and len(heard) == 1
+    asked = [a for _p, a in ran if a[0] == "transcribe"][0]
+    assert asked[asked.index("--engine") + 1] == "parakeet"
+
+    # A computer Whistle has no engine for (Intel Mac): Parakeet is used instead, and because it
+    # is a 900 MB download the user is asked first.
+    from classes.editor_tools import ai_generation_hyperframes as setup
+    state.update(speech=False, parakeet=False, whistle_here=False)
+    asked = []
+    monkeypatch.setattr(hf, "install_plan", lambda st, **kw: [{"id": "parakeet", "label": "Parakeet, 900 MB"}])
+    monkeypatch.setattr(setup, "_ask_install_consent", lambda steps: asked.append(steps) or False)
+    mac = editor.add_clip(Clip.get(id=studio.clip).data["file_id"], position=50.0, layer=L1, start=2.0, end=7.0)
+    assert [w["text"] for w in captions.clip_caption_words(Clip.get(id=mac))] == ["evenly", "spread", "guess"]
+    assert state["parakeet"] is False and asked[0][0]["id"] == "parakeet"          # declined: nothing fetched
+    monkeypatch.setattr(setup, "_ask_install_consent", lambda steps: True)
+    assert [w["text"] for w in captions.clip_caption_words(Clip.get(id=mac))] == ["Hello,", "there."]
+    assert state["parakeet"] is True and state["speech"] is False and len(heard) == 1
+
+    state.update(speech=False, parakeet=False, installable=False, whistle_here=True, chosen=False)  # neither: fall back
+    other = editor.add_clip(Clip.get(id=studio.clip).data["file_id"], position=30.0, layer=L1, start=2.0, end=7.0)
+    assert [w["text"] for w in captions.clip_caption_words(Clip.get(id=other))] == ["evenly", "spread", "guess"]
+
+
+def test_the_whole_project_is_captioned_clip_by_clip(editor, studio):
+    from classes.query import Clip
+    file_id = Clip.get(id=studio.clip).data["file_id"]
+    silent = editor.add_clip(file_id, position=30.0, layer=L1, start=0.0, end=4.0)      # no words fall in it
+
+    r = _receipt(editor.call("add_captions_tool", whole_project=True, style="highlight"))
+    assert [c["clip_id"] for c in r["captioned"]] == [studio.clip]
+    assert [(s["clip_id"], "no spoken words" in s["reason"]) for s in r["skipped"]] == [(silent, True)]
+    assert len(studio.placed) == 1
+
+    # Again: the caption overlay is not itself a clip to caption, and the old captions are replaced.
+    again = _receipt(editor.call("add_captions_tool", whole_project=True))
+    assert [c["clip_id"] for c in again["captioned"]] == [studio.clip] and again["captioned"][0]["replaced"] == 1
+    assert len(_receipt(editor.call("list_captions_tool"))["captions"]) == 1
+
+    studio.words = []
+    out = editor.call("add_captions_tool", whole_project=True)
+    assert out.startswith("Error") and "no spoken words" in out
+
+
+def test_each_stage_is_reported_while_captions_are_built(editor, studio, monkeypatch):
+    stages = []
+    monkeypatch.setattr(captions, "on_progress", stages.append)
+    editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True)
+    joined = " | ".join(stages).lower()
+    assert joined.index("speech") < joined.index("rendering") < joined.index("cutting out") < joined.index("placing")
+
+    monkeypatch.setattr(captions, "on_progress", lambda message: 1 / 0)          # a broken listener is not fatal
+    assert not editor.call("add_captions_tool", timeline_clip_id=studio.clip).startswith("Error")
+
+
+def test_the_dock_loads_words_on_selection_and_can_caption_everything():
+    source = open(os.path.join(os.path.dirname(__file__), "..", "src", "windows", "views", "captions_dock.py")).read()
+    selection = source[source.index("def selection_changed"):source.index("def _check_subject")]
+    assert "self.load_words()" in selection
+    assert '"whole_project": True' in source and "tool.on_progress" in source
+
+
+@pytest.mark.parametrize("fail_on", [1, 2])
+def test_a_failed_placement_puts_the_old_captions_back(editor, studio, monkeypatch, fail_on):
+    _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, style="highlight"))
+    real_place, calls = tool_handlers.place_motion_graphic, []
+
+    def flaky(**kw):
+        calls.append(kw)
+        return "Error: the timeline is locked" if len(calls) == fail_on else real_place(**kw)
+
+    monkeypatch.setattr(tool_handlers, "place_motion_graphic", flaky)
+    out = editor.call("add_captions_tool", timeline_clip_id=studio.clip, style="kinetic-slam", behind_subject=True)
     assert out.startswith("Error") and "locked" in out
+    listing = _receipt(editor.call("list_captions_tool"))["captions"]
+    assert [(c["style"], c["role"]) for c in listing] == [("highlight", "captions")]      # none of the new pair
+    from classes.query import File
+    styles = [f.data["ai_metadata"]["captions"]["style"] for f in File.filter()
+              if "captions" in (f.data.get("ai_metadata") or {})]
+    assert styles == ["highlight"]                                                        # nor their files
 
 
-# ---------------------------------------------------------------------------
-# list / edit / remove
-# ---------------------------------------------------------------------------
-
-def _captioned(tt):
-    clip = _speaker(tt, position=10.0)
-    tt.call("add_captions_tool", timeline_clip_id=clip, cues=[
-        {"start": 11, "end": 12, "text": "one"}, {"start": 13, "end": 14, "text": "two"},
-        {"start": 15, "end": 16, "text": "three Tokio"}])
-    tt.mark()
-    return clip
+def test_a_failed_subject_check_does_not_rule_the_speaker_out(editor, studio, monkeypatch):
+    from classes.query import Clip
+    answers = iter([None, 0.0, 0.0])
+    monkeypatch.setattr(captions, "_subject_coverage", lambda project, media, at: next(answers))
+    assert captions.has_subject(Clip.get(id=studio.clip)) is False       # one failure, two empty frames
+    monkeypatch.setattr(captions, "_subject_coverage", lambda project, media, at: None)
+    assert captions.has_subject(Clip.get(id=studio.clip)) is True        # nothing could be checked
 
 
-def test_list_captions(tt):
-    clip = _captioned(tt)
-    out = receipt(tt.call("list_captions_tool"))
-    [track] = out["caption_tracks"]
-    assert track["timeline_clip_id"] == clip and [c["index"] for c in track["cues"]] == [1, 2, 3]
-    assert track["cues"][0] == {"index": 1, "start": 11.0, "end": 12.0, "source_start": 1.0, "source_end": 2.0,
-                                "text": "one", "visible": True}
-    assert tt.undo_steps_since_mark() == 0
+def test_the_cut_out_falls_back_to_hyperframes_own_and_can_be_chosen(editor, studio, monkeypatch):
+    def broken(project, src, out, timeout=0):
+        raise hf.HyperframesError("the GPU driver crashed")
 
+    monkeypatch.setattr(hf, "matte", broken)
+    r = _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True))
+    assert "subject_clip_id" in r and any(a[0] == "remove-background" for _p, a in studio.commands)
 
-def test_edit_cues_text_timing_delete_add_find_shift_in_one_step(tt):
-    clip = _captioned(tt)
-    rec = receipt(tt.call("edit_captions_tool", timeline_clip_id=clip,
-                          cue_edits=[{"index": 1, "text": "ONE"}, {"index": 2, "start": 12.5, "end": 14.5},
-                                     {"index": 3, "delete": False}],
-                          add_cues=[{"start": 20, "end": 21, "text": "four"}],
-                          find="Tokio", replace="Tokyo", shift_seconds=0.5))
-    texts = [c["text"] for c in rec["cues"]]
-    assert texts == ["ONE", "two", "three Tokyo", "four"]
-    assert [c["start"] for c in rec["cues"]] == [11.5, 13.0, 15.5, 20.5]
-    assert tt.undo_steps_since_mark() == 1
-    tt.undo()
-    assert [c.text for c in caption_cues.parse_caption_text(_caption(tt, clip)["caption_text"])] == [
-        "one", "two", "three Tokio"]
-    rec = receipt(tt.call("edit_captions_tool", cue_edits=[{"index": 2, "delete": True}]))
-    assert [c["text"] for c in rec["cues"]] == ["one", "three Tokio"]
+    studio.commands.clear()
+    monkeypatch.setattr(hf, "matting", lambda: "u2net")                  # the user picked HyperFrames' own
+    _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True))
+    assert any(a[0] == "remove-background" for _p, a in studio.commands)
 
+    # RVM chosen but not on this computer yet: it is fetched first (small, like the speech model)
+    fetched = []
+    monkeypatch.setattr(hf, "matting", lambda: "rvm")
+    monkeypatch.setattr(hf, "rvm_ready", lambda: bool(fetched))
+    monkeypatch.setattr(hf, "install_rvm", lambda: fetched.append(1))
+    def matte(project, src, out, timeout=0):
+        path = os.path.join(hf.project_dir(project), out)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "wb").write(b"0" * 64)
+        studio.mattes.append(src)
+        return {"frames": 1, "provider": "cpu", "ms_per_frame": 1}
 
-def test_restyle_keeps_the_cues(tt):
-    clip = _captioned(tt)
-    before = _caption(tt, clip)["caption_text"]
-    tt.call("edit_captions_tool", effect_id=_caption(tt, clip)["id"], text_color="#ffe14d", text_size=0.08)
-    e = _caption(tt, clip)
-    assert e["caption_text"] == before
-    assert e["color"]["green"]["Points"][0]["co"]["Y"] == 225.0
-    assert tt.undo_steps_since_mark() == 1
-
-
-@pytest.mark.parametrize("args, needle", [
-    ({}, "nothing to change"),
-    ({"cue_edits": [{"index": 9, "text": "x"}]}, "there is no cue 9"),
-    ({"cue_edits": [{"index": 1, "text": ""}]}, "empty text"),
-    ({"cue_edits": [{"index": 1, "start": 12, "end": 11}]}, "end must be after start"),
-    ({"find": "absent", "replace": "x"}, "no caption contains"),
-    ({"replace": "x"}, "replace needs find"),
-    ({"add_cues": [{"start": 50, "end": 51, "text": "x"}]}, "outside clip"),
-    ({"cue_edits": [{"index": 1, "delete": True}, {"index": 2, "delete": True}, {"index": 3, "delete": True}]},
-     "remove_captions_tool"),
-])
-def test_edit_captions_refusals(tt, args, needle):
-    _captioned(tt)
-    out = tt.call("edit_captions_tool", **args)
-    assert out.startswith("Error") and needle in out, out
-    assert tt.undo_steps_since_mark() == 0
-
-
-def test_edit_needs_a_target_when_several_clips_have_captions(tt):
-    _captioned(tt)
-    other = _speaker(tt, position=40.0)
-    tt.call("add_captions_tool", timeline_clip_id=other, cues=[{"start": 41, "end": 42, "text": "x"}])
-    out = tt.call("edit_captions_tool", shift_seconds=1)
-    assert out.startswith("Error") and "which captions" in out
-    assert tt.call("edit_captions_tool", shift_seconds=1, timeline_clip_id=other).startswith("Updated captions")
-
-
-def test_remove_captions_never_deletes_clips(tt):
-    clip = _captioned(tt)
-    n_clips = len(tt.clips())
-    out = tt.call("remove_captions_tool", timeline_clip_id=clip)
-    assert out.startswith("Removed 1 caption track(s)") and _caption(tt, clip) is None
-    assert len(tt.clips()) == n_clips
-    assert tt.undo_steps_since_mark() == 1
-    tt.undo()
-    assert _caption(tt, clip) is not None
-    out = tt.call("remove_captions_tool", all_captions=True)
-    assert out.startswith("Removed 1")
-    assert tt.call("remove_captions_tool", all_captions=True).startswith("Error")
-
-
-def test_remove_overlay_captions_reports_the_leftover_clip(tt):
-    rec = receipt(tt.call("add_captions_tool", cues=[{"start": 1, "end": 2, "text": "hi"}]))
-    overlay = rec["captioned"][0]["timeline_clip_id"]
-    out = tt.call("remove_captions_tool", effect_id=rec["captioned"][0]["effect_id"])
-    assert "delete_from_timeline_tool" in out and tt.clip(overlay) is not None
-    assert receipt(out)["empty_overlay_clip_ids"] == [overlay]
-
-
-def test_outlines_only_stay_heavy_on_heavy_fonts(tt, monkeypatch):
-    # found live: the yellow preset's 0.07-em black outline on a regular font hid the yellow fill
-    from classes.editor_tools import titles_text_captions as caps
-    clip = _speaker(tt)
-    monkeypatch.setattr(caps, "installed_font_families", lambda: ["Arial", "Arial Black"])
-    rec = receipt(tt.call("add_captions_tool", timeline_clip_id=clip, style="yellow",
-                          cues=[{"start": 1, "end": 2, "text": "yellow words"}]))
-    assert rec["look"]["font"] == "Arial Black" and rec["look"]["stroke_width"] == 0.07
-    monkeypatch.setattr(caps, "installed_font_families", lambda: ["Arial"])      # no heavy font here
-    rec = receipt(tt.call("add_captions_tool", timeline_clip_id=clip, style="yellow",
-                          cues=[{"start": 1, "end": 2, "text": "yellow words"}]))
-    assert rec["look"]["font"] == "sans" and rec["look"]["stroke_width"] == caps.THIN_OUTLINE
-    rec = receipt(tt.call("add_captions_tool", timeline_clip_id=clip, style="yellow", stroke_width=0.1,
-                          cues=[{"start": 1, "end": 2, "text": "yellow words"}]))
-    assert rec["look"]["stroke_width"] == 0.1                                     # an explicit request wins
+    monkeypatch.setattr(hf, "matte", matte)
+    studio.commands.clear()
+    _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True))
+    assert fetched == [1] and not any(a[0] == "remove-background" for _p, a in studio.commands)
