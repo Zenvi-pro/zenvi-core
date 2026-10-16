@@ -460,7 +460,7 @@ def _predicted_look(src_look: Optional[Dict[str, Any]], grade: Optional[Dict[str
     return out
 
 
-def _swap_fix(shot_id: int, scored: List[tuple], pool: List[Any], covering: Any, avoid: set, prefer: str, next_to: set = frozenset()) -> Optional[str]:
+def _swap_fix(shot_id: int, scored: List[tuple], pool: List[Any], covering: Any, avoid: set, prefer: str, next_to: set, proposed: Dict[int, str]) -> Optional[str]:
     """The build_recreation_tool call that swaps this shot's clip for the best other window ("look": the one whose look is closest; "any": the best overall)."""
     best, best_key = None, -1.0
     for fidx, w_in, _w_out, _src, score, parts in scored:
@@ -476,6 +476,7 @@ def _swap_fix(shot_id: int, scored: List[tuple], pool: List[Any], covering: Any,
             best, best_key = (f.file_id, w_in), key
     if best is None:
         return None
+    proposed[shot_id] = best[0]                                           # later suggestions in this pass treat it as already there
     return f"build_recreation_tool(overrides=[{{reference_shot:{shot_id}, file_id:'{best[0]}', in:{best[1]:.2f}}}], only_shots=[{shot_id}])"
 
 
@@ -533,10 +534,11 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
     buckets: Counter = Counter()
     placed_files: List[str] = []
     slot_info: Dict[int, Tuple[List[tuple], Any]] = {}
+    proposed: Dict[int, str] = {}
 
     def neighbour_files(shot_id: int) -> set:
         order = [i for i, _a, _b, _r in slots]
-        at = {i: next((c.file_id for c in pictures if c.start <= snap(a) + frame * 0.5 < c.end), None) for i, a, _b, _r in slots}
+        at = {i: proposed.get(i) or next((c.file_id for c in pictures if c.start <= snap(a) + frame * 0.5 < c.end), None) for i, a, _b, _r in slots}
         k = order.index(shot_id)
         return {at[order[j]] for j in (k - 1, k + 1) if 0 <= j < len(order) and at[order[j]]}
     for shot_id, a, b, row in slots:
@@ -591,7 +593,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
                 if dist >= LOOK_CLOSE:
                     findings.setdefault(shot_id, []).append(f"look is {dist:.2f} from the reference's" + (" even with its grade" if grade else " and it is not graded"))
                     # a grade can only move a look so far: when it already has one, the fix is a source whose own look is closer
-                    swap = _swap_fix(shot_id, scored, pool, covering, set(), "look", neighbour_files(shot_id)) if grade else None
+                    swap = _swap_fix(shot_id, scored, pool, covering, set(), "look", neighbour_files(shot_id), proposed) if grade else None
                     fixes.setdefault(shot_id, swap or "build_recreation_tool(grade=true, only_shots=[%d])" % shot_id)
 
     reuse_max = max(buckets.values(), default=0)
@@ -620,7 +622,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
                 name = by_id[c.file_id].name[:24] if c.file_id in by_id else c.file_id
                 findings.setdefault(shot_id, []).append(f"same moment of {name} used {buckets[hot[0]]} times")
                 info = slot_info.get(shot_id)
-                swap = _swap_fix(shot_id, info[0], pool, info[1], overused, "any", neighbour_files(shot_id)) if info else None
+                swap = _swap_fix(shot_id, info[0], pool, info[1], overused, "any", neighbour_files(shot_id), proposed) if info else None
                 if swap:
                     fixes.setdefault(shot_id, swap)
 
