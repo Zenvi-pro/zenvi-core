@@ -173,3 +173,12 @@ def test_footage_with_its_own_sound_left_on_lowers_the_sound_score(studio):
     assert check(studio, plan_id=pid)["areas"]["sound"] == 100.0
     receipt_data(studio.ed, "set_clip_audio_video_tool", timeline_clip_ids=[c["id"] for c in picture_clips(studio)], audio="on")
     assert check(studio, plan_id=pid)["areas"]["sound"] < 100.0
+
+
+def test_a_window_that_runs_past_the_end_of_the_file_is_pulled_back_inside_it(studio):
+    """Seen live: the index said a clip was 4.70 s long, the editor saw 4.67 s, and the whole build stopped on a 0.03 s overrun."""
+    pid = plan(studio)["plan_id"]
+    out = build_it(studio, pid, overrides=[{"reference_shot": 0, "file_id": studio.src["mid"], "in": 11.8}])        # a 1 s shot from 11.8: ends at 12.8 in a 12 s file
+    assert out["placed"] == 6
+    first = picture_clips(studio)[0]
+    assert first["end"] <= 12.0 + 1e-6 and abs((first["end"] - first["start"]) - SHOT) < 1e-6

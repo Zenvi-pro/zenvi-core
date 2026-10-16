@@ -186,6 +186,17 @@ def _source_look(files_by_id: Dict[str, Any], choice: Dict[str, Any]) -> Optiona
     return (shot or {}).get("look")
 
 
+def _inside_file(file_id: str, start: float, length: float) -> float:
+    """*start* moved earlier if needed so a cut of *length* ends inside the file as the editor sees it (the index can run a frame or two past it)."""
+    from classes.clip_placement import source_window_for_file
+    from classes.query import File
+    f = File.get(id=file_id)
+    if f is None:
+        return start
+    lo, hi = source_window_for_file(f.data)
+    return max(lo, min(start, hi - length))
+
+
 def _ensure_track(name: str) -> None:
     from classes.query import Track
     if not any(str((t.data or {}).get("label") or "") == name for t in Track.filter()):
@@ -256,7 +267,8 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
         for r in run:
             c = _effective(r, plan)
             length = snap(r["end"]) - snap(r["start"])
-            items.append({"file_id": c["file_id"], "source_start": round(float(c["in"]), 3), "source_end": round(float(c["in"]) + length, 3)})
+            start = _inside_file(c["file_id"], float(c["in"]), length)
+            items.append({"file_id": c["file_id"], "source_start": round(start, 3), "source_end": round(start + length, 3)})
         data = _call("add_clips_to_timeline_tool", items=items, track=plan["track_name"], start_seconds=snap(run[0]["start"]), allow_overlap=False)
         for r, clip in zip(run, data.get("clips") or []):
             placed_ids[r["reference_shot"]] = str(clip["timeline_clip_id"])
