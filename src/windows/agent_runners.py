@@ -1832,19 +1832,19 @@ class CodexRunner(BaseAgentRunner):
         ]
         if self._model_id:
             common += ["--model", self._model_id]
-        common += _add_dir_args()
         # Unlike Claude, Codex will not take an id we invent -- it mints its own
         # and reports it as ``thread.started``.  Resuming a seeded placeholder
         # would just fail, so wait until we have heard a real one.
         cli = self._cli_path or self.CLI_NAME
         if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
-            # The thread already holds the steering from its first turn.
+            # The thread already holds the steering from its first turn, and
+            # the folders: `exec resume` has no --add-dir (it exits 2).
             self._stdin_prompt = text or ""
             return [cli, "exec", "resume", self._cli_session_id, *common, "-"]
         # Codex has no --append-system-prompt; prefix import steering so it
         # does not Glob /mnt/c the way Claude did before the Claude prompt fix.
         self._stdin_prompt = _agent_import_prompt() + "\n\n" + (text or "")
-        return [cli, "exec", *common, "-"]
+        return [cli, "exec", *common, *_add_dir_args(), "-"]
 
     def _handle_event(self, ev: dict):
         etype = ev.get("type")
