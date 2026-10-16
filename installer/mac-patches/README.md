@@ -90,8 +90,9 @@ compare frame 1 with `ffmpeg -i out.mp4 -frames:v 1 first.png`.
 
 ### `libopenshot-v1.0.0-noncrop-location.patch` (deleted at v1.0.1)
 
-v1.0.1 contains upstream `98ee060`, so this patch no longer applies and was
-dropped. Kept below for the record.
+The corrected behavior is still required, but v1.0.1 provides it through
+upstream `98ee060`, so this patch no longer applies and is not needed. Kept
+below for the record.
 
 **File:** `src/Clip.cpp`. Source: libopenshot `develop` commit
 `98ee060d94856e7d5765f8d939ab8f03cab6b35b` ("Preserve non-crop clip location
@@ -107,8 +108,8 @@ so existing projects do not shift.
 Zenvi's preview transform handles (`src/windows/video_widget.py`, ported from
 openshot-qt PR #6109) and its project migration (`src/classes/project_data.py`,
 ported from openshot-qt PRs #6075/#6109) implement the corrected contract, so
-this patch is **required** for the preview handles to match the rendered frame.
-Drop it when moving to a libopenshot tag that contains `98ee060`.
+the preview handles match the rendered frame only with `98ee060` in the build:
+from this patch at `v1.0.0`, from upstream at `v1.0.1`.
 
 ### `libopenshot-v0.5.0-mac.patch` (v0.5.0 only)
 
