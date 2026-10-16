@@ -355,3 +355,37 @@ def test_the_subject_is_kept_in_frame_when_zooming_off_centre(editor, monkeypatc
     from classes.editor_tools.timeline_edit_common import keyframe_value
     shift = keyframe_value(got["values"]["location_x"])
     assert 0.0 < shift <= 0.5 + 1e-6 and keyframe_value(got["values"]["location_y"]) == 0.0
+
+
+def _look_row(shot, luma):
+    return {"reference_shot": shot, "look": {"present": True, "avg_luma": luma, "sat_proxy": 0.3, "warm_cool": 0.0, "contrast_span": 0.4}}
+
+
+def test_shots_of_one_scene_are_graded_alike_and_a_new_scene_keeps_its_own_grade():
+    from classes.editor_tools import media_index_tools_recreate as R
+    rows = [_look_row(0, 0.10), _look_row(1, 0.11), _look_row(2, 0.10), _look_row(3, 0.85), _look_row(4, 0.86)]
+    targets = {0: {"exposure": 0.0}, 1: {"exposure": 0.4}, 2: {"exposure": 0.0}, 3: {"exposure": 1.0}, 4: {"exposure": 1.0}}
+    out = R._smooth_grades(rows, targets)
+    assert abs(out[1]["exposure"] - 0.4) < abs(targets[1]["exposure"] - 0.0)                 # the odd one out is pulled towards its scene
+    assert 0.0 < out[1]["exposure"] < 0.4 and out[3]["exposure"] == 1.0 and out[4]["exposure"] == 1.0   # the bright scene is untouched by the dark one
+
+
+def test_a_ramp_moves_the_exposure_over_the_clip_and_the_check_judges_its_average(studio):
+    from classes.editor_tools import media_index_tools_recreate as R
+    from classes.query import Clip
+    pid = plan(studio)["plan_id"]
+    build_it(studio, pid, ramps=False)
+    clip = picture_clips(studio)[1]["id"]
+    before = (R._applied_grade(clip) or {"exposure": 0.0})["exposure"]
+    assert R._ramp_exposure(clip, 0.6, 30)
+    effect = next(e for e in Clip.get(id=clip).data["effects"] if e["class_name"] == "ColorGrade")
+    ys = [p["co"]["Y"] for p in effect["exposure"]["Points"]]
+    assert len(ys) == 2 and abs((ys[1] - ys[0]) - 0.6) < 0.01 and abs(R._applied_grade(clip)["exposure"] - before) < 0.01
+
+
+def test_the_build_ramps_the_shots_the_reference_brightens_or_darkens(studio, monkeypatch):
+    from classes.editor_tools import media_index_tools_recreate as R
+    monkeypatch.setattr(R, "_reference_luma_ramps", lambda ref, rows: {2: 0.5, 4: -0.4})
+    out = build_it(studio, plan(studio)["plan_id"])
+    assert out["ramped"] == 2
+    assert check(studio, plan_id=out["plan_id"])["areas"]["look"] >= 90.0

@@ -38,6 +38,10 @@ FRAMING_OK = 0.85                # a clip is framed as asked when its zoom reach
 PASS_SCORE, AREA_FLOOR = 80.0, 60.0
 WEAK_RANK = 0.30                 # a placed window ranked in the bottom 30% of the candidates for its shot is a weak pick
 LOOK_CLOSE = 0.25                # a clip matches the reference shot's look when the gap in brightness, colour cast, saturation and contrast is under this
+SCENE_GAP = 0.30                 # neighbouring reference shots whose looks are this close belong to one scene and are graded alike
+RAMP_MIN_STOPS = 0.15            # a within-shot brightness change smaller than this is not worth a ramp
+RAMP_MAX_STOPS = 0.8
+RAMP_MIN_SECONDS = 0.6
 BATCH_HOP_TIMEOUT = 180
 BUILD_LEASE_SECONDS = 900.0
 
@@ -180,6 +184,86 @@ def _frame_grade(ref_look: Optional[Dict[str, Any]], src_look: Optional[Dict[str
            "temperature": q(clamp(2.0 * (float(ref_look.get("warm_cool") or 0.0) - float(src_look.get("warm_cool") or 0.0)), -0.6, 0.6), 0.05),
            "contrast": q(clamp(1.5 * (float(ref_look.get("contrast_span") or 0.0) - float(src_look.get("contrast_span") or 0.0)), -0.5, 0.5), 0.1)}
     return {k: v for k, v in out.items() if abs(v - (1.0 if k == "saturation" else 0.0)) > 1e-6}
+
+
+def _smooth_grades(rows: List[Dict[str, Any]], targets: Dict[int, Dict[str, float]]) -> Dict[int, Dict[str, float]]:
+    """Blend each shot's grade with its neighbours' when the reference's own look barely changes between them, so cuts inside one scene do not
+    jump from grade to grade; a real change of scene keeps its own grade. Values stay on the same steps so clips can still share a call."""
+    q = lambda v, step: round(round(v / step) * step, 3)  # noqa: E731
+    out: Dict[int, Dict[str, float]] = {}
+    for k, r in enumerate(rows):
+        own = targets.get(r["reference_shot"])
+        if not own:
+            continue
+        near = []
+        for j in (k - 1, k + 1):
+            if 0 <= j < len(rows) and targets.get(rows[j]["reference_shot"]):
+                gap = _look_gap(r.get("look") or {}, rows[j].get("look") or {})
+                if gap is not None and gap < SCENE_GAP:
+                    near.append(targets[rows[j]["reference_shot"]])
+        blended = {}
+        for key, value in own.items():
+            values = [value] + [n.get(key, 1.0 if key == "saturation" else 0.0) for n in near]
+            weights = [2.0] + [1.0] * len(near)
+            step = {"exposure": 0.1, "saturation": 0.1, "temperature": 0.05, "contrast": 0.1}[key]
+            blended[key] = q(sum(v * w for v, w in zip(values, weights)) / sum(weights), step)
+        out[r["reference_shot"]] = blended
+    return out
+
+
+def _reference_luma_ramps(ref_file_id: str, rows: List[Dict[str, Any]]) -> Dict[int, float]:
+    """{reference shot: change in brightness over the shot, in stops (end minus start)} for shots long enough to show one, measured from a
+    few tiny frames of the reference itself. Empty when the reference cannot be read."""
+    import numpy as np
+    from classes.editor_tools.media_index_tools_precision import _audio_path
+    from classes.media_index import contact
+    from classes.media_index.probe import probe_media
+    from classes.query import File
+    f = File.get(id=str(ref_file_id))
+    long_rows = [r for r in rows if r["duration"] >= RAMP_MIN_SECONDS]
+    if f is None or not long_rows:
+        return {}
+    times = []
+    for r in long_rows:
+        pad = min(0.15, r["duration"] * 0.15)
+        times += [r["start"] + pad, r["end"] - pad]
+    try:
+        path = _audio_path(f)
+        probe = probe_media(path)
+        frames, got = contact.decode_frames_at(path, times, (64, 36), start_time=float((probe or {}).get("start_time") or 0.0))
+    except Exception:  # noqa: BLE001 - no ramps is a fine fallback
+        return {}
+    if len(got) != len(times):
+        return {}
+    luma = [max(0.02, float(frames[i].mean()) / 255.0) for i in range(len(times))]
+    out: Dict[int, float] = {}
+    for k, r in enumerate(long_rows):
+        stops = 0.8 * float(np.log2(luma[2 * k + 1] / luma[2 * k]))
+        if abs(stops) >= RAMP_MIN_STOPS:
+            out[r["reference_shot"]] = max(-RAMP_MAX_STOPS, min(RAMP_MAX_STOPS, stops))
+    return out
+
+
+def _ramp_exposure(clip_id: str, stops: float, frames: int) -> bool:
+    """Make a clip's Color Grade exposure move by *stops* over its length (centred on the exposure it has), as keyframes on the effect."""
+    import copy
+    from classes.editor_tools import clip_props_model as cpm
+    from classes.editor_tools.effects_color import save_clip_effects
+    from classes.query import Clip
+    clip = Clip.get(id=clip_id)
+    if clip is None or frames < 2:
+        return False
+    if _applied_grade(clip_id) is None:                                # a shot that needed no grade still needs the effect to ramp
+        _call("color_grade_clip_tool", timeline_clip_ids=[clip_id], exposure=0.0, reset=True)
+        clip = Clip.get(id=clip_id)
+    effects = copy.deepcopy((clip.data or {}).get("effects") or [])
+    for effect in effects:
+        if effect.get("class_name") == "ColorGrade":
+            base = keyframe_value(effect.get("exposure"), 0.0)
+            effect["exposure"] = {"Points": [cpm.make_point(1, round(base - stops / 2.0, 3), cpm.BEZIER), cpm.make_point(frames, round(base + stops / 2.0, 3), cpm.BEZIER)]}
+            save_clip_effects([(clip_id, effects)])
+            return True
+    return False
 
 
 def _source_look(files_by_id: Dict[str, Any], choice: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -378,11 +462,12 @@ def _ensure_track(name: str) -> None:
         }, required=["reference_shot", "file_id", "in"]), "Swap the source of some shots (from a check's fixes, or stock you imported); remembered for later builds.", []),
         "grade": boolean("Grade every clip towards its reference shot's measured look (brightness, colour, contrast).", True),
         "song": boolean("Put the reference's own audio on a Song track (its picture hidden) and silence the footage's own sound.", True),
+        "ramps": boolean("Let each clip's brightness follow the reference shot's own change over its length (a fade up, a flare), as keyframes, and grade the shots of one scene alike.", True),
         "framing": boolean("Zoom into footage that is framed wider than the reference shot (a close-up made from a wide shot), keeping the subject centred.", True),
     }),
     background_safe=True,
 )
-def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=True, framing=True):
+def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=True, framing=True, ramps=True):
     """Place a recreation plan on the timeline: each source window at the reference's exact cut time and length, on a Recreation track,
     in one undoable step. Each clip is graded towards its reference shot's measured look (grade), the reference's audio goes under it
     on a Song track and the footage's own sound is switched off (song). With overrides it swaps the source of the named shots; with
@@ -446,15 +531,24 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
         plan["placed"].update(placed_ids)
 
         graded = 0
+        ramped = 0
         if grade:
+            targets = {r["reference_shot"]: _frame_grade(r.get("look"), _source_look(by_id, _effective(r, plan))) for r in todo}
+            targets = _smooth_grades(todo, targets)
             groups: Dict[Tuple, List[str]] = {}
             for r in todo:
-                values = _frame_grade(r.get("look"), _source_look(by_id, _effective(r, plan)))
+                values = targets.get(r["reference_shot"])
                 if values and r["reference_shot"] in placed_ids:
                     groups.setdefault(tuple(sorted(values.items())), []).append(placed_ids[r["reference_shot"]])
             for params, ids in groups.items():
                 _call("color_grade_clip_tool", timeline_clip_ids=ids, reset=True, **dict(params))
                 graded += len(ids)
+            if ramps:
+                steps = _reference_luma_ramps(plan["reference_file_id"], [r for r in todo if r["reference_shot"] in placed_ids])
+                fps_now = 1.0 / frame
+                for shot_id, stops in steps.items():
+                    if _ramp_exposure(placed_ids[shot_id], stops, int(round(slot_len[shot_id] * fps_now))):
+                        ramped += 1
 
         zoomed = []
         if framing:
@@ -497,18 +591,18 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
         if song and placed_ids:
             _call("set_clip_audio_video_tool", timeline_clip_ids=list(placed_ids.values()), audio="off")
 
-        return placed_ids, replaced, graded, song_note, zoomed
+        return placed_ids, replaced, graded, song_note, zoomed, ramped
 
-    placed_ids, replaced, graded, song_note, zoomed = _in_one_batch(run)
+    placed_ids, replaced, graded, song_note, zoomed, ramped = _in_one_batch(run)
 
     unfilled = [r["reference_shot"] for r in plan["rows"] if not _effective(r, plan)]
     from classes.editor_tools import playback_health
     playback_note = playback_health.start_preview_copies({_effective(r, plan)["file_id"] for r in todo}, len(placed_ids))
     layer_now = _layer_of(plan["track_name"])
     playback_note += playback_health.stacked_tracks_note(layer_now, min(snap(r["start"]) for r in todo), max(snap(r["end"]) for r in todo))
-    return ok(f"Placed {len(placed_ids)} shot(s) on track '{plan['track_name']}' (replaced {replaced}), graded {graded}, zoomed in on {len(zoomed)} to match the reference's framing.{song_note}"
+    return ok(f"Placed {len(placed_ids)} shot(s) on track '{plan['track_name']}' (replaced {replaced}), graded {graded} ({ramped} with a brightness ramp), zoomed in on {len(zoomed)} to match the reference's framing.{song_note}"
               + (f" Unfilled: {unfilled}." if unfilled else "") + playback_note,
-              plan_id=plan["id"], placed=len(placed_ids), replaced=replaced, graded=graded, zoomed=zoomed, unfilled=unfilled,
+              plan_id=plan["id"], placed=len(placed_ids), replaced=replaced, graded=graded, ramped=ramped, zoomed=zoomed, unfilled=unfilled,
               next="check_recreation_tool(plan_id) scores it against the reference; fix the shots it names, then check again.")
 
 
@@ -526,7 +620,11 @@ def _applied_grade(clip_id: str) -> Optional[Dict[str, float]]:
     clip = Clip.get(id=clip_id)
     for effect in ((clip.data or {}).get("effects") or []) if clip is not None else []:
         if effect.get("class_name") == "ColorGrade":
-            return _grade_values(effect)
+            values = _grade_values(effect)
+            points = (effect.get("exposure") or {}).get("Points") if isinstance(effect.get("exposure"), dict) else None
+            if points and len(points) > 1:                              # a ramp: judge the look on its average
+                values["exposure"] = round(sum(float(p["co"]["Y"]) for p in points) / len(points), 4)
+            return values
     return None
 
 
