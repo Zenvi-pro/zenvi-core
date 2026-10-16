@@ -58,6 +58,10 @@ If AI generation is on and you are happy to spend credits (note your balance fir
 - **Pass:** it names a price before spending; the generated clips land on the timeline in the right slots; the balance drops by about
   what it said.
 
+### The same, step by step (checks that the loop is used)
+Ask for a **new** session, then: "Recreate the Japanese ending video using my own footage clips. Match its shot lengths and cut on the same moments, use the same song, and follow its look and pacing. Cut my clips as needed. For anything my footage can't cover, use stock footage. Tell me what you used, what you skipped, and why."
+Expect, in order: `storyboard_tool` on the reference, `plan_recreation_tool`, `search_stock_video_tool` + `import_stock_media_tool` for the weak shots, `build_recreation_tool`, `check_recreation_tool`, one or more rebuilds of only the failing shots, a final check, and a report that quotes the scores. Write down the score per round, the build time, and whether the window stayed responsive.
+
 ## Things to try on purpose (the awkward ones)
 
 | What you type | What should happen |

@@ -93,3 +93,20 @@ Zenvi credits for the one-time description pass are not measured. They are spent
 ## Still to do
 - A single call (or a compact text-only list) for a whole file, so the agent does not page by hand; per-shot times for runs of very short shots.
 - Read the account balance before and after indexing to put a credit figure on the description pass.
+
+## Recreate the Japanese ending: plan, build, check, fix (run by us over the app's own tool interface)
+
+Reference: the 90 s anime ending (80 shots). Footage: the user's 8 clips plus 5 stock clips found with `search_stock_video_tool` and imported with `import_stock_media_tool(video_id=...)`.
+
+The earlier Claude Code run (before these tools): 85 placements took over two minutes and timed out, 6 clips were reused about 40 times, one global grade, no stock, no check. Scored afterwards by `check_recreation_tool`: **76.1, NOT YET** (look 10.2, variety 52.5, nothing graded per shot).
+
+| Step | Overall | Look | Variety | Most uses of one moment | Back-to-back repeats | Time |
+|---|---|---|---|---|---|---|
+| Old recreation, scored | 76.1 | 10.2 | 52.5 | many | - | - |
+| Build (plan, 5 stock overrides, per-shot grade, song) | 95.8 | 95.4 | 82.5 | 3 | 1 | 18 s for 80 clips |
+| Round 2: apply the check's 17 swaps | 96.1 | 97.2 | 82.5 | 3 | 1 | 20 s |
+| Round 3: apply the next 10 swaps | **99.1** | 97.2 | 97.5 | 2 | 1 | 14 s |
+
+What the real run found that the synthetic tests had not (each now has a regression test): the index said a clip ran 0.03 s past the end the editor could use; a failed build left clips that blocked the retry; one tool call per grade made the build take 160 s (now one batch, 18 s); a swap suggested in the same pass could land next to the same file or reuse a moment (swaps now book their own picks). The check's look score was first fooled by any grade existing; it now compares the look the grade would produce with the reference's.
+
+Not measured or not built: a fresh Claude Code session on the same prompt; credits charged for stock and for the description pass; fades/dissolves are listed by the check but not built; undo of an 80-clip build is slow (about 0.4 s per clip); the look is predicted from the grade, not measured from a render.
