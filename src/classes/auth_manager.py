@@ -61,7 +61,7 @@ ZENVI_WEBSITE = _zenvi_website()
 AUTH_FILE = os.path.join(info.USER_PATH, "zenvi_auth.json")
 
 POLL_INTERVAL = 2
-POLL_TIMEOUT = 45   # seconds before falling back to the password form
+POLL_TIMEOUT = 90   # seconds before falling back to the password form
 
 
 class AuthError(Exception):
