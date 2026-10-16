@@ -728,14 +728,16 @@ def install(captions: bool = False, progress: Optional[Callable[[str], None]] = 
 
 def _check_value(project: str, program: str, sub: str, value: str, inputs: Iterable[str]) -> None:
     if _SCHEME_RE.match(value) and not _DRIVE_RE.match(value):
-        if program == "hyperframes" and sub == "capture" and value.lower().startswith(("http://", "https://")):
+        if program == "hyperframes" and sub == "capture" and value.lower().startswith("https://"):
             return
         raise HyperframesError("argument %r is a URL or protocol; only 'hyperframes capture <https url>' "
                                "may reach the network" % value)
     if _is_absolute(value) or ".." in value.replace("\\", "/").split("/"):
         allowed = {os.path.normcase(os.path.realpath(p)) for p in inputs}
         full = os.path.realpath(value if _is_absolute(value) else os.path.join(project_dir(project), value))
-        if os.path.normcase(full) in allowed or _inside(full, project_dir(project)) or _inside(full, skills_dir()):
+        if os.path.normcase(full) in allowed or _inside(full, project_dir(project)):
+            return
+        if program in SCRIPT_PROGRAMS and _inside(full, skills_dir()):    # a skill script reading its own files
             return
         raise HyperframesError("argument %r points outside the project folder; use project-relative paths, "
                                "or a media file that is in Project Files" % value)

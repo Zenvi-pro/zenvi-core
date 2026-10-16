@@ -117,6 +117,18 @@ def test_arguments_cannot_reach_outside_the_project(home, tmp_path):
             hf.check_command("demo", "ffmpeg", args)
     with pytest.raises(hf.HyperframesError):                      # URLs are for capture only
         hf.check_command("demo", "hyperframes", ["render", "https://example.com"])
+    with pytest.raises(hf.HyperframesError):                      # and only over https
+        hf.check_command("demo", "hyperframes", ["capture", "http://example.com"])
+
+
+def test_only_skill_scripts_may_name_files_in_the_skills_folder(home):
+    planted = "../../.agents/skills/embedded-captions/scripts/prepare.sh"
+    for program, args in (("ffmpeg", ["-f", "data", "-i", "payload.sh", "-c", "copy", "-y", planted]),
+                          ("ffprobe", [planted]), ("hyperframes", ["lint", planted])):
+        with pytest.raises(hf.HyperframesError):                  # a write here would plant a runnable script
+            hf.check_command("demo", program, args)
+    hf.check_command("demo", "bash", ["skills/embedded-captions/scripts/prepare.sh",
+                                      "../../.agents/skills/embedded-captions/SKILL.md"])
 
 
 # -- running ------------------------------------------------------------------

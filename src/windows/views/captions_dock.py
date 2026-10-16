@@ -259,7 +259,10 @@ class CaptionsDock(QWidget):
         from classes.query import Clip
         try:
             clip = Clip.get(id=clip_id)
-            found = bool(clip) and tool.has_subject(clip)
+            # The index only: a frame probe here could start a model download on a mere selection.
+            # Not recorded counts as someone there; the tool checks the frames when it runs.
+            people = tool._people_on_camera(clip) if clip else 0
+            found = bool(clip) and (people is None or people > 0)
         except Exception:
             log.warning("Captions dock: could not check the clip for a speaker", exc_info=True)
             return

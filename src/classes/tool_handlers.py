@@ -8490,7 +8490,8 @@ def place_motion_graphic(
             def _taken(layer, clips):
                 return primary_track_overlaps(clips, layer=layer, t0=t, t1=t + dur)
 
-            locked = {int(L["number"]) for L in layers if isinstance(L, dict) and L.get("lock")}
+            locked = {int(L["number"]) for L in layers
+                      if isinstance(L, dict) and L.get("lock") and L.get("number") is not None}
             picture = [c for c in clips_raw if _is_visual(c)]
             floor = max((n for n in nums if _taken(n, picture)), default=-1)
             usable = [n for n in nums if n > floor and n not in locked and not _taken(n, clips_raw)]
@@ -8595,12 +8596,12 @@ def place_motion_graphic(
                             {"position": float(new_pos) - float(dur)},
                         )
                 try:
-                    _run_on_main_thread(_undo_ripple)
+                    _run_on_main_thread(_atomic(app, _undo_ripple, tid=_composite_tid))
                 except Exception as undo_exc:
                     log.warning("cut_in ripple rollback failed: %s", undo_exc)
             if new_lane[0] is not None:
                 try:
-                    _run_on_main_thread(new_lane[0].delete)
+                    _run_on_main_thread(_atomic(app, new_lane[0].delete, tid=_composite_tid))
                 except Exception as undo_exc:
                     log.warning("could not remove the unused overlay track: %s", undo_exc)
             return result

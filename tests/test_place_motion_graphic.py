@@ -203,7 +203,7 @@ def test_overlay_goes_above_footage_on_the_top_track():
     f = _file(transparent=True)
     app = _layers_app()
     patches = _patch_place(f, [_clip("C1", 3000000, 0.0, end=15.0)], app)
-    with patches[0], patches[1] as mods, patches[2] as add_clip, patches[3]:
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
         out = th.place_motion_graphic(file_id="F1", position_seconds="1.0", duration_seconds="4.0",
                                       mode="overlay")
         track_cls = sys.modules["classes.query"].Track
@@ -267,16 +267,32 @@ def test_overlay_skips_a_locked_track():
     assert add_clip.call_args.kwargs["track"] == "4000000"       # a new lane above the locked one
 
 
+def test_a_locked_track_with_no_number_does_not_break_placement():
+    f = _file(transparent=True)
+    app = MagicMock()
+    app.project.get.return_value = [{"number": 1000000}, {"number": 2000000}, {"lock": True},
+                                    {"number": None, "lock": True}]
+    patches = _patch_place(f, [_clip("C1", 1000000, 0.0, end=15.0)], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        out = th.place_motion_graphic(file_id="F1", position_seconds="1.0", duration_seconds="4.0",
+                                      mode="overlay")
+    assert not out.startswith("Error:") and add_clip.call_args.kwargs["track"] == "2000000"
+
+
 def test_a_failed_placement_removes_the_track_it_created():
     f = _file(transparent=True)
     app = _layers_app()
+    app.updates.transaction_id = None
     patches = _patch_place(f, [_clip("C1", 3000000, 0.0, end=15.0)], app, add_clip_return="Error: no such file")
-    with patches[0], patches[1], patches[2], patches[3]:
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        deleted_in = []
+        sys.modules["classes.query"].Track.return_value.delete.side_effect = \
+            lambda: deleted_in.append(app.updates.transaction_id)
         out = th.place_motion_graphic(file_id="F1", position_seconds="1.0", duration_seconds="4.0",
                                       mode="overlay")
-        track_cls = sys.modules["classes.query"].Track
     assert out.startswith("Error")
-    track_cls.return_value.delete.assert_called_once()
+    # in the same undo step as the insert, or undo replays a track that was never wanted
+    assert deleted_in == [add_clip.call_args.kwargs["transaction_id"]]
 
 
 def test_placement_joins_the_undo_step_of_the_tool_that_called_it():

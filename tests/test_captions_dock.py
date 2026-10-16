@@ -49,7 +49,8 @@ def dock(monkeypatch):
     monkeypatch.setattr(captions_dock, "get_app", lambda: types.SimpleNamespace(_tr=lambda s: s, window=window))
     monkeypatch.setattr(query.Clip, "get", staticmethod(lambda id=None, **kw: clips.get(id)))
     monkeypatch.setattr(tool, "clip_caption_words", words)
-    monkeypatch.setattr(tool, "has_subject", lambda clip: clip.id == "A")      # nobody on camera in B
+    monkeypatch.setattr(tool, "_people_on_camera", lambda clip: 1 if clip.id == "A" else 0)  # nobody in B
+    monkeypatch.setattr(tool, "has_subject", lambda clip: pytest.fail("a selection must not probe frames"))
     monkeypatch.setattr(tool, "on_progress", None)
     monkeypatch.setattr(tool_handlers, "execute_tool", execute)
     state.dock = captions_dock.CaptionsDock()
@@ -178,7 +179,7 @@ def test_the_recogniser_picker_shows_what_is_installed_and_installs_on_request(r
     assert s.installs == ["parakeet", "whistle"] and s.chosen == "whistle"
 
 
-def test_the_download_question_already_counts_as_busy(recognisers):
+def test_the_download_question_already_counts_as_busy(recognisers, monkeypatch):
     s = recognisers
 
     def ask(parent, label):
@@ -186,7 +187,7 @@ def test_the_download_question_already_counts_as_busy(recognisers):
         return False
 
     from windows.views import captions_dock
-    captions_dock._confirm_download = ask
+    monkeypatch.setattr(captions_dock, "_confirm_download", ask)
     _pick(s, "parakeet")
     assert s.busy_while_asking and not s.dock._busy
 

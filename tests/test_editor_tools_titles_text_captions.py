@@ -175,6 +175,8 @@ def test_without_the_on_device_recogniser_the_indexed_transcript_is_used(editor,
     from classes.agent_tools.receipt import ToolReceipt
 
     monkeypatch.undo()                                   # the real transcript_words, the rest re-patched below
+    monkeypatch.setattr(hf, "home", lambda: str(studio.tmp / "hyperframes"))   # never the real install
+    monkeypatch.setattr(captions, "_speech_words", lambda clip: [])           # no on-device recogniser here
     monkeypatch.setattr(transcript, "get_transcript", lambda **kw: ToolReceipt.error(
         "get_transcript_tool", "Error: faster-whisper is not installed").to_json())
     # stored at indexing time, in the media's own seconds; the clip plays 2.0-7.0 of it at 10.0 s
@@ -220,6 +222,17 @@ def test_long_clips_are_captioned_for_their_whole_length(editor, studio):
     assert studio.placed == []
     captions._place("F-any", 0.0, 240.0)
     assert studio.place_kwargs[-1]["max_duration_seconds"] >= 240.0
+
+
+def test_a_failed_subject_import_leaves_no_orphan_caption_file(editor, studio, monkeypatch):
+    from classes.query import File
+
+    real = tool_handlers._import_generated_video
+    monkeypatch.setattr(tool_handlers, "_import_generated_video", lambda path, **kw: (
+        (None, "no alpha channel") if "subject-" in os.path.basename(path) else real(path, **kw)))
+    out = editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True)
+    assert out.startswith("Error") and "no alpha channel" in out
+    assert not [f for f in File.filter() if (f.data.get("ai_metadata") or {}).get("source") == captions.SOURCE]
 
 
 def test_a_failed_import_leaves_the_existing_captions_in_place(editor, studio, monkeypatch):

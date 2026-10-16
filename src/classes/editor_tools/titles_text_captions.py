@@ -440,8 +440,12 @@ def build_captions(clip, style: str = cap.DEFAULT_STYLE, behind_subject: bool = 
     info = {"clip_id": clip_id, "style": style, "behind_subject": bool(behind_subject), "role": "captions",
             "text": " ".join(w["text"] for w in words)}
     caption_file = _import_overlay(os.path.join(root, out_rel.replace("/", os.sep)), "Captions: " + title, info)
-    subject = behind_subject and _import_overlay(os.path.join(root, subject_rel.replace("/", os.sep)),
-                                                 "Subject: " + title, dict(info, role="subject"))
+    try:
+        subject = behind_subject and _import_overlay(os.path.join(root, subject_rel.replace("/", os.sep)),
+                                                     "Subject: " + title, dict(info, role="subject"))
+    except Exception:
+        on_main(caption_file.delete)                    # nothing would ever reference it
+        raise
     previous = on_main(lambda: [copy.deepcopy(c.data) for c, _info in _caption_clips(clip_id)])
     tracks = on_main(lambda: {int(t.get("number") or 0) for t in th()._get_app().project.get("layers") or []})
     removed = _remove(clip_id)                           # one caption track per clip: this replaces the last
