@@ -1400,8 +1400,9 @@ jobs:
   # and this build updates itself (its installer helper does). Each must come
   # back up, stay up, and still be signed in. Logs land in the job artifact.
   # The previous release's AppImage updater can't replace a running AppImage
-  # (Text file busy), so on Linux only this build's own update is tested;
-  # Intel Macs have no runner, so only the arm64 DMG is.
+  # (Text file busy), and v1.2.1's Intel DMG never started, so on Linux and
+  # Intel Macs only this build's own update is tested. The Intel leg is
+  # optional: an Intel DMG that failed verification isn't in the release.
   update-e2e:
     needs: [version, build-linux, build-macos, build-windows]
     if: always() && !cancelled() && needs.version.result == 'success'
@@ -1421,6 +1422,11 @@ jobs:
             artifact: linux-packages
             pattern: "Zenvi-v*-x86_64.AppImage"
             old_to_new: false
+          - runner: macos-15-intel
+            artifact: macos-package-x86_64
+            pattern: "Zenvi-v*-x86_64.dmg"
+            old_to_new: false
+            optional: true
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 75
     env:
@@ -1435,6 +1441,8 @@ jobs:
           python-version: "3.12"
 
       - name: Download this build
+        id: download
+        continue-on-error: ${{ matrix.optional == true }}
         uses: actions/download-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -1442,6 +1450,7 @@ jobs:
 
       - name: Find this build's installer
         id: new
+        if: steps.download.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -1451,7 +1460,7 @@ jobs:
 
       - name: Download the previous release
         id: previous
-        if: matrix.old_to_new
+        if: matrix.old_to_new && steps.download.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -1491,6 +1500,7 @@ jobs:
           --new "${{ steps.new.outputs.file }}" --new-version "$VER"
 
       - name: This build updates itself
+        if: steps.download.outcome == 'success'
         shell: bash
         run: >-
           python installer/e2e_update_test.py --scenario new-to-new
@@ -1500,7 +1510,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: update-e2e-${{ runner.os }}
+          name: update-e2e-${{ matrix.runner }}
           path: e2e-artifacts/
           if-no-files-found: ignore
 
