@@ -7865,8 +7865,13 @@ def modify_clip(
 def download_pexels_video_tool(video_id: str = "", link: str = "", filename: str = "", **kwargs) -> str:
     """Download a Pexels MP4 from the search-result link to the local machine."""
     try:
+        if not link and str(video_id).strip().isdigit():
+            # a clip found with search_stock_video_tool in this session: its link was remembered, so the id is enough
+            from classes.editor_tools.ai_generation_stock import remembered_link
+            link = remembered_link(video_id)
         if not link:
-            return "Error: link is required (use the MP4 URL from search_pexels_videos_tool)."
+            return ("Error: no link for that clip. Find one with search_stock_video_tool (or search_pexels_videos_tool), "
+                    "then pass its video_id here, or pass its link.")
         from classes.credits_client import charge_operation_on_success, check_operation
 
         _, _, blocked = check_operation("stock_add", "stock media download")
