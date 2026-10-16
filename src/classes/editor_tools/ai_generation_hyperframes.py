@@ -339,9 +339,16 @@ def _check_problems(project) -> list:
                 continue
             where = " ".join(str(finding[k]) for k in ("sourceFile", "selector") if finding.get(k))
             detail = "off canvas by %s px" % json.dumps(off_canvas) if off_canvas else ""
+            message, hint = str(finding.get("message") or ""), str(finding.get("fixHint") or "")
+            if finding.get("code") == "sweep_static":      # the CLI blames the seek; usually it is the layout
+                message = "nothing moved between any of the sampled frames"
+                hint = ("usually several short graphics in one long composition with gaps and holds between "
+                        "them: make one project per graphic, its index.html only as long as that graphic, and "
+                        "keep something animating until it ends; if it never moves at all, register a paused "
+                        "GSAP timeline in window.__timelines under the data-composition-id")
             problems.append("; ".join(filter(None, (
                 finding.get("code") or "error", where, "t=%ss" % finding["time"] if "time" in finding else "",
-                detail, str(finding.get("message") or ""), str(finding.get("fixHint") or "")))))
+                detail, message, hint))))
     return problems[:12]
 
 
@@ -372,7 +379,8 @@ def render_motion_graphic(project, label, transparent=True, composition="", fps=
     It first runs 'hyperframes check' and refuses to render while that reports
     an error or anything painted outside the canvas -- you cannot see the frame,
     so fix what it lists and call again (an intentional off-canvas entrance is
-    marked with data-layout-allow-overflow). The render takes from a few seconds
+    marked with data-layout-allow-overflow). Render one graphic per project (title,
+    lower third, end card...), each a few seconds long. The render takes from a few seconds
     to a few minutes. The result carries a file_id: place it next with
     place_motion_graphic_tool. Nothing is uploaded.
     """

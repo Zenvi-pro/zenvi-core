@@ -195,6 +195,19 @@ def test_render_is_refused_while_the_layout_is_off_canvas(editor, rendered):
     assert rendered.commands == [] and rendered.imported == []      # nothing rendered, nothing imported
 
 
+def test_a_long_mostly_still_package_is_refused_with_the_way_out(editor, rendered):
+    # The real finding for one 129 s composition holding seven short graphics: every grid sample
+    # lands on a gap or a settled hold, and the CLI's own hint (check the GSAP seek) misleads.
+    rendered.check = {"ok": False, "layout": {"findings": [{
+        "code": "sweep_static", "severity": "error", "time": 0, "selector": "[data-composition-id]",
+        "sourceFile": "index.html", "message": "Timeline did not advance under seek; every green verdict "
+        "on this run is unreliable.", "fixHint": "Confirm the composition seeks a paused GSAP/CSS timeline"}]}}
+    out = editor.call("render_motion_graphic_tool", project="title", label="Social package")
+    assert out.startswith("Error") and rendered.commands == []
+    assert "one project per graphic" in out and "window.__timelines" in out
+    assert "did not advance under seek" not in out and "Confirm the composition seeks" not in out
+
+
 def test_render_is_refused_on_check_errors_and_proceeds_when_the_check_cannot_run(editor, rendered):
     rendered.check = {"ok": False, "runtime": {"findings": [{"code": "js_error", "severity": "error",
                                                              "message": "gsap is not defined"}]}}
