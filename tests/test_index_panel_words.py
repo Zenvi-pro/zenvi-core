@@ -35,6 +35,7 @@ def _panel(added):
     panel._project_token = lambda: index_panel.IndexPanel._project_token(panel)
     panel._load_transcript = lambda token=None: index_panel.IndexPanel._load_transcript(panel, token)
     panel._populate = lambda raw, token=None: index_panel.IndexPanel._populate(panel, raw, token)
+    panel._render = lambda: index_panel.IndexPanel._render(panel)
     return panel
 
 
@@ -72,8 +73,8 @@ def test_refresh_requests_words_and_lists_them():
     gui.assert_called_once()
     get.assert_called_once()
     assert get.call_args.kwargs.get("includeWords") is True
-    assert len(added) == 2
-    panel._status.setText.assert_called_with("2 words · local-apple · gen 2")
+    assert len(added) == 3                      # the clip header, then two lines (the 5 s pause splits them)
+    panel._status.setText.assert_called_with("2 lines · 2 words · local-apple · gen 2")
     assert panel._loading is False
 
 
