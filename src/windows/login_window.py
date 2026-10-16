@@ -252,7 +252,9 @@ class LoginWindow(QDialog):
         layout.addWidget(self._browser_status)
 
         self._browser_sub = QLabel(
-            "Complete sign-in in your browser.\nThis window will close automatically."
+            "Open the Authorize page in your browser.\n"
+            "If you're already signed in, just click Continue.\n"
+            "This window will close automatically."
         )
         self._browser_sub.setAlignment(Qt.AlignCenter)
         self._browser_sub.setWordWrap(True)
@@ -369,7 +371,9 @@ class LoginWindow(QDialog):
         self._stack.setCurrentIndex(self._PAGE_BROWSER)
         self._browser_status.setText("Opening browser…")
         self._browser_sub.setText(
-            "Complete sign-in in your browser.\nThis window will close automatically."
+            "Open the Authorize page in your browser.\n"
+            "If you're already signed in, just click Continue.\n"
+            "This window will close automatically."
         )
         self._url_label.clear()
         self.adjustSize()
@@ -377,7 +381,7 @@ class LoginWindow(QDialog):
         login_url, state = self._auth.start_auth_flow()
         self._url_label.setText(login_url)
         print(f"[zenvi-auth] browser flow started: {login_url}", file=sys.stderr)
-        QTimer.singleShot(1400, lambda: self._browser_status.setText("Waiting for authentication…"))
+        QTimer.singleShot(1400, lambda: self._browser_status.setText("Waiting for browser…"))
 
         self._browser_worker = _PollWorker(self._auth, state)
         self._browser_thread = QThread(self)
