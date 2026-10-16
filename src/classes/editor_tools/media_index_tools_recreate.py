@@ -45,6 +45,9 @@ RAMP_MAX_STOPS = 0.8
 RAMP_MIN_SECONDS = 0.6
 MAX_CUT_ERROR_FRAMES = 6         # one cut further off than this fails the check whatever the average says
 TRANSITION_SECONDS = 0.5         # the longest dissolve or fade the build makes
+TILE_HEIGHT = 144
+TILE_WIDTH = 256
+MAX_COMPARE_SHOTS = 8
 BATCH_HOP_TIMEOUT = 180
 BUILD_LEASE_SECONDS = 900.0
 
@@ -742,10 +745,11 @@ def _grade_score(parts: List[float]) -> float:
         "reference_file_id": string("The video being recreated."),
         "plan_id": string("The plan (default: the latest for this reference); gives the swap candidates for weak shots.", ""),
         "tolerance_frames": integer("How far a cut may be from the reference's, in frames.", 1, minimum=0, maximum=12),
+        "show_pictures": boolean(f"Attach a picture of the worst shots (reference frame beside the chosen footage, up to {MAX_COMPARE_SHOTS}) so they can be judged by eye.", True),
     }, required=["reference_file_id"]),
     read_only=True,
 )
-def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
+def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pictures=True):
     """Score the timeline against the reference it recreates, and say what to fix. Six areas, 0 to 100 each: timing (every cut and
     length against the reference's, in frames), coverage (a clip in every slot, no overlaps), variety (the same moment or clip not
     reused too often, no clip twice in a row), picture (how well each placed window ranks among the footage for its shot), look (each clip
@@ -961,9 +965,16 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
     ref_transitions = sorted((s for s in ref.shots if (s.get("opens_with") or {}).get("kind") in ("fade", "dissolve")), key=lambda s: s["start"])
     failing = [{"reference_shot": sid, "time": _mmss(next(a for i, a, _b, _r in slots if i == sid)), "problems": probs, "fix": fixes.get(sid)}
                for sid, probs in sorted(findings.items())][:20]
+    sheet_path, sheet_rows = None, []
+    if show_pictures and plan and findings:
+        worst = sorted(findings, key=lambda sid: (-len(findings[sid]), sid))[:MAX_COMPARE_SHOTS]
+        try:
+            sheet_path, sheet_rows, _skipped_sheet = _compare_sheet(plan, ref.file_id, sorted(worst))
+        except Exception:  # noqa: BLE001 - the numbers are the answer; the picture is a bonus
+            log.info("could not draw the picture of the worst shots", exc_info=True)
     head = (f"{'PASS' if passed else 'NOT YET'}: overall {overall} (timing {areas['timing']}, coverage {areas['coverage']}, variety {areas['variety']}, "
             f"picture {areas['picture']}, look {areas['look']}, sound {areas['sound']}, framing {areas['framing']}); {len(findings)} shot(s) to fix.")
-    return ok(head + (f" {len(skipped)} shot(s) skipped on purpose: {skipped[:12]}." if skipped else ""), passed=passed, overall=overall, areas=areas, skipped=skipped, failing=failing, failing_total=len(findings),
+    return ok(head + (f" {len(skipped)} shot(s) skipped on purpose: {skipped[:12]}." if skipped else ""), passed=passed, overall=overall, areas=areas, skipped=skipped, failing=failing, failing_total=len(findings), image_path=sheet_path, image_rows=sheet_rows,
               variety={"most_uses_of_one_moment": reuse_max, "clips_twice_in_a_row": back_to_back, "biggest_share_of_one_file": round(share, 2),
                        "files_used": len(uses)},
               graded=graded, slots=len(slots),
@@ -973,9 +984,6 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1):
 
 
 # ============================ compare ============================
-TILE_HEIGHT = 144
-TILE_WIDTH = 256
-MAX_COMPARE_SHOTS = 8
 
 
 def _tile(f, t: float) -> "Any":
@@ -998,6 +1006,48 @@ def _tile(f, t: float) -> "Any":
     return tile
 
 
+def _compare_sheet(plan: Dict[str, Any], reference_file_id: str, wanted: List[int]) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Render the reference-beside-footage picture for *wanted* shots: (png path, rows shown, shots skipped with why). Raises ToolError when
+    nothing can be shown."""
+    import os
+    import tempfile
+    import numpy as np
+    from classes.media_index import contact
+    from classes.query import File
+    ref_file = File.get(id=str(reference_file_id))
+    rows = {r["reference_shot"]: r for r in plan["rows"]}
+    tiles, legend = [], []
+    for shot_id in wanted[:MAX_COMPARE_SHOTS]:
+        row = rows.get(shot_id)
+        c = _effective(row, plan) if row else None
+        if row is None or c is None or ref_file is None:
+            legend.append({"shot": shot_id, "note": "no footage chosen for this shot" if row else "not a shot of this plan"})
+            continue
+        src = File.get(id=str(c["file_id"]))
+        if src is None:
+            legend.append({"shot": shot_id, "note": "the chosen file is no longer in the project"})
+            continue
+        ref_t = (float(row["start"]) + float(row["end"])) / 2.0
+        src_t = float(c["in"]) + float(row["duration"]) / 2.0
+        tiles.extend([_tile(ref_file, ref_t), _tile(src, src_t)])
+        legend.append({"shot": shot_id, "reference_t": round(ref_t, 2), "source": str(src.data.get("name") or c["file_id"])[:40], "source_t": round(src_t, 2),
+                       "described_as": (row.get("description") or "")[:100]})
+    if not tiles:
+        raise ToolError("nothing to show: " + "; ".join(str(x.get("note")) for x in legend))
+    times = [t for entry in legend if "reference_t" in entry for t in (entry["reference_t"], entry["source_t"])]
+    picture = contact.sheet(np.stack(tiles), times, 0.0, 2)
+    fd, path = tempfile.mkstemp(suffix=".png", prefix="recreation_compare_")
+    os.close(fd)
+    contact.write_png(path, picture)
+    try:
+        from classes.agent_tools.output import ImageBlock, attach_images
+        from classes.editor_tools.media_index_tools_precision import _sheet_jpeg
+        attach_images([ImageBlock(data=_sheet_jpeg(path))])
+    except Exception:                                                      # the path in the result still works
+        log.info("comparison picture not attached; image_path still works", exc_info=True)
+    return path, [e for e in legend if "reference_t" in e], [e for e in legend if "note" in e]
+
+
 @editor_tool(
     "compare_recreation_tool",
     covers=("index.match",),
@@ -1015,12 +1065,6 @@ def compare_recreation(reference_file_id, shots, plan_id=""):
     and framing? If not, swap the shot (build_recreation_tool overrides), look for stock, or leave it out and say so. The numbers in
     check_recreation_tool cannot tell you that; the picture can.
     """
-    import os
-    import tempfile
-    import numpy as np
-    from classes.editor_tools.media_index_tools_precision import _sheet_jpeg
-    from classes.media_index import contact
-    from classes.query import File
     wanted = [int(x) for x in shots][:MAX_COMPARE_SHOTS]
     if not wanted:
         raise ToolError("give the reference shot numbers to look at")
@@ -1029,36 +1073,6 @@ def compare_recreation(reference_file_id, shots, plan_id=""):
     plan = _plan(plan_id, reference_file_id)
     if not plan:
         raise ToolError("no plan yet: plan_recreation_tool makes one")
-    ref_file = File.get(id=str(reference_file_id))
-    rows = {r["reference_shot"]: r for r in plan["rows"]}
-    tiles, legend = [], []
-    for shot_id in wanted:
-        row = rows.get(shot_id)
-        c = _effective(row, plan) if row else None
-        if row is None or c is None or ref_file is None:
-            legend.append({"shot": shot_id, "note": "no footage chosen for this shot" if row else "not a shot of this plan"})
-            continue
-        src = File.get(id=str(c["file_id"]))
-        if src is None:
-            legend.append({"shot": shot_id, "note": "the chosen file is no longer in the project"})
-            continue
-        ref_t = (float(row["start"]) + float(row["end"])) / 2.0
-        src_t = float(c["in"]) + float(row["duration"]) / 2.0
-        tiles.extend([_tile(ref_file, ref_t), _tile(src, src_t)])
-        legend.append({"shot": shot_id, "reference_t": round(ref_t, 2), "source": str(src.data.get("name") or c["file_id"])[:40], "source_t": round(src_t, 2),
-                       "described_as": (row.get("description") or "")[:100]})
-    if not tiles:
-        raise ToolError("nothing to show: " + "; ".join(str(x.get("note")) for x in legend))
-    frames = np.stack(tiles)
-    times = [t for entry in legend if "reference_t" in entry for t in (entry["reference_t"], entry["source_t"])]
-    picture = contact.sheet(frames, times, 0.0, 2)
-    fd, path = tempfile.mkstemp(suffix=".png", prefix="recreation_compare_")
-    os.close(fd)
-    contact.write_png(path, picture)
-    try:
-        from classes.agent_tools.output import ImageBlock, attach_images
-        attach_images([ImageBlock(data=_sheet_jpeg(path))])
-    except Exception:                                                      # the path in the result still works
-        pass
-    return ok(f"{len(tiles) // 2} shot(s): reference on the left, the chosen footage on the right, one row per shot in the order listed.",
-              image_path=path, rows=[e for e in legend if "reference_t" in e], skipped=[e for e in legend if "note" in e])
+    path, shown, skipped = _compare_sheet(plan, str(reference_file_id), wanted)
+    return ok(f"{len(shown)} shot(s): reference on the left, the chosen footage on the right, one row per shot in the order listed.",
+              image_path=path, rows=shown, skipped=skipped)

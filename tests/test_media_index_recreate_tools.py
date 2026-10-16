@@ -420,3 +420,22 @@ def test_one_cut_far_from_the_reference_fails_the_check_even_when_the_average_is
     receipt_data(studio.ed, "move_clips_tool", timeline_clip_ids=[victim["id"]], by_seconds=0.3, allow_overlap=True)
     result = check(studio, plan_id=pid)
     assert result["overall"] >= 80.0 and result["passed"] is False
+
+
+def test_the_check_attaches_a_picture_of_its_worst_shots(closeups, monkeypatch):
+    import numpy as np
+    from classes.editor_tools import media_index_tools_recreate as R
+    monkeypatch.setattr(R, "_tile", lambda f, t: np.zeros((R.TILE_HEIGHT, R.TILE_WIDTH, 3), dtype=np.uint8))
+    monkeypatch.setattr("classes.editor_tools.media_index_tools_precision._sheet_jpeg", lambda path: b"jpeg")
+    out = build_it(closeups, plan(closeups)["plan_id"], framing=False)          # left wide on purpose: every shot has a finding
+    result = check(closeups, plan_id=out["plan_id"])
+    assert result["image_path"] and len(result["image_rows"]) == min(6, R.MAX_COMPARE_SHOTS)
+    assert check(closeups, plan_id=out["plan_id"], show_pictures=False)["image_path"] is None
+
+
+def test_a_picture_that_cannot_be_drawn_never_breaks_the_check(closeups, monkeypatch):
+    from classes.editor_tools import media_index_tools_recreate as R
+    out = build_it(closeups, plan(closeups)["plan_id"], framing=False)
+    monkeypatch.setattr(R, "_tile", lambda f, t: (_ for _ in ()).throw(R.ToolError("cannot read the picture")))
+    result = check(closeups, plan_id=out["plan_id"])
+    assert result["image_path"] is None and result["failing_total"] == 6
