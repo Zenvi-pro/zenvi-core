@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import time
 
 from classes import hyperframes_local as hf
@@ -319,33 +321,74 @@ def _import(project, full, label, transparent):
               size_mb=round(os.path.getsize(full) / 1048576.0, 2))
 
 
-def _check_problems(project) -> list:
+def _link_or_copy(src, dst):
+    try:
+        os.link(src, dst)                               # no second copy of large media
+    except OSError:
+        shutil.copy2(src, dst)
+
+
+def _check_copy(project, composition, copy):
+    """A throwaway copy of *project* whose index.html is *composition*: 'check' only audits index.html."""
+    shutil.copytree(hf.project_dir(project), hf.project_dir(copy), ignore=shutil.ignore_patterns("renders"),
+                    copy_function=_link_or_copy)
+    with open(hf.resolve_path(project, composition), encoding="utf-8") as fh:
+        html = fh.read()
+    folder = os.path.dirname(composition.replace("\\", "/"))
+    if folder:                      # 'render -c' resolves its relative URLs from its own folder; so does the browser
+        base = '<base href="%s/">' % folder
+        html, found = re.subn(r"<head[^>]*>", lambda m: m.group(0) + base, html, count=1, flags=re.I)
+        html = html if found else base + html
+    index = os.path.join(hf.project_dir(copy), "index.html")
+    if os.path.exists(index):
+        os.remove(index)                                # a hard link: never write through it
+    with open(index, "w", encoding="utf-8") as fh:
+        fh.write(html)
+
+
+def _check_problems(project, composition="") -> list:
     """What 'hyperframes check' says must be fixed before a render is worth making.
 
     Errors from any pass, plus anything painted outside the canvas: the model
     cannot see its frame, and an off-canvas lower third renders "successfully".
     Best effort -- a check that cannot run or parse does not block the render.
     """
+    copy = "check-%d" % time.time_ns() if composition else ""
     try:
-        _code, out = hf.run(project, "hyperframes", ["check", ".", "--json"], timeout=600)
+        if copy:
+            _check_copy(project, composition, copy)
+        _code, out = hf.run(copy or project, "hyperframes", ["check", ".", "--json"], timeout=600)
         report, _end = json.JSONDecoder().raw_decode(out[out.index("{"):])
-    except (hf.HyperframesError, ValueError):
+    except (hf.HyperframesError, ValueError, OSError):
         return []
+    finally:
+        if copy:
+            shutil.rmtree(hf.project_dir(copy), ignore_errors=True)
+    entry = os.path.normcase(os.path.join(hf.project_dir(copy), "index.html")) if copy else ""
     problems = []
-    for section in report.values() if isinstance(report, dict) else ():
+    for name, section in report.items() if isinstance(report, dict) else ():
         for finding in (section.get("findings") or []) if isinstance(section, dict) else ():
             off_canvas = finding.get("overflow")
             if finding.get("severity") != "error" and not off_canvas:
                 continue
+            source = str(finding.get("sourceFile") or "")
+            in_entry = bool(copy) and os.path.normcase(os.path.normpath(
+                os.path.join(hf.project_dir(copy), source))) == entry
+            if in_entry and name == "lint":             # linted again without its folder; the CLI lints the real file
+                continue
             where = " ".join(str(finding[k]) for k in ("sourceFile", "selector") if finding.get(k))
+            if in_entry:                                # name the real files, not the throwaway copy's
+                where = where.replace(source, composition, 1)
+            elif copy:
+                where = where.replace(copy, project)          # the CLI prints the copy's absolute paths
             detail = "off canvas by %s px" % json.dumps(off_canvas) if off_canvas else ""
             message, hint = str(finding.get("message") or ""), str(finding.get("fixHint") or "")
             if finding.get("code") == "sweep_static":      # the CLI blames the seek; usually it is the layout
                 message = "nothing moved between any of the sampled frames"
                 hint = ("usually several short graphics in one long composition with gaps and holds between "
-                        "them: make one project per graphic, its index.html only as long as that graphic, and "
-                        "keep something animating until it ends; if it never moves at all, register a paused "
-                        "GSAP timeline in window.__timelines under the data-composition-id")
+                        "them: make one project per graphic, the composition you render only as long as that "
+                        "graphic, and keep something animating until it ends; if it never moves at all, register "
+                        "a paused GSAP timeline in window.__timelines under the data-composition-id")
             problems.append("; ".join(filter(None, (
                 finding.get("code") or "error", where, "t=%ss" % finding["time"] if "time" in finding else "",
                 detail, message, hint))))
@@ -388,7 +431,7 @@ def render_motion_graphic(project, label, transparent=True, composition="", fps=
     entry = _guard(hf.resolve_path, project, composition or "index.html")
     if not os.path.isfile(entry):
         raise ToolError("%s has no %s; write the composition first" % (project, composition or "index.html"))
-    problems = _check_problems(project)
+    problems = _check_problems(project, composition)
     if problems:
         raise ToolError("not rendered: 'hyperframes check' found %d problem(s) to fix first:\n- %s"
                         % (len(problems), "\n- ".join(problems)))

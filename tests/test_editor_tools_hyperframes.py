@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import urllib.request
 from types import SimpleNamespace
 
@@ -206,6 +207,60 @@ def test_a_long_mostly_still_package_is_refused_with_the_way_out(editor, rendere
     assert out.startswith("Error") and rendered.commands == []
     assert "one project per graphic" in out and "window.__timelines" in out
     assert "did not advance under seek" not in out and "Confirm the composition seeks" not in out
+
+
+def test_a_composition_render_is_checked_on_that_composition_not_index_html(editor, rendered, monkeypatch):
+    os.makedirs(os.path.join(hf.project_dir("title"), "compositions"))
+    with open(os.path.join(hf.project_dir("title"), "compositions", "lower.html"), "w") as fh:
+        fh.write("<html><head><title>lower</title></head><body><img src='assets/logo.png'></body></html>")
+    checked = []
+    run = hf.run
+
+    def spy(project, program, args, **kw):
+        if args[0] == "check":
+            checked.append((project, open(os.path.join(hf.project_dir(project), "index.html")).read()))
+            rendered.check["lint"]["findings"].append(        # the real CLI prints absolute paths in the copy
+                {"code": "missing_asset", "severity": "error", "message": "absolute path finding",
+                 "sourceFile": os.path.join(hf.project_dir(project), "compositions", "lower.html")})
+        return run(project, program, args, **kw)
+
+    monkeypatch.setattr(hf, "run", spy)
+    rendered.check = {"ok": False, "layout": {"findings": [{"code": "content_overlap", "severity": "error",
+                                                            "sourceFile": "index.html", "selector": "#name",
+                                                            "message": "two titles overlap"}]},
+                      "lint": {"findings": [
+                          # the copy's entry, linted without its folder: a false alarm the real file does not get
+                          {"code": "missing_asset", "severity": "error", "sourceFile": "index.html",
+                           "message": "copy-only false alarm"},
+                          {"code": "missing_asset", "severity": "error", "sourceFile": "compositions/index.html",
+                           "message": "real missing asset"}]}}
+    out = editor.call("render_motion_graphic_tool", project="title", label="Lower third",
+                      composition="compositions/lower.html")
+
+    assert out.startswith("Error") and "two titles overlap" in out and rendered.commands == []
+    assert "compositions/lower.html #name" in out                       # the real file, not the copy's
+    assert "copy-only false alarm" not in out and "compositions/index.html; real missing asset" in out
+    assert os.path.join(hf.project_dir("title"), "compositions", "lower.html") + "; absolute path finding" in out
+    project, html = checked[0]
+    assert project != "title" and "<title>lower</title>" in html
+    assert '<head><base href="compositions/">' in html                   # URLs resolve as 'render -c' does
+    assert not os.path.exists(hf.project_dir(project))                 # the copy is cleaned up
+    assert open(os.path.join(hf.project_dir("title"), "index.html")).read() == "<div></div>"
+
+
+def test_a_composition_check_that_cannot_copy_leaves_nothing_behind(editor, rendered, monkeypatch):
+    os.makedirs(os.path.join(hf.project_dir("title"), "compositions"))
+    with open(os.path.join(hf.project_dir("title"), "compositions", "lower.html"), "w") as fh:
+        fh.write("<html></html>")
+
+    def half_copy(src, dst, **kw):
+        os.makedirs(dst)
+        raise shutil.Error([("a", "b", "disk full")])
+
+    monkeypatch.setattr(shutil, "copytree", half_copy)
+    _receipt(editor.call("render_motion_graphic_tool", project="title", label="x",
+                         composition="compositions/lower.html"))
+    assert sorted(os.listdir(os.path.dirname(hf.project_dir("title")))) == ["title"]
 
 
 def test_render_is_refused_on_check_errors_and_proceeds_when_the_check_cannot_run(editor, rendered):
