@@ -1144,9 +1144,18 @@ jobs:
             exit 1
           fi
 
-          # Staple the notarization ticket so Gatekeeper can verify offline
-          xcrun stapler staple "$DMG_NAME"
-          xcrun stapler validate "$DMG_NAME"
+          # Staple the notarization ticket so Gatekeeper can verify offline.
+          # Both ask Apple's ticket service over the network, which drops
+          # connections now and then ("The network connection was lost",
+          # exit 68): retry rather than fail a build Apple already accepted.
+          for step in staple validate; do
+            for attempt in 1 2 3 4; do
+              if xcrun stapler "$step" "$DMG_NAME"; then break; fi
+              if [ "$attempt" = 4 ]; then echo "::error::stapler $step failed 4 times"; exit 1; fi
+              echo "::warning::stapler $step failed (attempt $attempt); retrying in 30 s"
+              sleep 30
+            done
+          done
           spctl -a -t open --context context:primary-signature -vv "$DMG_NAME" || true
           echo "Notarization complete: $DMG_NAME"
 
