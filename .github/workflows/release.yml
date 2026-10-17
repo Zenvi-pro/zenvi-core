@@ -1148,13 +1148,23 @@ jobs:
           # Both ask Apple's ticket service over the network, which drops
           # connections now and then ("The network connection was lost",
           # exit 68): retry rather than fail a build Apple already accepted.
-          for step in staple validate; do
-            for attempt in 1 2 3 4; do
-              if xcrun stapler "$step" "$DMG_NAME"; then break; fi
-              if [ "$attempt" = 4 ]; then echo "::error::stapler $step failed 4 times"; exit 1; fi
-              echo "::warning::stapler $step failed (attempt $attempt); retrying in 30 s"
-              sleep 30
-            done
+          # 'stapler staple' validates the ticket it attaches ("The staple and
+          # validate action worked!"); the separate validate is a second look
+          # that some runners can't complete (it keeps losing its IPv6
+          # connection to Apple), so it warns instead of failing the build.
+          for attempt in 1 2 3 4; do
+            if xcrun stapler staple "$DMG_NAME"; then break; fi
+            if [ "$attempt" = 4 ]; then echo "::error::stapler staple failed 4 times"; exit 1; fi
+            echo "::warning::stapler staple failed (attempt $attempt); retrying in 30 s"
+            sleep 30
+          done
+          for attempt in 1 2 3; do
+            if xcrun stapler validate "$DMG_NAME"; then break; fi
+            if [ "$attempt" = 3 ]; then
+              echo "::warning::stapler validate could not reach Apple; the staple step already validated the ticket"
+              break
+            fi
+            sleep 30
           done
           spctl -a -t open --context context:primary-signature -vv "$DMG_NAME" || true
           echo "Notarization complete: $DMG_NAME"
