@@ -50,7 +50,7 @@ from classes.logger import log
 from classes.app import get_app
 from classes import info
 from classes.query import Clip, Effect, Transition, File
-from themes.cosmic.tokens import TOKENS, resolve
+from themes.cosmic.tokens import TOKENS, qcolor, resolve
 
 from windows.models.properties_model import PropertiesModel
 from windows.color_picker import ColorPicker
@@ -76,13 +76,7 @@ from .menu import StyledContextMenu, populate_keyframe_context_menu
 import openshot
 
 
-def _token_color(name):
-    """QColor for a design token. QColor() cannot read CSS rgba(), so split those up."""
-    value = TOKENS[name]
-    if value.startswith("rgba("):
-        red, green, blue, alpha = (part.strip() for part in value[5:-1].split(","))
-        return QColor(int(red), int(green), int(blue), round(float(alpha) * 255))
-    return QColor(value)
+_token_color = qcolor
 
 
 def _style_state(name):

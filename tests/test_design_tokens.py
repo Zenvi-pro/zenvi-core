@@ -131,3 +131,18 @@ def test_chat_page_loads_the_bundled_inter():
     assert faces
     for url in re.findall(r"url\([\"']?([^)\"']+)", " ".join(faces)):
         assert (SRC / "chat_ui" / url).resolve().is_file(), url
+
+
+def test_one_shared_parser_turns_tokens_into_qcolors():
+    import os as _os
+
+    import pytest as _pytest
+
+    if _os.environ.get("ZENVI_REAL_QT") != "1":  # CI stubs Qt, so QColor would be a mock
+        _pytest.skip("builds real QColors: run with ZENVI_REAL_QT=1")
+    soft = tokens.qcolor("accent_soft")      # CSS rgba(), which QColor() cannot read
+    assert (soft.red(), soft.green(), soft.blue(), soft.alpha()) == (58, 114, 245, 41)
+    assert tokens.qcolor("accent").name() == tokens.TOKENS["accent"]
+    copies = [p for p in (SRC / "windows").rglob("*.py")
+              if 'startswith("rgba(")' in p.read_text(encoding="utf-8")]
+    assert copies == []  # views use tokens.qcolor instead of their own parser

@@ -28,7 +28,7 @@
 from qt_api import QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPointF
 from qt_api import QRect, QRectF, QSize, QStyle, QStyledItemDelegate, Qt
 
-from themes.cosmic.tokens import TOKENS
+from themes.cosmic.tokens import TOKENS, qcolor
 
 TILE_INSET = 4    # half of the 8px gap between neighbouring tiles
 TILE_PAD = 4      # inside the tile frame, around the thumbnail and the name
@@ -40,13 +40,7 @@ THUMB_RADIUS = 6
 _BOLT = ((8.16, 0.8), (3.92, 8.32), (7.08, 8.32), (5.92, 15.2), (12.08, 6.72), (8.76, 6.72), (10.24, 0.8))
 
 
-def token_color(name):
-    """QColor for a design token: "#rrggbb", or "rgba(r, g, b, a)" for translucent tokens."""
-    value = TOKENS[name]
-    if value.startswith("rgba("):
-        red, green, blue, alpha = (float(part) for part in value[5:-1].split(","))
-        return QColor(int(red), int(green), int(blue), round(alpha * 255))
-    return QColor(value)
+token_color = qcolor  # kept: the media panels import it from here
 
 
 def tile_grid_size(icon_size):

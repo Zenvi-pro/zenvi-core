@@ -48,3 +48,14 @@ def resolve(text):
     for name, value in TOKENS.items():
         text = text.replace("{%s}" % name, value)
     return text
+
+
+def qcolor(name):
+    """QColor for a token. QColor() cannot read CSS rgba(), so those are split up."""
+    from qt_api import QColor  # lazy: this module is also read where Qt is not installed
+
+    value = TOKENS[name]
+    if value.startswith("rgba("):
+        red, green, blue, alpha = (float(part) for part in value[5:-1].split(","))
+        return QColor(int(red), int(green), int(blue), round(alpha * 255))
+    return QColor(value)
