@@ -734,7 +734,7 @@
     "restart": false
   },
   {
-    "value": true,
+    "value": false,
     "title": "Background Cache Warming While Idle",
     "type": "bool",
     "category": "Performance",
