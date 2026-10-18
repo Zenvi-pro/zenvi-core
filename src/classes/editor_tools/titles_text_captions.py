@@ -36,6 +36,7 @@ from classes.editor_tools._base import (
     th,
 )
 from classes.editor_tools._registry import editor_tool
+from classes.editor_tools.timeline_edit_common import media_has_audio
 from classes.logger import log
 
 SOURCE = "hyperframes_captions"
@@ -79,13 +80,6 @@ def _media(clip) -> str:
     return path if path and os.path.isfile(path) else ""
 
 
-def _has_audio(clip) -> bool:
-    """False only when the file is known to have no audio stream (generated overlays, silent video)."""
-    from classes.query import File
-
-    f = File.get(id=str(clip.data.get("file_id") or ""))
-    return not (f and isinstance(f.data, dict) and f.data.get("has_audio") is False)
-
 
 def _run(project: str, program: str, args: list, timeout: int, inputs=()) -> str:
     try:
@@ -120,7 +114,7 @@ def _speech_words(clip) -> List[dict]:
     Where Whistle has no engine (Intel Macs) Parakeet is the only one.
     """
     media = _media(clip)
-    if not media or not _has_audio(clip):
+    if not media or not media_has_audio(clip):  # generated overlays and silent video (#320)
         return []
     installed = bool(hf.status().get("parakeet"))
     engine = hf.recogniser()
@@ -566,8 +560,7 @@ def _speech_clips() -> list:
     from classes.query import Clip
 
     overlays = {str(c.id) for c, _info in _caption_clips()}
-    clips = [c for c in Clip.filter() if str(c.id) not in overlays
-             and (c.data.get("reader") or {}).get("has_audio") is not False]
+    clips = [c for c in Clip.filter() if str(c.id) not in overlays and media_has_audio(c)]
     return sorted(clips, key=lambda c: (float(c.data.get("position") or 0.0), -int(c.data.get("layer") or 0)))
 
 

@@ -30,7 +30,7 @@ def studio(editor, tmp_path, monkeypatch):
     monkeypatch.setattr(hf, "status", lambda: {"ready": True})
     media = tmp_path / "interview.mp4"
     media.write_bytes(b"0" * 64)
-    video = editor.add_file("video", path=str(media), has_audio=True)
+    video = editor.add_file("video", path=str(media), has_audio=True, channels=2, audio_stream_index=1)
     clip = editor.add_clip(video, position=10.0, layer=L1, start=2.0, end=7.0)       # 5 s on the timeline
     state = SimpleNamespace(commands=[], placed=[], place_kwargs=[], clip=clip, tmp=tmp_path, mattes=[], words=[
         {"text": "Hello", "timelineStartSec": 10.2, "timelineEndSec": 10.6},

@@ -173,21 +173,52 @@ def test_a_word_does_not_stay_lit_through_a_pause():
         {"text": "uh", "start": 1.0, "end": 1.2}]
 
 
-def test_a_clip_without_audio_is_not_sent_to_the_speech_recogniser(monkeypatch, tmp_path):
-    # Generated overlays (motion graphics, .mov) are video-only; extracting their speech
+class _ExtractStarted(Exception):
+    """Stops _speech_words right after it starts extracting audio."""
+
+
+@pytest.mark.parametrize("file_data, clip_reader, sent", [
+    # Generated overlays (motion graphics .mov) are video-only; extracting their speech
     # failed with "Output file does not contain any stream" on every drop (#320)
+    ({"has_audio": False}, None, False),
+    ({"has_audio": True, "channels": 0}, None, False),      # probed as audio-less
+    ({"has_audio": True, "channels": 2}, {"has_audio": False}, False),  # the clip's own reader wins
+    ({"has_audio": True, "channels": 2}, None, True),
+    ({}, None, True),                                        # unprobed: still try
+])
+def test_only_clips_with_sound_go_to_the_speech_recogniser(monkeypatch, tmp_path, file_data, clip_reader, sent):
     from types import SimpleNamespace
 
     from classes import query
     from classes.editor_tools import titles_text_captions as ttc
 
-    media = tmp_path / "generated_overlay.mov"
+    media = tmp_path / "clip.mov"
     media.write_bytes(b"x")
-    overlay = SimpleNamespace(data={"has_audio": False}, absolute_path=lambda: str(media))
-    monkeypatch.setattr(query.File, "get", staticmethod(lambda **k: overlay))
-    calls = []
-    monkeypatch.setattr(ttc, "_run", lambda *a, **k: calls.append(a))
-    clip = SimpleNamespace(id="C1", data={"file_id": "F1", "start": 0.0, "end": 4.0, "position": 0.0})
+    looked_up = []
 
-    assert ttc._speech_words(clip) == []
-    assert calls == []
+    def get(**kwargs):
+        looked_up.append(kwargs.get("id"))
+        return SimpleNamespace(data=dict(file_data), absolute_path=lambda: str(media))
+    monkeypatch.setattr(query.File, "get", staticmethod(get))
+    monkeypatch.setattr(ttc.hf, "status", lambda: {})
+    monkeypatch.setattr(ttc.hf, "recogniser", lambda: "whistle")
+    monkeypatch.setattr(ttc.hf, "project_dir", lambda _project: str(tmp_path))
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append(args)
+        raise _ExtractStarted()
+    monkeypatch.setattr(ttc, "_run", run)
+    data = {"file_id": "F1", "start": 0.0, "end": 4.0, "position": 0.0}
+    if clip_reader is not None:
+        data["reader"] = clip_reader
+    clip = SimpleNamespace(id="C1", data=data)
+
+    if sent:
+        with pytest.raises(_ExtractStarted):
+            ttc._speech_words(clip)
+        assert calls and calls[0][1] == "ffmpeg"
+    else:
+        assert ttc._speech_words(clip) == []
+        assert calls == []
+    assert "F1" in looked_up  # the media path came from the stub, not an empty lookup
