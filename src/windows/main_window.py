@@ -1154,7 +1154,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
             # Ensure that playhead, preview thread, and cache all agree that
             # Frame 1 is being previewed
-            self.preview_thread.player.Seek(1)
+            # Queued to the preview thread: Seek clears the player cache under
+            # the timeline lock, which froze the GUI while frames decoded.
+            self.SeekSignal.emit(1)
             self.movePlayhead(1)
             if loaded_project:
                 self._pending_project_open_refresh = True
@@ -6241,7 +6243,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self._pending_preview_size = None
         self._scope_timer = QTimer(self)
         self._scope_timer.setSingleShot(True)
-        self._scope_timer.setInterval(0)   # latest-wins worker path handles stale frame dropping
+        self._scope_timer.setInterval(66)  # ~15 Hz; scopes analysed every played frame cost a second frame fetch
         self._scope_timer.timeout.connect(self._run_scope_analysis)
         self.preview_thread.position_changed.connect(self._on_scope_frame)
         self.SeekSignal.connect(self._on_scope_seek)

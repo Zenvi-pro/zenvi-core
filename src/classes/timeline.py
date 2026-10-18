@@ -138,8 +138,11 @@ class TimelineSync(UpdateInterface):
                     self.timeline.ApplyJsonDiff(payload)
 
                     # Clear frame cache so the next render picks up the new clip data
-                    # (without this, libopenshot serves the cached pre-change frame)
-                    self.timeline.ClearAllCache(True)
+                    # (without this, libopenshot serves the cached pre-change frame).
+                    # Not deep: decoded source frames don't depend on edits, and
+                    # re-decoding every clip (4K included) after each tweak stalled
+                    # playback and the GUI thread waiting on the timeline lock.
+                    self.timeline.ClearAllCache(False)
 
                     # Refresh the preview so the video widget reflects the change
                     self.window.refreshFrameSignal.emit()
