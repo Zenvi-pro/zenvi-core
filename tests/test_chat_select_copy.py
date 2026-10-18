@@ -127,7 +127,7 @@ def test_the_whole_transcript_is_selectable_and_only_controls_are_not():
 
 def test_the_highlight_is_visible_on_the_dark_theme():
     m = re.search(r"#chat-messages ::selection\s*\{([^}]*)\}", css())
-    assert m and "background" in m.group(1) and "rgba(77, 156, 246" in m.group(1) and "color" in m.group(1)
+    assert m and "background" in m.group(1) and "rgba(58, 114, 245" in m.group(1) and "color" in m.group(1)
 
 
 def test_the_chat_is_a_region_not_a_custom_application_shell():
