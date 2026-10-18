@@ -191,16 +191,6 @@ class UpdatePanel(QFrame):
         self.primary.setText(self._tr("Download from zenvi.pro"))
         self.primary.setEnabled(True)
 
-    @staticmethod
-    def _lighten(hex_color, amount=24):
-        """Nudge a #rrggbb color brighter for the hover state."""
-        try:
-            raw = hex_color.lstrip("#")
-            parts = [min(255, int(raw[i:i + 2], 16) + amount) for i in (0, 2, 4)]
-            return "#%02x%02x%02x" % tuple(parts)
-        except (ValueError, IndexError):
-            return hex_color
-
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------

@@ -59,11 +59,6 @@ _STYLESHEET = tokens.resolve("""
 FILE_ICON = QSize(128, 72)  # 16:9; two columns fit the default panel width
 _FILES_STYLE = tokens.resolve("""
     QListView { background: {surface}; border: none; }
-    QListView::item { background: {hover}; color: {text};
-        border: 1px solid {line}; border-radius: 6px;
-        padding-top: 2px; }
-    QListView::item:hover { border: 1px solid {accent}; }
-    QListView::item:selected { border: 1px solid {accent}; background: {accent_soft}; }
 """)
 
 

@@ -346,16 +346,6 @@ NEUTRAL_PUCK_COLOR = TOKENS["white"]
 ACHROMATIC_SATURATION_THRESHOLD = 0.02
 
 
-def _mix_color(first, second, ratio):
-    ratio = max(0.0, min(1.0, float(ratio)))
-    return QColor(
-        int(round(first.red() + ((second.red() - first.red()) * ratio))),
-        int(round(first.green() + ((second.green() - first.green()) * ratio))),
-        int(round(first.blue() + ((second.blue() - first.blue()) * ratio))),
-        int(round(first.alpha() + ((second.alpha() - first.alpha()) * ratio))),
-    )
-
-
 def disabled_control_color(text=False):
     return QColor(TOKENS["text_off" if text else "line_strong"])
 

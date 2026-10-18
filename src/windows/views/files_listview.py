@@ -63,7 +63,6 @@ class FileCardDelegate(IndexingBadgeDelegate):
     ]
     BTN_SIZE = 20
     BTN_GAP  = 4
-    OVLY_H   = 30   # gradient overlay height (px)
 
     def __init__(self, list_view):
         super().__init__(list_view)
@@ -423,7 +422,6 @@ class FilesListView(QListView):
         self.setResizeMode(QListView.Adjust)
 
         self.setUniformItemSizes(True)
-        self.setStyleSheet('QListView::item { padding-top: 2px; border-radius: 4px; }')
 
         self.setWordWrap(False)
         self.setTextElideMode(Qt.ElideRight)

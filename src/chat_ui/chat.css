@@ -44,7 +44,6 @@
     --chat-primary-text: var(--primary-text);
     --chat-code-bg: var(--raised);
     --chat-button-bg: var(--hover);
-    --chat-button-hover-bg: var(--hover);
 }
 
 /* Inter is bundled and registered as an app font; the rest are the old fallbacks. */
@@ -342,17 +341,6 @@ body {
 }
 
 /* ΓöÇΓöÇ Glow border (conic-gradient spinner) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
-@property --glow-angle {
-    syntax: "<angle>";
-    initial-value: 0deg;
-    inherits: false;
-}
-
-@keyframes glow-spin {
-    0%   { --glow-angle: 0deg; }
-    100% { --glow-angle: 360deg; }
-}
-
 .chat-input-glow-border {
     position: absolute;
     inset: -2px;
@@ -362,11 +350,6 @@ body {
     pointer-events: none;
     background: none;
     z-index: 0;
-}
-
-.chat-input-glow-wrap.glow-active .chat-input-glow-border {
-    opacity: 1;
-    animation: glow-spin 2.5s linear infinite;
 }
 
 /* Resting border when glow is off */

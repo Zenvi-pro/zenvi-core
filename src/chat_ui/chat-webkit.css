@@ -245,21 +245,6 @@ html[data-zenvi-webkit="1"] .chat-input-row .border-t {
     border-radius: 0 0 9px 9px;
 }
 
-html[data-zenvi-webkit="1"] .chat-input-glow-wrap.glow-active .chat-input-glow-border {
-    -webkit-animation: webkit-glow-pulse 2s ease-in-out infinite;
-    animation: webkit-glow-pulse 2s ease-in-out infinite;
-}
-
-@-webkit-keyframes webkit-glow-pulse {
-    0%, 100% { opacity: 0.35; border-color: rgba(58, 114, 245, 0.25); }
-    50% { opacity: 0.95; border-color: rgba(58, 114, 245, 0.65); }
-}
-
-@keyframes webkit-glow-pulse {
-    0%, 100% { opacity: 0.35; border-color: rgba(58, 114, 245, 0.25); }
-    50% { opacity: 0.95; border-color: rgba(58, 114, 245, 0.65); }
-}
-
 /* Activity spinner */
 @-webkit-keyframes activity-spin-wk {
     from { -webkit-transform: rotate(0deg); }
