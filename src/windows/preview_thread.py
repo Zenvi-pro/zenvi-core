@@ -202,6 +202,8 @@ class PlayerWorker(QObject):
         self._scope_lock = threading.Lock()
         self._pending_scope_request = None
         self._scope_analysis_active = False
+        self._seek_lock = threading.Lock()
+        self._pending_seek = None
 
         # Create QtPlayer class from libopenshot
         self.player = openshot.QtPlayer()
@@ -321,7 +323,7 @@ class PlayerWorker(QObject):
                 self.mode_changed.emit(self.current_mode)
 
             # wait for a small delay
-            time.sleep(0.01)
+            time.sleep(0.01 if self.player.Mode() == openshot.PLAYBACK_PLAY else 0.04)
             QCoreApplication.processEvents()
 
         self.finished.emit()
@@ -668,6 +670,22 @@ class PlayerWorker(QObject):
 
     def Seek(self, number):
         """ Seek to a specific frame """
+
+        # Keep only the newest request, and flush it once on the next event loop pass
+        with self._seek_lock:
+            schedule = self._pending_seek is None
+            self._pending_seek = number
+        if QThread.currentThread() is not self.thread():
+            # Direct calls (replay from start, then Play) must land before what follows
+            self._flush_seek()
+        elif schedule:
+            QTimer.singleShot(0, self._flush_seek)
+
+    def _flush_seek(self):
+        with self._seek_lock:
+            number, self._pending_seek = self._pending_seek, None
+        if number is None:
+            return
 
         # Seek to frame
         if self.parent.initialized:
