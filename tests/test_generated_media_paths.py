@@ -48,3 +48,31 @@ def test_cleanup_scratch_parent_ignores_unrelated_dirs(tmp_path):
     file_path.write_bytes(b"x")
     cleanup_scratch_parent(str(file_path), "zenvi_url_import_")
     assert other.is_dir()
+
+
+def test_saving_relocates_generated_media_that_is_still_open(tmp_path, monkeypatch):
+    # #320: the timeline's reader holds a generated overlay open; on Windows a move
+    # then fails with WinError 32 and the whole save failed
+    from classes.assets import relocate_generated_media, reverse_media_moves
+
+    monkeypatch.setattr(info, "USER_PATH", str(tmp_path / "user"))
+    generated = tmp_path / "user" / "generated"
+    generated.mkdir(parents=True)
+    src = generated / "overlay.mov"
+    src.write_bytes(b"overlay-bytes")
+    project = tmp_path / "Founder.zvn"
+    project.write_text("{}")
+    files = [{"id": "F1", "path": str(src)}]
+    clips = [{"file_id": "F1", "reader": {"path": str(src)}}]
+
+    with open(src, "rb"):  # the reader's open handle
+        moves = relocate_generated_media(files, clips, str(project))
+
+    dest = files[0]["path"]
+    assert os.path.dirname(dest) == str(tmp_path / "Founder_assets" / "media")
+    assert open(dest, "rb").read() == b"overlay-bytes"
+    assert clips[0]["reader"]["path"] == dest
+
+    reverse_media_moves(moves)  # a later save failure rolls back without losing the original
+    assert src.read_bytes() == b"overlay-bytes"
+    assert not os.path.exists(dest)
