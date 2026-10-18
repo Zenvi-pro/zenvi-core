@@ -38,6 +38,7 @@ from qt_api import QLineEdit, QEvent, QLinearGradient
 from classes.app import get_app
 from windows.views.menu import StyledContextMenu, populate_keyframe_context_menu
 from windows.color_picker import ColorPicker
+from themes.cosmic.tokens import TOKENS, resolve
 import openshot
 
 
@@ -204,7 +205,7 @@ def _set_keyframe_value(data, frame_number, value, interpolation=openshot.BEZIER
     return {"Points": points}
 
 
-def _normalize_color_data(data, default_color="#ffffff"):
+def _normalize_color_data(data, default_color=TOKENS["white"]):
     color = QColor(default_color)
     if isinstance(data, dict):
         return {
@@ -227,7 +228,7 @@ def _normalize_color_data(data, default_color="#ffffff"):
     }
 
 
-def _evaluate_color(data, frame_number, default_color="#ffffff"):
+def _evaluate_color(data, frame_number, default_color=TOKENS["white"]):
     normalized = _normalize_color_data(data, default_color)
     return QColor(
         int(round(_evaluate_keyframe(normalized["red"], frame_number, 255.0))),
@@ -333,15 +334,15 @@ def curve_summary(data, frame_number):
 def default_wheels_data():
     return {
         "enabled_keyframes": _keyframe_value(value=1.0),
-        "global": {"color_keyframes": _normalize_color_data("#ffffff"), "amount_keyframes": _keyframe_value(value=0.0), "luma_keyframes": _keyframe_value(value=0.0)},
-        "shadows": {"color_keyframes": _normalize_color_data("#ffffff"), "amount_keyframes": _keyframe_value(value=0.0), "luma_keyframes": _keyframe_value(value=0.0)},
-        "midtones": {"color_keyframes": _normalize_color_data("#ffffff"), "amount_keyframes": _keyframe_value(value=0.0), "luma_keyframes": _keyframe_value(value=0.0)},
-        "highlights": {"color_keyframes": _normalize_color_data("#ffffff"), "amount_keyframes": _keyframe_value(value=0.0), "luma_keyframes": _keyframe_value(value=0.0)},
+        "global": {"color_keyframes": _normalize_color_data(TOKENS["white"]), "amount_keyframes": _keyframe_value(value=0.0), "luma_keyframes": _keyframe_value(value=0.0)},
+        "shadows": {"color_keyframes": _normalize_color_data(TOKENS["white"]), "amount_keyframes": _keyframe_value(value=0.0), "luma_keyframes": _keyframe_value(value=0.0)},
+        "midtones": {"color_keyframes": _normalize_color_data(TOKENS["white"]), "amount_keyframes": _keyframe_value(value=0.0), "luma_keyframes": _keyframe_value(value=0.0)},
+        "highlights": {"color_keyframes": _normalize_color_data(TOKENS["white"]), "amount_keyframes": _keyframe_value(value=0.0), "luma_keyframes": _keyframe_value(value=0.0)},
     }
 
 
-NEUTRAL_WHEEL_COLOR = "#ffffff"
-NEUTRAL_PUCK_COLOR = "#ffffff"
+NEUTRAL_WHEEL_COLOR = TOKENS["white"]
+NEUTRAL_PUCK_COLOR = TOKENS["white"]
 ACHROMATIC_SATURATION_THRESHOLD = 0.02
 
 
@@ -355,14 +356,8 @@ def _mix_color(first, second, ratio):
     )
 
 
-def disabled_control_color(widget, text=False):
-    palette = widget.palette()
-    base = palette.base().color()
-    mid = palette.mid().color()
-    text_color = palette.text().color()
-    if text:
-        return _mix_color(mid, text_color, 0.32)
-    return _mix_color(base, mid, 0.36)
+def disabled_control_color(text=False):
+    return QColor(TOKENS["text_off" if text else "line_strong"])
 
 
 def is_neutral_wheel(data):
@@ -374,14 +369,14 @@ def is_neutral_wheel(data):
 
 def display_wheel_color(data):
     if is_neutral_wheel(data):
-        return QColor(Qt.white)
+        return QColor(TOKENS["white"])
     color = QColor((data or {}).get("color", NEUTRAL_WHEEL_COLOR))
-    return color if color.isValid() else QColor(Qt.white)
+    return color if color.isValid() else QColor(TOKENS["white"])
 
 
 def selected_wheel_color(data):
     color = QColor((data or {}).get("color", NEUTRAL_WHEEL_COLOR))
-    return color if color.isValid() else QColor(Qt.white)
+    return color if color.isValid() else QColor(TOKENS["white"])
 
 
 def is_achromatic_color(color):
@@ -428,7 +423,7 @@ def normalize_wheels_data(data):
         if name == "enabled_keyframes":
             continue
         source = data.get(name) or {}
-        wheel["color_keyframes"] = _normalize_color_data(source.get("color_keyframes", source.get("color")), "#ffffff")
+        wheel["color_keyframes"] = _normalize_color_data(source.get("color_keyframes", source.get("color")), TOKENS["white"])
         wheel["amount_keyframes"] = _normalize_keyframe_data(source.get("amount_keyframes", source.get("amount")), 0.0)
         wheel["luma_keyframes"] = _normalize_keyframe_data(source.get("luma_keyframes", source.get("luma")), 0.0)
     return normalized
@@ -513,7 +508,7 @@ def _draw_keyframe_marker(painter, center, interpolation, size, fill_color, bord
         painter.drawEllipse(rect)
 
 
-def _keyframe_marker_icon(interpolation, size=12, fill_color="#4d7bff", border_color="#ffffff"):
+def _keyframe_marker_icon(interpolation, size=12, fill_color=TOKENS["accent"], border_color=TOKENS["text"]):
     pixmap = QPixmap(size + 4, size + 4)
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
@@ -646,8 +641,8 @@ class ColorWheelControl(QWidget):
 
         center, radius = self._center_and_radius()
         enabled = self.isEnabled()
-        disabled_color = disabled_control_color(self)
-        disabled_text_color = disabled_control_color(self, text=True)
+        disabled_color = disabled_control_color()
+        disabled_text_color = disabled_control_color(text=True)
 
         ring_rect = QRectF(center.x() - radius, center.y() - radius, radius * 2.0, radius * 2.0)
         ring_width = max(6.0, radius * 0.16)
@@ -667,9 +662,9 @@ class ColorWheelControl(QWidget):
             painter.setBrush(QBrush(disabled_color))
             painter.drawPath(ring_path)
 
-        outline_color = disabled_color if not enabled else self.palette().mid().color()
+        outline_color = QColor(TOKENS["line_strong"])
         painter.setPen(QPen(outline_color, 1.0))
-        painter.setBrush(QBrush(self.palette().base()))
+        painter.setBrush(QBrush(QColor(TOKENS["bg"])))
         painter.drawEllipse(center, inner_radius - 1.0, inner_radius - 1.0)
 
         painter.setPen(QPen(outline_color, 1.0, Qt.DashLine))
@@ -677,7 +672,7 @@ class ColorWheelControl(QWidget):
         painter.drawLine(QPointF(center.x(), center.y() - inner_radius), QPointF(center.x(), center.y() + inner_radius))
 
         puck = self._puck_position()
-        painter.setPen(QPen(Qt.white if enabled else disabled_text_color, 1.0))
+        painter.setPen(QPen(QColor(TOKENS["text"]) if enabled else disabled_text_color, 1.0))
         painter.setBrush(QBrush(puck_display_color(self._data) if enabled else disabled_color))
         painter.drawEllipse(puck, 5.0, 5.0)
 
@@ -685,7 +680,7 @@ class ColorWheelControl(QWidget):
             font = painter.font()
             font.setBold(True)
             painter.setFont(font)
-            painter.setPen(QPen(Qt.white if enabled else disabled_text_color))
+            painter.setPen(QPen(QColor(TOKENS["text"]) if enabled else disabled_text_color))
             text_rect = QRectF(center.x() - radius, center.y() - radius, radius * 2.0, ring_width)
             painter.drawText(text_rect, Qt.AlignCenter, self._title)
 
@@ -1012,10 +1007,10 @@ class CurvePreviewWidget(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
 
         rect = self._graph_rect()
-        painter.fillRect(self.rect(), self.palette().window())
-        painter.fillRect(rect, self.palette().base())
+        painter.fillRect(self.rect(), QColor(TOKENS["surface"]))
+        painter.fillRect(rect, QColor(TOKENS["sunken"]))
 
-        grid_pen = QPen(self.palette().mid().color(), 1)
+        grid_pen = QPen(QColor(TOKENS["line_strong"]), 1)
         painter.setPen(grid_pen)
         for tick in range(5):
             x = rect.left() + (tick * rect.width() / 4.0)
@@ -1025,7 +1020,7 @@ class CurvePreviewWidget(QWidget):
 
         nodes = self._evaluated_nodes()
         is_enabled = curve_enabled_at_frame(self._curve_data, self._frame_number)
-        painter.setPen(QPen(self.palette().text().color() if is_enabled else self.palette().mid().color(), 1.5))
+        painter.setPen(QPen(QColor(TOKENS["text"]) if is_enabled else QColor(TOKENS["text_off"]), 1.5))
         path = QPainterPath()
         if nodes:
             path.moveTo(self._point_to_screen(nodes[0]))
@@ -1052,9 +1047,9 @@ class CurvePreviewWidget(QWidget):
                     path.cubicTo(self._point_to_screen(c1), self._point_to_screen(c2), self._point_to_screen(right))
             painter.drawPath(path)
 
-        handle_pen = QPen(QColor("#ffffff") if is_enabled else self.palette().mid().color(), 1.0)
+        handle_pen = QPen(QColor(TOKENS["text"]) if is_enabled else QColor(TOKENS["text_off"]), 1.0)
         painter.setPen(handle_pen)
-        painter.setBrush(QBrush(QColor("#ffffff") if is_enabled else self.palette().mid().color()))
+        painter.setBrush(QBrush(QColor(TOKENS["text"]) if is_enabled else QColor(TOKENS["text_off"])))
         for node in nodes:
             if node["interpolation"] == openshot.BEZIER:
                 left_handle = self._handle_point(node["id"], "left")
@@ -1077,8 +1072,8 @@ class CurvePreviewWidget(QWidget):
                 screen_point,
                 node["interpolation"],
                 9.0,
-                QColor("#4d7bff") if is_enabled else self.palette().mid().color(),
-                QColor("#ffffff") if is_enabled else self.palette().mid().color(),
+                QColor(TOKENS["accent"]) if is_enabled else QColor(TOKENS["text_off"]),
+                QColor(TOKENS["text"]) if is_enabled else QColor(TOKENS["text_off"]),
             )
 
         painter.end()
@@ -1193,7 +1188,7 @@ class WheelsPreviewWidget(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(self.rect(), self.palette().window())
+        painter.fillRect(self.rect(), QColor(TOKENS["surface"]))
 
         wheels = wheels_snapshot(self._wheels_data, self._frame_number)
         names = ["global", "shadows", "midtones", "highlights"]
@@ -1204,12 +1199,12 @@ class WheelsPreviewWidget(QWidget):
             center_x = (idx * slot_width) + (slot_width / 2.0)
             center = QPointF(center_x, 28.0)
             radius = 19.0
-            painter.setPen(QPen(self.palette().mid().color(), 1))
-            painter.setBrush(QBrush(self.palette().base()))
+            painter.setPen(QPen(QColor(TOKENS["line_strong"]), 1))
+            painter.setBrush(QBrush(QColor(TOKENS["bg"])))
             painter.drawEllipse(center, radius, radius)
             tint = display_wheel_color(wheel)
             if is_neutral_wheel(wheel):
-                tint = QColor(self.palette().base())
+                tint = QColor(TOKENS["bg"])
             else:
                 tint.setAlpha(26)
             painter.setBrush(QBrush(tint))
@@ -1219,19 +1214,19 @@ class WheelsPreviewWidget(QWidget):
             angle = math.radians(scope_angle_for_display_hue((wheel_color.hueF() if wheel_color.hueF() >= 0 else 0.0) * 360.0))
             amount = float(wheel["amount"]) * radius * 0.85
             puck = QPointF(center.x() + math.cos(angle) * amount, center.y() - math.sin(angle) * amount)
-            painter.setPen(QPen(Qt.white, 1.0))
+            painter.setPen(QPen(QColor(TOKENS["text"]), 1.0))
             painter.setBrush(QBrush(puck_display_color(wheel)))
             painter.drawEllipse(puck, 5.0, 5.0)
 
             luma_rect = QRectF(center_x - 20.0, 55.0, 40.0, 3.0)
-            painter.setPen(QPen(self.palette().mid().color(), 1.0))
+            painter.setPen(QPen(QColor(TOKENS["line_strong"]), 1.0))
             painter.drawLine(QPointF(luma_rect.left(), luma_rect.center().y()), QPointF(luma_rect.right(), luma_rect.center().y()))
             value = (float(wheel["luma"]) + 1.0) / 2.0
             marker_x = luma_rect.left() + (luma_rect.width() * value)
-            painter.setPen(QPen(self.palette().highlight().color(), 2.0))
+            painter.setPen(QPen(QColor(TOKENS["accent"]), 2.0))
             painter.drawLine(QPointF(marker_x, luma_rect.top() - 2.0), QPointF(marker_x, luma_rect.bottom() + 2.0))
 
-            painter.setPen(QPen(self.palette().text().color(), 1))
+            painter.setPen(QPen(QColor(TOKENS["text"]), 1))
             painter.drawText(QRectF(center_x - 16.0, 61.0, 32.0, 16.0), Qt.AlignCenter, labels[idx])
 
         painter.end()
@@ -1273,7 +1268,7 @@ class PropertySlider(QWidget):
         self._edit = QLineEdit(self)
         self._edit.setAlignment(Qt.AlignCenter)
         self._edit.setFrame(False)
-        self._edit.setStyleSheet("background: transparent; color: white; border: none; font-size: 11px;")
+        self._edit.setStyleSheet(resolve("background: transparent; color: {text}; border: none; font-size: 11px;"))
         self._edit.hide()
         self._edit.installEventFilter(self)
 
@@ -1306,8 +1301,8 @@ class PropertySlider(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         rect = QRectF(self.rect())
 
-        bg = QColor("#1e2433")
-        fg = QColor("#4a6fa5")
+        bg = QColor(TOKENS["hover"])
+        fg = QColor(TOKENS["text_muted"])
         app = get_app()
         if app.theme_manager:
             theme = app.theme_manager.get_current_theme()
@@ -1315,8 +1310,8 @@ class PropertySlider(QWidget):
                 bg = theme.get_color(".property_value", "background-color")
                 fg = theme.get_color(".property_value", "foreground-color")
         if not self.isEnabled():
-            bg = self.palette().base().color()
-            fg = disabled_control_color(self)
+            bg = QColor(TOKENS["sunken"])
+            fg = disabled_control_color()
 
         path = QPainterPath()
         path.addRoundedRect(rect, 6, 6)
@@ -1342,7 +1337,7 @@ class PropertySlider(QWidget):
                 self._curve_pixmaps.get(self._interpolation, self._curve_pixmaps[openshot.LINEAR]))
             text_rect.adjust(0.0, 0.0, -24.0, 0.0)
 
-        painter.setPen(QPen(Qt.white if self.isEnabled() else disabled_control_color(self, text=True)))
+        painter.setPen(QPen(QColor(TOKENS["text"]) if self.isEnabled() else disabled_control_color(text=True)))
         painter.drawText(text_rect, Qt.AlignCenter, self._fmt(self._value))
         painter.end()
 

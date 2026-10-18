@@ -36,6 +36,7 @@ from qt_api import (
 )
 from classes import info
 from classes.logger import log
+from themes.cosmic.tokens import TOKENS
 from windows.color_grade_editor import draw_broadcast_hue_ring
 
 # ─── Persistent settings keys ────────────────────────────────────────────────
@@ -349,11 +350,12 @@ class WaveformWidget(QWidget):
         painter.setRenderHint(QPainter.Antialiasing, False)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         w, h = self.width(), self.height()
-        painter.fillRect(0, 0, w, h, QColor(0, 0, 0))
+        painter.fillRect(0, 0, w, h, QColor(TOKENS["bg"]))
 
         if not self._data or not self._data.get("present"):
-            painter.setPen(QColor(80, 80, 80))
-            painter.drawText(self.rect(), Qt.AlignCenter, "No Video")
+            painter.setPen(QColor(TOKENS["text_faint"]))
+            painter.drawText(self.rect(), Qt.AlignCenter | Qt.TextWordWrap,
+                             "Play or select a clip to see the waveform.")
             return
 
         wf      = self._data.get("waveform", {})
@@ -373,7 +375,7 @@ class WaveformWidget(QWidget):
                     painter.drawImage(QRect(i * band_w, 0, band_w, h), img)
 
             # Thin dividers between bands
-            painter.setPen(QPen(QColor(50, 50, 50), 1))
+            painter.setPen(QPen(QColor(TOKENS["line_strong"]), 1))
             painter.drawLine(band_w,     0, band_w,     h)
             painter.drawLine(band_w * 2, 0, band_w * 2, h)
 
@@ -417,7 +419,7 @@ class WaveformWidget(QWidget):
 
         # IRE reference lines at 10 / 50 / 90 %
         if self._ire:
-            painter.setPen(QPen(QColor(60, 60, 60), 1, Qt.DashLine))
+            painter.setPen(QPen(QColor(TOKENS["line_strong"]), 1, Qt.DashLine))
             for pct in (0.1, 0.5, 0.9):
                 y = int(h * (1.0 - pct))
                 painter.drawLine(0, y, w, y)
@@ -457,11 +459,12 @@ class HistogramWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, False)
         w, h = self.width(), self.height()
-        painter.fillRect(0, 0, w, h, QColor(20, 20, 20))
+        painter.fillRect(0, 0, w, h, QColor(TOKENS["bg"]))
 
         if not self._data or not self._data.get("present"):
-            painter.setPen(QColor(80, 80, 80))
-            painter.drawText(self.rect(), Qt.AlignCenter, "No Video")
+            painter.setPen(QColor(TOKENS["text_faint"]))
+            painter.drawText(self.rect(), Qt.AlignCenter | Qt.TextWordWrap,
+                             "Play or select a clip to see the histogram.")
             return
 
         hist  = self._data.get("histogram", {})
@@ -573,8 +576,8 @@ class VectorscopeWidget(QWidget):
     def _draw_guides(self, painter, center_x, center_y, radius):
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
-        ring_pen = QPen(QColor(90, 98, 110, 88), 1)
-        spoke_pen = QPen(QColor(90, 98, 110, 68), 1)
+        ring_pen = QPen(QColor(TOKENS["line_strong"]), 1)
+        spoke_pen = QPen(QColor(TOKENS["line_strong"]), 1)
         skin_pen = QPen(QColor(210, 170, 120, 110), 1, Qt.DashLine)
 
         painter.setPen(ring_pen)
@@ -607,7 +610,8 @@ class VectorscopeWidget(QWidget):
         """Draw hue labels per-frame, tinted toward their target color by proximity score."""
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
-        base_r, base_g, base_b, base_a = 160, 168, 176, 120
+        base = QColor(TOKENS["text_faint"])
+        base_r, base_g, base_b, base_a = base.red(), base.green(), base.blue(), 255
         for i, (label, angle_deg, display_hue) in enumerate(self._HUE_LABELS):
             score = scores[i] if scores else 0.0
             angle = math.radians(angle_deg)
@@ -683,7 +687,7 @@ class VectorscopeWidget(QWidget):
                 3.0,
                 alpha=220,
             )
-            painter.setPen(QPen(QColor(120, 128, 138, 110), 1))
+            painter.setPen(QPen(QColor(TOKENS["line_strong"]), 1))
             painter.drawEllipse(layout["plot_rect"])
         finally:
             painter.end()
@@ -736,11 +740,12 @@ class VectorscopeWidget(QWidget):
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
             w, h = self.width(), self.height()
-            painter.fillRect(0, 0, w, h, QColor(0, 0, 0))
+            painter.fillRect(0, 0, w, h, QColor(TOKENS["bg"]))
 
             if not self._data or not self._data.get("present"):
-                painter.setPen(QColor(80, 80, 80))
-                painter.drawText(self.rect(), Qt.AlignCenter, "No Video")
+                painter.setPen(QColor(TOKENS["text_faint"]))
+                painter.drawText(self.rect(), Qt.AlignCenter | Qt.TextWordWrap,
+                                 "Play or select a clip to see the vectorscope.")
                 return
 
             layout = self._layout_info()
@@ -777,11 +782,12 @@ class AudioMeterWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, False)
         w, h = self.width(), self.height()
-        painter.fillRect(0, 0, w, h, QColor(20, 20, 20))
+        painter.fillRect(0, 0, w, h, QColor(TOKENS["bg"]))
 
         if not self._data or not self._data.get("present"):
-            painter.setPen(QColor(80, 80, 80))
-            painter.drawText(self.rect(), Qt.AlignCenter, "No Audio")
+            painter.setPen(QColor(TOKENS["text_faint"]))
+            painter.drawText(self.rect(), Qt.AlignCenter | Qt.TextWordWrap,
+                             "Play or select a clip to see levels.")
             return
 
         summary   = self._data.get("summary", {})
@@ -802,7 +808,7 @@ class AudioMeterWidget(QWidget):
             peak          = peak_vals[ch] if ch < len(peak_vals) else 0.0
             clipped_count = clipped[ch]   if ch < len(clipped)   else 0
 
-            painter.fillRect(x, 0, bar_w, h, QColor(40, 40, 40))
+            painter.fillRect(x, 0, bar_w, h, QColor(TOKENS["line_strong"]))
 
             rms_h = int(rms * h)
             for row in range(rms_h):

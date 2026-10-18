@@ -476,11 +476,10 @@ QWidget#cutting QPushButton#btnStart:disabled, QPushButton#btnEnd:disabled { col
 QFrame#recordingCard {
     background-color: {raised};
     border: 1px solid {line_strong};
-    border-radius: 10px;
+    border-radius: 8px;
 }
 QFrame#recordingCard[checked="true"] { border: 1px solid {accent}; background-color: {accent_soft}; }
 QFrame#recordingCard[available="false"] { border: 1px solid {line}; background-color: {surface}; }
-QLabel#recordingCardIcon { color: {text}; font-size: 20px; }
 QLabel#recordingCardTitle { color: {text}; font-size: 13px; font-weight: 600; }
 QLabel#recordingCardSubtitle { color: {text_faint}; font-size: 12px; }
 QFrame#recordingSection {
@@ -490,7 +489,6 @@ QFrame#recordingSection {
 }
 QFrame#recordingSection[active="true"] { border: 1px solid {accent}; }
 QFrame#recordingSection[active="false"] { color: {text_faint}; background-color: {bg}; }
-QLabel#recordingSectionIcon { color: {text_muted}; font-size: 15px; }
 QLabel#recordingSectionTitle { color: {text}; font-weight: 600; }
 QPushButton#recordingAdvancedLink {
     color: {text_muted}; background: transparent; border: none;
