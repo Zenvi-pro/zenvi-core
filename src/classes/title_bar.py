@@ -26,9 +26,34 @@
  """
 
 from qt_api import Qt, QEvent
-from qt_api import QWidget, QHBoxLayout, QLabel, QPushButton, QDockWidget
+from qt_api import QWidget, QHBoxLayout, QLabel, QPushButton, QDockWidget, QSizePolicy, QPainter
 
 from classes.app import get_app
+
+
+class _ElidingLabel(QLabel):
+    """A title that shrinks with its dock: text() stays whole, painting elides it."""
+
+    def __init__(self, text=""):
+        super().__init__(text)
+        self.setMinimumWidth(1)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        hint.setWidth(1)
+        return hint
+
+    def paintEvent(self, event):
+        if not self.text():
+            return super().paintEvent(event)  # the drag-handle variant paints its pixmap
+        rect = self.contentsRect()
+        elided = self.fontMetrics().elidedText(self.text(), Qt.ElideRight, rect.width())
+        painter = QPainter(self)
+        painter.setPen(self.palette().color(self.foregroundRole()))
+        painter.drawText(rect, int(self.alignment() | Qt.AlignVCenter), elided)
+        painter.end()
+        self.setToolTip(self.text() if elided != self.text() else "")
 
 
 class HiddenTitleBar(QWidget):
@@ -58,8 +83,9 @@ class HiddenTitleBar(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Add a QLabel for the title (optional, based on title_text)
-        self.title_label = QLabel(title_text)
+        # Add a QLabel for the title (optional, based on title_text). It elides, so a
+        # long panel name never becomes the dock's minimum width.
+        self.title_label = _ElidingLabel(title_text)
         self.title_label.setFocusPolicy(Qt.NoFocus)
         self.title_label.installEventFilter(self)
         if title_text:

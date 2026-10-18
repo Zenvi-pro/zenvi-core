@@ -93,3 +93,17 @@ def test_dock_font_is_inter_then_the_existing_fallbacks():
 def test_webkit_css_uses_only_what_webkit_602_has():
     css = re.sub(r"/\*.*?\*/", "", WEBKIT_CSS.read_text(encoding="utf-8"), flags=re.S)
     assert UNSUPPORTED_ON_WEBKIT_602.search(css) is None, UNSUPPORTED_ON_WEBKIT_602.search(css)
+
+
+def test_every_chat_theme_sets_every_chat_slot():
+    # Light themes left --chat-surface on the dark token: dark text on a dark surface
+    import re as _re
+    from pathlib import Path as _Path
+
+    from windows.ai_chat_ui import CHAT_THEME_COLORS
+
+    css = (_Path(__file__).resolve().parents[1] / "src" / "chat_ui" / "chat.css").read_text(encoding="utf-8")
+    root = css[css.index(":root"):css.index("}", css.index(":root"))]
+    slots = set(_re.findall(r"--(chat-[a-z-]+):", root)) | {"accent-soft"}
+    for name, palette in CHAT_THEME_COLORS.items():
+        assert slots - set(palette) == set(), name

@@ -42,6 +42,9 @@ CHAT_THEME_COLORS = {
         "chat-primary-text": "#FFFFFF",
         "chat-code-bg": "#E2E8F0",
         "chat-placeholder": "rgba(15, 23, 42, 0.5)",
+        "chat-surface": "#F1F5F9",
+        "chat-muted": "#475569",
+        "accent-soft": "rgba(99, 102, 241, 0.14)",
     },
     "Humanity: Dark": {
         "chat-bg": "#191919",
@@ -55,6 +58,10 @@ CHAT_THEME_COLORS = {
         "chat-primary": "#6366F1",
         "chat-primary-text": "#FFFFFF",
         "chat-placeholder": "rgba(255, 255, 255, 0.5)",
+        "chat-surface": "#26282c",
+        "chat-muted": "#b0b0b0",
+        "chat-code-bg": "#2a2a2a",
+        "accent-soft": "rgba(99, 102, 241, 0.18)",
     },
     "Retro": {
         "chat-bg": "#f0f0f0",
@@ -68,6 +75,10 @@ CHAT_THEME_COLORS = {
         "chat-primary": "#217dd4",
         "chat-primary-text": "#FFFFFF",
         "chat-placeholder": "rgba(51, 51, 51, 0.5)",
+        "chat-surface": "#e8e8e8",
+        "chat-muted": "#5f626a",
+        "chat-code-bg": "#e8e8e8",
+        "accent-soft": "rgba(33, 125, 212, 0.14)",
     },
     "Cosmic Dusk": {
         "chat-bg": TOKENS["surface"],
@@ -83,6 +94,7 @@ CHAT_THEME_COLORS = {
         "chat-primary": TOKENS["primary"],
         "chat-primary-text": TOKENS["primary_text"],
         "chat-code-bg": TOKENS["raised"],
+        "accent-soft": TOKENS["accent_soft"],
     },
 }
 

@@ -149,7 +149,10 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
                 os.path.join(PATH, "images", "fonts", "Inter-%s.ttf" % weight))
         font = QFont(FONT_FAMILY)
         font.setPointSizeF(FONT_POINT_SIZE)
-        font.setHintingPreference(QFont.PreferNoHinting)
+        hinting = getattr(QFont, "PreferNoHinting", None) or getattr(
+            getattr(QFont, "HintingPreference", None), "PreferNoHinting", None)  # Qt5 / Qt6
+        if hinting is not None:
+            font.setHintingPreference(hinting)
         self.app.setFont(font)
 
         # Tabs on the left side (vertical menu style) for the top area; the other
@@ -170,9 +173,9 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
         win = self.app.window
 
         _img_dir = os.path.join(PATH, "themes/cosmic/images")
-        _tab_size = 36   # must match the min/max-width/height in the instance stylesheet
+        _tab_size = 40   # must match the min/max-width/height in both stylesheets
         _icon_size = QSize(20, 20)
-        _icon_offset = (_tab_size - _icon_size.width()) // 2  # 8px — centers 20px icon in 36px tab
+        _icon_offset = (_tab_size - _icon_size.width()) // 2  # centers the 20px icon in the tab
         _icon_cache = {}
         _vertical_tab_shapes = {
             QTabBar.RoundedWest, QTabBar.TriangularWest,
@@ -285,20 +288,21 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
                     tabbar.setExpanding(False)
                     tabbar.setStyleSheet(resolve("""
                         QTabBar::tab {
-                            min-width:  36px;
-                            max-width:  36px;
-                            min-height: 36px;
-                            max-height: 36px;
+                            min-width:  40px;
+                            max-width:  40px;
+                            min-height: 40px;
+                            max-height: 40px;
                             padding:    0px;
                             margin:     2px 0px;
-                            border-right: 2px solid transparent;
+                            border: none;
+                            border-left: 2px solid transparent;
                         }
                         QTabBar::tab:selected {
-                            background: rgba(58,114,245,0.12);
-                            border-right: 2px solid {accent};
+                            background: transparent;
+                            border-left: 2px solid {text};
                         }
                         QTabBar::tab:hover:!selected {
-                            background: rgba(255,255,255,0.05);
+                            background: {hover};
                         }
                     """))
 
@@ -352,8 +356,8 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
                 "icon": "themes/cosmic/images/tool-export.svg",
                 "style": Qt.ToolButtonIconOnly,
                 "stylesheet": (
-                    "QToolButton { background-color: {accent}; color: {white}; border: none; border-radius: 6px; padding: 8px 12px; } "
-                    "QToolButton:hover, QToolButton:pressed { background-color: {accent_hover}; }"
+                    resolve("QToolButton { background-color: {accent}; color: {white}; border: none; border-radius: 6px; padding: 8px 12px; } "
+                            "QToolButton:hover, QToolButton:pressed { background-color: {accent_hover}; }")
                 ),
             },
             {
@@ -493,7 +497,7 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
                 background: {hover};
             }
             .track_disabled {
-                background: {bg} !important;
+                background: {sunken} !important;
             }
             .track-resize-handle {
                 background-color: {surface};

@@ -80,3 +80,54 @@ def test_webengine_chat_page_follows_the_theme_background():
     source = (SRC / "windows" / "ai_chat_ui.py").read_text(encoding="utf-8")
     assert "document.body.style.background = '%(surface)s'" not in source
     assert "document.body.style.background = 'var(--chat-bg)'" in source
+
+
+def test_every_placeholder_string_in_the_theme_is_resolved():
+    # The Export button's inline sheet kept "{accent}" literally, so Qt dropped its colors
+    import ast
+
+    tree = ast.parse(THEME.read_text(encoding="utf-8"))
+    resolved = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "resolve":
+            for arg in node.args:
+                resolved.update(id(n) for n in ast.walk(arg))
+        if isinstance(node, ast.JoinedStr):  # the message-box f-string joins self.style_sheet, resolved after
+            resolved.update(id(n) for n in ast.walk(node))
+    names = "|".join(sorted(tokens.TOKENS))
+    leaks = [n.lineno for n in ast.walk(tree)
+             if isinstance(n, ast.Constant) and isinstance(n.value, str)
+             and re.search(r"\{(%s)\}" % names, n.value) and id(n) not in resolved
+             and not n.value.lstrip().startswith(("/*", "QMainWindow"))]
+    assert leaks == []
+
+
+def test_font_hinting_enum_works_on_qt5_and_qt6():
+    # PyQt6 keeps PreferNoHinting under QFont.HintingPreference; QFont.PreferNoHinting crashed theming
+    assert "QFont.PreferNoHinting)" not in THEME.read_text(encoding="utf-8")
+
+
+def test_activity_bar_sheets_agree_on_size_and_indicator():
+    # The per-tab-bar sheet drew a right accent bar on top of the global left text bar
+    source = THEME.read_text(encoding="utf-8")
+    sheet = source[source.index('tabbar.setStyleSheet(resolve("""'):]
+    sheet = sheet[:sheet.index('"""))')]
+    assert "border-right: 2px solid {accent}" not in sheet
+    assert "border-left: 2px solid {text}" in sheet
+    assert "min-width:  40px" in sheet and "_tab_size = 40" in source
+
+
+def test_disabled_tracks_look_different_from_enabled_ones():
+    source = THEME.read_text(encoding="utf-8")
+    track = re.search(r"\.track \{[^}]*background: (\{\w+\})", source).group(1)
+    disabled = re.search(r"\.track_disabled \{[^}]*background: (\{\w+\})", source).group(1)
+    assert track != disabled
+
+
+def test_chat_page_loads_the_bundled_inter():
+    # Qt WebEngine ignores QFontDatabase app fonts; the page needs @font-face
+    css = (SRC / "chat_ui" / "chat.css").read_text(encoding="utf-8")
+    faces = re.findall(r"@font-face\s*\{[^}]*font-family:\s*[\"']?Inter[^}]*\}", css)
+    assert faces
+    for url in re.findall(r"url\([\"']?([^)\"']+)", " ".join(faces)):
+        assert (SRC / "chat_ui" / url).resolve().is_file(), url

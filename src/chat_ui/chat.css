@@ -10,6 +10,11 @@
  * Host can override any variable at runtime via window.setThemeColors().
  */
 
+/* Inter ships with the app; Qt WebEngine does not see QFontDatabase app fonts. */
+@font-face { font-family: "Inter"; font-weight: 400; src: url("../images/fonts/Inter-Regular.ttf"); }
+@font-face { font-family: "Inter"; font-weight: 500; src: url("../images/fonts/Inter-Medium.ttf"); }
+@font-face { font-family: "Inter"; font-weight: 600; src: url("../images/fonts/Inter-SemiBold.ttf"); }
+
 /* ΓöÇΓöÇ Design tokens ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 :root {
     /* Mirror of src/themes/cosmic/tokens.py (CSS cannot import Python). Keep the values equal to TOKENS;

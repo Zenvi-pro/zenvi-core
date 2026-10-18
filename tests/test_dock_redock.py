@@ -253,3 +253,12 @@ def test_docked_cosmic_panels_are_named(window):
     assert isinstance(titlebar, HiddenTitleBar)
     assert titlebar.title_label.text() == "Files"
     assert titlebar.height() == 32
+
+
+def test_a_long_panel_name_does_not_stop_the_dock_shrinking(window):
+    # The named title bar's label made the full title the dock's minimum width
+    window.files.setWindowTitle("Scene Descriptions and a much longer translated title")
+    window.apply_dock_titlebars(is_cosmic=True)
+    titlebar = window.files.titleBarWidget()
+    assert titlebar.minimumSizeHint().width() <= 80  # the float/close buttons, not the name
+    assert titlebar.title_label.text() == "Scene Descriptions and a much longer translated title"
