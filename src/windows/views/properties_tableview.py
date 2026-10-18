@@ -163,10 +163,14 @@ class PropertyDelegate(QItemDelegate):
             # Selected rows take the accent tint, hovered rows the hover fill; a color keyframe is its swatch.
             painter.setPen(QPen(Qt.NoPen))
             painter.fillRect(rect, QColor(TOKENS["surface"]))
-            if property_type == "color" and not readonly:
+            if property_type == "color":
                 painter.fillRect(rect, QColor(int(cur_property[1]["red"]["value"]),
                                               int(cur_property[1]["green"]["value"]),
                                               int(cur_property[1]["blue"]["value"])))
+                if selected:  # the swatch stays; selection is an accent outline
+                    painter.setPen(QPen(QColor(TOKENS["accent"]), 2))
+                    painter.drawRect(rect.adjusted(1, 1, -1, -1))
+                    painter.setPen(QPen(Qt.NoPen))
             elif selected:
                 painter.fillRect(rect, _token_color("accent_soft"))
             elif hovered:

@@ -12,12 +12,11 @@ from qt_api import (
     Qt, QThread, pyqtSignal, QTimer, QRunnable, QThreadPool,
     pyqtSlot, QObject,
 )
-from qt_api import QPixmap, QPainter, QPainterPath, QPen, QRect, QRectF
+from qt_api import QPixmap, QPainter, QPainterPath, QPen, QRect, QRectF, QImage
 from qt_api import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QScrollArea, QGridLayout,
-    QLabel, QFrame, QProgressBar, QApplication, QLayout,
-)
+    QLabel, QFrame, QProgressBar, QApplication, )
 
 from classes.logger import log
 from themes.cosmic import tokens
@@ -90,14 +89,15 @@ class _WaveformRunnable(QRunnable):
     """Fetches a waveform image URL and emits the result via a signal carrier."""
 
     class _Signals(QObject):
-        ready = pyqtSignal(int, QPixmap)   # sound_id, pixmap
-        finished = pyqtSignal(int)         # sound_id, success or not
+        ready = pyqtSignal(int, QImage, int)   # sound_id, image (QPixmap is GUI-thread only), search
+        finished = pyqtSignal(int, int)        # sound_id, search; success or not
 
-    def __init__(self, sound_id: int, url: str):
+    def __init__(self, sound_id: int, url: str, search: int):
         super().__init__()
         self.signals = _WaveformRunnable._Signals()
         self._sound_id = sound_id
         self._url = url
+        self._search = search
 
     def run(self):
         try:
@@ -108,14 +108,13 @@ class _WaveformRunnable(QRunnable):
                 timeout=10,
             )
             resp.raise_for_status()
-            pix = QPixmap()
-            pix.loadFromData(resp.content)
-            if not pix.isNull():
-                self.signals.ready.emit(self._sound_id, pix)
+            image = QImage.fromData(resp.content)
+            if not image.isNull():
+                self.signals.ready.emit(self._sound_id, image, self._search)
         except Exception as exc:
             log.warning("Freesound waveform fetch failed (%s): %s", self._url, exc)
         finally:
-            self.signals.finished.emit(self._sound_id)
+            self.signals.finished.emit(self._sound_id, self._search)
 
 
 # ── Sound card widget ─────────────────────────────────────────────────────────
@@ -134,7 +133,7 @@ class _SoundCard(QFrame):
         super().__init__(parent)
         self._sound = sound
         self._waveform: QPixmap | None = None
-        self._waveform_pending = bool((sound.get("images") or {}).get("waveform_m"))
+        self._media_pending = bool((sound.get("images") or {}).get("waveform_m"))
         self._downloading = False
 
         self.setFixedSize(CARD_W, CARD_H)
@@ -163,11 +162,11 @@ class _SoundCard(QFrame):
 
     def set_waveform(self, pix: QPixmap):
         self._waveform = pix.scaled(CARD_W, CARD_MEDIA_H, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-        self._waveform_pending = False
+        self._media_pending = False
         self.update()
 
-    def set_waveform_pending(self, pending: bool):
-        self._waveform_pending = pending
+    def set_media_pending(self, pending: bool):
+        self._media_pending = pending
         self.update()
 
     def set_downloading(self, downloading: bool):
@@ -209,7 +208,7 @@ class _SoundCard(QFrame):
             painter.setOpacity(0.75)
             painter.drawPixmap(0, 0, self._waveform)
             painter.setOpacity(1.0)
-        elif self._waveform_pending:
+        elif self._media_pending:
             paint_text(painter, QRect(0, 0, CARD_W, CARD_MEDIA_H), "Loading…", 11, "text_faint", Qt.AlignCenter)
         if self._downloading:
             veil = token_color("bg")
@@ -258,6 +257,7 @@ class FreesoundDock(QDockWidget):
         self._dl_workers: Dict[int, _DownloadWorker] = {}
         self._cards: Dict[int, _SoundCard] = {}
         self._wave_pool = QThreadPool.globalInstance()
+        self._search_gen = 0   # results from an older search are ignored
 
         self._build_ui()
 
@@ -355,7 +355,6 @@ class FreesoundDock(QDockWidget):
         self._grid.setContentsMargins(4, 4, 4, 4)
         self._grid.setSpacing(8)
         # Let the scroll area grow to the rows instead of squeezing them into the viewport.
-        self._grid.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self._scroll.setWidget(self._grid_container)
         vbox.addWidget(self._scroll, 1)
 
@@ -443,10 +442,12 @@ class FreesoundDock(QDockWidget):
             # Fetch waveform image asynchronously
             wave_url = (sound.get("images") or {}).get("waveform_m", "")
             if wave_url:
-                runnable = _WaveformRunnable(sid, wave_url)
+                runnable = _WaveformRunnable(sid, wave_url, self._search_gen)
                 runnable.signals.ready.connect(self._on_waveform_ready)
                 runnable.signals.finished.connect(self._on_waveform_finished)
                 self._wave_pool.start(runnable)
+
+        self._fit_grid()
 
         shown = self._current_page * data.get("page_size", 15)
         if shown < self._total_count:
@@ -454,18 +455,18 @@ class FreesoundDock(QDockWidget):
         else:
             self._load_more_btn.hide()
 
-    @pyqtSlot(int, QPixmap)
-    def _on_waveform_ready(self, sound_id: int, pix: QPixmap):
-        card = self._cards.get(sound_id)
+    @pyqtSlot(int, QImage, int)
+    def _on_waveform_ready(self, sound_id: int, image: QImage, search: int):
+        card = self._cards.get(sound_id) if search == self._search_gen else None
         if card:
-            card.set_waveform(pix)
+            card.set_waveform(QPixmap.fromImage(image))
 
-    @pyqtSlot(int)
-    def _on_waveform_finished(self, sound_id: int):
-        # Failed or invalid waveform: stop showing "Loading…" for that card
-        card = self._cards.get(sound_id)
+    @pyqtSlot(int, int)
+    def _on_waveform_finished(self, sound_id: int, search: int):
+        # Failed or invalid waveform: stop showing "Loading…" (a stale search is ignored)
+        card = self._cards.get(sound_id) if search == self._search_gen else None
         if card:
-            card.set_waveform_pending(False)
+            card.set_media_pending(False)
 
     # ── Download flow ─────────────────────────────────────────────────────────
 
@@ -546,7 +547,21 @@ class FreesoundDock(QDockWidget):
         else:
             self._progress.hide()
 
+    def _fit_grid(self):
+        """Re-flow cards to the viewport width; fix only the height so the dock can still narrow."""
+        cols = max(1, (self._scroll.viewport().width() - 8) // (CARD_W + 8))
+        widgets = []
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            if item and item.widget():
+                widgets.append(item.widget())
+        for idx, w in enumerate(widgets):
+            row, col = divmod(idx, cols)
+            self._grid.addWidget(w, row, col)
+        self._grid_container.setMinimumHeight(self._grid.sizeHint().height())
+
     def _clear_grid(self):
+        self._search_gen += 1
         while self._grid.count():
             item = self._grid.takeAt(0)
             if item and item.widget():
@@ -566,12 +581,4 @@ class FreesoundDock(QDockWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if self._cards:
-            cols = max(1, (self.width() - 24) // (CARD_W + 8))
-            widgets = []
-            while self._grid.count():
-                item = self._grid.takeAt(0)
-                if item and item.widget():
-                    widgets.append(item.widget())
-            for idx, w in enumerate(widgets):
-                row, col = divmod(idx, cols)
-                self._grid.addWidget(w, row, col)
+            self._fit_grid()

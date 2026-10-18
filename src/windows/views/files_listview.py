@@ -134,6 +134,9 @@ class FileCardDelegate(IndexingBadgeDelegate):
 
     # ── painting ──────────────────────────────────────────────────────────
 
+    def _badge_anchor_rect(self, option, index):
+        return self._decoration_rect(option, index)  # tiles mark the thumbnail's corner
+
     def _decoration_rect(self, option, index):
         """The thumbnail of a tile (badges and quick actions sit on it)."""
         return tile_thumb_rect(option.rect)

@@ -175,3 +175,16 @@ def test_keyframed_numeric_row_has_an_accent_dot(rig):
     row, QColor = rig
     row.set_property(points=2)
     assert _argb(QColor(TOKENS["accent"])) in row.pixels(row.paint())
+
+
+@needs_real_qt
+@pytest.mark.parametrize("readonly, selected", [(True, False), (False, True)])
+def test_color_rows_keep_their_swatch_and_show_selection(rig, readonly, selected):
+    row, QColor = rig
+    row.label.setData(("color", {"type": "color", "readonly": readonly, "points": 0, "interpolation": 0,
+                                 "min": 0, "max": 255,
+                                 "red": {"value": 200}, "green": {"value": 30}, "blue": {"value": 40}}))
+    pixels = row.pixels(row.paint(selected=selected))
+    assert QColor(200, 30, 40).rgb() in pixels
+    if selected:
+        assert QColor(TOKENS["accent"]).rgb() in pixels

@@ -12,12 +12,11 @@ from qt_api import (
     Qt, QThread, pyqtSignal, QSize, QTimer, QRunnable, QThreadPool,
     pyqtSlot, QObject,
 )
-from qt_api import QPixmap, QPainter, QPainterPath, QPen, QBrush, QRect, QRectF
+from qt_api import QPixmap, QPainter, QPainterPath, QPen, QBrush, QRect, QRectF, QImage
 from qt_api import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QScrollArea, QGridLayout,
-    QLabel, QSizePolicy, QFrame, QProgressBar, QApplication, QLayout,
-)
+    QLabel, QSizePolicy, QFrame, QProgressBar, QApplication, )
 
 from classes.logger import log
 from themes.cosmic import tokens
@@ -90,13 +89,15 @@ class _ThumbnailRunnable(QRunnable):
     """Fetches a thumbnail URL and emits the result via a signal carrier."""
 
     class _Signals(QObject):
-        ready = pyqtSignal(int, QPixmap)   # video_id, pixmap
+        ready = pyqtSignal(int, QImage, int)   # video_id, image (QPixmap is GUI-thread only), search
+        finished = pyqtSignal(int, int)        # video_id, search; success or not
 
-    def __init__(self, video_id: int, url: str):
+    def __init__(self, video_id: int, url: str, search: int):
         super().__init__()
         self.signals = _ThumbnailRunnable._Signals()
         self._video_id = video_id
         self._url = url
+        self._search = search
 
     def run(self):
         try:
@@ -107,12 +108,13 @@ class _ThumbnailRunnable(QRunnable):
                 timeout=10,
             )
             resp.raise_for_status()
-            pix = QPixmap()
-            pix.loadFromData(resp.content)
-            if not pix.isNull():
-                self.signals.ready.emit(self._video_id, pix)
+            image = QImage.fromData(resp.content)
+            if not image.isNull():
+                self.signals.ready.emit(self._video_id, image, self._search)
         except Exception as exc:
             log.warning("Pexels thumbnail fetch failed (%s): %s", self._url, exc)
+        finally:
+            self.signals.finished.emit(self._video_id, self._search)
 
 
 # ── Video card widget ─────────────────────────────────────────────────────────
@@ -131,6 +133,7 @@ class _VideoCard(QFrame):
         super().__init__(parent)
         self._video = video
         self._thumb: QPixmap | None = None
+        self._media_pending = bool(video.get("video_pictures") or video.get("image"))
         self._downloading = False
 
         self.setFixedSize(CARD_W, CARD_H)
@@ -167,6 +170,11 @@ class _VideoCard(QFrame):
         x = (scaled.width() - CARD_W) // 2
         y = (scaled.height() - CARD_MEDIA_H) // 2
         self._thumb = scaled.copy(x, y, CARD_W, CARD_MEDIA_H)
+        self._media_pending = False
+        self.update()
+
+    def set_media_pending(self, pending: bool):
+        self._media_pending = pending
         self.update()
 
     def set_downloading(self, downloading: bool):
@@ -206,7 +214,7 @@ class _VideoCard(QFrame):
         painter.setClipPath(well)
         if self._thumb:
             painter.drawPixmap(0, 0, self._thumb)
-        else:
+        elif self._media_pending:
             paint_text(painter, QRect(0, 0, CARD_W, CARD_MEDIA_H), "Loading…", 11, "text_faint", Qt.AlignCenter)
         if self._downloading:
             veil = token_color("bg")
@@ -353,7 +361,6 @@ class PexelsDock(QDockWidget):
         self._grid.setContentsMargins(4, 4, 4, 4)
         self._grid.setSpacing(8)
         # Let the scroll area grow to the rows instead of squeezing them into the viewport.
-        self._grid.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self._scroll.setWidget(self._grid_container)
         vbox.addWidget(self._scroll, 1)
 
@@ -449,22 +456,32 @@ class PexelsDock(QDockWidget):
             if not thumb_url:
                 thumb_url = video.get("image", "")
             if thumb_url:
-                runnable = _ThumbnailRunnable(vid_id, thumb_url)
+                runnable = _ThumbnailRunnable(vid_id, thumb_url, self._search_gen)
                 runnable.signals.ready.connect(self._on_thumbnail_ready)
+                runnable.signals.finished.connect(self._on_thumbnail_finished)
                 self._thumb_pool.start(runnable)
 
         # Show "Load more" if more pages exist
+        self._fit_grid()
+
         shown = self._current_page * data.get("per_page", 15)
         if shown < self._total_results:
             self._load_more_btn.show()
         else:
             self._load_more_btn.hide()
 
-    @pyqtSlot(int, QPixmap)
-    def _on_thumbnail_ready(self, video_id: int, pix: QPixmap):
-        card = self._cards.get(video_id)
+    @pyqtSlot(int, QImage, int)
+    def _on_thumbnail_ready(self, video_id: int, image: QImage, search: int):
+        card = self._cards.get(video_id) if search == self._search_gen else None
         if card:
-            card.set_thumbnail(pix)
+            card.set_thumbnail(QPixmap.fromImage(image))
+
+    @pyqtSlot(int, int)
+    def _on_thumbnail_finished(self, video_id: int, search: int):
+        # Failed or invalid thumbnail: stop showing "Loading…" (a stale search is ignored)
+        card = self._cards.get(video_id) if search == self._search_gen else None
+        if card:
+            card.set_media_pending(False)
 
     # ── Download flow ─────────────────────────────────────────────────────────
 
@@ -566,7 +583,21 @@ class PexelsDock(QDockWidget):
         else:
             self._progress.hide()
 
+    def _fit_grid(self):
+        """Re-flow cards to the viewport width; fix only the height so the dock can still narrow."""
+        cols = max(1, (self._scroll.viewport().width() - 8) // (CARD_W + 8))
+        widgets = []
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            if item and item.widget():
+                widgets.append(item.widget())
+        for idx, w in enumerate(widgets):
+            row, col = divmod(idx, cols)
+            self._grid.addWidget(w, row, col)
+        self._grid_container.setMinimumHeight(self._grid.sizeHint().height())
+
     def _clear_grid(self):
+        self._search_gen += 1
         while self._grid.count():
             item = self._grid.takeAt(0)
             if item and item.widget():
@@ -585,14 +616,5 @@ class PexelsDock(QDockWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # Re-flow grid on resize
         if self._cards:
-            cols = max(1, (self.width() - 24) // (CARD_W + 8))
-            widgets = []
-            while self._grid.count():
-                item = self._grid.takeAt(0)
-                if item and item.widget():
-                    widgets.append(item.widget())
-            for idx, w in enumerate(widgets):
-                row, col = divmod(idx, cols)
-                self._grid.addWidget(w, row, col)
+            self._fit_grid()

@@ -198,9 +198,13 @@ class IndexingBadgeDelegate(QStyledItemDelegate):
         if status is None or not status.state:
             return
         self._sync_pulse(self._any_indexing())
-        paint_status_badge(painter, badge_rect(self._decoration_rect(option, index)), status.state, self._angle)
+        paint_status_badge(painter, badge_rect(self._badge_anchor_rect(option, index)), status.state, self._angle)
 
     # ── Optimize Preview (proxy) badge + progress ─────────────────────────
+
+    def _badge_anchor_rect(self, option, index):
+        """Where the status mark sits: the row's top-right (tiles override with the thumbnail)."""
+        return option.rect
 
     def _decoration_rect(self, option, index):
         """Rect of the thumbnail (decoration) inside the row; row rect as fallback."""
@@ -273,7 +277,7 @@ class IndexingBadgeDelegate(QStyledItemDelegate):
         if (
             status is not None
             and status.tooltip
-            and badge_rect(self._decoration_rect(option, index)).contains(event.pos())
+            and badge_rect(self._badge_anchor_rect(option, index)).contains(event.pos())
         ):
             name_index = self._row_column(index, 1)
             name = ""

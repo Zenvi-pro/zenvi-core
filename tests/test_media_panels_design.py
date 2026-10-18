@@ -272,7 +272,7 @@ def test_freesound_card_stops_loading_when_the_waveform_fails(monkeypatch):
     with_wave = freesound._SoundCard({"id": 1, "name": "rain", "duration": 3.0,
                                       "images": {"waveform_m": "https://x/w.png"}})
     no_wave = freesound._SoundCard({"id": 2, "name": "wind", "duration": 3.0, "images": {}})
-    assert with_wave._waveform_pending and not no_wave._waveform_pending
+    assert with_wave._media_pending and not no_wave._media_pending
 
     import requests
 
@@ -280,9 +280,78 @@ def test_freesound_card_stops_loading_when_the_waveform_fails(monkeypatch):
         raise requests.ConnectionError("offline")
     monkeypatch.setattr(requests, "get", offline)
     done = []
-    runnable = freesound._WaveformRunnable(1, "https://x/w.png")
-    runnable.signals.finished.connect(done.append)
+    runnable = freesound._WaveformRunnable(1, "https://x/w.png", 0)
+    runnable.signals.finished.connect(lambda *args: done.append(args))
     runnable.run()
-    assert done == [1]
-    with_wave.set_waveform_pending(False)
-    assert not with_wave._waveform_pending
+    assert done == [(1, 0)]
+    with_wave.set_media_pending(False)
+    assert not with_wave._media_pending
+
+
+def _png_bytes():
+    from PyQt5.QtCore import QBuffer, QIODevice
+
+    image = QImage(4, 4, QImage.Format_RGB32)
+    image.fill(QColor("#ff0000"))
+    buf = QBuffer()
+    buf.open(QIODevice.WriteOnly)
+    image.save(buf, "PNG")
+    return bytes(buf.data())
+
+
+@pytest.mark.parametrize("module_name, runnable_name", [
+    ("windows.freesound_dock", "_WaveformRunnable"),
+    ("windows.pexels_dock", "_ThumbnailRunnable"),
+])
+def test_stock_fetchers_hand_a_qimage_across_threads(monkeypatch, module_name, runnable_name):
+    # QPixmap is GUI-thread only; the pool threads built one and could crash the paint engine
+    import requests
+
+    module = importlib.import_module(module_name)
+    monkeypatch.setattr(requests, "get", lambda *a, **k: SimpleNamespace(
+        content=_png_bytes(), raise_for_status=lambda: None))
+    runnable = getattr(module, runnable_name)(7, "https://x/i.png", 3)
+    got, done = [], []
+    runnable.signals.ready.connect(lambda *args: got.append(args))
+    runnable.signals.finished.connect(lambda *args: done.append(args))
+    runnable.run()
+    assert got and isinstance(got[0][1], QImage) and got[0][2] == 3
+    assert done == [(7, 3)]
+
+
+@pytest.mark.parametrize("module_name, card_cls, slot, item", [
+    ("windows.freesound_dock", "_SoundCard", "_on_waveform_finished",
+     {"id": 7, "name": "rain", "duration": 3.0, "images": {"waveform_m": "https://x/w.png"}}),
+    ("windows.pexels_dock", "_VideoCard", "_on_thumbnail_finished",
+     {"id": 7, "duration": 3, "user": {"name": "a"}, "image": "https://x/i.png"}),
+])
+def test_a_finished_fetch_from_an_older_search_is_ignored(module_name, card_cls, slot, item):
+    # A late result from the previous search cleared "Loading..." on the new search's card
+    module = importlib.import_module(module_name)
+    card = getattr(module, card_cls)(item)
+    assert card._media_pending
+    dock = SimpleNamespace(_cards={7: card}, _search_gen=2)
+    getattr(getattr(module, "PexelsDock" if "pexels" in module_name else "FreesoundDock"), slot)(dock, 7, 1)
+    assert card._media_pending                      # stale: still loading
+    getattr(getattr(module, "PexelsDock" if "pexels" in module_name else "FreesoundDock"), slot)(dock, 7, 2)
+    assert not card._media_pending                  # this search's fetch is over
+
+
+@pytest.mark.parametrize("module_name", ["windows.freesound_dock", "windows.pexels_dock"])
+def test_stock_grids_do_not_lock_the_dock_width(module_name):
+    # SetMinimumSize made the full grid width the minimum: no column drop, last column clipped
+    source = Path(importlib.import_module(module_name).__file__).read_text(encoding="utf-8")
+    assert "SizeConstraint.SetMinimumSize" not in source
+    assert "viewport().width()" in source
+
+
+def test_tree_view_status_badge_stays_on_the_row():
+    # The tree delegate anchored the status mark to its 75x49 icon instead of the row
+    from windows.views.files_listview import FileCardDelegate
+    from windows.views.indexing_badge import IndexingBadgeDelegate
+
+    assert IndexingBadgeDelegate._badge_anchor_rect is not FileCardDelegate._badge_anchor_rect
+    option = QStyleOptionViewItem()
+    option.rect = QRect(0, 0, 300, 50)
+    delegate = IndexingBadgeDelegate.__new__(IndexingBadgeDelegate)
+    assert IndexingBadgeDelegate._badge_anchor_rect(delegate, option, None) == option.rect

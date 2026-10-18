@@ -611,7 +611,7 @@ class VectorscopeWidget(QWidget):
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
         base = QColor(TOKENS["text_faint"])
-        base_r, base_g, base_b, base_a = base.red(), base.green(), base.blue(), 255
+        base_r, base_g, base_b, base_a = base.red(), base.green(), base.blue(), 120  # idle labels fade
         for i, (label, angle_deg, display_hue) in enumerate(self._HUE_LABELS):
             score = scores[i] if scores else 0.0
             angle = math.radians(angle_deg)
@@ -800,8 +800,9 @@ class AudioMeterWidget(QWidget):
             return
 
         gap   = 4
-        bar_w = min(24, max(8, (w - (channels + 1) * gap) // channels))  # thin strips, like a mixer
-        left  = (w - channels * bar_w - (channels - 1) * gap) // 2
+        # Thin strips like a mixer, but every channel stays on screen in a narrow panel
+        bar_w = max(1, min(24, (w - (channels + 1) * gap) // channels))
+        left  = max(0, (w - channels * bar_w - (channels - 1) * gap) // 2)
 
         for ch in range(channels):
             x             = left + ch * (bar_w + gap)

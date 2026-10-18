@@ -138,3 +138,24 @@ def test_color_wheel_outline_comes_from_line_strong(monkeypatch):
     wheel.resize(170, 170)
     wheel.grab()
     assert ellipse_pens[0] == TOKENS["line_strong"]
+
+
+def test_many_audio_channels_stay_inside_the_meter(monkeypatch):
+    # Bars had an 8px floor and were centred, so a 16-channel meter lost its outer channels
+    from PyQt5.QtGui import QColor, QImage
+
+    meter = scope_panel.AudioMeterWidget()
+    meter.resize(60, 80)
+    meter.update_data({"present": True, "channels": 16,  # only the first channel has signal
+                       "summary": {"peak": [0.0] * 16, "rms": [0.9] + [0.0] * 15, "clipped_samples": [0] * 16}})
+    image = QImage(meter.size(), QImage.Format_ARGB32)
+    image.fill(QColor("#ff00ff"))
+    meter.render(image)
+    greens = [x for x in range(meter.width()) if QColor(image.pixel(x, 79)).green() > 150
+              and QColor(image.pixel(x, 79)).red() < 100]
+    assert greens and min(greens) < 8  # channel 1's level bar is on screen at the left edge
+
+
+def test_vectorscope_labels_fade_when_idle():
+    source = Path(importlib.import_module("windows.scope_panel").__file__).read_text(encoding="utf-8")
+    assert "base.blue(), 255" not in source  # a fixed 255 alpha left nothing to fade toward
