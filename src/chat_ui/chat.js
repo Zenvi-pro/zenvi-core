@@ -2163,6 +2163,8 @@
             }, 6000);
         } else if (state === 'listening') {
             inputEl.placeholder = 'Listening...';
+        } else if (state === 'hearing') {
+            inputEl.placeholder = 'Turning your words into text...';
         } else if (state === 'off' && modePlaceholder) {
             inputEl.placeholder = modePlaceholder;
         }
@@ -2174,7 +2176,7 @@
         adjustTextareaHeight();
         if (inputEl.value.trim()) hideOverlay();
         if (final) {
-            window.setDictationState('off');
+            window.setDictationState('off', text ? '' : 'No speech was heard. Try again, a little closer to the mic.');
             inputEl.focus();
         }
     };

@@ -192,7 +192,7 @@ class Dictation:
                 live, heard = live_engine(), 0          # the engine this take started with, kept
                 # ponytail: re-hears the whole prompt each time (Whistle is fast); MAX_SECONDS bounds the cost
                 while not self._stopped.wait(PARTIAL_EVERY):
-                    if self._proc.poll() is not None and not reader.is_alive():
+                    if self._proc.poll() is not None and not reader.is_alive() and not self._stopped.is_set():
                         errors.seek(0)
                         err = errors.read().decode("utf-8", "replace").strip()
                         self._on_error("the microphone could not be read: %s" % (err[-400:] or "ffmpeg stopped"))

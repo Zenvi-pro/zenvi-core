@@ -133,6 +133,7 @@ class FakeMic:
         self.stdout = os.fdopen(read, "rb")
         self.fail = fail
         self.returncode = None
+        self._closing = threading.Lock()
         if fail:
             os.close(self._write)
             self.returncode = 1
@@ -151,10 +152,11 @@ class FakeMic:
     def poll(self):
         return self.returncode
 
-    def terminate(self):
-        if self.returncode is None:
-            os.close(self._write)
-            self.returncode = 0
+    def terminate(self):                            # stop and the recording thread can both call it at once
+        with self._closing:
+            if self.returncode is None:
+                self.returncode = 0
+                os.close(self._write)
 
     kill = terminate
 
@@ -614,3 +616,61 @@ def test_downloading_note_stays_until_the_download_ends(dock, models):
     assert dock.installed.wait(5)
     downloading = next(js for js in dock.js if "Downloading" in js)
     assert downloading.rstrip(";").endswith("true)")                  # sticky: no 6 s timeout
+
+
+# -- the prompt box while the words are being worked out (chat.js under node) --
+
+_MIC_HARNESS = r"""
+function classList() { var s = {}; return {toggle: function (c, on) { if (on) s[c] = 1; else delete s[c]; },
+                                            has: function (c) { return !!s[c]; }}; }
+var micBtn = {classList: classList(), title: '', setAttribute: function () {}};
+var inputEl = {value: '', placeholder: 'Ask or edit directly', focus: function () {}};
+var window = {};
+function setTimeout() {}
+function adjustTextareaHeight() {}
+function hideOverlay() {}
+var dictationState = 'off', dictationPrefix = '', modePlaceholder = '';
+%s
+%s
+var out = {};
+window.setDictationState('listening');
+out.listening = inputEl.placeholder;
+window.setDictationState('hearing');
+out.hearing = inputEl.placeholder;
+out.hearingBusy = micBtn.classList.has('hearing');
+window.setDictationText('cut the intro', true);
+out.done = inputEl.placeholder;
+out.text = inputEl.value;
+inputEl.value = '';
+window.setDictationState('listening');
+window.setDictationState('hearing');
+window.setDictationText('', true);
+out.nothing = inputEl.placeholder;
+console.log(JSON.stringify(out));
+"""
+
+
+def test_the_prompt_says_the_words_are_coming_after_stop():
+    """Parakeet takes ~10 s after stop: the box must say it is working, not keep saying Listening."""
+    import shutil
+    import subprocess
+    from pathlib import Path
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not on PATH")
+    src = (Path(__file__).resolve().parents[1] / "src" / "chat_ui" / "chat.js").read_text(encoding="utf-8")
+
+    def cut(start, end):
+        i = src.index(start)
+        return src[i:src.index(end, i) + len(end)]
+
+    proc = subprocess.run([node, "-e", _MIC_HARNESS % (
+        cut("window.setDictationState = function", "\n    };"),
+        cut("window.setDictationText = function", "\n    };"))], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert out["listening"] == "Listening..."
+    assert out["hearing"] not in ("Listening...", "Ask or edit directly") and "words" in out["hearing"].lower()
+    assert out["hearingBusy"] is True
+    assert out["done"] == "Ask or edit directly" and out["text"] == "cut the intro"
+    assert "no speech" in out["nothing"].lower()          # an empty take says so instead of just resetting
