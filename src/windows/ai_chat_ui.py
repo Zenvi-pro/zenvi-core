@@ -42,10 +42,10 @@ CHAT_THEME_COLORS = {
     },
     "Humanity: Dark": {
         "chat-bg": "#191919",
-        "chat-preamble-bg": "#252525",
+        "chat-preamble-bg": "#26282c",
         "chat-text": "#ffffff",
         "chat-border": "#404040",
-        "chat-input-bg": "#252525",
+        "chat-input-bg": "#26282c",
         "chat-button-bg": "#353535",
         "chat-button-hover-bg": "#2a82da",
         "chat-accent": "#6366F1",
@@ -54,7 +54,7 @@ CHAT_THEME_COLORS = {
     "Retro": {
         "chat-bg": "#f0f0f0",
         "chat-preamble-bg": "#e8e8e8",
-        "chat-text": "#333333",
+        "chat-text": "#35383d",
         "chat-border": "#ccc",
         "chat-input-bg": "#ffffff",
         "chat-button-bg": "#e8e8e8",
@@ -65,15 +65,15 @@ CHAT_THEME_COLORS = {
     "Cosmic Dusk": {
         "chat-bg":              "#161616",
         "chat-surface":         "#1e1e1e",
-        "chat-text":            "#d4d4d4",
+        "chat-text":            "#e6e7ea",
         "chat-muted":           "#6b7280",
         "chat-placeholder":     "#6b7280",
-        "chat-border":          "#2a2a2a",
-        "chat-input-bg":        "#1a1a1a",
-        "chat-button-bg":       "#252525",
-        "chat-button-hover-bg": "#2e2e2e",
-        "chat-accent":          "#4d9cf6",
-        "chat-code-bg":         "#252525",
+        "chat-border":          "#2b2d32",
+        "chat-input-bg":        "#202226",
+        "chat-button-bg":       "#26282c",
+        "chat-button-hover-bg": "#2e3035",
+        "chat-accent":          "#3a72f5",
+        "chat-code-bg":         "#26282c",
     },
 }
 
@@ -349,7 +349,7 @@ class WidgetToolBlock(QFrame):
         mono.setFamily("Consolas")
         mono.setPointSize(9)
         self._body.setFont(mono)
-        self._body.setStyleSheet("background: #1a1a1a; color: #c8c8c8; border: none;")
+        self._body.setStyleSheet("background: #202226; color: #d2d4d8; border: none;")
         outer.addWidget(self._body)
 
     def _refresh_header(self):
@@ -2286,7 +2286,7 @@ class AIChatWindow(QDockWidget):
             tab_btn.setStyleSheet(
                 "text-align: left; background: transparent; border: 1px solid transparent;"
                 if sid != self._active_sid else
-                "text-align: left; background: rgba(77,156,246,0.14); border: 1px solid rgba(77,156,246,0.35);"
+                "text-align: left; background: rgba(58,114,245,0.14); border: 1px solid rgba(58,114,245,0.35);"
             )
             tab_btn.clicked.connect(lambda _=False, s=sid: self._switch_session(s))
             layout.addWidget(tab_btn)
@@ -2824,15 +2824,15 @@ class AIChatWindow(QDockWidget):
 
         inject_js = (
             "var r = document.documentElement.style;"
-            "r.setProperty('--chat-bg',       '#0d0d0d');"
-            "r.setProperty('--chat-surface',  '#0d0d0d');"
+            "r.setProperty('--chat-bg',       '#1a1b1e');"
+            "r.setProperty('--chat-surface',  '#1a1b1e');"
             "r.setProperty('--chat-input-bg', '#171717');"
             "r.setProperty('--chat-border',   'transparent');"
-            "document.body.style.background = '#0d0d0d';"
+            "document.body.style.background = '#1a1b1e';"
             "var msgs = document.getElementById('chat-messages');"
-            "if (msgs) { msgs.style.background = '#0d0d0d'; msgs.style.border = 'none'; }"
+            "if (msgs) { msgs.style.background = '#1a1b1e'; msgs.style.border = 'none'; }"
             "var preamble = document.querySelector('.chat-container > div');"
-            "if (preamble) { preamble.style.background = '#0d0d0d'; preamble.style.border = 'none'; }"
+            "if (preamble) { preamble.style.background = '#1a1b1e'; preamble.style.border = 'none'; }"
         )
 
         self._chat_view = ChatWebEngineView(chat_ui_dir, self)
@@ -2891,7 +2891,7 @@ class AIChatWindow(QDockWidget):
             self._chat_view = QWebView(self)
         self._chat_view.setObjectName("AIChatWindowContents")
         pal = self._chat_view.palette()
-        pal.setColor(self._chat_view.backgroundRole(), QColor(13, 13, 13))
+        pal.setColor(self._chat_view.backgroundRole(), QColor(26, 27, 30))
         self._chat_view.setAutoFillBackground(True)
         self._chat_view.setPalette(pal)
 
@@ -2906,15 +2906,15 @@ class AIChatWindow(QDockWidget):
 
         inject_js = (
             "var r = document.documentElement.style;"
-            "r.setProperty('--chat-bg',       '#0d0d0d');"
-            "r.setProperty('--chat-surface',  '#0d0d0d');"
+            "r.setProperty('--chat-bg',       '#1a1b1e');"
+            "r.setProperty('--chat-surface',  '#1a1b1e');"
             "r.setProperty('--chat-input-bg', '#171717');"
             "r.setProperty('--chat-border',   'transparent');"
-            "document.body.style.background = '#0d0d0d';"
+            "document.body.style.background = '#1a1b1e';"
             "var msgs = document.getElementById('chat-messages');"
-            "if (msgs) { msgs.style.background = '#0d0d0d'; msgs.style.border = 'none'; }"
+            "if (msgs) { msgs.style.background = '#1a1b1e'; msgs.style.border = 'none'; }"
             "var preamble = document.querySelector('.chat-container > div');"
-            "if (preamble) { preamble.style.background = '#0d0d0d'; preamble.style.border = 'none'; }"
+            "if (preamble) { preamble.style.background = '#1a1b1e'; preamble.style.border = 'none'; }"
         )
 
         def on_load_finished(ok):

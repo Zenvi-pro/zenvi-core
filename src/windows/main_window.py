@@ -4421,10 +4421,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.filesFilter.setPlaceholderText(_("Search files, footage & music…"))
         self.filesFilter.setClearButtonEnabled(True)
         self.filesFilter.setStyleSheet(
-            "QLineEdit#filesFilter { background: #1a1a1a; color: #d4d4d4;"
+            "QLineEdit#filesFilter { background: #202226; color: #e6e7ea;"
             " border: 1px solid rgba(255,255,255,0.09); border-radius: 15px;"
             " padding: 7px 14px; font-size: 12px; }"
-            "QLineEdit#filesFilter:focus { border: 1px solid #4d9cf6; }")
+            "QLineEdit#filesFilter:focus { border: 1px solid #3a72f5; }")
         self.filesToolbar.addWidget(self.filesFilter)
         self.tabFiles.layout().insertWidget(0, self.filesToolbar)
         # Debounce stock searches so we don't hit the network on every keystroke.

@@ -29,8 +29,8 @@ BADGE_MARGIN = 3
 _COLORS = {
     SUCCESS: QColor("#4ade80"),
     FAILED: QColor("#ef4444"),
-    RUNNING: QColor("#4d9cf6"),
-    PENDING: QColor("#8a8a8a"),
+    RUNNING: QColor("#3a72f5"),
+    PENDING: QColor("#9a9da5"),
     SKIPPED: QColor("#f59e0b"),
 }
 
@@ -75,7 +75,7 @@ def paint_status_badge(painter, rect, state, angle=0):
     painter.setBrush(color)
     painter.drawEllipse(rect)
 
-    pen = QPen(QColor("#0d0d0d"), 1.6)
+    pen = QPen(QColor("#1a1b1e"), 1.6)
     pen.setCapStyle(Qt.RoundCap)
     pen.setJoinStyle(Qt.RoundJoin)
     painter.setPen(pen)

@@ -34,11 +34,11 @@ STATE_READY = "ready"
 STATE_FAILED = "failed"
 
 # Palette — matches the cosmic theme's progress bar and accent colors
-COLOR_ACCENT = "#4d9cf6"
+COLOR_ACCENT = "#3a72f5"
 COLOR_WARNING = "#f59e0b"
 COLOR_SUCCESS = "#22c55e"
-COLOR_TRACK = "#1a1a1a"
-COLOR_SURFACE = "#252525"
+COLOR_TRACK = "#202226"
+COLOR_SURFACE = "#26282c"
 
 ICON_SIZE = 16
 PROGRESS_HEIGHT = 3

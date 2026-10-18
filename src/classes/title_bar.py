@@ -104,7 +104,7 @@ class HiddenTitleBar(QWidget):
         if floating:
             self.setFixedHeight(24)
         else:
-            self.setFixedHeight(0 if (not title_text and not show_buttons) else 20)
+            self.setFixedHeight(0 if (not title_text and not show_buttons) else 28)
 
     def update_title(self, text):
         """Update label text when dock title changes."""

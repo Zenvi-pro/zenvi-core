@@ -1634,9 +1634,9 @@
         badge.style.display = 'inline-flex';
         if (balance < 0) {
             badge.textContent = '…';
-            badge.style.background = 'rgba(77,156,246,0.08)';
-            badge.style.color = 'rgba(77,156,246,0.65)';
-            badge.style.borderColor = 'rgba(77,156,246,0.15)';
+            badge.style.background = 'rgba(58,114,245,0.08)';
+            badge.style.color = 'rgba(58,114,245,0.65)';
+            badge.style.borderColor = 'rgba(58,114,245,0.15)';
             return;
         }
         badge.textContent = balance + ' credits';
@@ -1649,9 +1649,9 @@
             badge.style.color = 'rgba(245,158,11,0.9)';
             badge.style.borderColor = 'rgba(245,158,11,0.25)';
         } else {
-            badge.style.background = 'rgba(77,156,246,0.12)';
-            badge.style.color = 'rgba(77,156,246,0.95)';
-            badge.style.borderColor = 'rgba(77,156,246,0.25)';
+            badge.style.background = 'rgba(58,114,245,0.12)';
+            badge.style.color = 'rgba(58,114,245,0.95)';
+            badge.style.borderColor = 'rgba(58,114,245,0.25)';
         }
     };
 
@@ -1671,17 +1671,17 @@
 
     function applyZenviWebKitInlineTheme(vars) {
         try {
-            const bg = vars['chat-bg'] || '#0d0d0d';
-            const tx = vars['chat-text'] || '#d4d4d4';
+            const bg = vars['chat-bg'] || '#1a1b1e';
+            const tx = vars['chat-text'] || '#e6e7ea';
             const br = (vars['chat-border'] && vars['chat-border'] !== 'transparent')
                 ? vars['chat-border'] : 'rgba(255,255,255,0.07)';
             const inp = vars['chat-input-bg'] || '#171717';
             const surf = vars['chat-surface'] || vars['chat-preamble-bg'] || bg;
             const muted = vars['chat-muted'] || vars['chat-placeholder'] || '#6b7280';
-            const acc = vars['chat-accent'] || '#4d9cf6';
+            const acc = vars['chat-accent'] || '#3a72f5';
             // ponytail: "light" = bg hex starts c-f; read real luminance if a mid-tone theme appears.
             const light = /^#[c-f]/i.test(bg);
-            const codeBg = vars['chat-code-bg'] || (light ? 'rgba(0,0,0,0.07)' : '#252525');
+            const codeBg = vars['chat-code-bg'] || (light ? 'rgba(0,0,0,0.07)' : '#26282c');
 
             document.body.style.background = bg;
             document.body.style.color = tx;
@@ -1696,11 +1696,11 @@
                 tabBar.style.background = bg;
                 tabBar.style.borderBottom = '1px solid ' + br;
             }
-            // Dark themes keep the dock's own #0d0d0d; a light theme (Retro) must
+            // Dark themes keep the dock's own #1a1b1e; a light theme (Retro) must
             // not end up with dark panels under its dark text.
-            document.documentElement.style.setProperty('--chat-wk-bg', light ? bg : '#0d0d0d');
+            document.documentElement.style.setProperty('--chat-wk-bg', light ? bg : '#1a1b1e');
             // Themes without their own surface colour (Retro, Humanity) otherwise
-            // keep the #0d0d0d boot default.
+            // keep the #1a1b1e boot default.
             document.documentElement.style.setProperty('--chat-surface', surf);
             const glowInner = document.querySelector('.chat-input-glow-inner');
             if (glowInner) {

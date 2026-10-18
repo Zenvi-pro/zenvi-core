@@ -13,12 +13,12 @@
 /* ΓöÇΓöÇ Design tokens ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 :root {
     /* Surfaces */
-    --chat-bg:          #0d0d0d;
-    --chat-surface:     #0d0d0d;
+    --chat-bg:          #1a1b1e;
+    --chat-surface:     #1a1b1e;
     --chat-input-bg:    #171717;
 
     /* Text */
-    --chat-text:        #d4d4d4;
+    --chat-text:        #e6e7ea;
     --chat-muted:       #6b7280;
     --chat-placeholder: #6b7280;
 
@@ -26,14 +26,14 @@
     --chat-border:      transparent;
 
     /* Accent (Cursor blue) */
-    --chat-accent:      #4d9cf6;
+    --chat-accent:      #3a72f5;
 
     /* Code blocks */
-    --chat-code-bg:     #252525;
+    --chat-code-bg:     #26282c;
 
     /* Button surfaces */
-    --chat-button-bg:        #252525;
-    --chat-button-hover-bg:  #4d9cf6;
+    --chat-button-bg:        #26282c;
+    --chat-button-hover-bg:  #3a72f5;
 }
 
 /* ΓöÇΓöÇ Reset ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
@@ -1037,13 +1037,13 @@
 }
 
 .chat-tab.active {
-    background: rgba(77,156,246,0.14);
-    border-color: rgba(77,156,246,0.35);
+    background: rgba(58,114,245,0.14);
+    border-color: rgba(58,114,245,0.35);
     color: var(--chat-text);
 }
 
 .chat-tab.has-unread {
-    border-color: rgba(77,156,246,0.22);
+    border-color: rgba(58,114,245,0.22);
 }
 
 .chat-tab-badge {
@@ -1056,7 +1056,7 @@
 
 .chat-tab.has-unread .chat-tab-badge {
     background: var(--chat-accent);
-    box-shadow: 0 0 0 2px rgba(77,156,246,0.14);
+    box-shadow: 0 0 0 2px rgba(58,114,245,0.14);
 }
 
 .chat-tab-processing {
@@ -1281,7 +1281,7 @@
 }
 /* The default highlight is nearly invisible on this dark theme, which reads as "I cannot select". */
 #chat-messages ::selection {
-    background: rgba(77, 156, 246, 0.55);
+    background: rgba(58, 114, 245, 0.55);
     color: #ffffff;
 }
 
@@ -1302,7 +1302,7 @@
     color: var(--chat-text);
     cursor: pointer;
 }
-.chat-signin-btn:hover:not(:disabled) { border-color: rgba(77, 156, 246, 0.8); }
+.chat-signin-btn:hover:not(:disabled) { border-color: rgba(58, 114, 245, 0.8); }
 .chat-signin-btn:disabled { opacity: 0.6; cursor: default; }
 .chat-signin-status { font-size: 11px; color: var(--chat-muted); }
 .chat-signin-status.ok { color: #6fcf97; }

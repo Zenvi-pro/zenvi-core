@@ -23,8 +23,8 @@ html[data-zenvi-webkit="1"] body {
     margin: 0;
     padding: 0;
     /* --chat-wk-bg is set by chat.js applyZenviWebKitInlineTheme() */
-    background: var(--chat-wk-bg, #0d0d0d) !important;
-    color: var(--chat-text, #d4d4d4) !important;
+    background: var(--chat-wk-bg, #1a1b1e) !important;
+    color: var(--chat-text, #e6e7ea) !important;
     font-family: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
     font-size: 13px;
     height: 100%;
@@ -90,7 +90,7 @@ html[data-zenvi-webkit="1"] #chat-tab-history,
 html[data-zenvi-webkit="1"] #chat-tab-add {
     position: -webkit-sticky;
     z-index: 2;
-    background: var(--chat-wk-bg, #0d0d0d) !important;
+    background: var(--chat-wk-bg, #1a1b1e) !important;
 }
 html[data-zenvi-webkit="1"] #chat-tab-bar > * {
     margin-right: 4px;
@@ -105,7 +105,7 @@ html[data-zenvi-webkit="1"] #chat-tab-history {
 }
 html[data-zenvi-webkit="1"] #chat-tab-add {
     right: 0;
-    box-shadow: 8px 0 0 var(--chat-wk-bg, #0d0d0d);
+    box-shadow: 8px 0 0 var(--chat-wk-bg, #1a1b1e);
 }
 
 /* Messages — flex-1 scroll (0% basis so WebKit gives remaining height reliably) */
@@ -118,7 +118,7 @@ html[data-zenvi-webkit="1"] #chat-messages {
     overflow-y: auto;
     background: transparent !important;
 }
-/* Preamble card: index.html paints it #0d0d0d inline. */
+/* Preamble card: index.html paints it #1a1b1e inline. */
 html[data-zenvi-webkit="1"] .chat-container > .flex-shrink-0.mt-2 {
     background: transparent !important;
 }
@@ -195,11 +195,11 @@ html[data-zenvi-webkit="1"] .chat-mention-kind {
 }
 html[data-zenvi-webkit="1"] .chat-mention-item:hover,
 html[data-zenvi-webkit="1"] .chat-mention-item.active {
-    background: rgba(77, 156, 246, 0.14);
+    background: rgba(58, 114, 245, 0.14);
 }
 
 html[data-zenvi-webkit="1"] .chat-command-item.active {
-    background: rgba(77, 156, 246, 0.14) !important;
+    background: rgba(58, 114, 245, 0.14) !important;
 }
 
 /* Message enter animation — vendor prefixed */
@@ -230,10 +230,10 @@ html[data-zenvi-webkit="1"] .chat-input-glow-border {
     bottom: -1px;
     left: -1px;
     background: transparent !important;
-    border: 1px solid rgba(77, 156, 246, 0.35);
+    border: 1px solid rgba(58, 114, 245, 0.35);
 }
 html[data-zenvi-webkit="1"] .chat-input-glow-wrap.glow-active .chat-input-glow-inner {
-    box-shadow: inset 0 0 0 1px rgba(77, 156, 246, 0.4);
+    box-shadow: inset 0 0 0 1px rgba(58, 114, 245, 0.4);
 }
 /* The "/" and "@" palettes are mounted inside the card and open upwards out of it. */
 html[data-zenvi-webkit="1"] .chat-input-glow-inner {
@@ -249,13 +249,13 @@ html[data-zenvi-webkit="1"] .chat-input-glow-wrap.glow-active .chat-input-glow-b
 }
 
 @-webkit-keyframes webkit-glow-pulse {
-    0%, 100% { opacity: 0.35; border-color: rgba(77, 156, 246, 0.25); }
-    50% { opacity: 0.95; border-color: rgba(77, 156, 246, 0.65); }
+    0%, 100% { opacity: 0.35; border-color: rgba(58, 114, 245, 0.25); }
+    50% { opacity: 0.95; border-color: rgba(58, 114, 245, 0.65); }
 }
 
 @keyframes webkit-glow-pulse {
-    0%, 100% { opacity: 0.35; border-color: rgba(77, 156, 246, 0.25); }
-    50% { opacity: 0.95; border-color: rgba(77, 156, 246, 0.65); }
+    0%, 100% { opacity: 0.35; border-color: rgba(58, 114, 245, 0.25); }
+    50% { opacity: 0.95; border-color: rgba(58, 114, 245, 0.65); }
 }
 
 /* Activity spinner */
@@ -315,7 +315,7 @@ html[data-zenvi-webkit="1"] .chat-model-menu {
     max-width: 260px;
     width: 260px;
     background: #1e1e1e;
-    border: 1px solid #2a2a2a;
+    border: 1px solid #2b2d32;
     box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
     -webkit-animation: chat-menu-enter-wk 0.15s ease;
     animation: chat-menu-enter-wk 0.15s ease;

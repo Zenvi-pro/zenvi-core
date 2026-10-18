@@ -45,24 +45,24 @@ from windows.freesound_dock import (
 
 
 _STYLESHEET = """
-    QWidget#StockSearchView { background: #0d0d0d; }
-    QScrollArea { background: #0d0d0d; border: none; }
-    QWidget#scrollContents { background: #0d0d0d; }
-    QLabel#sectionHeader { color: #d4d4d4; font-size: 12px; font-weight: bold;
+    QWidget#StockSearchView { background: #1a1b1e; }
+    QScrollArea { background: #1a1b1e; border: none; }
+    QWidget#scrollContents { background: #1a1b1e; }
+    QLabel#sectionHeader { color: #e6e7ea; font-size: 12px; font-weight: bold;
         padding: 8px 2px 2px 2px; }
-    QLabel#sectionStatus { color: #8a8a8a; font-size: 10px; padding-left: 2px; }
+    QLabel#sectionStatus { color: #9a9da5; font-size: 10px; padding-left: 2px; }
 """
 
 # Project-file cards, sized to match the Pexels footage cards for a consistent grid.
 FILE_ICON = QSize(150, 84)
 FILE_GRID = QSize(162, 118)
 _FILES_STYLE = """
-    QListView { background: #0d0d0d; border: none; }
-    QListView::item { background: #1a1a1a; color: #d4d4d4;
+    QListView { background: #1a1b1e; border: none; }
+    QListView::item { background: #202226; color: #e6e7ea;
         border: 1px solid rgba(255,255,255,0.06); border-radius: 6px;
         padding-top: 2px; }
-    QListView::item:hover { border: 1px solid #4d9cf6; }
-    QListView::item:selected { border: 1px solid #4d9cf6; background: #1d2b3a; }
+    QListView::item:hover { border: 1px solid #3a72f5; }
+    QListView::item:selected { border: 1px solid #3a72f5; background: #1d2b3a; }
 """
 
 

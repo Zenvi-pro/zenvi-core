@@ -141,14 +141,14 @@ class _VideoCard(QFrame):
         self._spinner = QLabel(self)
         self._spinner.setText("⏳")
         self._spinner.setAlignment(Qt.AlignCenter)
-        self._spinner.setStyleSheet("color: #8a8a8a; font-size: 18px;")
+        self._spinner.setStyleSheet("color: #9a9da5; font-size: 18px;")
         self._spinner.setGeometry(0, 0, CARD_W, CARD_H)
 
         self._status_label = QLabel("", self)
         self._status_label.setAlignment(Qt.AlignCenter)
         self._status_label.setWordWrap(True)
         self._status_label.setStyleSheet(
-            "color: #d4d4d4; font-size: 10px; background: transparent;"
+            "color: #e6e7ea; font-size: 10px; background: transparent;"
         )
         self._status_label.setGeometry(4, CARD_H // 2, CARD_W - 8, CARD_H // 2)
         self._status_label.hide()
@@ -170,7 +170,7 @@ class _VideoCard(QFrame):
         self._downloading = False
         self._status_label.setText("✓ Added")
         self._status_label.setStyleSheet(
-            "color: #4d9cf6; font-size: 11px; font-weight: bold; background: transparent;"
+            "color: #3a72f5; font-size: 11px; font-weight: bold; background: transparent;"
         )
         self._status_label.show()
         QTimer.singleShot(2500, self._status_label.hide)
@@ -193,7 +193,7 @@ class _VideoCard(QFrame):
         rect = self.rect()
 
         # Background
-        painter.fillRect(rect, QColor("#1a1a1a"))
+        painter.fillRect(rect, QColor("#202226"))
 
         # Thumbnail
         if self._thumb:
@@ -210,7 +210,7 @@ class _VideoCard(QFrame):
         # Duration badge
         dur_rect = self.rect().adjusted(0, CARD_H - 22, 0, 0)
         painter.fillRect(dur_rect, QColor(0, 0, 0, 160))
-        painter.setPen(QColor("#d4d4d4"))
+        painter.setPen(QColor("#e6e7ea"))
         font = QFont()
         font.setPointSize(8)
         painter.setFont(font)
@@ -231,7 +231,7 @@ class _VideoCard(QFrame):
 
         # Hover border
         if self.underMouse():
-            pen = QPen(QColor("#4d9cf6"), 2)
+            pen = QPen(QColor("#3a72f5"), 2)
             painter.setPen(pen)
             painter.drawRect(rect.adjusted(1, 1, -1, -1))
 
@@ -282,18 +282,18 @@ class PexelsDock(QDockWidget):
         root = QWidget()
         root.setObjectName("PexelsDockContents")
         root.setStyleSheet("""
-            QWidget#PexelsDockContents { background: #0d0d0d; }
+            QWidget#PexelsDockContents { background: #1a1b1e; }
             QLineEdit {
-                background: #1a1a1a;
+                background: #202226;
                 border: 1px solid rgba(255,255,255,0.09);
                 border-radius: 4px;
-                color: #d4d4d4;
+                color: #e6e7ea;
                 padding: 4px 8px;
                 font-size: 12px;
             }
-            QLineEdit:focus { border-color: #4d9cf6; }
+            QLineEdit:focus { border-color: #3a72f5; }
             QPushButton#searchBtn {
-                background: #4d9cf6;
+                background: #3a72f5;
                 border: none;
                 border-radius: 4px;
                 color: #fff;
@@ -301,21 +301,21 @@ class PexelsDock(QDockWidget):
                 padding: 4px 10px;
                 min-width: 30px;
             }
-            QPushButton#searchBtn:hover  { background: #3b8fe8; }
+            QPushButton#searchBtn:hover  { background: #2f63e0; }
             QPushButton#searchBtn:pressed { background: #2d7dd4; }
-            QLabel#statusLabel { color: #8a8a8a; font-size: 11px; }
-            QScrollArea { background: #0d0d0d; border: none; }
-            QWidget#scrollContents { background: #0d0d0d; }
+            QLabel#statusLabel { color: #9a9da5; font-size: 11px; }
+            QScrollArea { background: #1a1b1e; border: none; }
+            QWidget#scrollContents { background: #1a1b1e; }
             QPushButton#loadMoreBtn {
-                background: #252525;
+                background: #26282c;
                 border: 1px solid rgba(255,255,255,0.09);
                 border-radius: 4px;
-                color: #d4d4d4;
+                color: #e6e7ea;
                 padding: 6px;
                 font-size: 11px;
                 margin: 6px;
             }
-            QPushButton#loadMoreBtn:hover { background: #2e2e2e; border-color: #4d9cf6; }
+            QPushButton#loadMoreBtn:hover { background: #2e3035; border-color: #3a72f5; }
         """)
 
         vbox = QVBoxLayout(root)
@@ -349,8 +349,8 @@ class PexelsDock(QDockWidget):
         self._progress.setFixedHeight(3)
         self._progress.setTextVisible(False)
         self._progress.setStyleSheet(
-            "QProgressBar { background: #1a1a1a; border: none; border-radius: 1px; }"
-            "QProgressBar::chunk { background: #4d9cf6; border-radius: 1px; }"
+            "QProgressBar { background: #202226; border: none; border-radius: 1px; }"
+            "QProgressBar::chunk { background: #3a72f5; border-radius: 1px; }"
         )
         self._progress.hide()
         vbox.addWidget(self._progress)

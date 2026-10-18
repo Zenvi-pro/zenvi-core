@@ -424,7 +424,7 @@ if QWebEnginePage is not None:
             super().__init__(parent)
             self._chat_ui_dir = chat_ui_dir
             page = ChatWebEnginePage(chat_ui_dir, self)
-            page.setBackgroundColor(QColor(13, 13, 13))
+            page.setBackgroundColor(QColor(26, 27, 30))
             page.rejectedFileUrl.connect(self._on_rejected_file)
             self.setPage(page)
             self.setAcceptDrops(True)

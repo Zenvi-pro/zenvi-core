@@ -32,11 +32,11 @@ from classes.logger import log
 
 
 # ── Palette (cosmic dark theme tokens) ────────────────────────────────────
-TEXT = "#d4d4d4"
-TEXT_DIM = "#8a8a8a"
+TEXT = "#e6e7ea"
+TEXT_DIM = "#9a9da5"
 TEXT_ON_INK = "#ffffff"
-ACCENT = "#4d9cf6"
-ACCENT_PRESSED = "#3b8fe8"
+ACCENT = "#3a72f5"
+ACCENT_PRESSED = "#2f63e0"
 BORDER_HI_ALPHA = 0.13     # rgba(255,255,255,0.13)
 
 ROBOT_SVG = "themes/cosmic/images/tool-agent.svg"
