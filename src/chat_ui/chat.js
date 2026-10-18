@@ -1634,25 +1634,15 @@
         badge.style.display = 'inline-flex';
         if (balance < 0) {
             badge.textContent = '…';
-            badge.style.background = 'rgba(58,114,245,0.08)';
-            badge.style.color = 'rgba(58,114,245,0.65)';
-            badge.style.borderColor = 'rgba(58,114,245,0.15)';
+            badge.style.background = 'var(--chat-surface)';
+            badge.style.color = 'var(--chat-muted)';
+            badge.style.borderColor = 'var(--chat-border-strong)';
             return;
         }
         badge.textContent = balance + ' credits';
-        if (balance === 0) {
-            badge.style.background = 'rgba(239,68,68,0.12)';
-            badge.style.color = 'rgba(239,68,68,0.9)';
-            badge.style.borderColor = 'rgba(239,68,68,0.25)';
-        } else if (balance < 50) {
-            badge.style.background = 'rgba(245,158,11,0.12)';
-            badge.style.color = 'rgba(245,158,11,0.9)';
-            badge.style.borderColor = 'rgba(245,158,11,0.25)';
-        } else {
-            badge.style.background = 'rgba(58,114,245,0.12)';
-            badge.style.color = 'rgba(58,114,245,0.95)';
-            badge.style.borderColor = 'rgba(58,114,245,0.25)';
-        }
+        badge.style.background = 'var(--chat-surface)';
+        badge.style.borderColor = 'var(--chat-border-strong)';
+        badge.style.color = balance === 0 ? 'var(--danger)' : (balance < 50 ? 'var(--chat-text)' : 'var(--chat-muted)');
     };
 
     window.setThemeColors = function (cssVarsJson) {
@@ -1671,24 +1661,25 @@
 
     function applyZenviWebKitInlineTheme(vars) {
         try {
-            const bg = vars['chat-bg'] || '#1a1b1e';
-            const tx = vars['chat-text'] || '#e6e7ea';
+            const bg = vars['chat-bg'] || '#0a0a0a';
+            const tx = vars['chat-text'] || '#ededed';
             const br = (vars['chat-border'] && vars['chat-border'] !== 'transparent')
-                ? vars['chat-border'] : 'rgba(255,255,255,0.07)';
-            const inp = vars['chat-input-bg'] || '#171717';
+                ? vars['chat-border'] : '#1c1c1c';
+            const brStrong = vars['chat-border-strong'] || '#2a2a2a';
+            const inp = vars['chat-input-bg'] || '#121212';
             const surf = vars['chat-surface'] || vars['chat-preamble-bg'] || bg;
-            const muted = vars['chat-muted'] || vars['chat-placeholder'] || '#6b7280';
+            const muted = vars['chat-muted'] || vars['chat-placeholder'] || '#a1a1a1';
             const acc = vars['chat-accent'] || '#3a72f5';
             // ponytail: "light" = bg hex starts c-f; read real luminance if a mid-tone theme appears.
             const light = /^#[c-f]/i.test(bg);
-            const codeBg = vars['chat-code-bg'] || (light ? 'rgba(0,0,0,0.07)' : '#26282c');
+            const codeBg = vars['chat-code-bg'] || (light ? 'rgba(0,0,0,0.07)' : '#171717');
 
             document.body.style.background = bg;
             document.body.style.color = tx;
 
             const msgs = document.getElementById('chat-messages');
             if (msgs) {
-                msgs.style.background = surf;
+                msgs.style.background = vars['chat-preamble-bg'] || bg;
                 msgs.style.color = tx;
             }
             const tabBar = document.getElementById('chat-tab-bar');
@@ -1696,11 +1687,10 @@
                 tabBar.style.background = bg;
                 tabBar.style.borderBottom = '1px solid ' + br;
             }
-            // Dark themes keep the dock's own #1a1b1e; a light theme (Retro) must
-            // not end up with dark panels under its dark text.
-            document.documentElement.style.setProperty('--chat-wk-bg', light ? bg : '#1a1b1e');
+            // The body and the dock paint the theme's own background, light or dark.
+            document.documentElement.style.setProperty('--chat-wk-bg', bg);
             // Themes without their own surface colour (Retro, Humanity) otherwise
-            // keep the #1a1b1e boot default.
+            // keep the boot default.
             document.documentElement.style.setProperty('--chat-surface', surf);
             const glowInner = document.querySelector('.chat-input-glow-inner');
             if (glowInner) {
@@ -1712,7 +1702,7 @@
             }
             const modelTrig = document.getElementById('chat-model-trigger');
             if (modelTrig) {
-                modelTrig.style.borderColor = br;
+                modelTrig.style.borderColor = brStrong;
                 modelTrig.style.background = surf;
                 modelTrig.style.color = tx;
             }
