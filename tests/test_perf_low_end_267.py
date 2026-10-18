@@ -73,3 +73,19 @@ def test_cache_warming_renders_each_frame_once_then_idles():
     mgr.invalidate()  # an edit re-arms one more pass
     mgr._warm_one_chunk()
     assert requested[30] == 1
+
+
+def test_heavy_footage_gets_an_optimized_preview_on_import():
+    pytest.importorskip("PyQt5.QtWidgets")
+    pytest.importorskip("openshot")
+    from types import SimpleNamespace
+    from windows.models.files_model import needs_optimized_preview
+
+    def file(media_type, width, height):
+        return SimpleNamespace(data={"media_type": media_type, "width": width, "height": height})
+
+    assert needs_optimized_preview(file("video", 3840, 2160))
+    assert needs_optimized_preview(file("video", 2560, 1440))
+    assert not needs_optimized_preview(file("video", 1920, 1080))
+    assert not needs_optimized_preview(file("image", 6000, 4000))
+    assert _default("optimize-preview-auto") is True
