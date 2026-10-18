@@ -136,3 +136,47 @@ def test_refresh_while_playing_leaves_the_player_alone(make_worker):
     worker.refreshFrame()
     assert getattr(player, "readers", 0) == 0
     assert player.seeks == []
+
+
+def test_project_open_seek_survives_a_queued_refresh(make_worker):
+    # The open-project Seek(1) is pending when the deferred refresh runs; the refresh
+    # re-seeked to the old position and the preview stayed off frame 1
+    from unittest.mock import MagicMock
+
+    worker, player = make_worker()
+    worker.parent.LoadFileSignal = MagicMock()
+    worker.timeline = object()
+    worker.clip_path = None
+    player.Position = lambda: 240
+    worker.Seek(1)
+    worker.refreshFrame()
+    QCoreApplication.processEvents()
+    assert player.seeks[-1] == 1
+
+
+def test_a_seek_burst_through_the_signal_reaches_the_running_worker_once(make_worker):
+    # The real UI path: SeekSignal is queued to the worker on its own thread
+    import time
+
+    from PyQt5.QtCore import QObject, QThread, pyqtSignal
+
+    class Emitter(QObject):
+        seek = pyqtSignal(int)
+
+    worker, player = make_worker()
+    thread = QThread()
+    worker.moveToThread(thread)
+    emitter = Emitter()
+    emitter.seek.connect(worker.Seek)
+    thread.start()
+    try:
+        for frame in range(1, 51):
+            emitter.seek.emit(frame)
+        deadline = time.time() + 2
+        while (not player.seeks or player.seeks[-1] != 50) and time.time() < deadline:
+            time.sleep(0.01)
+    finally:
+        thread.quit()
+        thread.wait(2000)
+    assert player.seeks[-1] == 50
+    assert len(player.seeks) <= 3  # one per burst, give or take a flush racing the queue

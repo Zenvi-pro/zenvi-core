@@ -1198,7 +1198,7 @@ class FilesModel(QObject, updates.UpdateInterface):
 
         # Play heavy footage from a small optimized copy (exports still use the original)
         heavy = [f for f in scroll_to_files if needs_optimized_preview(f)]
-        proxy_service = getattr(app.window, "proxy_service", None)
+        proxy_service = self._proxy_service()
         if heavy and proxy_service and settings.get("optimize-preview-auto"):
             QTimer.singleShot(0, lambda: proxy_service.create_for_files(heavy))
 

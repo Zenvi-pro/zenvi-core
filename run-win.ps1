@@ -177,11 +177,14 @@ if find "$BINDINGS_DIR" -iname 'openshot.py' 2>/dev/null | grep -q .; then
         echo "The existing libopenshot build has no OpenCV effects -- rebuilding it."
     fi
     # A Zenvi source patch that still applies cleanly to the checkout has not
-    # been built in yet.
-    if [ -n "$LIBOPENSHOT_OK" ] &&
-        git -C "$LIBOPENSHOT_SRC" apply --check --whitespace=nowarn "$PREROLL_PATCH" 2>/dev/null; then
-        echo "The existing libopenshot build predates a Zenvi source patch -- rebuilding it."
-        LIBOPENSHOT_OK=""
+    # been built in yet (each new patch has to trigger a rebuild of older installs).
+    if [ -n "$LIBOPENSHOT_OK" ]; then
+        for patch in "$PREROLL_PATCH" "$REFRESH_PATCH"; do
+            if git -C "$LIBOPENSHOT_SRC" apply --check --whitespace=nowarn "$patch" 2>/dev/null; then
+                echo "The existing libopenshot build predates $(basename "$patch") -- rebuilding it."
+                LIBOPENSHOT_OK=""
+            fi
+        done
     fi
 fi
 

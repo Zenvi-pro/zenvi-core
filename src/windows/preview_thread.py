@@ -397,8 +397,11 @@ class PlayerWorker(QObject):
         # Always load back in the timeline reader
         self.parent.LoadFileSignal.emit('')
 
-        # Mark frame number for processing (if parent is done initializing)
-        self.Seek(self.player.Position())
+        # Mark frame number for processing (if parent is done initializing); a seek
+        # still pending (e.g. project open's Seek(1)) wins over the current position
+        with self._seek_lock:
+            pending = self._pending_seek
+        self.Seek(pending if pending is not None else self.player.Position())
 
         log.debug("refreshFrame done pos=%s", self.player.Position())
 

@@ -175,7 +175,8 @@ QDockWidget::close-button, QDockWidget::float-button {
     max-width: 0; max-height: 0; padding: 0; margin: 0;
     border: none; background: transparent; image: none;
 }
-QDockWidget QWidget { border: none; }
+/* Containers only: controls inside docks keep their own borders */
+QDockWidget > QWidget, QDockWidget QScrollArea, QDockWidget QFrame[frameShape="0"] { border: none; }
 
 QDockWidget QWidget#dockFilesContents,
 QWidget#dockTransitionsContents,
@@ -507,7 +508,7 @@ QPushButton#recordingSegment[position="right"] { border-left: none; border-top-l
 QPushButton#recordingSegment:checked { color: {text}; background-color: {active}; }
 
 /* ── Scene Descriptions dock ─────────────────────────────── */
-QDockWidget#AIMediaPanel QWidget { background-color: {surface}; border: none; }
+QDockWidget#AIMediaPanel QWidget { background-color: {surface}; }
 QDockWidget#AIMediaPanel QLabel#clipNameLabel { color: {text}; font-size: 13px; font-weight: 600; }
 QDockWidget#AIMediaPanel QLabel#statusLabel { color: {text_muted}; font-size: 12px; }
 QDockWidget#AIMediaPanel QLabel#statusLabel[failed="true"] { color: {danger}; }

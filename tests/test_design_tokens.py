@@ -59,5 +59,24 @@ def test_python_code_never_passes_a_raw_placeholder_to_qcolor():
 def test_minimap_window_is_translucent_so_clips_show_through():
     # The viewport window sits over the clip lines; an opaque fill hid them
     source = (SRC / "windows" / "views" / "zoom_slider.py").read_text(encoding="utf-8")
-    window = re.search(r"scroll_color = (.+)\n(.*)\n", source)
-    assert window and "setAlpha(" in window.group(0)
+    alpha = re.search(r"scroll_color\.setAlpha\((\d+)\)", source)
+    assert alpha and 1 <= int(alpha.group(1)) <= 254
+
+
+def test_dock_border_reset_spares_controls():
+    # "QDockWidget QWidget { border: none }" also hit combos, spin boxes and buttons in
+    # docks, and their hover/focus rules only change border-color, so they lost borders
+    qss = QSS.read_text(encoding="utf-8")
+    for rule in re.findall(r"^([^{}\n]*QDockWidget[^{}\n]*)\{([^}]*)\}", qss, re.M):
+        selector, body = rule
+        if "border: none" not in body:
+            continue
+        for part in selector.split(","):
+            assert not re.fullmatch(r"\s*QDockWidget(#\w+)?\s+QWidget\s*", part), part
+
+
+def test_webengine_chat_page_follows_the_theme_background():
+    # The WebEngine boot script pinned the body to the dark theme's surface color
+    source = (SRC / "windows" / "ai_chat_ui.py").read_text(encoding="utf-8")
+    assert "document.body.style.background = '%(surface)s'" not in source
+    assert "document.body.style.background = 'var(--chat-bg)'" in source

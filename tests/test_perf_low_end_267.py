@@ -89,3 +89,23 @@ def test_heavy_footage_gets_an_optimized_preview_on_import():
     assert not needs_optimized_preview(file("video", 1920, 1080))
     assert not needs_optimized_preview(file("image", 6000, 4000))
     assert _default("optimize-preview-auto") is True
+
+
+def test_cache_warming_resumes_where_a_busy_user_interrupted_it():
+    # Marking the pass done before the frames rendered skipped the rest of the last chunk
+    requested, busy = [], {"now": False}
+    timeline = MagicMock()
+    timeline.GetMaxFrame.return_value = 10
+
+    def get_frame(n):
+        requested.append(n)
+        if n == 5:
+            busy["now"] = True  # the user starts scrubbing mid-chunk
+    timeline.GetFrame.side_effect = get_frame
+    mgr = BackgroundRenderManager(get_timeline=lambda: timeline, get_project_data=dict,
+                                  is_user_busy=lambda: busy["now"])
+    mgr._warm_one_chunk()
+    busy["now"] = False
+    mgr._warm_one_chunk()
+    mgr._warm_one_chunk()
+    assert sorted(set(requested)) == list(range(1, 11))

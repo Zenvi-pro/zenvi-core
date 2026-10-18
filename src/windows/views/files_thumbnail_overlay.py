@@ -127,6 +127,10 @@ class TileDelegate(QStyledItemDelegate):
         super().__init__(view)
         view.setMouseTracking(True)  # hover reaches the tile only with mouse tracking
 
+    def sizeHint(self, option, index):
+        # QListView sizes items from this, capped at gridSize; the default hint was smaller
+        return tile_grid_size(self.parent().iconSize())
+
     def paint(self, painter, option, index):
         paint_tile(painter, option, index)
 

@@ -91,6 +91,7 @@ class _WaveformRunnable(QRunnable):
 
     class _Signals(QObject):
         ready = pyqtSignal(int, QPixmap)   # sound_id, pixmap
+        finished = pyqtSignal(int)         # sound_id, success or not
 
     def __init__(self, sound_id: int, url: str):
         super().__init__()
@@ -113,6 +114,8 @@ class _WaveformRunnable(QRunnable):
                 self.signals.ready.emit(self._sound_id, pix)
         except Exception as exc:
             log.warning("Freesound waveform fetch failed (%s): %s", self._url, exc)
+        finally:
+            self.signals.finished.emit(self._sound_id)
 
 
 # ── Sound card widget ─────────────────────────────────────────────────────────
@@ -131,6 +134,7 @@ class _SoundCard(QFrame):
         super().__init__(parent)
         self._sound = sound
         self._waveform: QPixmap | None = None
+        self._waveform_pending = bool((sound.get("images") or {}).get("waveform_m"))
         self._downloading = False
 
         self.setFixedSize(CARD_W, CARD_H)
@@ -159,6 +163,11 @@ class _SoundCard(QFrame):
 
     def set_waveform(self, pix: QPixmap):
         self._waveform = pix.scaled(CARD_W, CARD_MEDIA_H, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        self._waveform_pending = False
+        self.update()
+
+    def set_waveform_pending(self, pending: bool):
+        self._waveform_pending = pending
         self.update()
 
     def set_downloading(self, downloading: bool):
@@ -200,7 +209,7 @@ class _SoundCard(QFrame):
             painter.setOpacity(0.75)
             painter.drawPixmap(0, 0, self._waveform)
             painter.setOpacity(1.0)
-        else:
+        elif self._waveform_pending:
             paint_text(painter, QRect(0, 0, CARD_W, CARD_MEDIA_H), "Loading…", 11, "text_faint", Qt.AlignCenter)
         if self._downloading:
             veil = token_color("bg")
@@ -436,6 +445,7 @@ class FreesoundDock(QDockWidget):
             if wave_url:
                 runnable = _WaveformRunnable(sid, wave_url)
                 runnable.signals.ready.connect(self._on_waveform_ready)
+                runnable.signals.finished.connect(self._on_waveform_finished)
                 self._wave_pool.start(runnable)
 
         shown = self._current_page * data.get("page_size", 15)
@@ -449,6 +459,13 @@ class FreesoundDock(QDockWidget):
         card = self._cards.get(sound_id)
         if card:
             card.set_waveform(pix)
+
+    @pyqtSlot(int)
+    def _on_waveform_finished(self, sound_id: int):
+        # Failed or invalid waveform: stop showing "Loading…" for that card
+        card = self._cards.get(sound_id)
+        if card:
+            card.set_waveform_pending(False)
 
     # ── Download flow ─────────────────────────────────────────────────────────
 

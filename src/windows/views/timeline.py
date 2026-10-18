@@ -310,6 +310,11 @@ def _save_waveform(item, tid, inserted_by_tid=False):
             break
 
 
+# Paused cache-bar polling stops after this many unchanged 300 ms ticks: a slow fill
+# can leave the cache JSON unchanged for a second, so allow a few seconds
+CACHE_POLL_IDLE_TICKS = 10
+
+
 class TimelineView(updates.UpdateInterface, ViewClass):
     """ A Web(Engine/Kit)View QWidget used to load the Timeline """
 
@@ -5838,7 +5843,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             self.cache_renderer_idle_ticks = 0
             return
         self.cache_renderer_idle_ticks += 1
-        if self.cache_renderer_idle_ticks >= 3:
+        if self.cache_renderer_idle_ticks >= CACHE_POLL_IDLE_TICKS:
             self.cache_renderer.stop()
 
     def resume_cache_renderer(self):

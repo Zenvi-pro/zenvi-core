@@ -284,7 +284,12 @@ def relocate_generated_media(files, clips, project_file_path):
                     except PermissionError:
                         # Windows won't move a file the timeline's reader holds open
                         # (WinError 32): copy it; the original stays in generated/
-                        shutil.copy2(abs_src, dest)
+                        try:
+                            shutil.copy2(abs_src, dest)
+                        except Exception:
+                            if os.path.isfile(dest):
+                                os.remove(dest)  # half-written copy
+                            raise
                 except Exception:
                     log.error(
                         "Could not relocate generated media %s to %s",

@@ -64,14 +64,18 @@ def _cache_view(tl, *, playing):
     return view
 
 
-def test_cache_poll_stops_after_three_idle_ticks_while_paused(tl):
+def test_cache_poll_stops_only_after_a_few_idle_seconds_while_paused(tl):
+    # A slow paused fill can leave the cache version unchanged for a second; stopping
+    # after 0.9 s left the cached-ranges bar stale
     view = _cache_view(tl, playing=False)
+    view.cache_renderer.setInterval(300)
     view.cache_renderer.start()
     view.poll_cache_renderer()  # first render picks up the cache version
-    view.poll_cache_renderer()  # idle 1
-    view.poll_cache_renderer()  # idle 2
+    assert tl.CACHE_POLL_IDLE_TICKS * view.cache_renderer.interval() >= 3000
+    for _ in range(tl.CACHE_POLL_IDLE_TICKS - 1):
+        view.poll_cache_renderer()
     assert view.cache_renderer.isActive()
-    view.poll_cache_renderer()  # idle 3
+    view.poll_cache_renderer()
     assert not view.cache_renderer.isActive()
 
 
@@ -90,8 +94,8 @@ def test_cache_change_while_paused_restarts_the_idle_count(tl):
         view.poll_cache_renderer()
     _set_cache_version(view, 2)
     view.poll_cache_renderer()  # the cache filled in: count starts over
-    view.poll_cache_renderer()
-    view.poll_cache_renderer()
+    for _ in range(tl.CACHE_POLL_IDLE_TICKS - 1):
+        view.poll_cache_renderer()
     assert view.cache_renderer.isActive()
     view.poll_cache_renderer()
     assert not view.cache_renderer.isActive()
@@ -100,7 +104,7 @@ def test_cache_change_while_paused_restarts_the_idle_count(tl):
 def test_play_seek_or_timeline_change_restarts_a_stopped_poll(tl):
     view = _cache_view(tl, playing=False)
     view.cache_renderer.start()
-    for _ in range(4):
+    for _ in range(tl.CACHE_POLL_IDLE_TICKS + 1):
         view.poll_cache_renderer()
     assert not view.cache_renderer.isActive()
 

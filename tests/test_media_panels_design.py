@@ -253,3 +253,36 @@ def test_generation_progress_fills_with_the_accent_token(monkeypatch):
     image = _paint_on_canvas(lambda p: generation_badge.paint_generation_progress(delegate, p, option, index),
                              120, 100, background="#000000")
     assert QColor(TOKENS["accent"]).name() in _colors(image)
+
+
+def test_tile_delegates_size_items_to_the_tile_grid():
+    # QListView sizes items from the delegate's sizeHint; the default hint gave tiles
+    # smaller than tile_grid_size, so thumbnails and hover areas were misplaced
+    from windows.views.files_thumbnail_overlay import TileDelegate, tile_grid_size
+
+    view = QListView()
+    view.setIconSize(QSize(128, 72))
+    delegate = TileDelegate(view)
+    hint = delegate.sizeHint(QStyleOptionViewItem(), QStandardItemModel().index(0, 0))
+    assert hint == tile_grid_size(QSize(128, 72))
+
+
+def test_freesound_card_stops_loading_when_the_waveform_fails(monkeypatch):
+    freesound = importlib.import_module("windows.freesound_dock")
+    with_wave = freesound._SoundCard({"id": 1, "name": "rain", "duration": 3.0,
+                                      "images": {"waveform_m": "https://x/w.png"}})
+    no_wave = freesound._SoundCard({"id": 2, "name": "wind", "duration": 3.0, "images": {}})
+    assert with_wave._waveform_pending and not no_wave._waveform_pending
+
+    import requests
+
+    def offline(*_a, **_k):
+        raise requests.ConnectionError("offline")
+    monkeypatch.setattr(requests, "get", offline)
+    done = []
+    runnable = freesound._WaveformRunnable(1, "https://x/w.png")
+    runnable.signals.finished.connect(done.append)
+    runnable.run()
+    assert done == [1]
+    with_wave.set_waveform_pending(False)
+    assert not with_wave._waveform_pending

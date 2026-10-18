@@ -182,3 +182,10 @@ def test_same_frame_refresh_patch_keeps_the_cache_on_a_paused_edit():
 def test_run_win_applies_the_same_frame_refresh_patch():
     with open(os.path.join(ROOT, "run-win.ps1"), encoding="utf-8") as fh:
         assert "installer/mac-patches/libopenshot-v1.0.0-same-frame-refresh.patch" in fh.read()
+
+
+def test_run_win_rebuilds_an_existing_build_missing_any_patch():
+    # An install built with only the preroll patch must rebuild to pick up the refresh patch
+    with open(os.path.join(ROOT, "run-win.ps1"), encoding="utf-8") as fh:
+        text = fh.read()
+    assert 'for patch in "$PREROLL_PATCH" "$REFRESH_PATCH"; do' in text

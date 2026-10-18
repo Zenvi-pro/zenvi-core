@@ -162,8 +162,6 @@ class BackgroundRenderManager:
                 return
             start = self._cursor_frame
             end = min(max_frame, start + 12)
-            self._cursor_frame = end + 1
-            self._warm_done = end >= max_frame
         for frame in range(start, end + 1):
             if self._stop.is_set() or self._is_user_busy():
                 return
@@ -171,6 +169,9 @@ class BackgroundRenderManager:
                 timeline.GetFrame(frame)
             except Exception:
                 return
+            with self._lock:  # advance only past frames that rendered
+                self._cursor_frame = frame + 1
+                self._warm_done = frame >= max_frame
 
     def _disk_one_chunk(self) -> None:
         """Write a small hashed segment index file (metadata only in v1).

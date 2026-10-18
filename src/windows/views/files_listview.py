@@ -70,6 +70,10 @@ class FileCardDelegate(IndexingBadgeDelegate):
         list_view.setMouseTracking(True)
         list_view.viewport().installEventFilter(self)
 
+    def sizeHint(self, option, index):
+        # Tiles are painted at tile_grid_size; the inherited hint was smaller
+        return tile_grid_size(self.parent().iconSize())
+
     # ── helpers ───────────────────────────────────────────────────────────
 
     def _btn_rects(self, item_rect):
