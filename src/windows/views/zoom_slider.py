@@ -228,7 +228,8 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         selected_clip_pen = QPen(QBrush(QColor(TOKENS["accent"])), 1.5)
         selected_clip_pen.setCosmetic(True)
 
-        scroll_color = QColor(TOKENS["line_strong"])
+        scroll_color = QColor(TOKENS["text"])
+        scroll_color.setAlpha(40)  # translucent: clips stay visible under the viewport window
         scroll_pen = QPen(QBrush(scroll_color), 2.0)
         scroll_pen.setCosmetic(True)
 

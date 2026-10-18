@@ -382,16 +382,17 @@ class PlayerWorker(QObject):
         """ Refresh a certain frame """
         log.debug("refreshFrame pos=%s mode=%s", self.player.Position(), self.player.Mode())
 
+        # Refresh signals arrive during playback too (every edit, selection change).
+        # Playback already renders the changed frames; re-setting the reader or
+        # seeking here crippled it until the user paused and played again (#332).
+        if self.player.Mode() == openshot.PLAYBACK_PLAY and self.player.Speed() != 0.0:
+            return
+
         # Re-set the timeline reader so libopenshot picks up any clip changes
         # (e.g. clips added since the last Reader() call at startup).
         # Without this, Play+Pause serves stale cached frames from before the clip was added.
         if not self.clip_path:
             self.player.Reader(self.timeline)
-
-        # Selection/UI refresh signals can arrive during active playback.
-        # Avoid seeking while playing, which can perturb frame progression.
-        if self.player.Mode() == openshot.PLAYBACK_PLAY and self.player.Speed() != 0.0:
-            return
 
         # Always load back in the timeline reader
         self.parent.LoadFileSignal.emit('')

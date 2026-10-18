@@ -135,14 +135,9 @@ class TimelineSync(UpdateInterface):
                     payload = action.json(is_array=True)
                     if proxy_service:
                         payload = proxy_service.rewrite_json_for_preview(payload)
+                    # ApplyJsonDiff drops the edited item's old and new frame ranges and its
+                    # clip cache; clearing everything on top starved playback on every drop (#332)
                     self.timeline.ApplyJsonDiff(payload)
-
-                    # Clear frame cache so the next render picks up the new clip data
-                    # (without this, libopenshot serves the cached pre-change frame).
-                    # Not deep: decoded source frames don't depend on edits, and
-                    # re-decoding every clip (4K included) after each tweak stalled
-                    # playback and the GUI thread waiting on the timeline lock.
-                    self.timeline.ClearAllCache(False)
 
                     # Refresh the preview so the video widget reflects the change
                     self.window.refreshFrameSignal.emit()

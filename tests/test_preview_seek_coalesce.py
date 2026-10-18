@@ -57,7 +57,10 @@ class FakeQtPlayer:
         return 1
 
     def Reader(self, reader):
-        pass
+        self.readers = getattr(self, "readers", 0) + 1
+
+    def Speed(self):
+        return 1.0
 
     def GetRendererQObject(self):
         return 0  # no renderer, so Start() returns from initPlayer() early
@@ -123,3 +126,13 @@ def test_direct_seek_from_another_thread_applies_before_returning(make_worker):
     worker.moveToThread(thread)  # the worker lives on the preview thread, this test on the GUI thread
     worker.Seek(1)
     assert player.seeks == [1]
+
+
+def test_refresh_while_playing_leaves_the_player_alone(make_worker):
+    # #332: re-setting the reader mid-playback left playback crawling until pause/unpause
+    worker, player = make_worker(openshot.PLAYBACK_PLAY)
+    worker.timeline = object()
+    worker.clip_path = None
+    worker.refreshFrame()
+    assert getattr(player, "readers", 0) == 0
+    assert player.seeks == []
