@@ -33,7 +33,7 @@ from qt_api import QDockWidget, QMenu, QTabBar, QTabWidget, QWidget
 
 from classes.info import PATH
 from ..base import BaseTheme
-from .tokens import FONT_FAMILY, FONT_POINT_SIZE, resolve
+from .tokens import FONT_FAMILY, FONT_POINT_SIZE, TOKENS, resolve
 
 
 # objectName → nav SVG filename (stable across translations)
@@ -128,17 +128,17 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
         # Graphite palette (same tokens as the stylesheet) for unstyled widgets
         from qt_api import QColor as _QColor
         from qt_api import QPalette as _QPalette
-        panel, sunken, raised = _QColor("{surface}"), _QColor("{sunken}"), _QColor("{raised}")
+        panel, sunken, raised = _QColor(TOKENS["surface"]), _QColor(TOKENS["sunken"]), _QColor(TOKENS["raised"])
         dark_palette.setColor(_QPalette.Window,        panel)
         dark_palette.setColor(_QPalette.Base,          sunken)
         dark_palette.setColor(_QPalette.AlternateBase, panel)
         dark_palette.setColor(_QPalette.Button,        raised)
-        dark_palette.setColor(_QPalette.Mid,           _QColor("{bg}"))
-        dark_palette.setColor(_QPalette.Dark,          _QColor("{bg}"))
-        dark_palette.setColor(_QPalette.Text,          _QColor("{text}"))
-        dark_palette.setColor(_QPalette.WindowText,    _QColor("{text}"))
-        dark_palette.setColor(_QPalette.ButtonText,    _QColor("{text}"))
-        dark_palette.setColor(_QPalette.Highlight,     _QColor("{accent}"))
+        dark_palette.setColor(_QPalette.Mid,           _QColor(TOKENS["bg"]))
+        dark_palette.setColor(_QPalette.Dark,          _QColor(TOKENS["bg"]))
+        dark_palette.setColor(_QPalette.Text,          _QColor(TOKENS["text"]))
+        dark_palette.setColor(_QPalette.WindowText,    _QColor(TOKENS["text"]))
+        dark_palette.setColor(_QPalette.ButtonText,    _QColor(TOKENS["text"]))
+        dark_palette.setColor(_QPalette.Highlight,     _QColor(TOKENS["accent"]))
 
         self.app.setPalette(dark_palette)
 

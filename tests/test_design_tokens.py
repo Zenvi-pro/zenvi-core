@@ -48,3 +48,9 @@ def test_self_painted_timeline_chrome_uses_tokens():
     source = (SRC / "windows" / "views" / "zoom_slider.py").read_text(encoding="utf-8")
     assert re.findall(r"#[0-9a-fA-F]{6,8}\b", source) == []
     assert "TOKENS[" in source
+
+
+def test_python_code_never_passes_a_raw_placeholder_to_qcolor():
+    # QColor("{surface}") is an invalid color: the whole palette went black
+    source = THEME.read_text(encoding="utf-8")
+    assert re.findall(r"QColor\(\s*[\"']\{", source) == []
