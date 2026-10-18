@@ -800,15 +800,16 @@ class AudioMeterWidget(QWidget):
             return
 
         gap   = 4
-        bar_w = max(8, (w - (channels + 1) * gap) // channels)
+        bar_w = min(24, max(8, (w - (channels + 1) * gap) // channels))  # thin strips, like a mixer
+        left  = (w - channels * bar_w - (channels - 1) * gap) // 2
 
         for ch in range(channels):
-            x             = gap + ch * (bar_w + gap)
+            x             = left + ch * (bar_w + gap)
             rms           = rms_vals[ch]  if ch < len(rms_vals)  else 0.0
             peak          = peak_vals[ch] if ch < len(peak_vals) else 0.0
             clipped_count = clipped[ch]   if ch < len(clipped)   else 0
 
-            painter.fillRect(x, 0, bar_w, h, QColor(TOKENS["line_strong"]))
+            painter.fillRect(x, 0, bar_w, h, QColor(TOKENS["sunken"]))
 
             rms_h = int(rms * h)
             for row in range(rms_h):

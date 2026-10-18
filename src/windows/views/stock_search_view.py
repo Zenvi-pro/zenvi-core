@@ -56,7 +56,7 @@ _STYLESHEET = tokens.resolve("""
 """)
 
 # Project-file thumbnails; their tile grid comes from tile_grid_size.
-FILE_ICON = QSize(150, 84)
+FILE_ICON = QSize(128, 72)  # 16:9; two columns fit the default panel width
 _FILES_STYLE = tokens.resolve("""
     QListView { background: {surface}; border: none; }
     QListView::item { background: {hover}; color: {text};
