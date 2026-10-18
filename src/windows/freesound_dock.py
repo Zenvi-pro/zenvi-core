@@ -12,14 +12,18 @@ from qt_api import (
     Qt, QThread, pyqtSignal, QTimer, QRunnable, QThreadPool,
     pyqtSlot, QObject,
 )
-from qt_api import QPixmap, QColor, QPainter, QFont, QPen
+from qt_api import QPixmap, QPainter, QPainterPath, QPen, QRect, QRectF
 from qt_api import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QScrollArea, QGridLayout,
-    QLabel, QFrame, QProgressBar, QApplication,
+    QLabel, QFrame, QProgressBar, QApplication, QLayout,
 )
 
 from classes.logger import log
+from themes.cosmic import tokens
+from windows.views.files_thumbnail_overlay import (
+    TILE_RADIUS, paint_caption, paint_text, token_color,
+)
 
 
 # ── Async helpers ─────────────────────────────────────────────────────────────
@@ -114,11 +118,12 @@ class _WaveformRunnable(QRunnable):
 # ── Sound card widget ─────────────────────────────────────────────────────────
 
 CARD_W = 240
-CARD_H = 72
+CARD_MEDIA_H = 72            # waveform strip
+CARD_H = CARD_MEDIA_H + 40   # plus the name and metadata lines
 
 
 class _SoundCard(QFrame):
-    """A single result card: waveform + name + duration badge + hover overlay."""
+    """A result tile: waveform, then the sound's name and username · duration."""
 
     clicked = pyqtSignal(dict)   # emits the sound dict
 
@@ -137,21 +142,14 @@ class _SoundCard(QFrame):
         mins, secs = divmod(int(dur), 60)
         self._dur_text = f"{mins}:{secs:02d}"
 
-        # Spinner shown while waveform loads
-        self._spinner = QLabel(self)
-        self._spinner.setText("🎵")
-        self._spinner.setAlignment(Qt.AlignCenter)
-        self._spinner.setStyleSheet("color: #555; font-size: 20px;")
-        self._spinner.setGeometry(0, 0, CARD_W, CARD_H)
-
         # Status overlay (Downloading… / ✓ Added / Error)
         self._status_label = QLabel("", self)
         self._status_label.setAlignment(Qt.AlignCenter)
         self._status_label.setWordWrap(True)
-        self._status_label.setStyleSheet(
-            "color: #e6e7ea; font-size: 10px; background: transparent;"
-        )
-        self._status_label.setGeometry(4, CARD_H // 2, CARD_W - 8, CARD_H // 2)
+        self._status_label.setStyleSheet(tokens.resolve(
+            "color: {text}; font-size: 11px; background: transparent;"
+        ))
+        self._status_label.setGeometry(4, CARD_MEDIA_H // 2, CARD_W - 8, CARD_MEDIA_H // 2)
         self._status_label.hide()
 
         name = sound.get("name", "")
@@ -160,8 +158,7 @@ class _SoundCard(QFrame):
         self.setToolTip(f"{name}\nBy: {username}\n{self._dur_text}\nTags: {tags}")
 
     def set_waveform(self, pix: QPixmap):
-        self._waveform = pix.scaled(CARD_W, CARD_H, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-        self._spinner.hide()
+        self._waveform = pix.scaled(CARD_W, CARD_MEDIA_H, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
         self.update()
 
     def set_downloading(self, downloading: bool):
@@ -173,9 +170,9 @@ class _SoundCard(QFrame):
     def set_done(self):
         self._downloading = False
         self._status_label.setText("✓ Added")
-        self._status_label.setStyleSheet(
-            "color: #3a72f5; font-size: 11px; font-weight: bold; background: transparent;"
-        )
+        self._status_label.setStyleSheet(tokens.resolve(
+            "color: {success}; font-size: 11px; background: transparent;"
+        ))
         self._status_label.show()
         QTimer.singleShot(2500, self._status_label.hide)
         self.update()
@@ -183,9 +180,9 @@ class _SoundCard(QFrame):
     def set_error(self, msg: str):
         self._downloading = False
         self._status_label.setText(f"Error: {msg[:40]}")
-        self._status_label.setStyleSheet(
-            "color: #ef4444; font-size: 10px; background: transparent;"
-        )
+        self._status_label.setStyleSheet(tokens.resolve(
+            "color: {danger}; font-size: 11px; background: transparent;"
+        ))
         self._status_label.show()
         self.update()
 
@@ -194,48 +191,31 @@ class _SoundCard(QFrame):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        rect = self.rect()
-        painter.fillRect(rect, QColor("#202226"))
-
-        # Waveform image (tinted slightly green to distinguish from video)
+        well = QPainterPath()
+        well.addRoundedRect(QRectF(0, 0, CARD_W, CARD_MEDIA_H), TILE_RADIUS, TILE_RADIUS)
+        painter.fillPath(well, token_color("sunken"))
+        painter.save()
+        painter.setClipPath(well)
         if self._waveform:
             painter.setOpacity(0.75)
-            painter.drawPixmap(rect, self._waveform)
+            painter.drawPixmap(0, 0, self._waveform)
             painter.setOpacity(1.0)
-
-        # Dark overlay when downloading
+        else:
+            paint_text(painter, QRect(0, 0, CARD_W, CARD_MEDIA_H), "Loading…", 11, "text_faint", Qt.AlignCenter)
         if self._downloading:
-            painter.fillRect(rect, QColor(0, 0, 0, 140))
+            veil = token_color("bg")
+            veil.setAlpha(140)
+            painter.fillRect(QRect(0, 0, CARD_W, CARD_MEDIA_H), veil)
+        painter.restore()
 
-        # Sound name (top strip)
-        name_rect = rect.adjusted(6, 4, -6, -(CARD_H - 22))
-        painter.setPen(QColor("#e0e0e0"))
-        name_font = QFont()
-        name_font.setPointSize(8)
-        name_font.setBold(True)
-        painter.setFont(name_font)
-        name = self._sound.get("name", "")
-        painter.drawText(name_rect, Qt.AlignLeft | Qt.AlignVCenter,
-                         name if len(name) <= 32 else name[:29] + "…")
+        paint_caption(painter, QRect(6, CARD_MEDIA_H + 6, CARD_W - 12, 36),
+                      self._sound.get("name", ""),
+                      f"{self._sound.get('username', '')} · {self._dur_text}")
 
-        # Bottom bar: username (left) + duration (right)
-        bottom_rect = rect.adjusted(0, CARD_H - 20, 0, 0)
-        painter.fillRect(bottom_rect, QColor(0, 0, 0, 160))
-        info_font = QFont()
-        info_font.setPointSize(7)
-        painter.setFont(info_font)
-        painter.setPen(QColor("#a0a0a0"))
-        painter.drawText(bottom_rect.adjusted(6, 0, -6, -2), Qt.AlignLeft | Qt.AlignVCenter,
-                         self._sound.get("username", ""))
-        painter.setPen(QColor("#e6e7ea"))
-        painter.drawText(bottom_rect.adjusted(6, 0, -6, -2), Qt.AlignRight | Qt.AlignVCenter,
-                         self._dur_text)
-
-        # Hover border
         if self.underMouse():
-            pen = QPen(QColor("#3a72f5"), 2)
-            painter.setPen(pen)
-            painter.drawRect(rect.adjusted(1, 1, -1, -1))
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(QPen(token_color("line_strong"), 1))
+            painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), TILE_RADIUS, TILE_RADIUS)
 
     def enterEvent(self, event):
         self.update()
@@ -281,42 +261,42 @@ class FreesoundDock(QDockWidget):
     def _build_ui(self):
         root = QWidget()
         root.setObjectName("FreesoundDockContents")
-        root.setStyleSheet("""
-            QWidget#FreesoundDockContents { background: #1a1b1e; }
+        root.setStyleSheet(tokens.resolve("""
+            QWidget#FreesoundDockContents { background: {surface}; }
             QLineEdit {
-                background: #202226;
-                border: 1px solid rgba(255,255,255,0.09);
-                border-radius: 4px;
-                color: #e6e7ea;
+                background: {sunken};
+                border: 1px solid {line_strong};
+                border-radius: 6px;
+                color: {text};
                 padding: 4px 8px;
                 font-size: 12px;
             }
-            QLineEdit:focus { border-color: #3a72f5; }
+            QLineEdit:focus { border-color: {accent}; }
             QPushButton#searchBtn {
-                background: #3a72f5;
-                border: none;
-                border-radius: 4px;
-                color: #fff;
-                font-size: 14px;
-                padding: 4px 10px;
-                min-width: 30px;
+                background: {raised};
+                border: 1px solid {line_strong};
+                border-radius: 6px;
+                color: {text};
+                font-size: 12px;
+                padding: 4px 12px;
             }
-            QPushButton#searchBtn:hover  { background: #2f63e0; }
-            QPushButton#searchBtn:pressed { background: #2d7dd4; }
-            QLabel#statusLabel { color: #9a9da5; font-size: 11px; }
-            QScrollArea { background: #1a1b1e; border: none; }
-            QWidget#scrollContents { background: #1a1b1e; }
+            QPushButton#searchBtn:hover { background: {hover}; }
+            QPushButton#searchBtn:pressed { background: {active}; }
+            QPushButton#searchBtn:disabled { color: {text_off}; }
+            QLabel#statusLabel { color: {text_faint}; font-size: 11px; }
+            QScrollArea { background: {surface}; border: none; }
+            QWidget#scrollContents { background: {surface}; }
             QPushButton#loadMoreBtn {
-                background: #26282c;
-                border: 1px solid rgba(255,255,255,0.09);
-                border-radius: 4px;
-                color: #e6e7ea;
+                background: {raised};
+                border: 1px solid {line_strong};
+                border-radius: 6px;
+                color: {text};
                 padding: 6px;
-                font-size: 11px;
+                font-size: 12px;
                 margin: 6px;
             }
-            QPushButton#loadMoreBtn:hover { background: #2e3035; border-color: #3a72f5; }
-        """)
+            QPushButton#loadMoreBtn:hover { background: {hover}; }
+        """))
 
         vbox = QVBoxLayout(root)
         vbox.setContentsMargins(8, 8, 8, 8)
@@ -330,7 +310,7 @@ class FreesoundDock(QDockWidget):
         self._search_input.returnPressed.connect(self._on_search)
         bar.addWidget(self._search_input)
 
-        self._search_btn = QPushButton("🔍")
+        self._search_btn = QPushButton("Search")
         self._search_btn.setObjectName("searchBtn")
         self._search_btn.setToolTip("Search")
         self._search_btn.clicked.connect(self._on_search)
@@ -348,10 +328,10 @@ class FreesoundDock(QDockWidget):
         self._progress.setRange(0, 0)
         self._progress.setFixedHeight(3)
         self._progress.setTextVisible(False)
-        self._progress.setStyleSheet(
-            "QProgressBar { background: #202226; border: none; border-radius: 1px; }"
-            "QProgressBar::chunk { background: #3a72f5; border-radius: 1px; }"
-        )
+        self._progress.setStyleSheet(tokens.resolve(
+            "QProgressBar { background: {sunken}; border: none; border-radius: 1px; }"
+            "QProgressBar::chunk { background: {accent}; border-radius: 1px; }"
+        ))
         self._progress.hide()
         vbox.addWidget(self._progress)
 
@@ -364,7 +344,9 @@ class FreesoundDock(QDockWidget):
         self._grid_container.setObjectName("scrollContents")
         self._grid = QGridLayout(self._grid_container)
         self._grid.setContentsMargins(4, 4, 4, 4)
-        self._grid.setSpacing(6)
+        self._grid.setSpacing(8)
+        # Let the scroll area grow to the rows instead of squeezing them into the viewport.
+        self._grid.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self._scroll.setWidget(self._grid_container)
         vbox.addWidget(self._scroll, 1)
 
@@ -439,7 +421,7 @@ class FreesoundDock(QDockWidget):
         )
 
         existing = self._grid.count()
-        cols = max(1, (self.width() - 24) // (CARD_W + 6))
+        cols = max(1, (self.width() - 24) // (CARD_W + 8))
         for idx, sound in enumerate(sounds):
             sid = sound.get("id", idx)
             card = _SoundCard(sound)
@@ -567,7 +549,7 @@ class FreesoundDock(QDockWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if self._cards:
-            cols = max(1, (self.width() - 24) // (CARD_W + 6))
+            cols = max(1, (self.width() - 24) // (CARD_W + 8))
             widgets = []
             while self._grid.count():
                 item = self._grid.takeAt(0)
