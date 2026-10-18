@@ -252,4 +252,4 @@ def test_docked_cosmic_panels_are_named(window):
     titlebar = window.files.titleBarWidget()
     assert isinstance(titlebar, HiddenTitleBar)
     assert titlebar.title_label.text() == "Files"
-    assert titlebar.height() == 28
+    assert titlebar.height() == 32

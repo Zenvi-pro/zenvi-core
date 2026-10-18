@@ -396,6 +396,12 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
         ]
         self.set_toolbar_buttons(self.app.window.timelineToolbar, icon_size=16, settings=timeline_buttons)
 
+        # ── Captions toolbar: one quiet text button ──────────────────
+        self.set_toolbar_buttons(self.app.window.captionToolbar, icon_size=16, settings=[
+            {"action": self.app.window.actionInsertTimestamp, "icon": "themes/cosmic/images/tool-add-track.svg",
+             "style": Qt.ToolButtonTextBesideIcon},
+        ])
+
         # ── Video toolbar ─────────────────────────────────────────────
         toolbar_buttons = [
             {"expand": True},
@@ -442,10 +448,12 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
                 border-bottom: 1px solid rgba(255, 255, 255, 0.06);
             }
             #ruler_time {
-                color: {text_muted};
+                color: {text};
+                font-size: 11pt;
             }
             .ruler_time {
-                color: {text_muted};
+                color: {text_faint};
+                font-size: 8pt;
             }
             .tick_mark {
                 background-color: rgba(255, 255, 255, 0.2);
@@ -453,6 +461,7 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
 
             /* ── Track control panel ─────────────────────────── */
             .track_name {
+                font-size: 9pt;
                 background: {surface};
                 border: none;
                 border-bottom: 1px solid rgba(255, 255, 255, 0.05);
@@ -497,8 +506,9 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
 
             /* ── Clips ───────────────────────────────────────── */
             .clip {
+                font-size: 8pt;
                 background: {clip};
-                border: 1px solid rgba(255, 255, 255, 0.12);
+                border: 1px solid {clip_border};
                 border-radius: 4px;
                 box-sizing: border-box;
                 height: 48px;

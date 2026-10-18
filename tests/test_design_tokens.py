@@ -41,3 +41,10 @@ def test_inter_is_bundled_with_its_license():
     for name in ("Inter-Regular.ttf", "Inter-Medium.ttf", "Inter-SemiBold.ttf", "Inter-LICENSE.txt"):
         assert (fonts / name).is_file(), name
     assert tokens.FONT_FAMILY == "Inter"
+
+
+def test_self_painted_timeline_chrome_uses_tokens():
+    # The zoom minimap painted a saturated blue block over the timeline toolbar
+    source = (SRC / "windows" / "views" / "zoom_slider.py").read_text(encoding="utf-8")
+    assert re.findall(r"#[0-9a-fA-F]{6,8}\b", source) == []
+    assert "TOKENS[" in source

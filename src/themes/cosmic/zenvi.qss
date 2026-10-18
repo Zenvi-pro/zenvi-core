@@ -245,6 +245,36 @@ QTabWidget#tabCategories QTabBar::tab:hover:!selected,
 QTabWidget#tabWidget QTabBar::tab:hover:!selected,
 QTabWidget#generateTabs QTabBar::tab:hover:!selected { color: {text}; background: transparent; }
 
+/* ── Panel filter bars: segmented control + search ────────── */
+QToolBar#effectsToolbar, QToolBar#transitionsToolbar, QToolBar#emojisToolbar, QToolBar#captionToolbar {
+    background: transparent;
+    border: none;
+    padding: 8px 10px 6px 10px;
+    spacing: 2px;
+}
+QToolBar#effectsToolbar QToolButton, QToolBar#transitionsToolbar QToolButton {
+    background: transparent;
+    color: {text_faint};
+    border: none;
+    border-radius: 5px;
+    padding: 4px 9px;
+    margin: 0;
+}
+QToolBar#effectsToolbar QToolButton:hover, QToolBar#transitionsToolbar QToolButton:hover { color: {text}; background: {hover}; }
+QToolBar#effectsToolbar QToolButton:checked, QToolBar#transitionsToolbar QToolButton:checked {
+    color: {text};
+    background: {active};
+}
+QToolBar#captionToolbar QToolButton {
+    color: {text_muted};
+    background: transparent;
+    border: 1px solid {line_strong};
+    border-radius: 6px;
+    padding: 4px 10px;
+}
+QToolBar#captionToolbar QToolButton:hover { color: {text}; background: {hover}; }
+QTextEdit#captionTextEdit { background: {sunken}; border: 1px solid {line}; border-radius: 8px; padding: 8px; }
+
 /* ── Inputs ──────────────────────────────────────────────── */
 QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox {
     background-color: {sunken};
