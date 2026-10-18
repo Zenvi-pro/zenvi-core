@@ -18,6 +18,10 @@ from classes import timeline as timeline_module  # noqa: E402
 
 
 def test_property_edit_keeps_decoded_source_frames(monkeypatch):
+    settings = SimpleNamespace(ENABLE_PLAYBACK_CACHING=True)
+    monkeypatch.setattr(timeline_module.openshot, "Settings",
+                        SimpleNamespace(Instance=lambda: settings), raising=False)
+    monkeypatch.setattr(timeline_module.openshot, "PLAYBACK_PLAY", 1, raising=False)
     sync = timeline_module.TimelineSync.__new__(timeline_module.TimelineSync)
     sync.timeline = MagicMock()
     sync.timeline_lock = MagicMock()
