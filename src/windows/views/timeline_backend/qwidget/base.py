@@ -959,8 +959,8 @@ class TimelineWidgetBase(QWidget):
     def redraw_audio_data(self):
         """Force clip painters to rebuild after waveform data changes."""
         painter = getattr(self, "clip_painter", None)
-        if painter is not None and hasattr(painter, "clear_cache"):
-            painter.clear_cache()
+        if painter is not None and hasattr(painter, "clear_render_cache"):
+            painter.clear_render_cache()
         self.geometry.mark_dirty()
         self.update()
 
@@ -1206,7 +1206,7 @@ class TimelineWidgetBase(QWidget):
             return
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, False)
-        painter.setPen(QPen(QColor("#4d9cf6"), 2))
+        painter.setPen(QPen(QColor("#3a72f5"), 2))
         painter.setBrush(Qt.NoBrush)
         painter.drawRect(QRectF(self.rect()).adjusted(1, 1, -1, -1))
         painter.restore()
@@ -2677,7 +2677,7 @@ class TimelineWidgetBase(QWidget):
         if not item_id_str:
             return
         self.win.removeSelection(item_id_str, item_type)
-        self.clip_painter.clear_cache()
+        self.clip_painter.clear_render_cache()
         self.geometry.mark_dirty()
         self._keyframes_dirty = True
         self.update()
