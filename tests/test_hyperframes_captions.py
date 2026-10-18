@@ -183,6 +183,7 @@ class _ExtractStarted(Exception):
     ({"has_audio": False}, None, False),
     ({"has_audio": True, "channels": 0}, None, False),      # probed as audio-less
     ({"has_audio": True, "channels": 2}, {"has_audio": False}, False),  # the clip's own reader wins
+    ({"has_audio": True, "channels": 2}, {"has_audio": True, "channels": 0}, False),  # reader: no channels
     ({"has_audio": True, "channels": 2}, None, True),
     ({}, None, True),                                        # unprobed: still try
 ])
@@ -222,3 +223,20 @@ def test_only_clips_with_sound_go_to_the_speech_recogniser(monkeypatch, tmp_path
         assert ttc._speech_words(clip) == []
         assert calls == []
     assert "F1" in looked_up  # the media path came from the stub, not an empty lookup
+
+
+def test_whole_project_captions_leave_out_clips_without_sound(monkeypatch):
+    from types import SimpleNamespace
+
+    from classes import query
+    from classes.editor_tools import titles_text_captions as ttc
+
+    speech = SimpleNamespace(id="S", data={"position": 0.0, "layer": 1,
+                                           "reader": {"has_audio": True, "channels": 2}})
+    overlay = SimpleNamespace(id="O", data={"position": 0.0, "layer": 2,
+                                            "reader": {"has_audio": False, "channels": 0}})
+    zero = SimpleNamespace(id="Z", data={"position": 1.0, "layer": 1,
+                                         "reader": {"has_audio": True, "channels": 0}})
+    monkeypatch.setattr(query.Clip, "filter", staticmethod(lambda **k: [overlay, zero, speech]))
+    monkeypatch.setattr(ttc, "_caption_clips", lambda: [])
+    assert [c.id for c in ttc._speech_clips()] == ["S"]
