@@ -109,3 +109,45 @@ def test_cache_warming_resumes_where_a_busy_user_interrupted_it():
     mgr._warm_one_chunk()
     mgr._warm_one_chunk()
     assert sorted(set(requested)) == list(range(1, 11))
+
+
+def _warmer(timeline):
+    return BackgroundRenderManager(get_timeline=lambda: timeline, get_project_data=dict,
+                                   is_user_busy=lambda: False)
+
+
+def test_cache_warming_skips_a_frame_that_fails_instead_of_retrying_it_forever():
+    requested = []
+    timeline = MagicMock()
+    timeline.GetMaxFrame.return_value = 10
+
+    def get_frame(n):
+        requested.append(n)
+        if n == 5:
+            raise RuntimeError("decode failed")
+    timeline.GetFrame.side_effect = get_frame
+    mgr = _warmer(timeline)
+    for _ in range(5):
+        mgr._warm_one_chunk()
+    assert requested.count(5) == 1 and set(range(1, 11)) <= set(requested)
+
+
+def test_cache_warming_finishes_when_the_timeline_got_shorter():
+    timeline = MagicMock()
+    timeline.GetMaxFrame.return_value = 30
+    mgr = _warmer(timeline)
+    mgr._warm_one_chunk()            # cursor moves past frame 13
+    timeline.GetMaxFrame.return_value = 5
+    timeline.GetFrame.reset_mock()
+    for _ in range(3):
+        mgr._warm_one_chunk()
+    assert mgr._warm_done            # no endless empty chunks
+
+
+def test_an_invalidate_during_a_chunk_restarts_the_pass():
+    timeline = MagicMock()
+    timeline.GetMaxFrame.return_value = 10
+    mgr = _warmer(timeline)
+    timeline.GetFrame.side_effect = lambda n: mgr.invalidate() if n == 3 else None
+    mgr._warm_one_chunk()
+    assert mgr._cursor_frame == 1 and not mgr._warm_done

@@ -83,6 +83,7 @@ class BackgroundRenderManager:
         self._lock = threading.Lock()
         self._cursor_frame = 1
         self._warm_done = False
+        self._warm_gen = 0
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -120,6 +121,7 @@ class BackgroundRenderManager:
         with self._lock:
             self._cursor_frame = 1
             self._warm_done = False
+            self._warm_gen += 1  # a chunk already rendering must not overwrite the reset
         self._wake.set()
 
     def lookup_render_file(self, digest: str) -> Optional[str]:
@@ -160,6 +162,10 @@ class BackgroundRenderManager:
             # (and evicted) the cache forever while holding the timeline lock.
             if self._warm_done:
                 return
+            if self._cursor_frame > max_frame:  # the timeline got shorter: this pass is over
+                self._warm_done = True
+                return
+            gen = self._warm_gen
             start = self._cursor_frame
             end = min(max_frame, start + 12)
         for frame in range(start, end + 1):
@@ -168,8 +174,10 @@ class BackgroundRenderManager:
             try:
                 timeline.GetFrame(frame)
             except Exception:
-                return
-            with self._lock:  # advance only past frames that rendered
+                log.debug("Cache warming skipped frame %s", frame, exc_info=True)  # never retry it forever
+            with self._lock:
+                if gen != self._warm_gen:  # invalidate() reset the pass meanwhile
+                    return
                 self._cursor_frame = frame + 1
                 self._warm_done = frame >= max_frame
 

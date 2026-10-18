@@ -654,14 +654,16 @@ class PlayerWorker(QObject):
     def Play(self):
         """ Start playing the video player """
 
-        # Start playback
+        # Start playback (from a seek still waiting in the queue, if any)
+        self._flush_seek()
         if self.parent.initialized:
             self.player.Play()
 
     def Pause(self):
         """ Pause the video player """
 
-        # Pause playback
+        # Pause playback (at a seek still waiting in the queue, if any)
+        self._flush_seek()
         if self.parent.initialized:
             self.player.Pause()
 
@@ -715,6 +717,7 @@ class PlayerWorker(QObject):
     def Speed(self, new_speed):
         """ Set the speed of the video player """
 
-        # Set speed
+        # Set speed (after a seek still waiting in the queue, if any)
+        self._flush_seek()
         if self.parent.initialized and self.player.Speed() != new_speed:
             self.player.Speed(new_speed)

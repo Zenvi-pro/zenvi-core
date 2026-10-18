@@ -178,3 +178,14 @@ def test_waveform_arrival_redraws_clips_without_clearing_thumbnails(tl):
             view, "7", {"ui": {"audio_data": [0.1, 0.2]}}, "tid-1")
     view.clip_painter.clear_render_cache.assert_called_once_with()
     view.clip_painter.clear_cache.assert_not_called()
+
+
+def test_a_poll_that_could_not_read_the_cache_is_not_idle(tl):
+    # A paused edit holding the timeline lock made every poll look idle, so polling died mid-edit
+    view = _cache_view(tl, playing=False)
+    view.render_cache_json = lambda: False  # lock busy
+    view.cache_renderer.start()
+    for _ in range(tl.CACHE_POLL_IDLE_TICKS + 2):
+        view.poll_cache_renderer()
+    assert view.cache_renderer.isActive()
+    assert view.cache_renderer_idle_ticks == 0

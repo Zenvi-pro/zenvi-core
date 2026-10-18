@@ -180,3 +180,16 @@ def test_a_seek_burst_through_the_signal_reaches_the_running_worker_once(make_wo
         thread.wait(2000)
     assert player.seeks[-1] == 50
     assert len(player.seeks) <= 3  # one per burst, give or take a flush racing the queue
+
+
+@pytest.mark.parametrize("call", ["Play", "Pause"])
+def test_play_or_pause_applies_a_queued_seek_first(make_worker, call):
+    # SeekSignal then PlaySignal: the deferred seek ran after Play, starting at the old frame
+    worker, player = make_worker()
+    worker.Seek(30)
+    order = []
+    player.Play = lambda: order.append(("play", list(player.seeks)))
+    player.Pause = lambda: order.append(("pause", list(player.seeks)))
+    getattr(worker, call)()
+    assert player.seeks == [30]
+    assert order[-1][1] == [30]  # the player had seeked by the time it was told to play/pause

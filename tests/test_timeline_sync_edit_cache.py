@@ -78,3 +78,19 @@ def test_the_edited_frame_still_updates_without_a_full_clear(tmp_path):
                                  json=lambda **k: json.dumps(diff)))
 
     assert not is_white()  # the transparent clip is gone from the cached frame
+
+
+def test_an_edit_rearms_background_cache_warming(monkeypatch):
+    settings = SimpleNamespace(ENABLE_PLAYBACK_CACHING=True)
+    monkeypatch.setattr(timeline_module.openshot, "Settings",
+                        SimpleNamespace(Instance=lambda: settings), raising=False)
+    monkeypatch.setattr(timeline_module.openshot, "PLAYBACK_PLAY", 1, raising=False)
+    sync = timeline_module.TimelineSync.__new__(timeline_module.TimelineSync)
+    sync.timeline = MagicMock()
+    sync.timeline_lock = MagicMock()
+    warmer = MagicMock()
+    sync.window = SimpleNamespace(
+        preview_thread=SimpleNamespace(player=SimpleNamespace(Mode=lambda: 0)),
+        proxy_service=None, refreshFrameSignal=MagicMock(), background_render_manager=warmer)
+    sync.changed(SimpleNamespace(type="update", key=["clips", {"id": "C1"}], json=lambda **k: "[]"))
+    warmer.invalidate.assert_called_once()

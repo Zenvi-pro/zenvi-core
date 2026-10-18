@@ -5803,7 +5803,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 if lock is not None:
                     acquired = lock.acquire(False)
                     if not acquired:
-                        return
+                        return False  # busy (an edit is applying): try again next tick
                 try:
                     cache_object = self.window.timeline_sync.timeline.GetCache()
                 finally:
@@ -5832,9 +5832,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             log.warning("Exception processing timeline cache: %s", ex)
 
     def poll_cache_renderer(self):
-        """Timer tick: render the cache, and stop polling after 3 idle ticks while paused"""
+        """Timer tick: render the cache; stop after CACHE_POLL_IDLE_TICKS idle ticks while paused"""
         version = self.cache_renderer_version
-        self.render_cache_json()
+        if self.render_cache_json() is False:
+            return  # could not read the cache, so this tick says nothing about idleness
         try:
             playing = self.window.preview_thread.player.Mode() == openshot.PLAYBACK_PLAY
         except Exception:

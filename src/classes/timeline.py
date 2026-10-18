@@ -88,6 +88,10 @@ class TimelineSync(UpdateInterface):
         if action and len(action.key) >= 1 and action.key[0].lower() in ["files", "history", "markers", "layers", "scale", "profile", "export_settings", "export_overrides", "zenvi_cloud"]:
             return
 
+        warmer = getattr(self.window, "background_render_manager", None)
+        if warmer is not None:
+            warmer.invalidate()  # warm the changed timeline again (it warms one pass, then idles)
+
         with self.timeline_lock:
             # Enter edit mode for property updates — disable caching until the user seeks or plays.
             # Only "update" actions represent manual property edits; structural changes like
