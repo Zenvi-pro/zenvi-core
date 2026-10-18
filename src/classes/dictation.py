@@ -26,12 +26,15 @@ SAMPLE_RATE = 16000
 PARTIAL_EVERY = 1.0          # seconds between live re-hearings
 MAX_SECONDS = 120            # a prompt, not a podcast: recording stops itself here
 SPEECH_OVER_FLOOR = 4        # speech is this many times louder than the take's quiet 100 ms chunks
-MIN_SPEECH_RMS = 400         # ...and at least this loud: noise-suppressed mics zero the room, leaving no floor
+HISS_RMS = 20                # the floor never counts as lower than mic hiss (faint speech measured ~100)
 SPEECH_CHUNKS = 3            # ...for at least 300 ms in all, so one knock or click is not speech
 PROJECT = "dictation"        # hf.project_dir(PROJECT) holds speech.wav
 WISPR_FLOW_URL = "wispr-flow://start-hands-free"
 WISPR_FLOW_SITE = "https://wisprflow.ai"
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
+# What Whisper-family recognisers "hear" in a quiet room: a take that is only this is no words.
+MADE_UP = {"", "you", "thank you", "thanks", "thank you very much", "thanks for watching",
+           "thank you for watching", "bye"}
 _heard = threading.Lock()    # one speech.wav, one recogniser run at a time
 
 
@@ -83,12 +86,12 @@ def _rms(chunk: bytes) -> float:
 
 
 def heard_speech(levels: List[float]) -> bool:
-    """Whether a take's per-100 ms RMS levels hold speech: mics differ 10x in level (a laptop array
-    mic hears "hello" at ~500, a headset at ~5000), so speech is measured against the take's own room."""
+    """Whether a take's per-100 ms RMS levels hold speech: mics and rooms differ 10x in level (one
+    laptop mic: faint speech ~100, "hello" ~500), so speech is measured against the take's own quiet chunks."""
     room = sorted(level for level in levels if level >= 5)   # below 5: zeros while the mic wakes up
     if not room:
         return False
-    loud = max(SPEECH_OVER_FLOOR * room[len(room) // 10], MIN_SPEECH_RMS)
+    loud = SPEECH_OVER_FLOOR * max(room[len(room) // 10], HISS_RMS)
     return sum(level >= loud for level in room) >= SPEECH_CHUNKS
 
 
@@ -116,6 +119,11 @@ def transcribe(pcm: bytes, parakeet: Optional[bool] = None) -> str:
                 hf.install_speech()                 # 18 MB, the same one-time download captions make
             words = hf.transcribe(wav)
     return " ".join(" ".join(str(w.get("text") or "").strip() for w in words).split())
+
+
+def _heard_words(pcm: bytes, parakeet: bool) -> str:
+    text = transcribe(pcm, parakeet)
+    return "" if re.sub(r"[^a-z ]", "", text.lower()).strip() in MADE_UP else text
 
 
 class Dictation:
@@ -192,7 +200,7 @@ class Dictation:
                     pcm = self._snapshot()
                     if live and len(pcm) > heard and self._spoke():
                         heard = len(pcm)
-                        self._on_text(transcribe(pcm, not live), False)
+                        self._on_text(_heard_words(pcm, not live), False)
             self._release()
             reader.join(5)
             try:
@@ -200,7 +208,7 @@ class Dictation:
             except subprocess.TimeoutExpired:
                 self._proc.kill()
             # Recognisers "hear" words like "Thank you." in a quiet room: no speech, no words.
-            self._on_text(transcribe(self._snapshot(), not live) if self._spoke() else "", True)
+            self._on_text(_heard_words(self._snapshot(), not live) if self._spoke() else "", True)
         except Exception as exc:                    # reported in the chat box, never a silent dead mic
             with self._lock:
                 proc = self._proc

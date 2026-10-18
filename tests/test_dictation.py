@@ -257,15 +257,40 @@ def test_digital_silence_while_the_mic_wakes_up_is_not_a_noise_floor(monkeypatch
     assert texts == [("", True)]
 
 
-@pytest.mark.parametrize("room", [
-    # the same laptop mic with nobody talking, measured: its noise suppression zeroes the quiet,
-    # so the room comes through as bursts, one of them a single 100 ms knock at 621
-    [0, 0, 0, 30, 26, 17, 84, 204, 108, 161, 102, 305, 145, 148, 212, 75, 80, 207, 198, 135, 69, 107, 77,
-     185, 117, 137, 118, 326, 108, 4, 0, 7, 0, 2, 128, 347, 212, 621, 373, 236],
-    [0, 0, 0, 0, 1, 1, 0, 249, 40, 212, 95, 19, 11, 55, 179, 57, 130, 151, 6, 90, 233, 151, 16, 119, 207],
-])
-def test_room_noise_on_a_noise_suppressed_mic_is_not_speech(room):
-    assert dictation.heard_speech(room) is False
+def test_faint_speech_with_no_level_over_a_few_hundred_is_still_speech():
+    # a video talking near the same laptop mic (Whistle heard full sentences): no fixed level fits both
+    faint = [0, 0, 0, 0, 6, 8, 98, 111, 83, 40, 7, 24, 0, 8, 100, 8, 1, 52, 34, 88, 110, 38, 76, 32, 93, 50,
+             56, 89, 97, 141, 20, 161, 79, 91, 27, 127, 33, 11, 119, 62, 43, 34, 11, 20, 3, 0, 0, 13, 95, 17]
+    assert dictation.heard_speech(faint) is True
+
+
+def test_a_mic_that_only_hisses_is_not_speech():
+    assert dictation.heard_speech([0, 0, 6, 9, 12, 7, 15, 11, 8, 14, 10, 6, 13, 9]) is False
+
+
+@pytest.mark.parametrize("phrase", ["Thank you.", "thank you", "Thanks for watching!", "you", "."])
+def test_what_the_recogniser_makes_up_for_silence_is_dropped(monkeypatch, phrase):
+    mic = FakeMic()
+    session, texts, errors, done = _session(monkeypatch, mic, live=False)
+    monkeypatch.setattr(dictation, "transcribe", lambda pcm, parakeet=None: phrase)
+    session.start()
+    mic.speak(1.0)
+    threading.Event().wait(0.3)
+    session.stop()
+    assert done.wait(5)
+    assert texts == [("", True)]
+
+
+def test_a_real_thank_you_sentence_is_kept(monkeypatch):
+    mic = FakeMic()
+    session, texts, errors, done = _session(monkeypatch, mic, live=False)
+    monkeypatch.setattr(dictation, "transcribe", lambda pcm, parakeet=None: "Thank you, now cut the intro.")
+    session.start()
+    mic.speak(1.0)
+    threading.Event().wait(0.3)
+    session.stop()
+    assert done.wait(5)
+    assert texts == [("Thank you, now cut the intro.", True)]
 
 
 def test_hello_on_that_mic_is_speech():
