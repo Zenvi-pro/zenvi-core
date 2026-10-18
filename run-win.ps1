@@ -164,6 +164,7 @@ export UNITTEST_DIR="${MSYS2_ROOT_WIN}\usr"
 LIBOPENSHOT_SRC="$DEPS_DIR/libopenshot"
 BINDINGS_DIR="$LIBOPENSHOT_SRC/build/bindings/python"
 PREROLL_PATCH="$REPO_ROOT_UNIX/installer/mac-patches/libopenshot-v1.0.0-discard-preroll.patch"
+REFRESH_PATCH="$REPO_ROOT_UNIX/installer/mac-patches/libopenshot-v1.0.0-same-frame-refresh.patch"
 LIBOPENSHOT_OK=""
 REBUILD_AUDIO=""
 if find "$BINDINGS_DIR" -iname 'openshot.py' 2>/dev/null | grep -q .; then
@@ -272,7 +273,7 @@ if [ -z "$LIBOPENSHOT_OK" ]; then
     # stream-copy trimmed MP4 decodes the whole file and comes back black.
     # Written against v1.0.0; it also applies to the default branch built here.
     # Skipped if already applied; the setup stops if upstream changed the code.
-    bash "$REPO_ROOT_UNIX/installer/apply-libopenshot-patches.sh" . "$PREROLL_PATCH"
+    bash "$REPO_ROOT_UNIX/installer/apply-libopenshot-patches.sh" . "$PREROLL_PATCH" "$REFRESH_PATCH"
 
     rm -rf build
     mkdir -p build && cd build
