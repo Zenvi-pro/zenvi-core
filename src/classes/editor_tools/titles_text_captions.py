@@ -79,6 +79,14 @@ def _media(clip) -> str:
     return path if path and os.path.isfile(path) else ""
 
 
+def _has_audio(clip) -> bool:
+    """False only when the file is known to have no audio stream (generated overlays, silent video)."""
+    from classes.query import File
+
+    f = File.get(id=str(clip.data.get("file_id") or ""))
+    return not (f and isinstance(f.data, dict) and f.data.get("has_audio") is False)
+
+
 def _run(project: str, program: str, args: list, timeout: int, inputs=()) -> str:
     try:
         code, out = hf.run(project, program, args, timeout=timeout, inputs=inputs)
@@ -112,7 +120,7 @@ def _speech_words(clip) -> List[dict]:
     Where Whistle has no engine (Intel Macs) Parakeet is the only one.
     """
     media = _media(clip)
-    if not media:
+    if not media or not _has_audio(clip):
         return []
     installed = bool(hf.status().get("parakeet"))
     engine = hf.recogniser()

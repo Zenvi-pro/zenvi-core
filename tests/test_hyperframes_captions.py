@@ -171,3 +171,23 @@ def test_a_word_does_not_stay_lit_through_a_pause():
     # A silence that would swallow the whole word is ignored rather than deleting it.
     assert cap.trim_to_speech([{"text": "uh", "start": 1.0, "end": 1.2}], [(0.9, 1.3)]) == [
         {"text": "uh", "start": 1.0, "end": 1.2}]
+
+
+def test_a_clip_without_audio_is_not_sent_to_the_speech_recogniser(monkeypatch, tmp_path):
+    # Generated overlays (motion graphics, .mov) are video-only; extracting their speech
+    # failed with "Output file does not contain any stream" on every drop (#320)
+    from types import SimpleNamespace
+
+    from classes import query
+    from classes.editor_tools import titles_text_captions as ttc
+
+    media = tmp_path / "generated_overlay.mov"
+    media.write_bytes(b"x")
+    overlay = SimpleNamespace(data={"has_audio": False}, absolute_path=lambda: str(media))
+    monkeypatch.setattr(query.File, "get", staticmethod(lambda **k: overlay))
+    calls = []
+    monkeypatch.setattr(ttc, "_run", lambda *a, **k: calls.append(a))
+    clip = SimpleNamespace(id="C1", data={"file_id": "F1", "start": 0.0, "end": 4.0, "position": 0.0})
+
+    assert ttc._speech_words(clip) == []
+    assert calls == []
