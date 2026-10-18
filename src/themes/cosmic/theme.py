@@ -273,7 +273,7 @@ QPushButton {
     background-color: #26282c;
     color: #e6e7ea;
     border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
+    border-radius: 4px;
     padding: 6px 14px;
     min-height: 22px;
 }
@@ -290,7 +290,7 @@ QPushButton#acceptButton {
     background-color: #3a72f5;
     color: #ffffff;
     border: none;
-    border-radius: 6px;
+    border-radius: 4px;
     padding: 6px 16px;
     font-weight: 500;
 }
@@ -472,10 +472,10 @@ QTabWidget#generateTabs QTabBar::tab:selected {
 
 /* ── Line edit (general) ──────────────────────────────────── */
 QLineEdit {
-    background-color: #1a1b1e;
+    background-color: #141518;
     color: #e6e7ea;
     border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
+    border-radius: 4px;
     padding: 5px 8px;
     selection-background-color: rgba(58, 114, 245, 0.3);
 }
@@ -490,17 +490,17 @@ QLineEdit#effectsFilter,
 QLineEdit#transitionsFilter,
 QLineEdit#emojisFilter,
 QLineEdit#txtPropertyFilter {
-    background-color: #1a1b1e;
-    border-radius: 6px;
+    background-color: #141518;
+    border-radius: 4px;
     padding: 5px 10px;
 }
 
 /* ── Text edit ────────────────────────────────────────────── */
 QTextEdit, QPlainTextEdit {
-    background-color: #1a1b1e;
+    background-color: #141518;
     color: #e6e7ea;
     border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
+    border-radius: 4px;
     padding: 4px;
     selection-background-color: rgba(58, 114, 245, 0.3);
 }
@@ -509,10 +509,10 @@ QTextEdit:focus, QPlainTextEdit:focus { border-color: #3a72f5; }
 
 /* ── Spin box ─────────────────────────────────────────────── */
 QSpinBox, QDoubleSpinBox {
-    background-color: #1a1b1e;
+    background-color: #141518;
     color: #e6e7ea;
     border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
+    border-radius: 4px;
     padding: 4px 8px;
     selection-background-color: rgba(58, 114, 245, 0.3);
 }
@@ -583,7 +583,7 @@ QComboBox {
     background-color: #26282c;
     color: #e6e7ea;
     border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
+    border-radius: 4px;
     padding: 5px 8px;
     combobox-popup: 0;
 }
@@ -1090,22 +1090,24 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
         self.app.setStyle(QStyleFactory.create("Fusion"))
         dark_palette = ui_util.make_dark_palette(self.app.palette())
 
-        # Override palette to absolute black so all unstyled QWidget backgrounds
-        # default to #1a1b1e instead of the default medium-gray (53,53,53)
+        # Graphite palette (same tokens as the stylesheet) for unstyled widgets
         from qt_api import QColor as _QColor
-        _black = _QColor(26, 27, 30)
-        _gray  = _QColor(37, 37, 37)
         from qt_api import QPalette as _QPalette
-        dark_palette.setColor(_QPalette.Window,        _black)
-        dark_palette.setColor(_QPalette.Base,          _black)
-        dark_palette.setColor(_QPalette.AlternateBase, _black)
-        dark_palette.setColor(_QPalette.Button,        _gray)
-        dark_palette.setColor(_QPalette.Mid,           _black)
-        dark_palette.setColor(_QPalette.Dark,          _black)
+        panel, sunken, raised = _QColor("#1a1b1e"), _QColor("#141518"), _QColor("#26282c")
+        dark_palette.setColor(_QPalette.Window,        panel)
+        dark_palette.setColor(_QPalette.Base,          sunken)
+        dark_palette.setColor(_QPalette.AlternateBase, panel)
+        dark_palette.setColor(_QPalette.Button,        raised)
+        dark_palette.setColor(_QPalette.Mid,           _QColor("#111214"))
+        dark_palette.setColor(_QPalette.Dark,          _QColor("#111214"))
+        dark_palette.setColor(_QPalette.Text,          _QColor("#e6e7ea"))
+        dark_palette.setColor(_QPalette.WindowText,    _QColor("#e6e7ea"))
+        dark_palette.setColor(_QPalette.ButtonText,    _QColor("#e6e7ea"))
+        dark_palette.setColor(_QPalette.Highlight,     _QColor("#3a72f5"))
 
         self.app.setPalette(dark_palette)
 
-        # Compact font
+        # One size up from the old 8pt, which read as cramped on every OS
         font = QFont("Ubuntu")
         font.setPointSizeF(9)
         self.app.setFont(font)
