@@ -33,6 +33,7 @@ from qt_api import QDockWidget, QMenu, QTabBar, QTabWidget, QWidget
 
 from classes.info import PATH
 from ..base import BaseTheme
+from .tokens import FONT_FAMILY, FONT_POINT_SIZE, resolve
 
 
 # objectName → nav SVG filename (stable across translations)
@@ -58,22 +59,22 @@ DOCK_NAV_ICONS = [
 
 # ── Design tokens (Cursor-IDE inspired dark palette) ──────────────────────
 #
-#   BG_DEEP    #1a1b1e   main window / dialog floor  ← the "absolute black"
-#   BG_MAIN    #1a1b1e   primary panel surface       ← same as deep black (2-tone palette)
-#   BG_RAISED  #26282c   raised surfaces, hover
-#   BG_PRESS   #2e3035   pressed / active toggle
-#   BG_INPUT   #1a1b1e   text inputs (same as deep black)
+#   BG_DEEP    {surface}   main window / dialog floor  ← the "absolute black"
+#   BG_MAIN    {surface}   primary panel surface       ← same as deep black (2-tone palette)
+#   BG_RAISED  {raised}   raised surfaces, hover
+#   BG_PRESS   {active}   pressed / active toggle
+#   BG_INPUT   {surface}   text inputs (same as deep black)
 #
-#   TEXT       #e6e7ea   primary text
-#   TEXT_DIM   #9a9da5   secondary / muted text
-#   TEXT_OFF   #5f626a   disabled text
+#   TEXT       {text}   primary text
+#   TEXT_DIM   {text_muted}   secondary / muted text
+#   TEXT_OFF   {text_faint}   disabled text
 #
 #   BORDER     rgba(255,255,255,0.07)   subtle border
 #   BORDER_HI  rgba(255,255,255,0.13)  hover border
-#   ACCENT     #3a72f5   blue accent
-#   ACCENT_HVR #2f63e0   accent hover
-#   PLAYHEAD   #ff4a3d   tally-light red playhead
-#   DANGER     #ef4444   destructive red
+#   ACCENT     {accent}   blue accent
+#   ACCENT_HVR {accent_hover}   accent hover
+#   PLAYHEAD   {playhead}   tally-light red playhead
+#   DANGER     {danger}   destructive red
 #   SEL_BG     rgba(58,114,245,0.18)   selection highlight
 # ──────────────────────────────────────────────────────────────────────────
 
@@ -88,991 +89,25 @@ class CosmicTheme(BaseTheme):
         # ── Base stylesheet ────────────────────────────────────────────────
         # Assigned first so get_color() / get_int() can parse it.
         # The f-string replacement (PATH, translated strings) happens below.
-        self.style_sheet = """
-
-/* ── Window & dialog ─────────────────────────────────────── */
-QMainWindow {
-    background-color: #111214;
-    color: #e6e7ea;
-}
-
-/* Panels float on the floor, separated by gutters you can drag */
-QMainWindow::separator {
-    background: #111214;
-    width: 6px;
-    height: 6px;
-}
-
-QMainWindow::separator:hover {
-    background: rgba(58, 114, 245, 0.45);
-}
-
-QDialog {
-    background-color: #1a1b1e;
-    color: #e6e7ea;
-}
-
-QWidget {
-    color: #e6e7ea;
-}
-
-/* ── Tooltips ─────────────────────────────────────────────── */
-QToolTip {
-    background-color: #26282c;
-    color: #e6e7ea;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 6px;
-    padding: 4px 10px;
-    font-size: 12px;
-}
-
-/* ── Tutorial widget ──────────────────────────────────────── */
-QWidget#tutorial {
-    background-color: #1a1b1e;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
-    padding: 20px;
-}
-
-QLabel#lblTutorialText  { font-size: 14px; }
-QCheckBox#checkboxMetrics { font-size: 14px; }
-
-QWidget#tutorial QPushButton#NextTip,
-QWidget#tutorial QPushButton#HideTutorial {
-    font-size: 12px;
-}
-
-
-QLabel#lblMissingFileHint,
-QLabel#lblMissingFilePath {
-    color: #9bb2cc;
-}
-
-/* ── Preference / settings panels ────────────────────────── */
-QWidget#Simple, QWidget#Advanced, QWidget#PreferencePanel,
-QWidget#settingsContainer, QWidget#scrollAreaWidgetContents {
-    background-color: #1a1b1e;
-    border: none;
-}
-
-QScrollArea { border: none; background: transparent; }
-QTabWidget   { border: none; }
-
-/* ── Menu bar ─────────────────────────────────────────────── */
-QMenuBar {
-    background-color: #111214;
-    color: #e6e7ea;
-    padding: 0;
-    border: none;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-QMenuBar::item {
-    padding: 5px 10px;
-    background: transparent;
-}
-
-QMenuBar::item:selected,
-QMenuBar::item:pressed {
-    background-color: #26282c;
-    border-radius: 3px;
-}
-
-/* ── Dropdown menus ───────────────────────────────────────── */
-QMenu {
-    background-color: #26282c;
-    color: #e6e7ea;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 8px;
-    padding: 4px;
-}
-
-QMenu::item {
-    padding: 5px 18px 5px 22px;
-    border-radius: 4px;
-}
-
-QMenu::item:checked {
-    padding: 5px 18px 5px 22px;
-}
-
-QMenu::indicator {
-    width: 12px;
-    height: 12px;
-}
-
-QMenu::item:selected {
-    background-color: rgba(58, 114, 245, 0.15);
-    color: #e6e7ea;
-}
-
-QMenu::item:disabled { color: #5f626a; }
-
-QMenu::separator {
-    height: 1px;
-    background: rgba(255, 255, 255, 0.08);
-    margin: 3px 6px;
-}
-
-QMenu::indicator:checked {
-    image: url({PATH}themes/cosmic/images/dropdown-tick.svg);
-}
-
-/* ── Main toolbar ─────────────────────────────────────────── */
-QToolBar#toolBar {
-    background-color: #111214;
-    border: none;
-    spacing: 0;
-    padding: 0 4px;
-}
-
-QToolBar#toolBar QToolButton {
-    background-color: transparent;
-    color: #e6e7ea;
-    padding: 8px 10px;
-    border: none;
-    border-radius: 6px;
-}
-
-QToolBar#toolBar QToolButton:hover   { background-color: #26282c; }
-QToolBar#toolBar QToolButton:pressed { background-color: #2e3035; }
-
-/* ── Timeline toolbar ─────────────────────────────────────── */
-QToolBar#timelineToolbar {
-    background-color: #1a1b1e;
-    border-top: 1px solid rgba(255, 255, 255, 0.06);
-    spacing: 0;
-    padding: 0 2px;
-}
-
-QToolBar#timelineToolbar QToolButton {
-    color: #e6e7ea;
-    background-color: transparent;
-    padding: 6px 7px;
-    margin: 3px 2px;
-    border-radius: 6px;
-    border: none;
-}
-
-QToolBar#timelineToolbar QToolButton:hover   { background-color: #26282c; }
-QToolBar#timelineToolbar QToolButton:pressed { background-color: #2e3035; }
-QToolBar#timelineToolbar QToolButton:checked { background-color: rgba(58, 114, 245, 0.18); }
-
-/* General toolbar button defaults (video toolbar etc.) */
-QToolBar QToolButton:hover   { background-color: #26282c; }
-QToolBar QToolButton:pressed { background-color: #2e3035; }
-
-QToolBar::separator {
-    background: rgba(255, 255, 255, 0.08);
-    width: 1px;
-    margin: 4px 3px;
-}
-
-/* ── Push buttons ─────────────────────────────────────────── */
-QPushButton {
-    background-color: #26282c;
-    color: #e6e7ea;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 4px;
-    padding: 6px 14px;
-    min-height: 22px;
-}
-
-QPushButton:hover {
-    background-color: #2e3035;
-    border-color: rgba(255, 255, 255, 0.2);
-}
-
-QPushButton:pressed { background-color: #35383d; }
-QPushButton:disabled { color: #5f626a; border-color: rgba(255,255,255,0.05); }
-
-QPushButton#acceptButton {
-    background-color: #3a72f5;
-    color: #ffffff;
-    border: none;
-    border-radius: 4px;
-    padding: 6px 16px;
-    font-weight: 500;
-}
-
-QPushButton#acceptButton:hover   { background-color: #2f63e0; }
-QPushButton#acceptButton:pressed { background-color: #2856c4; }
-
-
-/* ── Labels ───────────────────────────────────────────────── */
-QLabel { color: #e6e7ea; }
-
-QLabel#dock-title-label {
-    color: #c9cbd0;
-    font-weight: 600;
-    padding: 0 12px;
-    font-size: 12px;
-}
-
-QLabel#dock-title-handle {
-    padding-left: 14px;
-    qproperty-pixmap: url({PATH}themes/cosmic/images/dock-move.svg);
-}
-
-/* Custom (Qt-drawn) dock title bar — also used by floating panels, where it
-   is the drag handle that lets them be docked back in */
-QWidget#dock-title-bar {
-    background-color: #1a1b1e;
-    border-top-left-radius: 6px;
-    border-top-right-radius: 6px;
-}
-
-/* ── Dock widgets ─────────────────────────────────────────── */
-QDockWidget {
-    background-color: #1a1b1e;
-    titlebar-close-icon:  url({PATH}themes/cosmic/images/dock-close.svg);
-    titlebar-normal-icon: url({PATH}themes/cosmic/images/dock-float.svg);
-    color: #e6e7ea;
-    font-weight: 500;
-}
-
-QDockWidget::title {
-    background-color: #1a1b1e;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    padding: 9px 14px;
-    text-align: left;
-    border-top-left-radius: 8px;
-    border-top-right-radius: 8px;
-}
-
-/* Hide close & float buttons – accessible via right-click on title bar */
-QDockWidget::close-button,
-QDockWidget::float-button {
-    max-width: 0px;
-    max-height: 0px;
-    padding: 0px;
-    margin: 0px;
-    border: none;
-    background: transparent;
-    image: none;
-}
-
-/* Nav dock title bar: compact float + close icon buttons */
-QPushButton#dock-float-button,
-QPushButton#dock-close-button {
-    background: transparent;
-    border: none;
-    border-radius: 4px;
-    color: #6b7280;
-    font-size: 12px;
-    padding: 0px;
-}
-QPushButton#dock-float-button:hover {
-    background: rgba(255,255,255,0.07);
-    color: #e6e7ea;
-}
-QPushButton#dock-close-button:hover {
-    background: rgba(239,68,68,0.15);
-    color: #ef4444;
-}
-
-QDockWidget QWidget { border: none; }
-
-/* Dock content areas */
-QDockWidget QWidget#dockFilesContents,
-QWidget#dockTransitionsContents,
-QWidget#dockEmojisContents,
-QWidget#dockEffectsContents,
-QWidget#dockCaptionContents,
-QWidget#dockPropertiesContents,
-QWidget#PexelsDockContents,
-QWidget#FreesoundDockContents,
-QWidget#AIChatWindowContents,
-QWidget#AIMediaPanelContents {
-    background-color: #1a1b1e;
-    border-radius: 0;
-    margin: 0 12px;
-}
-
-/* Video preview dock – no side margins, glow border on the actual preview */
-QWidget#dockVideoContents {
-    background-color: #1a1b1e;
-    border-radius: 0;
-    margin: 0;
-}
-
-/* Subtle white glow to visually separate the video canvas */
-QWidget#videoPreview {
-    background-color: #000000;
-    border: none;
-}
-
-QDockWidget QWidget#dockTimelineContents {
-    border-radius: 0;
-    margin: 0;
-    padding: 0;
-}
-
-/* ── Tab bar ──────────────────────────────────────────────── */
-QTabBar {
-    border: none;
-    qproperty-drawBase: 0;
-    qproperty-expanding: 0;
-    background: #1a1b1e;
-}
-
-/* Vertical dock-panel nav tabs (West position) – icon only, no text */
-QTabBar::tab {
-    background: transparent;
-    color: transparent;
-    font-size: 1px;
-    border: none;
-    padding: 0px;
-    margin: 2px 0;
-    border-right: 2px solid transparent;
-    min-width: 36px;
-    max-width: 36px;
-    min-height: 36px;
-    text-align: center;
-}
-
-QTabBar::tab:selected {
-    background: rgba(58, 114, 245, 0.12);
-    border-right: 2px solid #3a72f5;
-}
-
-QTabBar::tab:hover:!selected {
-    background: rgba(255, 255, 255, 0.05);
-}
-
-/* Override for dialogs that use horizontal (North) tabs with visible labels */
-QTabWidget#exportTabs QTabBar::tab,
-QTabWidget#tabCategories QTabBar::tab,
-QTabWidget#tabCredits QTabBar::tab,
-QTabWidget#tabChangelog QTabBar::tab,
-QTabWidget#tabWidget QTabBar::tab,
-QTabWidget#generateTabs QTabBar::tab {
-    color: #e6e7ea;
-    font-size: 12px;
-    min-width: 0;
-    min-height: 0;
-    max-width: 400px;
-    padding: 6px 14px;
-    border-right: none;
-    border-bottom: 2px solid transparent;
-    margin-bottom: 8px;
-    text-align: center;
-}
-
-QTabWidget#exportTabs QTabBar::tab:selected,
-QTabWidget#tabCategories QTabBar::tab:selected,
-QTabWidget#tabCredits QTabBar::tab:selected,
-QTabWidget#tabChangelog QTabBar::tab:selected,
-QTabWidget#tabWidget QTabBar::tab:selected,
-QTabWidget#generateTabs QTabBar::tab:selected {
-    border-right: none;
-    border-bottom: 2px solid #3a72f5;
-    background: transparent;
-}
-
-/* ── Line edit (general) ──────────────────────────────────── */
-QLineEdit {
-    background-color: #141518;
-    color: #e6e7ea;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 4px;
-    padding: 5px 8px;
-    selection-background-color: rgba(58, 114, 245, 0.3);
-}
-
-QLineEdit:hover  { border-color: rgba(255, 255, 255, 0.18); }
-QLineEdit:focus  { border-color: #3a72f5; }
-QLineEdit:disabled { color: #5f626a; border-color: rgba(255, 255, 255, 0.05); }
-
-/* Filter boxes in dock panels */
-QLineEdit#filesFilter,
-QLineEdit#effectsFilter,
-QLineEdit#transitionsFilter,
-QLineEdit#emojisFilter,
-QLineEdit#txtPropertyFilter {
-    background-color: #141518;
-    border-radius: 4px;
-    padding: 5px 10px;
-}
-
-/* ── Text edit ────────────────────────────────────────────── */
-QTextEdit, QPlainTextEdit {
-    background-color: #141518;
-    color: #e6e7ea;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 4px;
-    padding: 4px;
-    selection-background-color: rgba(58, 114, 245, 0.3);
-}
-
-QTextEdit:focus, QPlainTextEdit:focus { border-color: #3a72f5; }
-
-/* ── Spin box ─────────────────────────────────────────────── */
-QSpinBox, QDoubleSpinBox {
-    background-color: #141518;
-    color: #e6e7ea;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 4px;
-    padding: 4px 8px;
-    selection-background-color: rgba(58, 114, 245, 0.3);
-}
-
-QSpinBox:focus,
-QDoubleSpinBox:focus { border-color: #3a72f5; }
-
-QSpinBox::up-button,
-QDoubleSpinBox::up-button,
-QSpinBox::down-button,
-QDoubleSpinBox::down-button {
-    background: transparent;
-    border: none;
-    width: 16px;
-}
-
-/* ── Scroll bars ──────────────────────────────────────────── */
-QScrollBar:vertical {
-    border: none;
-    background: transparent;
-    width: 6px;
-}
-
-QScrollBar::handle:vertical {
-    background: rgba(255, 255, 255, 0.16);
-    border-radius: 3px;
-    min-height: 24px;
-}
-
-QScrollBar::handle:vertical:hover { background: rgba(255, 255, 255, 0.28); }
-
-QScrollBar::add-line:vertical,
-QScrollBar::sub-line:vertical {
-    height: 0;
-    border: none;
-    background: transparent;
-}
-
-QScrollBar::add-page:vertical,
-QScrollBar::sub-page:vertical { background: transparent; }
-
-QScrollBar:horizontal {
-    border: none;
-    background: transparent;
-    height: 6px;
-}
-
-QScrollBar::handle:horizontal {
-    background: rgba(255, 255, 255, 0.16);
-    border-radius: 3px;
-    min-width: 24px;
-}
-
-QScrollBar::handle:horizontal:hover { background: rgba(255, 255, 255, 0.28); }
-
-QScrollBar::add-line:horizontal,
-QScrollBar::sub-line:horizontal {
-    width: 0;
-    border: none;
-    background: transparent;
-}
-
-QScrollBar::add-page:horizontal,
-QScrollBar::sub-page:horizontal { background: transparent; }
-
-/* ── Combo box ────────────────────────────────────────────── */
-QComboBox {
-    background-color: #26282c;
-    color: #e6e7ea;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 4px;
-    padding: 5px 8px;
-    combobox-popup: 0;
-}
-
-QComboBox:hover  { border-color: rgba(255, 255, 255, 0.2); }
-QComboBox:focus  { border-color: #3a72f5; }
-
-/* ── Keyboard focus (TAB navigation; ported from OpenShot #5912, Zenvi palette) ── */
-QToolBar QToolButton:focus { background-color: #2e3035; border: 1px solid #3a72f5; }
-QToolBar QToolButton:checked:focus { border: 1px solid #3a72f5; }
-/* The main and timeline toolbars style their buttons by ID ("border: none"),
-   which outranks the generic rule above, so they need ID-scoped focus rules. */
-QToolBar#toolBar QToolButton:focus,
-QToolBar#timelineToolbar QToolButton:focus { background-color: #2e3035; border: 1px solid #3a72f5; }
-QToolBar#timelineToolbar QToolButton:checked:focus { background-color: rgba(58, 114, 245, 0.18); }
-QPushButton:focus { border-color: #3a72f5; }
-QCheckBox:focus { background-color: #2b2d32; border-radius: 3px; }
-QTabBar:focus { outline: none; }
-QTabBar::tab:focus { border-bottom: 2px solid #3a72f5; }
-QToolBox::tab:focus { border-left: 2px solid #3a72f5; }
-
-QComboBox::drop-down {
-    subcontrol-origin: padding;
-    subcontrol-position: top right;
-    width: 32px;
-    border: none;
-}
-
-QComboBox::down-arrow {
-    image: url({PATH}themes/cosmic/images/dropdown-arrow.svg);
-}
-
-QComboBox QAbstractItemView {
-    background-color: #26282c;
-    color: #e6e7ea;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 8px;
-    padding: 4px;
-    selection-background-color: rgba(58, 114, 245, 0.2);
-}
-
-QComboBox::item        { height: 24px; }
-QComboBox::item:selected  { background-color: rgba(58, 114, 245, 0.2); }
-QComboBox::item:checked   { font-weight: 600; }
-QComboBox::indicator::checked {
-    image: url({PATH}themes/cosmic/images/dropdown-tick.svg);
-}
-
-/* ── Tree / List / Table views ────────────────────────────── */
-QTreeView, QListView, QTableView {
-    background-color: #1a1b1e;
-    border: none;
-    color: #e6e7ea;
-    gridline-color: rgba(255, 255, 255, 0.05);
-    alternate-background-color: rgba(255, 255, 255, 0.02);
-    show-decoration-selected: 1;
-}
-
-QTreeView::item:hover,
-QListView::item:hover,
-QTableView::item:hover {
-    background: rgba(255, 255, 255, 0.05);
-}
-
-QTreeView::item:selected,
-QListView::item:selected,
-QTableView::item:selected {
-    background: rgba(58, 114, 245, 0.18);
-    color: #e6e7ea;
-}
-
-QHeaderView::section {
-    background-color: #1a1b1e;
-    color: #9a9da5;
-    padding: 5px 8px;
-    border: none;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    font-size: 12px;
-}
-
-QHeaderView::section:hover {
-    background-color: #26282c;
-    color: #e6e7ea;
-}
-
-/* ── Splitter handles ─────────────────────────────────────── */
-QSplitter::handle {
-    background: rgba(255, 255, 255, 0.04);
-}
-
-QSplitter::handle:horizontal { width: 1px; }
-QSplitter::handle:vertical   { height: 1px; }
-
-QSplitter::handle:hover {
-    background: rgba(58, 114, 245, 0.35);
-}
-
-/* ── Slider ───────────────────────────────────────────────── */
-QSlider::groove:horizontal {
-    background: rgba(255, 255, 255, 0.1);
-    height: 3px;
-    border-radius: 2px;
-}
-
-QSlider::handle:horizontal {
-    background: #3a72f5;
-    border: none;
-    width: 12px;
-    height: 12px;
-    margin: -5px 0;
-    border-radius: 6px;
-}
-
-QSlider::handle:horizontal:hover { background: #2f63e0; }
-
-QSlider::sub-page:horizontal {
-    background: rgba(58, 114, 245, 0.45);
-    border-radius: 2px;
-}
-
-QSlider::groove:vertical {
-    background: rgba(255, 255, 255, 0.1);
-    width: 3px;
-    border-radius: 2px;
-}
-
-QSlider::handle:vertical {
-    background: #3a72f5;
-    border: none;
-    width: 12px;
-    height: 12px;
-    margin: 0 -5px;
-    border-radius: 6px;
-}
-
-QSlider::sub-page:vertical {
-    background: rgba(58, 114, 245, 0.45);
-    border-radius: 2px;
-}
-
-/* ── Checkbox ─────────────────────────────────────────────── */
-QCheckBox {
-    color: #e6e7ea;
-    spacing: 6px;
-}
-
-QCheckBox::indicator {
-    width: 14px;
-    height: 14px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 3px;
-    background: #1a1b1e;
-}
-
-QCheckBox::indicator:hover          { border-color: #3a72f5; }
-QCheckBox::indicator:checked        { background: #3a72f5; border-color: #3a72f5; }
-QCheckBox::indicator:indeterminate  { background: rgba(58, 114, 245, 0.5); border-color: #3a72f5; }
-
-/* ── Radio button ─────────────────────────────────────────── */
-QRadioButton {
-    color: #e6e7ea;
-    spacing: 6px;
-}
-
-QRadioButton::indicator {
-    width: 14px;
-    height: 14px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 7px;
-    background: #1a1b1e;
-}
-
-QRadioButton::indicator:hover   { border-color: #3a72f5; }
-QRadioButton::indicator:checked { background: #3a72f5; border-color: #3a72f5; }
-
-/* ── Group box ────────────────────────────────────────────── */
-QGroupBox {
-    color: #9a9da5;
-    font-size: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 6px;
-    margin-top: 20px;
-    padding-top: 10px;
-}
-
-QGroupBox::title {
-    subcontrol-origin: margin;
-    subcontrol-position: top left;
-    /* No left offset — avoids clipping on narrow docks */
-    left: 8px;
-    top: -6px;
-    padding: 1px 6px;
-    background: #1a1b1e;
-    border-radius: 3px;
-    /* Prevent the title text from wrapping or being cut */
-    min-width: 0;
-}
-
-/* ── Tool box ─────────────────────────────────────────────── */
-QToolBox::tab {
-    background: #26282c;
-    color: #e6e7ea;
-    border: none;
-    border-top: 1px solid rgba(255, 255, 255, 0.08);
-    padding: 5px 10px;
-}
-
-QToolBox::tab:selected { color: #3a72f5; }
-
-/* ── Progress bar ─────────────────────────────────────────── */
-QProgressBar {
-    background: rgba(255, 255, 255, 0.08);
-    border: none;
-    border-radius: 3px;
-    height: 4px;
-    text-align: center;
-    color: transparent;
-}
-
-QProgressBar::chunk {
-    background: #3a72f5;
-    border-radius: 3px;
-}
-
-/* ── Frame dividers ───────────────────────────────────────── */
-QFrame[frameShape="4"] {
-    /* HLine */
-    background: rgba(255, 255, 255, 0.07);
-    max-height: 1px;
-    border: none;
-    margin: 2px 0;
-}
-
-QFrame[frameShape="5"] {
-    /* VLine */
-    background: rgba(255, 255, 255, 0.07);
-    max-width: 1px;
-    border: none;
-    margin: 0 2px;
-}
-
-/* ── Output / details panels ──────────────────────────────── */
-QWidget#Details, QWidget#Output { background-color: #1a1b1e; }
-QWidget#Output QTextEdit         { color: #e6e7ea; }
-
-/* ── Export / cutting dialog specifics ───────────────────── */
-QTabWidget QWidget#pageAdvancedOptions,
-QWidget#pageProfile,
-QWidget#pageImageSequenceSettings,
-QWidget#pageVideoSettings,
-QWidget#pageAudioSettings,
-QTabWidget QWidget#pageVideoDetails,
-QWidget#pageVideoFormat,
-QWidget#pageAudioFormat,
-QWidget#pageFrameSettings {
-    background-color: #1a1b1e;
-}
-
-QWidget#cutting QPushButton#btnStart,
-QPushButton#btnEnd {
-    border: 1px solid rgba(255, 255, 255, 0.18);
-}
-
-QWidget#cutting QPushButton#btnStart:disabled,
-QPushButton#btnEnd:disabled {
-    color: #5f626a;
-    border-color: rgba(255, 255, 255, 0.08);
-}
-
-QWidget#cutting QPushButton#btnAddClip {
-    background-color: #3a72f5;
-    color: #ffffff;
-    border: none;
-}
-
-QWidget#cutting QPushButton#btnAddClip:disabled {
-    background-color: #26282c;
-    color: #5f626a;
-}
-
-/* ── Property panel token colors ─────────────────────────── */
-.property_value {
-    foreground-color: #3a72f5;
-    background-color: #222a3d;
-}
-
-/* ── Zoom slider playhead ─────────────────────────────────── */
-.zoom_slider_playhead { background-color: #ff4a3d; }
-
-/* ── Video preview ────────────────────────────────────────── */
-QWidget#videoPreview { background-color: #1a1b1e; }
-
-/* ── Recording dock (source cards, sections, segment buttons) ── */
-QFrame#recordingCard {
-    background-color: #202226;
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    border-radius: 8px;
-}
-QFrame#recordingCard[checked="true"] {
-    border: 2px solid #3a72f5;
-    background-color: rgba(58, 114, 245, 0.14);
-}
-QFrame#recordingCard[available="false"] {
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    background-color: #141518;
-}
-QLabel#recordingCardIcon {
-    color: #3a72f5;
-    font-size: 22px;
-}
-QLabel#recordingCardTitle {
-    color: #f0f0f0;
-    font-size: 14px;
-    font-weight: 700;
-}
-QLabel#recordingCardSubtitle {
-    color: #9a9da5;
-    font-size: 12px;
-}
-QFrame#recordingSection {
-    background-color: #141518;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 8px;
-}
-QFrame#recordingSection[active="true"] {
-    border: 1px solid rgba(58, 114, 245, 0.45);
-}
-QFrame#recordingSection[active="false"] {
-    color: #7a7d85;
-    background-color: #16171a;
-}
-QLabel#recordingSectionIcon {
-    color: #3a72f5;
-    font-size: 16px;
-}
-QLabel#recordingSectionTitle {
-    color: #f0f0f0;
-    font-weight: 700;
-}
-QPushButton#recordingAdvancedLink {
-    color: #3a72f5;
-    background: transparent;
-    border: none;
-    padding: 0;
-    min-height: 0;
-    text-align: right;
-}
-QPushButton#recordingAdvancedLink:hover {
-    color: #b5caff;
-    text-decoration: underline;
-}
-QPushButton#recordingSegment {
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 6px;
-    padding: 7px 10px;
-    color: #d2d4d8;
-    background-color: #202226;
-}
-QPushButton#recordingSegment[position="left"] {
-    border-top-right-radius: 0;
-    border-bottom-right-radius: 0;
-}
-QPushButton#recordingSegment[position="right"] {
-    border-left: none;
-    border-top-left-radius: 0;
-    border-bottom-left-radius: 0;
-}
-QPushButton#recordingSegment:checked {
-    color: #b5caff;
-    border: 1px solid #3a72f5;
-    background-color: rgba(58, 114, 245, 0.22);
-}
-
-/* ── Scene Descriptions dock ──────────────────────────────── */
-QDockWidget#AIMediaPanel QWidget {
-    background-color: #1a1b1e;
-    border: none;
-}
-
-QDockWidget#AIMediaPanel QWidget#AIMediaPanelContents { background: #1a1b1e; }
-QDockWidget#AIMediaPanel QLabel#clipNameLabel { color: #e6e7ea; font-size: 12px; font-weight: bold; }
-QDockWidget#AIMediaPanel QLabel#statusLabel { color: #8fb0ff; font-size: 12px; }
-QDockWidget#AIMediaPanel QLabel#statusLabel[failed="true"] { color: #ef4444; }
-QDockWidget#AIMediaPanel QTextEdit#descriptionView {
-    background: #1a1b1e;
-    border: 1px solid rgba(255,255,255,0.07);
-    border-radius: 4px;
-    color: #e6e7ea;
-    padding: 8px;
-    font-size: 12px;
-}
-QDockWidget#AIMediaPanel QProgressBar#indexingProgress {
-    background: #26282c;
-    border: none;
-    border-radius: 1px;
-}
-QDockWidget#AIMediaPanel QProgressBar#indexingProgress::chunk { background: #3a72f5; border-radius: 1px; }
-QDockWidget#AIMediaPanel QPushButton#refreshBtn {
-    background: #26282c;
-    border: 1px solid rgba(255,255,255,0.09);
-    border-radius: 4px;
-    color: #e6e7ea;
-    padding: 6px;
-    font-size: 12px;
-}
-QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover { background: #2e3035; border-color: #3a72f5; }
-
-/* ── Tree/List view item height ───────────────────────────── */
-QTreeView::item,
-QListView::item {
-    min-height: 22px;
-    padding: 2px 4px;
-    border-radius: 3px;
-}
-
-/* ── Status bar (hidden in theme but styled if shown) ─────── */
-QStatusBar {
-    background: #1a1b1e;
-    color: #9a9da5;
-    font-size: 12px;
-    border-top: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-/* ── AI Chat dock (Qt wrapper) ────────────────────────────── */
-QDockWidget#AIChatWindow QWidget#AIChatWindowContents {
-    background-color: #1a1b1e;
-}
-
-QDockWidget#AIChatWindow QFrame#chatPreamble {
-    background-color: #1a1b1e;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 0;
-}
-
-QDockWidget#AIChatWindow QLabel#chatPreambleLabel {
-    color: #e6e7ea;
-    font-size: 12px;
-}
-
-QDockWidget#AIChatWindow QTextEdit#chatBox {
-    background-color: #1a1b1e;
-    color: #e6e7ea;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 0;
-    padding: 8px;
-}
-
-QDockWidget#AIChatWindow QTextEdit#msgInput {
-    background-color: #1a1b1e;
-    color: #e6e7ea;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 0;
-    padding: 6px;
-}
-
-QDockWidget#AIChatWindow QPushButton#sendBtn,
-QDockWidget#AIChatWindow QPushButton#clearBtn {
-    background-color: #26282c;
-    color: #e6e7ea;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-QDockWidget#AIChatWindow QPushButton#sendBtn:hover,
-QDockWidget#AIChatWindow QPushButton#clearBtn:hover {
-    background-color: #2e3035;
-}
-
-QDockWidget#AIChatWindow QComboBox#modelCombo {
-    background-color: #26282c;
-    color: #e6e7ea;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-}
-        """
+        with open(os.path.join(os.path.dirname(__file__), "zenvi.qss"), encoding="utf-8") as qss:
+            self.style_sheet = qss.read()
 
         # Prepend translated message-box buttons, and expand {PATH}
         path_unix_slashes = PATH.replace("\\", "/")
         self.style_sheet = f"""
 QMessageBox QPushButton[text="&{_('Yes')}"] {{
-    background-color: #3a72f5;
-    color: #ffffff;
+    background-color: {{primary}};
+    color: {{primary_text}};
     border: none;
-    padding: 6px 16px;
-    border-radius: 4px;
+    padding: 5px 14px;
+    border-radius: 6px;
 }}
 
 QMessageBox QPushButton[text="&{_('Cancel')}"] {{
     qproperty-icon: none;
 }}
         """ + self.style_sheet.replace("{PATH}", f"{path_unix_slashes}/")
+        self.style_sheet = resolve(self.style_sheet)
 
     # ── apply_theme ────────────────────────────────────────────────────────
     def apply_theme(self):
@@ -1093,23 +128,28 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
         # Graphite palette (same tokens as the stylesheet) for unstyled widgets
         from qt_api import QColor as _QColor
         from qt_api import QPalette as _QPalette
-        panel, sunken, raised = _QColor("#1a1b1e"), _QColor("#141518"), _QColor("#26282c")
+        panel, sunken, raised = _QColor("{surface}"), _QColor("{sunken}"), _QColor("{raised}")
         dark_palette.setColor(_QPalette.Window,        panel)
         dark_palette.setColor(_QPalette.Base,          sunken)
         dark_palette.setColor(_QPalette.AlternateBase, panel)
         dark_palette.setColor(_QPalette.Button,        raised)
-        dark_palette.setColor(_QPalette.Mid,           _QColor("#111214"))
-        dark_palette.setColor(_QPalette.Dark,          _QColor("#111214"))
-        dark_palette.setColor(_QPalette.Text,          _QColor("#e6e7ea"))
-        dark_palette.setColor(_QPalette.WindowText,    _QColor("#e6e7ea"))
-        dark_palette.setColor(_QPalette.ButtonText,    _QColor("#e6e7ea"))
-        dark_palette.setColor(_QPalette.Highlight,     _QColor("#3a72f5"))
+        dark_palette.setColor(_QPalette.Mid,           _QColor("{bg}"))
+        dark_palette.setColor(_QPalette.Dark,          _QColor("{bg}"))
+        dark_palette.setColor(_QPalette.Text,          _QColor("{text}"))
+        dark_palette.setColor(_QPalette.WindowText,    _QColor("{text}"))
+        dark_palette.setColor(_QPalette.ButtonText,    _QColor("{text}"))
+        dark_palette.setColor(_QPalette.Highlight,     _QColor("{accent}"))
 
         self.app.setPalette(dark_palette)
 
-        # One size up from the old 8pt, which read as cramped on every OS
-        font = QFont("Ubuntu")
-        font.setPointSizeF(9)
+        # Inter, bundled, so the UI reads the same on Windows, macOS and Linux
+        from qt_api import QFontDatabase
+        for weight in ("Regular", "Medium", "SemiBold"):
+            QFontDatabase.addApplicationFont(
+                os.path.join(PATH, "images", "fonts", "Inter-%s.ttf" % weight))
+        font = QFont(FONT_FAMILY)
+        font.setPointSizeF(FONT_POINT_SIZE)
+        font.setHintingPreference(QFont.PreferNoHinting)
         self.app.setFont(font)
 
         # Tabs on the left side (vertical menu style) for the top area; the other
@@ -1243,7 +283,7 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
                     tabbar.setTabText(i, "")
                 if has_nav:
                     tabbar.setExpanding(False)
-                    tabbar.setStyleSheet("""
+                    tabbar.setStyleSheet(resolve("""
                         QTabBar::tab {
                             min-width:  36px;
                             max-width:  36px;
@@ -1255,12 +295,12 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
                         }
                         QTabBar::tab:selected {
                             background: rgba(58,114,245,0.12);
-                            border-right: 2px solid #3a72f5;
+                            border-right: 2px solid {accent};
                         }
                         QTabBar::tab:hover:!selected {
                             background: rgba(255,255,255,0.05);
                         }
-                    """)
+                    """))
 
         def _schedule_tab_icons():
             QTimer.singleShot(150, _apply_tab_icons)
@@ -1312,8 +352,8 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
                 "icon": "themes/cosmic/images/tool-export.svg",
                 "style": Qt.ToolButtonIconOnly,
                 "stylesheet": (
-                    "QToolButton { background-color: #3a72f5; color: #ffffff; border: none; border-radius: 6px; padding: 8px 12px; } "
-                    "QToolButton:hover, QToolButton:pressed { background-color: #2f63e0; }"
+                    "QToolButton { background-color: {accent}; color: {white}; border: none; border-radius: 6px; padding: 8px 12px; } "
+                    "QToolButton:hover, QToolButton:pressed { background-color: {accent_hover}; }"
                 ),
             },
             {
@@ -1369,10 +409,10 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
         self.set_toolbar_buttons(self.app.window.videoToolbar, icon_size=32, settings=toolbar_buttons)
 
         # ── Timeline CSS overrides ─────────────────────────────────────
-        self.app.window.timeline.apply_theme("""
+        self.app.window.timeline.apply_theme(resolve("""
             /* ── Timeline body ──────────────────────────────── */
             body {
-                background: #1a1b1e;
+                background: {surface};
             }
 
             /* ── Scrollbars ─────────────────────────────────── */
@@ -1388,24 +428,24 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
                 background: rgba(255, 255, 255, 0.26);
             }
             ::-webkit-scrollbar-track {
-                background: #1a1b1e;
+                background: {surface};
                 box-shadow: none;
             }
-            ::-webkit-scrollbar-corner { background: #1a1b1e; }
+            ::-webkit-scrollbar-corner { background: {surface}; }
 
             /* ── Ruler ──────────────────────────────────────── */
             #ruler_label {
-                background: #1a1b1e;
+                background: {surface};
             }
             #scrolling_ruler {
-                background: #1a1b1e;
+                background: {surface};
                 border-bottom: 1px solid rgba(255, 255, 255, 0.06);
             }
             #ruler_time {
-                color: #9a9da5;
+                color: {text_muted};
             }
             .ruler_time {
-                color: #9a9da5;
+                color: {text_muted};
             }
             .tick_mark {
                 background-color: rgba(255, 255, 255, 0.2);
@@ -1413,14 +453,14 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
 
             /* ── Track control panel ─────────────────────────── */
             .track_name {
-                background: #1a1b1e;
+                background: {surface};
                 border: none;
                 border-bottom: 1px solid rgba(255, 255, 255, 0.05);
                 border-radius: 0;
                 box-shadow: none;
                 margin-left: 0;
                 height: 48px;
-                color: #e6e7ea;
+                color: {text};
             }
             .track_top {
                 padding-top: 4px;
@@ -1431,7 +471,7 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
 
             /* ── Track lanes ─────────────────────────────────── */
             .track {
-                background: #16171a;
+                background: {bg};
                 border: none;
                 border-top: 1px solid rgba(255, 255, 255, 0.04);
                 border-bottom: 1px solid rgba(255, 255, 255, 0.04);
@@ -1441,23 +481,23 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
                 transition: background 0.15s ease;
             }
             .track:hover {
-                background: #202226;
+                background: {hover};
             }
             .track_disabled {
-                background: #16171a !important;
+                background: {bg} !important;
             }
             .track-resize-handle {
-                background-color: #1a1b1e;
+                background-color: {surface};
                 border: 1px solid rgba(255, 255, 255, 0.04);
                 border-left: none;
                 border-radius: 0;
                 transition: background-color 0.15s ease;
             }
-            .track-resize-handle:hover { background-color: #26282c; }
+            .track-resize-handle:hover { background-color: {raised}; }
 
             /* ── Clips ───────────────────────────────────────── */
             .clip {
-                background: #2b3140;
+                background: {clip};
                 border: 1px solid rgba(255, 255, 255, 0.12);
                 border-radius: 4px;
                 box-sizing: border-box;
@@ -1491,7 +531,7 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
                 z-index: 2;
             }
             .clip_label {
-                color: #e6e7ea;
+                color: {text};
                 text-shadow: none;
                 font-size: 9pt;
             }
@@ -1514,16 +554,16 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
 
             /* Selection states */
             .ui-selecting {
-                border: 1px solid #3a72f5 !important;
+                border: 1px solid {accent} !important;
             }
             .ui-selected {
-                border: 2px solid #3a72f5 !important;
+                border: 2px solid {accent} !important;
                 filter: brightness(1.15);
             }
 
             /* Edge stop indicators */
-            .left_edge_stop  { border-left: 2px solid #3a72f5; }
-            .right_edge_stop { border-right: 2px solid #3a72f5; }
+            .left_edge_stop  { border-left: 2px solid {accent}; }
+            .right_edge_stop { border-right: 2px solid {accent}; }
 
             /* ── Transitions ─────────────────────────────────── */
             .transition {
@@ -1539,7 +579,7 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
             .transition:hover { opacity: 0.95; }
             .transition_top { background: none; }
             .transition.ui-selected { opacity: 1; }
-            .highlight_transition { border-color: #3a72f5 !important; }
+            .highlight_transition { border-color: {accent} !important; }
 
             /* ── Playhead ────────────────────────────────────── */
             .playhead-top {
@@ -1554,7 +594,7 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
                 position: absolute;
                 top: 0;
                 width: 2px;
-                background-color: #ff4a3d;
+                background-color: {playhead};
                 margin: -1px;
                 pointer-events: none;
             }
@@ -1566,7 +606,7 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
 
             /* ── Selection box ───────────────────────────────── */
             .ui-selectable-helper {
-                border: 1px solid #3a72f5;
+                border: 1px solid {accent};
                 background-color: rgba(58, 114, 245, 0.12);
             }
 
@@ -1590,7 +630,7 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
             .track-unlocked-enabled        { background-image: url(../themes/cosmic/images/track-unlocked-enabled.svg); }
             .keyframe-panel-add            { background-image: url(../themes/cosmic/images/keyframe-panel-add.svg); }
             .marker_icon                   { background-image: url(../themes/cosmic/images/marker.svg); }
-        """)
+        """))
 
         # Emit signal
         self.app.window.ThemeChangedSignal.emit(self)
