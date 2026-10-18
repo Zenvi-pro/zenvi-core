@@ -56,6 +56,7 @@ from classes.logger import log
 from classes.app import get_app
 from classes.metrics import track_metric_screen, track_metric_error
 from classes.query import File
+from themes.cosmic.tokens import TOKENS, resolve
 from classes.qt_main_thread import call_on_gui, invoke_on_gui
 
 import json
@@ -162,6 +163,8 @@ class Export(QDialog):
         # Load UI from designer & init
         ui_util.load_ui(self, self.ui_path)
         ui_util.init_ui(self)
+        for label in (self.lblChooseProfile, self.label_2):
+            label.setStyleSheet(resolve("color: {text_faint}; font-size: 12px;"))
         self._setup_toolbox_tab_order()
         self.exportTabs.tabBar().setFocusPolicy(Qt.StrongFocus)
 
@@ -1138,9 +1141,9 @@ class Export(QDialog):
             self.cancel_button.setVisible(False)
             self.export_button.setVisible(False)
             self.close_button.setVisible(True)
-            from qt_api import QPalette
+            from qt_api import QColor, QPalette
             p = QPalette()
-            p.setColor(QPalette.Highlight, Qt.green)
+            p.setColor(QPalette.Highlight, QColor(TOKENS["success"]))
             self.progressExportVideo.setPalette(p)
             self.enableControls()
             self.show()

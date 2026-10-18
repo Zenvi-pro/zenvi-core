@@ -22,10 +22,10 @@ from qt_api import (
     QFrame, QLabel, QPushButton, QProgressBar, QHBoxLayout, QVBoxLayout,
 )
 
+from themes.cosmic.tokens import resolve
 from classes.logger import log
 from windows.update_status_button import (
-    STATE_AVAILABLE, STATE_DOWNLOADING, STATE_READY, STATE_FAILED,
-    COLOR_ACCENT, COLOR_SUCCESS, COLOR_WARNING, svg_icon,
+    STATE_AVAILABLE, STATE_DOWNLOADING, STATE_READY, STATE_FAILED, svg_icon,
 )
 
 
@@ -69,12 +69,12 @@ class UpdatePanel(QFrame):
         self.setStyleSheet(self._stylesheet())
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 14)
-        layout.setSpacing(4)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(8)
 
         # Headline row — state glyph + title
         header = QHBoxLayout()
-        header.setSpacing(10)
+        header.setSpacing(8)
         self.glyph = QLabel(self)
         self.glyph.setFixedSize(QSize(GLYPH_SIZE, GLYPH_SIZE))
         self.title = QLabel(self)
@@ -91,17 +91,13 @@ class UpdatePanel(QFrame):
         self.detail.setWordWrap(True)
         layout.addWidget(self.detail)
 
-        layout.addSpacing(10)
-
         self.progress = QProgressBar(self)
         self.progress.setFixedHeight(4)
         self.progress.setTextVisible(False)
         layout.addWidget(self.progress)
 
-        layout.addSpacing(12)
-
         self.primary = QPushButton(self)
-        self.primary.setObjectName("updatePanelPrimary")
+        self.primary.setObjectName("acceptButton")
         self.primary.setCursor(Qt.PointingHandCursor)
         self.primary.setFixedHeight(32)
         self.primary.clicked.connect(self._on_primary)
@@ -152,7 +148,6 @@ class UpdatePanel(QFrame):
         self.progress.setVisible(False)
         self.primary.setText(self._tr("Download from zenvi.pro"))
         self.primary.setEnabled(True)
-        self._accent(COLOR_WARNING)
 
     def _show_downloading(self, percent, downloaded, total):
         self.title.setText(
@@ -174,7 +169,6 @@ class UpdatePanel(QFrame):
         self.progress.setVisible(True)
         self.primary.setText(self._tr("Downloading…"))
         self.primary.setEnabled(False)
-        self._accent(COLOR_ACCENT)
 
     def _show_ready(self, size):
         self.title.setText(
@@ -188,7 +182,6 @@ class UpdatePanel(QFrame):
         self.progress.setVisible(True)
         self.primary.setText(self._tr("Restart to Update"))
         self.primary.setEnabled(True)
-        self._accent(COLOR_SUCCESS)
 
     def _show_failed(self):
         self.title.setText(
@@ -197,31 +190,6 @@ class UpdatePanel(QFrame):
         self.progress.setVisible(False)
         self.primary.setText(self._tr("Download from zenvi.pro"))
         self.primary.setEnabled(True)
-        self._accent(COLOR_WARNING)
-
-    def _accent(self, color):
-        """Recolor the progress chunk and primary button for the current state."""
-        self.progress.setStyleSheet(
-            "QProgressBar { background: #1a1a1a; border: none; border-radius: 2px; }"
-            f"QProgressBar::chunk {{ background: {color}; border-radius: 2px; }}"
-        )
-        self.primary.setStyleSheet(
-            "QPushButton#updatePanelPrimary {"
-            f"  background-color: {color};"
-            "   color: #0f0f0f;"
-            "   border: none;"
-            "   border-radius: 6px;"
-            "   font-weight: 600;"
-            "   font-size: 12px;"
-            "}"
-            "QPushButton#updatePanelPrimary:hover {"
-            f"  background-color: {self._lighten(color)};"
-            "}"
-            "QPushButton#updatePanelPrimary:disabled {"
-            "   background-color: #2a2a2a;"
-            "   color: #6b6b6b;"
-            "}"
-        )
 
     @staticmethod
     def _lighten(hex_color, amount=24):
@@ -274,30 +242,30 @@ class UpdatePanel(QFrame):
         self.raise_()
 
     def _stylesheet(self):
-        return (
+        return resolve(
             "QFrame#updatePanel {"
-            "   background-color: #161616;"
-            "   border: 1px solid rgba(255, 255, 255, 0.08);"
-            "   border-radius: 10px;"
+            "   background-color: {raised};"
+            "   border: 1px solid {line_strong};"
+            "   border-radius: 8px;"
             "}"
             "QLabel#updatePanelTitle {"
-            "   color: #f2f2f2;"
+            "   color: {text};"
             "   font-size: 13px;"
             "   font-weight: 600;"
             "   background: transparent;"
             "}"
             "QLabel#updatePanelDetail {"
-            "   color: #8b8b8b;"
-            "   font-size: 11px;"
+            "   color: {text_muted};"
+            "   font-size: 12px;"
             "   background: transparent;"
             "}"
             "QPushButton#updatePanelLater {"
-            "   color: #8b8b8b;"
+            "   color: {text_muted};"
             "   background: transparent;"
             "   border: none;"
-            "   font-size: 11px;"
+            "   font-size: 12px;"
             "}"
-            "QPushButton#updatePanelLater:hover { color: #cfcfcf; }"
+            "QPushButton#updatePanelLater:hover { color: {text}; }"
         )
 
     def _tr(self, text):
