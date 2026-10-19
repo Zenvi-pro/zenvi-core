@@ -114,6 +114,10 @@ _launch_dir = os.path.dirname(os.path.abspath(__file__))
 if _launch_dir not in sys.path:
     sys.path.insert(0, _launch_dir)
 
+from classes.win_console import hide_child_consoles
+
+hide_child_consoles()
+
 # Export trial-encodes with a hardware encoder in a child copy of the app first,
 # because a broken one can abort() the process (classes/encoder_trial.py).
 # Answer before the update installer, crash handlers or Qt get involved.
