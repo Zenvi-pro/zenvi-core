@@ -113,8 +113,9 @@ def duck_depth(speech_levels_db: Sequence[float], bed_level_db: Optional[float],
     """How far to duck a music bed so it sits ``margin_db`` under the quietest voice it overlaps.
 
     Levels are what will be heard: source level plus the gain set on the clip. Returns ``{"duck_db", "needed", "limited"}``
-    where ``duck_db`` is a negative attenuation (None when the bed already sits far enough under, or its level is unknown:
-    the caller then leaves ducking to the editor's own estimate), and ``limited`` says the floor stopped it reaching the margin.
+    where ``duck_db`` is a negative attenuation (None when the bed already sits far enough under, needs a duck shallower than
+    ``ceiling_db``, or its level is unknown: the caller then leaves ducking to the editor's own estimate), and ``limited`` says the
+    floor stopped it reaching the margin.
     """
     levels = [float(x) for x in speech_levels_db if x is not None]
     if not levels or bed_level_db is None:
@@ -123,5 +124,7 @@ def duck_depth(speech_levels_db: Sequence[float], bed_level_db: Optional[float],
     needed = (quietest - margin_db) - float(bed_level_db)          # attenuation that gives exactly the margin (negative = quieter)
     if needed >= -0.5:
         return {"duck_db": None, "needed": round(needed, 1), "limited": False, "why": "already far enough under the voice"}
-    depth = min(ceiling_db, max(floor_db, needed))
+    if needed > ceiling_db:
+        return {"duck_db": None, "needed": round(needed, 1), "limited": False, "why": "too shallow to be worth keyframing"}
+    depth = max(floor_db, needed)
     return {"duck_db": round(depth, 1), "needed": round(needed, 1), "limited": needed < floor_db, "why": "ducked to the margin"}

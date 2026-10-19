@@ -571,11 +571,12 @@ def test_download_skips_cache_when_height_too_low(tmp_path, monkeypatch):
 
 
 # -- a public URL must not be able to send the download to a private address -------------
-def test_a_redirect_to_a_private_or_loopback_address_is_refused_not_followed():
+def test_a_redirect_to_a_private_or_loopback_address_is_refused_not_followed(monkeypatch):
     import http.server
     import threading
     import urllib.request
 
+    from classes import web_video_ingest as wvi
     from classes.web_video_ingest import open_public_url
 
     class Redirect(http.server.BaseHTTPRequestHandler):
@@ -595,7 +596,11 @@ def test_a_redirect_to_a_private_or_loopback_address_is_refused_not_followed():
     server = http.server.HTTPServer(("127.0.0.1", 0), Redirect)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        req = urllib.request.Request("http://127.0.0.1:%d/video.mp4" % server.server_port)
+        url = "http://127.0.0.1:%d/video.mp4" % server.server_port
+        real_check = wvi.assert_public_http_url
+        # open_public_url refuses a loopback first URL up front: let this test's own server through so the redirect guard is what gets tested
+        monkeypatch.setattr(wvi, "assert_public_http_url", lambda u: None if u == url else real_check(u))
+        req = urllib.request.Request(url)
         with pytest.raises(WebVideoIngestError, match="private or local"):
             open_public_url(req, timeout=5)
         with urllib.request.urlopen(req, timeout=5) as plain:       # what the code did before: it followed the redirect
@@ -603,6 +608,19 @@ def test_a_redirect_to_a_private_or_loopback_address_is_refused_not_followed():
     finally:
         server.shutdown()
         server.server_close()
+
+
+@pytest.mark.parametrize("url,refusal", [("file:///etc/passwd", "must be http"), ("http://127.0.0.1/x", "private or local")])
+def test_open_public_url_refuses_a_non_public_url_before_opening_anything(monkeypatch, url, refusal):
+    import socket
+    import urllib.request
+
+    from classes import web_video_ingest as wvi
+
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))])
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *a, **k: pytest.fail("a refused URL must not reach urllib"))
+    with pytest.raises(WebVideoIngestError, match=refusal):
+        wvi.open_public_url(urllib.request.Request(url), timeout=5)
 
 
 def test_a_redirect_to_a_public_address_is_still_followed(monkeypatch):

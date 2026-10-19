@@ -139,9 +139,10 @@ def test_the_duck_is_limited_by_the_floor_and_says_so():
     assert out["duck_db"] == M.DUCK_FLOOR_DB and out["limited"] is True and out["needed"] == -40.0
 
 
-def test_a_tiny_duck_is_not_worth_keyframing_but_a_small_one_is_raised_to_the_ceiling():
+def test_a_duck_shallower_than_the_ceiling_is_not_worth_keyframing_and_a_deeper_one_is_used_as_it_is():
     assert M.duck_depth([-20.0], -29.7)["duck_db"] is None, "needs only 0.3 dB"
-    assert M.duck_depth([-20.0], -28.5)["duck_db"] == M.DUCK_CEILING_DB, "needs 1.5 dB: a duck is either worth keyframing (3 dB) or not at all"
+    assert M.duck_depth([-20.0], -29.0)["duck_db"] is None, "needs 1 dB: shallower than the 3 dB ceiling, so not worth keyframing"
+    assert M.duck_depth([-20.0], -28.5)["duck_db"] is None, "needs 1.5 dB: still shallower than the ceiling, so no duck at all"
     assert M.duck_depth([-20.0], -26.0)["duck_db"] == -4.0, "deeper needs are used as they are"
 
 

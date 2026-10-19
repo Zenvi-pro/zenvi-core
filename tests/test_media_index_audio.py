@@ -374,6 +374,12 @@ def test_a_ramps_edges_win_and_a_novelty_edge_beside_one_is_the_same_change():
     assert au.merge_bounds([10.0, 12.0, 30.0], []) == [10.0, 30.0], "edges closer than the minimum gap collapse to the first"
 
 
+def test_ramps_that_touch_keep_their_pairs_and_the_peak_between_them():
+    out = au.ramp_boundaries(_energy(("ramp", 0.0, 1.0, 12), ("ramp", 0.3, 0.0, 20)))      # a build that drops straight into a fade at 9 s
+    assert out == pytest.approx([0.0, 9.0, 9.0, 28.0], abs=2.0), "two start/end pairs; dedupe would shift the pairing"
+    assert au.merge_bounds([15.0], out) == pytest.approx([0.0, 9.0, 28.0], abs=2.0), "the peak stays an edge; a novelty edge inside the fade is dropped"
+
+
 def test_a_fade_in_at_the_very_start_does_not_leave_a_sliver_section(tmp_path):
     seconds = 40
     t = np.arange(seconds * SR) / SR

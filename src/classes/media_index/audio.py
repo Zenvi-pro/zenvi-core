@@ -291,7 +291,8 @@ def ramp_boundaries(energy_by_second: np.ndarray) -> List[float]:
 
     A ramp is a stretch of at least ``RAMP_MIN_SECONDS`` where the smoothed energy keeps climbing (or falling) by at least
     ``RAMP_MIN_RISE``. It starts where it has covered 5% of the way and ends where it first gets within 5% of its top, so a long flat
-    intro or plateau around it is not counted as part of it.
+    intro or plateau around it is not counted as part of it. Returns the flat list of start, end pairs in time order (a
+    ramp can start where the one before it ends, so a time can appear twice).
     """
     n = int(energy_by_second.size)
     if n < 2 * RAMP_MIN_SECONDS:
@@ -318,7 +319,7 @@ def ramp_boundaries(energy_by_second: np.ndarray) -> List[float]:
                 i = best + 1
             else:
                 i += 1
-    return sorted(set(out))
+    return out          # pairs as found, in time order: a build that drops straight into a fade keeps its peak as a shared edge
 
 
 def edge_confidence(source: str, strength: Optional[float]) -> float:

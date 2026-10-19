@@ -16,7 +16,7 @@ import time
 from collections import Counter, OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
-from classes.editor_tools._base import ToolError, array, boolean, enum, integer, number, obj, ok, on_main, string, th
+from classes.editor_tools._base import ToolError, array, boolean, clip_frame_at, enum, get_app, integer, number, obj, ok, on_main, string, th
 from classes.editor_tools._registry import REGISTRY, editor_tool
 from classes.editor_tools.media_index_tools import _all_files, project_indexes
 from classes.editor_tools.effects_color_looks import _grade_values
@@ -28,6 +28,17 @@ MAX_PLANS = 6
 TRACK_NAME = "Recreation"
 SONG_TRACK_NAME = "Song"
 _PLANS: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+PLACED_KEY = "recreation_placed"     # project key: track name -> ids of the clips this tool placed there; a build removes these and nothing else
+
+
+def _placed(track: str) -> List[str]:
+    stored = get_app().project.get(PLACED_KEY) or {}
+    return list(stored.get(track) or []) if isinstance(stored, dict) else []
+
+
+def _set_placed(track: str, ids: List[str]) -> None:
+    """Saved in the project (not undoable, like the edit brief), so a build after a restart still finds its own clips."""
+    on_main(lambda: get_app().updates.update_untracked([PLACED_KEY], {track: list(ids)}))
 
 # areas of the check, with how much each counts towards the overall score; the recreation passes when the overall score is at least
 # PASS_SCORE and no area is below AREA_FLOOR
@@ -262,11 +273,13 @@ def _ramp_exposure(clip_id: str, stops: float, frames: int) -> bool:
     if _applied_grade(clip_id) is None:                                # a shot that needed no grade still needs the effect to ramp
         _call("color_grade_clip_tool", timeline_clip_ids=[clip_id], exposure=0.0, reset=True)
         clip = Clip.get(id=clip_id)
-    effects = copy.deepcopy((clip.data or {}).get("effects") or [])
+    data = clip.data or {}
+    first = clip_frame_at(data, float(data.get("position") or 0.0))           # keyframes count from the source's first frame (clip_frame_at): start on the frame the clip shows
+    effects = copy.deepcopy(data.get("effects") or [])
     for effect in effects:
         if effect.get("class_name") == "ColorGrade":
             base = keyframe_value(effect.get("exposure"), 0.0)
-            effect["exposure"] = {"Points": [cpm.make_point(1, round(base - stops / 2.0, 3), cpm.BEZIER), cpm.make_point(frames, round(base + stops / 2.0, 3), cpm.BEZIER)]}
+            effect["exposure"] = {"Points": [cpm.make_point(first, round(base - stops / 2.0, 3), cpm.BEZIER), cpm.make_point(first + frames - 1, round(base + stops / 2.0, 3), cpm.BEZIER)]}
             save_clip_effects([(clip_id, effects)])
             return True
     return False
@@ -311,18 +324,19 @@ def _aligned_window(file_id: str, start: float, length: float) -> float:
     return st
 
 
-def _snapshot(layer: int, spans: Optional[List[Tuple[float, float]]] = None) -> List[Dict[str, Any]]:
-    """The clips about to be cleared from the track (all of them, or those in the spans), so a failed build can put them back."""
+def _snapshot(track: str, spans: Optional[List[Tuple[float, float]]] = None) -> List[Dict[str, Any]]:
+    """The clips this tool placed on the track (all of them, or those in the spans): what a build clears, and what a failed build puts back."""
     from classes import audio_mix as am
     from classes.query import Clip
     rows = []
-    for c in Clip.filter():
-        data = c.data or {}
-        if not layer or int(data.get("layer") or 0) != layer:
+    for cid in _placed(track):
+        c = Clip.get(id=cid)
+        if c is None:
             continue
+        data = c.data or {}
         start, end = am.clip_timeline_extent(data)
         if spans is None or any(start < hi - 1e-6 and end > lo + 1e-6 for lo, hi in spans):
-            rows.append({"file_id": str(data.get("file_id") or ""), "position": float(start), "in": float(data.get("start") or 0.0), "out": float(data.get("end") or 0.0)})
+            rows.append({"id": str(cid), "file_id": str(data.get("file_id") or ""), "position": float(start), "in": float(data.get("start") or 0.0), "out": float(data.get("end") or 0.0)})
     return sorted(rows, key=lambda r: r["position"])
 
 
@@ -336,10 +350,11 @@ def _restore(rows: List[Dict[str, Any]], track: str) -> None:
             runs.append([r])
     for run in runs:
         try:
-            _call("add_clips_to_timeline_tool", items=[{"file_id": r["file_id"], "source_start": r["in"], "source_end": r["out"]} for r in run],
-                  track=track, start_seconds=run[0]["position"], allow_overlap=True)
+            data = _call("add_clips_to_timeline_tool", items=[{"file_id": r["file_id"], "source_start": r["in"], "source_end": r["out"]} for r in run],
+                         track=track, start_seconds=run[0]["position"], allow_overlap=True)
         except ToolError:
             continue
+        _set_placed(track, _placed(track) + [str(c["timeline_clip_id"]) for c in data.get("clips") or []])
 
 
 def _in_one_batch(fn):
@@ -370,22 +385,15 @@ def _clip_rows_on(layer: int) -> List[Tuple[str, float, float]]:
     return rows
 
 
-def _clear_track(name: str, layer: int) -> int:
-    """Remove every clip on the named track; returns how many were removed."""
-    count = len(_clip_rows_on(layer))
-    if count:
-        gone = th().delete_clips_on_track(track=name)
+def _clear_placed(track: str, rows: List[Dict[str, Any]]) -> int:
+    """Remove the clips this tool placed (the rows _snapshot picked) from the track and from its record; returns how many were removed."""
+    for r in rows:
+        gone = th().delete_from_timeline(timeline_clip_id=r["id"])
         if str(gone).startswith("Error"):
-            raise ToolError(f"could not clear the {name} track: {gone}")
-    return count
-
-
-def _clear_slots(layer: int, spans: List[Tuple[float, float]]) -> int:
-    """Remove the clips on the track that sit in any of these time spans (a rebuild replaces its own slots)."""
-    ids = [cid for cid, a, b in _clip_rows_on(layer) if any(a < hi - 1e-6 and b > lo + 1e-6 for lo, hi in spans)]
-    for cid in ids:
-        th().delete_from_timeline(timeline_clip_id=cid)
-    return len(ids)
+            raise ToolError(f"could not clear the {track} track: {gone}")
+    gone_ids = {r["id"] for r in rows}
+    _set_placed(track, [cid for cid in _placed(track) if cid not in gone_ids])
+    return len(rows)
 
 
 def _wanted_zoom(ref_type: Optional[str], src_type: Optional[str]) -> float:
@@ -455,12 +463,14 @@ def _fade_alpha(clip_id: str, frames: int, direction: str, total_frames: int) ->
     if clip is None or total_frames < 3:
         return
     frames = max(1, min(frames, total_frames - 1))
+    first = clip_frame_at(clip.data or {}, float((clip.data or {}).get("position") or 0.0))   # keyframes count from the source's first frame: the fade sits on the frames the clip shows
+    last = first + total_frames - 1
     existing = {int(float(p["co"]["X"])): float(p["co"]["Y"]) for p in ((clip.data or {}).get("alpha") or {}).get("Points", []) if len(((clip.data or {}).get("alpha") or {}).get("Points", [])) > 1}
-    points = dict(existing) if existing else {1: 1.0, total_frames: 1.0}
+    points = dict(existing) if existing else {first: 1.0, last: 1.0}
     if direction == "in":
-        points.update({1: 0.0, 1 + frames: 1.0})
+        points.update({first: 0.0, first + frames: 1.0})
     else:
-        points.update({total_frames - frames: 1.0, total_frames: 0.0})
+        points.update({last - frames: 1.0, last: 0.0})
 
     def apply() -> None:
         with clip_props._transaction():
@@ -528,14 +538,11 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
         starts = {r["reference_shot"]: _aligned_window(_effective(r, plan)["file_id"], float(_effective(r, plan)["in"]), slot_len[r["reference_shot"]]) for r in todo}
 
         _ensure_track(plan["track_name"])
-        layer = _layer_of(plan["track_name"])
         spans = None if wanted is None else [(snap(r["start"]), snap(r["end"])) for r in todo]
-        snapshot = _snapshot(layer, spans)
+        snapshot = _snapshot(plan["track_name"], spans)
+        replaced = _clear_placed(plan["track_name"], snapshot)           # a rebuild replaces the clips this tool placed, even if the plan was lost; the user's own clips stay
         if wanted is None:
-            replaced = _clear_track(plan["track_name"], layer)           # a full build starts from an empty Recreation track (it is ours by name)
             plan["placed"] = {}
-        else:
-            replaced = _clear_slots(layer, spans or [])                  # a rebuild replaces just those shots, even if the plan was lost
 
         # place in contiguous runs; each clip's length is the difference of the snapped slot boundaries, so rounding never drifts
         runs: List[List[Dict[str, Any]]] = []
@@ -558,6 +565,7 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
             _restore(snapshot, plan["track_name"])
             raise
         plan["placed"].update(placed_ids)
+        _set_placed(plan["track_name"], _placed(plan["track_name"]) + list(placed_ids.values()))
 
         graded = 0
         ramped = 0
@@ -631,18 +639,19 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
             if ref is not None:
                 try:
                     _ensure_track(SONG_TRACK_NAME)
-                    _clear_track(SONG_TRACK_NAME, _layer_of(SONG_TRACK_NAME))      # a new plan must not stack another copy of the song on the last one
+                    _clear_placed(SONG_TRACK_NAME, _snapshot(SONG_TRACK_NAME))     # a new plan must not stack another copy of the song on the last one
                     wanted_end = max(float(r["end"]) for r in plan["rows"])
                     usable_end = _inside_file(plan["reference_file_id"], wanted_end, 0.0)        # the editor's usable end of the file, which the index can overrun
                     added = _call("add_clips_to_timeline_tool", items=[{"file_id": plan["reference_file_id"], "source_start": 0.0, "source_end": round(min(wanted_end, usable_end), 3)}],
                                   track=SONG_TRACK_NAME, start_seconds=0.0, allow_overlap=True)
                     plan["song_clip"] = str((added.get("clips") or [{}])[0].get("timeline_clip_id") or "")
                     if plan["song_clip"]:
+                        _set_placed(SONG_TRACK_NAME, _placed(SONG_TRACK_NAME) + [plan["song_clip"]])
                         _call("set_clip_audio_video_tool", timeline_clip_ids=[plan["song_clip"]], video="off")
                         song_note = f" Song: the reference's audio on track '{SONG_TRACK_NAME}' (picture off)."
                 except ToolError as exc:                                  # the clips are the valuable part: say what failed, keep them
                     song_note = f" The song was NOT added ({exc}); add the reference's audio yourself."
-        if song and placed_ids:
+        if song and plan["song_clip"] and placed_ids:                # the footage goes silent only once the song is on the timeline
             _call("set_clip_audio_video_tool", timeline_clip_ids=list(placed_ids.values()), audio="off")
 
         return placed_ids, replaced, graded, song_note, zoomed, ramped, (made_transitions, skipped_transitions)

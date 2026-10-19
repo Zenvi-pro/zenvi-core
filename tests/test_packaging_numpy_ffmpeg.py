@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -73,6 +75,16 @@ def test_build_script_pins_its_sources_and_stays_self_contained():
     assert "links non-system libraries" in sh
 
 
+def test_mac_dmg_script_execs_and_signs_the_bundled_ffmpeg_cli():
+    sh = _read("installer/build-mac-dmg.sh")
+    # No extension: the chmod a-x pass strips +x and the *.dylib/*.so passes skip them.
+    for name in ("ffmpeg", "ffprobe"):
+        assert f'chmod +x "$OS_PATH/MacOS/lib/{name}"' in sh, f"{name} needs +x back after the chmod pass"
+    loop = "for bin in ffmpeg ffprobe; do"
+    assert loop in sh, "ffmpeg and ffprobe must be looped over for codesign"
+    assert "codesign" in sh.split(loop, 1)[1].split("done", 1)[0], "ffmpeg and ffprobe must be codesigned"
+
+
 def test_find_ffmpeg_prefers_the_frozen_lib_dir_over_homebrew(monkeypatch, tmp_path):
     import sys
 
@@ -93,5 +105,31 @@ def test_find_ffmpeg_prefers_the_frozen_lib_dir_over_homebrew(monkeypatch, tmp_p
     ffmpeg_cli.find_ffmpeg.cache_clear()
     try:
         assert ffmpeg_cli.find_ffmpeg("ffmpeg") == str(bundled)
+    finally:
+        ffmpeg_cli.find_ffmpeg.cache_clear()
+
+
+@pytest.mark.parametrize("frozen", [True, False], ids=["frozen", "source-run"])
+def test_find_ffmpeg_bundled_copy_beats_path_only_when_frozen(monkeypatch, tmp_path, frozen):
+    import sys
+
+    sys.path.insert(0, str(ROOT / "src"))
+    from classes import ffmpeg_cli
+
+    exe_dir = tmp_path / "app"
+    bundled = exe_dir / "lib" / "ffmpeg"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_text("")
+    on_path = str(tmp_path / "other" / "ffmpeg")
+
+    monkeypatch.delenv("FFMPEG_BIN_DIR", raising=False)
+    monkeypatch.delenv("ZENVI_FFMPEG_DIR", raising=False)
+    monkeypatch.setattr(ffmpeg_cli.shutil, "which", lambda *_a, **_k: on_path)
+    monkeypatch.setattr(sys, "frozen", frozen, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe_dir / "launch"))
+    ffmpeg_cli.find_ffmpeg.cache_clear()
+    try:
+        expected = str(bundled) if frozen else on_path
+        assert ffmpeg_cli.find_ffmpeg("ffmpeg") == expected
     finally:
         ffmpeg_cli.find_ffmpeg.cache_clear()

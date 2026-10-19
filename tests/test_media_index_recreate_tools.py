@@ -276,6 +276,7 @@ def test_a_song_that_cannot_be_added_is_reported_and_the_clips_are_kept(studio, 
     receipt = studio.ed.call_receipt("build_recreation_tool", plan_id=plan(studio)["plan_id"])
     assert receipt["status"] == "applied" and "song was NOT added" in receipt["summary"]
     assert receipt["data"]["placed"] == 6 and len(picture_clips(studio)) == 6
+    assert not any(R._is_muted(c["id"]) for c in picture_clips(studio))          # no song on the timeline, so the footage keeps its own sound
 
 
 def test_a_build_that_fails_after_clearing_puts_the_old_clips_back(studio, monkeypatch):
@@ -450,3 +451,63 @@ def test_building_again_with_a_new_plan_does_not_stack_a_second_copy_of_the_song
     layer = R._layer_of(R.SONG_TRACK_NAME)
     songs = [c for c in Clip.filter() if int((c.data or {}).get("layer") or 0) == layer]
     assert len(songs) == 1
+
+
+def trimmed_clip(studio, position=0.0):
+    """A clip trimmed to 12-15 s on a 25 fps project: it shows source frames 301 to 375 (keyframes count from the source's first frame)."""
+    studio.ed.store._data["fps"] = {"num": 25, "den": 1}
+    fid = studio.ed.add_file("video", duration=20.0, path="/m/trim.mp4")
+    return studio.ed.add_clip(fid, position=position, start=12.0, end=15.0)
+
+
+def test_a_fade_in_on_a_clip_trimmed_by_its_start_begins_on_the_frame_the_clip_shows(studio):
+    from classes.editor_tools import media_index_tools_recreate as R
+    from classes.query import Clip
+    clip = trimmed_clip(studio)
+    R._fade_alpha(clip, 12, "in", 75)
+    first = min(Clip.get(id=clip).data["alpha"]["Points"], key=lambda p: p["co"]["X"])
+    assert abs(first["co"]["X"] - 301) < 1e-6 and first["co"]["Y"] == 0.0
+
+
+def test_a_fade_out_on_a_clip_trimmed_by_its_start_ends_on_the_frame_the_clip_shows(studio):
+    from classes.editor_tools import media_index_tools_recreate as R
+    from classes.query import Clip
+    clip = trimmed_clip(studio)
+    R._fade_alpha(clip, 12, "out", 75)
+    last = max(Clip.get(id=clip).data["alpha"]["Points"], key=lambda p: p["co"]["X"])
+    assert abs(last["co"]["X"] - 375) < 1e-6 and last["co"]["Y"] == 0.0
+
+
+def test_a_ramp_on_a_clip_trimmed_by_its_start_is_keyed_on_the_frames_it_shows(studio):
+    from classes.editor_tools import media_index_tools_recreate as R
+    from classes.query import Clip
+    clip = trimmed_clip(studio)
+    assert R._ramp_exposure(clip, 0.6, 75)
+    effect = next(e for e in Clip.get(id=clip).data["effects"] if e["class_name"] == "ColorGrade")
+    assert [round(p["co"]["X"]) for p in effect["exposure"]["Points"]] == [301, 375]
+
+
+def test_clips_the_user_put_on_tracks_named_song_or_recreation_survive_a_build(studio):
+    from classes.editor_tools import media_index_tools_recreate as R
+    from classes.query import Clip
+    studio.ed.add_track(10, label=R.SONG_TRACK_NAME)
+    studio.ed.add_track(11, label=R.TRACK_NAME)
+    own_song = studio.ed.add_clip(studio.src["mid"], layer=10, position=20.0, end=1.0)
+    own_rec = studio.ed.add_clip(studio.src["bright"], layer=11, position=20.0, end=1.0)
+    pid = plan(studio)["plan_id"]
+    assert build_it(studio, pid)["placed"] == 6
+    assert Clip.get(id=own_song) is not None and Clip.get(id=own_rec) is not None
+    again = build_it(studio, pid)                                    # a second build replaces the tool's own clips, not the user's
+    songs = [c for c in studio.ed.clips() if c["layer"] == 10 and c["file_id"] == studio.ref]
+    assert again["placed"] == 6 and again["replaced"] == 6 and len(songs) == 1
+
+
+def test_a_build_after_the_editor_restarted_still_replaces_its_own_clips_and_song(studio):
+    from classes.editor_tools import media_index_tools_recreate as R
+    pid = plan(studio)["plan_id"]
+    assert build_it(studio, pid)["placed"] == 6
+    R._PLANS.clear()                                                  # a restart forgets everything held in memory
+    getattr(R, "_PLACED", {}).clear()
+    again = build_it(studio, plan(studio)["plan_id"])
+    songs = [c for c in studio.ed.clips() if c["file_id"] == studio.ref]
+    assert again["placed"] == 6 and again["replaced"] == 6 and len(songs) == 1

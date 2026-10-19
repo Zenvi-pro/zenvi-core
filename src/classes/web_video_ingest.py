@@ -111,8 +111,9 @@ class _PublicOnlyRedirects(urllib.request.HTTPRedirectHandler):
 def open_public_url(request, timeout: float):
     """``urlopen`` for a user-supplied URL that also refuses redirects to private, loopback or link-local addresses.
 
-    The caller still checks the first URL with ``assert_public_http_url``. Raises WebVideoIngestError on a refused hop.
+    The URL itself is checked with ``assert_public_http_url`` before anything is opened. Raises WebVideoIngestError on a refused hop.
     """
+    assert_public_http_url(request.full_url if isinstance(request, urllib.request.Request) else request)
     return urllib.request.build_opener(_PublicOnlyRedirects).open(request, timeout=timeout)
 
 

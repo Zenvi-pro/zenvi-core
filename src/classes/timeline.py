@@ -91,7 +91,7 @@ class TimelineSync(UpdateInterface):
         """ This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface) """
 
         # Ignore changes that don't affect libopenshot
-        if action and len(action.key) >= 1 and action.key[0].lower() in ["files", "history", "markers", "layers", "scale", "profile", "export_settings", "export_overrides", "zenvi_cloud"]:
+        if action and len(action.key) >= 1 and action.key[0].lower() in ["files", "history", "markers", "layers", "scale", "profile", "export_settings", "export_overrides", "zenvi_cloud", "edit_brief", "recreation_placed"]:
             return
 
         if action and action.type != "load" and update_batch.active():
