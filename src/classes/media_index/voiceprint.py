@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import wave
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
@@ -190,6 +190,3 @@ def speakers_of(session: Any, samples: np.ndarray, words: Sequence[Any], *, thre
 def cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / ((np.linalg.norm(a) * np.linalg.norm(b)) or 1.0))
 
-
-def check_dims(vec: Sequence[float]) -> Tuple[bool, str]:
-    return (len(vec) == EMBED_DIMS, f"expected {EMBED_DIMS} numbers")

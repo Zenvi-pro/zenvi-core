@@ -250,11 +250,6 @@ def per_second(values: np.ndarray, frame_hz: float = FRAME_HZ) -> np.ndarray:
     return np.bincount(idx[keep], weights=values[keep], minlength=seconds) / np.maximum(1, np.bincount(idx[keep], minlength=seconds))
 
 
-def novelty_boundaries(features: np.ndarray, min_gap: float = SECTION_MIN_SECONDS) -> List[int]:
-    """Second indices where the music changes character (Foote's checkerboard novelty on a self-similarity matrix)."""
-    return [t for t, _strength in novelty_peaks(features, min_gap)]
-
-
 def novelty_peaks(features: np.ndarray, min_gap: float = SECTION_MIN_SECONDS) -> List[Tuple[int, float]]:
     """Second indices where the music changes character, each with how far its novelty peak stands above the bar (1.0 = at the bar)."""
     t_len = features.shape[0]

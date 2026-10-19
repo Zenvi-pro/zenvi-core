@@ -1,7 +1,6 @@
 """Colour measured per shot and per file, checked against pictures whose answers are known.
 
-The scope definition is pinned against the real FrameScope in ``test_framescope_parity`` (needs
-libopenshot): Rec.601 luma rounded to 8 bits, clipped shadows = luma <= 2, clipped highlights =
+The scope definition matches libopenshot's FrameScope: Rec.601 luma rounded to 8 bits, clipped shadows = luma <= 2, clipped highlights =
 luma >= 253, 256-bin histograms. Measured at the time of writing on a structured 640x360 still:
 average luma, clipped counts and the R/G/B histograms were identical, and the luma histogram
 differed by 248 of 230400 pixels (rounding). Small analysis frames were also compared with a
@@ -42,24 +41,7 @@ def feed(frames, fps=10.0, stride=1):
     return acc
 
 
-# ============================ the per-frame scope ============================
-def test_frame_scope_has_the_framescope_shape_and_counts():
-    rgb = np.zeros((10, 10, 3), np.uint8)
-    rgb[:5] = 255            # half white, half black
-    scope = look.frame_scope(rgb_to_gray(rgb), rgb)
-    assert len(scope["histogram"]["luma"]) == 256 and sum(scope["histogram"]["luma"]) == 100
-    assert scope["summary"]["clipped_shadows"] == 50 and scope["summary"]["clipped_highlights"] == 50
-    assert scope["summary"]["avg_luma"] == pytest.approx(0.5)
-
-
-def test_clipping_thresholds_match_framescope():
-    # Probed on the real library: grey 0..2 count as clipped shadows, 253..255 as clipped highlights.
-    for level, shadow, highlight in ((2, 1, 0), (3, 0, 0), (252, 0, 0), (253, 0, 1), (255, 0, 1)):
-        rgb = solid(level, level, level)
-        s = look.frame_scope(rgb_to_gray(rgb), rgb)["summary"]
-        assert (s["clipped_shadows"] > 0, s["clipped_highlights"] > 0) == (bool(shadow), bool(highlight)), level
-
-
+# ============================ known colours ============================
 def test_known_colours_have_the_known_measurements():
     acc = feed([solid(200, 100, 50)] * 10)
     r = acc.profile(0, 1.0)
@@ -224,48 +206,3 @@ def test_a_decoded_video_yields_a_profile_for_every_shot(tmp_path):
     assert out["file"]["profile"]["samples"] == out["sampling"]["frames"]
     assert 0.0 <= out["file"]["profile"]["clipped_shadows"] <= 1.0, "clipping must come out as a fraction"
     assert out["pipeline"]["hdr"] is False
-
-
-# ============================ against the real FrameScope ============================
-def test_framescope_parity_on_a_structured_still(tmp_path):
-    openshot = pytest.importorskip("openshot")
-    if not hasattr(openshot, "FrameScope"):
-        pytest.skip("needs the real libopenshot module (ZENVI_REAL_QT=1 and openshot on PYTHONPATH)")
-    w, h = 640, 360
-    rng = np.random.default_rng(7)
-    y, x = np.mgrid[0:h, 0:w]
-    img = np.zeros((h, w, 3), np.float64)
-    img[..., 0], img[..., 1] = x / w * 255, y / h * 255
-    img[..., 2] = 128 + 100 * np.sin(x / 37.0) * np.cos(y / 23.0)
-    img[40:90, 40:200] = 0
-    img[200:260, 300:520] = 255
-    img[100:180, 400:560] = (250, 40, 60)
-    img += rng.normal(0, 6, img.shape)
-    rgb = np.clip(img, 0, 255).astype(np.uint8)
-    png = tmp_path / "still.png"
-    Image.fromarray(rgb).save(png)
-
-    timeline = openshot.Timeline(w, h, openshot.Fraction(30, 1), 48000, 2, 3)
-    clip = openshot.Clip(str(png))
-    clip.Position(0.0)
-    clip.End(1.0)
-    timeline.AddClip(clip)
-    timeline.Open()
-    try:
-        scope = openshot.FrameScope()
-        scope.SetFrame(timeline.GetFrame(3))
-        real = {"avg": scope.GetVideoAverageLuma(), "cs": scope.GetVideoClippedShadows(),
-                "ch": scope.GetVideoClippedHighlights(), "luma": np.array(list(scope.GetVideoHistogramLuma())),
-                "r": np.array(list(scope.GetVideoHistogramRed())), "g": np.array(list(scope.GetVideoHistogramGreen())),
-                "b": np.array(list(scope.GetVideoHistogramBlue()))}
-    finally:
-        timeline.Close()
-
-    mine = look.frame_scope(rgb_to_gray(rgb), rgb)
-    assert mine["summary"]["avg_luma"] == pytest.approx(real["avg"], abs=1e-3)
-    assert mine["summary"]["clipped_shadows"] == int(real["cs"])
-    assert mine["summary"]["clipped_highlights"] == int(real["ch"])
-    for name, key in (("red", "r"), ("green", "g"), ("blue", "b")):
-        assert np.array_equal(np.array(mine["histogram"][name]), real[key]), name
-    l1 = np.abs(np.array(mine["histogram"]["luma"]) - real["luma"]).sum()
-    assert l1 / real["luma"].sum() < 0.005, "luma histograms may differ only by rounding"

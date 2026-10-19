@@ -64,20 +64,6 @@ class Sample:
         }
 
 
-def frame_scope(luma8: np.ndarray, rgb: np.ndarray) -> Dict[str, Any]:
-    """The raw ``video`` dict FrameScope would report for this frame (clipped values are pixel counts)."""
-    hist = [np.bincount(rgb[..., c].ravel(), minlength=256) for c in range(3)]
-    hist_luma = np.bincount(luma8.ravel(), minlength=256)
-    return {
-        "present": True,
-        "histogram": {"luma": hist_luma.tolist(), "red": hist[0].tolist(),
-                      "green": hist[1].tolist(), "blue": hist[2].tolist()},
-        "summary": {"avg_luma": float(luma8.mean()) / 255.0,
-                    "clipped_shadows": int((luma8 <= 2).sum()),
-                    "clipped_highlights": int((luma8 >= 253).sum())},
-    }
-
-
 def _saturation_hue(rgb: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     f = rgb.astype(np.float32) / 255.0
     mx, mn = f.max(axis=-1), f.min(axis=-1)

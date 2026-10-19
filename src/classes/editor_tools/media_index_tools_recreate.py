@@ -174,7 +174,7 @@ def plan_recreation(reference_file_id, source_file_ids=[], max_reuse=1, stock="a
             stock_ok = True
             r["stock"] = found
     plan = {"reference_file_id": str(reference_file_id), "reference_name": ref.name, "rows": rows, "reuse": out["reuse"], "overrides": {},
-            "placed": {}, "song_clip": "", "track_name": TRACK_NAME, "pool_ids": [f.file_id for f in pool]}
+            "song_clip": "", "track_name": TRACK_NAME, "pool_ids": [f.file_id for f in pool]}
     plan_id = _remember(plan)
     weak = [r["reference_shot"] for r in rows if r["status"] != "matched"]
     reuse = out["reuse"]
@@ -373,18 +373,6 @@ def _layer_of(name: str) -> int:
     return next((int((t.data or {}).get("number") or 0) for t in Track.filter() if str((t.data or {}).get("label") or "") == name), 0)
 
 
-def _clip_rows_on(layer: int) -> List[Tuple[str, float, float]]:
-    from classes.query import Clip
-    from classes import audio_mix as am
-    rows = []
-    for c in Clip.filter():
-        data = c.data or {}
-        if layer and int(data.get("layer") or 0) == layer:
-            start, end = am.clip_timeline_extent(data)
-            rows.append((str(c.id), float(start), float(end)))
-    return rows
-
-
 def _clear_placed(track: str, rows: List[Dict[str, Any]]) -> int:
     """Remove the clips this tool placed (the rows _snapshot picked) from the track and from its record; returns how many were removed."""
     for r in rows:
@@ -541,8 +529,6 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
         spans = None if wanted is None else [(snap(r["start"]), snap(r["end"])) for r in todo]
         snapshot = _snapshot(plan["track_name"], spans)
         replaced = _clear_placed(plan["track_name"], snapshot)           # a rebuild replaces the clips this tool placed, even if the plan was lost; the user's own clips stay
-        if wanted is None:
-            plan["placed"] = {}
 
         # place in contiguous runs; each clip's length is the difference of the snapped slot boundaries, so rounding never drifts
         runs: List[List[Dict[str, Any]]] = []
@@ -564,7 +550,6 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
                 th().delete_from_timeline(timeline_clip_id=clip_id)
             _restore(snapshot, plan["track_name"])
             raise
-        plan["placed"].update(placed_ids)
         _set_placed(plan["track_name"], _placed(plan["track_name"]) + list(placed_ids.values()))
 
         graded = 0

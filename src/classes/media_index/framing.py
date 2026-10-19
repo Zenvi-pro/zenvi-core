@@ -29,24 +29,6 @@ LOW_CONFIDENCE = 0.25
 CENTER_SIGMA = 0.25
 
 
-def _box(a: np.ndarray, r: int = 1) -> np.ndarray:
-    """Mean over a (2r+1) square, edges repeated."""
-    padded = np.pad(a, r, mode="edge")
-    out = np.zeros_like(a, dtype=np.float64)
-    for dy in range(2 * r + 1):
-        for dx in range(2 * r + 1):
-            out += padded[dy:dy + a.shape[0], dx:dx + a.shape[1]]
-    return out / float((2 * r + 1) ** 2)
-
-
-def _blur(a: np.ndarray) -> np.ndarray:
-    k = np.array([1, 4, 6, 4, 1], dtype=np.float64) / 16.0
-    padded = np.pad(a, 2, mode="edge")
-    horizontal = sum(k[i] * padded[2:-2, i:i + a.shape[1]] for i in range(5))
-    padded = np.pad(horizontal, ((2, 2), (0, 0)), mode="edge")
-    return sum(k[i] * padded[i:i + a.shape[0], :] for i in range(5))
-
-
 def _shrink(gray: np.ndarray, size: Tuple[int, int]) -> np.ndarray:
     """Area-average *gray* down to size (w, h)."""
     h, w = gray.shape
