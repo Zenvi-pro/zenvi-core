@@ -12,7 +12,8 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
 from classes import tool_handlers as th  # noqa: E402
-from classes.media_index import embedder as E, schema as S  # noqa: E402
+import numpy as np  # noqa: E402
+from classes.media_index import embedder as E, schema as S, vectors  # noqa: E402
 from classes.media_index.store import Shelf  # noqa: E402
 
 
@@ -21,7 +22,10 @@ def _setup(monkeypatch, tmp_path, *, ready=(), busy=False):
     shelf = Shelf(str(tmp_path))
     key = "ef" * 32
     for layer in ready:
-        shelf.set_layer(key, layer, version=S.LAYER_VERSIONS.get(layer, 9), status="ready", model=E.MODEL_LOCAL)
+        if layer == S.LAYER_VECTORS:
+            vectors.write_layer(shelf, key, [{"kind": "image", "shot": 0, "t": 1.0}], [np.ones(4, np.float32) / 2], model=E.MODEL_LOCAL)
+        else:
+            shelf.set_layer(key, layer, version=S.LAYER_VERSIONS.get(layer, 9), status="ready")
     monkeypatch.setattr("classes.editor_tools.media_index_tools.default_shelf", lambda: shelf)
     files_model = MagicMock()
     files_model.is_file_indexing.return_value = busy

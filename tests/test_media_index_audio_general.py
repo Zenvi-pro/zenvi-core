@@ -51,10 +51,10 @@ def test_a_click_track_gets_no_downbeats_because_no_four_beat_bar_is_assumed(tmp
     assert not out["music"].get("downbeats"), "every fourth beat is not a bar"
 
 
-def test_phrase_points_are_where_the_sections_change(tmp_path):
+def test_phrase_points_are_the_section_starts_including_the_first(tmp_path):
     music = analyse(write_wav(tmp_path / "song.wav", three_part_song()))["music"]
-    starts = [s["start"] for s in music["sections"][1:]]
-    assert len(starts) == 2 and music["phrase_points"] == starts
+    starts = [s["start"] for s in music["sections"]]
+    assert len(starts) == 3 and music["phrase_points"] == starts and starts[0] == 0.0, "a track placed at its first phrase keeps its intro"
 
 
 def test_a_clean_90_bpm_click_track_is_not_pulled_toward_120(tmp_path):

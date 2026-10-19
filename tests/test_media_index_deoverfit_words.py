@@ -63,15 +63,10 @@ def _media(tmp_path, name):
     return str(p)
 
 
-def test_a_japanese_file_name_starts_no_retry_when_the_recogniser_heard_the_machine_language(tmp_path, monkeypatch):
-    monkeypatch.setattr(sf, "_machine_language", lambda: "en", raising=False)
-    rec = Recogniser(heard="en-US")
-    got = sf.load_or_transcribe(_media(tmp_path, "【推しの子】ED.mp4"), PROBE, SHA, Shelf(str(tmp_path / "shelf")), transcribe=rec)
-    assert rec.calls == ["auto"] and "retried_language" not in got
-
-
-def test_a_latin_file_name_is_retried_in_the_language_the_recogniser_heard(tmp_path, monkeypatch):
-    monkeypatch.setattr(sf, "_machine_language", lambda: "en", raising=False)
-    rec = Recogniser(heard="ja-JP")
-    got = sf.load_or_transcribe(_media(tmp_path, "holiday.mp4"), PROBE, SHA, Shelf(str(tmp_path / "shelf")), transcribe=rec)
-    assert rec.calls == ["auto", "ja-JP"] and got["retried_language"] == "ja-JP" and len(got["words"]) == 13
+def test_indexing_transcribes_once_whatever_the_name_or_the_language_heard(tmp_path):
+    """The engines report the language their first pass already used, so a second pass in it only repeats the first. Another
+    language is asked for explicitly (get_lyrics_tool), never guessed from the file name."""
+    for i, (name, heard) in enumerate((("【推しの子】ED.mp4", "en-US"), ("holiday.mp4", "ja-JP"))):
+        rec = Recogniser(heard=heard)
+        got = sf.load_or_transcribe(_media(tmp_path, name), PROBE, SHA, Shelf(str(tmp_path / f"shelf{i}")), transcribe=rec)
+        assert rec.calls == ["auto"] and "retried_language" not in got and "language_tried" not in got

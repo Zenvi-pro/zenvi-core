@@ -52,26 +52,30 @@ def project_indexes(file_ids=None):
 
 
 def embed_query(text: str, files):
-    """The search phrase as a unit vector from each model the *files* were indexed with: {model: vector}.
-    Raises ToolError with what to do when it cannot be embedded."""
+    """The search phrase as a unit vector from each model the *files* were indexed with: {model: vector}. A model that
+    cannot embed it leaves its files out; ToolError, saying what to do, only when no model can."""
     from classes.media_index import embedder as E
-    out = {}
-    for model in {fi.vector_model for fi in files if fi.vector_model}:
+    out, failed = {}, None
+    for model in sorted({fi.vector_model for fi in files if fi.vector_model}):
         try:
             out[model] = E.get_embedder(model).texts([text], query=True)[0]
         except E.EmbedError as exc:
-            if exc.flags.get("auth"):
-                raise ToolError("sign in to Zenvi to search footage indexed with the cloud model (or set Preferences > Footage search "
-                                "model to this computer); filters and a reference clip work signed out")
-            if exc.flags.get("credits"):
-                raise ToolError("out of credits for the cloud search model: add credits, or set Preferences > Footage search model "
-                                "to this computer (free)")
-            if exc.flags.get("rate_limited"):
-                wait = exc.flags.get("retry_after")
-                raise ToolError("too many searches this hour" + (f"; try again in about {int(wait) // 60 + 1} min" if wait else "")
-                                + ", or search with filters or a reference clip")
-            raise ToolError(f"could not embed the query: {exc}")
-    return out
+            log.info("search: %s could not embed the query: %s", model, exc)
+            failed = exc
+    if out or failed is None:
+        return out
+    exc = failed
+    if exc.flags.get("auth"):
+        raise ToolError("sign in to Zenvi to search footage indexed with the cloud model (or set Preferences > Footage search "
+                        "model to this computer); filters and a reference clip work signed out")
+    if exc.flags.get("credits"):
+        raise ToolError("out of credits for the cloud search model: add credits, or set Preferences > Footage search model "
+                        "to this computer (free)")
+    if exc.flags.get("rate_limited"):
+        wait = exc.flags.get("retry_after")
+        raise ToolError("too many searches this hour" + (f"; try again in about {int(wait) // 60 + 1} min" if wait else "")
+                        + ", or search with filters or a reference clip")
+    raise ToolError(f"could not embed the query: {exc}")
 
 
 def _nonempty(d):
@@ -188,6 +192,8 @@ def search_footage(query="", look_for="", reference_file_id="", reference_start=
                         "indexing; index_status_tool shows each file). Searching with filters (camera move, colour, duration, "
                         "talking) still works, and get_transcript_tool reads what was said")
     qv = embed_query(query, searchable) if query else None
+    if qv is not None:
+        not_searchable += [f.name for f in searchable if f.vector_model not in qv]      # their model could not embed the query
     ref_vec = ref_look = None
     if reference_file_id:
         ref = next((f for f in files if f.file_id == str(reference_file_id)), None)
@@ -397,9 +403,9 @@ def index_status(file_ids=None, only_incomplete=False):
             continue
         sha = sha_of(f.data.get("fingerprint"))
         ready = {layer: bool(sha) and shelf.layer_ready(sha, layer) for layer in S.LAYER_VERSIONS}
-        stale = [layer for layer in LAYER_ORDER if ready[layer] and not shelf.layer_ready(sha, layer, version=S.LAYER_VERSIONS[layer])]
-        if ready[S.LAYER_VECTORS] and not _vectors_current(shelf, sha):
-            stale.append(S.LAYER_VECTORS)               # made by the other model: re-embedded on the next index run
+        stale = [layer for layer in LAYER_ORDER if ready[layer] and layer != S.LAYER_VECTORS
+                 and not shelf.layer_ready(sha, layer, version=S.LAYER_VERSIONS[layer])]
+        ready[S.LAYER_VECTORS] = bool(sha) and _vectors_current(shelf, sha)      # another model's vectors are not searchable: missing
         na = _not_applicable_layers(shelf, sha, ready)
         missing = [layer for layer in LAYER_ORDER if not ready[layer] and layer not in na]
         if only_incomplete and not missing:
@@ -420,7 +426,7 @@ def index_status(file_ids=None, only_incomplete=False):
     label="Describe a long file",
     schema=obj({
         **FILE_TARGET,
-        "approve": boolean("Say yes: describe the file for search now. Leave false to only see what it would involve and cost.", False),
+        "approve": boolean("Say yes: describe every shot now (search does not need it). Leave false to only see what it would involve and cost.", False),
     }),
 )
 def index_long_file(file_ids=None, file_query="", approve=False):
@@ -489,10 +495,15 @@ def describe_file_shots(f, fi, shot_ids):
     if not IndexingJob._signed_in():
         return None, "sign in to Zenvi for shot descriptions (search, pictures and measured facts work without them)"
     by_id = {int(s["id"]): s for s in fi.shots}
+    from classes.media_index import longfile
     wanted = [i for i in dict.fromkeys(int(x) for x in shot_ids) if i in by_id]
+    if len(wanted) > MAX_DESCRIBE_SHOTS:
+        return None, f"at most {MAX_DESCRIBE_SHOTS} shots a call; ask for fewer"
     todo = [i for i in wanted if not by_id[i].get("watch")]
     if todo:
-        seconds = sum(by_id[i]["end"] - by_id[i]["start"] for i in todo)
+        seconds = cloud.upload_seconds([by_id[i] for i in todo])          # what is uploaded and billed, gaps between runs excluded
+        if longfile.is_long(seconds) and not f.data.get("index_long_ok"):
+            return None, "that is over 30 minutes of footage to describe: ask for a shorter range, or approve it with index_long_file_tool"
         _, _balance, blocked = check_operation("indexing_per_minute", "shot descriptions", duration_seconds=max(1.0, seconds))
         if blocked:
             return None, blocked

@@ -29,6 +29,9 @@ PER_MATRIX = 200                 # best rows taken from each file's matrix befor
 # and turns away 5 of 12 no-match queries. Gemini Embedding 2's is its old picture floor (its per-kind floors were
 # 0.36 picture, 0.40 description, 0.52 sentence; not re-measured for one-space ranking).
 FLOOR = {E.MODEL_LOCAL: 0.64, E.MODEL_CLOUD: 0.36}
+# Picture against picture (a reference clip): EmbeddingGemma 2 scores different subjects 0.64-0.84 (median 0.72), the
+# same subject in another clip 0.73-0.93 (median 0.83); Gemini's picture floor stays as it was.
+REFERENCE_FLOOR = {E.MODEL_LOCAL: 0.75, E.MODEL_CLOUD: 0.36}
 RELATIVE_CUT = 0.08              # drop hits this far below the best one of the same model (right answers sat within 0.04)
 KINDS = {"spoken": ("speech", "audio"), "on_screen": ("image", "shot"), "": ("image", "speech", "audio", "shot")}
 _WORD = re.compile(r"[\w']+", re.UNICODE)
@@ -141,12 +144,13 @@ def _best_vectors(fi: FileIndex, q: np.ndarray, kinds: Sequence[str]) -> Dict[in
     for rows, matrix in ((fi.text_rows, fi.text_matrix), (fi.image_rows, fi.image_matrix), (fi.audio_rows, fi.audio_matrix)):
         if matrix is None or not rows:
             continue
-        sims = matrix @ q
-        for i in np.argsort(-sims)[:PER_MATRIX]:
+        allowed = np.array([r.get("kind") in kinds for r in rows])
+        if not allowed.any():
+            continue
+        sims = np.where(allowed, matrix @ q, -np.inf)          # the kinds asked for, before taking the best rows
+        for i in np.argsort(-sims)[:int(allowed.sum())][:PER_MATRIX]:
             row, score = rows[int(i)], float(sims[int(i)])
             kind = row.get("kind")
-            if kind not in kinds:
-                continue
             span = None if kind == "image" else (float(row["start"]), float(row["end"]))
             t = float(row["t"]) if kind == "image" else (span[0] + span[1]) / 2.0
             sid = _shot_id(fi, row, t)
@@ -209,18 +213,16 @@ def search(files: Sequence[FileIndex], *, query_vector: QueryVector = None, quer
             if v is None:
                 continue
             for sid, b in _best_vectors(fi, v, ("image",) if reference else kinds).items():
-                if reference or b["score"] >= FLOOR.get(fi.vector_model, 0.0):
+                if b["score"] >= (REFERENCE_FLOOR if reference else FLOOR).get(fi.vector_model, 0.0):
                     found[(fi.sha, sid)] = b
                     scored.append(((fi.sha, sid), b["score"], fi.vector_model))
-        if not reference:
-            top: Dict[str, float] = {}
-            for _, score, model in scored:
-                top[model] = max(top.get(model, -1.0), score)
-            scored = [r for r in scored if r[1] >= top[r[2]] - RELATIVE_CUT]
-        lists.append([k for k, _, _ in sorted(scored, key=lambda r: -r[1])])
+        # Each model's scores are ranked on their own: a cosine from one model means nothing next to another's.
+        for model in sorted({m for _, _, m in scored}):
+            mine = sorted((r for r in scored if r[2] == model), key=lambda r: -r[1])
+            lists.append([k for k, s, _ in mine if reference or s >= mine[0][1] - RELATIVE_CUT])
     words = _words(query_text)
+    by_words: List[Tuple[str, int]] = []
     if words:
-        by_words: List[Tuple[str, int]] = []
         for fi in files:
             for sid, w in _word_hits(fi, words, kinds).items():
                 key = (fi.sha, sid)
@@ -229,7 +231,6 @@ def search(files: Sequence[FileIndex], *, query_vector: QueryVector = None, quer
                 elif w["span"] and found[key].get("kind") != "speech":
                     found[key].update(kind="words", t=w["t"], span=w["span"], why=w["why"])
                 by_words.append(key)
-        lists.append(by_words)
     if reference_look and reference_look.get("present"):
         looks: List[Tuple[Tuple[str, int], float]] = []
         for fi in files:
@@ -245,8 +246,10 @@ def search(files: Sequence[FileIndex], *, query_vector: QueryVector = None, quer
 
     queried = q is not None or bool(words) or bool(reference_look and reference_look.get("present"))
     lists = [x for x in lists if x]
-    if lists:
+    if lists or by_words:
         fused = rrf(lists)
+        for key in by_words:              # every exact-word hit counts the same: where it was found says nothing
+            fused[key] = fused.get(key, 0.0) + 1.0 / (RRF_K + 1)
         keys = sorted(fused, key=lambda k: -fused[k])
     elif queried:
         fused, keys = {}, []          # something was asked for and nothing matched: say so, don't list everything

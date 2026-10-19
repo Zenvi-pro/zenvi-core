@@ -400,7 +400,7 @@ def music_profile(feat: Dict[str, np.ndarray], rms_db: np.ndarray, bpm: Optional
             sec["confidence"], sec["source"] = edge["confidence"], edge["source"]
         if sections:
             sections[-1]["end"] = round(float(duration), 2)
-    phrases = [s["start"] for s in sections[1:]]
+    phrases = [s["start"] for s in sections]
     loud = feat["rms"] > 1e-5
     brightness = round(float(np.median(feat["centroid"][loud])), 1) if loud.any() else None
     return {"arc": arc, "arc_seconds": ARC_SECONDS, "sections": sections, "phrase_points": phrases,

@@ -464,7 +464,8 @@ def black_flags(darks: List[float]) -> List[bool]:
         return []
     low, typical = min(darks), float(np.median(darks))
     near = low + BLACK_NEAR_DARKEST * (typical - low)
-    return [d < BLACK_LUMA and d <= near for d in darks]
+    # In a file that is itself under the ceiling only a shot darker than its usual shots can be black (a flat night file has none).
+    return [d < BLACK_LUMA and d <= near and (typical >= BLACK_LUMA or d < typical) for d in darks]
 
 
 def typical_jitter(shots: List[Dict[str, Any]]) -> None:

@@ -323,6 +323,44 @@ def run_watch_chunked(client: Any, path: str, probe: Dict[str, Any], file_id: st
 
 
 # ============================ the layer ============================
+RUN_GAP = 30.0          # asked-for shots closer than this share one proxy; farther apart, each run gets its own
+
+
+def runs_of(shots: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """The shots in time order, grouped into runs that one short proxy covers."""
+    runs: List[List[Dict[str, Any]]] = []
+    for s in sorted(shots, key=lambda x: float(x["start"])):
+        if runs and float(s["start"]) - float(runs[-1][-1]["end"]) <= RUN_GAP:
+            runs[-1].append(s)
+        else:
+            runs.append([s])
+    return runs
+
+
+def upload_seconds(shots: List[Dict[str, Any]]) -> float:
+    """How much footage describing *shots* uploads (and is billed for): the span of each run."""
+    return round(sum(float(r[-1]["end"]) - float(r[0]["start"]) for r in runs_of(shots)), 3)
+
+
+def _describe_runs(client: Any, path: str, probe: Dict[str, Any], file_id: str, todo: List[Dict[str, Any]], shelf: Shelf, sha: str,
+                   should_cancel: Optional[Callable[[], bool]], uploader: Callable[..., Any]) -> Dict[str, Any]:
+    """Describe *todo* one run at a time, keeping each finished run, so a failure or a cancel never repays one already done."""
+    speech = shelf.read_json(sha, "speech.json") if shelf.layer_ready(sha, S.LAYER_SPEECH) else None
+    per_shot = (speech or {}).get("per_shot") or {}
+    usage: Dict[str, Any] = {}
+    for run in runs_of(todo):
+        request = [{"id": int(s["id"]), "start": float(s["start"]), "end": float(s["end"]),
+                    "fps": plan_shot_fps(s, per_shot.get(str(s["id"])))} for s in run]
+        start, end = request[0]["start"], request[-1]["end"]
+        result = _watch_window(client, path, probe, file_id, request, transcript_rows(speech), start=start if start > 0 else None,
+                               end=end, should_cancel=should_cancel, on_progress=None, uploader=uploader)
+        if result.get("error") or not result.get("shots"):
+            fail = {k: result[k] for k in PASS_UP if k in result}
+            fail.setdefault("error", "no shot descriptions came back")
+            return fail
+        usage = result.get("usage") or usage
+        _merge(shelf, sha, result["shots"], usage)
+    return {"usage": usage}
 def _described(shelf: Shelf, sha: str) -> Dict[int, Dict[str, Any]]:
     """{shot id: description} of the shots already described (a shot the cloud left out does not count)."""
     watch = shelf.read_json(sha, "watch.json") if shelf.layer_ready(sha, S.LAYER_WATCH) else None
@@ -331,7 +369,7 @@ def _described(shelf: Shelf, sha: str) -> Dict[int, Dict[str, Any]]:
 
 def _merge(shelf: Shelf, sha: str, new: List[Dict[str, Any]], usage: Dict[str, Any]) -> Dict[str, Any]:
     by_id = _described(shelf, sha)
-    by_id.update({int(s["id"]): s for s in new})
+    by_id.update({int(s["id"]): s for s in new if not s.get("missing")})      # a shot left out is asked for again next time
     watch = {"version": S.LAYER_VERSIONS[S.LAYER_WATCH], "kind": S.INFERRED, "model": usage.get("model"),
              "shots": [by_id[k] for k in sorted(by_id)]}
     shelf.write_json(sha, "watch.json", watch)
@@ -355,6 +393,13 @@ def compute_cloud(client: Any, path: str, probe: Dict[str, Any], sha: str, shelf
     todo = [s for s in structure["shots"] if int(s["id"]) not in have]
     if not todo:
         return {"layers": {S.LAYER_WATCH: "cached"}, "watch": shelf.read_json(sha, "watch.json")}
+    if len(todo) < len(structure["shots"]):          # finishing a partly described file: only the missing runs are uploaded
+        from classes.gemini_direct_upload import upload_file_to_gemini_resumable
+        out = _describe_runs(client, path, probe, file_id or sha[:12], todo, shelf, sha, should_cancel,
+                             uploader or upload_file_to_gemini_resumable)
+        if out.get("error"):
+            return out
+        return {"layers": {S.LAYER_WATCH: READY}, "usage": out["usage"], "watch": shelf.read_json(sha, "watch.json")}
     speech = shelf.read_json(sha, "speech.json") if shelf.layer_ready(sha, S.LAYER_SPEECH, version=S.LAYER_VERSIONS[S.LAYER_SPEECH]) else None
     result = run_watch(client, path, probe, file_id or sha[:12], {"shots": todo}, speech, should_cancel=should_cancel,
                        on_progress=on_progress, uploader=uploader, resume=(shelf, sha))
@@ -376,29 +421,21 @@ def describe_shots(client: Any, path: str, probe: Dict[str, Any], sha: str, shel
     """
     from classes.gemini_direct_upload import upload_file_to_gemini_resumable
     from classes.media_index import vectors
+    from classes.media_index.job import single_flight
 
-    structure = shelf.read_json(sha, "structure.json") or {}
-    wanted = {int(i) for i in shot_ids}
-    have = _described(shelf, sha)
-    todo = [s for s in structure.get("shots") or [] if int(s["id"]) in wanted and int(s["id"]) not in have]
-    usage: Dict[str, Any] = {}
-    if todo:
-        speech = shelf.read_json(sha, "speech.json") if shelf.layer_ready(sha, S.LAYER_SPEECH) else None
-        per_shot = (speech or {}).get("per_shot") or {}
-        request = [{"id": int(s["id"]), "start": float(s["start"]), "end": float(s["end"]),
-                    "fps": plan_shot_fps(s, per_shot.get(str(s["id"])))} for s in todo]
-        # ponytail: one proxy from the first to the last asked-for shot; split into runs if far-apart asks get slow
-        start, end = min(r["start"] for r in request), max(r["end"] for r in request)
-        result = _watch_window(client, path, probe, file_id or sha[:12], request, transcript_rows(speech),
-                               start=start if start > 0 else None, end=end, should_cancel=should_cancel, on_progress=None,
-                               uploader=uploader or upload_file_to_gemini_resumable)
-        if result.get("error") or not result.get("shots"):
-            fail = {k: result[k] for k in PASS_UP if k in result}
-            fail.setdefault("error", "no shot descriptions came back")
-            return fail
-        usage = result.get("usage") or {}
-        _merge(shelf, sha, result["shots"], usage)
-    described = _described(shelf, sha)
-    shots = [described[i] for i in sorted(wanted) if i in described]
-    vectors.add_descriptions(shelf, sha, embedder, shots)
+    with single_flight(sha):          # one describe per file at a time: two would pay twice and the last write would win
+        structure = shelf.read_json(sha, "structure.json") or {}
+        wanted = {int(i) for i in shot_ids}
+        have = _described(shelf, sha)
+        todo = [s for s in structure.get("shots") or [] if int(s["id"]) in wanted and int(s["id"]) not in have]
+        usage: Dict[str, Any] = {}
+        if todo:
+            out = _describe_runs(client, path, probe, file_id or sha[:12], todo, shelf, sha, should_cancel,
+                                 uploader or upload_file_to_gemini_resumable)
+            if out.get("error"):
+                return out
+            usage = out["usage"]
+        described = _described(shelf, sha)
+        shots = [described[i] for i in sorted(wanted) if i in described]
+        vectors.add_descriptions(shelf, sha, embedder, shots)
     return {"described": sorted(int(s["id"]) for s in todo if int(s["id"]) in described), "shots": shots, "usage": usage}

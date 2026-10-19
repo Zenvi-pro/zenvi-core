@@ -346,3 +346,80 @@ def test_describe_shots_pays_only_for_shots_not_yet_described(shelf, monkeypatch
     again = cloud.describe_shots(MagicMock(), "clip.mp4", {"duration": 8.0}, A, shelf, [0, 1], emb, uploader=lambda *a, **k: None)
     assert asked == [[1]] and again["described"] == []
     assert sorted(r["shot"] for r in load(shelf, A, "fa").text_rows) == [0, 1]
+
+
+# ---------------------------------------------------------------- review findings
+def test_spoken_search_scores_every_sentence_even_when_many_descriptions_rank_above_them(shelf):
+    rows = [({"kind": "shot", "shot": 0, "start": 0.0, "end": 5.0, "text": f"d{i}"}, at(2, 0.9)) for i in range(search.PER_MATRIX + 5)]
+    rows.append(({"kind": "speech", "shot": 1, "start": 6.0, "end": 7.0, "text": "the line"}, at(3, 0.8)))
+    put_file(shelf, A, shots=[shot(0, 0, 5), shot(1, 5, 10)], rows=rows)
+    hits = search.search([load(shelf, A, "fa")], query_vector={LOCAL: unit(0)}, look_for="spoken")["hits"]
+    assert [h["shot_id"] for h in hits] == [1]
+
+
+def test_files_of_two_models_are_ranked_within_their_own_model_not_by_raw_cosine(shelf):
+    put_file(shelf, A, shots=[shot(0, 0, 5)], rows=[({"kind": "image", "shot": 0, "t": 2.0}, at(2, 0.66))], model=LOCAL)
+    put_file(shelf, B, shots=[shot(0, 0, 5)], rows=[({"kind": "image", "shot": 0, "t": 2.0}, at(3, 0.55))], model=CLOUD)
+    hits = search.search([load(shelf, A, "fa"), load(shelf, B, "fb")], query_vector={LOCAL: unit(0), CLOUD: unit(0)})["hits"]
+    assert {h["file_id"] for h in hits} == {"fa", "fb"} and hits[0]["rank_score"] == hits[1]["rank_score"], "each is the best of its model"
+
+
+def test_a_half_written_vector_layer_is_not_current_so_it_is_rebuilt(shelf):
+    put_file(shelf, A, shots=[shot(0, 0, 5)], rows=[({"kind": "image", "shot": 0, "t": 2.0}, unit(2))])
+    shelf.write_bytes(A, vectors.MATRIX, b"\0" * 6)
+    assert not vectors.is_current(shelf, A, LOCAL)
+
+
+def test_the_worker_is_started_before_planning_so_the_cpu_path_takes_one_picture_per_shot(shelf, monkeypatch, tmp_path):
+    put_file(shelf, A, shots=[shot(0, 0, 10)], rows=None)
+    planned = []
+    monkeypatch.setattr(vectors, "extract_keyframes", lambda path, plan, size, tmp: planned.extend(plan) or [None] * len(plan))
+    monkeypatch.setattr(vectors, "audio_windows", lambda path: iter(()))
+
+    class Cpu(FakeEmbedder):
+        device = ""
+
+        def start(self):
+            self.device = "cpu"
+    vectors.compute_vectors("clip.mp4", {"has_video": True, "video": {"width": 1280, "height": 720}}, A, shelf, Cpu())
+    assert len(planned) == 1
+
+
+def test_a_shot_the_cloud_left_out_is_not_kept_as_described(shelf, monkeypatch):
+    put_file(shelf, A, shots=[shot(0, 0, 4), shot(1, 4, 8)], rows=[({"kind": "image", "shot": 0, "t": 2.0}, unit(2))])
+    monkeypatch.setattr(cloud, "_watch_window", lambda *a, **k: {"shots": [{"id": 0, "start": 0.0, "end": 4.0, "description": "A."},
+                                                                         {"id": 1, "start": 4.0, "end": 8.0, "missing": True}]})
+    out = cloud.describe_shots(MagicMock(), "clip.mp4", {"duration": 8.0}, A, shelf, [0, 1], FakeEmbedder(), uploader=lambda *a, **k: None)
+    assert out["described"] == [0]
+    assert [s["id"] for s in json.loads(Path(shelf.entry_dir(A), "watch.json").read_text())["shots"]] == [0]
+
+
+def test_far_apart_shots_are_described_from_their_own_short_proxies(shelf, monkeypatch):
+    shots = [shot(i, i * 10.0, i * 10.0 + 10.0) for i in range(120)]
+    put_file(shelf, A, shots=shots, rows=[({"kind": "image", "shot": 0, "t": 2.0}, unit(2))])
+    windows = []
+
+    def window(client, path, probe, file_id, request, transcript, start=None, end=None, **kw):
+        windows.append((start, end, [s["id"] for s in request]))
+        return {"shots": [{**s, "description": "x"} for s in request]}
+    monkeypatch.setattr(cloud, "_watch_window", window)
+    cloud.describe_shots(MagicMock(), "clip.mp4", {"duration": 1200.0}, A, shelf, [0, 1, 119], FakeEmbedder(), uploader=lambda *a, **k: None)
+    assert [w[2] for w in windows] == [[0, 1], [119]] and windows[1][0] == 1190.0
+    assert cloud.upload_seconds([s for s in shots if s["id"] in (0, 1, 119)]) == 30.0
+
+
+def test_a_search_still_runs_on_the_models_that_could_embed_the_query(monkeypatch):
+    from types import SimpleNamespace
+    from classes.editor_tools import media_index_tools as T
+
+    class Model:
+        def __init__(self, name):
+            self.name = name
+
+        def texts(self, texts, query=False):
+            if self.name == CLOUD:
+                raise E.EmbedError("signed out", auth=True)
+            return [unit(1)]
+    monkeypatch.setattr(E, "get_embedder", Model)
+    out = T.embed_query("x", [SimpleNamespace(vector_model=LOCAL), SimpleNamespace(vector_model=CLOUD)])
+    assert list(out) == [LOCAL]

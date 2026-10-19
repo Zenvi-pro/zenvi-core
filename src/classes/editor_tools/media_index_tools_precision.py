@@ -733,8 +733,8 @@ def _frames_pack(f, start_seconds, end_seconds, per_second=None, count=None, eve
         "pictures": boolean("Also make the keyframe pictures (one per shot, 48 a sheet). Look at them when a description matters: the text is a model's "
                             "reading and can be wrong about hair colour, who is who and small details.", True),
         "look": boolean("Add each shot's brightness and three main colours to its row (list mode; measured, a few tokens a row).", False),
-        "describe": boolean("Get words for the shots on this page that have none yet (Gemini; once per shot, uses credits, needs sign-in). "
-                            "False = pictures and measured facts only.", True),
+        "describe": boolean("Full detail only: get words for the shots on this page that have none yet (Gemini; once per shot, uses "
+                            "credits, needs sign-in). False = pictures and measured facts only. List mode never describes.", True),
         "tile_width": integer("Width of each keyframe in pixels.", 320, minimum=96, maximum=640),
     }),
     read_only=True,
@@ -763,7 +763,7 @@ def storyboard(file_ids=None, file_query="", start_seconds=0, detail="full", pic
     if not shots:
         raise ToolError("no shots at or after that time")
     described_note = ""
-    if describe and fi.media_type == "video" and any(not s.get("watch") for s in shots):
+    if describe and not as_list and fi.media_type == "video" and any(not s.get("watch") for s in shots):
         _out, why = describe_file_shots(f, fi, [s["id"] for s in shots])
         if why:
             described_note = f"No descriptions for some shots: {why}."

@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import locale
 import os
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -186,15 +185,7 @@ def load_or_transcribe(
         saved = shelf.read_json(sha, "speech.json")
         if isinstance(saved, dict) and isinstance(saved.get("words"), list):
             _prime_path_cache(path, saved, cache)
-            if transcribe is None:
-                from classes.speech.asr import transcribe_file as default_transcribe
-            else:
-                default_transcribe = transcribe
-            tried_before = saved.get("language_tried")
-            better = with_better_language(path, saved, duration, default_transcribe, cache, token)
-            if better is not saved or better.get("language_tried") != tried_before:
-                _save_layer(shelf, sha, better)
-            return better
+            return saved
 
     if transcribe is None:
         from classes.speech.asr import transcribe_file
@@ -209,7 +200,7 @@ def load_or_transcribe(
     except Exception as exc:
         log.info("Transcription unavailable for %s: %s", path, exc)
         return {"version": S.LAYER_VERSIONS[S.LAYER_SPEECH], "unavailable": str(exc)[:300]}
-    layer = with_better_language(path, _record_to_layer(record, duration), duration, transcribe, cache, token)
+    layer = _record_to_layer(record, duration)
     if sha:
         _save_layer(shelf, sha, layer)
     return layer
@@ -224,11 +215,9 @@ def _save_layer(shelf: Shelf, sha: str, layer: Dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------- language ---
-# The engine listens in the machine's language unless told otherwise, so a song or a talk in another language comes back empty
-# (Apple's engine returned 0 words for a Japanese ending, and 243 characters with locale ja-JP). Trying every language per file would
-# be slow, so there is one retry at most, and only for a file whose first pass found next to nothing: in the language the recogniser
-# reports for that pass, when it is not the machine's own (whisper reports the language it detected, Apple the locale it listened in).
-# The script of a file name is read only for get_lyrics_tool's default locale, never for the retry.
+# The engine listens in the machine's language unless told otherwise, so a song or a talk in another language can come back
+# empty. Indexing transcribes once: the engines report the language their first pass already used, so a second pass in it only
+# repeats the first. Another language is asked for explicitly (get_lyrics_tool); the script of the file name is its default locale.
 _SCRIPT_LOCALES = (
     (re.compile(r"[\u3040-\u30ff]"), "ja-JP"),
     (re.compile(r"[\uac00-\ud7af]"), "ko-KR"),
@@ -240,7 +229,6 @@ _SCRIPT_LOCALES = (
     (re.compile(r"[\u0370-\u03ff]"), "el-GR"),
     (re.compile(r"[\u3400-\u9fff]"), "zh-CN"),     # han with no kana: Chinese (a Japanese title almost always has kana)
 )
-MIN_RETRY_WORDS = 8
 
 
 def language_hints(path: str) -> List[str]:
@@ -250,59 +238,11 @@ def language_hints(path: str) -> List[str]:
     return next(([tag] for pattern, tag in _SCRIPT_LOCALES if pattern.search(name)), [])
 
 
-def _same_language(a: Any, b: Any) -> bool:
-    return str(a or "").lower().split("-")[0] == str(b or "").lower().split("-")[0] and bool(a) and bool(b)
-
-
-def _sparse(word_count: int, duration: float) -> bool:
-    """Next to nothing heard in a file long enough to hold speech: under about six words a minute."""
-    return duration >= 8.0 and word_count * 60.0 / duration < 6.0
-
-
 def _transcribe_in(transcribe: Callable[..., Any], path: str, language: str, cache: Any, token: Any) -> Any:
     kwargs: Dict[str, Any] = {"token": token, "language": language}
     if cache is not None:
         kwargs["cache"] = cache
     return transcribe(path, **kwargs)
-
-
-def _machine_language() -> str:
-    """The language this machine's engine listens in: the OS locale's language, "en" when the OS names none (as the Apple helper does)."""
-    try:
-        name = locale.getdefaultlocale()[0]
-    except ValueError:
-        name = None
-    return (name or "en").split("_")[0].lower()
-
-
-def _heard_elsewhere(layer: Dict[str, Any]) -> Optional[str]:
-    """The language the recogniser reports for this pass when it is not the machine's own; None when it names none."""
-    heard = str(layer.get("language") or "").strip()
-    if not heard or heard.lower() in ("auto", "unknown") or _same_language(heard, _machine_language()):
-        return None
-    return heard
-
-
-def with_better_language(path: str, layer: Dict[str, Any], duration: float, transcribe: Callable[..., Any], cache: Any, token: Any) -> Dict[str, Any]:
-    """*layer*, or a transcript in the language the recogniser heard when the first pass found next to nothing (one try, once ever)."""
-    if layer.get("language_tried") is not None or layer.get("skipped") or layer.get("unavailable"):
-        return layer
-    count = len(layer.get("words") or [])
-    heard = _heard_elsewhere(layer) if _sparse(count, duration) else None
-    if heard is None:
-        return layer
-    best = layer
-    try:
-        candidate = _record_to_layer(_transcribe_in(transcribe, path, heard, cache, token), duration)
-        if len(candidate["words"]) >= MIN_RETRY_WORDS and len(candidate["words"]) > 2 * count:
-            candidate["retried_language"] = heard
-            best = candidate
-    except InterruptedError:
-        raise
-    except Exception as exc:
-        log.info("Transcription in %s unavailable for %s: %s", heard, path, exc)
-    best["language_tried"] = [heard]
-    return best
 
 
 def transcribe_in_language(path: str, probe: Dict[str, Any], sha: str, shelf: Shelf, language: str, *, shots: Optional[List[Dict[str, Any]]] = None,

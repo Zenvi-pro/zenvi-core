@@ -19,11 +19,11 @@ import os
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 
 import numpy as np
 
-from classes.ffmpeg_cli import run_ffmpeg
+from classes.ffmpeg_cli import popen_ffmpeg, run_ffmpeg
 from classes.media_index import embedder as E, schema as S
 from classes.media_index.store import Shelf
 
@@ -64,7 +64,7 @@ def write_layer(shelf: Shelf, sha: str, rows: Sequence[Dict[str, Any]], vecs: Se
     shelf.write_json(sha, INDEX, {"version": S.LAYER_VERSIONS[S.LAYER_VECTORS], "dims": dims, "model": model, "device": device,
                                   "rows": [r for r, _ in kept]})
     shelf.set_layer(sha, S.LAYER_VECTORS, version=S.LAYER_VERSIONS[S.LAYER_VECTORS], status="ready", model=model, device=device,
-                    rows=len(kept))
+                    rows=len(kept), dims=dims)
     return len(kept)
 
 
@@ -81,8 +81,15 @@ def read_layer(shelf: Shelf, sha: str):
 def is_current(shelf: Shelf, sha: str, model: str) -> bool:
     """The file's vectors exist and were made by *model* (another model's vectors cannot be searched with its queries)."""
     row = shelf.layer(sha, S.LAYER_VECTORS) or {}
-    return row.get("status") in ("ready", S.NOT_APPLICABLE) and row.get("model") == model and \
-        int(row.get("version") or 0) == S.LAYER_VERSIONS[S.LAYER_VECTORS]
+    if row.get("model") != model or int(row.get("version") or 0) != S.LAYER_VERSIONS[S.LAYER_VECTORS]:
+        return False
+    if row.get("status") == S.NOT_APPLICABLE:
+        return True
+    try:          # a write cut short leaves a matrix that does not match its rows: that file is embedded again
+        size = os.path.getsize(os.path.join(shelf.entry_dir(sha), MATRIX))
+    except OSError:
+        return False
+    return row.get("status") == "ready" and size == int(row.get("rows") or 0) * int(row.get("dims") or S.EMBED_DIMS) * 2
 
 
 # ============================ cutting the inputs (ffmpeg) ============================
@@ -105,22 +112,28 @@ def extract_keyframes(path: str, plan: List[Dict[str, Any]], size, tmp: str) -> 
         return list(pool.map(one, enumerate(plan)))
 
 
-def audio_windows(path: str) -> List[E.Window]:
-    """The file's sound as 10 s windows of 16 kHz mono, without digital silence and short tails."""
+def audio_windows(path: str) -> Iterator[E.Window]:
+    """The file's sound as 10 s windows of 16 kHz mono, without digital silence and short tails, read as it decodes (a long
+    file is never held in memory). Raises ``embedder.EmbedError`` when the sound cannot be read to the end."""
     cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", path, "-map", "0:a:0", "-ac", "1",
            "-ar", str(E.AUDIO_RATE), "-f", "f32le", "-"]
-    try:
-        proc = run_ffmpeg(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, timeout=3600)
-    except Exception:
-        return []
-    samples = np.frombuffer(proc.stdout or b"", dtype="<f4")
     step = int(AUDIO_WINDOW * E.AUDIO_RATE)
-    out: List[E.Window] = []
-    for lo in range(0, len(samples), step):
-        w = samples[lo:lo + step]
-        if len(w) >= AUDIO_MIN * E.AUDIO_RATE and float(np.max(np.abs(w))) > SILENCE_PEAK:
-            out.append((lo / E.AUDIO_RATE, (lo + len(w)) / E.AUDIO_RATE, w))
-    return out
+    proc = popen_ffmpeg(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        at = 0
+        while True:
+            chunk = proc.stdout.read(step * 4)
+            if not chunk:
+                break
+            w = np.frombuffer(chunk[: len(chunk) // 4 * 4], dtype="<f4")
+            if len(w) >= AUDIO_MIN * E.AUDIO_RATE and float(np.max(np.abs(w))) > SILENCE_PEAK:
+                yield at / E.AUDIO_RATE, (at + len(w)) / E.AUDIO_RATE, w
+            at += len(w)
+    finally:
+        proc.stdout.close()
+        code = proc.wait()
+    if code != 0:
+        raise E.EmbedError("the sound could not be read to the end")
 
 
 # ============================ making the layer ============================
@@ -162,6 +175,8 @@ def compute_vectors(path: str, probe: Dict[str, Any], sha: str, shelf: Shelf, em
     rows: List[Dict[str, Any]] = []
     vecs: List[Optional[np.ndarray]] = []
 
+    if hasattr(embedder, "start"):
+        embedder.start()                  # its device decides how many pictures to plan
     if probe.get("has_video") and shots:
         video = probe.get("video") or {}
         # ponytail: "low power" is simply the CPU path (one picture per shot); add RAM/battery checks if CPU users want more
@@ -184,10 +199,17 @@ def compute_vectors(path: str, probe: Dict[str, Any], sha: str, shelf: Shelf, em
                   "end": float(s["end"]), "text": str(s["text"])} for s in sentences]
     progress(0.8)
     check()
-    windows = audio_windows(path) if probe.get("has_audio") else []
-    if windows:
-        vecs += embedder.audio(windows)
-        rows += [{"kind": "audio", "start": round(a, 3), "end": round(b, 3)} for a, b, _ in windows]
+    batch: List[E.Window] = []
+    for window in (audio_windows(path) if probe.get("has_audio") else ()):
+        batch.append(window)
+        if len(batch) == E.AUDIO_BATCH * 2:
+            check()
+            vecs += embedder.audio(batch)
+            rows += [{"kind": "audio", "start": round(a, 3), "end": round(b, 3)} for a, b, _ in batch]
+            batch = []
+    if batch:
+        vecs += embedder.audio(batch)
+        rows += [{"kind": "audio", "start": round(a, 3), "end": round(b, 3)} for a, b, _ in batch]
     check()
     watch = shelf.read_json(sha, "watch.json") if shelf.layer_ready(sha, S.LAYER_WATCH) else None
     described = _description_rows(shelf, sha, (watch or {}).get("shots") or [], set())

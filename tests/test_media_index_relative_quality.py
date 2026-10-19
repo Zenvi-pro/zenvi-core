@@ -52,5 +52,10 @@ def test_a_night_file_is_not_all_black():
     assert sum(st.black_flags(darks)) <= 1, st.black_flags(darks)
 
 
+def test_a_night_file_shot_at_one_exposure_has_no_black_shot_but_a_fade_to_black_in_it_does():
+    assert st.black_flags([0.04, 0.04, 0.04, 0.04]) == [False] * 4
+    assert st.black_flags([0.04, 0.04, 0.0, 0.04]) == [False, False, True, False]
+
+
 def test_a_real_black_frame_in_a_bright_file_is_black():
     assert st.black_flags([0.002, 0.4, 0.35, 0.38, 0.33]) == [True, False, False, False, False]

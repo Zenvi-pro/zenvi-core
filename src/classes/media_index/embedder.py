@@ -164,6 +164,12 @@ class LocalEmbedder:
             except Exception:
                 proc.kill()
 
+    def start(self) -> None:
+        """Start the worker now (its device is then known), unless it is already running."""
+        with self._lock:
+            if self._proc is None or self._proc.poll() is not None:
+                self._start()
+
     def close(self) -> None:
         with self._lock:
             if self._timer:

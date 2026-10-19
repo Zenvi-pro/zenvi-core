@@ -206,10 +206,8 @@ class IndexingJob:
                 return
 
         if media_type == "video" and signed_in and (E.describe_on_import() or self.file_data.get("index_long_ok")):
+            # A cancel here stops only the descriptions: the file is searchable, so it is still reported indexed.
             self._describe_on_import(client, file_path, probe, sha, shelf, model, duration, file_id, metadata)
-            if self._cancelled:
-                self._completed(self.file_data, metadata, None)
-                return
 
         structure = shelf.read_json(sha, "structure.json") or {}
         watch = shelf.read_json(sha, "watch.json") or {"shots": []}
