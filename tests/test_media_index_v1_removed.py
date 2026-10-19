@@ -56,10 +56,30 @@ def test_a_shelf_restore_is_free_and_never_calls_restore_index(monkeypatch, tmp_
 
 def test_footage_that_shares_a_fingerprint_with_other_footage_fails_with_that_reason(monkeypatch, tmp_path):
     h, calls = _v2(monkeypatch, tmp_path, populate=True)
-    h.shelf.set_source(h.sha, duration=900.0, media_type="video")
+    monkeypatch.setattr("classes.media_index.facts.compute_facts", lambda *a, **k: {"ok": False, "collision": True, "layers": {}})
     meta, _ = h.run(duration=6.0)
     assert calls == [] and meta["index"]["status"] == "failed" and "different file" in meta["error"]
     _no_old_route(h)
+
+
+def test_an_editor_duration_that_is_unknown_or_off_by_a_second_never_fails_the_file(monkeypatch, tmp_path):
+    for editor_duration in (0.0, 7.5):          # the shelf holds ffprobe's 6.0 s for this very file
+        (tmp_path / str(editor_duration)).mkdir()
+        h, calls = _v2(monkeypatch, tmp_path / str(editor_duration), populate=True)
+        h.shelf.set_source(h.sha, duration=6.0, media_type="video")
+        meta, _ = h.run(duration=editor_duration)
+        assert meta["index"]["status"] != "failed", (editor_duration, meta.get("error"))
+
+
+def test_local_facts_never_overwrite_the_record_of_different_footage(monkeypatch, tmp_path):
+    from classes.media_index import facts
+    from classes.media_index.store import Shelf
+    shelf = Shelf(str(tmp_path / "shelf"))
+    shelf.set_source("a" * 64, duration=900.0, media_type="video")
+    monkeypatch.setattr(facts, "probe_media", lambda path: {"ok": True, "duration": 6.0, "has_video": True, "has_audio": False, "video": {}})
+    out = facts.compute_facts("x.mp4", fingerprint="a" * 64, shelf=shelf, media_type="video")
+    assert out["ok"] is False and out.get("collision") is True
+    assert (shelf.read_json("a" * 64, "manifest.json") or {})["source"]["duration"] == 900.0
 
 
 def test_flags_has_no_v2_switch():

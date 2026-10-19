@@ -70,6 +70,7 @@ class IndexingJob:
         self._completed = emit_completed
         self._progress = emit_progress
         self._cancelled = False
+        self._collision = False
 
     def cancel(self) -> None:
         """Ask the job to stop at its next check (called from another thread at app quit)."""
@@ -84,7 +85,7 @@ class IndexingJob:
         try:
             from classes.media_index import facts
             self._progress(file_id, "analyzing", 0)
-            facts.compute_facts(
+            result = facts.compute_facts(
                 file_path,
                 fingerprint=self.file_data.get("fingerprint"),
                 media_type=media_type,
@@ -94,6 +95,7 @@ class IndexingJob:
         except Exception as exc:  # includes facts.Cancelled
             log.info("Local media analysis stopped for %s: %s", file_path, exc)
             return
+        self._collision = bool((result or {}).get("collision"))
         self._run_people_scan(file_path, media_type)
 
     def _run_people_scan(self, file_path, media_type):
@@ -185,8 +187,7 @@ class IndexingJob:
             self._v2_failed(metadata, index_name, media_type, "The file has no fingerprint, so it cannot be indexed.")
             return
         shelf = default_shelf()
-        from classes.media_index.reuse import same_footage
-        if not same_footage(shelf, sha, media_type=media_type, duration=duration):
+        if self._collision:          # local facts found the layers under this fingerprint belong to other footage
             # Two different files can in theory share a fingerprint; never describe this one with the other's layers.
             log.warning("Saved index for %s was made from different footage; not indexing it", file_path)
             self._v2_failed(metadata, index_name, media_type,

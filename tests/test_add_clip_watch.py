@@ -32,13 +32,15 @@ def _no_placement_plans_between_tests():
     tool_handlers._planned_end_by_clip_id.clear()
 
 
-def _run_add(file_data, timeline_clips=(), clip_id="C1", **kwargs):
+def _run_add(file_data, timeline_clips=(), clip_id="C1", no_hit=False, **kwargs):
     watch_calls = []
     kwargs.setdefault("position_seconds", "0")
 
     def fake_moment(query, file_id=None, window=None):
         start, end = window
         watch_calls.append((float(start), float(end), query))
+        if no_hit:
+            return None
         return {
             "file_id": file_id,
             "start": float(start) + 0.4,
@@ -157,6 +159,15 @@ def test_start_seconds_past_the_end_of_the_file_is_refused():
     assert out.startswith("Error:"), out
     assert "past the end" in out
     assert calls == []
+
+
+def test_a_first_n_seconds_trim_with_no_index_hit_is_refused_not_placed_blind():
+    out, calls, _placed = _run_add(
+        {"path": "/clips/stock.mp4", "name": "city_traffic.mp4", "duration": 90.0, "start": 0.0, "end": 90.0, "has_video": True},
+        no_hit=True, duration_seconds="6",
+    )
+    assert calls, out
+    assert out.startswith("Error:") and "matched" not in out, out
 
 
 def test_add_clip_watches_bounded_stock_window_without_query():

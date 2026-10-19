@@ -2561,12 +2561,10 @@ def add_clip_to_timeline(
                     out_s = min(src_end, in_s + float(trim_dur))
                     if out_s - in_s < float(trim_dur):
                         in_s = max(src_start, out_s - float(trim_dur))
-            else:
-                in_s, out_s = win_s, min(src_end, win_s + float(trim_dur))
-            watched_start, watched_end = in_s, out_s
+                watched_start, watched_end = in_s, out_s     # only an index hit bounds the window; a miss stays a blind trim
             log.info(
-                "add_clip_to_timeline moment file=%s in=%.3f out=%.3f matched=%s query=%r",
-                file_id, in_s, out_s, bool(moment), watch_q[:80],
+                "add_clip_to_timeline moment file=%s in=%s out=%s matched=%s query=%r",
+                file_id, watched_start, watched_end, bool(moment), watch_q[:80],
             )
 
         if blind_trim_rejected(
@@ -5320,10 +5318,10 @@ def insert_v2v_into_clip(
 
     best_mid = None
 
-    # Strategy 1: the local index's best hit for the query inside this clip, cut at its peak.
+    # Strategy 1: the local index's best hit for the query inside this clip, cut where that moment ends ("insert after X").
     moment = _v2_moment(query, file_id=str(source_file.id), window=(clip_start, clip_end))
     if moment:
-        insertion = moment["peak"]
+        insertion = moment["end"]
         if insertion > clip_end - 1.0:
             insertion = max(clip_start, clip_end - 1.0)
         best_mid = insertion

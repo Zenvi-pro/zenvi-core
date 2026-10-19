@@ -97,6 +97,10 @@ def compute_facts(
     probe = probe_media(path)
     if not probe.get("ok"):
         return {"ok": False, "sha": sha, "error": probe.get("error") or "unreadable media", "layers": {}}
+    from classes.media_index.reuse import same_footage
+    if not same_footage(shelf, sha, media_type=media_type, duration=probe.get("duration") or 0.0):
+        # the layers under this fingerprint were made from different footage: never describe this file with them
+        return {"ok": False, "sha": sha, "collision": True, "error": "a different file has this fingerprint", "layers": {}}
 
     def report(stage: str, fraction: float) -> None:
         if on_progress is not None:

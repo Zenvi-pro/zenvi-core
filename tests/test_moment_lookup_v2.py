@@ -138,14 +138,13 @@ def test_add_clip_keeps_the_window_when_the_moment_is_not_in_it(indexed, monkeyp
     cloud.watch_window.assert_not_called()
 
 
-def test_add_clip_keeps_the_window_when_the_search_is_refused(indexed, monkeypatch):
+def test_add_clip_refuses_a_blind_first_n_seconds_trim_when_the_search_is_refused(indexed, monkeypatch):
     def refused(text):
         raise ToolError("sign in to Zenvi to search by description")
 
     monkeypatch.setattr(T, "embed_query", refused)
-    out, placed, cloud = _place(monkeypatch, dict(LAKE), query="a dog runs", start_seconds="0", duration_seconds="20")
-    assert not out.startswith("Error:"), out
-    assert (placed["start"], placed["end"]) == (0.0, 20.0)
+    out, _placed, cloud = _place(monkeypatch, dict(LAKE), query="a dog runs", start_seconds="0", duration_seconds="20")
+    assert out.startswith("Error:") and "start_seconds and end_seconds" in out, out
     cloud.watch_window.assert_not_called()
 
 
