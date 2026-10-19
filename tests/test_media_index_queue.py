@@ -13,17 +13,17 @@ from classes.media_index.queue import next_index, signin_skipped_ids, timeline_f
 
 
 def test_a_file_on_the_timeline_goes_before_older_imports():
-    queue = [("a", False), ("b", False), ("c", False)]
+    queue = ["a", "b", "c"]
     assert next_index(queue, {"c"}) == 2
 
 
 def test_the_oldest_timeline_file_goes_first_among_timeline_files():
-    queue = [("a", False), ("b", False), ("c", False)]
+    queue = ["a", "b", "c"]
     assert next_index(queue, {"b", "c"}) == 1
 
 
 def test_with_nothing_on_the_timeline_it_is_first_in_first_out():
-    assert next_index([("a", False), ("b", False)], set()) == 0
+    assert next_index(["a", "b"], set()) == 0
 
 
 def test_an_empty_queue_is_safe():
@@ -31,11 +31,11 @@ def test_an_empty_queue_is_safe():
 
 
 def test_draining_a_queue_never_starves_or_repeats_a_file():
-    queue = [(str(i), False) for i in range(6)]
+    queue = [str(i) for i in range(6)]
     used = {"4", "2"}
     order = []
     while queue:
-        order.append(queue.pop(next_index(queue, used))[0])
+        order.append(queue.pop(next_index(queue, used)))
     assert order == ["2", "4", "0", "1", "3", "5"]
     assert sorted(order) == [str(i) for i in range(6)]
 

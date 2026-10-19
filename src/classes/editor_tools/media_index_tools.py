@@ -67,7 +67,7 @@ def embed_query(text: str):
         wait = out.get("retry_after")
         raise ToolError("too many searches this hour" + (f"; try again in about {int(wait) // 60 + 1} min" if wait else "") + ", or search with filters or a reference clip")
     if out.get("unsupported"):
-        raise ToolError("this backend has no media index v2 search yet; use search_clips_tool")
+        raise ToolError("this backend has no media index v2 search yet")
     vectors = out.get("vectors") or []
     if out.get("error") or not vectors or not vectors[0]:
         raise ToolError("could not embed the query: " + str(out.get("error") or "no vector returned"))
@@ -422,9 +422,6 @@ def index_long_file(file_ids=None, file_query="", approve=False):
     """
     from classes.indexing_status import SKIP_LONG
     from classes.media_index import longfile
-    from classes.media_index.flags import v2_enabled
-    if not v2_enabled():
-        raise ToolError("long files can only be described while the editor is running with its media index")
     shelf = default_shelf()
     rows, to_queue = [], []
     for f in resolve_files(file_ids, file_query):
@@ -687,119 +684,3 @@ def _view_timeline_audio(start, end):
 def plan_clamped(strips, hi):
     """The planned strips cut to the end of the timeline."""
     return [(a, min(b, hi)) for a, b in strips if a < hi]
-
-
-# ---------------------------------------------------------------------------
-# The older search tools, answered from the local index
-# ---------------------------------------------------------------------------
-
-def _mmss(sec):
-    sec = max(0.0, float(sec))
-    return f"{int(sec // 60)}:{int(sec % 60):02d}"
-
-
-def _window_text(h):
-    return (f"start_seconds={h['start']:.3f} end_seconds={h['end']:.3f} peak_seconds={h['peak']:.3f} "
-            f"({_mmss(h['start'])}–{_mmss(h['end'])})")
-
-
-def _v2_files():
-    """Indexed files that can be searched by meaning, or None when the preference is off or nothing is indexed yet."""
-    from classes.media_index.flags import v2_enabled
-    if not v2_enabled():
-        return None, 0
-    files, missing = project_indexes()
-    files = [f for f in files if f.layers.get(S.LAYER_VECTORS)]
-    return (files or None), len(missing)
-
-
-def v1_only_file_ids():
-    """Ids of project media that the local index cannot search by meaning but the original project index can.
-
-    With the preference on, ``search_clips_tool`` answers from the local index; footage indexed before the switch (or on
-    another machine) has only the original index, and would otherwise vanish from search. Empty when the preference is off.
-    """
-    from classes.media_index.flags import v2_enabled
-    if not v2_enabled():
-        return set()
-    from classes.twelvelabs_match import get_index_block, twelvelabs_is_indexed
-    shelf = default_shelf()
-    out = set()
-    for f in _all_files():
-        if str(f.data.get("media_type") or "video") not in ("video", "audio"):
-            continue
-        fi = _index_for(f, shelf)
-        if fi is not None and fi.layers.get(S.LAYER_VECTORS):
-            continue
-        if twelvelabs_is_indexed(get_index_block(f.data.get("ai_metadata") or {})):
-            out.add(str(f.id))
-    return out
-
-
-def legacy_search_clips(query, k, look_for="", nth=0):
-    """search_clips_tool's answer from the local index, in its own line format; None to use the original search."""
-    files, missing = _v2_files()
-    if files is None:
-        return None
-    try:
-        qv = embed_query(query)
-    except ToolError as exc:
-        return f"Error: {exc}"
-    res = msearch.search(files, query_vector=qv, look_for=look_for or "", limit=60)
-    hits = res["hits"]
-    if not hits:
-        return (f"No index matches for '{query}' in this project's index ({len(files)} indexed media item(s)). "
-                "Try a more specific description, or check indexing finished.")
-    grouped = {}
-    for h in hits:
-        grouped.setdefault(h["file_id"], []).append(h)
-    lines = [f"Found {len(hits)} match(es) across {len(grouped)} project media item(s) (local index):"]
-    for shown, (fid, group) in enumerate(grouped.items()):
-        if shown >= k and nth == 0:
-            break
-        chrono = sorted(group, key=lambda x: x["start"])
-        name = group[0]["name"]
-        if nth > 0:
-            h = chrono[min(nth - 1, len(chrono) - 1)]
-            lines.append(f"  • {name} media_bin_file_id={fid} — occurrence #{nth} {_window_text(h)}")
-        elif len(chrono) == 1:
-            lines.append(f"  • {name} media_bin_file_id={fid} media_type=video — {_window_text(chrono[0])} (rank=1)")
-        else:
-            lines.append(f"  • {name} media_bin_file_id={fid} — {len(chrono)} occurrences:")
-            best = group[0]
-            order = {id(h): n for n, h in enumerate(chrono, 1)}
-            for h in sorted(group[:8], key=lambda x: x["start"]):
-                lines.append(f"      {order[id(h)]}. {_window_text(h)}{'  <-- best match' if h is best else ''}")
-            lines.append("      Place the best match unless the user asked for a different one (e.g. 'the 2nd time').")
-    if missing:
-        lines.append(f"Note: {missing} file(s) are not in the local index yet (index_status_tool).")
-    lines.append(
-        "To PLACE a moment: place_moment(file_id=..., start_seconds=<keep in>, end_seconds=<keep out>, query=<same "
-        "description>, track=..., position_seconds=...). Watch+trim+place are built in — do not call "
-        "watch_clip_window_tool or convert to frames. To SLICE an already-placed clip: slice_moment(query, "
-        "clip_query=... or timeline_clip_id=...).")
-    return "\n".join(lines)
-
-
-def legacy_search_in_clip(query, k, file_id, clip_start, clip_end, clip_name, look_for=""):
-    """search_clip_scenes_tool's answer for one clip's trimmed range from the local index; None to use the original."""
-    files, _ = _v2_files()
-    if files is None or not any(f.file_id == str(file_id) for f in files):
-        return None
-    try:
-        qv = embed_query(query)
-    except ToolError as exc:
-        return f"Error: {exc}"
-    mine = [f for f in files if f.file_id == str(file_id)]
-    res = msearch.search(mine, query_vector=qv, look_for=look_for or "", limit=60)
-    inside = [h for h in res["hits"] if h["end"] > clip_start and h["start"] < clip_end][:k]
-    if not inside:
-        return None        # nothing in this range by meaning: let the scene-description fallback answer
-    lines = [f"Index matches in '{clip_name}' ({_mmss(clip_start)} - {_mmss(clip_end)}):"]
-    for rank, h in enumerate(inside, 1):
-        s, e = max(h["start"], clip_start), min(h["end"], clip_end)
-        peak = min(max(h["peak"], s), e)
-        lines.append(f"- keep {_mmss(s - clip_start)}-{_mmss(e - clip_start)} peak {_mmss(peak - clip_start)} (rank={rank}, overlap=1.00)")
-        if h.get("why"):
-            lines.append(f"  transcript: {h['why'][:180]}")
-    return "\n".join(lines)

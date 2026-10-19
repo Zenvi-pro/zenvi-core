@@ -43,31 +43,6 @@ def test_session_bearer_follows_token_rotation_and_sign_out():
         assert "Authorization" not in c.session.headers
 
 
-def test_search_posts_with_bearer_header():
-    c = _client()
-    with patch.object(api_client.ZenviBackendClient, "_auth_token", staticmethod(lambda: "jwt-1")):
-        sess = c.session
-        seen = {}
-
-        class _Resp:
-            def raise_for_status(self):
-                return None
-
-            def json(self):
-                return {"results": []}
-
-        def fake_post(url, **kw):
-            seen["url"] = url
-            seen["auth"] = sess.headers.get("Authorization")
-            return _Resp()
-
-        with patch.object(sess, "post", fake_post):
-            out = c.search("a dog", top_k=3)
-    assert out == {"results": []}
-    assert seen["url"].endswith("/search")
-    assert seen["auth"] == "Bearer jwt-1"
-
-
 def test_parallel_indexing_session_also_carries_bearer():
     c = _client()
     with patch.object(api_client.ZenviBackendClient, "_auth_token", staticmethod(lambda: "jwt-1")):

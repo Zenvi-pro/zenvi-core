@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, List, Sequence, Set, Tuple
+from typing import Any, Iterable, List, Sequence, Set
 
 
 def timeline_file_ids(clips: Iterable[Any]) -> Set[str]:
@@ -20,13 +20,13 @@ def timeline_file_ids(clips: Iterable[Any]) -> Set[str]:
     return used
 
 
-def next_index(queue: Sequence[Tuple[str, bool]], used_on_timeline: Set[str]) -> int:
+def next_index(queue: Sequence[str], used_on_timeline: Set[str]) -> int:
     """Position in *queue* to start next: a file on the timeline first, else the oldest.
 
     Within each group the order is first in, first out, so nothing is starved by a later
     import. An empty queue returns 0 (the caller checks for emptiness before popping).
     """
-    for position, (file_id, _summarize_only) in enumerate(queue):
+    for position, file_id in enumerate(queue):
         if str(file_id) in used_on_timeline:
             return position
     return 0

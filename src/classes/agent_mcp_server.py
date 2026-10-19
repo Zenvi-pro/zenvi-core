@@ -51,10 +51,8 @@ SERVER_INSTRUCTIONS = (
     "a 0–1 top-left coordinate grid. To describe, summarise or recreate footage call "
     "storyboard_tool first (detail=list for the whole video in one call: a row per shot with its own exact time; keep every row; open the keyframe picture before trusting a description): every cut is exact. Use inspect_media_tool only for "
     "a spot check or a file with no shot list yet; never sample frames at a fixed interval to find cuts, and never guess from filenames. "
-    "Do not shell ffmpeg for frames. Do not use watch_clip_window_tool for "
-    "verification — that path is Assistant place/slice backend confirm and does "
-    "not return images to you. To cut at a known source time, pass start_seconds "
-    "(and end_seconds for a range) to slice_clip_at_best_match_tool. After "
+    "Do not shell ffmpeg for frames. To cut a placed clip, use slice_clips_tool "
+    "(at_seconds is timeline time). After "
     "delete_from_timeline_tool, check the receipt removedClipIds. If inspect shows "
     "the edit is wrong, undo_tool and retry. "
     "YouTube / youtu.be / similar URL: call ingest_web_video_tool once "
@@ -79,7 +77,7 @@ SERVER_INSTRUCTIONS = (
     "indices are refused. add_captions_tool burns timed dialogue; "
     "export_captions_tool writes SRT/VTT. diarize_media_tool labels speakers "
     "offline. detect_beats_tool finds music beats. "
-    "To recreate a video from the user's footage run the loop: plan_recreation_tool, build_recreation_tool, check_recreation_tool, fix what the check names, check again; never place it by length alone. search_footage_tool searches everything the index knows (what happens, what is said, how it looks); search_clips_tool remains the cloud tier."
+    "To recreate a video from the user's footage run the loop: plan_recreation_tool, build_recreation_tool, check_recreation_tool, fix what the check names, check again; never place it by length alone. search_footage_tool searches everything the index knows (what happens, what is said, how it looks)."
 )
 
 # The editing playbook (how to finish a whole piece) is one text shared with the Zenvi Assistant; see classes.edit_playbook.

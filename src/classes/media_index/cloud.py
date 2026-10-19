@@ -136,10 +136,13 @@ def audio_summary(audio: Dict[str, Any], seconds: float) -> str:
     return ", ".join(bits) + "."
 
 
-def v1_metadata_from_v2(watch: Dict[str, Any], speech: Optional[Dict[str, Any]], structure: Dict[str, Any],
-                        media_type: str = "video") -> Dict[str, Any]:
-    """The v1 ``ai_metadata`` shape (chapters, scene descriptions, cues...) from v2 data, so the
-    Scene Descriptions dock, badges and audio tools keep working while v2 is on."""
+def metadata_view(watch: Dict[str, Any], speech: Optional[Dict[str, Any]], structure: Dict[str, Any],
+                  media_type: str = "video") -> Dict[str, Any]:
+    """The ``ai_metadata`` view (chapters, scene descriptions, cues...) derived from the v2 shelf layers.
+
+    The Scene Descriptions dock, badges and audio tools read this shape. It is a view, not a second store: the shelf
+    is the source of truth.
+    """
     shots = watch.get("shots") or []
     chapters, scenes, moments = [], [], []
     objects: List[str] = []

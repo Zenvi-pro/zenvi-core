@@ -153,9 +153,6 @@ KWARG_PROPS = {
     },
     # read by the shared timeline-clip resolver
     "modify_clip_tool": {"occurrence", "position_near", "track"},
-    "search_clip_scenes_tool": {"occurrence", "position_near", "track"},
-    "watch_clip_window_tool": {"occurrence", "position_near", "track"},
-    "slice_clip_at_best_match_tool": {"track"},
     "split_file_add_clip_tool": {"require_visual_match"},
     "watch_clip_tool": {"query"},
     # Phase 5 speech tools read the snake_case aliases for clipId / fileId

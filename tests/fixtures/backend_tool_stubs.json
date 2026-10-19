@@ -88,7 +88,6 @@
   "get_file_info_tool": {
    "file_id": "str!"
   },
-  "get_project_catalog_tool": {},
   "get_project_info_tool": {},
   "get_timeline_placements_metadata_tool": {
    "detail_level": "str"
@@ -158,25 +157,8 @@
   "reindex_project_file_tool": {
    "file_id": "str!"
   },
-  "resummarize_project_file_tool": {
-   "file_id": "str!"
-  },
   "save_project_tool": {
    "file_path": "str!"
-  },
-  "search_clip_scenes_tool": {
-   "clip_query": "str",
-   "occurrence": "str",
-   "position_near": "str",
-   "query": "str!",
-   "timeline_clip_id": "str",
-   "top_k": "str",
-   "track": "str"
-  },
-  "search_clips_tool": {
-   "look_for": "str",
-   "query": "str!",
-   "top_k": "int"
   },
   "search_transitions_tool": {
    "query": "str!"
@@ -197,15 +179,6 @@
    "key": "str!",
    "value": "str!"
   },
-  "slice_clip_at_best_match_tool": {
-   "clip_query": "str",
-   "end_seconds": "str",
-   "occurrence": "str",
-   "query": "str!",
-   "start_seconds": "str",
-   "timeline_clip_id": "str",
-   "track": "str"
-  },
   "slice_clip_at_playhead_tool": {},
   "suggest_motion_graphics_placements_tool": {
    "beat_count": "str",
@@ -219,14 +192,6 @@
   },
   "watch_clip_tool": {
    "file_path": "str"
-  },
-  "watch_clip_window_tool": {
-   "clip_query": "str",
-   "end": "str",
-   "query": "str",
-   "start": "str",
-   "timeline_clip_id": "str",
-   "track": "str"
   },
   "zoom_in_tool": {},
   "zoom_out_tool": {}

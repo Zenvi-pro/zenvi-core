@@ -12,7 +12,7 @@ Editor tools registered: 99; all agent tools: 145.
 | `ai.jobs` — List and cancel generation jobs | Cancel Job / generation queue | `cancel_comfyui_job_tool`, `list_comfyui_jobs_tool` |
 | `ai.tts` — Narration from text placed on a real track with its real duration (off the GUI thread) | generate_tts_and_add_to_timeline_tool | `generate_tts_and_add_to_timeline_tool` |
 | `ai.video_generation` — AI video generation/edit/morph that replaces (not stacks on) the originals and reports failures as errors | generate_video/modify_clip/generate_transition_clip tools | `generate_transition_clip_tool`, `generate_video_and_add_to_timeline_tool`, `modify_clip_tool` |
-| `ai.search` — Semantic search tools without crashes; failures reported as errors | search_clips/search_clip_scenes/slice_clip_at_best_match | `search_clip_scenes_tool`, `search_clips_tool`, `slice_clip_at_best_match_tool` |
+| `ai.search` — Semantic search tools without crashes; failures reported as errors | search_footage_tool | `search_footage_tool` |
 | `ai.stock_media` — Pexels/Freesound import (existing tools) with errors reported as errors | Stock search in Project Files | `import_stock_media_tool` |
 | `recording.prepare` — Open and configure the Recording dock (sources mic/screen/webcam, devices, track, start time); starting capture stays a human action | View > Recording View / Clip > Audio > Record | `prepare_recording_tool` |
 

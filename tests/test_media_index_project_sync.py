@@ -21,6 +21,13 @@ FP2 = "f" * 64
 GOOD = {"analyzed": True, "short_summary": "a street at night", "chapters": [{"start": 0, "end": 4}]}
 
 
+def _save_index(shelf):
+    """A finished analysis of FP, saved as the ``facts`` layer of its shelf entry."""
+    shelf.write_json(FP, "facts.json", GOOD)
+    shelf.set_layer(FP, "facts", version=1, status="ready")
+    shelf.set_source(FP, duration=9.0)
+
+
 @pytest.fixture
 def shelves(tmp_path, monkeypatch):
     here = Shelf(str(tmp_path / "here"))
@@ -37,7 +44,7 @@ def _project(tmp_path, name="trip"):
 
 def test_collect_copies_each_files_index_next_to_the_project(shelves):
     here, tmp_path = shelves
-    here.save_v1_index(FP, GOOD, duration=9.0)
+    _save_index(here)
     project = _project(tmp_path)
     files = [{"id": "a", "fingerprint": {"sha256": FP}}, {"id": "b", "fingerprint": {"sha256": FP2}},
              {"id": "c"}, {"id": "d", "fingerprint": None}]
@@ -48,7 +55,7 @@ def test_collect_copies_each_files_index_next_to_the_project(shelves):
 
 def test_a_project_opened_on_another_machine_restores_its_index(shelves, monkeypatch):
     here, tmp_path = shelves
-    here.save_v1_index(FP, GOOD, duration=9.0)
+    _save_index(here)
     project = _project(tmp_path)
     project_sync.export_index_for_files([{"fingerprint": {"sha256": FP}}], project)
 
@@ -56,7 +63,7 @@ def test_a_project_opened_on_another_machine_restores_its_index(shelves, monkeyp
     # "Another machine": same project folder, a different, empty shelf.
     monkeypatch.setattr(project_sync, "default_shelf", lambda: there)
     assert project_sync.import_project_index(project) == [FP]
-    assert there.load_v1_index(FP)["ai_metadata"]["short_summary"] == "a street at night"
+    assert there.read_json(FP, "facts.json")["short_summary"] == "a street at night"
 
 
 def test_opening_a_project_without_an_index_does_nothing(shelves):
@@ -78,7 +85,7 @@ def test_no_thread_is_started_when_there_is_nothing_to_import(shelves, monkeypat
 
 def test_the_background_import_runs_off_the_calling_thread(shelves, monkeypatch):
     here, tmp_path = shelves
-    here.save_v1_index(FP, GOOD, duration=9.0)
+    _save_index(here)
     project = _project(tmp_path)
     project_sync.export_index_for_files([{"fingerprint": {"sha256": FP}}], project)
 
@@ -94,7 +101,7 @@ def test_the_background_import_runs_off_the_calling_thread(shelves, monkeypatch)
 
 def test_failures_never_escape(shelves, monkeypatch):
     here, tmp_path = shelves
-    here.save_v1_index(FP, GOOD, duration=9.0)
+    _save_index(here)
     project = _project(tmp_path)
 
     def boom(*_a, **_k):
@@ -110,7 +117,7 @@ def test_failures_never_escape(shelves, monkeypatch):
 def test_collect_media_carries_the_index_along(shelves, tmp_path):
     """The real collect helper, not just the sync module."""
     here, tmp_path = shelves
-    here.save_v1_index(FP, GOOD, duration=9.0)
+    _save_index(here)
     project = _project(tmp_path)
     media = tmp_path / "clip.mp4"
     media.write_bytes(b"x" * 100)
@@ -120,4 +127,4 @@ def test_collect_media_carries_the_index_along(shelves, tmp_path):
 
     copied, skipped, errors, moves = copy_media_into_project(files, project)
     assert errors == [] and len(copied) == 1 and len(moves) == 1
-    assert os.path.isfile(tmp_path / "projects" / "trip_assets" / "index" / FP / "v1_index.json")
+    assert os.path.isfile(tmp_path / "projects" / "trip_assets" / "index" / FP / "facts.json")

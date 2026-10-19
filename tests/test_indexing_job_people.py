@@ -30,10 +30,10 @@ def scanned(monkeypatch):
 
 
 def go(monkeypatch, tmp_path, *, people_on=True, status=READY, media_type="video", facts_raise=None):
-    _facts_calls(monkeypatch, enabled=True, raises=facts_raise)
+    h = Harness(monkeypatch, tmp_path)
+    _facts_calls(monkeypatch, raises=facts_raise)
     monkeypatch.setattr(flags, "people_enabled", lambda: people_on)
     monkeypatch.setattr(people_models, "status", lambda: status)
-    h = Harness(monkeypatch, tmp_path)
     meta, _ = h.run(media_type=media_type)
     return h, meta
 
@@ -42,16 +42,14 @@ def test_with_everything_ready_the_faces_and_voices_are_found_after_the_local_an
     h, meta = go(monkeypatch, tmp_path)
     assert [c[0] for c in scanned] == ["faces", "voices"]
     assert scanned[0][1] == str(h.media) and scanned[0][2] == h.sha and scanned[0][3][0]["end"] == 5.0 and scanned[1][2] == h.sha
-    h.client.start_direct_indexing_job.assert_called_once()
     assert meta["index"]["status"] == "ready"
 
 
 @pytest.mark.parametrize("kw", [dict(people_on=False), dict(status={**READY, "runtime": False})])
 def test_nothing_is_scanned_when_it_is_off_or_there_is_no_runtime_and_nothing_is_downloaded(monkeypatch, tmp_path, scanned, kw):
     monkeypatch.setattr(people_models, "download", lambda *a, **k: pytest.fail("indexing must never download models"))
-    h, _ = go(monkeypatch, tmp_path, **kw)
+    go(monkeypatch, tmp_path, **kw)
     assert scanned == []
-    h.client.start_direct_indexing_job.assert_called_once()
 
 
 def test_without_the_face_models_only_voices_are_heard_and_without_the_voice_model_only_faces_are_found(monkeypatch, tmp_path, scanned):
@@ -79,7 +77,6 @@ def test_a_file_already_scanned_is_not_scanned_again(monkeypatch, tmp_path, scan
 def test_a_failing_scan_never_stops_indexing(monkeypatch, tmp_path, scanned):
     monkeypatch.setattr(people, "scan_video", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("model exploded")))
     h, meta = go(monkeypatch, tmp_path)
-    h.client.start_direct_indexing_job.assert_called_once()
     assert meta["index"]["status"] == "ready"
 
 

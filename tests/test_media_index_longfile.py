@@ -13,7 +13,7 @@ if str(SRC) not in sys.path:
 
 from classes import credits_client as cc  # noqa: E402
 from classes.indexing_status import SKIPPED, derive_indexing_status  # noqa: E402
-from classes.media_index import cloud, flags, longfile  # noqa: E402
+from classes.media_index import cloud, longfile  # noqa: E402
 from classes.media_index import schema as S  # noqa: E402
 from classes.media_index.store import Shelf  # noqa: E402
 
@@ -212,7 +212,6 @@ def test_cancelling_between_chunks_stops_the_pass(small):
 def harness(monkeypatch, tmp_path):
     sys.path.insert(0, str(Path(__file__).parent))
     from test_indexing_job_reuse import Harness
-    monkeypatch.setattr(flags, "v2_enabled", lambda: True)
     from classes.media_index import facts
     monkeypatch.setattr(facts, "compute_facts", lambda *a, **k: {"ok": True})
     monkeypatch.setattr(cc, "check_operation", lambda *a, **k: (True, 1000, None))
@@ -226,7 +225,6 @@ def test_a_long_file_waits_for_approval_and_shows_the_estimate(monkeypatch, harn
     assert calls == [] and meta["skip_code"] == "long_file" and "at most about 1620 credits" in meta["skip_reason"]
     status = derive_indexing_status(meta)
     assert status.state == SKIPPED and status.label == "Approval needed" and "1620" in status.tooltip
-    harness.client.start_direct_indexing_job.assert_not_called()
 
 
 def test_an_approved_long_file_goes_through_the_cloud_pass(monkeypatch, harness):
@@ -246,17 +244,10 @@ def test_an_approved_long_file_goes_through_the_cloud_pass(monkeypatch, harness)
     assert "skip_code" not in meta and harness.charges == []
 
 
-def test_a_long_file_the_cloud_cannot_take_keeps_the_original_limit_message(monkeypatch, harness):
-    monkeypatch.setattr(cloud, "compute_cloud", lambda *a, **k: {"unsupported": True, "error": "no v2", "layers": {}})
+def test_an_approved_long_file_the_backend_cannot_take_fails_with_that_reason(monkeypatch, harness):
+    monkeypatch.setattr(cloud, "compute_cloud", lambda *a, **k: {"unsupported": True, "error": "no media index v2", "layers": {}})
     meta, _ = harness.run(duration=90 * 60.0, extra={"index_long_ok": True})
-    assert "30-minute limit" in meta["skip_reason"] and "skip_code" not in meta
-    harness.client.start_direct_indexing_job.assert_not_called()
-
-
-def test_without_the_preference_a_long_file_is_skipped_exactly_as_before(monkeypatch, harness):
-    monkeypatch.setattr(flags, "v2_enabled", lambda: False)
-    meta, _ = harness.run(duration=90 * 60.0, extra={"index_long_ok": True})
-    assert "30-minute limit" in meta["skip_reason"] and "skip_code" not in meta
+    assert meta["index"]["status"] == "failed" and "no media index v2" in meta["error"]
 
 
 def test_a_clip_just_under_the_limit_is_not_treated_as_long(monkeypatch, harness):
@@ -297,7 +288,6 @@ def library(monkeypatch, tmp_path):
 
     files = [f("L1", "podcast.mp4", 90, sha="1" * 64, ai={"skip_code": "long_file"}), f("S1", "short.mp4", 5, sha="2" * 64),
              f("L2", "lecture.mp4", 40, sha="3" * 64), f("P1", "pic.png", 100, kind="image"), f("L3", "fresh.mp4", 50)]
-    monkeypatch.setattr(flags, "v2_enabled", lambda: True)
     monkeypatch.setattr(T, "default_shelf", lambda: shelf)
     monkeypatch.setattr(T, "resolve_files", lambda ids=None, query="": [x for x in files if x.id in (ids or [])])
     monkeypatch.setattr(T, "on_main", lambda fn, *a, **k: fn(*a))
@@ -334,12 +324,6 @@ def test_asking_again_after_approval_does_not_queue_a_second_time(library):
     tool(file_ids=["L1"], approve=True)
     _, r = tool(file_ids=["L1"])
     assert r["files"][0]["state"] == "approved" and library.queued == ["L1"]
-
-
-def test_it_refuses_when_there_is_no_running_editor_index(library, monkeypatch):
-    monkeypatch.setattr(flags, "v2_enabled", lambda: False)
-    out = REGISTRY["index_long_file_tool"].func(file_ids=["L1"])
-    assert out.startswith("Error") and "media index" in out
 
 
 def test_nothing_waiting_says_so(library):

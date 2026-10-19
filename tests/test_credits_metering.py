@@ -165,57 +165,6 @@ def test_a_blocked_stock_download_neither_downloads_nor_charges(monkeypatch, cha
     assert charges == []
 
 
-def _reindex(monkeypatch, *, result, ai_metadata=None):
-    fake_file = types.SimpleNamespace(
-        data={"path": "/media/clip.mp4", "duration": 6.0, "ai_metadata": ai_metadata or {}},
-        save=lambda: None,
-    )
-    query = types.ModuleType("classes.query")
-    query.File = types.SimpleNamespace(get=lambda **kw: fake_file)
-    monkeypatch.setitem(sys.modules, "classes.query", query)
-    monkeypatch.setattr(th, "_get_app", lambda: types.SimpleNamespace(project={"id": "p1"}))
-    # No Qt event loop runs here, stubbed or real: run the main-thread hops inline.
-    monkeypatch.setattr(th, "_run_on_main_thread", lambda fn, *a, timeout=None: fn(*a))
-    client = MagicMock()
-    client.is_indexing_configured.return_value = True
-    client.reindex_video.return_value = result
-    monkeypatch.setattr(api_client, "get_backend_client", lambda: client)
-    return th.reindex_project_file(file_id="f1"), client
-
-
-def test_a_reindex_is_charged_once_for_the_clip_duration(monkeypatch, charges):
-    out, _ = _reindex(monkeypatch, result={"success": True, "index_id": "zenvi-p1", "video_id": ""})
-
-    assert out.startswith("Re-indexing complete"), out
-    assert [(a[1], k.get("duration_seconds")) for a, k in charges] == [("indexing_per_minute", 6.0)]
-
-
-def test_a_failed_reindex_is_not_charged(monkeypatch, charges):
-    out, _ = _reindex(monkeypatch, result={"success": False, "error": "boom"})
-
-    assert out == "Error: Re-indexing failed: boom"
-    assert charges == []
-
-
-def test_a_reindex_blocked_by_the_monthly_limit_says_what_still_works(monkeypatch, charges):
-    monkeypatch.setattr(cc, "check_operation", lambda *a, **k: (False, 0, "Monthly indexing limit reached (6 minutes on free plan)."))
-    out, client = _reindex(monkeypatch, result={"success": True})
-
-    assert out.startswith("Error") and "Monthly indexing limit reached" in out
-    assert "search_footage_tool" in out and "get_transcript_tool" in out, "the Assistant must not conclude nothing can be searched"
-    client.reindex_video.assert_not_called()
-    assert charges == []
-
-
-def test_an_indexed_clip_is_not_reindexed_or_charged(monkeypatch, charges):
-    ready = {"twelvelabs": {"status": "ready", "index_id": "zenvi-p1", "video_id": "v1"}}
-    out, client = _reindex(monkeypatch, result={"success": True}, ai_metadata=ready)
-
-    assert "already indexed" in out
-    client.reindex_video.assert_not_called()
-    assert charges == []
-
-
 # ── a backend-billed generation repaints the badge ─────────────────────────
 
 

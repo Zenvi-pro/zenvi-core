@@ -10,7 +10,6 @@
 
 from classes.media_index.schema import LAYER_VECTORS as S_VECTORS, LAYER_WATCH as S_WATCH  # noqa: F401
 from classes.media_index.store import (  # noqa: F401
-    LAYER_V1,
     SCHEMA_VERSION,
     Shelf,
     default_shelf,

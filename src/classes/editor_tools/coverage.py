@@ -134,7 +134,7 @@ CAPABILITIES = [
     ("ai.jobs", "ai-generation", "Cancel Job / generation queue", "List and cancel generation jobs"),
     ("ai.tts", "ai-generation", "generate_tts_and_add_to_timeline_tool", "Narration from text placed on a real track with its real duration (off the GUI thread)"),
     ("ai.video_generation", "ai-generation", "generate_video/modify_clip/generate_transition_clip tools", "AI video generation/edit/morph that replaces (not stacks on) the originals and reports failures as errors"),
-    ("ai.search", "ai-generation", "search_clips/search_clip_scenes/slice_clip_at_best_match", "Semantic search tools without crashes; failures reported as errors"),
+    ("ai.search", "ai-generation", "search_footage_tool", "Semantic search tools without crashes; failures reported as errors"),
     ("ai.stock_media", "ai-generation", "Stock search in Project Files", "Pexels/Freesound import (existing tools) with errors reported as errors"),
     ("recording.prepare", "ai-generation", "View > Recording View / Clip > Audio > Record", "Open and configure the Recording dock (sources mic/screen/webcam, devices, track, start time); starting capture stays a human action"),
     # ------------------------------------------------------------------ media-index
@@ -193,7 +193,7 @@ LEGACY_COVERAGE = {
     "transition.list": ["list_transitions_tool", "search_transitions_tool"],
     "transition.apply": ["apply_transition_tool"],
     "audio.levels": ["set_clip_volume_tool", "duck_under_speech_tool", "analyze_timeline_audio_tool"],
-    "ai.search": ["search_clips_tool", "search_clip_scenes_tool", "slice_clip_at_best_match_tool"],
+    "ai.search": ["search_footage_tool"],
     "ai.stock_media": ["import_stock_media_tool"],
     "ai.video_generation": ["generate_video_and_add_to_timeline_tool", "modify_clip_tool",
                             "generate_transition_clip_tool"],

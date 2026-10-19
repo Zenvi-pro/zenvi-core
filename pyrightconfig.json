@@ -14,7 +14,6 @@
     "src/classes/export_acceleration/hw_encode.py",
     "src/classes/ffmpeg_cli.py",
     "src/classes/headless.py",
-    "src/classes/index_chunker.py",
     "src/classes/launch_args.py",
     "src/classes/media_index/__init__.py",
     "src/classes/media_index/job.py",

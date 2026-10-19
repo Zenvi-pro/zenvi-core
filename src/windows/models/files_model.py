@@ -92,27 +92,24 @@ class BackendIndexingWorker(QThread):
     """Background worker: Gemini index + Flash audiovisual summary."""
     completed = pyqtSignal(dict, object, object)  # file_data, metadata, error
     progress = pyqtSignal(str, str, int)  # file_id, phase, percent (-1 = indeterminate)
-    intermediate_save = pyqtSignal(str, object)  # file_id, metadata dict
 
-    def __init__(self, file_data, project_id="", summarize_only=False, parent=None):
+    def __init__(self, file_data, project_id="", parent=None):
         super().__init__(parent)
         self.file_data = file_data
         self.project_id = project_id or ""
-        self.summarize_only = bool(summarize_only)
         self._job = None
 
 
     def run(self):
         # The logic lives in classes.media_index.job (no Qt, so it is tested headlessly);
-        # this thread only supplies the backend client and the three signals.
+        # this thread only supplies the backend client and the two signals.
         from classes.media_index.job import IndexingJob
 
         self._job = IndexingJob(
-            self.file_data, self.project_id, self.summarize_only,
+            self.file_data, self.project_id,
             client_factory=get_backend_client,  # looked up now, so a test can patch the module name
             emit_completed=self.completed.emit,
             emit_progress=self.progress.emit,
-            emit_intermediate=self.intermediate_save.emit,
         )
         self._job.run()
 
@@ -688,7 +685,7 @@ class FilesModel(QObject, updates.UpdateInterface):
     def is_file_queued(self, file_id):
         """True while a file waits for one of the bounded indexing worker slots."""
         fid = str(file_id or "")
-        return any(qid == fid for qid, _ in self._indexing_queue)
+        return any(qid == fid for qid in self._indexing_queue)
 
     def has_active_indexing(self):
         """True while any file in the project is indexing or waiting to index."""
@@ -697,16 +694,16 @@ class FilesModel(QObject, updates.UpdateInterface):
     def get_indexing_progress(self, file_id):
         return self._indexing_progress.get(str(file_id or ""))
 
-    def _enqueue_index(self, file_id, summarize_only=False):
-        """Queue a file for background indexing/summarize with bounded concurrency."""
+    def _enqueue_index(self, file_id):
+        """Queue a file for background indexing with bounded concurrency."""
         fid = str(file_id or "")
         if not fid:
             return
         if self.is_file_indexing(fid):
             return
-        if any(qid == fid for qid, _ in self._indexing_queue):
+        if any(qid == fid for qid in self._indexing_queue):
             return
-        self._indexing_queue.append((fid, bool(summarize_only)))
+        self._indexing_queue.append(fid)
         self._status_cache.pop(fid, None)
         self._drain_indexing_queue()
 
@@ -731,17 +728,17 @@ class FilesModel(QObject, updates.UpdateInterface):
     def _drain_indexing_queue(self):
         from classes.media_index.queue import next_index
         while len(self._active_indexers) < self._MAX_INDEXING_WORKERS and self._indexing_queue:
-            file_id, summarize_only = self._indexing_queue.pop(
+            file_id = self._indexing_queue.pop(
                 next_index(self._indexing_queue, self._timeline_file_ids()))
             if self.is_file_indexing(file_id):
                 continue
-            self._start_indexing_worker(file_id, summarize_only=summarize_only)
+            self._start_indexing_worker(file_id)
 
-    def _index_file_async(self, file_id, summarize_only=False):
-        """Fire-and-forget background indexing/summarize for an already-saved file."""
-        self._enqueue_index(file_id, summarize_only=summarize_only)
+    def _index_file_async(self, file_id):
+        """Fire-and-forget background indexing for an already-saved file."""
+        self._enqueue_index(file_id)
 
-    def _start_indexing_worker(self, file_id, summarize_only=False):
+    def _start_indexing_worker(self, file_id):
         from classes.query import File as _File
         file_obj = _File.get(id=file_id)
         if not file_obj or not isinstance(file_obj.data, dict):
@@ -758,7 +755,7 @@ class FilesModel(QObject, updates.UpdateInterface):
         except Exception:
             pass
         worker = BackendIndexingWorker(
-            dict(file_obj.data), project_id=project_id, summarize_only=summarize_only,
+            dict(file_obj.data), project_id=project_id,
         )
         self._active_indexers.append(worker)
         self._set_indexing_progress(file_id, "uploading", -1)
@@ -774,23 +771,6 @@ class FilesModel(QObject, updates.UpdateInterface):
 
         def _on_progress(fid, phase, percent):
             self._set_indexing_progress(fid, phase, percent)
-
-        def _on_intermediate(fid, metadata):
-            try:
-                if not metadata or not isinstance(metadata, dict):
-                    return
-                f = _File.get(id=fid)
-                if not f:
-                    return
-                self._apply_ai_metadata(f, metadata)
-                self._save_file_untracked(f)
-                get_app().window.FileUpdated.emit(str(fid))
-                try:
-                    get_app().window.schedule_flush_project_to_disk()
-                except Exception:
-                    pass
-            except Exception as exc:
-                log.warning(f"Failed to apply intermediate indexing result: {exc}")
 
         def _on_complete(_file_data, metadata, error):
             try:
@@ -814,7 +794,6 @@ class FilesModel(QObject, updates.UpdateInterface):
                 log.warning(f"Failed to apply background indexing result: {exc}")
 
         worker.progress.connect(_on_progress)
-        worker.intermediate_save.connect(_on_intermediate)
         worker.completed.connect(_on_complete)
         worker.finished.connect(_on_finished)
         worker.start()
@@ -1269,7 +1248,7 @@ class FilesModel(QObject, updates.UpdateInterface):
         self.ignore_updates = False
         self.ignore_image_sequence_paths = []
         self._active_indexers = []  # strong refs to keep QThreads alive until finished
-        self._indexing_queue = []  # (file_id, summarize_only) waiting for a worker slot
+        self._indexing_queue = []  # file ids waiting for a worker slot
         self._indexing_progress = {}
         self._status_cache = {}
         self.thumbnails = None  # thumbnail worker, created below

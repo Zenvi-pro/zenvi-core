@@ -189,7 +189,7 @@ def test_index_status_lists_each_layer_and_skips_non_media(env):
     assert [x["file_id"] for x in one["files"]] == ["F1"]
 
 
-@pytest.mark.parametrize("out,fragment", [({"auth": True}, "sign in"), ({"unsupported": True}, "search_clips_tool"),
+@pytest.mark.parametrize("out,fragment", [({"auth": True}, "sign in"),
                                           ({"credits": True, "error": "Out of credits"}, "out of credits"),
                                           ({"rate_limited": True, "retry_after": 600, "error": "slow down"}, "about 11 min"),
                                           ({"rate_limited": True, "error": "slow down"}, "too many searches"),
@@ -203,6 +203,14 @@ def test_embedding_failures_become_actionable_errors(monkeypatch, out, fragment)
     assert fragment in str(e.value)
 
 
+def test_a_backend_without_media_index_search_says_so_without_naming_a_removed_tool(monkeypatch):
+    import classes.api_client as api
+    monkeypatch.setattr(api, "get_backend_client", lambda: SimpleNamespace(v2_embed=lambda *a, **k: {"unsupported": True}))
+    with pytest.raises(ToolError) as e:
+        T.embed_query("x")
+    assert "has no media index v2 search yet" in str(e.value) and "search_clips_tool" not in str(e.value)
+
+
 def test_a_good_embedding_is_a_float32_vector(monkeypatch):
     import classes.api_client as api
     vec = unit(3).astype("<f2").tobytes()
@@ -210,61 +218,6 @@ def test_a_good_embedding_is_a_float32_vector(monkeypatch):
                         lambda: SimpleNamespace(v2_embed=lambda *a, **k: {"vectors": [base64.b64encode(vec).decode()]}))
     v = T.embed_query("x")
     assert v.dtype == np.float32 and v.shape == (DIMS,) and v[3] == 1.0 and blend(0, 1).shape == (DIMS,)
-
-
-# -- the older search tools -------------------------------------------------------------
-@pytest.fixture
-def v2_on(env, monkeypatch):
-    from classes.media_index import flags
-    monkeypatch.setattr(flags, "v2_enabled", lambda: True)
-    return env
-
-
-def test_with_the_preference_off_the_older_search_is_untouched(env, monkeypatch):
-    from classes.media_index import flags
-    monkeypatch.setattr(flags, "v2_enabled", lambda: False)
-    assert T.legacy_search_clips("lake", 5) is None
-    assert T.legacy_search_in_clip("lake", 5, "F1", 0, 20, "lake") is None
-
-
-def test_with_the_preference_on_search_clips_answers_in_its_own_format(v2_on):
-    out = T.legacy_search_clips("lake view", 5)
-    assert out.startswith("Found 1 match(es) across 1 project media item(s)")
-    assert "lake.mp4 media_bin_file_id=F1" in out and "start_seconds=0.000 end_seconds=10.000 peak_seconds=" in out
-    assert "To PLACE a moment: place_moment(file_id=" in out and "1 file(s) are not in the local index yet" in out
-
-
-def test_no_match_says_so_in_the_original_words(v2_on):
-    assert T.legacy_search_clips("spaceship launch", 5).startswith("No index matches for 'spaceship launch'")
-
-
-def test_several_occurrences_are_numbered_in_time_order_with_the_best_marked(v2_on, monkeypatch):
-    monkeypatch.setattr(T, "embed_query", lambda t: blend(0, 1, 0.7))     # the later shot ranks first
-    out = T.legacy_search_clips("anything", 5)
-    assert "2 occurrences:" in out and out.index("1. start_seconds=0.000") < out.index("2. start_seconds=10.000")
-    best_line = next(x for x in out.splitlines() if "<-- best match" in x)
-    assert "2. start_seconds=10.000" in best_line
-    second = T.legacy_search_clips("anything", 5, nth=2)
-    assert "occurrence #2 start_seconds=10.000" in second
-
-
-def test_with_nothing_indexed_yet_the_original_search_runs(v2_on, monkeypatch):
-    monkeypatch.setattr(T, "_all_files", lambda: [v2_on.files[2]])
-    assert T.legacy_search_clips("lake", 5) is None
-
-
-def test_a_signed_out_search_is_an_error_not_a_silent_fallback(v2_on, monkeypatch):
-    monkeypatch.setattr(T, "embed_query", lambda t: (_ for _ in ()).throw(ToolError("sign in to Zenvi")))
-    assert T.legacy_search_clips("lake", 5).startswith("Error: sign in")
-
-
-def test_search_in_one_clip_is_limited_to_its_trimmed_range(v2_on, monkeypatch):
-    monkeypatch.setattr(T, "embed_query", lambda t: blend(0, 1, 0.5))
-    out = T.legacy_search_in_clip("anything", 5, "F1", 8.0, 14.0, "lake clip")
-    assert out.startswith("Index matches in 'lake clip' (0:08 - 0:14):")
-    assert "keep 0:00-0:02 peak" in out and "keep 0:02-0:06 peak" in out
-    assert T.legacy_search_in_clip("anything", 5, "F1", 100.0, 110.0, "x") is None
-    assert T.legacy_search_in_clip("anything", 5, "F2", 0.0, 5.0, "x") is None
 
 
 # -- match / locate / view audio ---------------------------------------------------------
@@ -426,26 +379,6 @@ def test_an_audio_only_file_with_just_an_audio_analysis_counts_as_indexed(env):
     found, missing = T.project_indexes()
     assert "M9" in [f.file_id for f in found] and "song.mp3" not in missing
     assert "new.mp4" in missing, "a file with no index at all is still reported as not indexed"
-
-
-# -- which files only the original index can find ---------------------------------------
-def test_v1_only_files_are_the_ones_with_an_original_index_and_no_local_vectors(monkeypatch):
-    from classes.media_index import flags
-    from classes.editor_tools import media_index_tools as MT
-    from classes import twelvelabs_match as tm
-    ready = {"index": {"status": "ready", "index_id": "i", "video_id": "v"}}
-
-    def f(fid, ai, mt="video"):
-        return SimpleNamespace(id=fid, data={"media_type": mt, "ai_metadata": ai})
-
-    files = [f("old", ready), f("covered", ready), f("none", {}), f("pic", ready, "image"), f("song", ready, "audio")]
-    monkeypatch.setattr(MT, "_all_files", lambda: files)
-    monkeypatch.setattr(MT, "_index_for", lambda fo, shelf=None: SimpleNamespace(layers={"vectors": fo.id == "covered"}))
-    monkeypatch.setattr(flags, "v2_enabled", lambda: True)
-    assert MT.v1_only_file_ids() == {"old", "song"}, "images are not searched by the original index; a file with no index at all is not offered"
-    monkeypatch.setattr(flags, "v2_enabled", lambda: False)
-    assert MT.v1_only_file_ids() == set()
-    assert tm.twelvelabs_is_indexed(tm.get_index_block(ready)) is True
 
 
 def test_locate_with_an_action_gives_each_hit_the_masking_tools_arguments(env):

@@ -324,41 +324,30 @@ def test_search_timeline_placements_ranked():
     assert len(hits) == 2
 
 
-def test_twelvelabs_project_candidates_pass_index_id():
-    from classes.clip_resolver import _twelvelabs_project_candidates
+def test_a_clip_matched_by_its_name_resolves_without_the_backend():
+    backend = MagicMock()
+    with _patch_contexts([_make_context("a", "Harbour walk")]), \
+            patch("classes.clip_resolver._playhead_position", return_value=0.0), \
+            patch("classes.api_client.get_backend_client", return_value=backend), \
+            _resolver_env({"a": MagicMock(id="a")}):
+        result = resolve_timeline_clip(clip_query="harbour")
+    assert result.ok and result.clip.id == "a"
+    backend.is_indexing_configured.assert_not_called()
+    backend.search.assert_not_called()
 
-    ctx = _make_context(
-        "c1",
-        "Talk",
-        ai={
-            "twelvelabs": {
-                "status": "ready",
-                "index_id": "idx-shared",
-                "video_id": "vid-1",
-            }
-        },
-    )
-    client = MagicMock()
-    client.is_indexing_configured.return_value = True
-    client.search.return_value = {
-        "results": [{"video_id": "vid-1", "start": 1.0, "end": 2.0, "rank": 1}]
-    }
 
-    with patch(
-        "classes.project_tl_index.collect_project_twelvelabs_index",
-        return_value={
-            "index_id": "idx-shared",
-            "video_map": {"vid-1": {"file_id": "file-1"}},
-        },
-    ), patch(
-        "classes.api_client.get_backend_client",
-        return_value=client,
-    ):
-        cands = _twelvelabs_project_candidates("when does she say hello", [ctx])
-
-    assert client.search.call_args.kwargs.get("index_id") == "idx-shared"
-    assert len(cands) == 1
-    assert cands[0].timeline_clip_id == "c1"
+def test_a_query_no_clip_matches_is_an_error_and_never_asks_the_backend():
+    ai = {"analyzed": True, "tags": {"objects": ["dog"]}, "description": "a dog runs"}
+    backend = MagicMock()
+    with _patch_contexts([_make_context("a", "Clip A", ai=ai)]), \
+            patch("classes.clip_resolver._playhead_position", return_value=0.0), \
+            patch("classes.api_client.get_backend_client", return_value=backend), \
+            _resolver_env({"a": MagicMock(id="a")}):
+        result = resolve_timeline_clip(clip_query="volcano eruption")
+    assert not result.ok
+    assert "volcano eruption" in result.error
+    backend.is_indexing_configured.assert_not_called()
+    backend.search.assert_not_called()
 
 
 if __name__ == "__main__":

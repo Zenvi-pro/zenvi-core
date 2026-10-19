@@ -93,7 +93,7 @@ WATCH = {"shots": [
 
 
 def test_v2_data_fills_every_field_the_existing_ui_and_tools_read():
-    meta = cloud.v1_metadata_from_v2(WATCH, SPEECH, STRUCTURE)
+    meta = cloud.metadata_view(WATCH, SPEECH, STRUCTURE)
     assert meta["analyzed"] is True and meta["provider"] == "gemini-v2" and is_ai_metadata_usable(meta)
     assert [c["title"] for c in meta["chapters"]] == ["A calm pond", "A dog runs in"]
     assert meta["chapters"][0]["objects"] == ["pond", "willow tree"] and meta["chapters"][0]["sounds"] == "birdsong"
@@ -107,7 +107,7 @@ def test_v2_data_fills_every_field_the_existing_ui_and_tools_read():
 
 
 def test_nothing_described_is_not_analysed():
-    meta = cloud.v1_metadata_from_v2({"shots": []}, None, {"shots": []})
+    meta = cloud.metadata_view({"shots": []}, None, {"shots": []})
     assert meta["analyzed"] is False and meta["chapters"] == []
 
 

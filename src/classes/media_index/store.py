@@ -5,7 +5,6 @@
  Layout, under ``<root>/<sha256>/``::
 
      manifest.json   schema_version, per-layer {version, status, model, updated, ...}
-     v1_index.json   the v1 (Gemini chapters/cues/moments) ai_metadata, durable
      <layer>.json    later layers (facts, colour, watch, ...) share the same helpers
 
  Why not ``media_cache``: that cache is an LRU with a size limit, so paid index data
@@ -30,7 +29,6 @@ from typing import Any, Dict, Iterable, List, Optional
 from classes.logger import log
 
 SCHEMA_VERSION = 1
-LAYER_V1 = "v1_index"
 
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*\.json$")
@@ -224,32 +222,6 @@ class Shelf:
             return False
         return version is None or int(row.get("version") or 0) == int(version)
 
-    # -- the v1 (Gemini chapters/cues/moments) index ------------------------------
-    def save_v1_index(self, fingerprint: Any, ai_metadata: Dict[str, Any], *,
-                      duration: float = 0.0, media_type: str = "video",
-                      project_id: str = "", file_id: str = "") -> bool:
-        """Keep a finished v1 analysis for good, so no other project pays for it again."""
-        if not isinstance(ai_metadata, dict) or not ai_metadata.get("analyzed"):
-            return False
-        ok = self.write_json(fingerprint, "v1_index.json", {
-            "ai_metadata": ai_metadata,
-            "source": {"duration": float(duration or 0.0), "media_type": str(media_type or "video"),
-                       "project_id": str(project_id or ""), "file_id": str(file_id or "")},
-            "saved_at": time.time(),
-        })
-        if not ok:
-            return False
-        self.set_source(fingerprint, duration=float(duration or 0.0), media_type=str(media_type or "video"))
-        return self.set_layer(fingerprint, LAYER_V1, version=1, status="ready")
-
-    def load_v1_index(self, fingerprint: Any) -> Optional[Dict[str, Any]]:
-        if not self.layer_ready(fingerprint, LAYER_V1, version=1):
-            return None
-        data = self.read_json(fingerprint, "v1_index.json")
-        if not isinstance(data, dict) or not isinstance(data.get("ai_metadata"), dict):
-            return None
-        return data
-
     # -- moving entries between the shelf and a project ----------------------------
     def export_entries(self, fingerprints: Iterable[Any], dest_root: str) -> List[str]:
         """Copy entries into *dest_root* (a project's index folder); returns the keys copied."""
@@ -327,7 +299,7 @@ def _merge_entry(src: str, dst: str) -> bool:
 
 
 def _layer_files(folder: str, layer: str) -> List[str]:
-    """The files that belong to *layer*: ``<layer>.json`` and ``<layer>_*``, plus a v1 alias."""
+    """The files that belong to *layer*: ``<layer>.json`` and ``<layer>_*``."""
     names = []
     try:
         listing = os.listdir(folder)
@@ -337,7 +309,7 @@ def _layer_files(folder: str, layer: str) -> List[str]:
         if name == _MANIFEST or name.startswith("."):
             continue
         base = os.path.splitext(name)[0]
-        if base == layer or name.startswith(layer + "_") or (layer == LAYER_V1 and base == "v1_index"):
+        if base == layer or name.startswith(layer + "_"):
             if os.path.isfile(os.path.join(folder, name)):
                 names.append(name)
     return names
