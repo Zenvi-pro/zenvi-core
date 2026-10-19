@@ -68,7 +68,7 @@ def test_the_profile_carries_what_an_editor_needs():
              "music": {"arc": [0.1, 0.9], "arc_seconds": 4, "sections": [{"label": "intro"}], "downbeats": list(range(40)), "phrase_points": list(range(40)), "brightness_hz": 900.0}}
     p = MF.profile_from_audio(audio, 61.234)
     assert p["seconds"] == 61.2 and p["bpm"] == 110.0 and p["beats"] == 3 and p["integrated_lufs"] == -14.0 and p["energy_arc"] == [0.1, 0.9]
-    assert len(p["downbeats"]) == 16 and len(p["phrase_points"]) == 16 and len(p["silence_ranges"]) == 8
+    assert "downbeats" not in p and len(p["phrase_points"]) == 16 and len(p["silence_ranges"]) == 8
     empty = MF.profile_from_audio({}, 0)
     assert empty["bpm"] is None and empty["energy_arc"] == [] and empty["beats"] == 0
 

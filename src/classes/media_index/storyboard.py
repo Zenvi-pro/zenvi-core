@@ -12,8 +12,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from classes.media_index import contact
+from classes.media_index import contact, quality
 from classes.media_index.library import FileIndex
+from classes.media_index.style import real_shots
 
 
 def page(shots: List[Dict[str, Any]], start: Optional[float], per_page: int = contact.MAX_TILES) -> Tuple[List[Dict[str, Any]], Optional[float]]:
@@ -62,13 +63,14 @@ def list_line(fi: FileIndex, shot: Dict[str, Any], max_chars: int = 110, look: b
 def opens(shot: Dict[str, Any]) -> str:
     """`` [fade in]`` when a shot is not reached by a plain cut ("cut" is the rule, so it is not repeated on every row)."""
     kind = str((shot.get("opens_with") or {}).get("kind") or "")
-    return f" [{kind} in]" if kind and kind != "hard" else ""
+    return f" [{kind} in]" if kind and kind not in ("hard", "split") else ""
 
 
 def cut_summary(fi: FileIndex, on_beat: float = 0.06) -> str:
     """One line: how the shots are joined, and how many cuts land on a beat (a cut is on a beat when within *on_beat* seconds)."""
+    cuts = real_shots(fi.shots)[1:]
     kinds: Dict[str, int] = {}
-    for shot in fi.shots[1:]:
+    for shot in cuts:
         kind = str((shot.get("opens_with") or {}).get("kind") or "hard")
         kinds[kind] = kinds.get(kind, 0) + 1
     if not kinds:
@@ -76,9 +78,9 @@ def cut_summary(fi: FileIndex, on_beat: float = 0.06) -> str:
     text = "CUTS " + ", ".join(f"{n} {k}" for k, n in sorted(kinds.items(), key=lambda kv: -kv[1]))
     tempo = (fi.audio or {}).get("tempo") or {}
     beats = [float(b) for b in tempo.get("beats") or []]
-    if beats and fi.shots[1:]:
-        hits = sum(1 for shot in fi.shots[1:] if min(abs(float(shot["start"]) - b) for b in beats) <= on_beat)
-        text += f"; {hits} of {len(fi.shots) - 1} land on a beat ({float(tempo.get('bpm') or 0):.0f} BPM)"
+    if beats and cuts:
+        hits = sum(1 for shot in cuts if min(abs(float(shot["start"]) - b) for b in beats) <= on_beat)
+        text += f"; {hits} of {len(cuts)} land on a beat ({float(tempo.get('bpm') or 0):.0f} BPM)"
     return text
 
 
@@ -117,7 +119,7 @@ def look_tag(shot: Dict[str, Any]) -> str:
     return f" | luma {float(profile.get('avg_luma') or 0.0):.2f}" + (" " + palette if palette else "")
 
 
-def repeats_line(fi: FileIndex, threshold: float = 0.85, max_pairs: int = 10, min_gap: float = 0.15) -> str:
+def repeats_line(fi: FileIndex, threshold: Optional[float] = None, max_pairs: int = 10, min_gap: float = 0.15) -> str:
     """Pairs of shots far apart in the video (at least *min_gap* of its length) whose pictures look nearly the same: a set, a prop or a
     motif that comes back, worth reusing or matching. Neighbours are left out on purpose (a scene looks like itself).
 
@@ -127,6 +129,7 @@ def repeats_line(fi: FileIndex, threshold: float = 0.85, max_pairs: int = 10, mi
     rows, matrix = fi.image_rows, fi.image_matrix
     if matrix is None or not len(rows) or not fi.shots:
         return ""
+    threshold = threshold or quality.similarity(quality.REPEAT_SIMILARITY, fi)
     n = len(fi.shots)
     index = {int(s["id"]): k for k, s in enumerate(fi.shots)}
     total = np.zeros((n, matrix.shape[1]), dtype=np.float32)
@@ -162,7 +165,7 @@ def music_line(fi: FileIndex) -> str:
 
 def rhythm_line(fi: FileIndex) -> str:
     """How fast the picture cuts: the average and median shot, how many are under a second, and whether it speeds up or slows down."""
-    lengths = [float(s["end"]) - float(s["start"]) for s in fi.shots]
+    lengths = [float(s["end"]) - float(s["start"]) for s in real_shots(fi.shots)]
     if len(lengths) < 6:
         return ""
     third = len(lengths) // 3

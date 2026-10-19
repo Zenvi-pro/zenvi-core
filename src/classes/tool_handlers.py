@@ -859,7 +859,7 @@ def _is_extreme_for_4_seconds(prompt):
 def _v2_moment(query, file_id=None, window=None):
     """The best local-index hit for a described moment: {file_id, start, end, peak, why}, with start, end and peak clipped
     to *window* (start, end) when one is given. None when the query is empty, nothing in the project (or in *file_id*) is
-    indexed and described, the query cannot be embedded (not signed in, out of credits, no search) or no hit is in the window."""
+    indexed, the query cannot be embedded or no hit is in the window."""
     from classes.editor_tools._base import ToolError
     from classes.editor_tools.media_index_tools import embed_query, project_indexes
     from classes.media_index import search as msearch
@@ -868,14 +868,14 @@ def _v2_moment(query, file_id=None, window=None):
     if not q:
         return None
     files, _missing = project_indexes([str(file_id)] if file_id else None)
-    # Nothing described cannot match words, so do not pay to embed the query for it.
-    if not any(f.text_matrix is not None or f.image_matrix is not None for f in files):
+    files = [f for f in files if f.vector_model]
+    if not files:
         return None
     try:
-        query_vector = embed_query(q)
+        query_vector = embed_query(q, files)
     except ToolError:
         return None
-    for h in msearch.search(files, query_vector=query_vector, limit=60)["hits"]:
+    for h in msearch.search(files, query_vector=query_vector, query_text=q, limit=60)["hits"]:
         start, end = (max(h["start"], window[0]), min(h["end"], window[1])) if window else (h["start"], h["end"])
         if end > start:
             return {**h, "start": start, "end": end, "peak": min(max(h["peak"], start), end)}
@@ -6496,8 +6496,7 @@ def _wait_for_file_indexing(file_id: str, files_model, timeout_sec: int = 1800, 
 def _queue_missing_index_layers(file_id: str) -> str:
     """Send a file with missing index layers through the same indexing job an import uses; "" when it has none to send.
 
-    The job builds the free local layers first, then the paid description layer only if the account allows it, and it never pays for a
-    layer already saved.
+    The job builds the local layers, then the search vectors with the model chosen in Preferences; nothing already saved is redone.
     """
     from classes.editor_tools.media_index_tools import missing_layers
     from classes.query import File
@@ -6511,14 +6510,14 @@ def _queue_missing_index_layers(file_id: str) -> str:
     if files_model.is_file_indexing(file_id) or files_model.is_file_queued(file_id):
         return f"File {file_id} is already being indexed (missing: {', '.join(missing)}). Call wait_until_project_indexed_tool, then index_status_tool."
     files_model._index_file_async(file_id)
-    return (f"File {file_id} queued for indexing (missing: {', '.join(missing)}). The free local layers (shots, colour, sound, speech) come first; "
-            "the AI picture descriptions follow only if the account has indexing allowance, and nothing already saved is paid for again. "
+    return (f"File {file_id} queued for indexing (missing: {', '.join(missing)}). The local layers (shots, colour, sound, speech) come "
+            "first, then the search vectors; nothing already saved is redone. Shot descriptions are separate: describe_shots_tool. "
             "Call wait_until_project_indexed_tool, then index_status_tool to see what is ready.")
 
 
 def reindex_project_file(file_id: str = "", **kwargs) -> str:
-    """Index a project file whose index is incomplete: queues it through the normal indexing job (local layers first, then the AI
-    descriptions if the account allows). A file whose index is complete is left as it is.
+    """Index a project file whose index is incomplete: queues it through the normal indexing job (local layers, then the
+    search vectors). A file whose index is complete is left as it is.
     Runs on a worker thread; the project-file read is marshalled to the Qt main thread.
     """
     try:
@@ -6656,7 +6655,7 @@ def _overlay_index_boosts(contexts) -> list:
                     by_file.setdefault(key, []).append(ctx)
 
         for query, delta, is_avoid, is_prefer in queries:
-            for h in msearch.search(files, query_vector=embed_query(query), limit=12)["hits"]:
+            for h in msearch.search(files, query_vector=embed_query(query, files), query_text=query, limit=12)["hits"]:
                 for ctx in by_file.get(h["file_id"], []):
                     pos = float(getattr(ctx, "timeline_position", 0) or 0)
                     end = float(getattr(ctx, "timeline_end", pos + 1) or (pos + 1))

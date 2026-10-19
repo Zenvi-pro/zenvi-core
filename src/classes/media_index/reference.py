@@ -18,6 +18,7 @@ import numpy as np
 
 from classes.media_index import search as msearch
 from classes.media_index.library import FileIndex
+from classes.media_index.style import real_shots
 
 MIN_REFERENCE_SHOT = 0.25          # a flash shorter than this is not worth matching on its own
 
@@ -51,7 +52,7 @@ def match_reference(ref: FileIndex, files: Sequence[FileIndex], start: Optional[
     hi = float(ref.duration or (ref.shots[-1]["end"] if ref.shots else 0.0)) if end is None else float(end)
     by_sha = {f.sha: f for f in pool}
     rows: List[Dict[str, Any]] = []
-    for shot in ref.shots_between(lo, hi):
+    for shot in real_shots(ref.shots):
         a, b = max(shot["start"], lo), min(shot["end"], hi)
         need = b - a
         if need < MIN_REFERENCE_SHOT or shot.get("black"):
@@ -62,7 +63,7 @@ def match_reference(ref: FileIndex, files: Sequence[FileIndex], start: Optional[
                                "candidates": []}
         qv = _shot_query_vector(ref, shot)
         if qv is not None and pool:
-            res = msearch.search(pool, query_vector=qv, filters=filters or {}, limit=max(per_shot * 3, 6))
+            res = msearch.search(pool, query_vector={ref.vector_model: qv}, filters=filters or {}, limit=max(per_shot * 3, 6))
             for hit in res["hits"]:
                 cand = by_sha[hit["sha"]]
                 src = next((s for s in cand.shots if s["id"] == hit["shot_id"]), None)
@@ -171,7 +172,7 @@ def scored_windows(ref: FileIndex, shot: Dict[str, Any], need: float, pool_files
     raw: List[tuple] = []
     for fi_index, cand in enumerate(pool_files):
         sims = times = None
-        if qv is not None and cand.image_matrix is not None and len(cand.image_rows):
+        if qv is not None and cand.image_matrix is not None and len(cand.image_rows) and cand.vector_model == ref.vector_model:
             sims = cand.image_matrix @ qv
             times = np.array([float(r["t"]) for r in cand.image_rows])
         for src in cand.shots:
@@ -205,17 +206,13 @@ def rank_of_window(scored: Sequence[tuple], file_index: int, w_in: float, w_out:
     return round(sum(1 for x in scored if x[4] <= best_of_mine) / len(scored), 3)
 
 
-_ANIMATION_WORDS = {"anime", "animated", "animation", "cartoon", "illustrated", "illustration", "manga", "cel-shaded", "2d", "stylized", "stylised", "drawn", "digital"}
-_CHARACTER_WORDS = {"character", "characters"}
-
-
 def tightness(shot_type: Optional[str]) -> Optional[float]:
     """How tight a framing a shot-type phrase describes, on a rough scale: 4 extreme close-up, 3 close-up, 2 medium, 1.5 full body, 1 wide.
     None when the phrase says nothing about it."""
     text = str(shot_type or "").lower()
     if not text:
         return None
-    if "extreme" in text and "close" in text or "macro" in text or "detail" in text:
+    if "extreme" in text and "close" in text or "macro" in text:
         return 4.0
     if "medium close" in text or "bust" in text:
         return 2.7
@@ -231,16 +228,9 @@ def tightness(shot_type: Optional[str]) -> Optional[float]:
 
 
 def stock_query_for(description: str, look: Optional[Dict[str, Any]] = None, limit: int = 8) -> str:
-    """Words to search real stock footage with for a shot described in the reference: the scene without the animation vocabulary ("anime
-    character" becomes "person"), plus "dark" or "bright" from the shot's measured look, since lighting is what a grade cannot supply."""
-    words = []
-    for w in (description or "footage").replace(",", " ").replace(".", " ").split():
-        low = w.lower().strip("'\"()")
-        if low in _ANIMATION_WORDS:
-            continue
-        words.append("person" if low in _CHARACTER_WORDS else w)
-        if len(words) >= limit:
-            break
+    """Words to search real stock footage with for a shot described in the reference: the description as written (its first `limit`
+    words), plus "dark" or "bright" from the shot's measured look, since lighting is what a grade cannot supply."""
+    words = (description or "footage").replace(",", " ").replace(".", " ").split()[:limit]
     luma = (look or {}).get("avg_luma")
     tone = "" if luma is None else ("dark moody" if float(luma) < 0.3 else ("bright" if float(luma) > 0.65 else ""))
     return " ".join(([tone] if tone else []) + words)
@@ -294,7 +284,7 @@ def plan_recreation(ref: FileIndex, files: Sequence[FileIndex], start: Optional[
     lo = 0.0 if start is None else float(start)
     hi = float(ref.duration or (ref.shots[-1]["end"] if ref.shots else 0.0)) if end is None else float(end)
     slots = []
-    for shot in ref.shots_between(lo, hi):
+    for shot in real_shots(ref.shots):
         a, b = max(float(shot["start"]), lo), min(float(shot["end"]), hi)
         if b - a >= MIN_REFERENCE_SHOT and not shot.get("black"):
             slots.append((shot, a, b))

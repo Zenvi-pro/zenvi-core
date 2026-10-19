@@ -83,9 +83,9 @@ def test_no_target_means_no_length_verdict():
 
 
 def test_a_short_form_has_a_length_cap():
-    assert by_id(run([clip("a", 0, 75)], Brief(form="YouTube Short")))["form_length"]["status"] == "needs"
+    assert by_id(run([clip("a", 0, 75)], Brief(form="short")))["form_length"]["status"] == "needs"
     assert "form_length" not in by_id(run([clip("a", 0, 75)], Brief(form="vlog")))
-    assert "form_length" not in by_id(run([clip("a", 0, 50)], Brief(form="YouTube Short")))
+    assert "form_length" not in by_id(run([clip("a", 0, 50)], Brief(form="short")))
 
 
 def shots_of(lengths, **kw):
@@ -109,7 +109,7 @@ def test_every_shot_the_same_length_is_a_gentle_note_not_a_demand():
 def test_a_slow_short_form_is_flagged_but_a_slow_film_is_not():
     slow = shots_of([14.0, 6.0, 22.0, 9.0, 30.0, 11.0])
     assert by_id(run(slow, Brief(form="TikTok")))["pacing"]["status"] == "needs"
-    assert by_id(run(slow, Brief(form="short film")))["pacing"]["status"] == "ok"
+    assert by_id(run(slow, Brief(form="film")))["pacing"]["status"] == "ok"
 
 
 def test_varied_shot_lengths_are_fine_and_too_few_shots_cannot_be_judged():
@@ -250,7 +250,7 @@ def test_source_level_is_the_power_average_of_the_audible_windows():
 
 def test_music_is_expected_for_a_vlog_not_for_a_podcast_and_the_user_can_override():
     vlog = [clip("v", 0, 30)]
-    assert by_id(run(vlog, Brief(form="YouTube vlog")))["music"]["status"] == "needs"
+    assert by_id(run(vlog, Brief(form="vlog")))["music"]["status"] == "needs"
     assert by_id(run(vlog, Brief(form="podcast")))["music"]["status"] == "ok"
     assert by_id(run(vlog, Brief(form="vlog", wants_music=False)))["music"]["status"] == "ok"
     assert by_id(run(vlog, Brief(form="podcast", wants_music=True)))["music"]["status"] == "needs"
@@ -396,8 +396,8 @@ def test_an_opening_title_is_noticed():
 
 def test_a_vertical_form_needs_a_vertical_project():
     clips = [clip("a", 0, 10)]
-    assert by_id(run(clips, Brief(form="Instagram Reel"), project=ProjectInfo(10.0, 1920, 1080)))["format"]["status"] == "needs"
-    assert by_id(run(clips, Brief(form="Instagram Reel"), project=ProjectInfo(10.0, 1080, 1920)))["format"]["status"] == "ok"
+    assert by_id(run(clips, Brief(form="reel"), project=ProjectInfo(10.0, 1920, 1080)))["format"]["status"] == "needs"
+    assert by_id(run(clips, Brief(form="reel"), project=ProjectInfo(10.0, 1080, 1920)))["format"]["status"] == "ok"
     assert "format" not in by_id(run(clips, Brief(form="vlog"), project=ProjectInfo(10.0, 1920, 1080)))
 
 
@@ -425,18 +425,17 @@ def test_a_clean_edit_has_nothing_that_needs_work():
 
 
 @pytest.mark.parametrize("form,expected", [
-    ("TikTok", True), ("Instagram Reel", True), ("YouTube Short", True), ("YouTube Shorts", True), ("short-form video", True), ("a short", True),
-    ("short film", False), ("Short Film", False), ("short-film", False), ("short documentary", False), ("shorts story", False),
-    ("vlog", False), ("shortcut tutorial", False), ("", False)])
-def test_a_short_film_is_not_a_short_form_video(form, expected):
+    ("tiktok", True), ("reel", True), ("short", True), ("film", False), ("vlog", False), ("", False),
+    ("YouTube Short", False), ("short film", False), ("Instagram Reel", False)])
+def test_a_short_form_is_the_explicit_value_not_a_word_in_the_name(form, expected):
     assert R.is_short_form(form) is expected
 
 
-def test_a_short_film_is_not_held_to_social_rules():
+def test_a_film_is_not_held_to_social_rules():
     clips = [clip("pic", 0, 200), clip("talk", 2, 90, kind="audio", role="speech")]
-    ids = by_id(run(clips, Brief(form="short film"), project=ProjectInfo(200.0, 1920, 1080)))
+    ids = by_id(run(clips, Brief(form="film"), project=ProjectInfo(200.0, 1920, 1080)))
     assert "format" not in ids and "form_length" not in ids and ids["captions"]["status"] == "ok"
-    reel = by_id(run(clips, Brief(form="Instagram Reel"), project=ProjectInfo(200.0, 1920, 1080)))
+    reel = by_id(run(clips, Brief(form="reel"), project=ProjectInfo(200.0, 1920, 1080)))
     assert reel["format"]["status"] == "needs" and reel["form_length"]["status"] == "needs" and reel["captions"]["status"] == "needs"
 
 

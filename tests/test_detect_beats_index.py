@@ -27,15 +27,13 @@ def shelf(tmp_path, monkeypatch):
     B.reset_beat_factory()
 
 
-def test_a_click_track_gets_its_real_tempo_beats_and_bars(tmp_path):
+def test_a_click_track_gets_its_real_tempo_and_beats_and_no_invented_bars(tmp_path):
     x, times = clicks(24, 120)
     out = B.detect_beats(write_wav(tmp_path / "c.wav", x))
     assert out["source"] == "media-index" and out["rhythmic"] is True and out["bpm"] == pytest.approx(120.0, abs=2.0)
     got = [b["timeSec"] for b in out["beats"]]
     assert abs(got[0] - times[0]) < 0.06 and abs(got[-1] - times[-1]) < 0.12
-    downs = [d["timeSec"] for d in out["downbeats"]]
-    assert len(downs) >= 4 and all(min(abs(d - g) for g in got) < 1e-6 for d in downs), "every downbeat is one of the beats"
-    assert abs((downs[1] - downs[0]) - 2.0) < 0.1, "bars are four beats (2 s at 120 BPM)"
+    assert out["downbeats"] == [], "no four-beat bar is assumed"
 
 
 def test_a_steady_tone_has_no_rhythm_and_gets_no_invented_beats(tmp_path):
@@ -55,13 +53,13 @@ def test_an_indexed_file_is_not_analysed_again(tmp_path, shelf, monkeypatch):
     assert [b["timeSec"] for b in out["beats"]] == [0.5, 1.1, 1.7, 2.3, 2.9] and [d["timeSec"] for d in out["downbeats"]] == [0.5, 2.9] and out["bpm"] == 100.0
 
 
-def test_an_older_saved_analysis_without_bars_falls_back_to_every_fourth_beat(tmp_path, shelf):
+def test_an_analysis_without_measured_bars_gets_none_invented(tmp_path, shelf):
     path = write_wav(tmp_path / "c.wav", clicks(12, 100)[0])
     from classes.media_fingerprint import fingerprint
     sha = fingerprint(path)["sha256"]
     shelf.write_json(sha, "audio.json", {"tempo": {"bpm": 100.0, "beats": [round(0.5 + 0.6 * i, 2) for i in range(10)]}})
     shelf.set_layer(sha, "audio", version=1, status="ready")
-    assert [d["timeSec"] for d in B.detect_beats(path)["downbeats"]] == [0.5, 2.9, 5.3]
+    assert B.detect_beats(path)["downbeats"] == []
 
 
 def temp_wav_of(path, tmp_path):

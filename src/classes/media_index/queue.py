@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, List, Sequence, Set
+from typing import Any, Callable, Dict, Iterable, List, Sequence, Set
 
 
 def timeline_file_ids(clips: Iterable[Any]) -> Set[str]:
@@ -32,13 +32,8 @@ def next_index(queue: Sequence[str], used_on_timeline: Set[str]) -> int:
     return 0
 
 
-def signin_skipped_ids(files: Iterable[Any]) -> List[str]:
-    """Ids of files whose cloud indexing was skipped only because nobody was signed in."""
-    ids: List[str] = []
-    for item in files or []:
-        if not isinstance(item, dict) or not item.get("id"):
-            continue
-        meta = item.get("ai_metadata")
-        if isinstance(meta, dict) and meta.get("skip_code") == "signin":
-            ids.append(str(item["id"]))
-    return ids
+def unsearchable_ids(files: Iterable[Any], needs_vectors: Callable[[Dict[str, Any]], bool]) -> List[str]:
+    """Ids of the media files *needs_vectors* says have no search vectors from the chosen model yet."""
+    return [str(item["id"]) for item in files or []
+            if isinstance(item, dict) and item.get("id") and str(item.get("media_type") or "video") in ("video", "audio", "image")
+            and needs_vectors(item)]

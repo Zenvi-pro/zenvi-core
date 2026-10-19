@@ -51,12 +51,6 @@ def test_the_estimate_is_a_stated_ceiling(seconds, minutes, chunks, credits):
     assert longfile.estimate(seconds) == {"minutes": minutes, "chunks": chunks, "max_credits": credits}
 
 
-def test_what_the_user_is_told_names_the_cost_the_passes_and_what_to_do():
-    text = longfile.approval_text("podcast.mp4", 5400)
-    assert "podcast.mp4 is 90 min long" in text and "5 cloud passes" in text and "at most about 1620 credits" in text
-    assert "usually lower" in text and "already analysed on this computer" in text and "index_long_file_tool" in text
-
-
 def test_only_longer_than_thirty_minutes_counts_as_long():
     assert not longfile.is_long(1800) and longfile.is_long(1800.1) and not longfile.is_long(0)
 
@@ -215,16 +209,19 @@ def harness(monkeypatch, tmp_path):
     from classes.media_index import facts
     monkeypatch.setattr(facts, "compute_facts", lambda *a, **k: {"ok": True})
     monkeypatch.setattr(cc, "check_operation", lambda *a, **k: (True, 1000, None))
-    return Harness(monkeypatch, tmp_path)
+    from test_indexing_job_reuse import _stub_vectors
+    h = Harness(monkeypatch, tmp_path)
+    _stub_vectors(monkeypatch, h)
+    return h
 
 
-def test_a_long_file_waits_for_approval_and_shows_the_estimate(monkeypatch, harness):
+def test_a_long_file_is_indexed_for_search_but_described_only_after_a_yes(monkeypatch, harness):
+    from classes.media_index import embedder as E
     calls = []
     monkeypatch.setattr(cloud, "compute_cloud", lambda *a, **k: calls.append(1) or {"layers": {}})
+    monkeypatch.setattr(E, "describe_on_import", lambda: True)
     meta, _ = harness.run(duration=90 * 60.0)
-    assert calls == [] and meta["skip_code"] == "long_file" and "at most about 1620 credits" in meta["skip_reason"]
-    status = derive_indexing_status(meta)
-    assert status.state == SKIPPED and status.label == "Approval needed" and "1620" in status.tooltip
+    assert calls == [] and meta["index"]["status"] == "ready" and "skip_code" not in meta
 
 
 def test_an_approved_long_file_goes_through_the_cloud_pass(monkeypatch, harness):
@@ -244,10 +241,10 @@ def test_an_approved_long_file_goes_through_the_cloud_pass(monkeypatch, harness)
     assert "skip_code" not in meta and harness.charges == []
 
 
-def test_an_approved_long_file_the_backend_cannot_take_fails_with_that_reason(monkeypatch, harness):
+def test_an_approved_long_file_whose_description_fails_is_still_indexed(monkeypatch, harness):
     monkeypatch.setattr(cloud, "compute_cloud", lambda *a, **k: {"unsupported": True, "error": "no media index v2", "layers": {}})
     meta, _ = harness.run(duration=90 * 60.0, extra={"index_long_ok": True})
-    assert meta["index"]["status"] == "failed" and "no media index v2" in meta["error"]
+    assert meta["index"]["status"] == "ready" and not meta.get("error")
 
 
 def test_a_clip_just_under_the_limit_is_not_treated_as_long(monkeypatch, harness):
@@ -299,9 +296,9 @@ def library(monkeypatch, tmp_path):
 def test_without_approval_it_only_reports_the_passes_and_the_cost_ceiling(library):
     head, r = tool(file_ids=["L1", "L2"])
     rows = {x["file_id"]: x for x in r["files"]}
-    assert rows["L1"]["state"] == "needs_approval" and rows["L1"]["waiting"] is True
+    assert rows["L1"]["state"] == "needs_approval"
     assert (rows["L1"]["minutes"], rows["L1"]["chunks"], rows["L1"]["max_credits"]) == (90, 5, 1620)
-    assert (rows["L2"]["minutes"], rows["L2"]["chunks"], rows["L2"]["max_credits"]) == (40, 2, 720) and rows["L2"]["waiting"] is False
+    assert (rows["L2"]["minutes"], rows["L2"]["chunks"], rows["L2"]["max_credits"]) == (40, 2, 720)
     assert "podcast.mp4 (90 min, 5 passes, up to 1620 credits)" in head and r["changed"] is False
     assert library.queued == [] and "index_long_ok" not in library.files["L1"].data and library.files["L1"].saves == 0
 

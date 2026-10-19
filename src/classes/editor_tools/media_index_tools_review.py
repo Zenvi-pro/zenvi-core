@@ -177,9 +177,9 @@ def _brief(form: str, target_seconds: Optional[float], vibe: str, wants_music: s
     covers=("index.review",),
     label="Review edit",
     schema=obj({
-        "form": string("What this edit is: 'YouTube vlog', 'TikTok', 'Instagram Reel', 'short film', 'montage', 'trailer', 'podcast', "
-                       "'tutorial'... Sets what is expected (vertical, captions, music, loudness target). '' = judge only what can be "
-                       "measured and report expectations as notes.", ""),
+        "form": enum(("",) + R.FORMS, "What this edit is: 'vlog', 'tiktok', 'reel', 'short' (short-form video), 'film', 'montage', 'trailer', "
+                     "'podcast', 'tutorial'... Sets what is expected (vertical, captions, music, loudness target). '' = judge only what can be "
+                     "measured and report expectations as notes.", ""),
         "target_seconds": number("The length it should be, in seconds (0 = no target).", None, minimum=0),
         "vibe": string("The look or feel asked for ('warm golden hour', 'moody noir', 'bright and clean'). A vibe makes an ungraded "
                        "edit a problem.", ""),

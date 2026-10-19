@@ -1,4 +1,4 @@
-"""Search over a project's saved index: ranking, fusion, filters, snapping, and the dossier."""
+"""Search over a project's saved index: ranking, filters, snapping, and the dossier."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from classes.media_index import dossier, library, search  # noqa: E402
+from classes.media_index import dossier, embedder, library, search, vectors  # noqa: E402
 from classes.media_index.store import Shelf  # noqa: E402
 
 DIMS = 16
@@ -56,10 +56,8 @@ def build(shelf, sha, *, shots, watch=None, speech=None, text=(), image=(), audi
         shelf.write_json(sha, "audio.json", audio)
         shelf.set_layer(sha, "audio", version=1, status="ready")
     if "vectors" in layers and (text or image):
-        shelf.write_json(sha, "vectors_index.json", {"dims": DIMS, "text": [r for r, _ in text], "image": [r for r, _ in image]})
-        shelf.write_bytes(sha, "vectors_text.f16", np.stack([v for _, v in text]).astype("<f2").tobytes() if text else b"")
-        shelf.write_bytes(sha, "vectors_image.f16", np.stack([v for _, v in image]).astype("<f2").tobytes() if image else b"")
-        shelf.set_layer(sha, "vectors", version=1, status="ready")
+        rows = list(text) + [({"kind": "image", **r}, v) for r, v in image]
+        vectors.write_layer(shelf, sha, [r for r, _ in rows], [v for _, v in rows], model=embedder.MODEL_LOCAL)
 
 
 def shot(i, start, end, cam="static", black=False, **extra):
@@ -119,10 +117,10 @@ def test_layers_are_joined_by_shot(two_files):
 
 
 def test_a_truncated_vector_file_means_no_vectors_never_wrong_ones(shelf, two_files):
-    blob = shelf.read_bytes(SHA1, "vectors_text.f16")
-    shelf.write_bytes(SHA1, "vectors_text.f16", blob[:-10])
+    blob = shelf.read_bytes(SHA1, vectors.MATRIX)
+    shelf.write_bytes(SHA1, vectors.MATRIX, blob[:-10])
     fi = library.load_file_index(shelf, SHA1)
-    assert fi.text_matrix is None and fi.text_rows == [] and fi.image_matrix is not None
+    assert fi.text_matrix is None and fi.text_rows == [] and fi.image_matrix is None
 
 
 def test_the_loaded_index_is_cached_and_refreshed_when_a_layer_changes(shelf, two_files):
@@ -171,7 +169,7 @@ def test_a_visual_match_snaps_to_the_shot_with_the_picture_time_as_the_peak(two_
     assert (h["file_id"], h["shot_id"]) == ("F1", 0) and (h["start"], h["end"]) == (0, 10) and h["peak"] == 2.0 and h["snapped_to"] == "shot"
 
 
-def test_a_shot_matched_by_two_layers_beats_one_matched_by_one(two_files):
+def test_a_shot_ranks_by_its_best_vector_and_reports_every_kind_that_matched(two_files):
     q = unit(1)       # shot 1's description AND its first picture match; nothing else does
     res = search.search(two_files, query_vector=q)
     assert top(res) == [("F1", 1)]
@@ -308,7 +306,7 @@ def test_a_long_dossier_stops_and_says_where_to_continue(two_files):
 def test_a_dossier_names_the_layers_that_are_still_missing(shelf):
     build(shelf, SHA1, shots=[shot(0, 0, 5)], layers=("structure",))
     d = dossier.build_dossier(library.load_file_index(shelf, SHA1, name="x.mp4"))
-    assert "NOT INDEXED YET" in d["text"] and "watch" in d["text"] and "vectors" in d["text"]
+    assert "NOT INDEXED YET" in d["text"] and "vectors_local" in d["text"] and "watch" not in d["text"], "descriptions are on demand, not missing"
 
 
 def test_an_empty_range_says_so(two_files):
@@ -403,22 +401,8 @@ def at_cosine(i, c):
     return v / np.linalg.norm(v)
 
 
-def test_the_calibrated_cut_offs_are_the_ones_measured_on_labelled_queries():
-    assert search.MIN_COSINE == {"shot": 0.40, "speech": 0.52, "image": 0.36}
-
-
-@pytest.mark.parametrize("layer,row,floor", [("shot", 0, search.MIN_COSINE["shot"]), ("speech", 2, search.MIN_COSINE["speech"]), ("image", 3, search.MIN_COSINE["image"])])
-def test_a_match_just_under_its_cut_off_is_dropped_and_just_over_is_kept(two_files, layer, row, floor):
-    assert search.search(two_files, query_vector=at_cosine(row, floor - 0.02))["hits"] == [], f"{layer}: noise"
-    kept = search.search(two_files, query_vector=at_cosine(row, floor + 0.02))["hits"]
-    assert kept and layer in kept[0]["scores"], f"{layer}: a real match"
-
-
-def test_a_speech_score_that_passed_the_old_cut_off_is_now_noise(two_files):
-    assert search.search(two_files, query_vector=at_cosine(2, 0.46))["hits"] == []
-
-
-def test_each_kind_of_row_is_held_to_its_own_floor_whichever_is_lower(two_files, monkeypatch):
-    monkeypatch.setattr(search, "MIN_COSINE", {"shot": 0.40, "speech": 0.30, "image": 0.36})
-    assert search.search(two_files, query_vector=at_cosine(2, 0.35))["hits"], "a spoken match above a lower speech floor is kept"
-    assert search.search(two_files, query_vector=at_cosine(0, 0.35))["hits"] == [], "a shot description under its own floor is not"
+@pytest.mark.parametrize("row", [0, 2, 3])
+def test_one_floor_holds_for_every_kind_of_vector(two_files, row):
+    floor = search.FLOOR[two_files[0].vector_model]
+    assert search.search(two_files, query_vector=at_cosine(row, floor - 0.02))["hits"] == [], "noise"
+    assert search.search(two_files, query_vector=at_cosine(row, floor + 0.02))["hits"], "a real match"

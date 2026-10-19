@@ -24,7 +24,7 @@ import numpy as np
 
 from classes.ffmpeg_cli import popen_ffmpeg
 from classes.media_index import schema as S
-from classes.media_index.quality import frame_sharpness
+from classes.media_index.quality import MIN_MOTION_PAIRS, frame_sharpness
 from classes.media_index.probe import analysis_size
 
 # --- hard cuts (calibrated on real footage joined at known times: every cut scored
@@ -49,7 +49,8 @@ GRID = (4, 4)
 SMALL = (80, 45)              # frames are reduced to this for the blend test (w, h)
 
 # --- fades through black ------------------------------------------------------------------
-BLACK_LUMA = 0.05
+BLACK_LUMA = 0.05             # the ceiling: a shot brighter than this is never black
+BLACK_NEAR_DARKEST = 0.25     # ... and within this share of the way from its file's darkest shot to the typical one: the bottom quarter of its range
 BLACK_MIN_SECONDS = 0.3
 EDGE_MARGIN = 0.4             # boundaries this close to the start or end are not boundaries
 
@@ -452,6 +453,33 @@ def build_shots(boundaries: List[Dict[str, Any]], duration: float) -> List[Dict[
     return shots
 
 
+# ponytail: a file of black shots only marks its darkest few; the quarter is a guess, not tuned on night footage
+def black_flags(darks: List[float]) -> List[bool]:
+    """Which shots are black, from each shot's median brightness (0..1), judged against the file's own shots.
+
+    A shot is black when it is under BLACK_LUMA and within BLACK_NEAR_DARKEST of the way from the file's darkest shot to
+    its typical one. A dim night file therefore does not turn all black; a real black frame in a bright file still does.
+    """
+    if not darks:
+        return []
+    low, typical = min(darks), float(np.median(darks))
+    near = low + BLACK_NEAR_DARKEST * (typical - low)
+    return [d < BLACK_LUMA and d <= near for d in darks]
+
+
+def typical_jitter(shots: List[Dict[str, Any]]) -> None:
+    """Store on each shot's motion the median jitter of the OTHER measured shots of its file (0 when there are none).
+
+    quality.shot_quality calls a shot shaky only when it shakes well above this, so an all-handheld file does not get
+    every shot flagged, and a one-shot file is judged by the absolute floor alone.
+    """
+    jitter = np.array([float(s["motion"].get("jitter_px") or 0.0) for s in shots])
+    measured = np.array([int(s["motion"].get("valid_pairs") or 0) >= MIN_MOTION_PAIRS for s in shots])
+    for i, s in enumerate(shots):   # ponytail: quadratic in shots per file, fine for thousands
+        rest = np.delete(jitter, i)[np.delete(measured, i)]
+        s["motion"]["typical_jitter_px"] = round(float(np.median(rest)), 3) if rest.size else 0.0
+
+
 # ============================ the decode pass ============================
 class Cancelled(Exception):
     """Raised inside the analysis loop when the caller asked to stop."""
@@ -631,14 +659,16 @@ def analyze_structure(
     boundaries = reconcile_transitions(boundaries, find_dips(lumas, fps), find_gradual_runs(pairs, fps), fps)
     merged = merge_boundaries(boundaries, total)
     shots = build_shots(merged, total)
-    for shot in shots:
+    spans = [(int(round(s["start"] * fps)), max(int(round(s["end"] * fps)), int(round(s["start"] * fps)) + 1)) for s in shots]
+    frames = [lumas[lo:hi] or lumas[-1:] or [0.0] for lo, hi in spans]
+    black = black_flags([float(np.median(f)) for f in frames])   # a black screen, not a scene
+    for shot, (lo, hi), frame_luma, is_black in zip(shots, spans, frames, black):
         shot["motion"] = _shot_motion(shot, pairs, merged, fps)
-        lo, hi = int(round(shot["start"] * fps)), max(int(round(shot["end"] * fps)), int(round(shot["start"] * fps)) + 1)
-        frame_luma = lumas[lo:hi] or lumas[-1:] or [0.0]
         shot["mean_luma"] = round(float(np.mean(frame_luma)), 4)
-        shot["black"] = bool(np.median(frame_luma) < BLACK_LUMA)   # a black screen, not a scene
+        shot["black"] = is_black
         in_shot = [v for i, v in sharps.items() if lo <= i < hi]
-        shot["sharpness"] = None if shot["black"] or not in_shot else round(float(np.median(in_shot)), 4)
+        shot["sharpness"] = None if is_black or not in_shot else round(float(np.median(in_shot)), 4)
+    typical_jitter(shots)
     if on_progress is not None:
         on_progress(1.0)
     return {

@@ -115,12 +115,12 @@ def test_layers_saved_by_an_older_version_are_refreshed_and_gain_the_new_fields(
     for layer in ("structure", "audio"):
         shelf.set_layer(sha, layer, version=1, status="ready")
     # still readable as it is ...
-    assert shelf.layer_ready(sha, "structure") and not shelf.layer_ready(sha, "structure", version=2)
+    assert shelf.layer_ready(sha, "structure") and not shelf.layer_ready(sha, "structure", version=S.LAYER_VERSIONS["structure"])
     # ... and the next run refreshes just those (speech is untouched)
     again = run(media["av"], shelf)
     assert again["layers"]["structure"] == "ready" and again["layers"]["audio"] == "ready" and again["layers"]["speech"] == "cached"
     assert all(s.get("sharpness") is not None for s in shelf.read_json(sha, "structure.json")["shots"])
-    assert "music" in shelf.read_json(sha, "audio.json") and shelf.layer_ready(sha, "structure", version=2)
+    assert "music" in shelf.read_json(sha, "audio.json") and shelf.layer_ready(sha, "structure", version=S.LAYER_VERSIONS["structure"])
 
 
 def test_capture_time_and_place_are_kept_with_the_source(media, shelf, tmp_path):

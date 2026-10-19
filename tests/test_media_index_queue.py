@@ -1,4 +1,4 @@
-"""Which queued file indexes next, and which files wait only for a sign-in."""
+"""Which queued file indexes next, and which files are queued again because they cannot be searched yet."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from classes.media_index.queue import next_index, signin_skipped_ids, timeline_file_ids  # noqa: E402
+from classes.media_index.queue import next_index, timeline_file_ids, unsearchable_ids  # noqa: E402
 
 
 def test_a_file_on_the_timeline_goes_before_older_imports():
@@ -46,15 +46,15 @@ def test_timeline_file_ids_ignore_clips_without_a_file():
     assert timeline_file_ids(None) == set()
 
 
-def test_only_files_skipped_for_sign_in_are_requeued():
+def test_only_media_files_that_cannot_be_searched_with_the_chosen_model_are_requeued():
     files = [
-        {"id": "a", "ai_metadata": {"skip_code": "signin", "skip_reason": "Sign in"}},
-        {"id": "b", "ai_metadata": {"skip_reason": "Clip exceeds the 30-minute limit."}},
-        {"id": "c", "ai_metadata": {"analyzed": True}},
-        {"id": "d"},
-        {"ai_metadata": {"skip_code": "signin"}},
+        {"id": "a", "media_type": "video", "stale": True},
+        {"id": "b", "media_type": "video", "stale": False},
+        {"id": "c", "media_type": "image", "stale": True},
+        {"id": "t", "media_type": "title", "stale": True},
+        {"media_type": "video", "stale": True},
         None,
-        {"id": "e", "ai_metadata": {"skip_code": "signin"}},
+        {"id": "e", "stale": True},
     ]
-    assert signin_skipped_ids(files) == ["a", "e"]
-    assert signin_skipped_ids(None) == []
+    assert unsearchable_ids(files, lambda f: f["stale"]) == ["a", "c", "e"]
+    assert unsearchable_ids(None, lambda f: True) == []

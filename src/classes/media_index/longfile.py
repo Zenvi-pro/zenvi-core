@@ -50,10 +50,3 @@ def estimate(duration_seconds: float) -> Dict[str, Any]:
     return {"minutes": minutes, "chunks": max(1, int(math.ceil(float(duration_seconds or 0.0) / CHUNK_SECONDS))),
             "max_credits": minutes * CREDITS_PER_MINUTE_CEILING}
 
-
-def approval_text(name: str, duration_seconds: float) -> str:
-    """The sentence shown on a long file that is waiting for a yes."""
-    est = estimate(duration_seconds)
-    return (f"{name} is {duration_seconds / 60:.0f} min long. Describing it for search is done in {est['chunks']} cloud passes and "
-            f"costs at most about {est['max_credits']} credits (the real charge follows what the AI actually used and is usually lower). "
-            "Its shots, colour and sound are already analysed on this computer. Approve it with index_long_file_tool to describe it.")

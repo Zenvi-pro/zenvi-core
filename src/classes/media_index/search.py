@@ -1,34 +1,41 @@
 """
  @file
- @brief Search a project's footage across every layer, then snap results to real boundaries.
+ @brief Search a project's footage in one vector space, then snap results to real boundaries.
 
- A text query is embedded once (by the caller) and compared with each file's saved vectors:
- shot descriptions, transcript sentences and pictures, a plain dot product in numpy. The ranked
- lists are fused (reciprocal rank, weighted like the backend's old retrieval: moments and
- speech count a little more than a scene summary) at shot level, filtered by measured facts
- (camera move, shot type, mood, colour, duration, speech) and returned with where in the shot
- the match peaks. Speech matches snap to the sentence's own word edges, everything else to the
- shot's cuts.
+ A query is embedded once per model (by the caller) and compared with every vector of each file: keyframes, spoken
+ sentences, sound and shot descriptions. A shot ranks by its single best-matching vector, whatever its kind, so a
+ clip that happens to have a transcript never outranks a clearer picture match. Exact words in transcripts and
+ descriptions are matched too and merged by rank, so names and numbers are not missed. One floor per model drops
+ weak matches, and a relative cut drops hits far below the best one. Results are filtered by measured facts
+ (camera move, shot type, colour, duration, speech) and snapped: a sentence match to the sentence's span, anything
+ else to the shot's cuts.
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+import re
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
 from classes import color_agent as ca
+from classes.media_index import embedder as E
 from classes.media_index.library import FileIndex
 
 RRF_K = 60
-PER_LAYER = 60                    # candidates taken from each ranked list before fusing
-WEIGHT = {"shot": 1.35, "speech": 1.30, "image": 1.0, "look": 0.8}
-# Below these a hit is noise. Calibrated on 19 clips and 22 queries with known answers, plus 7 queries that match nothing
-# (tests/eval/live_search.py; raw scores in tests/eval/results/search_calibration.json). The right clip came first for every query.
-#   shot   0.40  right answers 0.22-0.78 (90% above 0.51); wrong pairs: 95% under 0.45. Kept: real footage matched down to 0.39.
-#   speech 0.52  right answers 0.57-0.78; wrong pairs ran as high as 0.58 (median 0.40), so the old 0.40 passed half of them.
-#   image  0.36  right answers 0.23-0.5 (a picture matches words less closely); wrong pairs: 99% under 0.34.
-MIN_COSINE = {"shot": 0.40, "speech": 0.52, "image": 0.36}
+PER_MATRIX = 200                 # best rows taken from each file's matrix before choosing each shot's best
+# A best match under the floor is noise. EmbeddingGemma 2 (q4) on 85 labelled queries and 12 that match nothing: the
+# right answer scored 0.615-0.85 (median 0.77), the no-match queries' best 0.63-0.71, so 0.64 keeps 84 of 85 answers
+# and turns away 5 of 12 no-match queries. Gemini Embedding 2's is its old picture floor (its per-kind floors were
+# 0.36 picture, 0.40 description, 0.52 sentence; not re-measured for one-space ranking).
+FLOOR = {E.MODEL_LOCAL: 0.64, E.MODEL_CLOUD: 0.36}
+RELATIVE_CUT = 0.08              # drop hits this far below the best one of the same model (right answers sat within 0.04)
+KINDS = {"spoken": ("speech", "audio"), "on_screen": ("image", "shot"), "": ("image", "speech", "audio", "shot")}
+_WORD = re.compile(r"[\w']+", re.UNICODE)
+_STOP = frozenset("a an and are at be by for from has have he her his in is it its of on or she that the their they this to "
+                  "was were where who with what when".split())
+QueryVector = Union[None, np.ndarray, Dict[str, np.ndarray]]
+
 
 def _num(d: Dict[str, Any], key: str, default: float) -> float:
     value = d.get(key)
@@ -50,16 +57,6 @@ LOOK_TESTS: Dict[str, Callable[[Dict[str, Any], Dict[str, Any]], bool]] = {
     "flat": lambda p, e: _num(p, "contrast_span", 1.0) <= 0.25,
 }
 LOOK_NAMES = tuple(LOOK_TESTS)
-
-
-def rrf(lists: Sequence[Tuple[str, Sequence[Any]]], k: int = RRF_K) -> Dict[Any, float]:
-    """Weighted reciprocal-rank fusion of ranked key lists: {key: score}."""
-    scores: Dict[Any, float] = {}
-    for layer, keys in lists:
-        weight = WEIGHT.get(layer, 1.0)
-        for rank, key in enumerate(keys):
-            scores[key] = scores.get(key, 0.0) + weight / (k + rank + 1)
-    return scores
 
 
 def passes_filters(shot: Dict[str, Any], f: Dict[str, Any], fi: FileIndex) -> bool:
@@ -108,9 +105,14 @@ def passes_filters(shot: Dict[str, Any], f: Dict[str, Any], fi: FileIndex) -> bo
     return True
 
 
-def _top(sims: np.ndarray, minimum: float, n: int = PER_LAYER) -> List[int]:
-    order = np.argsort(-sims)[:n]
-    return [int(i) for i in order if sims[i] >= minimum]
+
+def rrf(lists: Sequence[Sequence[Any]], k: int = RRF_K) -> Dict[Any, float]:
+    """Reciprocal-rank fusion of ranked key lists: {key: score}."""
+    scores: Dict[Any, float] = {}
+    for keys in lists:
+        for rank, key in enumerate(keys):
+            scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
+    return scores
 
 
 def _speech_text(fi: FileIndex, start: float, end: float, limit: int = 160) -> str:
@@ -118,36 +120,74 @@ def _speech_text(fi: FileIndex, start: float, end: float, limit: int = 160) -> s
     return said[:limit]
 
 
-def search(files: Sequence[FileIndex], *, query_vector: Optional[np.ndarray] = None,
-           reference_vector: Optional[np.ndarray] = None, reference_look: Optional[Dict[str, Any]] = None,
+def _vector_for(q: QueryVector, model: str) -> Optional[np.ndarray]:
+    return q.get(model) if isinstance(q, dict) else q
+
+
+def _words(text: str) -> List[str]:
+    return [w for w in _WORD.findall(str(text or "").lower()) if w not in _STOP]
+
+
+def _shot_id(fi: FileIndex, row: Dict[str, Any], t: float) -> Optional[int]:
+    if row.get("shot") is not None:
+        return int(row["shot"])
+    shot = fi.shot_at(t)
+    return int(shot["id"]) if shot else None
+
+
+def _best_vectors(fi: FileIndex, q: np.ndarray, kinds: Sequence[str]) -> Dict[int, Dict[str, Any]]:
+    """{shot id: the shot's best-matching vector}: its kind, score and the time it stands for."""
+    best: Dict[int, Dict[str, Any]] = {}
+    for rows, matrix in ((fi.text_rows, fi.text_matrix), (fi.image_rows, fi.image_matrix), (fi.audio_rows, fi.audio_matrix)):
+        if matrix is None or not rows:
+            continue
+        sims = matrix @ q
+        for i in np.argsort(-sims)[:PER_MATRIX]:
+            row, score = rows[int(i)], float(sims[int(i)])
+            kind = row.get("kind")
+            if kind not in kinds:
+                continue
+            span = None if kind == "image" else (float(row["start"]), float(row["end"]))
+            t = float(row["t"]) if kind == "image" else (span[0] + span[1]) / 2.0
+            sid = _shot_id(fi, row, t)
+            if sid is None:
+                continue
+            b = best.setdefault(sid, {"score": -1.0, "scores": {}})
+            b["scores"][kind] = max(b["scores"].get(kind, -1.0), round(score, 4))
+            if score > b["score"]:
+                b.update(score=score, kind=kind, t=span[0] if kind == "speech" else t, span=span if kind == "speech" else None,
+                         why=str(row.get("text") or "")[:160])
+    return best
+
+
+def _word_hits(fi: FileIndex, words: List[str], kinds: Sequence[str]) -> Dict[int, Dict[str, Any]]:
+    """{shot id: the first sentence or description that holds every query word}."""
+    out: Dict[int, Dict[str, Any]] = {}
+    for row in fi.text_rows:
+        if row.get("kind") not in kinds or not set(words) <= set(_words(row.get("text") or "")):
+            continue
+        start, end = float(row["start"]), float(row["end"])
+        sid = _shot_id(fi, row, (start + end) / 2.0)
+        if sid is not None:
+            out.setdefault(sid, {"t": start, "span": (start, end) if row["kind"] == "speech" else None,
+                                 "why": str(row.get("text") or "")[:160]})
+    return out
+
+
+def search(files: Sequence[FileIndex], *, query_vector: QueryVector = None, query_text: str = "",
+           reference_vector: QueryVector = None, reference_look: Optional[Dict[str, Any]] = None,
            look_for: str = "", filters: Optional[Dict[str, Any]] = None, limit: int = 20, offset: int = 0,
            sort: str = "relevance") -> Dict[str, Any]:
     """Rank shots of *files*. With no query, vector or look reference, returns the shots that pass the filters.
 
-    ``look_for`` is "spoken" (transcript only), "on_screen" (what is seen) or "" (both). ``sort`` is "relevance" (the
-    ranking, or file order when nothing was asked), "highlight" (best moments first) or "chronological" (by when each
-    was shot, then by position in its file).
+    ``query_vector`` is the query embedded by each file's model ({model: vector}); ``query_text`` is its words, for
+    exact matches. ``reference_vector`` ranks by picture likeness to a reference. ``look_for`` is "spoken" (sentences
+    and sound), "on_screen" (pictures and descriptions) or "" (all). ``sort`` is "relevance" (the ranking, or file
+    order when nothing was asked), "highlight" (best moments first) or "chronological" (by when each was shot, then
+    by position in its file).
     """
     f = dict(filters or {})
-    q = query_vector if query_vector is not None else reference_vector
-    peak: Dict[Tuple[str, int], Dict[str, Any]] = {}
-    layer_scores: Dict[Tuple[str, int], Dict[str, float]] = {}
-    lists: List[Tuple[str, List[Any]]] = []
-
-    def note(key: Tuple[str, int], layer: str, score: float, t: Optional[float] = None, span: Optional[Tuple[float, float]] = None,
-             why: str = "") -> None:
-        cur = layer_scores.setdefault(key, {})
-        if score > cur.get(layer, -1.0):
-            cur[layer] = round(float(score), 4)
-            info = peak.setdefault(key, {})
-            if layer == "speech" or "t" not in info or layer == "shot":
-                if t is not None:
-                    info["t"] = t
-                if span:
-                    info["span"] = span
-                if why:
-                    info["why"] = why
-
+    kinds = KINDS.get(look_for or "", KINDS[""])
     # The same footage imported twice is one candidate (the first file wins); the others are reported, not ranked again.
     by_sha: Dict[str, FileIndex] = {}
     same_content: Dict[str, List[str]] = {}
@@ -157,72 +197,61 @@ def search(files: Sequence[FileIndex], *, query_vector: Optional[np.ndarray] = N
         else:
             by_sha[fi.sha] = fi
     files = list(by_sha.values())
+
+    found: Dict[Tuple[str, int], Dict[str, Any]] = {}
+    lists: List[List[Tuple[str, int]]] = []
+    reference = query_vector is None
+    q = reference_vector if reference else query_vector
     if q is not None:
-        shot_rank: List[Tuple[Tuple[str, int], float]] = []
-        speech_rank: List[Tuple[Tuple[str, int], float]] = []
-        image_rank: List[Tuple[Tuple[str, int], float]] = []
+        scored: List[Tuple[Tuple[str, int], float, str]] = []
         for fi in files:
-            if fi.text_matrix is not None:
-                sims = fi.text_matrix @ q
-                for i in _top(sims, min(MIN_COSINE["shot"], MIN_COSINE["speech"])):
-                    row = fi.text_rows[i]
-                    if sims[i] < MIN_COSINE["speech" if row["kind"] != "shot" else "shot"]:
-                        continue          # shot descriptions and spoken sentences share one matrix but not one noise floor
-                    if row["kind"] == "shot":
-                        if look_for == "spoken":
-                            continue
-                        key = (fi.sha, int(row["shot"]))
-                        shot_rank.append((key, float(sims[i])))
-                        note(key, "shot", sims[i], t=(row["start"] + row["end"]) / 2.0, why=(row["text"] or "")[:160])
-                    else:
-                        if look_for == "on_screen":
-                            continue
-                        shot = fi.shot_at((row["start"] + row["end"]) / 2.0)
-                        if not shot:
-                            continue
-                        key = (fi.sha, int(shot["id"]))
-                        speech_rank.append((key, float(sims[i])))
-                        note(key, "speech", sims[i], t=row["start"], span=(row["start"], row["end"]), why=(row["text"] or "")[:160])
-            if fi.image_matrix is not None and look_for != "spoken":
-                sims = fi.image_matrix @ q
-                for i in _top(sims, MIN_COSINE["image"]):
-                    row = fi.image_rows[i]
-                    key = (fi.sha, int(row["shot"]))
-                    image_rank.append((key, float(sims[i])))
-                    note(key, "image", sims[i], t=row["t"])
-        for layer, rows in (("shot", shot_rank), ("speech", speech_rank), ("image", image_rank)):
-            seen: List[Tuple[str, int]] = []
-            for key, _ in sorted(rows, key=lambda r: -r[1]):
-                if key not in seen:
-                    seen.append(key)
-            if seen:
-                lists.append((layer, seen))
+            v = _vector_for(q, fi.vector_model)
+            if v is None:
+                continue
+            for sid, b in _best_vectors(fi, v, ("image",) if reference else kinds).items():
+                if reference or b["score"] >= FLOOR.get(fi.vector_model, 0.0):
+                    found[(fi.sha, sid)] = b
+                    scored.append(((fi.sha, sid), b["score"], fi.vector_model))
+        if not reference:
+            top: Dict[str, float] = {}
+            for _, score, model in scored:
+                top[model] = max(top.get(model, -1.0), score)
+            scored = [r for r in scored if r[1] >= top[r[2]] - RELATIVE_CUT]
+        lists.append([k for k, _, _ in sorted(scored, key=lambda r: -r[1])])
+    words = _words(query_text)
+    if words:
+        by_words: List[Tuple[str, int]] = []
+        for fi in files:
+            for sid, w in _word_hits(fi, words, kinds).items():
+                key = (fi.sha, sid)
+                if key not in found:
+                    found[key] = {"kind": "words", "score": None, "scores": {}, **w}
+                elif w["span"] and found[key].get("kind") != "speech":
+                    found[key].update(kind="words", t=w["t"], span=w["span"], why=w["why"])
+                by_words.append(key)
+        lists.append(by_words)
     if reference_look and reference_look.get("present"):
-        scored: List[Tuple[Tuple[str, int], float]] = []
+        looks: List[Tuple[Tuple[str, int], float]] = []
         for fi in files:
             for shot in fi.shots:
                 p = shot.get("look")
                 if p and p.get("present"):
                     d = ca.look_profile_distance(p, reference_look)
                     if d is not None:
-                        scored.append(((fi.sha, int(shot["id"])), d))
-        order = [k for k, _ in sorted(scored, key=lambda r: r[1])][:PER_LAYER * 2]
-        if order:
-            lists.append(("look", order))
-            for key, d in scored:
-                layer_scores.setdefault(key, {})["look_distance"] = round(float(d), 4)
+                        looks.append(((fi.sha, int(shot["id"])), d))
+        lists.append([k for k, _ in sorted(looks, key=lambda r: r[1])][:PER_MATRIX])
+        for key, d in looks:
+            found.setdefault(key, {"kind": "look", "score": None, "scores": {}})["scores"]["look_distance"] = round(float(d), 4)
 
-    queried = q is not None or bool(reference_look and reference_look.get("present"))
-    ranking_active = bool(lists)
-    if ranking_active:
+    queried = q is not None or bool(words) or bool(reference_look and reference_look.get("present"))
+    lists = [x for x in lists if x]
+    if lists:
         fused = rrf(lists)
         keys = sorted(fused, key=lambda k: -fused[k])
     elif queried:
-        fused = {}
-        keys = []          # something was asked for and nothing matched: say so, don't list everything
+        fused, keys = {}, []          # something was asked for and nothing matched: say so, don't list everything
     else:
-        fused = {}
-        keys = [(fi.sha, int(s["id"])) for fi in files for s in fi.shots]
+        fused, keys = {}, [(fi.sha, int(s["id"])) for fi in files for s in fi.shots]
 
     hits: List[Dict[str, Any]] = []
     for key in keys:
@@ -230,19 +259,20 @@ def search(files: Sequence[FileIndex], *, query_vector: Optional[np.ndarray] = N
         shot = next((s for s in fi.shots if s["id"] == key[1]), None)
         if shot is None or not passes_filters(shot, f, fi):
             continue
-        info = peak.get(key, {})
+        info = found.get(key, {})
         span = info.get("span")
-        start, end = (max(shot["start"], span[0]), min(shot["end"], span[1])) if span and "speech" in layer_scores.get(key, {}) and \
-            layer_scores[key].get("speech", 0) >= layer_scores[key].get("shot", 0) else (shot["start"], shot["end"])
+        start, end = (max(shot["start"], span[0]), min(shot["end"], span[1])) if span else (shot["start"], shot["end"])
         if end <= start:
             start, end = shot["start"], shot["end"]
         watch = shot.get("watch") or {}
+        score = info.get("score")
         hits.append({
             "file_id": fi.file_id, "name": fi.name, "sha": fi.sha, "shot_id": shot["id"],
             "start": round(start, 3), "end": round(end, 3),
             "snapped_to": "speech" if (start, end) != (shot["start"], shot["end"]) else "shot",
-            "peak": round(float(info.get("t", (shot["start"] + shot["end"]) / 2.0)), 3),
-            "score": round(float(fused.get(key, 0.0)), 5), "scores": layer_scores.get(key, {}),
+            "peak": round(min(max(float(info.get("t", (shot["start"] + shot["end"]) / 2.0)), shot["start"]), shot["end"]), 3),
+            "matched": info.get("kind"), "score": round(float(score), 4) if score is not None else None,
+            "rank_score": round(float(fused.get(key, 0.0)), 5), "scores": info.get("scores") or {},
             "why": info.get("why") or (watch.get("description") or _speech_text(fi, shot["start"], shot["end"]))[:160],
             "camera": (shot.get("motion") or {}).get("class"), "shot_type": watch.get("shot_type") or None,
             "mood": watch.get("mood") or None,
@@ -251,14 +281,14 @@ def search(files: Sequence[FileIndex], *, query_vector: Optional[np.ndarray] = N
             "same_content_files": same_content.get(fi.sha) or None,
         })
     if sort == "highlight":
-        hits.sort(key=lambda h: (-(h["highlight"] or 0.0), -h["score"]))
+        hits.sort(key=lambda h: (-(h["highlight"] or 0.0), -h["rank_score"]))
     elif sort == "chronological":
         order = {fi.file_id: i for i, fi in enumerate(files)}
         hits.sort(key=lambda h: (h["captured_at"] or "9999", order.get(h["file_id"], 0), h["start"]))
     total = len(hits)
     page = hits[offset: offset + max(1, limit)]
     return {"hits": page, "total": total, "next": offset + len(page) if offset + len(page) < total else None,
-            "ranked": ranking_active}
+            "ranked": queried}
 
 
 def reference_vector_from(fi: FileIndex, start: float, end: float) -> Optional[np.ndarray]:

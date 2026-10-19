@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from classes.editor_tools import REGISTRY, media_index_tools as T  # noqa: E402
 from classes.editor_tools._base import ToolError  # noqa: E402
-from classes.media_index import library  # noqa: E402
+from classes.media_index import embedder as E, library  # noqa: E402
 from classes.media_index.store import Shelf  # noqa: E402
 from test_media_index_search import DIMS, SHA1, SHA2, blend, build, profile, shot, unit, w  # noqa: E402
 import classes.media_index.schema as S  # noqa: E402
@@ -57,9 +57,9 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr("classes.path_utils.absolute_media_path", lambda p: p, raising=False)
     queries = []
 
-    def fake_embed(text):
+    def fake_embed(text, files):
         queries.append(text)
-        return {"lake": unit(0), "dog": unit(1)}.get(text.split()[0], unit(14))
+        return {E.MODEL_LOCAL: {"lake": unit(0), "dog": unit(1)}.get(text.split()[0], unit(14))}
 
     monkeypatch.setattr(T, "embed_query", fake_embed)
     return SimpleNamespace(shelf=shelf, queries=queries, files=files)
@@ -72,17 +72,17 @@ def test_search_returns_moments_with_file_and_times(env):
     assert env.queries[-1] == "lake view" and r["total"] >= 1 and r["next"] is None
 
 
-def test_a_description_search_with_no_descriptions_says_why_and_does_not_pay_to_embed(env):
+def test_a_search_over_files_without_vectors_says_why_and_embeds_nothing(env):
     out = REGISTRY["search_footage_tool"].func(query="lake view", file_ids=["F2"])
-    assert out.startswith("Error") and "descriptions" in out and "filters" in out
+    assert out.startswith("Error") and "search vectors" in out and "filters" in out
     assert env.queries == [], "nothing was sent to be embedded"
 
 
-def test_files_that_cannot_match_a_description_are_named_next_to_the_results(env):
+def test_files_that_cannot_match_words_yet_are_named_next_to_the_results(env):
     _, r = call("search_footage_tool", query="lake view")
-    assert r["not_described"] == ["partial.mp4"] and r["hits"][0]["file_id"] == "F1"
+    assert r["not_searchable"] == ["partial.mp4"] and r["hits"][0]["file_id"] == "F1"
     _, plain = call("search_footage_tool", filters={"camera_move": "pan"})
-    assert "not_described" not in plain, "a filter search never needed descriptions"
+    assert "not_searchable" not in plain, "a filter search never needed vectors"
 
 
 def test_files_without_an_index_are_reported_not_hidden(env):
@@ -96,7 +96,7 @@ def test_a_query_that_matches_nothing_says_so(env):
 
 
 def test_filters_work_without_a_query_and_without_signing_in(env, monkeypatch):
-    monkeypatch.setattr(T, "embed_query", lambda t: (_ for _ in ()).throw(AssertionError("no embedding needed")))
+    monkeypatch.setattr(T, "embed_query", lambda t, f: (_ for _ in ()).throw(AssertionError("no embedding needed")))
     _, r = call("search_footage_tool", filters={"camera": "pan"})
     assert [(h["file_id"], h["shot_id"]) for h in r["hits"]] == [("F1", 0)]
     _, r = call("search_footage_tool", filters={"look": "warm"})
@@ -104,7 +104,7 @@ def test_filters_work_without_a_query_and_without_signing_in(env, monkeypatch):
 
 
 def test_a_reference_range_finds_similar_footage_without_any_cloud_call(env, monkeypatch):
-    monkeypatch.setattr(T, "embed_query", lambda t: (_ for _ in ()).throw(AssertionError("no embedding needed")))
+    monkeypatch.setattr(T, "embed_query", lambda t, f: (_ for _ in ()).throw(AssertionError("no embedding needed")))
     _, r = call("search_footage_tool", reference_file_id="F1", reference_start=10.0, reference_end=20.0)
     assert (r["hits"][0]["file_id"], r["hits"][0]["shot_id"]) == ("F1", 1)
 
@@ -166,12 +166,12 @@ def test_a_layer_a_file_cannot_have_is_not_reported_as_missing(env):
     _, r = call("index_status_tool", file_ids=["F2"])
     row = r["files"][0]
     assert row["not_applicable"] == ["audio", "speech"] and "audio" not in row["missing"] and "speech" not in row["missing"]
-    assert "watch" in row["missing"]
+    assert "vectors_local" in row["missing"]
     fi = library.load_file_index(env.shelf, SHA2)
     assert fi.not_applicable == ["audio", "speech"]
     from classes.media_index.dossier import build_dossier
     notes = build_dossier(fi)["text"]
-    assert "NOT INDEXED YET" in notes and "audio" not in notes.split("NOT INDEXED YET")[1] and "watch" in notes
+    assert "NOT INDEXED YET" in notes and "audio" not in notes.split("NOT INDEXED YET")[1] and "vectors_local" in notes
 
 
 def test_index_status_lists_each_layer_and_skips_non_media(env):
@@ -179,48 +179,45 @@ def test_index_status_lists_each_layer_and_skips_non_media(env):
     rows = {x["file_id"]: x for x in r["files"]}
     assert set(rows) == {"F1", "F2", "F3"}
     assert rows["F1"]["missing"] == ["audio"] and rows["F1"]["searchable"] is True
-    assert rows["F1"]["stale"] == ["structure"], "a free local layer saved by an older version: refreshed on the next index run"
-    assert rows["F1"]["older_cloud"] == ["watch"], "a paid cloud layer from an older version is kept as is (newer fields read as unknown)"
-    assert rows["F2"]["ready"] == ["structure"] and "watch" in rows["F2"]["missing"]
-    assert rows["F3"]["missing"] == ["structure", "look", "audio", "speech", "watch", "vectors"] and rows["F3"]["searchable"] is False
+    assert rows["F1"]["stale"] == ["structure"], "a local layer saved by an older version: refreshed on the next index run"
+    assert rows["F1"]["vector_model"] == E.MODEL_LOCAL and rows["F1"]["described_shots"] == 0
+    assert rows["F2"]["ready"] == ["structure"] and "vectors_local" in rows["F2"]["missing"]
+    assert rows["F3"]["missing"] == ["structure", "look", "audio", "speech", "vectors_local"] and rows["F3"]["searchable"] is False
     _, incomplete = call("index_status_tool", only_incomplete=True)
     assert len(incomplete["files"]) == 3
     _, one = call("index_status_tool", file_ids=["F1"])
     assert [x["file_id"] for x in one["files"]] == ["F1"]
 
 
-@pytest.mark.parametrize("out,fragment", [({"auth": True}, "sign in"),
-                                          ({"credits": True, "error": "Out of credits"}, "out of credits"),
-                                          ({"rate_limited": True, "retry_after": 600, "error": "slow down"}, "about 11 min"),
-                                          ({"rate_limited": True, "error": "slow down"}, "too many searches"),
-                                          ({"error": "boom"}, "boom"), ({"vectors": [None]}, "no vector")])
-def test_embedding_failures_become_actionable_errors(monkeypatch, out, fragment):
-    monkeypatch.undo()
-    import classes.api_client as api
-    monkeypatch.setattr(api, "get_backend_client", lambda: SimpleNamespace(v2_embed=lambda *a, **k: out))
+@pytest.mark.parametrize("flags,fragment", [({"auth": True}, "sign in"), ({"credits": True}, "out of credits"),
+                                            ({"rate_limited": True, "retry_after": 600}, "about 11 min"),
+                                            ({"rate_limited": True}, "too many searches"), ({}, "boom")])
+def test_embedding_failures_become_actionable_errors(monkeypatch, flags, fragment):
+    class Failing:
+        def texts(self, texts, query=False):
+            raise E.EmbedError("boom", **flags)
+    monkeypatch.setattr(E, "get_embedder", lambda model: Failing())
     with pytest.raises(ToolError) as e:
-        T.embed_query("x")
+        T.embed_query("x", [SimpleNamespace(vector_model=E.MODEL_CLOUD)])
     assert fragment in str(e.value)
 
 
-def test_a_backend_without_media_index_search_says_so_without_naming_a_removed_tool(monkeypatch):
-    import classes.api_client as api
-    monkeypatch.setattr(api, "get_backend_client", lambda: SimpleNamespace(v2_embed=lambda *a, **k: {"unsupported": True}))
-    with pytest.raises(ToolError) as e:
-        T.embed_query("x")
-    assert "has no media index v2 search yet" in str(e.value) and "search_clips_tool" not in str(e.value)
+def test_the_query_is_embedded_once_per_model_the_files_were_indexed_with(monkeypatch):
+    asked = []
+
+    class Model:
+        def __init__(self, name):
+            self.name = name
+
+        def texts(self, texts, query=False):
+            asked.append((self.name, texts, query))
+            return [unit(3)]
+    monkeypatch.setattr(E, "get_embedder", Model)
+    files = [SimpleNamespace(vector_model=E.MODEL_LOCAL), SimpleNamespace(vector_model=E.MODEL_LOCAL), SimpleNamespace(vector_model="")]
+    out = T.embed_query("x", files)
+    assert list(out) == [E.MODEL_LOCAL] and asked == [(E.MODEL_LOCAL, ["x"], True)] and out[E.MODEL_LOCAL][3] == 1.0
 
 
-def test_a_good_embedding_is_a_float32_vector(monkeypatch):
-    import classes.api_client as api
-    vec = unit(3).astype("<f2").tobytes()
-    monkeypatch.setattr(api, "get_backend_client",
-                        lambda: SimpleNamespace(v2_embed=lambda *a, **k: {"vectors": [base64.b64encode(vec).decode()]}))
-    v = T.embed_query("x")
-    assert v.dtype == np.float32 and v.shape == (DIMS,) and v[3] == 1.0 and blend(0, 1).shape == (DIMS,)
-
-
-# -- match / locate / view audio ---------------------------------------------------------
 @pytest.fixture
 def recreate(env, monkeypatch):
     """A reference (R) of two shots plus the two project files from `env`."""

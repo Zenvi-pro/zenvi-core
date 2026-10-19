@@ -31,7 +31,7 @@ def scanned(monkeypatch):
 
 def go(monkeypatch, tmp_path, *, people_on=True, status=READY, media_type="video", facts_raise=None):
     h = Harness(monkeypatch, tmp_path)
-    _facts_calls(monkeypatch, raises=facts_raise)
+    _facts_calls(monkeypatch, h, raises=facts_raise)
     monkeypatch.setattr(flags, "people_enabled", lambda: people_on)
     monkeypatch.setattr(people_models, "status", lambda: status)
     meta, _ = h.run(media_type=media_type)

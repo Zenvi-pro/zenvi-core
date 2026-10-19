@@ -37,7 +37,7 @@ class FakeClipObj:
 
 @pytest.fixture
 def timeline(monkeypatch):
-    state = SimpleNamespace(clips=[], objs={}, calls=[], locked=False, bpm=120.0, beats=None, downbeats=None)
+    state = SimpleNamespace(clips=[], objs={}, calls=[], locked=False, bpm=120.0, beats=None)
 
     def fake_build():
         return state.clips, R.ProjectInfo(duration=max((c.end for c in state.clips), default=0.0)), state.objs
@@ -46,7 +46,6 @@ def timeline(monkeypatch):
 
     def provider():
         idx = {"M": audio_index(-20.0, 120.0, beats)}
-        idx["M"].audio["music"] = {"downbeats": beats[::4]}
         return lambda c: idx.get(c.file_id) or FakeIndex()
     monkeypatch.setattr(TE, "_index_provider", provider)
     monkeypatch.setattr(TE, "frame_seconds", lambda: 1.0 / 30.0)
@@ -127,13 +126,12 @@ def test_the_longest_music_clip_with_a_tempo_is_the_one_used(timeline):
     assert r["music_clip_id"] == "long"
 
 
-def test_downbeat_mode_only_uses_the_first_beat_of_each_bar(timeline):
+def test_there_is_no_bar_mode_because_no_meter_is_assumed(timeline):
     timeline.load(clip("a", 0.0, 2.45, src_in=10.0), clip("b", 2.45, 8.0, src_in=30.0), music())
-    _, every = call("sync_cuts_to_beats_tool", dry_run=True, on="beat")
-    _, bars = call("sync_cuts_to_beats_tool", dry_run=True, on="downbeat", max_shift_seconds=0.6)
+    _, every = call("sync_cuts_to_beats_tool", dry_run=True)
     assert every["moves"][0]["to"] == pytest.approx(2.5, abs=0.04), "the nearest beat"
-    assert bars["moves"][0]["to"] == pytest.approx(3.0, abs=0.04) or bars["moves"][0]["to"] == pytest.approx(1.0, abs=0.04), "only bar starts (1, 3, 5...)"
-    assert bars["on"] == "downbeat"
+    for name in ("sync_cuts_to_beats_tool", "slice_on_beats_tool"):
+        assert "on" not in REGISTRY[name].schema["properties"]
 
 
 def test_a_locked_track_refuses_before_anything_is_written(timeline):
@@ -256,7 +254,7 @@ def test_music_alone_is_not_ducked(mixer):
 
 def test_the_loudness_target_follows_the_form_or_an_explicit_value(mixer):
     voices_and_music(mixer.tl, levels=(-20.0,))
-    _, film = call("balance_mix_tool", form="short film", dry_run=True)
+    _, film = call("balance_mix_tool", form="film", dry_run=True)
     _, podcast = call("balance_mix_tool", form="podcast", dry_run=True)
     _, custom = call("balance_mix_tool", form="podcast", target_lufs=-18.0, dry_run=True)
     assert (film["target_lufs"], podcast["target_lufs"], custom["target_lufs"]) == (-23.0, -16.0, -18.0)

@@ -558,6 +558,32 @@
     "setting": "media-index-people"
   },
   {
+    "value": "local",
+    "title": "Footage search model (changing it re-indexes footage in the background)",
+    "type": "dropdown",
+    "restart": false,
+    "category": "General",
+    "setting": "media-index-embedding-model",
+    "values": [
+      {
+        "value": "local",
+        "name": "On this computer: EmbeddingGemma 2 (free, about 470 MB download on first use)"
+      },
+      {
+        "value": "cloud",
+        "name": "Cloud: Gemini Embedding 2 (needs sign-in, about $0.96 an hour of footage)"
+      }
+    ]
+  },
+  {
+    "value": false,
+    "title": "Describe all footage on import with Gemini (uses credits; otherwise shots are described when the assistant needs them)",
+    "type": "bool",
+    "restart": false,
+    "category": "General",
+    "setting": "media-index-describe-on-import"
+  },
+  {
     "value": true,
     "title": "Native timeline",
     "type": "bool",

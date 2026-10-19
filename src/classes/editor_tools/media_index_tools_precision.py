@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 from classes.editor_tools._base import ToolError, array, boolean, enum, get_app, integer, number, obj, ok, on_main, string
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.media_files import FILE_TARGET, _display_name, resolve_files
-from classes.editor_tools.media_index_tools import _all_files, _index_for
+from classes.editor_tools.media_index_tools import _all_files, _index_for, describe_file_shots
 from classes.logger import log
 from classes.media_index import contact, context, health
 from classes.media_index.facts import technical_of
@@ -733,11 +733,13 @@ def _frames_pack(f, start_seconds, end_seconds, per_second=None, count=None, eve
         "pictures": boolean("Also make the keyframe pictures (one per shot, 48 a sheet). Look at them when a description matters: the text is a model's "
                             "reading and can be wrong about hair colour, who is who and small details.", True),
         "look": boolean("Add each shot's brightness and three main colours to its row (list mode; measured, a few tokens a row).", False),
+        "describe": boolean("Get words for the shots on this page that have none yet (Gemini; once per shot, uses credits, needs sign-in). "
+                            "False = pictures and measured facts only.", True),
         "tile_width": integer("Width of each keyframe in pixels.", 320, minimum=96, maximum=640),
     }),
     read_only=True,
 )
-def storyboard(file_ids=None, file_query="", start_seconds=0, detail="full", pictures=True, look=False, tile_width=320):
+def storyboard(file_ids=None, file_query="", start_seconds=0, detail="full", pictures=True, look=False, describe=True, tile_width=320):
     """Understand or recreate a video in ONE call: every shot with its exact start and end, camera move, shot type and (when the picture
     layer was built) what happens, plus one stamped keyframe per shot. The cuts are exact and free; this is the first call for "describe
     this video", "what happens scene by scene" or "recreate this". Never sample frames at a fixed interval to find cuts. Use detail=list
@@ -760,8 +762,17 @@ def storyboard(file_ids=None, file_query="", start_seconds=0, detail="full", pic
     shots, next_start = board.page(fi.shots, float(start_seconds or 0.0), per_page=board.MAX_LIST_SHOTS if as_list else contact.MAX_TILES)
     if not shots:
         raise ToolError("no shots at or after that time")
+    described_note = ""
+    if describe and fi.media_type == "video" and any(not s.get("watch") for s in shots):
+        _out, why = describe_file_shots(f, fi, [s["id"] for s in shots])
+        if why:
+            described_note = f"No descriptions for some shots: {why}."
+        else:
+            fi = _index_for(f, shelf)
+            by_id = {s["id"]: s for s in fi.shots}
+            shots = [by_id.get(s["id"], s) for s in shots]
     rows = [board.list_line(fi, s, look=bool(look)) for s in shots] if as_list else [dossier.shot_lines(fi, s) for s in shots]
-    extra = [x for x in (board.speech_line(fi), board.cut_summary(fi), board.rhythm_line(fi), board.music_line(fi), board.repeats_line(fi)) if x]
+    extra = [x for x in (described_note, board.speech_line(fi), board.cut_summary(fi), board.rhythm_line(fi), board.music_line(fi), board.repeats_line(fi)) if x]
     lines = dossier.header(fi) + extra + rows
     if next_start is not None:
         lines.append(f"... more shots; call again with start_seconds={next_start:.2f}")

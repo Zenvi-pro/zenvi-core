@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 import math
-import re
 import statistics
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -56,6 +55,7 @@ SILENCE_FLOOR_DB = -50.0
 GAIN_SAMPLE_SECONDS = 0.25       # how finely an automated volume curve is read over an overlap
 
 # ---- forms ------------------------------------------------------------------------------------
+# The form is the explicit ``form`` argument, one of FORMS, matched exactly. Free text sets no form rules.
 _MUSIC_FORMS = ("vlog", "tiktok", "reel", "short", "montage", "trailer", "recap", "highlight", "music video", "film",
                 "movie", "scene", "ad", "promo", "commercial", "travel")
 _DIALOGUE_FORMS = ("podcast", "interview", "tutorial", "lecture", "talk", "webinar", "news")
@@ -63,6 +63,7 @@ _BEAT_FORMS = ("montage", "trailer", "reel", "tiktok", "music video", "highlight
 LOUDNESS_TARGETS = {"podcast": -16.0, "film": -23.0, "movie": -23.0, "broadcast": -23.0}
 DEFAULT_LOUDNESS = -14.0         # online video (YouTube, TikTok, Reels, Shorts)
 FORM_MAX_SECONDS = {"tiktok": 180.0, "reel": 90.0, "short": 60.0}
+FORMS = _MUSIC_FORMS + _DIALOGUE_FORMS + ("broadcast",)
 
 
 @dataclass
@@ -107,12 +108,16 @@ class TimelineClip:
 
 @dataclass
 class Brief:
-    form: str = ""                           # "YouTube vlog", "TikTok", "short film", "podcast"...
+    form: str = ""                           # one of FORMS ("vlog", "tiktok", "podcast"...); anything else is a general review
     target_seconds: Optional[float] = None
     vibe: str = ""
     wants_music: Optional[bool] = None       # an explicit yes/no from the user wins over the form's default
     wants_captions: Optional[bool] = None
     wants_grade: Optional[bool] = None
+
+    def __post_init__(self) -> None:
+        form = str(self.form or "").strip().lower()
+        self.form = form if form in FORMS else ""
 
 
 @dataclass
@@ -130,21 +135,9 @@ def finding(fid: str, layer: str, status: str, summary: str, evidence: Optional[
     return {"id": fid, "layer": layer, "status": status, "summary": summary, "evidence": evidence or {}, "fix": list(fix)}
 
 
-def _has(form: str, words: Sequence[str]) -> bool:
-    f = (form or "").lower()
-    return any(w in f for w in words)
-
-
-_SHORT_NOT_FORM = re.compile(r"\bshorts?[\s-]+(film|movie|story|stories|documentary|doc|drama|comedy)\b")
-_SHORT_WORD = re.compile(r"\bshorts?\b|\bshort-form\b")
-
-
 def is_short_form(form: str) -> bool:
-    """TikTok, Reels, YouTube Shorts and short-form video; not a 'short film'."""
-    f = (form or "").lower()
-    if _has(f, ("tiktok", "reel")):
-        return True
-    return bool(_SHORT_WORD.search(f)) and not _SHORT_NOT_FORM.search(f)
+    """TikTok, Reels and short-form video: the explicit 'tiktok', 'reel' or 'short' form."""
+    return form in ("tiktok", "reel", "short")
 
 
 def music_expected(brief: Brief) -> Optional[bool]:
@@ -152,9 +145,9 @@ def music_expected(brief: Brief) -> Optional[bool]:
         return brief.wants_music
     if not brief.form:
         return None
-    if _has(brief.form, _DIALOGUE_FORMS) and not _has(brief.form, ("vlog",)):
+    if brief.form in _DIALOGUE_FORMS:
         return False
-    return _has(brief.form, _MUSIC_FORMS)
+    return brief.form in _MUSIC_FORMS
 
 
 def captions_expected(brief: Brief) -> Optional[bool]:
@@ -168,10 +161,7 @@ def vertical_expected(brief: Brief) -> bool:
 
 
 def loudness_target(brief: Brief) -> float:
-    for key, value in LOUDNESS_TARGETS.items():
-        if _has(brief.form, (key,)):
-            return value
-    return DEFAULT_LOUDNESS
+    return LOUDNESS_TARGETS.get(brief.form, DEFAULT_LOUDNESS)
 
 
 # ============================ helpers ============================
@@ -240,7 +230,7 @@ def story_findings(clips: Sequence[TimelineClip], project: ProjectInfo, brief: B
                            f"{duration:.1f} s against a target of {target:.0f} s ({off * 100:+.0f}%).",
                            {"duration": round(duration, 2), "target": target, "off_pct": round(off * 100, 1)},
                            [] if abs(off) <= LENGTH_TOLERANCE else ["trim_clips_tool", "set_clip_speed_tool", "remove_gaps_tool"]))
-    cap = next((v for k, v in FORM_MAX_SECONDS.items() if (is_short_form(brief.form) if k == "short" else _has(brief.form, (k,)))), None)
+    cap = FORM_MAX_SECONDS.get(brief.form)
     if cap and duration > cap:
         out.append(finding("form_length", "delivery", "needs", f"A {brief.form} should stay under {cap:.0f} s; this is {duration:.0f} s.",
                            {"duration": round(duration, 2), "limit": cap}, ["trim_clips_tool"]))
@@ -490,7 +480,7 @@ def sound_findings(clips: Sequence[TimelineClip], project: ProjectInfo, brief: B
         if beats:
             on = sum(1 for c in cuts if min(abs(c - b) for b in beats) <= BEAT_TOLERANCE)
             frac = on / len(cuts)
-            drives = _has(brief.form, _BEAT_FORMS) or is_short_form(brief.form)
+            drives = brief.form in _BEAT_FORMS or is_short_form(brief.form)
             out.append(finding("beat_sync", "sound", "ok" if frac >= BEAT_MIN_FRACTION else ("needs" if drives else "info"),
                                f"{frac * 100:.0f}% of the cuts land on a beat ({tempo['bpm']:.0f} BPM)." + ("" if frac >= BEAT_MIN_FRACTION else " Cutting on the beat makes it feel tight."),
                                {"cuts": len(cuts), "on_beat": on, "fraction": round(frac, 2), "bpm": tempo["bpm"], "tolerance_seconds": BEAT_TOLERANCE},

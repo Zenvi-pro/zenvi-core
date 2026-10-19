@@ -28,6 +28,17 @@ def _shot_lengths(shots: Sequence[Dict[str, Any]]) -> List[float]:
     return [float(s["end"]) - float(s["start"]) for s in shots if not s.get("black") and float(s["end"]) > float(s["start"])]
 
 
+def real_shots(shots: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The shots the edit cuts: a split piece (cut only so no shot is too long to keyframe) is folded into the shot it continues."""
+    out: List[Dict[str, Any]] = []
+    for s in shots:
+        if out and (s.get("opens_with") or {}).get("kind") == "split":
+            out[-1] = {**out[-1], "end": s["end"], "duration": round(float(s["end"]) - float(out[-1]["start"]), 3), "black": bool(out[-1].get("black") and s.get("black"))}
+        else:
+            out.append(s)
+    return out
+
+
 def pacing_curve(cut_times: Sequence[float], duration: float, window: float = PACE_WINDOW) -> List[Dict[str, float]]:
     """Cuts per minute in each *window* seconds of the piece."""
     out: List[Dict[str, float]] = []
@@ -71,10 +82,12 @@ def edit_style(fi: Any) -> Dict[str, Any]:
     """The style of a finished video from its index (a ``library.FileIndex``)."""
     shots = list(fi.shots or [])
     duration = float(fi.duration or (shots[-1]["end"] if shots else 0.0))
-    lengths = _shot_lengths(shots)
-    live = [s for s in shots if not s.get("black")]
-    cuts = [float(s["start"]) for s in live[1:]]
-    out: Dict[str, Any] = {"seconds": round(duration, 2), "shots": len(live), "orientation": fi.orientation or None}
+    takes = real_shots(shots)
+    lengths = _shot_lengths(takes)
+    live = [s for s in shots if not s.get("black")]           # per picture piece: each one's motion, shot type and text
+    live_takes = [s for s in takes if not s.get("black")]     # the shots the edit cuts
+    cuts = [float(s["start"]) for s in live_takes[1:]]
+    out: Dict[str, Any] = {"seconds": round(duration, 2), "shots": len(live_takes), "orientation": fi.orientation or None}
     if lengths:
         out["pacing"] = {"average_shot": round(statistics.fmean(lengths), 2), "median_shot": round(statistics.median(lengths), 2), "shortest": round(min(lengths), 2),
                          "longest": round(max(lengths), 2), "cuts_per_minute": round(len(cuts) * 60.0 / duration, 1) if duration > 0 else None}
@@ -82,7 +95,7 @@ def edit_style(fi: Any) -> Dict[str, Any]:
         out["pacing"]["shape"] = pace_shape(curve)
         out["pacing"]["curve"] = curve
     kinds: Dict[str, int] = {}
-    for s in live[1:]:
+    for s in live_takes[1:]:
         kind = (s.get("opens_with") or {}).get("kind")
         if kind in ("hard", "dissolve", "fade"):
             kinds[kind] = kinds.get(kind, 0) + 1

@@ -30,7 +30,7 @@ sys.modules.setdefault("PyQt5.QtWidgets", MagicMock(QApplication=MagicMock))
 from classes import tool_handlers as th  # noqa: E402
 from classes.editor_tools import media_index_tools as T  # noqa: E402
 from classes.editor_tools._base import ToolError  # noqa: E402
-from classes.media_index import library  # noqa: E402
+from classes.media_index import embedder as E, library  # noqa: E402
 from classes.media_index import schema as S  # noqa: E402
 from classes.media_index.store import Shelf  # noqa: E402
 from test_media_index_search import DIMS, SHA1, build, shot, unit, w  # noqa: E402
@@ -59,9 +59,9 @@ def indexed(tmp_path, monkeypatch):
     monkeypatch.setattr("classes.path_utils.absolute_media_path", lambda p: p, raising=False)
     embedded = []
 
-    def fake_embed(text):
+    def fake_embed(text, files):
         embedded.append(text)
-        return {"a dog runs": unit(1), "a calm lake": unit(0)}.get(text, unit(14))
+        return {E.MODEL_LOCAL: {"a dog runs": unit(1), "a calm lake": unit(0)}.get(text, unit(14))}
 
     monkeypatch.setattr(T, "embed_query", fake_embed)
     return SimpleNamespace(embedded=embedded)
@@ -81,7 +81,7 @@ def test_no_hit_in_the_window_and_no_index_are_both_none_and_the_second_costs_no
 
 
 def test_a_refused_search_is_no_moment_not_an_error(indexed, monkeypatch):
-    def refused(text):
+    def refused(text, files):
         raise ToolError("out of credits for searching by description")
 
     monkeypatch.setattr(T, "embed_query", refused)
@@ -139,7 +139,7 @@ def test_add_clip_keeps_the_window_when_the_moment_is_not_in_it(indexed, monkeyp
 
 
 def test_add_clip_refuses_a_blind_first_n_seconds_trim_when_the_search_is_refused(indexed, monkeypatch):
-    def refused(text):
+    def refused(text, files):
         raise ToolError("sign in to Zenvi to search by description")
 
     monkeypatch.setattr(T, "embed_query", refused)
@@ -194,7 +194,7 @@ def test_split_refuses_a_long_window_the_index_cannot_place(indexed, monkeypatch
 def test_the_overlay_boosts_are_the_index_peaks_for_the_avoid_and_prefer_queries(indexed, monkeypatch):
     from classes.mg_placement import AVOID_QUERY, PREFER_QUERY
 
-    monkeypatch.setattr(T, "embed_query", lambda text: {AVOID_QUERY: unit(0), PREFER_QUERY: unit(1)}[text])
+    monkeypatch.setattr(T, "embed_query", lambda text, files: {E.MODEL_LOCAL: {AVOID_QUERY: unit(0), PREFER_QUERY: unit(1)}[text]})
     ctx = SimpleNamespace(file_id="F1", parent_file_id="F1", timeline_position=0.0, timeline_end=20.0, source_start=0.0)
     boosts = sorted(th._overlay_index_boosts([ctx]), key=lambda b: b["t"])
     assert boosts == [

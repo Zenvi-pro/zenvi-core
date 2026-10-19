@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from classes.api_client import ZenviBackendClient  # noqa: E402
 from classes.media_index import flags  # noqa: E402
 from classes.media_index.job import IndexingJob  # noqa: E402
-from test_indexing_job_reuse import Harness, _v2  # noqa: E402
+from test_indexing_job_reuse import Harness, _stub_vectors  # noqa: E402
 
 V1_CLIENT_METHODS = ("search", "watch_window", "start_direct_indexing_job", "summarize_indexed_video",
                      "restore_index", "reindex_video", "is_indexing_configured")
@@ -37,25 +37,18 @@ def test_a_file_with_no_fingerprint_fails_with_that_reason(monkeypatch, tmp_path
     _no_old_route(h)
 
 
-def test_a_backend_without_media_index_v2_fails_the_file_with_that_reason(monkeypatch, tmp_path):
-    h, calls = _v2(monkeypatch, tmp_path, result={"unsupported": True, "error": "no media index v2", "layers": {}})
-    meta, _ = h.run(duration=6.0)
-    assert len(calls) == 1
-    assert meta["index"]["status"] == "failed" and "has no media index v2" in meta["error"]
-    assert h.charges == []
-    _no_old_route(h)
-
-
-def test_a_shelf_restore_is_free_and_never_calls_restore_index(monkeypatch, tmp_path):
-    h, calls = _v2(monkeypatch, tmp_path, populate=True)
+def test_a_file_already_on_the_shelf_is_restored_without_embedding_again(monkeypatch, tmp_path):
+    h = Harness(monkeypatch, tmp_path)
+    calls = _stub_vectors(monkeypatch, h)
+    h.run(duration=6.0)
     meta, _ = h.run(file_id="f2", project="p2", duration=6.0)
-    assert calls == [] and h.charges == []
-    assert meta["index"]["index_id"] == "zenvi-p2" and meta["chapters"]
+    assert len(calls) == 1 and h.charges == [] and meta["index"]["index_id"] == "zenvi-p2"
     _no_old_route(h)
 
 
 def test_footage_that_shares_a_fingerprint_with_other_footage_fails_with_that_reason(monkeypatch, tmp_path):
-    h, calls = _v2(monkeypatch, tmp_path, populate=True)
+    h = Harness(monkeypatch, tmp_path)
+    calls = _stub_vectors(monkeypatch, h)
     monkeypatch.setattr("classes.media_index.facts.compute_facts", lambda *a, **k: {"ok": False, "collision": True, "layers": {}})
     meta, _ = h.run(duration=6.0)
     assert calls == [] and meta["index"]["status"] == "failed" and "different file" in meta["error"]
@@ -65,7 +58,8 @@ def test_footage_that_shares_a_fingerprint_with_other_footage_fails_with_that_re
 def test_an_editor_duration_that_is_unknown_or_off_by_a_second_never_fails_the_file(monkeypatch, tmp_path):
     for editor_duration in (0.0, 7.5):          # the shelf holds ffprobe's 6.0 s for this very file
         (tmp_path / str(editor_duration)).mkdir()
-        h, calls = _v2(monkeypatch, tmp_path / str(editor_duration), populate=True)
+        h = Harness(monkeypatch, tmp_path / str(editor_duration))
+        _stub_vectors(monkeypatch, h)
         h.shelf.set_source(h.sha, duration=6.0, media_type="video")
         meta, _ = h.run(duration=editor_duration)
         assert meta["index"]["status"] != "failed", (editor_duration, meta.get("error"))

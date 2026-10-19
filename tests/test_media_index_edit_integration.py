@@ -298,7 +298,7 @@ def test_the_audit_reads_the_real_timeline_and_leaves_no_trace(world):
     build(world.shelf, SHA_V, shots=[shot(0, 0, 12, "pan"), shot(1, 12, 25, "static")], duration=24.5,
           watch=[w(0, 0, 12, "A lake"), w(1, 12, 25, "A dog")], look={"profile": profile(0.5)})
     library.clear_cache()
-    receipt = ed.call_receipt("review_edit_tool", form="YouTube vlog", measure_colour=False, render_mix=False)
+    receipt = ed.call_receipt("review_edit_tool", form="vlog", measure_colour=False, render_mix=False)
     assert receipt["status"] in ("applied", "unchanged"), receipt
     data = receipt["data"]
     ids = {f["id"]: f for layer in data["layers"].values() for f in layer}
@@ -325,7 +325,7 @@ def test_after_the_real_ducking_pass_the_audit_no_longer_calls_the_music_too_lou
     ed = mix_world.world.editor
 
     def margin():
-        data = ed.call_receipt("review_edit_tool", form="YouTube vlog", measure_colour=False, render_mix=False)["data"]
+        data = ed.call_receipt("review_edit_tool", form="vlog", measure_colour=False, render_mix=False)["data"]
         found = {f["id"]: f for layer in data["layers"].values() for f in layer}
         return found["dialogue_margin"]
 

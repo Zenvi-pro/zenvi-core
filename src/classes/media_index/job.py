@@ -1,6 +1,6 @@
 """
  @file
- @brief The indexing job: sign-in check, reuse of a saved analysis, upload, charge, keep.
+ @brief The indexing job: local analysis, search vectors, optional descriptions, keep.
 
  This is the logic of the background indexing worker, with no Qt in it, so it is tested in
  the ordinary headless suite. ``windows.models.files_model.BackendIndexingWorker`` is a thin
@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, Iterator, Tuple
 
 from classes.logger import log
 
+PROVIDER = "media-index-v2"
 _FLIGHTS_LOCK = threading.Lock()
 _FLIGHTS: Dict[str, Tuple[threading.Lock, int]] = {}
 
@@ -52,7 +53,7 @@ def single_flight(key: str, cancelled: Callable[[], bool] = lambda: False, poll:
 class IndexingJob:
     """Index one file (or reuse a saved analysis of the same content) and report back."""
 
-    # Hard limit: clips longer than 30 minutes are not indexed or summarized.
+    # Files longer than 30 minutes are indexed, but only described on import after a yes (index_long_file_tool).
     _MAX_INDEXING_SECONDS = 30 * 60
 
     def __init__(
@@ -123,22 +124,6 @@ class IndexingJob:
         except Exception as exc:  # includes cancellation
             log.info("People scan skipped for %s: %s", file_path, exc)
 
-    def _long_file_needs_approval(self, file_path, duration, metadata) -> bool:
-        """True (with the reason and the cost estimate written into *metadata*) when a file over 30 minutes must not go on.
-
-        A long file can be described in chunks, but only after the user approved it (the file carries ``index_long_ok``):
-        it takes a while and uses the cloud.
-        """
-        import os
-        from classes.media_index import longfile
-        name = os.path.basename(file_path) or "This file"
-        if self.file_data.get("index_long_ok"):
-            return False
-        from classes.indexing_status import SKIP_LONG
-        metadata["skip_reason"] = longfile.approval_text(name, duration)
-        metadata["skip_code"] = SKIP_LONG
-        return True
-
     def _flight_key(self, file_path):
         """The fingerprint to take a turn on, or None when the file has none (then there is nothing to share)."""
         return self._fingerprint_sha(file_path) or None
@@ -163,24 +148,32 @@ class IndexingJob:
             return self._try_v2(client, file_path, media_type, duration, file_id, index_name, metadata)
 
     def _v2_index_block(self, index_name, file_id, media_type, sha):
-        block = {"status": "ready", "index_id": index_name, "index_name": index_name, "video_id": file_id,
-                 "provider": "gemini-v2", "media_type": media_type, "v2": True, "fingerprint": sha}
-        return block
+        return {"status": "ready", "index_id": index_name, "index_name": index_name, "video_id": file_id,
+                "provider": PROVIDER, "media_type": media_type, "v2": True, "fingerprint": sha}
 
     def _v2_failed(self, metadata, index_name, media_type, reason):
         """Finish the file as failed with *reason*, which the badge shows. Nothing is charged for it."""
-        block = {"status": "failed", "error": reason, "index_name": index_name, "provider": "gemini-v2", "media_type": media_type}
+        block = {"status": "failed", "error": reason, "index_name": index_name, "provider": PROVIDER, "media_type": media_type}
         metadata["index"], metadata["twelvelabs"], metadata["error"] = block, dict(block), reason
         self._completed(self.file_data, metadata, None)
 
-    def _try_v2(self, client, file_path, media_type, duration, file_id, index_name, metadata):
-        """The media index v2 path, the only way a file is indexed. It always finishes the job.
+    def _skip(self, metadata, index_name, media_type, reason):
+        """Finish the file as skipped (nothing wrong with it: out of credits, over a limit)."""
+        block = {"status": "skipped", "error": reason, "index_name": index_name, "provider": PROVIDER, "media_type": media_type}
+        metadata["index"], metadata["twelvelabs"] = block, dict(block)
+        self._completed(self.file_data, metadata, None)
 
-        A file whose v2 layers are already on the shelf is restored for free, in any project, with no sign-in and no
-        charge. Anything else is described by the cloud, or fails with the reason it cannot be.
+    def _try_v2(self, client, file_path, media_type, duration, file_id, index_name, metadata):
+        """The only way a file is indexed. It always finishes the job.
+
+        The search vectors are made by the model chosen in Preferences: EmbeddingGemma 2 on this computer (the default,
+        free, no sign-in), or Gemini Embedding 2 in the cloud when picked and signed in. A file whose vectors from that
+        model are already on the shelf is not embedded again, in any project. Gemini descriptions are made here only when
+        the user turned on "Describe all footage on import"; otherwise agents ask for them shot by shot.
         """
-        from classes.media_index import S_WATCH, S_VECTORS, cloud, default_shelf
+        from classes.media_index import cloud, default_shelf, embedder as E, vectors
         from classes.media_index import schema as S
+        from classes.media_index.probe import probe_media
 
         sha = self._fingerprint_sha(file_path)
         if not sha:
@@ -194,86 +187,64 @@ class IndexingJob:
                             "This footage shares a fingerprint with a different file, so it cannot be indexed safely.")
             return
 
-        def ready(layer):
-            # any saved version counts: an older cloud layer is kept, not paid for again
-            return shelf.layer_ready(sha, layer)
-
-        def settled(layer):
-            return cloud.is_settled(shelf, sha, layer)
-
-        def build():
-            structure = shelf.read_json(sha, "structure.json") or {}
-            watch = shelf.read_json(sha, "watch.json") or {"shots": []}
-            speech = shelf.read_json(sha, "speech.json") if ready(S.LAYER_SPEECH) else None
-            meta = cloud.metadata_view(watch, speech, structure, media_type)
-            if media_type == "audio" and not meta.get("analyzed") and ready(S.LAYER_AUDIO):
-                # A music file has no picture to describe; its local analysis is the whole index, and the audio roles
-                # (music bed, sound effect) are only assigned to files marked analysed.
-                meta["analyzed"] = True
-                meta["short_summary"] = cloud.audio_summary(shelf.read_json(sha, "audio.json") or {}, duration)
-            block = self._v2_index_block(index_name, file_id, media_type, sha)
-            meta["index"], meta["twelvelabs"] = block, dict(block)
-            return meta
-
-        done_watch = settled(S_WATCH) or media_type != "video"
-        if done_watch and settled(S_VECTORS):
-            self._progress(file_id, "done", 100)
-            self._completed(self.file_data, build(), None)
-            return
-
-        if not self._signed_in():
-            from classes.indexing_status import SKIP_SIGNIN
-            metadata["skip_reason"] = "Sign in to Zenvi to index this file for search."
-            metadata["skip_code"] = SKIP_SIGNIN
-            self._completed(self.file_data, metadata, None)
-            return
-
-        from classes.credits_client import check_operation
-        credit_duration = duration if media_type != "image" else 60.0
-        _, _balance, blocked = check_operation("indexing_per_minute", f"{media_type} indexing", duration_seconds=credit_duration)
-        if blocked:
-            block = {"status": "skipped", "error": blocked, "index_name": index_name, "provider": "gemini-v2", "media_type": media_type}
-            metadata["index"], metadata["twelvelabs"] = block, dict(block)
-            self._completed(self.file_data, metadata, None)
-            return
-
-        from classes.media_index.probe import probe_media
+        signed_in = self._signed_in()
+        model = E.chosen_model(signed_in)
         probe = probe_media(file_path)
+        if not vectors.is_current(shelf, sha, model):
+            self._progress(file_id, "indexing", 0)
+            try:
+                vectors.compute_vectors(file_path, probe, sha, shelf, E.get_embedder(model), should_cancel=lambda: self._cancelled,
+                                        on_progress=lambda f: self._progress(file_id, "indexing", int(f * 100)))
+            except vectors.Cancelled:
+                self._completed(self.file_data, metadata, None)
+                return
+            except E.EmbedError as exc:
+                if exc.flags.get("credits") or exc.flags.get("rate_limited"):
+                    self._skip(metadata, index_name, media_type, str(exc))
+                else:
+                    self._v2_failed(metadata, index_name, media_type, f"Could not index this file for search: {exc}")
+                return
 
-        def on_progress(fraction):
-            if fraction < 0.4:
-                self._progress(file_id, "uploading", int(fraction / 0.4 * 100))
-            else:
-                self._progress(file_id, "indexing", -1)
+        if media_type == "video" and signed_in and (E.describe_on_import() or self.file_data.get("index_long_ok")):
+            self._describe_on_import(client, file_path, probe, sha, shelf, model, duration, file_id, metadata)
+            if self._cancelled:
+                self._completed(self.file_data, metadata, None)
+                return
 
-        try:
-            result = cloud.compute_cloud(client, file_path, probe, sha, shelf, file_id=file_id, media_type=media_type,
-                                         should_cancel=lambda: self._cancelled, on_progress=on_progress)
-        except cloud.Cancelled:
-            self._completed(self.file_data, metadata, None)
-            return
-        if result.get("unsupported"):
-            self._v2_failed(metadata, index_name, media_type, "The backend has no media index v2, so this file cannot be indexed yet.")
-            return
-        if result.get("auth"):
-            from classes.indexing_status import SKIP_SIGNIN
-            metadata["skip_reason"] = "Sign in to Zenvi to index this file for search."
-            metadata["skip_code"] = SKIP_SIGNIN
-            self._completed(self.file_data, metadata, None)
-            return
-        if result.get("credits") or result.get("rate_limited"):
-            # out of credits, or over the account's limit: nothing was wrong with the file, so it is skipped, not failed
-            block = {"status": "skipped", "error": result["error"], "index_name": index_name, "provider": "gemini-v2", "media_type": media_type}
-            metadata["index"], metadata["twelvelabs"] = block, dict(block)
-            self._completed(self.file_data, metadata, None)
-            return
-        if result.get("error"):
-            self._v2_failed(metadata, index_name, media_type, result["error"])
-            return
-        # No desktop charge here: the backend meters /index/v2 itself, from what Gemini really billed.
-        meta = build()
+        structure = shelf.read_json(sha, "structure.json") or {}
+        watch = shelf.read_json(sha, "watch.json") or {"shots": []}
+        speech = shelf.read_json(sha, "speech.json") if shelf.layer_ready(sha, S.LAYER_SPEECH) else None
+        meta = cloud.metadata_view(watch, speech, structure, media_type)
+        meta["analyzed"] = True          # searchable: every file has its vectors (or nothing to embed) from here on
+        if media_type == "audio" and shelf.layer_ready(sha, S.LAYER_AUDIO) and not meta.get("short_summary"):
+            # A music file has no picture to describe; its local analysis is the summary.
+            meta["short_summary"] = cloud.audio_summary(shelf.read_json(sha, "audio.json") or {}, duration)
+        block = self._v2_index_block(index_name, file_id, media_type, sha)
+        meta["index"], meta["twelvelabs"] = block, dict(block)
         self._progress(file_id, "done", 100)
         self._completed(self.file_data, meta, None)
+
+    def _describe_on_import(self, client, file_path, probe, sha, shelf, model, duration, file_id, metadata):
+        """Gemini descriptions of every shot, when the user asked for them up front (the preference, or a yes for a long
+        file). Never fails the index: search works without them, and an agent can still ask for any shot later."""
+        from classes.credits_client import check_operation
+        from classes.media_index import cloud, embedder as E, vectors
+        if duration > self._MAX_INDEXING_SECONDS and not self.file_data.get("index_long_ok"):
+            log.info("Not describing %s on import: over 30 minutes and not approved", file_path)
+            return
+        _, _balance, blocked = check_operation("indexing_per_minute", "video descriptions", duration_seconds=duration)
+        if blocked:
+            log.info("Not describing %s on import: %s", file_path, blocked)
+            return
+        try:
+            result = cloud.compute_cloud(client, file_path, probe, sha, shelf, file_id=file_id, media_type="video",
+                                         should_cancel=lambda: self._cancelled,
+                                         on_progress=lambda f: self._progress(file_id, "describing", int(f * 100)))
+            if result.get("error"):
+                log.info("Describing %s on import failed: %s", file_path, result["error"])
+            vectors.add_descriptions(shelf, sha, E.get_embedder(model), (result.get("watch") or {}).get("shots") or [])
+        except (cloud.Cancelled, E.EmbedError) as exc:
+            log.info("Describing %s on import stopped: %s", file_path, exc)
 
     def run(self):
         client = self._client_factory()
@@ -297,10 +268,6 @@ class IndexingJob:
                     self._completed(self.file_data, metadata, None)
                     return
                 duration = float(self.file_data.get("duration") or 0)
-                too_long = media_type != "image" and duration > self._MAX_INDEXING_SECONDS
-                if too_long and self._long_file_needs_approval(file_path, duration, metadata):
-                    self._completed(self.file_data, metadata, None)
-                    return
 
                 from classes.project_tl_index import build_project_index_name
 

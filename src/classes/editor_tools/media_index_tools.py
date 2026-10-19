@@ -6,10 +6,6 @@ same footage is searchable in every project. Nothing here mutates the project.
 
 from __future__ import annotations
 
-import base64
-
-import numpy as np
-
 from classes.editor_tools._base import ToolError, array, boolean, enum, get_app, integer, mapping, number, obj, ok, on_main, string
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.media_files import FILE_TARGET, _display_name, resolve_files
@@ -19,8 +15,8 @@ from classes.media_index.dossier import build_dossier
 from classes.media_index.store import default_shelf, sha_of
 
 QUERY_LIMIT_CHARS = 500
-LAYER_ORDER = ("structure", "look", "audio", "speech", "watch", "vectors")
-CLOUD_LAYERS = ("watch", "vectors")
+# What "fully indexed" means. Descriptions (the watch layer) are not part of it: they are made on demand.
+LAYER_ORDER = (S.LAYER_STRUCTURE, S.LAYER_LOOK, S.LAYER_AUDIO, S.LAYER_SPEECH, S.LAYER_VECTORS)
 
 
 def _all_files():
@@ -55,23 +51,27 @@ def project_indexes(file_ids=None):
     return found, missing
 
 
-def embed_query(text: str):
-    """Unit vector of a search phrase from the cloud, or raises ToolError with what to do."""
-    from classes.api_client import get_backend_client
-    out = get_backend_client().v2_embed([{"kind": "text", "id": "q", "text": text}], dims=S.EMBED_DIMS, task_type="RETRIEVAL_QUERY")
-    if out.get("auth"):
-        raise ToolError("sign in to Zenvi to search by description (searching with filters or a reference clip works signed out)")
-    if out.get("credits"):
-        raise ToolError("out of credits for searching by description: add credits, or search with filters or a reference clip (those cost nothing)")
-    if out.get("rate_limited"):
-        wait = out.get("retry_after")
-        raise ToolError("too many searches this hour" + (f"; try again in about {int(wait) // 60 + 1} min" if wait else "") + ", or search with filters or a reference clip")
-    if out.get("unsupported"):
-        raise ToolError("this backend has no media index v2 search yet")
-    vectors = out.get("vectors") or []
-    if out.get("error") or not vectors or not vectors[0]:
-        raise ToolError("could not embed the query: " + str(out.get("error") or "no vector returned"))
-    return np.frombuffer(base64.b64decode(vectors[0]), dtype="<f2").astype(np.float32)
+def embed_query(text: str, files):
+    """The search phrase as a unit vector from each model the *files* were indexed with: {model: vector}.
+    Raises ToolError with what to do when it cannot be embedded."""
+    from classes.media_index import embedder as E
+    out = {}
+    for model in {fi.vector_model for fi in files if fi.vector_model}:
+        try:
+            out[model] = E.get_embedder(model).texts([text], query=True)[0]
+        except E.EmbedError as exc:
+            if exc.flags.get("auth"):
+                raise ToolError("sign in to Zenvi to search footage indexed with the cloud model (or set Preferences > Footage search "
+                                "model to this computer); filters and a reference clip work signed out")
+            if exc.flags.get("credits"):
+                raise ToolError("out of credits for the cloud search model: add credits, or set Preferences > Footage search model "
+                                "to this computer (free)")
+            if exc.flags.get("rate_limited"):
+                wait = exc.flags.get("retry_after")
+                raise ToolError("too many searches this hour" + (f"; try again in about {int(wait) // 60 + 1} min" if wait else "")
+                                + ", or search with filters or a reference clip")
+            raise ToolError(f"could not embed the query: {exc}")
+    return out
 
 
 def _nonempty(d):
@@ -180,16 +180,14 @@ def search_footage(query="", look_for="", reference_file_id="", reference_start=
     person_note = {}
     if person:
         filters["person_shots"], person_note = _person_shots(files, str(person))
-    # Searching by description ranks against the descriptions the cloud pass writes. A file without them cannot match
-    # a query, and when none has them the question cannot be answered, so say that instead of paying to embed it.
-    described = [f for f in files if f.text_matrix is not None or f.image_matrix is not None]
-    not_described = [f.name for f in files if f not in described]
-    if query and not described:
-        raise ToolError(f"none of the {len(files)} indexed file(s) has picture or speech descriptions yet, so a description search "
-                        "cannot find anything (they are built in the cloud after sign-in and need indexing minutes or credits; "
-                        "index_status_tool shows each file). Searching with filters (camera move, colour, duration, talking) or a "
-                        "reference clip still works, and get_transcript_tool reads what was said")
-    qv = embed_query(query) if query else None
+    # A file without search vectors yet cannot match words; when none has them, say so instead of embedding the query.
+    searchable = [f for f in files if f.vector_model]
+    not_searchable = [f.name for f in files if not f.vector_model]
+    if query and not searchable:
+        raise ToolError(f"none of the {len(files)} indexed file(s) has search vectors yet (they are made on this computer while "
+                        "indexing; index_status_tool shows each file). Searching with filters (camera move, colour, duration, "
+                        "talking) still works, and get_transcript_tool reads what was said")
+    qv = embed_query(query, searchable) if query else None
     ref_vec = ref_look = None
     if reference_file_id:
         ref = next((f for f in files if f.file_id == str(reference_file_id)), None)
@@ -204,7 +202,8 @@ def search_footage(query="", look_for="", reference_file_id="", reference_start=
             ref_vec = msearch.reference_vector_from(ref, lo if lo is not None else 0.0, hi if hi is not None else ref.duration + 1.0)
             if ref_vec is None:
                 raise ToolError("that reference has no picture vectors yet (not fully indexed)")
-    result = msearch.search(files, query_vector=qv, reference_vector=ref_vec, reference_look=ref_look, look_for=look_for or "",
+            ref_vec = {ref.vector_model: ref_vec}
+    result = msearch.search(files, query_vector=qv, query_text=query, reference_vector=ref_vec, reference_look=ref_look, look_for=look_for or "",
                             filters=filters or {}, limit=int(limit), offset=int(cursor), sort=str(sort or "relevance"))
     hits = [_nonempty({**h, "sha": None, "scores": h["scores"]}) for h in result["hits"]]
     if person_note:
@@ -216,7 +215,7 @@ def search_footage(query="", look_for="", reference_file_id="", reference_start=
     extra = {"person": person_note["who"], "unsure_shots": person_note["unsure_shots"],
              "heard_only_shots": person_note["heard_only_shots"]} if person_note else {}
     return ok(summary, hits=hits, total=result["total"], next=result["next"], not_indexed=missing[:20],
-              **({"not_described": not_described[:20]} if query and not_described else {}), **extra)
+              **({"not_searchable": not_searchable[:20]} if query and not_searchable else {}), **extra)
 
 
 def _files_in_place(files, query: str):
@@ -359,8 +358,16 @@ def missing_layers(file_data, shelf=None) -> list:
     if not sha:
         return []
     ready = {layer: shelf.layer_ready(sha, layer) for layer in S.LAYER_VERSIONS}
+    ready[S.LAYER_VECTORS] = _vectors_current(shelf, sha)
     na = _not_applicable_layers(shelf, sha, ready)
     return [layer for layer in LAYER_ORDER if not ready[layer] and layer not in na]
+
+
+def _vectors_current(shelf, sha) -> bool:
+    """The file's search vectors were made by the model the next index run would use (changing the model re-embeds)."""
+    from classes.media_index import embedder as E, vectors
+    from classes.media_index.job import IndexingJob
+    return vectors.is_current(shelf, sha, E.chosen_model(IndexingJob._signed_in()))
 
 
 @editor_tool(
@@ -375,8 +382,9 @@ def missing_layers(file_data, shelf=None) -> list:
 )
 def index_status(file_ids=None, only_incomplete=False):
     """Which parts of each file's index are ready: structure (cuts, camera motion), look (colour), audio (loudness,
-    tempo), speech (transcript), watch (what happens, objects, text) and vectors (search). Use it to know
-    whether search_footage_tool can already see a file, and what is still being worked on.
+    tempo), speech (transcript) and vectors_local (search; vector_model names the model that made them).
+    described_shots counts the shots Gemini has described so far (made on demand by describe_shots_tool, not needed
+    for search). Use it to know whether search_footage_tool can already see a file, and what is still being worked on.
     """
     shelf = default_shelf()
     wanted = {str(x) for x in file_ids} if file_ids else None
@@ -389,16 +397,18 @@ def index_status(file_ids=None, only_incomplete=False):
             continue
         sha = sha_of(f.data.get("fingerprint"))
         ready = {layer: bool(sha) and shelf.layer_ready(sha, layer) for layer in S.LAYER_VERSIONS}
-        older = [layer for layer in LAYER_ORDER if ready[layer] and not shelf.layer_ready(sha, layer, version=S.LAYER_VERSIONS[layer])]
-        stale = [layer for layer in older if layer not in CLOUD_LAYERS]            # free: refreshed on the next index run
-        older_cloud = [layer for layer in older if layer in CLOUD_LAYERS]         # paid: kept as is, newer fields read as unknown
+        stale = [layer for layer in LAYER_ORDER if ready[layer] and not shelf.layer_ready(sha, layer, version=S.LAYER_VERSIONS[layer])]
+        if ready[S.LAYER_VECTORS] and not _vectors_current(shelf, sha):
+            stale.append(S.LAYER_VECTORS)               # made by the other model: re-embedded on the next index run
         na = _not_applicable_layers(shelf, sha, ready)
         missing = [layer for layer in LAYER_ORDER if not ready[layer] and layer not in na]
         if only_incomplete and not missing:
             continue
         rows.append({"file_id": str(f.id), "name": _display_name(f.data), "media_type": kind,
-                     "ready": [layer for layer in LAYER_ORDER if ready[layer]], "missing": missing, "not_applicable": na, "stale": stale, "older_cloud": older_cloud,
-                     "searchable": ready["vectors"] or ready["structure"]})
+                     "ready": [layer for layer in LAYER_ORDER if ready[layer]], "missing": missing, "not_applicable": na, "stale": stale,
+                     "vector_model": (shelf.layer(sha, S.LAYER_VECTORS) or {}).get("model") if sha else None,
+                     "described_shots": int((shelf.layer(sha, S.LAYER_WATCH) or {}).get("shots") or 0) if sha else 0,
+                     "searchable": ready[S.LAYER_VECTORS] or ready[S.LAYER_STRUCTURE]})
     log.debug("index_status: %d files", len(rows))
     complete = sum(1 for r in rows if not r["missing"])
     return ok(f"{complete} of {len(rows)} files fully indexed", files=rows)
@@ -414,13 +424,12 @@ def index_status(file_ids=None, only_incomplete=False):
     }),
 )
 def index_long_file(file_ids=None, file_query="", approve=False):
-    """Files longer than 30 minutes are analysed on this computer (shots, colour, sound) but are only described by the
-    AI after a yes, because describing one takes several cloud passes and uses credits. Call with approve=false to see
+    """Describe every shot of a file longer than 30 minutes. Every file is searchable without this; describing a long one
+    takes several cloud passes and uses credits, so it needs a yes (shorter files: describe_shots_tool). Call with approve=false to see
     how many passes and the most it can cost (a ceiling: the real charge follows what the AI used and is usually lower);
     ask the user; then call with approve=true. Each pass is charged on its own, so an interrupted run never repays what
     already finished.
     """
-    from classes.indexing_status import SKIP_LONG
     from classes.media_index import longfile
     shelf = default_shelf()
     rows, to_queue = [], []
@@ -433,7 +442,7 @@ def index_long_file(file_ids=None, file_query="", approve=False):
         if kind not in ("video", "audio"):
             row.update(state="not_applicable", note="only video and audio files are described")
         elif not longfile.is_long(duration):
-            row.update(state="not_long", note="under 30 minutes: indexed without asking")
+            row.update(state="not_long", note="under 30 minutes: describe its shots with describe_shots_tool")
         elif not sha:
             row.update(state="not_ready", note="the file has no fingerprint yet; wait for import to finish")
         else:
@@ -443,8 +452,7 @@ def index_long_file(file_ids=None, file_query="", approve=False):
             elif data.get("index_long_ok") and not approve:
                 row.update(state="approved", note="already approved; it is queued or running (see index_status_tool)")
             else:
-                waiting = (data.get("ai_metadata") or {}).get("skip_code") == SKIP_LONG
-                row.update(state="will_describe" if approve else "needs_approval", waiting=waiting)
+                row.update(state="will_describe" if approve else "needs_approval")
                 if approve:
                     to_queue.append(f)
         rows.append(row)
@@ -465,6 +473,77 @@ def index_long_file(file_ids=None, file_query="", approve=False):
         head = (f"{len(asking)} file(s) need a yes: " + "; ".join(f"{r['name']} ({r['minutes']} min, {r['chunks']} passes, up to {r['max_credits']} credits)" for r in asking)
                 if asking else "No long file is waiting for approval.")
     return ok(head, changed=bool(to_queue), files=rows, ceiling_note="max_credits is a flat ceiling per minute; the real charge follows token use")
+
+
+MAX_DESCRIBE_SHOTS = 300
+
+
+def describe_file_shots(f, fi, shot_ids):
+    """Gemini descriptions for *shot_ids* of one file, made now for the ones that have none: (result, None) or (None, why not)."""
+    from classes.api_client import get_backend_client
+    from classes.credits_client import check_operation
+    from classes.media_index import cloud, embedder as E
+    from classes.media_index.job import IndexingJob
+    from classes.media_index.probe import probe_media
+    from classes.path_utils import absolute_media_path
+    if not IndexingJob._signed_in():
+        return None, "sign in to Zenvi for shot descriptions (search, pictures and measured facts work without them)"
+    by_id = {int(s["id"]): s for s in fi.shots}
+    wanted = [i for i in dict.fromkeys(int(x) for x in shot_ids) if i in by_id]
+    todo = [i for i in wanted if not by_id[i].get("watch")]
+    if todo:
+        seconds = sum(by_id[i]["end"] - by_id[i]["start"] for i in todo)
+        _, _balance, blocked = check_operation("indexing_per_minute", "shot descriptions", duration_seconds=max(1.0, seconds))
+        if blocked:
+            return None, blocked
+    path = absolute_media_path(f.data.get("path")) or str(f.data.get("path") or "")
+    try:
+        out = cloud.describe_shots(get_backend_client(), path, probe_media(path), fi.sha, default_shelf(), wanted,
+                                   E.get_embedder(fi.vector_model or E.MODEL_LOCAL), file_id=str(f.id))
+    except (cloud.Cancelled, E.EmbedError) as exc:
+        return None, str(exc)
+    if out.get("auth"):
+        return None, "sign in to Zenvi for shot descriptions"
+    if out.get("error"):
+        return None, str(out["error"])
+    return out, None
+
+
+@editor_tool(
+    "describe_shots_tool",
+    covers=("index.describe",),
+    label="Describe shots",
+    schema=obj({
+        "file_id": string("The video whose shots to describe.", ""),
+        "shot_ids": array({"type": "integer"}, "Shot ids, as search_footage_tool and storyboard_tool give them."),
+        "start_seconds": number("Or every shot between these seconds of the file.", None, minimum=0),
+        "end_seconds": number("End of that range.", None, minimum=0),
+    }),
+    read_only=True,
+)
+def describe_shots(file_id="", shot_ids=None, start_seconds=None, end_seconds=None):
+    """Words for shots, from Gemini: what happens, actions, objects, text on screen, sounds, mood, shot type, how interesting and
+    usable each is. Search does NOT need this (every file is searchable from its pictures, speech and sound); call it for the shots
+    you are about to reason about or write about. Each shot is described once and kept, so asking again is free; new shots use
+    credits and need sign-in. The new descriptions also become searchable.
+    """
+    f = next(iter(resolve_files([file_id])))
+    fi = _index_for(f)
+    if fi is None or not fi.shots:
+        raise ToolError("that file has no shot list yet (index_status_tool shows progress)")
+    ids = [int(x) for x in shot_ids or []]
+    if start_seconds is not None and end_seconds is not None:
+        ids += [int(s["id"]) for s in fi.shots_between(float(start_seconds), float(end_seconds))]
+    if not ids:
+        raise ToolError("give shot_ids, or start_seconds and end_seconds")
+    if len(set(ids)) > MAX_DESCRIBE_SHOTS:
+        raise ToolError(f"at most {MAX_DESCRIBE_SHOTS} shots a call; ask for a shorter range")
+    out, why = describe_file_shots(f, fi, ids)
+    if why:
+        raise ToolError(why)
+    shots = [_nonempty({k: s.get(k) for k in ("id", "start", "end", "description", "actions", "on_screen_text", "sound_events", "mood",
+                                               "shot_type", "interest", "usable", "usable_reason")}) for s in out["shots"]]
+    return ok(f"{len(shots)} shot(s) described ({len(out['described'])} new)", file_id=str(f.id), shots=shots)
 
 
 @editor_tool(

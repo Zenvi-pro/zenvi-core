@@ -14,7 +14,7 @@ sys.path.insert(0, str(SRC))
 sys.path.insert(0, str(Path(__file__).parent))
 
 import media_fixtures as mf  # noqa: E402
-from classes.media_index import cloud, library, probe as P  # noqa: E402
+from classes.media_index import cloud, library, probe as P, vectors  # noqa: E402
 from classes.media_index.store import Shelf  # noqa: E402
 
 GPS_TAG = "+37.7749-122.4194+012.000/"
@@ -94,9 +94,9 @@ def test_the_upload_proxy_carries_no_location_or_date_tags(tagged, tmp_path):
 
 
 def test_a_keyframe_carries_no_tags_either(tagged, tmp_path):
-    out = str(tmp_path / "k.jpg")
-    assert cloud.extract_keyframe(tagged, 0.5, out)
-    assert b"37.7749" not in Path(out).read_bytes()
+    """Keyframes are embedded on this computer, or sent to the cloud model when the user picked it."""
+    out, = vectors.extract_keyframes(tagged, [{"t": 0.5}], (384, 384), str(tmp_path))
+    assert out and b"37.7749" not in Path(out).read_bytes()
 
 
 # ============================ shelf and loading ============================

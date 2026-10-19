@@ -1,5 +1,5 @@
-"""Words in another language: a song or talk the machine's own language hears as silence is transcribed once more in the language its
-file name points to, joined the way that language is written, and kept on the shelf. Found live: a Japanese ending came back with 0
+"""Words in another language: a song or talk the machine's own language hears as silence is transcribed once more in the language the
+recogniser heard, joined the way that language is written, and kept on the shelf. Found live: a Japanese ending came back with 0
 words (Apple's engine listens in the machine's language) and 243 characters with locale ja-JP."""
 
 from __future__ import annotations
@@ -26,16 +26,16 @@ def chars(text, start=1.0, step=0.4):
 
 
 class Engine:
-    """Hears nothing in English and a line of lyrics in Japanese; records every call."""
+    """Its first pass hears nothing and reports *auto*; asked for Japanese it hears a line of lyrics. Records every call."""
 
-    def __init__(self, japanese="思い出せない願いを手放して"):
-        self.calls, self.japanese = [], japanese
+    def __init__(self, japanese="思い出せない願いを手放して", auto="en-US"):
+        self.calls, self.japanese, self.auto = [], japanese, auto
 
     def __call__(self, path, **kw):
         self.calls.append(kw.get("language", "auto"))
         abspath, size, mtime = file_identity(path)
         ja = kw.get("language") == "ja-JP"
-        return TranscriptRecord(path=abspath, size=size, mtimeNs=mtime, modelId="apple-speech-analyzer", language="ja-JP" if ja else "en-US",
+        return TranscriptRecord(path=abspath, size=size, mtimeNs=mtime, modelId="apple-speech-analyzer", language="ja-JP" if ja else self.auto,
                                 words=chars(self.japanese) if ja else [], generation=1, transcriptionSource="local-apple")
 
 
@@ -43,6 +43,11 @@ def media(tmp_path, name):
     p = tmp_path / name
     p.write_bytes(b"x" * 64)
     return str(p)
+
+
+@pytest.fixture(autouse=True)
+def machine_listens_in_english(monkeypatch):
+    monkeypatch.setattr(sf, "_machine_language", lambda: "en")
 
 
 # ---- the clue and the joining ----
@@ -63,8 +68,8 @@ def test_characters_that_arrive_one_at_a_time_are_joined_without_spaces_and_end_
 
 
 # ---- the retry ----
-def test_a_japanese_name_with_nothing_heard_is_transcribed_again_in_japanese_and_kept(tmp_path):
-    shelf, engine = Shelf(str(tmp_path / "shelf")), Engine()
+def test_a_first_pass_that_heard_japanese_is_transcribed_again_in_japanese_and_kept(tmp_path):
+    shelf, engine = Shelf(str(tmp_path / "shelf")), Engine(auto="ja-JP")
     got = sf.load_or_transcribe(media(tmp_path, "【推しの子】ED.mp4"), PROBE, SHA, shelf, transcribe=engine)
     assert engine.calls == ["auto", "ja-JP"]
     assert got["retried_language"] == "ja-JP" and got["language"] == "ja-JP" and len(got["words"]) == 13
@@ -90,7 +95,7 @@ def test_a_latin_name_or_a_file_with_plenty_of_words_is_not_retried(tmp_path):
 
 def test_the_retry_happens_once_even_when_it_finds_nothing(tmp_path):
     shelf = Shelf(str(tmp_path / "shelf"))
-    engine = Engine(japanese="")
+    engine = Engine(japanese="", auto="ja-JP")
     path = media(tmp_path, "日本語のうた.mp4")
     first = sf.load_or_transcribe(path, PROBE, SHA, shelf, transcribe=engine)
     assert first["language_tried"] == ["ja-JP"] and not first["words"]
@@ -100,7 +105,7 @@ def test_the_retry_happens_once_even_when_it_finds_nothing(tmp_path):
 
 def test_an_old_empty_layer_gets_its_one_retry_when_the_file_is_indexed_again(tmp_path):
     shelf = Shelf(str(tmp_path / "shelf"))
-    old = {"version": 1, "kind": "inferred", "engine": "local-apple", "model": "m", "language": "en-US", "words": [], "sentences": [],
+    old = {"version": 1, "kind": "inferred", "engine": "local-apple", "model": "m", "language": "ja-JP", "words": [], "sentences": [],
            "speech_ranges": [], "stats": {}, "generation": 1}
     shelf.write_json(SHA, "speech.json", old)
     shelf.set_layer(SHA, "speech", version=1, status="ready")

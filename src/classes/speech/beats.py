@@ -73,8 +73,7 @@ class EnergyBeatEngine:
                 while bpm > 180:
                     bpm /= 2
         # Downbeats: every 4th beat
-        downbeats = [b for i, b in enumerate(beats) if i % 4 == 0]
-        return {"beats": beats, "downbeats": downbeats, "bpm": float(bpm)}
+        return {"beats": beats, "downbeats": [], "bpm": float(bpm)}
 
 
 _factory: Callable[[], BeatEngine] = EnergyBeatEngine
@@ -112,7 +111,7 @@ def _from_media_index(media_path: str) -> Optional[dict]:
         if not tempo or not tempo.get("beats"):
             return {"beats": [], "downbeats": [], "bpm": 0.0, "source": "media-index", "rhythmic": False}
         times = [float(t) for t in tempo["beats"]]
-        downs = (audio.get("music") or {}).get("downbeats") or times[::4]
+        downs = (audio.get("music") or {}).get("downbeats") or []
         return {"beats": [{"timeSec": t, "strength": 1.0} for t in times], "downbeats": [{"timeSec": float(t)} for t in downs],
                 "bpm": float(tempo["bpm"]), "source": "media-index", "rhythmic": True}
     except Exception:  # noqa: BLE001 - any failure falls back to the older engine

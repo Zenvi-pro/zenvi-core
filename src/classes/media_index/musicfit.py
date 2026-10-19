@@ -25,7 +25,7 @@ def profile_from_audio(audio: Dict[str, Any], seconds: float) -> Dict[str, Any]:
         "beats": len(tempo.get("beats") or []), "integrated_lufs": loud.get("integrated_lufs"), "loudness_range": loud.get("lra"),
         "dynamic_range_db": audio.get("dynamic_range_db"), "brightness_hz": music.get("brightness_hz"),
         "energy_arc": music.get("arc", []), "arc_seconds": music.get("arc_seconds"),
-        "sections": music.get("sections", []), "downbeats": (music.get("downbeats") or [])[:16],
+        "sections": music.get("sections", []),
         "phrase_points": (music.get("phrase_points") or [])[:16], "silence_ranges": (audio.get("silence_ranges") or [])[:8],
         "spectrogramSuggested": spectro.suggest(music.get("sections", []), seconds),
     }

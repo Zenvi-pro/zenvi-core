@@ -89,8 +89,8 @@ def test_black_shots_are_not_counted_as_shots_and_a_split_is_not_a_transition():
     shots = [shot(0, 0, 4), shot(1, 4, 5, black=True), shot(2, 5, 9, "hard")]
     shots.append({**shot(3, 9, 12), "opens_with": {"kind": "split"}})
     out = S.edit_style(reference(shots=shots, duration=12.0))
-    assert out["shots"] == 3 and out["transitions"] == {"hard": 1}
-    assert out["pacing"]["average_shot"] == 3.67 and out["pacing"]["shortest"] == 3.0, "the 1 s of black is not a shot"
+    assert out["shots"] == 2 and out["transitions"] == {"hard": 1}, "a split piece belongs to the shot before it"
+    assert out["pacing"]["average_shot"] == 5.5 and out["pacing"]["shortest"] == 4.0, "the 1 s of black is not a shot"
 
 
 def test_cuts_on_the_beat_music_speech_sound_look_and_text_are_read():

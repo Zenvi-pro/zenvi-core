@@ -33,7 +33,9 @@ ABS_BLURRY = 0.22
 
 # --- shake: the fast jitter left after removing pans and zooms (px at the analysis frame) ----------
 SHAKE_FULL_PX = 1.4         # jitter at or above this reads as fully shaky (4x the handheld threshold)
-SHAKY_AT = 0.5
+SHAKY_PX = 0.7              # absolute floor: the synthetic tripod clip measures under 0.07 px, a smooth pan under 0.35 px
+SHAKY_REL = 2.0             # and it shakes at least twice as hard as the typical other shot of its file: clearly out of line, not just wobblier
+# ponytail: 2x and the 0.7 px floor are guesses from synthetic clips, not tuned on real handheld footage
 MIN_MOTION_PAIRS = 5
 
 # --- exposure -------------------------------------------------------------------------------------
@@ -51,8 +53,17 @@ AUDIO_RUMBLE = 0.55         # share of spectral magnitude below 100 Hz (wind, ha
 UNKNOWN_INTEREST = 0.4     # what a shot with no model opinion counts as: ordinary footage
 
 # --- grouping -------------------------------------------------------------------------------------
-TAKE_SIMILARITY = 0.90      # two shots whose mean picture vectors are this alike are takes of one thing
-SCENE_SIMILARITY = 0.78     # neighbouring shots below this start a new scene
+# Picture likeness runs higher with EmbeddingGemma 2 than with Gemini Embedding 2, so each model has its own. Measured with
+# EmbeddingGemma 2 (q4) on the hard evaluation set: two halves of one take 0.84-0.99 (median 0.97), different clips of the
+# same subject 0.73-0.93 (median 0.83), different subjects 0.64-0.84. Gemini's were set on its own pictures.
+TAKE_SIMILARITY = {"embeddinggemma-2": 0.93, "gemini-embedding-2": 0.90}     # shots this alike are takes of one thing
+SCENE_SIMILARITY = {"embeddinggemma-2": 0.86, "gemini-embedding-2": 0.78}    # neighbouring shots below this start a new scene
+REPEAT_SIMILARITY = {"embeddinggemma-2": 0.93, "gemini-embedding-2": 0.85}   # far-apart shots this alike are the same motif
+
+
+def similarity(table: Dict[str, float], fi: Any) -> float:
+    """The likeness threshold in *table* for the model that made *fi*'s picture vectors."""
+    return table.get(getattr(fi, "vector_model", ""), table["gemini-embedding-2"])
 
 
 # ============================ sharpness ============================
@@ -140,6 +151,8 @@ def shot_quality(shot: Dict[str, Any], *, median_sharpness: Optional[float], aud
     if sharp is not None and median_sharpness:
         rel = round(float(min(2.0, float(sharp) / median_sharpness)), 3)
     shake = shake_score(shot.get("motion"))
+    motion = shot.get("motion") or {}
+    jitter = float(motion.get("jitter_px") or 0.0)
     exposure = exposure_of(shot.get("look"))
     flags: List[str] = []
     if shot.get("black"):
@@ -149,7 +162,7 @@ def shot_quality(shot: Dict[str, Any], *, median_sharpness: Optional[float], aud
         flags.append("blurry")
     elif rel is not None and rel < SOFT_REL:
         flags.append("soft")
-    if shake is not None and shake >= SHAKY_AT:
+    if shake is not None and jitter >= SHAKY_PX and jitter >= SHAKY_REL * float(motion.get("typical_jitter_px") or 0.0):
         flags.append("shaky")
     for p in (exposure or {}).get("problems", []):
         flags.append(p)
@@ -207,7 +220,7 @@ def shot_vectors(fi: Any) -> Dict[int, np.ndarray]:
     return out
 
 
-def take_groups(files: Sequence[Any], threshold: float = TAKE_SIMILARITY) -> List[Dict[str, Any]]:
+def take_groups(files: Sequence[Any], threshold: Optional[float] = None) -> List[Dict[str, Any]]:
     """Groups of shots (across files) that show the same thing, best-quality first.
 
     Greedy and order-independent in effect: shots are visited best-first and join the first group whose
@@ -229,12 +242,13 @@ def take_groups(files: Sequence[Any], threshold: float = TAKE_SIMILARITY) -> Lis
     items.sort(key=lambda it: -it[0])
     groups: List[Dict[str, Any]] = []
     for score, fi, shot, v in items:
+        model = getattr(fi, "vector_model", "")
         for g in groups:
-            if float(np.dot(g["_lead"], v)) >= threshold:
+            if g["_model"] == model and float(np.dot(g["_lead"], v)) >= (threshold or similarity(TAKE_SIMILARITY, fi)):
                 g["members"].append({"file_id": fi.file_id, "shot_id": int(shot["id"]), "highlight": score})
                 break
         else:
-            groups.append({"_lead": v, "members": [{"file_id": fi.file_id, "shot_id": int(shot["id"]), "highlight": score}]})
+            groups.append({"_lead": v, "_model": model, "members": [{"file_id": fi.file_id, "shot_id": int(shot["id"]), "highlight": score}]})
     out = []
     for g in groups:
         if len(g["members"]) >= 2:
@@ -242,12 +256,13 @@ def take_groups(files: Sequence[Any], threshold: float = TAKE_SIMILARITY) -> Lis
     return out
 
 
-def scenes_of(fi: Any, threshold: float = SCENE_SIMILARITY) -> List[Dict[str, Any]]:
+def scenes_of(fi: Any, threshold: Optional[float] = None) -> List[Dict[str, Any]]:
     """Runs of neighbouring shots that look alike (same place, same setup), as scene cards.
 
     Uses picture vectors when the file has them; without vectors each shot is its own scene.
     """
     vecs = shot_vectors(fi)
+    threshold = threshold or similarity(SCENE_SIMILARITY, fi)
     scenes: List[List[Dict[str, Any]]] = []
     prev = None
     for shot in fi.shots:

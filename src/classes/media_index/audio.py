@@ -60,8 +60,6 @@ CLIP_PEAK = 0.995                            # a frame that reaches this is at (
 SECTION_MIN_SECONDS = 6.0
 SECTION_MIN_TRACK = 24.0                     # shorter material has no sections worth naming
 ARC_SECONDS = 4.0
-BARS_PER_PHRASE = 4
-BEATS_PER_BAR = 4
 
 
 class Cancelled(Exception):
@@ -375,21 +373,22 @@ def label_sections(bounds: List[float], energy_by_second: np.ndarray) -> List[Di
     return out
 
 
-def music_profile(feat: Dict[str, np.ndarray], rms_db: np.ndarray, bpm: Optional[float], beats: List[float],
-                  duration: float) -> Dict[str, Any]:
-    """The shape of a piece of audio: energy arc, sections, bars and phrase points, brightness. All measured.
+def music_profile(feat: Dict[str, np.ndarray], rms_db: np.ndarray, bpm: Optional[float], duration: float) -> Dict[str, Any]:
+    """The shape of a piece of audio: energy arc, sections, phrase points, brightness. All measured.
 
     Energy is level normalised to the file's own quiet-to-loud range, so a quiet song and a loud one both span 0..1.
+    Sections are named only where a steady tempo was found (rhythmic audio, the local measure of music); speech and
+    ambience get none. Phrase points are where the sections change, so no bar length is assumed.
     """
     per_s = per_second(rms_db.astype(np.float64))
     if per_s.size < 8:
-        return {"arc": [], "sections": [], "downbeats": [], "phrase_points": [], "brightness_hz": None}
+        return {"arc": [], "sections": [], "phrase_points": [], "brightness_hz": None}
     lo, hi = float(np.percentile(per_s, 5)), float(np.percentile(per_s, 95))
     energy = np.full(per_s.shape, 0.5) if hi - lo < 3.0 else np.clip((per_s - lo) / (hi - lo), 0.0, 1.0)
     arc_n = int(ARC_SECONDS)
     arc = [round(float(energy[i:i + arc_n].mean()), 3) for i in range(0, energy.size, arc_n)]
     sections: List[Dict[str, Any]] = []
-    if duration >= SECTION_MIN_TRACK:
+    if duration >= SECTION_MIN_TRACK and bpm:
         cols = [per_s, per_second(feat["centroid"].astype(np.float64)), per_second(feat["flatness"].astype(np.float64)),
                 per_second(feat["flux"].astype(np.float64)), per_second(feat["low"].astype(np.float64))]
         n = min(c.size for c in cols)
@@ -401,18 +400,10 @@ def music_profile(feat: Dict[str, np.ndarray], rms_db: np.ndarray, bpm: Optional
             sec["confidence"], sec["source"] = edge["confidence"], edge["source"]
         if sections:
             sections[-1]["end"] = round(float(duration), 2)
-    downbeats: List[float] = []
-    phrases: List[float] = []
-    if len(beats) >= 2 * BEATS_PER_BAR:
-        flux = feat["flux"]
-        idx = [min(flux.size - 1, max(0, int(round((t - BEAT_OFFSET_SECONDS) * FRAME_HZ)))) for t in beats]
-        strengths = np.array([float(flux[i]) for i in idx])
-        phase = int(np.argmax([strengths[p::BEATS_PER_BAR].sum() for p in range(BEATS_PER_BAR)]))
-        downbeats = [round(float(t), 3) for t in beats[phase::BEATS_PER_BAR]]
-        phrases = downbeats[::BARS_PER_PHRASE]
+    phrases = [s["start"] for s in sections[1:]]
     loud = feat["rms"] > 1e-5
     brightness = round(float(np.median(feat["centroid"][loud])), 1) if loud.any() else None
-    return {"arc": arc, "arc_seconds": ARC_SECONDS, "sections": sections, "downbeats": downbeats, "phrase_points": phrases,
+    return {"arc": arc, "arc_seconds": ARC_SECONDS, "sections": sections, "phrase_points": phrases,
             "brightness_hz": brightness}
 
 
@@ -531,6 +522,6 @@ def analyze_audio(
         "tempo_confidence": round(confidence, 3),
         "silence_ranges": silence_ranges(rms_db),
         **_level_facts(rms_db),
-        "music": music_profile(feat, rms_db, bpm, beats, duration or decoded),
+        "music": music_profile(feat, rms_db, bpm, duration or decoded),
         "kind": S.MEASURED,
     }

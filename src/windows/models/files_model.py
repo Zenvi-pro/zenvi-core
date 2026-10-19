@@ -715,12 +715,16 @@ class FilesModel(QObject, updates.UpdateInterface):
         except Exception:
             return set()
 
-    def requeue_signin_skipped(self):
-        """Index again the files whose cloud indexing waited for a signed-in user."""
+    def requeue_unsearchable(self, *_args):
+        """Index again the files with no search vectors from the chosen model: after a sign-in, a project open, or a change
+        of Preferences > Footage search model. Files already embedded by that model are left alone."""
         try:
-            from classes.media_index.queue import signin_skipped_ids
-            ids = signin_skipped_ids(get_app().project.get("files"))
+            from classes.editor_tools.media_index_tools import missing_layers
+            from classes.media_index import schema as S
+            from classes.media_index.queue import unsearchable_ids
+            ids = unsearchable_ids(get_app().project.get("files"), lambda f: S.LAYER_VECTORS in missing_layers(f))
         except Exception:
+            log.debug("Could not list files to index again", exc_info=1)
             return
         for fid in ids:
             self._enqueue_index(fid)
@@ -1261,11 +1265,11 @@ class FilesModel(QObject, updates.UpdateInterface):
         except Exception:
             pass
 
-        # Files whose cloud indexing waited for a signed-in user resume once a session is
-        # saved. The signal hops to the GUI thread, wherever the login finished.
+        # A sign-in can switch the search model to the cloud one the user picked: files are embedded again once a
+        # session is saved. The signal hops to the GUI thread, wherever the login finished.
         try:
             from classes.auth_manager import AuthManager
-            self.sessionSaved.connect(self.requeue_signin_skipped)
+            self.sessionSaved.connect(self.requeue_unsearchable)
             AuthManager.instance().add_session_listener(self.sessionSaved.emit)
         except Exception:
             log.debug("Could not watch for sign-in", exc_info=1)

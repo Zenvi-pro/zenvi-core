@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import locale
 import os
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -225,8 +226,9 @@ def _save_layer(shelf: Shelf, sha: str, layer: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------- language ---
 # The engine listens in the machine's language unless told otherwise, so a song or a talk in another language comes back empty
 # (Apple's engine returned 0 words for a Japanese ending, and 243 characters with locale ja-JP). Trying every language per file would
-# be slow and can make the system fetch a language model for each, so the language comes from a clue the file already carries: the
-# script its file name is written in. One retry, and only for a file whose first pass found next to nothing.
+# be slow, so there is one retry at most, and only for a file whose first pass found next to nothing: in the language the recogniser
+# reports for that pass, when it is not the machine's own (whisper reports the language it detected, Apple the locale it listened in).
+# The script of a file name is read only for get_lyrics_tool's default locale, never for the retry.
 _SCRIPT_LOCALES = (
     (re.compile(r"[\u3040-\u30ff]"), "ja-JP"),
     (re.compile(r"[\uac00-\ud7af]"), "ko-KR"),
@@ -245,7 +247,7 @@ def language_hints(path: str) -> List[str]:
     """The locale the script of the file's name points to ([] for a Latin-script name). Kana means Japanese even when kanji are present,
     so the first script that matches decides and no second language is tried."""
     name = os.path.basename(str(path or ""))
-    return next(([locale] for pattern, locale in _SCRIPT_LOCALES if pattern.search(name)), [])
+    return next(([tag] for pattern, tag in _SCRIPT_LOCALES if pattern.search(name)), [])
 
 
 def _same_language(a: Any, b: Any) -> bool:
@@ -264,32 +266,42 @@ def _transcribe_in(transcribe: Callable[..., Any], path: str, language: str, cac
     return transcribe(path, **kwargs)
 
 
+def _machine_language() -> str:
+    """The language this machine's engine listens in: the OS locale's language, "en" when the OS names none (as the Apple helper does)."""
+    try:
+        name = locale.getdefaultlocale()[0]
+    except ValueError:
+        name = None
+    return (name or "en").split("_")[0].lower()
+
+
+def _heard_elsewhere(layer: Dict[str, Any]) -> Optional[str]:
+    """The language the recogniser reports for this pass when it is not the machine's own; None when it names none."""
+    heard = str(layer.get("language") or "").strip()
+    if not heard or heard.lower() in ("auto", "unknown") or _same_language(heard, _machine_language()):
+        return None
+    return heard
+
+
 def with_better_language(path: str, layer: Dict[str, Any], duration: float, transcribe: Callable[..., Any], cache: Any, token: Any) -> Dict[str, Any]:
-    """*layer*, or a transcript in the language the file name points to when the first pass found next to nothing (one try, once ever)."""
+    """*layer*, or a transcript in the language the recogniser heard when the first pass found next to nothing (one try, once ever)."""
     if layer.get("language_tried") is not None or layer.get("skipped") or layer.get("unavailable"):
         return layer
     count = len(layer.get("words") or [])
-    if not _sparse(count, duration):
+    heard = _heard_elsewhere(layer) if _sparse(count, duration) else None
+    if heard is None:
         return layer
-    hints = [h for h in language_hints(path) if not _same_language(h, layer.get("language"))]
-    if not hints:
-        return layer
-    best, tried = layer, []
-    for hint in hints:
-        tried.append(hint)
-        try:
-            record = _transcribe_in(transcribe, path, hint, cache, token)
-        except InterruptedError:
-            raise
-        except Exception as exc:
-            log.info("Transcription in %s unavailable for %s: %s", hint, path, exc)
-            continue
-        candidate = _record_to_layer(record, duration)
+    best = layer
+    try:
+        candidate = _record_to_layer(_transcribe_in(transcribe, path, heard, cache, token), duration)
         if len(candidate["words"]) >= MIN_RETRY_WORDS and len(candidate["words"]) > 2 * count:
-            candidate["retried_language"] = hint
+            candidate["retried_language"] = heard
             best = candidate
-            break
-    best["language_tried"] = tried
+    except InterruptedError:
+        raise
+    except Exception as exc:
+        log.info("Transcription in %s unavailable for %s: %s", heard, path, exc)
+    best["language_tried"] = [heard]
     return best
 
 

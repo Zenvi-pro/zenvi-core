@@ -1,29 +1,22 @@
 """
  @file
- @brief The cloud layers of the media index: what happens in each shot, and search vectors.
+ @brief The one cloud layer of the media index: Gemini's words for what happens in a shot, made on demand.
 
- Runs after the local facts. One low-resolution proxy of the file is uploaded; Gemini describes
- every shot once (the shot list, per-shot frame rates and the local transcript are given to it,
- so it neither guesses cuts nor transcribes). Descriptions and transcript sentences become text
- vectors, and a picture every couple of seconds becomes picture vectors, all kept on the shelf.
-
- Video is watched; audio-only files and stills get picture/text vectors only for now (the watch
- pass is video-only). Nothing here raises for a backend problem: it returns an ``error`` so the
- caller can fall back to the original indexing.
+ Search does not need it (every file is searchable from its local vectors). Descriptions are made when an agent
+ asks for some shots (``describe_shots``), or for a whole file when the user turned on "Describe all footage on
+ import" (``compute_cloud``). A low-resolution proxy of the needed range is uploaded with the measured shot list and
+ the local transcript, so Gemini neither guesses cuts nor transcribes. Each shot is described once and kept on the
+ shelf; a shot already described is never paid for again. Nothing here raises for a backend problem: it returns an
+ ``error``.
 """
 
 from __future__ import annotations
 
-import base64
-import math
 import os
 import subprocess
 import tempfile
 import time
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional, Tuple
-
-import numpy as np
 
 from classes.ffmpeg_cli import run_ffmpeg
 from classes.media_index import schema as S
@@ -32,9 +25,7 @@ from classes.media_index.store import Shelf
 POLL_SECONDS = 2.0
 UNREACHABLE_SECONDS = 180.0
 MAX_WAIT_SECONDS = 30 * 60
-EMBED_BATCH = 48
 READY = "ready"
-MAX_VECTOR_ATTEMPTS = 2
 
 
 class Cancelled(Exception):
@@ -89,38 +80,6 @@ def shot_document(watch: Dict[str, Any]) -> str:
     return " ".join(p for p in parts if p)
 
 
-def keyframe_plan(shots: List[Dict[str, Any]], every: float = S.KEYFRAME_EVERY_SECONDS,
-                  cap: int = S.MAX_KEYFRAMES) -> List[Dict[str, Any]]:
-    """Picture times: at least one per shot and one per ``every`` seconds inside long shots."""
-    rows: List[Dict[str, Any]] = []
-    for s in shots:
-        start, end = float(s["start"]), float(s["end"])
-        n = max(1, int(math.ceil((end - start) / every)))
-        for i in range(n):
-            rows.append({"shot": int(s["id"]), "t": round(start + (i + 0.5) * (end - start) / n, 3)})
-    if len(rows) > cap:  # thin evenly, never dropping a shot's only picture
-        step = len(rows) / cap
-        rows = [rows[int(i * step)] for i in range(cap)]
-    return rows
-
-
-def is_settled(shelf: Any, sha: str, layer: str) -> bool:
-    """A cloud layer needs no further work: it is ready, or it was found to have nothing to hold.
-
-    A vectors layer that held nothing because there was no speech to embed is settled only until a transcript appears.
-    """
-    row = shelf.layer(sha, layer) or {}
-    status = row.get("status")
-    if status == READY:
-        # Vectors that left some passages out stay searchable but are tried again, twice at most, so one rate-limited
-        # batch does not leave shots out of semantic search for good and a passage that always fails is not re-bought forever.
-        partial = layer == S.LAYER_VECTORS and int(row.get("failed") or 0) > 0
-        return not (partial and int(row.get("attempts") or 1) < MAX_VECTOR_ATTEMPTS)
-    if status == S.NOT_APPLICABLE:
-        return not (layer == S.LAYER_VECTORS and row.get("had_speech") is False and shelf.layer_ready(sha, S.LAYER_SPEECH))
-    return False
-
-
 def audio_summary(audio: Dict[str, Any], seconds: float) -> str:
     """One factual line about an audio file from its local analysis (tempo, length, loudness, sections)."""
     bits = [f"Audio, {int(round(seconds))} s"]
@@ -167,7 +126,7 @@ def metadata_view(watch: Dict[str, Any], speech: Optional[Dict[str, Any]], struc
             for r in transcript_rows(speech)]
     first = [s.get("description") for s in shots if s.get("description")]
     return {
-        "analyzed": bool(first or cues), "provider": "gemini-v2", "media_type": media_type,
+        "analyzed": bool(first or cues), "provider": "media-index-v2", "media_type": media_type,
         "short_summary": " ".join(first[:2])[:400], "description": " ".join(first)[:4000],
         "sounds": ", ".join(dict.fromkeys(o["label"] for s in shots for o in s.get("sound_events") or [])),
         "transcript": " ".join(r["text"] for r in cues).strip(),
@@ -204,17 +163,6 @@ def make_proxy(path: str, probe: Dict[str, Any], out_path: str, start: Optional[
     if proc.returncode != 0 or not os.path.isfile(out_path) or os.path.getsize(out_path) <= 0:
         return False, (proc.stderr or b"proxy encode failed").decode("utf-8", "replace")[-300:]
     return True, ""
-
-
-def extract_keyframe(path: str, t: float, out: str, long_edge: int = S.KEYFRAME_LONG_EDGE) -> bool:
-    cmd = ["ffmpeg", "-nostdin", "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{max(0.0, t):.3f}", "-i", path,
-           "-map_metadata", "-1", "-frames:v", "1", "-vf", f"scale='if(gt(iw,ih),{long_edge},-2)':'if(gt(iw,ih),-2,{long_edge})':flags=area",
-           "-q:v", "4", out]
-    try:
-        proc = run_ffmpeg(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=120)
-    except Exception:
-        return False
-    return proc.returncode == 0 and os.path.isfile(out) and os.path.getsize(out) > 0
 
 
 # ============================ talking to the backend ============================
@@ -374,139 +322,83 @@ def run_watch_chunked(client: Any, path: str, probe: Dict[str, Any], file_id: st
     return {"shots": merged, "usage": usage, "missing": sum(1 for s in merged if s.get("missing")), "errors": []}
 
 
-def embed_in_batches(client: Any, items: List[Dict[str, Any]], *, dims: int = S.EMBED_DIMS, task_type: Optional[str] = None,
-                     should_cancel: Optional[Callable[[], bool]] = None,
-                     on_progress: Optional[Callable[[float], None]] = None) -> Tuple[List[Optional[np.ndarray]], List[str]]:
-    """Vectors for *items* (None where one failed) and any error strings."""
-    session = client._new_http_session()
-    out: List[Optional[np.ndarray]] = [None] * len(items)
-    errors: List[str] = []
-    for lo in range(0, len(items), EMBED_BATCH):
-        if should_cancel and should_cancel():
-            raise Cancelled()
-        chunk = items[lo:lo + EMBED_BATCH]
-        reply = client.v2_embed(chunk, dims=dims, task_type=task_type, session=session)
-        if reply.get("error") and not reply.get("vectors"):
-            errors.append(str(reply["error"]))
-            if reply.get("unsupported") or reply.get("auth") or reply.get("credits") or reply.get("rate_limited") or reply.get("forbidden"):
-                break                  # asking again would only be refused again
-            continue
-        for i, b64 in enumerate(reply.get("vectors") or []):
-            if b64:
-                out[lo + i] = np.frombuffer(base64.b64decode(b64), dtype="<f2").astype(np.float32)
-        errors.extend(f"item {lo + int(k)}: {v}" for k, v in (reply.get("errors") or {}).items())
-        if on_progress:
-            on_progress(min(1.0, (lo + len(chunk)) / max(1, len(items))))
-    return out, errors
+# ============================ the layer ============================
+def _described(shelf: Shelf, sha: str) -> Dict[int, Dict[str, Any]]:
+    """{shot id: description} of the shots already described (a shot the cloud left out does not count)."""
+    watch = shelf.read_json(sha, "watch.json") if shelf.layer_ready(sha, S.LAYER_WATCH) else None
+    return {int(s["id"]): s for s in (watch or {}).get("shots") or [] if not s.get("missing")}
 
 
-# ============================ the layers ============================
-def _pack(rows: List[Dict[str, Any]], vectors: List[Optional[np.ndarray]]) -> Tuple[List[Dict[str, Any]], bytes]:
-    kept = [(r, v) for r, v in zip(rows, vectors) if v is not None]
-    if not kept:
-        return [], b""
-    return [r for r, _ in kept], np.stack([v for _, v in kept]).astype("<f2").tobytes()
+def _merge(shelf: Shelf, sha: str, new: List[Dict[str, Any]], usage: Dict[str, Any]) -> Dict[str, Any]:
+    by_id = _described(shelf, sha)
+    by_id.update({int(s["id"]): s for s in new})
+    watch = {"version": S.LAYER_VERSIONS[S.LAYER_WATCH], "kind": S.INFERRED, "model": usage.get("model"),
+             "shots": [by_id[k] for k in sorted(by_id)]}
+    shelf.write_json(sha, "watch.json", watch)
+    shelf.set_layer(sha, S.LAYER_WATCH, version=S.LAYER_VERSIONS[S.LAYER_WATCH], status=READY, model=watch["model"],
+                    shots=len(watch["shots"]))
+    return watch
 
 
 def compute_cloud(client: Any, path: str, probe: Dict[str, Any], sha: str, shelf: Shelf, *, file_id: str = "",
                   media_type: str = "video", should_cancel: Optional[Callable[[], bool]] = None,
                   on_progress: Optional[Callable[[float], None]] = None, uploader: Optional[Callable[..., Any]] = None
                   ) -> Dict[str, Any]:
-    """Run the watch and vector layers that are missing. Needs the local facts on the shelf.
+    """Describe every shot of a video not yet described. Needs the local facts on the shelf.
 
-    Returns ``{"layers": {...}, "error"?, "unsupported"?, "auth"?, "usage"?}``; never raises for backend problems.
+    Returns ``{"layers": {...}, "watch"?, "usage"?}`` or ``{"error": ..., "unsupported"?, "auth"?, "credits"?...}``.
     """
     structure = shelf.read_json(sha, "structure.json") or {}
-    speech = shelf.read_json(sha, "speech.json") if shelf.layer_ready(sha, S.LAYER_SPEECH, version=S.LAYER_VERSIONS[S.LAYER_SPEECH]) else None
-    layers: Dict[str, str] = {}
-    usage: Dict[str, Any] = {}
-
-    def report(lo: float, hi: float) -> Callable[[float], None]:
-        return lambda f: on_progress(round(lo + (hi - lo) * max(0.0, min(1.0, f)), 4)) if on_progress else None
-
-    def current(layer: str) -> bool:
-        # Cloud layers cost money: one saved by an older version is kept, never re-run just for being old.
-        return is_settled(shelf, sha, layer)
-
-    # ---- watch -------------------------------------------------------------------------
-    watch: Optional[Dict[str, Any]] = None
     if media_type != "video" or not structure.get("shots"):
-        layers[S.LAYER_WATCH] = "skipped"
-    elif current(S.LAYER_WATCH):
-        layers[S.LAYER_WATCH] = "cached"
-        watch = shelf.read_json(sha, "watch.json")
-    else:
-        result = run_watch(client, path, probe, file_id or sha[:12], structure, speech, should_cancel=should_cancel,
-                           on_progress=report(0.0, 0.6), uploader=uploader, resume=(shelf, sha))
+        return {"layers": {S.LAYER_WATCH: "skipped"}}
+    have = _described(shelf, sha)
+    todo = [s for s in structure["shots"] if int(s["id"]) not in have]
+    if not todo:
+        return {"layers": {S.LAYER_WATCH: "cached"}, "watch": shelf.read_json(sha, "watch.json")}
+    speech = shelf.read_json(sha, "speech.json") if shelf.layer_ready(sha, S.LAYER_SPEECH, version=S.LAYER_VERSIONS[S.LAYER_SPEECH]) else None
+    result = run_watch(client, path, probe, file_id or sha[:12], {"shots": todo}, speech, should_cancel=should_cancel,
+                       on_progress=on_progress, uploader=uploader, resume=(shelf, sha))
+    if result.get("error") or not result.get("shots"):
+        fail = {k: result[k] for k in PASS_UP if k in result}
+        fail.setdefault("error", "no shot descriptions came back")
+        return fail
+    usage = result.get("usage") or {}
+    return {"layers": {S.LAYER_WATCH: READY}, "usage": usage, "watch": _merge(shelf, sha, result["shots"], usage)}
+
+
+def describe_shots(client: Any, path: str, probe: Dict[str, Any], sha: str, shelf: Shelf, shot_ids: List[int], embedder: Any,
+                   *, file_id: str = "", should_cancel: Optional[Callable[[], bool]] = None,
+                   uploader: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
+    """Describe the asked-for shots that have no description yet, keep them, and add them to the file's search vectors.
+
+    Returns ``{"described": [newly described ids], "shots": [descriptions of every asked-for shot], "usage"}``, or an
+    error dict as ``compute_cloud`` does.
+    """
+    from classes.gemini_direct_upload import upload_file_to_gemini_resumable
+    from classes.media_index import vectors
+
+    structure = shelf.read_json(sha, "structure.json") or {}
+    wanted = {int(i) for i in shot_ids}
+    have = _described(shelf, sha)
+    todo = [s for s in structure.get("shots") or [] if int(s["id"]) in wanted and int(s["id"]) not in have]
+    usage: Dict[str, Any] = {}
+    if todo:
+        speech = shelf.read_json(sha, "speech.json") if shelf.layer_ready(sha, S.LAYER_SPEECH) else None
+        per_shot = (speech or {}).get("per_shot") or {}
+        request = [{"id": int(s["id"]), "start": float(s["start"]), "end": float(s["end"]),
+                    "fps": plan_shot_fps(s, per_shot.get(str(s["id"])))} for s in todo]
+        # ponytail: one proxy from the first to the last asked-for shot; split into runs if far-apart asks get slow
+        start, end = min(r["start"] for r in request), max(r["end"] for r in request)
+        result = _watch_window(client, path, probe, file_id or sha[:12], request, transcript_rows(speech),
+                               start=start if start > 0 else None, end=end, should_cancel=should_cancel, on_progress=None,
+                               uploader=uploader or upload_file_to_gemini_resumable)
         if result.get("error") or not result.get("shots"):
-            fail = {k: result[k] for k in ("error", "unsupported", "auth", "credits", "rate_limited", "forbidden", "retry_after") if k in result}
-            fail["layers"] = layers
+            fail = {k: result[k] for k in PASS_UP if k in result}
             fail.setdefault("error", "no shot descriptions came back")
             return fail
-        watch = {"version": S.LAYER_VERSIONS[S.LAYER_WATCH], "kind": S.INFERRED, "model": (result.get("usage") or {}).get("model"),
-                 "usage": result.get("usage"), "missing": result.get("missing", 0), "shots": result["shots"]}
-        shelf.write_json(sha, "watch.json", watch)
-        shelf.set_layer(sha, S.LAYER_WATCH, version=S.LAYER_VERSIONS[S.LAYER_WATCH], status=READY,
-                        model=watch["model"], shots=len(watch["shots"]), missing=watch["missing"])
-        layers[S.LAYER_WATCH] = READY
-        usage = watch.get("usage") or {}
-    if should_cancel and should_cancel():
-        raise Cancelled()
-
-    # ---- vectors -----------------------------------------------------------------------
-    if current(S.LAYER_VECTORS):
-        layers[S.LAYER_VECTORS] = "cached"
-        return {"layers": layers, "usage": usage, "watch": watch}
-    text_rows: List[Dict[str, Any]] = []
-    text_items: List[Dict[str, Any]] = []
-    for s in (watch or {}).get("shots") or []:
-        doc = shot_document(s)
-        if doc and not s.get("missing"):
-            text_rows.append({"kind": "shot", "shot": s["id"], "start": s["start"], "end": s["end"], "text": doc})
-    for r in transcript_rows(speech):
-        if r["text"].strip():
-            text_rows.append({"kind": "speech", "shot": None, "start": r["start"], "end": r["end"], "text": r["text"]})
-    text_items = [{"kind": "text", "text": r["text"]} for r in text_rows]
-
-    image_rows: List[Dict[str, Any]] = []
-    image_items: List[Dict[str, Any]] = []
-    if probe.get("has_video") and structure.get("shots"):
-        with tempfile.TemporaryDirectory(prefix="zenvi_kf_") as tmp:
-            plan = keyframe_plan(structure["shots"])
-            files = [os.path.join(tmp, f"{i}.jpg") for i in range(len(plan))]
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                ok = list(pool.map(lambda iv: extract_keyframe(path, iv[1]["t"], files[iv[0]]), enumerate(plan)))
-            for row, f, good in zip(plan, files, ok):
-                if good:
-                    with open(f, "rb") as fh:
-                        image_items.append({"kind": "image", "mime": "image/jpeg", "data": base64.b64encode(fh.read()).decode("ascii")})
-                    image_rows.append(row)
-    if should_cancel and should_cancel():
-        raise Cancelled()
-
-    text_vecs, text_errors = embed_in_batches(client, text_items, task_type="RETRIEVAL_DOCUMENT", should_cancel=should_cancel,
-                                              on_progress=report(0.6, 0.8))
-    image_vecs, image_errors = embed_in_batches(client, image_items, task_type=None, should_cancel=should_cancel,
-                                                on_progress=report(0.8, 1.0))
-    t_rows, t_blob = _pack(text_rows, text_vecs)
-    i_rows, i_blob = _pack(image_rows, image_vecs)
-    errors = text_errors + image_errors
-    if not text_rows and not image_rows and (media_type != "video" or structure.get("shots")):
-        # Nothing existed to embed (a song with no speech, a silent clip with nothing described): that is a finished file, not a failure.
-        shelf.set_layer(sha, S.LAYER_VECTORS, version=S.LAYER_VERSIONS[S.LAYER_VECTORS], status=S.NOT_APPLICABLE,
-                        note="nothing to embed", had_speech=bool(speech))
-        layers[S.LAYER_VECTORS] = "skipped"
-        return {"layers": layers, "usage": usage, "watch": watch, "nothing_to_embed": True}
-    if not t_rows and not i_rows:
-        return {"error": errors[0] if errors else "no vectors were produced", "layers": layers, "usage": usage,
-                **({"unsupported": True} if any("no media index v2" in e for e in errors) else {})}
-    shelf.write_bytes(sha, "vectors_text.f16", t_blob)
-    shelf.write_bytes(sha, "vectors_image.f16", i_blob)
-    shelf.write_json(sha, "vectors_index.json", {"version": S.LAYER_VERSIONS[S.LAYER_VECTORS], "dims": S.EMBED_DIMS,
-                                                  "text": t_rows, "image": i_rows, "errors": errors[:20]})
-    previous = shelf.layer(sha, S.LAYER_VECTORS) or {}
-    shelf.set_layer(sha, S.LAYER_VECTORS, version=S.LAYER_VERSIONS[S.LAYER_VECTORS], status=READY,
-                    text=len(t_rows), image=len(i_rows), failed=len(text_rows) + len(image_rows) - len(t_rows) - len(i_rows),
-                    attempts=int(previous.get("attempts") or 0) + 1)
-    layers[S.LAYER_VECTORS] = READY
-    return {"layers": layers, "usage": usage, "watch": watch, "errors": errors}
+        usage = result.get("usage") or {}
+        _merge(shelf, sha, result["shots"], usage)
+    described = _described(shelf, sha)
+    shots = [described[i] for i in sorted(wanted) if i in described]
+    vectors.add_descriptions(shelf, sha, embedder, shots)
+    return {"described": sorted(int(s["id"]) for s in todo if int(s["id"]) in described), "shots": shots, "usage": usage}

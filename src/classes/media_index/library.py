@@ -4,7 +4,7 @@
 
  Every layer keeps its own boundaries on a shared per-file timeline in seconds; here they are
  joined by shot: structure (cuts, camera motion), watch (what happens), look (colour), speech
- (what is said) and the vectors. Loading is cached (float32 vector matrices, bounded by rows), so
+ (what is said) and the search vectors. Loading is cached (float32 vector matrices, bounded by rows), so
  searching a project is a handful of matrix products, not disk reads.
 """
 
@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from classes.media_index import quality, schema as S
+from classes.media_index import quality, schema as S, vectors
 from classes.media_index.store import Shelf
 
 MAX_CACHED_ROWS = 250_000      # about 750 MB of float32 at 768 dims
@@ -47,10 +47,13 @@ class FileIndex:
     look_file: Dict[str, Any] = field(default_factory=dict)
     pipeline: Dict[str, Any] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
-    text_rows: List[Dict[str, Any]] = field(default_factory=list)
+    text_rows: List[Dict[str, Any]] = field(default_factory=list)      # spoken sentences and shot descriptions
     text_matrix: Optional[np.ndarray] = None
     image_rows: List[Dict[str, Any]] = field(default_factory=list)
     image_matrix: Optional[np.ndarray] = None
+    audio_rows: List[Dict[str, Any]] = field(default_factory=list)
+    audio_matrix: Optional[np.ndarray] = None
+    vector_model: str = ""                                             # the model all of this file's vectors come from
     layers: Dict[str, bool] = field(default_factory=dict)
     not_applicable: List[str] = field(default_factory=list)
     scenes: List[Dict[str, Any]] = field(default_factory=list)
@@ -58,7 +61,7 @@ class FileIndex:
 
     @property
     def rows(self) -> int:
-        return len(self.text_rows) + len(self.image_rows)
+        return len(self.text_rows) + len(self.image_rows) + len(self.audio_rows)
 
     def shot_at(self, t: float) -> Optional[Dict[str, Any]]:
         for s in self.shots:
@@ -68,15 +71,6 @@ class FileIndex:
 
     def shots_between(self, start: float, end: float) -> List[Dict[str, Any]]:
         return [s for s in self.shots if s["end"] > start and s["start"] < end]
-
-
-def _matrix(shelf: Shelf, sha: str, name: str, rows: List[Dict[str, Any]], dims: int) -> Optional[np.ndarray]:
-    if not rows:
-        return None
-    blob = shelf.read_bytes(sha, name)
-    if not blob or len(blob) != len(rows) * dims * 2:
-        return None          # a truncated or mismatched file is treated as no vectors, never as wrong ones
-    return np.frombuffer(blob, dtype="<f2").reshape(len(rows), dims).astype(np.float32)
 
 
 def load_file_index(shelf: Shelf, sha: str, *, file_id: str = "", name: str = "", path: str = "",
@@ -127,13 +121,12 @@ def load_file_index(shelf: Shelf, sha: str, *, file_id: str = "", name: str = ""
         trouble = quality.audio_trouble(windows, shot["start"], shot["end"], fi.audio.get("noise_floor_db")) if windows else None
         shot["quality"] = quality.shot_quality(shot, median_sharpness=median, audio=trouble, watch=shot.get("watch"))
     if ready[S.LAYER_VECTORS]:
-        index = shelf.read_json(sha, "vectors_index.json") or {}
-        dims = int(index.get("dims") or S.EMBED_DIMS)
-        text_rows, image_rows = index.get("text") or [], index.get("image") or []
-        tm = _matrix(shelf, sha, "vectors_text.f16", text_rows, dims)
-        im = _matrix(shelf, sha, "vectors_image.f16", image_rows, dims)
-        fi.text_rows, fi.text_matrix = (text_rows, tm) if tm is not None else ([], None)
-        fi.image_rows, fi.image_matrix = (image_rows, im) if im is not None else ([], None)
+        rows, matrix, fi.vector_model = vectors.read_layer(shelf, sha)
+        for kinds, name in ((("speech", "shot"), "text"), (("image",), "image"), (("audio",), "audio")):
+            idx = [i for i, r in enumerate(rows) if r.get("kind") in kinds]
+            if idx and matrix is not None:
+                setattr(fi, name + "_rows", [rows[i] for i in idx])
+                setattr(fi, name + "_matrix", matrix[idx])
     fi.scenes = quality.scenes_of(fi)
     if shelf.layer_ready(sha, S.LAYER_MUSIC_DESC):
         fi.music_desc = list((shelf.read_json(sha, "music_desc.json") or {}).get("windows") or [])

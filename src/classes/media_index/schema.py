@@ -19,11 +19,11 @@ LAYER_STRUCTURE = "structure"
 LAYER_AUDIO = "audio"
 LAYER_SPEECH = "speech"
 LAYER_LOOK = "look"
-LAYER_WATCH = "watch"        # cloud: what happens in each shot (one cheap Gemini pass)
-LAYER_VECTORS = "vectors"    # cloud: text and picture vectors for search
+LAYER_WATCH = "watch"        # cloud: what happens in each shot, described on demand by Gemini
+LAYER_VECTORS = "vectors_local"    # search vectors of every kind, from the model chosen in Preferences (see vectors.py)
 LAYER_VERSIONS = {
-    LAYER_STRUCTURE: 2,         # 2: shots carry a sharpness measure
-    LAYER_AUDIO: 2,             # 2: clipping, rumble, noise floor and a music profile
+    LAYER_STRUCTURE: 3,         # 3: black judged against the file's own shots; motion carries typical_jitter_px
+    LAYER_AUDIO: 3,             # 3: sections only with a steady tempo, no downbeats, phrase points are section starts
     LAYER_SPEECH: 1,
     LAYER_LOOK: 1,
     LAYER_WATCH: 2,             # 2: interest, usable, people, hook (older saved watch layers are kept, never re-bought)
@@ -41,11 +41,10 @@ ANALYSIS_FPS = 10.0
 SHOT_MIN_SECONDS = 0.3
 SHOT_MAX_SECONDS = 8.0
 
-# Cloud layers.
+# Search vectors and descriptions.
 EMBED_DIMS = 768                  # vector size stored on the shelf (float16, L2-normalised)
 KEYFRAME_EVERY_SECONDS = 2.0      # at least one picture vector this often inside a shot
 MAX_KEYFRAMES = 3000              # a safety cap per file
-KEYFRAME_LONG_EDGE = 384
 PROXY_HEIGHT = 480
 
 # Lazy layers: made the first time they are asked for, then kept. They are not part of "fully indexed".
@@ -54,7 +53,7 @@ LAZY_LAYERS = {LAYER_MUSIC_DESC: 1}
 
 NOT_APPLICABLE = "not_applicable"     # manifest status of a layer the file cannot have (no audio track, no picture)
 
-# Cloud layers (watch, vectors) cost money, so they are never re-run because of a version bump: an older one stays in
-# use and the new fields read as unknown. Local layers are free and do refresh.
+# The watch layer (descriptions) costs money, so it is never re-run because of a version bump: an older one stays in
+# use and the new fields read as unknown. Local layers are free and do refresh; vectors are re-made for a new version.
 # Layer shapes only ever grow: a reader accepts a layer saved at an older version (it lacks the newer
 # fields) and the next index run refreshes it, so a version bump never makes existing data unreadable.

@@ -33,7 +33,7 @@ def _index_provider():
     return index_for
 
 
-def _music_beats(music_clip_id, on, own_clip_id=""):
+def _music_beats(music_clip_id, own_clip_id=""):
     """(timeline clips, clip objects, the music clip, its tempo, its beats on the timeline's clock) for the music to cut to.
 
     The music is the clip asked for, else the longest music clip with a detected tempo. Slicing a clip passes *own_clip_id*,
@@ -65,10 +65,7 @@ def _music_beats(music_clip_id, on, own_clip_id=""):
     tempo = audio.get("tempo") or {}
     if not tempo.get("beats"):
         raise ToolError(f"{bed.name!r} has no steady tempo, so there is no beat to cut to")
-    source_beats = ((audio.get("music") or {}).get("downbeats") if on == "downbeat" else None) or tempo["beats"]
-    if on == "downbeat" and not (audio.get("music") or {}).get("downbeats"):
-        source_beats = tempo["beats"][::4]
-    beats = sorted(t for t in (bed.to_timeline(x) for x in source_beats if bed.src_in <= x <= bed.src_out) if bed.start <= t <= bed.end)
+    beats = sorted(t for t in (bed.to_timeline(x) for x in tempo["beats"] if bed.src_in <= x <= bed.src_out) if bed.start <= t <= bed.end)
     if not beats:
         raise ToolError("none of the music's beats fall inside the part of it that is on the timeline")
     return clips, objs, bed, tempo, beats
@@ -81,15 +78,13 @@ def _music_beats(music_clip_id, on, own_clip_id=""):
     label="Cut to the beat",
     schema=obj({
         "music_clip_id": string("Timeline clip id of the music to cut to (default: the longest music clip with a detected tempo).", ""),
-        "on": enum(["beat", "downbeat"], "'beat' = every beat, 'downbeat' = only the first beat of each bar (a calmer, more musical cut).",
-                   "beat"),
         "max_shift_seconds": number("The furthest a cut may move to reach a beat. Larger moves change what shows more.", 0.25,
                                     minimum=0.05, maximum=1.0),
         "include_speech": boolean("Also move cuts next to speaking clips (they are left alone by default: a move could land mid-word).", False),
         "dry_run": boolean("Only report which cuts would move; change nothing.", False),
     }),
 )
-def sync_cuts_to_beats(music_clip_id="", on="beat", max_shift_seconds=0.25, include_speech=False, dry_run=False):
+def sync_cuts_to_beats(music_clip_id="", max_shift_seconds=0.25, include_speech=False, dry_run=False):
     """Nudge the cuts between neighbouring picture clips onto the beat of the music, so the edit feels tight.
 
     For each cut the earlier clip's out point and the later clip's in point shift together by the same small amount
@@ -100,7 +95,7 @@ def sync_cuts_to_beats(music_clip_id="", on="beat", max_shift_seconds=0.25, incl
     """
     from classes.clip_utils import clip_time_bounds
 
-    clips, objs, bed, tempo, beats = _music_beats(music_clip_id, on)
+    clips, objs, bed, tempo, beats = _music_beats(music_clip_id)
 
     cut_clips = []
     for c in clips:
@@ -115,7 +110,7 @@ def sync_cuts_to_beats(music_clip_id="", on="beat", max_shift_seconds=0.25, incl
     plan = beatsync.plan_beat_sync(cut_clips, beats, max_shift=float(max_shift_seconds), frame=frame_seconds(), include_speech=bool(include_speech))
     summary_bits = f"{plan['cuts']} cut(s): {len(plan['moves'])} to move, {plan['already_on_beat']} already on a beat, {len(plan['skipped'])} left as they are"
     receipt = dict(cuts=plan["cuts"], already_on_beat=plan["already_on_beat"], moves=plan["moves"], skipped=plan["skipped"][:20],
-                   music_clip_id=bed.id, bpm=tempo.get("bpm"), on=on)
+                   music_clip_id=bed.id, bpm=tempo.get("bpm"))
     if dry_run or not plan["moves"]:
         return ok(("Would move " if dry_run else "Nothing to move: ") + summary_bits + ".", changed=False, dry_run=bool(dry_run), **receipt)
 
@@ -138,7 +133,7 @@ def sync_cuts_to_beats(music_clip_id="", on="beat", max_shift_seconds=0.25, incl
         save_clip(objs[cid], start=f["start"], end=f["end"], duration=f["end"] - f["start"], position=snap(f["position"]))
     extend_timeline()
     refresh()
-    return ok(f"Moved {len(plan['moves'])} cut(s) onto the {on}: " + summary_bits + ".", changed=True, **receipt)
+    return ok(f"Moved {len(plan['moves'])} cut(s) onto the beat: " + summary_bits + ".", changed=True, **receipt)
 
 
 # ============================ slice_on_beats_tool ============================
@@ -149,14 +144,13 @@ def sync_cuts_to_beats(music_clip_id="", on="beat", max_shift_seconds=0.25, incl
     schema=obj({
         "timeline_clip_id": string("The picture clip (a video or image on the timeline) to cut into pieces.", ""),
         "music_clip_id": string("Timeline clip id of the music to cut to (default: the longest music clip with a detected tempo).", ""),
-        "on": enum(["beat", "downbeat"], "'beat' = a cut on each beat, 'downbeat' = only the first beat of each bar (calmer).", "beat"),
         "every": integer("Cut on every Nth beat (2 = every other beat, 4 = about once a bar).", 1, minimum=1, maximum=16),
         "from_seconds": number("Timeline second to start cutting at (default: the start of the clip).", None, minimum=0),
         "to_seconds": number("Timeline second to stop cutting at (default: the end of the clip).", None, minimum=0),
         "dry_run": boolean("Only report where the cuts would go; change nothing.", False),
     }, required=["timeline_clip_id"]),
 )
-def slice_on_beats(timeline_clip_id, music_clip_id="", on="beat", every=1, from_seconds=None, to_seconds=None, dry_run=False):
+def slice_on_beats(timeline_clip_id, music_clip_id="", every=1, from_seconds=None, to_seconds=None, dry_run=False):
     """Cut one clip into pieces that each run from one beat of the music to the next (a montage from one long shot).
 
     Use it when the user wants a clip cut to the beat; to tighten cuts that already exist between several clips use
@@ -166,7 +160,7 @@ def slice_on_beats(timeline_clip_id, music_clip_id="", on="beat", every=1, from_
     """
     from classes.editor_tools._registry import REGISTRY
 
-    clips, objs, _bed, tempo, beats = _music_beats(music_clip_id, on, own_clip_id=timeline_clip_id)
+    clips, objs, _bed, tempo, beats = _music_beats(music_clip_id, own_clip_id=timeline_clip_id)
     target = next((c for c in clips if c.id == str(timeline_clip_id) and c.kind in ("video", "image") and c.length > 0), None)
     if target is None:
         raise ToolError(f"{timeline_clip_id!r} is not a picture clip on the timeline (list_clips_tool lists them)")
@@ -179,10 +173,10 @@ def slice_on_beats(timeline_clip_id, music_clip_id="", on="beat", every=1, from_
         raise ToolError(f"that would make {plan['too_many'] + 1} pieces; ask for fewer (every=2 or 4, or a from_seconds/to_seconds range). Nothing was changed")
     if not plan["cuts"]:
         raise ToolError("no beat falls inside that part of the clip, so there is nothing to cut")
-    receipt = dict(cuts=plan["cuts"], pieces=len(plan["cuts"]) + 1, skipped_close=plan["skipped_close"], on=on, every=int(every), bpm=tempo.get("bpm"),
+    receipt = dict(cuts=plan["cuts"], pieces=len(plan["cuts"]) + 1, skipped_close=plan["skipped_close"], every=int(every), bpm=tempo.get("bpm"),
                    timeline_clip_id=target.id)
     if dry_run:
-        return ok(f"Would cut {target.name!r} into {receipt['pieces']} pieces on the {on}.", changed=False, dry_run=True, **receipt)
+        return ok(f"Would cut {target.name!r} into {receipt['pieces']} pieces on the beat.", changed=False, dry_run=True, **receipt)
     require_unlocked({int(objs[target.id].data.get("layer") or 0)})
     slicer = REGISTRY["slice_clips_tool"].func
     current, done = target.id, []
@@ -195,7 +189,7 @@ def slice_on_beats(timeline_clip_id, music_clip_id="", on="beat", every=1, from_
         current = piece.get("right") or current
         done.append(t)
     refresh()
-    return ok(f"Cut {target.name!r} into {len(done) + 1} pieces on the {on}.", changed=True, **{**receipt, "cuts": done})
+    return ok(f"Cut {target.name!r} into {len(done) + 1} pieces on the beat.", changed=True, **{**receipt, "cuts": done})
 
 
 # ============================ balance_mix_tool ============================
@@ -215,7 +209,7 @@ def _is_error(text: Any) -> bool:
         "duck_music": boolean("Duck music and sound-effect beds under the voice, with volume keyframes, restoring them in the gaps.", True),
         "set_loudness": boolean("Render the mix, measure it, and raise or lower everything together to the platform's loudness target "
                                 "(YouTube/TikTok/Reels about -14 LUFS, podcasts -16, film -23) without pushing peaks over -1 dB.", True),
-        "form": string("What this is ('YouTube vlog', 'podcast', 'film'...), to pick the loudness target. '' = -14 LUFS (online video).", ""),
+        "form": enum(("",) + R.FORMS, "What this is ('vlog', 'podcast', 'film'...), to pick the loudness target. '' = -14 LUFS (online video).", ""),
         "target_lufs": number("Override the loudness target (LUFS).", None, minimum=-40, maximum=-5),
         "dry_run": boolean("Only report what would change; change nothing.", False),
     }),

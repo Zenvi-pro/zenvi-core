@@ -18,11 +18,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from classes.editor_tools._base import ToolError, array, boolean, clip_frame_at, enum, get_app, integer, number, obj, ok, on_main, string, th
 from classes.editor_tools._registry import REGISTRY, editor_tool
-from classes.editor_tools.media_index_tools import _all_files, project_indexes
+from classes.editor_tools.media_index_tools import _all_files, _index_for, describe_file_shots, project_indexes
 from classes.editor_tools.effects_color_looks import _grade_values
 from classes.editor_tools.timeline_edit_common import frame_seconds, keyframe_value, snap
 from classes.logger import log
 from classes.media_index import reference as mref
+from classes.media_index.style import real_shots
 
 MAX_PLANS = 6
 TRACK_NAME = "Recreation"
@@ -155,6 +156,14 @@ def plan_recreation(reference_file_id, source_file_ids=[], max_reuse=1, stock="a
     from classes.editor_tools.ai_generation_stock import search_stock_for
     files, missing = project_indexes()
     ref = _reference(files, reference_file_id)
+    ref_file = next((f for f in _all_files() if str(f.id) == ref.file_id), None)
+    if ref_file is not None and any(not s.get("watch") for s in ref.shots):
+        # The reference's shot types and stock phrases come from its descriptions: made once, best effort.
+        _out, why = describe_file_shots(ref_file, ref, [s["id"] for s in ref.shots])
+        if why:
+            log.info("plan_recreation: no descriptions for the reference: %s", why)
+        else:
+            ref = _index_for(ref_file) or ref
     wanted = {str(x) for x in source_file_ids} if source_file_ids else None
     pool = [f for f in files if f.sha != ref.sha and f.shots and (wanted is None or f.file_id in wanted)]
     if not pool:
@@ -596,12 +605,15 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
 
         made_transitions, skipped_transitions = 0, 0
         if transitions:
+            order = [r["reference_shot"] for r in plan["rows"]]
+            before = dict(zip(order[1:], order))                    # the slot before each one (shot ids skip over split pieces)
             for r in todo:
                 kind = r.get("opens_with")
-                prev_id, cur_id = placed_ids.get(r["reference_shot"] - 1), placed_ids.get(r["reference_shot"])
+                prev = before.get(r["reference_shot"])
+                prev_id, cur_id = placed_ids.get(prev), placed_ids.get(r["reference_shot"])
                 if kind not in ("dissolve", "fade") or not prev_id or not cur_id:
                     continue
-                span = min(TRANSITION_SECONDS, 0.4 * min(slot_len[r["reference_shot"]], slot_len.get(r["reference_shot"] - 1, TRANSITION_SECONDS)))
+                span = min(TRANSITION_SECONDS, 0.4 * min(slot_len[r["reference_shot"]], slot_len.get(prev, TRANSITION_SECONDS)))
                 if span < 3 * frame:
                     skipped_transitions += 1
                     continue
@@ -611,7 +623,7 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
                               method="handles", audio_crossfade=False, replace_existing=True)
                     else:
                         half = max(1, int(round(span / 2.0 / frame)))
-                        _fade_alpha(prev_id, half, "out", int(round(slot_len[r["reference_shot"] - 1] / frame)))
+                        _fade_alpha(prev_id, half, "out", int(round(slot_len[prev] / frame)))
                         _fade_alpha(cur_id, half, "in", int(round(slot_len[r["reference_shot"]] / frame)))
                     made_transitions += 1
                 except ToolError as exc:
@@ -772,7 +784,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pic
         slots = [(r["reference_shot"], r["start"], r["end"], r) for r in plan["rows"] if _effective(r, plan)]
         skipped = [r["reference_shot"] for r in plan["rows"] if not _effective(r, plan)]          # left out on purpose, and reported as such
     else:
-        slots = [(s["id"], max(float(s["start"]), 0.0), float(s["end"]), None) for s in ref.shots
+        slots = [(s["id"], max(float(s["start"]), 0.0), float(s["end"]), None) for s in real_shots(ref.shots)
                  if float(s["end"]) - float(s["start"]) >= mref.MIN_REFERENCE_SHOT and not s.get("black")]
     if not slots:
         raise ToolError("nothing to check: the reference has no analysed shots")
@@ -802,6 +814,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pic
         at = {i: proposed.get(i) or getattr(clip_at(a, b), "file_id", None) for i, a, b, _r in slots}
         k = order.index(shot_id)
         return {at[order[j]] for j in (k - 1, k + 1) if 0 <= j < len(order) and at[order[j]]}
+    following = {i: r2 for (i, _a, _b, _r), (_i2, _a2, _b2, r2) in zip(slots, slots[1:])}     # the slot after each one (shot ids skip over split pieces)
     for shot_id, a, b, row in slots:
         covering = clip_at(a, b)
         if covering is None:
@@ -821,7 +834,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pic
         placed_files.append(covering.file_id)
         start_err = abs(covering.start - snap(a)) / frame
         len_err = abs(covering.length - (snap(b) - snap(a))) / frame
-        next_row = next((r2 for i2, _a2, _b2, r2 in slots if i2 == shot_id + 1), None)
+        next_row = following.get(shot_id)
         if (row or {}).get("opens_with") in ("dissolve", "fade") or (next_row or {}).get("opens_with") in ("dissolve", "fade"):   # a transition overlaps its cut by up to half its length each side
             start_err = max(0.0, start_err - TRANSITION_SECONDS / 2.0 / frame)
             len_err = max(0.0, len_err - TRANSITION_SECONDS / frame)

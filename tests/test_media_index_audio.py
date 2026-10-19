@@ -289,38 +289,10 @@ def test_beats_stop_where_the_groove_stops(tmp_path):
     assert len(beats) == pytest.approx(24, abs=1)
 
 
-def accented_clicks(seconds, bpm, accent_at, sr=SR):
-    """Clicks where every 4th is loud; *accent_at* picks which click of the bar is the loud one."""
-    rng = np.random.default_rng(4)
-    x = rng.normal(0, 10 ** (-55 / 20.0), int(seconds * sr))
-    period, t, k, loud = 60.0 / bpm, 0.25, 0, []
-    while t < seconds - 0.1:
-        n0, n = int(t * sr), int(0.025 * sr)
-        env = np.exp(-np.arange(n) / (0.006 * sr))
-        gain = 1.0 if k % 4 == accent_at else 0.4
-        x[n0:n0 + n] += (rng.normal(0, 1, n) * 0.6 + np.sin(2 * np.pi * 1800 * np.arange(n) / sr) * 0.5) * env * 0.7 * gain
-        if k % 4 == accent_at:
-            loud.append(round(t, 3))
-        t += period
-        k += 1
-    return x, loud
-
-
-@pytest.mark.parametrize("accent_at", [0, 1, 2])
-def test_downbeats_land_on_the_accented_beat_whichever_beat_of_the_bar_it_is(tmp_path, accent_at):
-    x, loud = accented_clicks(40, 120, accent_at)
-    music = analyse(write_wav(tmp_path / f"acc{accent_at}.wav", x))["music"]
-    downbeats = music["downbeats"]
-    assert len(downbeats) >= 8
-    near = [min(abs(d - t) for t in loud) for d in downbeats]
-    assert max(near) < 0.08, near
-    assert music["phrase_points"] == downbeats[::4] and len(music["phrase_points"]) >= 2
-
-
-def test_audio_without_a_rhythm_has_no_bars_but_still_has_an_arc(tmp_path):
-    out = analyse(write_wav(tmp_path / "tone.wav", tone(20, 330.0, -20.0)))
-    assert out["tempo"] is None and out["music"]["downbeats"] == [] and out["music"]["phrase_points"] == []
-    assert len(out["music"]["arc"]) == 5 and out["music"]["sections"] == [] or out["music"]["sections"][0]["label"] in ("steady", "intro")
+def test_audio_without_a_rhythm_has_no_sections_or_phrases_but_still_has_an_arc(tmp_path):
+    out = analyse(write_wav(tmp_path / "tone.wav", tone(30, 330.0, -20.0)))
+    assert out["tempo"] is None and out["music"]["phrase_points"] == [] and out["music"]["sections"] == []
+    assert len(out["music"]["arc"]) == 8, "an arc point every few seconds"
 
 
 def test_a_short_clip_has_no_sections(tmp_path):
@@ -383,8 +355,8 @@ def test_ramps_that_touch_keep_their_pairs_and_the_peak_between_them():
 def test_a_fade_in_at_the_very_start_does_not_leave_a_sliver_section(tmp_path):
     seconds = 40
     t = np.arange(seconds * SR) / SR
-    gain = np.clip(t / 14.0, 0.0, 1.0)                       # a 14 s fade in from silence, then steady
-    wave_data = (0.6 * gain * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+    gain = np.clip(t / 14.0, 0.0, 1.0)                       # a 14 s fade in from silence, then steady, over a steady beat
+    wave_data = (gain * (0.4 * np.sin(2 * np.pi * 220 * t) + clicks(seconds, 120)[0][:len(t)])).astype(np.float32)
     path = write_wav(tmp_path / "fadein.wav", wave_data)
     sections = analyse(path)["music"]["sections"]
     assert all(s["end"] - s["start"] >= au.SECTION_MIN_SECONDS - 0.5 for s in sections), sections
