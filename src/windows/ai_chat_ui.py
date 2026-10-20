@@ -350,11 +350,11 @@ def _tool_call_detail(call_id: str) -> dict:
 class WidgetToolBlock(QFrame):
     """Collapsible tool-run block for native Qt chat (mirrors chat.js tool blocks)."""
 
-    def __init__(self, call_id: str, title: str, cmd: str, parent=None):
+    def __init__(self, call_id: str, title: str, parent=None):
         super().__init__(parent)
         self.call_id = call_id
         self._title = title
-        self._cmd = cmd
+        self._cmd = ""
         self._expanded = True
         self._running = True
 
@@ -4109,7 +4109,7 @@ class AIChatWindow(QDockWidget):
         if not getattr(self, "_widget_tool_container", None):
             return
         block_id = call_id or tool_name or ("tool_%s" % time.time())
-        block = WidgetToolBlock(block_id, title, "", parent=self._widget_tool_blocks_host)
+        block = WidgetToolBlock(block_id, title, parent=self._widget_tool_blocks_host)
         insert_at = max(0, self._widget_tool_container.count() - 1)
         self._widget_tool_container.insertWidget(insert_at, block)
         self._widget_tool_blocks[block_id] = block
