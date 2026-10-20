@@ -63,6 +63,7 @@ def studio(editor, tmp_path, monkeypatch):
     click, truth = corpus.click_track(bpm=120.0, seconds=20.0, sections=((0.0, 20.0, 0.5),))
     beat_sha = sha(61)
     build(shelf, beat_sha, shots=[shot(0, 0, 20, "static")], duration=20.0, look={"profile": profile(0.5)})
+    shelf.set_source(beat_sha, media_type="audio")        # the click track is a sound file; its layers say so
     done = facts.compute_facts(str(click), fingerprint={"sha256": beat_sha}, shelf=shelf, media_type="audio", run_speech=False)
     assert done["layers"].get("audio") == "ready", done
     trailer = editor.add_file("video", duration=20.0, path=str(click), fingerprint={"sha256": beat_sha}, has_audio=True, channels=2)
