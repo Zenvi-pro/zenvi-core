@@ -239,7 +239,7 @@ _PLANNING_SAFE_TOOLS = frozenset({
     "save_edit_plan_tool", "save_planning_research_brief_tool",
     "update_edit_plan_step_tool", "finalize_edit_plan_tool",
     "present_planning_questions_tool",
-    "save_edit_checkpoint_tool", "watch_clip_tool",
+    "save_edit_checkpoint_tool",
 })
 
 
@@ -3395,8 +3395,6 @@ class AIChatWindow(QDockWidget):
             sess["last_user_command"] = (cmd or "").strip()
             sess["last_user_model_id"] = model_id or ""
             sess["last_user_images"] = list(images or []) if images else []
-        if action == "chat" and cmd and self._try_local_command(cmd):
-            return True
         if action == "chat" and cmd:
             self._request_preamble_summary(cmd)
         augmented_text = self._prepend_editor_snapshot(text) if text else text
@@ -3810,30 +3808,6 @@ class AIChatWindow(QDockWidget):
             self.send_message()
         else:
             QTextEdit.keyPressEvent(self.msg_input, event)
-
-    _WATCH_CLIP_PATTERNS = [
-        "watch clip", "view clip", "show clip", "play clip",
-        "play the feral", "show the feral", "watch the feral",
-        "play the trailer", "show me the clip", "show me the trailer",
-        "load the feral", "open the feral",
-    ]
-
-    def _try_local_command(self, text: str) -> bool:
-        """Execute certain commands locally without sending to the backend.
-        Returns True if the command was handled and no backend call is needed.
-        """
-        lower = text.lower().strip()
-        if any(pat in lower for pat in self._WATCH_CLIP_PATTERNS):
-            self._add_system_msg("Loading Feral trailer and starting playback...")
-            try:
-                from classes.tool_handlers import execute_tool
-                result = execute_tool("watch_clip_tool", {})
-                self._add_assistant_msg(result)
-            except Exception as exc:
-                self._add_assistant_msg(f"Error: {exc}")
-            self._set_processing_ui(False)
-            return True
-        return False
 
     def send_message(self):
         if self.is_processing:

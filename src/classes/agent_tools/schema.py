@@ -121,10 +121,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "open_project_tool": _obj({
         "file_path": _str(description="Project file path."),
     }, required=["file_path"]),
-    "watch_clip_tool": _obj({
-        "file_path": _str(description="Media path to import, place and play."),
-        "query": _str(),
-    }),
     "play_tool": _obj({}),
     "go_to_start_tool": _obj({}),
     "go_to_end_tool": _obj({}),
