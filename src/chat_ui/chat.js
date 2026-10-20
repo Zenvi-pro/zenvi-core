@@ -1104,7 +1104,10 @@
         el.appendChild(body);
         var batch = currentToolBatch();
         var sibling = toolName && !isReplay ? batch.byTool[toolName] : null;
-        var grouped = !!sibling && sibling.top.parentNode === activityContainer;
+        // Only a call right after its sibling joins the group: anything in between
+        // (a thought, another tool) keeps them apart and in order.
+        var grouped = !!sibling && sibling.top.parentNode === activityContainer
+            && activityContainer.lastChild === sibling.top;
         if (grouped) {
             if (!sibling.group) sibling.group = makeToolGroup(sibling);
             sibling.group.body.appendChild(el);
@@ -1144,6 +1147,8 @@
     var signInPrompts = [];
 
     function addSignInPrompt(block) {
+        // A grouped row sits in a collapsed body, so the prompt goes on the group row.
+        if (block && block.group) block = block.group;
         if (!block || block.signIn) return;
         var row = document.createElement('div');
         row.className = 'chat-signin-row';
@@ -1283,6 +1288,7 @@
                     var iconEl = block.header.querySelector('.chat-tool-icon');
                     if (iconEl) iconEl.innerHTML = ACTIVITY_CHECK_SVG;
                     setToolBlockExpanded(block, false);
+                    if (block.group) refreshToolGroup(block.group);
                 }
             });
             if (!firstAnswerTokenReceived && thinkingBlockEl && processingStartTime) {

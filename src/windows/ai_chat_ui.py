@@ -304,6 +304,17 @@ def _file_name(value: str):
     return os.path.basename(value.replace("\\", "/")) or None
 
 
+def _number(value):
+    """*value* as a finite float when it is a number or a numeric string, else None."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def describe_tool_call(tool_name: str, args) -> str:
     """One plain sentence for a tool row: its label plus up to three key args.
 
@@ -318,12 +329,12 @@ def describe_tool_call(tool_name: str, args) -> str:
                 files.append(name)
         elif key in _TEXT_ARG_KEYS and isinstance(value, str) and value.strip():
             texts.append('"%s"' % value.strip()[:40])
-        elif key.endswith("_seconds") and isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
-            minutes, secs = divmod(max(0, round(value)), 60)
+        elif key.endswith("_seconds") and _number(value) is not None:
+            minutes, secs = divmod(max(0, round(_number(value))), 60)
             word = _TIME_WORDS.get(key[: -len("_seconds")], "")
             times.append(" ".join(filter(None, (word, "%d:%02d" % (minutes, secs)))))
-        elif key == "track" and isinstance(value, int) and not isinstance(value, bool):
-            tracks.append("on track %d" % value)
+        elif key == "track" and _number(value) is not None and _number(value).is_integer():
+            tracks.append("on track %d" % _number(value))
     parts = (files + texts + times + tracks)[:3]
     text = f"{label}: {' '.join(parts)}" if parts else label
     return text if len(text) <= 90 else text[:89] + "…"
@@ -4110,6 +4121,9 @@ class AIChatWindow(QDockWidget):
             return
         block_id = call_id or tool_name or ("tool_%s" % time.time())
         block = WidgetToolBlock(block_id, title, parent=self._widget_tool_blocks_host)
+        if args_pretty:
+            # The native widget has no lazy fetch, so its collapsed body holds the details.
+            block.append_log("ARGS:\n" + args_pretty)
         insert_at = max(0, self._widget_tool_container.count() - 1)
         self._widget_tool_container.insertWidget(insert_at, block)
         self._widget_tool_blocks[block_id] = block
@@ -4149,8 +4163,8 @@ class AIChatWindow(QDockWidget):
             return
         block = self._widget_tool_blocks.get(call_id)
         if block:
-            if summary:
-                block.append_log(summary)
+            if detail:
+                block.append_log("RESULT:\n" + detail)
             block.complete(ok, summary)
 
     @pyqtSlot(str)

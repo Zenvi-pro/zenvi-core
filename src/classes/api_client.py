@@ -19,7 +19,6 @@ Usage:
     result = client.generate_video("a cat running on a beach")
 """
 
-from concurrent.futures import Future, ThreadPoolExecutor, wait as wait_futures
 import json
 import os
 import re
@@ -465,10 +464,11 @@ class ZenviBackendClient:
                 payload_data["project_id"] = project_id
             _ws_send({"type": "user_message", "data": payload_data})
 
-            # Tool calls run on a bounded pool; the drain below waits for them
-            # before returning when the server signals 'done'.
-            tool_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="zenvi-tool-worker")
-            tool_futures: List[Future] = []
+            # At most four tool calls run at once. Daemon threads, so quitting the
+            # editor never waits for a running tool; the drain below waits for
+            # them before returning when the server signals 'done'.
+            tool_slots = threading.Semaphore(4)
+            tool_threads: List[threading.Thread] = []
             last_tool_result_holder: List[Optional[str]] = [None]
 
             def _spawn_tool_worker(call_data: Dict[str, Any]) -> None:
@@ -529,7 +529,13 @@ class ZenviBackendClient:
                         "data": payload,
                     })
 
-                tool_futures.append(tool_pool.submit(_runner))
+                def _bounded():
+                    with tool_slots:
+                        _runner()
+
+                t = threading.Thread(target=_bounded, daemon=True, name="zenvi-tool-worker")
+                tool_threads.append(t)
+                t.start()
 
             # Periodic client-side pings so very long tool runs don't get an
             # idle reset from intermediaries.  Sends through the lock so they
@@ -642,8 +648,9 @@ class ZenviBackendClient:
                 stop_pings.set()
                 # Drain in-flight tool workers so any tool_result frames they
                 # emit get sent before we close the WS.
-                wait_futures(tool_futures, timeout=1.0 if self._shutting_down else 120)
-                tool_pool.shutdown(wait=False)
+                deadline = time.monotonic() + (1.0 if self._shutting_down else 120)
+                for t in tool_threads:
+                    t.join(max(0.0, deadline - time.monotonic()))
 
             try:
                 ws.close()

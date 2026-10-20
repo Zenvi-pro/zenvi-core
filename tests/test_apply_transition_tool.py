@@ -75,6 +75,15 @@ def test_overlap_longer_than_clip2_start_is_clamped_and_reported():
     assert "duration 0.50s (clamped from 1.00s)" in reply
 
 
+@pytest.mark.parametrize("c2_pos", [0.0, 0.01])
+def test_no_room_for_an_overlap_is_an_error_and_changes_nothing(c2_pos):
+    reply, app = _apply(_pair(c2_pos=c2_pos, c1_end=c2_pos), clip1_id="c1", clip2_id="c2",
+                        transition_name="fade", duration="1.0")
+    assert reply.startswith("Error"), reply
+    assert not app.window.timeline.update_transition_data.called
+    assert not app.updates.update.called
+
+
 @pytest.mark.parametrize("placement", ["between", "start"])
 def test_partial_name_is_applied_and_reported_by_its_full_name(placement):
     reply, app = _apply(_pair(), clip1_id="c1", clip2_id="c2", placement=placement,

@@ -219,7 +219,10 @@ def call_meta_tool(name: str, args: dict):
         terms = _words(args.get("query", ""))
         scored = sorted((-(3 * len(terms & _words(n.replace("_", " "))) + len(terms & _words(d["description"]))), n)
                         for n, d in defs.items())
-        limit = max(1, min(int(args.get("limit") or 5), 10))
+        try:
+            limit = max(1, min(int(args.get("limit") or 5), 10))
+        except (TypeError, ValueError):
+            return "Error: limit must be an integer from 1 to 10."
         return json.dumps([defs[n] for score, n in scored[:limit] if score < 0])
     target, inner = str(args.get("name") or ""), args.get("args") or {}
     d = defs.get(target)
@@ -228,7 +231,8 @@ def call_meta_tool(name: str, args: dict):
     unknown = sorted(set(inner) - set(d["inputSchema"].get("properties") or {}))
     if unknown:
         return "Error: unknown arguments for %s: %s" % (target, ", ".join(unknown))
-    return execute_tool_rich(target, inner)
+    # After the argument check: chat_session_id is not in any schema.
+    return execute_tool_rich(target, {**inner, "chat_session_id": "mcp"})
 
 
 # Tools a launch mode adds on top of MCP_EXTRA_TOOLS -- the headless session's

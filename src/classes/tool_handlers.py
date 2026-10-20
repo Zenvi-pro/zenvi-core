@@ -5851,6 +5851,12 @@ def add_transition_between_clips(clip1_id="", clip2_id="", transition_name="", d
         asked_dur = dur
         dur = min(dur, clip2_pos)  # clip2 cannot move before 0, so the overlap is at most its start
         new_clip2_pos = clip2_pos - dur
+        fps_data = app.project.get("fps") or {}
+        if round(dur * float(fps_data.get("num", 30)) / float(fps_data.get("den", 1) or 1)) < 1:
+            return (
+                f"Error: clip 2 starts at {clip2_pos:.2f}s, so there is no room to overlap the clips "
+                "for a transition. Move it later first."
+            )
 
         # ALL Qt/openshot calls MUST run on the Qt main thread
         result_box = [None]

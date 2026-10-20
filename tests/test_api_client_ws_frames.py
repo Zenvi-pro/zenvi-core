@@ -63,8 +63,11 @@ def test_tool_calls_never_run_more_than_four_at_once():
     lock = threading.Lock()
     active = peak = 0
 
+    daemon = []
+
     def slow_tool(name, args, call_id):
         nonlocal active, peak
+        daemon.append(threading.current_thread().daemon)
         with lock:
             active += 1
             peak = max(peak, active)
@@ -81,4 +84,5 @@ def test_tool_calls_never_run_more_than_four_at_once():
 
     results = sorted(m["data"]["call_id"] for m in fake.sent if m.get("type") == "tool_result")
     assert peak <= 4, f"{peak} tool calls ran at once"
+    assert all(daemon), "quitting the editor must not wait for a running tool"
     assert results == [f"c{i}" for i in range(10)], "every call's result is sent before the call returns"

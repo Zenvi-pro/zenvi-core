@@ -82,3 +82,19 @@ def test_the_manifest_carries_the_core_set():
     from classes.agent_tools.core_tools import CORE_TOOL_NAMES
 
     assert build_manifest()["core_tools"] == list(CORE_TOOL_NAMES)
+
+
+def test_run_tool_uses_the_mcp_chat_slot(tool_stub):
+    from classes.agent_mcp_server import call_meta_tool
+
+    seen = {}
+    tool_stub.execute_tool_rich = lambda name, args: seen.update(args) or "ok"
+    call_meta_tool("run_tool", {"name": "reverse_clip_tool", "args": {"timeline_clip_id": "c1"}})
+    assert seen["chat_session_id"] == "mcp"
+
+
+def test_find_tools_reports_a_bad_limit_instead_of_raising(tool_stub):
+    from classes.agent_mcp_server import call_meta_tool
+
+    assert call_meta_tool("find_tools", {"query": "reverse", "limit": "many"}).startswith("Error")
+    assert json.loads(call_meta_tool("find_tools", {"query": "reverse", "limit": "1"}))

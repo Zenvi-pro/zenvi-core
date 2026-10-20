@@ -30,6 +30,14 @@ def test_path_args_show_a_file_name_times_m_ss_and_track_a_number(chat_ui):
     assert text == "Add clip to timeline: beach.mp4 at 1:12 on track 2"
 
 
+def test_numbers_sent_as_strings_still_show(chat_ui):
+    text = chat_ui.describe_tool_call(
+        "add_clip_to_timeline_tool",
+        {"file_id": "C:/x/beach.mp4", "position_seconds": "72", "track": "2"},
+    )
+    assert text == "Add clip to timeline: beach.mp4 at 1:12 on track 2"
+
+
 def test_windows_and_posix_paths_both_give_the_file_name(chat_ui):
     for path in ("C:\\x\\beach.mp4", "/home/me/beach.mp4"):
         assert chat_ui.describe_tool_call("add_clip_to_timeline_tool", {"file_id": path}) == (

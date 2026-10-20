@@ -376,6 +376,28 @@ try {
     check(!!group && !group.classList.contains('running') && group.classList.contains('error'),
         'the group shows an error once nothing is running and one call failed');
 
+    // A thought between two calls of one tool keeps them apart, in order.
+    s = scenario({});
+    s.api.addToolBlock(payload('t1', 'Add clip to timeline', 'add_clip_to_timeline_tool', 'Add clip to timeline'));
+    s.api.appendThinkingText('Now the second shot.');
+    s.api.addToolBlock(payload('t2', 'Add clip to timeline', 'add_clip_to_timeline_tool', 'Add clip to timeline'));
+    check(groupRows(s).length === 0, 'calls with a thought between them are not grouped');
+    check(s.activity.children.length === 3 && s.activity.children[2] === rowOf(s, 't2'),
+        'the thought stays between the two calls');
+
+    // A grouped call that needs sign-in puts Sign in on the group row, where it can be seen.
+    s = scenario({ details: {
+        s1: { args: '{}', result: 'Error: Login required: sign in to Zenvi (Zenvi menu > Sign in), then run this again.' },
+        s2: { args: '{}', result: 'Error: Login required: sign in to Zenvi (Zenvi menu > Sign in), then run this again.' },
+    } });
+    s.api.addToolBlock(payload('s1', 'Generate image', 'generate_image_tool', 'Generate image'));
+    s.api.addToolBlock(payload('s2', 'Generate image', 'generate_image_tool', 'Generate image'));
+    s.api.completeToolBlock('s1', false, 'Error: Login required: sign in to Zenvi (Zenvi menu > Sign in), then run this again.');
+    s.api.completeToolBlock('s2', false, 'Error: Login required: sign in to Zenvi (Zenvi menu > Sign in), then run this again.');
+    groups = groupRows(s);
+    check(groups.length === 1 && signInRows(groups[0]) === 1 && signInRows(groups[0].children[1]) === 0,
+        'a grouped sign-in failure shows one Sign in row on the group, outside its collapsed body');
+
     s = scenario({});
     s.api.addToolBlock(payload('h1', 'Mute clips', 'mute_clips_tool', 'Mute clips'));
     s.api.addToolBlock(payload('h2', 'Add clip to timeline', 'add_clip_to_timeline_tool', 'Add clip to timeline'));
