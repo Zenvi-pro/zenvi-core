@@ -616,6 +616,10 @@
     display: inline;
 }
 
+.chat-tool-group-body {
+    padding-left: 12px;
+}
+
 .chat-tool-block.done .chat-tool-title {
     opacity: 0.85;
 }

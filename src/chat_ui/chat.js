@@ -958,7 +958,65 @@
         if (detail.result) setToolDetailRow(block, 'result', 'RESULT:\n' + detail.result);
     }
 
-    window.addToolBlock = function (payloadJson) {
+    // Calls that start in the same JS task arrive in one flush, so calls of one
+    // tool in that task share a group row. Each task gets a fresh batch.
+    var toolBatch = null;
+    function currentToolBatch() {
+        if (!toolBatch) {
+            toolBatch = { byTool: {} };
+            setTimeout(function () { toolBatch = null; }, 0);
+        }
+        return toolBatch;
+    }
+
+    function makeToolGroup(first) {
+        var group = {
+            el: document.createElement('div'),
+            header: document.createElement('button'),
+            body: document.createElement('div'),
+            label: first.label,
+            children: []
+        };
+        group.el.className = 'chat-tool-block chat-tool-group has-logs';
+        group.header.type = 'button';
+        group.header.className = 'chat-tool-header';
+        group.header.innerHTML =
+            '<span class="chat-tool-chevron">' + TOOL_CHEVRON_SVG + '</span>' +
+            '<span class="chat-tool-icon"></span>' +
+            '<span class="chat-tool-title"></span>';
+        group.body.className = 'chat-tool-group-body';
+        group.body.style.display = 'none';
+        group.header.addEventListener('click', function () {
+            var open = group.body.style.display !== 'none';
+            group.body.style.display = open ? 'none' : 'block';
+            group.el.classList[open ? 'remove' : 'add']('expanded');
+        });
+        group.el.appendChild(group.header);
+        group.el.appendChild(group.body);
+        group.iconEl = group.header.querySelector('.chat-tool-icon');
+        group.titleEl = group.header.querySelector('.chat-tool-title');
+        activityContainer.insertBefore(group.el, first.el);
+        group.body.appendChild(first.el);
+        group.children.push(first.el);
+        first.top = group.el;
+        toolBlocks[first.callId].group = group;
+        return group;
+    }
+
+    function refreshToolGroup(group) {
+        var running = 0, failed = 0;
+        group.children.forEach(function (el) {
+            if (el.classList.contains('running')) running++;
+            else if (el.classList.contains('error')) failed++;
+        });
+        group.titleEl.textContent = group.label + ' ×' + group.children.length;
+        group.iconEl.innerHTML = running ? ACTIVITY_SPINNER_SVG : (failed ? ACTIVITY_X_SVG : ACTIVITY_CHECK_SVG);
+        group.el.classList[running > 0 ? 'add' : 'remove']('running');
+        group.el.classList[running === 0 && failed > 0 ? 'add' : 'remove']('error');
+        group.el.classList[running === 0 && failed === 0 ? 'add' : 'remove']('done');
+    }
+
+    window.addToolBlock = function (payloadJson, isReplay) {
         // Normally opened by setProcessing(true), but a tool call can also be
         // the first thing a turn produces — open the block lazily either way.
         if (!activityContainer) openThinkingBlock();
@@ -1029,9 +1087,21 @@
 
         el.appendChild(header);
         el.appendChild(body);
-        activityContainer.appendChild(el);
-
-        toolBlocks[callId] = { el: el, header: header, body: body };
+        var batch = currentToolBatch();
+        var sibling = toolName && !isReplay ? batch.byTool[toolName] : null;
+        var grouped = !!sibling && sibling.top.parentNode === activityContainer;
+        if (grouped) {
+            if (!sibling.group) sibling.group = makeToolGroup(sibling);
+            sibling.group.body.appendChild(el);
+            sibling.group.children.push(el);
+        } else {
+            activityContainer.appendChild(el);
+            if (toolName && !isReplay) {
+                batch.byTool[toolName] = { callId: callId, el: el, top: el, group: null, label: data.label || title };
+            }
+        }
+        toolBlocks[callId] = { el: el, header: header, body: body, group: grouped ? sibling.group : null };
+        if (grouped) refreshToolGroup(sibling.group);
         scrollToBottomIfPinned();
     };
 
@@ -1137,6 +1207,7 @@
                 if (iconEl) iconEl.innerHTML = ACTIVITY_CHECK_SVG;
                 setToolBlockExpanded(block, false);
             }
+            if (block.group) refreshToolGroup(block.group);
         }
 
         scrollToBottomIfPinned();
@@ -1151,7 +1222,7 @@
             data = typeof payloadJson === 'string' ? JSON.parse(payloadJson) : payloadJson;
         } catch (e) { return; }
         if (!data || !data.call_id) return;
-        window.addToolBlock(data);
+        window.addToolBlock(data, true);
         var block = toolBlocks[data.call_id];
         if (block && block.el) {
             block.el.classList.remove('chat-message-enter');

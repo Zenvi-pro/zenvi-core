@@ -4082,6 +4082,7 @@ class AIChatWindow(QDockWidget):
             payload = {
                 "call_id": call_id,
                 "title": title,
+                "label": humanize_tool_name(tool_name),
                 "tool_name": tool_name or "",
             }
             self._run_js("if(window.addToolBlock) window.addToolBlock(%s);"

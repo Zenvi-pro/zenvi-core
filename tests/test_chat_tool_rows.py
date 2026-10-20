@@ -258,3 +258,10 @@ def test_the_next_burst_arms_a_new_flush(chat_ui, monkeypatch):
     timers[0][1]()
     win._run_js("b()")
     assert len(timers) == 2 and len(win.pages) == 1
+
+
+def test_each_row_carries_its_plain_label_for_group_rows(chat_ui):
+    win = _tool_window(chat_ui)
+    win._on_tool_started("c3", "add_clip_to_timeline_tool", json.dumps({"file_id": "/m/a.mp4"}))
+    [payload] = _added_payloads(win)
+    assert payload["label"] == chat_ui.humanize_tool_name("add_clip_to_timeline_tool")

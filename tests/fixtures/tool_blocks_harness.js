@@ -50,6 +50,9 @@ const FUNCTIONS = [
     fnSource('fetchToolDetail'),
     fnSource('setToolDetailRow'),
     fnSource('showToolDetail'),
+    fnSource('currentToolBatch'),
+    fnSource('makeToolGroup'),
+    fnSource('refreshToolGroup'),
     assignSource('addToolBlock'),
     assignSource('appendToolLog'),
     assignSource('completeToolBlock'),
@@ -61,6 +64,7 @@ const PRELUDE = [
     'var activityContainer = null;',
     'var lastEnterAt = 0, enterStagger = 0;',
     'var signInPrompts = [];',
+    'var toolBatch = null;',
     'var modelSelect = { value: "" };',
     'var currentAgentMode = "agent";',
     'var ACTIVITY_SPINNER_SVG = "<svg class=\\"spin\\"></svg>";',
@@ -258,11 +262,16 @@ function scenario(opts) {
     const activity = new FakeEl('div');
     messages.appendChild(activity);
     api.setActivity(activity);
-    return { api: api, calls: calls, root: root, activity: activity };
+    const runTasks = function () {
+        const tasks = pendingTasks;
+        pendingTasks = [];
+        tasks.forEach(function (fn) { fn(); });
+    };
+    return { api: api, calls: calls, root: root, activity: activity, runTasks: runTasks };
 }
 
-function payload(callId, title, toolName) {
-    return JSON.stringify({ call_id: callId, title: title, tool_name: toolName || '' });
+function payload(callId, title, toolName, label) {
+    return JSON.stringify({ call_id: callId, title: title, label: label || title, tool_name: toolName || '' });
 }
 
 function rowOf(s, callId) {
@@ -274,6 +283,10 @@ function body(row) { return row.children[1]; }
 
 function textHas(node, needle) {
     return !!node && node.textContent.indexOf(needle) >= 0;
+}
+
+function groupRows(s) {
+    return findAll(s.root, function (n) { return n.classList.contains('chat-tool-group'); });
 }
 
 function signInRows(row) {
@@ -339,6 +352,43 @@ try {
     s.api.appendToolLog('c8', 'Login required: sign in to Zenvi (Zenvi menu > Sign in), then run this again.');
     s.api.completeToolBlock('c9', false, 'Error: file not found');
     check(signInRows(rowOf(s, 'c9')) === 0, 'a login line in another row does not give this failed row a Sign in button');
+
+    // Calls of one tool that start in the same batch share one group row.
+    s = scenario({});
+    s.api.addToolBlock(payload('g1', 'Add clip to timeline: a.mp4 on track 1', 'add_clip_to_timeline_tool', 'Add clip to timeline'));
+    s.api.addToolBlock(payload('g2', 'Add clip to timeline: b.mp4 on track 1', 'add_clip_to_timeline_tool', 'Add clip to timeline'));
+    let groups = groupRows(s);
+    check(groups.length === 1, 'two calls of one tool in one batch share one group row');
+    const group = groups[0];
+    check(!!group && textHas(group.children[0], 'Add clip to timeline ×2'), 'the group row reads "Add clip to timeline ×2"');
+    check(!!group && rowOf(s, 'g1').parentNode === group.children[1] && rowOf(s, 'g2').parentNode === group.children[1],
+        'both rows sit inside the group body');
+    check(!!group && group.children[1].style.display === 'none', 'the group starts collapsed');
+    if (group) group.children[0].click();
+    check(!!group && group.children[1].style.display === 'block', 'clicking the group header opens it');
+    if (group) group.children[0].click();
+    check(!!group && group.children[1].style.display === 'none', 'clicking it again closes it');
+    s.api.completeToolBlock('g1', true, 'Added a.mp4 to track 1');
+    check(!!group && group.classList.contains('running'), 'the group spins while any call is still running');
+    s.api.completeToolBlock('g2', false, 'Error: file not found');
+    check(!!group && !group.classList.contains('running') && group.classList.contains('error'),
+        'the group shows an error once nothing is running and one call failed');
+
+    s = scenario({});
+    s.api.addToolBlock(payload('h1', 'Mute clips', 'mute_clips_tool', 'Mute clips'));
+    s.api.addToolBlock(payload('h2', 'Add clip to timeline', 'add_clip_to_timeline_tool', 'Add clip to timeline'));
+    check(groupRows(s).length === 0, 'different tools in one batch are not grouped');
+
+    s = scenario({});
+    s.api.addToolBlock(payload('k1', 'Add clip to timeline', 'add_clip_to_timeline_tool', 'Add clip to timeline'));
+    s.runTasks();
+    s.api.addToolBlock(payload('k2', 'Add clip to timeline', 'add_clip_to_timeline_tool', 'Add clip to timeline'));
+    check(groupRows(s).length === 0, 'calls from different batches stay separate rows');
+
+    s = scenario({});
+    s.api.replayToolBlock(JSON.stringify({ call_id: 'r1', title: 'Add clip to timeline', tool_name: 'add_clip_to_timeline_tool' }), true);
+    s.api.replayToolBlock(JSON.stringify({ call_id: 'r2', title: 'Add clip to timeline', tool_name: 'add_clip_to_timeline_tool' }), true);
+    check(groupRows(s).length === 0, 'restored rows from history are never grouped');
 
     // Progress lines still stream into the row, and a restored row is not expandable.
     s = scenario({});
