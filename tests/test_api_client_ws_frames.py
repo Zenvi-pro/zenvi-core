@@ -2,6 +2,8 @@
 
 import json
 import sys
+import threading
+import time
 import types
 from unittest.mock import patch
 
@@ -55,3 +57,28 @@ def test_thinking_frames_are_ignored_when_nobody_listens():
     fake, result = _run_ws([_frame("thinking", text="just thinking"), _frame("done")])
     assert result is None
     assert fake.sent and fake.sent[0]["type"] == "user_message"
+
+
+def test_tool_calls_never_run_more_than_four_at_once():
+    lock = threading.Lock()
+    active = peak = 0
+
+    def slow_tool(name, args, call_id):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
+        return "Done " + call_id
+
+    frames = [
+        json.dumps({"type": "tool_call", "data": {"call_id": f"c{i}", "tool_name": "slow_tool", "tool_args": {}}})
+        for i in range(10)
+    ]
+    fake, _ = _run_ws(frames + [_frame("done")], on_tool_call=slow_tool)
+
+    results = sorted(m["data"]["call_id"] for m in fake.sent if m.get("type") == "tool_result")
+    assert peak <= 4, f"{peak} tool calls ran at once"
+    assert results == [f"c{i}" for i in range(10)], "every call's result is sent before the call returns"
