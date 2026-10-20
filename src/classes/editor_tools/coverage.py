@@ -118,7 +118,7 @@ CAPABILITIES = [
     ("files.list_filter", "media-files", "Project Files search/filter", "List/filter project files by type, name, tags"),
     ("files.properties", "media-files", "File Properties dialog", "Rename, tag, relink the path, set in/out frames, set image-sequence fps; read full media info"),
     ("files.remove", "media-files", "Project Files > Remove from Project", "Remove files from the project (and their clips) without deleting from disk"),
-    ("files.subclip", "media-files", "Project Files > Split Clip", "Create named sub-clips of a file (existing split_file_add_clip_tool; several in one call)"),
+    ("files.subclip", "media-files", "Project Files > Split Clip", "Create named sub-clips of a file (create_subclips_tool; several in one call)"),
     ("files.proxy", "media-files", "Preview > Optimize (Optimize, Link, Unlink, Delete & Unlink, Cancel) / Edit > Clear > Optimized Videos", "Create and manage optimized preview proxies"),
     ("transition.list", "media-files", "Transitions dock", "List/search transitions (existing tools)"),
     ("transition.apply", "media-files", "Drag transition onto clips", "Apply a transition between/at clips (existing apply_transition_tool)"),
@@ -190,7 +190,7 @@ LEGACY_COVERAGE = {
     "clip.delete": ["delete_from_timeline_tool"],
     "clip.ripple_delete": ["delete_from_timeline_tool"],  # ripple=true
     "files.import": ["import_files_tool"],
-    "files.subclip": ["split_file_add_clip_tool"],
+    "files.subclip": ["create_subclips_tool"],
     "transition.list": ["list_transitions_tool", "search_transitions_tool"],
     "transition.apply": ["apply_transition_tool"],
     "audio.levels": ["set_clip_volume_tool", "duck_under_speech_tool", "analyze_timeline_audio_tool"],

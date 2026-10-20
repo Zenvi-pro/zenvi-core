@@ -6324,7 +6324,7 @@ def download_freesound_music_tool(sound_id: str = "", preview_url: str = "", fil
     """Download a Freesound HQ MP3 preview to the local machine."""
     try:
         if not preview_url:
-            return "Error: preview_url is required (from search_freesound_music_tool)."
+            return "Error: preview_url is required (from a Freesound search result)."
         try:
             sid = int(sound_id)
         except (ValueError, TypeError):

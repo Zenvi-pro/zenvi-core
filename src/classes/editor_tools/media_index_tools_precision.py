@@ -972,7 +972,7 @@ def get_moment(start_seconds, end_seconds, file_ids=None, file_query="", frames=
     shots in it with their description, measured quality and look, the words spoken, notes on what happens, a spectrogram only
     when it helps (a music section edge the numbers are unsure of) or when you ask, and where this footage is used on the
     timeline with what is above, below and around it there. Use it when you have found a moment (from search) and want to
-    judge it before cutting. It is never the way to survey a library: use search_footage_tool and get_media_overview_tool
+    judge it before cutting. It is never the way to survey a library: use search_footage_tool and get_project_overview_tool
     for that. A moment is at most 60 seconds.
     """
     from classes.media_index import moment, spectro

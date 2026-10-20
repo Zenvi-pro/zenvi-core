@@ -994,7 +994,7 @@ def export_files_to_folder(file_ids, folder=""):
     """Export chosen project files to a folder (Project Files > Export Selected Clips).
 
     Plain files are copied; sub-clips (files with in/out points, e.g. from
-    split_file_add_clip_tool) and image sequences are rendered as H.264/AAC MP4
+    create_subclips_tool) and image sequences are rendered as H.264/AAC MP4
     of just that part, at the file's own size and frame rate (on a QThread,
     never the GUI or a plain worker thread). Existing
     destination files are skipped, like the dialog. Changes nothing in the project.
