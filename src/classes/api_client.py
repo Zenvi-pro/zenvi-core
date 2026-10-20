@@ -531,7 +531,8 @@ class ZenviBackendClient:
 
                 def _bounded():
                     with tool_slots:
-                        _runner()
+                        if not self._shutting_down:  # cancelled while it waited for a slot
+                            _runner()
 
                 t = threading.Thread(target=_bounded, daemon=True, name="zenvi-tool-worker")
                 tool_threads.append(t)
@@ -648,9 +649,11 @@ class ZenviBackendClient:
                 stop_pings.set()
                 # Drain in-flight tool workers so any tool_result frames they
                 # emit get sent before we close the WS.
-                deadline = time.monotonic() + (1.0 if self._shutting_down else 120)
+                # A queued call starts only when an earlier one ends, so each gets
+                # its own wait; a cancel shares one short budget.
+                deadline = time.monotonic() + 1.0
                 for t in tool_threads:
-                    t.join(max(0.0, deadline - time.monotonic()))
+                    t.join(max(0.0, deadline - time.monotonic()) if self._shutting_down else 120)
 
             try:
                 ws.close()

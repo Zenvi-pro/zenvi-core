@@ -1211,16 +1211,19 @@
             }
             if (!ok) {
                 // Keep failed tools visible so args/results can be inspected.
-                block.el.classList.add('error', 'has-logs');
+                block.el.classList.add('error');
                 var errIcon = block.header.querySelector('.chat-tool-icon');
                 if (errIcon) errIcon.innerHTML = ACTIVITY_X_SVG;
                 setToolBlockExpanded(block, false);
                 // This call's own result decides Sign in; log lines from other calls never do.
-                fetchToolDetail(callId, function (detail) {
-                    if (AUTH_FAILURE_RE.test(String(summary || '') + '\n' + String(detail.result || ''))) {
-                        addSignInPrompt(block);
-                    }
-                });
+                // A row restored from history has no details to fetch.
+                if (block.el.classList.contains('has-logs')) {
+                    fetchToolDetail(callId, function (detail) {
+                        if (AUTH_FAILURE_RE.test(String(summary || '') + '\n' + String(detail.result || ''))) {
+                            addSignInPrompt(block);
+                        }
+                    });
+                }
             } else {
                 block.el.classList.add('done');
                 var iconEl = block.header.querySelector('.chat-tool-icon');

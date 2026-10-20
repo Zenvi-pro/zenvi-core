@@ -414,6 +414,12 @@ try {
     s.api.replayToolBlock(JSON.stringify({ call_id: 'r2', title: 'Add clip to timeline', tool_name: 'add_clip_to_timeline_tool' }), true);
     check(groupRows(s).length === 0, 'restored rows from history are never grouped');
 
+    // A failed row restored from history has no details, so it stays closed and asks for none.
+    s = scenario({});
+    s.api.replayToolBlock(JSON.stringify({ call_id: 'r9', title: 'Export video', tool_name: 'export_video_tool' }), false);
+    check(!rowOf(s, 'r9').classList.contains('has-logs') && s.calls.length === 0,
+        'a restored failed row is not expandable and fetches no details');
+
     // The same call announced twice in one batch stays one row, never a group of itself.
     s = scenario({});
     s.api.addToolBlock(payload('d1', 'Add clip to timeline', 'add_clip_to_timeline_tool', 'Add clip to timeline'));

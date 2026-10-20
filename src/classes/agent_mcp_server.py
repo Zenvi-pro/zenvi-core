@@ -217,14 +217,19 @@ def call_meta_tool(name: str, args: dict):
     defs = {d["name"]: d for d in iter_tool_defs()}
     if name == "find_tools":
         terms = _words(args.get("query", ""))
+        from classes.agent_tools.core_tools import CORE_TOOL_NAMES
+
+        listed = set(CORE_TOOL_NAMES) | set(_extra_tools())
         scored = sorted((-(3 * len(terms & _words(n.replace("_", " "))) + len(terms & _words(d["description"]))), n)
-                        for n, d in defs.items())
+                        for n, d in defs.items() if n not in listed)
         try:
             limit = max(1, min(int(args.get("limit") or 5), 10))
         except (TypeError, ValueError):
             return "Error: limit must be an integer from 1 to 10."
         return json.dumps([defs[n] for score, n in scored[:limit] if score < 0])
     target, inner = str(args.get("name") or ""), args.get("args") or {}
+    if not isinstance(inner, dict):
+        return "Error: run_tool args must be an object."
     d = defs.get(target)
     if d is None:
         return "Error: no tool named %r. Call find_tools to look it up." % target

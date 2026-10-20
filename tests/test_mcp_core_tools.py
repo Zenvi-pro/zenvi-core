@@ -98,3 +98,17 @@ def test_find_tools_reports_a_bad_limit_instead_of_raising(tool_stub):
 
     assert call_meta_tool("find_tools", {"query": "reverse", "limit": "many"}).startswith("Error")
     assert json.loads(call_meta_tool("find_tools", {"query": "reverse", "limit": "1"}))
+
+
+def test_find_tools_only_returns_tools_that_are_not_listed(tool_stub):
+    from classes.agent_mcp_server import call_meta_tool
+
+    found = json.loads(call_meta_tool("find_tools", {"query": "search footage reverse clip"}))
+    assert [t["name"] for t in found] == ["reverse_clip_tool"]
+
+
+def test_run_tool_rejects_args_that_are_not_an_object(tool_stub):
+    from classes.agent_mcp_server import call_meta_tool
+
+    for bad in ([1], "x"):
+        assert str(call_meta_tool("run_tool", {"name": "reverse_clip_tool", "args": bad})).startswith("Error")
