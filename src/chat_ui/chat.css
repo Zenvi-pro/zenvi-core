@@ -620,6 +620,12 @@
     padding-left: 12px;
 }
 
+.chat-thinking-text {
+    white-space: pre-wrap;
+    color: var(--chat-muted);
+    padding: 2px 10px;
+}
+
 .chat-tool-block.done .chat-tool-title {
     opacity: 0.85;
 }

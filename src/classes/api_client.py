@@ -397,6 +397,7 @@ class ZenviBackendClient:
         on_token: Optional[Callable] = None,
         on_tool_progress: Optional[Callable] = None,
         auth_token: Optional[str] = None,
+        on_thinking: Optional[Callable] = None,
         agent_mode: Optional[str] = None,
         action: Optional[str] = None,
         plan_id: Optional[str] = None,
@@ -614,6 +615,12 @@ class ZenviBackendClient:
                                 on_token(data.get("text", ""))
                             except Exception as exc:  # noqa: BLE001
                                 log.debug("on_token handler error: %s", exc)
+                    elif msg_type == "thinking":
+                        if on_thinking:
+                            try:
+                                on_thinking(data.get("text", ""))
+                            except Exception as exc:  # noqa: BLE001
+                                log.debug("on_thinking handler error: %s", exc)
                     elif msg_type == "assistant_response":
                         final_response = data.get("response", "")
                         if on_response:

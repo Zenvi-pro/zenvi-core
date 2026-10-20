@@ -57,6 +57,7 @@ const FUNCTIONS = [
     assignSource('appendToolLog'),
     assignSource('completeToolBlock'),
     assignSource('replayToolBlock'),
+    assignSource('appendThinkingText'),
 ];
 
 const PRELUDE = [
@@ -75,6 +76,7 @@ const PRELUDE = [
     'function escapeHtml(s) { return String(s); }',
     'function scrollToBottomIfPinned() {}',
     'function clearReasoningStep() {}',
+    'function openThinkingBlock() {}',
     'function setActivity(el) { activityContainer = el; }',
 ].join('\n');
 
@@ -252,7 +254,7 @@ function scenario(opts) {
     const body = FUNCTIONS.join('\n') + '\nreturn {' +
         'addToolBlock: typeof addToolBlock === "function" ? addToolBlock : window.addToolBlock,' +
         'appendToolLog: window.appendToolLog, completeToolBlock: window.completeToolBlock,' +
-        'replayToolBlock: window.replayToolBlock, setActivity: setActivity, toolBlocks: toolBlocks' +
+        'replayToolBlock: window.replayToolBlock, appendThinkingText: window.appendThinkingText, setActivity: setActivity, toolBlocks: toolBlocks' +
         '};';
     const api = new Function('document', 'window', 'setTimeout', 'getBridge', PRELUDE + '\n' + body)(
         document, win, fakeSetTimeout, getBridge);
@@ -389,6 +391,18 @@ try {
     s.api.replayToolBlock(JSON.stringify({ call_id: 'r1', title: 'Add clip to timeline', tool_name: 'add_clip_to_timeline_tool' }), true);
     s.api.replayToolBlock(JSON.stringify({ call_id: 'r2', title: 'Add clip to timeline', tool_name: 'add_clip_to_timeline_tool' }), true);
     check(groupRows(s).length === 0, 'restored rows from history are never grouped');
+
+    // Reasoning text streams into the open Thinking block, in order with its tool rows.
+    s = scenario({});
+    s.api.appendThinkingText('Checking ');
+    s.api.appendThinkingText('the timeline');
+    let thoughts = findAll(s.activity, function (n) { return n.classList.contains('chat-thinking-text'); });
+    check(thoughts.length === 1 && thoughts[0].textContent === 'Checking the timeline', 'streamed reasoning joins into one text block');
+    s.api.addToolBlock(payload('t1', 'List clips', 'list_clips_tool', 'List clips'));
+    s.api.appendThinkingText('Next');
+    thoughts = findAll(s.activity, function (n) { return n.classList.contains('chat-thinking-text'); });
+    check(thoughts.length === 2 && thoughts[1].textContent === 'Next', 'text after a tool row starts a new block below it');
+    check(s.activity.lastChild === thoughts[1], 'the new reasoning block comes after the tool row, in order');
 
     // Progress lines still stream into the row, and a restored row is not expandable.
     s = scenario({});

@@ -538,6 +538,7 @@ class AIChatWorker(QObject):
     response_ready = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     token_received = pyqtSignal(str)
+    thinking_received = pyqtSignal(str)
     tool_started = pyqtSignal(str, str, str)   # call_id, tool_name, args_json
     tool_log = pyqtSignal(str, str)            # call_id, line
     tool_completed = pyqtSignal(str, bool, str)  # call_id, ok, result_text
@@ -623,6 +624,10 @@ class AIChatWorker(QObject):
                 if text and not self._stopping:
                     self.token_received.emit(text)
 
+            def on_thinking(text):
+                if text and not self._stopping:
+                    self.thinking_received.emit(text)
+
             def on_tool_progress(kind, call_id, tool_name, payload):
                 if self._stopping:
                     return
@@ -693,6 +698,7 @@ class AIChatWorker(QObject):
                 on_response=on_response,
                 on_error=on_error,
                 on_token=on_token,
+                on_thinking=on_thinking,
                 on_tool_progress=on_tool_progress,
                 auth_token=client.auth_token(),
                 agent_mode=agent_mode or "agent",
@@ -1126,6 +1132,8 @@ class AIChatWindow(QDockWidget):
         worker.response_ready.connect(self._on_response_ready)
         worker.error_occurred.connect(self._on_error)
         worker.token_received.connect(self._on_token)
+        if hasattr(worker, "thinking_received"):
+            worker.thinking_received.connect(self._on_thinking)
         worker.tool_started.connect(self._on_tool_started)
         worker.tool_log.connect(self._on_tool_log)
         worker.tool_completed.connect(self._on_tool_completed)
@@ -3952,6 +3960,16 @@ class AIChatWindow(QDockWidget):
             "if(window.appendOrUpdateStreamingMessage) window.appendOrUpdateStreamingMessage(%s);"
             % json.dumps(chunk)
         )
+
+    @pyqtSlot(str)
+    def _on_thinking(self, text: str):
+        """Backend reasoning text, streamed into the open Thinking block."""
+        if not text or self._user_cancelled:
+            return
+        sid = getattr(self.sender(), "_session_id", self._active_sid)
+        if sid != self._active_sid or not self._use_web_ui:
+            return
+        self._run_js("if(window.appendThinkingText) window.appendThinkingText(%s);" % json.dumps(text))
 
     @pyqtSlot(str)
     def _on_token(self, text: str):

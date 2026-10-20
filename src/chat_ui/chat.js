@@ -561,6 +561,21 @@
 
     window.openThinkingBlock = openThinkingBlock;
 
+    // Backend reasoning text streams into the open Thinking block, in order with its tool rows.
+    window.appendThinkingText = function (text) {
+        if (!text) return;
+        if (!activityContainer) openThinkingBlock();
+        if (!activityContainer) return;
+        var last = activityContainer.lastChild;
+        if (!last || !last.classList.contains('chat-thinking-text')) {
+            last = document.createElement('div');
+            last.className = 'chat-thinking-text';
+            activityContainer.appendChild(last);
+        }
+        last.textContent = last.textContent + text;
+        scrollToBottomIfPinned();
+    };
+
     function collapseThinkingBlock(elapsedMs) {
         if (!thinkingBlockEl || thinkingBlockCollapsed) return;
         thinkingBlockCollapsed = true;

@@ -206,6 +206,8 @@ def _batching_window(chat_ui):
         _run_js = chat_ui.AIChatWindow._run_js
         _flush_js = chat_ui.AIChatWindow._flush_js
         _exec_js = chat_ui.AIChatWindow._exec_js
+        _on_thinking = chat_ui.AIChatWindow._on_thinking
+        _user_cancelled = False
         _record_tool_started = lambda self, *a: None
         _flush_token_buffer = lambda self: None
         _commit_streaming_segment = lambda self, sid: None
@@ -265,3 +267,13 @@ def test_each_row_carries_its_plain_label_for_group_rows(chat_ui):
     win._on_tool_started("c3", "add_clip_to_timeline_tool", json.dumps({"file_id": "/m/a.mp4"}))
     [payload] = _added_payloads(win)
     assert payload["label"] == chat_ui.humanize_tool_name("add_clip_to_timeline_tool")
+
+
+def test_reasoning_text_from_the_backend_is_queued_for_the_open_thinking_block(chat_ui, monkeypatch):
+    monkeypatch.setattr(chat_ui, "QTimer", types.SimpleNamespace(singleShot=lambda ms, fn: None))
+    win = _batching_window(chat_ui)
+    text = 'Checking "the" timeline\n'
+    win._on_thinking(text)
+    assert win._js_queue == [
+        "if(window.appendThinkingText) window.appendThinkingText(%s);" % json.dumps(text)
+    ]
