@@ -558,6 +558,8 @@ class ZenviMcpServer:
                 text = "" if result is None else str(result)
                 return mcp_content(wrap_str_result(name, text))
 
+            # MCP calls carry no chat session: give them their own split/import slot, not "default".
+            args["chat_session_id"] = "mcp"
             output = await anyio.to_thread.run_sync(
                 lambda: execute_tool_rich(name, args)
             )

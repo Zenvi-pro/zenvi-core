@@ -134,6 +134,41 @@ def test_server_lists_and_calls_tools(tool_stub):
         srv.stop()
 
 
+def test_mcp_calls_do_not_use_the_default_chat_slot(tool_stub):
+    _require_fastmcp()
+    from classes.agent_mcp_server import ZenviMcpServer
+
+    keys = []
+    run_rich = tool_stub.execute_tool_rich
+
+    def record(name, args):
+        keys.append(args.get("chat_session_id"))
+        return run_rich(name, args)
+
+    tool_stub.execute_tool_rich = record
+    srv = ZenviMcpServer().start()
+    time.sleep(1.0)
+    try:
+        async def call_once():
+            import httpx
+            from mcp import ClientSession
+            from mcp.client.streamable_http import streamable_http_client
+            headers = {"Authorization": "Bearer %s" % srv.token}
+            async with httpx.AsyncClient(headers=headers) as http_client:
+                async with streamable_http_client(srv.url(), http_client=http_client) as (r, w, _):
+                    async with ClientSession(r, w) as session:
+                        await session.initialize()
+                        await session.call_tool("list_files_tool", {})
+
+        asyncio.run(call_once())
+        asyncio.run(call_once())
+    finally:
+        srv.stop()
+
+    assert len(keys) == 2
+    assert all(k not in (None, "", "default") for k in keys), keys
+
+
 def test_server_instructions_tell_harnesses_to_inspect_after_edits():
     from classes.agent_mcp_server import SERVER_INSTRUCTIONS
 
