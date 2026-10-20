@@ -1664,6 +1664,12 @@ def delete_from_timeline(
 
     The whole call is a single undo step, whether it removes one clip or fifty.
     """
+    from classes.agent_tools.schema import strip_hidden
+
+    unknown = sorted(strip_hidden(_kw))
+    if unknown:
+        guess = " (did you mean ripple=true?)" if any("gap" in k.lower() for k in unknown) else ""
+        return f"Error: unknown argument(s): {', '.join(unknown)}{guess}. Nothing was deleted."
     try:
         app = _get_app()
 
@@ -2588,8 +2594,7 @@ def add_clip_to_timeline(
             return (
                 "Error: duration_seconds alone cannot trim the first N seconds of a file "
                 "nothing has looked at. Name both edges of the section you want: pass "
-                "start_seconds and end_seconds (the keep window search_footage_tool returned), "
-                "or place_moment with that window."
+                "start_seconds and end_seconds (the keep window search_footage_tool returned)."
                 + (" Times written in query are not read as the window." if skip_watch else "")
             )
 
