@@ -127,7 +127,8 @@ def test_server_lists_and_calls_tools(tool_stub):
                         return [t.name for t in tools.tools], result.content[0].text
 
         names, text = asyncio.run(run())
-        assert "list_files_tool" in names
+        # Only the core set is listed; any other tool is still callable by name.
+        assert "search_footage_tool" in names and "list_files_tool" not in names
         assert "FIXTURE_FILES" in text
     finally:
         srv.stop()
