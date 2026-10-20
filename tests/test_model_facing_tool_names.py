@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 
 from classes import tool_handlers  # noqa: F401  (merges the editor-tool registry into TOOL_SCHEMAS)
-from classes.agent_mcp_server import SERVER_INSTRUCTIONS, iter_tool_defs
+from classes.agent_mcp_server import SERVER_INSTRUCTIONS, iter_tool_defs, listed_tool_defs
 from classes.agent_tools.schema import TOOL_SCHEMAS
 from classes.edit_playbook import PLAYBOOK
 from classes.editor_tools import REGISTRY
@@ -54,7 +54,7 @@ def _model_facing_texts():
 
 
 def test_model_facing_tool_names_are_served_over_mcp():
-    served = {d["name"] for d in iter_tool_defs()} - RETIRED
+    served = {d["name"] for d in listed_tool_defs() + iter_tool_defs()} - RETIRED
     named = {}
     for where, text in _model_facing_texts():
         for name in TOOL_NAME.findall(text):
