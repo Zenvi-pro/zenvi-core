@@ -1089,7 +1089,7 @@
 
         header.addEventListener('click', function () {
             var block = toolBlocks[callId];
-            if (!block) return;
+            if (!block || !el.classList.contains('has-logs')) return;
             if (el.classList.contains('expanded')) {
                 setToolBlockExpanded(block, false);
                 return;

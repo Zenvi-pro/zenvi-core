@@ -86,3 +86,16 @@ def test_tool_calls_never_run_more_than_four_at_once():
     assert peak <= 4, f"{peak} tool calls ran at once"
     assert all(daemon), "quitting the editor must not wait for a running tool"
     assert results == [f"c{i}" for i in range(10)], "every call's result is sent before the call returns"
+
+
+def test_a_call_queued_before_stop_never_runs_even_after_a_new_turn():
+    from classes.api_client import ZenviBackendClient
+
+    client = ZenviBackendClient.__new__(ZenviBackendClient)
+    client._ws_lock = threading.Lock()
+    client._active_wss = set()
+    client._turn_cancels = set()
+    cancelled = threading.Event()
+    client._turn_cancels.add(cancelled)
+    client.cancel_current_request()
+    assert cancelled.is_set() and not client._turn_cancels

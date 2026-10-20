@@ -87,6 +87,9 @@ class ZenviBackendClient:
         self._active_wss = set()  # active WebSockets during parallel chat requests
         self._ws_lock = threading.Lock()
         self._shutting_down = False
+        # One event per running turn; Stop sets them all, so a tool call still
+        # queued for a slot never runs after Stop, even once a new turn starts.
+        self._turn_cancels: set = set()
         # Disable SSL verification for non-production backends (self-signed certs)
         self._ssl_verify = (self.base_url.rstrip("/") == _DEFAULT_BACKEND_URL.rstrip("/"))
 
@@ -427,6 +430,9 @@ class ZenviBackendClient:
         ws_url = f"{ws_url}/api/v1/chat/ws"
 
         self._shutting_down = False
+        turn_cancelled = threading.Event()
+        with self._ws_lock:
+            self._turn_cancels.add(turn_cancelled)
         ws = None
         try:
             sslopt = {} if self._ssl_verify else {"cert_reqs": 0}  # 0 = ssl.CERT_NONE
@@ -531,7 +537,7 @@ class ZenviBackendClient:
 
                 def _bounded():
                     with tool_slots:
-                        if not self._shutting_down:  # cancelled while it waited for a slot
+                        if not turn_cancelled.is_set():  # Stop came while it waited for a slot
                             _runner()
 
                 t = threading.Thread(target=_bounded, daemon=True, name="zenvi-tool-worker")
@@ -676,6 +682,7 @@ class ZenviBackendClient:
                 with self._ws_lock:
                     if ws is not None:
                         self._active_wss.discard(ws)
+                    self._turn_cancels.discard(turn_cancelled)
             except Exception:
                 pass
 
@@ -689,6 +696,9 @@ class ZenviBackendClient:
         with self._ws_lock:
             websockets = list(self._active_wss)
             self._active_wss.clear()
+            for event in self._turn_cancels:
+                event.set()
+            self._turn_cancels.clear()
 
         for ws in websockets:
             try:
