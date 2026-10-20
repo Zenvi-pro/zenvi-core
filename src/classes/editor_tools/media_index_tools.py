@@ -550,8 +550,8 @@ def describe_shots(file_id="", shot_ids=None, start_seconds=None, end_seconds=No
     if len(set(ids)) > MAX_DESCRIBE_SHOTS:
         raise ToolError(f"at most {MAX_DESCRIBE_SHOTS} shots a call; ask for a shorter range")
     out, why = describe_file_shots(f, fi, ids)
-    if why:
-        raise ToolError(why)
+    if why or out is None:
+        raise ToolError(why or "no descriptions came back")
     shots = [_nonempty({k: s.get(k) for k in ("id", "start", "end", "description", "actions", "on_screen_text", "sound_events", "mood",
                                                "shot_type", "interest", "usable", "usable_reason")}) for s in out["shots"]]
     return ok(f"{len(shots)} shot(s) described ({len(out['described'])} new)", file_id=str(f.id), shots=shots)

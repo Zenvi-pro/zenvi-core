@@ -64,8 +64,10 @@ def match_reference(ref: FileIndex, files: Sequence[FileIndex], start: Optional[
         qv = _shot_query_vector(ref, shot)
         if qv is not None and pool:
             # its own frames are matched picture to picture; a description stand-in is matched like any words
-            by = "reference_vector" if msearch.reference_vector_from(ref, shot["start"], shot["end"]) is not None else "query_vector"
-            res = msearch.search(pool, **{by: {ref.vector_model: qv}}, filters=filters or {}, limit=max(per_shot * 3, 6))
+            vec = {ref.vector_model: qv}
+            pictured = msearch.reference_vector_from(ref, shot["start"], shot["end"]) is not None
+            res = msearch.search(pool, query_vector=None if pictured else vec, reference_vector=vec if pictured else None,
+                                 filters=filters or {}, limit=max(per_shot * 3, 6))
             for hit in res["hits"]:
                 cand = by_sha[hit["sha"]]
                 src = next((s for s in cand.shots if s["id"] == hit["shot_id"]), None)

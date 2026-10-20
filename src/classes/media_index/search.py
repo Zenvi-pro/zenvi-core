@@ -151,15 +151,19 @@ def _best_vectors(fi: FileIndex, q: np.ndarray, kinds: Sequence[str]) -> Dict[in
         for i in np.argsort(-sims)[:int(allowed.sum())][:PER_MATRIX]:
             row, score = rows[int(i)], float(sims[int(i)])
             kind = row.get("kind")
-            span = None if kind == "image" else (float(row["start"]), float(row["end"]))
-            t = float(row["t"]) if kind == "image" else (span[0] + span[1]) / 2.0
+            if kind == "image":
+                t, span = float(row["t"]), None
+            else:
+                start, end = float(row["start"]), float(row["end"])
+                t, span = (start + end) / 2.0, (start, end)
             sid = _shot_id(fi, row, t)
             if sid is None:
                 continue
             b = best.setdefault(sid, {"score": -1.0, "scores": {}})
             b["scores"][kind] = max(b["scores"].get(kind, -1.0), round(score, 4))
             if score > b["score"]:
-                b.update(score=score, kind=kind, t=span[0] if kind == "speech" else t, span=span if kind == "speech" else None,
+                spoken = span if kind == "speech" else None
+                b.update(score=score, kind=kind, t=spoken[0] if spoken else t, span=spoken,
                          why=str(row.get("text") or "")[:160])
     return best
 
