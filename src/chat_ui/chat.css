@@ -612,6 +612,10 @@
     color: #ef4444;
 }
 
+.chat-tool-block.done .chat-tool-cmd {
+    display: inline;
+}
+
 .chat-tool-block.done .chat-tool-title {
     opacity: 0.85;
 }

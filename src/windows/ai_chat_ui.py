@@ -329,6 +329,24 @@ def describe_tool_call(tool_name: str, args) -> str:
     return text if len(text) <= 90 else text[:89] + "…"
 
 
+# Raw args and results for expanding a tool row. They stay here and reach the
+# page only when the user opens that row, and the store is bounded.
+_TOOL_DETAILS: dict = {}
+_TOOL_DETAILS_MAX = 200
+
+
+def _remember_tool_detail(call_id: str, **fields: str) -> None:
+    entry = _TOOL_DETAILS.pop(call_id, {})
+    entry.update(fields)
+    _TOOL_DETAILS[call_id] = entry
+    while len(_TOOL_DETAILS) > _TOOL_DETAILS_MAX:
+        del _TOOL_DETAILS[next(iter(_TOOL_DETAILS))]
+
+
+def _tool_call_detail(call_id: str) -> dict:
+    return dict(_TOOL_DETAILS.get(call_id) or {})
+
+
 class WidgetToolBlock(QFrame):
     """Collapsible tool-run block for native Qt chat (mirrors chat.js tool blocks)."""
 
@@ -931,6 +949,11 @@ class ChatBridge(QObject):
     def signInZenvi(self):
         if self.window:
             self.window._sign_in_zenvi()
+
+    @guarded_slot(str, result=str)
+    def toolDetail(self, call_id: str) -> str:
+        """Args and result of one tool row, asked for when the row is expanded."""
+        return json.dumps(_tool_call_detail(call_id))
 
     @guarded_slot(str, result=str)
     def listMentionables(self, query: str = "") -> str:
@@ -2046,8 +2069,6 @@ class AIChatWindow(QDockWidget):
         payload = {
             "call_id": event.get("call_id") or "",
             "title": event.get("title") or humanize_tool_name(event.get("tool_name") or ""),
-            "cmd": "",
-            "args_detail": "",
             "tool_name": event.get("tool_name") or "",
         }
         self._run_js(
@@ -4031,10 +4052,10 @@ class AIChatWindow(QDockWidget):
         if len(args_pretty) > 4000:
             args_pretty = args_pretty[:4000] + "\n…"
         if self._use_web_ui:
+            _remember_tool_detail(call_id, args=args_pretty)
             payload = {
                 "call_id": call_id,
                 "title": title,
-                "args_detail": args_pretty,
                 "tool_name": tool_name or "",
             }
             self._run_js("if(window.addToolBlock) window.addToolBlock(%s);"
@@ -4044,8 +4065,6 @@ class AIChatWindow(QDockWidget):
             return
         block_id = call_id or tool_name or ("tool_%s" % time.time())
         block = WidgetToolBlock(block_id, title, "", parent=self._widget_tool_blocks_host)
-        if args_pretty:
-            block.append_log("ARGS:\n" + args_pretty)
         insert_at = max(0, self._widget_tool_container.count() - 1)
         self._widget_tool_container.insertWidget(insert_at, block)
         self._widget_tool_blocks[block_id] = block
@@ -4067,7 +4086,7 @@ class AIChatWindow(QDockWidget):
 
     @pyqtSlot(str, bool, str)
     def _on_tool_completed(self, call_id: str, ok: bool, result: str):
-        """Mark a tool block as done/error and keep result text for inspection."""
+        """Mark a tool block as done/error. The result is kept for expanding the row."""
         sid = getattr(self.sender(), "_session_id", self._active_sid)
         self._record_tool_completed(sid, call_id, ok)
         if sid != self._active_sid:
@@ -4077,11 +4096,7 @@ class AIChatWindow(QDockWidget):
         if len(detail) > 6000:
             detail = detail[:6000] + "\n…"
         if self._use_web_ui:
-            if detail:
-                self._run_js(
-                    "if(window.appendToolLog) window.appendToolLog(%s, %s);"
-                    % (json.dumps(call_id), json.dumps("RESULT:\n" + detail))
-                )
+            _remember_tool_detail(call_id, result=detail)
             self._run_js(
                 "if(window.completeToolBlock) window.completeToolBlock(%s, %s, %s);"
                 % (json.dumps(call_id), "true" if ok else "false", json.dumps(summary))
@@ -4089,8 +4104,8 @@ class AIChatWindow(QDockWidget):
             return
         block = self._widget_tool_blocks.get(call_id)
         if block:
-            if detail:
-                block.append_log("RESULT:\n" + detail)
+            if summary:
+                block.append_log(summary)
             block.complete(ok, summary)
 
     @pyqtSlot(str)
