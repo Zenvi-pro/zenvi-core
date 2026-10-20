@@ -6070,11 +6070,26 @@ def apply_transition(
     return "Error: placement must be 'between', 'start', or 'end'."
 
 
+def _pick_transition(transition_name):
+    """(entry, error) for a transition name: the one it names, or an error naming the candidates."""
+    from classes import transition_ops
+
+    entries = transition_ops.catalog()
+    entry, candidates = transition_ops.find_transition(transition_name, entries)
+    if entry is not None:
+        return entry, None
+    if candidates:
+        return None, (f"Error: '{transition_name}' matches several transitions ({', '.join(candidates)}). "
+                      "Use a full name.")
+    names = ", ".join(e["key"] for e in entries[:6]) or "none installed"
+    return None, (f"Error: Transition '{transition_name}' not found. Some valid names: {names}. "
+                  "Use search_transitions_tool.")
+
+
 def add_transition_between_clips(clip1_id="", clip2_id="", transition_name="", duration="1.0", **_kw) -> str:
     """Add a transition between two clips."""
     try:
         from classes.query import Clip
-        from classes import info
 
         app = _get_app()
         win = app.window
@@ -6085,28 +6100,18 @@ def add_transition_between_clips(clip1_id="", clip2_id="", transition_name="", d
         if not clip2:
             return f"Error: Clip '{clip2_id}' not found."
 
-        # Find transition file
-        transitions_dir = os.path.join(info.PATH, "transitions")
-        transition_path = None
-        search_name = (transition_name or "").lower().replace(" ", "_")
-        for cat in ["common", "extra"]:
-            cat_dir = os.path.join(transitions_dir, cat)
-            if os.path.exists(cat_dir):
-                for fn in os.listdir(cat_dir):
-                    fb = os.path.splitext(fn)[0]
-                    if search_name in fb.lower() or fb.lower() in search_name:
-                        transition_path = os.path.join(cat_dir, fn)
-                        break
-            if transition_path:
-                break
-        if not transition_path:
-            return f"Error: Transition '{transition_name}' not found. Use search_transitions_tool."
+        entry, err = _pick_transition(transition_name)
+        if err:
+            return err
+        transition_path = entry["path"]
 
         clip1_end = clip1.data.get("position", 0) + (clip1.data.get("end", 0) - clip1.data.get("start", 0))
         try:
-            dur = float(duration)
-        except ValueError:
-            dur = 1.0
+            dur = 1.0 if duration in (None, "") else float(duration)
+        except (TypeError, ValueError):
+            dur = 0.0
+        if not dur > 0:
+            return "Error: duration must be a number of seconds above 0."
 
         layer1 = clip1.data.get("layer", 0)
         layer2 = clip2.data.get("layer", 0)
@@ -6119,7 +6124,9 @@ def add_transition_between_clips(clip1_id="", clip2_id="", transition_name="", d
         # are NOT rippled.
         clip2_pos = float(clip2.data.get("position", 0))
         clip2_id_val = clip2.data.get("id", clip2_id)
-        new_clip2_pos = max(clip2_pos - dur, 0)
+        asked_dur = dur
+        dur = min(dur, clip2_pos)  # clip2 cannot move before 0, so the overlap is at most its start
+        new_clip2_pos = clip2_pos - dur
 
         # ALL Qt/openshot calls MUST run on the Qt main thread
         result_box = [None]
@@ -6163,9 +6170,11 @@ def add_transition_between_clips(clip1_id="", clip2_id="", transition_name="", d
 
         # Moving clip2 + inserting the Mask is one user action -> one undo step.
         _run_on_main_thread(_atomic(app, _do_transition))
-        tid, actual_dur, actual_pos = result_box[0] if result_box[0] else ("?", dur, new_clip2_pos)
+        tid, actual_dur, actual_pos = result_box[0]
+        clamp = f" (clamped from {asked_dur:.2f}s)" if dur < asked_dur else ""
         return (
-            f"Added '{transition_name}' transition between clips (overlap: {actual_dur:.2f}s).\n"
+            f"Added '{transition_title}' transition between clips at {actual_pos:.2f}s, "
+            f"duration {actual_dur:.2f}s{clamp}.\n"
             f"Clip2 moved to {actual_pos:.2f}s. Transition ID: {tid}"
         )
     except Exception as e:
@@ -6177,28 +6186,16 @@ def add_transition_to_clip(clip_id="", transition_name="", position="start", dur
     """Add a transition (fade in/out) to a single clip."""
     try:
         from classes.query import Clip
-        from classes import info
 
         app = _get_app()
         clip = Clip.get(id=clip_id)
         if not clip:
             return f"Error: Clip '{clip_id}' not found."
 
-        transitions_dir = os.path.join(info.PATH, "transitions")
-        transition_path = None
-        search_name = (transition_name or "").lower().replace(" ", "_")
-        for cat in ["common", "extra"]:
-            cat_dir = os.path.join(transitions_dir, cat)
-            if os.path.exists(cat_dir):
-                for fn in os.listdir(cat_dir):
-                    fb = os.path.splitext(fn)[0]
-                    if search_name in fb.lower() or fb.lower() in search_name:
-                        transition_path = os.path.join(cat_dir, fn)
-                        break
-            if transition_path:
-                break
-        if not transition_path:
-            return f"Error: Transition '{transition_name}' not found. Use search_transitions_tool."
+        entry, err = _pick_transition(transition_name)
+        if err:
+            return err
+        transition_path = entry["path"]
 
         clip_position = clip.data.get("position", 0)
         clip_start = clip.data.get("start", 0)
@@ -6209,9 +6206,11 @@ def add_transition_to_clip(clip_id="", transition_name="", position="start", dur
         transition_title = os.path.splitext(os.path.basename(transition_path))[0]
 
         try:
-            dur = float(duration)
-        except ValueError:
-            dur = 1.0
+            dur = 1.0 if duration in (None, "") else float(duration)
+        except (TypeError, ValueError):
+            dur = 0.0
+        if not dur > 0:
+            return "Error: duration must be a number of seconds above 0."
 
         if (position or "").lower() == "end":
             trans_position = clip_position + clip_duration - dur
@@ -6261,9 +6260,9 @@ def add_transition_to_clip(clip_id="", transition_name="", position="start", dur
             result_box[0] = (tid, snapped_dur, snap(trans_position))
 
         _run_on_main_thread(_do_insert)
-        tid, actual_dur, actual_pos = result_box[0] if result_box[0] else ("?", dur, trans_position)
+        tid, actual_dur, actual_pos = result_box[0]
         return (
-            f"Added '{transition_name}' transition at {position} of clip.\n"
+            f"Added '{transition_title}' transition at {position} of clip.\n"
             f"ID: {tid}, Duration: {actual_dur:.2f}s, Position: {actual_pos:.2f}s"
         )
     except Exception as e:
