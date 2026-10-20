@@ -8,6 +8,8 @@ import threading
 import time
 import types
 
+import pytest
+
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
@@ -98,3 +100,23 @@ def test_launches_at_the_same_moment_both_pass_the_write_access_check(tmp_path):
         t.join()
     assert not errors, errors[:3]
     assert os.listdir(tmp_path) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="runs the generated PowerShell helper")
+def test_the_helper_records_its_outcome_in_real_unix_time(tmp_path):
+    # Windows PowerShell's `Get-Date -UFormat %s` is local time read as UTC, so
+    # a failure looked hours old (west of UTC) or in the future (east of it).
+    status = tmp_path / "update_status.json"
+    script = ui._build_update_helper_script(
+        str(tmp_path / "Zenvi-v9.9.9-x86_64.exe"), str(tmp_path / "update_manifest.json"),
+        "", str(tmp_path / "install.log"), version="9.9.9", status_path=str(status))
+    status_fn = script[script.index("function Status"):]
+    status_fn = status_fn[:status_fn.index("\n}\n") + 3]
+    ps = tmp_path / "status.ps1"
+    ps.write_text(status_fn + "Status $false 'test'\n", encoding="utf-8")
+    subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                    "-File", str(ps)], check=True, timeout=60)
+    import json
+    with open(status, encoding="utf-8-sig") as fh:
+        recorded = json.load(fh)["time"]
+    assert abs(recorded - time.time()) < 120

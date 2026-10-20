@@ -1150,7 +1150,7 @@ def _build_update_helper_script(filepath, manifest_path, relaunch_target, log_pa
             "    if ($postponed -and $attempts -gt 0) { $attempts = $attempts - 1 }\n"
             f"    $s = [ordered]@{{ version = {_ps_str(version)}; attempts = $attempts; "
             "ok = $ok; postponed = [bool]$postponed; reason = $reason; "
-            "time = [int][double]::Parse((Get-Date -UFormat %s)) }\n"
+            "time = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }\n"
             f"    $s | ConvertTo-Json | Set-Content -Path {_ps_str(status_path)} "
             "-Encoding UTF8 -ErrorAction SilentlyContinue\n"
             "}\n"
