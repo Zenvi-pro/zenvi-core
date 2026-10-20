@@ -87,6 +87,9 @@ class ZenviBackendClient:
         self._active_wss = set()  # active WebSockets during parallel chat requests
         self._ws_lock = threading.Lock()
         self._shutting_down = False
+        # One event per running turn; Stop sets them all, so a tool call still
+        # queued for a slot never runs after Stop, even once a new turn starts.
+        self._turn_cancels: set = set()
         # Disable SSL verification for non-production backends (self-signed certs)
         self._ssl_verify = (self.base_url.rstrip("/") == _DEFAULT_BACKEND_URL.rstrip("/"))
 
@@ -397,11 +400,13 @@ class ZenviBackendClient:
         on_token: Optional[Callable] = None,
         on_tool_progress: Optional[Callable] = None,
         auth_token: Optional[str] = None,
+        on_thinking: Optional[Callable] = None,
         agent_mode: Optional[str] = None,
         action: Optional[str] = None,
         plan_id: Optional[str] = None,
         on_plan_event: Optional[Callable] = None,
         images: Optional[List[Dict[str, Any]]] = None,
+        project_id: Optional[str] = None,
     ) -> Optional[str]:
         """
         Send a chat message via WebSocket with tool delegation support.
@@ -425,6 +430,9 @@ class ZenviBackendClient:
         ws_url = f"{ws_url}/api/v1/chat/ws"
 
         self._shutting_down = False
+        turn_cancelled = threading.Event()
+        with self._ws_lock:
+            self._turn_cancels.add(turn_cancelled)
         ws = None
         try:
             sslopt = {} if self._ssl_verify else {"cert_reqs": 0}  # 0 = ssl.CERT_NONE
@@ -458,12 +466,15 @@ class ZenviBackendClient:
                 payload_data["plan_id"] = plan_id
             if images:
                 payload_data["images"] = list(images)
+            if project_id:
+                payload_data["project_id"] = project_id
             _ws_send({"type": "user_message", "data": payload_data})
 
-            # Track outstanding tool worker threads so we can drain them
-            # before returning when the server signals 'done'.
-            tool_workers: List[threading.Thread] = []
-            tool_workers_lock = threading.Lock()
+            # At most four tool calls run at once. Daemon threads, so quitting the
+            # editor never waits for a running tool; the drain below waits for
+            # them before returning when the server signals 'done'.
+            tool_slots = threading.Semaphore(4)
+            tool_threads: List[threading.Thread] = []
             last_tool_result_holder: List[Optional[str]] = [None]
 
             def _spawn_tool_worker(call_data: Dict[str, Any]) -> None:
@@ -524,9 +535,13 @@ class ZenviBackendClient:
                         "data": payload,
                     })
 
-                t = threading.Thread(target=_runner, daemon=True, name="zenvi-tool-worker")
-                with tool_workers_lock:
-                    tool_workers.append(t)
+                def _bounded():
+                    with tool_slots:
+                        if not turn_cancelled.is_set():  # Stop came while it waited for a slot
+                            _runner()
+
+                t = threading.Thread(target=_bounded, daemon=True, name="zenvi-tool-worker")
+                tool_threads.append(t)
                 t.start()
 
             # Periodic client-side pings so very long tool runs don't get an
@@ -611,6 +626,12 @@ class ZenviBackendClient:
                                 on_token(data.get("text", ""))
                             except Exception as exc:  # noqa: BLE001
                                 log.debug("on_token handler error: %s", exc)
+                    elif msg_type == "thinking":
+                        if on_thinking:
+                            try:
+                                on_thinking(data.get("text", ""))
+                            except Exception as exc:  # noqa: BLE001
+                                log.debug("on_thinking handler error: %s", exc)
                     elif msg_type == "assistant_response":
                         final_response = data.get("response", "")
                         if on_response:
@@ -634,19 +655,11 @@ class ZenviBackendClient:
                 stop_pings.set()
                 # Drain in-flight tool workers so any tool_result frames they
                 # emit get sent before we close the WS.
-                with tool_workers_lock:
-                    pending = list(tool_workers)
-                if self._shutting_down:
-                    import time as _time
-                    deadline = _time.time() + 1.0
-                    for t in pending:
-                        remaining = deadline - _time.time()
-                        if remaining <= 0:
-                            break
-                        t.join(timeout=remaining)
-                else:
-                    for t in pending:
-                        t.join(timeout=120)
+                # A queued call starts only when an earlier one ends, so each gets
+                # its own wait; a cancel shares one short budget.
+                deadline = time.monotonic() + 1.0
+                for t in tool_threads:
+                    t.join(max(0.0, deadline - time.monotonic()) if self._shutting_down else 120)
 
             try:
                 ws.close()
@@ -669,6 +682,7 @@ class ZenviBackendClient:
                 with self._ws_lock:
                     if ws is not None:
                         self._active_wss.discard(ws)
+                    self._turn_cancels.discard(turn_cancelled)
             except Exception:
                 pass
 
@@ -682,6 +696,9 @@ class ZenviBackendClient:
         with self._ws_lock:
             websockets = list(self._active_wss)
             self._active_wss.clear()
+            for event in self._turn_cancels:
+                event.set()
+            self._turn_cancels.clear()
 
         for ws in websockets:
             try:

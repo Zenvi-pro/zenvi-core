@@ -1,4 +1,4 @@
-"""Moment lookup on the local index: add_clip_to_timeline, split_file_add_clip and the overlay boosts take the
+"""Moment lookup on the local index: add_clip_to_timeline and the overlay boosts take the
 best search hit for a described moment (its start, end and peak), keep the window asked for when there is none,
 and never call the cloud search or the cloud watch."""
 
@@ -146,49 +146,6 @@ def test_add_clip_refuses_a_blind_first_n_seconds_trim_when_the_search_is_refuse
     out, _placed, cloud = _place(monkeypatch, dict(LAKE), query="a dog runs", start_seconds="0", duration_seconds="20")
     assert out.startswith("Error:") and "start_seconds and end_seconds" in out, out
     cloud.watch_window.assert_not_called()
-
-
-def _split(monkeypatch, *, start, end, query, duration=60.0):
-    """split_file_add_clip on F1 with a fake File; returns (out, the subclips saved)."""
-    saved = []
-    parent = MagicMock()
-    parent.data = {"fps": {"num": 30, "den": 1}, "start": 0.0, "end": duration, "duration": duration,
-                   "path": "/media/lake.mp4", "name": "lake.mp4", "media_type": "video",
-                   "fingerprint": {"sha256": SHA1}}
-
-    class FakeFile:
-        def __init__(self):
-            self.data = {}
-            self.id = None
-            self.key = None
-            self.type = None
-
-        def save(self):
-            self.id = "new-sub"
-            saved.append(dict(self.data))
-
-        @staticmethod
-        def get(id=""):
-            return parent
-
-    query_mod = MagicMock()
-    query_mod.File = FakeFile
-    with patch.dict(sys.modules, {"classes.query": query_mod}):
-        out = th.split_file_add_clip(file_id="F1", start_seconds=start, end_seconds=end, query=query, name="clip")
-    return out, saved
-
-
-def test_split_cuts_the_subclip_at_the_hit(indexed, monkeypatch):
-    out, saved = _split(monkeypatch, start="0", end="20", duration=20.0, query="a dog runs")
-    assert saved, out
-    assert (saved[0]["start"], saved[0]["end"]) == (10.0, 20.0)
-    assert indexed.embedded == ["a dog runs"]
-
-
-def test_split_refuses_a_long_window_the_index_cannot_place(indexed, monkeypatch):
-    out, saved = _split(monkeypatch, start="10", end="40", query="a calm lake")
-    assert out.startswith("Error:") and "visual match" in out.lower(), out
-    assert saved == []
 
 
 def test_the_overlay_boosts_are_the_index_peaks_for_the_avoid_and_prefer_queries(indexed, monkeypatch):

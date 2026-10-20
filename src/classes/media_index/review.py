@@ -244,7 +244,7 @@ def story_findings(clips: Sequence[TimelineClip], project: ProjectInfo, brief: B
         evidence.update(variation=round(cv, 2), share_under_half_second=round(fast, 2))
         if fast > FAST_CUT_SHARE:
             out.append(finding("pacing", "story", "needs", f"{fast * 100:.0f}% of the shots are under {FAST_CUT_SECONDS} s: it will feel frantic.", evidence,
-                               ["trim_clips_tool", "remove_clip_tool"]))
+                               ["trim_clips_tool", "delete_from_timeline_tool"]))
         elif is_short_form(brief.form) and median > SLOW_MEDIAN_SHORT_FORM:
             out.append(finding("pacing", "story", "needs", f"The median shot is {median:.1f} s: slow for a {brief.form}.", evidence, ["trim_clips_tool", "set_clip_speed_tool"]))
         elif cv < MONOTONE_CV:
@@ -282,7 +282,7 @@ def story_findings(clips: Sequence[TimelineClip], project: ProjectInfo, brief: B
     hard = [r for r in weak_rows if set(r["flags"]) & {"black", "blurry", "shaky"}]
     out.append(finding("weak_shots", "story", "needs" if hard else ("info" if weak_rows else "ok"),
                        f"{len(hard)} shot(s) are blurry, shaky or black." if hard else (f"{len(weak_rows)} shot(s) have minor issues." if weak_rows else "No weak shots found in the indexed footage."),
-                       {"shots": weak_rows[:12]}, ["search_footage_tool", "trim_clips_tool", "remove_clip_tool"] if hard else []))
+                       {"shots": weak_rows[:12]}, ["search_footage_tool", "trim_clips_tool", "delete_from_timeline_tool"] if hard else []))
 
     repeats = []
     by_file: Dict[str, List[TimelineClip]] = {}
@@ -299,7 +299,7 @@ def story_findings(clips: Sequence[TimelineClip], project: ProjectInfo, brief: B
     similar = [g for g in take_groups if sum(1 for m in g["members"] if (m["file_id"],) in used) >= 2]
     out.append(finding("repeats", "story", "needs" if repeats else ("info" if similar else "ok"),
                        "The same moment is used more than once." if repeats else ("Some shots are near-duplicates of each other." if similar else "No repeated moments."),
-                       {"repeated": repeats[:8], "similar_groups": len(similar)}, ["remove_clip_tool", "search_footage_tool"] if repeats else []))
+                       {"repeated": repeats[:8], "similar_groups": len(similar)}, ["delete_from_timeline_tool", "search_footage_tool"] if repeats else []))
 
     types = [((_shot_at(index_for(s["clip"]), s["clip"].to_source(s["start"])) or {}).get("watch") or {}).get("shot_type") for s in shots]
     types = [t for t in types if t and t != "unknown"]
@@ -400,7 +400,7 @@ def sound_findings(clips: Sequence[TimelineClip], project: ProjectInfo, brief: B
         status = "needs" if want_music else "info"
         out.append(finding("music", "sound", status, "There is no music bed." if not beds else f"Music covers only {coverage * 100:.0f}% of the edit.",
                            {"coverage": round(coverage, 2), "beds": len(beds), "expected": want_music},
-                           ["find_music_tool", "audition_music_tool", "stock_music"] if status == "needs" or want_music is None else []))
+                           ["audition_music_tool", "stock_music"] if status == "needs" or want_music is None else []))
 
     margins, unknown_levels = [], 0
     for sp in speech:

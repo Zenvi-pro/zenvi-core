@@ -29,6 +29,7 @@ import threading
 import time
 import uuid
 
+from classes import assistant_turns
 from qt_api import QObject, pyqtSignal, pyqtSlot
 
 log = logging.getLogger(__name__)
@@ -1437,6 +1438,7 @@ class BaseAgentRunner(QObject):
     # and Qt resolves the slot by its registered signature ΓÇö a shorter one is
     # simply never found and the request silently does nothing.
     @pyqtSlot(str, str, str, str, str)
+    @assistant_turns.counts_as_turn
     def run_request(self, text: str, model_id: str, agent_mode: str = "agent",
                     action: str = "chat", plan_id: str = ""):
         # ``agent_mode``/``action``/``plan_id`` drive the Zenvi backend's

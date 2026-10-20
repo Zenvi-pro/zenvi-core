@@ -134,7 +134,7 @@ def test_the_check_names_a_cut_that_moved_and_a_rebuild_of_just_that_shot_fixes_
 def test_the_check_notices_an_empty_slot(studio):
     pid = plan(studio)["plan_id"]
     build_it(studio, pid)
-    studio.ed.call("remove_clip_tool", timeline_clip_id=picture_clips(studio)[3]["id"])
+    studio.ed.call("delete_from_timeline_tool", timeline_clip_id=picture_clips(studio)[3]["id"])
     result = check(studio, plan_id=pid)
     assert result["areas"]["coverage"] < 100.0 and any(f["reference_shot"] == 3 and "no clip" in " ".join(f["problems"]) for f in result["failing"])
 

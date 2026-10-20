@@ -475,12 +475,12 @@ def harmonize_look(reference="median", tolerance=0.15, max_clips=12, measure_lim
     label="Audition music",
     schema=obj({
         "candidates": array(mapping("One sound to audition.", properties={
-            "id": string("The sound's id (Freesound id from search_freesound_music_tool)."),
+            "id": string("The sound's id (its Freesound id)."),
             "name": string("A name to show in the result."),
             "preview_url": string("The preview MP3 URL from the search result (https, freesound.org only)."),
             "duration": number("The full sound's length in seconds (the preview may be shorter).")},
             additionalProperties=False, required=["id", "preview_url"]),
-            "The sounds to compare (at most 12), from search_freesound_music_tool's results."),
+            "The sounds to compare (at most 12), from a Freesound search."),
         "bpm_min": number("Slowest tempo you want.", None, minimum=0),
         "bpm_max": number("Fastest tempo you want.", None, minimum=0),
         "seconds_needed": number("How long the music must play (the whole edit, or the section it will cover).", None, minimum=0),
@@ -497,7 +497,7 @@ def audition_music(candidates, bpm_min=None, bpm_max=None, seconds_needed=None, 
     """
     cleaned = [c for c in (candidates or []) if isinstance(c, dict)]
     if not cleaned:
-        raise ToolError("give at least one candidate (id and preview_url from search_freesound_music_tool)")
+        raise ToolError("give at least one candidate (id and preview_url from a Freesound search)")
     result = audition.audition(cleaned, bpm_min=bpm_min, bpm_max=bpm_max, seconds=seconds_needed, energy=str(energy or ""))
     ranked = result["ranked"]
     if not ranked:

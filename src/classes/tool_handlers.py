@@ -43,8 +43,6 @@ from classes.clip_placement import (
     source_window_for_file,
 )
 from classes.agent_tools.handlers import (
-    PHASE3_DISPLAY_LABELS,
-    PHASE3_HANDLERS,
     PHASE4_DISPLAY_LABELS,
     PHASE4_HANDLERS,
     PHASE5_DISPLAY_LABELS,
@@ -1281,66 +1279,6 @@ def list_layers(**_kw) -> str:
 # Playback & history
 # ---------------------------------------------------------------------------
 
-_WATCH_CLIP_DEFAULT_PATH = os.path.expanduser(
-    "~/Downloads/Feral - Concept Trailer.mp4"
-)
-
-
-def watch_clip_and_play(file_path: str = "", **_kw) -> str:
-    """Import a video file into the media bin, add it to the timeline, and start playback.
-
-    If file_path is empty, defaults to the Feral concept trailer test video.
-    This is the handler for natural-language commands like 'watch clip',
-    'play the feral trailer', 'show me the clip', etc.
-    """
-    try:
-        resolved_path = (file_path or _WATCH_CLIP_DEFAULT_PATH).strip()
-        if not os.path.isfile(resolved_path):
-            return f"Error: File not found: {resolved_path}"
-
-        from classes.query import File as _File
-        from qt_api import QUrl as _QUrl
-
-        app = _get_app()
-        win = app.window
-
-        # Step 1: Import into media bin (must run on main thread — uses libopenshot)
-        def _do_import():
-            existing = _File.get(path=resolved_path)
-            if existing:
-                return existing.id
-            win.files_model.add_files([resolved_path], quiet=True, prevent_image_seq=True)
-            added = _File.get(path=resolved_path)
-            return added.id if added else None
-
-        file_id = _run_on_main_thread(_do_import)
-        if not file_id:
-            return f"Error: Could not import file into media bin: {resolved_path}"
-
-        # Step 2: Add to timeline (position 0, top video track)
-        add_result = add_clip_to_timeline(file_id=file_id, position_seconds="0", **_kw)
-        if add_result.startswith("Error"):
-            return add_result
-
-        # Step 3: Seek to start + play
-        def _do_play():
-            win.actionJumpStart_trigger()
-            # Ensure player is playing (actionPlay_trigger toggles, so check mode)
-            try:
-                import openshot
-                player = win.preview_thread.player
-                if player.Mode() != openshot.PLAYBACK_PLAY:
-                    win.actionPlay_trigger()
-            except Exception:
-                win.actionPlay_trigger()
-
-        _run_on_main_thread(_do_play)
-        return f"Loaded and playing: {os.path.basename(resolved_path)}"
-    except Exception as e:
-        log.error("watch_clip_and_play failed: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
 def go_to_start(**_kw) -> str:
     try:
         _get_app().window.actionJumpStart_trigger()
@@ -1664,6 +1602,12 @@ def delete_from_timeline(
 
     The whole call is a single undo step, whether it removes one clip or fifty.
     """
+    from classes.agent_tools.schema import strip_hidden
+
+    unknown = sorted(strip_hidden(_kw))
+    if unknown:
+        guess = " (did you mean ripple=true?)" if any("gap" in k.lower() for k in unknown) else ""
+        return f"Error: unknown argument(s): {', '.join(unknown)}{guess}. Nothing was deleted."
     try:
         app = _get_app()
 
@@ -1731,39 +1675,6 @@ def delete_from_timeline(
         return _delete_one_clip(app, resolved, ripple=wants_ripple)
     except Exception as e:
         return f"Error: {e}"
-
-
-def remove_clip(
-    timeline_clip_id: str = "",
-    clip_query: str = "",
-    track: str = "",
-    occurrence: str = "0",
-    position_near=None,
-    **_kw,
-) -> str:
-    """Deprecated alias for delete_from_timeline (scope="clip").
-
-    Kept so stored plans and in-flight sessions that still name
-    remove_clip_tool keep working. The agent catalog exposes only
-    delete_from_timeline_tool.
-    """
-    return delete_from_timeline(
-        timeline_clip_id=timeline_clip_id,
-        clip_query=clip_query,
-        track=track,
-        scope="clip",
-        occurrence=occurrence,
-        position_near=position_near,
-    )
-
-
-def delete_clips_on_track(track: str = "", include_transitions: bool = True, **_kw) -> str:
-    """Deprecated alias for delete_from_timeline (scope="track")."""
-    if track is None or (isinstance(track, str) and not track.strip()):
-        return "Error: track is required."
-    return delete_from_timeline(
-        track=track, scope="track", include_transitions=include_transitions
-    )
 
 
 def zoom_in(**_kw) -> str:
@@ -2238,181 +2149,6 @@ def get_file_info(file_id="", **_kw) -> str:
         return f"Error: {e}"
 
 
-def _coerce_time_arg(value):
-    if value is None:
-        return None
-    s = str(value).strip()
-    if not s:
-        return None
-    try:
-        return float(s)
-    except (TypeError, ValueError):
-        return None
-
-
-def _positive_int_arg(value):
-    if value is None:
-        return None
-    s = str(value).strip()
-    if not s:
-        return None
-    try:
-        n = int(float(s))
-    except (TypeError, ValueError):
-        return None
-    return n if n > 0 else None
-
-
-def split_file_add_clip(
-    file_id="",
-    start_frame=0,
-    end_frame=0,
-    name="",
-    start_seconds="",
-    end_seconds="",
-    query="",
-    **_kw,
-) -> str:
-    try:
-        from classes.query import File
-        from classes import time_parts
-        from classes.ai_metadata_utils import get_effective_ai_metadata, filter_tags_string_for_window
-
-        chat_session_id = str(_kw.get("chat_session_id", "") or "default")
-        query = str(query or _kw.get("query") or "").strip()
-
-        if not file_id:
-            return "Error: file_id is required."
-        file_id = str(file_id).strip()
-        f = File.get(id=file_id)
-        if not f:
-            return f"Error: File not found for id={file_id}."
-        fps_data = f.data.get("fps") or {}
-        fps_num = int(fps_data.get("num", 30))
-        fps_den = int(fps_data.get("den", 1))
-        fps = float(fps_num) / float(fps_den) if fps_den else 0.0
-        if fps <= 0:
-            return "Error: Invalid fps."
-
-        src_start, src_end = source_window_for_file(f.data)
-        t0 = _coerce_time_arg(start_seconds if str(start_seconds or "").strip() else _kw.get("start_seconds"))
-        t1 = _coerce_time_arg(end_seconds if str(end_seconds or "").strip() else _kw.get("end_seconds"))
-        sf = _positive_int_arg(start_frame if start_frame not in (None, "", 0, "0") else _kw.get("start_frame"))
-        ef = _positive_int_arg(end_frame if end_frame not in (None, "", 0, "0") else _kw.get("end_frame"))
-        if t0 is None or t1 is None:
-            if sf is None or ef is None:
-                return (
-                    "Error: Provide start_seconds+end_seconds (preferred) or "
-                    "start_frame+end_frame (1-based)."
-                )
-            t0 = src_start + (sf - 1) / fps
-            t1 = src_start + ef / fps
-            log.warning(
-                "split_file_add_clip used 1-based frames file=%s start_frame=%s end_frame=%s",
-                file_id, sf, ef,
-            )
-        if t1 < t0:
-            t0, t1 = t1, t0
-        t0 = max(src_start, min(float(t0), src_end))
-        t1 = max(src_start, min(float(t1), src_end))
-        if t1 <= t0 + 1e-3:
-            return (
-                f"Error: split window is empty after clamping to the file "
-                f"[{src_start:.2f}s–{src_end:.2f}s]."
-            )
-
-        skip_watch = _parse_explicit_source_time_range_sec(query) is not None
-        watched_note = ""
-        moment = None
-        orig_span = float(t1) - float(t0)
-        require_visual = bool(_kw.get("require_visual_match")) or orig_span > MAX_PLACE_SPAN_SEC
-        if not skip_watch and not _window_is_dialogue_driven(f.data, t0, t1):
-            moment = _v2_moment(query, file_id=file_id, window=(t0, t1))
-            if moment:
-                t0, t1 = moment["start"], moment["end"]
-            elif require_visual:
-                return (
-                    "Error: no visual match in this chapter-level window "
-                    f"[{orig_span:.1f}s]. Narrow the query or re-index the file "
-                    "so action-bounded scenes exist; do not place the chapter start."
-                )
-            else:
-                watched_note = " (text-index window; no visual match)"
-
-        # Vision picks frames, not words: keep both edges off a mid-phrase cue.
-        t0, t1, _snapped = _snap_window_off_boundaries(f.data, t0, t1)
-        start_sec, end_sec = t0, t1
-        result_box = [None]
-        error_box = [None]
-
-        def _do_save():
-            try:
-                new_file = File()
-                new_file.data = copy.deepcopy(f.data)
-                new_file.data.pop("name", None)
-                new_file.id = None
-                new_file.key = None
-                new_file.type = "insert"
-                q_start, q_end = quantize_placement_seconds(start_sec, end_sec)
-                new_file.data["start"] = q_start
-                new_file.data["end"] = q_end
-                new_file.data["parent_file_id"] = file_id
-
-                if "ai_metadata" in new_file.data and new_file.data["ai_metadata"].get("analyzed"):
-                    from classes.timeline_clip_context import resolve_root_ai_metadata
-                    from classes.ai_metadata_utils import materialize_clip_ai_metadata
-
-                    root_ai, _ = resolve_root_ai_metadata(f.data, file_id=file_id)
-                    if root_ai:
-                        effective = materialize_clip_ai_metadata(
-                            root_ai, q_start, q_end, rebased=True,
-                        )
-                    else:
-                        effective = get_effective_ai_metadata(
-                            f.data,
-                            clip_data={"start": q_start, "end": q_end},
-                            rebased=True,
-                        )
-                    new_file.data["ai_metadata"] = effective
-                    if new_file.data.get("tags"):
-                        new_file.data["tags"] = filter_tags_string_for_window(
-                            str(new_file.data.get("tags") or ""),
-                            effective,
-                        )
-
-                if name and isinstance(name, str) and name.strip():
-                    new_file.data["name"] = name.strip()
-                else:
-                    t = time_parts.secondsToTime(start_sec, fps_num, fps_den)
-                    timestamp = "{}:{}:{}:{}".format(t["hour"], t["min"], t["sec"], t["frame"])
-                    base = os.path.splitext(os.path.basename(f.data.get("path") or f.data.get("name", "clip")))[0]
-                    new_file.data["name"] = f"{base} ({timestamp})"
-                new_file.data["zenvi_subclip"] = True
-                if moment:
-                    new_file.data["zenvi_watch_confirmed"] = True
-                new_file.save()
-                result_box[0] = (new_file.id, new_file.data.get("name", ""))
-            except Exception as exc:
-                error_box[0] = str(exc)
-
-        _run_on_main_thread(_do_save)
-        if error_box[0]:
-            return f"Error: {error_box[0]}"
-        if not result_box[0]:
-            return "Error: Failed to save subclip."
-        new_id, clip_name = result_box[0]
-        _last_split_file_id_by_chat_session[chat_session_id] = new_id
-        return (
-            f'Subclip created: "{clip_name}" (file_id={new_id}) '
-            f'from {_fmt_mmss(start_sec)}–{_fmt_mmss(end_sec)} source'
-            f'{watched_note}. '
-            f'Call add_clip_to_timeline_tool(file_id="{new_id}") to place it '
-            f'(do not pass duration_seconds — this subclip is already trimmed).'
-        )
-    except Exception as e:
-        return f"Error: {e}"
-
-
 # Where a placement was planned to end, for each one whose length snapping or a
 # watch changed: {timeline_clip_id: (position placed at, planned timeline end)}.
 # A later position planned on that end is what butt_against_previous_clip fixes.
@@ -2474,7 +2210,7 @@ def add_clip_to_timeline(
                 return (
                     "Error: No clip was just created. "
                     "Pass tool_args.file_id with a media_bin file id, or run "
-                    "split_file_add_clip_tool / import_files_tool / import_stock_media_tool "
+                    "import_files_tool / import_stock_media_tool "
                     "immediately before this step (empty file_id only works right after those "
                     "tools in the same session)."
                 )
@@ -2588,8 +2324,7 @@ def add_clip_to_timeline(
             return (
                 "Error: duration_seconds alone cannot trim the first N seconds of a file "
                 "nothing has looked at. Name both edges of the section you want: pass "
-                "start_seconds and end_seconds (the keep window search_footage_tool returned), "
-                "or place_moment with that window."
+                "start_seconds and end_seconds (the keep window search_footage_tool returned)."
                 + (" Times written in query are not read as the window." if skip_watch else "")
             )
 
@@ -4455,12 +4190,6 @@ def fetch_motion_graphics_video(
     )
 
 
-# Hard-cut alias kept only so any stale backend tool name still resolves during one deploy.
-fetch_remotion_video_from_supabase = fetch_motion_graphics_video
-_download_remotion_file = _download_motion_graphics_file
-_remotion_cleanup_storage = _motion_graphics_cleanup_storage
-
-
 _KLING_O1_DEFAULT_T2V_DURATION = 5
 
 
@@ -6065,11 +5794,26 @@ def apply_transition(
     return "Error: placement must be 'between', 'start', or 'end'."
 
 
+def _pick_transition(transition_name):
+    """(entry, error) for a transition name: the one it names, or an error naming the candidates."""
+    from classes import transition_ops
+
+    entries = transition_ops.catalog()
+    entry, candidates = transition_ops.find_transition(transition_name, entries)
+    if entry is not None:
+        return entry, None
+    if candidates:
+        return None, (f"Error: '{transition_name}' matches several transitions ({', '.join(candidates)}). "
+                      "Use a full name.")
+    names = ", ".join(e["key"] for e in entries[:6]) or "none installed"
+    return None, (f"Error: Transition '{transition_name}' not found. Some valid names: {names}. "
+                  "Use search_transitions_tool.")
+
+
 def add_transition_between_clips(clip1_id="", clip2_id="", transition_name="", duration="1.0", **_kw) -> str:
     """Add a transition between two clips."""
     try:
         from classes.query import Clip
-        from classes import info
 
         app = _get_app()
         win = app.window
@@ -6080,28 +5824,18 @@ def add_transition_between_clips(clip1_id="", clip2_id="", transition_name="", d
         if not clip2:
             return f"Error: Clip '{clip2_id}' not found."
 
-        # Find transition file
-        transitions_dir = os.path.join(info.PATH, "transitions")
-        transition_path = None
-        search_name = (transition_name or "").lower().replace(" ", "_")
-        for cat in ["common", "extra"]:
-            cat_dir = os.path.join(transitions_dir, cat)
-            if os.path.exists(cat_dir):
-                for fn in os.listdir(cat_dir):
-                    fb = os.path.splitext(fn)[0]
-                    if search_name in fb.lower() or fb.lower() in search_name:
-                        transition_path = os.path.join(cat_dir, fn)
-                        break
-            if transition_path:
-                break
-        if not transition_path:
-            return f"Error: Transition '{transition_name}' not found. Use search_transitions_tool."
+        entry, err = _pick_transition(transition_name)
+        if err:
+            return err
+        transition_path = entry["path"]
 
         clip1_end = clip1.data.get("position", 0) + (clip1.data.get("end", 0) - clip1.data.get("start", 0))
         try:
-            dur = float(duration)
-        except ValueError:
-            dur = 1.0
+            dur = 1.0 if duration in (None, "") else float(duration)
+        except (TypeError, ValueError):
+            dur = 0.0
+        if not dur > 0:
+            return "Error: duration must be a number of seconds above 0."
 
         layer1 = clip1.data.get("layer", 0)
         layer2 = clip2.data.get("layer", 0)
@@ -6114,7 +5848,15 @@ def add_transition_between_clips(clip1_id="", clip2_id="", transition_name="", d
         # are NOT rippled.
         clip2_pos = float(clip2.data.get("position", 0))
         clip2_id_val = clip2.data.get("id", clip2_id)
-        new_clip2_pos = max(clip2_pos - dur, 0)
+        asked_dur = dur
+        dur = min(dur, clip2_pos)  # clip2 cannot move before 0, so the overlap is at most its start
+        new_clip2_pos = clip2_pos - dur
+        fps_data = app.project.get("fps") or {}
+        if round(dur * float(fps_data.get("num", 30)) / float(fps_data.get("den", 1) or 1)) < 1:
+            return (
+                f"Error: clip 2 starts at {clip2_pos:.2f}s, so there is no room to overlap the clips "
+                "for a transition. Move it later first."
+            )
 
         # ALL Qt/openshot calls MUST run on the Qt main thread
         result_box = [None]
@@ -6158,9 +5900,11 @@ def add_transition_between_clips(clip1_id="", clip2_id="", transition_name="", d
 
         # Moving clip2 + inserting the Mask is one user action -> one undo step.
         _run_on_main_thread(_atomic(app, _do_transition))
-        tid, actual_dur, actual_pos = result_box[0] if result_box[0] else ("?", dur, new_clip2_pos)
+        tid, actual_dur, actual_pos = result_box[0]
+        clamp = f" (clamped from {asked_dur:.2f}s)" if dur < asked_dur else ""
         return (
-            f"Added '{transition_name}' transition between clips (overlap: {actual_dur:.2f}s).\n"
+            f"Added '{transition_title}' transition between clips at {actual_pos:.2f}s, "
+            f"duration {actual_dur:.2f}s{clamp}.\n"
             f"Clip2 moved to {actual_pos:.2f}s. Transition ID: {tid}"
         )
     except Exception as e:
@@ -6172,28 +5916,16 @@ def add_transition_to_clip(clip_id="", transition_name="", position="start", dur
     """Add a transition (fade in/out) to a single clip."""
     try:
         from classes.query import Clip
-        from classes import info
 
         app = _get_app()
         clip = Clip.get(id=clip_id)
         if not clip:
             return f"Error: Clip '{clip_id}' not found."
 
-        transitions_dir = os.path.join(info.PATH, "transitions")
-        transition_path = None
-        search_name = (transition_name or "").lower().replace(" ", "_")
-        for cat in ["common", "extra"]:
-            cat_dir = os.path.join(transitions_dir, cat)
-            if os.path.exists(cat_dir):
-                for fn in os.listdir(cat_dir):
-                    fb = os.path.splitext(fn)[0]
-                    if search_name in fb.lower() or fb.lower() in search_name:
-                        transition_path = os.path.join(cat_dir, fn)
-                        break
-            if transition_path:
-                break
-        if not transition_path:
-            return f"Error: Transition '{transition_name}' not found. Use search_transitions_tool."
+        entry, err = _pick_transition(transition_name)
+        if err:
+            return err
+        transition_path = entry["path"]
 
         clip_position = clip.data.get("position", 0)
         clip_start = clip.data.get("start", 0)
@@ -6204,9 +5936,11 @@ def add_transition_to_clip(clip_id="", transition_name="", position="start", dur
         transition_title = os.path.splitext(os.path.basename(transition_path))[0]
 
         try:
-            dur = float(duration)
-        except ValueError:
-            dur = 1.0
+            dur = 1.0 if duration in (None, "") else float(duration)
+        except (TypeError, ValueError):
+            dur = 0.0
+        if not dur > 0:
+            return "Error: duration must be a number of seconds above 0."
 
         if (position or "").lower() == "end":
             trans_position = clip_position + clip_duration - dur
@@ -6256,9 +5990,9 @@ def add_transition_to_clip(clip_id="", transition_name="", position="start", dur
             result_box[0] = (tid, snapped_dur, snap(trans_position))
 
         _run_on_main_thread(_do_insert)
-        tid, actual_dur, actual_pos = result_box[0] if result_box[0] else ("?", dur, trans_position)
+        tid, actual_dur, actual_pos = result_box[0]
         return (
-            f"Added '{transition_name}' transition at {position} of clip.\n"
+            f"Added '{transition_title}' transition at {position} of clip.\n"
             f"ID: {tid}, Duration: {actual_dur:.2f}s, Position: {actual_pos:.2f}s"
         )
     except Exception as e:
@@ -6380,7 +6114,7 @@ def download_freesound_music_tool(sound_id: str = "", preview_url: str = "", fil
     """Download a Freesound HQ MP3 preview to the local machine."""
     try:
         if not preview_url:
-            return "Error: preview_url is required (from search_freesound_music_tool)."
+            return "Error: preview_url is required (from a Freesound search result)."
         try:
             sid = int(sound_id)
         except (ValueError, TypeError):
@@ -10060,7 +9794,6 @@ AGENT_TOOL_HANDLERS = {
     # list_markers_tool: classes.editor_tools.tracks_nav
     # new/save/open_project_tool: classes.editor_tools.project_export
     # Playback
-    "watch_clip_tool": watch_clip_and_play,
     # play_tool: classes.editor_tools.tracks_nav
     "go_to_start_tool": go_to_start,
     "go_to_end_tool": go_to_end,
@@ -10069,10 +9802,6 @@ AGENT_TOOL_HANDLERS = {
     # Timeline
     # add_track_tool, add_marker_tool: classes.editor_tools.tracks_nav
     "delete_from_timeline_tool": delete_from_timeline,
-    # Deprecated aliases -- kept dispatchable for stored plans and in-flight
-    # sessions; the backend catalog exposes delete_from_timeline_tool only.
-    "remove_clip_tool": remove_clip,
-    "delete_clips_on_track_tool": delete_clips_on_track,
     # Audio mix / ducking
     "analyze_timeline_audio_tool": analyze_timeline_audio,
     "set_clip_volume_tool": set_clip_volume,
@@ -10085,7 +9814,6 @@ AGENT_TOOL_HANDLERS = {
     # Export
     # Clips
     "get_file_info_tool": get_file_info,
-    "split_file_add_clip_tool": split_file_add_clip,
     "add_clip_to_timeline_tool": add_clip_to_timeline,
     "import_video_url_and_add_to_timeline_tool": import_video_url_and_add_to_timeline,
     "ingest_web_video_tool": ingest_web_video,
@@ -10097,7 +9825,6 @@ AGENT_TOOL_HANDLERS = {
     "place_motion_graphic_tool": place_motion_graphic,
     # Remotion / HyperFrames
     "fetch_motion_graphics_video_tool": fetch_motion_graphics_video,
-    "fetch_remotion_video_from_supabase_tool": fetch_motion_graphics_video,
     # Video generation / AI edit
     "generate_video_and_add_to_timeline_tool": generate_video_and_add_to_timeline,
     "generate_image_and_add_to_timeline_tool": generate_image_and_add_to_timeline,
@@ -10128,12 +9855,8 @@ AGENT_TOOL_HANDLERS = {
 from classes.editor_tools import REGISTRY as _EDITOR_TOOL_SPECS  # noqa: E402
 from classes.agent_tools.schema import TOOL_SCHEMAS as _TOOL_SCHEMAS  # noqa: E402
 
-# #183's add_effect / add_title / set_keyframes / set_project_setting and #220's
-# add_captions are served by the editor tools of the same names, whose arguments
-# are a superset of theirs.
-for _phase_handlers in (PHASE3_HANDLERS, PHASE4_HANDLERS, PHASE5_HANDLERS):
-    AGENT_TOOL_HANDLERS.update({name: func for name, func in _phase_handlers.items()
-                                if name not in _EDITOR_TOOL_SPECS})
+for _phase_handlers in (PHASE4_HANDLERS, PHASE5_HANDLERS):
+    AGENT_TOOL_HANDLERS.update(_phase_handlers)
 _editor_overlap = set(_EDITOR_TOOL_SPECS) & set(AGENT_TOOL_HANDLERS)
 assert not _editor_overlap, f"editor_tools re-registers {sorted(_editor_overlap)}"
 AGENT_TOOL_HANDLERS.update({name: spec.func for name, spec in _EDITOR_TOOL_SPECS.items()})
@@ -10148,14 +9871,11 @@ TOOL_DISPLAY_LABELS = {
     "list_files_tool": "List project media",
     "list_clips_tool": "List clips",
     "list_layers_tool": "List tracks",
-    "watch_clip_tool": "Load and play clip",
     "go_to_start_tool": "Seek to start",
     "go_to_end_tool": "Seek to end",
     "undo_tool": "Undo",
     "redo_tool": "Redo",
     "delete_from_timeline_tool": "Delete from timeline",
-    "remove_clip_tool": "Delete from timeline",
-    "delete_clips_on_track_tool": "Delete from timeline",
     "analyze_timeline_audio_tool": "Analyze timeline audio",
     "set_clip_volume_tool": "Set clip volume",
     "duck_under_speech_tool": "Duck music under speech",
@@ -10165,7 +9885,6 @@ TOOL_DISPLAY_LABELS = {
     "import_files_tool": "Import files from disk",
     "wait_until_project_indexed_tool": "Wait for indexing",
     "get_file_info_tool": "Read file info",
-    "split_file_add_clip_tool": "Split clip and add to timeline",
     "add_clip_to_timeline_tool": "Add clip to timeline",
     "import_video_url_and_add_to_timeline_tool": "Import video to timeline",
     "ingest_web_video_tool": "Ingest web / YouTube video",
@@ -10175,7 +9894,6 @@ TOOL_DISPLAY_LABELS = {
     "propose_overlay_windows_tool": "Propose overlay windows",
     "place_motion_graphic_tool": "Place motion graphic",
     "fetch_motion_graphics_video_tool": "Fetch HyperFrames video",
-    "fetch_remotion_video_from_supabase_tool": "Fetch HyperFrames video",
     "generate_video_and_add_to_timeline_tool": "Generate video",
     "generate_image_and_add_to_timeline_tool": "Generate image",
     "modify_clip_tool": "AI edit clip",
@@ -10194,7 +9912,6 @@ TOOL_DISPLAY_LABELS = {
     "get_timeline_placements_metadata_tool": "Read timeline placements",
     "get_timeline_state_tool": "Read timeline state",
 }
-TOOL_DISPLAY_LABELS.update(PHASE3_DISPLAY_LABELS)
 TOOL_DISPLAY_LABELS.update(PHASE4_DISPLAY_LABELS)
 TOOL_DISPLAY_LABELS.update(PHASE5_DISPLAY_LABELS)
 TOOL_DISPLAY_LABELS.update({name: spec.label for name, spec in _EDITOR_TOOL_SPECS.items()})
@@ -10307,12 +10024,10 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     "generate_image_and_add_to_timeline_tool",
     "modify_clip_tool",
     "generate_transition_clip_tool",
-    "split_file_add_clip_tool",
     "add_clip_to_timeline_tool",
     "propose_overlay_windows_tool",
     # HyperFrames download + alpha re-encode can take a while.
     "fetch_motion_graphics_video_tool",
-    "fetch_remotion_video_from_supabase_tool",
     "ingest_web_video_tool",
     "inspect_timeline_tool",
     "inspect_media_tool",

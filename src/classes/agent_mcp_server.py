@@ -21,8 +21,10 @@ While it listens, the app's server also advertises itself in a discovery file
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 import os
+import re
 import secrets
 import socket
 import threading
@@ -40,7 +42,9 @@ SERVER_NAME = "zenvi-editor"
 # The built-in Zenvi Assistant bakes watch into its place/slice workflows; CLI
 # harnesses do not run those, so they must watch their own edits explicitly.
 SERVER_INSTRUCTIONS = (
-    "These tools drive a live video editor. Every tool returns a JSON receipt "
+    "These tools drive a live video editor. Only the core tools are listed: find any "
+    "other tool named here (or anything else you need) with find_tools, then call it "
+    "with run_tool. Every tool returns a JSON receipt "
     "with contract=3: status (applied|unchanged|refused|error), summary, clips, "
     "shifted, removedClipIds, createdTracks, watchSuggested, undoSteps. After a "
     "successful mutation (status=applied), patch your timeline state from the "
@@ -176,6 +180,64 @@ def iter_tool_defs() -> list:
             "inputSchema": schema,
         })
     return defs
+
+
+_META_TOOLS = (
+    {"name": "find_tools",
+     "description": "Search every editor tool not listed here. Returns the best matches with "
+                    "their input schemas. Call it before saying something cannot be done.",
+     "inputSchema": {"type": "object", "additionalProperties": False, "required": ["query"],
+                     "properties": {"query": {"type": "string", "description": "What you want to do, in plain words."},
+                                    "limit": {"type": "integer", "description": "How many tools (1-10).", "default": 5}}}},
+    {"name": "run_tool",
+     "description": "Run a tool found with find_tools: run_tool(name=<tool name>, args={...}).",
+     "inputSchema": {"type": "object", "additionalProperties": False, "required": ["name"],
+                     "properties": {"name": {"type": "string"},
+                                    "args": {"type": "object", "description": "Arguments matching that tool's inputSchema."}}}},
+)
+
+
+def listed_tool_defs() -> list:
+    """What the server lists: the core tools, find_tools / run_tool and the MCP extras."""
+    from classes.agent_tools.core_tools import CORE_TOOL_NAMES
+
+    keep = set(CORE_TOOL_NAMES) | set(_extra_tools())
+    return [d for d in iter_tool_defs() if d["name"] in keep] + [dict(d) for d in _META_TOOLS]
+
+
+def _words(text: str) -> set:
+    return {w[:-1] if len(w) > 4 and w.endswith("s") else w
+            for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(w) > 2}
+
+
+def call_meta_tool(name: str, args: dict):
+    """find_tools ranks every tool by word overlap; run_tool checks args, then executes."""
+    from classes.tool_handlers import execute_tool_rich
+
+    defs = {d["name"]: d for d in iter_tool_defs()}
+    if name == "find_tools":
+        terms = _words(args.get("query", ""))
+        from classes.agent_tools.core_tools import CORE_TOOL_NAMES
+
+        listed = set(CORE_TOOL_NAMES) | set(_extra_tools())
+        scored = sorted((-(3 * len(terms & _words(n.replace("_", " "))) + len(terms & _words(d["description"]))), n)
+                        for n, d in defs.items() if n not in listed)
+        try:
+            limit = max(1, min(int(args.get("limit") or 5), 10))
+        except (TypeError, ValueError):
+            return "Error: limit must be an integer from 1 to 10."
+        return json.dumps([defs[n] for score, n in scored[:limit] if score < 0])
+    target, inner = str(args.get("name") or ""), args.get("args") or {}
+    if not isinstance(inner, dict):
+        return "Error: run_tool args must be an object."
+    d = defs.get(target)
+    if d is None:
+        return "Error: no tool named %r. Call find_tools to look it up." % target
+    unknown = sorted(set(inner) - set(d["inputSchema"].get("properties") or {}))
+    if unknown:
+        return "Error: unknown arguments for %s: %s" % (target, ", ".join(unknown))
+    # After the argument check: chat_session_id is not in any schema.
+    return execute_tool_rich(target, {**inner, "chat_session_id": "mcp"})
 
 
 # Tools a launch mode adds on top of MCP_EXTRA_TOOLS -- the headless session's
@@ -474,7 +536,7 @@ class ZenviMcpServer:
                      instructions=SERVER_INSTRUCTIONS)
 
         tools = [types.Tool(name=d["name"], description=d["description"],
-                            inputSchema=d["inputSchema"]) for d in iter_tool_defs()]
+                            inputSchema=d["inputSchema"]) for d in listed_tool_defs()]
 
         @fm._mcp_server.list_tools()
         async def _list_tools():
@@ -488,6 +550,12 @@ class ZenviMcpServer:
             from classes.tool_handlers import execute_tool_rich
             args = dict(arguments or {})
 
+            if name in ("find_tools", "run_tool"):
+                output = await anyio.to_thread.run_sync(lambda: call_meta_tool(name, args))
+                if isinstance(output, ToolOutput):
+                    return mcp_content(output)
+                return mcp_content(wrap_str_result(name, "" if output is None else str(output)))
+
             extra = _extra_tools().get(name)
             if extra is not None:
                 # Called directly on the worker thread rather than through
@@ -499,6 +567,8 @@ class ZenviMcpServer:
                 text = "" if result is None else str(result)
                 return mcp_content(wrap_str_result(name, text))
 
+            # MCP calls carry no chat session: give them their own split/import slot, not "default".
+            args["chat_session_id"] = "mcp"
             output = await anyio.to_thread.run_sync(
                 lambda: execute_tool_rich(name, args)
             )

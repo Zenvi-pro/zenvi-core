@@ -153,8 +153,6 @@ KWARG_PROPS = {
     },
     # read by the shared timeline-clip resolver
     "modify_clip_tool": {"occurrence", "position_near", "track"},
-    "split_file_add_clip_tool": {"require_visual_match"},
-    "watch_clip_tool": {"query"},
     # Phase 5 speech tools read the snake_case aliases for clipId / fileId
     "transcribe_media_tool": {"file_id"},
     "get_transcript_tool": {"file_id", "timeline_clip_id"},
@@ -289,3 +287,12 @@ def test_import_files_accepts_a_list_of_paths():
     args = {"paths": ["/media/a.mp4", "/media/b.mp4"]}
     assert validate_args("import_files_tool", normalize_args("import_files_tool", args)) is None
     assert validate_args("import_files_tool", {"paths": "/media/a.mp4,/media/b.mp4"}) is None
+
+
+def test_watch_clip_tool_is_removed_from_core():
+    from classes.agent_mcp_server import iter_tool_defs
+
+    assert "watch_clip_tool" not in tool_handlers.AGENT_TOOL_HANDLERS
+    assert "watch_clip_tool" not in {d["name"] for d in iter_tool_defs()}
+    src = Path(__file__).resolve().parents[1] / "src"
+    assert [p for p in src.rglob("*.py") if "Feral" in p.read_text(encoding="utf-8")] == []

@@ -866,7 +866,7 @@ def create_subclips(file_id, subclips):
     plays only its range (times in seconds of the source media); AI scene descriptions are
     trimmed to the range. Nothing is placed on the timeline: put them there with
     add_clip_to_timeline_tool(file_id=<new id>). To find a moment by description instead of
-    times use split_file_add_clip_tool(query=...). One undo step for all sub-clips.
+    times, search_footage_tool returns each moment's file and in/out seconds. One undo step for all sub-clips.
     """
     from classes.ai_metadata_utils import adjust_scene_descriptions_for_subclip
     from classes.query import File
