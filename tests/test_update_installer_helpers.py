@@ -396,6 +396,7 @@ def test_the_shell_helpers_parse(tmp_path):
         assert result.returncode == 0, f"{name}: {result.stderr}"
 
 
+@posix_only
 def test_the_macos_admin_swap_quotes_paths_with_quotes_and_spaces(tmp_path):
     """as_admin() builds a shell command for osascript; run it with a stand-in."""
     script = textwrap.dedent('''
