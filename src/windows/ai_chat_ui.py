@@ -19,6 +19,7 @@ from qt_api import (
 )
 from qt_api import QColor, QTextCursor
 
+from classes import assistant_turns
 from classes.bridge_guard import guarded_slot
 from classes.logger import log
 from classes.api_client import get_backend_client
@@ -564,6 +565,7 @@ class AIChatWorker(QObject):
         self._pending_project_id = ""
 
     @pyqtSlot(str, str, str, str, str)
+    @assistant_turns.counts_as_turn
     def run_request(self, text: str, model_id: str, agent_mode: str = "agent", action: str = "chat", plan_id: str = ""):
         """Send the user message to the backend via WebSocket (with tool delegation)."""
         self._agent_mode = agent_mode or "agent"
