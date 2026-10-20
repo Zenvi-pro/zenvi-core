@@ -63,3 +63,10 @@ def test_model_facing_tool_names_are_served_over_mcp():
     dangling = [f"{name}: {', '.join(sorted(where))}"
                 for name, where in sorted(named.items()) if name not in served]
     assert dangling == [], "model-facing text names tools that are not served:\n" + "\n".join(dangling)
+
+
+def test_retired_handlers_are_not_served_over_mcp():
+    from classes.tool_handlers import AGENT_TOOL_HANDLERS
+    served = {d["name"] for d in iter_tool_defs()}
+    assert not RETIRED & set(AGENT_TOOL_HANDLERS), sorted(RETIRED & set(AGENT_TOOL_HANDLERS))
+    assert not RETIRED & served, sorted(RETIRED & served)

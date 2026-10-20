@@ -141,7 +141,6 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
 
     public_args = dict(args)
     if chat_session_id is not None and tool_name in (
-        "split_file_add_clip_tool",
         "add_clip_to_timeline_tool",
         "place_motion_graphic_tool",
         "import_stock_media_tool",

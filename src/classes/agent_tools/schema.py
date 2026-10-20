@@ -26,7 +26,6 @@ PRIORITY_SCHEMAS = frozenset({
     "set_clip_volume_tool",
     "duck_under_speech_tool",
     "import_files_tool",
-    "split_file_add_clip_tool",
     "add_track_tool",
     "add_marker_tool",
     "modify_clip_tool",
@@ -104,7 +103,6 @@ def _url_list(**kw) -> dict:
 # ---------------------------------------------------------------------------
 
 TOOL_SCHEMAS: dict[str, dict] = {
-    "get_project_info_tool": _obj({}),
     "list_files_tool": _obj({}),
     "list_clips_tool": _obj({
         "layer": _str(description="Optional layer_number or UI track filter."),
@@ -113,15 +111,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         ),
     }),
     "list_layers_tool": _obj({}),
-    "list_markers_tool": _obj({}),
-    "new_project_tool": _obj({}),
-    "save_project_tool": _obj({
-        "file_path": _str(description="Optional destination path; empty saves in place."),
-    }),
-    "open_project_tool": _obj({
-        "file_path": _str(description="Project file path."),
-    }, required=["file_path"]),
-    "play_tool": _obj({}),
     "go_to_start_tool": _obj({}),
     "go_to_end_tool": _obj({}),
     "undo_tool": _obj({
@@ -130,8 +119,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "redo_tool": _obj({
         "steps": _str_or_num(),
     }),
-    "add_track_tool": _obj({}),
-    "add_marker_tool": _obj({}),
     "delete_from_timeline_tool": _obj({
         "timeline_clip_id": _str(),
         "clip_query": _str(),
@@ -141,17 +128,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "position_near": _opt_str_or_num(),
         "include_transitions": _bool(),
         "ripple": _str_or_bool(),
-    }),
-    "remove_clip_tool": _obj({
-        "timeline_clip_id": _str(),
-        "clip_query": _str(),
-        "track": _str(),
-        "occurrence": _str_or_num(),
-        "position_near": _opt_str_or_num(),
-    }),
-    "delete_clips_on_track_tool": _obj({
-        "track": _str(),
-        "include_transitions": _bool(),
     }),
     "analyze_timeline_audio_tool": _obj({
         "track": _str(),
@@ -207,28 +183,9 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "wait_until_project_indexed_tool": _obj({
         "timeout_seconds": _str_or_num(),
     }),
-    "export_video_tool": _obj({
-        "show_dialog": _str_or_bool(),
-        "output_path": _str(),
-    }),
-    "get_export_settings_tool": _obj({}),
-    "set_export_setting_tool": _obj({
-        "key": _str(),
-        "value": {"type": ["string", "number", "boolean", "null"]},
-    }, required=["key"]),
     "get_file_info_tool": _obj({
         "file_id": _str(),
     }, required=["file_id"]),
-    "split_file_add_clip_tool": _obj({
-        "file_id": _str(),
-        "query": _str(),
-        "start_seconds": _str_or_num(),
-        "end_seconds": _str_or_num(),
-        "start_frame": _str_or_num(),
-        "end_frame": _str_or_num(),
-        "name": _str(),
-        "require_visual_match": _str_or_bool(),
-    }),
     "add_clip_to_timeline_tool": _obj({
         "file_id": _str(description="Media-bin file id."),
         "position_seconds": _str_or_num(),
@@ -370,13 +327,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "render_job_id": _str(),
         "label": _str(),
     }),
-    "fetch_remotion_video_from_supabase_tool": _obj({
-        "segment_urls": _url_list(),
-        "supabase_url": _str(),
-        "supabase_path": _str(),
-        "render_job_id": _str(),
-        "label": _str(),
-    }),
     "generate_video_and_add_to_timeline_tool": _obj({
         "prompt": _str(),
         "position_seconds": _str_or_num(),
@@ -422,14 +372,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "duration": _str_or_num(description="Seconds."),
         "placement": _str(description="'between' (default), 'start' or 'end'."),
     }, required=["clip1_id"]),
-    "generate_tts_and_add_to_timeline_tool": _obj({
-        "text": _str(),
-        "voice": _str(),
-        "model": _str(),
-        "speed": _str_or_num(),
-        "track": _str_or_num(),
-        "position": _str_or_num(description="Timeline position in seconds."),
-    }, required=["text"]),
     "import_stock_media_tool": _obj({
         "source": _str(description="'pexels' or 'freesound'; empty with local_path."),
         "video_id": _str_or_num(),
@@ -454,56 +396,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         ),
     }),
     # Phase 3.8 new tools
-    "add_effect_tool": _obj({
-        "timeline_clip_id": _str(),
-        "clip_query": _str(),
-        "track": _str(),
-        "occurrence": _str_or_num(),
-        "position_near": _opt_str_or_num(),
-        "effect": _str(description="libopenshot EffectInfo class_name."),
-        "effect_name": _str(),
-    }),
-    "add_title_tool": _obj({
-        "text": _str(description="Title / lower-third text."),
-        "template": _str(description="Bundled SVG template basename without .svg."),
-        "position_seconds": _str_or_num(),
-        "track": _str(),
-        "duration_seconds": _str_or_num(),
-        "file_name": _str(),
-    }, required=["text"]),
-    "set_keyframes_tool": _obj({
-        "timeline_clip_id": _str(),
-        "clip_query": _str(),
-        "track": _str(),
-        "occurrence": _str_or_num(),
-        "position_near": _opt_str_or_num(),
-        "property": _str(enum=[
-            "volume", "alpha", "location_x", "location_y",
-            "scale_x", "scale_y", "rotation",
-        ]),
-        "points": {
-            "type": "array",
-            "minItems": 1,
-            "items": {
-                "type": "object",
-                "properties": {
-                    "frame": _int(minimum=1),
-                    "seconds": _num(minimum=0),
-                    "value": _num(),
-                },
-                "additionalProperties": False,
-                "required": ["value"],
-            },
-        },
-    }, required=["property", "points"]),
-    "set_project_setting_tool": _obj({
-        "fps": _str_or_num(),
-        "fps_num": _int(minimum=1),
-        "fps_den": _int(minimum=1),
-        "width": _int(minimum=16, maximum=8192),
-        "height": _int(minimum=16, maximum=8192),
-        "sample_rate": _int(minimum=8000, maximum=192000),
-    }),
 
     "inspect_timeline_tool": _obj({
         "startFrame": _int(minimum=0, description="0-index project frame."),
@@ -597,19 +489,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         ),
     }),
 
-    "add_captions_tool": _obj({
-        "clipId": _str(),
-        "timeline_clip_id": _str(description="Alias for clipId."),
-        "trackIndex": _int(minimum=0),
-        "maxWords": _int(minimum=1, maximum=24),
-        "maxChars": _int(minimum=8, maximum=120),
-        "language": _str(),
-        "modelId": _str(),
-        "engine": _str(
-            description="auto|apple|whisper — same on-device ASR as get_transcript_tool (never cloud).",
-        ),
-        "srtPath": _str(description="Import SRT/VTT instead of transcribing."),
-    }),
 
     "export_captions_tool": _obj({
         "path": _str(description="Destination .srt or .vtt path."),
