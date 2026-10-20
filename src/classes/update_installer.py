@@ -1011,7 +1011,9 @@ def cleanup_leftover_bundles():
 # ---------------------------------------------------------------------------
 
 # Inno Setup silent flags:
-#   /VERYSILENT            — no user prompts at all
+#   /SILENT                — no prompts, but Setup's progress window shows:
+#                            the install takes minutes, and with nothing on
+#                            screen people launch Zenvi again mid-install
 #   /SUPPRESSMSGBOXES      — suppress any message boxes
 #   /NORESTART             — don't auto-reboot the machine
 #   /CLOSEAPPLICATIONS     — use Restart Manager to close processes holding
@@ -1026,7 +1028,7 @@ def cleanup_leftover_bundles():
 # existing per-machine install under {autopf} instead of updating it in
 # place. Leave install scope exactly as Setup would otherwise choose.
 _INNO_SILENT_ARGS = (
-    "/VERYSILENT",
+    "/SILENT",
     "/SUPPRESSMSGBOXES",
     "/NORESTART",
     "/CLOSEAPPLICATIONS",
@@ -1074,7 +1076,7 @@ def _build_update_helper_script(filepath, manifest_path, relaunch_target, log_pa
     """
     inno_arg_list = ",".join(_ps_str(a) for a in _INNO_SILENT_ARGS)
     # Only real Inno Setup .exe installers take silent-mode ArgumentList flags.
-    # Unit-test stubs use a .bat stand-in; passing /VERYSILENT etc. can hang
+    # Unit-test stubs use a .bat stand-in; passing the Inno flags can hang
     # Start-Process -Wait on some Windows runners.
     if str(filepath).lower().endswith(".exe"):
         start_process = (

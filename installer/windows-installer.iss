@@ -58,6 +58,8 @@ SignedUninstaller=no
 PrivilegesRequiredOverridesAllowed=commandline
 ; One Setup at a time: two updates installing at once would fight over {app}.
 SetupMutex=ZenviSetupMutex,Global\ZenviSetupMutex
+; Updates run Setup with /SILENT: Cancel after [InstallDelete] would leave a half-deleted install
+AllowCancelDuringInstall=no
 AllowNoIcons=yes
 
 [Languages]

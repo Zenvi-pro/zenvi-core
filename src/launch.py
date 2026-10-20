@@ -128,6 +128,27 @@ if len(sys.argv) > 1 and sys.argv[1] == _TRIAL_FLAG:
 
     sys.exit(_encoder_trial_main(sys.argv[2:]))
 
+
+def _exit_if_update_installing():
+    """While Setup replaces this install, the rest of it (Qt included) may be
+    half-written, so check before importing anything else. The installer
+    helper opens the new Zenvi itself when it's done."""
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        from classes import update_installer
+        if not update_installer.install_in_progress():
+            return
+        manifest = update_installer.read_manifest() or {}
+        import platform
+        update_installer._show_update_notice(platform.system().lower(), manifest.get("version", ""))
+    except Exception:
+        return
+    sys.exit(0)
+
+
+_exit_if_update_installing()
+
 try:
     from classes.ffmpeg_cli import ensure_ffmpeg_on_path
     ensure_ffmpeg_on_path()
@@ -282,13 +303,6 @@ def _install_staged_update(launch_paths):
     try:
         from classes import update_installer
 
-        if update_installer.install_in_progress():
-            # Opening this copy now would race the helper replacing it; the
-            # helper opens the new Zenvi itself when it's done.
-            import platform
-            manifest = update_installer.read_manifest() or {}
-            update_installer._show_update_notice(platform.system().lower(), manifest.get("version", ""))
-            sys.exit(0)
         # A launch that opens a file opens it now; the update waits for the
         # next plain launch or Restart to Update.
         if not launch_paths and update_installer.has_pending_update(for_launch=True) and \
