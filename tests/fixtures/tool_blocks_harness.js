@@ -392,6 +392,21 @@ try {
     s.api.replayToolBlock(JSON.stringify({ call_id: 'r2', title: 'Add clip to timeline', tool_name: 'add_clip_to_timeline_tool' }), true);
     check(groupRows(s).length === 0, 'restored rows from history are never grouped');
 
+    // The same call announced twice in one batch stays one row, never a group of itself.
+    s = scenario({});
+    s.api.addToolBlock(payload('d1', 'Add clip to timeline', 'add_clip_to_timeline_tool', 'Add clip to timeline'));
+    s.api.addToolBlock(payload('d1', 'Add clip to timeline', 'add_clip_to_timeline_tool', 'Add clip to timeline'));
+    check(groupRows(s).length === 0 && findAll(s.root, function (n) { return n.getAttribute && n.getAttribute('data-call-id') === 'd1'; }).length === 1,
+        'a repeated announcement of one call keeps a single row');
+
+    // Old WebKit pages call the bridge synchronously and get the detail back at once.
+    s = scenario({ webkit: true, details: { w1: { args: '{"track": 2}', result: 'Muted 1 clip' } } });
+    s.api.addToolBlock(payload('w1', 'Mute clips', 'mute_clips_tool', 'Mute clips'));
+    s.api.completeToolBlock('w1', true, 'Muted 1 clip');
+    header(rowOf(s, 'w1')).click();
+    check(s.calls.join() === 'w1' && textHas(body(rowOf(s, 'w1')), '"track": 2') && textHas(body(rowOf(s, 'w1')), 'Muted 1 clip'),
+        'WebKit pages get the args and result synchronously on expand');
+
     // Reasoning text streams into the open Thinking block, in order with its tool rows.
     s = scenario({});
     s.api.appendThinkingText('Checking ');
