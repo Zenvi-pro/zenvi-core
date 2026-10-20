@@ -402,6 +402,7 @@ class ZenviBackendClient:
         plan_id: Optional[str] = None,
         on_plan_event: Optional[Callable] = None,
         images: Optional[List[Dict[str, Any]]] = None,
+        project_id: Optional[str] = None,
     ) -> Optional[str]:
         """
         Send a chat message via WebSocket with tool delegation support.
@@ -458,6 +459,8 @@ class ZenviBackendClient:
                 payload_data["plan_id"] = plan_id
             if images:
                 payload_data["images"] = list(images)
+            if project_id:
+                payload_data["project_id"] = project_id
             _ws_send({"type": "user_message", "data": payload_data})
 
             # Track outstanding tool worker threads so we can drain them

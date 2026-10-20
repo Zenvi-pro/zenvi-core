@@ -516,6 +516,7 @@ class AIChatWorker(QObject):
         self._stopping = False  # Set to True during app shutdown to suppress fallback/emit
         # Vision parts for the next hosted-chat turn (set by AIChatWindow before invoke).
         self._pending_chat_images = []
+        self._pending_project_id = ""
 
     @pyqtSlot(str, str, str, str, str)
     def run_request(self, text: str, model_id: str, agent_mode: str = "agent", action: str = "chat", plan_id: str = ""):
@@ -666,6 +667,7 @@ class AIChatWorker(QObject):
                 plan_id=plan_id or None,
                 on_plan_event=on_plan_event,
                 images=images or None,
+                project_id=self._pending_project_id or None,
             )
 
             if final_error:
@@ -3403,6 +3405,7 @@ class AIChatWindow(QDockWidget):
             worker._pending_chat_images = list(images)
         else:
             worker._pending_chat_images = []
+        worker._pending_project_id = self._project_id()
         self._set_processing_ui(True)
         QMetaObject.invokeMethod(
             worker,
