@@ -185,3 +185,76 @@ def test_tool_rows_in_chat_js_behave_on_a_small_dom():
     assert proc.stdout.strip(), f"harness produced no output (stderr: {proc.stderr})"
     result = json.loads(proc.stdout.strip().splitlines()[-1])
     assert result["ok"], "; ".join(result["failures"])
+
+
+class _FakePage:
+    def __init__(self, sink):
+        self.sink = sink
+
+    def runJavaScript(self, code, callback=None):
+        self.sink.append(code)
+
+
+def _batching_window(chat_ui):
+    """A stand-in carrying the real queueing methods, with a fake embedded page."""
+
+    class W:
+        _use_web_ui = True
+        _active_sid = "s1"
+        _chat_embed_backend = "webengine"
+        _on_tool_started = chat_ui.AIChatWindow._on_tool_started
+        _run_js = chat_ui.AIChatWindow._run_js
+        _flush_js = chat_ui.AIChatWindow._flush_js
+        _exec_js = chat_ui.AIChatWindow._exec_js
+        _record_tool_started = lambda self, *a: None
+        _flush_token_buffer = lambda self: None
+        _commit_streaming_segment = lambda self, sid: None
+
+        def __init__(self):
+            self.pages = []
+            self._chat_view = types.SimpleNamespace(page=lambda: _FakePage(self.pages))
+            self._js_queue = []
+            self._js_flush_scheduled = False
+
+        def sender(self):
+            return types.SimpleNamespace()
+
+    return W()
+
+
+def test_a_burst_of_50_tool_events_reaches_the_page_in_one_flush(chat_ui, monkeypatch):
+    timers = []
+    monkeypatch.setattr(chat_ui, "QTimer", types.SimpleNamespace(
+        singleShot=lambda ms, fn: timers.append((ms, fn))))
+    win = _batching_window(chat_ui)
+    for i in range(50):
+        win._on_tool_started(f"c{i}", "list_clips_tool", "{}")
+
+    assert win.pages == [], "nothing reaches the page while the burst is still arriving"
+    assert [ms for ms, _ in timers] == [60], "one single-shot 60 ms flush for the whole burst"
+    timers[0][1]()
+    assert len(win.pages) == 1, "one page call for the whole burst"
+    assert win.pages[0].count("addToolBlock(") == 50
+
+
+def test_a_call_that_wants_a_result_flushes_queued_js_first(chat_ui, monkeypatch):
+    monkeypatch.setattr(chat_ui, "QTimer", types.SimpleNamespace(singleShot=lambda ms, fn: None))
+    win = _batching_window(chat_ui)
+    win._run_js("first()")
+    win._run_js("second()")
+    win._run_js("third()", callback=lambda result: None)
+
+    assert len(win.pages) == 2
+    assert "first()" in win.pages[0] and "second()" in win.pages[0]
+    assert win.pages[1] == "third()", "the page sees calls in the order they were made"
+
+
+def test_the_next_burst_arms_a_new_flush(chat_ui, monkeypatch):
+    timers = []
+    monkeypatch.setattr(chat_ui, "QTimer", types.SimpleNamespace(
+        singleShot=lambda ms, fn: timers.append((ms, fn))))
+    win = _batching_window(chat_ui)
+    win._run_js("a()")
+    timers[0][1]()
+    win._run_js("b()")
+    assert len(timers) == 2 and len(win.pages) == 1

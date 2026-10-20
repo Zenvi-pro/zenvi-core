@@ -1006,6 +1006,8 @@ class AIChatWindow(QDockWidget):
         self._chat_web_initial_sync_done = False
         self._user_cancelled = False
         self._token_buffer = []
+        self._js_queue = []
+        self._js_flush_scheduled = False
         self._token_buffer_sid = None  # tab the buffered chunks were streamed for
         self._token_flush_scheduled = False
         self._mention_armed = False
@@ -2964,9 +2966,33 @@ class AIChatWindow(QDockWidget):
         self._chat_view.loadFinished.connect(on_load_finished)
 
     def _run_js(self, code, callback=None):
-        """Run JavaScript in the embedded WebEngine or WebKit chat page."""
+        """Run JavaScript in the embedded WebEngine or WebKit chat page.
+
+        Fire-and-forget snippets are queued and sent together on a ~60 ms flush,
+        so a burst of tool events costs one page call. A call that wants a
+        result flushes the queue first, so the page still sees calls in order.
+        """
         if not self._use_web_ui or not getattr(self, "_chat_view", None):
             return
+        if callback is None:
+            self._js_queue.append(code)
+            if not self._js_flush_scheduled:
+                self._js_flush_scheduled = True
+                QTimer.singleShot(60, self._flush_js)
+            return
+        self._flush_js()
+        self._exec_js(code, callback)
+
+    def _flush_js(self):
+        self._js_flush_scheduled = False
+        if not self._js_queue:
+            return
+        # One try per snippet: a snippet that throws must not drop the rest of the batch.
+        code = "\n".join("try{%s}catch(e){console.error(e)}" % snippet for snippet in self._js_queue)
+        self._js_queue = []
+        self._exec_js(code)
+
+    def _exec_js(self, code, callback=None):
         if getattr(self, "_chat_embed_backend", "webengine") == "webkit":
             from windows.embedded_web import run_js as web_run_js
 
