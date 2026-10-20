@@ -45,6 +45,14 @@ def test_core_tools_are_real_handlers():
     assert len(CORE_TOOL_NAMES) < 30
 
 
+def test_multi_clip_assembly_is_core():
+    """Placing clips one by one, agents got crossfade overlaps wrong (1 s or none for a
+    0.5 s fade); the batch tools do the overlap maths, so they must not hide behind find_tools."""
+    from classes.agent_tools.core_tools import CORE_TOOL_NAMES
+
+    assert {"add_clips_to_timeline_tool", "add_transitions_between_clips_tool"} <= set(CORE_TOOL_NAMES)
+
+
 def test_the_mcp_lists_core_tools_and_search_only(tool_stub):
     from classes.agent_mcp_server import _extra_tools, listed_tool_defs
 
