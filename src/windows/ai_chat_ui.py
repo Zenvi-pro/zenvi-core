@@ -1,6 +1,7 @@
 import html
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -290,28 +291,42 @@ def _planning_block_message(tool_name: str) -> str:
     )
 
 
-def _format_tool_command(tool_name: str, args: dict) -> str:
-    """Build a `$`-style preview line summarising the tool invocation."""
-    parts = [tool_name]
-    if isinstance(args, dict):
-        for k, v in args.items():
-            try:
-                if isinstance(v, str):
-                    if len(v) > 80:
-                        v_disp = v[:80] + "…"
-                    else:
-                        v_disp = v
-                    parts.append('%s=%s' % (k, json.dumps(v_disp)))
-                elif isinstance(v, (int, float, bool)) or v is None:
-                    parts.append('%s=%s' % (k, json.dumps(v)))
-                else:
-                    s = json.dumps(v, default=str)
-                    if len(s) > 80:
-                        s = s[:80] + "…"
-                    parts.append('%s=%s' % (k, s))
-            except Exception:
-                parts.append(str(k))
-    return " ".join(parts)
+_FILE_ARG_KEYS = ("file_id", "file_path", "path", "source")
+_TEXT_ARG_KEYS = ("query", "text", "prompt", "title")
+_TIME_WORDS = {"position": "at", "start": "at", "at": "at", "end": "to", "duration": "for", "length": "for"}
+
+
+def _file_name(value: str):
+    """File name for a path; None for a bare id, which means nothing to a person."""
+    value = value.strip()
+    if "/" not in value and "\\" not in value and not re.search(r"\.\w{1,5}$", value):
+        return None
+    return os.path.basename(value.replace("\\", "/")) or None
+
+
+def describe_tool_call(tool_name: str, args) -> str:
+    """One plain sentence for a tool row: its label plus up to three key args.
+
+    Only the args named above are shown; anything else is skipped, never dumped.
+    """
+    label = humanize_tool_name(tool_name)
+    files, texts, times, tracks = [], [], [], []
+    for key, value in (args.items() if isinstance(args, dict) else []):
+        if key in _FILE_ARG_KEYS and isinstance(value, str) and value.strip():
+            name = _file_name(value)
+            if name:
+                files.append(name)
+        elif key in _TEXT_ARG_KEYS and isinstance(value, str) and value.strip():
+            texts.append('"%s"' % value.strip()[:40])
+        elif key.endswith("_seconds") and isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+            minutes, secs = divmod(max(0, round(value)), 60)
+            word = _TIME_WORDS.get(key[: -len("_seconds")], "")
+            times.append(" ".join(filter(None, (word, "%d:%02d" % (minutes, secs)))))
+        elif key == "track" and isinstance(value, int) and not isinstance(value, bool):
+            tracks.append("on track %d" % value)
+    parts = (files + texts + times + tracks)[:3]
+    text = f"{label}: {' '.join(parts)}" if parts else label
+    return text if len(text) <= 90 else text[:89] + "…"
 
 
 class WidgetToolBlock(QFrame):
@@ -4007,8 +4022,7 @@ class AIChatWindow(QDockWidget):
             args = json.loads(args_json) if args_json else {}
         except Exception:
             args = {}
-        title = humanize_tool_name(tool_name)
-        cmd = _format_tool_command(tool_name, args)
+        title = describe_tool_call(tool_name, args)
         # Full args for expand/inspect (bounded)
         try:
             args_pretty = json.dumps(args, indent=2, ensure_ascii=False, default=str)
@@ -4020,7 +4034,6 @@ class AIChatWindow(QDockWidget):
             payload = {
                 "call_id": call_id,
                 "title": title,
-                "cmd": cmd,
                 "args_detail": args_pretty,
                 "tool_name": tool_name or "",
             }
@@ -4030,7 +4043,7 @@ class AIChatWindow(QDockWidget):
         if not getattr(self, "_widget_tool_container", None):
             return
         block_id = call_id or tool_name or ("tool_%s" % time.time())
-        block = WidgetToolBlock(block_id, title, cmd, parent=self._widget_tool_blocks_host)
+        block = WidgetToolBlock(block_id, title, "", parent=self._widget_tool_blocks_host)
         if args_pretty:
             block.append_log("ARGS:\n" + args_pretty)
         insert_at = max(0, self._widget_tool_container.count() - 1)
