@@ -88,6 +88,8 @@ def rig(monkeypatch):
         pytest.skip("paints a real PropertyDelegate: run with ZENVI_REAL_QT=1")
     import importlib
 
+    if not hasattr(importlib.import_module("openshot"), "CONSTANT"):
+        pytest.skip("an earlier test left a stub openshot module")  # e.g. test_windows_update_launch
     importlib.import_module("qt_api")  # QtWebEngine must load before any QApplication
     from PyQt5.QtCore import QRect
     from PyQt5.QtGui import QColor, QImage, QPainter, QStandardItem, QStandardItemModel

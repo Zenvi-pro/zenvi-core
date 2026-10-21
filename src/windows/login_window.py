@@ -3,22 +3,27 @@ Zenvi login window.
 
 Primary flow  — browser OAuth:
   Opens ZENVI_WEBSITE/login?state=<uuid> in the default browser, then polls
-  Supabase until the session is ready. Falls back to email/password after
-  POLL_TIMEOUT seconds if the website hasn't written the session back.
+  Supabase until the session is ready (POLL_TIMEOUT, the hand-off row's
+  lifetime). A browser that is already signed in to Zenvi only has to approve.
 
 Fallback flow — email / password form:
-  Uses Supabase Auth REST API directly; no browser required.
+  Uses Supabase Auth REST API directly; no browser required. Only shown when
+  the user asks for it.
 
 Usage:
     dlg = LoginWindow(parent=main_window)
     dlg.auth_completed.connect(on_signed_in)
     dlg.exec_()
+
+    # A sign-in that ended on its own: explain, and open the browser only on a click.
+    dlg = LoginWindow(parent=None, auto_open_browser=False,
+                      message="Your Zenvi sign-in has ended. Sign in again to continue.")
 """
 
 import logging
 import sys
 
-from qt_api import Qt, QThread, QObject, QTimer, pyqtSignal, pyqtSlot
+from qt_api import Qt, QThread, QObject, QTimer, pyqtSignal, pyqtSlot, isdeleted
 from qt_api import (
     QApplication,
     QDialog,
@@ -33,9 +38,10 @@ from qt_api import (
     QWidget,
 )
 
-from classes.auth_manager import AuthManager, AuthError
+from classes.auth_manager import AuthManager, AuthError, confirmation_code
 from classes import info
 from themes.cosmic.tokens import resolve
+from classes.qt_main_thread import invoke_on_gui
 
 log = logging.getLogger(__name__)
 
@@ -67,24 +73,8 @@ QPushButton#link:hover {
 
 # ── Background workers ──────────────────────────────────────────────────────
 
-
-class _PollWorker(QObject):
-    """Runs AuthManager.poll_for_session() in a QThread and bridges to Qt signals."""
-    succeeded = pyqtSignal(dict)
-    timed_out = pyqtSignal()
-
-    def __init__(self, auth: AuthManager, state: str) -> None:
-        super().__init__()
-        self._auth = auth
-        self._state = state
-
-    @pyqtSlot()
-    def start(self) -> None:
-        self._auth.poll_for_session(
-            state=self._state,
-            on_success=self.succeeded.emit,
-            on_timeout=self.timed_out.emit,
-        )
+# Sign-in threads that outlived their dialog, kept alive until they finish.
+_orphaned_threads: set = set()
 
 
 class _PasswordWorker(QObject):
@@ -123,19 +113,16 @@ class LoginWindow(QDialog):
     auth_completed = pyqtSignal(dict)
     auth_cancelled = pyqtSignal()
 
-    # Thread-safe signals from background → main thread
-    _sig_browser_success = pyqtSignal(dict)
-    _sig_browser_timeout = pyqtSignal()
-
     _PAGE_BROWSER = 0
     _PAGE_PASSWORD = 1
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, auto_open_browser: bool = True, message: str = "") -> None:
         super().__init__(parent)
         self._auth = AuthManager.instance()
         self._signup_mode = False
-        self._browser_thread: QThread | None = None
-        self._browser_worker: _PollWorker | None = None
+        self._message = message
+        # Cancel handle of the browser hand-off this dialog is waiting for.
+        self._browser_poll = None
         self._pw_thread: QThread | None = None
         self._pw_worker: _PasswordWorker | None = None
 
@@ -147,10 +134,11 @@ class LoginWindow(QDialog):
         self.setStyleSheet(_DIALOG_QSS)
 
         self._build_ui()
-        self._sig_browser_success.connect(self._on_success)
-        self._sig_browser_timeout.connect(self._on_browser_timeout)
 
-        QTimer.singleShot(0, self._start_browser_flow)
+        if auto_open_browser:
+            QTimer.singleShot(0, self._start_browser_flow)
+        else:
+            self._show_browser_idle(message or "Sign in to continue")
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -231,9 +219,21 @@ class LoginWindow(QDialog):
         self._copy_btn.setFixedWidth(52)
         self._copy_btn.clicked.connect(self._copy_url)
         url_row.addWidget(self._copy_btn)
-        layout.addLayout(url_row)
+        self._url_row = QWidget()
+        self._url_row.setLayout(url_row)
+        layout.addWidget(self._url_row)
 
         layout.addStretch(1)
+
+        # Shown when nothing is waiting on the browser: before a sign-in the user
+        # didn't start, and after one timed out.
+        self._browser_btn = QPushButton("Sign in with your browser")
+        self._browser_btn.setObjectName("primary")
+        self._browser_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._browser_btn.clicked.connect(self._start_browser_flow)
+        self._browser_btn.hide()
+        layout.addWidget(self._browser_btn)
+        layout.addSpacing(8)
 
         self._use_password_btn = QPushButton("Sign in with email instead")
         self._use_password_btn.setObjectName("ghost")
@@ -318,9 +318,25 @@ class LoginWindow(QDialog):
             self._copy_btn.setText("Copied!")
             QTimer.singleShot(1500, lambda: self._copy_btn.setText("Copy"))
 
+    def _show_browser_idle(self, title: str, detail: str = "") -> None:
+        """The browser page with nothing in flight: a button opens the browser."""
+        self._stop_browser_thread()
+        self._stack.setCurrentIndex(self._PAGE_BROWSER)
+        self._browser_status.setText(title)
+        self._browser_sub.setText(
+            detail or "Your browser opens the Zenvi website. If you're already\n"
+                      "signed in there, you only have to approve."
+        )
+        self._url_row.hide()
+        self._browser_btn.show()
+        self._browser_btn.setFocus()
+        self.adjustSize()
+
     def _start_browser_flow(self) -> None:
         self._stop_browser_thread()
         self._stack.setCurrentIndex(self._PAGE_BROWSER)
+        self._browser_btn.hide()
+        self._url_row.show()
         self._browser_status.setText("Opening browser…")
         self._browser_sub.setText(
             "Complete sign-in in your browser.\nThis window will close automatically."
@@ -330,26 +346,44 @@ class LoginWindow(QDialog):
 
         login_url, state = self._auth.start_auth_flow()
         self._url_label.setText(login_url)
+        self._code = confirmation_code(state)
         print(f"[zenvi-auth] browser flow started: {login_url}", file=sys.stderr)
-        QTimer.singleShot(1400, lambda: self._browser_status.setText("Waiting for authentication…"))
+        QTimer.singleShot(1400, self._show_waiting)
 
-        self._browser_worker = _PollWorker(self._auth, state)
-        self._browser_thread = QThread(self)
-        self._browser_worker.moveToThread(self._browser_thread)
-        self._browser_worker.succeeded.connect(self._sig_browser_success)
-        self._browser_worker.timed_out.connect(self._sig_browser_timeout)
-        self._browser_thread.started.connect(self._browser_worker.start)
-        self._browser_thread.start()
+        # The poll calls back on its own thread, possibly after this dialog
+        # is gone: hop to the GUI thread and check it still exists there.
+        self._browser_poll = self._auth.poll_for_session(
+            state=state,
+            on_success=self._from_poll(self._on_success),
+            on_timeout=self._from_poll(self._on_browser_timeout),
+        )
+
+    def _from_poll(self, slot):
+        def call(*args):
+            def run():
+                if not isdeleted(self) and self._browser_poll is not None:
+                    slot(*args)
+            invoke_on_gui(run)
+        return call
+
+    def _show_waiting(self) -> None:
+        if self._browser_poll is not None:
+            self._browser_status.setText("Waiting for authentication…")
+            self._browser_sub.setText(
+                "Approve the sign-in in your browser if it shows the code\n"
+                f"{self._code}\nThis window will close automatically."
+            )
 
     @pyqtSlot()
     def _on_browser_timeout(self) -> None:
-        print("[zenvi-auth] browser poll timed out — switching to password form", file=sys.stderr)
-        self._browser_status.setText("Browser sign-in timed out")
-        self._browser_sub.setText(
-            "The browser didn't complete sign-in in time.\n"
-            "Use email + password below, or try again."
+        # Stay on the browser page: switching to the password form here is what
+        # asked people who were signed in on the website for their password.
+        print("[zenvi-auth] browser sign-in timed out", file=sys.stderr)
+        self._show_browser_idle(
+            "Browser sign-in timed out",
+            "The browser didn't finish signing in.\nTry again, or sign in with your email.",
         )
-        QTimer.singleShot(1500, self._show_password_page)
+        self._browser_btn.setText("Try again")
 
     def _show_password_page(self) -> None:
         self._stop_browser_thread()
@@ -416,17 +450,24 @@ class LoginWindow(QDialog):
     # ── Shared ──────────────────────────────────────────────────────────────
 
     def _stop_browser_thread(self) -> None:
-        self._auth.cancel_poll()
-        if self._browser_thread and self._browser_thread.isRunning():
-            self._browser_thread.quit()
-            self._browser_thread.wait(1000)
-        self._browser_thread = None
-        self._browser_worker = None
+        # Only this dialog's hand-off: the chat may be waiting on one of its own.
+        if self._browser_poll is not None:
+            self._auth.cancel_poll(self._browser_poll)
+            self._browser_poll = None
 
     def _stop_pw_thread(self) -> None:
-        if self._pw_thread and self._pw_thread.isRunning():
-            self._pw_thread.quit()
-            self._pw_thread.wait(1000)
+        thread = self._pw_thread
+        if thread and thread.isRunning():
+            thread.quit()
+            if not thread.wait(1000):
+                # Still inside a network request: let it finish on its own
+                # rather than be destroyed with this dialog while running.
+                thread.setParent(None)
+                _orphaned_threads.add(thread)
+                if self._pw_worker is not None:
+                    _orphaned_threads.add(self._pw_worker)
+                thread.finished.connect(lambda t=thread, w=self._pw_worker: (
+                    _orphaned_threads.discard(t), _orphaned_threads.discard(w)))
         self._pw_thread = None
         self._pw_worker = None
 
@@ -443,13 +484,14 @@ class LoginWindow(QDialog):
         self.accept()
 
     def _cancel(self) -> None:
-        self._stop_browser_thread()
-        self._stop_pw_thread()
-        self.auth_cancelled.emit()
         self.reject()
 
-    def closeEvent(self, event) -> None:
+    def done(self, result) -> None:
+        # Every way out -- Cancel, Escape, the close button, success -- ends
+        # here; WA_DeleteOnClose deletes the dialog right after, so nothing
+        # may still be waiting to call it back.
         self._stop_browser_thread()
         self._stop_pw_thread()
-        self.auth_cancelled.emit()
-        event.accept()
+        if result != QDialog.Accepted:
+            self.auth_cancelled.emit()
+        super().done(result)

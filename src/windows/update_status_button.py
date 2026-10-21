@@ -95,6 +95,8 @@ class UpdateStatusButton(QToolButton):
         self.percent = 0
         self.downloaded = 0
         self.total = 0
+        # Why the last download or install of this version didn't finish.
+        self.reason = ""
 
         self._indeterminate_pos = 0.0
         self._indeterminate_timer = QTimer(self)
@@ -168,12 +170,14 @@ class UpdateStatusButton(QToolButton):
 
         self._set_state(STATE_DOWNLOADING, text, tooltip, COLOR_ACCENT)
 
-    def set_ready(self, version, size=0):
+    def set_ready(self, version, size=0, note=""):
         """The update is downloaded, verified and staged for the next launch.
 
         *size* comes from the update manifest, so a session that finds an
-        already-staged update can still report how large it is."""
+        already-staged update can still report how large it is. *note* says
+        why the last attempt to install it didn't finish, if one didn't."""
         self.version = version or self.version
+        self.reason = note
         self.percent = 100
         if size:
             self.total = size
@@ -187,8 +191,9 @@ class UpdateStatusButton(QToolButton):
         )
 
     def set_failed(self, version, reason=""):
-        """The download failed; fall back to offering a manual download."""
+        """The download (or installing it) failed; offer a manual download."""
         self.version = version or self.version
+        self.reason = reason
         self._set_state(
             STATE_FAILED,
             self._tr("Update Available"),
