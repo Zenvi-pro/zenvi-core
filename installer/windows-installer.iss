@@ -56,6 +56,10 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 SignedUninstaller=no
 ; SignedUninstallerDir=..\build\
 PrivilegesRequiredOverridesAllowed=commandline
+; One Setup at a time: two updates installing at once would fight over {app}.
+SetupMutex=ZenviSetupMutex,Global\ZenviSetupMutex
+; Updates run Setup with /SILENT: Cancel after [InstallDelete] would leave a half-deleted install
+AllowCancelDuringInstall=no
 AllowNoIcons=yes
 
 [Languages]
@@ -98,6 +102,16 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 [Run]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#MyAppName}"" program=""{app}\{#MyAppExeName}"" dir=in action=allow enable=yes"; Flags: runhidden; Tasks: firewall;
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait runasoriginaluser; Check: ReopenAfterSilentUpdate and not PortableCheck
 
 [UninstallRun]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""{#MyAppName}"""; Flags: runhidden; Tasks: firewall;
+
+[Code]
+// Zenvi 1.0.188's updater runs this installer silently and never opens the
+// app again. Later updaters pass /NORESTARTAPPLICATIONS and reopen it
+// themselves, so only a silent install without that flag reopens it here.
+function ReopenAfterSilentUpdate: Boolean;
+begin
+  Result := WizardSilent and (Pos('/NORESTARTAPPLICATIONS', Uppercase(GetCmdTail)) = 0);
+end;

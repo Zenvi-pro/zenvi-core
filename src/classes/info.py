@@ -29,7 +29,7 @@ import os
 import sys
 from time import strftime
 
-VERSION = "1.2.2"
+VERSION = "1.2.3"
 # libopenshot 1.0.1: the 4.0-era effects, the corrected Crop location math, and
 # microphones with non-ASCII names (1.0.0 could not open "Intel® Smart Sound ...").
 MINIMUM_LIBOPENSHOT_VERSION = "1.0.1"
