@@ -79,7 +79,9 @@ def test_codex_does_not_resume_a_seeded_placeholder(codex):
     assert "resume" not in argv
 
 
-def test_codex_learns_its_thread_id_and_reports_it(codex):
+def test_codex_learns_its_thread_id_and_reports_it(codex, monkeypatch):
+    import windows.agent_runners as ar
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: ["--add-dir", "C:/footage"])
     seen = []
     codex.cli_session_changed.connect(
         lambda sid, cli, started, cwd: seen.append((sid, cli, started, cwd))
@@ -95,6 +97,8 @@ def test_codex_learns_its_thread_id_and_reports_it(codex):
     argv = codex._build_argv("again")
     assert argv[:3] == ["codex", "exec", "resume"]
     assert argv[3] == "th_123"
+    # `codex exec resume` has no --add-dir; passing it exits 2 (#281).
+    assert "--add-dir" not in argv
 
 
 def test_codex_ignores_an_empty_thread_id(codex):
