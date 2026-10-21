@@ -33,6 +33,7 @@ import platform
 import traceback
 import json
 import logging
+import tempfile
 
 from qt_api import (
     QT_API,
@@ -181,6 +182,13 @@ def get_app():
 def get_settings():
     """Get a reference to the app's settings object"""
     return get_app().get_settings()
+
+
+def check_user_path_writable(user_path):
+    """Raise PermissionError if Zenvi can't write to its user directory.
+    A file of its own, so two launches at once can't delete each other's."""
+    with tempfile.TemporaryFile(dir=user_path) as f:
+        f.write(b'{}')
 
 
 class StartupError:
@@ -489,18 +497,9 @@ class OpenShotApp(QApplication):
         # Test for permission issues (and display message if needed)
         try:
             log.debug("Testing write access to user directory")
-            # Create test paths
-            TEST_PATH_DIR = os.path.join(info.USER_PATH, 'PERMISSION')
-            TEST_PATH_FILE = os.path.join(TEST_PATH_DIR, f'test{info.PROJECT_EXT}')
-            os.makedirs(TEST_PATH_DIR, exist_ok=True)
-            with open(TEST_PATH_FILE, 'w') as f:
-                f.write('{}')
-                f.flush()
-            # Delete test paths
-            os.unlink(TEST_PATH_FILE)
-            os.rmdir(TEST_PATH_DIR)
+            check_user_path_writable(info.USER_PATH)
         except PermissionError as ex:
-            log.error('Failed to create file %s', TEST_PATH_FILE, exc_info=1)
+            log.error('Failed to write to %s', info.USER_PATH, exc_info=1)
             self.errors.append(StartupError(
                 _("Permission Error"),
                 _("%(error)s. Please delete <b>%(path)s</b> and launch OpenShot again.") % {
@@ -539,22 +538,34 @@ class OpenShotApp(QApplication):
         # Show auth dialog if user is not signed in (keep main window hidden from taskbar until then).
         # A headless session checked the stored session before building the
         # window, and has no one to show a dialog to.
+        # Only a stored sign-in is checked here, without the network: an expired
+        # access token is refreshed in the background below, and being offline
+        # never sends anyone back to the browser.
         from classes.auth_manager import AuthManager
         auth = AuthManager.instance()
-        if not self.headless and not auth.is_authenticated():
+        if not self.headless and not auth.has_session():
             self.window.hide()
             from windows.login_window import LoginWindow
             login_dlg = LoginWindow(parent=None)
             result = login_dlg.exec_()
             # If user cancelled auth, quit the application
             if result != LoginWindow.Accepted:
-                log.info("Auth cancelled by user ΓÇö exiting.")
+                log.info("Auth cancelled by user — exiting.")
                 self.window.close()
                 return False
             # The chat dock's first credits fetch ran signed out; fetch now
             # instead of leaving the badge on its placeholder for 60 s.
             if getattr(self.window, "dockAIChat", None):
                 self.window.dockAIChat.refresh_credits_for_account()
+        if not self.headless:
+            # Ask again only when the server says the sign-in is over -- at
+            # startup or whenever a refresh later in the session is refused.
+            from classes.qt_main_thread import invoke_on_gui
+            window = self.window
+            # Deferred: never run a modal prompt inside whatever GUI code asked
+            # for the token.
+            auth.add_revoked_listener(lambda: invoke_on_gui(window.zenvi_session_ended, defer=True))
+            auth.check_session_async()
 
         # Show main window (Win32 HWND icon needed when host is python.exe on Windows).
         # Headless, it is shown on the offscreen platform: laid out and painted
@@ -571,6 +582,10 @@ class OpenShotApp(QApplication):
         # On Android, prompt for All Files Access once the window is visible so
         # the permission is in place before the user first taps Import Files.
         QTimer.singleShot(500, request_android_storage_permission_if_needed)
+
+        # Logged once the event loop runs with the window up: the auto-update
+        # end-to-end test (installer/e2e_update_test.py) waits for this line.
+        QTimer.singleShot(0, lambda: log.info("Zenvi %s is ready", info.VERSION))
 
         # Files later launches hand over are opened from here on, after
         # startup's own project (below) is in place.

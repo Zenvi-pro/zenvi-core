@@ -4282,6 +4282,10 @@ class AIChatWindow(QDockWidget):
 
         try:
             _url, state = auth.start_auth_flow()
+            if self._use_web_ui:
+                from classes.auth_manager import confirmation_code
+                self._run_js("if(window.onZenviSignInStarted) onZenviSignInStarted(%s);"
+                             % json.dumps(confirmation_code(state)))
             auth.poll_for_session(
                 state,
                 on_success=lambda session: report(True, str((session or {}).get("user_email") or "")),
