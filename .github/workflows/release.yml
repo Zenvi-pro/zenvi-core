@@ -360,7 +360,7 @@ jobs:
           # path (brew --prefix qt@5), so unlink it first. Plain `opencv` is
           # OpenCV 5, which libopenshot's find_package(OpenCV 4) rejects.
           brew unlink qt@5 || true
-          brew install opencv@4 protobuf
+          brew install opencv@4 protobuf pkgconf
 
       # Build libopenshot from source only for arm64 (native build, no cross-compilation).
       # x86_64 skips this: cross-compiling C++ for x86_64 via Rosetta is complex and
@@ -440,6 +440,10 @@ jobs:
           # drags in qtbase via vtk); PyQt5 needs the Qt 5 build.
           OPENCV_PREFIX="$(brew --prefix opencv@4)"
           PROTOBUF_PREFIX="$(brew --prefix protobuf)"
+          # Homebrew protobuf includes and links abseil, which CMake's FindProtobuf
+          # module does not pass on: take protobuf's flags from its pkg-config file.
+          PROTOBUF_CFLAGS="$(pkg-config --cflags protobuf)"
+          PROTOBUF_LIBS="$(pkg-config --libs protobuf)"
           cmake -S /tmp/libopenshot -B /tmp/libopenshot/build \
             -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
             -DCMAKE_BUILD_TYPE=Release \
@@ -451,7 +455,9 @@ jobs:
             -DENABLE_MAGICK=OFF \
             -DUSE_QT6=OFF \
             -DPython3_EXECUTABLE="$(which python3)" \
-            -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations" \
+            -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations $PROTOBUF_CFLAGS" \
+            -DCMAKE_SHARED_LINKER_FLAGS="$PROTOBUF_LIBS" \
+            -DCMAKE_MODULE_LINKER_FLAGS="$PROTOBUF_LIBS" \
             -DOpenMP_ROOT="$LIBOMP_PREFIX" \
             -DCMAKE_PREFIX_PATH="$INSTALL_PREFIX;$QT5_PREFIX;$LIBOMP_PREFIX;$OPENCV_PREFIX;$PROTOBUF_PREFIX"
           cmake --build /tmp/libopenshot/build --parallel $(sysctl -n hw.logicalcpu)
