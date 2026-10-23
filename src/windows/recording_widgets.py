@@ -20,11 +20,13 @@ import sys
 from qt_api import (
     Qt, pyqtSignal, QRect, QPoint, QEvent, QTimer,
     QWidget, QFrame, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
-    QGridLayout, QApplication, QDialog, QPainter, QColor, QPen,
+    QGridLayout, QApplication, QDialog, QPainter, QColor, QPen, QPixmap,
 )
 
+from classes import info
 from classes.app import get_app
 from classes.logger import log
+from themes.cosmic.tokens import TOKENS
 
 
 _WIN32_USER32 = None
@@ -37,10 +39,27 @@ _MAC_COREFOUNDATION = None
 _MAC_KEYS = None
 
 
+def _token_color(name, alpha=255):
+    color = QColor(TOKENS[name])
+    color.setAlpha(alpha)
+    return color
+
+
+def _icon(name):
+    """Cosmic monochrome icon, recolored to text_muted so the SVG's own fill does not show."""
+    pixmap = QPixmap()
+    path = os.path.join(info.PATH, "themes", "cosmic", "images", name)
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8") as svg:
+            data = re.sub(r"#[0-9a-fA-F]{6}", TOKENS["text_muted"], svg.read())
+        pixmap.loadFromData(data.encode("utf-8"), "SVG")
+    return pixmap
+
+
 class RecordingSourceCard(QFrame):
     toggled = pyqtSignal(bool)
 
-    def __init__(self, title, subtitle, symbol, parent=None):
+    def __init__(self, title, subtitle, icon_name, parent=None):
         super().__init__(parent)
         self._checked = False
         self._available = True
@@ -53,10 +72,9 @@ class RecordingSourceCard(QFrame):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(4)
 
-        icon = QLabel(symbol, self)
+        icon = QLabel(self)
         icon.setObjectName("recordingCardIcon")
-        icon.setAlignment(Qt.AlignCenter)
-        icon.setFixedHeight(30)
+        icon.setPixmap(_icon(icon_name))
         layout.addWidget(icon, 0, Qt.AlignCenter)
 
         title_label = QLabel(title, self)
@@ -99,7 +117,7 @@ class RecordingSourceCard(QFrame):
 
 
 class RecordingSection(QFrame):
-    def __init__(self, title, symbol, parent=None):
+    def __init__(self, title, icon_name, parent=None):
         super().__init__(parent)
         self.setObjectName("recordingSection")
         self.setProperty("active", True)
@@ -108,8 +126,9 @@ class RecordingSection(QFrame):
         self.outer_layout.setSpacing(8)
 
         header = QHBoxLayout()
-        icon = QLabel(symbol, self)
+        icon = QLabel(self)
         icon.setObjectName("recordingSectionIcon")
+        icon.setPixmap(_icon(icon_name))
         title_label = QLabel(title, self)
         title_label.setObjectName("recordingSectionTitle")
         self.advanced_button = QPushButton(get_app()._tr("Advanced"), self)
@@ -282,15 +301,15 @@ class RegionSelectorOverlay(QDialog):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 120))
+        painter.fillRect(self.rect(), _token_color("bg", 120))
         if self.global_selection.isValid():
             global_rect = self.global_selection.normalized()
             rect = QRect(
                 self.mapFromGlobal(global_rect.topLeft()),
                 self.mapFromGlobal(global_rect.bottomRight()),
             ).normalized()
-            painter.setPen(QPen(QColor(64, 145, 255), 2))
-            painter.fillRect(rect, QColor(64, 145, 255, 45))
+            painter.setPen(QPen(QColor(TOKENS["accent"]), 2))
+            painter.fillRect(rect, _token_color("accent", 45))
             painter.drawRect(rect)
 
 
@@ -761,10 +780,10 @@ class MacWindowSelectorOverlay(QDialog):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 95))
+        painter.fillRect(self.rect(), _token_color("bg", 95))
         if self.hover_rect.isValid():
-            painter.setPen(QPen(QColor(64, 145, 255), 3))
-            painter.fillRect(self.hover_rect, QColor(64, 145, 255, 45))
+            painter.setPen(QPen(QColor(TOKENS["accent"]), 3))
+            painter.fillRect(self.hover_rect, _token_color("accent", 45))
             painter.drawRect(self.hover_rect)
 
 
@@ -968,7 +987,7 @@ class WindowsRegionSelectorOverlay(RegionSelectorOverlay):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 120))
+        painter.fillRect(self.rect(), _token_color("bg", 120))
         if self.native_selection.isValid():
             bounds = self.capture_geometry
             scale_x = float(self.width() or 1) / float(bounds.width() or 1)
@@ -980,8 +999,8 @@ class WindowsRegionSelectorOverlay(RegionSelectorOverlay):
                 max(1, int(round(native.width() * scale_x))),
                 max(1, int(round(native.height() * scale_y))),
             )
-            painter.setPen(QPen(QColor(64, 145, 255), 2))
-            painter.fillRect(rect, QColor(64, 145, 255, 45))
+            painter.setPen(QPen(QColor(TOKENS["accent"]), 2))
+            painter.fillRect(rect, _token_color("accent", 45))
             painter.drawRect(rect)
 
 
@@ -1210,10 +1229,10 @@ class WindowsWindowSelectorOverlay(QDialog):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 95))
+        painter.fillRect(self.rect(), _token_color("bg", 95))
         if self.hover_rect.isValid():
-            painter.setPen(QPen(QColor(64, 145, 255), 3))
-            painter.fillRect(self.hover_rect, QColor(64, 145, 255, 45))
+            painter.setPen(QPen(QColor(TOKENS["accent"]), 3))
+            painter.fillRect(self.hover_rect, _token_color("accent", 45))
             painter.drawRect(self.hover_rect)
 
 

@@ -42,6 +42,7 @@ from classes.metrics import track_metric_screen
 from windows.views.credits_treeview import CreditsTreeView
 from windows.views.changelog_treeview import ChangelogTreeView
 from windows.views.menu import StyledContextMenu
+from themes.cosmic.tokens import TOKENS, resolve
 
 import json
 import datetime
@@ -100,26 +101,8 @@ class About(QDialog):
         self.app = get_app()
         _ = self.app._tr
 
-        _bg = ""
-        for _p in info.application_icon_paths():
-            if _p.lower().endswith((".svg", ".png")):
-                _bg = "background-image: url(%s);" % _p.replace("\\", "/")
-                break
-        self.setStyleSheet("""
-            QDialog {
-                %s
-                background-repeat: no-repeat;
-                background-position: center;
-                background-size: contain;
-                margin: 0px;
-                padding: 0px;
-                border: none;
-            }
-            QLabel#txtversion, QLabel#lblAboutCompany {
-                background: transparent;
-                margin-bottom: 10px;
-            }
-        """)
+        for label in (self.txtversion, self.lblAboutCompany):
+            label.setStyleSheet(resolve("font-size: 12px; color: {text_muted}; margin-bottom: 10px;"))
 
         # Hide chnagelog button by default
         self.btnchangelog.setVisible(False)
@@ -148,9 +131,9 @@ class About(QDialog):
             <div style="font-weight:400;" align="right">
               %s<br>
               <a href="http://www.openshotstudios.com?r=about-us"
-                 style="text-decoration:none; color: #91C3FF;">OpenShot Studios, LLC</a>
+                 style="text-decoration:none; color: %s;">OpenShot Studios, LLC</a>
             </div>
-            ''' % (copyright_text)
+            ''' % (copyright_text, TOKENS["text_muted"])
 
         # Set description and company labels
         self.lblAboutDescription.setWordWrap(True)

@@ -65,6 +65,10 @@ def entry_dir(fingerprint):
     return path
 
 
+# Bumped when baked-in thumbnail styling changes (v2 dropped the film-sprocket
+# overlay), so cached thumbnails are made again instead of showing the old look.
+THUMBS_DIR = "thumbs-v2"
+
 def preferred_thumbnail_path(file_id, frame, fingerprint=None, thumb_root=None):
     """Canonical write path for a thumbnail frame.
 
@@ -73,7 +77,7 @@ def preferred_thumbnail_path(file_id, frame, fingerprint=None, thumb_root=None):
     frame = int(frame or 1)
     entry = entry_dir(fingerprint) if fingerprint else ""
     if entry:
-        return os.path.join(entry, "thumbs", "%s.png" % frame)
+        return os.path.join(entry, THUMBS_DIR, "%s.png" % frame)
     root = thumb_root or info.THUMBNAIL_PATH
     return os.path.join(root, str(file_id), "%s.png" % frame)
 
@@ -92,7 +96,7 @@ def resolve_thumbnail_path(file_id, frame, fingerprint=None, thumb_root=None):
     candidates = []
     entry = entry_dir(fingerprint) if fingerprint else ""
     if entry:
-        candidates.append(os.path.join(entry, "thumbs", "%s.png" % frame))
+        candidates.append(os.path.join(entry, THUMBS_DIR, "%s.png" % frame))
     root = thumb_root or info.THUMBNAIL_PATH
     subdir = os.path.join(root, str(file_id))
     candidates.append(os.path.join(subdir, "%s.png" % frame))

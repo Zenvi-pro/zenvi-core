@@ -10,28 +10,24 @@
 """
 
 from qt_api import Qt, QRect, QTimer
-from qt_api import QColor, QPen, QPainterPath
+from qt_api import QPen, QPainterPath
 from qt_api import QStyle, QStyledItemDelegate, QStyleOptionViewItem, QToolTip
 
 from classes.app import get_app
 from .generation_badge import paint_generation_progress
 from classes.indexing_status import FAILED, PENDING, RUNNING, SKIPPED, SUCCESS
 from classes.query import File
-from .files_thumbnail_overlay import paint_proxy_badge
-
-# Optimize Preview progress bar (thin line along the bottom of the thumbnail)
-PROXY_BAR_COLOR = QColor("#3AA1FF")
-PROXY_BAR_TRACK_COLOR = QColor("#283241")
+from .files_thumbnail_overlay import paint_proxy_badge, token_color
 
 BADGE_SIZE = 12
 BADGE_MARGIN = 3
 
-_COLORS = {
-    SUCCESS: QColor("#4ade80"),
-    FAILED: QColor("#ef4444"),
-    RUNNING: QColor("#4d9cf6"),
-    PENDING: QColor("#8a8a8a"),
-    SKIPPED: QColor("#f59e0b"),
+_STATE_TOKEN = {
+    SUCCESS: "success",
+    FAILED: "danger",
+    RUNNING: "accent",
+    PENDING: "text_faint",
+    SKIPPED: "text_muted",
 }
 
 
@@ -46,13 +42,18 @@ def badge_rect(item_rect):
 
 
 def paint_status_badge(painter, rect, state, angle=0):
-    """Draw the status mark for one file. No-op for files with no status."""
-    color = _COLORS.get(state)
-    if color is None:
+    """Draw the status mark for one file: a muted pill with a state glyph (green dot done,
+    danger cross failed, accent arc running). No-op for files with no status."""
+    token = _STATE_TOKEN.get(state)
+    if token is None:
         return
+    color = token_color(token)
 
     painter.save()
     painter.setRenderHint(painter.Antialiasing, True)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(token_color("raised"))
+    painter.drawEllipse(rect)
 
     if state == RUNNING:
         # Rotating arc, driven by the view's pulse timer
@@ -60,39 +61,36 @@ def paint_status_badge(painter, rect, state, angle=0):
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
-        painter.drawArc(rect.adjusted(1, 1, -1, -1), -angle * 16, 270 * 16)
+        painter.drawArc(rect.adjusted(2, 2, -2, -2), -angle * 16, 270 * 16)
         painter.restore()
         return
 
     if state == PENDING:
-        painter.setPen(QPen(color, 1))
+        painter.setPen(QPen(color, 2))
         painter.setBrush(Qt.NoBrush)
-        painter.drawEllipse(rect.adjusted(1, 1, -1, -1))
+        painter.drawEllipse(rect.adjusted(2, 2, -2, -2))
         painter.restore()
         return
 
-    painter.setPen(Qt.NoPen)
-    painter.setBrush(color)
-    painter.drawEllipse(rect)
+    if state == SUCCESS:
+        painter.setBrush(color)
+        painter.drawEllipse(rect.adjusted(3, 3, -3, -3))
+        painter.restore()
+        return
 
-    pen = QPen(QColor("#0d0d0d"), 1.6)
+    pen = QPen(color, 2)
     pen.setCapStyle(Qt.RoundCap)
-    pen.setJoinStyle(Qt.RoundJoin)
     painter.setPen(pen)
     path = QPainterPath()
     x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
-    if state == SUCCESS:
-        path.moveTo(x + w * 0.27, y + h * 0.52)
-        path.lineTo(x + w * 0.44, y + h * 0.70)
-        path.lineTo(x + w * 0.75, y + h * 0.32)
-    elif state == SKIPPED:
+    if state == SKIPPED:
         path.moveTo(x + w * 0.28, y + h * 0.5)
         path.lineTo(x + w * 0.72, y + h * 0.5)
     else:
-        path.moveTo(x + w * 0.32, y + h * 0.32)
-        path.lineTo(x + w * 0.68, y + h * 0.68)
-        path.moveTo(x + w * 0.68, y + h * 0.32)
-        path.lineTo(x + w * 0.32, y + h * 0.68)
+        path.moveTo(x + w * 0.3, y + h * 0.3)
+        path.lineTo(x + w * 0.7, y + h * 0.7)
+        path.moveTo(x + w * 0.7, y + h * 0.3)
+        path.lineTo(x + w * 0.3, y + h * 0.7)
     painter.drawPath(path)
     painter.restore()
 
@@ -186,19 +184,27 @@ class IndexingBadgeDelegate(QStyledItemDelegate):
     # ── painting / tooltip ────────────────────────────────────────────────
 
     def paint(self, painter, option, index):
-        super().paint(painter, option, index)
+        self.paint_item(painter, option, index)
         self.paint_badge(painter, option, index)
         self.paint_proxy_state(painter, option, index)
         paint_generation_progress(self, painter, option, index)
+
+    def paint_item(self, painter, option, index):
+        """The item itself; the thumbnail views draw a tile here instead."""
+        super().paint(painter, option, index)
 
     def paint_badge(self, painter, option, index):
         status = self._status(index)
         if status is None or not status.state:
             return
         self._sync_pulse(self._any_indexing())
-        paint_status_badge(painter, badge_rect(option.rect), status.state, self._angle)
+        paint_status_badge(painter, badge_rect(self._badge_anchor_rect(option, index)), status.state, self._angle)
 
     # ── Optimize Preview (proxy) badge + progress ─────────────────────────
+
+    def _badge_anchor_rect(self, option, index):
+        """Where the status mark sits: the row's top-right (tiles override with the thumbnail)."""
+        return option.rect
 
     def _decoration_rect(self, option, index):
         """Rect of the thumbnail (decoration) inside the row; row rect as fallback."""
@@ -260,9 +266,9 @@ class IndexingBadgeDelegate(QStyledItemDelegate):
 
         painter.save()
         painter.setPen(Qt.NoPen)
-        painter.setBrush(PROXY_BAR_TRACK_COLOR)
+        painter.setBrush(token_color("raised"))
         painter.drawRect(full_rect)
-        painter.setBrush(PROXY_BAR_COLOR)
+        painter.setBrush(token_color("accent"))
         painter.drawRect(fill_rect)
         painter.restore()
 
@@ -271,7 +277,7 @@ class IndexingBadgeDelegate(QStyledItemDelegate):
         if (
             status is not None
             and status.tooltip
-            and badge_rect(option.rect).contains(event.pos())
+            and badge_rect(self._badge_anchor_rect(option, index)).contains(event.pos())
         ):
             name_index = self._row_column(index, 1)
             name = ""
