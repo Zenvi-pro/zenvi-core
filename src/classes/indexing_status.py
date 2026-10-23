@@ -50,12 +50,11 @@ def status_source(
 ) -> dict:
     """Metadata a timeline clip's badge should be derived from.
 
-    A clip only carries ai_metadata once its source has been analyzed, so an
-    un-analyzed clip must fall back to the source file, otherwise the source's
-    ``error`` / ``skip_reason`` is lost and the clip reads as "not yet analyzed".
+    The source file owns the indexing state, so a clip reads exactly what that
+    file's media-bin badge reads. The clip's own ai_metadata is a snapshot that
+    re-indexing the source does not update (a failed retry would still read as
+    indexed); it only stands in when there is no source metadata at all.
     """
-    if isinstance(clip_metadata, dict) and clip_metadata.get("analyzed"):
-        return clip_metadata
     if isinstance(source_metadata, dict) and source_metadata:
         return source_metadata
     return clip_metadata if isinstance(clip_metadata, dict) else {}
@@ -85,7 +84,7 @@ def derive_indexing_status(
     if block_status in _RUNNING_BLOCK_STATUS:
         # Saved mid-index but no worker owns it any more (app closed or killed).
         return IndexingStatus(
-            FAILED, "Indexing interrupted", "Indexing was interrupted. Re-index the clip to retry."
+            FAILED, "Indexing interrupted", "Indexing was interrupted. Use Re-index to try again."
         )
 
     skip_reason = str(meta.get("skip_reason") or "").strip()

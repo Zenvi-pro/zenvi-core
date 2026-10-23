@@ -981,7 +981,8 @@ QDockWidget#AIMediaPanel QProgressBar#indexingProgress {
     border-radius: 1px;
 }
 QDockWidget#AIMediaPanel QProgressBar#indexingProgress::chunk { background: #4d9cf6; border-radius: 1px; }
-QDockWidget#AIMediaPanel QPushButton#refreshBtn {
+QDockWidget#AIMediaPanel QPushButton#refreshBtn,
+QDockWidget#AIMediaPanel QPushButton#reindexBtn {
     background: #252525;
     border: 1px solid rgba(255,255,255,0.09);
     border-radius: 4px;
@@ -989,7 +990,9 @@ QDockWidget#AIMediaPanel QPushButton#refreshBtn {
     padding: 6px;
     font-size: 11px;
 }
-QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover { background: #2e2e2e; border-color: #4d9cf6; }
+QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover,
+QDockWidget#AIMediaPanel QPushButton#reindexBtn:hover { background: #2e2e2e; border-color: #4d9cf6; }
+QDockWidget#AIMediaPanel QPushButton#reindexBtn:disabled { color: #5c5c5c; border-color: rgba(255,255,255,0.05); }
 
 /* ── Tree/List view item height ───────────────────────────── */
 QTreeView::item,
