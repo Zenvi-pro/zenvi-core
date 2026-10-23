@@ -32,7 +32,6 @@ MAX_RESPONSE_CHARS = 12_000   # keep a huge payload from swamping the agent's co
 ALLOWED_PATH_PREFIXES = (
     "/api/v1/models",
     "/api/v1/chat/",
-    "/api/v1/indexing/",
     "/api/v1/credits",
     "/api/v1/projects",
     "/api/v1/usage",

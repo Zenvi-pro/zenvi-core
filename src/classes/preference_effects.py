@@ -71,6 +71,8 @@ def apply_preference_side_effects(setting, value):
     elif setting == "theme":
         if getattr(app, "theme_manager", None):
             app.theme_manager.apply_theme(value)
+    elif setting == "media-index-embedding-model" and getattr(window, "files_model", None):
+        window.files_model.requeue_unsearchable()
     elif setting == "timeline-thumbnail-style":
         timeline_widget = getattr(window, "timeline", None)
         if hasattr(timeline_widget, "set_thumbnail_style"):

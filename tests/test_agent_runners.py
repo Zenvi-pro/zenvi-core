@@ -821,7 +821,7 @@ def test_claude_argv_appends_system_prompt(qapp, monkeypatch, tmp_path):
     assert prompt == _claude_code_system_prompt()
     assert "ingest_web_video_tool" in prompt
     assert "ToolSearch" in prompt
-    assert "watch_clip_window_tool" in prompt
+    assert "watch_clip_window_tool" not in prompt
     assert "HEIC" in prompt
 
 

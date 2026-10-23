@@ -15,9 +15,6 @@ Usage:
     # Models
     models = client.list_models()
 
-    # Search
-    results = client.search("sunset")
-
     # Generation
     result = client.generate_video("a cat running on a beach")
 """
@@ -25,11 +22,10 @@ Usage:
 import json
 import os
 import re
-import tempfile
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Callable, Tuple
+from typing import Any, Dict, List, Optional, Callable
 from classes.logger import log
 
 # Shown when a paid action cannot run because of the login. The wording matters: the plan runner treats
@@ -57,6 +53,28 @@ def _refresh_credits_after_backend_billing() -> None:
         credits.refresh_balance()
     except Exception as exc:
         log.debug("credits refresh after a backend-billed request failed: %s", exc)
+
+
+def _v2_refusal(response) -> dict:
+    """A 402, 403 or 429 from the media index v2 routes as ``{"error", ...}`` with a flag saying which.
+
+    ``credits``: the account is out of credits; ``rate_limited`` (and ``retry_after`` seconds): too many requests or the
+    daily limit; ``forbidden``: the upload or job belongs to another account. The server's own message is kept.
+    """
+    try:
+        detail = (response.json() or {}).get("detail")
+    except Exception:  # noqa: BLE001
+        detail = None
+    detail = detail if isinstance(detail, dict) else {}
+    message = str(detail.get("message") or "")
+    if response.status_code == 402:
+        return {"credits": True, "error": message or "Out of credits for media indexing. Upgrade your plan or add credits to continue."}
+    if response.status_code == 429:
+        out = {"rate_limited": True, "error": message or "Too many media index requests. Try again shortly."}
+        if detail.get("retry_after") is not None:
+            out["retry_after"] = detail["retry_after"]
+        return out
+    return {"forbidden": True, "error": message or "The media index refused this request."}
 
 
 class ZenviBackendClient:
@@ -204,49 +222,6 @@ class ZenviBackendClient:
         except Exception as exc:
             log.error("Media upload failed: %s", exc)
             return {"success": False, "error": str(exc)}
-
-    def cleanup_backend_upload(self, file_id: str, session=None) -> None:
-        """Remove a temp upload on the backend after tag/index complete."""
-        if not file_id:
-            return
-        try:
-            s = session or self.session
-            r = s.delete(f"{self.api_url}/media/upload/{file_id}", timeout=30)
-            r.raise_for_status()
-        except Exception as exc:
-            log.debug("Backend upload cleanup failed for %s: %s", file_id, exc)
-
-    def _post_media_multipart(
-        self,
-        endpoint: str,
-        local_path: str,
-        file_id: str = "",
-        extra: Optional[Dict[str, Any]] = None,
-        session=None,
-        timeout: int = 120,
-    ) -> Dict[str, Any]:
-        """POST multipart with file to a media endpoint; return parsed JSON."""
-        if not os.path.isfile(local_path):
-            return {"error": f"File not found: {local_path}"}
-        extra = dict(extra or {})
-        fid = file_id or extra.pop("file_id", None) or uuid.uuid4().hex
-        name = extra.pop("filename", None) or os.path.basename(local_path)
-        data = {"file_id": fid, "filename": name, **{k: v for k, v in extra.items() if v is not None}}
-        try:
-            s = session or self.session
-            with open(local_path, "rb") as fh:
-                r = s.post(
-                    f"{self.api_url}{endpoint}",
-                    files={"file": (name, fh)},
-                    data=data,
-                    headers=self._multipart_headers(s),
-                    timeout=timeout,
-                )
-            r.raise_for_status()
-            return r.json()
-        except Exception as exc:
-            log.error("Multipart POST %s failed: %s", endpoint, exc)
-            return {"error": str(exc)}
 
     @staticmethod
     def _download_url_to_temp(
@@ -715,90 +690,6 @@ class ZenviBackendClient:
                 pass
 
     # ------------------------------------------------------------------
-    # Search
-    # ------------------------------------------------------------------
-    def search(
-        self,
-        query: str,
-        top_k: int = 5,
-        index_id: Optional[str] = None,
-        video_id: Optional[str] = None,
-        page_limit: Optional[int] = None,
-        media_type: Optional[str] = None,
-        look_for: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Search for clips matching a query. look_for: on_screen | spoken | None (both)."""
-        try:
-            effective_top_k = top_k
-            if page_limit and page_limit > effective_top_k:
-                effective_top_k = min(int(page_limit), 50)
-            effective_top_k = min(effective_top_k, 50)
-            payload: Dict[str, Any] = {
-                "query": query,
-                "top_k": effective_top_k,
-                "for_place": True,
-            }
-            if index_id:
-                payload["index_id"] = index_id
-            if video_id:
-                payload["video_id"] = video_id
-            if page_limit:
-                payload["page_limit"] = page_limit
-            if media_type:
-                payload["media_type"] = media_type
-            if look_for:
-                payload["look_for"] = look_for
-            r = self.session.post(f"{self.api_url}/search", json=payload, timeout=30)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            log.error("Search failed: %s", e)
-            return {"results": [], "error": str(e)}
-
-    def watch_window(
-        self,
-        query: str,
-        window_start: float,
-        window_end: float,
-        frames: List[Dict[str, Any]],
-        fallback_cut: Optional[float] = None,
-        fallback_in: Optional[float] = None,
-        fallback_out: Optional[float] = None,
-        sparse: bool = False,
-        orientation_role: bool = False,
-        source_class: str = "",
-    ) -> Dict[str, Any]:
-        """Vision-confirm a cut time from a small JPEG set. Frames stay off chat."""
-        try:
-            payload: Dict[str, Any] = {
-                "query": query or "",
-                "window_start": float(window_start),
-                "window_end": float(window_end),
-                "frames": list(frames or []),
-                "sparse": bool(sparse),
-                "orientation_role": bool(orientation_role),
-            }
-            if source_class:
-                payload["source_class"] = str(source_class)
-            if fallback_cut is not None:
-                payload["fallback_cut"] = float(fallback_cut)
-            if fallback_in is not None:
-                payload["fallback_in"] = float(fallback_in)
-            if fallback_out is not None:
-                payload["fallback_out"] = float(fallback_out)
-            r = self.session.post(
-                f"{self.api_url}/indexing/watch-window",
-                json=payload,
-                timeout=60,
-            )
-            r.raise_for_status()
-            data = r.json() if isinstance(r.json(), dict) else {}
-            return data if isinstance(data, dict) else {"error": "bad watch-window response"}
-        except Exception as e:
-            log.error("watch-window failed: %s", e)
-            return {"error": str(e)}
-
-    # ------------------------------------------------------------------
     # Indexing
     # ------------------------------------------------------------------
     def _new_http_session(self):
@@ -812,300 +703,6 @@ class ZenviBackendClient:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         self._apply_bearer(s)
         return s
-
-    def start_direct_indexing_job(
-        self,
-        file_path: str,
-        index_name: str,
-        file_id: str = "",
-        filename: str = "",
-        existing_index_id: Optional[str] = None,
-        session=None,
-        progress_callback: Optional[Callable[[str, int], None]] = None,
-        project_id: str = "",
-        duration_sec: float = 0.0,
-        force: bool = False,
-        media_type: str = "video",
-    ) -> Dict[str, Any]:
-        """Index via editor-side chunks + Gemini Files direct upload (no backend media store)."""
-        from classes.index_chunker import extract_chunks, cleanup_chunk_dir, guess_mime
-        from classes.gemini_direct_upload import upload_file_to_gemini_resumable
-
-        if not file_path or not os.path.isfile(file_path):
-            return {"success": False, "error": f"File not found: {file_path}"}
-
-        mt = (media_type or "video").strip().lower() or "video"
-        if mt not in ("video", "image", "audio"):
-            mt = "video"
-        # Guard mislabeled imports (libopenshot often sets has_video on MP3).
-        _audio_exts = (
-            ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma",
-            ".opus", ".aiff", ".aif", ".oga",
-        )
-        if mt != "audio" and os.path.splitext(file_path or "")[1].lower() in _audio_exts:
-            mt = "audio"
-        name = filename or os.path.basename(file_path) or file_id or "media"
-        fid = file_id or uuid.uuid4().hex
-        s = session or self._new_http_session()
-        work_dir = ""
-
-        pid = (project_id or "").strip()
-        if not pid and str(index_name or "").startswith("zenvi-"):
-            pid = str(index_name)[len("zenvi-"):]
-
-        try:
-            if progress_callback:
-                progress_callback("planning", 0)
-
-            duration = float(duration_sec or 0)
-            if mt == "image":
-                duration = 0.0
-            elif duration <= 0:
-                try:
-                    import subprocess
-                    from classes.ffmpeg_cli import run_ffmpeg
-                    proc = run_ffmpeg(
-                        [
-                            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-                            "-of", "default=noprint_wrappers=1:nokey=1", file_path,
-                        ],
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        check=False,
-                    )
-                    duration = float((proc.stdout or "0").strip() or 0)
-                except Exception:
-                    duration = 0.0
-            if mt != "image" and duration <= 0:
-                return {"success": False, "error": f"Could not determine {mt} duration"}
-
-            pr = s.post(
-                f"{self.api_url}/indexing/plan-chunks",
-                json={"duration_sec": duration, "media_type": mt},
-                timeout=30,
-            )
-            pr.raise_for_status()
-            plan_data = pr.json()
-            if plan_data.get("error"):
-                return {"success": False, "error": plan_data["error"]}
-            plan = plan_data.get("chunks") or []
-            if not plan:
-                return {"success": False, "error": "Empty chunk plan from backend"}
-            max_height = int(plan_data.get("index_max_height") or 720)
-
-            if progress_callback:
-                progress_callback("chunking", 5)
-            chunk_infos, work_dir, chunk_err = extract_chunks(
-                file_path, plan, media_type=mt, max_height=max_height,
-            )
-            if chunk_err:
-                return {"success": False, "error": chunk_err}
-
-            job_id = str(uuid.uuid4())
-            uploaded_chunks = []
-            total = len(chunk_infos)
-            done_count = [0]
-
-            def _upload_one(info: Dict[str, Any]) -> Dict[str, Any]:
-                hs = s if total == 1 else self._new_http_session()
-                mime = str(info.get("mime_type") or guess_mime(info["path"], mt))
-                payload: Dict[str, Any] = {
-                    "file_id": fid,
-                    "project_id": pid,
-                    "index_name": index_name,
-                    "filename": name,
-                    "total_size": int(info["size"]),
-                    "mime_type": mime,
-                    "media_type": mt,
-                    "chunk_index": int(info["chunk_index"]),
-                    "start_ts": float(info["start"]),
-                    "end_ts": float(info["end"]),
-                    "job_id": job_id,
-                }
-                if existing_index_id:
-                    payload["existing_index_id"] = existing_index_id
-
-                r = hs.post(f"{self.api_url}/indexing/upload-session", json=payload, timeout=60)
-                r.raise_for_status()
-                session_data = r.json()
-                if session_data.get("error"):
-                    raise RuntimeError(session_data["error"])
-                upload_url = str(session_data.get("upload_url") or "")
-                if not upload_url:
-                    urls = session_data.get("presigned_urls") or []
-                    if urls:
-                        upload_url = str(urls[0].get("url") or "")
-                if not upload_url:
-                    raise RuntimeError("Invalid upload-session response")
-
-                file_info, up_err = upload_file_to_gemini_resumable(
-                    info["path"],
-                    upload_url,
-                    mime_type=mime,
-                )
-                if up_err:
-                    raise RuntimeError(up_err)
-
-                done_count[0] += 1
-                if progress_callback and total > 0:
-                    progress_callback("uploading", int(done_count[0] * 80 / total))
-                return {
-                    "chunk_index": int(info["chunk_index"]),
-                    "gemini_file_name": str(file_info.get("name") or ""),
-                    "gemini_file_uri": str(file_info.get("uri") or ""),
-                    "start_ts": float(info["start"]),
-                    "end_ts": float(info["end"]),
-                    "size": int(info["size"]),
-                    "mime_type": mime,
-                    "media_type": mt,
-                }
-
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            workers = min(8, max(1, total))
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futs = [pool.submit(_upload_one, info) for info in chunk_infos]
-                for fut in as_completed(futs):
-                    uploaded_chunks.append(fut.result())
-            uploaded_chunks.sort(key=lambda c: int(c.get("chunk_index") or 0))
-
-            cr = s.post(
-                f"{self.api_url}/indexing/upload-complete",
-                json={
-                    "job_id": job_id,
-                    "chunks": uploaded_chunks,
-                    "force": bool(force),
-                    "media_type": mt,
-                    # Self-contained so multi-worker backends don't need sticky pending RAM.
-                    "file_id": fid,
-                    "project_id": pid,
-                    "filename": name,
-                    "index_name": index_name,
-                },
-                timeout=60,
-            )
-            cr.raise_for_status()
-            complete = cr.json()
-            if not complete.get("success"):
-                return {"success": False, "error": complete.get("error", "upload-complete failed")}
-
-            if progress_callback:
-                progress_callback("indexing", -1)
-            result = self._poll_indexing_job(
-                job_id,
-                progress_callback=progress_callback,
-                session=s,
-            )
-            if not isinstance(result, dict):
-                return {"success": False, "error": "Invalid indexing job response"}
-            err = result.get("error") or result.get("message")
-            if err and not result.get("ai_metadata") and not result.get("index_id"):
-                return {"success": False, "error": err, "message": err}
-            if result.get("video_id") and not result.get("error"):
-                result.setdefault("status", "ready")
-                result.setdefault(
-                    "index_id",
-                    index_name or (f"zenvi-{pid}" if pid else "zenvi-videos"),
-                )
-                result["success"] = True
-            elif result.get("ai_metadata") and not result.get("error"):
-                result.setdefault(
-                    "index_id",
-                    index_name or (f"zenvi-{pid}" if pid else "zenvi-videos"),
-                )
-                result.setdefault("video_id", fid)
-                result.setdefault("status", "ready")
-                result["success"] = True
-            return result
-        except Exception as exc:
-            log.error("Gemini indexing failed: %s", exc)
-            return {"success": False, "error": str(exc)}
-        finally:
-            if work_dir:
-                cleanup_chunk_dir(work_dir)
-
-    def _poll_indexing_job(
-        self,
-        job_id: str,
-        max_wait: int = 21600,
-        poll_interval: int = 3,
-        progress_callback: Optional[Callable[[str, int], None]] = None,
-        session=None,
-        max_unreachable: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        """Poll /indexing/job/{job_id} until the job finishes or max_wait seconds pass.
-
-        Gives up once every poll has failed for max_unreachable seconds straight
-        (ZENVI_INDEX_UNREACHABLE_SEC, default 180), so a lost backend surfaces an
-        error while a brief network blip or a backend redeploy does not.
-
-        Always uses a dedicated HTTP session — the shared client session is not
-        safe for concurrent QThread indexing workers.
-        """
-        import time
-        if max_unreachable is None:
-            try:
-                max_unreachable = int(os.environ.get("ZENVI_INDEX_UNREACHABLE_SEC", "180"))
-            except ValueError:
-                max_unreachable = 180
-        s = session or self._new_http_session()
-        deadline = time.time() + max_wait
-        unreachable_since = None
-        while time.time() < deadline:
-            if progress_callback:
-                progress_callback("indexing", -1)
-            try:
-                r = s.get(f"{self.api_url}/indexing/job/{job_id}", timeout=15)
-                r.raise_for_status()
-                data = r.json()
-                unreachable_since = None
-                status = data.get("status", "running")
-                if status == "done":
-                    result = data.get("result")
-                    if isinstance(result, dict) and result:
-                        return result
-                    return {
-                        "success": False,
-                        "error": "Indexing finished but returned an empty result",
-                        "message": "Indexing finished but returned an empty result",
-                    }
-                if status == "failed":
-                    result = data.get("result") or {}
-                    err = (
-                        result.get("error", "Indexing failed")
-                        if isinstance(result, dict)
-                        else "Indexing failed"
-                    )
-                    return {"success": False, "error": err, "message": err}
-                if status == "not_found":
-                    return {
-                        "success": False,
-                        "error": f"Job {job_id} not found on backend",
-                        "message": f"Job {job_id} not found on backend",
-                    }
-            except Exception as e:
-                code = getattr(getattr(e, "response", None), "status_code", None)
-                if code is not None and code < 500:
-                    err = f"Indexing status check failed: HTTP {code}"
-                    log.error(err)
-                    return {"success": False, "error": err, "message": err}
-                now = time.time()
-                if unreachable_since is None:
-                    unreachable_since = now
-                if now - unreachable_since >= max_unreachable:
-                    if code is not None:
-                        err = f"Backend returned HTTP {code} for {max_unreachable}s while indexing"
-                    else:
-                        err = f"Backend unreachable for {max_unreachable}s while indexing: {e}"
-                    log.error(err)
-                    return {"success": False, "error": err, "message": err}
-                log.warning("Indexing poll error (will retry): %s", e)
-            time.sleep(poll_interval)
-        return {
-            "success": False,
-            "error": f"Indexing job {job_id} timed out after {max_wait}s",
-            "message": f"Indexing job {job_id} timed out after {max_wait}s",
-        }
 
     # ------------------------------------------------------------------
     # Video Generation
@@ -1263,55 +860,66 @@ class ZenviBackendClient:
         finally:
             _refresh_credits_after_backend_billing()
 
-    # ------------------------------------------------------------------
-    # Indexing & Pegasus summarize (for files_model)
-    # ------------------------------------------------------------------
-    def summarize_indexed_video(
-        self,
-        video_id: str,
-        *,
-        file_id: str = "",
-        index_id: str = "",
-        index_name: str = "",
-        session=None,
-    ) -> Dict[str, Any]:
-        """Generate Pegasus audiovisual summary for an indexed TwelveLabs video_id."""
-        payload = {
-            "video_id": str(video_id or "").strip(),
-            "file_id": str(file_id or ""),
-            "index_id": str(index_id or "") or None,
-            "index_name": str(index_name or ""),
-        }
+    # -- media index v2 -----------------------------------------------------------------
+    def _v2(self, method: str, path: str, payload: Optional[Dict[str, Any]] = None, *,
+            timeout: float = 60, session=None) -> Dict[str, Any]:
+        """Call /index/v2/<path>. Never raises: errors come back as ``{"error": ...}`` and
+        ``unsupported`` marks a backend that has no v2 routes (the caller then fails the file)."""
         try:
             s = session or self.session
-            r = s.post(
-                f"{self.api_url}/indexing/summarize",
-                json=payload,
-                timeout=300,
-            )
+            url = f"{self.api_url}/index/v2{path}"
+            r = s.get(url, timeout=timeout) if method == "GET" else s.post(url, json=payload or {}, timeout=timeout)
+            if r.status_code in (404, 405):
+                return {"unsupported": True, "error": "this backend has no media index v2"}
+            if r.status_code == 401:
+                return {"auth": True, "error": "sign in to use the media index"}
+            if r.status_code in (402, 403, 429):
+                return _v2_refusal(r)
             r.raise_for_status()
-            data = r.json() if isinstance(r.json(), dict) else {}
-            meta = data.get("ai_metadata") if isinstance(data.get("ai_metadata"), dict) else None
-            if meta and (meta.get("analyzed") or data.get("success")):
-                return meta
-            out = self._empty_ai_metadata()
-            out["error"] = data.get("error") or (meta or {}).get("error") or "Summarize did not complete"
-            if meta and isinstance(meta.get("twelvelabs"), dict):
-                out["twelvelabs"] = meta["twelvelabs"]
-            return out
+            data = r.json()
+            if not isinstance(data, dict):
+                return {"error": "unexpected response"}
+            billing = data.get("billing") or (data.get("result") or {}).get("billing")
+            if isinstance(billing, dict) and billing.get("credits"):
+                _refresh_credits_after_backend_billing()          # the backend charged for this: repaint the badge
+            return data
         except Exception as exc:
-            log.error("Pegasus summarize failed: %s", exc)
-            meta = self._empty_ai_metadata()
-            meta["error"] = str(exc)
-            return meta
+            log.warning("media index v2 %s %s failed: %s", method, path, exc)
+            return {"error": str(exc)}
 
-    def is_indexing_configured(self) -> bool:
-        """Check whether the backend has video indexing configured."""
-        try:
-            r = self.session.get(f"{self.api_url}/indexing/status", timeout=5)
-            return r.status_code == 200 and r.json().get("configured", False)
-        except Exception:
-            return False
+    def v2_upload_session(self, file_id: str, filename: str, total_size: int, mime_type: str = "video/mp4",
+                          session=None) -> Dict[str, Any]:
+        return self._v2("POST", "/upload-session", {"file_id": file_id, "filename": filename,
+                                                    "total_size": int(total_size), "mime_type": mime_type}, session=session)
+
+    def v2_understand(self, file_name: str, file_uri: str, shots: List[Dict[str, Any]],
+                      transcript: List[Dict[str, Any]], mime_type: str = "video/mp4",
+                      media_type: str = "video", session=None) -> Dict[str, Any]:
+        return self._v2("POST", "/understand", {"file_name": file_name, "file_uri": file_uri, "mime_type": mime_type,
+                                                "media_type": media_type, "shots": shots, "transcript": transcript},
+                        timeout=120, session=session)
+
+    def v2_describe_audio(self, file_name: str, file_uri: str, duration_seconds: float, windows: List[Dict[str, Any]],
+                          mime_type: str = "audio/aac", session=None) -> Dict[str, Any]:
+        return self._v2("POST", "/describe-audio", {"file_name": file_name, "file_uri": file_uri, "mime_type": mime_type,
+                                                    "duration_seconds": float(duration_seconds), "windows": windows},
+                        timeout=120, session=session)
+
+    def v2_listen(self, file_name: str, file_uri: str, duration_seconds: float, context: Optional[Dict[str, Any]] = None,
+                  mime_type: str = "audio/aac", session=None) -> Dict[str, Any]:
+        return self._v2("POST", "/listen", {"file_name": file_name, "file_uri": file_uri, "mime_type": mime_type,
+                                            "duration_seconds": float(duration_seconds), "context": context or {}},
+                        timeout=120, session=session)
+
+    def v2_job(self, job_id: str, session=None) -> Dict[str, Any]:
+        return self._v2("GET", f"/job/{job_id}", timeout=15, session=session)
+
+    def v2_embed(self, items: List[Dict[str, Any]], dims: int = 768, task_type: Optional[str] = None,
+                 session=None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"items": items, "dims": int(dims)}
+        if task_type:
+            payload["task_type"] = task_type
+        return self._v2("POST", "/embed", payload, timeout=180, session=session)
 
     @staticmethod
     def _empty_ai_metadata() -> Dict[str, Any]:
@@ -1329,20 +937,6 @@ class ZenviBackendClient:
             "index": {},
             "twelvelabs": {},
         }
-
-    def get_project_catalog(self, project_id: str) -> Dict[str, Any]:
-        """Orientation catalog for a project (no vector search)."""
-        try:
-            r = self.session.get(
-                f"{self.api_url}/indexing/catalog",
-                params={"project_id": project_id},
-                timeout=30,
-            )
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            log.error("Catalog fetch failed: %s", e)
-            return {"items": [], "error": str(e)}
 
     # ------------------------------------------------------------------
     # Pexels stock video
@@ -1382,45 +976,6 @@ class ZenviBackendClient:
         except Exception as e:
             log.error("Freesound search failed: %s", e)
             return {"sounds": [], "error": str(e)}
-
-    # ------------------------------------------------------------------
-    # Re-indexing (manual trigger via agent tools)
-    # ------------------------------------------------------------------
-    def reindex_video(
-        self,
-        file_id: str,
-        file_path: str,
-        index_name: str = "zenvi-videos",
-        existing_index_id: str = "",
-        force: bool = False,
-        session=None,
-    ) -> Dict[str, Any]:
-        """Re-index via direct TwelveLabs presigned upload."""
-        if isinstance(force, str):
-            force = force.strip().lower() in ("true", "1", "yes", "force")
-        if not force and not file_path:
-            return {"success": False, "error": "file_path is required"}
-
-        result = self.start_direct_indexing_job(
-            file_path,
-            index_name,
-            file_id=file_id,
-            filename=os.path.basename(file_path) if file_path else "",
-            existing_index_id=existing_index_id or None,
-            session=session,
-        )
-        if result.get("index_id"):
-            return {
-                "success": True,
-                "file_id": file_id,
-                "index_id": result.get("index_id"),
-                "video_id": result.get("video_id"),
-            }
-        return {
-            "success": False,
-            "file_id": file_id,
-            "error": result.get("error") or result.get("message") or "Re-index failed",
-        }
 
     def freesound_download(self, sound_id: int, preview_url: str, filename: str = "") -> Dict[str, Any]:
         """Download a Freesound preview to the local machine.

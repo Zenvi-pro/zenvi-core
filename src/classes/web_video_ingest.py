@@ -14,6 +14,7 @@ import re
 import shutil
 import socket
 import time
+import urllib.request
 from typing import Any, Optional
 from urllib.parse import urlparse
 
@@ -97,6 +98,23 @@ def assert_public_http_url(url: str) -> None:
                 "That URL points at a private or local network address, "
                 "which cannot be fetched."
             )
+
+
+class _PublicOnlyRedirects(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect only to a public address: checking the first URL is not enough when the server can send us elsewhere."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        assert_public_http_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def open_public_url(request, timeout: float):
+    """``urlopen`` for a user-supplied URL that also refuses redirects to private, loopback or link-local addresses.
+
+    The URL itself is checked with ``assert_public_http_url`` before anything is opened. Raises WebVideoIngestError on a refused hop.
+    """
+    assert_public_http_url(request.full_url if isinstance(request, urllib.request.Request) else request)
+    return urllib.request.build_opener(_PublicOnlyRedirects).open(request, timeout=timeout)
 
 
 def requested_height_for_intent(intent: str) -> int:

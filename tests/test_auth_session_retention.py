@@ -426,3 +426,11 @@ def test_the_sign_in_link_says_this_app_shows_the_code(auth, monkeypatch):
     monkeypatch.setattr(am.sys, "platform", "darwin")
     url, state = auth.start_auth_flow()
     assert url.endswith(f"/login?state={state}&v=2") and opened == [url]
+
+
+def test_a_saved_sign_in_tells_its_listeners_once_and_a_failing_listener_breaks_nothing(auth):
+    heard = []
+    auth.add_session_listener(lambda: heard.append("saved"))
+    auth.add_session_listener(lambda: 1 / 0)
+    auth.save_session(_session(3600))
+    assert heard == ["saved"] and auth.load_session() is not None

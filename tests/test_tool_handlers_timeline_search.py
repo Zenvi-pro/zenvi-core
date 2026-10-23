@@ -90,44 +90,7 @@ def test_get_timeline_placements_metadata_rows():
     assert "tennis" in out
 
 
-def test_search_clip_scenes_uses_parent_twelvelabs():
-    resolved = MagicMock(ok=True, clip=MagicMock())
-    resolved.clip.data = {"file_id": "sub-1", "start": 10.0, "end": 40.0, "title": "Sub"}
-    calls = []
-
-    parent_ai = {
-        "twelvelabs": {"status": "ready", "index_id": "idx", "video_id": "vid"},
-        "scene_descriptions": [],
-    }
-    sub_file = MagicMock(data={"zenvi_subclip": True, "parent_file_id": "root-1", "path": "/v.mp4"})
-    mock_backend = MagicMock()
-    mock_backend.is_indexing_configured.return_value = True
-
-    def _search(index_id, query, **kw):
-        calls.append((index_id, kw.get("video_id")))
-        return [{"start": 12.0, "end": 18.0, "rank": 1}], None
-
-    with patch.object(tool_handlers, "_resolve_timeline_clip_for_tool", lambda **_kw: resolved):
-        with patch.object(tool_handlers, "_twelvelabs_search_in_window", _search):
-            with patch.object(tool_handlers, "_get_source_file_for_clip", return_value=sub_file):
-                with patch(
-                    "classes.api_client.get_backend_client",
-                    lambda: mock_backend,
-                ):
-                    with patch(
-                        "classes.timeline_clip_context.resolve_parent_file_data",
-                        return_value={"ai_metadata": parent_ai},
-                    ):
-                        out = tool_handlers.search_clip_scenes(
-                            query="tennis",
-                            clip_query="sub clip",
-                        )
-    assert calls and calls[0][1] == "vid"
-    assert "TwelveLabs matches" in out or "matches" in out.lower()
-
-
 if __name__ == "__main__":
     test_list_clips_includes_source_window_and_summary_preview()
     test_get_timeline_placements_metadata_rows()
-    test_search_clip_scenes_uses_parent_twelvelabs()
     print("test_tool_handlers_timeline_search: ok")

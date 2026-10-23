@@ -1,0 +1,271 @@
+{
+ "songs": 8,
+ "true_edges": 22,
+ "truth": {
+  "s1": [
+   10,
+   20,
+   38
+  ],
+  "s2": [
+   22,
+   42
+  ],
+  "s3": [
+   16,
+   32
+  ],
+  "s4": [
+   16,
+   30,
+   44
+  ],
+  "s5": [
+   10,
+   20,
+   30
+  ],
+  "s6": [
+   16,
+   26,
+   50
+  ],
+  "s7": [
+   10,
+   24,
+   36
+  ],
+  "s8": [
+   12,
+   24,
+   38
+  ]
+ },
+ "conditions": {
+  "local finder alone": {
+   "tol_2s": {
+    "f1": 0.9091,
+    "precision": 0.9091,
+    "recall": 0.9091,
+    "extra": 2,
+    "missed": 2
+   },
+   "tol_3s": {
+    "f1": 0.9545,
+    "precision": 0.9545,
+    "recall": 0.9545,
+    "extra": 1,
+    "missed": 1
+   },
+   "edges": {
+    "s1": [
+     12,
+     21,
+     37
+    ],
+    "s2": [
+     22,
+     42
+    ],
+    "s3": [
+     16,
+     33
+    ],
+    "s4": [
+     18,
+     27,
+     45
+    ],
+    "s5": [
+     10,
+     20,
+     30
+    ],
+    "s6": [
+     16,
+     30,
+     50
+    ],
+    "s7": [
+     12,
+     24,
+     38
+    ],
+    "s8": [
+     12,
+     24,
+     38
+    ]
+   }
+  },
+  "A_numbers_only": {
+   "tol_2s": {
+    "f1": 0.9302,
+    "precision": 0.9524,
+    "recall": 0.9091,
+    "extra": 1,
+    "missed": 2
+   },
+   "tol_3s": {
+    "f1": 0.9302,
+    "precision": 0.9524,
+    "recall": 0.9091,
+    "extra": 1,
+    "missed": 2
+   },
+   "edges": {
+    "s1": [
+     10,
+     38
+    ],
+    "s2": [
+     23,
+     42
+    ],
+    "s3": [
+     16
+    ],
+    "s4": [
+     16,
+     28,
+     44
+    ],
+    "s5": [
+     10,
+     20,
+     30
+    ],
+    "s6": [
+     16,
+     26,
+     52
+    ],
+    "s7": [
+     10,
+     24,
+     36
+    ],
+    "s8": [
+     12,
+     24,
+     36,
+     44
+    ]
+   }
+  },
+  "A2_numbers_and_sections": {
+   "tol_2s": {
+    "f1": 0.9333,
+    "precision": 0.913,
+    "recall": 0.9545,
+    "extra": 2,
+    "missed": 1
+   },
+   "tol_3s": {
+    "f1": 0.9778,
+    "precision": 0.9565,
+    "recall": 1.0,
+    "extra": 1,
+    "missed": 0
+   },
+   "edges": {
+    "s1": [
+     12,
+     21,
+     37
+    ],
+    "s2": [
+     22,
+     42
+    ],
+    "s3": [
+     16,
+     33
+    ],
+    "s4": [
+     16,
+     27,
+     45
+    ],
+    "s5": [
+     10,
+     20,
+     30
+    ],
+    "s6": [
+     16,
+     26,
+     50
+    ],
+    "s7": [
+     11,
+     24,
+     36
+    ],
+    "s8": [
+     12,
+     24,
+     37,
+     44
+    ]
+   }
+  },
+  "B_numbers_sections_and_spectrogram": {
+   "tol_2s": {
+    "f1": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "extra": 0,
+    "missed": 0
+   },
+   "tol_3s": {
+    "f1": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "extra": 0,
+    "missed": 0
+   },
+   "edges": {
+    "s1": [
+     10.5,
+     21.3,
+     38.3
+    ],
+    "s2": [
+     22.0,
+     42.1
+    ],
+    "s3": [
+     15.8,
+     31.5
+    ],
+    "s4": [
+     15.7,
+     29.5,
+     43.2
+    ],
+    "s5": [
+     9.8,
+     19.7,
+     29.5
+    ],
+    "s6": [
+     15.8,
+     25.6,
+     49.3
+    ],
+    "s7": [
+     9.9,
+     23.6,
+     35.4
+    ],
+    "s8": [
+     11.8,
+     23.6,
+     37.4
+    ]
+   }
+  }
+ },
+ "method": "Blind: 8 songs generated from seeds with random sections (levels, ramps, bed tone, click pitch, hi-hat); the truth file was not opened until all three sets of answers were written to disk. The reader was a Claude model (the kind of agent that uses the tool). A = the raw numbers (duration, tempo, loudness, 4 s energy curve); A2 = A plus the computed section list; B = A2 plus the spectrogram image. Limits: 8 songs and 22 edges, synthetic, one reader, edges read by eye from the picture."
+}

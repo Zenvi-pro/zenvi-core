@@ -46,14 +46,24 @@ def get_app():
     return th()._get_app()
 
 
-def on_main(func, *args, timeout=None):
+def on_main(func, *args, timeout=None, batch=True):
     """Run *func(*args)* on the Qt GUI thread and return its result.
 
     Inline when already on the GUI thread (mutating tools are dispatched
     there) and under the headless test stub. Keeps the caller's undo
     transaction id across the hop, so a background-safe tool's mutations
     still land in its one undo step.
+
+    Whatever the function changes is announced to the timeline, preview and minimap once when it returns, not once per change
+    (see classes.update_batch); pass ``batch=False`` only for a hop that must see the libopenshot timeline updated halfway through.
     """
+    if batch:
+        from classes import update_batch
+        plain = func
+
+        def func(*a):
+            with update_batch.batch():
+                return plain(*a)
     return th()._run_on_main_thread(func, *args, timeout=timeout)
 
 
@@ -472,7 +482,13 @@ def color_keyframe(value: Any) -> dict:
 # ---------------------------------------------------------------------------
 
 def refresh_preview() -> None:
-    """Ask the preview to redraw the current frame (after property edits)."""
+    """Ask the preview to redraw the current frame (after property edits).
+
+    Inside an update batch the timeline redraws once when the batch ends, so asking here as well would draw the frame twice.
+    """
+    from classes import update_batch
+    if update_batch.active():
+        return
     try:
         get_app().window.refreshFrameSignal.emit()
     except Exception:

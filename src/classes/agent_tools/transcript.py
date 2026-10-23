@@ -195,6 +195,10 @@ def _transcript_notes(*, for_edit: bool = True) -> list[str]:
         "(e.g. [\"FlowCut\",\"flocut\"]) — do NOT call get_transcript_tool again. "
         "Keep language=auto. Never pass fileId to remove_words_tool.",
     ]
+    notes.append(
+        "Word times are only good to a few tenths of a second. To cut at the instant someone starts or stops talking, "
+        "get that instant from get_voice_edges_tool first and slice there; never slice at a word time."
+    )
     if for_edit:
         notes.append(
             "matches=[...] is enough for brand/filler cuts — you do not need "

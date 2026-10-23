@@ -459,7 +459,7 @@ def _claude_code_system_prompt():
         "- On ok=false / status=failed: quote the short reason once and stop. "
         "Do not start a second download of the same URL in that turn.\n"
         "- After a successful ingest+place: one short sentence. "
-        "Do NOT call watch_clip_window_tool unless the user asked to check "
+        "Do NOT call inspect_timeline_tool unless the user asked to check "
         "the picture.\n"
         "\n"
         + _agent_bash_prompt()

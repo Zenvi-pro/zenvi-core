@@ -70,6 +70,7 @@ _RIPPLE_NOTE = "Shift the later clips on the track to follow (close/open the roo
 # seconds on a loaded machine; giving up mid-way would leave a half-done edit
 # (the hop still runs later), so wait well past the 30 s GUI-dispatch default.
 HOP_TIMEOUT = 180
+PLACEMENT_HOP_CLIPS = 8          # clips inserted per GUI-thread hop: short enough that the interface keeps responding
 
 
 def _clips_or_query_given(timeline_clip_ids, clip_query, scope) -> bool:
@@ -354,20 +355,34 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
         require_unlocked([layer])
         return timeline_ops.insert_placement_step(step)
 
+    # One timeline update and one preview refresh for the whole placement (not one per clip), in short GUI-thread hops so the
+    # interface keeps answering; the batch is closed in `finally` even if a hop fails, and its lease ends it if this worker dies.
+    from classes import update_batch
+
+    def _insert_some(group):
+        return [_insert(step) for step in group]
+
     clip_ids, transition_ids = [], []
-    for step in steps:
-        clip_id, transition_id = on_main(_insert, step, timeout=HOP_TIMEOUT)
-        clip_ids.append(clip_id)
-        if transition_id:
-            transition_ids.append(transition_id)
-    on_main(_finish_edit, timeout=HOP_TIMEOUT)
+    on_main(update_batch.begin, timeout=HOP_TIMEOUT, batch=False)
+    try:
+        for i in range(0, len(steps), PLACEMENT_HOP_CLIPS):
+            for clip_id, transition_id in on_main(_insert_some, steps[i:i + PLACEMENT_HOP_CLIPS], timeout=HOP_TIMEOUT):
+                clip_ids.append(clip_id)
+                if transition_id:
+                    transition_ids.append(transition_id)
+        on_main(_finish_edit, timeout=HOP_TIMEOUT)
+    finally:
+        on_main(update_batch.end, timeout=HOP_TIMEOUT, batch=False)
 
     placed = [clip_summary(fresh(cid)) for cid in clip_ids if fresh(cid)]
     end = max(p["end"] for p in placed)
     how = f", {os.path.splitext(os.path.basename(trans_path))[0]} transitions" if trans_path else (
         ", random transitions" if trans_random else (f", fade {fade}" if fade != "none" else ""))
+    from classes.editor_tools import playback_health
+    copies_note = playback_health.start_preview_copies(
+        [str(getattr(fresh(cid), "data", {}).get("file_id") or "") for cid in clip_ids if fresh(cid)], len(placed))
     return ok(f"Placed {len(placed)} clip(s) on {track_name(layer)} from {start:.2f} s to {end:.2f} s "
-              f"({end - start:.1f} s{how}{fit_note}).",
+              f"({end - start:.1f} s{how}{fit_note}).{copies_note}",
               track=ui_track_number(layer), start=r3(start), end=r3(end), total_seconds=r3(end - start),
               clips=placed, transition_ids=transition_ids, trimmed_file_ids=trimmed_ids,
               overlap_seconds=r3(overlap))
@@ -736,6 +751,13 @@ def slice_clips(at_seconds=-1.0, timeline_clip_ids=[], clip_query="", track="", 
         s, e = span(data)
         return s + tol < t < e - tol
 
+    shortest = 2 * frame_seconds()
+
+    def leaves_sliver(data):
+        """A cut that would leave a piece under two frames long: nobody means that, it is a cut placed on an edge."""
+        s, e = span(data)
+        return t - s < shortest or e - t < shortest
+
     scope = (scope or "").strip().lower()
     skipped = []
     trans = []
@@ -745,6 +767,11 @@ def slice_clips(at_seconds=-1.0, timeline_clip_ids=[], clip_query="", track="", 
             if not inside(c.data):
                 s, e = span(c.data)
                 raise ToolError(f"{title(c)!r} ({s:.2f}-{e:.2f} s) is not under {t:.2f} s; cut inside the clip")
+            if leaves_sliver(c.data):
+                s, e = span(c.data)
+                raise ToolError(f"cutting {title(c)!r} ({s:.2f}-{e:.2f} s) at {t:.3f} s would leave a piece of {min(t - s, e - t):.3f} s, "
+                                "under two frames. To cut where someone starts or stops talking, get the exact time from "
+                                "get_voice_edges_tool (or refine_cut_tool for a picture cut); to shorten a clip use trim_clips_tool")
         require_unlocked({int(c.data.get("layer") or 0) for c in clips})
         if scope == "selected" and include_transitions:
             sel = set(getattr(get_app().window, "selected_transitions", []) or [])
@@ -753,7 +780,7 @@ def slice_clips(at_seconds=-1.0, timeline_clip_ids=[], clip_query="", track="", 
         wanted = {resolve_layer(track)} if scope == "track" else {int(t_.get("number") or 0) for t_ in layers()}
         if scope == "track":
             require_unlocked(wanted)
-        clips = [c for c in Clip.filter() if int(c.data.get("layer") or 0) in wanted and inside(c.data)]
+        clips = [c for c in Clip.filter() if int(c.data.get("layer") or 0) in wanted and inside(c.data) and not leaves_sliver(c.data)]
         if include_transitions:
             trans = [tr for tr in Transition.filter() if int(tr.data.get("layer") or 0) in wanted and inside(tr.data)]
         for item in [c for c in clips if is_locked(int(c.data.get("layer") or 0))]:

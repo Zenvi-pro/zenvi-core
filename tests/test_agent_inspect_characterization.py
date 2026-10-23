@@ -48,23 +48,13 @@ def test_inspect_tools_registered():
     assert "inspect_media_tool" in BACKGROUND_SAFE_TOOLS
 
 
-def test_watch_clip_window_has_no_inspect_image_shape():
-    from classes.tool_handlers import watch_clip_window
-
-    # Doc / return contract: prose only — no MIME, no data.frames.
-    doc = (watch_clip_window.__doc__ or "").lower()
-    assert "jpeg" not in doc
-    assert "image/jpeg" not in doc
-    assert "data.frames" not in doc
-
-
-def test_server_instructions_still_point_at_watch_for_vision():
+def test_server_instructions_still_point_at_inspect_for_vision():
     """Flipped in Step 4.8 — kept as inverse assert that inspect is preferred."""
     from classes.agent_mcp_server import SERVER_INSTRUCTIONS
 
     text = SERVER_INSTRUCTIONS
     assert "inspect_timeline_tool" in text
-    assert "Do not use watch_clip_window_tool for verification" in text
+    assert "watch_clip_window_tool" not in text
 
 
 def test_mcp_call_tool_emits_image_content_when_rich(monkeypatch):
@@ -132,5 +122,4 @@ def test_server_instructions_will_prefer_inspect():
     text = SERVER_INSTRUCTIONS
     assert "inspect_timeline_tool" in text
     assert "watchSuggested" in text
-    lowered = text.lower()
-    assert "do not use watch_clip_window_tool for verification" in lowered
+    assert "watch_clip_window_tool" not in text

@@ -223,6 +223,20 @@ def inspect_timeline(
     )
 
 
+def _shot_list_hint(file_data: dict) -> list[str]:
+    """A note pointing at storyboard_tool when this file already has its shot list on the shelf (so the agent does not sample)."""
+    try:
+        from classes.media_index import default_shelf, sha_of
+        sha = sha_of(file_data.get("fingerprint"))
+        shelf = default_shelf()
+        if sha and shelf.layer_ready(sha, "structure"):
+            shots = len((shelf.read_json(sha, "structure.json") or {}).get("shots") or [])
+            return [f"This file already has an exact shot list ({shots} shots): call storyboard_tool for every cut and a keyframe per shot instead of sampling frames."]
+    except Exception:
+        log.debug("shot-list hint skipped", exc_info=True)
+    return []
+
+
 def inspect_media(
     fileId="",
     clipId="",
@@ -232,7 +246,8 @@ def inspect_media(
     overview=False,
     **_kw,
 ):
-    """See frames from a library file (or a storyboard overview). Visual only."""
+    """A few frames of a library file (or a rough overview sheet), sampled at fixed spacing. Visual only. To describe or recreate a
+    video, call storyboard_tool first: it gives every cut exactly (this tool misses cuts between samples) and one keyframe per shot."""
     from classes.agent_tools.inspect_overlay import COORDINATE_GRID_NOTE
     from classes.agent_tools.inspect_render import (
         InspectBusy,
@@ -378,6 +393,7 @@ def inspect_media(
             f"Rendered {len(images)} inspect image(s).",
             undo_steps=0,
             warnings=warnings,
+            notes=_shot_list_hint(file_data),
             data=data,
         ),
         images=images,

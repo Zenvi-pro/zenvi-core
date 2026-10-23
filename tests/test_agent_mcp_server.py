@@ -61,11 +61,11 @@ def tool_stub():
         """List the media files in the current project bin."""
         return "FIXTURE_FILES: a.mp4, b.wav"
 
-    def watch_clip_window(query="", start="", end="", **_kw):
-        """Vision-check a placed clip."""
-        return "WATCH_RESULT query=%s" % query
+    def search_footage(query="", **_kw):
+        """Search the footage by what happens, what is said and how it looks."""
+        return "SEARCH_RESULT query=%s" % query
 
-    th.AGENT_TOOL_HANDLERS = {"list_files_tool": list_files, "watch_clip_window_tool": watch_clip_window}
+    th.AGENT_TOOL_HANDLERS = {"list_files_tool": list_files, "search_footage_tool": search_footage}
     th.humanize_tool_name = lambda n: n
 
     def _execute(name, args):
@@ -95,12 +95,12 @@ def test_iter_tool_defs(tool_stub):
     defs = {d["name"]: d for d in iter_tool_defs()}
 
     # Editor tools are exactly what AGENT_TOOL_HANDLERS holds...
-    assert set(defs) - set(_extra_tools()) == {"list_files_tool", "watch_clip_window_tool"}
+    assert set(defs) - set(_extra_tools()) == {"list_files_tool", "search_footage_tool"}
     # ...and the MCP-only extras are advertised alongside them.
     assert set(_extra_tools()) <= set(defs)
 
     # Typed properties come from TOOL_SCHEMAS (editor tools: their registry schema).
-    assert defs["watch_clip_window_tool"]["inputSchema"]["properties"]["query"]["type"] == "string"
+    assert defs["search_footage_tool"]["inputSchema"]["properties"]["query"]["type"] == "string"
     assert "media files" in defs["list_files_tool"]["description"]
 
 
@@ -133,33 +133,13 @@ def test_server_lists_and_calls_tools(tool_stub):
         srv.stop()
 
 
-# --- watch parity: MCP harnesses must be able to self-check after an edit ---
-
-def test_watch_tool_description_is_agent_callable_not_internal():
-    """The description harnesses actually receive for the real registered tool
-    must read as a post-edit vision check, not internal jargon (issue #59)."""
-    from classes.agent_mcp_server import _build_input_schema, _first_doc_paragraph
-    from classes.tool_handlers import AGENT_TOOL_HANDLERS
-
-    watch_clip_window = AGENT_TOOL_HANDLERS["watch_clip_window_tool"]
-
-    desc = _first_doc_paragraph(watch_clip_window).lower()
-    assert "vision" in desc
-    # Only the first paragraph reaches harnesses, so the when-to-call guidance
-    # has to live there.
-    assert "after" in desc and "place" in desc and "slice" in desc
-    assert "do not call" not in desc and "internal" not in desc
-    schema = _build_input_schema(watch_clip_window)
-    assert {"query", "start", "end"} <= set(schema["properties"])
-
-
 def test_server_instructions_tell_harnesses_to_inspect_after_edits():
     from classes.agent_mcp_server import SERVER_INSTRUCTIONS
 
     text = SERVER_INSTRUCTIONS.lower()
     assert "inspect_timeline_tool" in text
     assert "watchsuggested" in text.replace(" ", "")
-    assert "do not use watch_clip_window_tool for verification" in text
+    assert "watch_clip_window_tool" not in text
     assert "do not shell ffmpeg" in text
     assert "inspect_media_tool" in text
     assert "get_timeline_state_tool" in text
@@ -183,14 +163,14 @@ def test_initialize_advertises_the_inspect_instruction(tool_stub):
                         init = await session.initialize()
                         tools = await session.list_tools()
                         result = await session.call_tool(
-                            "watch_clip_window_tool", {"query": "goal"})
+                            "search_footage_tool", {"query": "goal"})
                         return (init.instructions or "", [t.name for t in tools.tools],
                                 result.content[0].text)
 
         instructions, names, text = asyncio.run(run())
         assert "inspect_timeline_tool" in instructions
-        assert "watch_clip_window_tool" in names  # still registered for Assistant
-        assert "WATCH_RESULT query=goal" in text
+        assert "search_footage_tool" in names
+        assert "SEARCH_RESULT query=goal" in text
     finally:
         srv.stop()
 

@@ -21,7 +21,6 @@ PRIORITY_SCHEMAS = frozenset({
     "add_clip_to_timeline_tool",
     "delete_from_timeline_tool",
     "slice_clip_at_playhead_tool",
-    "slice_clip_at_best_match_tool",
     "place_motion_graphic_tool",
     "apply_transition_tool",
     "set_clip_volume_tool",
@@ -125,16 +124,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "watch_clip_tool": _obj({
         "file_path": _str(description="Media path to import, place and play."),
         "query": _str(),
-    }),
-    "watch_clip_window_tool": _obj({
-        "query": _str(),
-        "start": _str_or_num(),
-        "end": _str_or_num(),
-        "timeline_clip_id": _str(),
-        "clip_query": _str(),
-        "track": _str(),
-        "occurrence": _str_or_num(),
-        "position_near": _opt_str_or_num(),
     }),
     "play_tool": _obj({}),
     "go_to_start_tool": _obj({}),
@@ -361,30 +350,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "max_iterations": _str_or_num(),
     }),
     "slice_clip_at_playhead_tool": _obj({}),
-    "search_clips_tool": _obj({
-        "query": _str(),
-        "top_k": _str_or_num(),
-        "look_for": _str(description="'on_screen' (what is visible), 'spoken' (what is said); omit for both."),
-    }, required=["query"]),
-    "search_clip_scenes_tool": _obj({
-        "query": _str(),
-        "top_k": _str_or_num(),
-        "timeline_clip_id": _str(),
-        "clip_query": _str(),
-        "track": _str(),
-        "occurrence": _str_or_num(),
-        "position_near": _opt_str_or_num(),
-    }, required=["query"]),
-    "get_project_catalog_tool": _obj({}),
-    "slice_clip_at_best_match_tool": _obj({
-        "query": _str(),
-        "occurrence": _str_or_num(),
-        "timeline_clip_id": _str(),
-        "clip_query": _str(),
-        "track": _str(),
-        "start_seconds": _str_or_num(description="Known cut time in source seconds."),
-        "end_seconds": _str_or_num(description="End of a known range in source seconds."),
-    }, required=["query"]),
     "suggest_motion_graphics_placements_tool": _obj({
         "brief": _str(),
         "beat_count": _str_or_num(),
@@ -478,12 +443,8 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "filename": _str(),
         "local_path": _str(),
     }),
-    "resummarize_project_file_tool": _obj({
-        "file_id": _str(),
-    }, required=["file_id"]),
     "reindex_project_file_tool": _obj({
         "file_id": _str(),
-        "force": _str_or_bool(),
     }, required=["file_id"]),
     "get_clips_with_full_metadata_tool": _obj({
         "detail_level": _str(description="summary (default) or full."),
@@ -679,12 +640,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "language": _str(),
         "modelId": _str(),
     }),
-
-    "search_media_local_tool": _obj({
-        "query": _str(description="Visual / semantic query."),
-        "top_k": _int(minimum=1, maximum=50),
-        "provider": _str(description="local or auto."),
-    }, required=["query"]),
 
 }
 
