@@ -283,12 +283,19 @@ def import_media_file(path: str, name: str = "", extra: Optional[dict] = None):
 
 
 def place_clip(file_id: str, position: float, duration: float, layer: int, *,
-               title: str = "", props: Optional[dict] = None) -> dict:
-    """Timeline.addClip (the drop path) + trim/props in the same undo step. GUI thread."""
+               title: str = "", props: Optional[dict] = None, ignore_refresh: bool = False) -> dict:
+    """Timeline.addClip (the drop path) + trim/props in the same undo step. GUI thread.
+
+    *ignore_refresh* skips the preview refresh (``QtPlayer`` seek + playback-cache
+    reset) this clip would trigger. A batch importer passes it for every clip but
+    the last -- whose normal refresh turns caching back on and redraws once -- and
+    calls :func:`end_clip_batch` if the batch stops early. Single clips: leave it off.
+    """
     from classes.editor_tools._base import timeline_ui
     from classes.query import Clip
     timeline = timeline_ui()
-    new_clip = timeline.addClip(file_id, _Point(position), int(layer), call_manual_move=False)
+    new_clip = timeline.addClip(file_id, _Point(position), int(layer), ignore_refresh=bool(ignore_refresh),
+                                call_manual_move=False)
     if not isinstance(new_clip, dict) or not new_clip.get("id"):
         raise ToolError("the timeline did not create the clip")
     start = float(new_clip.get("start") or 0.0)
@@ -299,9 +306,22 @@ def place_clip(file_id: str, position: float, duration: float, layer: int, *,
         new_clip["title"] = title
     for key, value in (props or {}).items():
         new_clip[key] = copy.deepcopy(value)
-    timeline.update_clip_data(new_clip, only_basic_props=False, ignore_refresh=False)
+    timeline.update_clip_data(new_clip, only_basic_props=False, ignore_refresh=bool(ignore_refresh))
     placed = Clip.get(id=new_clip["id"])
     return placed.data if placed else new_clip
+
+
+def end_clip_batch() -> None:
+    """After clips placed with ``ignore_refresh=True``: turn playback caching back on and redraw once.
+
+    Only needed when a batch stopped before placing its last clip normally (an
+    error, a refusal); the editor's own ``IgnoreUpdates(False)``. GUI thread.
+    """
+    win = get_app().window
+    try:
+        win.IgnoreUpdates.emit(False, False)
+    except Exception:
+        log.warning("could not refresh the preview after a batch of clips", exc_info=True)
 
 
 def fade_alpha(start: float, end: float, fade_in: float, fade_out: float, base: float = 1.0) -> Optional[dict]:
