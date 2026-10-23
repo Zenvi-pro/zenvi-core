@@ -1048,6 +1048,20 @@ class AudioRecordingDockContent(QWidget):
         self._sync_source_sections()
         self._webcam_layout_changed()
         self._sync_backend_state()
+        self._tracks_refresh_queued = False
+        get_app().updates.add_listener(self)
+
+    def changed(self, action):
+        """UpdateManager hook: a new or opened project, or a track change, refreshes the track list."""
+        if action and (action.type == "load" or (action.key and action.key[0] == "layers")):
+            # Once, after the change: a renumber updates layers one at a time.
+            if not self._tracks_refresh_queued:
+                self._tracks_refresh_queued = True
+                QTimer.singleShot(0, self._refresh_tracks_once)
+
+    def _refresh_tracks_once(self):
+        self._tracks_refresh_queued = False
+        self.refresh_tracks()
 
     def _backend_available(self):
         audio_available = all(hasattr(openshot, name) for name in (

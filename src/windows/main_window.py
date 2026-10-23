@@ -92,7 +92,7 @@ from windows.update_panel import UpdatePanel
 from windows.update_status_button import (
     UpdateStatusButton, STATE_DOWNLOADING, STATE_READY,
 )
-from windows.scope_panel import WaveformDockContent, HistogramDockContent, VectorscopeDockContent, AudioMeterWidget
+from windows.scope_panel import WaveformDockContent, HistogramDockContent, VectorscopeDockContent, AudioMeterWidget, AudioLevelsDockContent
 from windows.video_widget import VideoWidget
 from windows.views.effects_listview import EffectsListView
 from windows.views.effects_treeview import EffectsTreeView
@@ -6192,7 +6192,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.dockAudio.setObjectName("dockAudio")
         self.dockAudio.setProperty("_skip_auto_tab_order", True)
         self.dockAudio.setFocusPolicy(Qt.NoFocus)
-        self.dockAudio.setWidget(self.audio_meter)
+        self.dockAudio.setWidget(AudioLevelsDockContent(self.audio_meter))
         self.dockAudio.hide()
         self.addDockWidget(Qt.RightDockWidgetArea, self.dockAudio)
 
