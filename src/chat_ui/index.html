@@ -175,8 +175,28 @@
                                            aria-label="Search models">
                                 </div>
                                 <div id="chat-model-list" class="chat-model-list py-1"></div>
+                                <!-- Effort and Ultracode of the picked model: only
+                                     shown when its CLI lists effort levels -->
+                                <div id="chat-model-effort" class="chat-model-effort" style="display: none;">
+                                    <div class="chat-effort-row">
+                                        <span>Effort <span id="chat-effort-name" class="chat-effort-name"></span></span>
+                                        <span id="chat-effort-dots" class="chat-effort-dots"
+                                              role="radiogroup" aria-label="Reasoning effort"></span>
+                                    </div>
+                                    <div id="chat-ultracode-row" class="chat-effort-row" style="display: none;">
+                                        <span>Ultracode</span>
+                                        <button type="button" id="chat-ultracode-toggle" class="chat-switch"
+                                                role="switch" aria-checked="false" aria-label="Ultracode"></button>
+                                    </div>
+                                </div>
                                 <div id="chat-model-footer" class="chat-model-footer"></div>
                             </div>
+
+                            <!-- Permission mode: only shown for a CLI agent's
+                                 model that lists modes (see setModels) -->
+                            <button type="button" id="chat-cli-mode" class="chat-mode-btn chat-cli-mode"
+                                    title="Permission mode (Shift+Tab to change)"
+                                    aria-label="Permission mode" style="display: none;"></button>
 
                             <!-- Agent Trace -->
                             <button type="button" id="chat-trace-btn"
