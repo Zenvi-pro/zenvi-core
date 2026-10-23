@@ -535,7 +535,8 @@
         firstAnswerTokenReceived = false;
         thinkingBlockStartedAt = Date.now();
         proseCommittedBelowThinking = false;
-        thinkingBlockEl = document.createElement('div');
+        // Each header toggles its own block: the globals move on to the next turn.
+        var blockEl = thinkingBlockEl = document.createElement('div');
         thinkingBlockEl.className = 'chat-thinking-block expanded';
         thinkingBlockHeader = document.createElement('button');
         thinkingBlockHeader.type = 'button';
@@ -544,13 +545,10 @@
             '<span class="chat-thinking-chevron">' + TOOL_CHEVRON_SVG + '</span>' +
             '<span class="chat-thinking-title">Thinking…</span>';
         thinkingBlockHeader.addEventListener('click', function () {
-            if (!thinkingBlockEl) return;
-            var expanded = thinkingBlockEl.classList.toggle('expanded');
-            if (thinkingBlockBody) {
-                thinkingBlockBody.style.display = expanded ? 'block' : 'none';
-            }
+            var expanded = blockEl.classList.toggle('expanded');
+            blockBody.style.display = expanded ? 'block' : 'none';
         });
-        thinkingBlockBody = document.createElement('div');
+        var blockBody = thinkingBlockBody = document.createElement('div');
         thinkingBlockBody.className = 'chat-thinking-body';
         thinkingBlockBody.style.display = 'block';
         thinkingBlockEl.appendChild(thinkingBlockHeader);
@@ -996,10 +994,12 @@
         var body = document.createElement('div');
         body.className = 'chat-tool-body';
 
+        // Registered below; toolBlocks is emptied when the turn ends, so the
+        // click handler holds its own block.
+        var block = { el: el, header: header, body: body, lines: [] };
         header.addEventListener('click', function () {
-            var block = toolBlocks[callId];
             // Expand when we have args/result logs.
-            if (!block || block.lines.length === 0) return;
+            if (block.lines.length === 0) return;
             var nowExpanded = !el.classList.contains('expanded');
             setToolBlockExpanded(block, nowExpanded);
         });
@@ -1008,7 +1008,7 @@
         el.appendChild(body);
         activityContainer.appendChild(el);
 
-        toolBlocks[callId] = { el: el, header: header, body: body, lines: [] };
+        toolBlocks[callId] = block;
         if (argsDetail) {
             window.appendToolLog(callId, 'ARGS:\n' + argsDetail);
         }
