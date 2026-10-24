@@ -1334,6 +1334,73 @@ jobs:
           }
           Write-Host "Verification OK: SWIG openshot.py present in frozen build"
 
+      # freeze.py lists every shipped DLL/PYD/EXE so a startup failure can name
+      # the one antivirus software quarantined (src/classes/openshot_import_diag.py).
+      - name: Verify bundled native file list
+        id: frozen
+        shell: powershell
+        run: |
+          $exeDir = Get-ChildItem -Path "build" -Directory -Filter "exe.*" | Select-Object -First 1
+          if (!$exeDir) { throw "cx_Freeze output directory build/exe.* not found" }
+          $manifest = Join-Path $exeDir.FullName "lib\bundled-native-files.txt"
+          if (!(Test-Path $manifest)) { throw "freeze.py did not write $manifest" }
+          $names = Get-Content $manifest
+          if ($names -notcontains "lib/libopenshot.dll") { throw "$manifest does not list lib/libopenshot.dll" }
+          Write-Host "OK: $($names.Count) native files listed in $manifest"
+          # Add-Content, not >>: Windows PowerShell's >> writes UTF-16.
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "dir=$($exeDir.FullName)"
+
+      # Sign every DLL/PYD/EXE before Inno Setup packs them. The installer's own
+      # signature does not cover the files it extracts, and antivirus heuristics
+      # quarantine unsigned binaries (Sophos removed lib\libva.dll from v1.2.3,
+      # so Zenvi could not start). Same setup as the installer signing below;
+      # each signing step logs in itself so neither depends on a token's lifetime.
+      - name: Azure login (OIDC for Artifact Signing, app binaries)
+        if: ${{ vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CODESIGNING_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_CODESIGNING_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_CODESIGNING_SUBSCRIPTION_ID }}
+
+      - name: Sign app binaries (Azure Artifact Signing)
+        if: ${{ vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ vars.AZURE_CODESIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_CODESIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.AZURE_CODESIGNING_PROFILE_NAME }}
+          files-folder: ${{ steps.frozen.outputs.dir }}
+          files-folder-filter: dll,pyd,exe
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      - name: Verify app binaries are signed
+        if: ${{ vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
+        shell: powershell
+        env:
+          FROZEN_DIR: ${{ steps.frozen.outputs.dir }}
+        run: |
+          $files = Get-ChildItem -Path $env:FROZEN_DIR -Recurse -File -Include *.dll,*.pyd,*.exe
+          $unsigned = $files | Where-Object { (Get-AuthenticodeSignature $_.FullName).Status -ne "Valid" }
+          if ($unsigned) {
+            $unsigned | ForEach-Object { Write-Host "::error::not signed: $($_.FullName)" }
+            throw "$(@($unsigned).Count) of $($files.Count) binaries are not validly signed"
+          }
+          Write-Host "OK: all $($files.Count) binaries signed"
+
       - name: Install Inno Setup 6
         run: choco install innosetup --yes --no-progress
         shell: powershell
