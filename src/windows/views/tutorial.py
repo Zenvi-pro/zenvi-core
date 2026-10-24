@@ -29,7 +29,7 @@ import functools
 
 from qt_api import Qt, QPoint, QPointF, QRectF, QTimer, QObject, QRect
 from qt_api import (
-    QColor, QPalette, QPen, QPainter, QPainterPath, QKeySequence,
+    QColor, QPen, QPainter, QPainterPath, QKeySequence,
 )
 from qt_api import (
     QAction, QLabel, QWidget, QVBoxLayout, QHBoxLayout,
@@ -39,6 +39,7 @@ from classes.logger import log
 from classes.app import get_app
 from classes.metrics import track_metric_screen
 from classes import sentry
+from themes.cosmic.tokens import TOKENS
 
 
 class TutorialDialog(QWidget):
@@ -72,9 +73,9 @@ class TutorialDialog(QWidget):
             painter.setClipPath(path)
 
             # Fill background
-            frameColor = QColor("#53a0ed")
+            frameColor = QColor(TOKENS["line_strong"])
             painter.setPen(QPen(frameColor, 1.2))
-            painter.setBrush(self.palette().color(QPalette.Window))
+            painter.setBrush(QColor(TOKENS["raised"]))
             painter.drawRoundedRect(rounded_rect, corner_radius, corner_radius)
 
             # Disable clipping temporarily for the arrow
@@ -104,7 +105,7 @@ class TutorialDialog(QWidget):
                 path.lineTo(arrow_top_corner)  # Top corner of the triangle
                 path.lineTo(arrow_bottom_corner)  # Bottom corner of the triangle
                 path.closeSubpath()
-                painter.fillPath(path, self.palette().color(QPalette.Window))
+                painter.fillPath(path, QColor(TOKENS["raised"]))
 
                 # Draw the triangle's borders (convert QPointF to QPoint for drawLine)
                 border_pen = QPen(frameColor, 1)
@@ -163,6 +164,7 @@ class TutorialDialog(QWidget):
 
         # Create vertical box
         self.vbox = QVBoxLayout()
+        self.vbox.setSpacing(8)
 
         # Add label
         self.label = QLabel(self)
@@ -208,9 +210,8 @@ class TutorialDialog(QWidget):
         self.btn_close_tips.addAction(self.close_action)
 
         self.btn_next_tip = QPushButton(self)
-        self.btn_next_tip.setObjectName("NextTip")
+        self.btn_next_tip.setObjectName("acceptButton")
         self.btn_next_tip.setText(_("Next"))
-        self.btn_next_tip.setStyleSheet("font-weight:bold;")
 
         hbox.addWidget(self.btn_close_tips)
         hbox.addWidget(self.btn_next_tip)

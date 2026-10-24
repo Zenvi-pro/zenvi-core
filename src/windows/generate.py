@@ -43,6 +43,7 @@ from classes.logger import log
 from classes.query import File
 from windows.region import SelectRegion
 from windows.color_picker import ColorPicker
+from themes.cosmic.tokens import resolve
 
 
 class GenerateMediaDialog(QDialog):
@@ -81,8 +82,8 @@ class GenerateMediaDialog(QDialog):
         self.setMinimumHeight(460)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(14, 14, 14, 14)
-        root.setSpacing(10)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(8)
 
         root.addLayout(self._build_top_block())
 
@@ -102,6 +103,7 @@ class GenerateMediaDialog(QDialog):
         button_row.addStretch(1)
         self.cancel_button = QPushButton("Cancel")
         self.generate_button = QPushButton("Generate")
+        self.generate_button.setObjectName("acceptButton")
         self.generate_button.setIcon(QIcon(":/icons/Humanity/actions/16/star.svg"))
         self.cancel_button.clicked.connect(self.reject)
         self.generate_button.clicked.connect(self._on_generate_clicked)
@@ -169,7 +171,7 @@ class GenerateMediaDialog(QDialog):
             self.thumbnail_label = QLabel()
             self.thumbnail_label.setFixedSize(self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT)
             self.thumbnail_label.setAlignment(Qt.AlignCenter)
-            self.thumbnail_label.setStyleSheet("border: 1px solid palette(mid);")
+            self.thumbnail_label.setStyleSheet(resolve("border: 1px solid {line_strong};"))
             self._load_thumbnail()
             block.addWidget(self.thumbnail_label, 0)
 
@@ -257,9 +259,9 @@ class GenerateMediaDialog(QDialog):
         layout = QFormLayout(tab)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setVerticalSpacing(8)
-        self.highlight_color = QColor("#2EA6FF")
+        self.highlight_color = QColor(46, 166, 255)
         self.highlight_color.setAlphaF(0.70)
-        self.border_color = QColor("#FFFFFF")
+        self.border_color = QColor(255, 255, 255)
         self.border_color.setAlphaF(1.0)
         self.highlight_color_button = QPushButton("Choose Color")
         self.highlight_color_button.clicked.connect(self._pick_highlight_color)

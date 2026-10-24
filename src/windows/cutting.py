@@ -43,6 +43,7 @@ from classes.metrics import track_metric_screen
 from classes.proxy_service import dialog_preview_reader_data
 from classes.ai_metadata_utils import adjust_scene_descriptions_for_subclip
 from classes.query import File
+from themes.cosmic.tokens import TOKENS, resolve
 from windows.preview_thread import PreviewParent
 from windows.video_widget import VideoWidget
 
@@ -412,10 +413,10 @@ class Cutting(QDialog):
         self.btnRepeat.setAutoRaise(True)
         self.btnRepeat.setFixedSize(24, 24)
         self.btnRepeat.setToolTip(_("Repeat"))
-        self.btnRepeat.setStyleSheet(
+        self.btnRepeat.setStyleSheet(resolve(
             "QToolButton#btnRepeat { border-radius: 4px; }"
-            "QToolButton#btnRepeat:checked { background-color: rgba(83,160,237,80); }"
-        )
+            "QToolButton#btnRepeat:checked { background-color: {accent_soft}; }"
+        ))
         self.btnRepeat.toggled.connect(self._on_repeat_toggled)
         self.horizontalLayout_3.insertWidget(2, self.btnRepeat)
 
@@ -600,7 +601,7 @@ class Cutting(QDialog):
 
         # Save thumbnail image
         self.start_image = os.path.join(info.USER_PATH, 'thumbnail', '%s.png' % self.start_frame)
-        self.r.GetFrame(self.start_frame).Thumbnail(self.start_image, 160, 90, '', '', '#000000', True, 'png', 85)
+        self.r.GetFrame(self.start_frame).Thumbnail(self.start_image, 160, 90, '', '', TOKENS["bg"], True, 'png', 85)
 
         # Set CSS on button
         self.btnStart.setStyleSheet('background-image: url(%s);' % self.start_image.replace('\\', '/'))
@@ -637,7 +638,7 @@ class Cutting(QDialog):
 
         # Save thumbnail image
         self.end_image = os.path.join(info.USER_PATH, 'thumbnail', '%s.png' % self.end_frame)
-        self.r.GetFrame(self.end_frame).Thumbnail(self.end_image, 160, 90, '', '', '#000000', True, 'png', 85)
+        self.r.GetFrame(self.end_frame).Thumbnail(self.end_image, 160, 90, '', '', TOKENS["bg"], True, 'png', 85)
 
         # Set CSS on button
         self.btnEnd.setStyleSheet('background-image: url(%s);' % self.end_image.replace('\\', '/'))
