@@ -158,7 +158,7 @@ def _apply_layout(view, show_panels, hide_panels, scopes, toolbar, fullscreen, d
     if not any([view, show_panels, hide_panels, scopes, toolbar, fullscreen, dock_all, save_view_as,
                 update_active_view, delete_view]):
         raise ToolError("say what to change (view, show_panels, hide_panels, scopes, toolbar, fullscreen, "
-                        "dock_all, save_view_as, update_active_view, delete_view); get_editor_layout_tool reads it")
+                        "dock_all, save_view_as, update_active_view, delete_view); run_tool(name='get_editor_layout_tool') reads it")
     views = {v.get("name", "").strip().lower(): v for v in win._custom_views()}
     target_custom = None
     builtin = None

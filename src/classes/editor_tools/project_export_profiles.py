@@ -162,7 +162,7 @@ def resolve_profile_request(profile: str = "", fps: Optional[float] = None) -> d
     """A profile record for a name, key, social preset or 'WIDTHxHEIGHT[@fps]' text."""
     text = str(profile or "").strip()
     if not text:
-        raise ToolError("name a profile or social preset (see list_project_profiles_tool)")
+        raise ToolError("name a profile or social preset (see run_tool(name='list_project_profiles_tool'))")
     key, spec = social_preset(text)
     if spec:
         width, height, default_fps, _export, _aliases = spec

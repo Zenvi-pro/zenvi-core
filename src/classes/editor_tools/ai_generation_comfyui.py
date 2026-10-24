@@ -376,7 +376,7 @@ def _enqueue(source_file, payload: dict) -> dict:
         active = queue.get_active_job_for_file(getattr(source_file, "id", "")) if source_file else None
         if active:
             raise ToolError(f"{error} Job {active.get('id')} for this file is {active.get('status')}; wait for it "
-                            "(list_comfyui_jobs_tool) or cancel it (cancel_comfyui_job_tool).")
+                            "(run_tool(name='list_comfyui_jobs_tool')) or cancel it (run_tool(name='cancel_comfyui_job_tool')).")
         raise ToolError(error or "the generation job could not be queued")
     new_ids = [jid for jid in queue.jobs if jid not in before]
     if not new_ids:
@@ -495,7 +495,7 @@ def create_media_with_comfyui(prompt, kind="", template="", name="", reference_i
     else:
         if not kind:
             raise ToolError("say what to make: kind (image, video, sound, music) or a template from "
-                            "list_comfyui_templates_tool")
+                            "run_tool(name='list_comfyui_templates_tool')")
         tmpl = find_template(CREATE_KINDS[kind], creates, "Create")
     ref_id = _reference_image(reference_image_file_id, tmpl)
     _require_reachable()
@@ -585,7 +585,7 @@ def enhance_file_with_comfyui(file_id, action="", template="", prompt="", name="
     else:
         if not action:
             raise ToolError("say what to do: action (e.g. upscale, restyle, blur_object, captions, "
-                            "reduce_noise) or a template from list_comfyui_templates_tool(file_id)")
+                            "reduce_noise) or a template from run_tool(name='list_comfyui_templates_tool', args={'file_id': ...})")
         table = ENHANCE_ACTIONS.get(mt, {})
         if action not in table:
             valid = ", ".join(table) or "none (this media type has no Enhance templates)"
@@ -734,7 +734,7 @@ def cancel_comfyui_job(job_id="", file_id="", all_jobs=False):
     if job_id:
         job = queue.get_job(str(job_id).strip())
         if not job:
-            raise ToolError(f"no generation job {job_id!r}; list_comfyui_jobs_tool lists them")
+            raise ToolError(f"no generation job {job_id!r}; run_tool(name='list_comfyui_jobs_tool') lists them")
         if job.get("status") not in ("queued", "running"):
             raise ToolError(f"job {job_id} is {job.get('status')}; only queued or running jobs can be canceled")
         targets = [job]

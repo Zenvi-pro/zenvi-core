@@ -179,7 +179,7 @@ def search_footage(query="", look_for="", reference_file_id="", reference_start=
     files = restrict_files(files, captured_after, captured_before, int(place_id))
     if not files:
         raise ToolError("no indexed footage yet" + (f" ({len(missing)} file(s) still indexing or not indexed)" if missing else "")
-                        + "; index_status_tool shows progress")
+                        + "; run_tool(name='index_status_tool') shows progress")
     filters = dict(filters or {})
     person_note = {}
     if person:
@@ -189,7 +189,7 @@ def search_footage(query="", look_for="", reference_file_id="", reference_start=
     not_searchable = [f.name for f in files if not f.vector_model]
     if query and not searchable:
         raise ToolError(f"none of the {len(files)} indexed file(s) has search vectors yet (they are made on this computer while "
-                        "indexing; index_status_tool shows each file). Searching with filters (camera move, colour, duration, "
+                        "indexing; run_tool(name='index_status_tool') shows each file). Searching with filters (camera move, colour, duration, "
                         "talking) still works, and get_transcript_tool reads what was said")
     qv = embed_query(query, searchable) if query else None
     if qv is not None:
@@ -252,7 +252,7 @@ def _person_shots(files, person: str):
     found = pp.find_people(reg, person)
     if not found:
         known = [p["name"] or p["id"] for p in reg["people"] if p.get("name")][:12]
-        raise ToolError(f"no person called {person!r}" + (f" (named people: {', '.join(known)})" if known else ": name someone first with name_person_tool, or look with list_people_tool"))
+        raise ToolError(f"no person called {person!r}" + (f" (named people: {', '.join(known)})" if known else ": name someone first with run_tool(name='name_person_tool'), or look with run_tool(name='list_people_tool')"))
     scans = {fi.sha: s for fi in files for s in [pp.load_scan(fi.sha)] if s}
     unscanned = [fi.name for fi in files if fi.media_type == "video" and fi.sha not in scans]
     by_sha = pp.shots_with(reg, [p["id"] for p in found], scans)
@@ -300,7 +300,7 @@ def get_segment_dossier(file_id="", file_query="", start=None, end=None, max_cha
     f = resolve_files([file_id] if file_id else None, file_query)[0]
     fi = _index_for(f)
     if fi is None or not (fi.shots or fi.rows):
-        raise ToolError(f"{_display_name(f.data)!r} has no saved index yet; index_status_tool shows progress")
+        raise ToolError(f"{_display_name(f.data)!r} has no saved index yet; run_tool(name='index_status_tool') shows progress")
     d = build_dossier(fi, start, end, max_chars=int(max_chars))
     return ok(f"notes for {_display_name(f.data)}: {d['shots_shown']} of {d['shots_in_range']} shots", file_id=str(f.id),
               notes=d["text"], next_start=d["next_start"])
@@ -329,7 +329,7 @@ def get_look_profile(file_id="", file_query="", start=None, end=None, compare_to
     f = resolve_files([file_id] if file_id else None, file_query)[0]
     fi = _index_for(f)
     if fi is None or not fi.layers.get(S.LAYER_LOOK):
-        raise ToolError(f"{_display_name(f.data)!r} has no measured look yet; index_status_tool shows progress")
+        raise ToolError(f"{_display_name(f.data)!r} has no measured look yet; run_tool(name='index_status_tool') shows progress")
     lo, hi = (start, end) if end is not None else (None, None)
     profile = msearch.reference_look_from(fi, lo, hi)
     if profile is None:
@@ -541,7 +541,7 @@ def describe_shots(file_id="", shot_ids=None, start_seconds=None, end_seconds=No
     f = next(iter(resolve_files([file_id])))
     fi = _index_for(f)
     if fi is None or not fi.shots:
-        raise ToolError("that file has no shot list yet (index_status_tool shows progress)")
+        raise ToolError("that file has no shot list yet (run_tool(name='index_status_tool') shows progress)")
     ids = [int(x) for x in shot_ids or []]
     if start_seconds is not None and end_seconds is not None:
         ids += [int(s["id"]) for s in fi.shots_between(float(start_seconds), float(end_seconds))]
@@ -587,7 +587,7 @@ def locate_in_footage(what, kind="auto", file_ids=None, start=None, end=None, li
     from classes.media_index import handoff, reference as mref
     files, missing = project_indexes(file_ids)
     if not files:
-        raise ToolError("no indexed footage yet; index_status_tool shows progress")
+        raise ToolError("no indexed footage yet; run_tool(name='index_status_tool') shows progress")
     hits = mref.locate(files, what, kind=kind, start=start, end=end, limit=int(limit))
     if for_action:
         by_file = {str(fi.file_id): fi for fi in files}

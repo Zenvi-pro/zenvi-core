@@ -231,7 +231,7 @@ def set_clip_properties(properties, timeline_clip_ids=None, clip_query="", track
             raise ToolError(f"{name!r} sets {key}, which is already in properties")
         if key == "time":
             raise ToolError("time maps clip frames to source frames (speed); change speed with the speed tools, "
-                            "or animate it with set_keyframes_tool(property='time')")
+                            "or animate it with run_tool(name='set_keyframes_tool', args={'property': 'time'})")
         keys[name] = key
     clips, skipped = resolve_targets(timeline_clip_ids, clip_query, track, scope)
 
@@ -412,7 +412,7 @@ def set_keyframes(property, points, timeline_clip_id="", clip_query="", track=""
     key = cpm.resolve_key(property)
     info = cpm.property_info(key, data)
     if not info.keyframable:
-        raise ToolError(f"{key} holds a single value and cannot be animated; set it with set_clip_properties_tool")
+        raise ToolError(f"{key} holds a single value and cannot be animated; set it with run_tool(name='set_clip_properties_tool')")
     if not isinstance(points, list) or not points:
         raise ToolError("points must list at least one keyframe, e.g. [{\"seconds\": 0, \"value\": 1}]")
     if ease and interpolation not in ("", "bezier"):
@@ -575,7 +575,7 @@ def remove_keyframes(properties, timeline_clip_ids=None, clip_query="", track=""
         for key in clip_keys:
             info = cpm.property_info(key, data)
             if not info.keyframable:
-                raise ToolError(f"{key} holds a single value and has no keyframes; set it with set_clip_properties_tool")
+                raise ToolError(f"{key} holds a single value and has no keyframes; set it with run_tool(name='set_clip_properties_tool')")
             if info.kind == "color":
                 curves = copy.deepcopy(data.get(key) or {})
                 removed = 0

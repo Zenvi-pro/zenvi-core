@@ -96,7 +96,7 @@ def resolve_preset(name: str) -> dict:
     if hits:
         raise ToolError(f"'{text}' matches several presets: " + ", ".join(sorted({h['title'] for h in hits})))
     raise ToolError(f"no export preset matches '{text}'. Try 'MP4 (h.264)', 'YouTube', 'Instagram Reels', "
-                    "'TikTok', 'YouTube Shorts', 'GIF', 'MP3', 'WEBM', 'ProRes' (list_export_presets_tool lists all)")
+                    "'TikTok', 'YouTube Shorts', 'GIF', 'MP3', 'WEBM', 'ProRes' (run_tool(name='list_export_presets_tool') lists all)")
 
 
 # Render threads that outlived their timeout, kept until they stop: a QThread

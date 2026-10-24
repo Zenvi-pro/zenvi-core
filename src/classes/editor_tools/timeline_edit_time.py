@@ -189,7 +189,7 @@ def set_clip_speed(timeline_clip_ids=[], clip_query="", track="", scope="", spee
         duration = span(c.data)[1] - span(c.data)[0]
         eff, direction = effective_speed(c.data)
         if (speed or target_duration_seconds) and eff is None and not reset:
-            raise ToolError(f"{name!r} is looped (repeat_clip_tool); pass reset=true to clear the loop before "
+            raise ToolError(f"{name!r} is looped (run_tool(name='repeat_clip_tool')); pass reset=true to clear the loop before "
                             "changing its speed")
         base_duration = _reset_duration(c) if reset else duration
         base_speed = 1.0 if reset else eff
@@ -284,7 +284,7 @@ def repeat_clip(timeline_clip_ids=[], clip_query="", track="", scope="", times=2
     plans = []
     for c in clips:
         if timeline_ops.repeat_is_active(c.data):
-            raise ToolError(f"{title(c)!r} is already looped; reset it first (set_clip_speed_tool reset=true) or "
+            raise ToolError(f"{title(c)!r} is already looped; reset it first (run_tool(name='set_clip_speed_tool') reset=true) or "
                             "undo the earlier repeat")
         duration = span(c.data)[1] - span(c.data)[0]
         span_frames = max(1, int(round(duration * fps)))
@@ -427,7 +427,7 @@ def separate_clip_audio(timeline_clip_ids=[], clip_query="", track="", scope="",
             raise ToolError(f"{title(c)!r} has no audio to separate")
         if keyframe_value(c.data.get("has_audio")) == 0.0:
             raise ToolError(f"{title(c)!r} already has its audio off (separated before?); turn it back on with "
-                            "set_clip_audio_video_tool(audio='auto') first")
+                            "run_tool(name='set_clip_audio_video_tool', args={'audio': 'auto'}) first")
         if not media_has_video(c) and not per_channel:
             raise ToolError(f"{title(c)!r} is already audio-only; use per_channel=true to split its channels")
 

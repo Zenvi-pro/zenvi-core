@@ -295,7 +295,7 @@ def add_emoji(emoji, group="", position_seconds=0.0, duration_seconds=0.0, scree
     matches = emoji_catalog.search(str(emoji or "").strip(), group, 6)
     if not matches:
         raise ToolError(f"no emoji matches {emoji!r}" + (f" in group {group}" if group else "")
-                        + "; try search_emojis_tool with a simpler word")
+                        + "; try run_tool(name='search_emojis_tool') with a simpler word")
     best_score, best = matches[0]
     if best_score < 20.0:
         raise ToolError(f"no good emoji match for {emoji!r}; closest: "

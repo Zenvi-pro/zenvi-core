@@ -118,7 +118,7 @@ def _resolve_template(template: str) -> str:
     if not path:
         hint = ", ".join(title_svg.suggest_templates(raw)) or ", ".join(DEFAULT_TEMPLATES)
         raise ToolError(f"unknown title template {raw!r}; close matches: {hint} "
-                        "(list_title_templates_tool lists them all)")
+                        "(run_tool(name='list_title_templates_tool') lists them all)")
     return path
 
 
@@ -466,7 +466,7 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
         raise ToolError(f"{name} has no text; it is a background card (set background_color), or pick a "
                         "template with text")
     if slots and not (text.strip() or subtitle.strip() or any(v.strip() for v in lines)):
-        raise ToolError("add_title_tool needs text (or subtitle / lines)")
+        raise ToolError("run_tool(name='add_title_tool') needs text (or subtitle / lines)")
     style = _Style(font, font_weight, font_style, font_scale, text_color, background_color, fit_text)
     values = _assign_texts(slots, text, subtitle, lines, name, blank_rest=True)
     fps = project_fps()
@@ -546,7 +546,7 @@ def _svg_file(file_obj):
         raise ToolError(f"{data.get('name') or os.path.basename(str(data.get('path') or ''))!r} is not a title "
                         "(only .svg titles can be edited)")
     if data.get("zenvi_role") == OVERLAY_ROLE:
-        raise ToolError("that clip is a caption/timer overlay; use edit_captions_tool or add_timer_tool")
+        raise ToolError("that clip is a caption/timer overlay; use run_tool(name='edit_captions_tool') or run_tool(name='add_timer_tool')")
     return file_obj
 
 
@@ -585,7 +585,7 @@ def _resolve_title(timeline_clip_id: str, file_id: str, title_query: str):
                 scored.append((1, f))
         if not scored:
             raise ToolError(f"no title in the project matches {title_query!r} "
-                            "(list_title_templates_tool kind=project lists them)")
+                            "(run_tool(name='list_title_templates_tool') kind=project lists them)")
         best = max(s for s, _ in scored)
         top = [f for s, f in scored if s == best]
         if len(top) > 1:
@@ -602,7 +602,7 @@ def _resolve_title(timeline_clip_id: str, file_id: str, title_query: str):
     if len(titles) == 1:
         return titles[0], ""
     raise ToolError("which title? pass timeline_clip_id, file_id or title_query "
-                    f"({len(titles)} titles in the project; list_title_templates_tool kind=project lists them)")
+                    f"({len(titles)} titles in the project; run_tool(name='list_title_templates_tool') kind=project lists them)")
 
 
 def _clips_of(file_id: str) -> list:

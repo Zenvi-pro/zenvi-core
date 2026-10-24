@@ -197,7 +197,7 @@ def resolve_transitions(transition_ids=None, between_clip_ids=None, track="", at
         for tid in transition_ids:
             t = Transition.get(id=str(tid).strip())
             if not t:
-                raise ToolError(f"no transition with id={tid!r} (list_timeline_transitions_tool lists them)")
+                raise ToolError(f"no transition with id={tid!r} (run_tool(name='list_timeline_transitions_tool') lists them)")
             out.append(t)
         return out
     if between_clip_ids:
@@ -280,7 +280,7 @@ def _pick_mask(name):
     entry, candidates = transition_ops.find_transition(name)
     if entry is None:
         hint = f"; did you mean {', '.join(candidates)}" if candidates else ""
-        raise ToolError(f"unknown transition {name!r}{hint} (list_transitions_tool)")
+        raise ToolError(f"unknown transition {name!r}{hint} (run_tool(name='list_transitions_tool'))")
     return entry
 
 

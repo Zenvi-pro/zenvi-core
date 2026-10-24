@@ -93,7 +93,7 @@ def _remember(plan: Dict[str, Any]) -> str:
 def _plan(plan_id: str, reference_file_id: str = "") -> Optional[Dict[str, Any]]:
     if plan_id:
         if plan_id not in _PLANS:
-            raise ToolError(f"no plan {plan_id!r} in this session (plan_recreation_tool makes one)")
+            raise ToolError(f"no plan {plan_id!r} in this session (run_tool(name='plan_recreation_tool') makes one)")
         return _PLANS[plan_id]
     for plan in reversed(list(_PLANS.values())):
         if not reference_file_id or plan["reference_file_id"] == str(reference_file_id):
@@ -109,7 +109,7 @@ def _effective(row: Dict[str, Any], plan: Dict[str, Any]) -> Optional[Dict[str, 
 def _reference(files, reference_file_id: str):
     ref = next((f for f in files if f.file_id == str(reference_file_id)), None)
     if ref is None:
-        raise ToolError(f"reference file {reference_file_id!r} has no saved index yet; index_status_tool shows progress")
+        raise ToolError(f"reference file {reference_file_id!r} has no saved index yet; run_tool(name='index_status_tool') shows progress")
     return ref
 
 
@@ -167,7 +167,7 @@ def plan_recreation(reference_file_id, source_file_ids=[], max_reuse=1, stock="a
     wanted = {str(x) for x in source_file_ids} if source_file_ids else None
     pool = [f for f in files if f.sha != ref.sha and f.shots and (wanted is None or f.file_id in wanted)]
     if not pool:
-        raise ToolError("no other indexed video footage to cut from; import and index the clips first (index_status_tool)")
+        raise ToolError("no other indexed video footage to cut from; import and index the clips first (run_tool(name='index_status_tool'))")
     out = mref.plan_recreation(ref, pool, max_reuse=int(max_reuse))
     if not out["total"]:
         raise ToolError("the reference has no analysed shots to recreate")
@@ -512,7 +512,7 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
     """
     plan = _plan(plan_id)
     if plan is None:
-        raise ToolError("no plan yet: call plan_recreation_tool first")
+        raise ToolError("no plan yet: call run_tool(name='plan_recreation_tool') first")
     for item in overrides or []:
         shot = int(item["reference_shot"])
         row = next((r for r in plan["rows"] if r["reference_shot"] == shot), None)
@@ -789,7 +789,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pic
     if not slots:
         raise ToolError("nothing to check: the reference has no analysed shots")
     if not pictures:
-        raise ToolError("no recreation clips on the timeline yet: build_recreation_tool places the plan")
+        raise ToolError("no recreation clips on the timeline yet: run_tool(name='build_recreation_tool') places the plan")
 
     findings: Dict[int, List[str]] = {}
     fixes: Dict[int, str] = {}

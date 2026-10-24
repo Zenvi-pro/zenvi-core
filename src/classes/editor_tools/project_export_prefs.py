@@ -249,7 +249,7 @@ def set_preference(key="", value="", restore_tab=""):
                   + ("; restart Zenvi for all of them to take effect." if restart else "."),
                   tab=restore_tab, restart_required=restart)
     if not (key or "").strip():
-        raise ToolError("give key and value (see get_preferences_tool), or restore_tab")
+        raise ToolError("give key and value (see run_tool(name='get_preferences_tool')), or restore_tab")
     item = _find(key)
     name = item["setting"]
     if name in READ_ONLY_SETTINGS:

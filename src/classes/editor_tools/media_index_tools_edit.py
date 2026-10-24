@@ -51,7 +51,7 @@ def _music_beats(music_clip_id, own_clip_id=""):
     if music_clip_id:
         bed = next((c for c in clips if c.id == str(music_clip_id) and c.length > 0 and (c.has_audio if slicing else c.role == "music")), None)
         if bed is None:
-            raise ToolError(f"{music_clip_id!r} is not a {'clip with sound' if slicing else 'music clip'} on the timeline (analyze_timeline_audio_tool lists them)")
+            raise ToolError(f"{music_clip_id!r} is not a {'clip with sound' if slicing else 'music clip'} on the timeline (run_tool(name='analyze_timeline_audio_tool') lists them)")
     else:
         with_tempo = [c for c in clips if c.role == "music" and c.length > 0 and tempo_of(c)]
         own = next((c for c in clips if c.id == str(own_clip_id) and c.has_audio and c.length > 0 and tempo_of(c)), None) if own_clip_id else None

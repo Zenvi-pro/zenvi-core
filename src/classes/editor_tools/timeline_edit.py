@@ -124,7 +124,7 @@ def _transition_choice(name):
         return stems[near[0]], None
     sample = near[:8] or sorted(stems)[:8]
     raise ToolError(f"unknown transition {name!r}; use 'fade' (crossfade), 'random', or a name such as "
-                    f"{', '.join(sample)} (list_transitions_tool lists all)")
+                    f"{', '.join(sample)} (run_tool(name='list_transitions_tool') lists all)")
 
 
 def _fit_lengths(durations, fixed, keep, budget):
@@ -772,7 +772,7 @@ def slice_clips(at_seconds=-1.0, timeline_clip_ids=[], clip_query="", track="", 
                 s, e = span(c.data)
                 raise ToolError(f"cutting {title(c)!r} ({s:.2f}-{e:.2f} s) at {t:.3f} s would leave a piece of {min(t - s, e - t):.3f} s, "
                                 "under two frames. To cut where someone starts or stops talking, get the exact time from "
-                                "get_voice_edges_tool (or refine_cut_tool for a picture cut); to shorten a clip use trim_clips_tool")
+                                "run_tool(name='get_voice_edges_tool') (or run_tool(name='refine_cut_tool') for a picture cut); to shorten a clip use trim_clips_tool")
         require_unlocked({int(c.data.get("layer") or 0) for c in clips})
         if scope == "selected" and include_transitions:
             sel = set(getattr(get_app().window, "selected_transitions", []) or [])

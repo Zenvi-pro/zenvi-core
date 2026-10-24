@@ -403,7 +403,7 @@ def apply_clip_preset(preset, timeline_clip_ids=None, clip_query="", track="", s
         if spec.zone not in ("in", "out", "emphasis"):
             raise ToolError(f"{preset} takes no duration_seconds: "
                             + ("camera moves and credits span the whole clip; trim the clip or animate part of it "
-                               "with set_keyframes_tool" if spec.zone == "whole" else "it has no length"))
+                               "with run_tool(name='set_keyframes_tool')" if spec.zone == "whole" else "it has no length"))
     if at_seconds is not None and spec.zone != "emphasis":
         raise ToolError(f"at_seconds only sets where an Emphasis preset starts; {preset} is not one")
     if spec.name == "volume_level":

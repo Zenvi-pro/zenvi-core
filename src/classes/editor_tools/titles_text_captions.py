@@ -559,7 +559,7 @@ def add_captions(cues=None, srt_path="", timeline_clip_id="", clip_query="", tra
             names = ", ".join(f"{c.id} ({_clip_label(c)})" for c in targets[:5]) or "the timeline has no clips"
             raise ToolError("no transcript is available to caption from (" + names + "). Zenvi fills it "
                             "when it indexes a file; check with list_project_files_tool, index with "
-                            "reindex_project_file_tool, or pass cues / srt_path instead")
+                            "run_tool(name='reindex_project_file_tool'), or pass cues / srt_path instead")
     elif targets:
         c = targets[0]
         base = time_base if time_base != "auto" else ("source" if source == "file" else "timeline")
@@ -853,7 +853,7 @@ def edit_captions(effect_id="", timeline_clip_id="", clip_query="", cue_edits=No
 
     ready, _changed = _prepare([Cue(q.start, q.end, caption_cues.display_text(q.text)) for q in cues], False)
     if not ready:
-        raise ToolError("that would leave no captions; use remove_captions_tool to remove them")
+        raise ToolError("that would leave no captions; use run_tool(name='remove_captions_tool') to remove them")
 
     new_effect = copy.deepcopy(effect)
     new_effect["caption_text"] = caption_cues.build_caption_text(ready)

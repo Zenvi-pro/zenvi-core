@@ -213,7 +213,7 @@ def resolve_effect_name(name: str) -> str:
     cat = catalog()
     key = _norm(name)
     if not key:
-        raise ToolError("name the effect (see list_effects_tool)")
+        raise ToolError("name the effect (see run_tool(name='list_effects_tool'))")
     for cn, spec in cat.items():
         if key in (_norm(cn), _norm(spec["name"])):
             return cn
@@ -225,7 +225,7 @@ def resolve_effect_name(name: str) -> str:
             return cn
     close = difflib.get_close_matches(str(name), list(cat), n=4, cutoff=0.5)
     hint = f"; did you mean {', '.join(close)}?" if close else ""
-    raise ToolError(f"unknown effect {name!r}{hint} list_effects_tool lists all {len(cat)} effects")
+    raise ToolError(f"unknown effect {name!r}{hint} run_tool(name='list_effects_tool') lists all {len(cat)} effects")
 
 
 def effect_kind(class_name: str) -> str:
@@ -320,7 +320,7 @@ def find_effect(effect_id: str):
         for effect in clip_effects(clip):
             if str(effect.get("id")) == eid:
                 return clip, effect
-    raise ToolError(f"no effect with id={effect_id!r} on the timeline (get_clip_effects_tool lists them)")
+    raise ToolError(f"no effect with id={effect_id!r} on the timeline (run_tool(name='get_clip_effects_tool') lists them)")
 
 
 def save_clip_effects(changes: list) -> None:
@@ -843,7 +843,7 @@ def add_effect(timeline_clip_id="", clip_query="", track="", timeline_clip_ids=N
     """
     name = str(effect or effect_name or "").strip()
     if not name:
-        raise ToolError("add_effect_tool needs effect (e.g. \"Blur\"; list_effects_tool lists them)")
+        raise ToolError("run_tool(name='add_effect_tool') needs effect (e.g. \"Blur\"; run_tool(name='list_effects_tool') lists them)")
     class_name = resolve_effect_name(name)
     if if_exists not in ("update", "add"):
         raise ToolError("if_exists must be 'update' or 'add'")
@@ -855,7 +855,7 @@ def add_effect(timeline_clip_id="", clip_query="", track="", timeline_clip_ids=N
         clip_id = timeline_clip_id or (many[0] if many else "")
         opts = dict(processing or {}) if isinstance(processing, dict) else {}
         if processing not in (None, {}) and not isinstance(processing, dict):
-            raise ToolError("processing is an object of process_clip_effect_tool options")
+            raise ToolError("processing is an object of run_tool(name='process_clip_effect_tool') options")
         return proc.run_processing_tool(
             clip_id, clip_query, track, class_name, opts, properties, interpolation,
             occurrence=occurrence, position_near=position_near)
@@ -898,7 +898,7 @@ def _effects_to_edit(effect_id, timeline_clip_id, clip_query, track, timeline_cl
             raise ToolError(f"clip {_clip_label(clip)} is on a locked track; unlock the track first")
         return [(clip, eff)], []
     if not effect:
-        raise ToolError("give effect_id (from get_clip_effects_tool), or a clip plus the effect name")
+        raise ToolError("give effect_id (from run_tool(name='get_clip_effects_tool')), or a clip plus the effect name")
     class_name = resolve_effect_name(effect)
     clips, explicit = target_clips(timeline_clip_id, clip_query, track, timeline_clip_ids, scope)
     out, skipped = [], []

@@ -355,7 +355,7 @@ def refine_cut(file_ids=None, file_query="", near_seconds=None, shot_id=None, ra
         structure = (shelf.read_json(sha, "structure.json") if sha else None) or {}
         shot = next((s for s in structure.get("shots") or [] if int(s["id"]) == int(shot_id)), None)
         if shot is None:
-            raise ToolError(f"no shot {shot_id} in this file's index (get_segment_dossier_tool lists the shots)")
+            raise ToolError(f"no shot {shot_id} in this file's index (run_tool(name='get_segment_dossier_tool') lists the shots)")
         edges = {}
         last = max(int(s["id"]) for s in structure["shots"])
         for label, at, skip in (("start", float(shot["start"]), int(shot_id) == 0), ("end", float(shot["end"]), int(shot_id) == last)):
@@ -404,12 +404,12 @@ def _faces_for_framing(sha: str, person: str = ""):
     from classes.media_index.flags import people_enabled
     if not sha or not people_enabled():
         if person:
-            raise ToolError("following a person needs the people preference on and a people scan (scan_people_tool)")
+            raise ToolError("following a person needs the people preference on and a people scan (run_tool(name='scan_people_tool'))")
         return None, ""
     scan = pp.load_scan(sha)
     if not scan:
         if person:
-            raise ToolError("this file has no people scan yet: run scan_people_tool, then ask again")
+            raise ToolError("this file has no people scan yet: call run_tool(name='scan_people_tool'), then ask again")
         return None, ""
     reg = pp.load_registry()
     tracks = pp.resolve_tracks(sha, scan, reg)
@@ -417,7 +417,7 @@ def _faces_for_framing(sha: str, person: str = ""):
     if person:
         found = pp.find_people(reg, person)
         if not found:
-            raise ToolError(f"no person {person!r} (list_people_tool lists them)")
+            raise ToolError(f"no person {person!r} (run_tool(name='list_people_tool') lists them)")
         ids = {p["id"] for p in found}
         tracks = [t for t in tracks if t["person"] in ids]
         tag = "p" + "-".join(sorted(ids)) + f"n{len(tracks)}"
@@ -615,7 +615,7 @@ def get_edit_style(file_ids=None, file_query="", compare_to_timeline=True):
     f = resolve_files(file_ids, file_query)[0]
     fi = _index_for(f, shelf)
     if fi is None or not fi.shots:
-        raise ToolError("that file has no shot index yet (index_status_tool shows what is still being worked on)")
+        raise ToolError("that file has no shot index yet (run_tool(name='index_status_tool') shows what is still being worked on)")
     reference = style.edit_style(fi)
     yours, gaps = None, []
     if compare_to_timeline:
@@ -757,7 +757,7 @@ def storyboard(file_ids=None, file_query="", start_seconds=0, detail="full", pic
     f = files[0]
     fi = _index_for(f, shelf)
     if fi is None or not fi.shots:
-        raise ToolError("that file has no shot list yet (index_status_tool shows what is still being worked on); wait for it, don't sample frames")
+        raise ToolError("that file has no shot list yet (run_tool(name='index_status_tool') shows what is still being worked on); wait for it, don't sample frames")
     as_list = str(detail) == "list"
     shots, next_start = board.page(fi.shots, float(start_seconds or 0.0), per_page=board.MAX_LIST_SHOTS if as_list else contact.MAX_TILES)
     if not shots:
@@ -979,7 +979,7 @@ def get_moment(start_seconds, end_seconds, file_ids=None, file_query="", frames=
     f = resolve_files(file_ids, file_query)[0]
     fi = _index_for(f)
     if fi is None or not (fi.shots or fi.rows):
-        raise ToolError(f"{_display_name(f.data)!r} has no saved index yet; index_status_tool shows progress")
+        raise ToolError(f"{_display_name(f.data)!r} has no saved index yet; run_tool(name='index_status_tool') shows progress")
     try:
         lo, hi = moment.check_range(start_seconds, end_seconds, fi.duration)
     except ValueError as exc:

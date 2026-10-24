@@ -197,7 +197,7 @@ def remap_layers(source_layers, dest_track) -> dict:
         idx = order.index(n) + offset
         if idx < 0 or idx >= len(order):
             raise ToolError(f"moving these clips' {len(sources)} tracks onto {track_name(dest)} needs a "
-                            "track that does not exist; add one first (add_track_tool)")
+                            "track that does not exist; add one first (run_tool(name='add_track_tool'))")
         out[n] = order[idx]
     return out
 

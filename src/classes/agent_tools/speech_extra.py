@@ -62,7 +62,7 @@ def remove_silence(
 
     if not clipId:
         return ToolReceipt.refused(
-            "remove_silence_tool", "Error: timeline_clip_id is required.",
+            "run_tool(name='remove_silence_tool')", "Error: timeline_clip_id is required.",
         ).to_json()
 
     try:
@@ -75,13 +75,13 @@ def remove_silence(
     clip = _find_clip(project_data, str(clipId))
     if clip is None:
         return ToolReceipt.refused(
-            "remove_silence_tool", f"Error: Unknown timeline_clip_id '{clipId}'.",
+            "run_tool(name='remove_silence_tool')", f"Error: Unknown timeline_clip_id '{clipId}'.",
         ).to_json()
 
     path = _media_path_for_clip(clip)
     if not path or not os.path.isfile(path):
         return ToolReceipt.refused(
-            "remove_silence_tool", "Error: Clip has no readable media path.",
+            "run_tool(name='remove_silence_tool')", "Error: Clip has no readable media path.",
         ).to_json()
 
     try:
@@ -90,7 +90,7 @@ def remove_silence(
         max_frac = float(max_remove_fraction)
     except (TypeError, ValueError):
         return ToolReceipt.refused(
-            "remove_silence_tool", "Error: Invalid numeric arguments.",
+            "run_tool(name='remove_silence_tool')", "Error: Invalid numeric arguments.",
         ).to_json()
 
     from classes.speech.map_timeline import is_retimed
@@ -116,7 +116,7 @@ def remove_silence(
         )
     except Exception as exc:
         return ToolReceipt.error(
-            "remove_silence_tool", f"Error: VAD failed: {exc}",
+            "run_tool(name='remove_silence_tool')", f"Error: VAD failed: {exc}",
         ).to_json()
 
     # Clip speech windows to the trimmed source range, rebased into source time.
@@ -163,7 +163,7 @@ def remove_silence(
             removed=removed, fps=fps, tid=tid,
         )
     except Exception as exc:
-        return ToolReceipt.error("remove_silence_tool", f"Error: {exc}").to_json()
+        return ToolReceipt.error("run_tool(name='remove_silence_tool')", f"Error: {exc}").to_json()
 
     return ToolReceipt.applied(
         "remove_silence_tool",
@@ -198,7 +198,7 @@ def export_captions(
 
     if not path:
         return ToolReceipt.refused(
-            "export_captions_tool", "Error: path is required.",
+            "run_tool(name='export_captions_tool')", "Error: path is required.",
         ).to_json()
 
     try:
@@ -234,7 +234,7 @@ def export_captions(
         os.replace(tmp, path)
     except Exception as exc:
         return ToolReceipt.error(
-            "export_captions_tool", f"Error: write failed: {exc}",
+            "run_tool(name='export_captions_tool')", f"Error: write failed: {exc}",
         ).to_json()
 
     return ToolReceipt.applied(
@@ -278,7 +278,7 @@ def diarize_media(
         clip = _find_clip(project_data, str(clipId))
         if clip is None:
             return ToolReceipt.refused(
-                "diarize_media_tool", f"Error: Unknown timeline_clip_id '{clipId}'.",
+                "run_tool(name='diarize_media_tool')", f"Error: Unknown timeline_clip_id '{clipId}'.",
             ).to_json()
         path = _media_path_for_clip(clip)
     elif fileId:
@@ -286,17 +286,17 @@ def diarize_media(
         f = File.get(id=str(fileId))
         if f is None or not isinstance(getattr(f, "data", None), dict):
             return ToolReceipt.refused(
-                "diarize_media_tool", f"Error: Unknown file_id '{fileId}'.",
+                "run_tool(name='diarize_media_tool')", f"Error: Unknown file_id '{fileId}'.",
             ).to_json()
         path = resolve_media_path(f.data)
     else:
         return ToolReceipt.refused(
-            "diarize_media_tool", "Error: Provide file_id or timeline_clip_id.",
+            "run_tool(name='diarize_media_tool')", "Error: Provide file_id or timeline_clip_id.",
         ).to_json()
 
     if not path:
         return ToolReceipt.refused(
-            "diarize_media_tool", "Error: Media path missing.",
+            "run_tool(name='diarize_media_tool')", "Error: Media path missing.",
         ).to_json()
 
     model = (model_id or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
@@ -307,7 +307,7 @@ def diarize_media(
         )
     except Exception as exc:
         return ToolReceipt.error(
-            "diarize_media_tool", f"Error: Diarization failed: {exc}",
+            "run_tool(name='diarize_media_tool')", f"Error: Diarization failed: {exc}",
         ).to_json()
 
     record.words = labelled

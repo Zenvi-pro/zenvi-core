@@ -1770,13 +1770,13 @@ def wait_until_project_indexed(timeout_seconds=1800, **_kw) -> str:
         return (
             "Error: %d of %d project file(s) are not indexed and nothing is indexing them (their import "
             "skipped indexing, or indexing is off), so there is nothing to wait for. Not indexed: %s. "
-            "reindex_project_file_tool indexes one; captions can also come from an .srt or cues." % (
+            "run_tool(name='reindex_project_file_tool') indexes one; captions can also come from an .srt or cues." % (
                 len(pending), len(targets), ", ".join(fid for fid, _err in pending))
         )
     # Not an answer the caller can plan on: say which files and why.
     return (
         "Error: indexing did not finish for %d of %d project file(s) within %ss "
-        "(%d indexed). Pending: %s. Wait again, or call reindex_project_file_tool "
+        "(%d indexed). Pending: %s. Wait again, or call run_tool(name='reindex_project_file_tool') "
         "for files that failed." % (
             len(pending), len(targets), budget, len(done),
             "; ".join("%s (%s)" % (fid, err) for fid, err in pending))
@@ -1858,7 +1858,7 @@ def add_clip_to_timeline(
                 return (
                     "Error: No clip was just created. "
                     "Pass tool_args.file_id with a media_bin file id, or run "
-                    "import_files_tool / import_stock_media_tool "
+                    "import_files_tool / run_tool(name='import_stock_media_tool') "
                     "immediately before this step (empty file_id only works right after those "
                     "tools in the same session)."
                 )
@@ -3736,7 +3736,7 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
     _audio_exts = (".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma")
     if "freesound.org" in lower_path or any(lower_path.endswith(ext) for ext in _audio_exts):
         return (
-            "Error: ingest_web_video_tool is for video URLs only. "
+            "Error: run_tool(name='ingest_web_video_tool') is for video URLs only. "
             "For Freesound / music / SFX use stock_music(query=..., track=...)."
         )
     try:
@@ -3746,7 +3746,7 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
         ):
             return (
                 "Error: that is a YouTube page URL, not a direct video file. "
-                "Use ingest_web_video_tool(url=..., intent=\"timeline\") instead."
+                "Use run_tool(name='ingest_web_video_tool', args={'url': ..., 'intent': 'timeline'}) instead."
             )
     except Exception as exc:
         return f"Error: could not classify video URL: {exc}"
@@ -3801,7 +3801,7 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
                 return (
                     f"Error: Video imported (file_id={file_id}, {size_mb:.1f} MB) but placing it on the "
                     f"timeline failed: {placement or 'unknown'}. Do NOT download it again: call "
-                    f"add_clip_to_timeline_tool(file_id='{file_id}', track=..., position_seconds=...)."
+                    f"run_tool(name='add_clip_to_timeline_tool')(file_id='{file_id}', track=..., position_seconds=...)."
                 )
             return (
                 f"✅ Video imported (file_id: {file_id}, {size_mb:.1f} MB) and added to the timeline.\n"
@@ -4598,7 +4598,7 @@ def generate_image_and_add_to_timeline(prompt="", duration_seconds="", position_
                 return (
                     f"Error: Image imported (file_id={f.id}) but timeline placement failed: "
                     f"{msg or 'unknown'}. "
-                    f"Do NOT regenerate — call add_clip_to_timeline_tool(file_id='{f.id}', "
+                    f"Do NOT regenerate — call run_tool(name='add_clip_to_timeline_tool')(file_id='{f.id}', "
                     f"track=<layer_number from get_timeline_state_tool>, position_seconds=..., "
                     f"duration_seconds={seconds:g})."
                 )
@@ -5312,7 +5312,7 @@ def _pick_transition(transition_name):
                       "Use a full name.")
     names = ", ".join(e["key"] for e in entries[:6]) or "none installed"
     return None, (f"Error: Transition '{transition_name}' not found. Some valid names: {names}. "
-                  "Use list_transitions_tool with query.")
+                  "Use run_tool(name='list_transitions_tool') with query.")
 
 
 def add_transition_between_clips(clip1_id="", clip2_id="", transition_name="", duration="1.0", **_kw) -> str:
@@ -5592,7 +5592,7 @@ def download_pexels_video_tool(video_id: str = "", link: str = "", filename: str
             from classes.editor_tools.ai_generation_stock import remembered_link
             link = remembered_link(video_id)
         if not link:
-            return ("Error: no link for that clip. Find one with search_stock_video_tool, "
+            return ("Error: no link for that clip. Find one with run_tool(name='search_stock_video_tool'), "
                     "then pass its video_id here, or pass its link.")
         from classes.credits_client import charge_operation_on_success, check_operation
 
@@ -6197,7 +6197,7 @@ def place_motion_graphic(
     try:
         fid = str(file_id or "").strip()
         if not fid:
-            return "Error: file_id is required for place_motion_graphic_tool"
+            return "Error: file_id is required for run_tool(name='place_motion_graphic_tool')"
         f = File.get(id=fid)
         if not f:
             return f"Error: File not found for id={fid}."
@@ -6280,7 +6280,7 @@ def place_motion_graphic(
                     return (
                         "Error: gap mode refused — primary track has footage overlapping "
                         f"[{t:.2f}, {t + dur:.2f}). Use mode=cut_in to ripple clips, or "
-                        "pick a true gap from propose_overlay_windows_tool."
+                        "pick a true gap from run_tool(name='propose_overlay_windows_tool')."
                     )
 
         region = str(layout_region or "").strip()
@@ -6369,10 +6369,10 @@ def place_motion_graphic(
 def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
     """Deprecated — use propose_overlay_windows_tool (timing) + agent-authored beats_json."""
     return (
-        "Error: suggest_motion_graphics_placements_tool is removed. "
-        "Call propose_overlay_windows_tool(beat_count=...) for timing/layout_region, "
-        "edit session/draft.html (lint optional), publish_session_draft_tool, "
-        "fetch_motion_graphics_video_tool, then place_motion_graphic_tool(mode=overlay|gap|cut_in). "
+        "Error: run_tool(name='suggest_motion_graphics_placements_tool') is removed. "
+        "Call run_tool(name='propose_overlay_windows_tool', args={'beat_count': ...}) for timing/layout_region, "
+        "edit session/draft.html (lint optional), run_tool(name='publish_session_draft_tool'), "
+        "run_tool(name='fetch_motion_graphics_video_tool'), then run_tool(name='place_motion_graphic_tool', args={'mode': 'overlay|gap|cut_in'}). "
         "Never put the creative brief into on-screen title text."
     )
 

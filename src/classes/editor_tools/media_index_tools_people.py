@@ -127,7 +127,7 @@ def scan_people(file_ids=None, rescan=False):
     _need_on()
     st = pm.status()
     if not st["runtime"] or not st["faces_ready"]:
-        raise ToolError("people models are not ready: " + ("install onnxruntime (pip install -r requirements-speech.txt)" if not st["runtime"] else "run setup_people_tool first"))
+        raise ToolError("people models are not ready: " + ("install onnxruntime (pip install -r requirements-speech.txt)" if not st["runtime"] else "call run_tool(name='setup_people_tool') first"))
     all_files, missing = project_indexes(file_ids or None)
     started, rows, left = time.time(), [], []
     for fi in all_files:
@@ -205,7 +205,7 @@ def _file_track(fi, seconds: float, track_id: str = ""):
     """The face track at a time in a file: (scan, tracks near that time). Raises ToolError saying what is missing."""
     scan = pp.load_scan(fi.sha)
     if not scan:
-        raise ToolError(f"{fi.name!r} has no people scan yet: run scan_people_tool")
+        raise ToolError(f"{fi.name!r} has no people scan yet: call run_tool(name='scan_people_tool')")
     reg = pp.load_registry()
     tracks = pp.resolve_tracks(fi.sha, scan, reg)
     if track_id:
@@ -243,7 +243,7 @@ def who_is_this(file_id, seconds):
     fi = files[0]
     vscan = pp.load_voice_scan(fi.sha)
     if not pp.load_scan(fi.sha) and not vscan:
-        raise ToolError(f"{fi.name!r} has no people scan yet: run scan_people_tool")
+        raise ToolError(f"{fi.name!r} has no people scan yet: call run_tool(name='scan_people_tool')")
     reg = pp.load_registry()
     tracks = _file_track(fi, float(seconds))[1] if pp.load_scan(fi.sha) else []
     rows = [_describe_track(reg, t) for t in tracks]
@@ -285,7 +285,7 @@ def name_person(name, person_id="", file_id="", seconds=None, track_id="", by="f
         try:
             out = pp.name_person(str(person_id), clean)
         except KeyError:
-            raise ToolError(f"no person {person_id!r} (list_people_tool lists them)")
+            raise ToolError(f"no person {person_id!r} (run_tool(name='list_people_tool') lists them)")
         return ok(f"{out['id']} is now called {out['name']}.", changed=True, person=out, **({"warning": f"{out['same_name_as']} has the same name: merge_people_tool if they are one person"} if out["same_name_as"] else {}))
     if not file_id or seconds is None:
         raise ToolError("say who: a person_id, or a file_id and the time they are on screen")
@@ -297,7 +297,7 @@ def name_person(name, person_id="", file_id="", seconds=None, track_id="", by="f
         return _name_voice(fi, float(seconds), clean)
     reg, tracks = _file_track(fi, float(seconds), track_id)
     if not tracks:
-        raise ToolError("no face was found there: who_is_this_tool shows where faces are")
+        raise ToolError("no face was found there: run_tool(name='who_is_this_tool') shows where faces are")
     if len(tracks) > 1:
         raise ToolError("more than one face is on screen then: pass track_id from " + ", ".join(f"{t['id']} (box {t['samples'][0]['box']})" for t in tracks[:6]))
     t = tracks[0]
@@ -317,11 +317,11 @@ def name_person(name, person_id="", file_id="", seconds=None, track_id="", by="f
 def _name_voice(fi, seconds: float, clean: str) -> str:
     vscan = pp.load_voice_scan(fi.sha)
     if not vscan:
-        raise ToolError(f"{fi.name!r} has no voice scan yet: run scan_people_tool (it needs the voice model and a transcript)")
+        raise ToolError(f"{fi.name!r} has no voice scan yet: call run_tool(name='scan_people_tool') (it needs the voice model and a transcript)")
     reg = pp.load_registry()
     v = pp.voice_at(fi.sha, vscan, reg, seconds)
     if v is None:
-        raise ToolError("no one is speaking then: who_is_this_tool shows when voices are heard")
+        raise ToolError("no one is speaking then: run_tool(name='who_is_this_tool') shows when voices are heard")
     existing = [p for p in pp.find_people(reg, clean) if (p.get("name") or "").lower() == clean.lower()]
     if existing:
         res = pp.pin_speaker(fi.sha, v["speaker"], existing[0]["id"])
@@ -348,7 +348,7 @@ def merge_people(keep, merge):
     try:
         out = pp.merge_people(str(keep), str(merge))
     except KeyError as exc:
-        raise ToolError(f"no person {exc.args[0]!r} (list_people_tool lists them)")
+        raise ToolError(f"no person {exc.args[0]!r} (run_tool(name='list_people_tool') lists them)")
     except ValueError as exc:
         raise ToolError(str(exc))
     return ok(f"{out['merged']} was folded into {out['kept']}.", changed=True, **out)
@@ -409,7 +409,7 @@ def locate_person(person, for_action="", file_ids=None, limit=20):
     reg = pp.load_registry()
     found = pp.find_people(reg, str(person))
     if not found:
-        raise ToolError(f"no person {person!r} (list_people_tool lists them)")
+        raise ToolError(f"no person {person!r} (run_tool(name='list_people_tool') lists them)")
     ids = {p["id"] for p in found}
     files, _m = _fi_by_file(file_ids or None)
     from classes.editor_tools.media_index_tools import _all_files

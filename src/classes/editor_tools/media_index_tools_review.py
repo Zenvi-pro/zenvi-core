@@ -370,7 +370,7 @@ def _no_audio_analysis(f) -> ToolError:
     except Exception:
         busy = False
     if busy:
-        return ToolError(f"{name!r} is still being analysed (its sound takes a few seconds): call wait_until_project_indexed_tool, then try again")
+        return ToolError(f"{name!r} is still being analysed (its sound takes a few seconds): call run_tool(name='wait_until_project_indexed_tool'), then try again")
     return ToolError(f"{name!r} has no audio analysis and is not being analysed: remove it from the project and import it again so it is indexed")
 
 
@@ -515,7 +515,7 @@ def listen(start=None, end=None, file_id="", form="", vibe=""):
             except OSError:
                 pass
     if result.get("auth"):
-        raise ToolError("sign in to Zenvi to use listen_tool")
+        raise ToolError("sign in to Zenvi to use run_tool(name='listen_tool')")
     if result.get("unsupported"):
         raise ToolError("this backend has no media index v2 listening yet")
     if result.get("error"):

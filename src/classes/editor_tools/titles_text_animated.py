@@ -82,7 +82,7 @@ def _min_version() -> str:
 def _find_template(name: str):
     raw = str(name or "").strip()
     if not raw:
-        raise ToolError("template is required (list_title_templates_tool kind=animated lists them)")
+        raise ToolError("template is required (run_tool(name='list_title_templates_tool') kind=animated lists them)")
     key = raw.lower().replace(" ", "_").replace(".xml", "").replace(".blend", "")
     for path in blender_titles.template_paths():
         summary = blender_titles.template_summary(path)
@@ -206,7 +206,7 @@ def add_animated_title(template="", text="", params=None, length_multiplier=1, p
     if not exe:
         raise ToolError(f"Blender is not available (Blender Command = {command or 'not set'!r}). Install Blender "
                         f"{_min_version()}+ from blender.org and set Preferences > General > Blender Command to "
-                        "its executable; or use add_title_tool for a static title with fades")
+                        "its executable; or use run_tool(name='add_title_tool') for a static title with fades")
     try:
         version = blender_titles.blender_version(exe)
     except Exception as exc:
