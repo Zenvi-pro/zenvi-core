@@ -70,7 +70,7 @@ def test_real_rendering_measures_a_dark_and_a_bright_clip_and_the_audit_calls_th
 def test_a_real_grade_changes_what_the_audit_measures(world):
     editor, ids = world
     before = measure(editor, ids)[2][ids["dark"]]["avg_luma"]
-    receipt = editor.call_receipt("apply_color_tool", clipId=ids["dark"], exposure_delta=0.35)
+    receipt = editor.call_receipt("color_grade_clip_tool", timeline_clip_id=ids["dark"], exposure=0.35)
     assert receipt["status"] == "applied", receipt["summary"]
     after = measure(editor, ids)[2][ids["dark"]]["avg_luma"]
     assert after > before * 1.2 and after > before + 0.02, f"the grade is measured after it is applied: {before:.3f} -> {after:.3f}"

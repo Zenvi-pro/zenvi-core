@@ -340,7 +340,7 @@ def picture_findings(clips: Sequence[TimelineClip], brief: Brief, looks: Dict[st
                            "Clips differ noticeably in brightness or warmth." if uneven else "Brightness and warmth are consistent across the clips.",
                            {"measured_clips": len(measured), "luma_spread": round(ls, 3), "warmth_spread": round(ws, 3), "median_luma": round(ml, 3),
                             "median_warmth": round(mw, 3), "outliers": outliers[:10]},
-                           ["harmonize_look_tool", "apply_color_tool", "match_color_to_reference_tool"] if uneven else []))
+                           ["harmonize_look_tool", "color_grade_clip_tool"] if uneven else []))
     else:
         out.append(finding("consistency", "picture", "unknown" if pics else "ok",
                            "Fewer than two clips were measured." if pics else "No picture to measure.", {"measured_clips": len(measured)}, ["analyze_frame_colors_tool"] if pics else []))
@@ -352,7 +352,7 @@ def picture_findings(clips: Sequence[TimelineClip], brief: Brief, looks: Dict[st
             problems.append({"clip": c.id, "name": c.name, "problems": ex["problems"], "luma": ex["avg_luma"]})
     out.append(finding("exposure", "picture", "needs" if problems else ("ok" if measured else "unknown"),
                        f"{len(problems)} clip(s) have exposure problems." if problems else ("No exposure problems found." if measured else "Exposure was not measured."),
-                       {"clips": problems[:12]}, ["apply_color_tool", "color_grade_clip_tool"] if problems else []))
+                       {"clips": problems[:12]}, ["color_grade_clip_tool"] if problems else []))
 
     risky = []
     for c in pics:
@@ -373,7 +373,7 @@ def picture_findings(clips: Sequence[TimelineClip], brief: Brief, looks: Dict[st
     else:
         out.append(finding("style", "picture", "needs" if wants else "info",
                            "No grade is applied" + (f", but a look was asked for ({brief.vibe})." if brief.vibe else "; fine if the footage is already consistent and a natural look is wanted."),
-                           {"graded": 0, "clips": len(pics), "vibe": brief.vibe}, ["apply_look_tool", "apply_color_tool", "harmonize_look_tool"]))
+                           {"graded": 0, "clips": len(pics), "vibe": brief.vibe}, ["color_grade_clip_tool", "harmonize_look_tool"]))
     return out
 
 
