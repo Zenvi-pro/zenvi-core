@@ -53,7 +53,7 @@ SERVER_INSTRUCTIONS = (
     "with that object (clipId/start/end) — or with startFrame/endFrame — before "
     "claiming the edit is correct; you will receive composited JPEG frames with "
     "a 0–1 top-left coordinate grid. To describe, summarise or recreate footage call "
-    "storyboard_tool first (detail=list for the whole video in one call: a row per shot with its own exact time; keep every row; open the keyframe picture before trusting a description): every cut is exact. Use inspect_media_tool only for "
+    "storyboard_tool first (detail=list for the whole video in one call: a row per shot with its own exact time; keep every row; open the keyframe picture before trusting a description): every cut is exact. Use view_frames_tool only for "
     "a spot check or a file with no shot list yet; never sample frames at a fixed interval to find cuts, and never guess from filenames. "
     "Do not shell ffmpeg for frames. To cut a placed clip, use slice_clips_tool "
     "(at_seconds is timeline time). After "
@@ -61,8 +61,8 @@ SERVER_INSTRUCTIONS = (
     "the edit is wrong, undo_tool and retry. "
     "YouTube / youtu.be / similar URL: call ingest_web_video_tool once "
     "(intent=timeline if the user asked to add/place it; intent=reference for "
-    "colour/look only). Do not ToolSearch or use import_files_tool / "
-    "import_video_url_and_add_to_timeline_tool for a YouTube page URL. "
+    "colour/look only). Do not ToolSearch or use import_files_tool "
+    "for a YouTube page URL. "
     "If status=running, call ingest_web_video_tool(job_id=...) again — each "
     "call waits until completed/failed or ~45s. Do not start a second download. "
     "A client 'operation timed out' is not failure; keep calling the same job_id. "
@@ -80,7 +80,7 @@ SERVER_INSTRUCTIONS = (
     "um_uh is allowed). After cuts, call get_transcript_tool again — stale "
     "indices are refused. add_captions_tool burns timed dialogue; "
     "export_captions_tool writes SRT/VTT. diarize_media_tool labels speakers "
-    "offline. detect_beats_tool finds music beats. "
+    "offline. analyze_music_tool finds music beats. "
     "To recreate a video from the user's footage run the loop: plan_recreation_tool, build_recreation_tool, check_recreation_tool, fix what the check names, check again; never place it by length alone. search_footage_tool searches everything the index knows (what happens, what is said, how it looks)."
 )
 

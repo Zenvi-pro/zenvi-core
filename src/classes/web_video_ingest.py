@@ -69,7 +69,7 @@ def assert_public_http_url(url: str) -> None:
     if not is_probable_web_video_url(url):
         raise WebVideoIngestError(
             "URL must be http(s). Local paths use import_files_tool; "
-            "direct MP4s may use import_video_url_and_add_to_timeline_tool."
+            "direct MP4s may use ingest_web_video_tool."
         )
     host = (urlparse(str(url).strip()).hostname or "").strip()
     if not host:
