@@ -287,6 +287,7 @@ try:
     print("Imported classes.info", flush=True)
     from classes.logger import log
     print("Imported classes.logger", flush=True)
+    from classes.openshot_import_diag import write_bundle_manifest
 except BaseException:
     import traceback
     traceback.print_exc()
@@ -1065,6 +1066,12 @@ if sys.platform == "win32":
                     break
             else:
                 log.warning("WARNING: %s not found — Gemini indexing will fail in the frozen build" % _name)
+
+    # Last Windows post-build step, so the list covers everything shipped. When
+    # antivirus quarantines one of these, the startup error names it.
+    for frozen_path in os.listdir(build_path):
+        if frozen_path.startswith("exe") and os.path.isdir(os.path.join(build_path, frozen_path, "lib")):
+            log.info("Wrote %s" % write_bundle_manifest(os.path.join(build_path, frozen_path)))
 
 # Post-build: bundle shared library dependencies of _openshot and libopenshot.
 # cx_Freeze's include_files silently drops many .so files, so we use ldd to
