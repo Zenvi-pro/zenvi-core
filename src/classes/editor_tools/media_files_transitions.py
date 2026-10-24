@@ -280,7 +280,7 @@ def _pick_mask(name):
     entry, candidates = transition_ops.find_transition(name)
     if entry is None:
         hint = f"; did you mean {', '.join(candidates)}" if candidates else ""
-        raise ToolError(f"unknown transition {name!r}{hint} (list_transitions_tool / search_transitions_tool)")
+        raise ToolError(f"unknown transition {name!r}{hint} (list_transitions_tool)")
     return entry
 
 
@@ -338,7 +338,7 @@ def list_timeline_transitions(track="", timeline_clip_id="", at_seconds=None):
     'later_first' = the later clip shows first and flashes back) or the clip edge it fades
     (on_clip_start = fade in, on_clip_end = fade out).
     Use before changing, reversing, copying or removing a transition. The catalog of
-    transitions you can add is list_transitions_tool / search_transitions_tool. Read-only.
+    transitions you can add is list_transitions_tool (query narrows it by name). Read-only.
     """
     layer = resolve_layer(track) if str(track or "").strip() else None
     items = [t for t in _transitions() if layer is None or _layer_of(t.data) == layer]

@@ -235,11 +235,10 @@ REQUEST_TIMEOUT_SECONDS = 120
 _PLANNING_SAFE_TOOLS = frozenset({
     "get_project_info_tool", "get_timeline_state_tool", "list_markers_tool",
     "search_pexels_videos_tool",
-    "search_freesound_music_tool", "list_transitions_tool", "search_transitions_tool",
+    "search_freesound_music_tool", "list_transitions_tool",
     "save_edit_plan_tool", "save_planning_research_brief_tool",
     "update_edit_plan_step_tool", "finalize_edit_plan_tool",
     "present_planning_questions_tool",
-    "save_edit_checkpoint_tool",
 })
 
 

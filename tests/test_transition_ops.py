@@ -131,8 +131,8 @@ def test_catalog_lists_common_extra_and_the_user_folder(tmp_path, monkeypatch):
     assert ops.find_transition("my wipe", entries)[0]["category"] == "user"
 
 
-def test_legacy_list_and_search_tools_include_the_user_folder(tmp_path, monkeypatch):
-    """Regression: list_transitions_tool / search_transitions_tool skipped ~/.openshot_qt/transitions."""
+def test_list_transitions_includes_the_user_folder(tmp_path, monkeypatch):
+    """Regression: list_transitions_tool skipped ~/.openshot_qt/transitions."""
     import json
     from classes import info, tool_handlers
     user = tmp_path / "transitions"
@@ -141,7 +141,19 @@ def test_legacy_list_and_search_tools_include_the_user_folder(tmp_path, monkeypa
     monkeypatch.setattr(info, "TRANSITIONS_PATH", str(user))
     listed = json.loads(tool_handlers.list_transitions(category="user"))
     assert listed["total"] == 1 and listed["transitions"][0]["filename"] == "brand_swipe.png"
-    found = json.loads(tool_handlers.search_transitions(query="brand"))
-    assert found["matches"] == 1 and found["transitions"][0]["category"] == "user"
     common = json.loads(tool_handlers.list_transitions(category="common"))
     assert common["total"] == 7 and {t["category"] for t in common["transitions"]} == {"common"}
+
+
+def test_list_transitions_query_matches_names_within_the_category(tmp_path, monkeypatch):
+    import json
+    from classes import info, tool_handlers
+    user = tmp_path / "transitions"
+    user.mkdir()
+    (user / "brand_swipe.png").write_bytes(b"x")
+    monkeypatch.setattr(info, "TRANSITIONS_PATH", str(user))
+    found = json.loads(tool_handlers.list_transitions(query="BRAND"))
+    assert found["total"] == 1 and found["transitions"][0]["category"] == "user"
+    fades = json.loads(tool_handlers.list_transitions(query="fade", category="common"))
+    assert fades["total"] >= 1 and {t["category"] for t in fades["transitions"]} == {"common"}
+    assert tool_handlers.list_transitions(query="brand", category="common") == "No transitions found."

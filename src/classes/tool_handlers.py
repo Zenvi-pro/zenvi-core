@@ -5430,16 +5430,18 @@ def generate_transition_clip(
 # Transitions tools
 # ---------------------------------------------------------------------------
 
-def list_transitions(category="all", **_kw) -> str:
-    """List the transitions of the Transitions dock (common, extra and the user folder)."""
+def list_transitions(category="all", query="", **_kw) -> str:
+    """List the transitions of the Transitions dock (common, extra and the user folder); query filters by name."""
     try:
         from classes import transition_ops
 
         category = str(category or "all").strip().lower()
         wanted = ("common", "extra", "user") if category == "all" else (category,)
+        query_lower = (query or "").lower()
         transitions = [
             {k: e[k] for k in ("name", "filename", "category", "path")}
             for e in transition_ops.catalog(wanted)
+            if query_lower in e["name"].lower() or query_lower in e["key"]
         ]
         if not transitions:
             return "No transitions found."
@@ -5450,31 +5452,10 @@ def list_transitions(category="all", **_kw) -> str:
         }
         if len(transitions) > 50:
             data["note"] = (f"Showing first 50 of {len(transitions)} transitions; "
-                            "search_transitions_tool finds the rest by name.")
+                            "narrow it with query or category.")
         return json.dumps(data, indent=2)
     except Exception as e:
         log.error("list_transitions: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def search_transitions(query="", **_kw) -> str:
-    """Search the transitions of the Transitions dock by name (common, extra and the user folder)."""
-    try:
-        from classes import transition_ops
-
-        query_lower = (query or "").lower()
-        matches = [
-            {k: e[k] for k in ("name", "filename", "category", "path")}
-            for e in transition_ops.catalog()
-            if query_lower in e["name"].lower() or query_lower in e["key"]
-        ]
-
-        if not matches:
-            return f"No transitions found matching '{query}'."
-
-        return json.dumps({"query": query, "matches": len(matches), "transitions": matches}, indent=2)
-    except Exception as e:
-        log.error("search_transitions: %s", e, exc_info=True)
         return f"Error: {e}"
 
 
@@ -5514,7 +5495,7 @@ def _pick_transition(transition_name):
                       "Use a full name.")
     names = ", ".join(e["key"] for e in entries[:6]) or "none installed"
     return None, (f"Error: Transition '{transition_name}' not found. Some valid names: {names}. "
-                  "Use search_transitions_tool.")
+                  "Use list_transitions_tool with query.")
 
 
 def add_transition_between_clips(clip1_id="", clip2_id="", transition_name="", duration="1.0", **_kw) -> str:
@@ -5794,7 +5775,7 @@ def download_pexels_video_tool(video_id: str = "", link: str = "", filename: str
             from classes.editor_tools.ai_generation_stock import remembered_link
             link = remembered_link(video_id)
         if not link:
-            return ("Error: no link for that clip. Find one with search_stock_video_tool (or search_pexels_videos_tool), "
+            return ("Error: no link for that clip. Find one with search_stock_video_tool, "
                     "then pass its video_id here, or pass its link.")
         from classes.credits_client import charge_operation_on_success, check_operation
 
@@ -9400,7 +9381,6 @@ AGENT_TOOL_HANDLERS = {
     "generate_transition_clip_tool": generate_transition_clip,
     # OpenShot transitions (mask/dissolve)
     "list_transitions_tool": list_transitions,
-    "search_transitions_tool": search_transitions,
     "apply_transition_tool": apply_transition,
     # Colour grade (Phase 6 — ColorGrade / FrameScope)
     "apply_color_tool": apply_color,
@@ -9461,7 +9441,6 @@ TOOL_DISPLAY_LABELS = {
     "modify_clip_tool": "AI edit clip",
     "generate_transition_clip_tool": "Bake A + morph + B",
     "list_transitions_tool": "List transitions",
-    "search_transitions_tool": "Search transitions",
     "apply_transition_tool": "Apply transition",
     "apply_color_tool": "Apply color grade",
     "inspect_color_tool": "Inspect color",
@@ -9537,7 +9516,6 @@ def humanize_tool_name(tool_name: str) -> str:
 READ_ONLY_TOOLS = frozenset({
     "get_timeline_state_tool",
     "list_transitions_tool",
-    "search_transitions_tool",
     "propose_overlay_windows_tool",
     "analyze_timeline_audio_tool",
     "inspect_color_tool",
