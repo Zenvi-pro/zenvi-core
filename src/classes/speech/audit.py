@@ -74,7 +74,7 @@ def audit_receipt(tool: str, receipt_json: str) -> str:
         summary=data.get("summary"),
         transcriptionSource=payload.get("transcriptionSource") if isinstance(payload, dict) else None,
         modelId=payload.get("modelId") if isinstance(payload, dict) else None,
-        transcriptGeneration=payload.get("transcriptGeneration") if isinstance(payload, dict) else None,
+        transcript_generation=payload.get("transcript_generation") if isinstance(payload, dict) else None,
         wordSample=words_sample,
         warnings=data.get("warnings"),
     )

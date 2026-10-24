@@ -131,7 +131,7 @@ def test_cues_on_a_clip_use_timeline_seconds_and_one_undo(tt):
 
 def test_subtitle_file_on_a_trimmed_clip_keeps_media_time(tt):
     clip = _speaker(tt, position=5.0, start=1.0, end=9.0)
-    rec = receipt(tt.call("add_captions_tool", srtPath=_srt_file(tt), clipId=clip))
+    rec = receipt(tt.call("add_captions_tool", srt_path=_srt_file(tt), timeline_clip_id=clip))
     cues = caption_cues.parse_caption_text(_caption(tt, clip)["caption_text"])
     assert [c.start for c in cues] == [0.5, 3.2, 7.7]
     assert rec["captioned"][0]["first"] == 4.5          # 0.5 s of media at position 5 - trim 1
@@ -142,7 +142,7 @@ def test_subtitle_file_on_a_trimmed_clip_keeps_media_time(tt):
 
 def test_cues_outside_the_clip_are_skipped_or_refused(tt):
     clip = _speaker(tt, position=0.0, start=0.0, end=4.0)
-    rec = receipt(tt.call("add_captions_tool", srtPath=_srt_file(tt), timeline_clip_id=clip))
+    rec = receipt(tt.call("add_captions_tool", srt_path=_srt_file(tt), timeline_clip_id=clip))
     assert rec["captioned"][0]["cues"] == 2 and "outside" in rec["warnings"][0]
     tt.mark()
     out = tt.call("add_captions_tool", timeline_clip_id=clip, cues=[{"start": 30, "end": 31, "text": "late"}])
@@ -153,7 +153,7 @@ def test_cues_outside_the_clip_are_skipped_or_refused(tt):
 def test_subtitles_without_a_clip_go_on_a_captions_overlay(tt):
     video = tt.add_file("video", duration=30.0)
     tt.add_clip(video, position=0.0, layer=1000000)
-    rec = receipt(tt.call("add_captions_tool", srtPath=_srt_file(tt), style="yellow"))
+    rec = receipt(tt.call("add_captions_tool", srt_path=_srt_file(tt), style="yellow"))
     entry = rec["captioned"][0]
     assert entry["overlay"] is True and entry["layer"] == 2000000
     overlay = tt.clip(entry["timeline_clip_id"])
@@ -173,7 +173,7 @@ def test_captions_from_the_indexed_transcript(tt):
         {"start": 1.0, "end": 6.0, "text": "so today we are going to walk all the way across the city together"},
         {"start": 7.0, "end": 8.0, "text": "at 10:30"}]}
     clip = _speaker(tt, ai_metadata=ai)
-    rec = receipt(tt.call("add_captions_tool", clipId=clip, maxWords=6))
+    rec = receipt(tt.call("add_captions_tool", timeline_clip_id=clip, max_words=6))
     cues = caption_cues.parse_caption_text(_caption(tt, clip)["caption_text"])
     assert rec["source"] == "transcript" and len(cues) >= 3
     assert all(len(caption_cues.display_text(c.text).split()) <= 6 for c in cues)
@@ -190,7 +190,7 @@ def test_transcript_captions_for_every_speech_clip_and_refusal_without_one(tt):
     assert [e["timeline_clip_id"] for e in rec["captioned"]] == [a]
     tt.mark()
     out = tt.call("add_captions_tool", timeline_clip_id=tt.clips()[-1]["id"])
-    assert out.startswith("Error") and "no transcript" in out and "cues / srtPath" in out
+    assert out.startswith("Error") and "no transcript" in out and "cues / srt_path" in out
     assert tt.undo_steps_since_mark() == 0
 
 
@@ -224,15 +224,16 @@ def test_styles_map_to_caption_properties(tt):
 
 
 @pytest.mark.parametrize("args, needle", [
-    ({"cues": [{"start": 1, "end": 2, "text": "a"}], "srtPath": "/x.srt"}, "either cues or srtPath"),
-    ({"srtPath": "/definitely/missing.srt"}, "not found"),
+    ({"cues": [{"start": 1, "end": 2, "text": "a"}], "srt_path": "/x.srt"}, "either cues or srt_path"),
+    ({"srt_path": "/definitely/missing.srt"}, "not found"),
     ({"cues": [{"start": 2, "end": 1, "text": "a"}]}, "0 <= start < end"),
     ({"cues": [{"start": 1, "end": 2, "text": " "}]}, "has no text"),
-    ({"cues": [{"start": 1, "end": 2, "text": "a"}], "trackIndex": 1}, "trackIndex"),
+    ({"cues": [{"start": 1, "end": 2, "text": "a"}], "track": 1}, "track picks"),
     ({"cues": [{"start": 1, "end": 2, "text": "a"}], "time_base": "source"}, "needs the clip"),
     ({"style": "comic"}, "must be one of"),
     ({"cues": [{"start": 1, "end": 2, "text": "a"}], "text_color": "nope"}, "text_color"),
-    ({"clipId": "nope", "cues": [{"start": 1, "end": 2, "text": "a"}]}, "no timeline clip"),
+    ({"timeline_clip_id": "nope", "cues": [{"start": 1, "end": 2, "text": "a"}]}, "no timeline clip"),
+    ({"cues": [{"start": 1, "end": 2, "text": "a"}], "clipId": "c1"}, "unknown argument(s) clipId"),
 ])
 def test_add_captions_refusals(tt, args, needle):
     _speaker(tt)

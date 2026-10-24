@@ -42,10 +42,10 @@ def _media_path_for_clip(clip: dict) -> str:
 
 
 def remove_silence(
-    clipId: str = "",
-    minPauseSec=0.4,
-    padSec=0.08,
-    maxRemoveFraction=0.85,
+    timeline_clip_id: str = "",
+    min_pause_seconds=0.4,
+    pad_seconds=0.08,
+    max_remove_fraction=0.85,
     **_kw,
 ):
     """Remove quiet non-speech gaps inside a clip and close them (one undo)."""
@@ -58,11 +58,11 @@ def remove_silence(
     from classes.speech.word_ranges import compact_fragments_after_remove
     from classes.tool_handlers import _new_transaction_id
 
-    clipId = _first_nonempty(clipId, _kw.get("timeline_clip_id"))
+    clipId = _first_nonempty(timeline_clip_id)
 
     if not clipId:
         return ToolReceipt.refused(
-            "remove_silence_tool", "Error: clipId is required.",
+            "remove_silence_tool", "Error: timeline_clip_id is required.",
         ).to_json()
 
     try:
@@ -75,7 +75,7 @@ def remove_silence(
     clip = _find_clip(project_data, str(clipId))
     if clip is None:
         return ToolReceipt.refused(
-            "remove_silence_tool", f"Error: Unknown clipId '{clipId}'.",
+            "remove_silence_tool", f"Error: Unknown timeline_clip_id '{clipId}'.",
         ).to_json()
 
     path = _media_path_for_clip(clip)
@@ -85,9 +85,9 @@ def remove_silence(
         ).to_json()
 
     try:
-        min_pause = float(minPauseSec)
-        pad = float(padSec)
-        max_frac = float(maxRemoveFraction)
+        min_pause = float(min_pause_seconds)
+        pad = float(pad_seconds)
+        max_frac = float(max_remove_fraction)
     except (TypeError, ValueError):
         return ToolReceipt.refused(
             "remove_silence_tool", "Error: Invalid numeric arguments.",
@@ -143,7 +143,7 @@ def remove_silence(
         return ToolReceipt.refused(
             "remove_silence_tool",
             f"Error: Would remove {removed / duration:.0%} of the clip — "
-            "refusing (raise maxRemoveFraction or lower minPauseSec).",
+            "refusing (raise max_remove_fraction or lower min_pause_seconds).",
             data={"removedDurationSec": removed, "clipDurationSec": duration},
         ).to_json()
     if removed <= 1e-9:
@@ -184,8 +184,8 @@ def remove_silence(
 def export_captions(
     path: str = "",
     format: str = "srt",
-    clipId: str = "",
-    trackIndex=None,
+    timeline_clip_id: str = "",
+    track=None,
     language: str = "auto",
     **_kw,
 ):
@@ -194,9 +194,7 @@ def export_captions(
     from classes.agent_tools.transcript import _first_nonempty, get_transcript
     from classes.speech.captions import cues_to_srt, cues_to_vtt, phrase_words
 
-    clipId = _first_nonempty(clipId, _kw.get("timeline_clip_id"))
-    if trackIndex in (None, "") and _kw.get("track_index") not in (None, ""):
-        trackIndex = _kw.get("track_index")
+    clipId = _first_nonempty(timeline_clip_id)
 
     if not path:
         return ToolReceipt.refused(
@@ -211,10 +209,10 @@ def export_captions(
         return ToolReceipt.error("export_captions_tool", str(exc)).to_json()
 
     raw = get_transcript(
-        clipId=clipId or "",
-        trackIndex=trackIndex,
+        timeline_clip_id=clipId or "",
+        track=track,
         language=language,
-        includeWords=True,
+        include_words=True,
         engine="auto",
     )
     receipt = parse_receipt(raw)
@@ -248,11 +246,11 @@ def export_captions(
 
 
 def diarize_media(
-    fileId: str = "",
-    clipId: str = "",
-    maxSpeakers=2,
+    file_id: str = "",
+    timeline_clip_id: str = "",
+    max_speakers=2,
     language: str = "auto",
-    modelId: str = "",
+    model_id: str = "",
     **_kw,
 ):
     """Attach speakerIds to cached transcript words for a file/clip."""
@@ -263,8 +261,8 @@ def diarize_media(
     from classes.speech.diarize import diarize_file_words, speaker_turns
     from classes.speech.map_timeline import resolve_media_path, words_for_clip
 
-    clipId = _first_nonempty(clipId, _kw.get("timeline_clip_id"))
-    fileId = _first_nonempty(fileId, _kw.get("file_id"))
+    clipId = _first_nonempty(timeline_clip_id)
+    fileId = _first_nonempty(file_id)
 
     try:
         from classes.app import get_app
@@ -280,7 +278,7 @@ def diarize_media(
         clip = _find_clip(project_data, str(clipId))
         if clip is None:
             return ToolReceipt.refused(
-                "diarize_media_tool", f"Error: Unknown clipId '{clipId}'.",
+                "diarize_media_tool", f"Error: Unknown timeline_clip_id '{clipId}'.",
             ).to_json()
         path = _media_path_for_clip(clip)
     elif fileId:
@@ -288,12 +286,12 @@ def diarize_media(
         f = File.get(id=str(fileId))
         if f is None or not isinstance(getattr(f, "data", None), dict):
             return ToolReceipt.refused(
-                "diarize_media_tool", f"Error: Unknown fileId '{fileId}'.",
+                "diarize_media_tool", f"Error: Unknown file_id '{fileId}'.",
             ).to_json()
         path = resolve_media_path(f.data)
     else:
         return ToolReceipt.refused(
-            "diarize_media_tool", "Error: Provide fileId or clipId.",
+            "diarize_media_tool", "Error: Provide file_id or timeline_clip_id.",
         ).to_json()
 
     if not path:
@@ -301,11 +299,11 @@ def diarize_media(
             "diarize_media_tool", "Error: Media path missing.",
         ).to_json()
 
-    model = (modelId or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
+    model = (model_id or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
     try:
         record = transcribe_file(path, language=language or "auto", model_id=model)
         labelled, warnings = diarize_file_words(
-            path, record.words, max_speakers=int(maxSpeakers or 2),
+            path, record.words, max_speakers=int(max_speakers or 2),
         )
     except Exception as exc:
         return ToolReceipt.error(
@@ -338,7 +336,7 @@ def diarize_media(
                 "startFrame": to_frame(w.startSec, fps),
                 "endFrame": to_frame(w.endSec, fps),
                 "speakerId": w.speakerId,
-                "transcriptGeneration": record.generation,
+                "transcript_generation": record.generation,
             })
 
     speakers = sorted({w.get("speakerId") for w in mapped if w.get("speakerId")})
@@ -351,7 +349,7 @@ def diarize_media(
             "speakers": speakers,
             "words": mapped,
             "turns": speaker_turns(mapped),
-            "transcriptGeneration": record.generation,
+            "transcript_generation": record.generation,
             "transcriptionSource": record.transcriptionSource,
         },
     ).to_json()

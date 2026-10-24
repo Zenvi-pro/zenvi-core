@@ -72,32 +72,32 @@ def test_mcp_iter_tool_defs_uses_strict_schemas():
         assert defs[name]["inputSchema"]["additionalProperties"] is False
 
 
-def test_normalize_drops_empty_track_index_and_coerces_string_int():
+def test_normalize_drops_empty_track_and_coerces_string_int():
     from classes.agent_tools.schema import normalize_args
 
     dropped = normalize_args("get_transcript_tool", {
-        "clipId": "c1",
-        "trackIndex": "",
+        "timeline_clip_id": "c1",
+        "track": "",
         "force": "false",
     })
-    assert "trackIndex" not in dropped
+    assert "track" not in dropped
     assert dropped["force"] is False
-    assert dropped["clipId"] == "c1"
+    assert dropped["timeline_clip_id"] == "c1"
 
-    coerced = normalize_args("get_transcript_tool", {"trackIndex": "0", "force": "true"})
-    assert coerced["trackIndex"] == 0
+    coerced = normalize_args("get_transcript_tool", {"track": "0", "force": "true"})
+    assert coerced["track"] == 0
     assert coerced["force"] is True
 
 
 def test_validate_accepts_assistant_stringly_transcript_args():
     assert validate_args("get_transcript_tool", {
-        "clipId": "c1",
-        "trackIndex": "",
+        "timeline_clip_id": "c1",
+        "track": "",
         "force": "false",
     }) is None
     assert validate_args("get_transcript_tool", {
-        "fileId": "f1",
-        "trackIndex": "0",
+        "file_id": "f1",
+        "track": "0",
     }) is None
 
 
@@ -110,11 +110,11 @@ def test_validate_accepts_timeline_detail_level():
 
 def test_validate_accepts_remove_words_matches():
     assert validate_args("remove_words_tool", {
-        "clipId": "c1",
+        "timeline_clip_id": "c1",
         "matches": ["FlowCut", "flocut"],
     }) is None
     assert validate_args("add_captions_tool", {
-        "clipId": "c1",
+        "timeline_clip_id": "c1",
         "engine": "auto",
     }) is None
 
@@ -126,6 +126,17 @@ def test_validate_accepts_transcript_aliases():
     assert validate_args("get_transcript_tool", {
         "file_id": "FZOEBK3JJZ",
     }) is None
+
+
+@pytest.mark.parametrize("tool, args", [
+    ("get_transcript_tool", {"clipId": "c1"}),
+    ("remove_words_tool", {"timeline_clip_id": "c1", "wordIndices": [0]}),
+    ("remove_silence_tool", {"timeline_clip_id": "c1", "minPauseSec": 0.2}),
+    ("inspect_timeline_tool", {"clipId": "c1", "start": 0, "end": 1}),
+    ("add_captions_tool", {"clipId": "c1", "srtPath": "/x.srt"}),
+])
+def test_retired_argument_spellings_are_refused(tool, args):
+    assert validate_args(tool, args) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -149,12 +160,6 @@ from classes.editor_tools import coerce_args
 KWARG_PROPS = {
     # read by the shared timeline-clip resolver
     "modify_clip_tool": {"occurrence", "position_near", "track"},
-    # Phase 5 speech tools read the snake_case aliases for clipId / fileId
-    "get_transcript_tool": {"file_id", "timeline_clip_id"},
-    "remove_words_tool": {"timeline_clip_id"},
-    "remove_silence_tool": {"timeline_clip_id"},
-    "export_captions_tool": {"timeline_clip_id"},
-    "diarize_media_tool": {"file_id", "timeline_clip_id"},
     # Phase 6 colour tools accept camelCase allClips via **kwargs / **_kw
     "apply_color_tool": {"allClips"},
     "apply_look_tool": {"allClips"},

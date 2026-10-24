@@ -18,7 +18,7 @@ def _receipt(words):
         "tool": "get_transcript_tool",
         "summary": "ok",
         "data": {
-            "transcriptGeneration": 2,
+            "transcript_generation": 2,
             "transcriptionSource": "local-apple",
             "clips": [{"clipId": "C1", "words": words}],
         },
@@ -72,7 +72,7 @@ def test_refresh_requests_words_and_lists_them():
     assert _InlineThread.started == ["index_panel_transcript"]
     gui.assert_called_once()
     get.assert_called_once()
-    assert get.call_args.kwargs.get("includeWords") is True
+    assert get.call_args.kwargs.get("include_words") is True
     assert len(added) == 2
     panel._status.setText.assert_called_with("2 words · local-apple · gen 2")
     assert panel._loading is False

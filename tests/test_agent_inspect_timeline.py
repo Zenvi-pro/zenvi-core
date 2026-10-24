@@ -18,9 +18,17 @@ def test_timeline_schema_golden():
     assert schema["additionalProperties"] is False
     props = set(schema["properties"])
     assert props == {
-        "startFrame", "endFrame", "maxFrames", "clipId", "start", "end", "overview",
+        "start_frame", "end_frame", "max_frames", "timeline_clip_id", "start", "end", "overview",
     }
     assert validate_args("inspect_timeline_tool", {"unknown": 1}) is not None
+
+
+def test_watch_suggested_keys_are_inspect_arguments():
+    from classes.agent_tools.receipt import WatchSuggested
+
+    watch = WatchSuggested("clip-a", 1.0, 3.0).to_dict()
+    assert set(watch) == {"timeline_clip_id", "start", "end"}
+    assert validate_args("inspect_timeline_tool", watch) is None
 
 
 def test_mid_bin_matches_plan_example():
@@ -39,7 +47,7 @@ def test_empty_timeline_refused(monkeypatch):
         "classes.agent_tools.inspect_render.snapshot_project",
         lambda _app: dict(app.project._data),
     )
-    out = insp.inspect_timeline(startFrame=0, endFrame=30)
+    out = insp.inspect_timeline(start_frame=0, end_frame=30)
     assert isinstance(out, ToolReceipt)
     assert out.status == "refused"
     assert out.undoSteps == 0
@@ -85,7 +93,7 @@ def test_watch_suggested_window_and_mid_bin(monkeypatch):
     monkeypatch.setattr(
         "classes.agent_tools.inspect_render.render_timeline_frames", fake_render,
     )
-    out = insp.inspect_timeline(clipId="clip-a", start=1.0, end=3.0, maxFrames=6)
+    out = insp.inspect_timeline(timeline_clip_id="clip-a", start=1.0, end=3.0, max_frames=6)
     assert isinstance(out, ToolOutput)
     assert out.receipt.status == "applied"
     assert out.receipt.undoSteps == 0
@@ -133,7 +141,7 @@ def test_overview_single_image(monkeypatch):
             "timestamps": [r[time_key] for r in rendered[:4]],
         },
     )
-    out = insp.inspect_timeline(overview=True, startFrame=0, endFrame=60)
+    out = insp.inspect_timeline(overview=True, start_frame=0, end_frame=60)
     assert isinstance(out, ToolOutput)
     assert len(out.images) == 1
     assert out.receipt.data["mode"] == "overview"
@@ -155,15 +163,15 @@ def test_unknown_clip_refused(monkeypatch):
         "classes.agent_tools.inspect_render.snapshot_project",
         lambda _app: dict(project),
     )
-    out = insp.inspect_timeline(clipId="missing", start=0, end=1)
+    out = insp.inspect_timeline(timeline_clip_id="missing", start=0, end=1)
     assert out.status == "refused"
 
 
 @pytest.mark.parametrize("kwargs", [
-    {"startFrame": 0, "endFrame": 900},                    # past the 300-frame end
-    {"startFrame": -10, "endFrame": 20},
-    {"startFrame": 0, "endFrame": 900, "overview": True},
-    {"startFrame": 400, "overview": True},
+    {"start_frame": 0, "end_frame": 900},                    # past the 300-frame end
+    {"start_frame": -10, "end_frame": 20},
+    {"start_frame": 0, "end_frame": 900, "overview": True},
+    {"start_frame": 400, "overview": True},
 ])
 def test_inspect_ranges_outside_the_project_are_refused(monkeypatch, kwargs):
     """Review #216: only the single-frame form checked the project's range."""
@@ -225,6 +233,6 @@ def test_inspect_tools_create_zero_undo_via_execute():
         coerce_steps=lambda x: 1,
         qthread=None,
     )
-    out = ex.execute_tool_rich("inspect_timeline_tool", {"startFrame": 0})
+    out = ex.execute_tool_rich("inspect_timeline_tool", {"start_frame": 0})
     assert out.receipt.undoSteps == 0
     assert history == []

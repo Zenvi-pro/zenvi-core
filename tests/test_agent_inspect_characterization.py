@@ -121,4 +121,6 @@ def test_server_instructions_will_prefer_inspect():
     text = SERVER_INSTRUCTIONS
     assert "inspect_timeline_tool" in text
     assert "watchSuggested" in text
+    assert "timeline_clip_id/start/end" in text
     assert "watch_clip_window_tool" not in text
+    assert not any(old in text for old in ("clipId", "startFrame", "fillerPreset", "transcriptGeneration"))

@@ -21,12 +21,12 @@ SHIFT_GROUP_MINIMUM = 3
 
 @dataclass
 class WatchSuggested:
-    clipId: str
+    timeline_clip_id: str
     start: float
     end: float
 
     def to_dict(self) -> dict:
-        return {"clipId": self.clipId, "start": self.start, "end": self.end}
+        return {"timeline_clip_id": self.timeline_clip_id, "start": self.start, "end": self.end}
 
 
 @dataclass

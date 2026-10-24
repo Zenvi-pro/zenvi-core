@@ -20,7 +20,7 @@ def _clamp_max_frames(raw) -> tuple[int, list[str]]:
     if n < 1:
         n = 1
     if n > _MAX_FRAMES:
-        warnings.append(f"maxFrames clamped from {n} to {_MAX_FRAMES}")
+        warnings.append(f"max_frames clamped from {n} to {_MAX_FRAMES}")
         n = _MAX_FRAMES
     return n, warnings
 
@@ -45,10 +45,10 @@ def _range_error(sf: int, ef: int, total: int):
 
 
 def inspect_timeline(
-    startFrame=None,
-    endFrame=None,
-    maxFrames=None,
-    clipId="",
+    start_frame=None,
+    end_frame=None,
+    max_frames=None,
+    timeline_clip_id="",
     start=None,
     end=None,
     overview=False,
@@ -85,11 +85,11 @@ def inspect_timeline(
     overview = bool(overview)
     mode = "overview" if overview else "frames"
 
-    if clipId and (start is not None or end is not None):
-        clip = _find_clip(project_data, str(clipId))
+    if timeline_clip_id and (start is not None or end is not None):
+        clip = _find_clip(project_data, str(timeline_clip_id))
         if clip is None:
             return ToolReceipt.refused(
-                "inspect_timeline_tool", f"Error: Unknown clipId '{clipId}'.",
+                "inspect_timeline_tool", f"Error: Unknown timeline_clip_id '{timeline_clip_id}'.",
             )
         try:
             t0 = float(start if start is not None else clip.get("position") or 0)
@@ -108,15 +108,15 @@ def inspect_timeline(
                 "inspect_timeline_tool", "Error: end must be greater than start.",
             )
         from classes.frame_time import to_frame
-        startFrame = to_frame(t0, fps)
-        endFrame = to_frame(t1, fps)
-        if endFrame <= startFrame:
-            endFrame = startFrame + 1
+        start_frame = to_frame(t0, fps)
+        end_frame = to_frame(t1, fps)
+        if end_frame <= start_frame:
+            end_frame = start_frame + 1
 
-    if startFrame is None and not overview:
+    if start_frame is None and not overview:
         return ToolReceipt.refused(
             "inspect_timeline_tool",
-            "Error: Provide startFrame, or clipId+start+end, or overview=true.",
+            "Error: Provide start_frame, or timeline_clip_id+start+end, or overview=true.",
         )
 
     if total <= 0 and not (project_data.get("clips") or []):
@@ -124,36 +124,36 @@ def inspect_timeline(
             "inspect_timeline_tool", "Error: Timeline is empty — nothing to render.",
         )
 
-    max_n, w = _clamp_max_frames(maxFrames)
+    max_n, w = _clamp_max_frames(max_frames)
     warnings.extend(w)
 
     if overview:
-        if startFrame is not None and endFrame is not None:
-            sf, ef = int(startFrame), int(endFrame)
-        elif startFrame is not None:
-            sf, ef = int(startFrame), max(int(startFrame) + 1, total)
+        if start_frame is not None and end_frame is not None:
+            sf, ef = int(start_frame), int(end_frame)
+        elif start_frame is not None:
+            sf, ef = int(start_frame), max(int(start_frame) + 1, total)
         else:
             sf, ef = 0, max(1, total)
         if ef <= sf:
             return ToolReceipt.refused(
-                "inspect_timeline_tool", "Error: endFrame must be greater than startFrame.",
+                "inspect_timeline_tool", "Error: end_frame must be greater than start_frame.",
             )
         if (out_of_range := _range_error(sf, ef, total)) is not None:
             return out_of_range
         frames_0 = mid_bin_frames(sf, ef, min(36, max(6, ef - sf)))
-    elif endFrame is None or int(endFrame or 0) == 0:
-        sf = int(startFrame)
+    elif end_frame is None or int(end_frame or 0) == 0:
+        sf = int(start_frame)
         if sf < 0 or (total > 0 and sf >= total):
             return ToolReceipt.refused(
                 "inspect_timeline_tool",
-                f"Error: startFrame {sf} out of range [0, {total}).",
+                f"Error: start_frame {sf} out of range [0, {total}).",
             )
         frames_0 = [sf]
     else:
-        sf, ef = int(startFrame), int(endFrame)
+        sf, ef = int(start_frame), int(end_frame)
         if ef <= sf:
             return ToolReceipt.refused(
-                "inspect_timeline_tool", "Error: endFrame must be greater than startFrame.",
+                "inspect_timeline_tool", "Error: end_frame must be greater than start_frame.",
             )
         if (out_of_range := _range_error(sf, ef, total)) is not None:
             return out_of_range

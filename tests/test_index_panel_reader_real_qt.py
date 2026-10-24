@@ -27,7 +27,7 @@ def qapp():
 def receipt():
     words = [{"text": "Hello", "startFrame": 10}, {"text": "there", "startFrame": 40}, {"text": "friend", "startFrame": 500}]
     return json.dumps({"contract": 3, "status": "applied", "tool": "get_transcript_tool", "summary": "ok",
-                       "data": {"transcriptGeneration": 1, "transcriptionSource": "local-apple", "clips": [{"clipId": "C1", "words": words}]}})
+                       "data": {"transcript_generation": 1, "transcriptionSource": "local-apple", "clips": [{"clipId": "C1", "words": words}]}})
 
 
 def panel_with_words(qapp):

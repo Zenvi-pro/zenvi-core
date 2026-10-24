@@ -141,7 +141,7 @@ def test_remove_silence_tool_mocked(tmp_path):
              return_value=([], []),
          ) as apply_mock:
         from classes.agent_tools.speech_extra import remove_silence
-        raw = remove_silence(clipId="c1", minPauseSec=0.2, padSec=0.05)
+        raw = remove_silence(timeline_clip_id="c1", min_pause_seconds=0.2, pad_seconds=0.05)
     receipt = parse_receipt(raw)
     assert receipt["status"] == "applied"
     assert apply_mock.called
@@ -167,7 +167,7 @@ def test_remove_silence_refuses_total_wipe(tmp_path):
          patch("classes.speech.vad.detect_speech_windows", return_value=[]):
         from classes.agent_tools.speech_extra import remove_silence
         # No speech → entire file is silence → refuse entire delete or applied remove
-        raw = remove_silence(clipId="c1", maxRemoveFraction=0.5)
+        raw = remove_silence(timeline_clip_id="c1", max_remove_fraction=0.5)
     receipt = parse_receipt(raw)
     assert receipt["status"] in ("refused", "unchanged", "applied", "error")
     if receipt["status"] == "refused":
@@ -233,7 +233,7 @@ def test_diarize_media_tool(tmp_path):
          patch("classes.clip_utils.project_fps_fraction", return_value=Fraction(30, 1)), \
          patch("classes.speech.diarize.extract_mono_16k_wav", return_value=(str(wav), "")):
         from classes.agent_tools.speech_extra import diarize_media
-        raw = diarize_media(clipId="c1", maxSpeakers=2)
+        raw = diarize_media(timeline_clip_id="c1", max_speakers=2)
     receipt = parse_receipt(raw)
     assert receipt["status"] == "applied"
     assert receipt["data"]["speakers"]
