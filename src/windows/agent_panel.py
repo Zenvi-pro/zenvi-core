@@ -369,6 +369,11 @@ class AgentPanel(QFrame):
                     % binary)
 
         version = _format_version(detected.get("version"))
+        if backend_id == "chatgpt" and detected.get("logged_in") is False:
+            return (COLOR_PARTIAL, self._tr("needs sign-in"), version,
+                    (self._tr("Sign in"), True), False,
+                    self._tr("Sign in with ChatGPT to run the agent on your ChatGPT plan "
+                             "instead of Zenvi credits."))
         # Only a CLI the app can sign in reports logged_in (CLI_LOGINS).
         if detected.get("logged_in") is False:
             return (COLOR_PARTIAL, self._tr("needs sign-in"), version,
@@ -456,7 +461,7 @@ class AgentPanel(QFrame):
         chat = self._chat()
         if chat is None:
             return
-        # Sign-in is Anthropic OAuth; Connect is MCP registration — do not mix.
+        # Sign-in is the agent's own login (Anthropic, ChatGPT); Connect is MCP registration — do not mix.
         status = {}
         try:
             status = chat.cli_status() or {}
@@ -466,8 +471,9 @@ class AgentPanel(QFrame):
             self._connecting = backend_id
             self._connect_error.pop(backend_id, None)
             self.refresh()
-            # Login can take several minutes in the browser.
-            self._connect_timer.start(max(CONNECT_TIMEOUT_MS, 6 * 60 * 1000))
+            # Login can take several minutes in the browser; ChatGPT then downloads Codex (~150 MB).
+            minutes = 15 if backend_id == "chatgpt" else 6
+            self._connect_timer.start(max(CONNECT_TIMEOUT_MS, minutes * 60 * 1000))
             try:
                 chat._sign_in_cli(backend_id)
             except Exception:

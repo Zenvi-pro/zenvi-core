@@ -482,6 +482,7 @@ BACKEND_ZENVI = "zenvi"
 BACKEND_CLAUDE = "claude_code"
 BACKEND_CODEX = "codex"
 BACKEND_CURSOR = "cursor_cli"
+BACKEND_CHATGPT = "chatgpt"
 BACKENDS = [{"id": BACKEND_ZENVI, "name": "Zenvi Assistant"}] + [
     {"id": backend, "name": runner.DISPLAY_NAME, "cli": runner.CLI_NAME}
     for backend, runner in CLI_RUNNERS.items()
@@ -3251,11 +3252,7 @@ class AIChatWindow(QDockWidget):
         """Check every agent CLI's availability in a background thread; push to JS."""
         def run():
             try:
-                from windows.agent_runners import detect_cli
-                status = {
-                    backend: detect_cli(runner.CLI_NAME)
-                    for backend, runner in CLI_RUNNERS.items()
-                }
+                status = {backend: runner.detect() for backend, runner in CLI_RUNNERS.items()}
                 QMetaObject.invokeMethod(
                     self,
                     "_on_cli_status",
@@ -4431,7 +4428,7 @@ class AIChatWindow(QDockWidget):
     def _sign_in_cli(self, backend_id: str):
         """Open the CLI's browser login; on success auto-retry the pending message."""
         from windows.agent_runners import CLI_LOGINS
-        if backend_id not in CLI_LOGINS:
+        if backend_id not in CLI_LOGINS and backend_id != BACKEND_CHATGPT:
             if self._use_web_ui:
                 self._run_js(
                     "if(window.onCliAuthResult) onCliAuthResult(%s, %s, %s);"

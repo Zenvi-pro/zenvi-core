@@ -268,7 +268,7 @@ def test_every_cli_backend_comes_from_the_runner_registry(qapp):
     from windows.ai_chat_ui import BACKENDS
 
     assert [b["id"] for b in BACKENDS] == ["zenvi", "claude_code", "codex", "cursor_cli",
-                                           "opencode", "hermes"]
+                                           "opencode", "hermes", "chatgpt"]
     for row in BACKENDS[1:]:
         runner = CLI_RUNNERS[row["id"]]
         assert row == {"id": runner.BACKEND_ID, "name": runner.DISPLAY_NAME,

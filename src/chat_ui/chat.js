@@ -2694,8 +2694,9 @@
             if (cliEmptyStateEl.getAttribute('data-connect-for') === id + ':auth') return;
             cliEmptyStateEl.setAttribute('data-connect-for', id + ':auth');
             cliEmptyStateEl.innerHTML =
-                '<div class="chat-cli-connect-msg">' + escapeHtml(findBackendName(id)) +
-                ' needs you to sign in again.</div>' +
+                '<div class="chat-cli-connect-msg">' + escapeHtml(id === 'chatgpt'
+                    ? 'Sign in with ChatGPT to run the agent on your ChatGPT plan instead of Zenvi credits.'
+                    : findBackendName(id) + ' needs you to sign in again.') + '</div>' +
                 '<button type="button" id="chat-cli-connect-btn" class="chat-cli-connect-btn">' +
                 escapeHtml(signInLabel(id)) + '</button>' +
                 '<div id="chat-cli-connect-status" class="chat-cli-connect-status"></div>';
@@ -2753,7 +2754,7 @@
     var SIGN_IN_AGAIN = 'Open the sign-in page again';
 
     function signInLabel(id) {
-        return 'Sign in to ' + findBackendName(id);
+        return id === 'chatgpt' ? 'Sign in with ChatGPT' : 'Sign in to ' + findBackendName(id);
     }
 
     window.showCliAuthRecovery = function (backendId, message) {

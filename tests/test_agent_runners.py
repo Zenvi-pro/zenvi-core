@@ -3392,6 +3392,139 @@ def test_codex_prompt_goes_through_stdin_not_argv(qapp):
         assert (runner._proc.stdin.sent == "my private prompt") is resumed
 
 
+# ── ChatGPT plan (Sign in with ChatGPT, issue #274) ──────────────────────────
+
+class _McpServer:
+    token = "tok"
+
+    def start(self):
+        return self
+
+    def url(self):
+        return "http://127.0.0.1:7434/mcp"
+
+
+def test_chatgpt_runner_is_its_own_backend_on_a_private_codex(qapp, monkeypatch):
+    """Runs Zenvi's own Codex copy with the plan provider -- never the codex on PATH."""
+    import windows.agent_runners as ar
+    from classes import chatgpt_plan
+    from windows.agent_runners import CLI_RUNNERS, ChatGPTPlanRunner
+
+    assert CLI_RUNNERS["chatgpt"] is ChatGPTPlanRunner
+    monkeypatch.setattr(ar, "_which_cli", lambda name: "/usr/local/bin/codex")
+    monkeypatch.setattr(chatgpt_plan, "codex_path", lambda: "/zenvi/chatgpt/bin/codex")
+    monkeypatch.setattr(chatgpt_plan, "installed", lambda: True)
+    assert ChatGPTPlanRunner.locate_cli() == "/zenvi/chatgpt/bin/codex"
+
+    runner = ChatGPTPlanRunner()
+    runner._server = _McpServer()
+    runner._cli_path = ChatGPTPlanRunner.locate_cli()
+    argv = runner._build_argv("hi")
+
+    assert argv[0] == "/zenvi/chatgpt/bin/codex" and argv[1] == "exec"
+    assert 'model_provider="openai_chatgpt_plan"' in argv
+    assert 'mcp_servers.zenvi_editor.url="http://127.0.0.1:7434/mcp"' in argv
+
+
+def test_chatgpt_runner_env_carries_the_plan_token_not_the_users_codex(qapp, monkeypatch):
+    from classes import chatgpt_plan
+    from windows.agent_runners import ChatGPTPlanRunner
+
+    seen = {}
+
+    def child_env(env):
+        seen.update(env)
+        return dict(env, ACCESS_TOKEN="at", CODEX_HOME="/zenvi/chatgpt/codex-home")
+
+    monkeypatch.setattr(chatgpt_plan, "child_env", child_env)
+    runner = ChatGPTPlanRunner()
+    runner._server = _McpServer()
+    env = runner._build_env()
+
+    assert seen["ZENVI_MCP_TOKEN"] == "tok"
+    assert env["ACCESS_TOKEN"] == "at" and env["CODEX_HOME"] == "/zenvi/chatgpt/codex-home"
+
+
+def test_chatgpt_runner_asks_for_sign_in_instead_of_running(qapp, monkeypatch):
+    import windows.agent_runners as ar
+    from classes import chatgpt_plan
+    from windows.agent_runners import ChatGPTPlanRunner
+
+    monkeypatch.setattr("classes.agent_mcp_server.get_mcp_server", lambda: _McpServer())
+    def signed_out():
+        raise chatgpt_plan.SignInRequired("expired")
+
+    monkeypatch.setattr(chatgpt_plan, "access_token", signed_out)
+    monkeypatch.setattr(chatgpt_plan, "signed_in", lambda: False)
+    monkeypatch.setattr(chatgpt_plan, "install", lambda: pytest.fail("no download before sign-in"))
+    monkeypatch.setattr(chatgpt_plan, "list_models", lambda: pytest.fail("no model list before sign-in"))
+    launched = []
+    monkeypatch.setattr(ar.subprocess, "Popen", lambda *a, **k: launched.append(a))
+
+    runner = ChatGPTPlanRunner()
+    events = []
+    runner.auth_required.connect(lambda t: events.append(("auth", t)))
+    runner.error_occurred.connect(lambda t: events.append(("error", t)))
+    runner.run_request("hello", "", "agent", "chat", "")
+
+    assert [e[0] for e in events] == ["auth"]
+    assert "ChatGPT" in events[0][1]
+    assert not launched
+
+
+def test_chatgpt_detect_reports_sign_in_without_looking_on_path(monkeypatch):
+    import windows.agent_runners as ar
+    from classes import chatgpt_plan
+    from windows.agent_runners import ChatGPTPlanRunner
+
+    monkeypatch.setattr(ar, "_which_cli", lambda name: pytest.fail("PATH probed"))
+    for signed in (False, True):
+        monkeypatch.setattr(chatgpt_plan, "signed_in", lambda: signed)
+        status = ChatGPTPlanRunner.detect()
+        assert status["installed"] and status["registered"]
+        assert status["logged_in"] is signed
+
+
+def test_chatgpt_models_come_from_the_signed_in_account(monkeypatch):
+    from classes import chatgpt_plan
+    from windows.agent_runners import ChatGPTPlanRunner
+
+    rows = [{"id": "gpt-6.1-sol", "name": "GPT-6.1 Sol", "default": True}]
+    monkeypatch.setattr(chatgpt_plan, "list_models", lambda: rows)
+    assert ChatGPTPlanRunner.list_models("ignored") == rows
+
+
+def test_chatgpt_runner_uses_the_accounts_model_when_none_is_picked(qapp, monkeypatch):
+    """Codex's own default (gpt-6.1-sol) is refused on a ChatGPT plan: "not supported
+    when using Codex with a ChatGPT account". Use what the account lists."""
+    from classes import chatgpt_plan
+    from windows.agent_runners import ChatGPTPlanRunner
+
+    monkeypatch.setattr(chatgpt_plan, "list_models", lambda: [
+        {"id": "gpt-6-luna", "name": "GPT-6 Luna", "default": True},
+        {"id": "gpt-5.6-terra", "name": "GPT-5.6 Terra"}])
+    monkeypatch.setattr(chatgpt_plan, "signed_in", lambda: True)
+    runner = ChatGPTPlanRunner()
+    assert runner._coerce_model("") == "gpt-6-luna"
+    assert runner._coerce_model("gpt-5.6-terra") == "gpt-5.6-terra"
+
+
+def test_codex_resume_argv_has_no_add_dir(qapp, monkeypatch):
+    """`codex exec resume` exits 2 on --add-dir ("unexpected argument"), so every
+    second turn failed; only the first turn may carry it."""
+    import windows.agent_runners as ar
+    from windows.agent_runners import CodexRunner
+
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: ["--add-dir", "/home/me/Desktop"])
+    runner = CodexRunner()
+    runner._server = _McpServer()
+    assert "--add-dir" in runner._build_argv("first")
+    runner._cli_started = runner._cli_id_from_cli = True
+    runner._cli_session_id = "thread-1"
+    resume = runner._build_argv("again")
+    assert "resume" in resume and "--add-dir" not in resume
+
+
 def test_a_model_probe_reaps_the_cli_it_killed(monkeypatch):
     """Without a wait() after kill() each probe left a zombie on POSIX, and
     Claude Code is probed every 15 minutes."""
@@ -3413,3 +3546,22 @@ def test_a_model_probe_reaps_the_cli_it_killed(monkeypatch):
     monkeypatch.setattr(ar.subprocess, "Popen", FakeProc)
     ar._acp_style_probe(["cli"], [{}], lambda ev: True)
     assert calls == ["kill", "wait"]
+
+
+def test_chatgpt_turn_without_a_model_fails_clearly(qapp, monkeypatch):
+    """No model resolved (the list failed): a clear error, not a turn on Codex's refused default."""
+    from classes import chatgpt_plan
+    from windows.agent_runners import ChatGPTPlanRunner
+
+    monkeypatch.setattr(chatgpt_plan, "access_token", lambda: "at")
+    monkeypatch.setattr(chatgpt_plan, "install", lambda: "/zenvi/codex")
+    monkeypatch.setattr(chatgpt_plan, "signed_in", lambda: True)
+    monkeypatch.setattr(chatgpt_plan, "list_models", lambda: [])
+    runner = ChatGPTPlanRunner()
+    runner._model_id = ""
+    err = runner._ensure_ready()
+    assert err and "model" in err.lower()
+
+    monkeypatch.setattr(chatgpt_plan, "list_models", lambda: [{"id": "gpt-6-luna", "default": True}])
+    assert runner._ensure_ready() is None
+    assert runner._model_id == "gpt-6-luna"
