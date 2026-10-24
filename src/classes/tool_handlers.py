@@ -8074,8 +8074,6 @@ TOOL_HANDLERS = dict(AGENT_TOOL_HANDLERS)
 
 # Humanized titles for chat tool-block headers (main agent tools only).
 TOOL_DISPLAY_LABELS = {
-    "go_to_start_tool": "Seek to start",
-    "go_to_end_tool": "Seek to end",
     "undo_tool": "Undo",
     "redo_tool": "Redo",
     "delete_from_timeline_tool": "Delete from timeline",
