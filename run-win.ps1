@@ -332,7 +332,6 @@ source .venv/bin/activate
 REQS_FILTERED="$DEPS_DIR/requirements-noqt.filtered.txt"
 grep -viE '^(cryptography|rpds-py)([=<>~[:space:]]|$)' requirements-noqt.txt > "$REQS_FILTERED"
 pip install -r "$REQS_FILTERED"
-# pip install -r requirements-manim.txt   # uncomment if your build needs it
 
 echo ""
 echo "=== Setup complete. Launching Zenvi Core... ==="

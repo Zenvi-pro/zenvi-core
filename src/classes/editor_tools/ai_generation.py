@@ -15,6 +15,7 @@ semantic search and stock import are pre-existing handlers in ``tool_handlers``
 
 from classes.editor_tools import (  # noqa: F401
     ai_generation_comfyui,
+    ai_generation_hyperframes,
     ai_generation_recording,
     ai_generation_tts,
 )

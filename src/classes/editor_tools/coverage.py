@@ -93,8 +93,8 @@ CAPABILITIES = [
     ("title.create", "titles-text", "Title Editor > Save", "Create a title from a template with texts, font, colors, alpha, and place it on the timeline"),
     ("title.edit", "titles-text", "Project Files > Edit Title / Duplicate", "Change an existing title's text/font/colors (updating its clips) or duplicate it"),
     ("title.animated", "titles-text", "Title > Animated Title (Blender, 19 templates)", "List Blender templates with parameters and render one into an image sequence clip"),
-    ("caption.add", "titles-text", "Caption effect / Captions dock", "Add captions from the transcript, an SRT/VTT file or given cues, with style (font, size, colors, stroke, background, position, fades)"),
-    ("caption.edit", "titles-text", "Captions dock (edit text, Insert Caption)", "Edit caption cues of a Caption effect"),
+    ("caption.add", "titles-text", "Captions dock", "Add animated word-timed captions from the clip's on-device transcript in a HyperFrames caption style, optionally behind the speaker"),
+    ("caption.edit", "titles-text", "Captions dock (styles, Remove)", "List caption styles and caption overlays; remove a clip's captions"),
     ("text.timer", "titles-text", "Timer effect", "Add a styled count-up/down/clock/timecode overlay"),
     ("emoji.add", "titles-text", "Emojis dock", "Search the 1,239 emoji by name/group and place one on the timeline"),
 
@@ -136,6 +136,7 @@ CAPABILITIES = [
     ("ai.video_generation", "ai-generation", "generate_video/modify_clip/generate_transition_clip tools", "AI video generation/edit/morph that replaces (not stacks on) the originals and reports failures as errors"),
     ("ai.search", "ai-generation", "search_clips/search_clip_scenes/slice_clip_at_best_match", "Semantic search tools without crashes; failures reported as errors"),
     ("ai.stock_media", "ai-generation", "Stock search in Project Files", "Pexels/Freesound import (existing tools) with errors reported as errors"),
+    ("ai.hyperframes", "ai-generation", "HyperFrames motion graphics, product demos and captions", "Author, check and render HTML compositions with the local HyperFrames CLI and its skills; import the render from disk"),
     ("recording.prepare", "ai-generation", "View > Recording View / Clip > Audio > Record", "Open and configure the Recording dock (sources mic/screen/webcam, devices, track, start time); starting capture stays a human action"),
 ]
 

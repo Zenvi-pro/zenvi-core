@@ -1631,5 +1631,27 @@
     "type": "spinner",
     "min": 5,
     "max": 10
+  },
+  {
+    "category": "AI",
+    "title": "Chat Dictation (mic button)",
+    "setting": "dictation-engine",
+    "value": "auto",
+    "type": "dropdown",
+    "values": [
+      {
+        "value": "auto",
+        "name": "Automatic (Wispr Flow when installed)"
+      },
+      {
+        "value": "zenvi",
+        "name": "Zenvi (the Captions speech recogniser)"
+      },
+      {
+        "value": "wispr",
+        "name": "Wispr Flow"
+      }
+    ],
+    "restart": false
   }
 ]

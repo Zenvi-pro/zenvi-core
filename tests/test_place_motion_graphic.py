@@ -7,6 +7,8 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
@@ -194,3 +196,148 @@ def test_overlay_places_transparent_on_high_track():
     assert "mg_place mode=overlay" in out
     assert add_clip.call_args.kwargs["track"] == "3000000"
     assert "lower" in add_clip.call_args.kwargs["query"]
+
+
+def test_overlay_goes_above_footage_on_the_top_track():
+    """Footage on the top track during the window: the overlay gets a new track above it, not the same one."""
+    f = _file(transparent=True)
+    app = _layers_app()
+    patches = _patch_place(f, [_clip("C1", 3000000, 0.0, end=15.0)], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        out = th.place_motion_graphic(file_id="F1", position_seconds="1.0", duration_seconds="4.0",
+                                      mode="overlay")
+        track_cls = sys.modules["classes.query"].Track
+    assert not out.startswith("Error:")
+    assert add_clip.call_args.kwargs["track"] == "4000000"
+    assert track_cls.return_value.data["number"] == 4000000
+    track_cls.return_value.save.assert_called_once()
+
+
+def test_overlay_reuses_a_free_track_above_the_footage():
+    f = _file(transparent=True)
+    app = _layers_app()
+    clips = [_clip("C1", 2000000, 0.0, end=15.0), _clip("C2", 3000000, 40.0, end=5.0)]
+    patches = _patch_place(f, clips, app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        out = th.place_motion_graphic(file_id="F1", position_seconds="1.0", duration_seconds="4.0",
+                                      mode="overlay")
+        track_cls = sys.modules["classes.query"].Track
+    assert not out.startswith("Error:")
+    assert add_clip.call_args.kwargs["track"] == "3000000"
+    track_cls.return_value.save.assert_not_called()
+
+
+def test_overlay_asked_onto_the_footage_track_still_goes_above_it():
+    """The assistant names the top track by habit; that must not put the overlay in the footage's lane."""
+    f = _file(transparent=True)
+    app = _layers_app()
+    patches = _patch_place(f, [_clip("C1", 3000000, 0.0, end=15.0)], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        out = th.place_motion_graphic(file_id="F1", position_seconds="0", duration_seconds="5.0",
+                                      mode="overlay", track="3000000")
+    assert not out.startswith("Error:")
+    assert add_clip.call_args.kwargs["track"] == "4000000"
+
+
+def test_music_above_the_picture_neither_forces_a_new_track_nor_shares_its_lane():
+    f = _file(transparent=True)
+    app = _layers_app()
+    music = SimpleNamespace(data={"id": "A1", "layer": 3000000, "position": 0.0, "start": 0.0, "end": 60.0,
+                                  "reader": {"has_video": False, "has_audio": True}})
+    patches = _patch_place(f, [_clip("C1", 1000000, 0.0, end=15.0), music], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        out = th.place_motion_graphic(file_id="F1", position_seconds="1.0", duration_seconds="4.0",
+                                      mode="overlay")
+        track_cls = sys.modules["classes.query"].Track
+    assert not out.startswith("Error:")
+    assert add_clip.call_args.kwargs["track"] == "2000000"       # free, above the picture, not the music's lane
+    track_cls.return_value.save.assert_not_called()
+
+
+def test_overlay_skips_a_locked_track():
+    f = _file(transparent=True)
+    app = MagicMock()
+    app.project.get.return_value = [{"number": 1000000}, {"number": 2000000},
+                                    {"number": 3000000, "lock": True}]
+    patches = _patch_place(f, [_clip("C1", 2000000, 0.0, end=15.0)], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        out = th.place_motion_graphic(file_id="F1", position_seconds="1.0", duration_seconds="4.0",
+                                      mode="overlay")
+    assert not out.startswith("Error:")
+    assert add_clip.call_args.kwargs["track"] == "4000000"       # a new lane above the locked one
+
+
+def test_a_locked_track_with_no_number_does_not_break_placement():
+    f = _file(transparent=True)
+    app = MagicMock()
+    app.project.get.return_value = [{"number": 1000000}, {"number": 2000000}, {"lock": True},
+                                    {"number": None, "lock": True}]
+    patches = _patch_place(f, [_clip("C1", 1000000, 0.0, end=15.0)], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        out = th.place_motion_graphic(file_id="F1", position_seconds="1.0", duration_seconds="4.0",
+                                      mode="overlay")
+    assert not out.startswith("Error:") and add_clip.call_args.kwargs["track"] == "2000000"
+
+
+def test_a_failed_placement_removes_the_track_it_created():
+    f = _file(transparent=True)
+    app = _layers_app()
+    app.updates.transaction_id = None
+    patches = _patch_place(f, [_clip("C1", 3000000, 0.0, end=15.0)], app, add_clip_return="Error: no such file")
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        deleted_in = []
+        sys.modules["classes.query"].Track.return_value.delete.side_effect = \
+            lambda: deleted_in.append(app.updates.transaction_id)
+        out = th.place_motion_graphic(file_id="F1", position_seconds="1.0", duration_seconds="4.0",
+                                      mode="overlay")
+    assert out.startswith("Error")
+    # in the same undo step as the insert, or undo replays a track that was never wanted
+    assert deleted_in == [add_clip.call_args.kwargs["transaction_id"]]
+
+
+def test_placement_joins_the_undo_step_of_the_tool_that_called_it():
+    """add_captions places two overlays; each minting its own transaction made that several undo steps."""
+    f = _file(transparent=True)
+    app = _layers_app()
+    app.updates.transaction_id = "caller-step"
+    patches = _patch_place(f, [], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        th.place_motion_graphic(file_id="F1", position_seconds="0", duration_seconds="240", mode="overlay",
+                                max_duration_seconds=240)
+    assert add_clip.call_args.kwargs["transaction_id"] == "caller-step"
+    assert add_clip.call_args.kwargs["duration_seconds"] == "240.0"        # not cut to the 60 s default
+
+
+def test_a_graphic_is_still_capped_at_a_minute_by_default():
+    f = _file(transparent=True)
+    app = _layers_app()
+    app.updates.transaction_id = None
+    patches = _patch_place(f, [], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        th.place_motion_graphic(file_id="F1", position_seconds="0", duration_seconds="240", mode="overlay")
+    assert add_clip.call_args.kwargs["duration_seconds"] == "60.0"
+    assert add_clip.call_args.kwargs["transaction_id"]
+
+
+@pytest.mark.parametrize("limit", [-5, 0, "nan", "inf", "soon"])
+def test_a_nonsense_duration_limit_falls_back_to_a_minute(limit):
+    f = _file(transparent=True)
+    app = _layers_app()
+    app.updates.transaction_id = None
+    patches = _patch_place(f, [], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        th.place_motion_graphic(file_id="F1", position_seconds="0", duration_seconds="240", mode="overlay",
+                                max_duration_seconds=limit)
+    assert add_clip.call_args.kwargs["duration_seconds"] == "60.0"
+
+
+def test_full_file_places_the_whole_render_without_a_watch():
+    # Captions must land frame-exact: the visual watch moved a 20 s render to its 2-18 s.
+    f = _file(transparent=True, duration=20.0)
+    app = _layers_app()
+    patches = _patch_place(f, [], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        th.place_motion_graphic(file_id="F1", position_seconds="0", duration_seconds="20", mode="overlay",
+                                max_duration_seconds=20.0, full_file="true")
+    kwargs = add_clip.call_args.kwargs
+    assert kwargs["full_file"] == "true" and float(kwargs["end_seconds"]) == 20.0

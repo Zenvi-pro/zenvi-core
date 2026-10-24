@@ -47,7 +47,7 @@ ENHANCE_ACTIONS = {
               "mask_object": "image-mask-anything-sam2", "depth": "image-extract-depth",
               "lines": "image-extract-lines"},
     "video": {"upscale": "video-upscale-gan", "smooth_motion": "video-frame-interpolation-rife2x",
-              "split_scenes": "video-segment-scenes-transnet", "captions": "video-whisper-srt",
+              "split_scenes": "video-segment-scenes-transnet",
               "restyle": "video2video-basic", "blur_object": "video-blur-anything-sam2",
               "highlight_object": "video-highlight-anything-sam2", "mask_object": "video-mask-anything-sam2",
               "depth": "video-extract-depth", "lines": "video-extract-lines"},
@@ -55,7 +55,7 @@ ENHANCE_ACTIONS = {
               "remove_noise": "audio-noise-remove"},
 }
 ACTION_NAMES = ("upscale", "restyle", "image_to_video", "blur_object", "highlight_object", "mask_object", "depth",
-                "lines", "smooth_motion", "split_scenes", "captions", "speech_clarity", "reduce_noise",
+                "lines", "smooth_motion", "split_scenes", "speech_clarity", "reduce_noise",
                 "remove_noise")
 _ACTION_OF_TEMPLATE = {tid: action for table in ENHANCE_ACTIONS.values() for action, tid in table.items()}
 _KIND_OF_TEMPLATE = {tid: kind for kind, tid in CREATE_KINDS.items()}
@@ -527,7 +527,7 @@ _BOX = {"type": "object", "properties": {k: {"type": "number", "description": d}
                           "original is untouched."),
         "action": enum([""] + list(ACTION_NAMES), "What to do. Images: upscale, restyle, image_to_video, "
                        "blur_object, highlight_object, mask_object, depth, lines. Videos: upscale, smooth_motion "
-                       "(2x frame rate), split_scenes, captions (from speech), restyle, blur_object, "
+                       "(2x frame rate), split_scenes, restyle, blur_object, "
                        "highlight_object, mask_object, depth, lines. Audio: speech_clarity, reduce_noise, "
                        "remove_noise.", ""),
         "template": string("A template id or menu name from list_comfyui_templates_tool(file_id) instead of "
@@ -566,13 +566,12 @@ def enhance_file_with_comfyui(file_id, action="", template="", prompt="", name="
                               mask_brightness=1.15, background_brightness=0.75):
     """Process a Project Files image, video or audio file with a local ComfyUI template (Project Files > Enhance with AI).
 
-    For "upscale this video 4x", "make the motion smoother", "split this into scenes", "caption
-    it from the speech", "blur the license plate", "highlight the player", "cut out the dog
+    For "upscale this video 4x", "make the motion smoother", "split this into scenes",
+    "blur the license plate", "highlight the player", "cut out the dog
     (mask)", "clean up the noise / make the speech clearer", "turn this photo into a video",
     "restyle it like a watercolor". Needs comfyui.status=ready (list_comfyui_templates_tool);
     otherwise refuses with setup steps. Queues a job and returns its job_id at once; the output
-    becomes a NEW Project Files item (captions are stored on the file, split_scenes creates one
-    file per scene). Wait with list_comfyui_jobs_tool(job_id, wait_seconds). No undo step.
+    becomes a NEW Project Files item (split_scenes creates one file per scene). Wait with list_comfyui_jobs_tool(job_id, wait_seconds). No undo step.
     Object tracking (blur/highlight/mask) needs points, boxes, a prompt naming the object, or
     auto_detect. Example: {"file_id": "F12", "action": "blur_object", "prompt": "license plate"}.
     """
@@ -584,7 +583,7 @@ def enhance_file_with_comfyui(file_id, action="", template="", prompt="", name="
         tmpl = find_template(template, offered, f"Enhance ({mt or 'unknown media'})")
     else:
         if not action:
-            raise ToolError("say what to do: action (e.g. upscale, restyle, blur_object, captions, "
+            raise ToolError("say what to do: action (e.g. upscale, restyle, blur_object, "
                             "reduce_noise) or a template from list_comfyui_templates_tool(file_id)")
         table = ENHANCE_ACTIONS.get(mt, {})
         if action not in table:

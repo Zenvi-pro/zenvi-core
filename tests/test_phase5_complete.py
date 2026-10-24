@@ -208,45 +208,6 @@ def test_remove_silence_refuses_total_wipe(tmp_path):
         assert "Would remove" in receipt["summary"] or "entire" in receipt["summary"]
 
 
-def test_add_captions_places_titles():
-    from classes.agent_tools.receipt import ToolReceipt
-    fake_transcript = ToolReceipt.applied(
-        "get_transcript_tool", "ok", undo_steps=0,
-        data={
-            "transcriptionSource": "local",
-            "transcriptGeneration": 1,
-            "clips": [{
-                "clipId": "c1",
-                "words": [
-                    {"index": 0, "text": "Hi", "startSec": 0.0, "endSec": 0.3,
-                     "startFrame": 0, "endFrame": 9,
-                     "timelineStartSec": 0.0, "timelineEndSec": 0.3},
-                    {"index": 1, "text": "there", "startSec": 0.35, "endSec": 0.7,
-                     "startFrame": 10, "endFrame": 21,
-                     "timelineStartSec": 0.35, "timelineEndSec": 0.7},
-                ],
-            }],
-        },
-    ).to_json()
-    fake_title = ToolReceipt.applied(
-        "add_title_tool", "placed", data={"file_id": "t1"},
-    ).to_json()
-    app = MagicMock()
-    app.project = MagicMock()
-    app.project.get.side_effect = lambda k, d=None: {"fps": {"num": 30, "den": 1}}.get(k, d)
-    with patch("classes.app.get_app", return_value=app), \
-         patch("classes.clip_utils.project_fps_fraction", return_value=Fraction(30, 1)), \
-         patch("classes.agent_tools.transcript.get_transcript", return_value=fake_transcript), \
-         patch("classes.agent_tools.titles.add_title", return_value=fake_title) as title_mock:
-        from classes.agent_tools.speech_extra import add_captions
-        raw = add_captions(clipId="c1")
-    receipt = parse_receipt(raw)
-    assert receipt["status"] == "applied"
-    assert receipt["data"]["count"] >= 1
-    assert title_mock.called
-    assert "captionGroupId" in receipt["data"]
-
-
 def test_export_captions_writes_srt(tmp_path):
     from classes.agent_tools.receipt import ToolReceipt
     fake_transcript = ToolReceipt.applied(
