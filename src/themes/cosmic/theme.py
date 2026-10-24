@@ -53,6 +53,13 @@ DOCK_NAV_ICONS = [
     ("director_plan_review_dock", "nav-plan-review.svg"),
     ("dockPlanGraph", "nav-plan-graph.svg"),
     ("thinkingDock", "nav-thinking.svg"),
+    ("dockColorGradeWheels", "nav-color-wheels.svg"),
+    ("dockIndex", "nav-transcription.svg"),
+    ("dockAudioRecording", "nav-recording.svg"),
+    ("dockLumaWaveform", "nav-luma-waveform.svg"),
+    ("dockHistogram", "nav-histogram.svg"),
+    ("dockVectorscope", "nav-vectorscope.svg"),
+    ("dockAudio", "nav-audio-levels.svg"),
 ]
 
 
