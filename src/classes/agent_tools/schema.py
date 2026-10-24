@@ -361,10 +361,8 @@ TOOL_SCHEMAS: dict[str, dict] = {
     }),
     "list_transitions_tool": _obj({
         "category": _str(description="'all' (default), 'common' or 'extra'."),
+        "query": _str(description="Name filter, case-insensitive (e.g. 'wipe')."),
     }),
-    "search_transitions_tool": _obj({
-        "query": _str(),
-    }, required=["query"]),
     "apply_transition_tool": _obj({
         "clip1_id": _str(),
         "clip2_id": _str(description="Required when placement is 'between'."),

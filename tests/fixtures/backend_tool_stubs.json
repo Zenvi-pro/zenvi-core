@@ -126,7 +126,8 @@
   "list_layers_tool": {},
   "list_markers_tool": {},
   "list_transitions_tool": {
-   "category": "str"
+   "category": "str",
+   "query": "str"
   },
   "modify_clip_tool": {
    "clip_query": "str",
@@ -165,9 +166,6 @@
   },
   "save_project_tool": {
    "file_path": "str!"
-  },
-  "search_transitions_tool": {
-   "query": "str!"
   },
   "set_clip_volume_tool": {
    "clip_query": "str",

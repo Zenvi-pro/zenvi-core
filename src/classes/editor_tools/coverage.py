@@ -191,7 +191,7 @@ LEGACY_COVERAGE = {
     "clip.ripple_delete": ["delete_from_timeline_tool"],  # ripple=true
     "files.import": ["import_files_tool"],
     "files.subclip": ["create_subclips_tool"],
-    "transition.list": ["list_transitions_tool", "search_transitions_tool"],
+    "transition.list": ["list_transitions_tool"],
     "transition.apply": ["apply_transition_tool"],
     "audio.levels": ["set_clip_volume_tool", "duck_under_speech_tool", "analyze_timeline_audio_tool"],
     "ai.search": ["search_footage_tool"],
