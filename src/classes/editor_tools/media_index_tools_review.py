@@ -12,7 +12,7 @@ import tempfile
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from classes.editor_tools._base import ToolError, boolean, enum, get_app, integer, number, obj, ok, string
+from classes.editor_tools._base import ToolError, boolean, enum, get_app, integer, number, obj, ok, resolve_clip, string
 from classes.editor_tools._registry import REGISTRY, editor_tool
 from classes.editor_tools.media_files import _display_name, resolve_files
 from classes.editor_tools.media_index_tools import _index_for, project_indexes
@@ -387,22 +387,32 @@ def _no_audio_analysis(f) -> ToolError:
         "bpm_max": number("For a fit check: fastest tempo you want.", None, minimum=0),
         "seconds_needed": number("For a fit check: how long the music must play.", None, minimum=0),
         "energy": enum(["", "low", "medium", "high", "building"], "For a fit check: the energy you want.", ""),
+        "timeline_clip_id": string("Analyse this timeline clip's source file instead: clip_beats lists its beats in timeline "
+                                   "seconds for the part the clip plays.", ""),
     }),
     read_only=True,
 )
-def analyze_music(file_id="", file_query="", describe=False, bpm_min=None, bpm_max=None, seconds_needed=None, energy=""):
+def analyze_music(file_id="", file_query="", describe=False, bpm_min=None, bpm_max=None, seconds_needed=None, energy="",
+                  timeline_clip_id=""):
     """Understand a music file as an editor would: tempo and beats, loudness, the energy curve, its sections (intro,
     build, peak, break, outro), bars and phrase points (good places to cut or end), and, on request, what it is: genre,
     mood, instruments, vocals, what moments it suits. Pass bpm_min/bpm_max, seconds_needed or energy to get a fit verdict
     for your edit, with the measured reason for each line. Phrase points are where to loop or end the track so it does
     not stop mid-phrase; cutting your picture on downbeats makes it feel tight.
     """
+    clip = resolve_clip(timeline_clip_id=timeline_clip_id) if timeline_clip_id else None
+    if clip is not None:
+        file_id = str(clip.data.get("file_id") or "")
     f = resolve_files([file_id] if file_id else None, file_query)[0]
     fi = _index_for(f)
     if fi is None or not fi.layers.get(S.LAYER_AUDIO):
         raise _no_audio_analysis(f)
     profile = music_profile_of(fi)
     out: Dict[str, Any] = {"file_id": str(f.id), "profile": profile}
+    if clip is not None:
+        position, start, end = (float(clip.data.get(k) or 0.0) for k in ("position", "start", "end"))
+        beats = ((fi.audio or {}).get("tempo") or {}).get("beats") or []
+        out["clip_beats"] = [round(position + b - start, 3) for b in beats if start <= b <= end]
     if describe or fi.music_desc:
         desc = fi.music_desc
         if describe and not desc:

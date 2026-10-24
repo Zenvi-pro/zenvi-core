@@ -298,6 +298,14 @@ def test_the_music_tool_returns_the_profile_and_a_fit(footage, monkeypatch, tmp_
     assert "110 BPM" in head and r["profile"]["bpm"] == 110.0 and r["fit"]["fits"] is False and "description" not in r
 
 
+def test_a_timeline_clip_gets_its_beats_in_timeline_seconds_for_the_part_it_plays(footage, monkeypatch, tmp_path):
+    music_env(monkeypatch, footage, tmp_path)
+    clip = SimpleNamespace(data={"file_id": "M1", "position": 4.0, "start": 1.2, "end": 2.0})
+    monkeypatch.setattr(TR, "resolve_clip", lambda timeline_clip_id="", **_kw: clip, raising=False)
+    _, r = call("analyze_music_tool", timeline_clip_id="C1")
+    assert r["clip_beats"] == [4.3]
+
+
 def test_describing_music_calls_the_cloud_once_and_the_reading_is_labelled_inferred(footage, monkeypatch, tmp_path):
     music_env(monkeypatch, footage, tmp_path)
     calls = []
