@@ -457,7 +457,7 @@ def _file_reader(value):
                 f = cand
                 break
     if not f:
-        raise ToolError(f"no project file {value!r} for the image/video input (use a file id from list_files_tool)")
+        raise ToolError(f"no project file {value!r} for the image/video input (use a file id from list_project_files_tool)")
     return copy.deepcopy(f.data)
 
 

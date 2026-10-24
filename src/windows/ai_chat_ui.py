@@ -233,9 +233,7 @@ REQUEST_TIMEOUT_SECONDS = 120
 
 # Mirrors backend PLANNING_ALLOWLIST — tools safe to run in Plan mode.
 _PLANNING_SAFE_TOOLS = frozenset({
-    "get_project_info_tool", "list_files_tool", "list_clips_tool", "list_layers_tool",
-    "get_timeline_state_tool", "list_markers_tool", "get_file_info_tool",
-    "get_clips_with_full_metadata_tool", "get_timeline_placements_metadata_tool",
+    "get_project_info_tool", "get_timeline_state_tool", "list_markers_tool",
     "search_pexels_videos_tool",
     "search_freesound_music_tool", "list_transitions_tool", "search_transitions_tool",
     "save_edit_plan_tool", "save_planning_research_brief_tool",

@@ -57,15 +57,15 @@ def test_schema_extracts_typed_params_and_required():
 def tool_stub():
     th = types.ModuleType("classes.tool_handlers")
 
-    def list_files(**_kw):
-        """List the media files in the current project bin."""
-        return "FIXTURE_FILES: a.mp4, b.wav"
+    def playhead_state(**_kw):
+        """Report the playhead position and the selection."""
+        return "FIXTURE_PLAYHEAD: 0.0s"
 
     def search_footage(query="", **_kw):
         """Search the footage by what happens, what is said and how it looks."""
         return "SEARCH_RESULT query=%s" % query
 
-    th.AGENT_TOOL_HANDLERS = {"list_files_tool": list_files, "search_footage_tool": search_footage}
+    th.AGENT_TOOL_HANDLERS = {"get_playhead_and_selection_tool": playhead_state, "search_footage_tool": search_footage}
     th.humanize_tool_name = lambda n: n
 
     def _execute(name, args):
@@ -95,13 +95,13 @@ def test_iter_tool_defs(tool_stub):
     defs = {d["name"]: d for d in iter_tool_defs()}
 
     # Editor tools are exactly what AGENT_TOOL_HANDLERS holds...
-    assert set(defs) - set(_extra_tools()) == {"list_files_tool", "search_footage_tool"}
+    assert set(defs) - set(_extra_tools()) == {"get_playhead_and_selection_tool", "search_footage_tool"}
     # ...and the MCP-only extras are advertised alongside them.
     assert set(_extra_tools()) <= set(defs)
 
     # Typed properties come from TOOL_SCHEMAS (editor tools: their registry schema).
     assert defs["search_footage_tool"]["inputSchema"]["properties"]["query"]["type"] == "string"
-    assert "media files" in defs["list_files_tool"]["description"]
+    assert "playhead" in defs["get_playhead_and_selection_tool"]["description"]
 
 
 # --- transport: an MCP client can list + call tools ------------------------
@@ -123,13 +123,13 @@ def test_server_lists_and_calls_tools(tool_stub):
                     async with ClientSession(r, w) as session:
                         await session.initialize()
                         tools = await session.list_tools()
-                        result = await session.call_tool("list_files_tool", {})
+                        result = await session.call_tool("get_playhead_and_selection_tool", {})
                         return [t.name for t in tools.tools], result.content[0].text
 
         names, text = asyncio.run(run())
         # Only the core set is listed; any other tool is still callable by name.
-        assert "search_footage_tool" in names and "list_files_tool" not in names
-        assert "FIXTURE_FILES" in text
+        assert "search_footage_tool" in names and "get_playhead_and_selection_tool" not in names
+        assert "FIXTURE_PLAYHEAD" in text
     finally:
         srv.stop()
 
@@ -158,7 +158,7 @@ def test_mcp_calls_do_not_use_the_default_chat_slot(tool_stub):
                 async with streamable_http_client(srv.url(), http_client=http_client) as (r, w, _):
                     async with ClientSession(r, w) as session:
                         await session.initialize()
-                        await session.call_tool("list_files_tool", {})
+                        await session.call_tool("get_playhead_and_selection_tool", {})
 
         asyncio.run(call_once())
         asyncio.run(call_once())
@@ -368,12 +368,12 @@ def test_claude_cli_invokes_mcp_tool(tool_stub):
     saw_tool_use = saw_fixture = False
     try:
         proc = subprocess.Popen(
-            ["claude", "-p", "Call the list_files_tool tool with no arguments and report the result.",
+            ["claude", "-p", "Call the get_playhead_and_selection_tool tool with no arguments and report the result.",
              "--output-format", "stream-json", "--verbose",
              "--mcp-config", cfg_path, "--strict-mcp-config",
              # Same flag the app uses — see ClaudeCodeRunner._build_argv.
              "--dangerously-skip-permissions",
-             "--allowedTools", "mcp__zenvi-editor__list_files_tool"],
+             "--allowedTools", "mcp__zenvi-editor__get_playhead_and_selection_tool"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         for line in proc.stdout:
             try:
@@ -382,9 +382,9 @@ def test_claude_cli_invokes_mcp_tool(tool_stub):
                 continue
             if ev.get("type") == "assistant":
                 for b in ev.get("message", {}).get("content", []):
-                    if b.get("type") == "tool_use" and "list_files_tool" in (b.get("name") or ""):
+                    if b.get("type") == "tool_use" and "get_playhead_and_selection_tool" in (b.get("name") or ""):
                         saw_tool_use = True
-            if "FIXTURE_FILES" in json.dumps(ev):
+            if "FIXTURE_PLAYHEAD" in json.dumps(ev):
                 saw_fixture = True
         proc.wait(timeout=120)
     finally:

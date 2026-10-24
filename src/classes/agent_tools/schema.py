@@ -103,14 +103,6 @@ def _url_list(**kw) -> dict:
 # ---------------------------------------------------------------------------
 
 TOOL_SCHEMAS: dict[str, dict] = {
-    "list_files_tool": _obj({}),
-    "list_clips_tool": _obj({
-        "layer": _str(description="Optional layer_number or UI track filter."),
-        "detail_level": _str(
-            description="summary (default) or full — accepted for Assistant/LLM compat; listing is always complete.",
-        ),
-    }),
-    "list_layers_tool": _obj({}),
     "go_to_start_tool": _obj({}),
     "go_to_end_tool": _obj({}),
     "undo_tool": _obj({
@@ -183,9 +175,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "wait_until_project_indexed_tool": _obj({
         "timeout_seconds": _str_or_num(),
     }),
-    "get_file_info_tool": _obj({
-        "file_id": _str(),
-    }, required=["file_id"]),
     "add_clip_to_timeline_tool": _obj({
         "file_id": _str(description="Media-bin file id."),
         "position_seconds": _str_or_num(),
@@ -384,15 +373,9 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "reindex_project_file_tool": _obj({
         "file_id": _str(),
     }, required=["file_id"]),
-    "get_clips_with_full_metadata_tool": _obj({
-        "detail_level": _str(description="summary (default) or full."),
-    }),
-    "get_timeline_placements_metadata_tool": _obj({
-        "detail_level": _str(description="summary (default) or full."),
-    }),
     "get_timeline_state_tool": _obj({
         "detail_level": _str(
-            description="summary (default) or full — accepted for Assistant/LLM compat.",
+            description="summary (default) or full: full adds each clip's trim-aware AI scene descriptions.",
         ),
     }),
     # Phase 3.8 new tools
@@ -407,7 +390,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "overview": {"type": "boolean", "description": "One storyboard instead of N frames."},
     }),
     "inspect_media_tool": _obj({
-        "fileId": {"type": "string", "description": "Zenvi file id from list_files."},
+        "fileId": {"type": "string", "description": "Zenvi file id from list_project_files_tool."},
         "clipId": {"type": "string"},
         "start": _num(minimum=0),
         "end": _num(minimum=0),
@@ -418,7 +401,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "get_transcript_tool": _obj({
         "clipId": _str(description="Timeline clip id. Prefer this after edits."),
         "timeline_clip_id": _str(
-            description="Alias for clipId (Assistant / list_clips naming).",
+            description="Alias for clipId (Assistant / get_timeline_state naming).",
         ),
         "fileId": _str(description="Media-bin file id (source seconds at timeline 0)."),
         "file_id": _str(description="Alias for fileId."),

@@ -130,7 +130,7 @@ def test_the_keyframe_sheets_come_back_as_pictures_in_the_result(footage):
     assert len(out.images) == 1 and out.images[0].data[:2] == b"\xff\xd8"          # one JPEG, the sheet of six keyframes
     quiet = tool_handlers.execute_tool_rich("storyboard_tool", {"file_ids": [footage.fid], "pictures": False})
     assert quiet.images == []
-    other = tool_handlers.execute_tool_rich("list_files_tool", {})
+    other = tool_handlers.execute_tool_rich("list_project_files_tool", {})
     assert other.images == []                                                       # nothing leaks into the next call
 
 

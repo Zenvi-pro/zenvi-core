@@ -161,7 +161,7 @@ def nullable(schema: dict) -> dict:
 # Reusable argument fragments -------------------------------------------------
 
 CLIP_TARGET = {
-    "timeline_clip_id": string("Timeline clip id from list_clips_tool / get_timeline_state_tool. Preferred.", ""),
+    "timeline_clip_id": string("Timeline clip id from get_timeline_state_tool. Preferred.", ""),
     "clip_query": string("Describe the clip instead of an id: its file name or what it shows (e.g. 'beach "
                          "sunset'). Add track when several clips match. Prefer timeline_clip_id.", ""),
     "track": string("Narrow clip_query to a track: UI track number (1 = bottom), track name, or layer number.", ""),

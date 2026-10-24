@@ -167,14 +167,14 @@ def test_raw_args_and_results_stay_in_python_until_a_row_is_expanded(chat_ui):
 def test_the_detail_store_keeps_only_the_latest_200_calls(chat_ui):
     win = _tool_window(chat_ui)
     for i in range(205):
-        win._on_tool_started(f"c{i}", "list_clips_tool", "{}")
+        win._on_tool_started(f"c{i}", "get_timeline_state_tool", "{}")
     assert chat_ui._tool_call_detail("c0") == {}
     assert chat_ui._tool_call_detail("c204")["args"] == "{}"
 
 
 def test_the_page_asks_the_bridge_for_one_rows_detail(chat_ui):
     win = _tool_window(chat_ui)
-    win._on_tool_started("c2", "list_clips_tool", '{"track": 1}')
+    win._on_tool_started("c2", "get_timeline_state_tool", '{"track": 1}')
     fetch = getattr(chat_ui.ChatBridge.toolDetail, "__wrapped__", None) or chat_ui.ChatBridge.toolDetail
     detail = json.loads(fetch(types.SimpleNamespace(), "c2"))
     assert '"track": 1' in detail["args"]
@@ -238,7 +238,7 @@ def test_a_burst_of_50_tool_events_reaches_the_page_in_one_flush(chat_ui, monkey
         singleShot=lambda ms, fn: timers.append((ms, fn))))
     win = _batching_window(chat_ui)
     for i in range(50):
-        win._on_tool_started(f"c{i}", "list_clips_tool", "{}")
+        win._on_tool_started(f"c{i}", "get_timeline_state_tool", "{}")
 
     assert win.pages == [], "nothing reaches the page while the burst is still arriving"
     assert [ms for ms, _ in timers] == [60], "one single-shot 60 ms flush for the whole burst"

@@ -21,6 +21,8 @@ import os
 import time
 
 from classes import project_files
+from classes.ai_metadata_utils import build_summary_preview, get_effective_ai_metadata
+from classes.twelvelabs_match import get_index_block, twelvelabs_is_indexed
 from classes.editor_tools._base import (
     ToolError,
     array,
@@ -173,6 +175,7 @@ def describe_file(f, usage=None, full=False, check_missing=True) -> dict:
     start, end = _source_window(data)
     kind = kind_of(data)
     still = kind in ("image", "title")
+    ai = data.get("ai_metadata") if isinstance(data.get("ai_metadata"), dict) else {}
     out = {
         "file_id": str(f.id),
         "name": _display_name(data),
@@ -183,6 +186,9 @@ def describe_file(f, usage=None, full=False, check_missing=True) -> dict:
         "duration": None if still else round(max(0.0, end - start), 3),
         "tags": tags_of(data),
         "clip_count": len(clip_ids),
+        "analyzed": bool(ai.get("analyzed")),
+        "indexed": twelvelabs_is_indexed(get_index_block(ai)),
+        "summary_preview": build_summary_preview(get_effective_ai_metadata(data, rebased=True)),
     }
     if ("start" in data or "end" in data) and not still:
         out["source_in"] = round(start, 3)
@@ -222,8 +228,9 @@ def describe_file(f, usage=None, full=False, check_missing=True) -> dict:
             "pixel_ratio": "{}:{}".format((data.get("pixel_ratio") or {}).get("num", ""),
                                           (data.get("pixel_ratio") or {}).get("den", "")),
             "file_size": data.get("file_size"),
-            "analyzed": bool((data.get("ai_metadata") or {}).get("analyzed"))
-            if isinstance(data.get("ai_metadata"), dict) else False,
+            "short_summary": str(ai.get("short_summary") or ""),
+            "description": str(ai.get("description") or ""),
+            "chapters": [ch for ch in ai.get("chapters") or [] if isinstance(ch, dict)],
         })
         proxy = data.get("proxy_reader")
         if isinstance(proxy, dict) and proxy.get("path"):
@@ -323,10 +330,11 @@ def resolve_files(file_ids=None, file_query="") -> list:
                       "'used' = files on the timeline, '' = both.", ""),
         "missing_only": boolean("Only files whose media is missing on disk (moved or deleted; relink them "
                                 "with update_project_files_tool).", False),
-        "file_ids": array({"type": "string"}, "Only these file ids (e.g. to read full media info)."),
+        "file_ids": array({"type": "string"}, "Only these file ids, with their full media info and AI summary."),
         "detail": enum(["summary", "full"],
                        "'full' adds media info: size, fps, frames, codecs, sample rate, channels, bit rates, "
-                       "interlacing, aspect ratios, file size, optimized-preview path.", "summary"),
+                       "interlacing, aspect ratios, file size, optimized-preview path, and the AI summary "
+                       "and chapters.", "summary"),
         "limit": integer("Most files to return.", 100, minimum=1, maximum=1000),
     }),
     read_only=True,
@@ -343,6 +351,7 @@ def list_project_files(media_type="", query="", tags=None, usage="", missing_onl
     disk, and for videos the optimized-preview state (none/queued/running/ready/missing).
     Sub-clips made with Split Clip / create_subclips_tool are listed too (with source_in/out).
     Read-only. Example: usage="unused" before remove_files_from_project_tool(scope="unused").
+    It lists only what is already imported: it cannot see files on disk, import_files_tool adds them.
     """
     usage_map = _clip_usage()
     wanted_tags = [str(t).strip().lower() for t in (tags or []) if str(t).strip()]
@@ -374,7 +383,7 @@ def list_project_files(media_type="", query="", tags=None, usage="", missing_onl
         if missing_only and not media_missing(data):
             continue
         matched.append(f)
-    shown = [describe_file(f, usage_map, full=(detail == "full")) for f in matched[:int(limit)]]
+    shown = [describe_file(f, usage_map, full=(detail == "full" or bool(only_ids))) for f in matched[:int(limit)]]
     filters = [x for x in (media_type, q and f"'{q}'", wanted_tags and f"tags {wanted_tags}", usage,
                            missing_only and "missing") if x]
     summary = (f"{len(matched)} of {len(files)} project files match" + (f" ({', '.join(map(str, filters))})"

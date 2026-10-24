@@ -248,10 +248,10 @@ def _file(file_id: str, what: str = "file_id"):
     from classes.query import File
     fid = str(file_id or "").strip()
     if not fid:
-        raise ToolError(f"{what} is required (a Project Files id from list_files_tool)")
+        raise ToolError(f"{what} is required (a Project Files id from list_project_files_tool)")
     f = File.get(id=fid)
     if not f:
-        raise ToolError(f"no project file with {what}={fid!r}; list_files_tool lists them")
+        raise ToolError(f"no project file with {what}={fid!r}; list_project_files_tool lists them")
     return f
 
 
@@ -523,7 +523,7 @@ _BOX = {"type": "object", "properties": {k: {"type": "number", "description": d}
     "enhance_file_with_comfyui_tool",
     label="Enhance with ComfyUI",
     schema=obj({
-        "file_id": string("The Project Files item to process (list_files_tool). The result is a NEW file; the "
+        "file_id": string("The Project Files item to process (list_project_files_tool). The result is a NEW file; the "
                           "original is untouched."),
         "action": enum([""] + list(ACTION_NAMES), "What to do. Images: upscale, restyle, image_to_video, "
                        "blur_object, highlight_object, mask_object, depth, lines. Videos: upscale, smooth_motion "

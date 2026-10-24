@@ -1323,8 +1323,7 @@ def _resolve_targets(timeline_clip_ids, transition_ids, effect_ids, clip_query, 
                      "(Ctrl+A); 'none' = clear the selection (Ctrl+Shift+A); 'ripple' = these (or the "
                      "current selection) plus everything after them on the same track (Alt+A).",
                      "replace"),
-        "timeline_clip_ids": array({"type": "string"}, "Timeline clip ids (list_clips_tool / "
-                                   "get_timeline_state_tool)."),
+        "timeline_clip_ids": array({"type": "string"}, "Timeline clip ids (get_timeline_state_tool)."),
         "transition_ids": array({"type": "string"}, "Transition ids."),
         "effect_ids": array({"type": "string"}, "Effect ids from a clip's effects; the Properties "
                             "panel then shows that effect."),

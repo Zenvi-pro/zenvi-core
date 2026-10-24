@@ -93,7 +93,7 @@ _ZOOMS = {"none": None, "in": timeline_ops.ZOOM_IN, "out": timeline_ops.ZOOM_OUT
 _ITEM = mapping(
     "One file to place, with optional source in/out points in seconds of that file.",
     properties={
-        "file_id": string("Project file id (list_files_tool). Sub-clip file ids work too."),
+        "file_id": string("Project file id (list_project_files_tool). Sub-clip file ids work too."),
         "source_start": number("Source in point in seconds; -1 or omitted = the file's own in point."),
         "source_end": number("Source out point in seconds; -1 or omitted = the file's own out point. "
                              "For a still image this sets how long it stays on screen."),
@@ -172,7 +172,7 @@ def _fit_lengths(durations, fixed, keep, budget):
     "add_clips_to_timeline_tool",
     label="Add clips to timeline",
     schema=obj({
-        "file_ids": array({"type": "string"}, "Project file ids to place, in timeline order (list_files_tool). "
+        "file_ids": array({"type": "string"}, "Project file ids to place, in timeline order (list_project_files_tool). "
                           "Use this OR items.", []),
         "items": array(_ITEM, "Files with their own in/out points, in timeline order. Use this OR file_ids.", []),
         "order": enum(["as_given", "shuffle", "name"], "Order on the timeline: as given, shuffled, or by file name.",
@@ -231,7 +231,7 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
         raise ToolError("give file_ids (whole files) or items (with in/out points), not both")
     specs = [{"file_id": fid} for fid in file_ids] if file_ids else [dict(it) for it in items]
     if not specs:
-        raise ToolError("say which files to place: file_ids or items (list_files_tool lists the project files)")
+        raise ToolError("say which files to place: file_ids or items (list_project_files_tool lists the project files)")
     if fade != "none" and (transition or "").strip():
         raise ToolError("choose a transition or fades, not both (fade applies only without a transition)")
 
@@ -248,7 +248,7 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
         fid = str(spec.get("file_id") or "").strip()
         f = File.get(id=fid) if fid else None
         if not f:
-            raise ToolError(f"no project file with id={fid!r} (list_files_tool lists them)")
+            raise ToolError(f"no project file with id={fid!r} (list_project_files_tool lists them)")
         name = str(f.data.get("name") or os.path.basename(str(f.data.get("path") or fid)))
         s_arg = spec.get("source_start")
         e_arg = spec.get("source_end")

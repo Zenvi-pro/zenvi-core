@@ -138,7 +138,7 @@ def normalize_track_or_layer_arg(raw: str, layers) -> tuple[int | None, str | No
     if len(label_hits) > 1:
         return None, (
             f"Error: Ambiguous track label {raw!r} matches multiple layers. "
-            "Pass layer_number from list_layers_tool / TRACK_STACK_JSON."
+            "Pass layer_number from get_timeline_state_tool TRACK_STACK_JSON."
         )
 
     # A number never matches part of a name: "1" is UI track 1, not "Music 1".
@@ -157,7 +157,7 @@ def normalize_track_or_layer_arg(raw: str, layers) -> tuple[int | None, str | No
     return (
         None,
         f"Error: Unknown track or layer {raw!r}. "
-        "Call list_layers_tool and use layer_number (preferred), track_id, "
+        "Call get_timeline_state_tool and use layer_number (preferred), track_id, "
         "ui_track (1=bottom), or the exact label.",
     )
 
@@ -203,7 +203,7 @@ def format_track_label_for_llm(layer_num: int, layers) -> str:
 
 
 def parse_track_stack_from_tool_text(text: str) -> List[Dict[str, Any]]:
-    """Extract TRACK_STACK_JSON=[...] from list_layers / timeline tool output."""
+    """Extract TRACK_STACK_JSON=[...] from get_timeline_state output."""
     if not text:
         return []
     m = re.search(r"TRACK_STACK_JSON=(\[[\s\S]*?\])\s*(?:\n|$)", text)

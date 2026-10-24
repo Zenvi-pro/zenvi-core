@@ -66,7 +66,7 @@ def test_mcp_call_tool_emits_image_content_when_rich(monkeypatch):
 
     th = types.ModuleType("classes.tool_handlers")
     th.AGENT_TOOL_HANDLERS = {
-        "list_files_tool": lambda **_k: "files",
+        "list_project_files_tool": lambda **_k: "files",
     }
     th.humanize_tool_name = lambda n: n
 
@@ -74,7 +74,7 @@ def test_mcp_call_tool_emits_image_content_when_rich(monkeypatch):
 
     def execute_tool_rich(name, args):
         return ToolOutput(
-            receipt=ToolReceipt.applied("list_files_tool", "ok"),
+            receipt=ToolReceipt.applied("list_project_files_tool", "ok"),
             images=[ImageBlock(data=jpeg)],
         )
 
@@ -99,7 +99,7 @@ def test_mcp_call_tool_emits_image_content_when_rich(monkeypatch):
                     ) as (r, w, _):
                         async with ClientSession(r, w) as session:
                             await session.initialize()
-                            result = await session.call_tool("list_files_tool", {})
+                            result = await session.call_tool("list_project_files_tool", {})
                             return result.content
 
             content = asyncio.run(run())

@@ -329,7 +329,7 @@ def _format_candidates_error(candidates: List[ClipCandidate], prefix: str) -> st
             f"source={c.source_start:.1f}-{c.source_end:.1f}s score={c.score:.2f}"
         )
     lines.append(
-        "Pass timeline_clip_id from list_clips_tool, or disambiguate with track, "
+        "Pass timeline_clip_id from get_timeline_state_tool, or disambiguate with track, "
         "occurrence (1-based), or position_near (timeline seconds)."
     )
     return "\n".join(lines)
@@ -518,7 +518,7 @@ def resolve_timeline_clip(
                 if scored
                 else (
                     f"Error: No timeline clip matched clip_query {q!r}. "
-                    "Use list_clips_tool or get_timeline_placements_metadata_tool."
+                    "Use get_timeline_state_tool."
                 )
             ),
         )
@@ -551,7 +551,7 @@ def resolve_timeline_clip(
         window=win,
         error=(
             "Error: Multiple clips on timeline — pass clip_query (filename, subject, track) "
-            "or timeline_clip_id from list_clips_tool."
+            "or timeline_clip_id from get_timeline_state_tool."
         ),
     )
 
