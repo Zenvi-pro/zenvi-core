@@ -147,19 +147,13 @@ from classes.editor_tools import coerce_args
 # Properties a handler takes through **kwargs instead of by name: read with
 # kwargs.get() or passed on to a callee that consumes them.
 KWARG_PROPS = {
-    # forwarded to add_clip_to_timeline(**_kw)
-    "import_video_url_and_add_to_timeline_tool": {
-        "query", "start_seconds", "end_seconds", "duration_seconds", "full_file",
-    },
     # read by the shared timeline-clip resolver
     "modify_clip_tool": {"occurrence", "position_near", "track"},
     # Phase 5 speech tools read the snake_case aliases for clipId / fileId
-    "transcribe_media_tool": {"file_id"},
     "get_transcript_tool": {"file_id", "timeline_clip_id"},
     "remove_words_tool": {"timeline_clip_id"},
     "remove_silence_tool": {"timeline_clip_id"},
     "export_captions_tool": {"timeline_clip_id"},
-    "detect_beats_tool": {"file_id", "timeline_clip_id"},
     "diarize_media_tool": {"file_id", "timeline_clip_id"},
     # Phase 6 colour tools accept camelCase allClips via **kwargs / **_kw
     "apply_color_tool": {"allClips"},

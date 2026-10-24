@@ -160,7 +160,7 @@ def user_facing_receipt_text(text: str) -> str:
     summary = str(receipt.get("summary") or "").strip()
     data = receipt.get("data") if isinstance(receipt.get("data"), dict) else {}
 
-    if tool in ("get_transcript_tool", "transcribe_media_tool"):
+    if tool == "get_transcript_tool":
         script = data.get("script") if isinstance(data.get("script"), str) else ""
         if not script.strip() and isinstance(data.get("clips"), list):
             script = clips_to_script(data.get("clips"))

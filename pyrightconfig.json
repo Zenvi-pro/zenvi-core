@@ -23,7 +23,6 @@
     "src/classes/media_index/harmonize.py",
     "src/classes/media_index/mixplan.py",
     "src/classes/media_index/beatsync.py",
-    "src/classes/speech/beats.py",
     "src/classes/editor_tools/media_index_tools_review.py",
     "src/classes/media_index/review.py",
     "src/classes/media_index/audio_cloud.py",

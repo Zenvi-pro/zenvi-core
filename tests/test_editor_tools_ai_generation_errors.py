@@ -116,12 +116,10 @@ def test_wait_until_indexed_returns_at_once_when_nothing_is_indexing(editor, mon
 def test_import_video_url_checks_the_track_before_downloading(editor, monkeypatch):
     import urllib.request
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: pytest.fail("downloaded"))
-    out = editor.call("import_video_url_and_add_to_timeline_tool", video_url="https://example.invalid/a.mp4",
-                      track="12")
+    out = th.import_video_url_and_add_to_timeline(video_url="https://example.invalid/a.mp4", track="12")
     assert out.startswith("Error")
     editor.lock_track(L1)
-    out = editor.call("import_video_url_and_add_to_timeline_tool", video_url="https://example.invalid/a.mp4",
-                      track="1")
+    out = th.import_video_url_and_add_to_timeline(video_url="https://example.invalid/a.mp4", track="1")
     assert out.startswith("Error: Track") and "locked" in out
 
 
@@ -147,7 +145,7 @@ def test_import_video_url_placement_failure_is_an_error(editor, monkeypatch, tmp
 
     monkeypatch.setattr(th, "_import_generated_video", fake_import)
     monkeypatch.setattr(th, "add_clip_to_timeline", lambda **kw: "Error: duration_seconds needs a watch")
-    out = editor.call("import_video_url_and_add_to_timeline_tool", video_url="https://example.invalid/a.mp4")
+    out = th.import_video_url_and_add_to_timeline(video_url="https://example.invalid/a.mp4")
     assert out.startswith("Error: Video imported (file_id=") and "Do NOT download it again" in out
 
 

@@ -41,11 +41,10 @@ def test_inspect_tools_registered():
     )
 
     assert "inspect_timeline_tool" in AGENT_TOOL_HANDLERS
-    assert "inspect_media_tool" in AGENT_TOOL_HANDLERS
+    assert "view_frames_tool" in AGENT_TOOL_HANDLERS
     assert "inspect_timeline_tool" in READ_ONLY_TOOLS
-    assert "inspect_media_tool" in READ_ONLY_TOOLS
+    assert "view_frames_tool" in READ_ONLY_TOOLS
     assert "inspect_timeline_tool" in BACKGROUND_SAFE_TOOLS
-    assert "inspect_media_tool" in BACKGROUND_SAFE_TOOLS
 
 
 def test_server_instructions_still_point_at_inspect_for_vision():

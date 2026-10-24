@@ -1,4 +1,4 @@
-"""get_transcript_tool / remove_words_tool / transcribe_media_tool (Phase 5)."""
+"""get_transcript_tool / remove_words_tool (Phase 5)."""
 
 from __future__ import annotations
 
@@ -358,92 +358,6 @@ def _file_transcript_receipt(
             language_out=record.language,
             generation=record.generation,
         ),
-    ).to_json()
-
-
-def transcribe_media(
-    fileId: str = "",
-    language: str = "auto",
-    modelId: str = "",
-    force: bool = False,
-    engine: str = "auto",
-    **_kw,
-):
-    """Fill the local word-level transcript cache for a media-bin file."""
-    from classes.agent_tools.receipt import ToolReceipt
-    from classes.speech.cache import DEFAULT_MODEL_ID
-    from classes.speech.map_timeline import resolve_media_path
-
-    fileId = _first_nonempty(fileId, _kw.get("file_id"))
-    force = _as_bool(force, False)
-
-    if not fileId:
-        return ToolReceipt.refused(
-            "transcribe_media_tool", "Error: fileId is required.",
-        ).to_json()
-
-    fobj = _file_for_id(str(fileId))
-    if fobj is None or not isinstance(getattr(fobj, "data", None), dict):
-        return ToolReceipt.refused(
-            "transcribe_media_tool", f"Error: Unknown fileId '{fileId}'.",
-        ).to_json()
-
-    path = resolve_media_path(fobj.data)
-    if not path:
-        return ToolReceipt.refused(
-            "transcribe_media_tool", "Error: File has no media path.",
-        ).to_json()
-
-    model = (modelId or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
-    try:
-        record = _ensure_transcript(
-            path,
-            language=language or "auto",
-            model_id=model,
-            force=bool(force),
-            engine=engine or "auto",
-        )
-    except InterruptedError:
-        return ToolReceipt.error(
-            "transcribe_media_tool", "Error: Transcription cancelled.",
-        ).to_json()
-    except Exception as exc:
-        if _is_no_audio_exc(exc):
-            return _no_audio_receipt("transcribe_media_tool").to_json()
-        return ToolReceipt.error(
-            "transcribe_media_tool", f"Error: Transcription failed: {exc}",
-        ).to_json()
-
-    from classes.agent_tools.present import words_to_script
-    script = words_to_script(record.words)
-    summary = (
-        _short_transcript_summary(
-            word_count=len(record.words),
-            source=record.transcriptionSource,
-            language=record.language,
-            file_ids=[str(fileId)],
-        )
-        if record.words
-        else "No spoken dialogue found."
-    )
-    return ToolReceipt.applied(
-        "transcribe_media_tool",
-        summary,
-        undo_steps=0,
-        notes=[
-            "Show data.script to the user — never paste this receipt JSON. "
-            "Do not re-call this tool; use get_transcript_tool / remove_words_tool next.",
-        ],
-        data={
-            "fileId": str(fileId),
-            "wordCount": len(record.words),
-            "language": record.language,
-            "modelId": record.modelId,
-            "transcriptionSource": record.transcriptionSource,
-            "transcriptGeneration": record.generation,
-            "engine": record.transcriptionSource,
-            "script": script,
-        },
     ).to_json()
 
 

@@ -16,7 +16,6 @@ from classes.speech.diarize import WindowClusterDiarize, speaker_turns
 from classes.speech.cache import Word
 from classes.speech.runtime import CancelToken
 from classes.speech.vad import EnergyVad, silence_ranges_from_speech
-from classes.speech.beats import EnergyBeatEngine
 from classes.speech.word_ranges import compact_fragments_after_remove
 
 
@@ -114,14 +113,6 @@ def test_diarize_labels_speakers():
     assert turns
 
 
-def test_beats_detect_something(tmp_path):
-    wav = tmp_path / "b.wav"
-    _write_tone_wav(wav, seconds=2.0, amp=12000)
-    result = EnergyBeatEngine().detect(str(wav), token=CancelToken())
-    assert "beats" in result
-    assert "bpm" in result
-
-
 def test_remove_silence_tool_mocked(tmp_path):
     wav = tmp_path / "talk.wav"
     _write_tone_wav(wav, seconds=2.0)
@@ -212,31 +203,6 @@ def test_export_captions_writes_srt(tmp_path):
     assert "Hi" in out.read_text(encoding="utf-8")
 
 
-def test_detect_beats_tool(tmp_path):
-    wav = tmp_path / "m.wav"
-    _write_tone_wav(wav, seconds=1.5, amp=10000)
-    project = {
-        "fps": {"num": 30, "den": 1},
-        "clips": [{
-            "id": "c1", "position": 0, "start": 0, "end": 1.5, "layer": 0,
-            "reader": {"path": str(wav)},
-        }],
-    }
-    app = MagicMock()
-    app.project = MagicMock()
-    app.project.get.side_effect = lambda k, d=None: project.get(k, d)
-    with patch("classes.app.get_app", return_value=app), \
-         patch("classes.agent_tools.inspect_render.snapshot_project", return_value=project), \
-         patch("classes.agent_tools.speech_extra._media_path_for_clip", return_value=str(wav)), \
-         patch("classes.clip_utils.project_fps_fraction", return_value=Fraction(30, 1)), \
-         patch("classes.speech.beats.extract_mono_16k_wav", return_value=(str(wav), "")):
-        from classes.agent_tools.speech_extra import detect_beats_tool_handler
-        raw = detect_beats_tool_handler(clipId="c1")
-    receipt = parse_receipt(raw)
-    assert receipt["status"] == "applied"
-    assert "beats" in receipt["data"]
-
-
 def test_diarize_media_tool(tmp_path):
     wav = tmp_path / "d.wav"
     _write_tone_wav(wav, seconds=2.0)
@@ -280,11 +246,9 @@ def test_all_phase5_tools_registered():
     names = [
         "get_transcript_tool",
         "remove_words_tool",
-        "transcribe_media_tool",
         "remove_silence_tool",
         "add_captions_tool",
         "export_captions_tool",
-        "detect_beats_tool",
         "diarize_media_tool",
     ]
     for name in names:
@@ -298,7 +262,7 @@ def test_all_phase5_tools_registered():
 
 def test_inspect_still_has_no_transcription_key():
     from classes.agent_tools.schema import TOOL_SCHEMAS
-    for name in ("inspect_timeline_tool", "inspect_media_tool"):
+    for name in ("inspect_timeline_tool",):
         props = TOOL_SCHEMAS[name]["properties"]
         assert "transcription" not in props
         assert "transcribe" not in props

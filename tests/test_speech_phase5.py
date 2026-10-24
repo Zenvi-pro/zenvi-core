@@ -623,19 +623,16 @@ def test_phase5_tools_registered():
     for name in (
         "get_transcript_tool",
         "remove_words_tool",
-        "transcribe_media_tool",
     ):
         assert name in th.AGENT_TOOL_HANDLERS
         assert name in th.TOOL_DISPLAY_LABELS
         assert name in th.BACKGROUND_SAFE_TOOLS
     assert "get_transcript_tool" in th.READ_ONLY_TOOLS
-    assert "transcribe_media_tool" in th.READ_ONLY_TOOLS
     assert "remove_words_tool" not in th.READ_ONLY_TOOLS
 
     from classes.agent_tools.schema import TOOL_SCHEMAS
     assert "get_transcript_tool" in TOOL_SCHEMAS
     assert "remove_words_tool" in TOOL_SCHEMAS
-    assert "transcribe_media_tool" in TOOL_SCHEMAS
 
 
 def test_remove_words_applies_fragments(tmp_cache, tmp_path):

@@ -1279,22 +1279,6 @@ def list_layers(**_kw) -> str:
 # Playback & history
 # ---------------------------------------------------------------------------
 
-def go_to_start(**_kw) -> str:
-    try:
-        _get_app().window.actionJumpStart_trigger()
-        return "Seeked to start."
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def go_to_end(**_kw) -> str:
-    try:
-        _get_app().window.actionJumpEnd_trigger()
-        return "Seeked to end."
-    except Exception as e:
-        return f"Error: {e}"
-
-
 def _undo_redo(app, direction, steps) -> str:
     """Apply *steps* sequential undo/redo operations and report what happened.
 
@@ -1673,30 +1657,6 @@ def delete_from_timeline(
 
         wants_ripple = ripple is True or str(ripple).strip().lower() in ("1", "true", "yes", "on")
         return _delete_one_clip(app, resolved, ripple=wants_ripple)
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def zoom_in(**_kw) -> str:
-    try:
-        _get_app().window.actionTimelineZoomIn_trigger()
-        return "Timeline zoomed in."
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def zoom_out(**_kw) -> str:
-    try:
-        _get_app().window.actionTimelineZoomOut_trigger()
-        return "Timeline zoomed out."
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def center_on_playhead(**_kw) -> str:
-    try:
-        _get_app().window.actionCenterOnPlayhead_trigger()
-        return "Centered on playhead."
     except Exception as e:
         return f"Error: {e}"
 
@@ -2462,130 +2422,6 @@ def add_clip_to_timeline(
             f"Added clip to timeline at position {pos_sec}s on track {track_lbl}"
             f"{dur_part}{id_part}{_snap_note}{watch_part}."
         )
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def slice_clip_at_playhead(**_kw) -> str:
-    """Slice every unlocked clip and transition under the playhead, keeping both sides.
-
-    slice_clips_tool targets one clip, a track or the selection; this keeps the
-    old everything-under-the-playhead behaviour. Items on locked tracks and
-    items whose edge sits exactly at the playhead (a cut there would leave a
-    zero-length clip) are not sliced and not counted.
-    """
-    try:
-        from windows.views.timeline_backend.enums import MenuSlice
-
-        # Read state and perform the slice entirely on the main thread
-        result_box = [None]
-
-        def _do_slice():
-            from classes.query import Clip, Transition
-            app = _get_app()
-            win = app.window
-            fps = app.project.get("fps") or {}
-            fps_float = _project_fps_float(fps)
-            playhead_position = float(win.preview_thread.current_frame - 1) / fps_float
-            half_frame = 0.5 / fps_float
-            locked = {t.get("number") for t in (app.project.get("layers") or []) if t.get("lock")}
-
-            def _sliceable(item):
-                start = float(item.data.get("position", 0.0) or 0.0)
-                end = start + float(item.data.get("end", 0.0) or 0.0) - float(item.data.get("start", 0.0) or 0.0)
-                return (item.data.get("layer") not in locked
-                        and start + half_frame < playhead_position < end - half_frame)
-
-            clip_ids = [c.id for c in Clip.filter(intersect=playhead_position) if _sliceable(c)]
-            tran_ids = [t.id for t in Transition.filter(intersect=playhead_position) if _sliceable(t)]
-            if not clip_ids and not tran_ids:
-                result_box[0] = (f"Error: no unlocked clip or transition under the playhead "
-                                 f"({playhead_position:.2f} s); nothing was sliced.")
-                return
-            win.timeline.Slice_Triggered(MenuSlice.KEEP_BOTH, clip_ids, tran_ids, playhead_position)
-            n = len(clip_ids) + len(tran_ids)
-            result_box[0] = f"Sliced {n} item(s) at the playhead ({playhead_position:.2f} s); both sides kept."
-
-        _run_on_main_thread(_do_slice)
-
-        return result_box[0] or "Error: the slice did not run."
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def reverse_clip(
-    timeline_clip_id="",
-    clip_query="",
-    track="",
-    occurrence="0",
-    mode="reverse",
-    **_kw,
-) -> str:
-    """Reverse a timeline clip (or reset time remapping).
-
-    Same as Timeline → Speed → Reverse / Reset. mode='reverse' plays backward;
-    mode='reset' clears reverse/speed time curves back to forward 1x.
-    Resolve with timeline_clip_id or clip_query (+ track/occurrence if needed).
-    """
-    action = str(mode or "reverse").strip().lower()
-    if action in ("reverse", "backward", "backwards"):
-        menu_action_name = "REVERSE"
-        done = "Reversed"
-    elif action in ("reset", "none", "forward", "unreverse"):
-        menu_action_name = "NONE"
-        done = "Reset time on"
-    else:
-        return "Error: mode must be 'reverse' or 'reset'."
-
-    if not str(timeline_clip_id or "").strip() and not str(clip_query or "").strip():
-        return "Error: reverse_clip_tool requires timeline_clip_id or clip_query."
-
-    try:
-        resolved = _resolve_timeline_clip_for_tool(
-            timeline_clip_id=timeline_clip_id,
-            clip_query=clip_query,
-            track=track,
-            occurrence=occurrence,
-        )
-        if not resolved.ok or not resolved.clip:
-            return resolved.error or "Error: Could not resolve timeline clip."
-
-        clip_id = str(getattr(resolved.clip, "id", "") or "")
-        if not clip_id:
-            return "Error: Resolved clip has no id."
-
-        result_box = [None]
-
-        def _do_reverse():
-            from classes.query import Clip
-            from windows.views.retime import time_curve_is_reversed
-            from windows.views.timeline_backend.enums import MenuTime
-
-            app = _get_app()
-            timeline = getattr(app.window, "timeline", None)
-            if timeline is None or not hasattr(timeline, "Time_Triggered"):
-                result_box[0] = "Error: Timeline view is not available."
-                return
-            clip = Clip.get(id=clip_id)
-            if clip is None:
-                result_box[0] = f"Error: timeline_clip_id={clip_id} is no longer on the timeline."
-                return
-            # Timeline > Speed > Reverse toggles, so asking a reversed clip to
-            # reverse would play it forward again; a no-op must not add an undo step.
-            time_data = clip.data.get("time")
-            points = time_data.get("Points") if isinstance(time_data, dict) else None
-            if menu_action_name == "REVERSE" and time_curve_is_reversed(time_data):
-                result_box[0] = f"timeline_clip_id={clip_id} is already reversed; nothing changed."
-                return
-            if menu_action_name == "NONE" and (not isinstance(points, list) or len(points) <= 1):
-                result_box[0] = f"timeline_clip_id={clip_id} already plays forward at 1x; nothing changed."
-                return
-            menu_action = getattr(MenuTime, menu_action_name)
-            timeline.Time_Triggered(menu_action, [clip_id], "1X")
-            result_box[0] = f"{done} timeline_clip_id={clip_id}."
-
-        _run_on_main_thread(_do_reverse)
-        return result_box[0] or f"{done} timeline_clip_id={clip_id}."
     except Exception as e:
         return f"Error: {e}"
 
@@ -4212,7 +4048,7 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
     _audio_exts = (".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma")
     if "freesound.org" in lower_path or any(lower_path.endswith(ext) for ext in _audio_exts):
         return (
-            "Error: import_video_url_and_add_to_timeline_tool is for video URLs only. "
+            "Error: ingest_web_video_tool is for video URLs only. "
             "For Freesound / music / SFX use stock_music(query=..., track=...)."
         )
     try:
@@ -4485,7 +4321,7 @@ def ingest_web_video(
     """Fetch a YouTube/web video URL via yt-dlp into Imports/media bin (one undo).
 
     FIRST tool for youtube/youtu.be (or similar) links — do not ToolSearch or use
-    import_video_url_and_add_to_timeline_tool / import_files_tool for a page URL.
+    import_files_tool for a page URL.
 
     Long downloads return status=running with a job_id before MCP clients time
     out (~60s). Call ingest_web_video_tool(job_id=...) again — each call waits
@@ -9795,8 +9631,6 @@ AGENT_TOOL_HANDLERS = {
     # new/save/open_project_tool: classes.editor_tools.project_export
     # Playback
     # play_tool: classes.editor_tools.tracks_nav
-    "go_to_start_tool": go_to_start,
-    "go_to_end_tool": go_to_end,
     "undo_tool": undo,
     "redo_tool": redo,
     # Timeline
@@ -9806,19 +9640,13 @@ AGENT_TOOL_HANDLERS = {
     "analyze_timeline_audio_tool": analyze_timeline_audio,
     "set_clip_volume_tool": set_clip_volume,
     "duck_under_speech_tool": duck_under_speech,
-    "zoom_in_tool": zoom_in,
-    "zoom_out_tool": zoom_out,
-    "center_on_playhead_tool": center_on_playhead,
     "import_files_tool": import_files,
     "wait_until_project_indexed_tool": wait_until_project_indexed,
     # Export
     # Clips
     "get_file_info_tool": get_file_info,
     "add_clip_to_timeline_tool": add_clip_to_timeline,
-    "import_video_url_and_add_to_timeline_tool": import_video_url_and_add_to_timeline,
     "ingest_web_video_tool": ingest_web_video,
-    "slice_clip_at_playhead_tool": slice_clip_at_playhead,
-    "reverse_clip_tool": reverse_clip,
     # Search / slice / modify (tag-query resolved)
     "suggest_motion_graphics_placements_tool": suggest_motion_graphics_placements,
     "propose_overlay_windows_tool": propose_overlay_windows,
@@ -9871,25 +9699,17 @@ TOOL_DISPLAY_LABELS = {
     "list_files_tool": "List project media",
     "list_clips_tool": "List clips",
     "list_layers_tool": "List tracks",
-    "go_to_start_tool": "Seek to start",
-    "go_to_end_tool": "Seek to end",
     "undo_tool": "Undo",
     "redo_tool": "Redo",
     "delete_from_timeline_tool": "Delete from timeline",
     "analyze_timeline_audio_tool": "Analyze timeline audio",
     "set_clip_volume_tool": "Set clip volume",
     "duck_under_speech_tool": "Duck music under speech",
-    "zoom_in_tool": "Zoom in",
-    "zoom_out_tool": "Zoom out",
-    "center_on_playhead_tool": "Center on playhead",
     "import_files_tool": "Import files from disk",
     "wait_until_project_indexed_tool": "Wait for indexing",
     "get_file_info_tool": "Read file info",
     "add_clip_to_timeline_tool": "Add clip to timeline",
-    "import_video_url_and_add_to_timeline_tool": "Import video to timeline",
     "ingest_web_video_tool": "Ingest web / YouTube video",
-    "slice_clip_at_playhead_tool": "Slice clip at playhead",
-    "reverse_clip_tool": "Reverse clip",
     "suggest_motion_graphics_placements_tool": "Suggest MG placements (deprecated)",
     "propose_overlay_windows_tool": "Propose overlay windows",
     "place_motion_graphic_tool": "Place motion graphic",
@@ -9989,10 +9809,7 @@ READ_ONLY_TOOLS = frozenset({
     "inspect_color_tool",
     "list_looks_tool",
     "inspect_timeline_tool",
-    "inspect_media_tool",
     "get_transcript_tool",
-    "transcribe_media_tool",
-    "detect_beats_tool",
     "diarize_media_tool",
     "export_captions_tool",
 }) | frozenset(name for name, spec in _EDITOR_TOOL_SPECS.items() if spec.read_only)
@@ -10015,9 +9832,6 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     "import_files_tool",
     # Polls indexing state for minutes — must never occupy the GUI thread.
     "wait_until_project_indexed_tool",
-    # Downloads + re-encodes off the GUI thread; its timeline mutations
-    # marshal to the main thread internally.
-    "import_video_url_and_add_to_timeline_tool",
     "import_stock_media_tool",
     # Long-running Runware/ffmpeg work; Qt timeline touches are marshalled internally.
     "generate_video_and_add_to_timeline_tool",
@@ -10030,17 +9844,14 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     "fetch_motion_graphics_video_tool",
     "ingest_web_video_tool",
     "inspect_timeline_tool",
-    "inspect_media_tool",
     # Local ASR / VAD / beats / embeds can take minutes; Qt mutations marshal themselves.
     "get_transcript_tool",
-    "transcribe_media_tool",
     "remove_words_tool",
     "remove_silence_tool",
     "add_captions_tool",
     "export_captions_tool",
     # Its no-cue fallback extracts audio and runs VAD; the writes marshal themselves.
     "duck_under_speech_tool",
-    "detect_beats_tool",
     "diarize_media_tool",
 }) | frozenset(name for name, spec in _EDITOR_TOOL_SPECS.items() if spec.background_safe)
 

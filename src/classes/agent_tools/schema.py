@@ -20,7 +20,7 @@ HIDDEN_PARAMS = frozenset({"self", "chat_session_id", "transaction_id"})
 PRIORITY_SCHEMAS = frozenset({
     "add_clip_to_timeline_tool",
     "delete_from_timeline_tool",
-    "slice_clip_at_playhead_tool",
+    "slice_clips_tool",
     "place_motion_graphic_tool",
     "apply_transition_tool",
     "set_clip_volume_tool",
@@ -111,8 +111,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         ),
     }),
     "list_layers_tool": _obj({}),
-    "go_to_start_tool": _obj({}),
-    "go_to_end_tool": _obj({}),
     "undo_tool": _obj({
         "steps": _str_or_num(description="Number of undo steps."),
     }),
@@ -146,13 +144,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "fade_ms": _str_or_num(),
         "mode": _str(description="'replace' (default) or another handler mode."),
     }),
-    "reverse_clip_tool": _obj({
-        "timeline_clip_id": _str(),
-        "clip_query": _str(),
-        "track": _str(),
-        "occurrence": _str_or_num(),
-        "mode": _str(description="'reverse' (default) or 'reset'."),
-    }),
     "duck_under_speech_tool": _obj({
         "bed_clip_ids": _str(),
         "bed_query": _str(),
@@ -166,9 +157,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "boost_speech_db": _str_or_num(),
         "dry_run": _str_or_bool(description="true/false — preview without writing."),
     }),
-    "zoom_in_tool": _obj({}),
-    "zoom_out_tool": _obj({}),
-    "center_on_playhead_tool": _obj({}),
     "import_files_tool": _obj({
         "paths": {"oneOf": [{"type": "array", "items": {"type": "string"}}, {"type": "string"}],
                   "description": "List of paths, or one comma-separated string."},
@@ -194,16 +182,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "start_seconds": _str_or_num(),
         "end_seconds": _str_or_num(),
         "query": _str(),
-        "full_file": _str_or_bool(),
-    }),
-    "import_video_url_and_add_to_timeline_tool": _obj({
-        "video_url": _str(),
-        "position_seconds": _str_or_num(),
-        "track": _str_or_num(),
-        "query": _str(),
-        "start_seconds": _str_or_num(),
-        "end_seconds": _str_or_num(),
-        "duration_seconds": _str_or_num(),
         "full_file": _str_or_bool(),
     }),
     "ingest_web_video_tool": _obj({
@@ -302,7 +280,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "dryRun": _str_or_bool(),
         "max_iterations": _str_or_num(),
     }),
-    "slice_clip_at_playhead_tool": _obj({}),
     "suggest_motion_graphics_placements_tool": _obj({
         "brief": _str(),
         "beat_count": _str_or_num(),
@@ -406,14 +383,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "end": _num(description="watchSuggested.end seconds"),
         "overview": {"type": "boolean", "description": "One storyboard instead of N frames."},
     }),
-    "inspect_media_tool": _obj({
-        "fileId": {"type": "string", "description": "Zenvi file id from list_files."},
-        "clipId": {"type": "string"},
-        "start": _num(minimum=0),
-        "end": _num(minimum=0),
-        "maxFrames": _int(minimum=1, maximum=12),
-        "overview": {"type": "boolean"},
-    }, required=["fileId"]),
 
     "get_transcript_tool": _obj({
         "clipId": _str(description="Timeline clip id. Prefer this after edits."),
@@ -435,14 +404,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "includeWords": _bool(
             description="If true, include the verbose per-word timing array (same as detail_level=full).",
         ),
-    }),
-    "transcribe_media_tool": _obj({
-        "fileId": _str(description="Media-bin file id."),
-        "file_id": _str(description="Alias for fileId."),
-        "language": _str(description="BCP-47 / whisper code, or 'auto'."),
-        "modelId": _str(description="faster-whisper model, e.g. faster-whisper-base; ignored by the bundled whisper.cpp engine."),
-        "force": _bool(description="Ignore cache and re-run ASR."),
-        "engine": _str(description="auto|apple|whisper"),
     }),
     "remove_words_tool": _obj({
         "clipId": _str(description="Timeline clip to cut."),
@@ -499,12 +460,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "language": _str(),
     }, required=["path"]),
 
-    "detect_beats_tool": _obj({
-        "fileId": _str(),
-        "file_id": _str(description="Alias for fileId."),
-        "clipId": _str(),
-        "timeline_clip_id": _str(description="Alias for clipId."),
-    }),
 
     "diarize_media_tool": _obj({
         "fileId": _str(),

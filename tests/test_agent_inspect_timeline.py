@@ -183,3 +183,48 @@ def test_inspect_ranges_outside_the_project_are_refused(monkeypatch, kwargs):
     assert isinstance(out, ToolReceipt) and out.status == "refused", out
     assert "out of range" in out.summary
     assert rendered == []
+
+
+def test_inspect_tools_create_zero_undo_via_execute():
+    """READ_ONLY inspect must not open an undo group / bump history."""
+    from classes.agent_tools import execute as ex
+    from classes.agent_tools.output import ToolOutput
+    from classes.agent_tools.receipt import ToolReceipt
+
+    history = []
+
+    def handler(**_kw):
+        return ToolOutput(
+            receipt=ToolReceipt.applied(
+                "inspect_timeline_tool", "Rendered 1", undo_steps=0, data={"frames": []},
+            ),
+            images=[],
+        )
+
+    app = types.SimpleNamespace(
+        updates=types.SimpleNamespace(actionHistory=history),
+        project={},
+        thread=lambda: None,
+    )
+
+    def atomic(app_, fn):
+        def wrapped(**kw):
+            history.append("atomic")
+            return fn(**kw)
+        return wrapped
+
+    ex.bind_runtime(
+        handlers={"inspect_timeline_tool": handler},
+        read_only=frozenset({"inspect_timeline_tool"}),
+        background_safe=frozenset({"inspect_timeline_tool"}),
+        ungrouped=frozenset({"inspect_timeline_tool"}),
+        main_thread_timeouts={},
+        get_app=lambda: app,
+        run_on_main_thread=lambda fn, timeout=30: fn(),
+        atomic=atomic,
+        coerce_steps=lambda x: 1,
+        qthread=None,
+    )
+    out = ex.execute_tool_rich("inspect_timeline_tool", {"startFrame": 0})
+    assert out.receipt.undoSteps == 0
+    assert history == []
