@@ -750,7 +750,7 @@ def _retimed(data):
         "timeline_clip_ids": array({"type": "string"}, "Only join these clips (all on one track, joined in "
                                                        "timeline order). Leave out for every clip on the track."),
         "transition": string("'fade' (crossfade, default), 'random', or any transition name ('wipe_left_to_right', "
-                             "'circle_in_to_out', list_transitions_tool).", "fade"),
+                             "'circle_in_to_out', find_tools: list transitions).", "fade"),
         "duration_seconds": number("Length of each transition in seconds. 0 = the Default Transition Length "
                                    "preference.", 1.0, minimum=0),
         "method": enum(["ripple", "handles", "existing_overlaps"],
@@ -779,7 +779,7 @@ def add_transitions_between_clips(track="", timeline_clip_ids=None, transition="
     clip). Read `method` for how the overlap is made; the receipt lists every join added,
     skipped (gap, too short, already has one, no spare media) and every clip moved. One undo
     step. Refused on a locked track; never deletes clips. For one specific pair you can also
-    use apply_transition_tool.
+    use find_tools (apply a transition).
     Example: track="1", transition="fade", duration_seconds=0.5.
     """
     from classes.query import Clip, Transition

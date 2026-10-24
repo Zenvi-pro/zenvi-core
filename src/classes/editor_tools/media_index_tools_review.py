@@ -242,11 +242,11 @@ def review_edit(form="", target_seconds=None, vibe="", wants_music="", wants_cap
     needs, unknown = result["needs"], result["unknown"]
     summary = (f"{len(needs)} thing(s) need work: {', '.join(needs[:6])}" if needs else "Nothing needs work") + \
               (f"; {len(unknown)} could not be measured: {', '.join(unknown[:5])}" if unknown else "") + "."
-    return ok(summary, needs=needs, unknown=unknown, counts=result["counts"], layers=result["layers"],
+    return ok(summary, needs=needs, unknown=unknown, counts=result["counts"], layers=result["layers"], fix_with=result["fix_with"],
               measured={"colour_clips": len(looks), "colour_clips_considered": measured_of, "mix_rendered": mix is not None,
                         "mix_note": mix_note or None, "duration": round(project.duration, 2), "clips": len(clips)},
               how_to_read="Findings marked measured come from the file or the rendered mix; the model's opinions (interest, "
-                          "hook) are labelled inferred in get_segment_dossier_tool and never override a measured defect.")
+                          "hook) are labelled inferred in the segment dossier and never override a measured defect.")
 
 
 # ============================ get_project_overview_tool ============================
@@ -343,7 +343,7 @@ def get_project_overview(top_moments=8, precise_places=False):
     shot (days and places, from the clips' own tags), the best moments by highlight score, near-duplicate takes, which
     clips have speech, the music files with their energy and sections, the look clusters (dark/cool, bright/warm...),
     orientation mix and what is not indexed yet. Start here before planning a vlog, montage or film: it says what you
-    have to cut with, then use search_footage_tool and get_segment_dossier_tool for detail.
+    have to cut with, then use search_footage_tool and the segment dossier (find_tools: segment dossier) for detail.
     """
     files, missing = project_indexes()
     if not files and not missing:

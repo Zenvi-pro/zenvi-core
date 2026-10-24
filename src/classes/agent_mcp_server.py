@@ -53,21 +53,21 @@ SERVER_INSTRUCTIONS = (
     "with that object (clipId/start/end) — or with startFrame/endFrame — before "
     "claiming the edit is correct; you will receive composited JPEG frames with "
     "a 0–1 top-left coordinate grid. To describe, summarise or recreate footage call "
-    "storyboard_tool first (detail=list for the whole video in one call: a row per shot with its own exact time; keep every row; open the keyframe picture before trusting a description): every cut is exact. Use inspect_media_tool only for "
+    "storyboard_tool first (detail=list for the whole video in one call: a row per shot with its own exact time; keep every row; open the keyframe picture before trusting a description): every cut is exact. Use the media inspector (find_tools: inspect media) only for "
     "a spot check or a file with no shot list yet; never sample frames at a fixed interval to find cuts, and never guess from filenames. "
     "Do not shell ffmpeg for frames. To cut a placed clip, use slice_clips_tool "
     "(at_seconds is timeline time). After "
     "delete_from_timeline_tool, check the receipt removedClipIds. If inspect shows "
     "the edit is wrong, undo_tool and retry. "
-    "YouTube / youtu.be / similar URL: call ingest_web_video_tool once "
+    "YouTube / youtu.be / similar URL: call the web video ingest (find_tools: ingest web video) once "
     "(intent=timeline if the user asked to add/place it; intent=reference for "
-    "colour/look only). Do not ToolSearch or use import_files_tool / "
-    "import_video_url_and_add_to_timeline_tool for a YouTube page URL. "
-    "If status=running, call ingest_web_video_tool(job_id=...) again — each "
+    "colour/look only). Do not ToolSearch or use import_files_tool or a video-URL import (find_tools: import video url) "
+    "for a YouTube page URL. "
+    "If status=running, call the web video ingest again with job_id=... — each "
     "call waits until completed/failed or ~45s. Do not start a second download. "
     "A client 'operation timed out' is not failure; keep calling the same job_id. "
     "On ok=false / status=failed, report the reason once and stop. "
-    "After a successful ingest_web_video_tool place, reply briefly — do not "
+    "After a successful web video ingest place, reply briefly — do not "
     "call inspect_timeline_tool unless the user asked to check the picture. "
     "SPEECH WORKFLOW: You HAVE on-device transcription. For any dialogue, "
     "transcript, filler-word, or caption request call get_transcript_tool "
@@ -75,13 +75,13 @@ SERVER_INSTRUCTIONS = (
     "in project frames (never put ASR inside inspect_*). On macOS, engine=auto "
     "prefers Apple SpeechAnalyzer when the helper is present (macOS 26+); "
     "Windows and older Macs use whisper.cpp. Pass engine=whisper or "
-    "engine=apple to pin. Tighten pacing with remove_silence_tool "
-    "first, then remove_words_tool (pass transcriptGeneration; fillerPreset "
+    "engine=apple to pin. Tighten pacing with remove silent pauses "
+    "first, then remove filler words (pass transcriptGeneration; fillerPreset "
     "um_uh is allowed). After cuts, call get_transcript_tool again — stale "
     "indices are refused. add_captions_tool burns timed dialogue; "
-    "export_captions_tool writes SRT/VTT. diarize_media_tool labels speakers "
-    "offline. detect_beats_tool finds music beats. "
-    "To recreate a video from the user's footage run the loop: plan_recreation_tool, build_recreation_tool, check_recreation_tool, fix what the check names, check again; never place it by length alone. search_footage_tool searches everything the index knows (what happens, what is said, how it looks)."
+    "export captions writes SRT/VTT. diarize media labels speakers "
+    "offline. detect beats finds music beats. "
+    "To recreate a video from the user's footage run the loop: plan recreation, build recreation, check recreation, fix what the check names, check again; never place it by length alone. search_footage_tool searches everything the index knows (what happens, what is said, how it looks)."
 )
 
 # The editing playbook (how to finish a whole piece) is one text shared with the Zenvi Assistant; see classes.edit_playbook.
@@ -226,7 +226,8 @@ def call_meta_tool(name: str, args: dict):
             limit = max(1, min(int(args.get("limit") or 5), 10))
         except (TypeError, ValueError):
             return "Error: limit must be an integer from 1 to 10."
-        return json.dumps([defs[n] for score, n in scored[:limit] if score < 0])
+        return json.dumps([dict(defs[n], call='run_tool(name="%s", args={...}) -- not a direct tool, calling it by name fails' % n)
+                           for score, n in scored[:limit] if score < 0])
     target, inner = str(args.get("name") or ""), args.get("args") or {}
     if not isinstance(inner, dict):
         return "Error: run_tool args must be an object."

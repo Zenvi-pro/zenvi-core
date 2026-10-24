@@ -544,4 +544,5 @@ def review(clips: Sequence[TimelineClip], project: ProjectInfo, brief: Brief, *,
     needs = sorted((f for f in findings if f["status"] == "needs"), key=lambda f: _ORDER[f["status"]])
     unknown = [f["id"] for f in findings if f["status"] == "unknown"]
     return {"layers": layers, "needs": [f["id"] for f in needs], "unknown": unknown,
-            "counts": {s: sum(1 for f in findings if f["status"] == s) for s in ("needs", "info", "unknown", "ok")}}
+            "counts": {s: sum(1 for f in findings if f["status"] == s) for s in ("needs", "info", "unknown", "ok")},
+            "fix_with": "Tools named in fix that are not in your tool list run as run_tool(name=<tool>, args={...}); find_tools gives their parameters."}

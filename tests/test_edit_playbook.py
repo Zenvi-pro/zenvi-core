@@ -25,22 +25,21 @@ def test_every_tool_the_playbook_names_is_a_real_registered_tool():
     from classes.editor_tools import REGISTRY
 
     named = set(re.findall(r"\b[a-z][a-z_]*_tool\b", P.PLAYBOOK))
-    core = {"review_edit_tool", "get_project_overview_tool", "search_footage_tool", "get_segment_dossier_tool", "balance_mix_tool", "harmonize_look_tool",
-            "sync_cuts_to_beats_tool", "slice_on_beats_tool", "storyboard_tool", "plan_recreation_tool", "build_recreation_tool", "check_recreation_tool", "search_stock_video_tool", "audition_music_tool", "analyze_music_tool", "set_edit_brief_tool", "get_edit_brief_tool", "listen_tool"}
+    core = {"review_edit_tool", "get_project_overview_tool", "search_footage_tool", "storyboard_tool", "color_grade_clip_tool"}
     assert core <= named, f"the playbook must name the tools it relies on: {sorted(core - named)}"
-    real = set(REGISTRY) | set(tool_handlers.AGENT_TOOL_HANDLERS)
+    real = set(REGISTRY) | set(tool_handlers.AGENT_TOOL_HANDLERS) | {"run_tool"}
     assert not named - real, f"the playbook names tools that do not exist: {sorted(named - real)}"
 
 
 def test_the_playbook_covers_the_scope_rule_the_six_layers_the_loop_and_the_trust_rule():
-    for needle in ("PRECISION AND ZOOM", "get_moment_tool", "view_frames_tool", "refine_cut_tool", "locate_person_tool", "unsure", "Numbers first",
+    for needle in ("PRECISION AND ZOOM", "get moment", "view frames", "refine cut", "locate person", "find_tools", "run_tool", "unsure", "Numbers first",
                    "narrow request", "STORY", "PICTURE", "SOUND", "TEXT", "GRAPHICS/EFFECTS", "DELIVERY", "THE LOOP", "review_edit_tool",
                    "WHEN EACH LAYER IS NEEDED", "TRUST", "LONG-FORM", "Measured facts"):
         assert needle in P.PLAYBOOK, needle
 
 
 def test_it_stays_short_enough_for_every_agent_to_carry():
-    assert len(P.PLAYBOOK) < 7000 and len(P.PLAYBOOK.split()) < 1100
+    assert len(P.PLAYBOOK) < 7000 and len(P.PLAYBOOK.split()) < 1200  # unlisted tools are named in words: more words, same size
 
 
 def test_it_never_orders_a_step_without_leaving_room_for_judgement():

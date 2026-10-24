@@ -509,7 +509,7 @@ def add_captions(cues=None, srtPath="", clipId="", timeline_clip_id="", clip_que
     trimming keeps them on the words; the Captions dock can edit them). With cues or a
     subtitle file and no clip, they go on a transparent 'Captions' overlay clip above
     the video. A clip's existing captions are replaced unless replace_existing=false.
-    One undo step. Not for titles or other free text (add_title_tool).
+    One undo step. Not for titles or other free text (find_tools: add a title).
 
     Examples: {"timeline_clip_id": "C1", "style": "reels"};
     {"srtPath": "/path/captions.srt", "timeline_clip_id": "C1", "style": "classic"};

@@ -307,7 +307,7 @@ def test_inspect_still_has_no_transcription_key():
 def test_server_instructions_mention_speech():
     from classes.agent_mcp_server import SERVER_INSTRUCTIONS
     assert "get_transcript_tool" in SERVER_INSTRUCTIONS
-    assert "remove_silence_tool" in SERVER_INSTRUCTIONS
+    assert "remove silent pauses" in SERVER_INSTRUCTIONS  # in words: the tool is not listed
     assert "inspect" in SERVER_INSTRUCTIONS.lower()
 
 

@@ -51,6 +51,17 @@ def test_multi_clip_assembly_is_core():
     from classes.agent_tools.core_tools import CORE_TOOL_NAMES
 
     assert {"add_clips_to_timeline_tool", "add_transitions_between_clips_tool"} <= set(CORE_TOOL_NAMES)
+    # Their one-at-a-time twins duplicate them; they stay findable, not listed.
+    assert not {"add_clip_to_timeline_tool", "apply_transition_tool"} & set(CORE_TOOL_NAMES)
+
+
+def test_the_survey_and_check_steps_are_core():
+    """Instructions say storyboard_tool first and every receipt's watchSuggested asks for inspect_timeline_tool;
+    storyboard_tool also describes every shot, so describe_shots_tool is its duplicate."""
+    from classes.agent_tools.core_tools import CORE_TOOL_NAMES
+
+    assert {"storyboard_tool", "inspect_timeline_tool"} <= set(CORE_TOOL_NAMES)
+    assert "describe_shots_tool" not in CORE_TOOL_NAMES
 
 
 def test_the_mcp_lists_core_tools_and_search_only(tool_stub):
@@ -60,6 +71,40 @@ def test_the_mcp_lists_core_tools_and_search_only(tool_stub):
     assert {"find_tools", "run_tool", "search_footage_tool"} <= names
     assert "reverse_clip_tool" not in names
     assert names - set(_extra_tools()) - {"find_tools", "run_tool"} <= {"search_footage_tool"}
+
+
+PLAYBOOK_ACTIONS = {
+    "add a title or end card": "add_title_tool",
+    "balance the mix: even voices, music under them, loudness": "balance_mix_tool",
+    "duck music under speech": "duck_under_speech_tool",
+    "remove silent pauses": "remove_silence_tool",
+    "set the project profile: resolution, aspect ratio, frame rate": "set_project_profile_tool",
+    "even out the look so clips match each other": "harmonize_look_tool",
+    "sync cuts to the music beats": "sync_cuts_to_beats_tool",
+    "remove filler words like um and uh": "remove_words_tool",
+    "record the edit brief: goal, form, length": "set_edit_brief_tool",
+}
+
+
+def test_playbook_actions_find_their_tool_in_the_top_three():
+    """The playbook and instructions describe unlisted tools in words; find_tools must map the words back."""
+    from classes import tool_handlers  # noqa: F401  (merges the editor-tool registry)
+    from classes.agent_mcp_server import call_meta_tool
+
+    missed = {}
+    for query, want in PLAYBOOK_ACTIONS.items():
+        names = [t["name"] for t in json.loads(call_meta_tool("find_tools", {"query": query, "limit": 3}))]
+        if want not in names:
+            missed[query] = names
+    assert missed == {}
+
+
+def test_find_tools_says_each_result_runs_through_run_tool():
+    from classes import tool_handlers  # noqa: F401
+    from classes.agent_mcp_server import call_meta_tool
+
+    found = json.loads(call_meta_tool("find_tools", {"query": "add a title"}))
+    assert found and all('run_tool(name="%s"' % t["name"] in t["call"] for t in found)
 
 
 def test_find_tools_returns_unlisted_tools_with_schemas(tool_stub):

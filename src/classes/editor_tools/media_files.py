@@ -322,7 +322,7 @@ def resolve_files(file_ids=None, file_query="") -> list:
                       "'unused' = files no timeline clip uses (what 'remove unused files' removes), "
                       "'used' = files on the timeline, '' = both.", ""),
         "missing_only": boolean("Only files whose media is missing on disk (moved or deleted; relink them "
-                                "with update_project_files_tool).", False),
+                                "with find_tools: update project files).", False),
         "file_ids": array({"type": "string"}, "Only these file ids (e.g. to read full media info)."),
         "detail": enum(["summary", "full"],
                        "'full' adds media info: size, fps, frames, codecs, sample rate, channels, bit rates, "
@@ -341,8 +341,8 @@ def list_project_files(media_type="", query="", tags=None, usage="", missing_onl
     duration, codecs, audio channels) before editing. Each file reports its kind, duration,
     tags, how many timeline clips use it (with their ids), whether its media is missing on
     disk, and for videos the optimized-preview state (none/queued/running/ready/missing).
-    Sub-clips made with Split Clip / create_subclips_tool are listed too (with source_in/out).
-    Read-only. Example: usage="unused" before remove_files_from_project_tool(scope="unused").
+    Sub-clips made with Split Clip (or find_tools: create subclips) are listed too (with source_in/out).
+    Read-only. Example: usage="unused" before removing them (find_tools: remove files from project, scope="unused").
     """
     usage_map = _clip_usage()
     wanted_tags = [str(t).strip().lower() for t in (tags or []) if str(t).strip()]

@@ -153,7 +153,7 @@ def restrict_files(files, captured_after: str, captured_before: str, place_id: i
         "place_id": integer("Only footage shot at this place (ids come from get_project_overview_tool's trip.places); -1 = anywhere.", -1,
                             minimum=-1),
         "place": string("Only footage shot in a place by name ('Lisbon', 'Tokyo', 'Portugal'); names come from get_project_overview_tool's trip.places.", ""),
-        "person": string("Only shots this person is on screen in: a name the user gave (list_people_tool) or an id like P3. Needs the people "
+        "person": string("Only shots this person is on screen in: a name the user gave (find_tools: list people) or an id like P3. Needs the people "
                          "preference and a people scan. A possible match is left out and counted in `unsure_shots`; shots where only their "
                          "voice is heard (a narrator over other footage) are left out and counted in `heard_only_shots`.", ""),
         "limit": integer("Most results to return.", 10, minimum=1, maximum=50),
@@ -170,7 +170,7 @@ def search_footage(query="", look_for="", reference_file_id="", reference_start=
     "the dog on the beach" and "where he says thank you" both work. Add filters for measured facts (camera
     move, shot type, colour, duration, talking or not). A reference file or range finds similar footage, by
     picture or by colour. Use the returned file_id/start/end directly with the clip tools. Files not yet
-    indexed are listed in `not_indexed`; call index_status_tool to see progress.
+    indexed are listed in `not_indexed`; check progress with find_tools: index status.
     """
     query = str(query or "").strip()[:QUERY_LIMIT_CHARS]
     files, missing = project_indexes(file_ids)
@@ -526,7 +526,7 @@ def describe_file_shots(f, fi, shot_ids):
     label="Describe shots",
     schema=obj({
         "file_id": string("The video whose shots to describe.", ""),
-        "shot_ids": array({"type": "integer"}, "Shot ids, as search_footage_tool and storyboard_tool give them."),
+        "shot_ids": array({"type": "integer"}, "Shot ids, as search_footage_tool and the storyboard shot list give them."),
         "start_seconds": number("Or every shot between these seconds of the file.", None, minimum=0),
         "end_seconds": number("End of that range.", None, minimum=0),
     }),
