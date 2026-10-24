@@ -127,9 +127,12 @@ def test_no_patches_is_a_no_op(src):
     assert _source(src) == UPSTREAM
 
 
-def test_discard_preroll_patch_touches_only_the_ffmpeg_reader():
+def test_discard_preroll_patch_touches_only_the_ffmpeg_reader(tmp_path):
+    # Outside a checkout: inside one, git apply skips the patch's paths that lie
+    # outside the current directory, which is all of them when this app is a
+    # subdirectory of the repository (desktop/ in the Zenvi monorepo).
     proc = subprocess.run(["git", "apply", "--numstat", DISCARD_PATCH], capture_output=True, text=True,
-                          timeout=30, cwd=ROOT)
+                          timeout=30, cwd=tmp_path)
     assert proc.returncode == 0, proc.stderr
     files = [line.split("\t")[2] for line in proc.stdout.splitlines()]
     assert files == ["src/FFmpegReader.cpp"]
