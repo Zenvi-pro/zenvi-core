@@ -412,7 +412,7 @@ def get_edit_brief():
         "measure_limit": integer("Most clips whose look is measured (an even sample when there are more).", 24, minimum=2, maximum=80),
         "dry_run": boolean("Only measure and report which clips would be matched; change nothing.", False),
         "timeline_clip_ids": array({"type": "string"}, "Only these timeline clip ids are measured and matched; every other clip is "
-                                   "left as it is. Default: every picture clip.", []),
+                                   "left as it is. Default: every picture clip.", None),
     }),
 )
 def harmonize_look(reference="median", tolerance=0.15, max_clips=12, measure_limit=24, dry_run=False, timeline_clip_ids=None):
