@@ -368,10 +368,10 @@ def grader(monkeypatch, timeline):
         return {i: table[i] for i in ids if i in table}, len(ids)
     monkeypatch.setattr(TE, "measure_looks", measure)
 
-    def match(clipIds="", referenceClipId="", **kw):
-        state.calls.append((clipIds, referenceClipId))
+    def match(clip_ids, ref_clip_id):
+        state.calls.append((list(clip_ids), ref_clip_id))
         return state.result
-    monkeypatch.setattr(TE, "th", lambda: SimpleNamespace(match_color_to_reference=match))
+    monkeypatch.setattr(TE, "th", lambda: SimpleNamespace(_match_clips_to_reference=match))
     return state
 
 
@@ -386,7 +386,7 @@ def test_strays_are_matched_to_the_median_clip_and_reported_before_and_after(gra
     head, r = call("harmonize_look_tool")
     assert r["reference"] in ("c0", "c1", "c2") and r["to_match"] == ["c3", "c4"], "the dark, cool clip is furthest from the reference, so it goes first"
     clip_ids, ref = grader.calls[0]
-    assert set(clip_ids.split(",")) == {"c3", "c4"} and ref == r["reference"]
+    assert set(clip_ids) == {"c3", "c4"} and ref == r["reference"]
     assert r["changed"] is True and set(r["improved"]) == {"c3", "c4"} and all(r["after"][c] < r["distances"][c] for c in ("c3", "c4"))
     assert r["still_far"] == [] and "still differ" not in head
     assert "Matched 2 clip(s)" in head and "now look closer" in head
@@ -446,6 +446,17 @@ def test_only_the_matched_clips_are_measured_again(grader):
     grader.after = {"c4": look_of(0.5)}
     call("harmonize_look_tool")
     assert grader.measure_calls[0][1] == 24 and grader.measure_calls[1][0] == ["c4"]
+
+
+def test_timeline_clip_ids_limit_the_measure_and_the_match_to_those_clips(grader):
+    picture_edit(grader.tl)
+    grader.looks = {"c0": look_of(0.50), "c1": look_of(0.52), "c2": look_of(0.48), "c3": look_of(0.20, -0.2), "c4": look_of(0.85)}
+    grader.after = {"c4": look_of(0.50)}
+    head, r = call("harmonize_look_tool", timeline_clip_ids=["c4", "c0", "c1"])
+    assert not head.startswith("Error"), head
+    assert grader.measure_calls[0][0] == ["c0", "c1", "c4"], "only the named clips are measured, in timeline order"
+    assert r["to_match"] == ["c4"] and r["reference"] in ("c0", "c1") and "c3" not in r["distances"]
+    assert grader.calls == [(["c4"], r["reference"])], "the stray c3 is outside the named clips, so it is never touched"
 
 
 # ============================ audition_music_tool ============================

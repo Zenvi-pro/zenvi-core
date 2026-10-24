@@ -185,7 +185,7 @@ def test_ingest_web_video_tool_reference_imports_without_place(monkeypatch, tmp_
     assert out["file_id"] == "file-xyz"
     assert out["placed"] is False
     assert placed == []
-    assert "match_color_to_reference" in out["next"]
+    assert "get_look_profile_tool" in out["next"]
 
     out2 = json.loads(
         th.ingest_web_video(

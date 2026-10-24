@@ -28,7 +28,7 @@ calls, pictures and tokens. Credits: note the balance before and after.
 | 7 | "that video has a song in it. line up the sung words with the scenes, but don't write the lyrics out for me" | `get_lyrics`, `storyboard` | Lines tied to shots by time; no lyrics pasted into the chat |
 | 8 | "anything wrong with my clips I should know about before I start? blurry, shaky, weird frame rate?" | `check_media_health` | Specific findings per clip |
 | 9 | "I need this as a vertical 9:16 for Reels but keep the person in the middle" | `get_framing`, `reframe_to_subject` | Subject stays centred across the clip |
-| 10 | "my footage looks all over the place, can you make it feel like one video? and then make it look more like the Japanese one" | `harmonize_look`, `get_edit_style`, `match_color_to_reference` | Clips that strayed are pulled together; a visible shift toward the reference; one undo |
+| 10 | "my footage looks all over the place, can you make it feel like one video? and then make it look more like the Japanese one" | `harmonize_look`, `get_edit_style` | Clips that strayed are pulled together; a visible shift toward the reference; one undo |
 | 11 | "the music is drowning the talking, fix the mix and tell me how loud it ends up" | `analyze_timeline_audio`, `duck_under_speech`, `balance_mix` | Music sits under speech; the final loudness is given as a number |
 | 12 | "I did a few takes of the same line, find them and keep the cleanest" | `find_retakes` | Names the takes and says why one is best |
 | 13 | "look over the whole timeline and tell me honestly what still needs work" | `review_edit` | A list with measured numbers, not opinions |
@@ -39,7 +39,7 @@ calls, pictures and tokens. Credits: note the balance before and after.
 | # | What you type | What the AI should reach for | Pass |
 |---|---|---|---|
 | 15 | "make me a 30 second vertical clip from my footage with that song, cut to the beat, keep it moody, then tell me if anything's off" | `search_footage`, `slice_on_beats` or `sync_cuts_to_beats`, `reframe_to_subject`, `harmonize_look`, `balance_mix`, `review_edit` | A timeline of about 30 s; cuts on beats; the audit lists real issues; the AI says what it skipped |
-| 16 | "I filmed one long take and want it to feel like a music video, can you cut it on the beat of the song and add some punch to the colour?" | `slice_on_beats`, `apply_look` or `color_grade_clip` | Beat cuts, a grade applied, both undoable in separate steps |
+| 16 | "I filmed one long take and want it to feel like a music video, can you cut it on the beat of the song and add some punch to the colour?" | `slice_on_beats`, `color_grade_clip` | Beat cuts, a grade applied, both undoable in separate steps |
 | 17 | "clean up this interview: take out the long silences and the ums, then caption it" | `remove_silence`, `remove_words`, `add_captions` | Fewer pauses; captions follow the speech |
 
 ## The big one: recreate a video

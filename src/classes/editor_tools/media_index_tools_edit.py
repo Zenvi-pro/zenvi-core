@@ -411,19 +411,27 @@ def get_edit_brief():
         "max_clips": integer("Most clips to match in one call (the furthest from the reference first).", 12, minimum=1, maximum=40),
         "measure_limit": integer("Most clips whose look is measured (an even sample when there are more).", 24, minimum=2, maximum=80),
         "dry_run": boolean("Only measure and report which clips would be matched; change nothing.", False),
+        "timeline_clip_ids": array({"type": "string"}, "Only these timeline clip ids are measured and matched; every other clip is "
+                                   "left as it is. Default: every picture clip.", None),
     }),
 )
-def harmonize_look(reference="median", tolerance=0.15, max_clips=12, measure_limit=24, dry_run=False):
+def harmonize_look(reference="median", tolerance=0.15, max_clips=12, measure_limit=24, dry_run=False, timeline_clip_ids=None):
     """Make the clips of an edit look like they belong together. It measures how every picture clip looks as it plays
     (grade included), picks the reference look (the median clip unless you name one), finds the clips that stray beyond
     the tolerance and matches them to it with the editor's own colour matching (it solves the grade, applies it as one
     undo step, re-measures and recovers if a result goes wrong), then re-measures and reports each clip's distance
     before and after. It only evens out clips relative to each other: for a creative look apply it afterwards with
-    apply_look_tool or color_grade_clip_tool, or name a clip that already has the look as the reference.
+    color_grade_clip_tool (look=...), or name a clip that already has the look as the reference.
     """
     from classes import color_agent as ca
 
     clips, _project, objs = build_timeline()
+    if timeline_clip_ids:
+        wanted = [str(cid) for cid in timeline_clip_ids]
+        missing = [cid for cid in wanted if cid not in {c.id for c in clips}]
+        if missing:
+            raise ToolError(f"not on the timeline: {', '.join(missing)}")
+        clips = [c for c in clips if c.id in wanted]
     order: List[str] = []
     for shot in R.visible_shots(clips):
         if shot["clip"].id not in order:
@@ -432,7 +440,7 @@ def harmonize_look(reference="median", tolerance=0.15, max_clips=12, measure_lim
         raise ToolError("a timeline needs at least two picture clips to match them to each other")
     looks, considered = measure_looks(clips, objs, max_clips=int(measure_limit))
     if len(looks) < 2:
-        raise ToolError("fewer than two clips could be measured (are they rendering?): try again, or use match_color_to_reference_tool")
+        raise ToolError("fewer than two clips could be measured (are they rendering?): try again, or pass timeline_clip_ids of clips that render")
     try:
         plan = harmonize.plan_harmonize({k: v for k, v in looks.items()}, [c for c in order if c in looks], ca.look_profile_distance,
                                         reference=str(reference or "median"), tolerance=float(tolerance), max_clips=int(max_clips))
@@ -448,7 +456,7 @@ def harmonize_look(reference="median", tolerance=0.15, max_clips=12, measure_lim
                 else f"All {len(looks)} measured clips already look alike (within {plan['tolerance']:g} of {names.get(ref) or ref})")
         return ok(said + ".", changed=False, dry_run=bool(dry_run), **receipt)
 
-    out = th().match_color_to_reference(clipIds=",".join(plan["to_match"]), referenceClipId=ref)
+    out = th()._match_clips_to_reference(plan["to_match"], ref)
     if _is_error(out):
         raise ToolError(f"the colour match failed: {str(out)[:300]}")
     # Re-read the timeline: the clips changed, and the objects read before the match still hold the old data.
