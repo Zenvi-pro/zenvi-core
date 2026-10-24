@@ -984,7 +984,7 @@ def save_frame_image(time=-1, file_path="", overwrite=False):
     "export_files_to_folder_tool",
     label="Export project files",
     schema=obj({
-        "file_ids": array({"type": "string"}, "Project file ids (media_bin_file_id from list_files_tool)."),
+        "file_ids": array({"type": "string"}, "Project file ids (media_bin_file_id from list_project_files_tool)."),
         "folder": string("Destination folder (created if missing). Empty = the export folder preference.", ""),
     }, required=["file_ids"]),
     background_safe=True,

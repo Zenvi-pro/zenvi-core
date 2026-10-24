@@ -629,7 +629,7 @@ def test_a_whole_track_edit_updates_the_timeline_once(ed, flushes):
 
 def test_a_read_only_call_opens_no_batch(ed, flushes):
     _seq(ed, 3)
-    ed.call("list_clips_tool")
+    ed.call("get_timeline_state_tool")
     assert flushes == []
 
 

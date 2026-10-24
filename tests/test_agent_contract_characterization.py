@@ -37,9 +37,9 @@ def test_every_advertised_schema_rejects_unknown_keys():
 def test_execute_tool_returns_contract_3_receipt_json():
     """Defect C fixed: execute_tool always returns receipt JSON."""
     with patch.object(tool_handlers, "TOOL_HANDLERS", {
-        "list_files_tool": lambda **_kw: "FIXTURE_FILES",
-    }), patch.object(tool_handlers, "READ_ONLY_TOOLS", frozenset({"list_files_tool"})), \
-         patch.object(tool_handlers, "_UNGROUPED_TOOLS", frozenset({"list_files_tool"})), \
+        "list_project_files_tool": lambda **_kw: "FIXTURE_FILES",
+    }), patch.object(tool_handlers, "READ_ONLY_TOOLS", frozenset({"list_project_files_tool"})), \
+         patch.object(tool_handlers, "_UNGROUPED_TOOLS", frozenset({"list_project_files_tool"})), \
          patch.object(tool_handlers, "BACKGROUND_SAFE_TOOLS", frozenset()), \
          patch("classes.tool_handlers.QThread", None), \
          patch.object(tool_handlers, "_get_app", return_value=MagicMock(
@@ -48,7 +48,7 @@ def test_execute_tool_returns_contract_3_receipt_json():
              thread=MagicMock(return_value=object()),
          )):
         # Re-bind through real execute_tool path
-        raw = tool_handlers.execute_tool("list_files_tool", {})
+        raw = tool_handlers.execute_tool("list_project_files_tool", {})
     payload = parse_receipt(raw)
     assert payload is not None
     assert payload["contract"] == 3

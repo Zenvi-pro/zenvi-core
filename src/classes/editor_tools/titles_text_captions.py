@@ -561,7 +561,7 @@ def add_captions(cues=None, srtPath="", clipId="", timeline_clip_id="", clip_que
         if not plans:
             names = ", ".join(f"{c.id} ({_clip_label(c)})" for c in targets[:5]) or "the timeline has no clips"
             raise ToolError("no transcript is available to caption from (" + names + "). Zenvi fills it "
-                            "when it indexes a file; check with get_clips_with_full_metadata_tool, index with "
+                            "when it indexes a file; check with list_project_files_tool, index with "
                             "reindex_project_file_tool, or pass cues / srtPath instead")
     elif targets:
         c = targets[0]

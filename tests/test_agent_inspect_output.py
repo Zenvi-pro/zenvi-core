@@ -73,15 +73,15 @@ def test_execute_tool_string_matches_rich_receipt(monkeypatch):
 
     def handler(**_kw):
         return ToolOutput(
-            receipt=ToolReceipt.applied("list_files_tool", "ok"),
+            receipt=ToolReceipt.applied("list_project_files_tool", "ok"),
             images=[ImageBlock(data=b"\xff\xd8xx")],
         )
 
     ex.bind_runtime(
-        handlers={"list_files_tool": handler},
-        read_only=frozenset({"list_files_tool"}),
-        background_safe=frozenset({"list_files_tool"}),
-        ungrouped=frozenset({"list_files_tool"}),
+        handlers={"list_project_files_tool": handler},
+        read_only=frozenset({"list_project_files_tool"}),
+        background_safe=frozenset({"list_project_files_tool"}),
+        ungrouped=frozenset({"list_project_files_tool"}),
         main_thread_timeouts={},
         get_app=lambda: types.SimpleNamespace(
             updates=types.SimpleNamespace(actionHistory=[]),
@@ -93,8 +93,8 @@ def test_execute_tool_string_matches_rich_receipt(monkeypatch):
         coerce_steps=lambda x: 1,
         qthread=None,
     )
-    rich = ex.execute_tool_rich("list_files_tool", {})
-    text = ex.execute_tool("list_files_tool", {})
+    rich = ex.execute_tool_rich("list_project_files_tool", {})
+    text = ex.execute_tool("list_project_files_tool", {})
     assert text == rich.receipt.to_json()
     assert len(rich.images) == 1
 
@@ -107,7 +107,7 @@ def test_mcp_live_call_returns_image_blocks():
 
     th = types.ModuleType("classes.tool_handlers")
     th.AGENT_TOOL_HANDLERS = {
-        "list_files_tool": lambda **_k: "files",
+        "list_project_files_tool": lambda **_k: "files",
     }
     th.humanize_tool_name = lambda n: n
 
@@ -138,7 +138,7 @@ def test_mcp_live_call_returns_image_blocks():
                     ) as (r, w, _):
                         async with ClientSession(r, w) as session:
                             await session.initialize()
-                            result = await session.call_tool("list_files_tool", {})
+                            result = await session.call_tool("list_project_files_tool", {})
                             return result.content
 
             content = asyncio.run(run())
@@ -163,12 +163,12 @@ def test_read_only_calls_do_not_scan_the_timeline(monkeypatch):
 
     scans = []
     monkeypatch.setattr(ex, "_snapshot_clips", lambda app: scans.append(1) or [])
-    handlers = {"list_files_tool": lambda **_kw: "0 files", "zoom_in_tool": lambda **_kw: "Zoomed in"}
+    handlers = {"list_project_files_tool": lambda **_kw: "0 files", "zoom_in_tool": lambda **_kw: "Zoomed in"}
     ex.bind_runtime(
         handlers=handlers,
-        read_only=frozenset({"list_files_tool"}),
+        read_only=frozenset({"list_project_files_tool"}),
         background_safe=frozenset(),
-        ungrouped=frozenset({"list_files_tool"}),
+        ungrouped=frozenset({"list_project_files_tool"}),
         main_thread_timeouts={},
         get_app=lambda: types.SimpleNamespace(
             updates=types.SimpleNamespace(actionHistory=[]),
@@ -180,7 +180,7 @@ def test_read_only_calls_do_not_scan_the_timeline(monkeypatch):
         coerce_steps=lambda x: 1,
         qthread=None,
     )
-    ex.execute_tool("list_files_tool", {})
+    ex.execute_tool("list_project_files_tool", {})
     assert scans == []
     ex.execute_tool("zoom_in_tool", {})
     assert scans == [1]

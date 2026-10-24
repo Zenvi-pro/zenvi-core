@@ -405,7 +405,7 @@ _PROFILE_ARGS = {
     "fps": number("Frame rate, e.g. 24, 25, 29.97, 30, 60. 0 = keep (or the preset's).", 0, minimum=0, maximum=240),
     "orientation": enum(["", "landscape", "portrait", "square"],
                         "Turn the (current or named) profile to this shape: 'portrait' makes 1920x1080 -> 1080x1920.", ""),
-    "from_file_id": string("Match a project file's size and frame rate (media_bin_file_id from list_files_tool).", ""),
+    "from_file_id": string("Match a project file's size and frame rate (media_bin_file_id from list_project_files_tool).", ""),
     "reframe": enum(["keep", "fit", "fill"],
                     "Existing full-frame clips whose shape differs from the new frame: keep = unchanged (letterboxed/"
                     "pillarboxed), fit = whole picture with bars, fill = crop to fill, centred. Titles and "

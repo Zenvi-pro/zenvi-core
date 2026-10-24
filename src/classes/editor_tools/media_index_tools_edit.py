@@ -163,7 +163,7 @@ def slice_on_beats(timeline_clip_id, music_clip_id="", every=1, from_seconds=Non
     clips, objs, _bed, tempo, beats = _music_beats(music_clip_id, own_clip_id=timeline_clip_id)
     target = next((c for c in clips if c.id == str(timeline_clip_id) and c.kind in ("video", "image") and c.length > 0), None)
     if target is None:
-        raise ToolError(f"{timeline_clip_id!r} is not a picture clip on the timeline (list_clips_tool lists them)")
+        raise ToolError(f"{timeline_clip_id!r} is not a picture clip on the timeline (get_timeline_state_tool lists them)")
     lo = max(target.start, float(from_seconds)) if from_seconds is not None else target.start
     hi = min(target.end, float(to_seconds)) if to_seconds is not None else target.end
     if hi <= lo:

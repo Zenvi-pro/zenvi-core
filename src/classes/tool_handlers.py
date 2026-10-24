@@ -524,68 +524,6 @@ def _describe_group(actions) -> str:
         return ""
 
 
-def _source_fps_parts(file_data):
-    """(num, den, fps_float) for a file reader's own fps."""
-    fps_data = file_data.get("fps") or {}
-    num = parse_timecode_token(fps_data.get("num")) or 30.0
-    den = parse_timecode_token(fps_data.get("den")) or 1.0
-    if num <= 0:
-        num = 30.0
-    if den <= 0:
-        den = 1.0
-    return int(num), int(den), num / den
-
-
-def _source_duration_seconds(file_data):
-    """Source duration in seconds, preferring real seconds over frame counts."""
-    start = parse_timecode_token(file_data.get("start")) or 0.0
-    end = parse_timecode_token(file_data.get("end")) or 0.0
-    if end > start:
-        return end - start
-    duration = parse_timecode_token(file_data.get("duration"))
-    if duration and duration > 0:
-        return duration
-    reader = file_data.get("reader") or {}
-    duration = parse_timecode_token(reader.get("duration"))
-    if duration and duration > 0:
-        return duration
-    frames = parse_timecode_token(file_data.get("video_length")) or 0.0
-    _, _, fps_float = _source_fps_parts(file_data)
-    return frames / fps_float if frames > 0 and fps_float > 0 else 0.0
-
-
-def _unreliable_source_fps(file_data):
-    """True when a file's own fps must not be used for frame math.
-
-    Audio and some broken imports report 1/1 with video_length counted in that
-    1 fps space, which is what sends agents into a place/retry loop.
-    """
-    _, _, fps_float = _source_fps_parts(file_data)
-    if is_audio_only_media(file_data):
-        return True
-    return fps_float <= 2.0 and _source_duration_seconds(file_data) > 2.0
-
-
-def _describe_file_for_llm(file_id, file_data):
-    fps_num, fps_den, _ = _source_fps_parts(file_data)
-    duration = _source_duration_seconds(file_data)
-    project_fps = _get_app().project.get("fps") or {}
-    p_num = int(parse_timecode_token(project_fps.get("num")) or 30)
-    p_den = int(parse_timecode_token(project_fps.get("den")) or 1)
-    media_type = file_data.get("media_type") or ("audio" if is_audio_only_media(file_data) else "video")
-    line = (
-        f"file_id={file_id} path={file_data.get('path','')} "
-        f"duration_seconds={duration:.2f} source_fps={fps_num}/{fps_den} "
-        f"project_fps={p_num}/{p_den} media_type={media_type}"
-    )
-    if _unreliable_source_fps(file_data):
-        line += (
-            f"\nNOTE: source_fps is {fps_num}/{fps_den} and cannot be used for frame math. "
-            "Pass start_seconds/end_seconds (in source seconds) - never frame numbers."
-        )
-    return line
-
-
 def _project_fps_float(fps) -> float:
     """Project fps as a float, tolerating string or malformed num/den."""
     fps = fps if isinstance(fps, dict) else {}
@@ -1035,61 +973,6 @@ _last_split_file_id_by_chat_session = {}
 
 
 # ---------------------------------------------------------------------------
-# Project tools
-# ---------------------------------------------------------------------------
-
-def list_files(**_kw) -> str:
-    """List media already in the project media bin (does not import from disk).
-
-    To add local folders or files into Project Files, call import_files_tool
-    (dry_run=true first for folders). list_files_tool only reports what is
-    already imported.
-    """
-    try:
-        import os
-        from classes.query import File
-        from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
-
-        files = File.filter()
-        if not files:
-            return (
-                "No files in project media bin. "
-                "list_files_tool does not import from disk — call "
-                "import_files_tool with folder=\"Downloads\" (or a path; prefer "
-                "C:/Users/... on Windows), dry_run=true first for folders, and "
-                "media_types=video when the user asked for videos only."
-            )
-        lines = []
-        visible = 0
-        for f in files:
-            d = f.data if isinstance(f.data, dict) else {}
-            if d.get("zenvi_subclip"):
-                continue
-            visible += 1
-            name = d.get("name") or os.path.basename(str(d.get("path") or "")) or "?"
-            dur = float(d.get("duration", 0) or 0)
-            ai = d.get("ai_metadata") if isinstance(d.get("ai_metadata"), dict) else {}
-            analyzed = bool(ai.get("analyzed"))
-            indexed = twelvelabs_is_indexed(get_index_block(ai))
-            preview = _summary_preview_for_file_data(d)
-            lines.append(
-                f"  media_bin_file_id={f.id} name={name!r} duration={dur:.2f}s "
-                f"analyzed={analyzed} indexed={indexed} "
-                f"summary_preview={preview!r} "
-                f"path={os.path.basename(d.get('path', ''))}"
-            )
-        if not lines:
-            return (
-                "No files in project media bin. "
-                "list_files_tool does not import from disk — call "
-                "import_files_tool with folder=\"Downloads\" or paths= "
-                "(folder or file), dry_run=true first for folders."
-            )
-        return f"Media bin files ({visible}):\n" + "\n".join(lines)
-    except Exception as e:
-        return f"Error: {e}"
-
-
 _TAGS_PREVIEW_MAX = 80
 
 
@@ -1110,169 +993,6 @@ def _file_is_analyzed(file_data: dict) -> bool:
     if not isinstance(ai, dict):
         return False
     return bool(ai.get("analyzed"))
-
-
-def list_clips(layer="", **_kw) -> str:
-    try:
-        from classes.query import Clip
-
-        app = _get_app()
-        layers_raw = app.project.get("layers") or []
-        kwargs = {}
-        if layer and str(layer).strip():
-            resolved, err = normalize_track_or_layer_arg(str(layer).strip(), layers_raw)
-            if err:
-                return err
-            kwargs["layer"] = resolved
-        clips = Clip.filter(**kwargs)
-        if not clips:
-            return "No clips in project."
-        from classes.timeline_clip_context import build_timeline_clip_context, clear_metadata_lookup_cache
-
-        clear_metadata_lookup_cache()
-        file_cache: dict[str, dict] = {}
-
-        file_dupes: dict[str, list] = {}
-        for c in clips:
-            fid = str(c.data.get("file_id") or "")
-            layer = c.data.get("layer")
-            if fid:
-                file_dupes.setdefault(f"{fid}:{layer}", []).append(c)
-
-        lines = []
-        for c in clips:
-            d = c.data
-            lid = d.get("layer", "")
-            try:
-                lid_int = int(lid) if lid != "" and lid is not None else None
-            except (TypeError, ValueError):
-                lid_int = None
-            ui = layer_number_to_display_index(lid_int, layers_raw) if lid_int is not None else None
-            ui_part = f" ui_track={ui}" if ui is not None else ""
-            tids = (
-                [
-                    str(L.get("id", ""))
-                    for L in layers_raw
-                    if int(L.get("number") or 0) == lid_int
-                ]
-                if lid_int is not None
-                else []
-            )
-            tid_part = f" track_id={tids[0]}" if tids and tids[0] else ""
-            title = d.get("title") or d.get("label") or ""
-            fid = d.get("file_id", "")
-            fname = ""
-            summary_preview = ""
-            parent_file_id = ""
-            audio_role = ""
-            source_start = d.get("start", 0)
-            source_end = d.get("end", 0)
-            timeline_end = float(d.get("position", 0) or 0)
-            if fid:
-                try:
-                    from classes.query import File as _File
-                    if fid not in file_cache:
-                        fobj = _File.get(id=str(fid))
-                        file_cache[fid] = fobj.data if fobj and isinstance(fobj.data, dict) else None
-                    fdata = file_cache.get(fid)
-                    if fdata:
-                        import os
-                        fname = (
-                            fdata.get("name")
-                            or os.path.basename(str(fdata.get("path") or ""))
-                        )
-                        ctx = build_timeline_clip_context(c, d, fdata, layers=layers_raw)
-                        summary_preview = ctx.summary_preview
-                        parent_file_id = ctx.parent_file_id
-                        source_start = ctx.source_start
-                        source_end = ctx.source_end
-                        timeline_end = ctx.timeline_end
-                        audio_role = _audio_role_of(d, fdata, ctx)
-                except Exception:
-                    pass
-            summary_part = f" summary_preview={summary_preview!r}" if summary_preview else ""
-            occ_hint = ""
-            dup_key = f"{fid}:{lid_int}"
-            dupes = file_dupes.get(dup_key, [])
-            if len(dupes) > 1:
-                ranked = sorted(dupes, key=lambda x: float(x.data.get("position", 0) or 0))
-                for idx, dc in enumerate(ranked, 1):
-                    if dc.id == c.id:
-                        occ_hint = f" occurrence_hint={idx}"
-                        break
-            parent_part = f" parent_file_id={parent_file_id}" if parent_file_id and parent_file_id != str(fid) else ""
-            lines.append(
-                f"  timeline_clip_id={c.id} media_bin_file_id={fid}{parent_part} "
-                f"title={title!r} file={fname!r}{summary_part}{occ_hint} "
-                f"layer_number={lid_int if lid_int is not None else lid}{ui_part}{tid_part} "
-                f"position={d.get('position',0)} timeline_end={timeline_end:.2f} "
-                f"source_start={source_start} source_end={source_end}"
-                f"{f' audio_role={audio_role}' if audio_role else ''}"
-            )
-        from classes.agent_tools.receipt import ToolReceipt
-        structured = []
-        for c in clips:
-            d = c.data if isinstance(c.data, dict) else {}
-            lid = d.get("layer", "")
-            try:
-                lid_int = int(lid) if lid != "" and lid is not None else None
-            except (TypeError, ValueError):
-                lid_int = None
-            ui = layer_number_to_display_index(lid_int, layers_raw) if lid_int is not None else None
-            structured.append({
-                "id": str(c.id),
-                "file_id": str(d.get("file_id") or ""),
-                "title": str(d.get("title") or d.get("label") or ""),
-                "layer": lid_int,
-                "track": ui,
-                "position": float(d.get("position") or 0),
-                "start": float(d.get("start") or 0),
-                "end": float(d.get("end") or 0),
-            })
-        return ToolReceipt.applied(
-            "list_clips_tool",
-            f"Timeline clips ({len(clips)}).",
-            undo_steps=0,
-            data={"clips": structured, "legacy_text": f"Timeline clips ({len(clips)}):\n" + "\n".join(lines)},
-        ).to_json()
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def list_layers(**_kw) -> str:
-    try:
-        from classes.track_display import build_track_stack, track_stack_json
-
-        layers = _get_app().project.get("layers") or []
-        if not layers:
-            return "No layers in project."
-        stack = build_track_stack(layers)
-        lock_by_num = {
-            int(L.get("number") or 0): bool(L.get("lock", False)) for L in layers
-        }
-        n = len(stack)
-        bottom = stack[0] if stack else {}
-        top = stack[-1] if stack else {}
-        lines = [
-            f"Layers ({n}). Z-ORDER uses layer_number only (higher covers lower). "
-            "Track labels/names are cosmetic — they can be anything and do NOT imply priority.",
-            f"BOTTOM (drawn under): layer_number={bottom.get('layer_number')} "
-            f"label={bottom.get('label')!r}",
-            f"TOP (covers all below): layer_number={top.get('layer_number')} "
-            f"label={top.get('label')!r}",
-            "Stack bottom→top:",
-        ]
-        for e in stack:
-            lines.append(
-                f"  layer_number={e['layer_number']} ui_track={e['ui_track']} "
-                f"z_from_bottom={e['z_from_bottom']} label={e.get('label')!r} "
-                f"track_id={e.get('track_id')!r} "
-                f"lock={lock_by_num.get(e['layer_number'], False)}"
-            )
-        lines.append(f"TRACK_STACK_JSON={track_stack_json(layers)}")
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Error: {e}"
 
 
 # ---------------------------------------------------------------------------
@@ -1362,7 +1082,7 @@ def _undo_redo(app, direction, steps) -> str:
         return (
             f"Error: {label} applied {done} history step(s) but the timeline "
             f"did not change. The edit you meant may span several steps -- "
-            f"check list_clips_tool, then {label} again with steps=N, or "
+            f"check get_timeline_state_tool, then {label} again with steps=N, or "
             f"delete the clip directly."
         )
 
@@ -1588,7 +1308,7 @@ def delete_from_timeline(
     """Delete from the timeline: one clip placement, or an entire track.
 
     This is the ONLY timeline delete tool. Target it one of three ways:
-      * timeline_clip_id - an id from list_clips_tool or the timeline snapshot
+      * timeline_clip_id - an id from get_timeline_state_tool or the timeline snapshot
       * clip_query       - a description, narrowed with track / occurrence
                            (1-based) / position_near (timeline seconds)
       * track            - clear that whole track (UI "Track 1".."N", bottom=1,
@@ -1630,7 +1350,7 @@ def delete_from_timeline(
         if not mode:
             return (
                 "Error: delete_from_timeline_tool needs a target. Pass "
-                "timeline_clip_id (from list_clips_tool) or clip_query to "
+                "timeline_clip_id (from get_timeline_state_tool) or clip_query to "
                 "delete one placement, or track to clear a whole track."
             )
 
@@ -1655,7 +1375,7 @@ def delete_from_timeline(
         if not has_clip_target:
             return (
                 "Error: scope='clip' needs timeline_clip_id or clip_query. Use "
-                "list_clips_tool to get a timeline_clip_id, or pass clip_query "
+                "get_timeline_state_tool to get a timeline_clip_id, or pass clip_query "
                 "with track/occurrence/position_near."
             )
 
@@ -1766,7 +1486,7 @@ def _format_capped_lines(lines, cap=_IMPORT_RESULT_LINE_CAP) -> str:
     rest = len(lines) - cap
     return (
         "\n".join(lines[:cap])
-        + "\n... and %d more. Use list_files_tool to see the rest." % rest
+        + "\n... and %d more. Use list_project_files_tool to see the rest." % rest
     )
 
 
@@ -2135,19 +1855,6 @@ _EXPORT_MAIN_THREAD_TIMEOUT = 6 * 60 * 60
 # ---------------------------------------------------------------------------
 # Clipping (split, slice, add to timeline)
 # ---------------------------------------------------------------------------
-
-def get_file_info(file_id="", **_kw) -> str:
-    try:
-        from classes.query import File
-        if not file_id:
-            return "Error: file_id is required."
-        f = File.get(id=file_id.strip())
-        if not f:
-            return f"Error: File not found for id={file_id}."
-        return _describe_file_for_llm(file_id, f.data)
-    except Exception as e:
-        return f"Error: {e}"
-
 
 # Where a placement was planned to end, for each one whose length snapping or a
 # watch changed: {timeline_clip_id: (position placed at, planned timeline end)}.
@@ -4984,7 +4691,7 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
                     f"{msg or 'unknown'}. "
                     + ("The clips moved to make room were put back. " if _rippled else "")
                     + f"Do NOT regenerate — call add_clip_to_timeline_tool(file_id='{f.id}', "
-                    f"track=<layer_number from list_layers_tool>, position_seconds=...)."
+                    f"track=<layer_number from get_timeline_state_tool>, position_seconds=...)."
                 )
             if not stamped:
                 return (
@@ -5075,7 +4782,7 @@ def generate_image_and_add_to_timeline(prompt="", duration_seconds="", position_
                     f"Error: Image imported (file_id={f.id}) but timeline placement failed: "
                     f"{msg or 'unknown'}. "
                     f"Do NOT regenerate — call add_clip_to_timeline_tool(file_id='{f.id}', "
-                    f"track=<layer_number from list_layers_tool>, position_seconds=..., "
+                    f"track=<layer_number from get_timeline_state_tool>, position_seconds=..., "
                     f"duration_seconds={seconds:g})."
                 )
             if not stamped:
@@ -6356,104 +6063,6 @@ def reindex_project_file(file_id: str = "", **kwargs) -> str:
         return f"Error: {e}"
 
 
-def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
-    """Return project files with AI metadata for planning (excludes hidden subclips by default)."""
-    try:
-        from classes.query import File
-        from classes.timeline_clip_context import resolve_parent_file_id
-
-        level = str(detail_level or kwargs.get("detail_level") or "summary").lower().strip()
-        files = File.filter()
-        if not files:
-            return "No files in project."
-        lines = ["Project files with full metadata:"]
-        for f in files:
-            d = f.data
-            if d.get("zenvi_subclip") and level != "full":
-                continue
-            dur = d.get("duration", 0) or 0
-            m, s = divmod(int(dur), 60)
-            media_type = d.get("media_type", "?")
-            name = d.get("name") or d.get("path", "?").split("/")[-1]
-            ai = d.get("ai_metadata") or {}
-            analyzed = ai.get("analyzed", False)
-            tl = ai.get("twelvelabs", {}) or {}
-            from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
-            from classes.tl_search_strategy import infer_tl_search_hint
-            indexed = twelvelabs_is_indexed(tl)
-            hint = infer_tl_search_hint(ai, name)
-            scene_count = len(ai.get("scene_descriptions") or [])
-            chapter_count = len(ai.get("chapters") or [])
-            short = (ai.get("short_summary") or "")[:160]
-            desc = (ai.get("description") or "")[:400]
-            sounds = (ai.get("sounds") or "")[:160]
-            transcript = (ai.get("transcript") or "")[:200]
-            parent_id = resolve_parent_file_id(d, file_id=str(f.id or ""))
-            alias_part = ""
-            if d.get("zenvi_subclip") and parent_id and parent_id != str(f.id):
-                alias_part = f"  alias_of={parent_id}\n"
-            lines.append(
-                f"\n  media_bin_file_id={f.id}  name={name}  type={media_type}  "
-                f"duration={m}:{s:02d}\n"
-                f"{alias_part}"
-                f"    analyzed={analyzed}  indexed={indexed}  "
-                f"chapter_count={chapter_count}  scene_count={scene_count}\n"
-                f"    tl_search_hint={hint}\n"
-                f"    twelvelabs_index_id={tl.get('index_id', '')}\n"
-                f"    twelvelabs_index_name={tl.get('index_name', '')}\n"
-                f"    twelvelabs_video_id={tl.get('video_id', '')}\n"
-                f"    short_summary={short}\n"
-                f"    description={desc}"
-            )
-            # Pre-Pegasus projects (or failed summarize) may only have Gemini tags.
-            if not short and not desc:
-                tags = ai.get("tags") if isinstance(ai.get("tags"), dict) else {}
-                legacy_bits = []
-                for key in ("objects", "scenes", "activities", "mood"):
-                    vals = tags.get(key) or []
-                    if isinstance(vals, list) and vals:
-                        legacy_bits.append(
-                            f"{key}=[{', '.join(str(v) for v in vals[:8] if v)}]"
-                        )
-                if legacy_bits:
-                    lines.append(f"    legacy_tags={' '.join(legacy_bits)}")
-                elif sounds or transcript:
-                    if sounds:
-                        lines.append(f"    sounds={sounds}")
-                    if transcript:
-                        lines.append(f"    transcript={transcript}")
-            if level == "full":
-                if sounds:
-                    lines.append(f"    sounds={sounds}")
-                if transcript:
-                    lines.append(f"    transcript={transcript}")
-            chapters = ai.get("chapters") or []
-            if chapters:
-                limit = len(chapters) if level == "full" else min(3, len(chapters))
-                lines.append("    chapter_snippets:")
-                for ch in chapters[:limit]:
-                    if isinstance(ch, dict) and (ch.get("summary") or ch.get("title")):
-                        t0 = float(ch.get("start", 0) or 0)
-                        t1 = float(ch.get("end", t0) or t0)
-                        title = str(ch.get("title") or "")
-                        summary = str(ch.get("summary") or "")[:160]
-                        lines.append(
-                            f"      [{_fmt_mmss(t0)}-{_fmt_mmss(t1)}] {title}: {summary}"
-                        )
-            snippets = ai.get("scene_descriptions") or []
-            if snippets and not chapters:
-                limit = len(snippets) if level == "full" else min(3, len(snippets))
-                lines.append("    scene_snippets:")
-                for sc in snippets[:limit]:
-                    if isinstance(sc, dict) and sc.get("description"):
-                        t = float(sc.get("time", 0) or 0)
-                        lines.append(f"      [{_fmt_mmss(t)}] {str(sc['description'])[:160]}")
-        return "\n".join(lines)
-    except Exception as e:
-        log.error("get_clips_with_full_metadata: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
 def _overlay_index_boosts(contexts) -> list:
     """Index boosts mapped onto timeline times: where the local index finds the avoid and prefer queries, at each hit's peak.
 
@@ -6970,67 +6579,17 @@ def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
     )
 
 
-def get_timeline_placements_metadata(detail_level="summary", **_kw) -> str:
-    """Return one row per timeline clip with trim-aware effective metadata."""
-    try:
-        from classes.timeline_clip_context import enumerate_timeline_contexts
-
-        level = str(detail_level or _kw.get("detail_level") or "summary").lower().strip()
-        contexts = enumerate_timeline_contexts()
-        if not contexts:
-            return "No clips on timeline."
-
-        dupe_groups: dict[str, list] = {}
-        for ctx in contexts:
-            key = f"{ctx.file_id}:{ctx.layer}"
-            dupe_groups.setdefault(key, []).append(ctx)
-
-        lines = [f"Timeline placements ({len(contexts)}):"]
-        for ctx in sorted(contexts, key=lambda c: (int(c.layer or 0), c.timeline_position)):
-            dup_key = f"{ctx.file_id}:{ctx.layer}"
-            dupes = dupe_groups.get(dup_key, [])
-            occ_hint = ""
-            if len(dupes) > 1:
-                ranked = sorted(dupes, key=lambda c: c.timeline_position)
-                for idx, dc in enumerate(ranked, 1):
-                    if dc.timeline_clip_id == ctx.timeline_clip_id:
-                        occ_hint = f" occurrence_hint={idx}"
-                        break
-            group_id = dup_key if len(dupes) > 1 else ""
-            ai = ctx.effective_metadata or {}
-            scenes = ai.get("scene_descriptions") or []
-            scene_limit = len(scenes) if level == "full" else min(3, len(scenes))
-            lines.append(
-                f"\n  timeline_clip_id={ctx.timeline_clip_id} file_id={ctx.file_id} "
-                f"parent_file_id={ctx.parent_file_id}{occ_hint}\n"
-                f"    title={ctx.title!r} track={ctx.layer} ui_track={ctx.ui_track} "
-                f"position={ctx.timeline_position:.2f}s timeline_end={ctx.timeline_end:.2f}s\n"
-                f"    source_window={ctx.source_start:.2f}-{ctx.source_end:.2f}s "
-                f"index_status={ctx.index_status!r} duplicate_group={group_id!r}\n"
-                f"    summary_preview={ctx.summary_preview!r}"
-            )
-            if scenes and scene_limit:
-                lines.append("    effective_scenes:")
-                for sc in scenes[:scene_limit]:
-                    if isinstance(sc, dict) and sc.get("description"):
-                        t = float(sc.get("time", 0) or 0)
-                        lines.append(f"      [{_fmt_mmss(t)}] {str(sc['description'])[:160]}")
-        return "\n".join(lines)
-    except Exception as e:
-        log.error("get_timeline_placements_metadata: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
 # ---------------------------------------------------------------------------
 # Tool name → handler mapping
 # ---------------------------------------------------------------------------
 
-def get_timeline_state(**_kw) -> str:
+def get_timeline_state(detail_level="summary", **_kw) -> str:
     """Return a structured snapshot of the current timeline: tracks, clips with positions, and effects.
 
     Always lists every project layer (including empty tracks) so planners can pick ui_track values
-    even when the timeline has no clips yet.
+    even when the timeline has no clips yet. detail_level=full adds each clip's trim-aware AI scenes.
     """
+    level = str(detail_level or "summary").lower().strip()
     try:
         from classes.query import Clip
         from classes.timeline_clip_context import build_timeline_clip_context
@@ -7070,13 +6629,14 @@ def get_timeline_state(**_kw) -> str:
                 parts.append(f"track_id={tid}")
             if label:
                 parts.append(f"label={label!r}")
+            if layer_obj is not None and layer_obj.get("lock"):
+                parts.append("lock=True")
             return " | ".join(parts)
 
         lines = ["=== TIMELINE STATE ==="]
         lines.append(
             "Z-ORDER: higher layer_number covers lower. "
             "Track labels are cosmetic names only — never infer priority from the label text. "
-            "Call list_layers_tool for TRACK_STACK_JSON before multi-track placement. "
             "Hero/foreground → highest layer_number; backgrounds → lowest."
         )
         if not clips and not effects_raw:
@@ -7096,7 +6656,9 @@ def get_timeline_state(**_kw) -> str:
                 if not layer_clips:
                     lines.append("  (empty)")
                     continue
-                for c, d in sorted(layer_clips, key=lambda x: x[1].get("position", 0)):
+                ordered = sorted(layer_clips, key=lambda x: x[1].get("position", 0))
+                fids = [d.get("file_id", "") for _, d in ordered]
+                for i, (c, d) in enumerate(ordered):
                     clip_dur = float(d.get("end", 0) or 0) - float(d.get("start", 0) or 0)
                     if clip_dur <= 0:
                         try:
@@ -7113,6 +6675,7 @@ def get_timeline_state(**_kw) -> str:
                     analyzed_part = ""
                     source_part = ""
                     role_part = ""
+                    scenes = []
                     try:
                         from classes.query import File as _File
                         fobj = _File.get(id=d.get("file_id", ""))
@@ -7124,6 +6687,7 @@ def get_timeline_state(**_kw) -> str:
                             )
                             ctx = build_timeline_clip_context(c, d, fobj.data, layers=layers)
                             summary_preview = ctx.summary_preview
+                            scenes = (ctx.effective_metadata or {}).get("scene_descriptions") or []
                             source_part = (
                                 f" source={ctx.source_start:.1f}-{ctx.source_end:.1f}s"
                             )
@@ -7135,12 +6699,20 @@ def get_timeline_state(**_kw) -> str:
                     except Exception:
                         fname = d.get("file_id", "?")
                     summary_part = f" summary_preview={summary_preview!r}" if summary_preview else ""
+                    occ = fids[:i + 1].count(d.get("file_id", ""))
+                    occ_part = f" occurrence_hint={occ}" if fids.count(d.get("file_id", "")) > 1 else ""
                     lines.append(
                         f"  timeline_clip_id={c.id} media_bin_file_id={d.get('file_id','')} "
                         f"file={fname!r} title={(d.get('title') or d.get('label') or '')!r}"
-                        f"{summary_part}{analyzed_part}{source_part}{role_part}"
+                        f"{summary_part}{occ_part}{analyzed_part}{source_part}{role_part}"
                         f" @ {d.get('position',0):.2f}s–{clip_end:.2f}s (dur={clip_dur:.2f}s)"
                     )
+                    if level == "full" and scenes:
+                        lines.append("    effective_scenes:")
+                        for sc in scenes:
+                            if isinstance(sc, dict) and sc.get("description"):
+                                t = float(sc.get("time", 0) or 0)
+                                lines.append(f"      [{_fmt_mmss(t)}] {str(sc['description'])[:160]}")
         else:
             lines.append("\n(No layers/tracks in project.)")
 
@@ -7262,7 +6834,7 @@ def build_editor_snapshot_for_chat(max_chars: int = 5500) -> str:
             shown = media_lines[:20]
             head += "MEDIA_BIN:\n" + "\n".join(shown)
             if n_visible > len(shown):
-                head += f"\n  ... and {n_visible - len(shown)} more (use list_files_tool / get_clips_with_full_metadata_tool)\n"
+                head += f"\n  ... and {n_visible - len(shown)} more (use list_project_files_tool)\n"
             else:
                 head += "\n"
         else:
@@ -9788,9 +9360,6 @@ def match_color_to_reference(
 # Tools exposed to the main chat / video / transitions agents.
 AGENT_TOOL_HANDLERS = {
     # Project
-    "list_files_tool": list_files,
-    "list_clips_tool": list_clips,
-    "list_layers_tool": list_layers,
     # list_markers_tool: classes.editor_tools.tracks_nav
     # new/save/open_project_tool: classes.editor_tools.project_export
     # Playback
@@ -9813,7 +9382,6 @@ AGENT_TOOL_HANDLERS = {
     "wait_until_project_indexed_tool": wait_until_project_indexed,
     # Export
     # Clips
-    "get_file_info_tool": get_file_info,
     "add_clip_to_timeline_tool": add_clip_to_timeline,
     "import_video_url_and_add_to_timeline_tool": import_video_url_and_add_to_timeline,
     "ingest_web_video_tool": ingest_web_video,
@@ -9844,8 +9412,6 @@ AGENT_TOOL_HANDLERS = {
     # Stock / planning
     "import_stock_media_tool": import_stock_media,
     "reindex_project_file_tool": reindex_project_file,
-    "get_clips_with_full_metadata_tool": get_clips_with_full_metadata,
-    "get_timeline_placements_metadata_tool": get_timeline_placements_metadata,
     "get_timeline_state_tool": get_timeline_state,
 }
 
@@ -9868,9 +9434,6 @@ TOOL_HANDLERS = dict(AGENT_TOOL_HANDLERS)
 
 # Humanized titles for chat tool-block headers (main agent tools only).
 TOOL_DISPLAY_LABELS = {
-    "list_files_tool": "List project media",
-    "list_clips_tool": "List clips",
-    "list_layers_tool": "List tracks",
     "go_to_start_tool": "Seek to start",
     "go_to_end_tool": "Seek to end",
     "undo_tool": "Undo",
@@ -9884,7 +9447,6 @@ TOOL_DISPLAY_LABELS = {
     "center_on_playhead_tool": "Center on playhead",
     "import_files_tool": "Import files from disk",
     "wait_until_project_indexed_tool": "Wait for indexing",
-    "get_file_info_tool": "Read file info",
     "add_clip_to_timeline_tool": "Add clip to timeline",
     "import_video_url_and_add_to_timeline_tool": "Import video to timeline",
     "ingest_web_video_tool": "Ingest web / YouTube video",
@@ -9908,8 +9470,6 @@ TOOL_DISPLAY_LABELS = {
     "match_color_to_reference_tool": "Match color to reference",
     "import_stock_media_tool": "Import stock media",
     "reindex_project_file_tool": "Reindex file",
-    "get_clips_with_full_metadata_tool": "Read clips metadata",
-    "get_timeline_placements_metadata_tool": "Read timeline placements",
     "get_timeline_state_tool": "Read timeline state",
 }
 TOOL_DISPLAY_LABELS.update(PHASE4_DISPLAY_LABELS)
@@ -9975,15 +9535,9 @@ def humanize_tool_name(tool_name: str) -> str:
 # Safe to invoke from worker threads, which lets the agent run several of them
 # concurrently without serializing through the Qt main-thread dispatcher.
 READ_ONLY_TOOLS = frozenset({
-    "list_files_tool",
-    "list_clips_tool",
-    "list_layers_tool",
     "get_timeline_state_tool",
-    "get_file_info_tool",
     "list_transitions_tool",
     "search_transitions_tool",
-    "get_clips_with_full_metadata_tool",
-    "get_timeline_placements_metadata_tool",
     "propose_overlay_windows_tool",
     "analyze_timeline_audio_tool",
     "inspect_color_tool",

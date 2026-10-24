@@ -104,8 +104,7 @@ def test_validate_accepts_assistant_stringly_transcript_args():
 def test_validate_accepts_timeline_detail_level():
     assert validate_args("get_timeline_state_tool", {"detail_level": "summary"}) is None
     assert validate_args("get_timeline_state_tool", {}) is None
-    assert validate_args("list_clips_tool", {"detail_level": "full"}) is None
-    assert validate_args("list_clips_tool", {}) is None
+    assert validate_args("get_timeline_state_tool", {"detail_level": "full"}) is None
 
 
 def test_validate_accepts_remove_words_matches():
@@ -170,8 +169,6 @@ KWARG_PROPS = {
 # Sent by the assistant backend's stubs but unused by this handler. They stay in
 # the schema so those calls validate; list them here so the drift is visible.
 BACKEND_ONLY_PROPS = {
-    "get_timeline_state_tool": {"detail_level"},
-    "list_clips_tool": {"detail_level"},
 }
 
 
