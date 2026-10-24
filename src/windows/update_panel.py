@@ -63,6 +63,7 @@ class UpdatePanel(QFrame):
         self.window = window
         self.state = STATE_AVAILABLE
         self.version = ""
+        self.reason = ""
 
         self.setObjectName("updatePanel")
         self.setFixedWidth(PANEL_WIDTH)
@@ -130,6 +131,7 @@ class UpdatePanel(QFrame):
         """Mirror the toolbar button's current state into the panel."""
         self.state = button.state
         self.version = button.version
+        self.reason = getattr(button, "reason", "") or ""
 
         self.glyph.setPixmap(
             self._glyphs.get(self.state).pixmap(GLYPH_SIZE, GLYPH_SIZE))
@@ -183,6 +185,9 @@ class UpdatePanel(QFrame):
         self.detail.setText(
             self._tr("Downloaded · %s") % readable if readable
             else self._tr("Downloaded and verified"))
+        if self.reason:
+            self.detail.setText(
+                self._tr("The last try didn't finish: %s") % self._short(self.reason))
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
         self.progress.setVisible(True)
@@ -193,11 +198,21 @@ class UpdatePanel(QFrame):
     def _show_failed(self):
         self.title.setText(
             self._tr("Zenvi %s is available") % self.version)
-        self.detail.setText(self._tr("The download failed — try downloading it manually"))
+        if self.reason:
+            self.detail.setText(
+                self._tr("Couldn't update automatically (%s) — download it from zenvi.pro")
+                % self._short(self.reason))
+        else:
+            self.detail.setText(self._tr("The download failed — try downloading it manually"))
         self.progress.setVisible(False)
         self.primary.setText(self._tr("Download from zenvi.pro"))
         self.primary.setEnabled(True)
         self._accent(COLOR_WARNING)
+
+    @staticmethod
+    def _short(text, limit=140):
+        text = " ".join(str(text).split())
+        return text if len(text) <= limit else text[:limit - 1] + "…"
 
     def _accent(self, color):
         """Recolor the progress chunk and primary button for the current state."""
