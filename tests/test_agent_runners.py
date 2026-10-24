@@ -3546,3 +3546,22 @@ def test_a_model_probe_reaps_the_cli_it_killed(monkeypatch):
     monkeypatch.setattr(ar.subprocess, "Popen", FakeProc)
     ar._acp_style_probe(["cli"], [{}], lambda ev: True)
     assert calls == ["kill", "wait"]
+
+
+def test_chatgpt_turn_without_a_model_fails_clearly(qapp, monkeypatch):
+    """No model resolved (the list failed): a clear error, not a turn on Codex's refused default."""
+    from classes import chatgpt_plan
+    from windows.agent_runners import ChatGPTPlanRunner
+
+    monkeypatch.setattr(chatgpt_plan, "access_token", lambda: "at")
+    monkeypatch.setattr(chatgpt_plan, "install", lambda: "/zenvi/codex")
+    monkeypatch.setattr(chatgpt_plan, "signed_in", lambda: True)
+    monkeypatch.setattr(chatgpt_plan, "list_models", lambda: [])
+    runner = ChatGPTPlanRunner()
+    runner._model_id = ""
+    err = runner._ensure_ready()
+    assert err and "model" in err.lower()
+
+    monkeypatch.setattr(chatgpt_plan, "list_models", lambda: [{"id": "gpt-6-luna", "default": True}])
+    assert runner._ensure_ready() is None
+    assert runner._model_id == "gpt-6-luna"

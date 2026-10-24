@@ -612,7 +612,7 @@ def start_cli_login(backend: str) -> tuple[bool, str]:
     """
     if backend == BACKEND_CHATGPT:
         # Zenvi's own Sign in with ChatGPT, then the one-time Codex download.
-        ok, message = chatgpt_plan.sign_in()
+        ok, message = chatgpt_plan.sign_in(timeout=chatgpt_plan.SIGN_IN_TIMEOUT)
         if ok:
             try:
                 chatgpt_plan.install()
@@ -2537,6 +2537,12 @@ class ChatGPTPlanRunner(CodexRunner):
             log.warning("ChatGPT: Codex download failed: %s", e, exc_info=True)
             return "Could not download the ChatGPT agent (Codex %s): %s" % (
                 chatgpt_plan.CODEX_VERSION, e)
+        if not self._model_id:
+            # The list may have failed before the token refresh above; try once more.
+            self._model_id = self._coerce_model("")
+        if not self._model_id:
+            return ("Could not load the models your ChatGPT plan offers. "
+                    "Check your connection, then try again.")
         return None
 
     def _build_env(self):

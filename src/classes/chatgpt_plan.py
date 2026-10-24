@@ -40,6 +40,8 @@ SCOPES = "openid profile email offline_access resource.invoke chatgpt.tokens.use
 PLAN_SCOPE = "chatgpt.tokens.use.direct"
 CALLBACK_PORT = 1455          # the port is the only part of the redirect allowed to change
 APP_NAME = "Zenvi"
+TOKEN_MIN_LIFETIME = 30 * 60  # ACCESS_TOKEN is fixed for the whole Codex turn
+SIGN_IN_TIMEOUT = 15 * 60     # the agent panel waits as long
 
 # Pinned Codex release: bump the version and every hash together
 # (gh release view rust-v<version> --repo openai/codex --json assets).
@@ -222,6 +224,10 @@ def _wait_for_callback(server, deadline, state):
     return result
 
 
+class _CallbackServer(HTTPServer):
+    allow_reuse_address = False      # a busy port must raise, also on Windows
+
+
 def sign_in(open_browser=webbrowser.open, timeout=300):
     """Sign in with ChatGPT in the browser; returns ``(ok, message)``. Blocking."""
     account = _load()
@@ -230,9 +236,9 @@ def sign_in(open_browser=webbrowser.open, timeout=300):
     verifier = _b64url(secrets.token_bytes(48))
     state, nonce = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
     try:
-        server = HTTPServer(("127.0.0.1", CALLBACK_PORT), BaseHTTPRequestHandler)
+        server = _CallbackServer(("127.0.0.1", CALLBACK_PORT), BaseHTTPRequestHandler)
     except OSError:
-        server = HTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)   # 1455 busy (a Codex login?)
+        server = _CallbackServer(("127.0.0.1", 0), BaseHTTPRequestHandler)   # 1455 busy (a Codex login?)
     redirect_uri = "http://127.0.0.1:%d/auth/callback" % server.server_address[1]
     params = {
         "response_type": "code",
@@ -308,7 +314,8 @@ def access_token():
         account = _load()
         if not account.get("refresh_token"):
             raise SignInRequired("Sign in with ChatGPT first.")
-        if account.get("access_token") and float(account.get("expires_at") or 0) - 300 > time.time():
+        if (account.get("access_token")
+                and float(account.get("expires_at") or 0) - TOKEN_MIN_LIFETIME > time.time()):
             return account["access_token"]
         try:
             tokens = _post_form(TOKEN_URL, {

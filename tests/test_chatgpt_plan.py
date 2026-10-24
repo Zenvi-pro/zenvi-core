@@ -319,3 +319,10 @@ def test_list_models_ignores_a_malformed_reply(monkeypatch, reply):
     _signed_in(monkeypatch, expires_in=3600)
     monkeypatch.setattr(chatgpt_plan, "_get_json", lambda url, token: reply)
     assert chatgpt_plan.list_models() == []
+
+
+def test_a_token_with_under_30_minutes_left_is_refreshed(monkeypatch):
+    """ACCESS_TOKEN is fixed for the whole Codex turn, so it must outlive a long one."""
+    _signed_in(monkeypatch, expires_in=20 * 60)
+    _token_endpoint(monkeypatch, [{"access_token": "at-2", "refresh_token": "rt-2", "expires_in": 3600}])
+    assert chatgpt_plan.access_token() == "at-2"
