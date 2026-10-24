@@ -33,6 +33,7 @@ import platform
 import traceback
 import json
 import logging
+import tempfile
 
 from qt_api import (
     QT_API,
@@ -181,6 +182,13 @@ def get_app():
 def get_settings():
     """Get a reference to the app's settings object"""
     return get_app().get_settings()
+
+
+def check_user_path_writable(user_path):
+    """Raise PermissionError if Zenvi can't write to its user directory.
+    A file of its own, so two launches at once can't delete each other's."""
+    with tempfile.TemporaryFile(dir=user_path) as f:
+        f.write(b'{}')
 
 
 class StartupError:
@@ -489,18 +497,9 @@ class OpenShotApp(QApplication):
         # Test for permission issues (and display message if needed)
         try:
             log.debug("Testing write access to user directory")
-            # Create test paths
-            TEST_PATH_DIR = os.path.join(info.USER_PATH, 'PERMISSION')
-            TEST_PATH_FILE = os.path.join(TEST_PATH_DIR, f'test{info.PROJECT_EXT}')
-            os.makedirs(TEST_PATH_DIR, exist_ok=True)
-            with open(TEST_PATH_FILE, 'w') as f:
-                f.write('{}')
-                f.flush()
-            # Delete test paths
-            os.unlink(TEST_PATH_FILE)
-            os.rmdir(TEST_PATH_DIR)
+            check_user_path_writable(info.USER_PATH)
         except PermissionError as ex:
-            log.error('Failed to create file %s', TEST_PATH_FILE, exc_info=1)
+            log.error('Failed to write to %s', info.USER_PATH, exc_info=1)
             self.errors.append(StartupError(
                 _("Permission Error"),
                 _("%(error)s. Please delete <b>%(path)s</b> and launch OpenShot again.") % {
