@@ -608,7 +608,7 @@ def get_edit_style(file_ids=None, file_query="", compare_to_timeline=True):
     still, panning or handheld, how many cuts land on the beat, how much is speech and how fast it is spoken, how loud it is,
     its look, and how much text is on screen. With compare_to_timeline it measures the timeline being built the same way and
     lists where the two differ by enough to matter, each with what to do and which tool does it (the colour match itself is
-    match_reference_tool). It reports measurements; deciding what to copy is yours. The reference must be indexed.
+    harmonize_look_tool). It reports measurements; deciding what to copy is yours. The reference must be indexed.
     """
     from classes.media_index import style
     shelf = default_shelf()

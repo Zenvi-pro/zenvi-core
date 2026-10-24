@@ -1065,33 +1065,3 @@ def _compare_sheet(plan: Dict[str, Any], reference_file_id: str, wanted: List[in
     except Exception:                                                      # the path in the result still works
         log.info("comparison picture not attached; image_path still works", exc_info=True)
     return path, [e for e in legend if "reference_t" in e], [e for e in legend if "note" in e]
-
-
-@editor_tool(
-    "compare_recreation_tool",
-    covers=("index.match",),
-    label="Look at recreated shots next to the reference",
-    schema=obj({
-        "reference_file_id": string("The video being recreated."),
-        "shots": array({"type": "integer"}, f"Reference shot numbers to look at, at most {MAX_COMPARE_SHOTS} (the ones check_recreation_tool lists as failing, or the weakest in the plan)."),
-        "plan_id": string("The plan (default: the latest for this reference).", ""),
-    }, required=["reference_file_id", "shots"]),
-    read_only=True,
-)
-def compare_recreation(reference_file_id, shots, plan_id=""):
-    """Pictures for judging a recreation by eye: for each listed reference shot, the reference's frame (left) beside the frame of the footage
-    chosen for it (right, from the middle of the chosen window, before any colour grade). Look at them: is it the same kind of scene, subject
-    and framing? If not, swap the shot (build_recreation_tool overrides), look for stock, or leave it out and say so. The numbers in
-    check_recreation_tool cannot tell you that; the picture can.
-    """
-    wanted = [int(x) for x in shots][:MAX_COMPARE_SHOTS]
-    if not wanted:
-        raise ToolError("give the reference shot numbers to look at")
-    files, _missing = project_indexes()
-    _reference(files, reference_file_id)                                  # raises a plain message when the reference has no index
-    plan = _plan(plan_id, reference_file_id)
-    if not plan:
-        raise ToolError("no plan yet: plan_recreation_tool makes one")
-    path, shown, skipped = _compare_sheet(plan, str(reference_file_id), wanted)
-    return ok(f"{len(shown)} shot(s): reference on the left, the chosen footage on the right, one row per shot in the order listed.",
-              image_path=path, rows=shown, skipped=skipped)

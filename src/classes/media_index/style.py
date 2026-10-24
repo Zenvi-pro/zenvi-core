@@ -180,7 +180,7 @@ def compare_style(reference: Dict[str, Any], yours: Dict[str, Any]) -> List[Dict
     for key, limit in LOOK_GAPS.items():
         a, b = ref_look.get(key), my_look.get(key)
         if a is not None and b is not None and abs(a - b) >= limit:
-            gaps.append(_gap("look: " + key, round(a, 3), round(b, 3), f"differs by {abs(a - b):.2f}", "match the reference's look", ("match_reference_tool", "harmonize_look_tool")))
+            gaps.append(_gap("look: " + key, round(a, 3), round(b, 3), f"differs by {abs(a - b):.2f}", "match the reference's look", ("plan_recreation_tool", "harmonize_look_tool")))
     if (reference.get("text_on_screen") or {}).get("shots_with_text", 0) >= 0.3 and not (yours.get("text_on_screen") or {}).get("shots_with_text"):
         gaps.append(_gap("text on screen", f"{reference['text_on_screen']['shots_with_text'] * 100:.0f}% of shots", "none", "the reference puts text on screen, yours does not",
                          "add titles or captions", ("add_captions_tool",)))

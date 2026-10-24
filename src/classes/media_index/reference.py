@@ -2,10 +2,10 @@
  @file
  @brief Recreate a reference from available footage, and find things inside footage.
 
- ``match_reference`` walks the reference shot by shot. For each one it searches the other files by
- picture (the reference's own saved frames, no cloud call), keeps candidates long enough to fill the
- needed duration, and places the cut window around the best moment. A shot nothing matches is
- reported with a stock-search phrase from its description, so the gap can be filled from stock.
+ ``plan_recreation`` walks the reference shot by shot and chooses, for each one, the window of the other
+ files that looks most like it (the reference's own saved frames, no cloud call), handing the windows out
+ under reuse limits. A shot nothing matches is reported with a stock-search phrase from its description,
+ so the gap can be filled from stock.
  ``locate`` finds an object or on-screen text with its rough position, the input a mask or a
  generative replace needs.
 """
@@ -33,59 +33,6 @@ def _shot_query_vector(ref: FileIndex, shot: Dict[str, Any]) -> Optional[np.ndar
             if row.get("kind") == "shot" and int(row.get("shot", -1)) == int(shot["id"]):
                 return ref.text_matrix[i]
     return None
-
-
-def _window(hit: Dict[str, Any], shot: Dict[str, Any], need: float) -> Dict[str, Any]:
-    """A cut of `need` seconds inside the hit's shot, centred on where the match peaks."""
-    length = shot["end"] - shot["start"]
-    if length + 1e-6 < need:
-        return {"in": round(shot["start"], 3), "out": round(shot["end"], 3), "fits": False, "short_by": round(need - length, 3)}
-    start = min(max(hit["peak"] - need / 2.0, shot["start"]), shot["end"] - need)
-    return {"in": round(start, 3), "out": round(start + need, 3), "fits": True, "short_by": 0.0}
-
-
-def match_reference(ref: FileIndex, files: Sequence[FileIndex], start: Optional[float] = None, end: Optional[float] = None,
-                    per_shot: int = 3, filters: Optional[Dict[str, Any]] = None, include_reference: bool = False
-                    ) -> Dict[str, Any]:
-    pool = [f for f in files if include_reference or f.sha != ref.sha]
-    lo = 0.0 if start is None else float(start)
-    hi = float(ref.duration or (ref.shots[-1]["end"] if ref.shots else 0.0)) if end is None else float(end)
-    by_sha = {f.sha: f for f in pool}
-    rows: List[Dict[str, Any]] = []
-    for shot in real_shots(ref.shots):
-        a, b = max(shot["start"], lo), min(shot["end"], hi)
-        need = b - a
-        if need < MIN_REFERENCE_SHOT or shot.get("black"):
-            continue
-        watch = shot.get("watch") or {}
-        row: Dict[str, Any] = {"reference_shot": shot["id"], "start": round(a, 3), "end": round(b, 3), "duration": round(need, 3),
-                               "description": watch.get("description") or "", "camera": (shot.get("motion") or {}).get("class"),
-                               "candidates": []}
-        qv = _shot_query_vector(ref, shot)
-        if qv is not None and pool:
-            # its own frames are matched picture to picture; a description stand-in is matched like any words
-            vec = {ref.vector_model: qv}
-            pictured = msearch.reference_vector_from(ref, shot["start"], shot["end"]) is not None
-            res = msearch.search(pool, query_vector=None if pictured else vec, reference_vector=vec if pictured else None,
-                                 filters=filters or {}, limit=max(per_shot * 3, 6))
-            for hit in res["hits"]:
-                cand = by_sha[hit["sha"]]
-                src = next((s for s in cand.shots if s["id"] == hit["shot_id"]), None)
-                if src is None:
-                    continue
-                w = _window(hit, src, need)
-                row["candidates"].append({"file_id": hit["file_id"], "name": hit["name"], "shot_id": hit["shot_id"],
-                                          "score": hit["score"], "scores": hit["scores"], "why": hit["why"], **w})
-            # whole-fit candidates first, then by rank (stable)
-            row["candidates"].sort(key=lambda c: (not c["fits"], -c["score"]))
-            row["candidates"] = row["candidates"][:per_shot]
-        fitting = [c for c in row["candidates"] if c["fits"]]
-        row["status"] = "matched" if fitting else ("short_only" if row["candidates"] else "no_match")
-        if row["status"] != "matched":
-            row["stock_query"] = " ".join((row["description"] or "footage").split()[:14])
-        rows.append(row)
-    matched = sum(1 for r in rows if r["status"] == "matched")
-    return {"shots": rows, "matched": matched, "total": len(rows)}
 
 
 def locate(files: Sequence[FileIndex], what: str, *, kind: str = "auto", start: Optional[float] = None,
