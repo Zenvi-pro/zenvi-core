@@ -407,6 +407,29 @@ def test_faulthandler_still_uses_stderr_off_windows(monkeypatch, tmp_path):
         real_stderr.close()
 
 
+def test_a_packaged_build_dumps_to_a_file_even_with_stderr(monkeypatch, tmp_path):
+    # A macOS .app's stderr exists but goes to /dev/null: a native crash
+    # (after an update, say) used to leave no trace anywhere.
+    import faulthandler
+
+    monkeypatch.setattr(crash_handler, "_user_path", lambda: str(tmp_path))
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    real_stderr = open(tmp_path / "stderr.txt", "w", encoding="utf-8")
+    monkeypatch.setattr(sys, "stderr", real_stderr)
+    try:
+        assert crash_handler.enable_faulthandler() is True
+        assert (tmp_path / "faulthandler.log").exists()
+        assert crash_handler._faulthandler_stream is not None
+    finally:
+        faulthandler.disable()
+        real_stderr.close()
+        stream = crash_handler._faulthandler_stream
+        crash_handler._faulthandler_stream = None
+        if stream is not None:
+            stream.close()
+
+
 def test_log_file_path_points_at_the_app_log(monkeypatch, tmp_path):
     monkeypatch.setattr(crash_handler, "_user_path", lambda: str(tmp_path))
 

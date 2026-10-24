@@ -650,6 +650,82 @@
 .chat-model-trigger.active .chat-model-chevron { transform: rotate(180deg); }
 .chat-model-trigger:active { transform: scale(0.96); }
 
+/* Effort dots and the Ultracode switch, the last rows of the model menu, and
+   the permission-mode pill beside the model pill (#147). No flex gap: Qt
+   WebKit has none. */
+.chat-model-effort {
+    flex-shrink: 0;
+    padding: 4px 12px;
+    font-size: 12px;
+    color: var(--chat-text);
+    border-top: 1px solid var(--chat-border);
+}
+.chat-effort-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 26px;
+}
+.chat-effort-name { opacity: 0.5; }
+.chat-effort-dots {
+    display: flex;
+    align-items: center;
+    padding: 1px 3px;
+    border-radius: 9999px;
+    background: var(--chat-button-bg);
+}
+.chat-effort-dot {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+}
+.chat-effort-dot::before {
+    content: '';
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--chat-muted);
+}
+.chat-effort-dot:hover::before { background: var(--chat-text); }
+.chat-effort-dot.active::before { width: 12px; height: 12px; background: var(--chat-text); }
+.chat-switch {
+    position: relative;
+    width: 28px;
+    height: 16px;
+    padding: 0;
+    border: none;
+    border-radius: 9999px;
+    background: var(--chat-button-bg);
+    cursor: pointer;
+}
+.chat-switch::before {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--chat-text);
+    transition: left 0.12s;
+}
+.chat-switch.on { background: var(--chat-accent); }
+.chat-switch.on::before { left: 14px; }
+.chat-cli-mode {
+    flex-shrink: 0;
+    white-space: nowrap;
+    border: 1px solid var(--chat-border);
+    background: var(--chat-surface);
+}
+.chat-cli-mode[data-mode="plan"],
+.chat-cli-mode[data-mode="readonly"] { color: #fbbf24; }
+
 /* ΓöÇΓöÇ Model dropdown ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 @keyframes chat-menu-enter {
     from { opacity: 0; transform: translateY(4px); }
