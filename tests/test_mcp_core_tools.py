@@ -19,11 +19,11 @@ def tool_stub():
         """Search the footage by what happens, what is said and how it looks."""
         return "SEARCH query=%s" % query
 
-    def reverse_clip(timeline_clip_id="", **_kw):
-        """Reverse a clip so it plays backwards."""
-        return "REVERSED %s" % timeline_clip_id
+    def set_clip_speed(timeline_clip_ids=None, reverse=False, **_kw):
+        """Speed clips up or slow them down, or play them backwards (reverse)."""
+        return "REVERSED %s" % ",".join(timeline_clip_ids or [])
 
-    th.AGENT_TOOL_HANDLERS = {"search_footage_tool": search_footage, "reverse_clip_tool": reverse_clip}
+    th.AGENT_TOOL_HANDLERS = {"search_footage_tool": search_footage, "set_clip_speed_tool": set_clip_speed}
     th.humanize_tool_name = lambda n: n
     th.execute_tool_rich = lambda name, args: th.AGENT_TOOL_HANDLERS[name](**(args or {}))
     saved = sys.modules.get("classes.tool_handlers")
@@ -69,7 +69,7 @@ def test_the_mcp_lists_core_tools_and_search_only(tool_stub):
 
     names = {d["name"] for d in listed_tool_defs()}
     assert {"find_tools", "run_tool", "search_footage_tool"} <= names
-    assert "reverse_clip_tool" not in names
+    assert "set_clip_speed_tool" not in names
     assert names - set(_extra_tools()) - {"find_tools", "run_tool"} <= {"search_footage_tool"}
 
 
@@ -111,21 +111,21 @@ def test_find_tools_returns_unlisted_tools_with_schemas(tool_stub):
     from classes.agent_mcp_server import call_meta_tool
 
     found = json.loads(call_meta_tool("find_tools", {"query": "play the clip backwards reverse"}))
-    assert found[0]["name"] == "reverse_clip_tool"
+    assert found[0]["name"] == "set_clip_speed_tool"
     assert "inputSchema" in found[0]
 
 
 def test_run_tool_runs_a_found_tool(tool_stub):
     from classes.agent_mcp_server import call_meta_tool
 
-    out = call_meta_tool("run_tool", {"name": "reverse_clip_tool", "args": {"timeline_clip_id": "c1"}})
+    out = call_meta_tool("run_tool", {"name": "set_clip_speed_tool", "args": {"timeline_clip_ids": ["c1"], "reverse": True}})
     assert "REVERSED c1" in str(out)
 
 
 def test_run_tool_rejects_unknown_arguments(tool_stub):
     from classes.agent_mcp_server import call_meta_tool
 
-    out = call_meta_tool("run_tool", {"name": "reverse_clip_tool", "args": {"bogus": 1}})
+    out = call_meta_tool("run_tool", {"name": "set_clip_speed_tool", "args": {"bogus": 1}})
     assert str(out).startswith("Error")
 
 
@@ -142,7 +142,7 @@ def test_run_tool_uses_the_mcp_chat_slot(tool_stub):
 
     seen = {}
     tool_stub.execute_tool_rich = lambda name, args: seen.update(args) or "ok"
-    call_meta_tool("run_tool", {"name": "reverse_clip_tool", "args": {"timeline_clip_id": "c1"}})
+    call_meta_tool("run_tool", {"name": "set_clip_speed_tool", "args": {"timeline_clip_ids": ["c1"], "reverse": True}})
     assert seen["chat_session_id"] == "mcp"
 
 
@@ -157,11 +157,11 @@ def test_find_tools_only_returns_tools_that_are_not_listed(tool_stub):
     from classes.agent_mcp_server import call_meta_tool
 
     found = json.loads(call_meta_tool("find_tools", {"query": "search footage reverse clip"}))
-    assert [t["name"] for t in found] == ["reverse_clip_tool"]
+    assert [t["name"] for t in found] == ["set_clip_speed_tool"]
 
 
 def test_run_tool_rejects_args_that_are_not_an_object(tool_stub):
     from classes.agent_mcp_server import call_meta_tool
 
     for bad in ([1], "x"):
-        assert str(call_meta_tool("run_tool", {"name": "reverse_clip_tool", "args": bad})).startswith("Error")
+        assert str(call_meta_tool("run_tool", {"name": "set_clip_speed_tool", "args": bad})).startswith("Error")

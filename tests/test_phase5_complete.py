@@ -16,7 +16,6 @@ from classes.speech.diarize import WindowClusterDiarize, speaker_turns
 from classes.speech.cache import Word
 from classes.speech.runtime import CancelToken
 from classes.speech.vad import EnergyVad, silence_ranges_from_speech
-from classes.speech.beats import EnergyBeatEngine
 from classes.speech.word_ranges import compact_fragments_after_remove
 
 
@@ -114,14 +113,6 @@ def test_diarize_labels_speakers():
     assert turns
 
 
-def test_beats_detect_something(tmp_path):
-    wav = tmp_path / "b.wav"
-    _write_tone_wav(wav, seconds=2.0, amp=12000)
-    result = EnergyBeatEngine().detect(str(wav), token=CancelToken())
-    assert "beats" in result
-    assert "bpm" in result
-
-
 def test_remove_silence_tool_mocked(tmp_path):
     wav = tmp_path / "talk.wav"
     _write_tone_wav(wav, seconds=2.0)
@@ -150,7 +141,7 @@ def test_remove_silence_tool_mocked(tmp_path):
              return_value=([], []),
          ) as apply_mock:
         from classes.agent_tools.speech_extra import remove_silence
-        raw = remove_silence(clipId="c1", minPauseSec=0.2, padSec=0.05)
+        raw = remove_silence(timeline_clip_id="c1", min_pause_seconds=0.2, pad_seconds=0.05)
     receipt = parse_receipt(raw)
     assert receipt["status"] == "applied"
     assert apply_mock.called
@@ -176,7 +167,7 @@ def test_remove_silence_refuses_total_wipe(tmp_path):
          patch("classes.speech.vad.detect_speech_windows", return_value=[]):
         from classes.agent_tools.speech_extra import remove_silence
         # No speech → entire file is silence → refuse entire delete or applied remove
-        raw = remove_silence(clipId="c1", maxRemoveFraction=0.5)
+        raw = remove_silence(timeline_clip_id="c1", max_remove_fraction=0.5)
     receipt = parse_receipt(raw)
     assert receipt["status"] in ("refused", "unchanged", "applied", "error")
     if receipt["status"] == "refused":
@@ -212,31 +203,6 @@ def test_export_captions_writes_srt(tmp_path):
     assert "Hi" in out.read_text(encoding="utf-8")
 
 
-def test_detect_beats_tool(tmp_path):
-    wav = tmp_path / "m.wav"
-    _write_tone_wav(wav, seconds=1.5, amp=10000)
-    project = {
-        "fps": {"num": 30, "den": 1},
-        "clips": [{
-            "id": "c1", "position": 0, "start": 0, "end": 1.5, "layer": 0,
-            "reader": {"path": str(wav)},
-        }],
-    }
-    app = MagicMock()
-    app.project = MagicMock()
-    app.project.get.side_effect = lambda k, d=None: project.get(k, d)
-    with patch("classes.app.get_app", return_value=app), \
-         patch("classes.agent_tools.inspect_render.snapshot_project", return_value=project), \
-         patch("classes.agent_tools.speech_extra._media_path_for_clip", return_value=str(wav)), \
-         patch("classes.clip_utils.project_fps_fraction", return_value=Fraction(30, 1)), \
-         patch("classes.speech.beats.extract_mono_16k_wav", return_value=(str(wav), "")):
-        from classes.agent_tools.speech_extra import detect_beats_tool_handler
-        raw = detect_beats_tool_handler(clipId="c1")
-    receipt = parse_receipt(raw)
-    assert receipt["status"] == "applied"
-    assert "beats" in receipt["data"]
-
-
 def test_diarize_media_tool(tmp_path):
     wav = tmp_path / "d.wav"
     _write_tone_wav(wav, seconds=2.0)
@@ -267,7 +233,7 @@ def test_diarize_media_tool(tmp_path):
          patch("classes.clip_utils.project_fps_fraction", return_value=Fraction(30, 1)), \
          patch("classes.speech.diarize.extract_mono_16k_wav", return_value=(str(wav), "")):
         from classes.agent_tools.speech_extra import diarize_media
-        raw = diarize_media(clipId="c1", maxSpeakers=2)
+        raw = diarize_media(timeline_clip_id="c1", max_speakers=2)
     receipt = parse_receipt(raw)
     assert receipt["status"] == "applied"
     assert receipt["data"]["speakers"]
@@ -280,11 +246,9 @@ def test_all_phase5_tools_registered():
     names = [
         "get_transcript_tool",
         "remove_words_tool",
-        "transcribe_media_tool",
         "remove_silence_tool",
         "add_captions_tool",
         "export_captions_tool",
-        "detect_beats_tool",
         "diarize_media_tool",
     ]
     for name in names:
@@ -298,7 +262,7 @@ def test_all_phase5_tools_registered():
 
 def test_inspect_still_has_no_transcription_key():
     from classes.agent_tools.schema import TOOL_SCHEMAS
-    for name in ("inspect_timeline_tool", "inspect_media_tool"):
+    for name in ("inspect_timeline_tool",):
         props = TOOL_SCHEMAS[name]["properties"]
         assert "transcription" not in props
         assert "transcribe" not in props

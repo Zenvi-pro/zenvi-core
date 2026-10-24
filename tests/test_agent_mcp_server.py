@@ -177,7 +177,7 @@ def test_server_instructions_tell_harnesses_to_inspect_after_edits():
     assert "watchsuggested" in text.replace(" ", "")
     assert "watch_clip_window_tool" not in text
     assert "do not shell ffmpeg" in text
-    assert "inspect media" in text  # in words: the tool is not listed
+    assert "view frames" in text  # in words: the tool is not listed
     assert "get_timeline_state_tool" in text
 
 

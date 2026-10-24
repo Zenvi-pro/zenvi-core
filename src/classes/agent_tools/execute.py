@@ -127,7 +127,7 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
     chat_session_id = raw_args.pop("chat_session_id", None)
     transaction_id = raw_args.pop("transaction_id", None)
 
-    # Coerce Assistant stringly stubs (trackIndex="", force="false") before
+    # Coerce Assistant stringly stubs (track="", force="false") before
     # validation and before the handler sees kwargs. Editor tools were already
     # coerced by their registry, where "" is a value (name="" clears a track name).
     from classes.editor_tools import REGISTRY as _editor_tools

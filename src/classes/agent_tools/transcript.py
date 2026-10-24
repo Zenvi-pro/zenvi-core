@@ -1,4 +1,4 @@
-"""get_transcript_tool / remove_words_tool / transcribe_media_tool (Phase 5)."""
+"""get_transcript_tool / remove_words_tool (Phase 5)."""
 
 from __future__ import annotations
 
@@ -141,22 +141,20 @@ def _words_payload(record_words, fps, *, generation: int) -> list[dict]:
             "endFrame": ef,
             "startSec": w.startSec,
             "endSec": w.endSec,
-            "transcriptGeneration": generation,
+            "transcript_generation": generation,
         })
     return words
 
 
 def _want_full_words(detail_level: str = "", include_words=None, **_kw) -> bool:
     """Verbose words[] array — only when explicitly requested."""
-    if include_words is None and _kw.get("includeWords") is not None:
-        include_words = _kw.get("includeWords")
     if include_words is None and _kw.get("include_words") is not None:
         include_words = _kw.get("include_words")
     return _as_bool(include_words, False)
 
 
 def _want_compact_words(detail_level: str = "", include_words=None, **_kw) -> bool:
-    """compactWords rows — detail_level=full or includeWords."""
+    """compactWords rows — detail_level=full or include_words."""
     if _want_full_words(detail_level, include_words, **_kw):
         return True
     detail = _first_nonempty(detail_level, _kw.get("detail_level")).lower()
@@ -176,8 +174,8 @@ def _clip_transcript_payload(
 ) -> dict:
     row = dict(meta)
     row["wordCount"] = len(words)
-    row["transcriptGeneration"] = meta.get("transcriptGeneration") or (
-        words[0].get("transcriptGeneration") if words else 1
+    row["transcript_generation"] = meta.get("transcript_generation") or (
+        words[0].get("transcript_generation") if words else 1
     )
     # Default: no word arrays — remove_words_tool(matches=[...]) does not need them.
     if include_compact or include_words:
@@ -193,7 +191,7 @@ def _transcript_notes(*, for_edit: bool = True) -> list[str]:
         "data.clipIds are TIMELINE clip ids (not media-bin fileIds). "
         "For cuts: call remove_words_tool ONCE next with data.clipIds[0] + matches "
         "(e.g. [\"FlowCut\",\"flocut\"]) — do NOT call get_transcript_tool again. "
-        "Keep language=auto. Never pass fileId to remove_words_tool.",
+        "Keep language=auto. Never pass file_id to remove_words_tool.",
     ]
     notes.append(
         "Word times are only good to a few tenths of a second. To cut at the instant someone starts or stops talking, "
@@ -202,7 +200,7 @@ def _transcript_notes(*, for_edit: bool = True) -> list[str]:
     if for_edit:
         notes.append(
             "matches=[...] is enough for brand/filler cuts — you do not need "
-            "compactWords or a matching transcriptGeneration. After a successful cut, "
+            "compactWords or a matching transcript_generation. After a successful cut, "
             "use remove_words_tool data.script (full remaining dialogue) — do not "
             "truncate or invent a message limit."
         )
@@ -222,13 +220,13 @@ def _short_transcript_summary(
     files = [str(f) for f in (file_ids or []) if f]
     lang = f", {language}" if language else ""
     if clips:
-        id_bit = f" clipId={clips[0]}" if len(clips) == 1 else f" clipIds={clips}"
+        id_bit = f" timeline_clip_id={clips[0]}" if len(clips) == 1 else f" clipIds={clips}"
         action = (
             "Full dialogue in data.script. For word cuts call remove_words_tool next "
-            "with that clipId + matches=[...] — do not re-call get_transcript_tool."
+            "with that timeline_clip_id + matches=[...] — do not re-call get_transcript_tool."
         )
     elif files:
-        id_bit = f" fileId={files[0]}" if len(files) == 1 else f" fileIds={files}"
+        id_bit = f" file_id={files[0]}" if len(files) == 1 else f" fileIds={files}"
         action = (
             "Full dialogue in data.script. This is a media-bin fileId, NOT a timeline "
             "clipId — place the file on the timeline (or re-call get_transcript_tool "
@@ -293,14 +291,14 @@ def _transcript_data_payload(
             "remove_words_tool needs data.clipIds (timeline), not fileId"
         )
     else:
-        next_action = "pass clipId to remove_words_tool or place the clip first"
+        next_action = "pass timeline_clip_id to remove_words_tool or place the clip first"
     # Put actionable edit fields FIRST so they survive any truncation;
     # keep the long script last.
     return {
         "nextAction": next_action,
         "clipIds": clip_ids,
         "fileIds": file_ids,
-        "transcriptGeneration": generation,
+        "transcript_generation": generation,
         "wordCount": word_count,
         "transcriptionSource": source,
         "modelId": model_out,
@@ -331,7 +329,7 @@ def _file_transcript_receipt(
             include_words=include_words,
             include_compact=include_compact,
             fileId=str(file_id),
-            transcriptGeneration=record.generation,
+            transcript_generation=record.generation,
         ),
     ]
     summary = _short_transcript_summary(
@@ -361,102 +359,16 @@ def _file_transcript_receipt(
     ).to_json()
 
 
-def transcribe_media(
-    fileId: str = "",
-    language: str = "auto",
-    modelId: str = "",
-    force: bool = False,
-    engine: str = "auto",
-    **_kw,
-):
-    """Fill the local word-level transcript cache for a media-bin file."""
-    from classes.agent_tools.receipt import ToolReceipt
-    from classes.speech.cache import DEFAULT_MODEL_ID
-    from classes.speech.map_timeline import resolve_media_path
-
-    fileId = _first_nonempty(fileId, _kw.get("file_id"))
-    force = _as_bool(force, False)
-
-    if not fileId:
-        return ToolReceipt.refused(
-            "transcribe_media_tool", "Error: fileId is required.",
-        ).to_json()
-
-    fobj = _file_for_id(str(fileId))
-    if fobj is None or not isinstance(getattr(fobj, "data", None), dict):
-        return ToolReceipt.refused(
-            "transcribe_media_tool", f"Error: Unknown fileId '{fileId}'.",
-        ).to_json()
-
-    path = resolve_media_path(fobj.data)
-    if not path:
-        return ToolReceipt.refused(
-            "transcribe_media_tool", "Error: File has no media path.",
-        ).to_json()
-
-    model = (modelId or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
-    try:
-        record = _ensure_transcript(
-            path,
-            language=language or "auto",
-            model_id=model,
-            force=bool(force),
-            engine=engine or "auto",
-        )
-    except InterruptedError:
-        return ToolReceipt.error(
-            "transcribe_media_tool", "Error: Transcription cancelled.",
-        ).to_json()
-    except Exception as exc:
-        if _is_no_audio_exc(exc):
-            return _no_audio_receipt("transcribe_media_tool").to_json()
-        return ToolReceipt.error(
-            "transcribe_media_tool", f"Error: Transcription failed: {exc}",
-        ).to_json()
-
-    from classes.agent_tools.present import words_to_script
-    script = words_to_script(record.words)
-    summary = (
-        _short_transcript_summary(
-            word_count=len(record.words),
-            source=record.transcriptionSource,
-            language=record.language,
-            file_ids=[str(fileId)],
-        )
-        if record.words
-        else "No spoken dialogue found."
-    )
-    return ToolReceipt.applied(
-        "transcribe_media_tool",
-        summary,
-        undo_steps=0,
-        notes=[
-            "Show data.script to the user — never paste this receipt JSON. "
-            "Do not re-call this tool; use get_transcript_tool / remove_words_tool next.",
-        ],
-        data={
-            "fileId": str(fileId),
-            "wordCount": len(record.words),
-            "language": record.language,
-            "modelId": record.modelId,
-            "transcriptionSource": record.transcriptionSource,
-            "transcriptGeneration": record.generation,
-            "engine": record.transcriptionSource,
-            "script": script,
-        },
-    ).to_json()
-
-
 def get_transcript(
-    clipId: str = "",
-    fileId: str = "",
-    trackIndex=None,
+    timeline_clip_id: str = "",
+    file_id: str = "",
+    track=None,
     language: str = "auto",
-    modelId: str = "",
+    model_id: str = "",
     force: bool = False,
     engine: str = "auto",
     detail_level: str = "",
-    includeWords=None,
+    include_words=None,
     **_kw,
 ):
     """Return spoken words in project frames for a clip, file, or whole track."""
@@ -465,13 +377,11 @@ def get_transcript(
     from classes.speech.cache import DEFAULT_MODEL_ID
     from classes.speech.map_timeline import clip_speed, resolve_media_path, words_for_clip
 
-    clipId = _first_nonempty(clipId, _kw.get("timeline_clip_id"))
-    fileId = _first_nonempty(fileId, _kw.get("file_id"))
-    if trackIndex in (None, "") and _kw.get("track_index") not in (None, ""):
-        trackIndex = _kw.get("track_index")
+    clipId = _first_nonempty(timeline_clip_id)
+    fileId = _first_nonempty(file_id)
     force = _as_bool(force, False)
-    include_words = _want_full_words(detail_level, includeWords, **_kw)
-    include_compact = _want_compact_words(detail_level, includeWords, **_kw)
+    include_words = _want_full_words(detail_level, include_words, **_kw)
+    include_compact = _want_compact_words(detail_level, include_words, **_kw)
 
     try:
         from classes.app import get_app
@@ -487,7 +397,7 @@ def get_transcript(
         ).to_json()
 
     fps = _fps_from_project(app.project)
-    model = (modelId or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
+    model = (model_id or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
     eng = engine or "auto"
     clips_out: list[dict] = []
     warnings: list[str] = []
@@ -496,19 +406,19 @@ def get_transcript(
     if clipId:
         clip = _find_clip(project_data, str(clipId))
         if clip is None:
-            # Models often pass media-bin fileId as clipId after a file-only receipt.
+            # Models often pass media-bin file_id as timeline_clip_id after a file-only receipt.
             file_hits = _clips_for_file_id(project_data, str(clipId))
             if file_hits:
                 targets = file_hits
             else:
                 fobj = _file_for_id(str(clipId))
                 if fobj is not None and isinstance(getattr(fobj, "data", None), dict):
-                    # Treat as fileId — same path as explicit fileId=.
+                    # Treat as file_id — same path as explicit file_id=.
                     fileId = str(clipId)
                     clipId = ""
                 else:
                     return ToolReceipt.refused(
-                        "get_transcript_tool", f"Error: Unknown clipId '{clipId}'.",
+                        "get_transcript_tool", f"Error: Unknown timeline_clip_id '{clipId}'.",
                     ).to_json()
         else:
             targets = [clip]
@@ -517,7 +427,7 @@ def get_transcript(
         fobj = _file_for_id(str(fileId))
         if fobj is None or not isinstance(getattr(fobj, "data", None), dict):
             return ToolReceipt.refused(
-                "get_transcript_tool", f"Error: Unknown fileId '{fileId}'.",
+                "get_transcript_tool", f"Error: Unknown file_id '{fileId}'.",
             ).to_json()
         path = resolve_media_path(fobj.data)
         if not path:
@@ -553,12 +463,12 @@ def get_transcript(
         for clip in project_data.get("clips") or []:
             if not isinstance(clip, dict):
                 continue
-            if trackIndex is not None:
+            if track is not None:
                 try:
-                    want = int(trackIndex)
+                    want = int(track)
                 except (TypeError, ValueError):
                     return ToolReceipt.refused(
-                        "get_transcript_tool", "Error: trackIndex must be an integer.",
+                        "get_transcript_tool", "Error: track must be an integer.",
                     ).to_json()
                 layer = int(clip.get("layer", -1))
                 display = layer_number_to_display_index(layer, layers)
@@ -621,14 +531,14 @@ def get_transcript(
             return ToolReceipt.refused(
                 "get_transcript_tool",
                 "Error: Timeline is empty and multiple media-bin files exist. "
-                f"Pass fileId for one of: {ids}",
+                f"Pass file_id for one of: {ids}",
             ).to_json()
 
     if not targets and not fileId:
         return ToolReceipt.refused(
             "get_transcript_tool",
-            "Error: No clips to transcribe. Pass clipId/timeline_clip_id, "
-            "fileId/file_id, put a clip on the timeline, or import media first.",
+            "Error: No clips to transcribe. Pass timeline_clip_id or file_id, "
+            "put a clip on the timeline, or import media first.",
         ).to_json()
 
     generations: list[int] = []
@@ -689,7 +599,7 @@ def get_transcript(
                 position=pos,
                 start=start,
                 end=end,
-                transcriptGeneration=record.generation,
+                transcript_generation=record.generation,
             )
         )
         generations.append(record.generation)
@@ -758,13 +668,13 @@ def _as_str_list(value):
 
 
 def remove_words(
-    clipId: str = "",
-    wordIndices=None,
+    timeline_clip_id: str = "",
+    word_indices=None,
     matches=None,
-    fillerPreset: str = "",
-    transcriptGeneration=None,
+    filler_preset: str = "",
+    transcript_generation=None,
     language: str = "auto",
-    modelId: str = "",
+    model_id: str = "",
     engine: str = "auto",
     **_kw,
 ):
@@ -784,12 +694,10 @@ def remove_words(
         _new_transaction_id,
     )
 
-    clipId = _first_nonempty(clipId, _kw.get("timeline_clip_id"))
-    wordIndices = _as_int_list(wordIndices if wordIndices not in (None, "") else _kw.get("word_indices"))
-    matches = _as_str_list(matches if matches not in (None, "") else _kw.get("matchTexts") or _kw.get("match_texts"))
-    fillerPreset = _first_nonempty(fillerPreset, _kw.get("filler_preset"))
-    if transcriptGeneration in (None, "") and _kw.get("transcript_generation") not in (None, ""):
-        transcriptGeneration = _kw.get("transcript_generation")
+    clipId = _first_nonempty(timeline_clip_id)
+    wordIndices = _as_int_list(word_indices)
+    matches = _as_str_list(matches if matches not in (None, "") else _kw.get("match_texts"))
+    fillerPreset = _first_nonempty(filler_preset)
     warnings: list[str] = []
 
     try:
@@ -816,8 +724,8 @@ def remove_words(
         else:
             return ToolReceipt.refused(
                 "remove_words_tool",
-                "Error: clipId is required when the timeline has zero or multiple clips. "
-                "Pass clipId from get_transcript_tool data.clipIds.",
+                "Error: timeline_clip_id is required when the timeline has zero or multiple clips. "
+                "Pass timeline_clip_id from get_transcript_tool data.clipIds.",
             ).to_json()
 
     clip = _find_clip(project_data, str(clipId))
@@ -832,7 +740,7 @@ def remove_words(
             return ToolReceipt.refused(
                 "remove_words_tool",
                 f"Error: '{clipId}' is a media-bin fileId with multiple timeline clips. "
-                f"Pass one timeline clipId: {ids}",
+                f"Pass one timeline_clip_id: {ids}",
             ).to_json()
         else:
             fobj = _file_for_id(str(clipId))
@@ -844,11 +752,11 @@ def remove_words(
                     "then remove_words_tool with data.clipIds[0].",
                 ).to_json()
             return ToolReceipt.refused(
-                "remove_words_tool", f"Error: Unknown clipId '{clipId}'.",
+                "remove_words_tool", f"Error: Unknown timeline_clip_id '{clipId}'.",
             ).to_json()
 
     fps = _fps_from_project(app.project)
-    model = (modelId or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
+    model = (model_id or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
     file_data = _file_data_for_clip(clip)
     path = resolve_media_path(file_data) if file_data else ""
     if not path:
@@ -874,28 +782,28 @@ def remove_words(
             "remove_words_tool", f"Error: Transcription failed: {exc}",
         ).to_json()
 
-    if transcriptGeneration is not None:
+    if transcript_generation is not None:
         try:
-            want = int(transcriptGeneration)
+            want = int(transcript_generation)
         except (TypeError, ValueError):
             return ToolReceipt.refused(
                 "remove_words_tool",
-                "Error: transcriptGeneration must be an integer.",
+                "Error: transcript_generation must be an integer.",
             ).to_json()
         if want != int(record.generation):
-            # matches / fillerPreset recompute indices from the live record.
-            # wordIndices win over both below, so stale ones always refuse.
+            # matches / filler_preset recompute indices from the live record.
+            # word_indices win over both below, so stale ones always refuse.
             if wordIndices is not None:
                 return ToolReceipt.refused(
                     "remove_words_tool",
-                    "Error: transcriptGeneration mismatch — call get_transcript_tool again.",
+                    "Error: transcript_generation mismatch — call get_transcript_tool again.",
                     data={
-                        "transcriptGeneration": record.generation,
+                        "transcript_generation": record.generation,
                         "requested": want,
                     },
                 ).to_json()
             warnings.append(
-                f"transcriptGeneration {want} stale; using live generation "
+                f"transcript_generation {want} stale; using live generation "
                 f"{record.generation}"
             )
 
@@ -927,20 +835,20 @@ def remove_words(
         if fillerPreset not in FILLER_PRESETS:
             return ToolReceipt.refused(
                 "remove_words_tool",
-                f"Error: Unknown fillerPreset '{fillerPreset}'. "
+                f"Error: Unknown filler_preset '{fillerPreset}'. "
                 f"Use one of: {', '.join(sorted(FILLER_PRESETS))}.",
             ).to_json()
         indices = indices_for_filler_preset(mapped, fillerPreset)
     if matches is not None:
         matched = indices_for_matches(mapped, matches)
-        # Union with any preset hits; wordIndices below replace when provided.
+        # Union with any preset hits; word_indices below replace when provided.
         indices = sorted(set(indices) | set(matched))
     if wordIndices is not None:
         try:
             indices = [int(i) for i in list(wordIndices)]
         except (TypeError, ValueError):
             return ToolReceipt.refused(
-                "remove_words_tool", "Error: wordIndices must be integers.",
+                "remove_words_tool", "Error: word_indices must be integers.",
             ).to_json()
 
     if not indices:
@@ -950,7 +858,7 @@ def remove_words(
         return ToolReceipt.unchanged(
             "remove_words_tool",
             f"No words matched — nothing removed.{hint}",
-            data={"transcriptGeneration": record.generation, "matches": matches or []},
+            data={"transcript_generation": record.generation, "matches": matches or []},
             warnings=warnings,
         ).to_json()
 
@@ -959,7 +867,7 @@ def remove_words(
         return ToolReceipt.unchanged(
             "remove_words_tool",
             "No removable ranges — nothing removed.",
-            data={"transcriptGeneration": record.generation},
+            data={"transcript_generation": record.generation},
             warnings=warnings,
         ).to_json()
 
@@ -976,7 +884,7 @@ def remove_words(
             return ToolReceipt.unchanged(
                 "remove_words_tool",
                 "Selection produced no change.",
-                data={"transcriptGeneration": record.generation},
+                data={"transcript_generation": record.generation},
                 warnings=warnings,
             ).to_json()
 
@@ -1031,7 +939,7 @@ def remove_words(
             "removedWordIndices": indices,
             "removedDurationSec": removed,
             "fragmentCount": len(fragments),
-            "transcriptGeneration": record.generation,
+            "transcript_generation": record.generation,
             "transcriptionSource": record.transcriptionSource,
             "modelId": record.modelId,
             "language": record.language,
@@ -1170,6 +1078,6 @@ def _delete_clip_and_ripple(app, clip: dict, *, removed_duration: float, fps, wo
         data={
             "clipId": cid,
             "removedDurationSec": removed_duration,
-            "transcriptGeneration": generation,
+            "transcript_generation": generation,
         },
     ).to_json()

@@ -163,7 +163,7 @@ def test_read_only_calls_do_not_scan_the_timeline(monkeypatch):
 
     scans = []
     monkeypatch.setattr(ex, "_snapshot_clips", lambda app: scans.append(1) or [])
-    handlers = {"list_project_files_tool": lambda **_kw: "0 files", "zoom_in_tool": lambda **_kw: "Zoomed in"}
+    handlers = {"list_project_files_tool": lambda **_kw: "0 files", "set_timeline_view_tool": lambda **_kw: "Zoomed in"}
     ex.bind_runtime(
         handlers=handlers,
         read_only=frozenset({"list_project_files_tool"}),
@@ -182,5 +182,5 @@ def test_read_only_calls_do_not_scan_the_timeline(monkeypatch):
     )
     ex.execute_tool("list_project_files_tool", {})
     assert scans == []
-    ex.execute_tool("zoom_in_tool", {})
+    ex.execute_tool("set_timeline_view_tool", {})
     assert scans == [1]

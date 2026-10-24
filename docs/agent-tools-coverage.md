@@ -199,7 +199,7 @@ Editor tools registered: 143; all agent tools: 183.
 |---|---|
 | `account.session` | Sign in/out, login windows and the update pill manage the user's account and app updates, not the project; an assistant must not sign the user out. |
 | `chat.self` | The Agents/Plan docks are the assistant's own interface; the assistant does not drive itself. |
-| `files.preview_window` | Preview File opens an interactive player window; inspect_media_tool renders frames of a file for the assistant. |
+| `files.preview_window` | Preview File opens an interactive player window; view_frames_tool renders frames of a file for the assistant. |
 | `help.menu` | Help menu items (docs, tutorial, bug report, donate, about) open external links; nothing to edit. |
 | `preview.transform_handles` | On-canvas transform/crop handles are a mouse gesture over clip.properties_set/keyframes, which the tools expose directly. |
 | `preview.viewer_zoom` | Video preview zoom/pan and the preview FPS overlay change only the viewer, not the project; render frames with inspect tools instead. |

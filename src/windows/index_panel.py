@@ -137,7 +137,7 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
         try:
             from classes.agent_tools.transcript import get_transcript
             # The default receipt is compact (script only); the list needs words.
-            raw = get_transcript(includeWords=True)
+            raw = get_transcript(include_words=True)
         except Exception as exc:
             log.warning("Index refresh failed: %s", exc)
             raw = exc
@@ -162,7 +162,7 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
             return
 
         data = receipt.get("data") or {}
-        self._generation = data.get("transcriptGeneration")
+        self._generation = data.get("transcript_generation")
         from classes.speech import transcript_view
         model = transcript_view.reading_model(data.get("clips") or [], fps=self._fps())
         self._show_words(model)

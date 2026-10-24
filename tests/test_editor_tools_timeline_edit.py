@@ -502,7 +502,7 @@ def test_align_refusals_and_no_op(ed):
 
 
 # ---------------------------------------------------------------------------
-# slice_clip_at_playhead_tool (existing tool, fixed)
+# slice_clips_tool(scope='all') cuts everything under the playhead
 # ---------------------------------------------------------------------------
 
 def test_slice_at_playhead_skips_locked_and_edge_items(ed):
@@ -511,9 +511,8 @@ def test_slice_at_playhead_skips_locked_and_edge_items(ed):
     ed.add_clip(f, position=0.0, end=4.0, layer=T2)            # locked
     ed.add_clip(f, position=2.0, end=3.0, layer=T3)            # starts at the playhead
     ed.lock_track(T2)
-    ed.window.preview_thread.current_frame = 61                # 2.0 s
-    out = ed.call("slice_clip_at_playhead_tool")
-    assert out.startswith("Sliced 1 item(s)"), out
+    out = ed.call("slice_clips_tool", at_seconds=2.0, scope="all")
+    assert out.startswith("Sliced 1 clip(s)"), out
     assert ed.fake.calls[-1][:3] == ("slice", "KEEP_BOTH", [a])
 
 
@@ -521,8 +520,7 @@ def test_slice_at_playhead_with_nothing_sliceable_is_an_error(ed):
     f = ed.add_file("video", duration=10.0)
     ed.add_clip(f, position=0.0, end=4.0, layer=T2)
     ed.lock_track(T2)
-    ed.window.preview_thread.current_frame = 31
-    out = ed.call("slice_clip_at_playhead_tool")
+    out = ed.call("slice_clips_tool", at_seconds=1.0, scope="all")
     assert out.startswith("Error:") and ed.fake.calls == []
 
 

@@ -464,12 +464,11 @@ CUE_ITEM = {"type": "object", "properties": {
     schema=obj({
         "cues": array(CUE_ITEM, "Captions to show, each {start, end, text} in timeline seconds (or the clip's "
                       "source seconds with time_base='source'). Use for text you already have."),
-        "srtPath": string("Path of an .srt or .vtt subtitle file to burn in. With a clip its times are that "
+        "srt_path": string("Path of an .srt or .vtt subtitle file to burn in. With a clip its times are that "
                           "clip's media time; without one, timeline time.", ""),
-        "clipId": string("Timeline clip to caption (the speaker's clip). Same as timeline_clip_id.", ""),
         "timeline_clip_id": string("Timeline clip to caption.", ""),
         "clip_query": string("Describe the clip to caption instead of an id, e.g. 'talking head'.", ""),
-        "trackIndex": integer("Caption every clip on this UI track (1 = bottom) from its transcript. 0 = not "
+        "track": integer("Caption every clip on this UI track (1 = bottom) from its transcript. 0 = not "
                               "used.", 0, minimum=0),
         "time_base": enum(["auto", "timeline", "source"],
                           "What cue times mean: timeline seconds, or the clip's source (media) seconds. auto = "
@@ -478,31 +477,31 @@ CUE_ITEM = {"type": "object", "properties": {
                                 "captioned. Empty = the lowest free track above the video.", ""),
         **_STYLE_ARGS,
         "uppercase": boolean("Show the captions in capital letters.", False),
-        "maxWords": integer("Longest caption, in words, when phrasing a transcript (subtitle files and cues "
+        "max_words": integer("Longest caption, in words, when phrasing a transcript (subtitle files and cues "
                             "are kept as written).", 8, minimum=1, maximum=24),
-        "maxChars": integer("Longest caption, in characters, when phrasing a transcript.", 42,
+        "max_chars": integer("Longest caption, in characters, when phrasing a transcript.", 42,
                             minimum=8, maximum=120),
         "replace_existing": boolean("Replace the captions a clip already has (true) or add a second caption "
                                     "track to it (false).", True),
         "language": string("Accepted for compatibility with the on-device speech tools; the transcript comes "
                            "from Zenvi's media index, which already knows the language.", "auto"),
-        "modelId": string("Accepted for compatibility; not used (the transcript comes from the media index).", ""),
+        "model_id": string("Accepted for compatibility; not used (the transcript comes from the media index).", ""),
         "engine": string("Accepted for compatibility; not used (the transcript comes from the media index).",
                          "auto"),
     }),
     background_safe=True,
     covers=("caption.add",),
 )
-def add_captions(cues=None, srtPath="", clipId="", timeline_clip_id="", clip_query="", trackIndex=0,
+def add_captions(cues=None, srt_path="", timeline_clip_id="", clip_query="", track=0,
                  time_base="auto", overlay_track="", style="classic", font="", text_size=0.0, text_color="",
                  stroke_color="", stroke_width=-1.0, background_color="", background_opacity=-1.0, position="",
-                 fade_seconds=-1.0, uppercase=False, maxWords=8, maxChars=42, replace_existing=True,
-                 language="auto", modelId="", engine="auto"):
+                 fade_seconds=-1.0, uppercase=False, max_words=8, max_chars=42, replace_existing=True,
+                 language="auto", model_id="", engine="auto"):
     """Burn captions / subtitles into the video: from the speech transcript, a subtitle file, or given text.
 
     Use for "add captions from what I say", "caption the talking head", "burn in these
     subtitles (captions.srt)", "captions like Instagram reels". Three sources:
-    cues=[{start, end, text}] (timeline seconds); srtPath=an .srt/.vtt file; or neither,
+    cues=[{start, end, text}] (timeline seconds); srt_path=an .srt/.vtt file; or neither,
     to caption from the transcript Zenvi's media index stored for the clip's file
     (clips that are not indexed yet are refused -- index them first). Captions go on
     the captioned clip as a Caption effect (cue times follow the clip's media, so
@@ -512,29 +511,27 @@ def add_captions(cues=None, srtPath="", clipId="", timeline_clip_id="", clip_que
     One undo step. Not for titles or other free text (find_tools: add a title).
 
     Examples: {"timeline_clip_id": "C1", "style": "reels"};
-    {"srtPath": "/path/captions.srt", "timeline_clip_id": "C1", "style": "classic"};
+    {"srt_path": "/path/captions.srt", "timeline_clip_id": "C1", "style": "classic"};
     {"cues": [{"start": 1, "end": 3.5, "text": "Welcome back!"}], "style": "yellow", "position": "top"}.
     """
-    clip_id = str(clipId or timeline_clip_id or "").strip()
-    if clipId and timeline_clip_id and clipId != timeline_clip_id:
-        raise ToolError("clipId and timeline_clip_id name different clips; pass one")
+    clip_id = str(timeline_clip_id or "").strip()
     given = _given_cues(cues)
-    if given and str(srtPath or "").strip():
-        raise ToolError("pass either cues or srtPath, not both")
-    source = "cues" if given else ("file" if str(srtPath or "").strip() else "transcript")
-    if source != "transcript" and trackIndex:
-        raise ToolError("trackIndex picks clips to caption from their transcript; with cues or srtPath pass "
+    if given and str(srt_path or "").strip():
+        raise ToolError("pass either cues or srt_path, not both")
+    source = "cues" if given else ("file" if str(srt_path or "").strip() else "transcript")
+    if source != "transcript" and track:
+        raise ToolError("track picks clips to caption from their transcript; with cues or srt_path pass "
                         "timeline_clip_id (or nothing, for an overlay over the timeline)")
-    file_cues = _read_subtitle_file(srtPath) if source == "file" else []
+    file_cues = _read_subtitle_file(srt_path) if source == "file" else []
     cap_style = _style_from_args(style, font, text_size, text_color, stroke_color, stroke_width,
                                  background_color, background_opacity, position, fade_seconds)
     query = str(clip_query or "").strip()
-    overlay_mode = not (clip_id or query or trackIndex) and source != "transcript"
+    overlay_mode = not (clip_id or query or track) and source != "transcript"
     if overlay_mode and time_base == "source":
         raise ToolError("time_base='source' needs the clip whose media the times refer to")
 
     def _precheck():
-        found = _resolve_targets(clip_id, query, int(trackIndex or 0), source == "transcript")
+        found = _resolve_targets(clip_id, query, int(track or 0), source == "transcript")
         if overlay_mode:
             raw = file_cues if source == "file" else given
             plan_overlay_track(min(q.start for q in raw), max(q.end for q in raw), overlay_track)
@@ -556,13 +553,13 @@ def add_captions(cues=None, srtPath="", clipId="", timeline_clip_id="", clip_que
                 continue
             phrased = []
             for cue in cues_c:
-                phrased.extend(caption_cues.split_cue(cue, maxWords, maxChars))
+                phrased.extend(caption_cues.split_cue(cue, max_words, max_chars))
             plans.append((c, phrased))
         if not plans:
             names = ", ".join(f"{c.id} ({_clip_label(c)})" for c in targets[:5]) or "the timeline has no clips"
             raise ToolError("no transcript is available to caption from (" + names + "). Zenvi fills it "
                             "when it indexes a file; check with list_project_files_tool, index with "
-                            "reindex_project_file_tool, or pass cues / srtPath instead")
+                            "reindex_project_file_tool, or pass cues / srt_path instead")
     elif targets:
         c = targets[0]
         base = time_base if time_base != "auto" else ("source" if source == "file" else "timeline")

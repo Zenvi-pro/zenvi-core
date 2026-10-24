@@ -578,7 +578,7 @@ def locate_in_footage(what, kind="auto", file_ids=None, start=None, end=None, li
     """Find where an object or on-screen text appears, with when (seconds in the file) and where in the frame.
     box is [x, y, width, height] as 0-1 fractions from the top-left. It is a ROUGH box from the indexing pass:
     good for choosing where to look, point-masking or a region prompt, but not pixel-exact; refine it on a
-    frame (inspect_media_tool, then the masking or tracking effect) before masking, blurring, removing or
+    frame (view_frames_tool, then the masking or tracking effect) before masking, blurring, removing or
     replacing the thing. For a generative replace or removal, pass the file, time and region to the
     generation tool that is available. With for_action (blur_object, highlight_object or mask_object) each of the first
     5 results carries a handoff: the box in source pixels (grown a little, since it is rough), a point on the object, the seed
@@ -604,10 +604,10 @@ def locate_in_footage(what, kind="auto", file_ids=None, start=None, end=None, li
             except (TypeError, ValueError):
                 frames = None
             hit["handoff"] = handoff.mask_handoff(hit, width, height, fps, frames, for_action) or {"unavailable": "no box for this hit, or the frame size is unknown: "
-                                                                                                "use inspect_media_tool to choose points on the object"}
+                                                                                                "use view_frames_tool to choose points on the object"}
     summary = f"{len(hits)} place(s) where {what!r} appears" if hits else f"{what!r} was not found in the indexed footage"
     note = ("Boxes are rough. Only what the indexing pass noticed is listed, so a missing result is not proof the "
-            "thing is absent: try search_footage_tool with a description, or inspect_media_tool on the footage.")
+            "thing is absent: try search_footage_tool with a description, or view_frames_tool on the footage.")
     return ok(summary, hits=hits, note=note, not_indexed=missing[:20])
 
 

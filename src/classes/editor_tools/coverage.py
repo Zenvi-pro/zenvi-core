@@ -179,7 +179,7 @@ OUT_OF_SCOPE = {
     "chat.self": "The Agents/Plan docks are the assistant's own interface; the assistant does not drive itself.",
     "preview.viewer_zoom": "Video preview zoom/pan and the preview FPS overlay change only the viewer, not the project; render frames with inspect tools instead.",
     "preview.transform_handles": "On-canvas transform/crop handles are a mouse gesture over clip.properties_set/keyframes, which the tools expose directly.",
-    "files.preview_window": "Preview File opens an interactive player window; inspect_media_tool renders frames of a file for the assistant.",
+    "files.preview_window": "Preview File opens an interactive player window; view_frames_tool renders frames of a file for the assistant.",
     "track.keyframe_panel": "The native timeline's per-track keyframe lane is a visual editor over clip.keyframes.",
     "recording.capture_start": "Starting a microphone/screen/webcam capture records the user's surroundings; the assistant prepares the dock, the human presses Record.",
 }

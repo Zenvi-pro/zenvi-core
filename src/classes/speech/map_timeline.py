@@ -97,7 +97,7 @@ def words_for_clip(
             "timelineStartSec": to_seconds(start_f, fps),
             "timelineEndSec": to_seconds(end_f, fps),
             "clipId": clip_id,
-            "transcriptGeneration": int(generation),
+            "transcript_generation": int(generation),
         }
         if w.confidence is not None:
             row["confidence"] = w.confidence

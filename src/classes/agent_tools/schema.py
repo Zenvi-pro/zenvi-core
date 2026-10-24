@@ -20,7 +20,7 @@ HIDDEN_PARAMS = frozenset({"self", "chat_session_id", "transaction_id"})
 PRIORITY_SCHEMAS = frozenset({
     "add_clip_to_timeline_tool",
     "delete_from_timeline_tool",
-    "slice_clip_at_playhead_tool",
+    "slice_clips_tool",
     "place_motion_graphic_tool",
     "apply_transition_tool",
     "set_clip_volume_tool",
@@ -138,13 +138,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "fade_ms": _str_or_num(),
         "mode": _str(description="'replace' (default) or another handler mode."),
     }),
-    "reverse_clip_tool": _obj({
-        "timeline_clip_id": _str(),
-        "clip_query": _str(),
-        "track": _str(),
-        "occurrence": _str_or_num(),
-        "mode": _str(description="'reverse' (default) or 'reset'."),
-    }),
     "duck_under_speech_tool": _obj({
         "bed_clip_ids": _str(),
         "bed_query": _str(),
@@ -158,9 +151,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "boost_speech_db": _str_or_num(),
         "dry_run": _str_or_bool(description="true/false — preview without writing."),
     }),
-    "zoom_in_tool": _obj({}),
-    "zoom_out_tool": _obj({}),
-    "center_on_playhead_tool": _obj({}),
     "import_files_tool": _obj({
         "paths": {"oneOf": [{"type": "array", "items": {"type": "string"}}, {"type": "string"}],
                   "description": "List of paths, or one comma-separated string."},
@@ -183,16 +173,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "start_seconds": _str_or_num(),
         "end_seconds": _str_or_num(),
         "query": _str(),
-        "full_file": _str_or_bool(),
-    }),
-    "import_video_url_and_add_to_timeline_tool": _obj({
-        "video_url": _str(),
-        "position_seconds": _str_or_num(),
-        "track": _str_or_num(),
-        "query": _str(),
-        "start_seconds": _str_or_num(),
-        "end_seconds": _str_or_num(),
-        "duration_seconds": _str_or_num(),
         "full_file": _str_or_bool(),
     }),
     "ingest_web_video_tool": _obj({
@@ -295,10 +275,10 @@ TOOL_SCHEMAS: dict[str, dict] = {
     # Phase 3.8 new tools
 
     "inspect_timeline_tool": _obj({
-        "startFrame": _int(minimum=0, description="0-index project frame."),
-        "endFrame": _int(minimum=0, description="Exclusive end in 0-index frames."),
-        "maxFrames": _int(minimum=1, maximum=12, description="Default 6, max 12."),
-        "clipId": {"type": "string", "description": "From watchSuggested.clipId."},
+        "start_frame": _int(minimum=0, description="0-index project frame."),
+        "end_frame": _int(minimum=0, description="Exclusive end in 0-index frames."),
+        "max_frames": _int(minimum=1, maximum=12, description="Default 6, max 12."),
+        "timeline_clip_id": {"type": "string", "description": "From watchSuggested.timeline_clip_id."},
         "start": _num(description="watchSuggested.start seconds"),
         "end": _num(description="watchSuggested.end seconds"),
         "overview": {"type": "boolean", "description": "One storyboard instead of N frames."},
@@ -321,7 +301,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "file_id": _str(description="Alias for fileId."),
         "trackIndex": _int(minimum=0, description="UI track index; omit for all clips."),
         "language": _str(description="BCP-47 / whisper code, or 'auto'."),
-        "modelId": _str(description="faster-whisper model, e.g. faster-whisper-base; ignored by the bundled whisper.cpp engine (one model)."),
+        "model_id": _str(description="faster-whisper model, e.g. faster-whisper-base; ignored by the bundled whisper.cpp engine (one model)."),
         "force": _bool(description="Ignore cache and re-run ASR."),
         "engine": _str(
             description="auto|apple|whisper. auto=Apple SpeechAnalyzer on macOS 26+ when helper is present, else Whisper. Windows always Whisper.",
@@ -329,22 +309,13 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "detail_level": _str(
             description="Omit for a compact receipt (script + compactWords). Pass 'full' to also include the verbose words array.",
         ),
-        "includeWords": _bool(
+        "include_words": _bool(
             description="If true, include the verbose per-word timing array (same as detail_level=full).",
         ),
     }),
-    "transcribe_media_tool": _obj({
-        "fileId": _str(description="Media-bin file id."),
-        "file_id": _str(description="Alias for fileId."),
-        "language": _str(description="BCP-47 / whisper code, or 'auto'."),
-        "modelId": _str(description="faster-whisper model, e.g. faster-whisper-base; ignored by the bundled whisper.cpp engine."),
-        "force": _bool(description="Ignore cache and re-run ASR."),
-        "engine": _str(description="auto|apple|whisper"),
-    }),
     "remove_words_tool": _obj({
-        "clipId": _str(description="Timeline clip to cut."),
-        "timeline_clip_id": _str(description="Alias for clipId."),
-        "wordIndices": {
+        "timeline_clip_id": _str(description="Timeline clip to cut."),
+        "word_indices": {
             "type": "array",
             "items": {"type": "integer", "minimum": 0},
             "description": "Word indices from get_transcript_tool for this clip.",
@@ -358,29 +329,28 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "brand/name/phrase by text. Do NOT delete the clip from the timeline."
             ),
         },
-        "fillerPreset": _str(
+        "filler_preset": _str(
             description="Built-in preset: um_uh or english_fillers.",
         ),
-        "transcriptGeneration": _int(
+        "transcript_generation": _int(
             minimum=1,
             description=(
-                "Pin from get_transcript when using wordIndices. Optional for "
-                "matches/fillerPreset cuts (stale pins are ignored)."
+                "Pin from get_transcript when using word_indices. Optional for "
+                "matches/filler_preset cuts (stale pins are ignored)."
             ),
         ),
         "language": _str(
             description="Prefer 'auto'. Do not pass detected language from a prior receipt.",
         ),
-        "modelId": _str(),
+        "model_id": _str(),
         "engine": _str(description="auto|apple|whisper"),
     }),
 
     "remove_silence_tool": _obj({
-        "clipId": _str(description="Timeline clip to tighten."),
-        "timeline_clip_id": _str(description="Alias for clipId."),
-        "minPauseSec": _num(minimum=0.05, description="Minimum silence gap to remove."),
-        "padSec": _num(minimum=0.0, description="Keep this much audio around speech."),
-        "maxRemoveFraction": _num(
+        "timeline_clip_id": _str(description="Timeline clip to tighten."),
+        "min_pause_seconds": _num(minimum=0.05, description="Minimum silence gap to remove."),
+        "pad_seconds": _num(minimum=0.0, description="Keep this much audio around speech."),
+        "max_remove_fraction": _num(
             minimum=0.1, maximum=0.99,
             description="Refuse if more than this fraction would be deleted.",
         ),
@@ -390,27 +360,18 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "export_captions_tool": _obj({
         "path": _str(description="Destination .srt or .vtt path."),
         "format": _str(description="srt or vtt."),
-        "clipId": _str(),
-        "timeline_clip_id": _str(description="Alias for clipId."),
-        "trackIndex": _int(minimum=0),
+        "timeline_clip_id": _str(description="Timeline clip id."),
+        "track": _int(minimum=0),
         "language": _str(),
     }, required=["path"]),
 
-    "detect_beats_tool": _obj({
-        "fileId": _str(),
-        "file_id": _str(description="Alias for fileId."),
-        "clipId": _str(),
-        "timeline_clip_id": _str(description="Alias for clipId."),
-    }),
 
     "diarize_media_tool": _obj({
-        "fileId": _str(),
-        "file_id": _str(description="Alias for fileId."),
-        "clipId": _str(),
-        "timeline_clip_id": _str(description="Alias for clipId."),
-        "maxSpeakers": _int(minimum=1, maximum=8),
+        "file_id": _str(description="Media-bin file id."),
+        "timeline_clip_id": _str(description="Timeline clip id."),
+        "max_speakers": _int(minimum=1, maximum=8),
         "language": _str(),
-        "modelId": _str(),
+        "model_id": _str(),
     }),
 
 }
@@ -429,7 +390,7 @@ def normalize_args(tool_name: str, args: Optional[dict]) -> dict:
     """Coerce Assistant/LLM stringly-typed args into schema shapes.
 
     LangChain frontend stubs often advertise every field as ``str``, so models
-    send ``trackIndex=""`` / ``trackIndex="0"`` / ``force="false"``. Drop empty
+    send ``track=""`` / ``track="0"`` / ``force="false"``. Drop empty
     optionals and coerce integers/booleans/arrays before jsonschema runs.
     """
     import json
