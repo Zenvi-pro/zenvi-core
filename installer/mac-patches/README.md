@@ -3,15 +3,15 @@
 These patches apply to OpenShot's upstream `libopenshot` and `libopenshot-audio`
 repositories at a specific tag. They are applied at build time by
 
-- `scripts/build-mac-libopenshot.sh` (local macOS builds, default tag `v0.5.0`),
-- `.github/workflows/release.yml` (macOS arm64 release job, tag `v1.0.0`),
-- `installer/ci-win-msys-libopenshot.sh` (Windows MSYS2 release job, tag `v1.0.0`),
-- `run-win.ps1` (Windows setup from source; it builds libopenshot's default
-  branch, so it applies `libopenshot-v1.0.0-discard-preroll.patch` by name).
+- `scripts/build-mac-libopenshot.sh` (local macOS builds, default tag `v1.0.1`),
+- `.github/workflows/release.yml` (macOS arm64 release job, tag `v1.0.1`),
+- `installer/ci-win-msys-libopenshot.sh` (Windows MSYS2 release job, tag `v1.0.1`),
+- `run-win.ps1` (Windows setup from source, tag `v1.0.1`; it applies
+  `libopenshot-v1.0.1-discard-preroll.patch` by name).
 
 The Linux release job builds libopenshot from source too
 (`installer/ci-linux-libopenshot.sh`), applying the tag-locked
-`libopenshot-v1.0.0-*.patch` files; the `-mac` patch is not applied there.
+`libopenshot-v1.0.1-*.patch` files.
 
 All of them call `installer/apply-libopenshot-patches.sh`, which applies every
 `libopenshot-<tag>-*.patch` / `libopenshot-audio-<tag>-*.patch` file with one
@@ -35,15 +35,15 @@ rejects a CRLF patch against LF upstream sources.
 After the patches, `installer/patch-libopenshot-ffmpeg.py` rewrites the
 FFmpeg 8/9 `AVCodec` field accesses (`supported_samplerates`, `ch_layouts`,
 `sample_fmts`, `pix_fmts` were removed in FFmpeg 8). That script is still
-required at `v1.0.0`.
+required at `v1.0.1`.
 
-Zenvi requires libopenshot **1.0.0** (`src/classes/info.py`,
+Zenvi requires libopenshot **1.0.1** (`src/classes/info.py`,
 `MINIMUM_LIBOPENSHOT_VERSION`). The `v0.5.0` patches are kept only so the old
 default of the local build script keeps working.
 
 ## libopenshot-audio
 
-### `libopenshot-audio-v0.5.0-mac.patch`, `libopenshot-audio-v1.0.0-mac.patch` (identical)
+### `libopenshot-audio-v0.5.0-mac.patch`
 
 **File:** `CMakeLists.txt`
 
@@ -52,13 +52,12 @@ deprecated in macOS 10.9 and removed in macOS 10.14; it is absent from modern
 SDKs, and JUCE's old build configuration still references it. Linking succeeds
 without it on macOS 11+.
 
-Status at `v1.0.0`: **still needed** (`-framework AGL` is still in upstream's
-`CMakeLists.txt`). The Windows release build applies it too; the flag sits
-inside `if(APPLE)`, so it changes nothing there.
+Status at `v1.0.1`: **not needed**; upstream dropped `-framework AGL`, so the
+`v1.0.0` copy was deleted. The `v0.5.0` copy stays for old local builds.
 
 ## libopenshot
 
-### `libopenshot-v1.0.0-discard-preroll.patch`
+### `libopenshot-v1.0.1-discard-preroll.patch`
 
 **File:** `src/FFmpegReader.cpp`. Zenvi's own fix; nothing upstream yet
 (checked v1.0.1 and develop `0fbacca9`, where it also applies).
@@ -89,7 +88,11 @@ trim returns the first shown picture quickly. To check, trim with
 `ffmpeg -ss 3.5 -i in.mp4 -t 5 -c copy out.mp4` from a long-GOP source and
 compare frame 1 with `ffmpeg -i out.mp4 -frames:v 1 first.png`.
 
-### `libopenshot-v1.0.0-noncrop-location.patch`
+### `libopenshot-v1.0.0-noncrop-location.patch` (deleted at v1.0.1)
+
+The corrected behavior is still required, but v1.0.1 provides it through
+upstream `98ee060`, so this patch no longer applies and is not needed. Kept
+below for the record.
 
 **File:** `src/Clip.cpp`. Source: libopenshot `develop` commit
 `98ee060d94856e7d5765f8d939ab8f03cab6b35b` ("Preserve non-crop clip location
@@ -105,8 +108,8 @@ so existing projects do not shift.
 Zenvi's preview transform handles (`src/windows/video_widget.py`, ported from
 openshot-qt PR #6109) and its project migration (`src/classes/project_data.py`,
 ported from openshot-qt PRs #6075/#6109) implement the corrected contract, so
-this patch is **required** for the preview handles to match the rendered frame.
-Drop it when moving to a libopenshot tag that contains `98ee060`.
+the preview handles match the rendered frame only with `98ee060` in the build:
+from this patch at `v1.0.0`, from upstream at `v1.0.1`.
 
 ### `libopenshot-v0.5.0-mac.patch` (v0.5.0 only)
 
