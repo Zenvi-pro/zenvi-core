@@ -351,7 +351,7 @@ def list_project_files(media_type="", query="", tags=None, usage="", missing_onl
     disk, and for videos the optimized-preview state (none/queued/running/ready/missing).
     Sub-clips made with Split Clip (or find_tools: create subclips) are listed too (with source_in/out).
     Read-only. Example: usage="unused" before removing them (find_tools: remove files from project, scope="unused").
-    It lists only what is already imported: it cannot see files on disk, import_files_tool adds them.
+    It lists only what is already imported: it cannot see files on disk until they are imported.
     """
     usage_map = _clip_usage()
     wanted_tags = [str(t).strip().lower() for t in (tags or []) if str(t).strip()]
