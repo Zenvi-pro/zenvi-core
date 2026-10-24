@@ -1070,6 +1070,14 @@
         scrollToBottomIfPinned();
     }
 
+    /* The website shows the same code: approving a sign-in that shows another one would sign in someone else. */
+    window.onZenviSignInStarted = function (code) {
+        signInPrompts.forEach(function (p) {
+            if (!p.btn.isConnected || !p.btn.disabled) return;
+            p.status.textContent = 'Finish signing in on the Zenvi website. Approve only if it shows ' + code + '.';
+        });
+    };
+
     window.onZenviSignInResult = function (ok, email) {
         signInPrompts.forEach(function (p) {
             if (!p.btn.isConnected) return;

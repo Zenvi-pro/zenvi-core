@@ -160,3 +160,27 @@ jobs:
 
     - name: Test
       run: python ./src/tests/update_installer_tests.py -v
+
+  mac-update-installer-tests:
+    # The macOS update helper mounts a real disk image and swaps a real app
+    # bundle (tests/test_update_installer_helpers.py); Ubuntu has no hdiutil,
+    # so those tests only run here. Pure Python + /bin/sh, no Qt or openshot.
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install dependencies
+      run: pip install -r requirements-dev.txt
+
+    - name: Test
+      run: |
+        pytest tests/test_update_installer_helpers.py tests/test_auto_updater_install_flow.py \
+          tests/test_auth_session_retention.py tests/test_verify_mac_bundle.py -q -rs
+        python ./src/tests/update_installer_tests.py -v
