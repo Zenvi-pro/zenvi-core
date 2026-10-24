@@ -2784,14 +2784,34 @@
         }
     };
 
+    window.onCliAuthProgress = function (backendId, phase) {
+        if (phase !== 'download') return;
+        var text = 'Downloading ChatGPT agent…';
+        ['chat-cli-connect-status', 'chat-cli-auth-status'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (el) { el.textContent = text; el.className = 'chat-cli-connect-status'; }
+        });
+    };
+
     window.onCliAuthResult = function (backendId, ok, message) {
-        var statusEl = document.getElementById('chat-cli-auth-status') ||
+        // The empty-state overlay hides the message list, so a recovery card
+        // appended there is invisible. A decline has to land on the overlay.
+        var overlayUp = cliEmptyStateEl && cliEmptyStateEl.style.display !== 'none';
+        var statusEl = (overlayUp && document.getElementById('chat-cli-connect-status')) ||
+            document.getElementById('chat-cli-auth-status') ||
             document.getElementById('chat-cli-connect-status');
-        var btn = document.getElementById('chat-cli-auth-btn') ||
+        var btn = (overlayUp && document.getElementById('chat-cli-connect-btn')) ||
+            document.getElementById('chat-cli-auth-btn') ||
             document.getElementById('chat-cli-connect-btn');
+        var text = message || (ok ? 'Signed in. Retrying…' : 'Sign-in failed.');
         if (statusEl) {
-            statusEl.textContent = message || (ok ? 'Signed in. Retrying…' : 'Sign-in failed.');
+            statusEl.textContent = text;
             statusEl.className = 'chat-cli-connect-status ' + (ok ? 'ok' : 'error');
+        }
+        var also = document.getElementById('chat-cli-auth-status');
+        if (also && also !== statusEl) {
+            also.textContent = text;
+            also.className = 'chat-cli-connect-status ' + (ok ? 'ok' : 'error');
         }
         if (btn && !ok) {
             btn.disabled = false;

@@ -268,6 +268,7 @@ class AgentPanel(QFrame):
         self.window = window
         self._rows = {}
         self._connecting = None
+        self._connect_phase = ""
         self._connect_error = {}
         self._refreshing = False
         self._last_detect = 0.0
@@ -349,6 +350,14 @@ class AgentPanel(QFrame):
         name = self._rows[backend_id].name.text()
 
         if self._connecting == backend_id:
+            if backend_id == "chatgpt":
+                if self._connect_phase == "download":
+                    return (COLOR_PARTIAL, self._tr("connecting…"),
+                            self._tr("Downloading ChatGPT agent…"),
+                            (self._tr("Downloading…"), False), False, "")
+                return (COLOR_PARTIAL, self._tr("connecting…"),
+                        self._tr("Finish signing in in your browser…"),
+                        (self._tr("Signing in…"), False), False, "")
             return (COLOR_PARTIAL, self._tr("connecting…"),
                     self._tr("Registering Zenvi's tools…"),
                     (self._tr("Connecting…"), False), False, "")
@@ -359,6 +368,9 @@ class AgentPanel(QFrame):
                     error.splitlines()[0], (self._tr("Retry"), True), True, error)
 
         if detected is None:
+            if backend_id == "chatgpt":
+                return (COLOR_MISSING, self._tr("checking…"),
+                        self._tr("Checking your ChatGPT sign-in…"), None, False, "")
             return (COLOR_MISSING, self._tr("checking…"),
                     self._tr("Looking for the ‘%s’ command…") % binary, None, False, "")
 
@@ -469,6 +481,7 @@ class AgentPanel(QFrame):
             pass
         if (status.get(backend_id) or {}).get("logged_in") is False:
             self._connecting = backend_id
+            self._connect_phase = ""
             self._connect_error.pop(backend_id, None)
             self.refresh()
             # Login can take several minutes in the browser; ChatGPT then downloads Codex (~150 MB).
@@ -481,6 +494,7 @@ class AgentPanel(QFrame):
                 self.on_connect_result(backend_id, False, self._tr("Could not start sign-in."))
             return
         self._connecting = backend_id
+        self._connect_phase = ""
         self._connect_error.pop(backend_id, None)
         self.refresh()
         self._connect_timer.start(CONNECT_TIMEOUT_MS)
@@ -496,6 +510,7 @@ class AgentPanel(QFrame):
             return   # stale result for the other CLI
         self._connect_timer.stop()
         self._connecting = None
+        self._connect_phase = ""
         if ok:
             self._connect_error.pop(backend_id, None)
             row = self._rows.get(backend_id)
@@ -515,8 +530,16 @@ class AgentPanel(QFrame):
             self._connect_error[backend_id] = message or self._tr("Connect failed.")
             self.refresh()
 
+    def on_connect_progress(self, backend_id, phase):
+        """ChatGPT sign-in finished; the row is now the Codex download."""
+        if self._connecting != backend_id:
+            return
+        self._connect_phase = phase or ""
+        self.refresh()
+
     def _on_connect_timeout(self):
         backend_id, self._connecting = self._connecting, None
+        self._connect_phase = ""
         if backend_id:
             self._connect_error[backend_id] = self._tr("Connect timed out — try again.")
             self.refresh()

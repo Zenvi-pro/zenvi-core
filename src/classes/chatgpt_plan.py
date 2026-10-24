@@ -8,8 +8,9 @@ no Zenvi credits are charged for it, and the token never leaves this computer.
 
 Everything lives in ``~/.openshot_qt/chatgpt/``: the pinned Codex package
 (downloaded from OpenAI's GitHub release on first use and checked against its
-sha256), its own ``CODEX_HOME``, and the sign-in. No PATH change, and the
-user's own Codex (``~/.codex``: config, login, sessions) is never read or written.
+sha256), its own ``CODEX_HOME``, and the sign-in. No PATH change. Config, login
+and sessions stay in that ``CODEX_HOME``; the user's Codex config is not read
+or written. Codex may still create ``~/.codex/tmp`` symlinks to this binary.
 """
 
 import base64
@@ -231,7 +232,11 @@ class _CallbackServer(HTTPServer):
 def sign_in(open_browser=webbrowser.open, timeout=300):
     """Sign in with ChatGPT in the browser; returns ``(ok, message)``. Blocking."""
     account = _load()
-    account.setdefault("host_id", uuid.uuid4().urn)      # "urn:uuid:..."; a bare UUID is rejected
+    # Chosen and saved before the browser opens. A declined or lost callback
+    # must retry as the same agent, or OpenAI registers a second "Zenvi".
+    if "host_id" not in account:
+        account["host_id"] = uuid.uuid4().urn      # "urn:uuid:..."; a bare UUID is rejected
+        _save(account)
     saved_client = account.get("client_id") or ""
     verifier = _b64url(secrets.token_bytes(48))
     state, nonce = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
@@ -331,15 +336,7 @@ def access_token():
         return account["access_token"]
 
 
-def list_models():
-    """Picker entries for the models the signed-in account lists; [] when unknown."""
-    if not signed_in():
-        return []
-    try:
-        data = _get_json(API_URL + "/models", access_token())
-    except Exception as e:
-        log.debug("ChatGPT model list failed: %s", e)
-        return []
+def _model_rows(data):
     rows = []
     models = data.get("models") if isinstance(data, dict) else None
     for model in models if isinstance(models, list) else []:
@@ -349,6 +346,46 @@ def list_models():
     if rows:
         rows[0]["default"] = True
     return rows
+
+
+def _forget_access_token():
+    with _lock:
+        account = _load()
+        account.pop("access_token", None)
+        account.pop("expires_at", None)
+        _save(account)
+
+
+def list_models():
+    """Picker entries for the models the signed-in account lists; [] when unknown.
+
+    A 401 on a token that still looks fresh is a rejected grant, not a dropped
+    connection. Forget that token and refresh once. A refused refresh signs out
+    and raises SignInRequired; anything else stays signed in and returns [].
+    """
+    if not signed_in():
+        return []
+    refreshed = False
+    while True:
+        try:
+            data = _get_json(API_URL + "/models", access_token())
+        except SignInRequired:
+            raise
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and not refreshed:
+                refreshed = True
+                _forget_access_token()
+                continue
+            if e.code == 401:
+                with _lock:
+                    _clear_tokens(_load())
+                raise SignInRequired("Your ChatGPT sign-in was rejected. Sign in again.")
+            log.debug("ChatGPT model list failed: %s", e)
+            return []
+        except Exception as e:
+            log.debug("ChatGPT model list failed: %s", e)
+            return []
+        return _model_rows(data)
 
 
 # -- the private Codex --------------------------------------------------------

@@ -491,6 +491,8 @@ def is_cli_auth_error(text: str) -> bool:
         "auth login",
         "codex login",
         "agent login",
+        # Codex on a rejected ChatGPT-plan token: "401 Unauthorized: Incorrect API key provided".
+        "incorrect api key provided",
     )
     return any(n in low for n in needles)
 
@@ -605,15 +607,20 @@ def cli_is_logged_in(backend: str) -> bool | None:
     return login[2]() if login else None
 
 
-def start_cli_login(backend: str) -> tuple[bool, str]:
+def start_cli_login(backend: str, on_progress=None) -> tuple[bool, str]:
     """Run the CLI's own sign-in (it opens the browser) and wait for it.
 
-    Blocking, up to five minutes. Returns (ok, message).
+    Blocking. ChatGPT waits ``SIGN_IN_TIMEOUT`` (15 minutes), the same allowance
+    as the agent panel; the others wait up to five minutes. Returns (ok, message).
+    ``on_progress("download")`` fires once ChatGPT sign-in has succeeded and the
+    private Codex download is about to start.
     """
     if backend == BACKEND_CHATGPT:
         # Zenvi's own Sign in with ChatGPT, then the one-time Codex download.
         ok, message = chatgpt_plan.sign_in(timeout=chatgpt_plan.SIGN_IN_TIMEOUT)
         if ok:
+            if on_progress:
+                on_progress("download")
             try:
                 chatgpt_plan.install()
             except Exception as e:
@@ -2113,9 +2120,9 @@ class BaseAgentRunner(QObject):
         if self._aborted:
             return
         blob = text or "Unknown error."
-        # Only for a CLI the chat can sign in again (CLI_LOGINS): the others
-        # keep the plain error.
-        if self.BACKEND_ID in CLI_LOGINS and (
+        # Only for a CLI the chat can sign in again: the others keep the plain error.
+        sign_in_again = self.BACKEND_ID in CLI_LOGINS or self.BACKEND_ID == BACKEND_CHATGPT
+        if sign_in_again and (
             is_cli_auth_error(blob)
             or any(is_cli_auth_error(line) for line in self._stderr_tail)
         ):
@@ -2537,9 +2544,12 @@ class ChatGPTPlanRunner(CodexRunner):
             log.warning("ChatGPT: Codex download failed: %s", e, exc_info=True)
             return "Could not download the ChatGPT agent (Codex %s): %s" % (
                 chatgpt_plan.CODEX_VERSION, e)
-        if not self._model_id:
-            # The list may have failed before the token refresh above; try once more.
-            self._model_id = self._coerce_model("")
+        try:
+            if not self._model_id:
+                # The list may have failed before the token refresh above; try once more.
+                self._model_id = self._coerce_model("")
+        except chatgpt_plan.SignInRequired:
+            return CLI_AUTH_REQUIRED
         if not self._model_id:
             return ("Could not load the models your ChatGPT plan offers. "
                     "Check your connection, then try again.")

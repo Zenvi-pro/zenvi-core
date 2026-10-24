@@ -12,6 +12,7 @@ import os
 import tarfile
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -140,6 +141,21 @@ def test_sign_in_rejects_an_id_token_for_another_nonce(monkeypatch):
 
     assert not ok
     assert not chatgpt_plan.signed_in()
+
+
+def test_a_failed_attempt_keeps_the_same_host_id(monkeypatch):
+    """OpenAI wants ext_agent_host_id chosen and saved before the first sign-in."""
+    ids = []
+
+    def open_browser(url):
+        query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+        ids.append(query["ext_agent_host_id"])
+        return False
+
+    assert chatgpt_plan.sign_in(open_browser=open_browser, timeout=5)[0] is False
+    assert chatgpt_plan._load()["host_id"] == ids[0]
+    assert chatgpt_plan.sign_in(open_browser=open_browser, timeout=5)[0] is False
+    assert ids[0] == ids[1]
 
 
 def test_signing_in_again_reuses_the_issued_client_and_host(monkeypatch):
@@ -312,6 +328,52 @@ def test_list_models_reads_the_accounts_listed_models(monkeypatch):
 
 def test_list_models_is_empty_when_signed_out():
     assert chatgpt_plan.list_models() == []
+
+
+def _http_error(code):
+    return urllib.error.HTTPError(
+        "https://api.openai.com/v1/models", code, "no", hdrs=None, fp=io.BytesIO(b"{}"))
+
+
+def test_a_rejected_model_list_refreshes_once(monkeypatch):
+    """A 401 on a token we still think is fresh is a revoked grant, not a network blip."""
+    _signed_in(monkeypatch, expires_in=3600)
+    seen = []
+
+    def get_json(url, token):
+        seen.append(token)
+        if token == "at-1":
+            raise _http_error(401)
+        return {"models": [{"slug": "gpt-6-luna", "display_name": "GPT-6 Luna", "visibility": "list"}]}
+
+    monkeypatch.setattr(chatgpt_plan, "_get_json", get_json)
+    _token_endpoint(monkeypatch, [
+        {"access_token": "at-2", "refresh_token": "rt-2", "expires_in": 3600},
+    ])
+
+    rows = chatgpt_plan.list_models()
+
+    assert seen == ["at-1", "at-2"]
+    assert [r["id"] for r in rows] == ["gpt-6-luna"]
+    assert chatgpt_plan.signed_in()
+
+
+def test_a_rejected_model_list_signs_out_when_refresh_is_refused(monkeypatch):
+    _signed_in(monkeypatch, expires_in=3600)
+    monkeypatch.setattr(chatgpt_plan, "_get_json", lambda url, token: (_ for _ in ()).throw(_http_error(401)))
+    _token_endpoint(monkeypatch, [chatgpt_plan.OAuthError("invalid_grant")])
+
+    with pytest.raises(chatgpt_plan.SignInRequired):
+        chatgpt_plan.list_models()
+    assert not chatgpt_plan.signed_in()
+
+
+def test_list_models_stays_signed_in_when_the_request_fails(monkeypatch):
+    _signed_in(monkeypatch, expires_in=3600)
+    monkeypatch.setattr(chatgpt_plan, "_get_json", lambda url, token: (_ for _ in ()).throw(OSError("offline")))
+
+    assert chatgpt_plan.list_models() == []
+    assert chatgpt_plan.signed_in()
 
 
 @pytest.mark.parametrize("reply", [[], {"models": "nope"}, {"models": None}, "text"])

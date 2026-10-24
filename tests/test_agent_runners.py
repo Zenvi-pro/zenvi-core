@@ -831,8 +831,10 @@ def test_is_cli_auth_error_matches_oauth_strings():
     assert is_cli_auth_error(
         "Failed to authenticate: OAuth session expired and could not be refreshed"
     )
+    assert is_cli_auth_error("401 Unauthorized: Incorrect API key provided")
     assert is_cli_auth_error(CLI_AUTH_REQUIRED)
     assert not is_cli_auth_error("MCP server not connected")
+    assert not is_cli_auth_error("HTTP 401 from the media server")
     assert not is_cli_auth_error("")
 
 
@@ -3546,6 +3548,54 @@ def test_a_model_probe_reaps_the_cli_it_killed(monkeypatch):
     monkeypatch.setattr(ar.subprocess, "Popen", FakeProc)
     ar._acp_style_probe(["cli"], [{}], lambda ev: True)
     assert calls == ["kill", "wait"]
+
+
+def test_chatgpt_sign_in_names_the_download_only_after_the_browser(monkeypatch):
+    import windows.agent_runners as ar
+
+    phases = []
+    monkeypatch.setattr(ar.chatgpt_plan, "sign_in", lambda timeout: (True, "Signed in."))
+    monkeypatch.setattr(ar.chatgpt_plan, "install", lambda: "/zenvi/codex")
+    ok, _message = ar.start_cli_login(ar.BACKEND_CHATGPT, on_progress=phases.append)
+    assert ok and phases == ["download"]
+
+    phases.clear()
+    monkeypatch.setattr(ar.chatgpt_plan, "sign_in", lambda timeout: (False, "declined"))
+    monkeypatch.setattr(ar.chatgpt_plan, "install", lambda: pytest.fail("no download after a decline"))
+    ok, message = ar.start_cli_login(ar.BACKEND_CHATGPT, on_progress=phases.append)
+    assert ok is False and "declined" in message and phases == []
+
+
+def test_chatgpt_rejected_model_list_asks_to_sign_in(qapp, monkeypatch):
+    """A revoked grant must not read as 'check your connection' while the picker stays connected."""
+    import windows.agent_runners as ar
+    from classes import chatgpt_plan
+    from windows.agent_runners import CLI_AUTH_REQUIRED, ChatGPTPlanRunner
+
+    monkeypatch.setattr(ar, "models_for_backend", lambda backend: [])
+    monkeypatch.setattr(chatgpt_plan, "access_token", lambda: "at")
+    monkeypatch.setattr(chatgpt_plan, "install", lambda: "/zenvi/codex")
+    monkeypatch.setattr(chatgpt_plan, "signed_in", lambda: True)
+
+    def rejected():
+        raise chatgpt_plan.SignInRequired("revoked")
+
+    monkeypatch.setattr(chatgpt_plan, "list_models", rejected)
+    runner = ChatGPTPlanRunner()
+    runner._model_id = ""
+    assert runner._ensure_ready() == CLI_AUTH_REQUIRED
+
+
+def test_chatgpt_mid_turn_401_asks_to_sign_in(qapp):
+    from windows.agent_runners import ChatGPTPlanRunner
+
+    runner = ChatGPTPlanRunner()
+    events = []
+    runner.auth_required.connect(lambda text: events.append(("auth", text)))
+    runner.error_occurred.connect(lambda text: events.append(("error", text)))
+    runner._emit_error("401 Unauthorized: Incorrect API key provided")
+    assert events and events[0][0] == "auth"
+    assert "ChatGPT" in events[0][1]
 
 
 def test_chatgpt_turn_without_a_model_fails_clearly(qapp, monkeypatch):

@@ -3273,7 +3273,18 @@ class AIChatWindow(QDockWidget):
                     from windows.agent_runners import refresh_cli_models
                     changed = refresh_cli_models(backend, status[backend].get("version")) or changed
                 except Exception as exc:
-                    log.debug("%s model list failed: %s", backend, exc)
+                    from classes.chatgpt_plan import SignInRequired
+                    if isinstance(exc, SignInRequired):
+                        try:
+                            status[backend] = runner.detect()
+                        except Exception:
+                            log.debug("%s status after a rejected sign-in failed", backend, exc_info=True)
+                        QMetaObject.invokeMethod(
+                            self, "_on_cli_status", Qt.QueuedConnection,
+                            Q_ARG(str, json.dumps(status)),
+                        )
+                    else:
+                        log.debug("%s model list failed: %s", backend, exc)
             if changed:
                 QMetaObject.invokeMethod(self, "_on_cli_models", Qt.QueuedConnection)
 
@@ -4443,7 +4454,14 @@ class AIChatWindow(QDockWidget):
         def run():
             try:
                 from windows.agent_runners import start_cli_login
-                ok, message = start_cli_login(backend_id)
+
+                def progress(phase):
+                    QMetaObject.invokeMethod(
+                        self, "_on_sign_in_progress", Qt.QueuedConnection,
+                        Q_ARG(str, backend_id), Q_ARG(str, phase or ""),
+                    )
+
+                ok, message = start_cli_login(backend_id, on_progress=progress)
                 if not ok and not message:
                     return      # replaced by a newer click, which reports
             except Exception as e:
@@ -4456,6 +4474,20 @@ class AIChatWindow(QDockWidget):
             )
 
         threading.Thread(target=run, daemon=True, name="cli-signin").start()
+
+    @pyqtSlot(str, str)
+    def _on_sign_in_progress(self, backend_id: str, phase: str):
+        """ChatGPT's browser step finished; the panel and chat say the download is running."""
+        button = getattr(self.parent(), "agent_selector_button", None)
+        notify = getattr(button, "on_connect_progress", None)
+        if notify is not None:
+            try:
+                notify(backend_id, phase)
+            except Exception:
+                log.debug("agent panel sign-in progress failed", exc_info=True)
+        if self._use_web_ui and phase == "download":
+            self._run_js("if(window.onCliAuthProgress) onCliAuthProgress(%s, %s);"
+                         % (json.dumps(backend_id), json.dumps(phase)))
 
     @pyqtSlot(str, bool, str, str)
     def _on_sign_in_result(self, backend_id: str, ok: bool, message: str, session_id: str = ""):
