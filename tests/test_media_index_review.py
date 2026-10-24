@@ -411,6 +411,8 @@ def test_the_audit_groups_findings_by_layer_and_lists_what_needs_work():
     assert out["counts"]["needs"] == len(out["needs"]) and sum(out["counts"].values()) == sum(len(v) for v in out["layers"].values())
     assert "consistency" in out["unknown"], "one measured clip cannot show consistency"
     assert all(f["status"] in ("ok", "needs", "info", "unknown") and "fix" in f for v in out["layers"].values() for f in v)
+    # fix names tools the agent is not bound to; called by name they fail, so the audit says how to run them.
+    assert "run_tool(name=" in out["fix_with"] and "find_tools" in out["fix_with"]
 
 
 def test_a_clean_edit_has_nothing_that_needs_work():

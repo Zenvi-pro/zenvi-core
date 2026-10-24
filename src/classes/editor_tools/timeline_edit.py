@@ -189,7 +189,7 @@ def _fit_lengths(durations, fixed, keep, budget):
         "min_clip_seconds": number("Shortest a clip may be trimmed to by fit_total_seconds.", 1.0, minimum=0.1),
         "transition": string("Transition between consecutive clips: '' = hard cuts, 'fade' = crossfade, "
                              "'random', or a transition name such as 'wipe_left_to_right' or "
-                             "'circle_in_to_out' (list_transitions_tool).", ""),
+                             "'circle_in_to_out' (find_tools: list transitions).", ""),
         "transition_seconds": number("Length of each transition; clips overlap by this much. 0 = the Default "
                                      "Transition Length preference.", 0.0, minimum=0),
         "fade": enum(["none", "in", "out", "in_out"], "Opacity fades on every clip, used instead of a "
@@ -221,7 +221,8 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
     explicit in/out points are never trimmed; transition overlaps are accounted for. Example:
     8 files, fit_total_seconds=60, transition="fade", transition_seconds=0.5.
 
-    For one file at a precise time use add_clip_to_timeline_tool. The call is one undo step.
+    One file is a list of one (items=[{"file_id": "F1", "source_start": 4, "source_end": 9}], start_seconds = where it
+    goes on the timeline). The call is one undo step.
     Returns the new timeline clip ids in order with their positions and source in/out.
     """
     from classes.clip_placement import source_window_for_file
@@ -618,7 +619,7 @@ def trim_clips(timeline_clip_ids=[], clip_query="", track="", scope="", trim_sta
     opens. With ripple=true the clip keeps its start and every later clip on the track moves to
     close (or open) the room. Extending past the media, before 0 s, or over another clip is
     refused with the exact limit (allow_overlap=true overlaps anyway). Still images can be any
-    length. To cut a clip in two use slice_clips_tool; to change speed use set_clip_speed_tool.
+    length. To cut a clip in two use slice_clips_tool; to change speed use find_tools (set clip speed).
     One undo step for the whole batch.
     """
     from classes.clip_utils import clip_time_bounds

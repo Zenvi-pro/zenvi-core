@@ -218,7 +218,7 @@ def _grade_values(effect_json) -> dict:
         "temperature": _grade_param_schema("temperature", -1, 1, "White balance: + warmer (orange), - cooler (blue)."),
         "tint": _grade_param_schema("tint", -1, 1, "White balance: + magenta, - green."),
         "mix": _grade_param_schema("mix", 0, 1, "Grade strength: 1 = full, 0.5 = half-way to the original."),
-        "lut": string("LUT to apply: a name from list_luts_tool ('teal & orange cinema', "
+        "lut": string("LUT to apply: a name from the LUT list (find_tools: list LUTs) ('teal & orange cinema', "
                       "'film_stock_&_vintage/classic_film'), a .cube path, or 'none' to remove it.", ""),
         "lut_intensity": _grade_param_schema("lut_intensity", 0, 1, "How strongly the LUT applies."),
         "wheels": mapping("Color wheels, e.g. {\"shadows\": {\"color\": \"#2a6cff\", \"amount\": 0.15}, "
@@ -244,7 +244,7 @@ def color_grade_clip(timeline_clip_id="", clip_query="", track="", timeline_clip
     Without look/reset only the given controls change and the rest of the current grade stays
     ("a bit brighter" -> exposure=0.3). With a look the grade starts from neutral, then the look,
     then your controls ("cinematic but less saturated" -> look="cinematic", saturation=0.8).
-    To fix exposure or color casts objectively, call analyze_frame_colors_tool first and use its
+    To fix exposure or color casts objectively, measure first (find_tools: analyze frame colors) and use its
     suggested values, then analyze again to verify. Refused: audio-only clips, locked tracks,
     unknown LUT names (closest matches listed), out-of-range values.
     """

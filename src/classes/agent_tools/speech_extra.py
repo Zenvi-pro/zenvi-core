@@ -48,7 +48,7 @@ def remove_silence(
     maxRemoveFraction=0.85,
     **_kw,
 ):
-    """Remove quiet non-speech gaps inside a clip and close them (one undo)."""
+    """Remove silent pauses: quiet non-speech gaps inside a clip, closed (one undo)."""
     from classes.agent_tools.receipt import ToolReceipt
     from classes.agent_tools.transcript import (
         _first_nonempty,

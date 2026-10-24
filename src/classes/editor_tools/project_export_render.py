@@ -520,7 +520,7 @@ _EXPORT_SCHEMA = {
     "preset": string("Target: an Export dialog preset title or a common name -- 'MP4 (h.264)' (default), 'YouTube', "
                      "'YouTube (4K)', 'YouTube Shorts', 'Instagram Reels', 'Instagram', 'TikTok', 'Facebook', "
                      "'Twitter / X', 'LinkedIn', 'Vimeo', 'GIF', 'MP3', 'WEBM', 'ProRes', 'MOV', 'MKV', 'HEVC'. "
-                     "See list_export_presets_tool.", ""),
+                     "See find_tools (list export presets).", ""),
     "quality": enum(["", "low", "med", "high"], "Preset quality (bitrate). Empty = stored setting or high.", ""),
     "export_type": enum(["auto", "video_audio", "video_only", "audio_only", "image_sequence"],
                         "auto = the preset's (GIF = video only, MP3 = audio only). audio_only with container "
@@ -574,7 +574,7 @@ def export_video(preset="", quality="", export_type="auto", range="", start=0, e
     start/end seconds. Never opens a dialog unless show_dialog=true; refuses to
     overwrite unless overwrite=true. Waits for the render (the editor stays
     usable meanwhile) and returns the file path, size, format and range. For social
-    vertical formats, switch the project first with set_project_profile_tool
+    vertical formats, switch the project first (find_tools: set project profile)
     (reframe='fill'), otherwise landscape footage renders with bars.
     Example: {"preset": "Instagram Reels", "start": 0, "end": 5}
     """

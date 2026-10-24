@@ -746,8 +746,8 @@ def storyboard(file_ids=None, file_query="", start_seconds=0, detail="full", pic
     for a whole video in one call: one row per shot, each with its own time, so keep every row (do not merge quick shots into ranges). A row marked
     [unsure] has a description that hedges: look at its picture. Camera speeds are fractions of the frame a second. Header lines give the cut rhythm,
     the song's sections and pairs of near-identical shots.
-    The keyframe sheets come back as pictures: look at them before relying on a description. For one shot's detail use get_moment_tool; for the exact
-    cut frame use refine_cut_tool.
+    The keyframe sheets come back as pictures: look at them before relying on a description. For one shot's detail look up get moment; for the exact
+    cut frame, refine cut (both with find_tools).
     """
     from classes.media_index import dossier, storyboard as board
     shelf = default_shelf()

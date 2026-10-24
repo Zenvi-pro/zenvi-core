@@ -65,6 +65,24 @@ def test_model_facing_tool_names_are_served_over_mcp():
     assert dangling == [], "model-facing text names tools that are not served:\n" + "\n".join(dangling)
 
 
+def test_text_sent_with_every_call_names_only_listed_tools():
+    """The instructions, playbook and listed tools' descriptions reach the model on every call, next to the
+    callable names. An unlisted name there reads as callable and fails (add_title_tool looped that way);
+    such tools are described in words and reached with find_tools / run_tool."""
+    listed_defs = listed_tool_defs()
+    listed = {d["name"] for d in listed_defs}
+    texts = [("edit playbook", PLAYBOOK), ("MCP server instructions", SERVER_INSTRUCTIONS)]
+    texts += [(f"{d['name']} description", d["description"]) for d in listed_defs]
+    texts += [(f"{d['name']} schema", t) for d in listed_defs for t in _schema_descriptions(d["inputSchema"])]
+    stray = sorted({f"{name}: {where}" for where, text in texts for name in TOOL_NAME.findall(text) if name not in listed})
+    assert stray == [], "unlisted tools named in per-call text:\n" + "\n".join(stray)
+
+
+def test_the_playbook_says_how_to_reach_unlisted_tools():
+    assert "find_tools" in PLAYBOOK and "run_tool" in PLAYBOOK
+    assert "color_grade_clip_tool" in PLAYBOOK  # the one creative-grade path
+
+
 def test_retired_handlers_are_not_served_over_mcp():
     from classes.tool_handlers import AGENT_TOOL_HANDLERS
     served = {d["name"] for d in iter_tool_defs()}
