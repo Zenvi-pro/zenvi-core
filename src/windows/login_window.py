@@ -240,7 +240,9 @@ class LoginWindow(QDialog):
         layout.addWidget(self._browser_status)
 
         self._browser_sub = QLabel(
-            "Complete sign-in in your browser.\nThis window will close automatically."
+            "Open the Authorize page in your browser.\n"
+            "If you're already signed in, just click Continue.\n"
+            "This window will close automatically."
         )
         self._browser_sub.setAlignment(Qt.AlignCenter)
         self._browser_sub.setWordWrap(True)
@@ -385,7 +387,9 @@ class LoginWindow(QDialog):
         self._url_row.show()
         self._browser_status.setText("Opening browser…")
         self._browser_sub.setText(
-            "Complete sign-in in your browser.\nThis window will close automatically."
+            "Open the Authorize page in your browser.\n"
+            "If you're already signed in, just click Continue.\n"
+            "This window will close automatically."
         )
         self._url_label.clear()
         self.adjustSize()
@@ -414,10 +418,11 @@ class LoginWindow(QDialog):
 
     def _show_waiting(self) -> None:
         if self._browser_poll is not None:
-            self._browser_status.setText("Waiting for authentication…")
+            self._browser_status.setText("Waiting for browser…")
             self._browser_sub.setText(
-                "Approve the sign-in in your browser if it shows the code\n"
-                f"{self._code}\nThis window will close automatically."
+                "Open the Authorize page in your browser.\n"
+                "If you're already signed in, just click Continue.\n"
+                f"The code is {self._code}. This window will close automatically."
             )
 
     @pyqtSlot()
