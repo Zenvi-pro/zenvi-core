@@ -1,6 +1,6 @@
 """Project video profiles: social presets, profile search, switching the profile, custom profiles.
 
-Workstream: project-export. "Make this an Instagram reel" = set_project_profile_tool
+Workstream: project-export. "Make this an Instagram reel" = set_project_setting_tool
 (profile='instagram_reel', reframe='fill'): the social preset maps to a real
 profile file (FHD Vertical 1080p <fps>), the project switches through the Choose
 Profile dialog's own code path (``MainWindow.apply_project_profile``), and
@@ -305,37 +305,6 @@ def apply_profile_and_reframe(record: dict, reframe: str) -> dict:
             "letterboxed": letterboxed, "video_clips": video_clips}
 
 
-def _profile_receipt(result: dict, before: dict, record: dict, reframe: str, social_key=None) -> str:
-    from classes.project_profile import describe_profile
-
-    after = describe_profile(record)
-    social = SOCIAL_PRESETS[social_key][3] if social_key in SOCIAL_PRESETS else None
-    if social is None:
-        for spec in SOCIAL_PRESETS.values():
-            if (spec[0], spec[1]) == (after["width"], after["height"]):
-                social = spec[3]
-                break
-    parts = []
-    if result["changed"]:
-        parts.append(f"Project is now {after['name']} ({after['width']}x{after['height']} {after['aspect']}, "
-                     f"{after['fps']} fps)")
-    else:
-        parts.append(f"Project already uses {after['name']}")
-    if result["reframed"]:
-        parts.append(f"{len(result['reframed'])} clip(s) set to {'crop-to-fill' if reframe == 'fill' else 'fit'}")
-    if result["letterboxed"]:
-        parts.append(f"{len(result['letterboxed'])} clip(s) of another shape will show bars; "
-                     "call again with reframe='fill' to crop them to fill the frame")
-    if reframe == "fill" and not result.get("video_clips"):
-        parts.append("the timeline has no video clips yet, so nothing was reframed: clips placed later are "
-                     "fitted with bars when their shape differs, so call set_project_profile_tool(reframe='fill') "
-                     "again once they are on the timeline")
-    return ok("; ".join(parts) + ".", changed=result["changed"], profile=after,
-              previous_profile={k: before[k] for k in ("profile", "width", "height", "fps", "aspect")},
-              reframe=reframe, reframed_clip_ids=result["reframed"], skipped=result["skipped"],
-              letterboxed_clip_ids=result["letterboxed"], suggested_export_preset=social)
-
-
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -360,10 +329,10 @@ def list_project_profiles(query="", width=0, height=0, fps=0, aspect="", orienta
                           include_social_presets=True, limit=30):
     """Search the 425 built-in video profiles plus the user's custom ones (the Choose Profile dialog).
 
-    Also lists the social presets that set_project_profile_tool understands
+    Also lists the social presets that set_project_setting_tool understands
     (instagram_reel 1080x1920, instagram_post 1080x1080, instagram_portrait
     1080x1350, tiktok, youtube_shorts, youtube, youtube_4k, cinema 24 fps...).
-    Each profile has name (pass it to set_project_profile_tool), key, size,
+    Each profile has name (pass it to set_project_setting_tool), key, size,
     fps, aspect, orientation, interlaced, spherical and user (custom).
     """
     from classes.project_profile import describe_profile
@@ -393,24 +362,6 @@ def list_project_profiles(query="", width=0, height=0, fps=0, aspect="", orienta
              "aliases": list(s[4])[:4]}
             for k, s in SOCIAL_PRESETS.items()]
     return ok(f"{total} profile(s) match" + (f"; showing {min(total, limit)}" if total > limit else "") + ".", **out)
-
-
-_PROFILE_ARGS = {
-    "profile": string("Profile name ('FHD Vertical 1080p 30 fps'), key ('01080x1920p0030_09-16'), social preset "
-                      "('instagram_reel', 'tiktok', 'youtube_shorts', 'instagram_post', 'instagram_portrait', "
-                      "'youtube', 'youtube_4k', 'cinema', '4k') or 'WIDTHxHEIGHT'. Empty = keep the current one.", ""),
-    "width": integer("Frame width in pixels (with height) instead of a profile name. 0 = unchanged.", 0,
-                     minimum=0, maximum=16384),
-    "height": integer("Frame height in pixels (with width). 0 = unchanged.", 0, minimum=0, maximum=16384),
-    "fps": number("Frame rate, e.g. 24, 25, 29.97, 30, 60. 0 = keep (or the preset's).", 0, minimum=0, maximum=240),
-    "orientation": enum(["", "landscape", "portrait", "square"],
-                        "Turn the (current or named) profile to this shape: 'portrait' makes 1920x1080 -> 1080x1920.", ""),
-    "from_file_id": string("Match a project file's size and frame rate (media_bin_file_id from list_project_files_tool).", ""),
-    "reframe": enum(["keep", "fit", "fill"],
-                    "Existing full-frame clips whose shape differs from the new frame: keep = unchanged (letterboxed/"
-                    "pillarboxed), fit = whole picture with bars, fill = crop to fill, centred. Titles and "
-                    "picture-in-picture clips are never changed.", "keep"),
-}
 
 
 def _target_record(profile, width, height, fps, orientation, from_file_id):
@@ -452,36 +403,6 @@ def _target_record(profile, width, height, fps, orientation, from_file_id):
     return record
 
 
-@editor_tool(
-    "set_project_profile_tool",
-    label="Set project format",
-    schema=obj(_PROFILE_ARGS),
-    background_safe=True,
-    covers=("project.profile_set",),
-)
-def set_project_profile(profile="", width=0, height=0, fps=0, orientation="", from_file_id="", reframe="keep"):
-    """Change the project's video format: size, aspect and frame rate (File > Choose Profile).
-
-    Use for "make this an Instagram reel / TikTok / YouTube Short" (profile=
-    'instagram_reel' etc. -> 1080x1920 9:16), "square for Instagram",
-    "switch to 4K 24 fps" (profile='cinema_4k' or profile='4k', fps=24), "make
-    it vertical" (orientation='portrait'), or "match this clip" (from_file_id).
-    Landscape footage in a vertical project is letterboxed unless you pass
-    reframe='fill' (crop to fill, centred) -- do that when the user wants the
-    picture to fill the frame. Keyframes and trims follow a frame-rate change.
-    One undo step reverts the profile and the reframe. Export settings saved
-    in the Export dialog are reset when the profile changes.
-    Example: {"profile": "instagram_reel", "reframe": "fill"}
-    """
-    before = project_snapshot()
-    if not any([(profile or "").strip(), width, height, fps, orientation, from_file_id]) and reframe == "keep":
-        raise ToolError("say what to change: profile (name or social preset), width+height, fps, orientation, "
-                        "from_file_id, or reframe")
-    record = _target_record(profile, width, height, fps, orientation, from_file_id)
-    result = on_main(lambda: apply_profile_and_reframe(record, reframe), timeout=PROFILE_TIMEOUT)
-    return _profile_receipt(result, before, record, reframe, social_preset(profile)[0] if profile else None)
-
-
 _LAYOUT_BY_NAME = {"mono": "mono", "1": "mono", "stereo": "stereo", "2": "stereo", "surround": "surround",
                    "3": "surround", "5.1": "5.1", "6": "5.1", "7.1": "7.1", "8": "7.1"}
 _LAYOUT_SETTING = {"mono": "LAYOUT_MONO", "stereo": "LAYOUT_STEREO", "surround": "LAYOUT_SURROUND",
@@ -500,35 +421,40 @@ _SAMPLE_RATES = (22050, 44100, 48000, 96000, 192000)
         "height": nullable(integer("Frame height in pixels (even).", minimum=16, maximum=16384)),
         "sample_rate": nullable(integer("Project audio sample rate: 22050, 44100, 48000, 96000 or 192000.",
                                         minimum=8000, maximum=192000)),
-        "profile": string("Profile name or social preset instead of size/fps (see set_project_profile_tool).", ""),
-        "preset": string("Alias of profile for social presets: 'instagram_reel', 'tiktok', 'youtube', ...", ""),
+        "profile": string("Profile name ('FHD Vertical 1080p 30 fps'), key ('01080x1920p0030_09-16'), social preset "
+                          "('instagram_reel', 'tiktok', 'youtube_shorts', 'instagram_post', 'instagram_portrait', "
+                          "'youtube', 'youtube_4k', 'cinema', '4k') or 'WIDTHxHEIGHT'. Empty = keep the current one.", ""),
+        "from_file_id": string("Match a project file's size and frame rate (its file_id from list_project_files_tool).", ""),
         "orientation": enum(["", "landscape", "portrait", "square"], "Turn the frame to this shape.", ""),
         "channels": string("Audio channels: 'mono', 'stereo', 'surround', '5.1', '7.1' (or 1, 2, 3, 6, 8).", ""),
-        "reframe": enum(["keep", "fit", "fill"], "What happens to existing full-frame clips of another shape "
-                        "(see set_project_profile_tool).", "keep"),
+        "reframe": enum(["keep", "fit", "fill"], "Existing full-frame clips whose shape differs from the new frame: keep = unchanged "
+                        "(letterboxed/pillarboxed), fit = whole picture with bars, fill = crop to fill, centred. Titles and "
+                        "picture-in-picture clips are never changed.", "keep"),
         "save_as_default": boolean("Also store sample_rate/channels as the Preferences default for new projects "
                                    "(takes effect after restart).", False),
     }),
     background_safe=True,
-    covers=("project.audio_settings",),
+    covers=("project.audio_settings", "project.profile_set"),
 )
 def set_project_setting(fps=None, fps_num=None, fps_den=None, width=None, height=None, sample_rate=None,
-                        profile="", preset="", orientation="", channels="", reframe="keep", save_as_default=False):
-    """Change individual project settings: frame rate, frame size, audio sample rate and channels.
+                        profile="", from_file_id="", orientation="", channels="", reframe="keep", save_as_default=False):
+    """Change the project's format and audio: profile, size, frame rate, orientation or a file's match; sample rate and channels.
 
-    Video values go through the same profile switch as set_project_profile_tool
-    (a matching built-in profile, or a saved custom one for unusual sizes), so
-    keyframes follow an fps change. Audio: sample_rate / channels set the
-    project's mix format (used by export and the timeline); the preview may
-    re-sync the sample rate to the audio device, and opening a project re-applies
-    Preferences > Default Audio Sample Rate / Channels unless save_as_default=true.
-    One undo step; a call that changes nothing adds none.
-    Example: {"fps": 24} or {"sample_rate": 44100, "channels": "mono"}
+    Use for "make this an Instagram reel / TikTok / YouTube Short" (profile='instagram_reel' -> 1080x1920 9:16), "square for
+    Instagram" (profile='instagram_post'), "switch to 4K 24 fps" (profile='cinema_4k' or '4k', fps=24), "make it vertical"
+    (orientation='portrait') and "match this clip" (from_file_id). Video values go through the profile switch (a matching
+    built-in profile, or a saved custom one for unusual sizes), so keyframes follow an fps change. Landscape footage in a
+    vertical project is letterboxed unless you pass reframe='fill' (crop to fill, centred): do that when the user wants the
+    picture to fill the frame. Audio: sample_rate / channels set the project's mix format (used by export and the timeline);
+    the preview may re-sync the sample rate to the audio device, and opening a project re-applies Preferences > Default Audio
+    Sample Rate / Channels unless save_as_default=true. One undo step reverts the profile and the reframe; a call that changes
+    nothing adds none. Export settings saved in the Export dialog are reset when the profile changes.
+    Example: {"profile": "instagram_reel", "reframe": "fill"} or {"fps": 24} or {"sample_rate": 44100, "channels": "mono"}
     """
     app = get_app()
     before = project_snapshot()
     video_requested = any(v not in (None, "", 0) for v in (fps, fps_num, fps_den, width, height)) \
-        or bool((profile or preset or "").strip()) or bool(orientation)
+        or bool((profile or "").strip()) or bool(from_file_id) or bool(orientation)
     if fps_num is not None or fps_den is not None:
         if fps_num is None or fps_den is None:
             raise ToolError("give both fps_num and fps_den")
@@ -541,14 +467,14 @@ def set_project_setting(fps=None, fps_num=None, fps_den=None, width=None, height
     if sample_rate is not None and sample_rate not in _SAMPLE_RATES:
         raise ToolError(f"sample_rate must be one of {', '.join(map(str, _SAMPLE_RATES))}")
     if not video_requested and sample_rate is None and not layout and reframe == "keep":
-        raise ToolError("nothing to change: pass fps, width/height, profile/preset, orientation, sample_rate or channels")
+        raise ToolError("nothing to change: pass fps, width/height, profile, from_file_id, orientation, sample_rate or channels")
 
     record = None
     if video_requested or reframe != "keep":
         if (width is None) != (height is None):
             cur_w, cur_h = before["width"], before["height"]
             width, height = width or cur_w, height or cur_h
-        record = _target_record(profile or preset, width or 0, height or 0, fps or 0, orientation, "")
+        record = _target_record(profile, width or 0, height or 0, fps or 0, orientation, from_file_id)
         if fps_num is not None and (record["fps_num"], record["fps_den"]) != (fps_num, fps_den):
             record = ensure_profile(record["width"], record["height"], fps_num, fps_den)
 
@@ -590,11 +516,14 @@ def set_project_setting(fps=None, fps_num=None, fps_den=None, width=None, height
     if result["letterboxed"]:
         summary += (f" {len(result['letterboxed'])} clip(s) of another shape will show bars; "
                     "pass reframe='fill' to crop them.")
+    if record is not None and reframe == "fill" and not result["video_clips"]:
+        summary += (" The timeline has no video clips yet, so nothing was reframed: clips placed later are fitted with bars "
+                    "when their shape differs, so call set_project_setting_tool(reframe='fill') again once they are on the timeline.")
     return ok(summary, changed=changed, width=after["width"], height=after["height"], fps=after["fps"],
               fps_num=after["fps_num"], fps_den=after["fps_den"], profile=after["profile"],
               sample_rate=after["sample_rate"], channels=after["channels"],
               channel_layout=after["channel_layout"], reframed_clip_ids=result["reframed"],
-              letterboxed_clip_ids=result["letterboxed"], saved_as_default=bool(save_as_default))
+              letterboxed_clip_ids=result["letterboxed"], skipped=result["skipped"], saved_as_default=bool(save_as_default))
 
 
 @editor_tool(
@@ -625,7 +554,7 @@ def manage_custom_profiles(action, profile="", name="", width=0, height=0, fps=0
     Profile dialog and list_project_profiles_tool. Built-in profiles cannot be
     edited or deleted (duplicate them instead). The current project's profile
     and the default profile cannot be deleted. Does not change the open
-    project -- use set_project_profile_tool for that. Not an undo step.
+    project -- use set_project_setting_tool for that. Not an undo step.
     """
     from classes import info
     from classes.project_profile import (

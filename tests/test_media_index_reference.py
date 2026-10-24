@@ -38,54 +38,18 @@ def lib(tmp_path):
     return f(REF, "R", "ref.mp4"), [f(REF, "R", "ref.mp4"), f(A, "A", "a.mp4"), f(B, "B", "b.mp4")]
 
 
-def test_each_reference_shot_gets_candidates_that_fit_its_duration(lib):
+def test_the_reference_is_never_its_own_source(lib):
     ref, files = lib
-    out = reference.match_reference(ref, files)
-    assert out["total"] == 3, "the black shot is not matched"
-    s0, s1, s2 = out["shots"]
-    assert (s0["reference_shot"], s0["duration"], s0["status"]) == (0, 4.0, "matched")
-    top = s0["candidates"][0]
-    assert (top["file_id"], top["fits"]) == ("A", True) and top["out"] - top["in"] == pytest.approx(4.0, abs=1e-3)
-    assert 0.0 <= top["in"] and top["out"] <= 10.0, "the window stays inside the source shot"
-    assert s1["status"] == "matched" and s1["candidates"][0]["file_id"] == "B", "a clip that is too short is ranked below one that fits"
-    short = [c for c in s1["candidates"] if c["file_id"] == "A"]
-    assert short and short[0]["fits"] is False and short[0]["short_by"] == pytest.approx(1.0, abs=1e-3)
-
-
-def test_the_reference_is_never_its_own_candidate(lib):
-    ref, files = lib
-    for row in reference.match_reference(ref, files)["shots"]:
-        assert all(c["file_id"] != "R" for c in row["candidates"])
-    assert any(c["file_id"] == "R" for row in reference.match_reference(ref, files, include_reference=True)["shots"] for c in row["candidates"])
-
-
-def test_a_shot_nothing_matches_says_so_and_gives_a_stock_query(lib):
-    ref, files = lib
-    s2 = reference.match_reference(ref, files)["shots"][2]
-    assert s2["status"] == "no_match" and s2["candidates"] == [] and s2["stock_query"] == "A spaceship lands"
-
-
-def test_a_shot_only_matched_by_too_short_footage_is_flagged_and_gets_a_stock_query(lib):
-    ref, files = lib
-    row = reference.match_reference(ref, [files[1]], start=4.0, end=6.0)["shots"][0]      # needs 2 s; A's clock is 1 s
-    assert row["status"] == "short_only" and row["candidates"][0]["fits"] is False
-    assert row["candidates"][0]["short_by"] == pytest.approx(1.0, abs=1e-3) and row["stock_query"] == "A close up of a clock"
-    assert reference.match_reference(ref, [files[1]])["matched"] == 1, "only the long beach shot is filled"
+    for row in reference.plan_recreation(ref, files)["shots"]:
+        assert row["choice"] is None or row["choice"]["file_id"] != "R"
 
 
 def test_a_range_limits_the_reference_shots(lib):
     ref, files = lib
-    out = reference.match_reference(ref, files, start=6.0, end=12.0)
+    out = reference.plan_recreation(ref, files, start=6.0, end=12.0)
     assert [r["reference_shot"] for r in out["shots"]] == [2]
-    out = reference.match_reference(ref, files, start=1.0, end=3.0)
+    out = reference.plan_recreation(ref, files, start=1.0, end=3.0)
     assert out["shots"][0]["duration"] == pytest.approx(2.0)
-
-
-def test_filters_narrow_the_candidates(lib):
-    ref, files = lib
-    out = reference.match_reference(ref, files, filters={"min_duration": 4.0})
-    s0 = out["shots"][0]
-    assert all(c["file_id"] == "A" and c["shot_id"] == 0 for c in s0["candidates"])
 
 
 def test_a_reference_without_pictures_falls_back_to_its_descriptions(tmp_path):
@@ -97,16 +61,16 @@ def test_a_reference_without_pictures_falls_back_to_its_descriptions(tmp_path):
           text=[({"kind": "shot", "shot": 0, "start": 0, "end": 8, "text": "A cat sleeping"}, unit(4))])
     ref = library.load_file_index(shelf, REF, file_id="R", name="r")
     other = library.load_file_index(shelf, A, file_id="A", name="a")
-    out = reference.match_reference(ref, [other])
-    assert out["shots"][0]["status"] == "matched" and out["shots"][0]["candidates"][0]["file_id"] == "A"
+    out = reference.plan_recreation(ref, [other])
+    assert out["shots"][0]["choice"]["file_id"] == "A"
 
 
-def test_a_file_with_no_analysed_shots_gives_an_empty_result(tmp_path):
+def test_a_file_with_no_analysed_shots_gives_an_empty_plan(tmp_path):
     library.clear_cache()
     shelf = Shelf(str(tmp_path / "s3"))
     build(shelf, REF, shots=[], duration=3.0, watch=None, layers=("structure",))
     ref = library.load_file_index(shelf, REF, file_id="R")
-    assert reference.match_reference(ref, [ref]) == {"shots": [], "matched": 0, "total": 0}
+    assert reference.plan_recreation(ref, [ref])["shots"] == []
 
 
 # ============================ locate ============================
@@ -135,14 +99,3 @@ def test_locate_respects_kind_range_and_limit(lib):
     assert reference.locate(files, "clock", start=3.0, end=4.0) == []
     assert reference.locate(files, "") == [] and reference.locate(files, "zebra") == []
     assert len(reference.locate(files, "clock", limit=0)) == 0
-
-
-@pytest.mark.parametrize("peak,expected", [(5.0, (3.0, 7.0)), (9.5, (6.0, 10.0)), (0.5, (0.0, 4.0)), (10.0, (6.0, 10.0))])
-def test_the_cut_window_is_centred_on_the_peak_and_never_leaves_the_source_shot(peak, expected):
-    got = reference._window({"peak": peak}, {"start": 0.0, "end": 10.0}, 4.0)
-    assert (got["in"], got["out"], got["fits"]) == (expected[0], expected[1], True)
-
-
-def test_a_source_shot_shorter_than_the_need_returns_the_whole_shot_flagged():
-    got = reference._window({"peak": 3.0}, {"start": 2.0, "end": 4.5}, 4.0)
-    assert got == {"in": 2.0, "out": 4.5, "fits": False, "short_by": 1.5}

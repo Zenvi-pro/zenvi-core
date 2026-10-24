@@ -54,7 +54,7 @@ RECREATING A VIDEO FROM THE USER'S FOOTAGE (plan, build, check, fix, repeat)
 - Never place by length alone or repeat footage to fill a gap. Footage shows again only where the reference shows the same image again (the plan marks those).
 - storyboard_tool (detail=list) on the reference, then plan recreation: each shot gets a window of the user's clips; weak/unfilled shots are marked. For those: search stock video (describe the scene), import stock media (video_id=...), then override. Nothing fits: skip it and say so.
 - Build recreation (plan_id): exact cuts, per-shot grade, song.
-- Check recreation after each build, then compare recreation on the shots it names and LOOK: same scene, subject, framing? Numbers can't tell. Fix, re-check; stop at PASS or after 3 rounds with no change. Close with what was theirs, stock, approximated or skipped, and the score before and after.
+- Check recreation after each build, then LOOK at its pictures of the worst shots: same scene, subject, framing? Numbers can't tell. Fix, re-check; stop at PASS or after 3 rounds with no change. Close with what was theirs, stock, approximated or skipped, and the score before and after.
 
 LONG-FORM (a film)
 - Work in acts and scenes. Give each scene a sub-brief and keep scene cards in the brief; finish and audit one scene at a time, then audit the whole for continuity (look across scenes, loudness range, recurring music).

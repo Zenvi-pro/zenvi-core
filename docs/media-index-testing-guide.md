@@ -105,7 +105,7 @@ Use the kit (section 5) or your own footage. Each prompt targets one tool; the A
 | "bring that one in" | `import_stock_media_tool` | in the bin, indexed |
 | "build it" | `build_recreation_tool` | one undo step; clips at the reference's cut times; grades, zooms, transitions reported; the song on its own track |
 | "how good is it, honestly?" | `check_recreation_tool` | a score with six-seven areas, failing shots each with a concrete fix |
-| "show me the worst shots next to the reference" | `compare_recreation_tool` | a picture: reference left, your footage right |
+| "show me the worst shots next to the reference" | `check_recreation_tool` | a picture: reference left, your footage right |
 | "fix the worst ones" | `build_recreation_tool(only_shots, overrides)` then check | the score does not go down; only those shots change |
 | "do the whole thing and tell me what you used, skipped and why" | all of the above | closing report quotes the scores and names stock, approximated and skipped shots |
 

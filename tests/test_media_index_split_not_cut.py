@@ -44,13 +44,12 @@ def test_the_style_counts_cuts_and_shots_not_split_pieces():
     assert out["music"]["cut_on_beat"] == 1.0
 
 
-def test_the_recreation_plan_and_the_footage_matcher_have_one_slot_per_real_cut():
+def test_the_recreation_plan_has_one_slot_per_real_cut():
     shots = [piece(0, 0.0, 4.0, None), piece(1, 4.0, 8.0), piece(2, 8.0, 12.0, "split"), piece(3, 12.0, 16.0), piece(4, 16.0, 20.0)]
     ref = FileIndex(sha="a" * 64, duration=20.0, shots=shots)
     out = mref.plan_recreation(ref, [])
     assert [r["reference_shot"] for r in out["shots"]] == [0, 1, 3, 4]
     assert (out["shots"][1]["start"], out["shots"][1]["end"]) == (4.0, 12.0)
-    assert [r["reference_shot"] for r in mref.match_reference(ref, [])["shots"]] == [0, 1, 3, 4]
 
 
 @pytest.fixture

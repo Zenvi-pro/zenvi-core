@@ -174,7 +174,7 @@ def test_loudness_and_look_gaps_name_the_tools_and_small_ones_are_ignored():
     ref, yours = style_pair(sound={"loudness_lufs": -20.0})
     yours["look"]["warm_cool"] = -0.2
     gaps = S.compare_style(ref, yours)
-    assert aspects(gaps) == ["loudness", "look: warm_cool"] and gaps[0]["tools"] == ["balance_mix_tool"] and "match_reference_tool" in gaps[1]["tools"]
+    assert aspects(gaps) == ["loudness", "look: warm_cool"] and gaps[0]["tools"] == ["balance_mix_tool"] and "plan_recreation_tool" in gaps[1]["tools"]
     close, _ = style_pair(sound={"loudness_lufs": -15.5})
     assert S.compare_style(close, style_pair(sound={"loudness_lufs": -15.5})[1]) == []
 
@@ -192,7 +192,7 @@ def test_every_tool_the_advice_names_exists():
     yours["look"]["avg_luma"] = 0.9
     ref["text_on_screen"]["shots_with_text"] = 0.5
     named = {t for g in S.compare_style(ref, yours) for t in g["tools"]}
-    assert named >= {"sync_cuts_to_beats_tool", "balance_mix_tool", "match_reference_tool", "add_captions_tool", "generate_transition_clip_tool", "audition_music_tool"}
+    assert named >= {"sync_cuts_to_beats_tool", "balance_mix_tool", "plan_recreation_tool", "add_captions_tool", "generate_transition_clip_tool", "audition_music_tool"}
     real = set(REGISTRY) | set(tool_handlers.AGENT_TOOL_HANDLERS)
     assert not named - real, f"advice names tools that do not exist: {sorted(named - real)}"
 

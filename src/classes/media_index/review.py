@@ -520,7 +520,7 @@ def delivery_findings(project: ProjectInfo, brief: Brief) -> List[Dict[str, Any]
     portrait = project.height > project.width
     return [finding("format", "delivery", "ok" if portrait else "needs",
                     "The project is vertical." if portrait else f"A {brief.form} should be vertical (9:16); the project is {project.width}x{project.height}.",
-                    {"width": project.width, "height": project.height}, [] if portrait else ["set_project_profile_tool"])]
+                    {"width": project.width, "height": project.height}, [] if portrait else ["set_project_setting_tool"])]
 
 
 # ============================ the whole audit ============================

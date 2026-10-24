@@ -222,7 +222,7 @@ def _pick_profile(preset: dict, project_record: dict) -> tuple:
                 sizes = ", ".join(sorted({"%dx%d" % (o["width"], o["height"]) for o in options}))
                 note = (f"'{preset['title']}' only renders {sizes}; exporting {best['width']}x{best['height']} "
                         f"from a {pw}x{ph} project re-frames every clip (bars on 'fit' clips, crops on 'fill' "
-                        "clips). For a proper vertical/square edit switch the project with set_project_profile_tool "
+                        "clips). For a proper vertical/square edit switch the project with set_project_setting_tool "
                         "(reframe='fill') first, or pass profile= to keep the project size")
             return best, note
     return project_record, None
@@ -574,7 +574,7 @@ def export_video(preset="", quality="", export_type="auto", range="", start=0, e
     start/end seconds. Never opens a dialog unless show_dialog=true; refuses to
     overwrite unless overwrite=true. Waits for the render (the editor stays
     usable meanwhile) and returns the file path, size, format and range. For social
-    vertical formats, switch the project first (find_tools: set project profile)
+    vertical formats, switch the project first (find_tools: set project setting)
     (reframe='fill'), otherwise landscape footage renders with bars.
     Example: {"preset": "Instagram Reels", "start": 0, "end": 5}
     """

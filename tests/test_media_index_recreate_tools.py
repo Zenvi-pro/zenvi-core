@@ -99,6 +99,12 @@ def test_the_plan_gives_each_shot_the_source_whose_look_fits_and_stays_within_th
     assert names[0] == "dark.mp4" and names[1] == "bright.mp4"            # the measured look decides between otherwise equal footage
 
 
+def test_the_plan_only_cuts_from_the_footage_it_is_given(studio):
+    data = plan(studio, source_file_ids=[studio.src["bright"]])
+    assert set(data["reuse"]["uses_per_file"]) == {str(studio.src["bright"])}
+    assert studio.ed.call_receipt("plan_recreation_tool", reference_file_id=studio.ref, source_file_ids=[studio.ref], stock="off")["status"] == "error"
+
+
 def test_the_build_places_every_shot_at_the_reference_time_and_length_in_one_undo_step(studio):
     pid = plan(studio)["plan_id"]
     out = build_it(studio, pid)
@@ -307,17 +313,16 @@ def test_a_shot_left_out_on_purpose_is_reported_as_skipped_not_as_missing(studio
     assert result["skipped"] == [2] and result["areas"]["coverage"] == 100.0 and "skipped on purpose" in studio.ed.call_receipt("check_recreation_tool", reference_file_id=studio.ref, plan_id=pid)["summary"]
 
 
-def test_comparing_shots_shows_the_reference_beside_the_chosen_footage(studio, monkeypatch):
+def test_the_check_shows_the_reference_beside_the_chosen_footage(closeups, monkeypatch):
     import numpy as np
     from classes.editor_tools import media_index_tools_recreate as R
-    pid = plan(studio)["plan_id"]
     seen = []
     monkeypatch.setattr(R, "_tile", lambda f, t: (seen.append((str(f.id), round(t, 2))) or np.zeros((R.TILE_HEIGHT, R.TILE_WIDTH, 3), dtype=np.uint8)))
     monkeypatch.setattr("classes.editor_tools.media_index_tools_precision._sheet_jpeg", lambda path: b"jpeg")
-    out = receipt_data(studio.ed, "compare_recreation_tool", reference_file_id=studio.ref, shots=[1, 4, 99], plan_id=pid)
-    assert [r["shot"] for r in out["rows"]] == [1, 4] and [e["shot"] for e in out["skipped"]] == [99]
-    assert len(seen) == 4 and seen[0][0] == str(studio.ref) and seen[1][0] != str(studio.ref)       # reference tile, then footage tile, per shot
-    assert abs(seen[0][1] - (1 * SHOT + SHOT / 2)) < 1e-6                                              # the middle of the reference shot
+    out = build_it(closeups, plan(closeups)["plan_id"], framing=False)          # left wide on purpose: every shot has a finding
+    rows = check(closeups, plan_id=out["plan_id"])["image_rows"]
+    assert rows and len(seen) == 2 * len(rows) and seen[0][0] == str(closeups.ref) and seen[1][0] != str(closeups.ref)   # reference tile, then footage tile, per shot
+    assert abs(seen[0][1] - (rows[0]["shot"] * SHOT + SHOT / 2)) < 1e-6                                                  # the middle of the reference shot
 
 
 def test_footage_framed_wider_than_the_reference_is_zoomed_in_on_its_subject(closeups, monkeypatch):

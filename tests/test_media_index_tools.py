@@ -218,38 +218,6 @@ def test_the_query_is_embedded_once_per_model_the_files_were_indexed_with(monkey
     assert list(out) == [E.MODEL_LOCAL] and asked == [(E.MODEL_LOCAL, ["x"], True)] and out[E.MODEL_LOCAL][3] == 1.0
 
 
-@pytest.fixture
-def recreate(env, monkeypatch):
-    """A reference (R) of two shots plus the two project files from `env`."""
-    from test_media_index_reference import REF
-    build(env.shelf, REF, shots=[shot(0, 0, 4), shot(1, 4, 7)], duration=7.0,
-          watch=[w(0, 0, 4, "A calm lake"), w(1, 4, 7, "A spaceship lands")],
-          text=[], image=[({"shot": 0, "t": 1.0}, unit(0)), ({"shot": 1, "t": 5.0}, unit(12))])
-    env.files.append(file_obj("R", "ref.mp4", REF))
-    return env
-
-
-def test_match_reference_plans_each_shot_and_reports_the_gaps(recreate):
-    head, r = call("match_reference_tool", reference_file_id="R")
-    assert r["total"] == 2 and r["matched"] == 1 and "gaps: shots [1]" in head
-    first, second = r["shots"]
-    assert first["status"] == "matched" and first["candidates"][0]["file_id"] == "F1" and first["candidates"][0]["fits"] is True
-    assert second["status"] == "no_match" and second["stock_query"] == "A spaceship lands"
-
-
-def test_match_reference_can_be_limited_to_a_range_and_to_source_files(recreate):
-    _, r = call("match_reference_tool", reference_file_id="R", reference_start=0.0, reference_end=4.0, candidate_file_ids=["F1"])
-    assert [s["reference_shot"] for s in r["shots"]] == [0]
-    out = REGISTRY["match_reference_tool"].func(reference_file_id="R", candidate_file_ids=["R"])
-    assert out.startswith("Error") and "no other indexed footage" in out
-
-
-def test_match_reference_needs_an_indexed_reference(recreate):
-    assert REGISTRY["match_reference_tool"].func(reference_file_id="F3").startswith("Error")
-    out = REGISTRY["match_reference_tool"].func(reference_file_id="nope")
-    assert out.startswith("Error") and "no saved index" in out
-
-
 def test_locate_finds_an_object_with_time_and_box_and_says_the_box_is_rough(env):
     build(env.shelf, "e" * 64, shots=[shot(0, 0, 8)], duration=8.0,
           watch=[w(0, 0, 8, "A kitchen", objects=[{"label": "kettle", "box": [0.5, 0.4, 0.1, 0.2], "t": 2.0}],

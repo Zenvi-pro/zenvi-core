@@ -142,7 +142,7 @@ def test_the_directors_loop_builds_audits_and_keeps_the_plan(trip, monkeypatch, 
     ed.mark()
     audit = receipt_data(ed, "review_edit_tool", form="TikTok", target_seconds=30, vibe="calm travel", measure_colour=False)
     ids = {f["id"]: f for layer in audit["layers"].values() for f in layer}
-    assert ids["format"]["status"] == "needs" and "set_project_profile_tool" in ids["format"]["fix"]
+    assert ids["format"]["status"] == "needs" and "set_project_setting_tool" in ids["format"]["fix"]
     assert ids["length"]["status"] == "ok" and ids["music"]["status"] == "ok" and ids["style"]["status"] == "needs"
     assert ids["weak_shots"]["status"] == "ok", "the blurry and black shots were never placed"
     assert ids["loudness"]["status"] in ("ok", "needs") and ed.undo_steps_since_mark() == 0
