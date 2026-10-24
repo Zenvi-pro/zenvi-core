@@ -103,8 +103,6 @@ def _url_list(**kw) -> dict:
 # ---------------------------------------------------------------------------
 
 TOOL_SCHEMAS: dict[str, dict] = {
-    "go_to_start_tool": _obj({}),
-    "go_to_end_tool": _obj({}),
     "undo_tool": _obj({
         "steps": _str_or_num(description="Number of undo steps."),
     }),
@@ -187,7 +185,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "write_subs": _str_or_bool(),
         "job_id": _str(description="Long-poll id from a prior status=running reply."),
     }),
-    "slice_clip_at_playhead_tool": _obj({}),
     "suggest_motion_graphics_placements_tool": _obj({
         "brief": _str(),
         "beat_count": _str_or_num(),
@@ -283,23 +280,10 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "end": _num(description="watchSuggested.end seconds"),
         "overview": {"type": "boolean", "description": "One storyboard instead of N frames."},
     }),
-    "inspect_media_tool": _obj({
-        "fileId": {"type": "string", "description": "Zenvi file id from list_project_files_tool."},
-        "clipId": {"type": "string"},
-        "start": _num(minimum=0),
-        "end": _num(minimum=0),
-        "maxFrames": _int(minimum=1, maximum=12),
-        "overview": {"type": "boolean"},
-    }, required=["fileId"]),
-
     "get_transcript_tool": _obj({
-        "clipId": _str(description="Timeline clip id. Prefer this after edits."),
-        "timeline_clip_id": _str(
-            description="Alias for clipId (Assistant / get_timeline_state naming).",
-        ),
-        "fileId": _str(description="Media-bin file id (source seconds at timeline 0)."),
-        "file_id": _str(description="Alias for fileId."),
-        "trackIndex": _int(minimum=0, description="UI track index; omit for all clips."),
+        "timeline_clip_id": _str(description="Timeline clip id. Prefer this after edits."),
+        "file_id": _str(description="Media-bin file id (source seconds at timeline 0)."),
+        "track": _int(minimum=0, description="UI track index; omit for all clips."),
         "language": _str(description="BCP-47 / whisper code, or 'auto'."),
         "model_id": _str(description="faster-whisper model, e.g. faster-whisper-base; ignored by the bundled whisper.cpp engine (one model)."),
         "force": _bool(description="Ignore cache and re-run ASR."),

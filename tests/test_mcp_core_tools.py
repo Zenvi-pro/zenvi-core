@@ -78,7 +78,7 @@ PLAYBOOK_ACTIONS = {
     "balance the mix: even voices, music under them, loudness": "balance_mix_tool",
     "duck music under speech": "duck_under_speech_tool",
     "remove silent pauses": "remove_silence_tool",
-    "set the project profile: resolution, aspect ratio, frame rate": "set_project_profile_tool",
+    "set the project profile: resolution, aspect ratio, frame rate": "set_project_setting_tool",
     "even out the look so clips match each other": "harmonize_look_tool",
     "sync cuts to the music beats": "sync_cuts_to_beats_tool",
     "remove filler words like um and uh": "remove_words_tool",
