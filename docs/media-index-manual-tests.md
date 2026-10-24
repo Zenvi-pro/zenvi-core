@@ -49,7 +49,7 @@ calls, pictures and tokens. Credits: note the balance before and after.
 > grab stock footage. Tell me at the end what you used where, what you skipped, and why."
 
 - **Should reach for:** `storyboard` (list mode), `plan_recreation`, `search_stock_video` + `import_stock_media` for shots the plan marks weak,
-  `build_recreation`, `check_recreation`, `compare_recreation` (and it should look at the pictures), rebuilds of only the failing shots,
+  `build_recreation`, `check_recreation` (and it should look at the pictures it attaches), rebuilds of only the failing shots,
   then a closing report.
 - **Pass:** cuts within a frame of the original's; no footage shown twice unless the reference repeats that image; shots nothing fits are
   stock or reported as skipped (never filled with unrelated footage); a plain list of what came from your clips, from stock, and what was
