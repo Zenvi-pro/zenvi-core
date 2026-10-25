@@ -113,10 +113,11 @@ def main():
     own_wt = os.path.join(PORT_ROOT, FEATURE)
     for p in re.findall(r"(?<![\w.-])(?:~|/)[^\s\"';|&)<>]*", cmd_nohd):
         rp = os.path.realpath(os.path.expanduser(p.rstrip("/)")))
-        if rp == MAIN_REPO or rp.startswith(MAIN_REPO + "/"):
+        # os.sep: realpath() gives backslashes on Windows.
+        if rp == MAIN_REPO or rp.startswith(MAIN_REPO + os.sep):
             deny("path %s is the main checkout; work only inside %s." % (p, own_wt))
-        if rp.startswith(PORT_ROOT + "/"):
-            rest = rp[len(PORT_ROOT) + 1:].split("/")[0]
+        if rp.startswith(PORT_ROOT + os.sep):
+            rest = rp[len(PORT_ROOT) + 1:].split(os.sep)[0]
             if rest and not rest.startswith(".") and rest != FEATURE:
                 deny("path %s belongs to another feature's worktree." % p)
 

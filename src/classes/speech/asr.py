@@ -62,8 +62,9 @@ class FasterWhisperTranscriber:
             from faster_whisper import WhisperModel
         except ImportError as exc:
             raise RuntimeError(
-                "faster-whisper is not installed. "
-                "pip install -r requirements-speech.txt"
+                "No local speech engine: releases bundle whisper.cpp "
+                "(installer/build-whisper-cli.sh puts it in src/whisper); "
+                "or pip install -r requirements-speech.txt for faster-whisper"
             ) from exc
         size = _MODEL_SIZES.get(self.model_id, "base")
         self._model = WhisperModel(size, device="cpu", compute_type="int8")
@@ -133,6 +134,17 @@ def make_transcriber(engine: str = "auto", model_id: str = DEFAULT_MODEL_ID) -> 
     if resolved == "apple":
         from classes.speech.apple_asr import AppleSpeechTranscriber
         return AppleSpeechTranscriber()
+    return _whisper_transcriber(model_id)
+
+
+def _whisper_transcriber(model_id: str = DEFAULT_MODEL_ID) -> Transcriber:
+    """The bundled whisper.cpp when present (every release), else faster-whisper."""
+    from classes.speech import whisper_cpp
+    if whisper_cpp.available():
+        if model_id and model_id != DEFAULT_MODEL_ID:
+            log.info("modelId %s ignored: whisper.cpp runs the model it was installed with (%s)",
+                     model_id, whisper_cpp.model_id())
+        return whisper_cpp.WhisperCppTranscriber()
     return FasterWhisperTranscriber(model_id=model_id or DEFAULT_MODEL_ID)
 
 
@@ -165,6 +177,9 @@ def reset_transcriber_factory() -> None:
 def _cache_model_id(engine: str, model_id: str) -> str:
     if engine == "apple":
         return APPLE_MODEL_ID
+    from classes.speech import whisper_cpp
+    if whisper_cpp.available():
+        return whisper_cpp.model_id()  # the model it runs, whatever was asked for
     return (model_id or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
 
 
@@ -228,11 +243,11 @@ def transcribe_file(
                 ):
                     log.warning("Apple ASR failed (%s); falling back to whisper", exc)
                     used_engine = "whisper"
-                    used_model = (model_id or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
+                    used_model = _cache_model_id("whisper", model_id)
                     if _transcriber_factory is not None:
                         engine_obj = _transcriber_factory("whisper", used_model)
                     else:
-                        engine_obj = FasterWhisperTranscriber(used_model)
+                        engine_obj = _whisper_transcriber(model_id)
                     words, detected = engine_obj.transcribe(
                         wav_path,
                         language=None if lang_key == "auto" else lang_key,

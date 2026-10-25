@@ -17,23 +17,25 @@
 """
 
 import os
-import json
 import platform
+import re
 import threading
 import time
 import hashlib
 import shutil
+import sys
 
 import requests
 
 from classes import info
 from classes.logger import log
+from classes import update_installer
 from classes.update_installer import (
-    UPDATE_MANIFEST,
     UPDATE_STAGING_DIR,
     discard_staged_update,
     has_pending_update as installer_has_pending_update,
     is_version_newer,
+    parse_version,
     read_manifest,
 )
 
@@ -42,9 +44,23 @@ from classes.update_installer import (
 # Constants
 # ---------------------------------------------------------------------------
 
-GITHUB_API_URL = (
-    "https://api.github.com/repos/{repo}/releases/latest"
-)
+# ZENVI_GITHUB_API_BASE points the updater at a local mock of the GitHub API so
+# the whole check/download/install flow can be tested without publishing anything.
+_API_BASE = os.environ.get("ZENVI_GITHUB_API_BASE", "https://api.github.com").rstrip("/")
+GITHUB_API_URL = _API_BASE + "/repos/{repo}/releases/latest"
+GITHUB_RELEASES_URL = _API_BASE + "/repos/{repo}/releases?per_page=30"
+
+# Opt-in channel for testing the updater against release-candidate builds.
+# ZENVI_UPDATE_CHANNEL=rc also considers the prerelease the release workflow
+# publishes on every push to the releases branch. A prerelease never comes
+# back from /releases/latest (the website and the default channel); a draft
+# would not come back from /releases either, so the workflow must not make
+# it one.
+UPDATE_CHANNEL_ENV = "ZENVI_UPDATE_CHANNEL"
+RC_RELEASE_TAG = "releases-test"
+_ASSET_VERSION_RE = re.compile(r"Zenvi-v(\d+(?:\.\d+)+)-")
+# The checksum list the release workflow publishes next to the installers.
+CHECKSUMS_ASSET = "SHA256SUMS.txt"
 
 # How long to wait after app launch before first check (seconds)
 INITIAL_DELAY = 15
@@ -64,17 +80,55 @@ PROGRESS_INDETERMINATE = -1
 # Platform helpers
 # ---------------------------------------------------------------------------
 
+def update_channel():
+    """Return "rc" when the user opted into release candidates, else "stable"."""
+    value = os.environ.get(UPDATE_CHANNEL_ENV, "").strip().lower()
+    return "rc" if value in ("rc", "beta", "test") else "stable"
+
+
+def release_version(release):
+    """Version of a release payload: the tag, else the installer file names.
+
+    The RC prerelease reuses one tag (``releases-test``), so its version only
+    exists in the asset names (``Zenvi-v1.2.1-x86_64.dmg``).
+    """
+    tag = (release.get("tag_name") or "").lstrip("v")
+    if tag and parse_version(tag) != (0,):
+        return tag
+    for asset in release.get("assets", []):
+        match = _ASSET_VERSION_RE.match(asset.get("name", ""))
+        if match:
+            return match.group(1)
+    return ""
+
+
+def pick_release(stable, releases):
+    """Newest of the stable release and the RC prerelease (stable wins ties)."""
+    best, best_version = stable, release_version(stable) if stable else ""
+    for rel in releases or []:
+        if rel.get("draft") or rel.get("tag_name") != RC_RELEASE_TAG:
+            continue
+        version = release_version(rel)
+        if version and (not best_version or is_version_newer(version, best_version)):
+            best, best_version = rel, version
+    return best, best_version
+
+
+# Where the .deb puts the app (its /usr/bin/zenvi launcher runs /opt/zenvi/zenvi).
+_DEB_INSTALL_PREFIXES = ("/opt/zenvi/", "/usr/")
+
+
 def _platform_asset_suffix():
     """Return the expected asset file suffix for the running platform."""
     system = platform.system().lower()
     if system == "linux":
-        # Prefer AppImage; fall back to .deb
+        # The package type this copy of Zenvi came from: an AppImage sets
+        # $APPIMAGE; the .deb installs under /opt/zenvi (older ones, /usr).
         appimage = os.environ.get("APPIMAGE")
         if appimage:
             return ".AppImage"
-        # Check if installed via deb (binary in /usr)
-        exe = os.path.realpath(os.sys.executable)
-        if exe.startswith("/usr"):
+        exe = os.path.realpath(sys.executable)
+        if exe.startswith(_DEB_INSTALL_PREFIXES):
             return ".deb"
         return ".AppImage"
     elif system == "darwin":
@@ -92,6 +146,20 @@ def _platform_asset_arch_hint():
     elif machine in ("aarch64", "arm64"):
         return "arm64"
     return machine
+
+
+def parse_checksums(text):
+    """{file name: sha256} from `sha256sum` output (`<hex>  ./name` lines)."""
+    sums = {}
+    for line in (text or "").splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2 or len(parts[0]) != 64:
+            continue
+        name = parts[1].lstrip("*").strip()
+        if name.startswith("./"):
+            name = name[2:]
+        sums[os.path.basename(name)] = parts[0].lower()
+    return sums
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +261,7 @@ class AutoUpdater:
     def _run(self):
         """Entry point for the background thread."""
         try:
+            self._tidy_staging()
             release, latest_version = self._fetch_latest_release()
 
             # Wait before download check so the UI is fully loaded
@@ -212,8 +281,15 @@ class AutoUpdater:
                         staged_ver, latest_version,
                     )
                 else:
-                    log.info("AutoUpdater: Pending update already staged — skipping network check")
-                    self._notify_ui_pending()
+                    failure = update_installer.last_failure(staged_ver)
+                    if failure and update_installer.install_attempts(staged_ver) >= \
+                            update_installer.MAX_INSTALL_ATTEMPTS:
+                        log.warning("AutoUpdater: Installing %s keeps failing (%s); "
+                                    "offering the manual download", staged_ver, failure)
+                        self._emit_failed_signal(staged_ver, failure)
+                    else:
+                        log.info("AutoUpdater: Pending update already staged — skipping network check")
+                        self._notify_ui_pending()
                     return
 
             if release is None:
@@ -223,36 +299,63 @@ class AutoUpdater:
         except Exception:
             log.error("AutoUpdater: Unhandled error in background thread", exc_info=True)
 
+    def _tidy_staging(self):
+        """Drop downloads that will never be installed, report how the last
+        install went, and remove app copies an interrupted update left."""
+        for path in update_installer.cleanup_stale_staging():
+            log.info("AutoUpdater: Removed stale update file %s", path)
+        for path in update_installer.cleanup_leftover_bundles():
+            log.info("AutoUpdater: Removed a copy of the app left by an interrupted update: %s", path)
+        status = update_installer.read_status()
+        if status.get("ok") is True and status.get("version") == info.VERSION:
+            log.info("AutoUpdater: Updated to %s", info.VERSION)
+            try:
+                os.unlink(update_installer.UPDATE_STATUS)
+            except OSError:
+                pass
+        elif status.get("ok") is False:
+            log.warning("AutoUpdater: Installing %s did not finish: %s",
+                        status.get("version"), status.get("reason"))
+
     def _fetch_latest_release(self):
         """Single GitHub /releases/latest fetch for Sentry, UI, and download logic.
 
         Returns (release_dict_or_None, latest_version_str_or_empty).
         """
-        url = GITHUB_API_URL.format(repo=info.GITHUB_REPO)
-        try:
-            resp = requests.get(
-                url,
-                headers={
-                    "Accept": "application/vnd.github.v3+json",
-                    "User-Agent": f"Zenvi/{info.VERSION}",
-                },
-                timeout=30,
-            )
-        except requests.RequestException as exc:
-            log.warning("AutoUpdater: Network error checking for updates: %s", exc)
+        headers = {
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": f"Zenvi/{info.VERSION}",
+        }
+        rc = update_channel() == "rc"
+        stable = self._get_json(GITHUB_API_URL.format(repo=info.GITHUB_REPO), headers)
+        release, latest_version = stable, release_version(stable) if stable else ""
+        if rc:
+            releases = self._get_json(
+                GITHUB_RELEASES_URL.format(repo=info.GITHUB_REPO), headers)
+            if isinstance(releases, list):
+                release, latest_version = pick_release(stable, releases)
+                log.info("AutoUpdater: rc channel selected %s", latest_version or "nothing")
+        if release is None:
             return None, ""
-
-        if resp.status_code != 200:
-            log.warning("AutoUpdater: GitHub API returned HTTP %d", resp.status_code)
-            return None, ""
-
-        release = resp.json()
-        tag = release.get("tag_name", "")
-        latest_version = tag.lstrip("v")
         if latest_version:
-            info.ERROR_REPORT_STABLE_VERSION = latest_version
+            # Sentry treats "running the stable version" as production; an RC
+            # must not be reported as the stable version.
+            if not rc:
+                info.ERROR_REPORT_STABLE_VERSION = latest_version
             self._emit_version_signal(latest_version)
         return release, latest_version
+
+    @staticmethod
+    def _get_json(url, headers):
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+        except requests.RequestException as exc:
+            log.warning("AutoUpdater: Network error checking for updates: %s", exc)
+            return None
+        if resp.status_code != 200:
+            log.warning("AutoUpdater: GitHub API returned HTTP %d", resp.status_code)
+            return None
+        return resp.json()
 
     def _check_and_download(self, release, latest_version):
         """Download the platform asset from an already-fetched release payload."""
@@ -309,7 +412,9 @@ class AutoUpdater:
             "AutoUpdater: Downloading %s (%s bytes)",
             asset_name, f"{asset_size:,}" if asset_size else "unknown",
         )
-        success = self._download(download_url, asset_name, latest_version, asset_size)
+        expected_sha256 = self._published_checksum(release, asset_name)
+        success = self._download(download_url, asset_name, latest_version, asset_size,
+                                 expected_sha256=expected_sha256)
 
         if success:
             self._emit_update_ready_signal(latest_version)
@@ -321,7 +426,24 @@ class AutoUpdater:
     # Download
     # ------------------------------------------------------------------
 
-    def _download(self, url, filename, version, expected_size):
+    def _published_checksum(self, release, asset_name):
+        """The SHA-256 the release lists for *asset_name*, or "" if it lists none."""
+        sums_url = None
+        for asset in release.get("assets", []):
+            if asset.get("name") == CHECKSUMS_ASSET:
+                sums_url = asset.get("browser_download_url")
+                break
+        if not sums_url:
+            return ""
+        try:
+            resp = requests.get(sums_url, timeout=30)
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            log.warning("AutoUpdater: Could not fetch %s: %s", CHECKSUMS_ASSET, exc)
+            return ""
+        return parse_checksums(resp.text).get(asset_name, "")
+
+    def _download(self, url, filename, version, expected_size, expected_sha256=""):
         """Stream-download *url* to the staging directory. Returns True on success."""
         staging_file = os.path.join(UPDATE_STAGING_DIR, filename)
         temp_file = staging_file + ".part"
@@ -368,6 +490,15 @@ class AutoUpdater:
                 self._emit_failed_signal(version, "Downloaded file was incomplete")
                 return False
 
+            if expected_sha256 and sha256.hexdigest() != expected_sha256.lower():
+                log.error(
+                    "AutoUpdater: %s does not match the release's %s (expected %s, got %s)",
+                    filename, CHECKSUMS_ASSET, expected_sha256, sha256.hexdigest(),
+                )
+                self._safe_remove(temp_file)
+                self._emit_failed_signal(version, "The download did not match the published checksum")
+                return False
+
             self._emit_progress_signal(version, 100, downloaded, downloaded)
 
             # Promote temp → final
@@ -383,8 +514,7 @@ class AutoUpdater:
                 "platform": platform.system().lower(),
                 "downloaded_at": time.time(),
             }
-            with open(UPDATE_MANIFEST, "w", encoding="utf-8") as fh:
-                json.dump(manifest, fh, indent=2)
+            update_installer.write_manifest(manifest)
 
             log.info(
                 "AutoUpdater: Download complete — %s  sha256=%s",
@@ -421,7 +551,7 @@ class AutoUpdater:
 
     def _emit_version_signal(self, version):
         """Emit the existing FoundVersionSignal so the UI shows 'Update Available'."""
-        if version:
+        if version and update_channel() != "rc":
             info.ERROR_REPORT_STABLE_VERSION = version
         window = self._main_window()
         if window:

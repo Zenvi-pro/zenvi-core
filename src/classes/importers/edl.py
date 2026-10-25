@@ -25,7 +25,6 @@ You should have received a copy of the GNU General Public License
 along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-import json
 import os
 import re
 from operator import itemgetter
@@ -37,6 +36,7 @@ from classes import info
 from classes.app import get_app
 from classes.logger import log
 from classes.image_types import get_media_type
+from classes.importers.media_probe import probe_clip
 from classes.path_utils import absolute_path_from_export
 from classes.query import Clip, Track, File
 from classes import frame_time as ft
@@ -110,11 +110,12 @@ def _db_to_volume(db_value):
     return max(0.0, min(1.0, linear))
 
 
-def create_clip(context, track, prompt=True, missing=None):
+def create_clip(context, track, prompt=True, missing=None, probes=None):
     """Create a new clip based on this context dict
 
     prompt=False skips media that cannot be found instead of asking the user;
-    skipped paths are appended to *missing*. Returns the new Clip or None.
+    skipped paths are appended to *missing*. *probes* caches probed media for
+    one import (see media_probe.probe_clip). Returns the new Clip or None.
     """
     app = get_app()
     _ = app._tr
@@ -146,14 +147,21 @@ def create_clip(context, track, prompt=True, missing=None):
     # Check for this path in our existing project data
     file = File.get(path=clip_path)
 
-    # Load filepath in libopenshot clip object (which will try multiple readers to open it)
-    clip_obj = openshot.Clip(clip_path)
+    # Open the media in libopenshot (off the GUI thread, once per import)
+    try:
+        clip_json, reader_json = probe_clip(clip_path, probes if probes is not None else {}, openshot)
+    except Exception:
+        log.warning("Could not open %s" % clip_path, exc_info=1)
+        if missing is not None:
+            missing.append(clip_path)
+        return None
 
     if not file:
         # Get the JSON for the clip's internal reader
         try:
-            reader = clip_obj.Reader()
-            file_data = json.loads(reader.Json())
+            if reader_json is None:
+                raise ValueError("no reader for %s" % clip_path)
+            file_data = reader_json
 
             # Determine media type
             file_data["media_type"] = get_media_type(file_data)
@@ -179,7 +187,7 @@ def create_clip(context, track, prompt=True, missing=None):
 
     # Create Clip object
     clip = Clip()
-    clip.data = json.loads(clip_obj.Json())
+    clip.data = clip_json
     clip.data["file_id"] = file.id
     clip_title = context.get("clip_title") or os.path.basename(clip_path_value) or clip_path_value
     clip.data["title"] = clip_title
@@ -334,9 +342,10 @@ def import_edl(file_path=None, prompt=True):
             _("Edit Decision List (*.edl)"),
         )[0]
     summary = {"track_number": None, "clip_ids": [], "missing": []}
+    probes = {}
 
     def _commit(ctx, trk):
-        new_clip = create_clip(ctx, trk, prompt=prompt, missing=summary["missing"])
+        new_clip = create_clip(ctx, trk, prompt=prompt, missing=summary["missing"], probes=probes)
         if new_clip is not None:
             summary["clip_ids"].append(new_clip.id)
 
