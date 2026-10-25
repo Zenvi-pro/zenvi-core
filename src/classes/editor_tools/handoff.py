@@ -28,13 +28,14 @@ only for the one-undo-step media swap.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import tempfile
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from classes.editor_tools._base import (
-    ToolError, boolean, enum, mapping, nullable, number, obj, ok, string,
+    ToolError, array, boolean, enum, mapping, nullable, number, obj, ok, string,
 )
 from classes.assets import path_is_under
 from classes.editor_tools._registry import editor_tool
@@ -104,51 +105,126 @@ def _clip_rows(file_id: str) -> List[dict]:
 # Adobe hosts
 # ---------------------------------------------------------------------------
 
+# Full tool entries per reply. The Assistant's harness cuts a tool result at 51,200 bytes, and a receipt is
+# ONE JSON line, so an oversized reply arrives as nothing: entries past this budget come back as deferred_tools.
+TOOL_DETAILS_BUDGET = 32_000
+
+
+def _tool_names(tools: Any) -> List[str]:
+    """The distinct, non-blank names in *tools*, in the order given."""
+    names: List[str] = []
+    for name in tools or ():
+        name = str(name or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _json_bytes(value: Any) -> int:
+    """Bytes *value* takes in the receipt the Assistant reads (``ToolReceipt.to_json``)."""
+    return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+
+
+def _host_tools(catalog: List[dict], include_tools: bool, wanted: List[str], budget: int) -> Tuple[dict, str, int]:
+    """One connected host's tools for the listing: (row keys, summary note, details budget left).
+
+    ``tools`` is every tool as ``{name, title}`` when *include_tools*, the
+    named ones in full (``adobe_link.tool_details``) either way; names the
+    host lacks go to ``unknown_tools``, entries past the budget to
+    ``deferred_tools``.
+    """
+    from classes.handoff import adobe_link
+    rows = [r for r in catalog if isinstance(r, dict) and r.get("name")]
+    by_name = {str(r["name"]): r for r in rows}
+    details: Dict[str, dict] = {}
+    deferred: List[str] = []
+    for name in wanted:
+        if name in by_name:
+            entry = adobe_link.tool_details(by_name[name])
+            size = _json_bytes(entry)
+            if size <= budget:
+                details[name] = entry
+                budget -= size
+            else:
+                deferred.append(name)
+    if include_tools:
+        tools = [details.get(str(r["name"])) or adobe_link.tool_brief(r) for r in rows]
+    else:
+        tools = [details[n] for n in wanted if n in details]
+    part: Dict[str, Any] = {"tools": tools}
+    unknown = [n for n in wanted if n not in by_name]
+    if unknown:
+        part["unknown_tools"] = unknown
+    if deferred:
+        part["deferred_tools"] = deferred
+    counts = (["%d tools" % len(rows)] if include_tools else []) + (["%d described" % len(details)] if wanted else [])
+    return part, " (%s)" % ", ".join(counts), budget
+
+
 @editor_tool(
     "list_link_hosts_tool",
     label="List Adobe hosts",
     schema=obj({
-        "include_tools": boolean("Also list each CONNECTED app's own tools -- name, title, description, "
-                                 "inputSchema, annotations -- so call_link_host_tool gets valid arguments. "
-                                 "Use true before your first call_link_host_tool for an app.", False),
+        "include_tools": boolean("List each CONNECTED app's tools by name and title (a few KB). Call once with "
+                                 "true to see what an app can do.", False),
+        "tools": array({"type": "string"}, "Host tool names to describe in full -- description, inputSchema, "
+                       "annotations -- for each CONNECTED app, e.g. [\"ae_add_text\"]. Ask only for the few you "
+                       "will call; names an app lacks come back in its unknown_tools."),
     }),
     read_only=True,
     covers=("handoff.link_hosts",),
 )
-def list_link_hosts(include_tools=False):
+def list_link_hosts(include_tools=False, tools=None):
     """List the Adobe apps Zenvi Link connects -- After Effects and Premiere Pro -- and which one is active.
 
-    Use before call_link_host_tool or a Send To After Effects / Premiere handoff,
-    or when the user asks "is After Effects connected?". Each host reports
-    connected, active (the one used most recently), app version and open
-    project; a host that is not connected says why and how to connect it (open
-    the app with the Zenvi Link panel; `zenvi adobe install` installs the
-    panel). Call it with include_tools=true before your first
-    call_link_host_tool for an app: each connected host then also lists its
-    tools (name, title, description, inputSchema, annotations), so you pass
-    arguments its schema accepts instead of learning them from refusals; a
-    host whose list fails says so in tools_error. Read-only; changes nothing.
+    Use before call_link_host_tool or a Send To After Effects / Premiere
+    handoff, or when the user asks "is After Effects connected?". Each host
+    reports connected, active (the one used most recently), app version and
+    open project; a host that is not connected says why and how to connect it
+    (open the app with the Zenvi Link panel; `zenvi adobe install` installs the
+    panel). Before call_link_host_tool, call once with include_tools=true to
+    see what an app can do (its tools by name and title), then with
+    tools=[...] for the few you will call: those come back with description,
+    inputSchema and annotations, so you pass arguments the schema accepts.
+    Names an app does not have come back in its unknown_tools; details too
+    long for one reply come back in deferred_tools (ask again for those); a
+    host whose tool list fails says so in tools_error. Read-only; changes
+    nothing.
     """
     from classes.handoff import adobe_link
+    wanted = _tool_names(tools)
     hosts = adobe_link.list_hosts()
     rows = []
-    counts: Dict[str, int] = {}
+    notes: Dict[str, str] = {}
+    parts: List[dict] = []
+    failed = False
+    budget = TOOL_DETAILS_BUDGET
     for host in hosts:
         row = host.as_dict()
-        if include_tools and host.connected:
+        if host.connected and (include_tools or wanted):
             try:
-                row["tools"] = [adobe_link.compact_tool(t) for t in adobe_link.host_catalog(host.app)]
-                counts[host.app] = len(row["tools"])
+                catalog = adobe_link.host_catalog(host.app)
             except adobe_link.LinkHostError as exc:
                 row["tools_error"] = {"code": exc.code, "message": str(exc)}
+                notes[host.app] = " (its tool list failed)"
+                failed = True
+            else:
+                part, notes[host.app], budget = _host_tools(catalog, include_tools, wanted, budget)
+                row.update(part)
+                parts.append(part)
         rows.append(row)
     live = [h for h in hosts if h.connected]
     active = next((h.id for h in hosts if h.active), None)
     if live:
         summary = "Connected: %s%s." % (", ".join(
-            "%s %s%s" % (h.label, h.app_version or "",
-                         " (%d tools)" % counts[h.app] if h.app in counts else "") for h in live),
+            "%s %s%s" % (h.label, h.app_version or "", notes.get(h.app, "")) for h in live),
             "; active: %s" % next(h.label for h in hosts if h.active) if active else "")
+        unknown = [n for n in wanted if parts and not failed and all(n in p.get("unknown_tools", ()) for p in parts)]
+        deferred = [n for p in parts for n in p.get("deferred_tools", ())]
+        if unknown:
+            summary += " No connected app has %s." % ", ".join(unknown)
+        if deferred:
+            summary += " Too long for one reply: ask again with tools=[%s]." % ", ".join(deferred)
     else:
         summary = "No Adobe app is connected. " + adobe_link.connect_hint("aftereffects")
     return ok(summary, hosts=rows, active=active)
@@ -160,9 +236,10 @@ def list_link_hosts(include_tools=False):
     schema=obj({
         "host": enum(list(HOSTS), "Which Adobe app: aftereffects (ae_* tools) or premiere (premiere_* tools)."),
         "tool": string("The host tool to run, e.g. 'ae_get_state', 'ae_add_text', 'premiere_get_sequence'. "
-                       "Host tools list themselves through the host (Zenvi Link)."),
-        "arguments": mapping("The host tool's arguments as an object, exactly as its schema describes "
-                             "(times in seconds, ids from earlier receipts). {} for none."),
+                       "list_link_hosts_tool(include_tools=true) lists an app's tools."),
+        "arguments": mapping("The host tool's arguments as an object, exactly as its inputSchema describes "
+                             "(list_link_hosts_tool with tools=[name] gives it; times in seconds, ids from earlier "
+                             "receipts). {} for none."),
     }, required=["host", "tool"]),
     background_safe=True,
     covers=("handoff.call_host",),
