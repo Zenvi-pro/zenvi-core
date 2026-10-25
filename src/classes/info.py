@@ -423,7 +423,6 @@ try:
     LIST_GRID_SIZE = LIST_ICON_SIZE + QSize(5, 25)
     TREE_ICON_SIZE = QSize(75, 49)
     EMOJI_ICON_SIZE = QSize(75, 75)
-    EMOJI_GRID_SIZE = EMOJI_ICON_SIZE + QSize(5, 25)
     # Runtime emoji selections
     EMOJI_FILES = {}
     EMOJI_PATH = ""

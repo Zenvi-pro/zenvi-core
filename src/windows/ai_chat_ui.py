@@ -24,6 +24,7 @@ from classes.api_client import get_backend_client
 from classes.tool_handlers import humanize_tool_name
 from windows.agent_runners import CLI_RUNNERS
 from windows.embedded_web import web_embed_backend
+from themes.cosmic.tokens import TOKENS
 
 # Theme colors for chat CEP UI (match theme QSS). Keys match ThemeName.value.
 # Bloomberg Light: high information density, sharp edges, accent #6366F1.
@@ -33,47 +34,67 @@ CHAT_THEME_COLORS = {
         "chat-preamble-bg": "#F1F5F9",
         "chat-text": "#0F172A",
         "chat-border": "#E2E8F0",
+        "chat-border-strong": "#E2E8F0",
         "chat-input-bg": "#FFFFFF",
         "chat-button-bg": "#F1F5F9",
-        "chat-button-hover-bg": "#6366F1",
         "chat-accent": "#6366F1",
+        "chat-primary": "#6366F1",
+        "chat-primary-text": "#FFFFFF",
         "chat-code-bg": "#E2E8F0",
         "chat-placeholder": "rgba(15, 23, 42, 0.5)",
+        "chat-surface": "#F1F5F9",
+        "chat-muted": "#475569",
+        "accent-soft": "rgba(99, 102, 241, 0.14)",
     },
     "Humanity: Dark": {
         "chat-bg": "#191919",
-        "chat-preamble-bg": "#252525",
+        "chat-preamble-bg": "#26282c",
         "chat-text": "#ffffff",
         "chat-border": "#404040",
-        "chat-input-bg": "#252525",
+        "chat-border-strong": "#404040",
+        "chat-input-bg": "#26282c",
         "chat-button-bg": "#353535",
-        "chat-button-hover-bg": "#2a82da",
         "chat-accent": "#6366F1",
+        "chat-primary": "#6366F1",
+        "chat-primary-text": "#FFFFFF",
         "chat-placeholder": "rgba(255, 255, 255, 0.5)",
+        "chat-surface": "#26282c",
+        "chat-muted": "#b0b0b0",
+        "chat-code-bg": "#2a2a2a",
+        "accent-soft": "rgba(99, 102, 241, 0.18)",
     },
     "Retro": {
         "chat-bg": "#f0f0f0",
         "chat-preamble-bg": "#e8e8e8",
-        "chat-text": "#333333",
+        "chat-text": "#35383d",
         "chat-border": "#ccc",
+        "chat-border-strong": "#ccc",
         "chat-input-bg": "#ffffff",
         "chat-button-bg": "#e8e8e8",
-        "chat-button-hover-bg": "#217dd4",
         "chat-accent": "#217dd4",
+        "chat-primary": "#217dd4",
+        "chat-primary-text": "#FFFFFF",
         "chat-placeholder": "rgba(51, 51, 51, 0.5)",
+        "chat-surface": "#e8e8e8",
+        "chat-muted": "#5f626a",
+        "chat-code-bg": "#e8e8e8",
+        "accent-soft": "rgba(33, 125, 212, 0.14)",
     },
     "Cosmic Dusk": {
-        "chat-bg":              "#161616",
-        "chat-surface":         "#1e1e1e",
-        "chat-text":            "#d4d4d4",
-        "chat-muted":           "#6b7280",
-        "chat-placeholder":     "#6b7280",
-        "chat-border":          "#2a2a2a",
-        "chat-input-bg":        "#1a1a1a",
-        "chat-button-bg":       "#252525",
-        "chat-button-hover-bg": "#2e2e2e",
-        "chat-accent":          "#4d9cf6",
-        "chat-code-bg":         "#252525",
+        "chat-bg": TOKENS["surface"],
+        "chat-surface": TOKENS["raised"],
+        "chat-text": TOKENS["text"],
+        "chat-muted": TOKENS["text_muted"],
+        "chat-placeholder": TOKENS["text_faint"],
+        "chat-border": TOKENS["line"],
+        "chat-border-strong": TOKENS["line_strong"],
+        "chat-input-bg": TOKENS["sunken"],
+        "chat-button-bg": TOKENS["hover"],
+        "chat-accent": TOKENS["accent"],
+        "chat-primary": TOKENS["primary"],
+        "chat-primary-text": TOKENS["primary_text"],
+        "chat-code-bg": TOKENS["raised"],
+        "accent-soft": TOKENS["accent_soft"],
     },
 }
 
@@ -164,7 +185,7 @@ def _markdown_to_html(text: str) -> str:
     # Wrap in a div and style code blocks so they don't override theme colors
     # Use 'currentColor' so code inherits the widget's text color
     style = (
-        "pre, code { background: rgba(0,0,0,0.15); padding: 4px 6px; border-radius: 0; "
+        "pre, code { background: " + TOKENS["raised"] + "; padding: 4px 6px; border-radius: 0; "
         "font-family: monospace; color: inherit; } "
         "pre { margin: 8px 0; overflow-x: auto; } "
         "pre code { padding: 0; background: transparent; } "
@@ -349,7 +370,7 @@ class WidgetToolBlock(QFrame):
         mono.setFamily("Consolas")
         mono.setPointSize(9)
         self._body.setFont(mono)
-        self._body.setStyleSheet("background: #1a1a1a; color: #c8c8c8; border: none;")
+        self._body.setStyleSheet(f"background: {TOKENS['sunken']}; color: {TOKENS['text']}; border: none;")
         outer.addWidget(self._body)
 
     def _refresh_header(self):
@@ -2272,7 +2293,7 @@ class AIChatWindow(QDockWidget):
         if is_assistant:
             role_label = f'<span style="font-weight: bold;">{html.escape(role_display)}</span><br/>'
         else:
-            role_style = "color: #3B82F6;" if role == "user" else ""
+            role_style = f"color: {TOKENS['text_muted']};" if role == "user" else ""
             role_label = (
                 f'<span style="font-weight: bold; {role_style}">{html.escape(role_display)}</span><br/>'
             )
@@ -2345,7 +2366,7 @@ class AIChatWindow(QDockWidget):
             tab_btn.setStyleSheet(
                 "text-align: left; background: transparent; border: 1px solid transparent;"
                 if sid != self._active_sid else
-                "text-align: left; background: rgba(77,156,246,0.14); border: 1px solid rgba(77,156,246,0.35);"
+                f"text-align: left; background: {TOKENS['raised']}; border: 1px solid {TOKENS['line']};"
             )
             tab_btn.clicked.connect(lambda _=False, s=sid: self._switch_session(s))
             layout.addWidget(tab_btn)
@@ -2355,21 +2376,21 @@ class AIChatWindow(QDockWidget):
                 close_btn.setObjectName("chatWidgetTabCloseBtn")
                 close_btn.setAutoRaise(True)
                 close_btn.setText("x")
-                close_btn.setStyleSheet("border: none; color: #6b7280;")
+                close_btn.setStyleSheet(f"border: none; color: {TOKENS['text_faint']};")
                 close_btn.clicked.connect(lambda _=False, s=sid: self._close_session(s))
                 layout.addWidget(close_btn)
 
         hist_btn = QPushButton("History")
         hist_btn.setObjectName("chatWidgetTabHistoryBtn")
         hist_btn.setFlat(True)
-        hist_btn.setStyleSheet("border: 1px solid rgba(255,255,255,0.08);")
+        hist_btn.setStyleSheet(f"border: 1px solid {TOKENS['line']};")
         hist_btn.clicked.connect(lambda _=False, b=hist_btn: self._show_closed_session_menu(b))
         layout.addWidget(hist_btn)
 
         add_btn = QPushButton("+")
         add_btn.setObjectName("chatWidgetTabAddBtn")
         add_btn.setFlat(True)
-        add_btn.setStyleSheet("border: 1px solid rgba(255,255,255,0.08);")
+        add_btn.setStyleSheet(f"border: 1px solid {TOKENS['line']};")
         add_btn.clicked.connect(
             lambda _=False: self._create_session(
                 self.model_combo.currentData() if getattr(self, "model_combo", None) else "",
@@ -3028,16 +3049,16 @@ class AIChatWindow(QDockWidget):
 
         inject_js = (
             "var r = document.documentElement.style;"
-            "r.setProperty('--chat-bg',       '#0d0d0d');"
-            "r.setProperty('--chat-surface',  '#0d0d0d');"
-            "r.setProperty('--chat-input-bg', '#171717');"
-            "r.setProperty('--chat-border',   'transparent');"
-            "document.body.style.background = '#0d0d0d';"
+            "r.setProperty('--chat-bg',       '%(surface)s');"
+            "r.setProperty('--chat-surface',  '%(raised)s');"
+            "r.setProperty('--chat-input-bg', '%(sunken)s');"
+            "r.setProperty('--chat-border',   '%(line)s');"
+            "document.body.style.background = 'var(--chat-bg)';"
             "var msgs = document.getElementById('chat-messages');"
-            "if (msgs) { msgs.style.background = '#0d0d0d'; msgs.style.border = 'none'; }"
+            "if (msgs) { msgs.style.background = 'transparent'; msgs.style.border = 'none'; }"
             "var preamble = document.querySelector('.chat-container > div');"
-            "if (preamble) { preamble.style.background = '#0d0d0d'; preamble.style.border = 'none'; }"
-        )
+            "if (preamble) { preamble.style.background = 'transparent'; preamble.style.border = 'none'; }"
+        ) % TOKENS
 
         self._chat_view = ChatWebEngineView(chat_ui_dir, self)
         self._chat_view.setObjectName("AIChatWindowContents")
@@ -3095,7 +3116,7 @@ class AIChatWindow(QDockWidget):
             self._chat_view = QWebView(self)
         self._chat_view.setObjectName("AIChatWindowContents")
         pal = self._chat_view.palette()
-        pal.setColor(self._chat_view.backgroundRole(), QColor(13, 13, 13))
+        pal.setColor(self._chat_view.backgroundRole(), QColor(TOKENS["surface"]))
         self._chat_view.setAutoFillBackground(True)
         self._chat_view.setPalette(pal)
 
@@ -3110,16 +3131,16 @@ class AIChatWindow(QDockWidget):
 
         inject_js = (
             "var r = document.documentElement.style;"
-            "r.setProperty('--chat-bg',       '#0d0d0d');"
-            "r.setProperty('--chat-surface',  '#0d0d0d');"
-            "r.setProperty('--chat-input-bg', '#171717');"
-            "r.setProperty('--chat-border',   'transparent');"
-            "document.body.style.background = '#0d0d0d';"
+            "r.setProperty('--chat-bg',       '%(surface)s');"
+            "r.setProperty('--chat-surface',  '%(raised)s');"
+            "r.setProperty('--chat-input-bg', '%(sunken)s');"
+            "r.setProperty('--chat-border',   '%(line)s');"
+            "document.body.style.background = 'var(--chat-bg)';"
             "var msgs = document.getElementById('chat-messages');"
-            "if (msgs) { msgs.style.background = '#0d0d0d'; msgs.style.border = 'none'; }"
+            "if (msgs) { msgs.style.background = 'transparent'; msgs.style.border = 'none'; }"
             "var preamble = document.querySelector('.chat-container > div');"
-            "if (preamble) { preamble.style.background = '#0d0d0d'; preamble.style.border = 'none'; }"
-        )
+            "if (preamble) { preamble.style.background = 'transparent'; preamble.style.border = 'none'; }"
+        ) % TOKENS
 
         def on_load_finished(ok):
             if ok:

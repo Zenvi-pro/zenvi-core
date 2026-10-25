@@ -40,81 +40,36 @@ from qt_api import (
 
 from classes.auth_manager import AuthManager, AuthError, confirmation_code
 from classes import info
+from themes.cosmic.tokens import resolve
 from classes.qt_main_thread import invoke_on_gui
 
 log = logging.getLogger(__name__)
 
-_DARK = "#0A0A0A"
-_SURFACE = "#141414"
-_BORDER = "rgba(255,255,255,0.09)"
-_TEXT = "#ffffff"
-_MUTED = "rgba(255,255,255,0.38)"
-_ACCENT = "#7C6FF7"
-
-_DIALOG_QSS = f"""
-QDialog {{
-    background-color: {_DARK};
-}}
-QLabel {{
+_DIALOG_QSS = resolve("""
+QPushButton#ghost {
     background: transparent;
     border: none;
-    color: {_TEXT};
-}}
-QLineEdit {{
-    background: {_SURFACE};
-    border: 1px solid {_BORDER};
-    border-radius: 8px;
-    color: {_TEXT};
-    font-size: 13px;
-    padding: 8px 10px;
-    selection-background-color: {_ACCENT};
-}}
-QLineEdit:focus {{
-    border-color: {_ACCENT};
-}}
-QPushButton#primary {{
-    background: {_ACCENT};
-    border: none;
-    border-radius: 8px;
-    color: {_TEXT};
-    font-size: 13px;
-    font-weight: 600;
-    padding: 9px 0;
-}}
-QPushButton#primary:hover {{
-    background: #8D88F8;
-}}
-QPushButton#primary:pressed {{
-    background: #6B65E8;
-}}
-QPushButton#primary:disabled {{
-    background: rgba(124,111,247,0.35);
-    color: rgba(255,255,255,0.35);
-}}
-QPushButton#ghost {{
-    background: transparent;
-    border: 1px solid {_BORDER};
-    border-radius: 8px;
-    color: {_MUTED};
+    border-radius: 6px;
+    color: {text_muted};
     font-size: 12px;
     padding: 7px 0;
-}}
-QPushButton#ghost:hover {{
-    border-color: rgba(255,255,255,0.2);
-    color: rgba(255,255,255,0.7);
-}}
-QPushButton#link {{
+}
+QPushButton#ghost:hover {
+    background: {hover};
+    color: {text};
+}
+QPushButton#link {
     background: transparent;
     border: none;
-    color: {_MUTED};
-    font-size: 11px;
+    color: {text_muted};
+    font-size: 12px;
     padding: 0;
     text-decoration: underline;
-}}
-QPushButton#link:hover {{
-    color: rgba(255,255,255,0.65);
-}}
-"""
+}
+QPushButton#link:hover {
+    color: {text};
+}
+""")
 
 # ── Background workers ──────────────────────────────────────────────────────
 
@@ -207,7 +162,7 @@ class LoginWindow(QDialog):
 
         wordmark = QLabel("Zenvi")
         wordmark.setAlignment(Qt.AlignCenter)
-        wordmark.setStyleSheet("font-size: 22px; font-weight: 700;")
+        wordmark.setStyleSheet(resolve("font-size: 22px; font-weight: 600;"))
         layout.addWidget(wordmark)
         return header
 
@@ -231,7 +186,7 @@ class LoginWindow(QDialog):
 
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet(f"color: {_BORDER}; margin: 14px 0 18px 0;")
+        sep.setStyleSheet(resolve("margin: 14px 0 18px 0;"))
         layout.addWidget(sep)
 
         self._browser_status = QLabel("Opening browser…")
@@ -240,11 +195,13 @@ class LoginWindow(QDialog):
         layout.addWidget(self._browser_status)
 
         self._browser_sub = QLabel(
-            "Complete sign-in in your browser.\nThis window will close automatically."
+            "Open the Authorize page in your browser.\n"
+            "If you're already signed in, just click Continue.\n"
+            "This window will close automatically."
         )
         self._browser_sub.setAlignment(Qt.AlignCenter)
         self._browser_sub.setWordWrap(True)
-        self._browser_sub.setStyleSheet(f"font-size: 12px; color: {_MUTED}; line-height: 1.7;")
+        self._browser_sub.setStyleSheet(resolve("font-size: 12px; color: {text_muted};"))
         layout.addWidget(self._browser_sub)
 
         layout.addSpacing(14)
@@ -255,13 +212,12 @@ class LoginWindow(QDialog):
         self._url_label = QLineEdit()
         self._url_label.setReadOnly(True)
         self._url_label.setPlaceholderText("Login URL…")
-        self._url_label.setStyleSheet(
-            f"background: {_SURFACE}; border: 1px solid {_BORDER}; border-radius: 6px;"
-            f"color: {_MUTED}; font-size: 10px; padding: 5px 8px;"
-        )
+        self._url_label.setStyleSheet(resolve(
+            "background: {sunken}; border: 1px solid {line_strong}; border-radius: 6px;"
+            "color: {text_muted}; font-size: 11px; padding: 5px 8px;"
+        ))
         url_row.addWidget(self._url_label)
         self._copy_btn = QPushButton("Copy")
-        self._copy_btn.setObjectName("ghost")
         self._copy_btn.setFixedWidth(52)
         self._copy_btn.clicked.connect(self._copy_url)
         url_row.addWidget(self._copy_btn)
@@ -306,7 +262,7 @@ class LoginWindow(QDialog):
 
         self._pw_subtitle = QLabel("Sign in to your account")
         self._pw_subtitle.setAlignment(Qt.AlignCenter)
-        self._pw_subtitle.setStyleSheet(f"font-size: 12px; color: {_MUTED}; margin-bottom: 24px;")
+        self._pw_subtitle.setStyleSheet(resolve("font-size: 12px; color: {text_muted}; margin-bottom: 24px;"))
         layout.addWidget(self._pw_subtitle)
 
         self._email_input = QLineEdit()
@@ -325,16 +281,16 @@ class LoginWindow(QDialog):
         self._pw_error = QLabel("")
         self._pw_error.setAlignment(Qt.AlignCenter)
         self._pw_error.setWordWrap(True)
-        self._pw_error.setStyleSheet(
-            "font-size: 12px; color: #FF6B6B; background: rgba(255,107,107,0.08);"
+        self._pw_error.setStyleSheet(resolve(
+            "font-size: 12px; color: {danger}; background: {raised}; border: 1px solid {line_strong};"
             "border-radius: 6px; padding: 6px 8px; min-height: 0px;"
-        )
+        ))
         self._pw_error.hide()
         layout.addWidget(self._pw_error)
         layout.addSpacing(10)
 
         self._pw_submit_btn = QPushButton("Sign in")
-        self._pw_submit_btn.setObjectName("primary")
+        self._pw_submit_btn.setObjectName("acceptButton")
         self._pw_submit_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._pw_submit_btn.clicked.connect(self._on_password_submit)
         layout.addWidget(self._pw_submit_btn)
@@ -385,7 +341,9 @@ class LoginWindow(QDialog):
         self._url_row.show()
         self._browser_status.setText("Opening browser…")
         self._browser_sub.setText(
-            "Complete sign-in in your browser.\nThis window will close automatically."
+            "Open the Authorize page in your browser.\n"
+            "If you're already signed in, just click Continue.\n"
+            "This window will close automatically."
         )
         self._url_label.clear()
         self.adjustSize()
@@ -414,10 +372,11 @@ class LoginWindow(QDialog):
 
     def _show_waiting(self) -> None:
         if self._browser_poll is not None:
-            self._browser_status.setText("Waiting for authentication…")
+            self._browser_status.setText("Waiting for browser…")
             self._browser_sub.setText(
-                "Approve the sign-in in your browser if it shows the code\n"
-                f"{self._code}\nThis window will close automatically."
+                "Open the Authorize page in your browser.\n"
+                "If you're already signed in, just click Continue.\n"
+                f"The code is {self._code}. This window will close automatically."
             )
 
     @pyqtSlot()
