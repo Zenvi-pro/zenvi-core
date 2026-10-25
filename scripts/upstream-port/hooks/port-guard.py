@@ -8,8 +8,8 @@ in this repo the hook exits immediately and allows everything.
 What it blocks for port agents:
   * any reference to a non-personal git identity
   * pushing anything other than the agent's own jashan/<feature> branch, force pushes
-    (except --force-with-lease of that same branch), pushing to develop
-  * checking out / resetting / deleting develop, removing worktrees
+    (except --force-with-lease of that same branch), pushing to main
+  * checking out / resetting / deleting main, removing worktrees
   * git add -A / --all / . (adds must name paths: keeps .venv, .port-env out)
   * commits carrying Co-Authored-By trailers or a foreign --author
   * pip installs into the shared venv (PORT_ALLOW_PIP=1 lifts this)
@@ -31,7 +31,7 @@ if not FEATURE:
 
 PORT_ROOT = os.path.realpath(os.path.expanduser(os.environ.get("PORT_ROOT", "~/Projects/zenvi-worktrees")))
 MAIN_REPO = os.path.realpath(os.path.expanduser(os.environ.get("PORT_MAIN_REPO", "~/Projects/zenvi")))
-BASE_REF = os.environ.get("PORT_BASE_REF", "origin/develop")
+BASE_REF = os.environ.get("PORT_BASE_REF", "origin/main")
 OWN_BRANCH = "jashan/" + FEATURE
 PERSONAL_NAME = "Jashan Pratap Singh"
 ALLOWED_EMAILS = {
@@ -146,8 +146,8 @@ def main():
         if re.search(r"\bgit\s+(-C\s+\S+\s+)?push\b", seg):
             if re.search(r"\s(-f|--force)(\s|$)", seg) and "--force-with-lease" not in seg:
                 deny("force push is blocked; use --force-with-lease on your own branch only.")
-            if re.search(r"\bdevelop\b|\breleases\b|\bmain\b", seg):
-                deny("never push to develop/releases/main. Push only %s." % OWN_BRANCH)
+            if re.search(r"\bmain\b|\breleases\b|\bdevelop\b", seg):
+                deny("never push to main/releases/develop. Push only %s." % OWN_BRANCH)
             if "--all" in w or "--mirror" in w or "--tags" in w:
                 deny("push only %s, not --all/--tags/--mirror." % OWN_BRANCH)
             refs = [x for x in w[w.index("push") + 1:] if not x.startswith("-")] if "push" in w else []
@@ -158,10 +158,10 @@ def main():
                 if dst.startswith("jashan/") and dst != OWN_BRANCH:
                     deny("push target '%s' belongs to another feature (yours is %s)." % (r, OWN_BRANCH))
             needs_author_check = True
-        if re.search(r"\bgit\s+(checkout|switch)\s+(?!.*\s--\s)", seg) and re.search(r"\s(origin/)?(develop|releases|main)(\s|$)", seg) and " -- " not in seg and "-b " not in seg and "-c " not in seg:
-            deny("never check out develop/releases/main in a port worktree; stay on %s." % OWN_BRANCH)
-        if re.search(r"\bgit\s+branch\s+(-D|-d|-f|--force|-M|-m)\s+.*\b(develop|releases|main)\b", seg):
-            deny("never delete/move/force develop, releases or main.")
+        if re.search(r"\bgit\s+(checkout|switch)\s+(?!.*\s--\s)", seg) and re.search(r"\s(origin/)?(main|releases|develop)(\s|$)", seg) and " -- " not in seg and "-b " not in seg and "-c " not in seg:
+            deny("never check out main/releases/develop in a port worktree; stay on %s." % OWN_BRANCH)
+        if re.search(r"\bgit\s+branch\s+(-D|-d|-f|--force|-M|-m)\s+.*\b(main|releases|develop)\b", seg):
+            deny("never delete/move/force main, releases or develop.")
         if re.search(r"\bgit\s+worktree\s+(remove|prune|move)\b", seg):
             deny("worktree removal is a human task (scripts/upstream-port/shutdown.sh).")
         if re.search(r"\bgit\s+add\b", seg) and (re.search(r"\s(-A|--all)(\s|$)", seg) or re.search(r"\bgit\s+add\s+\.(\s|$)", seg)):
@@ -172,13 +172,13 @@ def main():
             m = re.search(r"--author[= ]\s*[\"']?([^\"']+)", seg)
             if m and not (PERSONAL_NAME in m.group(1) and any(e in m.group(1) for e in ALLOWED_EMAILS)):
                 deny("--author must be Jashan Pratap Singh with an allowed email.")
-        if re.search(r"\bgit\s+(reset\s+--hard|rebase|filter-repo|filter-branch)\b", seg) and re.search(r"\s(origin/)?(develop|releases|main)(\s|$)", seg):
-            # rebasing ONTO develop is fine; rewriting develop is not. Allow when we're on our own branch.
+        if re.search(r"\bgit\s+(reset\s+--hard|rebase|filter-repo|filter-branch)\b", seg) and re.search(r"\s(origin/)?(main|releases|develop)(\s|$)", seg):
+            # rebasing ONTO main is fine; rewriting main is not. Allow when we're on our own branch.
             try:
                 cur = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True, timeout=10).stdout.strip()
             except Exception:
                 cur = ""
-            if cur in ("develop", "releases", "main"):
+            if cur in ("main", "releases", "develop"):
                 deny("HEAD is %s; port worktrees must stay on %s." % (cur, OWN_BRANCH))
     if needs_author_check:
         check_authorship()

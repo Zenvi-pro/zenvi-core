@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # new-worktree.sh <feature> [--base <ref>]
-# Creates $PORT_ROOT/<feature> on branch jashan/<feature> cut from the manifest base (origin/develop or the
+# Creates $PORT_ROOT/<feature> on branch jashan/<feature> cut from the manifest base (origin/main or the
 # last unmerged dependency's branch), then bootstraps it: shared .venv symlink, .env copy, identity, .port-env.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -50,7 +50,7 @@ export PORT_GUARD="$PORT_GUARD"
 export PORT_SETTINGS="$PORT_SETTINGS"
 export PORT_BRANCH="$BRANCH"
 export PORT_BASE_BRANCH="$PR_BASE"
-export PORT_BASE_REF="origin/develop"
+export PORT_BASE_REF="origin/main"
 export ZENVI_DEPS="$DEPS_PREFIX"
 export ZENVI_OPENSHOT_INSTALL="$DEPS_PREFIX"
 export PORT_LIBOPENSHOT_TAG="$(mf tag "$FEATURE")"
