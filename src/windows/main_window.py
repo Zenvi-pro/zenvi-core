@@ -256,10 +256,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             # that never happened, and sends it through libopenshot_crash_recovery().
             self.destroy_lock_file()
 
-        # If this shutdown was triggered by "Restart to Apply Update", spawn a
-        # new instance now (after the lock file is gone, so the fresh process
-        # doesn't mistake the clean exit for a crash) — it will apply the
-        # staged update at startup, before this old process has fully exited.
+        # If this shutdown was triggered by "Restart to Update", start the
+        # installer helper now (after the lock file is gone, so the reopened
+        # Zenvi doesn't mistake this clean exit for a crash). It waits for
+        # this process to exit before installing, then opens Zenvi again.
         if getattr(self, "_restart_for_update", False):
             self._relaunch_for_update()
 
@@ -272,6 +272,15 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         """
         # Log the exit routine
         log.info('---------------- Shutting down -----------------')
+
+        # A launch arriving now must start its own window rather than hand its
+        # files to this one on its way out (it would answer, then vanish).
+        try:
+            server = getattr(app, "instance_server", None)
+            if server is not None:
+                server.close()
+        except Exception:
+            log.debug("Failed to close the single-instance server", exc_info=True)
 
         # Stop answering external agents first: the MCP discovery file goes
         # away before the editor they would drive starts tearing down.
@@ -656,9 +665,26 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 sleep(0.25)
 
     def _relaunch_for_update(self):
-        """Spawn a new instance of the app so the update staged by AutoUpdater
-        gets applied (launch.py applies pending updates at startup, before
-        this old process needs to have fully exited)."""
+        """Hand the update staged by AutoUpdater to the installer helper.
+
+        The helper waits for this process to exit, installs (with a rollback)
+        and opens Zenvi again -- the new version, or this one if installing
+        failed. Starting a second Zenvi here instead, as this used to, ran it
+        alongside this one's teardown while it swapped the app on disk.
+        """
+        if getattr(sys, "frozen", False):
+            try:
+                from classes import update_installer
+                if update_installer.apply_pending_update(wait_pid=os.getpid(), user_requested=True):
+                    log.info("Update helper started; it installs the update once Zenvi has quit")
+                    return
+                log.warning("No update could be handed to the installer; restarting as is")
+            except Exception:
+                log.error("Failed to start the update helper; restarting as is", exc_info=True)
+        self._relaunch_app()
+
+    def _relaunch_app(self):
+        """Start a new Zenvi (nothing to install): this one is quitting."""
         import subprocess
 
         try:
@@ -676,14 +702,18 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
                 if bundle and sys.platform == "darwin":
                     subprocess.Popen(["open", "-n", bundle])
+                elif os.environ.get("APPIMAGE"):
+                    # sys.executable lives in this AppImage's mount, which
+                    # disappears when this process exits.
+                    subprocess.Popen([os.environ["APPIMAGE"]], start_new_session=True)
                 else:
                     subprocess.Popen([sys.executable])
             else:
                 # Running from source (e.g. via run.sh)
                 subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:])
-            log.info("Spawned new Zenvi instance to apply staged update")
+            log.info("Spawned a new Zenvi instance")
         except Exception:
-            log.error("Failed to relaunch Zenvi for update", exc_info=True)
+            log.error("Failed to relaunch Zenvi", exc_info=True)
 
     def actionNew_trigger(self):
 
@@ -1154,7 +1184,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
             # Ensure that playhead, preview thread, and cache all agree that
             # Frame 1 is being previewed
-            self.preview_thread.player.Seek(1)
+            # Queued to the preview thread: Seek clears the player cache under
+            # the timeline lock, which froze the GUI while frames decoded.
+            self.SeekSignal.emit(1)
             self.movePlayhead(1)
             if loaded_project:
                 self._pending_project_open_refresh = True
@@ -4418,11 +4450,6 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.filesFilter.setObjectName("filesFilter")
         self.filesFilter.setPlaceholderText(_("Search files, footage & music…"))
         self.filesFilter.setClearButtonEnabled(True)
-        self.filesFilter.setStyleSheet(
-            "QLineEdit#filesFilter { background: #1a1a1a; color: #d4d4d4;"
-            " border: 1px solid rgba(255,255,255,0.09); border-radius: 15px;"
-            " padding: 7px 14px; font-size: 12px; }"
-            "QLineEdit#filesFilter:focus { border: 1px solid #4d9cf6; }")
         self.filesToolbar.addWidget(self.filesFilter)
         self.tabFiles.layout().insertWidget(0, self.filesToolbar)
         # Debounce stock searches so we don't hit the network on every keystroke.
@@ -4491,6 +4518,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Add Video Preview toolbar
         self.captionToolbar = QToolBar(_("Caption Toolbar"))
+        self.captionToolbar.setObjectName("captionToolbar")
 
         # Add Caption text editor widget
         self.captionTextEdit = QTextEdit()
@@ -4530,6 +4558,27 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Add timeline toolbar to web frame
         self.frameWeb.addWidget(self.timelineToolbar)
 
+    def zenvi_session_ended(self):
+        """The auth server rejected the stored sign-in (it was revoked or expired).
+
+        Explains and waits for a click before opening the browser, and keeps
+        the editor open if the user would rather sign in later.
+        """
+        if getattr(self, "_session_ended_prompt_open", False) or self.shutting_down:
+            return
+        self._session_ended_prompt_open = True
+        try:
+            from windows.login_window import LoginWindow
+            login_dlg = LoginWindow(
+                parent=None,
+                auto_open_browser=False,
+                message="Your Zenvi sign-in has ended",
+            )
+            if login_dlg.exec_() == LoginWindow.Accepted and getattr(self, "dockAIChat", None):
+                self.dockAIChat.refresh_credits_for_account()
+        finally:
+            self._session_ended_prompt_open = False
+
     def logout_clicked(self, checked=False):
         """Sign the current user out of their Zenvi account."""
         reply = QMessageBox.question(
@@ -4545,10 +4594,12 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         from classes.auth_manager import AuthManager
         AuthManager.instance().clear_session()
 
-        # Hide main window and re-show login dialog
+        # Hide main window and re-show login dialog. The browser opens only
+        # when asked: it may still be signed in to the account just left.
         self.hide()
         from windows.login_window import LoginWindow
-        login_dlg = LoginWindow(parent=None)
+        login_dlg = LoginWindow(parent=None, auto_open_browser=False,
+                                message="You're signed out of Zenvi")
         result = login_dlg.exec_()
         if result == LoginWindow.Accepted:
             self.show()
@@ -4649,7 +4700,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # The manifest carries the size, so a session that finds an update
         # staged by a previous run can still report how large it is
         manifest = get_update_manifest() or {}
-        self.update_status_button.set_ready(version, manifest.get("size", 0))
+        from classes import update_installer
+        self.update_status_button.set_ready(
+            version, manifest.get("size", 0), note=update_installer.last_failure(version))
         self._ensure_update_button()
         self._sync_update_panel()
 
@@ -6243,7 +6296,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self._pending_preview_size = None
         self._scope_timer = QTimer(self)
         self._scope_timer.setSingleShot(True)
-        self._scope_timer.setInterval(0)   # latest-wins worker path handles stale frame dropping
+        self._scope_timer.setInterval(66)  # ~15 Hz; scopes analysed every played frame cost a second frame fetch
         self._scope_timer.timeout.connect(self._run_scope_analysis)
         self.preview_thread.position_changed.connect(self._on_scope_frame)
         self.SeekSignal.connect(self._on_scope_seek)

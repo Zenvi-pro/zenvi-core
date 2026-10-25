@@ -26,6 +26,7 @@ from qt_api import (
 )
 
 from classes.logger import log
+from themes.cosmic.tokens import TOKENS
 from windows.agent_runners import CLI_RUNNERS
 
 
@@ -42,20 +43,20 @@ DETECT_THROTTLE_S = 2.0
 REOPEN_GUARD_S = 0.15
 
 # ── Cosmic dark palette ───────────────────────────────────────────────────
-BG_PANEL = "#161616"
-BG_ROW_HOVER = "#1f1f1f"
-BG_ROW_SELECTED = "#202631"
-TEXT = "#e8e8e8"
-TEXT_DIM = "#8a8a8a"
-BORDER = "rgba(255, 255, 255, 0.07)"
-BORDER_HI = "rgba(255, 255, 255, 0.13)"
-ACCENT = "#4d9cf6"
-DANGER = "#ef4444"
+BG_PANEL = TOKENS["raised"]
+BG_ROW_HOVER = TOKENS["hover"]
+BG_ROW_SELECTED = TOKENS["accent_soft"]
+TEXT = TOKENS["text"]
+TEXT_DIM = TOKENS["text_muted"]
+BORDER = TOKENS["line"]
+BORDER_HI = TOKENS["line_strong"]
+ACCENT = TOKENS["accent"]
+DANGER = TOKENS["danger"]
 
 # Status vocabulary, shared with the toolbar button's tooltip.
-COLOR_READY = "#22c55e"     # installed and registered with Zenvi's MCP server
-COLOR_PARTIAL = "#f59e0b"   # installed, not connected yet
-COLOR_MISSING = "#6b7280"   # not installed / not probed yet
+COLOR_READY = TOKENS["success"]     # installed and registered with Zenvi's MCP server
+COLOR_PARTIAL = TOKENS["text_muted"]   # installed, not connected yet
+COLOR_MISSING = TOKENS["text_faint"]   # not installed / not probed yet
 
 CLI_BINARIES = {backend: runner.CLI_NAME for backend, runner in CLI_RUNNERS.items()}
 
@@ -109,7 +110,7 @@ def _circle_pixmap(diameter, fill, ring=None, inner=None):
 def _radio_pixmap(selected):
     if selected:
         return _circle_pixmap(RADIO_PX, None, ring=ACCENT, inner=ACCENT)
-    return _circle_pixmap(RADIO_PX, None, ring="#5a5a5a")
+    return _circle_pixmap(RADIO_PX, None, ring=TOKENS["text_faint"])
 
 
 def _dot_pixmap(color):
@@ -336,15 +337,6 @@ class AgentPanel(QFrame):
     def _chat(self):
         return getattr(self.window, "dockAIChat", None)
 
-    def _has_models(self, backend_id):
-        """Whether the chat's model pill offers anything for *backend_id*."""
-        try:
-            from windows.agent_runners import models_for_backend
-            return bool(models_for_backend(backend_id))
-        except Exception:
-            log.debug("model lineup unavailable", exc_info=True)
-            return False
-
     def _state_for(self, backend_id, detected):
         """(color, word, desc, connect, danger, tooltip) for one backend."""
         if backend_id not in CLI_BINARIES:
@@ -378,10 +370,11 @@ class AgentPanel(QFrame):
                     % binary)
 
         version = _format_version(detected.get("version"))
-        if backend_id == "claude_code" and detected.get("logged_in") is False:
+        # Only a CLI the app can sign in reports logged_in (CLI_LOGINS).
+        if detected.get("logged_in") is False:
             return (COLOR_PARTIAL, self._tr("needs sign-in"), version,
                     (self._tr("Sign in"), True), False,
-                    self._tr("%s's Anthropic login expired. Sign in again to continue.")
+                    self._tr("%s's login expired. Sign in again to continue.")
                     % name)
         if not detected.get("registered"):
             return (COLOR_PARTIAL, self._tr("not connected"), version,
@@ -420,10 +413,7 @@ class AgentPanel(QFrame):
                     backend_id, status.get(backend_id))
                 row.set_state(backend_id == active, color, word, desc, connect, danger, tip)
 
-            if active in CLI_BINARIES and not self._has_models(active):
-                self.footer.setText(self._tr("This agent uses the model from its own config"))
-            else:
-                self.footer.setText(self._tr("Model is set in the chat panel  →"))
+            self.footer.setText(self._tr("Model is set in the chat panel  →"))
         finally:
             self._refreshing = False
 
@@ -473,9 +463,7 @@ class AgentPanel(QFrame):
             status = chat.cli_status() or {}
         except Exception:
             pass
-        if backend_id == "claude_code" and (
-            status.get("claude_code") or {}
-        ).get("logged_in") is False:
+        if (status.get(backend_id) or {}).get("logged_in") is False:
             self._connecting = backend_id
             self._connect_error.pop(backend_id, None)
             self.refresh()
@@ -484,7 +472,7 @@ class AgentPanel(QFrame):
             try:
                 chat._sign_in_cli(backend_id)
             except Exception:
-                log.error("Failed to start Claude sign-in for %s", backend_id, exc_info=True)
+                log.error("Failed to start sign-in for %s", backend_id, exc_info=True)
                 self.on_connect_result(backend_id, False, self._tr("Could not start sign-in."))
             return
         self._connecting = backend_id
@@ -628,7 +616,7 @@ class AgentPanel(QFrame):
             "}"
             "#agentPanel QLabel { background: transparent; }"
             "#agentPanel QLabel#agentPanelTitle {"
-            "   color: #f2f2f2; font-size: 13px; font-weight: 600; }"
+            "   color: %(title)s; font-size: 13px; font-weight: 600; }"
             "#agentPanel QLabel#agentPanelSubtitle {"
             "   color: %(dim)s; font-size: 11px; }"
             "#agentPanel QFrame#agentRow {"
@@ -645,12 +633,12 @@ class AgentPanel(QFrame):
             "   color: %(dim)s; font-size: 11px; }"
             "#agentPanel QLabel#agentRowDesc { color: %(dim)s; font-size: 11px; }"
             "#agentPanel QPushButton#agentRowConnect {"
-            "   color: #0f0f0f; background-color: %(accent)s; border: none;"
-            "   border-radius: 5px; padding: 2px 12px; font-size: 11px;"
+            "   color: %(primary_text)s; background-color: %(primary)s; border: none;"
+            "   border-radius: 6px; padding: 2px 12px; font-size: 11px;"
             "   font-weight: 600; min-height: 0px; }"
-            "#agentPanel QPushButton#agentRowConnect:hover { background-color: #67abf8; }"
+            "#agentPanel QPushButton#agentRowConnect:hover { background-color: %(primary_hover)s; }"
             "#agentPanel QPushButton#agentRowConnect:disabled {"
-            "   background-color: #2a2a2a; color: #6b6b6b; }"
+            "   background-color: %(raised)s; color: %(text_faint)s; }"
             "#agentPanel QPushButton#agentPanelFooter {"
             "   color: %(dim)s; background: transparent; border: none;"
             "   font-size: 11px; text-align: left; padding: 2px 0px; min-height: 0px; }"
@@ -658,7 +646,10 @@ class AgentPanel(QFrame):
         ) % {
             "bg": BG_PANEL, "border": BORDER, "border_hi": BORDER_HI,
             "hover": BG_ROW_HOVER, "sel": BG_ROW_SELECTED, "accent": ACCENT,
-            "text": TEXT, "dim": TEXT_DIM,
+            "text": TEXT, "dim": TEXT_DIM, "title": TOKENS["text"],
+            "primary": TOKENS["primary"], "primary_text": TOKENS["primary_text"],
+            "primary_hover": TOKENS["primary_hover"], "raised": TOKENS["raised"],
+            "text_faint": TOKENS["text_faint"],
         }
 
     def sizeHint(self):

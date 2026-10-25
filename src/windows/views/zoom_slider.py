@@ -40,6 +40,7 @@ from qt_api import QSizePolicy, QWidget
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
 from classes import update_batch, updates
+from themes.cosmic.tokens import TOKENS
 
 
 def _event_posf(event):
@@ -233,18 +234,19 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         painter.fillRect(event.rect(), background_color)
 
         # Create pens / colors
-        clip_pen = QPen(QBrush(QColor("#53a0ed")), 1.5)
+        clip_pen = QPen(QBrush(QColor(TOKENS["text_faint"])), 1.5)
         clip_pen.setCosmetic(True)
         painter.setPen(clip_pen)
 
-        selected_clip_pen = QPen(QBrush(QColor("Red")), 1.5)
+        selected_clip_pen = QPen(QBrush(QColor(TOKENS["accent"])), 1.5)
         selected_clip_pen.setCosmetic(True)
 
-        scroll_color = QColor("#4053a0ed")
+        scroll_color = QColor(TOKENS["text"])
+        scroll_color.setAlpha(40)  # translucent: clips stay visible under the viewport window
         scroll_pen = QPen(QBrush(scroll_color), 2.0)
         scroll_pen.setCosmetic(True)
 
-        marker_color = QColor("#4053a0ed")
+        marker_color = QColor(TOKENS["text_faint"])
         marker_pen = QPen(QBrush(marker_color), 1.0)
         marker_pen.setCosmetic(True)
 
@@ -252,7 +254,7 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         playhead_pen = QPen(QBrush(playhead_color), 1.0)
         playhead_pen.setCosmetic(True)
 
-        handle_color = QColor("#a653a0ed")
+        handle_color = QColor(TOKENS["text_muted"])
         handle_pen = QPen(QBrush(handle_color), 1.5)
         handle_pen.setCosmetic(True)
 

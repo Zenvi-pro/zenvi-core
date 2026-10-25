@@ -185,6 +185,22 @@ def test_is_running_distinguishes_a_stale_socket():
     assert si.is_running("n", socket_factory=lambda: FakeSocket(connects=False)) is False
 
 
+def test_a_window_that_quits_after_answering_went_away():
+    # It answered the hand-off on its way out (the window that just restarted
+    # to install an update): the new launch must start its own window.
+    answers = iter([True, True, False])
+    sleeps = []
+    assert si.went_away("n", socket_factory=lambda: FakeSocket(connects=next(answers)),
+                        sleep=sleeps.append)
+    assert len(sleeps) == 2
+
+
+def test_a_window_that_stays_did_not_go_away():
+    sleeps = []
+    assert not si.went_away("n", timeout_ms=0, socket_factory=lambda: FakeSocket(connects=True),
+                            sleep=sleeps.append)
+
+
 # --- the window's side (one connection) ---------------------------------------------
 
 class FakeSignal:
