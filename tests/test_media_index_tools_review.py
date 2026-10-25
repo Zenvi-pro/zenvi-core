@@ -306,6 +306,17 @@ def test_a_timeline_clip_gets_its_beats_in_timeline_seconds_for_the_part_it_play
     assert r["clip_beats"] == [4.3]
 
 
+def test_a_timeline_clip_with_only_a_reader_id_still_finds_its_file(footage, monkeypatch, tmp_path):
+    music_env(monkeypatch, footage, tmp_path)
+    clip = SimpleNamespace(data={"reader": {"id": "M1"}, "position": 4.0, "start": 1.2, "end": 2.0})
+    monkeypatch.setattr(TR, "resolve_clip", lambda timeline_clip_id="", **_kw: clip, raising=False)
+    asked = []
+    real = TR.resolve_files
+    monkeypatch.setattr(TR, "resolve_files", lambda ids=None, query="": asked.append(ids) or real(ids, query))
+    _, r = call("analyze_music_tool", timeline_clip_id="C1")
+    assert asked == [["M1"]] and r["clip_beats"] == [4.3]
+
+
 def test_describing_music_calls_the_cloud_once_and_the_reading_is_labelled_inferred(footage, monkeypatch, tmp_path):
     music_env(monkeypatch, footage, tmp_path)
     calls = []
