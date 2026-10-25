@@ -1,4 +1,4 @@
-"""Error and refusal text names only tools the model can call by name.
+"""Error, refusal and next-step text names only tools the model can call by name.
 
 The model is bound to the core tools plus find_tools / run_tool. A refusal that
 says "use list_transitions_tool" makes it call an unbound name and fail again.
@@ -16,6 +16,8 @@ LISTED = set(CORE_TOOL_NAMES) | {"find_tools", "run_tool"}
 NAME = re.compile(r"\b[a-z][a-z0-9_]*_tool\b")
 VIA_RUN_TOOL = re.compile(r"""run_tool\(name=["']([a-z0-9_]+_tool)["']""")
 ERROR_CALLS = {"ToolError", "fail"}
+# Success results point at the next step too: ok(summary, next=..., hint=...) and "next" fields.
+HINT_KEYS = {"next", "hint", "next_step", "next_steps", "note", "notes", "message", "summary", "suggestion", "tip"}
 
 
 def _strings(node):
@@ -31,6 +33,15 @@ def _error_texts(tree):
             name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
             if name in ERROR_CALLS:
                 yield node.lineno, " ".join(_strings(node))
+            elif name == "ok" and node.args:
+                yield node.lineno, " ".join(_strings(node.args[0]))
+            for kw in node.keywords:
+                if kw.arg in HINT_KEYS:
+                    yield node.lineno, " ".join(_strings(kw.value))
+        elif isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values):
+                if isinstance(key, ast.Constant) and key.value in HINT_KEYS:
+                    yield node.lineno, " ".join(_strings(value))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.startswith("Error:"):
             yield node.lineno, node.value
         elif isinstance(node, ast.JoinedStr):
