@@ -508,6 +508,11 @@ def _record_batch(job: _Job, card_files: Dict[str, str], card_templates: Dict[st
 
     shot_ids: List[str] = []
     flash_frames = max(1, _frame(FLASH_SECONDS, fps))
+    # The end card comes in just after the last cut; a shot label never shares the frame with it.
+    total = _frame(plan.duration, fps)
+    last_shot = plan.shots[-1]
+    end_at = _frame(last_shot.start + min(0.3, (last_shot.end - last_shot.start) * 0.15), fps)
+    label_limit = _seconds(end_at, fps) if "end" in card_files and total - end_at >= 1 else plan.duration
     for index, shot in enumerate(plan.shots):
         shot_ids.append(_insert(_shot_clip(job, shot, index, tracks["video"], warnings)))
         position = _seconds(_frame(shot.start, fps), fps)
@@ -519,10 +524,13 @@ def _record_batch(job: _Job, card_files: Dict[str, str], card_templates: Dict[st
             _fade(flash, 0.75, 0.0, position, position + _seconds(flash_frames, fps))
             _insert(flash)
         key = f"label:{shot.label}" if shot.label else ""
-        if key in card_files:
-            label = _placed(card_files[key], card_templates[key], position, tracks["labels"], None, length)
-            out = min(0.25, length / 4)
-            _fade(label, 1.0, 0.0, position + length - out, position + length)
+        label_end = min(position + length, label_limit)
+        label_length = label_end - position
+        # One the end card cuts down to a flicker is dropped.
+        if key in card_files and label_length > 0 and (label_end == position + length or label_length >= 0.3):
+            label = _placed(card_files[key], card_templates[key], position, tracks["labels"], None, label_length)
+            out = min(0.25, label_length / 4)
+            _fade(label, 1.0, 0.0, position + label_length - out, position + label_length)
             _insert(label)
 
     def place_title(key: str, position: float, length: float) -> str:
@@ -543,16 +551,12 @@ def _record_batch(job: _Job, card_files: Dict[str, str], card_templates: Dict[st
         return clip_id
 
     titles: Dict[str, Optional[str]] = {"hook": None, "end_card": None}
-    total = _frame(plan.duration, fps)
     if "hook" in card_files:
         first_shot = plan.shots[0]
         hold = min(3.0, max(1.6, first_shot.end - first_shot.start))
         titles["hook"] = place_title("hook", 0.0, _seconds(max(1, min(_frame(hold, fps), total)), fps))
-    if "end" in card_files:
-        last_shot = plan.shots[-1]
-        at = _frame(last_shot.start + min(0.3, (last_shot.end - last_shot.start) * 0.15), fps)
-        if total - at >= 1:
-            titles["end_card"] = place_title("end", _seconds(at, fps), _seconds(total, fps) - _seconds(at, fps))
+    if "end" in card_files and total - end_at >= 1:
+        titles["end_card"] = place_title("end", _seconds(end_at, fps), _seconds(total, fps) - _seconds(end_at, fps))
 
     extend_timeline()
     refresh()

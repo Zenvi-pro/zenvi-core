@@ -355,6 +355,9 @@ def test_labels_titles_and_end_plate_follow_the_style(reel):
     labelled = [s for s in data["shots"] if s["file_id"] in (ids["huddle"], ids["strike"])]
     assert len(labels) == len(labelled)
     assert [c["position"] for c in labels] == [pytest.approx(s["start"], abs=1e-3) for s in labelled]
+    # A label ends where the end card comes in, never under it.
+    end_card = next(c for c in _on(reel, data["tracks"]["titles"]) if c["id"] == data["title_clips"]["end_card"])
+    assert all(c["position"] + _length(c) <= end_card["position"] + 1e-6 for c in labels)
     names = sorted(os.listdir(reel.title_dir))
     assert any(n.startswith("Reel label Warm-up") for n in names) and any("The goal" in n for n in names)
     end = next(n for n in names if n.startswith("Reel end"))
@@ -381,6 +384,9 @@ def test_every_style_uses_the_desktops_own_look_and_motion_presets():
     from classes.editor_tools.effects_color_looks import LOOK_PRESETS
     photo = {"width": 1880, "height": 1253}
     for style in REEL_STYLES.values():
+        # One preset per family: a clip has one Color Grade, so a second colour preset would replace the first.
+        families = [look.split(".")[0] for look in style.looks]
+        assert len(set(families)) == len(families), style.id
         for look in style.looks:
             assert look.replace(".", "_", 1) in LOOK_PRESETS, (style.id, look)
             assert reels.look_preset(look)
