@@ -101,6 +101,7 @@ class TimelineSync(UpdateInterface):
             return
         if action and action.type == "load":
             self._batched_diffs = []        # a load replaces the whole timeline: held-back diffs would be stale
+            self._batched_property_edit = False
 
         with self.timeline_lock:
             # Enter edit mode for property updates — disable caching until the user seeks or plays.
@@ -148,18 +149,22 @@ class TimelineSync(UpdateInterface):
                     # This JSON DIFF is passed to libopenshot to update the timeline
                     self.timeline.ApplyJsonDiff(self._preview_payload(action.json(is_array=True)))
 
-                    # Clear frame cache so the next render picks up the new clip data
-                    # (without this, libopenshot serves the cached pre-change frame)
-                    self.timeline.ClearAllCache(True)
-
                     # Refresh the preview so the video widget reflects the change
                     self.window.refreshFrameSignal.emit()
 
             except Exception as e:
                 log.error("Error applying JSON to timeline object in libopenshot: %s. %s" %
                          (e, action.json(is_array=True)))
+            finally:
+                self._rewarm()  # even a failed load or diff has changed (or cleared) the timeline
 
             # Cache stays off — re-enabled when the user seeks or starts playback
+
+    def _rewarm(self):
+        """Warm the changed timeline again (the warmer does one pass, then idles)."""
+        warmer = getattr(self.window, "background_render_manager", None)
+        if warmer is not None:
+            warmer.invalidate()
 
     def _preview_payload(self, payload):
         """The diff as libopenshot should read it (proxy readers swapped in when there are proxies)."""
@@ -181,11 +186,13 @@ class TimelineSync(UpdateInterface):
                 if not is_playing:
                     openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
             try:
+                # ApplyJsonDiff drops the edited ranges; a full ClearAllCache starved playback (#332)
                 self.timeline.ApplyJsonDiff(json.dumps(diffs))
-                self.timeline.ClearAllCache(True)
                 self.window.refreshFrameSignal.emit()
             except Exception as e:
                 log.error("Error applying batched JSON to timeline object in libopenshot: %s" % e)
+            finally:
+                self._rewarm()
 
     def MaxSizeChangedCB(self, new_size):
         """Callback for max sized change (i.e. max size of video widget)"""

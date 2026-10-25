@@ -11,6 +11,7 @@ from qt_api import QAction, QColor, QKeySequence
 from classes.chat_navigation import is_allowed_chat_navigation
 from classes.file_drop import accept_os_file_drag, local_path_from_url, urls_from_mime
 from classes.logger import log
+from themes.cosmic.tokens import TOKENS
 
 try:
     from qt_api import QWebEnginePage, QWebEngineView
@@ -424,7 +425,7 @@ if QWebEnginePage is not None:
             super().__init__(parent)
             self._chat_ui_dir = chat_ui_dir
             page = ChatWebEnginePage(chat_ui_dir, self)
-            page.setBackgroundColor(QColor(13, 13, 13))
+            page.setBackgroundColor(QColor(TOKENS["surface"]))
             page.rejectedFileUrl.connect(self._on_rejected_file)
             self.setPage(page)
             self.setAcceptDrops(True)
