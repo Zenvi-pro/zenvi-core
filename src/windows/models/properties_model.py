@@ -32,7 +32,7 @@ from operator import itemgetter
 from qt_api import QMimeData, Qt, QLocale, QTimer
 from qt_api import (
     QStandardItemModel, QStandardItem,
-    QPixmap, QColor,
+    QPixmap, QColor, QFont,
     )
 
 from classes.waveform import get_audio_data
@@ -43,9 +43,16 @@ from classes.keyframe_rules import default_keyframe_value, max_transform_multipl
 from classes.query import Clip, Transition, Effect, File
 from classes.logger import log
 from classes.app import get_app
+from themes.cosmic.tokens import TOKENS
 import openshot
 
 import json
+
+
+def _property_name_font():
+    font = QFont()
+    font.setPixelSize(12)
+    return font
 
 
 class ClipStandardItemModel(QStandardItemModel):
@@ -180,7 +187,7 @@ class PropertiesModel(updates.UpdateInterface):
             wheel = updated.get(name, {})
             wheel_snapshot = snapshot.get(name, {})
             wheel["color_keyframes"] = _set_color_value(
-                wheel.get("color_keyframes"), frame_number, QColor(wheel_snapshot.get("color", "#ffffff")),
+                wheel.get("color_keyframes"), frame_number, QColor(wheel_snapshot.get("color", "white")),
                 openshot.LINEAR)
             wheel["amount_keyframes"] = _set_keyframe_value(
                 wheel.get("amount_keyframes"), frame_number, wheel_snapshot.get("amount", 0.0), openshot.LINEAR)
@@ -1155,10 +1162,8 @@ class PropertiesModel(updates.UpdateInterface):
             col = QStandardItem("Property")
             col.setText(_(label))
             col.setData(property)
-            if keyframe and points > 1:
-                col.setBackground(QColor("green"))  # Highlight keyframe background
-            elif points > 1:
-                col.setBackground(QColor(42, 130, 218))  # Highlight interpolated value background
+            col.setFont(_property_name_font())
+            col.setForeground(QColor(TOKENS["text_muted"]))
             if readonly or type in ["color", "font", "caption"] or choices or label == "Track":
                 col.setFlags(Qt.ItemIsEnabled)
             else:
@@ -1226,12 +1231,6 @@ class PropertiesModel(updates.UpdateInterface):
                 my_icon = QPixmap(":/curves/keyframe-%s.png" % interpolation)
                 col.setData(my_icon, Qt.DecorationRole)
 
-                # Set the background color of the cell
-                if keyframe:
-                    col.setBackground(QColor("green"))  # Highlight keyframe background
-                else:
-                    col.setBackground(QColor(42, 130, 218))  # Highlight interpolated value background
-
             if type == "color":
                 # Color needs to be handled special
                 vals = property[1]
@@ -1262,14 +1261,6 @@ class PropertiesModel(updates.UpdateInterface):
             # Get 1st Column
             col = self.items[name]["row"][0]
             col.setData(property)
-
-            # For non-color types, update the background color
-            if keyframe and points > 1:
-                col.setBackground(QColor("green"))  # Highlight keyframe background
-            elif points > 1:
-                col.setBackground(QColor(42, 130, 218))  # Highlight interpolated value background
-            else:
-                col.setBackground(QStandardItem("Empty").background())
 
             # Update helper dictionary
             row.append(col)
@@ -1325,12 +1316,6 @@ class PropertiesModel(updates.UpdateInterface):
                 # Apply icon to cell
                 my_icon = QPixmap(":/curves/keyframe-%s.png" % interpolation)
                 col.setData(my_icon, Qt.DecorationRole)
-
-                # Set the background color of the cell
-                if keyframe:
-                    col.setBackground(QColor("green"))  # Highlight keyframe background
-                else:
-                    col.setBackground(QColor(42, 130, 218))  # Highlight interpolated value background
 
             else:
                 # clear background color

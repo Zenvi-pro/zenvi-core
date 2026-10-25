@@ -29,14 +29,15 @@ from qt_api import QSizePolicy, QToolBar, QToolButton
 
 from classes import info
 from classes.logger import log
+from themes.cosmic.tokens import TOKENS
 
 
 # ── Palette (cosmic dark theme tokens) ────────────────────────────────────
-TEXT = "#d4d4d4"
-TEXT_DIM = "#8a8a8a"
-TEXT_ON_INK = "#ffffff"
-ACCENT = "#4d9cf6"
-ACCENT_PRESSED = "#3b8fe8"
+TEXT = TOKENS["text"]
+TEXT_DIM = TOKENS["text_muted"]
+TEXT_ON_INK = TOKENS["white"]
+ACCENT = TOKENS["accent"]
+ACCENT_PRESSED = QColor(ACCENT).darker(115).name()
 BORDER_HI_ALPHA = 0.13     # rgba(255,255,255,0.13)
 
 ROBOT_SVG = "themes/cosmic/images/tool-agent.svg"
@@ -536,7 +537,7 @@ class AgentSelectorButton(QToolButton):
             painter.fillPath(ink, color)
 
         # 4. Border, fading out as the ink arrives.
-        border = QColor(255, 255, 255)
+        border = QColor(TOKENS["white"])
         border.setAlphaF(BORDER_HI_ALPHA * (1.0 - ink_u))
         half = BORDER_W / 2.0
         stroke = QPainterPath()

@@ -32,8 +32,7 @@ import os
 from qt_api import QSize, Qt, QPoint, QRect, QEvent, QItemSelectionModel
 from qt_api import clear_override_cursor
 from qt_api import modifiers_has
-from qt_api import (QDrag, QCursor, QPixmap, QPainter, QIcon,
-                    QLinearGradient, QColor, QPen)
+from qt_api import (QDrag, QCursor, QPixmap, QPainter, QIcon, QPen)
 from qt_api import QListView, QAbstractItemView
 
 from classes import info
@@ -43,6 +42,7 @@ from classes.logger import log
 from classes.query import File
 from .menu import StyledContextMenu, add_bound_action
 from .indexing_badge import IndexingBadgeDelegate
+from .files_thumbnail_overlay import paint_tile, tile_grid_size, tile_thumb_rect, token_color
 from .optimized_preview_menu import add_optimized_preview_menu
 from .ai_tools_menu import add_ai_tools_menu
 from .generation_badge import (
@@ -63,13 +63,16 @@ class FileCardDelegate(IndexingBadgeDelegate):
     ]
     BTN_SIZE = 20
     BTN_GAP  = 4
-    OVLY_H   = 30   # gradient overlay height (px)
 
     def __init__(self, list_view):
         super().__init__(list_view)
         self._hover_index = None
         list_view.setMouseTracking(True)
         list_view.viewport().installEventFilter(self)
+
+    def sizeHint(self, option, index):
+        # Tiles are painted at tile_grid_size; the inherited hint was smaller
+        return tile_grid_size(self.parent().iconSize())
 
     # ── helpers ───────────────────────────────────────────────────────────
 
@@ -115,7 +118,7 @@ class FileCardDelegate(IndexingBadgeDelegate):
 
     def editorEvent(self, event, model, option, index):
         if event.type() == QEvent.MouseButtonRelease and index.isValid():
-            rects = self._btn_rects(option.rect)
+            rects = self._btn_rects(self._decoration_rect(option, index))
             pos = event.pos()
             win = get_app().window
             if rects.get("preview", QRect()).contains(pos):
@@ -131,34 +134,33 @@ class FileCardDelegate(IndexingBadgeDelegate):
 
     # ── painting ──────────────────────────────────────────────────────────
 
+    def _badge_anchor_rect(self, option, index):
+        return self._decoration_rect(option, index)  # tiles mark the thumbnail's corner
+
+    def _decoration_rect(self, option, index):
+        """The thumbnail of a tile (badges and quick actions sit on it)."""
+        return tile_thumb_rect(option.rect)
+
+    def paint_item(self, painter, option, index):
+        paint_tile(painter, option, index)
+
     def paint(self, painter, option, index):
         super().paint(painter, option, index)
         if not (self._hover_index and index == self._hover_index):
             return
 
         painter.save()
-        rect = option.rect
 
-        # Dark gradient at bottom of thumbnail
-        ovly = QRect(rect.x(), rect.bottom() - self.OVLY_H,
-                     rect.width(), self.OVLY_H)
-        grad = QLinearGradient(0, ovly.top(), 0, ovly.bottom())
-        grad.setColorAt(0, QColor(0, 0, 0, 0))
-        grad.setColorAt(1, QColor(0, 0, 0, 175))
-        painter.fillRect(ovly, grad)
-
-        # Action buttons
+        # Action buttons along the thumbnail's bottom edge
         labels = {k: lbl for k, lbl in self._ACTIONS}
         font = painter.font()
         font.setPointSizeF(8.5)
         painter.setFont(font)
-        for key, btn_rect in self._btn_rects(rect).items():
-            # Semi-transparent pill background
-            painter.setBrush(QColor(30, 30, 30, 210))
-            painter.setPen(QPen(QColor(120, 120, 120, 160), 1))
+        for key, btn_rect in self._btn_rects(self._decoration_rect(option, index)).items():
+            painter.setBrush(token_color("raised"))
+            painter.setPen(QPen(token_color("line_strong"), 1))
             painter.drawRoundedRect(btn_rect, 4, 4)
-            # Icon glyph
-            painter.setPen(QColor(220, 220, 220, 230))
+            painter.setPen(token_color("text"))
             painter.drawText(btn_rect, Qt.AlignCenter, labels.get(key, ""))
 
         painter.restore()
@@ -422,12 +424,11 @@ class FilesListView(QListView):
         # Setup header columns and layout
         self.setModelColumn(0)  # Only display first column in icon mode
         self.setIconSize(info.LIST_ICON_SIZE)
-        self.setGridSize(info.LIST_GRID_SIZE)
+        self.setGridSize(tile_grid_size(info.LIST_ICON_SIZE))
         self.setViewMode(QListView.IconMode)
         self.setResizeMode(QListView.Adjust)
 
         self.setUniformItemSizes(True)
-        self.setStyleSheet('QListView::item { padding-top: 2px; border-radius: 4px; }')
 
         self.setWordWrap(False)
         self.setTextElideMode(Qt.ElideRight)
