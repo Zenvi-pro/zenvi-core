@@ -271,7 +271,7 @@ def repeat_clip(timeline_clip_ids=[], clip_query="", track="", scope="", times=2
     "repeat it with a half-second pause" (delay_seconds=0.5), "loop it, speeding up each time"
     (speed_ramp_percent=25). The clip becomes N times as long (plus delays); the tool refuses
     to run into the next clip unless ripple=true or allow_overlap=true. A clip that is already
-    looped must be reset first (set_clip_speed_tool reset=true) or undone. To place separate
+    looped must be reset first (run_tool(name='set_clip_speed_tool', args={'timeline_clip_ids': [...], 'reset': true})) or undone. To place separate
     copies instead, use duplicate_clips_tool. One undo step.
     """
     _require_targets(timeline_clip_ids, clip_query, scope, "repeat")

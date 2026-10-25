@@ -4291,7 +4291,7 @@ def _ingest_web_video_impl(
             "do not leave the YouTube original on the story cut unless asked."
         )
     if intent_norm == "timeline" and not placed:
-        next_steps.append(f"Place with add_clip_to_timeline_tool(file_id=\"{file_id}\").")
+        next_steps.append(f"Place with add_clips_to_timeline_tool(file_ids=['{file_id}'], track=..., start_seconds=...).")
     if meta.get("subtitle_paths"):
         next_steps.append(
             "Subtitles cached (paths in subtitle_paths); caption tool can consume later."
@@ -4324,7 +4324,7 @@ def _ingest_web_video_impl(
         result["message"] = (
             f"Imported to media bin as file_id={file_id}, but timeline placement failed."
         )
-        result["next"] = f"Place with add_clip_to_timeline_tool(file_id=\"{file_id}\")."
+        result["next"] = f"Place with add_clips_to_timeline_tool(file_ids=['{file_id}'], track=..., start_seconds=...)."
     return json.dumps(result)
 
 

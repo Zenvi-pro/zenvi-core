@@ -695,7 +695,7 @@ def import_image_sequence(path, fps=0.0, name="", skip_indexing=False):
     Use for "import these frames as a sequence at 24 fps", renders from Blender/After
     Effects, stop-motion or time-lapse photo folders. The frames play at `fps` (the project
     rate when 0). It only adds the file to Project Files: place it with
-    add_clip_to_timeline_tool(file_id=...). To import photos as separate stills (a
+    add_clips_to_timeline_tool(file_ids=[...]). To import photos as separate stills (a
     slideshow), use import_files_tool instead. Returns the file id, pattern, frame count,
     fps and duration. One undo step.
     Example: path="~/renders/intro/", fps=24.
@@ -874,7 +874,7 @@ def create_subclips(file_id, subclips):
     1:10-1:30 'Demo' from interview.mp4". Each sub-clip is a new Project Files entry that
     plays only its range (times in seconds of the source media); AI scene descriptions are
     trimmed to the range. Nothing is placed on the timeline: put them there with
-    add_clip_to_timeline_tool(file_id=<new id>). To find a moment by description instead of
+    add_clips_to_timeline_tool(file_ids=[<new id>]). To find a moment by description instead of
     times, search_footage_tool returns each moment's file and in/out seconds. One undo step for all sub-clips.
     """
     from classes.ai_metadata_utils import adjust_scene_descriptions_for_subclip
@@ -934,7 +934,7 @@ def create_subclips(file_id, subclips):
 
     created = on_main(_create)
     return ok(f"Created {len(created)} sub-clip(s) of {_display_name(src.data)!r}. Place one with "
-              f"add_clip_to_timeline_tool(file_id=...).",
+              f"add_clips_to_timeline_tool(file_ids=[...]).",
               subclips=[{"file_id": i, "name": n, "source_in": round(s, 3), "source_out": round(e, 3),
                          "duration": round(e - s, 3)} for i, n, s, e in created],
               parent_file_id=src.id)
