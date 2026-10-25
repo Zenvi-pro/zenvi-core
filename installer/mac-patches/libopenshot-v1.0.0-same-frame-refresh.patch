@@ -1,0 +1,39 @@
+diff --git a/src/Qt/VideoCacheThread.cpp b/src/Qt/VideoCacheThread.cpp
+index ad80e33a..33fc887a 100644
+--- a/src/Qt/VideoCacheThread.cpp
++++ b/src/Qt/VideoCacheThread.cpp
+@@ -173,13 +173,12 @@ namespace openshot
+                         should_clear_cache = false;
+                         new_cached_count = cache->Count();
+                     } else {
+-                        // Paused same-frame edit refresh: force full cache refresh.
+-                        if (Timeline* timeline = dynamic_cast<Timeline*>(reader)) {
+-                            timeline->ClearAllCache();
+-                        }
+-                        new_cached_count = 0;
+-                        should_mark_seek = true;
+-                        should_preroll = true;
++                        // Paused same-frame edit refresh: Timeline::ApplyJsonDiff already
++                        // dropped exactly the edited frames, so keep everything else cached
++                        // (a full clear here also waited on the timeline lock; Zenvi #320/#332).
++                        new_cached_count = cache ? cache->Count() : 0;
++                        should_mark_seek = false;
++                        should_preroll = false;
+                         should_clear_cache = false;
+                     }
+                 } else {
+@@ -387,10 +386,10 @@ namespace openshot
+             cache_playhead = clampToTimelineRange(playhead, timeline_end);
+         }
+         if (paused && !cache->Contains(cache_playhead)) {
+-            // If paused and playhead not in cache, clear everything
+-            if (Timeline* timeline = dynamic_cast<Timeline*>(reader)) {
+-                timeline->ClearAllCache();
+-            }
++            // If paused and playhead not in cache, refill from the playhead. Frames
++            // elsewhere stay: edits invalidate their own ranges, and the cache's byte
++            // limit evicts old frames (a full clear here wiped the cache on every edit
++            // under the shown frame; Zenvi #320/#332).
+             cached_frame_count.store(0);
+             return true;
+         }

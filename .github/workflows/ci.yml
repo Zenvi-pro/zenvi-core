@@ -3,7 +3,7 @@ on: [push, pull_request]
 jobs:
   # Headless unit suite in tests/. Conftest stubs PyQt5 and libopenshot, so
   # this job needs no apt Qt/openshot packages. Landed non-required first;
-  # make it a required branch check once it has been green twice on develop.
+  # make it a required branch check once it has been green twice on main.
   unit-tests:
     runs-on: ubuntu-latest
     steps:
