@@ -959,8 +959,8 @@ class TimelineWidgetBase(QWidget):
     def redraw_audio_data(self):
         """Force clip painters to rebuild after waveform data changes."""
         painter = getattr(self, "clip_painter", None)
-        if painter is not None and hasattr(painter, "clear_cache"):
-            painter.clear_cache()
+        if painter is not None and hasattr(painter, "clear_render_cache"):
+            painter.clear_render_cache()
         self.geometry.mark_dirty()
         self.update()
 
@@ -1125,35 +1125,32 @@ class TimelineWidgetBase(QWidget):
             if not get_app().window.timeline:
                 return
 
-            # Skip panel property rebuild during an active keyframe drag
-            # to prevent stale point references (the drag writes
-            # pending_seconds directly to the cached point dicts).
-            if not self._dragging_panel_keyframes and not self._dragging_keyframe:
-                signature = self._panel_current_signature()
-                if signature != self._panel_refresh_signature:
-                    self._panel_refresh_signature = signature
-                    if self._update_track_panel_properties():
-                        self.geometry.mark_dirty()
+            # A playback tick only moves the playhead, so clips, waveforms and
+            # thumbnails are drawn once into a pixmap and reused until
+            # update() (any other change) or the view moves or resizes.
+            dpr = self.devicePixelRatioF()
+            key = (
+                self.width(), self.height(), dpr, self.h_scroll_offset, self.pixels_per_second,
+                tuple(getattr(self, "v_scrollbar_position", ())),
+            )
+            if getattr(self, "_static_dirty", True) or key != getattr(self, "_static_key", None):
+                self._static_dirty = False
+                self._static_key = key
+                pixmap = QPixmap(max(1, round(self.width() * dpr)), max(1, round(self.height() * dpr)))
+                pixmap.setDevicePixelRatio(dpr)
+                pixmap.fill(Qt.transparent)
+                static_painter = QPainter(pixmap)
+                try:
+                    static_painter.setRenderHints(painter.renderHints(), True)
+                    self._paint_static_layers(static_painter, self.rect())
+                except Exception:
+                    self._static_dirty = True
+                    raise
+                finally:
+                    static_painter.end()
+                self._static_pixmap = pixmap
+            painter.drawPixmap(0, 0, self._static_pixmap)
 
-            self.geometry.ensure()
-            self._ensure_keyframe_markers()
-            self._apply_panel_drag_marker_override()
-            self._apply_keyframe_drag_panel_override()
-
-            self.bg_painter.paint(painter, event.rect())
-            self.track_painter.paint_background(painter)
-            self.keyframe_panel_painter.paint(painter, mode="underlay")
-            self.clip_painter.paint(painter)
-            self.transition_painter.paint(painter)
-            self._paint_drag_preview(painter)
-            self.playback_cache_painter.paint(painter)
-            self.keyframe_painter.paint(painter)
-            self.track_painter.paint_names(painter)
-            self.keyframe_panel_painter.paint(painter, mode="overlay")
-            self.selection_painter.paint(painter)
-            self.ruler_painter.paint(painter)
-            self.playback_cache_painter.paint(painter)
-            self.marker_painter.paint(painter)
             self.playhead_painter.paint(painter)
             self.ruler_painter.paint_overlay(painter)
             self.scrollbar_painter.paint(painter)
@@ -1166,13 +1163,50 @@ class TimelineWidgetBase(QWidget):
                 self._repaint_after_paint = False
                 QTimer.singleShot(0, self.update)
 
+    def update(self, *args):
+        """Repaint everything; a playhead tick calls QWidget.update directly."""
+        self._static_dirty = True
+        super().update(*args)
+
+    def _paint_static_layers(self, painter, rect):
+        """Everything under the playhead, cached by paintEvent."""
+        # Skip panel property rebuild during an active keyframe drag
+        # to prevent stale point references (the drag writes
+        # pending_seconds directly to the cached point dicts).
+        if not self._dragging_panel_keyframes and not self._dragging_keyframe:
+            signature = self._panel_current_signature()
+            if signature != self._panel_refresh_signature:
+                self._panel_refresh_signature = signature
+                if self._update_track_panel_properties():
+                    self.geometry.mark_dirty()
+
+        self.geometry.ensure()
+        self._ensure_keyframe_markers()
+        self._apply_panel_drag_marker_override()
+        self._apply_keyframe_drag_panel_override()
+
+        self.bg_painter.paint(painter, rect)
+        self.track_painter.paint_background(painter)
+        self.keyframe_panel_painter.paint(painter, mode="underlay")
+        self.clip_painter.paint(painter)
+        self.transition_painter.paint(painter)
+        self._paint_drag_preview(painter)
+        self.playback_cache_painter.paint(painter)
+        self.keyframe_painter.paint(painter)
+        self.track_painter.paint_names(painter)
+        self.keyframe_panel_painter.paint(painter, mode="overlay")
+        self.selection_painter.paint(painter)
+        self.ruler_painter.paint(painter)
+        self.playback_cache_painter.paint(painter)
+        self.marker_painter.paint(painter)
+
     def _paint_focus_ring(self, painter):
         """Outline the timeline while it has keyboard focus from Tab (not a click)."""
         if not (self._keyboard_focus and self.hasFocus()):
             return
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, False)
-        painter.setPen(QPen(QColor("#4d9cf6"), 2))
+        painter.setPen(QPen(QColor("#3a72f5"), 2))
         painter.setBrush(Qt.NoBrush)
         painter.drawRect(QRectF(self.rect()).adjusted(1, 1, -1, -1))
         painter.restore()
@@ -2643,7 +2677,7 @@ class TimelineWidgetBase(QWidget):
         if not item_id_str:
             return
         self.win.removeSelection(item_id_str, item_type)
-        self.clip_painter.clear_cache()
+        self.clip_painter.clear_render_cache()
         self.geometry.mark_dirty()
         self._keyframes_dirty = True
         self.update()

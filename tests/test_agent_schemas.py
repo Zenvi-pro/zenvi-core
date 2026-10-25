@@ -166,6 +166,10 @@ KWARG_PROPS = {
     "export_captions_tool": {"timeline_clip_id"},
     "detect_beats_tool": {"file_id", "timeline_clip_id"},
     "diarize_media_tool": {"file_id", "timeline_clip_id"},
+    # Phase 6 colour tools accept camelCase allClips via **kwargs / **_kw
+    "apply_color_tool": {"allClips"},
+    "apply_look_tool": {"allClips"},
+    "match_color_to_reference_tool": {"allClips"},
 }
 
 # Sent by the assistant backend's stubs but unused by this handler. They stay in

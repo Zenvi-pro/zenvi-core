@@ -29,7 +29,7 @@ import os
 import sys
 from time import strftime
 
-VERSION = "1.2.3"
+VERSION = "1.3.0"
 # libopenshot 1.0.0 ships the 4.0-era effects and the corrected Crop location math.
 MINIMUM_LIBOPENSHOT_VERSION = "1.0.0"
 DATE = "20260813000000"
@@ -423,7 +423,6 @@ try:
     LIST_GRID_SIZE = LIST_ICON_SIZE + QSize(5, 25)
     TREE_ICON_SIZE = QSize(75, 49)
     EMOJI_ICON_SIZE = QSize(75, 75)
-    EMOJI_GRID_SIZE = EMOJI_ICON_SIZE + QSize(5, 25)
     # Runtime emoji selections
     EMOJI_FILES = {}
     EMOJI_PATH = ""
