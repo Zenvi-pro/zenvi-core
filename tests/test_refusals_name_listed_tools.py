@@ -75,3 +75,37 @@ def test_receipts_carry_the_tool_id_not_a_call():
                 if isinstance(first, ast.Constant) and isinstance(first.value, str) and "run_tool(" in first.value:
                     bad.append(f"{path.relative_to(SRC)}:{node.lineno}")
     assert not bad, bad
+
+
+def test_found_tool_descriptions_name_only_listed_tools():
+    """find_tools returns these descriptions; a name in one reads as callable."""
+    from classes import tool_handlers  # noqa: F401  (merges the editor-tool registry)
+    from classes.agent_mcp_server import iter_tool_defs
+
+    bad = []
+    for d in iter_tool_defs():
+        text = d["description"]
+        unlisted = set(NAME.findall(text)) - LISTED - set(VIA_RUN_TOOL.findall(text)) - {d["name"]}
+        if unlisted:
+            bad.append(f"{d['name']}: {sorted(unlisted)}")
+    assert not bad, "\n".join(bad)
+
+
+def test_no_text_writes_an_unlisted_tool_as_a_call():
+    """`x_tool(...)` in any string is an instruction to call it by name."""
+    from classes import tool_handlers  # noqa: F401
+    from classes.agent_mcp_server import iter_tool_defs, listed_tool_defs
+
+    listed = LISTED | {d["name"] for d in listed_tool_defs()}  # plus the harness tools the MCP server lists
+    tools = {d["name"] for d in iter_tool_defs()} | listed  # a Python function like execute_tool() is not a tool
+    call = re.compile(r"(?<![\w'\"=])([a-z][a-z0-9_]*_tool)\(")
+    bad = []
+    for path in sorted(SRC.rglob("*.py")):
+        if "legacy" in path.parts:
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                unlisted = (set(call.findall(node.value)) & tools) - listed
+                if unlisted:
+                    bad.append(f"{path.relative_to(SRC)}:{node.lineno} {sorted(unlisted)}")
+    assert not bad, "\n".join(bad)

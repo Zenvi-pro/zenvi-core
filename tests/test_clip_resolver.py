@@ -309,9 +309,6 @@ def test_a_query_no_clip_matches_is_an_error_and_never_asks_the_backend():
 
 
 if __name__ == "__main__":
-    test_score_substring_and_tag_overlap()
-    test_score_ignores_scenes_outside_trim()
-    test_score_includes_scenes_inside_trim()
     test_timeline_clip_id_takes_priority()
     test_single_clip_shortcut_without_query()
     test_ambiguous_query_returns_candidates()

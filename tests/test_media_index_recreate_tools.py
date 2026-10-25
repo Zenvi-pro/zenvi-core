@@ -155,13 +155,13 @@ def test_the_check_catches_the_same_clip_used_over_and_over(studio):
     assert result["variety"]["most_uses_of_one_moment"] >= 6 and result["areas"]["variety"] < 60.0
     assert result["passed"] is False
     later = [f for f in result["failing"] if any("same moment" in p for p in f["problems"])]
-    assert len(later) >= 3 and all(f["fix"] and "overrides=[" in f["fix"] for f in later)          # each later use comes with a swap to apply
+    assert len(later) >= 3 and all(f["fix"] and "'overrides': [" in f["fix"] for f in later)          # each later use comes with a swap to apply
     # a suggested swap never names the file of the shot before or after it (that would trade one flaw for another: a back-to-back repeat)
     import re
     files_at = {i: c["file_id"] for i, c in enumerate(picture_clips(studio))}
     for f in later:
-        shot = int(re.search(r"reference_shot:(\d+)", f["fix"]).group(1))
-        file_id = re.search(r"file_id:'(\w+)'", f["fix"]).group(1)
+        shot = int(re.search(r"'reference_shot': (\d+)", f["fix"]).group(1))
+        file_id = re.search(r"'file_id': '(\w+)'", f["fix"]).group(1)
         assert file_id not in {files_at.get(shot - 1), files_at.get(shot + 1)}
 
 
@@ -348,7 +348,7 @@ def test_a_close_up_left_wide_is_caught_with_the_call_that_zooms_it(closeups):
     result = check(closeups, plan_id=out["plan_id"])
     assert result["areas"]["framing"] < 60.0
     wide = [f for f in result["failing"] if any("framed wider" in p for p in f["problems"])]
-    assert wide and all("framing=true" in f["fix"] for f in wide)
+    assert wide and all("'framing': true" in f["fix"] for f in wide)
 
 
 def test_zoom_is_never_asked_for_when_the_footage_is_already_as_tight_or_tighter():

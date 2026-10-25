@@ -29,7 +29,7 @@
       "track": "str",
       "scope": "str",
       "occurrence": "str",
-      "position_near": "Optional",
+      "position_near": "Optional[float]",
       "include_transitions": "bool",
       "ripple": "bool"
     },
