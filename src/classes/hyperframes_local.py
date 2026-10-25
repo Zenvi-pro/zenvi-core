@@ -50,7 +50,9 @@ from classes.logger import log
 CLI_VERSION = "0.8.115"
 NODE_MAJOR = 22                       # the CLI's package.json: engines.node >= 22
 NODE_DIST = "https://nodejs.org/dist/latest-v%d.x/" % NODE_MAJOR
-SKILLS_SOURCE = "heygen-com/hyperframes"
+SKILLS_CLI = "skills@1.7.2"           # the skills installer, pinned like the CLI rather than 'latest'
+SKILLS_SOURCE = "heygen-com/hyperframes#461d83cd69d67b92f4ca45fd2b840a77da2f85c8"   # the commit CLI_VERSION's tag names
+SKILLS_MARKER = ".zenvi-source"       # in skills/: the source they came from, so an older or unpinned set is replaced
 # Helpers the embedded-captions skill's preview/measure scripts require.
 CAPTION_PACKAGES = ("sharp@0.35.3", "puppeteer@25.8.0", "gsap@3.15.0")
 
@@ -395,12 +397,20 @@ def _cli_version() -> Optional[str]:
         return "unknown"
 
 
+def _skills_source() -> str:
+    try:
+        with open(os.path.join(skills_dir(), SKILLS_MARKER), encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
 def status() -> dict:
     """What is in place. ``ready`` means a composition can be linted and rendered."""
     saved = _remembered()
     node, cli = find_program("node"), _cli_version()
     browser = saved.get("browser") if saved.get("browser") and os.path.exists(saved["browser"]) else None
-    skills = len(glob.glob(os.path.join(skills_dir(), "*", "SKILL.md")))
+    skills = len(glob.glob(os.path.join(skills_dir(), "*", "SKILL.md"))) if _skills_source() == SKILLS_SOURCE else 0
     captions = all(os.path.isdir(os.path.join(home(), "node_modules", p.split("@")[0])) for p in CAPTION_PACKAGES)
     return {
         "ready": bool(node and cli and browser),
@@ -450,7 +460,7 @@ def install_plan(st: dict, platform: Optional[str] = None, captions: bool = Fals
                       "argv": ["hyperframes", "browser", "ensure"]})
     if not st.get("skills"):
         steps.append({"id": "skills", "label": "Install the HyperFrames skills",
-                      "argv": ["npx", "--yes", "skills", "add", SKILLS_SOURCE, "--agent", "universal", "--copy",
+                      "argv": ["npx", "--yes", SKILLS_CLI, "add", SKILLS_SOURCE, "--agent", "universal", "--copy",
                                "--full-depth", "--yes"]})
     if captions and not st.get("caption_helpers"):
         steps.append({"id": "captions", "label": "Install the caption preview helpers",
@@ -705,12 +715,17 @@ def install(captions: bool = False, progress: Optional[Callable[[str], None]] = 
         if step["id"] == "speech":
             install_speech()
             continue
+        if step["id"] == "skills":
+            shutil.rmtree(skills_dir(), ignore_errors=True)   # an older or unpinned set: start clean
         node, argv = find_program("node"), list(step["argv"])
         own_cli = argv[0] == "hyperframes"
         argv = ([node, cli_script()] if own_cli else _node_tool(node, argv[0])) + argv[1:]
         code, out = _exec(argv, home(), node, INSTALL_TIMEOUT, isolated=own_cli)
         if code != 0:
             raise HyperframesError("%s failed (exit code %d): %s" % (step["label"], code, out[-1500:]))
+        if step["id"] == "skills":
+            with open(os.path.join(skills_dir(), SKILLS_MARKER), "w", encoding="utf-8") as fh:
+                fh.write(SKILLS_SOURCE)
         if step["id"] == "browser":
             code, path = _exec([node, cli_script(), "browser", "path"], home(), node, 120)
             lines = [line.strip() for line in path.splitlines() if line.strip()]

@@ -19,8 +19,10 @@ import re
 import shutil
 import threading
 import time
+import wave
 from typing import List, Optional
 
+from classes import dictation
 from classes import hyperframes_captions as cap
 from classes import hyperframes_local as hf
 from classes.editor_tools._base import (
@@ -106,8 +108,16 @@ def _indexed_words(clip) -> List[dict]:
             for w in cap.cue_words(cues)]
 
 
+def _speech_in(wav: str) -> bool:
+    """Whether a clip's own audio (16 kHz mono WAV) holds speech: a recogniser makes words up in ambience."""
+    with wave.open(wav, "rb") as fh:
+        pcm = fh.readframes(fh.getnframes())
+    # ponytail: dictation's loudness test, not voice detection: loud street spikes can still pass; add VAD if they do
+    return dictation.heard_speech([dictation.rms(pcm[i:i + 3200]) for i in range(0, len(pcm), 3200)])   # 100 ms
+
+
 def _speech_words(clip) -> List[dict]:
-    """The clip's words timed on this computer; [] when no recogniser can be had or it fails.
+    """The clip's words timed on this computer; [] when it has no speech or no recogniser works.
 
     The recogniser the user picked in the Captions dock: Whistle (small, downloaded on
     first use) by default, or the larger Parakeet, which ``hyperframes transcribe`` runs.
@@ -131,6 +141,8 @@ def _speech_words(clip) -> List[dict]:
                 _run(project, "ffmpeg", ["-y", "-v", "error", "-ss", str(start), "-t", str(duration), "-i", media,
                                          "-vn", "-ac", "1", "-ar", "16000", "speech.wav"], RENDER_TIMEOUT,
                      inputs=[media])
+                if not _speech_in(os.path.join(hf.project_dir(project), "speech.wav")):
+                    return []                           # no speech to hear: the recogniser would make words up
                 if engine == "parakeet":
                     if not installed:
                         # Too large to fetch unasked: the same confirmation the setup tool shows.
@@ -203,7 +215,9 @@ def transcript_words(clip) -> List[dict]:
 
 def clip_caption_words(clip) -> List[dict]:
     start, end, _duration = clip_extent(clip.data)
-    return cap.clip_words(transcript_words(clip), start, end)
+    words = cap.clip_words(transcript_words(clip), start, end)
+    # A phrase a quiet take is made up into is no words (dictation's MADE_UP), whichever source gave them.
+    return [] if dictation.made_up(" ".join(w["text"] for w in words)) else words
 
 
 def _caption_clips(clip_id: Optional[str] = None) -> list:
@@ -484,6 +498,30 @@ def _put_back(placed: list, previous: list, files: list, tracks: set):
             track.delete()
 
 
+def _overlay_note(overlays: list) -> str:
+    if not overlays:
+        return ""
+    names = ", ".join("'%s'" % title for title in dict.fromkeys(o["title"] for o in overlays))
+    return " The captions are drawn over %s and were not moved." % names
+
+
+def _overlays_over(start: float, end: float) -> list:
+    """Motion graphic and title overlays on screen between *start* and *end* seconds, on any track."""
+    from classes.query import Clip, File
+
+    out = []
+    for c in Clip.filter():
+        f = File.get(id=str(c.data.get("file_id") or ""))
+        motion = bool(f) and (f.data.get("ai_metadata") or {}).get("source") == "hyperframes_motion_graphics"
+        # a title is an SVG, as titles_text finds them
+        svg = bool(f) and str(f.data.get("path") or "").lower().endswith(".svg")
+        position, stop, _duration = clip_extent(c.data)
+        if (motion or svg) and position < end and start < stop:
+            out.append({"clip_id": str(c.id), "title": str(c.data.get("title") or c.id),
+                        "start": round(position, 3), "end": round(stop, 3)})
+    return out
+
+
 def _place_overlays(clip, caption_file, subject, start, duration, project, out_rel, placed) -> dict:
     receipt = {"timeline_clip_id": _place(caption_file.id, start, duration), "file_id": caption_file.id}
     placed.append(receipt["timeline_clip_id"])
@@ -503,6 +541,7 @@ def _place_overlays(clip, caption_file, subject, start, duration, project, out_r
             lift = BEHIND_SUBJECT_CENTRE - (band[0] + band[1]) / 2.0
             _set_geometry(receipt["timeline_clip_id"],
                           {"location_y": {"Points": [{"co": {"X": 1.0, "Y": lift}, "interpolation": 0}]}})
+    receipt["overlapping_overlays"] = on_main(_overlays_over, start, start + duration)
     return receipt
 
 
@@ -552,7 +591,8 @@ def add_captions(timeline_clip_id="", clip_query="", style=cap.DEFAULT_STYLE, be
         note = ", with the subject in front of them"
     elif behind_subject:
         note = "; no speaker was found in the shot, so they sit on top"
-    return ok("Added %d-word '%s' captions above the clip%s." % (r["words"], cap.STYLES[style]["label"], note), **r)
+    return ok("Added %d-word '%s' captions above the clip%s.%s" % (
+        r["words"], cap.STYLES[style]["label"], note, _overlay_note(r["overlapping_overlays"])), **r)
 
 
 def _speech_clips() -> list:
@@ -580,9 +620,11 @@ def _caption_project(style: str, behind_subject: bool):
     if not captioned:
         raise ToolError("no clip could be captioned: " + "; ".join(
             "%s: %s" % (s["title"], s["reason"]) for s in skipped[:5]))
-    return ok("Captioned %d of %d clip(s) with '%s' captions%s." % (
+    overlays = [o for c in captioned for o in c["overlapping_overlays"]]
+    return ok("Captioned %d of %d clip(s) with '%s' captions%s.%s" % (
         len(captioned), len(clips), cap.STYLES.get(style, {}).get("label", style),
-        "; %d skipped (no speech found or not captionable)" % len(skipped) if skipped else ""),
+        "; %d skipped (no speech found or not captionable)" % len(skipped) if skipped else "",
+        _overlay_note(overlays)),
         captioned=captioned, skipped=skipped, style=style)
 
 

@@ -341,3 +341,85 @@ def test_full_file_places_the_whole_render_without_a_watch():
                                 max_duration_seconds=20.0, full_file="true")
     kwargs = add_clip.call_args.kwargs
     assert kwargs["full_file"] == "true" and float(kwargs["end_seconds"]) == 20.0
+
+
+def test_cut_in_cuts_the_top_track_holding_footage_not_the_lowest():
+    # Footage is on the top track and the lowest track is empty: the picture the viewer sees is the top one.
+    f = _file(transparent=False, path="/tmp/plate.mp4")
+    app = _layers_app()
+    app.project.get.return_value = [{"number": n} for n in (1000000, 2000000, 3000000, 4000000)]
+    patches = _patch_place(f, [_clip("C1", 4000000, 0.0, end=10.0), _clip("C2", 4000000, 10.0, end=4.0)], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        out = th.place_motion_graphic(file_id="F1", position_seconds="5.0", duration_seconds="4.0", mode="cut_in")
+    assert not out.startswith("Error:")
+    assert add_clip.call_args.kwargs["track"] == "4000000"
+    app.updates.update.assert_any_call(["clips", {"id": "C2"}], {"position": 14.0})   # ripple and cut share a track
+
+
+def test_a_rendered_motion_graphic_is_placed_whole_without_asking():
+    # Files stamped by _stamp_motion_graphics_file_metadata: a visual watch trimmed a 20 s demo to 2-18 s.
+    f = _file(transparent=False, path="/tmp/demo.mp4", duration=20.0)
+    f.data["ai_metadata"]["source"] = "hyperframes_motion_graphics"
+    app = _layers_app()
+    patches = _patch_place(f, [], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        out = th.place_motion_graphic(file_id="F1", position_seconds="0", duration_seconds="20", mode="cut_in")
+    assert not out.startswith("Error:")
+    kwargs = add_clip.call_args.kwargs
+    assert kwargs["full_file"] == "true" and float(kwargs["end_seconds"]) == 20.0
+    assert kwargs["track"] == "1000000"                                 # no footage: the lowest track, as before
+
+
+def test_gap_is_refused_when_footage_sits_above_the_mid_track():
+    # Gap puts the graphic on the mid track; footage above it would hide the graphic.
+    f = _file(transparent=False, path="/tmp/plate.mp4")
+    app = _layers_app()
+    patches = _patch_place(f, [_clip("C1", 3000000, 0.0, end=10.0)], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        out = th.place_motion_graphic(file_id="F1", position_seconds="2.0", duration_seconds="2.0", mode="gap")
+    assert out.startswith("Error:")
+    add_clip.assert_not_called()
+
+
+def test_a_transparent_overlay_above_the_footage_is_not_the_cut_in_picture():
+    # Captions sit above the footage on a transparent overlay: the cut ripples the footage, not the captions.
+    f = _file(transparent=False, path="/tmp/plate.mp4")
+    app = _layers_app()
+    app.project.get.return_value = [{"number": n} for n in (1000000, 2000000, 3000000, 4000000)]
+    footage, captions = _clip("FOOT", 1000000, 0.0, end=20.0), _clip("CAP", 4000000, 6.0, end=6.0)
+    footage.data["file_id"], captions.data["file_id"] = "FOOT_FILE", "CAP_FILE"
+    overlay = SimpleNamespace(id="CAP_FILE", data={"path": "/tmp/captions.webm", "ai_metadata": {"transparent": True}})
+    patches = _patch_place(f, [footage, captions], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        sys.modules["classes.query"].File.filter.return_value = [overlay]
+        out = th.place_motion_graphic(file_id="F1", position_seconds="5.0", duration_seconds="2.0", mode="cut_in")
+    assert not out.startswith("Error:")
+    assert add_clip.call_args.kwargs["track"] == "1000000"
+    app.updates.update.assert_not_called()
+
+
+def test_a_title_above_the_footage_is_not_the_cut_in_picture():
+    # Titles are SVG images: visual, but not tagged transparent. The cut still belongs on the footage.
+    f = _file(transparent=False, path="/tmp/plate.mp4")
+    app = _layers_app()
+    app.project.get.return_value = [{"number": n} for n in (1000000, 2000000, 3000000, 4000000)]
+    footage, title = _clip("FOOT", 1000000, 0.0, end=20.0), _clip("TITLE", 4000000, 4.0, end=5.0)
+    footage.data["file_id"], title.data["file_id"] = "FOOT_FILE", "TITLE_FILE"
+    svg = SimpleNamespace(id="TITLE_FILE", data={"path": "/project/title/Lower_third.svg", "ai_metadata": {}})
+    patches = _patch_place(f, [footage, title], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        sys.modules["classes.query"].File.filter.return_value = [svg]
+        out = th.place_motion_graphic(file_id="F1", position_seconds="5.0", duration_seconds="2.0", mode="cut_in")
+    assert not out.startswith("Error:")
+    assert add_clip.call_args.kwargs["track"] == "1000000"
+
+
+def test_a_rendered_motion_graphic_longer_than_a_minute_is_placed_whole():
+    f = _file(transparent=False, path="/tmp/explainer.mp4", duration=90.0)
+    f.data["ai_metadata"]["source"] = "hyperframes_motion_graphics"
+    app = _layers_app()
+    patches = _patch_place(f, [], app)
+    with patches[0], patches[1], patches[2] as add_clip, patches[3]:
+        th.place_motion_graphic(file_id="F1", position_seconds="0", duration_seconds="", mode="gap")
+    kwargs = add_clip.call_args.kwargs
+    assert float(kwargs["duration_seconds"]) == 90.0 and float(kwargs["end_seconds"]) == 90.0

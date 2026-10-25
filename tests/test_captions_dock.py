@@ -1,6 +1,6 @@
 """The Captions dock, as real Qt widgets over a fake project (run with ZENVI_REAL_QT=1).
 
-Words load when a clip is selected, "Behind the speaker" is offered only where
+Words load when a clip is selected while the dock is on screen, "Behind the speaker" is offered only where
 someone is on camera, and a running job shows its stage with a clock.
 """
 
@@ -28,6 +28,7 @@ class _Window(QObject):
 def dock(monkeypatch):
     app = QApplication.instance() or QApplication([])
     from classes import query, tool_handlers
+    from classes import hyperframes_local as hf
     from classes.editor_tools import titles_text_captions as tool
     from windows.views import captions_dock
 
@@ -53,7 +54,10 @@ def dock(monkeypatch):
     monkeypatch.setattr(tool, "has_subject", lambda clip: pytest.fail("a selection must not probe frames"))
     monkeypatch.setattr(tool, "on_progress", None)
     monkeypatch.setattr(tool_handlers, "execute_tool", execute)
+    monkeypatch.setattr(captions_dock, "_recogniser_on_disk", lambda: True)          # Whistle is in place
+    monkeypatch.setattr(hf, "recogniser", lambda: "whistle")
     state.dock = captions_dock.CaptionsDock()
+    state.dock.show()                                    # on screen: a selection reads the words
     return state
 
 
@@ -78,6 +82,73 @@ def test_words_load_on_selection_and_follow_the_selection(dock):
     _pump(dock.app, 1.0)
     assert dock.loads == ["A", "B"] and d.wordsEdit.toPlainText() == "hello B"
     assert not d._busy and d.generateButton.isEnabled()
+
+
+def test_a_hidden_dock_reads_no_words_until_it_is_shown(dock):
+    d = dock.dock
+    d.hide()
+    _select(dock, "A")
+    _pump(dock.app, 0.6)
+    assert dock.loads == [] and not d._busy and d.wordsEdit.toPlainText() == ""
+    d.show()                                             # the selection is read once it is on screen
+    _pump(dock.app, 0.6)
+    assert dock.loads == ["A"] and d.wordsEdit.toPlainText() == "hello A"
+    d.hide()
+    _select(dock, "B")
+    _select(dock, "A")                                   # back on A while hidden: read again when shown
+    _pump(dock.app, 0.6)
+    assert dock.loads == ["A"]
+    d.show()
+    _pump(dock.app, 0.6)
+    assert dock.loads == ["A", "A"] and d.wordsEdit.toPlainText() == "hello A"
+
+
+@pytest.mark.parametrize("chosen", ["whistle", "parakeet"])
+def test_a_selection_never_downloads_or_asks_for_a_missing_recogniser(dock, recognisers, monkeypatch, chosen):
+    from classes import hyperframes_local as hf
+    from windows.views import captions_dock
+
+    def refuse(what):
+        def fail(*_args):
+            pytest.fail("a selection must not %s" % what)
+        return fail
+
+    recognisers.chosen = chosen
+    recognisers.installed[chosen] = False
+    monkeypatch.setattr(hf, "install_speech", refuse("download the Whistle recogniser"))
+    monkeypatch.setattr(hf, "install_parakeet", refuse("download the Parakeet recogniser"))
+    monkeypatch.setattr(captions_dock, "_confirm_download", refuse("ask before downloading"))
+    _select(dock, "A")
+    _pump(dock.app, 0.6)
+    assert dock.loads == [] and not dock.dock._busy
+
+
+def test_buttons_come_back_when_a_read_ends_after_the_dock_was_hidden(dock):
+    d = dock.dock
+    _select(dock, "A")                                   # its read is under way
+    d.hide()
+    _select(dock, "B")
+    _pump(dock.app, 0.6)
+    assert d.generateButton.isEnabled() and not d._busy
+
+
+def test_a_job_result_is_not_replaced_by_the_recogniser_hint(dock, recognisers):
+    recognisers.installed["whistle"] = False             # no recogniser: the selection shows the hint
+    _select(dock, "A")
+    _pump(dock.app, 0.3)
+    assert "download" in dock.dock.statusLabel.text().lower()
+    dock.dock.removeButton.click()
+    _pump(dock.app, 1.6)
+    assert dock.dock.statusLabel.text() == "Done."
+
+
+def test_a_failed_download_keeps_its_error_on_the_selected_clip(dock, recognisers):
+    recognisers.dock.show()
+    recognisers.chosen, recognisers.answer, recognisers.fail = "parakeet", True, True
+    _select(dock, "A")
+    _pick(recognisers, "parakeet")
+    _pump(dock.app, 0.8)
+    assert "no network" in recognisers.dock.statusLabel.text()
 
 
 def test_behind_the_speaker_is_offered_only_where_someone_is_on_camera(dock):
@@ -131,6 +202,7 @@ def recognisers(dock, monkeypatch):
     monkeypatch.setattr(hf, "speech_ready", lambda fresh=False: state.installed["whistle"])
     monkeypatch.setattr(hf, "status", lambda: {"ready": True, "speech": state.installed["whistle"],
                                                "parakeet": state.installed["parakeet"]})
+    monkeypatch.setattr(captions_dock, "_recogniser_on_disk", lambda: state.installed[hf.recogniser()])
     monkeypatch.setattr(hf, "install_speech", install("whistle"))
     monkeypatch.setattr(hf, "install_parakeet", install("parakeet"))
     monkeypatch.setattr(captions_dock, "_confirm_download",

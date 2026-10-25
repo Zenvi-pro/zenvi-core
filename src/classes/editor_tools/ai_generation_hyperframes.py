@@ -32,6 +32,7 @@ from classes.editor_tools._base import (
     th,
 )
 from classes.editor_tools._registry import editor_tool
+from themes.cosmic.tokens import TOKENS
 
 MAX_READ_LINES = 400
 MAX_WRITE_BYTES = 2 * 1024 * 1024
@@ -63,20 +64,33 @@ def _project_media() -> list:
 # Setup
 # ---------------------------------------------------------------------------
 
-def _ask_install_consent(steps) -> bool:
+# Qt's stock question icon is dark grey on the black theme; this one uses the theme's primary-button colours.
+_QUESTION_ICON = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<circle cx="16" cy="16" r="15" fill="%(primary)s"/>'
+    '<path d="M11.6 12.6A4.4 4.4 0 1 1 16 17v2.6" fill="none" stroke="%(primary_text)s" stroke-width="2.6" '
+    'stroke-linecap="round" stroke-linejoin="round"/>'
+    '<circle cx="16" cy="23.2" r="1.6" fill="%(primary_text)s"/></svg>') % TOKENS
+
+
+def _ask_install_consent(steps, title="", intro="") -> bool:
     def _ask():
-        from PyQt5.QtWidgets import QMessageBox
+        from qt_api import QMessageBox, QPixmap
 
         from classes.app import get_app
 
         _ = get_app()._tr
         lines = "\n".join("  • " + s["label"] for s in steps)
-        answer = QMessageBox.question(
-            get_app().window, _("Set up motion graphics"),
-            _("Zenvi renders motion graphics, product demos and captions on this computer with HyperFrames. "
-              "This needs a one-time install:") + "\n\n" + lines + "\n\n" + _("Install now?"),
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-        return answer == QMessageBox.Yes
+        text = ((intro or _("Zenvi renders motion graphics, product demos and captions on this computer with "
+                            "HyperFrames. This needs a one-time install:"))
+                + "\n\n" + lines + "\n\n" + _("Install now?"))
+        box = QMessageBox(QMessageBox.Question, title or _("Set up motion graphics"), text,
+                          QMessageBox.Yes | QMessageBox.No, get_app().window)
+        icon = QPixmap()
+        icon.loadFromData(_QUESTION_ICON.encode("utf-8"), "SVG")
+        box.setIconPixmap(icon)
+        box.setDefaultButton(QMessageBox.Yes)
+        return box.exec_() == QMessageBox.Yes
 
     return bool(on_main(_ask, timeout=600))
 

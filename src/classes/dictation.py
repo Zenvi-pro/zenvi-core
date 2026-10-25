@@ -78,7 +78,7 @@ def live_engine() -> bool:
     return not _parakeet()
 
 
-def _rms(chunk: bytes) -> float:
+def rms(chunk: bytes) -> float:
     samples = array.array("h", chunk[:len(chunk) // 2 * 2])
     if sys.byteorder == "big":
         samples.byteswap()
@@ -121,9 +121,14 @@ def transcribe(pcm: bytes, parakeet: Optional[bool] = None) -> str:
     return " ".join(" ".join(str(w.get("text") or "").strip() for w in words).split())
 
 
+def made_up(text: str) -> bool:
+    """Whether *text* is only what a recogniser makes up for a quiet take (see MADE_UP)."""
+    return re.sub(r"[^a-z ]", "", text.lower()).strip() in MADE_UP
+
+
 def _heard_words(pcm: bytes, parakeet: bool) -> str:
     text = transcribe(pcm, parakeet)
-    return "" if re.sub(r"[^a-z ]", "", text.lower()).strip() in MADE_UP else text
+    return "" if made_up(text) else text
 
 
 class Dictation:
@@ -168,7 +173,7 @@ class Dictation:
             chunk = self._proc.stdout.read(3200)    # 100 ms
             if not chunk:
                 return
-            level = _rms(chunk)
+            level = rms(chunk)
             with self._lock:
                 self._pcm += chunk
                 self._levels.append(level)

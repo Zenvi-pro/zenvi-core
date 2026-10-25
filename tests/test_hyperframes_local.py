@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 
 import pytest
 
@@ -185,6 +186,7 @@ def test_status_and_install_plan(home, monkeypatch):
     (home / "node_modules" / "hyperframes" / "package.json").write_text(json.dumps({"version": hf.CLI_VERSION}))
     (home / "chrome").write_text("")
     (home / "install.json").write_text(json.dumps({"browser": str(home / "chrome")}))
+    (home / ".agents" / "skills" / hf.SKILLS_MARKER).write_text(hf.SKILLS_SOURCE)
     st = hf.status()
     assert st["ready"] is True and st["cli"] == hf.CLI_VERSION and st["skills"] == 1
     # the speech recogniser is part of setup, but nothing that renders waits for it
@@ -202,6 +204,27 @@ def test_status_and_install_plan(home, monkeypatch):
         ["hyperframes", "models", "install", "parakeet"]]
     hf.remember(node=st["node"])
     assert json.loads((home / "install.json").read_text())["node"] == "/opt/node"
+
+
+def test_skills_come_from_a_pinned_skills_release_and_the_cli_tags_commit(home, monkeypatch):
+    monkeypatch.setattr(hf, "find_program", lambda name: None)
+    (step,) = [s for s in hf.install_plan(dict(hf.status(), skills=0)) if s["id"] == "skills"]
+    argv = step["argv"]
+    # an exact skills CLI release, and the commit the v0.8.115 tag (CLI_VERSION) points at: no moving name or branch
+    assert argv[:2] == ["npx", "--yes"] and re.fullmatch(r"skills@\d+\.\d+\.\d+", argv[2])
+    assert argv[3:5] == ["add", "heygen-com/hyperframes#461d83cd69d67b92f4ca45fd2b840a77da2f85c8"]
+    assert argv[5:] == ["--agent", "universal", "--copy", "--full-depth", "--yes"]
+
+
+def test_skills_installed_from_another_source_are_installed_again(home):
+    # The fixture's skills carry no record of where they came from, like an install made before pinning.
+    assert hf.status()["skills"] == 0 and "skills" in [s["id"] for s in hf.install_plan(hf.status())]
+    with open(os.path.join(hf.skills_dir(), hf.SKILLS_MARKER), "w") as fh:
+        fh.write(hf.SKILLS_SOURCE)
+    assert hf.status()["skills"] == 1
+    with open(os.path.join(hf.skills_dir(), hf.SKILLS_MARKER), "w") as fh:
+        fh.write("heygen-com/hyperframes")                 # the unpinned head of an earlier release
+    assert hf.status()["skills"] == 0
 
 
 def test_node_is_downloaded_into_the_private_folder_and_checksum_checked(home, monkeypatch, tmp_path):

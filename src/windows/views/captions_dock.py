@@ -7,6 +7,7 @@ clip's own transcript; editing them fixes what the recogniser got wrong.
 
 from __future__ import annotations
 
+import os
 import threading
 
 from qt_api import (
@@ -27,6 +28,14 @@ from classes import hyperframes_local as hf
 from classes.app import get_app
 from classes.logger import log
 
+
+
+def _recogniser_on_disk() -> bool:
+    """Whether the chosen recogniser's files are there. Not hf.status(): that hashes models and waits on a
+    running download, and this runs on the GUI thread for every selection (the run itself verifies them)."""
+    if hf.recogniser() == "parakeet":
+        return os.path.isfile(hf._parakeet_model())
+    return os.path.isfile(hf.speech_engine()) and os.path.isfile(hf.speech_model())
 
 
 def _confirm_download(parent, label) -> bool:
@@ -225,10 +234,15 @@ class CaptionsDock(QWidget):
             self.statusLabel.setText(_("Now using %s.") % spec["models"][name][0])
         self._fill_picker(kind)
         self._refresh_enabled()
-        if self._clip_id and self._words_for != self._clip_id:      # the selection moved on during the download
+        if not error and self._clip_id and self._words_for != self._clip_id:      # read the words waiting for it
             self.load_words()
 
     # -- selection ----------------------------------------------------------
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._words_for != self._clip_id:            # selected, or moved on, while the dock was hidden
+            self.load_words()
 
     def selection_changed(self):
         from classes.query import Clip
@@ -239,6 +253,7 @@ class CaptionsDock(QWidget):
         if clip_id != self._clip_id:
             self._clip_id = clip_id
             self.wordsEdit.clear()
+            self._words_for = ""                        # the box holds no clip's words now
             _ = get_app()._tr
             self.clipLabel.setText(_("Captions for: %s") % (clip.data.get("title") or clip_id) if clip
                                    else _("Select a clip with speech on the timeline."))
@@ -327,9 +342,13 @@ class CaptionsDock(QWidget):
         threading.Thread(target=work, name="zenvi-captions-dock", daemon=True).start()
 
     def load_words(self):
-        if self._busy or not self._clip_id:
+        # A read can download the recogniser: only on screen, and only once it is in place (the picker or Generate)
+        if self._busy or not self._clip_id or not self.isVisible():
             return
         _ = get_app()._tr
+        if not _recogniser_on_disk():
+            self.statusLabel.setText(_("Download the speech recogniser to read this clip's words."))
+            return
         self._begin(_("Reading the clip's speech..."))
         clip_id = self._clip_id
 
@@ -356,7 +375,6 @@ class CaptionsDock(QWidget):
             self.statusLabel.setText(message)
         elif self._clip_id:                             # the selection moved on meanwhile: read that clip now
             self.load_words()
-            return
         else:
             self.statusLabel.clear()
         self._refresh_enabled()
@@ -386,7 +404,7 @@ class CaptionsDock(QWidget):
     def _on_finished(self, message):
         self._busy = False
         self._clock.stop()
-        self.statusLabel.setText(message)
         if self._clip_id and self._words_for != self._clip_id:      # the selection moved on during the job
             self.load_words()
+        self.statusLabel.setText(message)               # last: the result outranks a reload's hint
         self._refresh_enabled()

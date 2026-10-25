@@ -1,7 +1,9 @@
 """add / list / remove captions: HyperFrames caption styles from Zenvi's own transcript."""
 
+import array
 import json
 import os
+import wave
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +23,20 @@ COMPONENT = """<div data-composition-id="x" data-duration="8"></div>
 def _receipt(out):
     assert not out.startswith("Error"), out
     return json.loads(out.split("\n", 1)[1])
+
+
+SPEECH = [30] * 10 + [3000] * 20 + [30] * 10     # 100 ms levels: a quiet room, someone talking, quiet
+AMBIENCE = [30] * 50                             # a street with nobody talking in it
+
+
+def _wav(path, loudness):
+    """A 16 kHz mono speech.wav: a steady tone at each 100 ms level in *loudness*."""
+    pcm = array.array("h", [a * (1 if i % 2 else -1) for a in loudness for i in range(1600)])
+    with wave.open(path, "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(16000)
+        out.writeframes(pcm.tobytes())
 
 
 @pytest.fixture
@@ -321,6 +337,8 @@ def test_the_bundled_recogniser_times_the_words_when_zenvis_own_is_missing(edito
     def fake_run(project, program, args, **kw):
         ran.append((program, list(args)))
         os.makedirs(hf.project_dir(project), exist_ok=True)
+        if args[-1] == "speech.wav":                 # the clip's audio, cut from the media as ffmpeg does
+            _wav(os.path.join(hf.project_dir(project), "speech.wav"), SPEECH)
         if args[0] == "transcribe":
             open(os.path.join(hf.project_dir(project), "transcript.json"), "w").write(json.dumps(
                 [{"text": "Hello,", "start": 0.3, "end": 0.5}, {"text": "there.", "start": 0.6, "end": 1.1}]))
@@ -474,3 +492,64 @@ def test_the_cut_out_falls_back_to_hyperframes_own_and_can_be_chosen(editor, stu
     studio.commands.clear()
     _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True))
     assert fetched == [1] and not any(a[0] == "remove-background" for _p, a in studio.commands)
+
+
+def _recogniser_hears(studio, monkeypatch, loudness, heard):
+    """Whistle hears *heard* in the clip's own audio, which measures *loudness* (100 ms levels)."""
+    from classes.agent_tools import transcript
+
+    monkeypatch.undo()                                   # the real transcript_words, the rest re-patched below
+    monkeypatch.setattr(hf, "home", lambda: str(studio.tmp / "hyperframes"))
+    monkeypatch.setattr(hf, "status", lambda: {"ready": True, "parakeet": False})
+    monkeypatch.setattr(hf, "recogniser", lambda: "whistle")
+    monkeypatch.setattr(hf, "speech_ready", lambda fresh=False: True)
+    monkeypatch.setattr(hf, "transcribe", lambda wav: [
+        {"text": w, "start": 0.2 + 0.3 * i, "end": 0.45 + 0.3 * i} for i, w in enumerate(heard.split())])
+    monkeypatch.setattr(transcript, "get_transcript", lambda **kw: json.dumps(
+        {"contract": 3, "status": "ok", "summary": "no on-device transcript", "data": {"clips": []}}))
+    monkeypatch.setattr(tool_handlers, "_clip_transcript_cues", lambda clip_id: [])
+
+    def fake_run(project, program, args, **kw):
+        if args[-1] == "speech.wav":                     # the clip's audio, cut from the media as ffmpeg does
+            os.makedirs(hf.project_dir(project), exist_ok=True)
+            _wav(os.path.join(hf.project_dir(project), "speech.wav"), loudness)
+        return 0, "ok"
+
+    monkeypatch.setattr(hf, "run", fake_run)
+
+
+@pytest.mark.parametrize("loudness, heard, words", [
+    (AMBIENCE, "Thank you, Mr. President.", []),          # a street: nobody talks, yet words are heard
+    (SPEECH, "Thank you.", []),                            # talking, but only a phrase a quiet take makes up
+    (SPEECH, "Hello there world", ["Hello", "there", "world"]),
+])
+def test_only_clips_whose_audio_holds_speech_get_words(studio, monkeypatch, loudness, heard, words):
+    from classes.query import Clip
+
+    _recogniser_hears(studio, monkeypatch, loudness, heard)
+    assert [w["text"] for w in captions.clip_caption_words(Clip.get(id=studio.clip))] == words
+
+
+def test_a_clip_with_no_speech_is_not_counted_as_captioned(studio, monkeypatch):
+    _recogniser_hears(studio, monkeypatch, AMBIENCE, "Thank you, Mr. President.")
+    with pytest.raises(captions.ToolError, match="no spoken words"):      # skipped, like a clip with no sound
+        captions._caption_project("highlight", False)
+
+
+def test_captions_name_the_motion_graphics_and_titles_they_are_drawn_over(editor, studio):
+    from classes.query import File
+
+    assert _receipt(editor.call("add_captions_tool", timeline_clip_id=studio.clip))["overlapping_overlays"] == []
+
+    card = File.get(id=editor.add_file("video", path=str(studio.tmp / "dialogue-scene.webm")))
+    tool_handlers._stamp_motion_graphics_file_metadata(card, "Dialogue Scene", True)
+    lower = editor.add_clip(card.id, position=10.0, layer=L1 * 4, start=0.0, end=5.0, title="Dialogue Scene")
+    box = editor.add_clip(editor.add_file("video", path=str(studio.tmp / "Gray_Box.svg")), position=12.0,
+                          layer=L1 * 5, start=0.0, end=2.0, title="Gray box")
+    editor.add_clip(card.id, position=30.0, layer=L1 * 4, start=0.0, end=5.0, title="Later card")
+
+    out = editor.call("add_captions_tool", timeline_clip_id=studio.clip, behind_subject=True)   # subject too
+    named = {o["clip_id"]: (o["title"], o["start"], o["end"]) for o in _receipt(out)["overlapping_overlays"]}
+    assert named == {lower: ("Dialogue Scene", 10.0, 15.0), box: ("Gray box", 12.0, 14.0)}
+    summary = out.split("\n", 1)[0]
+    assert summary.endswith("drawn over 'Dialogue Scene', 'Gray box' and were not moved.")

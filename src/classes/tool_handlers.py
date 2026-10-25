@@ -8391,6 +8391,7 @@ def place_motion_graphic(
     mode=gap → opaque only when primary track is clear at [t,t+dur).
     mode=cut_in → opaque: ripple primary-track clips at/after t, then place as a cut.
     """
+    from classes.editor_tools.titles_text_common import _is_visual
     from classes.mg_placement import (
         file_looks_transparent,
         primary_track_overlaps,
@@ -8431,9 +8432,13 @@ def place_motion_graphic(
                 )
             except (TypeError, ValueError):
                 dur = 3.0
-        # 60 s guards a runaway graphic; a caller that covers a whole clip (captions) raises it.
+        ai_meta = file_data.get("ai_metadata")
+        rendered_mg = isinstance(ai_meta, dict) and ai_meta.get("source") == "hyperframes_motion_graphics"
+        # 60 s guards a runaway graphic; a caller that covers a whole clip (captions) raises it,
+        # and a finished render is as long as it is.
         try:
-            longest = float(_kw.get("max_duration_seconds") or 60.0)
+            own = float(file_data.get("duration") or 0) if rendered_mg else 0.0
+            longest = float(_kw.get("max_duration_seconds") or max(60.0, own))
         except (TypeError, ValueError):
             longest = 60.0
         if not 0 < longest < float("inf"):              # negative, NaN or infinite
@@ -8449,7 +8454,6 @@ def place_motion_graphic(
         )
         if not nums:
             nums = [1000000, 2000000, 3000000]
-        primary_layer = nums[0]
         mid_layer = nums[len(nums) // 2] if len(nums) > 1 else nums[0]
         overlay_layer = nums[-1]
         new_overlay_track = False
@@ -8458,6 +8462,15 @@ def place_motion_graphic(
             for c in Clip.filter()
             if isinstance(getattr(c, "data", None), dict)
         ]
+        # The picture is the topmost track with footage at [t, t+dur): higher numbers draw on top.
+        # Transparent overlays (captions, renders) and titles (SVG images) sit over the picture, not in it.
+        overlay_fids = {str(f.id) for f in File.filter() if file_looks_transparent(f.data)
+                        or str(f.data.get("path") or "").lower().endswith(".svg")}
+        footage = [c for c in clips_raw if _is_visual(c) and str(c.get("file_id") or "") not in overlay_fids]
+        primary_layer = max(
+            (n for n in nums if primary_track_overlaps(footage, layer=n, t0=t, t1=t + dur)),
+            default=nums[0],
+        )
 
         if str(track or "").strip():
             resolved, err = normalize_track_or_layer_arg(str(track).strip(), layers)
@@ -8485,8 +8498,6 @@ def place_motion_graphic(
             # the picture -- whichever track was asked for. Keep the asked-for track
             # when it is free, unlocked and above the picture; otherwise take the lowest
             # such track, or add one on top (same rule as titles' plan_overlay_track).
-            from classes.editor_tools.titles_text_common import _is_visual
-
             def _taken(layer, clips):
                 return primary_track_overlaps(clips, layer=layer, t0=t, t1=t + dur)
 
@@ -8535,7 +8546,7 @@ def place_motion_graphic(
                 new_lane[0] = lane
             if mode_s == "cut_in":
                 shifts = ripple_positions(
-                    clips_raw, layer=int(primary_layer), t=t, delta=dur
+                    clips_raw, layer=int(track_num), t=t, delta=dur
                 )
                 shift_box[0] = shifts
                 for cid, new_pos in shifts:
@@ -8572,6 +8583,8 @@ def place_motion_graphic(
         # ...and join the caller's undo step when a tool is already inside one.
         _composite_tid = getattr(app.updates, "transaction_id", None) or _new_transaction_id()
         _run_on_main_thread(_atomic(app, _ripple_and_stamp, tid=_composite_tid))
+        # A rendered motion graphic always goes on whole: a visual watch trims it to the window its query matched.
+        full_file = _kw.get("full_file") or ("true" if rendered_mg else "")
         # add_clip marshals Qt mutations itself
         result = add_clip_to_timeline(
             file_id=fid,
@@ -8579,8 +8592,8 @@ def place_motion_graphic(
             track=str(track_num),
             duration_seconds=str(dur),
             # full_file: the whole render, frame-exact, no visual search (captions are timed to speech).
-            end_seconds=str(dur) if _kw.get("full_file") else "",
-            full_file=str(_kw.get("full_file") or ""),
+            end_seconds=str(dur) if full_file else "",
+            full_file=str(full_file),
             query=watch_query,
             chat_session_id=_kw.get("chat_session_id", ""),
             transaction_id=_composite_tid,
