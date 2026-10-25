@@ -1,5 +1,6 @@
 """The shared handoff editor tools, called through execute_tool like the chat does (contract-3 receipts)."""
 
+import json
 import os
 
 import pytest
@@ -333,3 +334,130 @@ def test_after_effects_prores422_renders_are_linked_as_opaque(linked, tmp_path):
         assert stored["render"]["codec"] == "prores422" and "prores422" not in lm.ALPHA_CODECS
     finally:
         host.stop()
+
+
+AE_CATALOG = [
+    {"name": "ae_get_state", "title": "Get state", "description": "App, project, active comp.",
+     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+     "annotations": {"readOnlyHint": True}, "outputSchema": {"type": "object"}, "timeoutMs": 5000},
+    {"name": "ae_add_text", "title": "Add text", "description": "Text layer with tasteful defaults.",
+     "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "description": "The text."}},
+                     "required": ["text"], "additionalProperties": False},
+     "annotations": {"readOnlyHint": False}, "returnsImage": False},
+]
+PREMIERE_CATALOG = [
+    {"name": "premiere_get_state", "title": "Premiere Pro state", "description": "App, project, sequence.",
+     "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": True}},
+]
+DETAIL_KEYS = {"name", "title", "description", "inputSchema", "annotations"}
+
+
+def _big_catalog(n):
+    """*n* host tools whose schemas weigh what real ones do (~2 KB each: AE has 30 at ~70 KB in all)."""
+    props = {"option_%d" % i: {"type": "string", "description": "An option of this tool, described at the "
+                               "length the real After Effects tools use for theirs."} for i in range(12)}
+    return [{"name": "ae_tool_%02d" % i, "title": "Tool number %02d" % i,
+             "description": "Does one After Effects thing, with the caveats a model needs to know. " * 5,
+             "inputSchema": {"type": "object", "properties": props, "additionalProperties": False},
+             "annotations": {"readOnlyHint": False}, "outputSchema": {"type": "object", "properties": props},
+             "timeoutMs": 60000} for i in range(n)]
+
+
+def _second_host(linked, catalog=None, tools_error=None):
+    premiere = FakeHost(app="premiere")
+    premiere.tools = catalog if catalog is not None else PREMIERE_CATALOG
+    premiere.tools_error = tools_error
+    write_discovery(linked.user_path, premiere, app="premiere")
+    return premiere
+
+
+def test_include_tools_lists_each_connected_hosts_tools_by_name_and_title(linked, ae_host):
+    ae_host.tools = AE_CATALOG
+    r = linked.call_receipt("list_link_hosts_tool")
+    assert "tools" not in r["data"]["hosts"][0]  # off by default: the listing stays small
+    r = linked.call_receipt("list_link_hosts_tool", include_tools=True)
+    ae, pr = r["data"]["hosts"]
+    assert ae["tools"] == [{"name": "ae_get_state", "title": "Get state"}, {"name": "ae_add_text", "title": "Add text"}]
+    assert "tools" not in pr and "tools_error" not in pr  # not connected: nothing to list
+    assert "(2 tools)" in r["summary"] and r["status"] == "applied" and r["undoSteps"] == 0
+
+
+def test_named_tools_come_back_in_full_and_unknown_names_per_host(linked, ae_host):
+    ae_host.tools = AE_CATALOG
+    premiere = _second_host(linked)
+    try:
+        r = linked.call_receipt("list_link_hosts_tool", tools=["ae_add_text", "ae_nope", " ae_add_text "])
+        ae, pr = r["data"]["hosts"]
+        assert [t["name"] for t in ae["tools"]] == ["ae_add_text"]  # only what was asked for, once
+        assert set(ae["tools"][0]) == DETAIL_KEYS  # no outputSchema / timeoutMs / returnsImage
+        assert ae["tools"][0]["inputSchema"]["required"] == ["text"]  # what call_link_host_tool needs
+        assert ae["unknown_tools"] == ["ae_nope"] and "deferred_tools" not in ae
+        assert pr["tools"] == [] and pr["unknown_tools"] == ["ae_add_text", "ae_nope"]
+        assert "(1 described)" in r["summary"] and "No connected app has ae_nope." in r["summary"]
+        assert r["status"] == "applied" and r["undoSteps"] == 0
+        r = linked.call_receipt("list_link_hosts_tool", tools="premiere_get_state")  # a bare name works too
+        ae, pr = r["data"]["hosts"]
+        assert ae["tools"] == [] and [t["name"] for t in pr["tools"]] == ["premiere_get_state"]
+        assert "No connected app has" not in r["summary"]
+    finally:
+        premiere.stop()
+
+
+def test_include_tools_with_named_tools_expands_just_those(linked, ae_host):
+    ae_host.tools = AE_CATALOG
+    r = linked.call_receipt("list_link_hosts_tool", include_tools=True, tools=["ae_add_text"])
+    tools = r["data"]["hosts"][0]["tools"]
+    assert tools[0] == {"name": "ae_get_state", "title": "Get state"}
+    assert set(tools[1]) == DETAIL_KEYS and tools[1]["name"] == "ae_add_text"
+    assert "(2 tools, 1 described)" in r["summary"]
+
+
+def test_tool_listings_stay_small_enough_for_the_assistant_to_read(linked, ae_host):
+    from classes import tool_handlers
+    from classes.editor_tools import handoff as handoff_tools
+    from classes.handoff import adobe_link
+    ae_host.tools = _big_catalog(60)
+    whole = sum(handoff_tools._json_bytes(adobe_link.tool_details(t)) for t in ae_host.tools)
+    assert whole > 51_200  # every schema at once would be cut off (OpenCode keeps 51,200 bytes of a result)
+    listing = tool_handlers.execute_tool("list_link_hosts_tool", {"include_tools": True})
+    assert len(listing.encode("utf-8")) < 6_000, len(listing.encode("utf-8"))
+    names = [t["name"] for t in ae_host.tools]
+    out = tool_handlers.execute_tool("list_link_hosts_tool", {"tools": names})  # asking for everything
+    assert len(out.encode("utf-8")) < 51_200
+    ae = json.loads(out)["data"]["hosts"][0]
+    described = [t["name"] for t in ae["tools"]]
+    assert described and ae["deferred_tools"] and described + ae["deferred_tools"] == names
+    assert "ask again with tools=[%s]" % ", ".join(ae["deferred_tools"]) in json.loads(out)["summary"]
+
+
+def test_host_tool_catalogs_are_cached_per_host_session(linked, ae_host):
+    from classes.handoff import adobe_link
+    ae_host.tools = AE_CATALOG
+    lists = lambda: sum(1 for c in ae_host.calls if c.get("method") == "tools/list")  # noqa: E731
+    linked.call_receipt("list_link_hosts_tool", include_tools=True)
+    linked.call_receipt("list_link_hosts_tool", tools=["ae_add_text"])
+    adobe_link.tool_timeout("aftereffects", "ae_get_state")  # the call timeout reads the same cache
+    assert lists() == 1
+    write_discovery(linked.user_path, ae_host, pid=os.getppid())  # the extension restarted: new pid
+    linked.call_receipt("list_link_hosts_tool", include_tools=True)
+    assert lists() == 2
+    ae_host.tools = AE_CATALOG[:1]  # restarted again in the same helper process, same port: a new start time
+    write_discovery(linked.user_path, ae_host, pid=os.getppid(), started_at="2026-10-05T09:30:00Z")
+    r = linked.call_receipt("list_link_hosts_tool", include_tools=True)
+    assert lists() == 3 and [t["name"] for t in r["data"]["hosts"][0]["tools"]] == ["ae_get_state"]
+
+
+def test_a_host_that_cannot_list_its_tools_reports_the_error(linked, ae_host):
+    ae_host.tools = AE_CATALOG
+    premiere = _second_host(linked, tools_error="catalog failed to load")
+    try:
+        for args in ({"include_tools": True}, {"tools": ["ae_add_text", "premiere_get_state"]}):
+            r = linked.call_receipt("list_link_hosts_tool", **args)
+            ae, pr = r["data"]["hosts"]
+            assert pr["connected"] and "tools" not in pr and "unknown_tools" not in pr
+            assert pr["tools_error"]["code"] == "HOST_ERROR"
+            assert "catalog failed to load" in pr["tools_error"]["message"]
+            assert ae["tools"] and "(its tool list failed)" in r["summary"]  # the other app still lists
+            assert "No connected app has" not in r["summary"]  # Premiere may have it: we could not tell
+    finally:
+        premiere.stop()
