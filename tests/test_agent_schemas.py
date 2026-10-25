@@ -3,7 +3,6 @@
 import pytest
 
 from classes.agent_tools.schema import (
-    PRIORITY_SCHEMAS,
     TOOL_SCHEMAS,
     UNSCHEMATIZED,
     get_schema,
@@ -24,8 +23,8 @@ def test_unschematized_allowlist_is_empty():
     assert UNSCHEMATIZED == frozenset()
 
 
-def test_priority_schemas_reject_unknown_keys():
-    for name in PRIORITY_SCHEMAS:
+def test_schemas_reject_unknown_keys():
+    for name in TOOL_SCHEMAS:
         schema = get_schema(name)
         assert schema is not None
         assert schema.get("additionalProperties") is False
@@ -218,8 +217,13 @@ def _backend_value(annotation, prop_schema=None):
     ann = annotation.rstrip("!").replace(" ", "")
     if ann.startswith("Optional["):
         ann = ann[len("Optional["):-1]
+    types = (prop_schema or {}).get("type")
+    if ann == "str" and "array" in (types if isinstance(types, list) else [types]):
+        item = ((prop_schema or {}).get("items") or {}).get("type")
+        return '["x"]' if item == "string" else "[1]"  # the stub takes a JSON array as text, as the model sends it
     if ann == "float":
-        return 1.5
+        lo, hi = (prop_schema or {}).get("minimum"), (prop_schema or {}).get("maximum")
+        return 1.5 if (lo is None or lo <= 1.5) and (hi is None or hi >= 1.5) else (lo + hi) / 2
     if ann == "int":
         return 2
     if ann == "bool":
