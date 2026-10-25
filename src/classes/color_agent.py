@@ -718,7 +718,8 @@ def scope_look_distance(subject: dict, reference: dict) -> Optional[float]:
 # --- LookProfile: dense sample aggregation + inverse grade ---------------------
 
 LOOK_DISTANCE_MATCHED = 0.045
-LOOK_DISTANCE_CLOSE = 0.08
+
+
 _MAX_STEP = {
     "exposure": 0.35,
     "contrast": 0.25,

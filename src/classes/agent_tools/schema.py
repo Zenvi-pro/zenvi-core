@@ -17,22 +17,7 @@ from jsonschema import Draft202012Validator
 HIDDEN_PARAMS = frozenset({"self", "chat_session_id", "transaction_id"})
 
 # First wave (plan 3.3) — kept as a named set for tests / docs.
-PRIORITY_SCHEMAS = frozenset({
-    "add_clip_to_timeline_tool",
-    "delete_from_timeline_tool",
-    "slice_clips_tool",
-    "place_motion_graphic_tool",
-    "apply_transition_tool",
-    "set_clip_volume_tool",
-    "duck_under_speech_tool",
-    "import_files_tool",
-    "add_track_tool",
-    "add_marker_tool",
-    "modify_clip_tool",
-    "undo_tool",
-    "redo_tool",
-    "export_video_tool",
-})
+
 
 # Empty until every registered tool has a schema. CI fails if a handler is
 # registered but missing from TOOL_SCHEMAS and not listed here.

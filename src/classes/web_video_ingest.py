@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 
 
 # Pin floor documented in requirements; runtime checks major capability only.
-YT_DLP_MIN_VERSION = (2024, 1, 1)
+
 
 # Cache entries older than this are eligible for purge (seconds).
 DEFAULT_CACHE_TTL_SECONDS = 7 * 24 * 3600

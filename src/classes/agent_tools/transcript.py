@@ -148,8 +148,6 @@ def _words_payload(record_words, fps, *, generation: int) -> list[dict]:
 
 def _want_full_words(detail_level: str = "", include_words=None, **_kw) -> bool:
     """Verbose words[] array — only when explicitly requested."""
-    if include_words is None and _kw.get("include_words") is not None:
-        include_words = _kw.get("include_words")
     return _as_bool(include_words, False)
 
 

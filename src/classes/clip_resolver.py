@@ -99,12 +99,6 @@ def _metadata_corpus(ai: dict, *, max_scenes: int = 8) -> str:
     return " ".join(parts)
 
 
-def _clip_timeline_duration(data: dict, file_data: Optional[dict] = None) -> float:
-    """Timeline-visible duration for a clip (handles end=0 / full-file trims)."""
-    from classes.ai_metadata_utils import get_source_window
-
-    start, end = get_source_window(data, file_data)
-    return max(0.01, end - start)
 
 
 def _fmt_position_mmss(pos: float) -> str:
@@ -174,48 +168,6 @@ def _score_context_against_query(
     return min(score, 1.0)
 
 
-def _score_clip_against_query(
-    clip_data: dict,
-    file_data: Optional[dict],
-    ai: Optional[dict],
-    query: str,
-    *,
-    prefer_track: str = "",
-    prefer_position_near: float = 0.0,
-) -> float:
-    """Backward-compatible scoring wrapper for unit tests."""
-    from classes.ai_metadata_utils import build_summary_preview, get_effective_ai_metadata, get_source_window
-
-    fid = str(clip_data.get("file_id") or "")
-    base_file = dict(file_data) if isinstance(file_data, dict) else {}
-    if ai and not base_file.get("ai_metadata"):
-        base_file["ai_metadata"] = ai
-    effective = get_effective_ai_metadata(base_file or None, clip_data=clip_data, rebased=True)
-    if not effective and ai:
-        effective = ai
-    start, end = get_source_window(clip_data, file_data)
-    pos = float(clip_data.get("position", 0.0) or 0.0)
-    fname = ""
-    if file_data:
-        fname = str(file_data.get("name") or os.path.basename(str(file_data.get("path") or "")))
-    ctx = TimelineClipContext(
-        timeline_clip_id=str(clip_data.get("id", "")),
-        file_id=fid,
-        parent_file_id=fid,
-        source_path=str((file_data or {}).get("path") or ""),
-        source_start=start,
-        source_end=end,
-        timeline_position=pos,
-        timeline_duration=max(0.01, end - start),
-        timeline_end=pos + max(0.01, end - start),
-        layer=clip_data.get("layer"),
-        ui_track=None,
-        title=str(clip_data.get("title") or clip_data.get("label") or fname or "Clip"),
-        file_name=fname,
-        effective_metadata=effective or {},
-        summary_preview=build_summary_preview(effective),
-    )
-    return _score_context_against_query(ctx, query, prefer_position_near=prefer_position_near)
 
 
 def _candidate_from_context(ctx: TimelineClipContext) -> ClipCandidate:
@@ -235,24 +187,6 @@ def _candidate_from_context(ctx: TimelineClipContext) -> ClipCandidate:
     )
 
 
-def _enumerate_timeline_clips():
-    """Legacy tuple rows for tests patching this hook."""
-    from classes.query import Clip, File
-
-    rows = []
-    for ctx in enumerate_timeline_contexts():
-        clip_obj = Clip.get(id=ctx.timeline_clip_id)
-        if not clip_obj:
-            continue
-        data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
-        file_data = None
-        ai = ctx.effective_metadata or None
-        if ctx.file_id:
-            fobj = File.get(id=ctx.file_id)
-            if fobj and isinstance(fobj.data, dict):
-                file_data = fobj.data
-        rows.append((clip_obj, data, file_data, ai))
-    return rows
 
 
 def _project_layers() -> list:

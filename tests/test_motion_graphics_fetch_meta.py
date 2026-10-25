@@ -112,8 +112,6 @@ def test_import_generated_video_alpha_fail_closed_no_yuv420p():
     with patch.object(th, "_output_path_for_generated_video", return_value="/tmp/out.webm"), patch.object(
         th, "_canonical_media_path", side_effect=lambda p: p
     ), patch.object(th, "_looks_like_alpha_video", return_value=True), patch.object(
-        th, "_ffprobe_has_explicit_yuva", return_value=False
-    ), patch.object(
         th, "_reencode_alpha_for_openshot", return_value=(None, "vp9 alpha failed")
     ), patch.object(th, "_reencode_for_openshot") as opaque:
         f, err = th._import_generated_video("/tmp/src.webm", preserve_alpha=True)
@@ -362,7 +360,6 @@ def test_vp9_alpha_probe_is_yuv420p_not_yuva(tmp_path):
     mode = th._ffprobe_alpha_mode(str(path))
     assert pix == contract["expect_pix_fmt"]
     assert mode == contract["expect_alpha_mode"]
-    assert th._ffprobe_has_explicit_yuva(str(path)) is contract["expect_explicit_yuva"]
     assert th._ffprobe_has_alpha(str(path)) is True
 
 

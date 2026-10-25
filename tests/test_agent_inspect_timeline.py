@@ -23,12 +23,9 @@ def test_timeline_schema_golden():
     assert validate_args("inspect_timeline_tool", {"unknown": 1}) is not None
 
 
-def test_watch_suggested_keys_are_inspect_arguments():
-    from classes.agent_tools.receipt import WatchSuggested
-
-    watch = WatchSuggested("clip-a", 1.0, 3.0).to_dict()
-    assert set(watch) == {"timeline_clip_id", "start", "end"}
-    assert validate_args("inspect_timeline_tool", watch) is None
+def test_a_watch_window_is_inspect_arguments():
+    """The MCP instructions pass watchSuggested {timeline_clip_id, start, end} straight to inspect."""
+    assert validate_args("inspect_timeline_tool", {"timeline_clip_id": "clip-a", "start": 1.0, "end": 3.0}) is None
 
 
 def test_mid_bin_matches_plan_example():

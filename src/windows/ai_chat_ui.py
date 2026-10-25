@@ -177,9 +177,6 @@ def _markdown_to_html(text: str) -> str:
     return f'<div style="{style}">{body}</div>'
 
 
-def _plain_to_html(text: str) -> str:
-    """Escape plain text for safe HTML display."""
-    return "<p>" + html.escape(text).replace("\n", "<br/>") + "</p>"
 
 
 # Wrapper blocks prepended before sending to the LLM (editor snapshot + legacy clip context).
@@ -229,7 +226,7 @@ def _summarize_prompt(prompt: str, max_words: int = 6) -> str:
     return _short_title(prompt, max_words)
 
 
-REQUEST_TIMEOUT_SECONDS = 120
+
 
 # Mirrors backend PLANNING_ALLOWLIST — tools safe to run in Plan mode.
 _PLANNING_SAFE_TOOLS = frozenset({

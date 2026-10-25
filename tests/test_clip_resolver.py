@@ -10,7 +10,6 @@ if _ROOT not in sys.path:
 
 from classes.clip_resolver import (  # noqa: E402
     MIN_CONFIDENCE,
-    _score_clip_against_query,
     resolve_clip_pair,
     resolve_timeline_clip,
     search_timeline_placements,
@@ -96,47 +95,6 @@ def _patch_contexts(contexts):
     )
 
 
-def test_score_substring_and_tag_overlap():
-    score = _score_clip_against_query(
-        {"title": "Beach Interview", "layer": 1000000},
-        {"name": "interview.mp4"},
-        {
-            "tags": {"objects": ["dog"], "scenes": ["beach"]},
-            "description": "person talks on the beach",
-        },
-        "beach interview",
-    )
-    assert score >= MIN_CONFIDENCE
-
-
-def test_score_ignores_scenes_outside_trim():
-    ai = {
-        "analyzed": True,
-        "tags": {"objects": ["car"], "scenes": []},
-        "scene_descriptions": [{"time": 50.0, "description": "car on highway"}],
-    }
-    score = _score_clip_against_query(
-        {"title": "Trimmed", "start": 0.0, "end": 10.0},
-        {"name": "clip.mp4", "duration": 120.0},
-        ai,
-        "car highway",
-    )
-    assert score == 0.0
-
-
-def test_score_includes_scenes_inside_trim():
-    ai = {
-        "analyzed": True,
-        "tags": {"objects": ["cat"], "scenes": []},
-        "scene_descriptions": [{"time": 5.0, "description": "cat playing"}],
-    }
-    score = _score_clip_against_query(
-        {"title": "Trimmed", "start": 0.0, "end": 10.0},
-        {"name": "clip.mp4", "duration": 120.0},
-        ai,
-        "cat",
-    )
-    assert score >= MIN_CONFIDENCE
 
 
 def test_timeline_clip_id_takes_priority():

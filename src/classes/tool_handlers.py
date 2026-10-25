@@ -702,7 +702,6 @@ def _fmt_mmss(seconds: float) -> str:
     return f"{m}:{s:02d}"
 
 
-MAX_PLACE_SPAN_SEC = 20.0
 
 
 def _as_error(message) -> str:
@@ -891,21 +890,12 @@ def _upload_generation_assets(client, seed_path=None, frame_specs=None):
 
 
 # Kling O1 Pro via Runware — desktop-side constraints (mirror backend constants).
-_KLING_O1_ALLOWED_DURATIONS = [5, 10]
+
+
 _KLING_O1_MIN_DIM = 720
 _KLING_O1_MAX_DIM = 2160
 
 
-def _snap_kling_o1_duration(duration):
-    """Snap to Kling O1 Pro duration: default 5s; use 10s only when clearly requested (>= 8)."""
-    try:
-        val = float(duration)
-    except (TypeError, ValueError):
-        return 5
-    val = max(1, min(10, val))
-    if val >= 8:
-        return 10
-    return 5
 
 
 # Managed generation (Grok Imagine) takes any whole-second length in this range.
@@ -973,7 +963,6 @@ _last_split_file_id_by_chat_session = {}
 
 
 # ---------------------------------------------------------------------------
-_TAGS_PREVIEW_MAX = 80
 
 
 def _summary_preview_for_file_data(file_data: dict, clip_data: dict | None = None) -> str:
@@ -2448,10 +2437,6 @@ def _ffprobe_has_alpha(path) -> bool:
     return mode in ("1", "true", "yes")
 
 
-def _ffprobe_has_explicit_yuva(path) -> bool:
-    """True when primary pix_fmt is already yuva* (rare for libvpx WebM)."""
-    pix = _ffprobe_pix_fmt(path)
-    return bool(pix and "yuva" in pix)
 
 
 def _verify_decoded_alpha_pixels(path, *, force_libvpx=None) -> bool:
@@ -2747,64 +2732,6 @@ def _merge_baked_transition_metadata(
     return ", ".join(tag_tokens), ai_merged
 
 
-def _merge_file_tags_and_metadata(*file_objs):
-    """Merge comma-separated tags and ai_metadata tag lists from File objects."""
-    tag_tokens = []
-    seen_tags = set()
-    list_keys = ("objects", "scenes", "activities", "mood")
-    ai_merged = {
-        "analyzed": True,
-        "tags": {key: [] for key in list_keys},
-    }
-    seen_lists = {key: set() for key in list_keys}
-    descriptions = []
-    scene_descriptions = []
-
-    for file_obj in file_objs:
-        if not file_obj or not isinstance(getattr(file_obj, "data", None), dict):
-            continue
-        data = file_obj.data
-        for part in str(data.get("tags") or "").split(","):
-            token = part.strip()
-            if not token:
-                continue
-            key = token.lower()
-            if key in seen_tags:
-                continue
-            seen_tags.add(key)
-            tag_tokens.append(token)
-
-        ai = data.get("ai_metadata")
-        if not isinstance(ai, dict):
-            continue
-        tags = ai.get("tags")
-        if isinstance(tags, dict):
-            for key in list_keys:
-                vals = tags.get(key) or []
-                if not isinstance(vals, list):
-                    continue
-                for val in vals:
-                    text = str(val).strip()
-                    if not text:
-                        continue
-                    norm = text.lower()
-                    if norm in seen_lists[key]:
-                        continue
-                    seen_lists[key].add(norm)
-                    ai_merged["tags"][key].append(text)
-        desc = ai.get("description")
-        if desc and str(desc).strip():
-            descriptions.append(str(desc).strip())
-        for scene in ai.get("scene_descriptions") or []:
-            if isinstance(scene, dict) and scene.get("description"):
-                scene_descriptions.append(scene)
-
-    if descriptions:
-        ai_merged["description"] = " | ".join(descriptions[:3])
-    if scene_descriptions:
-        ai_merged["scene_descriptions"] = scene_descriptions[:24]
-
-    return ", ".join(tag_tokens), ai_merged
 
 
 def _clip_source_range(clip_data, file_data, fallback_duration=0.0):
@@ -7405,17 +7332,6 @@ def _framescope_from_frame(frame) -> dict:
     return ca.scope_from_raw_video(video)
 
 
-def _measure_frame_scopes(frame_number: int) -> dict:
-    """Run FrameScope on a composited timeline frame (safe off the GUI thread)."""
-    app = _get_app()
-    timeline = getattr(getattr(app.window, "timeline_sync", None), "timeline", None)
-    if not timeline:
-        return {"present": False, "error": "no timeline"}
-    try:
-        frame = timeline.GetFrame(int(frame_number))
-        return _framescope_from_frame(frame)
-    except Exception as exc:
-        return {"present": False, "error": str(exc)}
 
 
 def _clip_local_frame_number(clip_data: dict, timeline_frame: int, fps_float: float) -> int:
@@ -7574,11 +7490,6 @@ def _render_clip_isolated(
                 pass
 
 
-def _measure_clip_isolated_scopes(clip_data: dict, timeline_frame: int, fps_float: float) -> dict:
-    """Back-compat: scopes only from an isolated clip render."""
-    return _render_clip_isolated(
-        clip_data, timeline_frame, fps_float, with_jpeg=False
-    ).get("scopes") or {"present": False}
 
 
 def _clip_duration_seconds(clip_data: dict) -> float:
