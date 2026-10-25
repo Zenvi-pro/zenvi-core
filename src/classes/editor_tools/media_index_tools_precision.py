@@ -494,7 +494,7 @@ def get_framing(start_seconds, end_seconds, file_ids=None, file_query="", aspect
     prop = place["property"]
     suggestion = {"properties": {"scale": "Crop", "gravity": "Center", prop: place["static"]}}
     if place.get("keyframes"):
-        suggestion["keyframes"] = {prop: place["keyframes"], "note": "the subject moves: set these with set_clip_properties_tool(at_seconds=...) on the timeline, or let reframe_to_subject_tool do it"}
+        suggestion["keyframes"] = {prop: place["keyframes"], "note": "the subject moves: set these with run_tool(name='set_clip_properties_tool', args={'at_seconds': ...}) on the timeline, or let run_tool(name='reframe_to_subject_tool') do it"}
     sure = "" if result["sure"] else " Not sure: nothing stands out clearly, so check this shot by eye."
     if person and not result.get("person_in_shot"):
         sure += f" {person} was not found on screen in this stretch, so this follows the main subject instead."

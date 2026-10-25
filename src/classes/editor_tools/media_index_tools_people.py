@@ -198,7 +198,7 @@ def list_people(include_minor=False):
     return ok(f"{len(shown)} people" + (f" ({len(rows) - len(shown)} brief appearances hidden)" if len(rows) > len(shown) else "") + ".", changed=False,
               people=shown[:MAX_LISTED], hidden=len(rows) - len(shown), unnamed=sum(1 for r in shown if not r["name"]),
               note="names come only from the user; an id like P3 is just a label. likely_same_as pairs a voice with a face that is on screen "
-                   "while it speaks: if the user agrees they are one person, merge_people_tool joins them")
+                   "while it speaks: if the user agrees they are one person, run_tool(name='merge_people_tool') joins them")
 
 
 def _file_track(fi, seconds: float, track_id: str = ""):
@@ -286,7 +286,7 @@ def name_person(name, person_id="", file_id="", seconds=None, track_id="", by="f
             out = pp.name_person(str(person_id), clean)
         except KeyError:
             raise ToolError(f"no person {person_id!r} (run_tool(name='list_people_tool') lists them)")
-        return ok(f"{out['id']} is now called {out['name']}.", changed=True, person=out, **({"warning": f"{out['same_name_as']} has the same name: merge_people_tool if they are one person"} if out["same_name_as"] else {}))
+        return ok(f"{out['id']} is now called {out['name']}.", changed=True, person=out, **({"warning": f"{out['same_name_as']} has the same name: run_tool(name='merge_people_tool') if they are one person"} if out["same_name_as"] else {}))
     if not file_id or seconds is None:
         raise ToolError("say who: a person_id, or a file_id and the time they are on screen")
     files, _m = _fi_by_file([str(file_id)])
@@ -440,7 +440,7 @@ def locate_person(person, for_action="", file_ids=None, limit=20):
             hit["handoff"] = handoff.mask_handoff(seed, width, height, float(video.get("fps") or 0.0), frames, for_action) or {"unavailable": "no usable box or frame size"}
     who = found[0].get("name") or found[0]["id"]
     return ok(f"{who} is on screen in {len(hits)} place(s)." if hits else f"{who} was not found on screen in the scanned footage.", changed=False, hits=hits,
-              note="only footage with a people scan is searched (scan_people_tool); a possible match is left out, so a missing result is not proof of absence")
+              note="only footage with a people scan is searched (run_tool(name='scan_people_tool')); a possible match is left out, so a missing result is not proof of absence")
 
 
 # ============================ erase ============================

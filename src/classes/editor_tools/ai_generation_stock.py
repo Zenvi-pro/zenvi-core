@@ -93,7 +93,7 @@ def search_stock_video(query, count=8, min_seconds=0.0, orientation="any"):
                   results=[], total=int(data.get("total_results") or 0))
     log.info("stock search %r: %d result(s)", text, len(rows))
     return ok(f"{len(rows)} stock clip(s) for {text!r} (of {int(data.get('total_results') or 0):,}); import one with "
-              "import_stock_media_tool(source='pexels', video_id=<video_id>).", results=rows, total=int(data.get("total_results") or 0))
+              "run_tool(name='import_stock_media_tool', args={'source': 'pexels', 'video_id': <video_id>}).", results=rows, total=int(data.get("total_results") or 0))
 
 
 def search_stock_for(query: str, min_seconds: float = 0.0, count: int = 3) -> Optional[List[Dict[str, Any]]]:

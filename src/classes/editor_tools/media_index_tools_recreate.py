@@ -193,7 +193,7 @@ def plan_recreation(reference_file_id, source_file_ids=[], max_reuse=1, stock="a
     notes = [_row_line(r, plan) for r in rows]
     return ok(head, plan_id=plan_id, notes="\n".join(notes), matched=out["matched"], weak_shots=weak, unfilled=out["unfilled"], reuse=reuse,
               stock_searched=stock_ok, not_indexed=missing[:20],
-              next="build_recreation_tool(plan_id) places it; then check_recreation_tool. Weak or unfilled shots: use a stock suggestion or accept a weak match.")
+              next="run_tool(name='build_recreation_tool', args={'plan_id': ...}) places it; then run_tool(name='check_recreation_tool'). Weak or unfilled shots: use a stock suggestion or accept a weak match.")
 
 
 # ============================ build ============================
@@ -663,7 +663,7 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
     return ok(f"Placed {len(placed_ids)} shot(s) on track '{plan['track_name']}' (replaced {replaced}), graded {graded} ({ramped} with a brightness ramp), zoomed in on {len(zoomed)} to match the reference's framing, {made_t} dissolve/fade transition(s) ({skipped_t} skipped).{song_note}"
               + (f" Unfilled: {unfilled}." if unfilled else "") + playback_note,
               plan_id=plan["id"], placed=len(placed_ids), replaced=replaced, graded=graded, ramped=ramped, zoomed=zoomed, transitions=made_t, transitions_skipped=skipped_t, unfilled=unfilled,
-              next="check_recreation_tool(plan_id) scores it against the reference; fix the shots it names, then check again.")
+              next="run_tool(name='check_recreation_tool', args={'plan_id': ...}) scores it against the reference; fix the shots it names, then check again.")
 
 
 # ============================ check ============================
@@ -999,7 +999,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pic
               graded=graded, slots=len(slots),
               transitions={"reference_fades_and_dissolves": len(ref_transitions), "timeline_transitions": len(transitions),
                            "at": [_mmss(s["start"]) + " " + str((s.get("opens_with") or {}).get("kind")) for s in ref_transitions[:12]]},
-              next="Fix the shots in `failing` with build_recreation_tool (overrides/only_shots), then check again. Stop at PASS or after three rounds with no change.")
+              next="Fix the shots in `failing` with run_tool(name='build_recreation_tool') (overrides/only_shots), then check again. Stop at PASS or after three rounds with no change.")
 
 
 # ============================ compare ============================

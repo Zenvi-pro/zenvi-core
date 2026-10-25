@@ -3889,7 +3889,7 @@ def _ingest_job_public(job: dict) -> str:
                 "a few minutes. This is not a failure."
             ),
             "next": (
-                f'Call ingest_web_video_tool(job_id="{jid}") again — the tool '
+                f'Call run_tool(name="ingest_web_video_tool", args={{"job_id": "{jid}"}}) again — the tool '
                 "waits until the download finishes or ~45s, then returns. "
                 "Do not start another download of the same URL. A client "
                 "'operation timed out' is not failure — keep calling this job_id."

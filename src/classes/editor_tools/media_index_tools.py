@@ -448,7 +448,7 @@ def index_long_file(file_ids=None, file_query="", approve=False):
         if kind not in ("video", "audio"):
             row.update(state="not_applicable", note="only video and audio files are described")
         elif not longfile.is_long(duration):
-            row.update(state="not_long", note="under 30 minutes: describe its shots with describe_shots_tool")
+            row.update(state="not_long", note="under 30 minutes: describe its shots with run_tool(name='describe_shots_tool')")
         elif not sha:
             row.update(state="not_ready", note="the file has no fingerprint yet; wait for import to finish")
         else:
@@ -456,7 +456,7 @@ def index_long_file(file_ids=None, file_query="", approve=False):
             if shelf.layer_ready(sha, S.LAYER_WATCH):
                 row.update(state="described", note="already described")
             elif data.get("index_long_ok") and not approve:
-                row.update(state="approved", note="already approved; it is queued or running (see index_status_tool)")
+                row.update(state="approved", note="already approved; it is queued or running (see run_tool(name='index_status_tool'))")
             else:
                 row.update(state="will_describe" if approve else "needs_approval")
                 if approve:

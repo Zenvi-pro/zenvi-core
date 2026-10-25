@@ -751,7 +751,7 @@ def import_image_sequence(path, fps=0.0, name="", skip_indexing=False):
     f = File.get(id=file_id)
     data = f.data
     return ok(f"Imported {len(frames)} frames of {details['pattern']} as one {num / den:g} fps sequence "
-              f"({float(data.get('duration') or 0):.2f}s). Place it with add_clip_to_timeline_tool.",
+              f"({float(data.get('duration') or 0):.2f}s). Place it with add_clips_to_timeline_tool(file_ids=[...]).",
               file_id=file_id, name=_display_name(data), path=details["path"], frames=len(frames),
               first_frame=frames[0], last_frame=frames[-1], fps=f"{num}/{den}",
               duration=round(float(data.get("duration") or 0.0), 3),
