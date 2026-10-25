@@ -41,17 +41,24 @@ UNSUPPORTED_ON_WEBKIT_602 = re.compile(
 
 
 def _hard_coded_colors(path):
-    """Line numbers of color literals and QColor(r, g, b) calls outside the other themes' palettes."""
+    """Line numbers of color literals and QColor(r, g, b) calls outside the other themes' palettes.
+
+    Docstrings are skipped like comments: an issue reference such as "(#147)" reads as a 3-digit hex color.
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"))
     exempt = set()
+    docstrings = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Dict):
             for key, value in zip(node.keys, node.values):
                 if isinstance(key, ast.Constant) and key.value in OTHER_THEMES:
                     exempt.update(range(value.lineno, value.end_lineno + 1))
+        elif isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.body and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant):
+                docstrings.add(node.body[0].value)
     lines = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and node not in docstrings:
             if COLOR_LITERAL.search(node.value):
                 lines.append(node.lineno)
         elif isinstance(node, ast.Call) and getattr(node.func, "id", "") == "QColor":
@@ -68,6 +75,19 @@ def _rule_body(css, selector):
 def test_python_colors_come_from_the_tokens():
     offenders = [f"{path.name}:{line}" for path in PY_FILES for line in _hard_coded_colors(path)]
     assert offenders == [], "hard-coded colors (use TOKENS): " + ", ".join(offenders)
+
+
+def test_issue_references_in_docstrings_are_not_colors(tmp_path):
+    source = tmp_path / "widget.py"
+    source.write_text(
+        '"""Chat widget (#147)."""\n'
+        "class Widget:\n"
+        '    """Effort picker (#147)."""\n'
+        "    def send(self):\n"
+        '        """Send it (#147)."""\n'
+        '        return "#147"\n',
+        encoding="utf-8")
+    assert _hard_coded_colors(source) == [6]
 
 
 def test_chat_css_root_mirrors_the_tokens():
