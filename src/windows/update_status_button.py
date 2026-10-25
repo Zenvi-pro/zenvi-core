@@ -24,6 +24,7 @@ from qt_api import QApplication, QToolButton
 
 from classes import info
 from classes.logger import log
+from themes.cosmic.tokens import TOKENS
 
 
 # Update states
@@ -34,11 +35,12 @@ STATE_READY = "ready"
 STATE_FAILED = "failed"
 
 # Palette — matches the cosmic theme's progress bar and accent colors
-COLOR_ACCENT = "#4d9cf6"
-COLOR_WARNING = "#f59e0b"
-COLOR_SUCCESS = "#22c55e"
-COLOR_TRACK = "#1a1a1a"
-COLOR_SURFACE = "#252525"
+COLOR_ACCENT = TOKENS["accent"]
+COLOR_ATTENTION = TOKENS["text"]
+COLOR_DANGER = TOKENS["danger"]
+COLOR_SUCCESS = TOKENS["success"]
+COLOR_TRACK = TOKENS["hover"]
+COLOR_SURFACE = TOKENS["raised"]
 
 ICON_SIZE = 16
 PROGRESS_HEIGHT = 3
@@ -49,7 +51,7 @@ INDETERMINATE_STEP = 0.012   # fraction of the width per tick
 INDETERMINATE_WIDTH = 0.30   # chunk width as a fraction of the track
 
 
-def svg_icon(relative_path, px=ICON_SIZE):
+def svg_icon(relative_path, px=ICON_SIZE, tint=None):
     """Build a HiDPI QIcon from a theme SVG.
 
     Mirrors BaseTheme.create_svg_icon(), which needs a theme instance we may not
@@ -68,6 +70,10 @@ def svg_icon(relative_path, px=ICON_SIZE):
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
     renderer.render(painter)
+    if tint:
+        # The theme SVGs carry their own colours; repaint the glyph in one colour.
+        painter.setCompositionMode(QPainter.CompositionMode_SourceIn)
+        painter.fillRect(pixmap.rect(), QColor(tint))
     painter.end()
     pixmap.setDevicePixelRatio(ratio)
     return QIcon(pixmap)
@@ -98,10 +104,10 @@ class UpdateStatusButton(QToolButton):
         self._indeterminate_timer.timeout.connect(self._advance_indeterminate)
 
         self._icons = {
-            STATE_AVAILABLE: svg_icon("themes/cosmic/images/warning.svg"),
-            STATE_DOWNLOADING: svg_icon("themes/cosmic/images/update-download.svg"),
-            STATE_READY: svg_icon("themes/cosmic/images/update-ready.svg"),
-            STATE_FAILED: svg_icon("themes/cosmic/images/warning.svg"),
+            STATE_AVAILABLE: svg_icon("themes/cosmic/images/warning.svg", tint=TOKENS["text_muted"]),
+            STATE_DOWNLOADING: svg_icon("themes/cosmic/images/update-download.svg", tint=TOKENS["text_muted"]),
+            STATE_READY: svg_icon("themes/cosmic/images/update-ready.svg", tint=TOKENS["text_muted"]),
+            STATE_FAILED: svg_icon("themes/cosmic/images/warning.svg", tint=TOKENS["text_muted"]),
         }
 
         self.setObjectName("updateStatusButton")
@@ -112,7 +118,7 @@ class UpdateStatusButton(QToolButton):
         self.setAutoRaise(True)
         self.setVisible(False)
 
-        self._apply_stylesheet(COLOR_WARNING)
+        self._apply_stylesheet(COLOR_ATTENTION)
 
         # Reserve enough width for the widest label so the toolbar does not
         # jitter as the percentage counts up
@@ -142,7 +148,7 @@ class UpdateStatusButton(QToolButton):
             STATE_AVAILABLE,
             self._tr("Update Available"),
             self._tr("Version <b>%s</b> is available.") % self.version,
-            COLOR_WARNING,
+            COLOR_ATTENTION,
         )
 
     def set_downloading(self, version, percent, downloaded, total):
@@ -193,7 +199,7 @@ class UpdateStatusButton(QToolButton):
             self._tr("Update Available"),
             self._tr("Version <b>%s</b> is available, but the download failed. "
                      "Click to download it manually.") % self.version,
-            COLOR_WARNING,
+            COLOR_DANGER,
         )
         if reason:
             log.warning("UpdateStatusButton: download failed — %s", reason)
@@ -234,7 +240,7 @@ class UpdateStatusButton(QToolButton):
             "   font-size: 11px;"
             "}"
             "QToolButton#updateStatusButton:hover {"
-            "   background-color: #2f2f2f;"
+            "   background-color: " + TOKENS["hover"] + ";"
             "}"
         )
 

@@ -1184,7 +1184,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
             # Ensure that playhead, preview thread, and cache all agree that
             # Frame 1 is being previewed
-            self.preview_thread.player.Seek(1)
+            # Queued to the preview thread: Seek clears the player cache under
+            # the timeline lock, which froze the GUI while frames decoded.
+            self.SeekSignal.emit(1)
             self.movePlayhead(1)
             if loaded_project:
                 self._pending_project_open_refresh = True
@@ -4448,11 +4450,6 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.filesFilter.setObjectName("filesFilter")
         self.filesFilter.setPlaceholderText(_("Search files, footage & music…"))
         self.filesFilter.setClearButtonEnabled(True)
-        self.filesFilter.setStyleSheet(
-            "QLineEdit#filesFilter { background: #1a1a1a; color: #d4d4d4;"
-            " border: 1px solid rgba(255,255,255,0.09); border-radius: 15px;"
-            " padding: 7px 14px; font-size: 12px; }"
-            "QLineEdit#filesFilter:focus { border: 1px solid #4d9cf6; }")
         self.filesToolbar.addWidget(self.filesFilter)
         self.tabFiles.layout().insertWidget(0, self.filesToolbar)
         # Debounce stock searches so we don't hit the network on every keystroke.
@@ -4521,6 +4518,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Add Video Preview toolbar
         self.captionToolbar = QToolBar(_("Caption Toolbar"))
+        self.captionToolbar.setObjectName("captionToolbar")
 
         # Add Caption text editor widget
         self.captionTextEdit = QTextEdit()
@@ -6298,7 +6296,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self._pending_preview_size = None
         self._scope_timer = QTimer(self)
         self._scope_timer.setSingleShot(True)
-        self._scope_timer.setInterval(0)   # latest-wins worker path handles stale frame dropping
+        self._scope_timer.setInterval(66)  # ~15 Hz; scopes analysed every played frame cost a second frame fetch
         self._scope_timer.timeout.connect(self._run_scope_analysis)
         self.preview_thread.position_changed.connect(self._on_scope_frame)
         self.SeekSignal.connect(self._on_scope_seek)
