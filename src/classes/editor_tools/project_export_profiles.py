@@ -329,10 +329,10 @@ def list_project_profiles(query="", width=0, height=0, fps=0, aspect="", orienta
                           include_social_presets=True, limit=30):
     """Search the 425 built-in video profiles plus the user's custom ones (the Choose Profile dialog).
 
-    Also lists the social presets that set_project_setting_tool understands
+    Also lists the social presets that run_tool(name='set_project_setting_tool') understands
     (instagram_reel 1080x1920, instagram_post 1080x1080, instagram_portrait
     1080x1350, tiktok, youtube_shorts, youtube, youtube_4k, cinema 24 fps...).
-    Each profile has name (pass it to set_project_setting_tool), key, size,
+    Each profile has name (pass it to run_tool(name='set_project_setting_tool')), key, size,
     fps, aspect, orientation, interlaced, spherical and user (custom).
     """
     from classes.project_profile import describe_profile
@@ -551,10 +551,10 @@ def manage_custom_profiles(action, profile="", name="", width=0, height=0, fps=0
     """Create, duplicate, edit or delete custom video profiles, or set the default profile for new projects.
 
     Custom profiles live in the user's profiles folder and appear in the Choose
-    Profile dialog and list_project_profiles_tool. Built-in profiles cannot be
+    Profile dialog and run_tool(name='list_project_profiles_tool'). Built-in profiles cannot be
     edited or deleted (duplicate them instead). The current project's profile
     and the default profile cannot be deleted. Does not change the open
-    project -- use set_project_setting_tool for that. Not an undo step.
+    project -- use run_tool(name='set_project_setting_tool') for that. Not an undo step.
     """
     from classes import info
     from classes.project_profile import (

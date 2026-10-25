@@ -179,10 +179,10 @@ def add_animated_title(template="", text="", params=None, length_multiplier=1, p
 
     Use for "animated title", "3D flying title", "neon title", "space movie intro".
     Needs Blender (Preferences > General > Blender Command); without it the call is
-    refused with setup steps -- offer add_title_tool (static SVG titles with fades)
+    refused with setup steps -- offer run_tool(name='add_title_tool') (static SVG titles with fades)
     instead. Rendering runs in the background and takes from tens of seconds to
     several minutes; the result is a transparent image-sequence clip on the lowest
-    free track above the video. list_title_templates_tool kind=animated lists the
+    free track above the video. run_tool(name='list_title_templates_tool') kind=animated lists the
     templates and their parameters. One undo step removes the clip and file.
 
     Example: {"template": "fly_by_1", "text": "Tokyo Day 1", "params": {"diffuse_color": "#ffcc00"},

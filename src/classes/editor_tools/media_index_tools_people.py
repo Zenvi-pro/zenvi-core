@@ -121,7 +121,7 @@ def _scan_voices_one(fi) -> Dict[str, Any]:
 def scan_people(file_ids=None, rescan=False):
     """Look through indexed videos for faces and note where each person is on screen (about half a second at a time), and listen to the
     speech in each file to tell the voices apart, all on this computer. Fast (a 30 s clip takes a couple of seconds). People are unnamed
-    until the user names them (name_person_tool). Needs the preference on and the models (people_status_tool says what is missing);
+    until the user names them (run_tool(name='name_person_tool')). Needs the preference on and the models (run_tool(name='people_status_tool') says what is missing);
     voices need the voice model and a transcript. It stops after about two minutes and says what is left.
     """
     _need_on()
@@ -342,7 +342,7 @@ def _name_voice(fi, seconds: float, clean: str) -> str:
 )
 def merge_people(keep, merge):
     """Say two people are the same person: the second is folded into the first (their faces, and their name if the first has none).
-    Use it when list_people_tool shows one person twice (a different look, angle or light).
+    Use it when run_tool(name='list_people_tool') shows one person twice (a different look, angle or light).
     """
     _need_on()
     try:
@@ -367,7 +367,7 @@ def merge_people(keep, merge):
 )
 def fix_person_track(file_id, person, track_id="", speaker_id=""):
     """Correct one face or voice that was matched to the wrong person (or that is someone new): the correction is kept and it is added
-    to the right person. Use it when who_is_this_tool names the wrong person.
+    to the right person. Use it when run_tool(name='who_is_this_tool') names the wrong person.
     """
     _need_on()
     if bool(track_id) == bool(speaker_id):

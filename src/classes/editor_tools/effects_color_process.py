@@ -482,7 +482,7 @@ def process_clip_effect(*, effect, timeline_clip_id="", clip_query="", track="",
     The result's tracked objects (Tracker/ObjectDetection/ObjectMask) can drive other effects: add Blur
     or Pixelate with properties {"mask_source_id": "<effect_id>"} to blur only the tracked object
     ("blur the face / licence plate"), plus "mask_invert": 1 to blur everything else ("blur the
-    background"). Use analyze_frame_colors_tool(save_frame_path=...) to look at a frame before picking
+    background"). Use run_tool(name='analyze_frame_colors_tool', args={'save_frame_path': ...}) to look at a frame before picking
     a region. Model files are downloaded only with download_model=true. Refused: still images,
     audio-only clips, locked tracks, a missing region/points, builds without OpenCV.
     Example: effect="Tracker", region={"x":0.42,"y":0.30,"width":0.12,"height":0.20}, region_time=3.0.

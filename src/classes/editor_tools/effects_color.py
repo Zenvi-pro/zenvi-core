@@ -660,7 +660,7 @@ def _rich_summary(ptype, value):
 PROPERTIES_ARG = mapping(
     "Effect properties to set, as {name: value}. A value is a number, true/false, a choice name "
     "(\"HSV/HSL hue\"), a color (\"#00ff00\") or text; or keyframes [{\"time\": 2.0, \"value\": 10, "
-    "\"interpolation\": \"linear\"}] in timeline seconds to animate it. list_effects_tool(effect=...) "
+    "\"interpolation\": \"linear\"}] in timeline seconds to animate it. run_tool(name='list_effects_tool', args={'effect': ...}) "
     "lists every property with its range, default and choices.")
 INTERPOLATION_ARG = enum(["bezier", "linear", "constant"],
                          "Default interpolation for keyframes that do not name one.", "bezier")
@@ -694,12 +694,12 @@ def list_effects(kind="all", query="", effect="", include_properties=False):
     """List the effects Zenvi can put on clips (libopenshot 1.0's full set: 34 video, 9 audio) with what they
     do, and, for one effect or with include_properties, every property with its range, default and choices.
 
-    Use this to find the right effect and the exact property names before add_effect_tool /
-    update_effect_tool. For common requests prefer the intent tools: color_grade_clip_tool (grades,
-    LUTs, black & white), apply_look_preset_tool (film grain, VHS, glow...), chroma_key_clip_tool
-    (green screen), process_clip_effect_tool (stabilize, track, detect objects), apply_audio_effect_tool
+    Use this to find the right effect and the exact property names before run_tool(name='add_effect_tool') /
+    run_tool(name='update_effect_tool'). For common requests prefer the intent tools: color_grade_clip_tool (grades,
+    LUTs, black & white), run_tool(name='apply_look_preset_tool') (film grain, VHS, glow...), run_tool(name='chroma_key_clip_tool')
+    (green screen), run_tool(name='process_clip_effect_tool') (stabilize, track, detect objects), run_tool(name='apply_audio_effect_tool')
     (compressor, echo, EQ, robot voice). Effects marked needs_processing analyse the clip first.
-    Example: list_effects_tool(effect="Blur") -> horizontal_radius 0-100, sigma, iterations, mask_mode...
+    Example: run_tool(name='list_effects_tool', args={'effect': "Blur"}) -> horizontal_radius 0-100, sigma, iterations, mask_mode...
     """
     cat = catalog()
     if effect:
@@ -750,7 +750,7 @@ def _common_properties() -> dict:
 def get_clip_effects(timeline_clip_id="", clip_query="", track="", timeline_clip_ids=None, scope="",
                      detail="full"):
     """List the effects already applied to clip(s): effect ids, class, name, and their current property
-    values (keyframed properties as timed points). Use it before update_effect_tool / remove_effect_tool
+    values (keyframed properties as timed points). Use it before run_tool(name='update_effect_tool') / run_tool(name='remove_effect_tool')
     to get effect ids, or to answer "what effects are on this clip?". Timeline listings do not show
     effects; this does.
     """
@@ -829,9 +829,9 @@ def add_effect(timeline_clip_id="", clip_query="", track="", timeline_clip_ids=N
     undo step. Use when the user names an effect ("add a blur", "pixelate it", "add a compressor to the
     voice", "negative", "wave distortion") or when no intent tool fits.
 
-    Prefer: color_grade_clip_tool for grading/LUTs/black & white, apply_look_preset_tool for the Look
-    menu presets (film grain, VHS/analog tape, glow, shadow, soft focus), chroma_key_clip_tool for green
-    screen, apply_audio_effect_tool for voice/music presets, process_clip_effect_tool for Stabilizer /
+    Prefer: color_grade_clip_tool for grading/LUTs/black & white, run_tool(name='apply_look_preset_tool') for the Look
+    menu presets (film grain, VHS/analog tape, glow, shadow, soft focus), run_tool(name='chroma_key_clip_tool') for green
+    screen, run_tool(name='apply_audio_effect_tool') for voice/music presets, run_tool(name='process_clip_effect_tool') for Stabilizer /
     Tracker / Object Detector / Object Mask (add_effect_tool also runs those, with `processing`).
 
     properties: {"horizontal_radius": 12, "vertical_radius": 12} or keyframes
@@ -839,7 +839,7 @@ def add_effect(timeline_clip_id="", clip_query="", track="", timeline_clip_ids=N
     To limit an effect to a tracked object (blur a face/plate): properties
     {"mask_source_id": "<Tracker/ObjectDetection effect id>"} (add "mask_invert": 1 for everything else).
     Refused: locked track, a video effect on an audio-only clip, an audio effect on a clip without sound,
-    unknown effect/property, out-of-range values. Returns effect ids for update_effect_tool.
+    unknown effect/property, out-of-range values. Returns effect ids for run_tool(name='update_effect_tool').
     """
     name = str(effect or effect_name or "").strip()
     if not name:
@@ -991,7 +991,7 @@ def remove_effect(effect_ids=None, timeline_clip_id="", clip_query="", track="",
     """Remove effects from clips (effect badge > Remove Effect). It never deletes timeline clips; to
     delete clips use delete_from_timeline_tool. Target effect ids, or an effect name on clip(s)
     ("remove the blur", "take the green screen key off"), or all_effects=true to strip every effect.
-    For Look presets you can also use apply_look_preset_tool(look="reset_look"). One undo step.
+    For Look presets you can also use run_tool(name='apply_look_preset_tool', args={'look': "reset_look"}). One undo step.
     """
     from classes.query import Clip
     per_clip: dict = {}

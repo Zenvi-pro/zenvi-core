@@ -92,7 +92,7 @@ def add_timer(mode="count_down", position_seconds=0.0, duration_seconds=0.0, cou
     above the video; with timeline_clip_id the Timer effect goes on that clip instead.
     Rendered by libopenshot's Timer effect (live digits, not an image). The time is
     written as mm:ss unless format says otherwise ('00:10' counts to '00:00'). One undo
-    step. For static text use add_title_tool.
+    step. For static text use run_tool(name='add_title_tool').
 
     Examples: {"mode": "count_down", "countdown_from_seconds": 10, "position_seconds": 5,
     "screen_position": "center", "text_size": 0.15}; {"mode": "timecode", "format": "timecode",
@@ -244,8 +244,8 @@ def search_emojis(query="", group="", limit=10):
     people, hands or flags).
 
     Use when the user wants to see options ("what fire emojis are there", "show me food
-    emoji") or when add_emoji_tool picked the wrong one. Each match has the emoji
-    character, its name, group and code (pass the code to add_emoji_tool). Read-only.
+    emoji") or when run_tool(name='add_emoji_tool') picked the wrong one. Each match has the emoji
+    character, its name, group and code (pass the code to run_tool(name='add_emoji_tool')). Read-only.
     """
     q = str(query or "").strip()
     if not q and not group:
@@ -284,7 +284,7 @@ def add_emoji(emoji, group="", position_seconds=0.0, duration_seconds=0.0, scree
     """Put an emoji sticker on the video, e.g. "put a 🔥 emoji top right", "add a heart at 5 seconds".
 
     Finds the emoji by name, character or code among the Emojis dock's OpenMoji
-    stickers (search_emojis_tool shows alternatives), adds it to Project Files the
+    stickers (run_tool(name='search_emojis_tool') shows alternatives), adds it to Project Files the
     way the dock does, and places it on the lowest free track above the video at
     position_seconds, sized and pinned to screen_position. The receipt lists close
     alternatives in case the match was not the intended one. One undo step.

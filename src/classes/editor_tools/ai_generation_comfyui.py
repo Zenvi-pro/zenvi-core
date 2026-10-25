@@ -392,8 +392,8 @@ def _enqueue(source_file, payload: dict) -> dict:
 
 def _queued_summary(row: dict, what: str, url: str) -> str:
     return (f"Queued ComfyUI job {row['job_id']} ({what}) at {url}; status {row['status']}. The result is imported "
-            f"into Project Files when it finishes: call list_comfyui_jobs_tool(job_id='{row['job_id']}', "
-            "wait_seconds=120) to wait for it and get the new file ids.")
+            f"into Project Files when it finishes: call run_tool(name='list_comfyui_jobs_tool', args={{'job_id': '{row['job_id']}', "
+            "'wait_seconds': 120}) to wait for it and get the new file ids.")
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +415,7 @@ def _queued_summary(row: dict, what: str, url: str) -> str:
 def list_comfyui_templates(file_id="", media_type=""):
     """List the local ComfyUI generation templates (AI Tools menu) and whether ComfyUI is set up.
 
-    Use before create_media_with_comfyui_tool / enhance_file_with_comfyui_tool, or to answer
+    Use before run_tool(name='create_media_with_comfyui_tool') / run_tool(name='enhance_file_with_comfyui_tool'), or to answer
     "what AI tools can I use on this clip?". Each row gives the template id, its menu name and
     path, the kind (create) or action (enhance) to pass, input/output media and what it needs
     (prompt, reference image, object selection). comfyui.status is not_configured, unreachable
@@ -477,12 +477,12 @@ def list_comfyui_templates(file_id="", media_type=""):
 def create_media_with_comfyui(prompt, kind="", template="", name="", reference_image_file_id=""):
     """Generate a new image, video clip, sound effect or music track with the local ComfyUI server (AI Tools > Create with AI).
 
-    Use only when the user wants local/ComfyUI generation and list_comfyui_templates_tool
+    Use only when the user wants local/ComfyUI generation and run_tool(name='list_comfyui_templates_tool')
     reports comfyui.status=ready; when ComfyUI is not configured this refuses with how to set
-    it up (cloud video generation is generate_video_and_add_to_timeline_tool). Queues a job
+    it up (cloud video generation is run_tool(name='generate_video_and_add_to_timeline_tool')). Queues a job
     and returns its job_id at once; the result lands in Project Files when it finishes -- wait
-    with list_comfyui_jobs_tool(job_id, wait_seconds), then place it with
-    add_clip_to_timeline_tool. Nothing changes on the timeline and there is no undo step.
+    with run_tool(name='list_comfyui_jobs_tool', args={'job_id': ..., 'wait_seconds': 120}), then place it with
+    run_tool(name='add_clip_to_timeline_tool'). Nothing changes on the timeline and there is no undo step.
     Example: {"kind": "image", "prompt": "misty pine forest at dawn, cinematic"}.
     """
     prompt = str(prompt or "").strip()
@@ -530,7 +530,7 @@ _BOX = {"type": "object", "properties": {k: {"type": "number", "description": d}
                        "(2x frame rate), split_scenes, captions (from speech), restyle, blur_object, "
                        "highlight_object, mask_object, depth, lines. Audio: speech_clarity, reduce_noise, "
                        "remove_noise.", ""),
-        "template": string("A template id or menu name from list_comfyui_templates_tool(file_id) instead of "
+        "template": string("A template id or menu name from run_tool(name='list_comfyui_templates_tool', args={'file_id': ...}) instead of "
                            "action (user templates).", ""),
         "prompt": string("For restyle / image_to_video: the look or motion to create. For blur/highlight/mask: "
                          "the object to find, in words ('the red car'), instead of or with points/boxes.", ""),
@@ -569,10 +569,10 @@ def enhance_file_with_comfyui(file_id, action="", template="", prompt="", name="
     For "upscale this video 4x", "make the motion smoother", "split this into scenes", "caption
     it from the speech", "blur the license plate", "highlight the player", "cut out the dog
     (mask)", "clean up the noise / make the speech clearer", "turn this photo into a video",
-    "restyle it like a watercolor". Needs comfyui.status=ready (list_comfyui_templates_tool);
+    "restyle it like a watercolor". Needs comfyui.status=ready (run_tool(name='list_comfyui_templates_tool'));
     otherwise refuses with setup steps. Queues a job and returns its job_id at once; the output
     becomes a NEW Project Files item (captions are stored on the file, split_scenes creates one
-    file per scene). Wait with list_comfyui_jobs_tool(job_id, wait_seconds). No undo step.
+    file per scene). Wait with run_tool(name='list_comfyui_jobs_tool', args={'job_id': ..., 'wait_seconds': 120}). No undo step.
     Object tracking (blur/highlight/mask) needs points, boxes, a prompt naming the object, or
     auto_detect. Example: {"file_id": "F12", "action": "blur_object", "prompt": "license plate"}.
     """
@@ -666,9 +666,9 @@ def enhance_file_with_comfyui(file_id, action="", template="", prompt="", name="
 def list_comfyui_jobs(job_id="", active_only=False, wait_seconds=0):
     """List ComfyUI generation jobs: status (queued, running, canceling, completed, failed, canceled), progress, errors and the Project Files ids they produced.
 
-    Use after create_media_with_comfyui_tool / enhance_file_with_comfyui_tool to wait for a
+    Use after run_tool(name='create_media_with_comfyui_tool') / run_tool(name='enhance_file_with_comfyui_tool') to wait for a
     result (job_id + wait_seconds) and get imported_file_ids to place with
-    add_clip_to_timeline_tool, or to answer "is my generation done?". Jobs live for this
+    run_tool(name='add_clip_to_timeline_tool'), or to answer "is my generation done?". Jobs live for this
     editor session only. A failed job's error says why (e.g. a missing ComfyUI node/model).
     """
     wanted = str(job_id or "").strip()

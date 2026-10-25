@@ -295,7 +295,7 @@ def add_track(position="top", relative_to="", name="", count=1):
     Examples: "add a music track" -> name='Music'; "add a track above the
     voiceover" -> position='above', relative_to='Voiceover'; "add two tracks at
     the bottom" -> position='bottom', count=2. Rename or lock a track with
-    update_track_tool; remove one with remove_track_tool.
+    run_tool(name='update_track_tool'); remove one with run_tool(name='remove_track_tool').
     """
     name = (name or "").strip()
     relative_to = (relative_to or "").strip()
@@ -525,8 +525,8 @@ def add_marker(position_seconds=None, name="", color=track_ops.DEFAULT_MARKER_CO
 
     position_seconds is in timeline seconds (0:32 = 32, 1:05 = 65); omit it to
     mark wherever the playhead is. The time snaps to the nearest frame. Name
-    markers so they can be found again: seek_playhead_tool(marker='Drop')
-    jumps to one, list_markers_tool lists them all. Several markers may share a
+    markers so they can be found again: run_tool(name='seek_playhead_tool', args={'marker': 'Drop'})
+    jumps to one, run_tool(name='list_markers_tool') lists them all. Several markers may share a
     time. Returns the new marker_id. Example: "mark the drop at 0:32" ->
     position_seconds=32, name='Drop'.
     """
@@ -557,10 +557,10 @@ def add_marker(position_seconds=None, name="", color=track_ops.DEFAULT_MARKER_CO
 def update_marker(marker, name=None, color="", position_seconds=None):
     """Rename, recolor or move an existing timeline marker.
 
-    marker is the marker_id from list_markers_tool or the marker's exact name
+    marker is the marker_id from run_tool(name='list_markers_tool') or the marker's exact name
     (a name several markers share is refused with their ids). Pass only what
     should change. Example: "rename the marker at 0:32 to Chorus" -> first
-    list_markers_tool, then marker='<id>', name='Chorus'; "move the Drop marker
+    run_tool(name='list_markers_tool'), then marker='<id>', name='Chorus'; "move the Drop marker
     to 0:40" -> marker='Drop', position_seconds=40. One undo step.
     """
     if name is None and not color and position_seconds is None:
@@ -651,9 +651,9 @@ def remove_marker(markers=None, at_seconds=None, all=False):
 def list_markers():
     """List the timeline's markers in time order: marker_id, name, color, seconds, frame and timecode.
 
-    Use it to find a marker to jump to (seek_playhead_tool marker=... or
-    to='next_marker'), rename (update_marker_tool) or remove
-    (remove_marker_tool). Read-only.
+    Use it to find a marker to jump to (run_tool(name='seek_playhead_tool') marker=... or
+    to='next_marker'), rename (run_tool(name='update_marker_tool')) or remove
+    (run_tool(name='remove_marker_tool')). Read-only.
     """
     rows = _marker_rows()
     if not rows:
@@ -783,8 +783,8 @@ def play(action="toggle", speed=None, frames=1):
     at double speed, speed=-1 backwards. 'step_forward' / 'step_back' pause and
     move `frames` frames. The result is the player's real state (playing,
     speed, playhead time). To play from a time or marker, call
-    seek_playhead_tool with play=true instead ("play from the start" ->
-    seek_playhead_tool to='start', play=true).
+    run_tool(name='seek_playhead_tool') with play=true instead ("play from the start" ->
+    run_tool(name='seek_playhead_tool') to='start', play=true).
     """
     if speed is not None and action not in ("play", "toggle"):
         raise ToolError("speed only applies to action='play'")

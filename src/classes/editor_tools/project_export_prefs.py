@@ -178,7 +178,7 @@ def _parse_value(item: dict, value):
 def get_preferences(tab="", key="", query=""):
     """Read editor preferences (Edit > Preferences) with their allowed values.
 
-    Each entry has key (pass it to set_preference_tool), title, tab, type
+    Each entry has key (pass it to run_tool(name='set_preference_tool')), title, tab, type
     (bool / spinner / spinner-int / dropdown / text / browse), value, default,
     min/max, choices for dropdowns, and restart_required. Keyboard shortcuts
     are listed only for tab='Keyboard' or a query. Internal settings are not shown.

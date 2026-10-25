@@ -927,7 +927,7 @@ def duplicate_clips(timeline_clip_ids=[], clip_query="", track="", scope="", pos
     and relative tracks, get new ids (and new effect ids), and land right after the originals by
     default. The tool refuses to cover existing clips unless ripple=true (insert, pushing later
     clips) or allow_overlap=true. The system clipboard is not touched. To move instead of copy
-    use move_clips_tool; to loop one clip's playback use repeat_clip_tool. One undo step.
+    use run_tool(name='move_clips_tool'); to loop one clip's playback use run_tool(name='repeat_clip_tool'). One undo step.
     """
     from classes.query import Clip, Transition
 

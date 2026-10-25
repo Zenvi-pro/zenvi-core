@@ -470,7 +470,7 @@ def get_framing(start_seconds, end_seconds, file_ids=None, file_query="", aspect
     the window's position over time, whether the subject moves, and a confidence. It is an attention heuristic, not an
     understanding of the picture: a small subject against bright clutter can be missed, and when confidence is low it says so
     (check those shots by eye). When people identity is on and the file was scanned, faces count extra, and with person the window follows that person. The result includes the values to give the
-    clip (set_clip_properties_tool, or reframe_to_subject_tool to do it for you). Measured from the original; kept on the shelf.
+    clip (run_tool(name='set_clip_properties_tool'), or run_tool(name='reframe_to_subject_tool') to do it for you). Measured from the original; kept on the shelf.
     """
     from classes.media_index import framing
     if float(end_seconds) - float(start_seconds) < 0.2:
@@ -522,7 +522,7 @@ def reframe_to_subject(timeline_clip_ids=None, aspect="project", dry_run=False, 
     instead of cutting people in half with a centre crop. For each full-frame picture clip it sets crop-to-fill and positions
     the picture on the subject (a fixed position, or keyframes across the clip when the subject moves), all in one undo step.
     Clips moved or resized as picture-in-picture, titles, and clips on locked tracks are left alone, and every clip reports
-    its confidence: where nothing stands out it still centres but says to check it by eye. Use get_framing_tool first to
+    its confidence: where nothing stands out it still centres but says to check it by eye. Use run_tool(name='get_framing_tool') first to
     look at one shot, or dry_run to see the plan.
     """
     from classes.editor_tools import clip_props, clip_props_model as cpm
@@ -608,7 +608,7 @@ def get_edit_style(file_ids=None, file_query="", compare_to_timeline=True):
     still, panning or handheld, how many cuts land on the beat, how much is speech and how fast it is spoken, how loud it is,
     its look, and how much text is on screen. With compare_to_timeline it measures the timeline being built the same way and
     lists where the two differ by enough to matter, each with what to do and which tool does it (the colour match itself is
-    harmonize_look_tool). It reports measurements; deciding what to copy is yours. The reference must be indexed.
+    run_tool(name='harmonize_look_tool')). It reports measurements; deciding what to copy is yours. The reference must be indexed.
     """
     from classes.media_index import style
     shelf = default_shelf()

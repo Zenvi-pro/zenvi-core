@@ -3,7 +3,7 @@
 The in-app Assistant has a Pexels search of its own (it runs in the backend), but Claude Code and every other MCP client only get the editor's
 tools, so "use stock footage for what is missing" had no way to find a clip: `import_stock_media_tool` wants the MP4 link of a result nobody could
 search for. This tool searches through the same backend route (the Pexels key stays on the server) and remembers each result's link, so
-`import_stock_media_tool(source="pexels", video_id=...)` works with just the id from the search.
+`run_tool(name='import_stock_media_tool', args={'source': "pexels", 'video_id': ...})` works with just the id from the search.
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ def rows_from(videos: List[Dict[str, Any]], min_seconds: float, orientation: str
 )
 def search_stock_video(query, count=8, min_seconds=0.0, orientation="any"):
     """Search Pexels stock videos (free to use) and list matches with their length, size, photographer and a preview picture. Then bring one
-    into the project with import_stock_media_tool(source="pexels", video_id=<video_id>): the link is remembered from this search. A download
+    into the project with run_tool(name='import_stock_media_tool', args={'source': "pexels", 'video_id': <video_id>}): the link is remembered from this search. A download
     uses stock credits where the account is metered. Use it for shots your own footage cannot cover.
     """
     text = str(query or "").strip()

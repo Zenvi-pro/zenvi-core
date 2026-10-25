@@ -115,7 +115,7 @@ def apply_look_preset(*, look, timeline_clip_id="", clip_query="", track="", tim
     "sharpen it", "remove the look". Re-applying a preset of the same family replaces it (no stacking).
 
     For a real color grade ("cinematic", "teal & orange", "black and white", "fix the exposure",
-    a LUT) use color_grade_clip_tool; for other effects add_effect_tool. Audio-only clips and locked
+    a LUT) use color_grade_clip_tool; for other effects run_tool(name='add_effect_tool'). Audio-only clips and locked
     tracks are refused. One undo step for all clips.
     """
     if look not in LOOK_PRESETS:
@@ -395,7 +395,7 @@ AUDIO_PRESETS = {
         "preset": enum(sorted(AUDIO_PRESETS),
                        "Audio effect preset: " + "; ".join(f"{k} = {v[2]}" for k, v in AUDIO_PRESETS.items()) + "."),
         "properties": mapping("Override preset values, e.g. {\"ratio\": 4} or {\"delay_time\": 0.25}; names from "
-                              "list_effects_tool(effect=...)."),
+                              "run_tool(name='list_effects_tool', args={'effect': ...})."),
     }, required=["preset"]),
     covers=("audio.effects",),
 )
@@ -404,8 +404,8 @@ def apply_audio_effect(*, preset, timeline_clip_id="", clip_query="", track="", 
     """Put an audio effect on clips' sound with sensible settings: "add a compressor to the voice", "add
     echo", "remove the low rumble", "boost the bass", "make it sound like a phone call", "robot voice",
     "whisper effect", "noise gate", "delay the audio 100 ms to fix sync". A clip that already has the
-    same effect type is updated (not stacked). Tune further with update_effect_tool; remove with
-    remove_effect_tool. For volume and ducking use the volume tools, not this. Refused: clips without
+    same effect type is updated (not stacked). Tune further with run_tool(name='update_effect_tool'); remove with
+    run_tool(name='remove_effect_tool'). For volume and ducking use the volume tools, not this. Refused: clips without
     sound (images, titles, muted-in-source), locked tracks. One undo step.
     """
     if preset not in AUDIO_PRESETS:
@@ -529,7 +529,7 @@ def chroma_key_clip(timeline_clip_id="", clip_query="", track="", key_color="aut
 
     The receipt's keyed_pct is the share of the frame the key made transparent: roughly the screen's
     share means it worked, a few percent means it missed the screen (try key_color='auto', a sampled
-    #RRGGBB or a higher fuzz). analyze_frame_colors_tool on the composite checks the rest. Refused: audio-only clips, locked tracks, a
+    #RRGGBB or a higher fuzz). run_tool(name='analyze_frame_colors_tool') on the composite checks the rest. Refused: audio-only clips, locked tracks, a
     background that is the same clip, 'auto' when the frame edges are not a green/blue screen.
     """
     clip = resolve_clip(timeline_clip_id, clip_query, track)

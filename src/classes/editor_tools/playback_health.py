@@ -47,7 +47,7 @@ def start_preview_copies(file_ids: Iterable[str], clip_count: int) -> str:
             return ""
         on_main(service.create_for_files, todo, timeout=HOP_TIMEOUT, batch=False)
         return (f" Building smooth-playback copies of {len(todo)} heavy video(s) in the background (the preview plays them; export uses the originals);"
-                f" progress: manage_optimized_previews_tool(action='status').")
+                f" progress: run_tool(name='manage_optimized_previews_tool', args={{'action': 'status'}}).")
     except Exception:  # noqa: BLE001 - playback copies are a courtesy
         log.warning("could not start preview copies", exc_info=True)
         return ""

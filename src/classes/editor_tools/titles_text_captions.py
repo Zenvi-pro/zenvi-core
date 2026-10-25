@@ -686,7 +686,7 @@ def add_captions(cues=None, srt_path="", timeline_clip_id="", clip_query="", tra
 def list_captions(timeline_clip_id=""):
     """List every caption track (Caption effect) with its numbered cues and look.
 
-    Use before edit_captions_tool (cue numbers, current text, timeline times) or to
+    Use before run_tool(name='edit_captions_tool') (cue numbers, current text, timeline times) or to
     answer "what do the captions say". Cue start/end are timeline seconds (source_start
     / source_end are the clip's media time the effect stores); visible=false marks cues
     outside the clip's trimmed range. Read-only.
@@ -764,9 +764,9 @@ def edit_captions(effect_id="", timeline_clip_id="", clip_query="", cue_edits=No
     Use after add_captions_tool or for captions made in the Captions dock ("fix the
     typo in caption 3", "the captions are half a second late", "make the captions
     yellow and bigger", "add a caption 'Thanks!' at 12 s for 2 s", "delete the last
-    caption"). Get cue numbers from list_captions_tool. Times are timeline seconds.
+    caption"). Get cue numbers from run_tool(name='list_captions_tool'). Times are timeline seconds.
     With no target the selected Caption effect, or the project's only caption track,
-    is used. One undo step. To remove captions entirely use remove_captions_tool.
+    is used. One undo step. To remove captions entirely use run_tool(name='remove_captions_tool').
 
     Example: {"timeline_clip_id": "C1", "cue_edits": [{"index": 2, "text": "Today we explore Tokyo."}],
     "shift_seconds": -0.4, "style": "reels"}.

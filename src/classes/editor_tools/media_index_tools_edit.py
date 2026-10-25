@@ -154,7 +154,7 @@ def slice_on_beats(timeline_clip_id, music_clip_id="", every=1, from_seconds=Non
     """Cut one clip into pieces that each run from one beat of the music to the next (a montage from one long shot).
 
     Use it when the user wants a clip cut to the beat; to tighten cuts that already exist between several clips use
-    sync_cuts_to_beats_tool instead. Cuts land on whole frames, never leave a piece under two frames, and are refused
+    run_tool(name='sync_cuts_to_beats_tool') instead. Cuts land on whole frames, never leave a piece under two frames, and are refused
     above 200 pieces (ask for a coarser cut: every=2 or 4, or a from/to range). Locked tracks are refused. One undo step.
     Use dry_run to see where the cuts would go first.
     """
@@ -364,7 +364,7 @@ def set_edit_brief(brief, replace=False):
     """Save the plan and intent of this edit inside the project, so a long job (a vlog, a whole film) survives a long
     conversation, a restart or another agent picking it up. It is stored with the project (saved with it, never an undo
     step, shared by the Zenvi Assistant and Claude Code). Update it as you go: mark scenes done, note decisions.
-    review_edit_tool and get_edit_brief_tool read it.
+    review_edit_tool and run_tool(name='get_edit_brief_tool') read it.
     """
     new = _clean_brief(brief)
     old = read_brief()
@@ -389,7 +389,7 @@ def set_edit_brief(brief, replace=False):
 )
 def get_edit_brief():
     """Read the edit brief saved with this project: the intent, plan and progress someone (or you, earlier) recorded
-    with set_edit_brief_tool. Read it first when picking up an edit you did not start or after a long break.
+    with run_tool(name='set_edit_brief_tool'). Read it first when picking up an edit you did not start or after a long break.
     """
     brief = read_brief()
     if not brief:

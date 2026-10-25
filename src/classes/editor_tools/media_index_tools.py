@@ -389,7 +389,7 @@ def _vectors_current(shelf, sha) -> bool:
 def index_status(file_ids=None, only_incomplete=False):
     """Which parts of each file's index are ready: structure (cuts, camera motion), look (colour), audio (loudness,
     tempo), speech (transcript) and vectors_local (search; vector_model names the model that made them).
-    described_shots counts the shots Gemini has described so far (made on demand by describe_shots_tool, not needed
+    described_shots counts the shots Gemini has described so far (made on demand by run_tool(name='describe_shots_tool'), not needed
     for search). Use it to know whether search_footage_tool can already see a file, and what is still being worked on.
     """
     shelf = default_shelf()
@@ -431,7 +431,7 @@ def index_status(file_ids=None, only_incomplete=False):
 )
 def index_long_file(file_ids=None, file_query="", approve=False):
     """Describe every shot of a file longer than 30 minutes. Every file is searchable without this; describing a long one
-    takes several cloud passes and uses credits, so it needs a yes (shorter files: describe_shots_tool). Call with approve=false to see
+    takes several cloud passes and uses credits, so it needs a yes (shorter files: run_tool(name='describe_shots_tool')). Call with approve=false to see
     how many passes and the most it can cost (a ceiling: the real charge follows what the AI used and is usually lower);
     ask the user; then call with approve=true. Each pass is charged on its own, so an interrupted run never repays what
     already finished.
@@ -578,11 +578,11 @@ def locate_in_footage(what, kind="auto", file_ids=None, start=None, end=None, li
     """Find where an object or on-screen text appears, with when (seconds in the file) and where in the frame.
     box is [x, y, width, height] as 0-1 fractions from the top-left. It is a ROUGH box from the indexing pass:
     good for choosing where to look, point-masking or a region prompt, but not pixel-exact; refine it on a
-    frame (view_frames_tool, then the masking or tracking effect) before masking, blurring, removing or
+    frame (run_tool(name='view_frames_tool'), then the masking or tracking effect) before masking, blurring, removing or
     replacing the thing. For a generative replace or removal, pass the file, time and region to the
     generation tool that is available. With for_action (blur_object, highlight_object or mask_object) each of the first
     5 results carries a handoff: the box in source pixels (grown a little, since it is rough), a point on the object, the seed
-    frame and a prompt, ready to pass to enhance_file_with_comfyui_tool (needs the optional ComfyUI AI tools to be ready).
+    frame and a prompt, ready to pass to run_tool(name='enhance_file_with_comfyui_tool') (needs the optional ComfyUI AI tools to be ready).
     """
     from classes.media_index import handoff, reference as mref
     files, missing = project_indexes(file_ids)
@@ -628,9 +628,9 @@ def locate_in_footage(what, kind="auto", file_ids=None, start=None, end=None, li
 def view_audio(file_id="", file_query="", start=None, end=None, timeline=False):
     """Draw a spectrogram of a stretch of audio as a PNG you can look at: time across, frequency up (logarithmic, 20 Hz to 11 kHz),
     brightness = loudness in dBFS, with labelled axes and a legend. NUMBERS FIRST: loudness, silence, beats, tempo, speech and
-    music sections are already in the dossier, search results, analyze_music_tool and review_edit_tool, and answer "find the quiet
+    music sections are already in the dossier, search results, run_tool(name='analyze_music_tool') and review_edit_tool, and answer "find the quiet
     part", "cut on the beat", "where does she speak", "where is the music loud". Use the picture only (1) where
-    spectrogramSuggested on analyze_music_tool says a section edge is uncertain and the edit depends on song structure, (2) to
+    spectrogramSuggested on run_tool(name='analyze_music_tool') says a section edge is uncertain and the edit depends on song structure, (2) to
     compare takes or tracks, (3) to check a finished mix: with timeline=true it shows the rendered mix, and the numbers beside
     it give each clip's level over time (does the music duck under the voice, does a cut jump in loudness). Do not use it to find
     words, silence or beats: those are better as numbers. A range must be given; each strip covers at most 60 s and one call returns

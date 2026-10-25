@@ -394,7 +394,7 @@ def apply_clip_preset(preset, timeline_clip_ids=None, clip_query="", track="", s
     on locked tracks are refused (skipped with scope); the receipt lists what
     changed and which effects were added (e.g. the Crop effect id).
 
-    Example: apply_clip_preset_tool(scope="all", preset="fade_in_out", duration_seconds=2)
+    Example: run_tool(name='apply_clip_preset_tool', args={'scope': "all", 'preset': "fade_in_out", 'duration_seconds': 2})
     """
     spec = PRESETS.get(preset)
     if spec is None:

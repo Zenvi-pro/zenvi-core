@@ -132,7 +132,7 @@ def get_clip_properties(timeline_clip_id="", clip_query="", track="", at_seconds
     interpolation and ease. Also lists the clip's effects (id, class). Changes
     nothing.
 
-    Example: get_clip_properties_tool(timeline_clip_id="ABC123", properties=["scale_x", "alpha"])
+    Example: run_tool(name='get_clip_properties_tool', args={'timeline_clip_id': "ABC123", 'properties': ["scale_x", "alpha"]})
     """
     clip = resolve_clip(timeline_clip_id, clip_query, track)
     data = clip.data
@@ -214,13 +214,12 @@ def set_clip_properties(properties, timeline_clip_ids=None, clip_query="", track
     "show frame numbers" (display). Several properties and several clips in
     one call, one undo step. A static value replaces any animation of that
     property (the receipt says so); to animate or change only part of a
-    curve use set_keyframes_tool, and for fades, zooms, slides or layouts use
-    apply_clip_preset_tool. Timeline position, trim and track are not
+    curve use run_tool(name='set_keyframes_tool'), and for fades, zooms, slides or layouts use
+    run_tool(name='apply_clip_preset_tool'). Timeline position, trim and track are not
     properties here (use the timeline editing tools). Clips on locked tracks
     are refused (or skipped with scope).
 
-    Example: set_clip_properties_tool(timeline_clip_ids=["ABC123"],
-    properties={"alpha": 0.5, "composite": "multiply"})
+    Example: run_tool(name='set_clip_properties_tool', args={'timeline_clip_ids': ["ABC123"], 'properties': {"alpha": 0.5, "composite": "multiply"}})
     """
     if not isinstance(properties, dict) or not properties:
         raise ToolError('properties must be an object such as {"alpha": 0.5}')
@@ -398,11 +397,10 @@ def set_keyframes(property, points, timeline_clip_id="", clip_query="", track=""
     bezier ease presets. mode='replace' (default) makes these points the whole
     curve; 'merge' keeps the other points; 'replace_range' clears only the span
     the new points cover. For whole-clip zooms, pans, fades and slides prefer
-    apply_clip_preset_tool; to remove keyframes use remove_keyframes_tool.
+    run_tool(name='apply_clip_preset_tool'); to remove keyframes use run_tool(name='remove_keyframes_tool').
     One undo step.
 
-    Example: set_keyframes_tool(timeline_clip_id="ABC123", property="scale_x",
-    points=[{"seconds": 0, "value": 1}, {"seconds": 4, "value": 1.3, "ease": "ease_in_out"}])
+    Example: run_tool(name='set_keyframes_tool', args={'timeline_clip_id': "ABC123", 'property': "scale_x", 'points': [{"seconds": 0, "value": 1}, {"seconds": 4, "value": 1.3, "ease": "ease_in_out"}]})
     """
     clip = resolve_clip(timeline_clip_id, clip_query, track, occurrence, position_near)
     data = clip.data
@@ -546,10 +544,10 @@ def remove_keyframes(properties, timeline_clip_ids=None, clip_query="", track=""
     loses its last keyframe it falls back to the Properties dock default
     (alpha 1, scale 1, location 0, rotation 0, shear 0, origin 0.5, volume 1),
     exactly like Remove Keyframe in the Properties dock; to keep some other
-    fixed value use set_clip_properties_tool instead. To remove fades use
-    apply_clip_preset_tool(preset='fade_none'). One undo step.
+    fixed value use run_tool(name='set_clip_properties_tool') instead. To remove fades use
+    run_tool(name='apply_clip_preset_tool', args={'preset': 'fade_none'}). One undo step.
 
-    Example: remove_keyframes_tool(timeline_clip_ids=["ABC123"], properties=["scale_x", "scale_y"])
+    Example: run_tool(name='remove_keyframes_tool', args={'timeline_clip_ids': ["ABC123"], 'properties': ["scale_x", "scale_y"]})
     """
     names = [str(p).strip() for p in (properties or []) if str(p).strip()]
     if not names:
@@ -666,7 +664,7 @@ def copy_clip_keyframes(source_clip_id="", source_query="", source_track="", tim
     otherwise), since stretching a speed curve changes what the target shows.
     Targets exclude the source and must not be on locked tracks. One undo step.
 
-    Example: copy_clip_keyframes_tool(source_clip_id="A1", timeline_clip_ids=["B2", "C3"], groups=["scale", "location"])
+    Example: run_tool(name='copy_clip_keyframes_tool', args={'source_clip_id': "A1", 'timeline_clip_ids': ["B2", "C3"], 'groups': ["scale", "location"]})
     """
     source = resolve_clip(source_clip_id, source_query, source_track)
     wanted = list(dict.fromkeys(str(g).strip().lower() for g in (groups or ["all"]) if str(g).strip()))

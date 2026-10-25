@@ -3593,9 +3593,9 @@ def fetch_motion_graphics_video(
             f"✅ Imported {len(file_ids)}/{n} HyperFrames segments as separate clips "
             f"(file_id={file_ids[0]}, file_ids: {file_ids}, total {total_mb:.1f} MB). "
             f"Indexing skipped (motion_graphics tag).{probe_bits}. {alpha_note}\n"
-            "MUST call place_motion_graphic_tool(file_id=..., mode=overlay|gap|cut_in) "
-            "for each file_id (transparent → mode=overlay high track; opaque → mode=gap or cut_in). "
-            "Do not use add_clip_to_timeline_tool for MG renders."
+            "MUST call run_tool(name='place_motion_graphic_tool', args={'file_id': ..., 'mode': 'overlay'}) "
+            "for each file_id (transparent → mode 'overlay' on a high track; opaque → mode 'gap' or 'cut_in'). "
+            "Do not use the plain clip placement tools for MG renders."
             f"{generic_warn}"
         )
 
@@ -3635,8 +3635,9 @@ def fetch_motion_graphics_video(
         f"(file_id={file_id}, size: {size_mb:.1f} MB). Indexing skipped (motion_graphics tag). "
         f"transparent_ok={str(bool(transparent_ok)).lower()} pix_fmt={pix_fmt or 'unknown'}. "
         f"{alpha_note}\n"
-        "MUST call place_motion_graphic_tool(file_id=..., mode=overlay|gap|cut_in) "
-        "with the placement mode above. Do not use add_clip_to_timeline_tool for MG renders."
+        f"MUST call run_tool(name='place_motion_graphic_tool', args={{'file_id': '{file_id}', "
+        f"'mode': '{'overlay' if transparent_ok or job_transparent else 'gap'}'}}) "
+        "('cut_in' also works for opaque). Do not use the plain clip placement tools for MG renders."
         f"{generic_warn}"
     )
 
@@ -3939,7 +3940,7 @@ def ingest_web_video(
     import_files_tool for a page URL.
 
     Long downloads return status=running with a job_id before MCP clients time
-    out (~60s). Call ingest_web_video_tool(job_id=...) again — each call waits
+    out (~60s). Call run_tool(name='ingest_web_video_tool', args={'job_id': ...}) again — each call waits
     until completed/failed or ~45s. A client "operation timed out" is NOT
     failure — keep calling the same job_id; do not start a second download.
 
@@ -6086,8 +6087,9 @@ def propose_overlay_windows(beat_count="4", prefer_transparent="true", **_kw) ->
             "layout_region → bake into session/draft.html "
             "(lower_third/corner_* = non-blocking overlay HTML; full_frame = sting; "
             "mid_plate = opaque plate). "
-            "publish_session_draft_tool(transparent=true|false) matching suggest_transparent. "
-            "Then place_motion_graphic_tool(mode=overlay|gap|cut_in) — never stack opaque "
+            "Publish the draft (transparent=true|false, matching suggest_transparent), then "
+            "run_tool(name='place_motion_graphic_tool', args={'file_id': ..., 'mode': 'overlay'}) "
+            "('gap' or 'cut_in' for opaque) — never stack opaque "
             "plates over hero footage with add_clip on the top overlay track."
         ),
     }
@@ -6294,12 +6296,13 @@ def place_motion_graphic(
 
 
 def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
-    """Deprecated — use propose_overlay_windows_tool (timing) + agent-authored beats_json."""
+    """Deprecated — use run_tool(name='propose_overlay_windows_tool') (timing) + agent-authored beats_json."""
     return (
         "Error: run_tool(name='suggest_motion_graphics_placements_tool') is removed. "
         "Call run_tool(name='propose_overlay_windows_tool', args={'beat_count': ...}) for timing/layout_region, "
-        "edit session/draft.html (lint optional), run_tool(name='publish_session_draft_tool'), "
-        "run_tool(name='fetch_motion_graphics_video_tool'), then run_tool(name='place_motion_graphic_tool', args={'mode': 'overlay|gap|cut_in'}). "
+        "edit session/draft.html (lint optional), publish the draft, "
+        "run_tool(name='fetch_motion_graphics_video_tool'), then "
+        "run_tool(name='place_motion_graphic_tool', args={'file_id': ..., 'mode': 'overlay'}) ('gap' or 'cut_in' for opaque). "
         "Never put the creative brief into on-screen title text."
     )
 

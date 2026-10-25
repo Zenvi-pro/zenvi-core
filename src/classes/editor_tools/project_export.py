@@ -370,8 +370,8 @@ def save_project(file_path="", overwrite=False):
 def list_recent_projects():
     """List File > Recent Projects, most recent first, with whether each file still exists.
 
-    Use the index with open_project_tool(recent_index=N) ("open my last
-    project"), or forget_recent_projects_tool to tidy the list.
+    Use the index with run_tool(name='open_project_tool', args={'recent_index': N}) ("open my last
+    project"), or run_tool(name='forget_recent_projects_tool') to tidy the list.
     """
     out = []
     for i, path in enumerate(_recent_projects(), start=1):
@@ -463,7 +463,7 @@ def _recovery_versions() -> list:
 def list_recovery_versions():
     """List File > Recovery: the automatic copies saved each time this project was saved, newest first.
 
-    Use before restore_recovery_version_tool ("go back to the version from an
+    Use before run_tool(name='restore_recovery_version_tool') ("go back to the version from an
     hour ago"). A project that was never saved has none.
     """
     if not project_path():

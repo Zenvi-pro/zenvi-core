@@ -150,8 +150,8 @@ def plan_recreation(reference_file_id, source_file_ids=[], max_reuse=1, stock="a
     window of your clips (in/out seconds of exactly the shot's length) by how its picture, measured look and camera move compare, and
     hands windows out under limits: the same moment is not reused beyond max_reuse, no clip plays twice in a row, no clip takes more than
     its share. Shots nothing fits are marked weak or unfilled with a stock-search phrase and, when signed in, stock clips to try (bring one
-    in with import_stock_media_tool and give it back to build_recreation_tool as an override). Returns plan_id. Nothing is placed yet:
-    read the plan, then call build_recreation_tool, then check_recreation_tool and fix what it names.
+    in with run_tool(name='import_stock_media_tool') and give it back to run_tool(name='build_recreation_tool') as an override). Returns plan_id. Nothing is placed yet:
+    read the plan, then call run_tool(name='build_recreation_tool'), then run_tool(name='check_recreation_tool') and fix what it names.
     """
     from classes.editor_tools.ai_generation_stock import search_stock_for
     files, missing = project_indexes()
@@ -193,7 +193,7 @@ def plan_recreation(reference_file_id, source_file_ids=[], max_reuse=1, stock="a
     notes = [_row_line(r, plan) for r in rows]
     return ok(head, plan_id=plan_id, notes="\n".join(notes), matched=out["matched"], weak_shots=weak, unfilled=out["unfilled"], reuse=reuse,
               stock_searched=stock_ok, not_indexed=missing[:20],
-              next="run_tool(name='build_recreation_tool', args={'plan_id': ...}) places it; then run_tool(name='check_recreation_tool'). Weak or unfilled shots: use a stock suggestion or accept a weak match.")
+              next="run_tool(name='build_recreation_tool', args={'plan_id': ...}) places it; then run_tool(name='check_recreation_tool', args={'reference_file_id': ..., 'plan_id': ...}). Weak or unfilled shots: use a stock suggestion or accept a weak match.")
 
 
 # ============================ build ============================
@@ -507,8 +507,8 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
     """Place a recreation plan on the timeline: each source window at the reference's exact cut time and length, on a Recreation track,
     in one undoable step. Each clip is graded towards its reference shot's measured look (grade), the reference's audio goes under it
     on a Song track and the footage's own sound is switched off (song). With overrides it swaps the source of the named shots; with
-    only_shots it rebuilds just those, replacing their clips. Does not do the reference's fades and dissolves (check_recreation_tool
-    lists them). Afterwards call check_recreation_tool and fix what it names.
+    only_shots it rebuilds just those, replacing their clips. Does not do the reference's fades and dissolves (run_tool(name='check_recreation_tool')
+    lists them). Afterwards call run_tool(name='check_recreation_tool') and fix what it names.
     """
     plan = _plan(plan_id)
     if plan is None:
@@ -663,7 +663,7 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
     return ok(f"Placed {len(placed_ids)} shot(s) on track '{plan['track_name']}' (replaced {replaced}), graded {graded} ({ramped} with a brightness ramp), zoomed in on {len(zoomed)} to match the reference's framing, {made_t} dissolve/fade transition(s) ({skipped_t} skipped).{song_note}"
               + (f" Unfilled: {unfilled}." if unfilled else "") + playback_note,
               plan_id=plan["id"], placed=len(placed_ids), replaced=replaced, graded=graded, ramped=ramped, zoomed=zoomed, transitions=made_t, transitions_skipped=skipped_t, unfilled=unfilled,
-              next="run_tool(name='check_recreation_tool', args={'plan_id': ...}) scores it against the reference; fix the shots it names, then check again.")
+              next="run_tool(name='check_recreation_tool', args={'reference_file_id': ..., 'plan_id': ...}) scores it against the reference; fix the shots it names, then check again.")
 
 
 # ============================ check ============================
@@ -737,7 +737,7 @@ def _swap_fix(shot_id: int, scored: List[tuple], pool: List[Any], covering: Any,
     for key in _moment_keys(best[0], best[1], length):
         moments[key] += 1
     proposed[shot_id] = best[0]
-    return f"build_recreation_tool(overrides=[{{reference_shot:{shot_id}, file_id:'{best[0]}', in:{best[1]:.2f}}}], only_shots=[{shot_id}])"
+    return f"run_tool(name='build_recreation_tool', args={{'overrides': [{{'reference_shot': {shot_id}, 'file_id': '{best[0]}', 'in': {best[1]:.2f}}}], 'only_shots': [{shot_id}]}})"
 
 
 def _grade_score(parts: List[float]) -> float:
@@ -762,7 +762,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pic
     reused too often, no clip twice in a row), picture (how well each placed window ranks among the footage for its shot), look (each clip
     graded and close to the reference shot's measured look) and sound (the reference's audio present, the footage's own sound off).
     It passes at 80 overall with no area under 60. failing lists the shots to fix, each with what is wrong and the call that fixes it;
-    transitions lists the reference's fades and dissolves (build_recreation_tool makes them). Run it after every build and
+    transitions lists the reference's fades and dissolves (run_tool(name='build_recreation_tool') makes them). Run it after every build and
     again after fixes; stop when it passes or three rounds change nothing.
     """
     from classes.editor_tools.media_index_tools_precision import _timeline_facts
@@ -825,10 +825,10 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pic
                 shift = nearby.start - slot
                 findings.setdefault(shot_id, []).append(f"no clip at this slot; the clip starting at {_mmss(nearby.start)} is {abs(shift) / frame:.0f} frame(s) "
                                                         f"{'late' if shift > 0 else 'early'}")
-                fixes[shot_id] = f"move_clips_tool(timeline_clip_ids=['{nearby.id}'], by_seconds={-shift:.3f})"
+                fixes[shot_id] = f"run_tool(name='move_clips_tool', args={{'timeline_clip_ids': ['{nearby.id}'], 'by_seconds': {-shift:.3f}}})"
             else:
                 findings.setdefault(shot_id, []).append("no clip at this slot")
-                fixes[shot_id] = f"build_recreation_tool(only_shots=[{shot_id}])"
+                fixes[shot_id] = f"run_tool(name='build_recreation_tool', args={{'only_shots': [{shot_id}]}})"
             continue
         coverage.append(1.0)
         placed_files.append(covering.file_id)
@@ -844,9 +844,9 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pic
             shift = snap(a) - covering.start
             findings.setdefault(shot_id, []).append(f"cut {start_err:.0f} frame(s) {'late' if shift < 0 else 'early'}, length {len_err:.0f} frame(s) off")
             if len_err <= tol + 1e-6:                                       # right length, wrong place: slide it
-                fixes[shot_id] = f"move_clips_tool(timeline_clip_ids=['{covering.id}'], by_seconds={shift:.3f})"
+                fixes[shot_id] = f"run_tool(name='move_clips_tool', args={{'timeline_clip_ids': ['{covering.id}'], 'by_seconds': {shift:.3f}}})"
             else:
-                fixes[shot_id] = f"build_recreation_tool(only_shots=[{shot_id}])"
+                fixes[shot_id] = f"run_tool(name='build_recreation_tool', args={{'only_shots': [{shot_id}]}})"
         for k in range(int(covering.src_in / mref.BUCKET_SECONDS), int(max(covering.src_in, covering.src_out - 1e-6) / mref.BUCKET_SECONDS) + 1):
             buckets[(covering.file_id, k)] += 1
         cand = by_id.get(covering.file_id)
@@ -860,7 +860,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pic
             else:
                 framing_scores.append(max(0.0, (applied - 1.0) / max(wanted_zoom - 1.0, 1e-6)))
                 findings.setdefault(shot_id, []).append(f"framed wider than the reference ({ref_type}): needs about {wanted_zoom:.1f}x zoom, has {applied:.1f}x")
-                fixes.setdefault(shot_id, "build_recreation_tool(framing=true, only_shots=[%d])" % shot_id)
+                fixes.setdefault(shot_id, "run_tool(name='build_recreation_tool', args={'framing': true, 'only_shots': [%d]})" % shot_id)
         if cand is not None and shot is not None and cand in pool:
             scored = mref.scored_windows(ref, shot, float(b) - float(a), pool)
             slot_info[shot_id] = (scored, covering)
@@ -889,7 +889,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pic
                     if grade:
                         look_misses.append(shot_id)                            # a grade can only move a look so far: the fix is a source whose own look is closer (below)
                     else:
-                        fixes.setdefault(shot_id, "build_recreation_tool(grade=true, only_shots=[%d])" % shot_id)
+                        fixes.setdefault(shot_id, "run_tool(name='build_recreation_tool', args={'grade': true, 'only_shots': [%d]})" % shot_id)
 
     # picture: how alike each placed window is to its reference shot, measured against every shot/window pair (not just the shot's own options),
     # so a "best of a poor lot" cannot pass
@@ -909,7 +909,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pic
             desc = ((row_of.get(shot_id) or {}).get("description") or "").strip()
             if desc:
                 query = mref.stock_query_for(desc, (next((x for x in ref.shots if int(x["id"]) == int(shot_id)), None) or {}).get("look"))
-                fixes[shot_id] = f"search_stock_video_tool(query='{query}') then build_recreation_tool(overrides=[...], only_shots=[{shot_id}])"
+                fixes[shot_id] = f"run_tool(name='search_stock_video_tool', args={{'query': '{query}'}}) then run_tool(name='build_recreation_tool', args={{'overrides': [...], 'only_shots': [{shot_id}]}})"
             continue
         if fit is None:                                                # no picture vectors for this file: fall back to how it ranks on look and camera
             rank = ranks.get(shot_id)
@@ -922,7 +922,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pic
             desc = ((row_of.get(shot_id) or {}).get("description") or "").strip()
             if desc:
                 query = mref.stock_query_for(desc, (next((x for x in ref.shots if int(x["id"]) == int(shot_id)), None) or {}).get("look"))
-                fixes.setdefault(shot_id, f"search_stock_video_tool(query='{query}') then build_recreation_tool(overrides=[...], only_shots=[{shot_id}])")
+                fixes.setdefault(shot_id, f"run_tool(name='search_stock_video_tool', args={{'query': '{query}'}}) then run_tool(name='build_recreation_tool', args={{'overrides': [...], 'only_shots': [{shot_id}]}})")
 
     reuse_max = max(buckets.values(), default=0)
     uses = Counter(placed_files)
@@ -969,7 +969,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pic
     for shot_id in look_misses:                                            # after the repeats are settled, so a look swap cannot make a new one
         info = slot_info.get(shot_id)
         swap = _swap_fix(shot_id, info[0], pool, info[1], moments, "look", neighbour_files(shot_id), proposed) if info else None
-        fixes.setdefault(shot_id, swap or "build_recreation_tool(grade=true, only_shots=[%d])" % shot_id)
+        fixes.setdefault(shot_id, swap or "run_tool(name='build_recreation_tool', args={'grade': true, 'only_shots': [%d]})" % shot_id)
 
     song_present = any(c.start <= 0.5 and c.length >= 0.8 * max(b for _i, _a, b, _r in slots) for c in ref_clips)
     audible = sum(1 for c in pictures if not _is_muted(c.id))

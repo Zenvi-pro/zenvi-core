@@ -344,9 +344,9 @@ def _project_titles(query: str) -> list:
 def list_title_templates(kind="static", query=""):
     """List title templates (and the titles already in the project) with their editable text fields.
 
-    Use before add_title_tool when the user wants a particular look ("lower third",
-    "end card", "gold title"), before edit_title_tool to see a title's current text,
-    and with kind="animated" before add_animated_title_tool. Each static template
+    Use before run_tool(name='add_title_tool') when the user wants a particular look ("lower third",
+    "end card", "gold title"), before run_tool(name='edit_title_tool') to see a title's current text,
+    and with kind="animated" before run_tool(name='add_animated_title_tool'). Each static template
     lists its fields in order (index, role title/subtitle/line, placeholder text),
     its text colour, background and where its text sits (zone top/center/bottom).
     Good defaults: Standard_1 (plain centred title + subtitle), Gray_Box_4 (lower
@@ -439,8 +439,8 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
     Use for titles, title cards, lower thirds, end cards, credits and any static
     text over video ("add a title 'Tokyo Day 1'", "lower third with my name",
     "end card saying Thanks for watching"). Not for subtitles or captions of speech
-    (add_captions_tool), countdowns (add_timer_tool), emoji (add_emoji_tool) or 3D
-    animated titles (add_animated_title_tool).
+    (add_captions_tool), countdowns (run_tool(name='add_timer_tool')), emoji (run_tool(name='add_emoji_tool')) or 3D
+    animated titles (run_tool(name='add_animated_title_tool')).
 
     Writes a new SVG title from the template with your text, font and colours,
     adds it to Project Files and places it at position_seconds for duration_seconds
@@ -654,7 +654,7 @@ def edit_title(timeline_clip_id="", file_id="", title_query="", text="", subtitl
     text. scope=all_clips (default) updates every clip showing that title, like the
     editor's Edit Title; this_clip gives just that clip its own edited copy;
     duplicate saves an edited copy as a new title (place it with
-    add_clip_to_timeline_tool). One undo step restores the previous look.
+    run_tool(name='add_clip_to_timeline_tool')). One undo step restores the previous look.
     To move, trim or re-time a title clip use the timeline tools instead.
 
     Example: {"timeline_clip_id": "C1A2", "text": "Tokyo Day 2", "text_color": "#FFD700"}.

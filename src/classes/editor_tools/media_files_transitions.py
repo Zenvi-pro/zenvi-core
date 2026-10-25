@@ -338,7 +338,7 @@ def list_timeline_transitions(track="", timeline_clip_id="", at_seconds=None):
     'later_first' = the later clip shows first and flashes back) or the clip edge it fades
     (on_clip_start = fade in, on_clip_end = fade out).
     Use before changing, reversing, copying or removing a transition. The catalog of
-    transitions you can add is list_transitions_tool (query narrows it by name). Read-only.
+    transitions you can add is run_tool(name='list_transitions_tool') (query narrows it by name). Read-only.
     """
     layer = resolve_layer(track) if str(track or "").strip() else None
     items = [t for t in _transitions() if layer is None or _layer_of(t.data) == layer]
@@ -590,7 +590,7 @@ def reverse_transition(transition_ids=None, between_clip_ids=None, track="", at_
     fade-in becomes a fade-out and back. On a crossfade/wipe BETWEEN two clips it makes the
     later clip show first and the earlier one flash back before the cut (the receipt's
     order becomes 'later_first'), which is rarely wanted: for "make the wipe go the other
-    way" use update_transition_tool(flip_wipe_side=true). Several transitions in one undo
+    way" use run_tool(name='update_transition_tool', args={'flip_wipe_side': true}). Several transitions in one undo
     step (scope='track' reverses a whole track). Refused on locked tracks; never deletes clips.
     """
     targets = resolve_transitions(transition_ids, between_clip_ids, track, at_seconds, scope)

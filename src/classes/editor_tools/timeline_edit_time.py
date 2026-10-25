@@ -166,8 +166,8 @@ def set_clip_speed(timeline_clip_ids=[], clip_query="", track="", scope="", spee
 
     A slower clip gets longer and may run into the next clip on its track: the tool refuses
     unless ripple=true (push later clips along) or allow_overlap=true. Looped clips
-    (repeat_clip_tool) need reset=true before a new speed. For a still frame use
-    freeze_frame_tool; to loop use repeat_clip_tool. One undo step for all clips. Returns each
+    (run_tool(name='repeat_clip_tool')) need reset=true before a new speed. For a still frame use
+    run_tool(name='freeze_frame_tool'); to loop use run_tool(name='repeat_clip_tool'). One undo step for all clips. Returns each
     clip's length before/after and its effective speed.
     """
     from windows.views.timeline_backend.enums import MenuTime
@@ -272,7 +272,7 @@ def repeat_clip(timeline_clip_ids=[], clip_query="", track="", scope="", times=2
     (speed_ramp_percent=25). The clip becomes N times as long (plus delays); the tool refuses
     to run into the next clip unless ripple=true or allow_overlap=true. A clip that is already
     looped must be reset first (run_tool(name='set_clip_speed_tool', args={'timeline_clip_ids': [...], 'reset': true})) or undone. To place separate
-    copies instead, use duplicate_clips_tool. One undo step.
+    copies instead, use run_tool(name='duplicate_clips_tool'). One undo step.
     """
     _require_targets(timeline_clip_ids, clip_query, scope, "repeat")
     clips = targets(timeline_clip_ids, clip_query, track, scope)
@@ -347,7 +347,7 @@ def freeze_frame(timeline_clip_id="", clip_query="", track="", at_seconds=-1.0, 
     playhead), "hold the frame at 12.5 s for 3 seconds with a slight zoom" (zoom=true). The
     clip gets hold_seconds longer and its sound is muted during the hold. The tool refuses to
     run into the next clip unless ripple=true or allow_overlap=true. For slow motion use
-    set_clip_speed_tool. One undo step.
+    run_tool(name='set_clip_speed_tool'). One undo step.
     """
     from windows.views.timeline_backend.enums import MenuTime
 
@@ -502,7 +502,7 @@ def set_clip_audio_video(timeline_clip_ids=[], clip_query="", track="", scope=""
     Use for "mute this clip" (audio='off'), "unmute it" (audio='auto'), "make it audio only" /
     "hide the video but keep the sound" (video='off'), "show the waveform" (waveform='show').
     This switches the track of sound or picture entirely; to change how loud a clip is use
-    set_clip_volume_tool, and to get the sound onto its own clip use separate_clip_audio_tool.
+    run_tool(name='set_clip_volume_tool'), and to get the sound onto its own clip use run_tool(name='separate_clip_audio_tool').
     Refused on locked tracks and for 'on'/'show' when the media has no audio/video. Already in
     that state is not an error (no undo step). One undo step. Waveforms are drawn a moment later.
     """

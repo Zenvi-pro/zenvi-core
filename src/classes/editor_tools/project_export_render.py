@@ -816,7 +816,7 @@ def get_export_settings():
 
     Reports preset, quality, type, output path, size, fps, codecs, bitrates,
     audio format and frame range (seconds and frames), the overrides saved with
-    set_export_setting_tool, and the keys that tool accepts.
+    run_tool(name='set_export_setting_tool'), and the keys that tool accepts.
     """
     overrides = {k: v for k, v in dict(get_app().project.get("export_overrides") or {}).items() if v is not None}
     try:
@@ -994,7 +994,7 @@ def export_files_to_folder(file_ids, folder=""):
     """Export chosen project files to a folder (Project Files > Export Selected Clips).
 
     Plain files are copied; sub-clips (files with in/out points, e.g. from
-    create_subclips_tool) and image sequences are rendered as H.264/AAC MP4
+    run_tool(name='create_subclips_tool')) and image sequences are rendered as H.264/AAC MP4
     of just that part, at the file's own size and frame rate (on a QThread,
     never the GUI or a plain worker thread). Existing
     destination files are skipped, like the dialog. Changes nothing in the project.
