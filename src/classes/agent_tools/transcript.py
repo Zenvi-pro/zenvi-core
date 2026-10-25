@@ -752,7 +752,7 @@ def remove_words(
                     "then run_tool(name='remove_words_tool') with data.clipIds[0].",
                 ).to_json()
             return ToolReceipt.refused(
-                "run_tool(name='remove_words_tool')", f"Error: Unknown timeline_clip_id '{clipId}'.",
+                "remove_words_tool", f"Error: Unknown timeline_clip_id '{clipId}'.",
             ).to_json()
 
     fps = _fps_from_project(app.project)
@@ -764,7 +764,7 @@ def remove_words(
         path = str(reader.get("path") or "")
     if not path:
         return ToolReceipt.refused(
-            "run_tool(name='remove_words_tool')", "Error: Clip has no media path.",
+            "remove_words_tool", "Error: Clip has no media path.",
         ).to_json()
 
     try:
@@ -779,7 +779,7 @@ def remove_words(
         if _is_no_audio_exc(exc):
             return _no_audio_receipt("remove_words_tool").to_json()
         return ToolReceipt.error(
-            "run_tool(name='remove_words_tool')", f"Error: Transcription failed: {exc}",
+            "remove_words_tool", f"Error: Transcription failed: {exc}",
         ).to_json()
 
     if transcript_generation is not None:
@@ -848,7 +848,7 @@ def remove_words(
             indices = [int(i) for i in list(wordIndices)]
         except (TypeError, ValueError):
             return ToolReceipt.refused(
-                "run_tool(name='remove_words_tool')", "Error: word_indices must be integers.",
+                "remove_words_tool", "Error: word_indices must be integers.",
             ).to_json()
 
     if not indices:
@@ -907,7 +907,7 @@ def remove_words(
         )
     except Exception as exc:
         return ToolReceipt.error(
-            "run_tool(name='remove_words_tool')", f"Error: {exc}",
+            "remove_words_tool", f"Error: {exc}",
         ).to_json()
 
     # Remaining dialogue after the cut — so the agent need not re-call
@@ -1065,9 +1065,9 @@ def _delete_clip_and_ripple(app, clip: dict, *, removed_duration: float, fps, wo
     try:
         _run_on_main_thread(_mutate)
     except Exception as exc:
-        return ToolReceipt.error("run_tool(name='remove_words_tool')", f"Error: {exc}").to_json()
+        return ToolReceipt.error("remove_words_tool", f"Error: {exc}").to_json()
     if error_box[0]:
-        return ToolReceipt.error("run_tool(name='remove_words_tool')", f"Error: {error_box[0]}").to_json()
+        return ToolReceipt.error("remove_words_tool", f"Error: {error_box[0]}").to_json()
 
     return ToolReceipt.applied(
         "remove_words_tool",
