@@ -585,7 +585,7 @@ def _resolve_title(timeline_clip_id: str, file_id: str, title_query: str):
                 scored.append((1, f))
         if not scored:
             raise ToolError(f"no title in the project matches {title_query!r} "
-                            "(run_tool(name='list_title_templates_tool') kind=project lists them)")
+                            "(run_tool(name='list_title_templates_tool', args={'kind': 'project'}) lists them)")
         best = max(s for s, _ in scored)
         top = [f for s, f in scored if s == best]
         if len(top) > 1:
@@ -602,7 +602,7 @@ def _resolve_title(timeline_clip_id: str, file_id: str, title_query: str):
     if len(titles) == 1:
         return titles[0], ""
     raise ToolError("which title? pass timeline_clip_id, file_id or title_query "
-                    f"({len(titles)} titles in the project; run_tool(name='list_title_templates_tool') kind=project lists them)")
+                    f"({len(titles)} titles in the project; run_tool(name='list_title_templates_tool', args={{'kind': 'project'}}) lists them)")
 
 
 def _clips_of(file_id: str) -> list:

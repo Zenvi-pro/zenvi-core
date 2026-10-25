@@ -82,7 +82,7 @@ def _min_version() -> str:
 def _find_template(name: str):
     raw = str(name or "").strip()
     if not raw:
-        raise ToolError("template is required (run_tool(name='list_title_templates_tool') kind=animated lists them)")
+        raise ToolError("template is required (run_tool(name='list_title_templates_tool', args={'kind': 'animated'}) lists them)")
     key = raw.lower().replace(" ", "_").replace(".xml", "").replace(".blend", "")
     for path in blender_titles.template_paths():
         summary = blender_titles.template_summary(path)

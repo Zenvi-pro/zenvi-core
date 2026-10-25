@@ -402,7 +402,7 @@ def analyze_music(file_id="", file_query="", describe=False, bpm_min=None, bpm_m
     """
     clip = resolve_clip(timeline_clip_id=timeline_clip_id) if timeline_clip_id else None
     if clip is not None:
-        file_id = str(clip.data.get("file_id") or "")
+        file_id = str(clip.data.get("file_id") or (clip.data.get("reader") or {}).get("id") or "")
     f = resolve_files([file_id] if file_id else None, file_query)[0]
     fi = _index_for(f)
     if fi is None or not fi.layers.get(S.LAYER_AUDIO):

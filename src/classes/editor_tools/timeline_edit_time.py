@@ -284,7 +284,7 @@ def repeat_clip(timeline_clip_ids=[], clip_query="", track="", scope="", times=2
     plans = []
     for c in clips:
         if timeline_ops.repeat_is_active(c.data):
-            raise ToolError(f"{title(c)!r} is already looped; reset it first (run_tool(name='set_clip_speed_tool') reset=true) or "
+            raise ToolError(f"{title(c)!r} is already looped; reset it first (run_tool(name='set_clip_speed_tool', args={{'timeline_clip_ids': ['{c.id}'], 'reset': true}})) or "
                             "undo the earlier repeat")
         duration = span(c.data)[1] - span(c.data)[0]
         span_frames = max(1, int(round(duration * fps)))

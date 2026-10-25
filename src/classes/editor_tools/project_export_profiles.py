@@ -518,7 +518,7 @@ def set_project_setting(fps=None, fps_num=None, fps_den=None, width=None, height
                     "pass reframe='fill' to crop them.")
     if record is not None and reframe == "fill" and not result["video_clips"]:
         summary += (" The timeline has no video clips yet, so nothing was reframed: clips placed later are fitted with bars "
-                    "when their shape differs, so call set_project_setting_tool(reframe='fill') again once they are on the timeline.")
+                    "when their shape differs, so call run_tool(name='set_project_setting_tool', args={'reframe': 'fill'}) again once they are on the timeline.")
     return ok(summary, changed=changed, width=after["width"], height=after["height"], fps=after["fps"],
               fps_num=after["fps_num"], fps_den=after["fps_den"], profile=after["profile"],
               sample_rate=after["sample_rate"], channels=after["channels"],

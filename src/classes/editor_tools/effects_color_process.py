@@ -159,8 +159,8 @@ def build_context(class_name: str, clip, opts: dict) -> tuple:
     if class_name == "Tracker":
         if not opts.get("region"):
             raise ToolError('Tracker needs region: the box around the object on the frame at region_time, e.g. '
-                            '{"x": 0.4, "y": 0.3, "width": 0.15, "height": 0.25} (use run_tool(name="analyze_frame_colors_tool") '
-                            'with save_frame_path to look at the frame first)')
+                            '{"x": 0.4, "y": 0.3, "width": 0.15, "height": 0.25} (use run_tool(name="analyze_frame_colors_tool", args={"save_frame_path": "<a .png path>"}) '
+                            'to look at the frame first)')
         r = _rect(opts["region"], "region")
         t = _seconds_in_clip(data, opts.get("region_time"), "region_time")
         first = int(round((t - float(data.get("position") or 0.0)) * project_fps()))

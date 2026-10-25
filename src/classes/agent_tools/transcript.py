@@ -189,19 +189,19 @@ def _transcript_notes(*, for_edit: bool = True) -> list[str]:
     notes = [
         "data.script is the full dialogue for the user. "
         "data.clipIds are TIMELINE clip ids (not media-bin fileIds). "
-        "For cuts: call remove_words_tool ONCE next with data.clipIds[0] + matches "
-        "(e.g. [\"FlowCut\",\"flocut\"]) — do NOT call get_transcript_tool again. "
-        "Keep language=auto. Never pass file_id to remove_words_tool.",
+        "For cuts: call run_tool(name='remove_words_tool', args={'timeline_clip_id': data.clipIds[0], "
+        "'matches': [\"FlowCut\", \"flocut\"]}) ONCE next — do NOT call get_transcript_tool again. "
+        "Keep language=auto. Never pass file_id to the word-removal tool.",
     ]
     notes.append(
         "Word times are only good to a few tenths of a second. To cut at the instant someone starts or stops talking, "
-        "get that instant from get_voice_edges_tool first and slice there; never slice at a word time."
+        "get that instant from run_tool(name='get_voice_edges_tool') first and slice there; never slice at a word time."
     )
     if for_edit:
         notes.append(
             "matches=[...] is enough for brand/filler cuts — you do not need "
             "compactWords or a matching transcript_generation. After a successful cut, "
-            "use remove_words_tool data.script (full remaining dialogue) — do not "
+            "use the cut receipt's data.script (full remaining dialogue) — do not "
             "truncate or invent a message limit."
         )
     return notes
@@ -222,15 +222,15 @@ def _short_transcript_summary(
     if clips:
         id_bit = f" timeline_clip_id={clips[0]}" if len(clips) == 1 else f" clipIds={clips}"
         action = (
-            "Full dialogue in data.script. For word cuts call remove_words_tool next "
-            "with that timeline_clip_id + matches=[...] — do not re-call get_transcript_tool."
+            "Full dialogue in data.script. For word cuts call run_tool(name='remove_words_tool', "
+            "args={'timeline_clip_id': <that id>, 'matches': [...]}) next — do not re-call get_transcript_tool."
         )
     elif files:
         id_bit = f" file_id={files[0]}" if len(files) == 1 else f" fileIds={files}"
         action = (
             "Full dialogue in data.script. This is a media-bin fileId, NOT a timeline "
             "clipId — place the file on the timeline (or re-call get_transcript_tool "
-            "with empty args once it is placed) before remove_words_tool."
+            "with empty args once it is placed) before cutting words."
         )
     else:
         id_bit = ""
@@ -288,10 +288,10 @@ def _transcript_data_payload(
     elif file_ids:
         next_action = (
             "place file on timeline then get_transcript_tool again — "
-            "remove_words_tool needs data.clipIds (timeline), not fileId"
+            "word removal needs data.clipIds (timeline), not fileId"
         )
     else:
-        next_action = "pass timeline_clip_id to remove_words_tool or place the clip first"
+        next_action = "pass timeline_clip_id to run_tool(name='remove_words_tool') or place the clip first"
     # Put actionable edit fields FIRST so they survive any truncation;
     # keep the long script last.
     return {

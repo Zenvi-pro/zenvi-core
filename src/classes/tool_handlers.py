@@ -3801,7 +3801,7 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
                 return (
                     f"Error: Video imported (file_id={file_id}, {size_mb:.1f} MB) but placing it on the "
                     f"timeline failed: {placement or 'unknown'}. Do NOT download it again: call "
-                    f"run_tool(name='add_clip_to_timeline_tool')(file_id='{file_id}', track=..., position_seconds=...)."
+                    f"add_clips_to_timeline_tool(file_ids=['{file_id}'], track=..., start_seconds=...)."
                 )
             return (
                 f"✅ Video imported (file_id: {file_id}, {size_mb:.1f} MB) and added to the timeline.\n"
@@ -4017,8 +4017,8 @@ def ingest_web_video(
     failure — keep calling the same job_id; do not start a second download.
 
     Intents (pick from what the user asked — do NOT place unless they asked):
-      reference — DEFAULT. Media bin only. Colour/look: read its look with get_look_profile_tool
-                  (file_id), then grade with color_grade_clip_tool. Never put the YouTube clip on the timeline for colour.
+      reference — DEFAULT. Media bin only. Colour/look: once it is indexed, read its look with
+                  run_tool(name='get_look_profile_tool', args={'file_id': ...}), then grade with color_grade_clip_tool. Never put the YouTube clip on the timeline for colour.
       timeline  — ONLY if user asked to add/edit/clip that YouTube video on the timeline.
       recreate  — Media bin watch-only reference; rebuild with user clips/stock/video_gen.
                   Do not leave the YouTube original on the cut unless asked.
@@ -4193,8 +4193,8 @@ def _ingest_web_video_impl(
                 "url": raw_url,
                 "message": "Direct media URL imported to media bin.",
                 "next": (
-                    "Colour: get_look_profile_tool(file_id=file_id), then color_grade_clip_tool. "
-                    "Timeline: add_clip_to_timeline_tool(file_id=...)."
+                    f"Colour: once it is indexed, run_tool(name='get_look_profile_tool', args={{'file_id': '{file_id}'}}), "
+                    f"then color_grade_clip_tool. Timeline: add_clips_to_timeline_tool(file_ids=['{file_id}'])."
                 ),
                 "product_note": (
                     "User-initiated local import. Do not re-upload the original as your own."
@@ -4283,7 +4283,7 @@ def _ingest_web_video_impl(
     next_steps = []
     if intent_norm in ("reference", "recreate"):
         next_steps.append(
-            f"Colour: get_look_profile_tool(file_id=\"{file_id}\"), then color_grade_clip_tool."
+            f"Colour: once it is indexed, run_tool(name='get_look_profile_tool', args={{'file_id': '{file_id}'}}), then color_grade_clip_tool."
         )
     if intent_norm == "recreate":
         next_steps.append(
@@ -4507,8 +4507,8 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
                     f"Error: Video imported (file_id={f.id}) but timeline placement failed: "
                     f"{msg or 'unknown'}. "
                     + ("The clips moved to make room were put back. " if _rippled else "")
-                    + f"Do NOT regenerate — call add_clip_to_timeline_tool(file_id='{f.id}', "
-                    f"track=<layer_number from get_timeline_state_tool>, position_seconds=...)."
+                    + f"Do NOT regenerate — call add_clips_to_timeline_tool(file_ids=['{f.id}'], "
+                    f"track=<layer_number from get_timeline_state_tool>, start_seconds=...)."
                 )
             if not stamped:
                 return (
@@ -4598,9 +4598,9 @@ def generate_image_and_add_to_timeline(prompt="", duration_seconds="", position_
                 return (
                     f"Error: Image imported (file_id={f.id}) but timeline placement failed: "
                     f"{msg or 'unknown'}. "
-                    f"Do NOT regenerate — call run_tool(name='add_clip_to_timeline_tool')(file_id='{f.id}', "
-                    f"track=<layer_number from get_timeline_state_tool>, position_seconds=..., "
-                    f"duration_seconds={seconds:g})."
+                    f"Do NOT regenerate — call add_clips_to_timeline_tool(file_ids=['{f.id}'], "
+                    f"track=<layer_number from get_timeline_state_tool>, start_seconds=..., "
+                    f"image_seconds={seconds:g})."
                 )
             if not stamped:
                 return (

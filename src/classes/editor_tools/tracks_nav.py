@@ -426,7 +426,7 @@ def remove_track(track, with_clips=False):
     layer = resolve_layer(track)
     row = _track_row(layer)
     if is_locked(layer):
-        raise ToolError("%s is locked; unlock it first (run_tool(name='update_track_tool') lock=false)" % _track_title(row))
+        raise ToolError("%s is locked; unlock it first (run_tool(name='update_track_tool', args={'track': <that track>, 'lock': false}))" % _track_title(row))
     if len(layers()) <= 1:
         raise ToolError("the project must keep at least one track")
     contents = track_ops.track_contents(layer)
@@ -667,7 +667,7 @@ def list_markers():
 
 def _at_end_error(state: dict) -> ToolError:
     return ToolError("nothing to play from %s: the playhead is at the end of the timeline (content "
-                     "ends at %s). Play from the start with run_tool(name='seek_playhead_tool') to='start', play=true"
+                     "ends at %s). Play from the start with run_tool(name='seek_playhead_tool', args={'to': 'start', 'play': true})"
                      % (state["timecode"], _timecode(_content_end())))
 
 
