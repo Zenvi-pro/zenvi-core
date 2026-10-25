@@ -49,6 +49,11 @@ def _hard_coded_colors(path):
             for key, value in zip(node.keys, node.values):
                 if isinstance(key, ast.Constant) and key.value in OTHER_THEMES:
                     exempt.update(range(value.lineno, value.end_lineno + 1))
+        elif isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            # A docstring's "(#147)" is an issue number, not a color.
+            first = node.body[0] if node.body else None
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+                exempt.update(range(first.lineno, first.end_lineno + 1))
     lines = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
