@@ -989,8 +989,8 @@ class ChatBridge(QObject):
 class AIChatWindow(QDockWidget):
     """Zenvi Assistant chat dock. Supports markdown in assistant replies and matches app theme."""
 
-    dictation_heard = pyqtSignal(str, bool)    # text, final (from the dictation threads)
-    dictation_failed = pyqtSignal(str)
+    dictation_heard = pyqtSignal(str, bool, int)   # text, final, take (from the dictation threads)
+    dictation_failed = pyqtSignal(str, int)        # message, take
     dictation_installed = pyqtSignal(str, str)   # engine, error ("" when it downloaded)
 
     def __init__(self, parent=None):
@@ -1021,6 +1021,7 @@ class AIChatWindow(QDockWidget):
         # Composer attachment undo: snapshots before each drop/paste batch.
         self._attachment_undo_stack = []
         self._dictation = None
+        self._dictation_take = 0                   # numbers each take; words from an older one are dropped
         self.dictation_heard.connect(self._on_dictation_heard)
         self.dictation_failed.connect(self._on_dictation_failed)
         self._dictation_download = ""
@@ -1191,6 +1192,7 @@ class AIChatWindow(QDockWidget):
 
     def _create_session(self, model_id: str = "", backend: str = BACKEND_ZENVI):
         """Create a new chat session and switch to it (called from the + tab button)."""
+        self._abandon_dictation()                   # the shared prompt box changes chats
         import uuid
         backend = _coerce_backend(backend)
         sid = str(uuid.uuid4())
@@ -1353,6 +1355,7 @@ class AIChatWindow(QDockWidget):
         """Switch the displayed session to *session_id* (called when user clicks a tab)."""
         if session_id not in self._sessions or session_id == self._active_sid:
             return
+        self._abandon_dictation()
         self._active_sid = session_id
         self._clear_attachment_undo()
         sess = self._sessions[session_id]
@@ -1459,6 +1462,7 @@ class AIChatWindow(QDockWidget):
 
     def _reopen_closed_session(self, session_id: str):
         """Restore a soft-deleted chat as an open tab and switch to it."""
+        self._abandon_dictation()                   # the shared prompt box changes chats
         if not session_id:
             return
         if session_id in self._sessions:
@@ -1549,6 +1553,7 @@ class AIChatWindow(QDockWidget):
         if none exist).  No backend memory is cleared — old conversations
         remain reachable when the original project is reopened.
         """
+        self._abandon_dictation()                   # the shared prompt box changes chats
         try:
             from classes import chat_history
 
@@ -1706,6 +1711,7 @@ class AIChatWindow(QDockWidget):
         Unlike ``reload_for_project("")`` (File → New), this keeps the prior
         draft conversations instead of minting a fresh empty bucket.
         """
+        self._abandon_dictation()                   # the shared prompt box changes chats
         draft_key = (draft_key or "").strip()
         if not draft_key.startswith("draft:"):
             return
@@ -2641,7 +2647,10 @@ class AIChatWindow(QDockWidget):
 
             self._run_js("var el=document.getElementById('chat-input'); if(el) el.focus(); true;", hand_off)
             return
-        session = dictation.Dictation(self.dictation_heard.emit, self.dictation_failed.emit)
+        self._dictation_take += 1
+        take = self._dictation_take
+        session = dictation.Dictation(lambda text, final: self.dictation_heard.emit(text, final, take),
+                                      lambda message: self.dictation_failed.emit(message, take))
         try:
             session.start()
         except Exception as exc:
@@ -2650,13 +2659,27 @@ class AIChatWindow(QDockWidget):
         self._dictation = session
         self._run_js("if(window.setDictationState) window.setDictationState('listening');")
 
-    def _on_dictation_heard(self, text, final):
+    def _abandon_dictation(self):
+        """Another chat is about to show: stop the take, take its words back out of the shared box, and
+        drop whatever it still sends (queued signals included: the slots compare the take number)."""
+        if not getattr(self, "_dictation", None):
+            return
+        self._dictation_take += 1
+        self._dictation.stop()
+        self._dictation = None
+        self._run_js("if(window.cancelDictation) window.cancelDictation();")
+
+    def _on_dictation_heard(self, text, final, take=None):
+        if take is not None and take != self._dictation_take:
+            return                                  # an abandoned take's words
         if final:
             self._dictation = None
         self._run_js("if(window.setDictationText) window.setDictationText(%s, %s);"
                      % (json.dumps(text), "true" if final else "false"))
 
-    def _on_dictation_failed(self, message):
+    def _on_dictation_failed(self, message, take=None):
+        if take is not None and take != self._dictation_take:
+            return
         self._dictation = None
         log.warning("Dictation failed: %s", message)
         self._run_js("if(window.setDictationState) window.setDictationState('off', %s);"

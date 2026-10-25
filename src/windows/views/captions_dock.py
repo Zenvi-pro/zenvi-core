@@ -30,12 +30,17 @@ from classes.logger import log
 
 
 
-def _recogniser_on_disk() -> bool:
-    """Whether the chosen recogniser's files are there. Not hf.status(): that hashes models and waits on a
-    running download, and this runs on the GUI thread for every selection (the run itself verifies them)."""
-    if hf.recogniser() == "parakeet":
-        return os.path.isfile(hf._parakeet_model())
-    return os.path.isfile(hf.speech_engine()) and os.path.isfile(hf.speech_model())
+def _models_on_disk() -> dict:
+    """What the pickers show, from the files being there. Not hf.status(): that hashes models and waits on a
+    running transcription or download, and the dock asks on the GUI thread (installs and runs verify hashes)."""
+    def there(path):                              # a link is never trusted, as the hash check refuses it too
+        return os.path.isfile(path) and not os.path.islink(path)
+
+    return {"speech": there(hf.speech_engine()) and there(hf.speech_model()),
+            "parakeet": there(hf._parakeet_model()),
+            "rvm": there(hf.rvm_model()) and hf._ort_installed(),
+            "u2net": there(hf._u2net_model()),
+            "recogniser": hf.recogniser(), "matting": hf.matting()}
 
 
 def _confirm_download(parent, label) -> bool:
@@ -170,7 +175,7 @@ class CaptionsDock(QWidget):
         """One entry per model, saying whether it is installed or what using it first downloads."""
         _ = get_app()._tr
         spec = self._pickers()[kind]
-        st = hf.status()                                # the files are hashed: a deleted one shows as a download
+        st = _models_on_disk()                          # a deleted file shows as a download
         installed = {name: bool(st.get(key)) for name, (_l, _s, _i, key) in spec["models"].items()}
         combo = spec["combo"]
         combo.blockSignals(True)
@@ -346,7 +351,8 @@ class CaptionsDock(QWidget):
         if self._busy or not self._clip_id or not self.isVisible():
             return
         _ = get_app()._tr
-        if not _recogniser_on_disk():
+        st = _models_on_disk()
+        if not st["parakeet" if st["recogniser"] == "parakeet" else "speech"]:
             self.statusLabel.setText(_("Download the speech recogniser to read this clip's words."))
             return
         self._begin(_("Reading the clip's speech..."))

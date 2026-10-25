@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 from typing import Callable, List, Optional, Tuple
 
@@ -72,6 +73,11 @@ _SCENE_BANNED_NAMES = {"open", "exec", "eval", "compile", "__import__", "input",
                        "locals", "vars", "getattr", "setattr", "delattr", "help", "exit", "quit", "memoryview"}
 _SCENE_BANNED_ATTRS = {"os", "sys", "subprocess", "shutil", "socket", "pathlib", "builtins", "importlib",
                        "ctypes", "system", "popen", "spawnv", "urllib", "request", "requests", "http"}
+# numpy reads and writes files, and unpickling with np.load runs code: banned as names and as attributes.
+_NUMPY_IO = {"load", "save", "savez", "savez_compressed", "savetxt", "loadtxt", "genfromtxt", "fromfile",
+             "tofile", "memmap", "DataSource", "lib", "ctypeslib", "f2py", "testing"}
+_SCENE_BANNED_NAMES |= _NUMPY_IO
+_SCENE_BANNED_ATTRS |= _NUMPY_IO
 # What a scene process sees of the editor's environment: enough to find the system, never its tokens or keys.
 _ENV_KEEP = {"PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "TEMP", "TMP", "TMPDIR",
              "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "OS",
@@ -247,16 +253,29 @@ def check_scene(source: str) -> None:
         raise hf.HyperframesError("the scene is not valid Python: %s (line %s)" % (exc.msg, exc.lineno))
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
+            # The modules themselves, never a submodule: numpy.ctypeslib, numpy.f2py and numpy.lib reach native
+            # code and files, and an attribute check never sees what an import line names.
             names = [a.name for a in node.names] if isinstance(node, ast.Import) else [node.module or ""]
-            bad = [n for n in names if n.split(".")[0] not in SCENE_IMPORTS or (isinstance(node, ast.ImportFrom)
-                                                                               and node.level)]
+            bad = [n for n in names if n not in SCENE_IMPORTS or (isinstance(node, ast.ImportFrom) and node.level)]
             if bad:
-                raise hf.HyperframesError("the scene may only import %s; not %s"
+                raise hf.HyperframesError("the scene may only import %s (not their submodules); not %s"
                                           % (", ".join(sorted(SCENE_IMPORTS - {"__future__"})), ", ".join(bad)))
+            taken = [a.name for a in node.names if a.name in _SCENE_BANNED_NAMES | _SCENE_BANNED_ATTRS]
+            if isinstance(node, ast.ImportFrom) and taken:
+                raise hf.HyperframesError("the scene may only draw; %s is not available in a scene" % taken[0])
         elif isinstance(node, ast.Name) and node.id in _SCENE_BANNED_NAMES:
             raise hf.HyperframesError("the scene may only draw; %s() is not available in a scene" % node.id)
-        elif isinstance(node, ast.Attribute) and (node.attr.startswith("__") or node.attr in _SCENE_BANNED_ATTRS):
+        elif isinstance(node, ast.Attribute) and (
+                (node.attr.startswith("__") and not _is_super_init(node)) or node.attr in _SCENE_BANNED_ATTRS):
             raise hf.HyperframesError("the scene may only draw; .%s is not available in a scene" % node.attr)
+
+
+def _is_super_init(node) -> bool:
+    """super().__init__ -- how every custom Mobject or Scene subclass starts; any other dunder is refused."""
+    import ast
+
+    return (node.attr == "__init__" and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "super")
 
 
 def render(project: str, scene_file: str, scene: str, transparent: bool = True, quality: str = "standard",
@@ -269,10 +288,24 @@ def render(project: str, scene_file: str, scene: str, transparent: bool = True, 
     if not _SCENE_RE.match(str(scene or "")):
         raise hf.HyperframesError("scene must be the name of a Scene class in that file, e.g. 'PythagorasProof'")
     with open(path, encoding="utf-8") as fh:
-        check_scene(fh.read())
+        source = fh.read()
+    check_scene(source)
     manim = manim_program()
     if not manim:
         raise hf.HyperframesError("Manim is not set up on this computer yet; call manim_setup_tool with install=true")
+    # Run exactly the checked text, from a folder of its own: Manim puts the scene's folder first on
+    # sys.path, where a project file (colour.py, numpy.py) would shadow an allowed module.
+    run_dir = tempfile.mkdtemp(prefix="zenvi-manim-")
+    try:
+        copy = os.path.join(run_dir, os.path.basename(path))
+        with open(copy, "w", encoding="utf-8") as fh:
+            fh.write(source)
+        return _render_checked(root, copy, scene, transparent, quality, fps, timeout, manim)
+    finally:
+        shutil.rmtree(run_dir, ignore_errors=True)
+
+
+def _render_checked(root, path, scene, transparent, quality, fps, timeout, manim) -> str:
     out_name = "%s-%d" % (scene, time.time_ns() // 1000000)
     argv = [manim, "render", path, scene, "-q", QUALITY.get(quality, "h"), "--fps", str(int(fps)),
             # conda-forge's PyAV has no VP9 encoder; a transparent .mov (qtrle, lossless) carries the alpha

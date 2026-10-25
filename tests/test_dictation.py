@@ -396,6 +396,7 @@ class _Dock:
         from unittest.mock import MagicMock
         self.js, self.pending = [], []
         self._dictation = None
+        self._dictation_take = 0
         self.dictation_heard = MagicMock()
         self.dictation_failed = MagicMock()
         self.installed = threading.Event()
@@ -404,7 +405,8 @@ class _Dock:
         self.confirmed = []
         self.answer = True
         for name in ("toggle_dictation", "_on_dictation_heard", "_on_dictation_failed",
-                     "pick_dictation_engine", "_on_dictation_installed", "_dictation_note"):
+                     "pick_dictation_engine", "_on_dictation_installed", "_dictation_note",
+                     "_abandon_dictation"):
             setattr(self, name, types.MethodType(getattr(window_cls, name), self))
 
     def _confirm_dictation_download(self, label):
@@ -674,3 +676,38 @@ def test_the_prompt_says_the_words_are_coming_after_stop():
     assert out["hearingBusy"] is True
     assert out["done"] == "Ask or edit directly" and out["text"] == "cut the intro"
     assert "no speech" in out["nothing"].lower()          # an empty take says so instead of just resetting
+
+
+def test_switching_chat_tabs_stops_the_take_and_drops_its_words(dock, monkeypatch):
+    # The composer is shared by every tab: words spoken for one chat must not land in another.
+    takes = []
+
+    class FakeSession:
+        def __init__(self, on_text, on_error):
+            self.on_text, self.on_error, self.stopped = on_text, on_error, False
+            takes.append(self)
+
+        def start(self):
+            pass
+
+        def stop(self):
+            self.stopped = True
+
+    def deliver(signal):                          # Qt runs the queued slot later, on the GUI thread
+        return lambda *args: signal(*args)
+
+    monkeypatch.setattr(dictation, "wispr_flow_installed", lambda *a: False)
+    monkeypatch.setattr(dictation, "Dictation", FakeSession)
+    dock.dictation_heard.emit.side_effect = deliver(dock._on_dictation_heard)
+    dock.dictation_failed.emit.side_effect = deliver(dock._on_dictation_failed)
+    dock.toggle_dictation()                       # speaking in chat A
+    dock._abandon_dictation()                     # another chat is about to show
+    assert takes[0].stopped and dock._dictation is None
+    assert "cancelDictation" in dock.js[-1]      # its partial words leave the shared box
+    dock.toggle_dictation()                       # a new take in chat B
+    written = len(dock.js)
+    takes[0].on_text("words for chat A", True)    # chat A's final, queued before the switch, lands now
+    takes[0].on_error("microphone closed")
+    assert not dock.js[written:] and dock._dictation is takes[1]     # nothing written, B still running
+    takes[1].on_text("words for chat B", True)
+    assert 'setDictationText("words for chat B", true)' in dock.js[-1] and dock._dictation is None

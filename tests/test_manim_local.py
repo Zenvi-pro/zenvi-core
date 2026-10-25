@@ -79,7 +79,8 @@ def test_render_runs_the_scene_in_the_project_and_returns_the_video(home, monkey
 
     argv = seen["argv"]
     assert argv[0] == exe and seen["cwd"] == hf.project_dir("proof")
-    assert argv[argv.index("render") + 1] == os.path.join(hf.project_dir("proof"), "scene.py")
+    scene = argv[argv.index("render") + 1]                 # a private copy of the checked scene (see below)
+    assert os.path.basename(scene) == "scene.py" and os.path.dirname(scene) != hf.project_dir("proof")
     assert "Pythagoras" in argv and "-t" in argv and argv[argv.index("--format") + 1] == "mov"
     assert "PYTHONPATH" not in seen["env"]                 # the editor's own Python path never leaks in
     assert seen["env"]["PATH"].split(os.pathsep)[0] == tex
@@ -106,6 +107,14 @@ def test_render_refuses_what_is_not_a_scene_in_the_project(home, monkeypatch):
     "x = (1).__class__.__mro__",
     "import manim\nmanim.os.system('x')",
     "getattr(config, 'x')",
+    "import numpy as np\nnp.load('payload.npy', allow_pickle=True)",   # unpickling runs code
+    "from numpy import load",
+    "import numpy as np\nnp.save('C:/Users/me/overwritten.npy', [1])",
+    "from numpy.ctypeslib import ctypes",                 # native code, one import line
+    "import numpy.f2py as f",
+    "from numpy.lib.format import open_memmap",
+    "from numpy import ctypeslib",
+    "import manim.utils.file_ops",
 ])
 def test_a_scene_that_reaches_beyond_drawing_is_refused_before_it_runs(home, monkeypatch, body):
     _fake_private_install(home)
@@ -115,6 +124,35 @@ def test_a_scene_that_reaches_beyond_drawing_is_refused_before_it_runs(home, mon
     with pytest.raises(hf.HyperframesError) as err:
         ml.render("proof", "bad.py", "S")
     assert "scene" in str(err.value).lower()
+
+
+def test_a_custom_mobject_may_call_its_parents_init():
+    ml.check_scene("from manim import *\nclass Badge(VGroup):\n    def __init__(self, **kw):\n"
+                   "        super().__init__(**kw)\n")
+    with pytest.raises(hf.HyperframesError):
+        ml.check_scene("from manim import *\nx = Circle().__init__")
+
+
+def test_the_checked_text_is_what_runs_away_from_the_projects_other_files(home, monkeypatch):
+    # Manim puts the scene's folder first on sys.path: a project colour.py would shadow the real module.
+    _fake_private_install(home)
+    root = hf.project_dir("proof")
+    open(os.path.join(root, "colour.py"), "w").write("import os\n")
+    ran = {}
+
+    def fake_run(argv, cwd, timeout, env):
+        scene = argv[argv.index("render") + 1]
+        ran.update(folder=os.path.dirname(scene), text=open(scene).read(), cwd=cwd)
+        out = os.path.join(cwd, "manim-media", "videos", argv[argv.index("-o") + 1] + ".mov")
+        os.makedirs(os.path.dirname(out))
+        open(out, "wb").write(b"0")
+        return 0, ""
+
+    monkeypatch.setattr(ml, "_run", fake_run)
+    ml.render("proof", "scene.py", "Pythagoras")
+    assert ran["folder"] != root and not os.path.exists(os.path.join(ran["folder"], "colour.py"))
+    assert "class Pythagoras" in ran["text"] and ran["cwd"] == root       # output still lands in the project
+    assert not os.path.exists(ran["folder"])                              # the private copy is cleaned up
 
 
 def test_the_scene_does_not_see_the_editors_secrets(home, monkeypatch):

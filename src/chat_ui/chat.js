@@ -2352,6 +2352,14 @@
         }
     };
 
+    // Another chat is showing: the box is shared, so the take's words go and what was typed before stays.
+    window.cancelDictation = function () {
+        if (dictationState === 'off') return;
+        inputEl.value = dictationPrefix;
+        adjustTextareaHeight();
+        window.setDictationState('off');
+    };
+
     // Typing or sending ends the take; a transcript arriving later is dropped.
     function endDictation() {
         if (dictationState === 'off') return;

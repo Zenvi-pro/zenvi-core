@@ -54,7 +54,9 @@ def dock(monkeypatch):
     monkeypatch.setattr(tool, "has_subject", lambda clip: pytest.fail("a selection must not probe frames"))
     monkeypatch.setattr(tool, "on_progress", None)
     monkeypatch.setattr(tool_handlers, "execute_tool", execute)
-    monkeypatch.setattr(captions_dock, "_recogniser_on_disk", lambda: True)          # Whistle is in place
+    monkeypatch.setattr(captions_dock, "_models_on_disk", lambda: {"speech": True, "parakeet": False,
+                                                                   "recogniser": "whistle"})  # Whistle is in place
+    monkeypatch.setattr(hf, "status", lambda: pytest.fail("hf.status() hashes models on the GUI thread"))
     monkeypatch.setattr(hf, "recogniser", lambda: "whistle")
     state.dock = captions_dock.CaptionsDock()
     state.dock.show()                                    # on screen: a selection reads the words
@@ -200,9 +202,10 @@ def recognisers(dock, monkeypatch):
     monkeypatch.setattr(hf, "choose_recogniser", lambda name: setattr(state, "chosen", name))
     monkeypatch.setattr(hf, "speech_supported", lambda *a: state.supported)
     monkeypatch.setattr(hf, "speech_ready", lambda fresh=False: state.installed["whistle"])
-    monkeypatch.setattr(hf, "status", lambda: {"ready": True, "speech": state.installed["whistle"],
-                                               "parakeet": state.installed["parakeet"]})
-    monkeypatch.setattr(captions_dock, "_recogniser_on_disk", lambda: state.installed[hf.recogniser()])
+    state.on_disk = lambda: {"speech": state.installed["whistle"], "parakeet": state.installed["parakeet"],
+                             "recogniser": hf.recogniser()}
+    monkeypatch.setattr(captions_dock, "_models_on_disk", lambda: state.on_disk())
+    monkeypatch.setattr(hf, "status", lambda: pytest.fail("hf.status() hashes models on the GUI thread"))
     monkeypatch.setattr(hf, "install_speech", install("whistle"))
     monkeypatch.setattr(hf, "install_parakeet", install("parakeet"))
     monkeypatch.setattr(captions_dock, "_confirm_download",
@@ -281,9 +284,8 @@ def test_the_cut_out_picker_shows_only_for_behind_the_speaker(recognisers, monke
     monkeypatch.setattr(hf, "matting", lambda: matte["chosen"])
     monkeypatch.setattr(hf, "choose_matting", lambda name: matte.update(chosen=name))
     monkeypatch.setattr(hf, "install_rvm", lambda: time.sleep(0.2) or matte["installed"].update(rvm=True))
-    monkeypatch.setattr(hf, "status", lambda: {"ready": True, "speech": True, "parakeet": False,
-                                               "recogniser": "whistle", "matting": matte["chosen"],
-                                               "rvm": matte["installed"]["rvm"], "u2net": matte["installed"]["u2net"]})
+    s.on_disk = lambda: {"speech": True, "parakeet": False, "recogniser": "whistle", "matting": matte["chosen"],
+                         "rvm": matte["installed"]["rvm"], "u2net": matte["installed"]["u2net"]}
     d = s.dock
     d._fill_picker("matting")
     combo = d.mattingCombo
