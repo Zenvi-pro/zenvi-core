@@ -9,6 +9,8 @@
     "src/classes/chat_navigation.py",
     "src/classes/cloud_sync.py",
     "src/classes/conversion.py",
+    "src/classes/editor_tools/timeline_edit_reels_cards.py",
+    "src/classes/editor_tools/timeline_edit_reels_plan.py",
     "src/classes/emoji_catalog.py",
     "src/classes/encoder_trial.py",
     "src/classes/export_acceleration/hw_encode.py",

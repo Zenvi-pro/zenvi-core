@@ -96,6 +96,7 @@ from classes.camera_motion import (
     PAN_TOP_TO_BOTTOM,
     PAN_BOTTOM_TO_TOP,
     PAN_UP,
+    apply_camera_keyframes,
     camera_pan_keyframes,
     ken_burns_keyframes,
     push_pull_keyframes,
@@ -2978,12 +2979,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
                 def _apply_camera_motion(values):
                     clip.data["scale"] = openshot.SCALE_CROP
-                    for prop in ("scale_x", "scale_y", "location_x", "location_y"):
-                        self._remove_keypoints_in_range(clip.data[prop], s, e)
-                    add("scale_x", kf(s, values.scale_x[0]), kf(e, values.scale_x[1]))
-                    add("scale_y", kf(s, values.scale_y[0]), kf(e, values.scale_y[1]))
-                    add("location_x", kf(s, values.location_x[0]), kf(e, values.location_x[1]))
-                    add("location_y", kf(s, values.location_y[0]), kf(e, values.location_y[1]))
+                    apply_camera_keyframes(clip.data, values, s, e, kf)
 
                 if action == MenuAnimate.NONE:
                     _reset_motion()
