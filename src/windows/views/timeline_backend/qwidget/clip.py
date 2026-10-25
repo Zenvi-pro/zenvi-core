@@ -662,7 +662,7 @@ class ClipInteractionMixin:
             for item_id, item_type in matched_items:
                 self.win.addSelection(str(item_id), item_type, False)
 
-            self.clip_painter.clear_cache()
+            self.clip_painter.clear_render_cache()
             self.geometry.mark_dirty()
             self._keyframes_dirty = True
             self.update()
