@@ -754,7 +754,7 @@ class ChatBridge(QObject):
 
     @guarded_slot(str, str, str, str)
     def sendMessageWithEffort(self, text: str, model_id: str, agent_mode: str, effort: str):
-        """sendMessage plus the effort picked for a CLI agent's model (#147)."""
+        """sendMessage plus the effort picked for a CLI agent's model."""
         if self.window:
             mode = agent_mode if agent_mode in ("planning", "agent") else None
             self.window._handle_web_send_message(
