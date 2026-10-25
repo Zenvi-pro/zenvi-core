@@ -50,3 +50,17 @@ def test_refusals_name_only_listed_tools():
             if unlisted:
                 bad.append(f"{path.relative_to(SRC)}:{lineno} {sorted(unlisted)}")
     assert not bad, "\n".join(bad)
+
+
+def test_receipts_carry_the_tool_id_not_a_call():
+    """ToolReceipt.refused/error(tool, message): the first argument is the handler's own name."""
+    bad = []
+    for path in sorted(SRC.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                    and node.func.attr in {"refused", "error", "ok", "applied"} and node.args:
+                first = node.args[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str) and "run_tool(" in first.value:
+                    bad.append(f"{path.relative_to(SRC)}:{node.lineno}")
+    assert not bad, bad
