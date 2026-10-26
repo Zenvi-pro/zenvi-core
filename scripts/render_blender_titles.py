@@ -31,6 +31,24 @@ class _Project:
         return self.data[key]
 
 
+def log_problems(returncode, log, frames, folder):
+    """What went wrong in one Blender run, from its exit code, its output and the frames it left."""
+    problems = []
+    if returncode != 0:
+        problems.append("exit %s" % returncode)
+    lines = log.splitlines()
+    at = next((i for i, ln in enumerate(lines) if ln.startswith("Traceback (most recent call last)")), None)
+    if at is not None:
+        # the exception is the first unindented line after the indented frames
+        problems.append(next((ln for ln in lines[at + 1:] if ln and not ln.startswith(" ")), "Traceback")[:160])
+    if not frames:
+        problems.append("no frame written")
+    stray = [ln.strip() for ln in lines if "Saved: '" in ln and not ln.split("Saved: '")[1].startswith(folder)]
+    if stray:
+        problems.append("wrote outside the output folder: " + stray[0][:120])
+    return problems
+
+
 def render_one(xml_path, blender, out_root, frame, gpu, timeout, size):
     details = bt.animation_details(xml_path)
     name = os.path.splitext(os.path.basename(xml_path))[0]
@@ -45,21 +63,10 @@ def render_one(xml_path, blender, out_root, frame, gpu, timeout, size):
     cmd = [blender, "--factory-startup", "-b", blend, "-y", "-P", target, "-f", str(frame)]
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, cwd=folder)
     log = proc.stdout.decode("utf-8", errors="ignore")
-    open(os.path.join(folder, "blender.log"), "w").write(log)
+    with open(os.path.join(folder, "blender.log"), "w") as f:
+        f.write(log)
     frames = glob.glob(os.path.join(folder, name + "*.png"))
-    problems = []
-    if proc.returncode != 0:
-        problems.append("exit %s" % proc.returncode)
-    lines = log.splitlines()
-    if "Traceback (most recent call last)" in lines:
-        # the exception is the first unindented line after the indented frames
-        at = lines.index("Traceback (most recent call last)")
-        problems.append(next((ln for ln in lines[at + 1:] if ln and not ln.startswith(" ")), "Traceback")[:160])
-    if not frames:
-        problems.append("no frame written")
-    stray = [ln.strip() for ln in lines if "Saved: '" in ln and not ln.split("Saved: '")[1].startswith(folder)]
-    if stray:
-        problems.append("wrote outside the output folder: " + stray[0][:120])
+    problems = log_problems(proc.returncode, log, frames, folder)
     return name, frames, problems
 
 
