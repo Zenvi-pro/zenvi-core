@@ -6,6 +6,13 @@ spoken words when the clip is moved or trimmed, and the Captions dock edits
 them. Captions not tied to one clip (an SRT for the finished edit, cues given
 in timeline seconds without a clip) go on a transparent "Captions" overlay clip
 that spans the cues.
+
+add_captions_tool requests it serves: "add captions from what I say", "caption
+the talking head", "burn in these subtitles (captions.srt)", "captions like
+Instagram reels". Example calls: {"timeline_clip_id": "C1", "style": "reels"};
+{"srtPath": "/path/captions.srt", "timeline_clip_id": "C1", "style": "classic"};
+{"cues": [{"start": 1, "end": 3.5, "text": "Welcome back!"}], "style": "yellow",
+"position": "top"}.
 """
 
 from __future__ import annotations
@@ -372,26 +379,23 @@ def _refresh() -> None:
 
 _STYLE_ARGS = {
     "style": enum(sorted(CAPTION_STYLES),
-                  "Look preset: classic = white text on a dark box at the bottom (subtitles); reels = big bold "
-                  "white text with a black outline (Instagram/TikTok/Shorts); minimal = small white text with a "
-                  "thin outline; yellow = yellow text with a black outline (TV subtitles); boxed = white on a "
-                  "solid black box. The arguments below override parts of it.", "classic"),
-    "font": string("Font family, e.g. 'Arial Black', 'Helvetica Neue'. Empty = the style's font.", ""),
-    "text_size": number("Text height as a fraction of the frame's shorter side: 0.04 small, 0.05 normal "
-                        "subtitles, 0.075 big reel captions. 0 = the style's size.", 0.0, minimum=0, maximum=0.3),
-    "text_color": string("Text colour '#RRGGBB' / '#RRGGBBAA' / 'rgba(...)' / name. Empty = the style's.", ""),
+                  "Look: classic (white on a dark box, subtitles), reels (big bold white, black outline), "
+                  "minimal (small white, thin outline), yellow (yellow, black outline), boxed (white on a "
+                  "solid black box). The arguments below override parts of it.", "classic"),
+    "font": string("Font family, e.g. 'Arial Black'. Empty = the style's.", ""),
+    "text_size": number("Text height, fraction of the frame's shorter side: 0.04 small, 0.05 subtitles, "
+                        "0.075 reels. 0 = the style's.", 0.0, minimum=0, maximum=0.3),
+    "text_color": string("'#RRGGBB', '#RRGGBBAA', 'rgba(...)' or a name. Empty = the style's.", ""),
     "stroke_color": string("Outline colour. Empty = the style's.", ""),
-    "stroke_width": number("Outline thickness relative to the text height: 0 = none, 0.03 thin, 0.09 heavy "
-                           "(heavy outlines only read with heavy fonts such as Arial Black). -1 = the style's.",
-                           -1.0, minimum=-1, maximum=0.5),
-    "background_color": string("Colour of the box behind the text (alpha in '#RRGGBBAA' sets its opacity). "
+    "stroke_width": number("Outline thickness / text height: 0 none, 0.03 thin, 0.09 heavy (only reads with "
+                           "heavy fonts, e.g. Arial Black). -1 = the style's.", -1.0, minimum=-1, maximum=0.5),
+    "background_color": string("Colour of the box behind the text ('#RRGGBBAA' alpha = its opacity). "
                                "Empty = the style's.", ""),
-    "background_opacity": number("Opacity of the box behind the text, 0 (no box) to 1. -1 = the style's.",
-                                 -1.0, minimum=-1, maximum=1),
+    "background_opacity": number("Box opacity, 0 (no box) to 1. -1 = the style's.", -1.0, minimum=-1, maximum=1),
     "position": enum(["", "bottom", "center", "top"],
-                     "Where the captions sit: bottom (above the safe margin, higher on vertical video), center "
-                     "or top. Empty = the style's (bottom).", ""),
-    "fade_seconds": number("Fade each caption in and out over this many seconds (0-3). -1 = the style's.",
+                     "bottom (above the safe margin, higher on vertical video), center or top. Empty = the "
+                     "style's (bottom).", ""),
+    "fade_seconds": number("Fade each caption in and out, seconds (0-3). -1 = the style's.",
                            -1.0, minimum=-1, maximum=3),
 }
 
@@ -462,33 +466,31 @@ CUE_ITEM = {"type": "object", "properties": {
     "add_captions_tool",
     label="Add captions",
     schema=obj({
-        "cues": array(CUE_ITEM, "Captions to show, each {start, end, text} in timeline seconds (or the clip's "
-                      "source seconds with time_base='source'). Use for text you already have."),
-        "srtPath": string("Path of an .srt or .vtt subtitle file to burn in. With a clip its times are that "
-                          "clip's media time; without one, timeline time.", ""),
-        "clipId": string("Timeline clip to caption (the speaker's clip). Same as timeline_clip_id.", ""),
+        "cues": array(CUE_ITEM, "Text you already have: [{start, end, text}] in timeline seconds (clip source "
+                      "seconds with time_base='source')."),
+        "srtPath": string(".srt/.vtt file to burn in. Its times are the clip's media time with a clip, else "
+                          "timeline time.", ""),
+        "clipId": string("Clip to caption; alias of timeline_clip_id.", ""),
         "timeline_clip_id": string("Timeline clip to caption.", ""),
-        "clip_query": string("Describe the clip to caption instead of an id, e.g. 'talking head'.", ""),
-        "trackIndex": integer("Caption every clip on this UI track (1 = bottom) from its transcript. 0 = not "
-                              "used.", 0, minimum=0),
+        "clip_query": string("Describe the clip instead of an id, e.g. 'talking head'.", ""),
+        "trackIndex": integer("Caption every clip on this UI track (1 = bottom) from its transcript. 0 = unused.",
+                              0, minimum=0),
         "time_base": enum(["auto", "timeline", "source"],
-                          "What cue times mean: timeline seconds, or the clip's source (media) seconds. auto = "
-                          "source for subtitle files and transcripts, timeline for cues.", "auto"),
-        "overlay_track": string("Track for the transparent 'Captions' overlay clip used when no clip is "
-                                "captioned. Empty = the lowest free track above the video.", ""),
+                          "Cue times are timeline or source (clip media) seconds. auto = source for files and "
+                          "transcripts, timeline for cues.", "auto"),
+        "overlay_track": string("Track for the 'Captions' overlay clip (when no clip is captioned). Empty = "
+                                "the lowest free track above the video.", ""),
         **_STYLE_ARGS,
-        "uppercase": boolean("Show the captions in capital letters.", False),
-        "maxWords": integer("Longest caption, in words, when phrasing a transcript (subtitle files and cues "
-                            "are kept as written).", 8, minimum=1, maximum=24),
-        "maxChars": integer("Longest caption, in characters, when phrasing a transcript.", 42,
+        "uppercase": boolean("Capital letters.", False),
+        "maxWords": integer("Max words per caption when phrasing a transcript (files and cues are kept as "
+                            "written).", 8, minimum=1, maximum=24),
+        "maxChars": integer("Max characters per caption when phrasing a transcript.", 42,
                             minimum=8, maximum=120),
-        "replace_existing": boolean("Replace the captions a clip already has (true) or add a second caption "
-                                    "track to it (false).", True),
-        "language": string("Accepted for compatibility with the on-device speech tools; the transcript comes "
-                           "from Zenvi's media index, which already knows the language.", "auto"),
-        "modelId": string("Accepted for compatibility; not used (the transcript comes from the media index).", ""),
-        "engine": string("Accepted for compatibility; not used (the transcript comes from the media index).",
-                         "auto"),
+        "replace_existing": boolean("true replaces a clip's existing captions; false adds a second caption "
+                                    "track.", True),
+        "language": string("Ignored (compatibility); the media index knows the language.", "auto"),
+        "modelId": string("Ignored (compatibility).", ""),
+        "engine": string("Ignored (compatibility).", "auto"),
     }),
     background_safe=True,
     covers=("caption.add",),
@@ -500,20 +502,13 @@ def add_captions(cues=None, srtPath="", clipId="", timeline_clip_id="", clip_que
                  language="auto", modelId="", engine="auto"):
     """Burn captions / subtitles into the video: from the speech transcript, a subtitle file, or given text.
 
-    Use for "add captions from what I say", "caption the talking head", "burn in these
-    subtitles (captions.srt)", "captions like Instagram reels". Three sources:
-    cues=[{start, end, text}] (timeline seconds); srtPath=an .srt/.vtt file; or neither,
-    to caption from the transcript Zenvi's media index stored for the clip's file
-    (clips that are not indexed yet are refused -- index them first). Captions go on
-    the captioned clip as a Caption effect (cue times follow the clip's media, so
-    trimming keeps them on the words; the Captions dock can edit them). With cues or a
-    subtitle file and no clip, they go on a transparent 'Captions' overlay clip above
-    the video. A clip's existing captions are replaced unless replace_existing=false.
-    One undo step. Not for titles or other free text (add_title_tool).
-
-    Examples: {"timeline_clip_id": "C1", "style": "reels"};
-    {"srtPath": "/path/captions.srt", "timeline_clip_id": "C1", "style": "classic"};
-    {"cues": [{"start": 1, "end": 3.5, "text": "Welcome back!"}], "style": "yellow", "position": "top"}.
+    Sources: cues, srtPath (.srt/.vtt), or neither = the transcript Zenvi's
+    media index stored for the clip's file (clips not indexed yet are
+    refused; index them first). Captions go on the clip as a Caption effect
+    (cues follow its media, so trims keep them on the words; the Captions dock
+    edits them). Cues or a file with no clip go on a transparent 'Captions'
+    overlay clip above the video. One undo step. Not for titles or other free
+    text (add_title_tool).
     """
     clip_id = str(clipId or timeline_clip_id or "").strip()
     if clipId and timeline_clip_id and clipId != timeline_clip_id:
