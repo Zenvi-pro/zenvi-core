@@ -191,6 +191,32 @@ def test_a_cli_answering_another_protocol_is_not_installed(runtime, monkeypatch)
     assert not os.path.exists(os.path.join(rt.home(), "cli")) and not rt.installed()
 
 
+def test_an_install_of_another_protocol_is_reported_outdated_and_not_run(runtime):
+    rt, bridge = runtime.module, runtime.bridge
+    rt.install(runtime.release())
+    assert not rt.status()["outdated"]
+    rt._write_runtime({"cli": dict(rt.installed()["cli"], protocol=bridge.PROTOCOL - 1)})
+    status = rt.status()
+    assert status["outdated"] and not status["ready"] and bridge.bridge_mode() == ""
+    rt.install(runtime.release("0.2.0"))
+    assert not rt.status()["outdated"] and rt.status()["ready"]
+
+
+def test_a_client_started_on_the_old_build_during_an_update_is_closed(runtime, monkeypatch):
+    rt, bridge = runtime.module, runtime.bridge
+    rt.install(runtime.release())
+    real_swap = rt._swap_in
+    during = []
+
+    def swap_while_a_call_starts_the_old_build(staged, target):
+        if target == bridge.managed_cli_dir():
+            during.append(bridge.get_client())
+        real_swap(staged, target)
+    monkeypatch.setattr(rt, "_swap_in", swap_while_a_call_starts_the_old_build)
+    rt.install(runtime.release("0.2.0"))
+    assert during and bridge.get_client() is not during[0]
+
+
 def test_cancel_stops_the_download_and_leaves_nothing(runtime):
     rt = runtime.module
     cancel = threading.Event()

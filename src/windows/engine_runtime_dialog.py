@@ -137,9 +137,15 @@ class EngineRuntimeDialog(QDialog):
                 parts.append(_("Node.js %(version)s (about %(mb)d MB, from nodejs.org)") % {
                     "version": engine_runtime.NODE_VERSION, "mb": engine_runtime.NODE_DOWNLOAD_MB})
             parts.append(_("the zenvi CLI from %s") % (source or _("(no source set)")))
-            text = _("Not installed. Installing downloads %(what)s into %(home)s.") % {
-                "what": _(" and ").join(parts), "home": status.get("home")}
-            self._install_btn.setText(_("Download and Install"))
+            if status.get("outdated"):
+                text = _("The installed zenvi CLI does not speak this Zenvi's bridge protocol (%(protocol)s): "
+                         "update it. Updating downloads %(what)s into %(home)s.")
+                self._install_btn.setText(_("Update"))
+            else:
+                text = _("Not installed. Installing downloads %(what)s into %(home)s.")
+                self._install_btn.setText(_("Download and Install"))
+            text = text % {"what": _(" and ").join(parts), "home": status.get("home"),
+                           "protocol": status.get("protocol")}
         if not source:
             text += "\n\n" + _("Set Preferences > AI > Zenvi Engine Tools Source to a release manifest URL or to "
                                "a zenvi CLI build folder (zenvi-web packages/cli/dist) to install or update.")

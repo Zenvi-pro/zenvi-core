@@ -82,3 +82,15 @@ def test_install_shows_progress_lists_the_tools_and_runs_off_the_gui_thread(dial
     assert calls.threads == [False, False, False, False]   # status, install, install(+status): never the GUI
     assert _wait(lambda: dlg._worker is None)
     dlg.reject()
+
+
+def test_an_outdated_install_says_update_not_not_installed(dialog_env, monkeypatch):
+    dlg_mod, calls = dialog_env
+    monkeypatch.setattr(engine_runtime, "status", lambda: {
+        "ready": False, "outdated": True, "home": "/tmp/engine", "source": "/tmp/engine-cli.json",
+        "node_needed": False, "protocol": 2})
+    dlg = dlg_mod.EngineRuntimeDialog()
+    assert _wait(lambda: "update it" in dlg._label.text())
+    assert "bridge protocol (2)" in dlg._label.text() and dlg._install_btn.text() == "Update"
+    assert _wait(lambda: dlg._worker is None)
+    dlg.reject()

@@ -114,11 +114,12 @@ def source(env=None) -> str:
 
 
 def status(env=None) -> dict:
-    """What is in place. ``ready``: bridged tools can run (the same test the bridge makes)."""
+    """What is in place. ``ready``: bridged tools can run (the same test the bridge makes);
+    ``outdated``: an installed CLI is there but not run (its bridge protocol is not this desktop's)."""
     saved = installed()
     out = {"ready": False, "home": home(), "source": source(env), "cli": None, "cli_version": "",
            "protocol": engine_bridge.PROTOCOL, "node": None, "node_version": "", "problem": "",
-           "node_needed": False, "managed": False}
+           "node_needed": False, "managed": False, "outdated": False}
     try:
         node, cli = engine_bridge.locate_cli(env)
         out.update(ready=True, cli=cli, node=node)
@@ -134,6 +135,9 @@ def status(env=None) -> dict:
     out["managed"] = bool(out["cli"]) and os.path.abspath(out["cli"]) == engine_bridge.managed_cli()
     if out["managed"]:
         out["cli_version"] = str((saved.get("cli") or {}).get("version") or "")
+    # An installed CLI this desktop does not run (another bridge protocol, or an install cut short).
+    out["outdated"] = (not out["managed"] and os.path.isfile(engine_bridge.managed_cli())
+                       and (saved.get("cli") or {}).get("protocol") != engine_bridge.PROTOCOL)
     return out
 
 
@@ -173,6 +177,8 @@ def install(src: Optional[str] = None, progress: Optional[Progress] = None,
             # A running bridge holds the old build (Windows cannot move it then); the next call starts the new one.
             engine_bridge.set_client(None)
             _swap_in(cli_dir, engine_bridge.managed_cli_dir())
+            # A call made meanwhile may have started the old build again: it goes too.
+            engine_bridge.set_client(None)
             _write_runtime({"cli": {"version": release.get("version") or version, "protocol": engine_bridge.PROTOCOL,
                                     "source": src, "sha256": release.get("sha256", ""),
                                     "installed": time.strftime("%Y-%m-%dT%H:%M:%S")}})
