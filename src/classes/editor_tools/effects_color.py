@@ -803,20 +803,21 @@ def _add_or_update_plan(clip, class_name, properties, if_exists, interpolation, 
     label="Add effect",
     schema=obj({
         **TARGETS,
-        "effect": string("Effect to add: class or display name from list_effects_tool (Blur, Sharpen, "
-                         "ChromaKey, ColorGrade, Pixelate, Compressor, Echo, ParametricEQ...).", ""),
-        "effect_name": string("Same as effect (either works).", ""),
-        "occurrence": integer("With clip_query: take the Nth match (1 = first). 0 = the best match.", 0, minimum=0),
-        "position_near": nullable(number("With clip_query: prefer the clip nearest this timeline time (seconds).")),
+        "effect": string("Class or display name from list_effects_tool (Blur, Pixelate, Compressor, Echo...).",
+                         ""),
+        "effect_name": string("Alias of effect.", ""),
+        "occurrence": integer("With clip_query: the Nth match (1 = first). 0 = the best match.", 0, minimum=0),
+        "position_near": nullable(number("With clip_query: prefer the clip nearest this timeline second.")),
         "properties": PROPERTIES_ARG,
         "interpolation": INTERPOLATION_ARG,
         "if_exists": enum(["update", "add"],
-                          "When the clip already has this effect: 'update' changes that one (default, "
-                          "avoids stacking duplicates); 'add' stacks another copy.", "update"),
+                          "Clip already has this effect: update that one (no duplicates) or add another copy.",
+                          "update"),
         "processing": mapping(
-            "Only for Stabilizer, Tracker, ObjectDetection, ObjectMask: the analysis options, same names as "
-            "process_clip_effect_tool (smoothing, region, region_time, tracker_type, model, device, "
-            "download_model, class_filter, confidence, points, negative_points, boxes, mask_quality)."),
+            "Stabilizer, Tracker, ObjectDetection, ObjectMask only: analysis options named as in "
+            "process_clip_effect_tool: smoothing, region, region_time, tracker_type, model, device, "
+            "download_model, class_filter, confidence, points, negative_points, boxes, mask_quality. One clip "
+            "at a time."),
     }),
     background_safe=True,
     covers=("effect.add", "audio.effects", "effect.process"),
@@ -824,21 +825,19 @@ def _add_or_update_plan(clip, class_name, properties, if_exists, interpolation, 
 def add_effect(timeline_clip_id="", clip_query="", track="", timeline_clip_ids=None, scope="",
                effect="", effect_name="", occurrence=0, position_near=None, properties=None,
                interpolation="bezier", if_exists="update", processing=None):
-    """Add any effect to one or more clips, optionally with its properties set or keyframed, as one
-    undo step. Use when the user names an effect ("add a blur", "pixelate it", "add a compressor to the
-    voice", "negative", "wave distortion") or when no intent tool fits.
+    """Add any named effect to one or more clips, optionally with properties set or keyframed; one undo step.
 
-    Prefer: color_grade_clip_tool for grading/LUTs/black & white, apply_look_preset_tool for the Look
-    menu presets (film grain, VHS/analog tape, glow, shadow, soft focus), chroma_key_clip_tool for green
-    screen, apply_audio_effect_tool for voice/music presets, process_clip_effect_tool for Stabilizer /
-    Tracker / Object Detector / Object Mask (add_effect_tool also runs those, with `processing`).
-
-    properties: {"horizontal_radius": 12, "vertical_radius": 12} or keyframes
-    {"pixelization": [{"time": 1, "value": 0.9}, {"time": 3, "value": 0}]} (timeline seconds).
-    To limit an effect to a tracked object (blur a face/plate): properties
-    {"mask_source_id": "<Tracker/ObjectDetection effect id>"} (add "mask_invert": 1 for everything else).
-    Refused: locked track, a video effect on an audio-only clip, an audio effect on a clip without sound,
-    unknown effect/property, out-of-range values. Returns effect ids for update_effect_tool.
+    For when the user names an effect or no intent tool fits. Prefer
+    color_grade_clip_tool (grading, LUTs, black & white),
+    apply_look_preset_tool (film grain, VHS, glow, shadow, soft focus),
+    chroma_key_clip_tool (green screen), apply_audio_effect_tool (voice/music
+    presets), process_clip_effect_tool (Stabilizer, Tracker, Object
+    Detector, Object Mask; also run here with processing). Limit an effect
+    to a tracked object with properties {"mask_source_id": "<effect id>"}
+    (plus "mask_invert": 1 for everything else). Refused: locked track, video
+    effect on an audio-only clip, audio effect on a clip without sound,
+    unknown effect/property, out-of-range values. Returns effect ids for
+    update_effect_tool.
     """
     name = str(effect or effect_name or "").strip()
     if not name:

@@ -495,22 +495,21 @@ def _placement(keyed, background, align):
     label="Chroma key",
     schema=obj({
         **CLIP_TARGET,
-        "key_color": string("Screen color to remove: 'auto' (sampled from the frame), 'green' / 'blue' (that "
-                            "screen's actual shade, sampled from the footage), or #RRGGBB.", "auto"),
-        "method": enum(sorted(KEY_METHODS), "Keying method; basic_soft (default) suits most green/blue screens, "
-                       "hsv_hue helps uneven lighting, cbcr_vector for spill-heavy footage.", "basic_soft"),
-        "fuzz": nullable(number("Tolerance around the key color (0-125): raise it if screen remains, lower it if "
-                                "the subject gets holes. Default: estimated from how uneven the screen is with "
-                                "key_color='auto', else 20.", minimum=0, maximum=125)),
-        "halo": number("Edge softening/spill cleanup (0-125).", 10.0, minimum=0, maximum=125),
-        "background_clip_id": string("Background clip to show through (timeline clip id). The keyed clip is put "
-                                     "on a track above it.", ""),
+        "key_color": string("'auto' (sampled from the frame), 'green' / 'blue' (that screen's real shade, "
+                            "sampled; the stock shade if none is found) or #RRGGBB.", "auto"),
+        "method": enum(sorted(KEY_METHODS), "basic_soft suits most screens, hsv_hue uneven lighting, cbcr_vector "
+                       "spill-heavy footage.", "basic_soft"),
+        "fuzz": nullable(number("Tolerance around the key color: raise if screen remains, lower if the subject "
+                                "gets holes. Default: estimated with key_color='auto', else 20.",
+                                minimum=0, maximum=125)),
+        "halo": number("Edge softening / spill cleanup.", 10.0, minimum=0, maximum=125),
+        "background_clip_id": string("Timeline clip to show through; the keyed clip goes on a track above it.",
+                                     ""),
         "background_query": string("Or describe the background clip ('the beach clip').", ""),
         "align": enum(["auto", "start", "keep"],
-                      "With a background: auto = move the keyed clip to the background's start only if they do "
-                      "not overlap in time; start = always start together; keep = keep the keyed clip's time.",
-                      "auto"),
-        "sample_time": nullable(number("Timeline time to sample the key color from (default: middle of the clip).")),
+                      "With a background: auto = move to the background's start only if they do not overlap; "
+                      "start = always; keep = keep the keyed clip's time.", "auto"),
+        "sample_time": nullable(number("Timeline second to sample the key color at (default: clip middle).")),
     }),
     background_safe=True,
     covers=("color.chroma_key",),
@@ -518,19 +517,17 @@ def _placement(keyed, background, align):
 def chroma_key_clip(timeline_clip_id="", clip_query="", track="", key_color="auto", method="basic_soft",
                     fuzz=None, halo=10.0, background_clip_id="", background_query="", align="auto",
                     sample_time=None):
-    """Remove a green or blue screen from a clip with the Chroma Key effect, and optionally composite it
-    over a background clip ("remove the green screen and put me on the beach"). key_color='auto'
-    samples the screen color from the frame edges, or from the frame's screen areas when the screen
-    does not reach the edges; 'green' / 'blue' sample that screen's real shade (the stock shade if
-    none is found). One ChromaKey per clip (updated if present).
-    With background_clip_id/background_query the keyed clip moves to a free track above the
-    background (a new top track if needed) so the background shows through, and to the background's
-    start if they did not overlap. One undo step for key + placement.
+    """Remove a green or blue screen with the Chroma Key effect, optionally compositing over a background clip.
 
-    The receipt's keyed_pct is the share of the frame the key made transparent: roughly the screen's
-    share means it worked, a few percent means it missed the screen (try key_color='auto', a sampled
-    #RRGGBB or a higher fuzz). analyze_frame_colors_tool on the composite checks the rest. Refused: audio-only clips, locked tracks, a
-    background that is the same clip, 'auto' when the frame edges are not a green/blue screen.
+    key_color='auto' samples the frame edges, or the frame's screen areas
+    when the screen does not reach the edges. One ChromaKey per clip (updated
+    if present). With a background the keyed clip moves to a free track above
+    it (a new top track if needed). One undo step for key + placement. The
+    receipt's keyed_pct is the share of the frame made transparent: about the
+    screen's share = worked; a few percent = missed (try 'auto', a sampled
+    #RRGGBB or higher fuzz); analyze_frame_colors_tool on the composite checks
+    the rest. Refused: audio-only clips, locked tracks, a background that is
+    the same clip, 'auto' when the frame edges are not a green/blue screen.
     """
     clip = resolve_clip(timeline_clip_id, clip_query, track)
     problem = compatibility_problem(clip, "ChromaKey")
