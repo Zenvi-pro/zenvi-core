@@ -156,3 +156,17 @@ def test_the_mcp_server_lists_bridged_tools_with_the_engines_schema(bridge, monk
     (listed,) = [d for d in agent_mcp_server.iter_tool_defs() if d["name"] == "add_motion_template_tool"]
     assert listed["inputSchema"] == {"type": "object", "properties": {"template": {"type": "string"}}}
     assert listed["description"].startswith("Place a motion template.")
+
+
+def test_an_untracked_change_is_applied_without_an_undo_step(bridge):
+    assert bridge.call_receipt("add_motion_template_tool", template="seek")["status"] == "applied"
+    assert bridge.get("playhead_position") == 2.5
+    assert bridge.undo_steps_since_mark() == 0
+
+
+def test_an_action_kind_the_desktop_does_not_know_applies_nothing(bridge):
+    receipt = bridge.call_receipt("add_motion_template_tool", template="future")
+    assert receipt["summary"].startswith("Error") and "update_sideways" in receipt["summary"]
+    assert not any(layer["id"] == "FAKELAYR02" for layer in bridge.get("layers"))
+    assert bridge.get("playhead_position") != 2.5
+    assert bridge.undo_steps_since_mark() == 0

@@ -13,7 +13,9 @@ desktop's own (chat, MCP) and runs like this:
    ``@transitions``-style paths with the desktop's own rules and apply the
    actions inside the caller's transaction, with the timeline refreshing
    once. execute_tool groups the call into one undo step; a refused or
-   failed call applies nothing and leaves no undo step.
+   failed call applies nothing and leaves no undo step. ``update_untracked``
+   actions (cached transcripts, the saved playhead) go through
+   ``UpdateManager.update_untracked``: saved with the project, never undone.
 
 New files arrive as Project Files inserts, so the files model makes their
 thumbnails as it does for any insert; fingerprints are backfilled on save.
@@ -37,6 +39,14 @@ SURFACE_NOTE = "Runs in the Zenvi engine (engine bridge)."
 
 # name -> engine catalog entry (name, title, description, inputSchema, annotations)
 BRIDGED: dict = {}
+
+# Answer action kinds -> the UpdateManager call that applies them.
+_APPLY = {
+    "insert": lambda updates, key, value: updates.insert(key, value),
+    "update": lambda updates, key, value: updates.update(key, value),
+    "update_untracked": lambda updates, key, value: updates.update_untracked(key, value),
+    "delete": lambda updates, key, value: updates.delete(key),
+}
 
 
 def _catalog_cache_path(cli: str) -> str:
@@ -133,20 +143,16 @@ def _apply(answer: dict, project_file: str, version) -> Optional[str]:
     # The engine keeps the bundled-asset aliases (@transitions/…); resolve them like a project load.
     text = app.project.convert_paths_to_absolute(project_file, json.dumps(answer.get("actions") or []))
     actions = json.loads(text)
+    unknown = sorted({str(a.get("type")) for a in actions} - set(_APPLY))
+    if unknown:
+        # Checked before applying anything: a partly applied answer would leave half a change.
+        return f"the engine answered an action this desktop cannot apply ({', '.join(unknown)}); nothing was applied"
     updates = app.updates
     window = app.window
     window.IgnoreUpdates.emit(True, True)
     try:
         for action in actions:
-            kind, key = action.get("type"), action.get("key")
-            if kind == "insert":
-                updates.insert(key, action.get("value"))
-            elif kind == "update":
-                updates.update(key, action.get("value"))
-            elif kind == "delete":
-                updates.delete(key)
-            else:
-                raise ValueError(f"unknown bridge action {kind!r}")
+            _APPLY[action["type"]](updates, action.get("key"), action.get("value"))
     finally:
         window.IgnoreUpdates.emit(False, True)
     return None

@@ -30,7 +30,7 @@ from typing import Optional
 from classes.logger import log
 
 # The bridge protocol this desktop speaks (zenvi-web packages/cli/src/bridge/run.ts BRIDGE_PROTOCOL).
-PROTOCOL = 1
+PROTOCOL = 2
 DEFAULT_TIMEOUT_SECONDS = 120.0
 CATALOG_TIMEOUT_SECONDS = 30.0
 

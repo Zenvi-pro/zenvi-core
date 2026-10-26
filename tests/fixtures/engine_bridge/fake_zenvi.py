@@ -3,7 +3,9 @@
 Run as ``python fake_zenvi.py bridge`` (JSON-RPC lines on stdio),
 ``python fake_zenvi.py bridge --tools`` or ``python fake_zenvi.py tool-run ...``.
 ``run`` answers like the real CLI: add_motion_template_tool inserts a track, a
-drawing file and its clip; anything else is refused. Every request is appended
+drawing file and its clip (template ``seek``: only moves the saved playhead,
+untracked; ``future``: an action kind no desktop knows); anything else is
+refused. Every request is appended
 to ``$FAKE_ZENVI_LOG`` (one JSON object per line) for the test to inspect.
 ``$FAKE_ZENVI_PROTOCOL`` overrides the protocol hello reports.
 """
@@ -40,10 +42,18 @@ def run(params):
          "backend_token": params.get("backend_token"), "project_keys": sorted((params.get("project") or {}).keys()),
          "clips": len((params.get("project") or {}).get("clips") or [])})
     tool = params.get("tool")
-    base = {"protocol": 1, "engine_version": "fake", "files": [], "timings": {"parse_ms": 0, "run_ms": 0, "translate_ms": 0}}
+    base = {"protocol": 2, "engine_version": "fake", "files": [], "timings": {"parse_ms": 0, "run_ms": 0, "translate_ms": 0}}
     if tool != "add_motion_template_tool" or (params.get("args") or {}).get("template") == "nope":
         r = receipt("refused", tool, "Error: the fake refuses this")
         return {**base, "ok": False, "text": json.dumps(r), "receipt": r, "actions": []}
+    template = (params.get("args") or {}).get("template")
+    if template in ("seek", "future"):
+        r = receipt("applied", tool, "Moved the playhead")
+        actions = [{"type": "update_untracked", "key": ["playhead_position"], "value": 2.5}]
+        if template == "future":
+            actions = [{"type": "insert", "key": ["layers"], "value": {"id": "FAKELAYR02", "number": 3000000}},
+                       {"type": "update_sideways", "key": ["playhead_position"], "value": 2.5}]
+        return {**base, "ok": True, "text": json.dumps(r), "receipt": r, "actions": actions}
     assets = os.path.splitext(params["project_file"])[0] + "_assets"
     svg = os.path.join(assets, "title", "end_card-title.svg")
     file_record = {"id": "FAKEFILE01", "path": svg, "media_type": "image", "duration": 3600, "has_video": True,
@@ -71,7 +81,7 @@ def serve():
         msg = json.loads(line)
         rid, method = msg.get("id"), msg.get("method")
         if method == "hello":
-            result = {"protocol": int(os.environ.get("FAKE_ZENVI_PROTOCOL", "1")), "engine_version": "fake"}
+            result = {"protocol": int(os.environ.get("FAKE_ZENVI_PROTOCOL", "2")), "engine_version": "fake"}
         elif method == "run":
             if (msg.get("params") or {}).get("args", {}).get("template") == "crash":
                 sys.exit(3)
@@ -88,7 +98,7 @@ def serve():
 def main(argv):
     if argv[:1] == ["bridge"] and "--tools" in argv:
         log({"catalog": True})
-        print(json.dumps({"protocol": int(os.environ.get("FAKE_ZENVI_PROTOCOL", "1")), "engine_version": "fake", "tools": TOOLS}))
+        print(json.dumps({"protocol": int(os.environ.get("FAKE_ZENVI_PROTOCOL", "2")), "engine_version": "fake", "tools": TOOLS}))
     elif argv[:1] == ["bridge"]:
         serve()
     elif argv[:1] == ["tool-run"]:
