@@ -166,3 +166,146 @@ def test_add_clip_to_timeline_four_past_the_top_is_refused_without_history(tt):
     out = tt.call("add_clip_to_timeline_tool", file_id=f, track="9", position_seconds="2", full_file="true")
     assert out.startswith("Error: Unknown track or layer '9'"), out
     assert tt.undo_steps_since_mark() == 0 and len(_numbers(tt)) == 5
+
+
+# ---------------------------------------------------------------------------
+# A busy named track: the overlay goes to the first free track above, with a warning
+# ---------------------------------------------------------------------------
+
+def test_title_for_a_busy_explicit_track_goes_to_the_first_free_track_above(tt):
+    video = tt.add_file("video", duration=10.0)
+    tt.add_clip(video, position=0.0, layer=2000000)
+    tt.mark()
+    out = tt.call("add_title_tool", text="X", track="2", position_seconds=5)
+    rec = receipt(out)
+    assert rec["layer"] == 3000000 and rec["track"] == 3 and rec["new_track"] is False
+    assert len(rec["warnings"]) == 1
+    assert rec["warnings"][0].startswith("track 2 already has ") and rec["warnings"][0].endswith(
+        "during 5.00-10.00s; placed on track 3 instead")
+    assert f" Warning: {rec['warnings'][0]}." in out.partition("\n")[0]
+    assert tt.undo_steps_since_mark() == 1
+
+
+def test_title_for_a_busy_track_opens_a_new_track_when_all_above_are_busy_too(tt):
+    video = tt.add_file("video", duration=30.0)
+    for n in range(1, 6):
+        tt.add_clip(video, position=0.0, layer=n * 1000000)
+    tt.mark()
+    rec = receipt(tt.call("add_title_tool", text="X", track="5"))
+    assert rec["layer"] == 6000000 and rec["new_track"] is True
+    assert "placed on a new track on top (track 6) instead" in rec["warnings"][0]
+    assert tt.undo_steps_since_mark() == 1
+    tt.undo()
+    assert len(_numbers(tt)) == 5
+
+
+def test_title_for_a_busy_track_skips_a_locked_free_one(tt):
+    video = tt.add_file("video", duration=10.0)
+    tt.add_clip(video, position=0.0, layer=2000000)
+    tt.lock_track(3000000)
+    rec = receipt(tt.call("add_title_tool", text="X", track="2"))
+    assert rec["layer"] == 4000000 and len(rec["warnings"]) == 1
+
+
+def test_a_free_named_track_has_no_warning(tt):
+    rec = receipt(tt.call("add_title_tool", text="X", track="2"))
+    assert "warnings" not in rec and rec["layer"] == 2000000
+
+
+def test_timer_for_a_busy_explicit_track_goes_above_with_a_warning(tt):
+    video = tt.add_file("video", duration=30.0)
+    tt.add_clip(video, position=0.0, layer=1000000)
+    tt.mark()
+    out = tt.call("add_timer_tool", mode="count_up", duration_seconds=3, track="1")
+    rec = receipt(out)
+    assert rec["layer"] == 2000000 and rec["warnings"][0].endswith("placed on track 2 instead")
+    assert " Warning: track 1 already has" in out.partition("\n")[0]
+    assert tt.undo_steps_since_mark() == 1
+
+
+# ---------------------------------------------------------------------------
+# Text on a colour card
+# ---------------------------------------------------------------------------
+
+def test_text_on_solid_color_is_drawn_with_a_text_template_over_the_colour(tt):
+    from classes import title_svg
+    tt.mark()
+    out = tt.call("add_title_tool", template="Solid_Color", text="DOUBT", background_color="#d4141c",
+                  text_color="#ffffff")
+    rec = receipt(out)
+    assert rec["template"] == "Standard_1" and rec["background_color"] == "#d4141c"
+    doc = title_svg.load(rec["path"])
+    assert title_svg.background_color(doc) == ("#d4141c", 1.0)
+    assert title_svg.line_texts(doc)[0] == "DOUBT"
+    assert rec["warnings"] == ["Solid_Color has no text; drew the text with Standard_1 over the colour #d4141c"]
+    assert " Warning: Solid_Color has no text; drew the text with Standard_1" in out.partition("\n")[0]
+    assert tt.undo_steps_since_mark() == 1
+
+
+def test_text_on_solid_color_keeps_the_cards_own_colour_without_a_background_colour(tt):
+    from classes import title_svg
+    rec = receipt(tt.call("add_title_tool", template="Solid_Color", text="Hi"))
+    colour, alpha = title_svg.background_color(title_svg.load(rec["path"]))
+    assert alpha == 1.0 and rec["background_color"] == colour
+
+
+# ---------------------------------------------------------------------------
+# duplicate_clips_tool / move_clips_tool to a track past the top
+# ---------------------------------------------------------------------------
+
+def _logo_and_clip(ed, layer=3000000):
+    f = ed.add_file("video", duration=10.0)
+    return ed.add_clip(f, position=0.0, end=4.0, layer=layer)
+
+
+def test_duplicate_to_a_track_past_the_top_adds_it_in_one_undo_step(ed):
+    a = _logo_and_clip(ed)
+    ed.mark()
+    out = ed.call("duplicate_clips_tool", timeline_clip_ids=[a], to_track="6")
+    head, _, body = out.partition("\n")
+    assert "on track 6 on a new track" in head, out
+    r = json.loads(body)
+    assert r["new_tracks"] == 1
+    assert [c["layer"] for c in ed.clips() if c.get("layer") == 6000000] == [6000000]
+    assert ed.undo_steps_since_mark() == 1
+    ed.undo()
+    assert _numbers(ed) == [n * 1000000 for n in range(1, 6)]
+
+
+def test_duplicate_keeps_the_stacking_and_adds_the_tracks_between(ed):
+    a = _logo_and_clip(ed, 1000000)
+    b = _logo_and_clip(ed, 3000000)
+    ed.mark()
+    receipt(ed.call("duplicate_clips_tool", timeline_clip_ids=[a, b], to_track="8"))
+    assert _numbers(ed)[5:] == [6000000, 7000000, 8000000]
+    copies = sorted(c["layer"] for c in ed.clips() if c["id"] not in (a, b))
+    assert copies == [6000000, 8000000]
+    assert ed.undo_steps_since_mark() == 1
+
+
+def test_move_to_a_track_past_the_top_adds_it_in_one_undo_step(ed):
+    a = _logo_and_clip(ed)
+    ed.mark()
+    out = ed.call("move_clips_tool", timeline_clip_ids=[a], to_track="7")
+    head, _, body = out.partition("\n")
+    assert "to track 7 on a new track (2 tracks added on top)" in head, out
+    assert json.loads(body)["new_tracks"] == 2
+    assert _numbers(ed)[5:] == [6000000, 7000000] and ed.clip(a)["layer"] == 7000000
+    assert ed.undo_steps_since_mark() == 1
+    ed.undo()
+    assert len(_numbers(ed)) == 5 and ed.clip(a)["layer"] == 3000000
+
+
+@pytest.mark.parametrize("tool", ["duplicate_clips_tool", "move_clips_tool"])
+def test_four_past_the_top_is_refused_without_history(ed, tool):
+    a = _logo_and_clip(ed)
+    ed.mark()
+    out = ed.call(tool, timeline_clip_ids=[a], to_track="9")
+    assert out.startswith("Error: Unknown track or layer '9'"), out
+    assert ed.undo_steps_since_mark() == 0 and len(_numbers(ed)) == 5
+
+
+def test_move_to_an_existing_track_adds_none(ed):
+    a = _logo_and_clip(ed)
+    out = ed.call("move_clips_tool", timeline_clip_ids=[a], to_track="4")
+    assert "new track" not in out and len(_numbers(ed)) == 5

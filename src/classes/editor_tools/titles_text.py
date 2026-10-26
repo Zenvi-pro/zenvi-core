@@ -27,11 +27,13 @@ from classes.editor_tools.titles_text_common import (
     GRAVITY, CommitTimeout, color_hex_alpha, commit_on_main, constant, create_track, fade_alpha,
     import_media_file, is_vertical,
     installed_font_families, place_clip, plan_overlay_track, precheck_on_main, refresh_file_and_clips,
-    resolve_font, title_dir, track_info, OVERLAY_ROLE,
+    resolve_font, title_dir, track_info, warning_note, warnings_field, OVERLAY_ROLE,
 )
 
 # #183's add_title_tool tried these in order when no template was named.
 DEFAULT_TEMPLATES = ("Bar_1", "Standard_1", "Footer_1")
+# What text is drawn with when the named template is a colour card (Solid_Color has no text field).
+TEXT_OVER_CARD = "Standard_1"
 
 # What each bundled template looks like (from rendering all 50), for the model.
 TEMPLATE_PURPOSE = {
@@ -408,7 +410,8 @@ _STYLE_PROPS = {
                            "Bar_1 (centre title on a blue bar).", ""),
         "position_seconds": number("Timeline second where the title starts.", 0.0, minimum=0),
         "track": string("UI track number (1 = bottom), name or layer for the title. Empty = the lowest free track "
-                        "above every clip with video at that time (a new top track when none is free).", ""),
+                        "above every clip with video at that time (a new top track when none is free). A named "
+                        "track that is busy then also falls back to the first free track above it (with a warning).", ""),
         "duration_seconds": number("How long the title stays on screen, in seconds.", 5.0, minimum=0.01, maximum=86400),
         "file_name": string("Name for the new title file in Project Files (without .svg). Empty = from the text. "
                             "An existing name gets ' (1)', ' (2)'... instead of being overwritten.", ""),
@@ -447,7 +450,8 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
     on the lowest free track above the video (never under it). Placeholder text the
     template has but you did not fill (e.g. 'Sub-Title') is blanked. No text with a
     background_color makes a blank colour card (Solid_Color unless a template is named),
-    e.g. a 0.1 s white flash frame. Optional fades.
+    e.g. a 0.1 s white flash frame. Text with template Solid_Color (a card with no text field) is
+    drawn with Standard_1 over background_color (else the card's colour). Optional fades.
     One undo step removes the clip and the file entry.
 
     Examples: {"text": "Tokyo Day 1", "template": "Standard_1", "text_color": "white",
@@ -467,9 +471,19 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
     name = _template_name(path)
     doc = _load_doc(path)
     slots = title_svg.fields(doc)
+    warnings = []
     if not slots and given:
-        raise ToolError(f"{name} has no text; it is a background card (set background_color), or pick a "
-                        "template with text")
+        # Agents name Solid_Color for "this text on a coloured frame": draw the text on a text template over the card's colour.
+        card, (card_colour, card_alpha) = name, title_svg.background_color(doc)
+        path = _resolve_template(TEXT_OVER_CARD)
+        name = _template_name(path)
+        doc = _load_doc(path)
+        slots = title_svg.fields(doc)
+        if not str(background_color or "").strip() and card_alpha > 0:
+            background_color = card_colour
+        warnings.append(f"{card} has no text; drew the text with {name} over "
+                        + (f"the colour {str(background_color).strip()}" if str(background_color or "").strip()
+                           else "the video"))
     if slots and not given and not colour_card:
         raise ToolError("add_title_tool needs text (or subtitle / lines), or a background_color for a blank "
                         "colour card")
@@ -504,8 +518,10 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
     out_path = title_svg.unique_title_path(title_dir(), base, taken=taken)
     title_svg.write(doc, out_path)
 
+    moved = []
+
     def _commit():
-        layer, created = plan_overlay_track(position, end, track)
+        layer, created = plan_overlay_track(position, end, track, moved=moved)
         f = import_media_file(out_path)
         if created:
             create_track(layer, "Titles")
@@ -527,12 +543,14 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
         raise
     shown = " / ".join(v for v in (values.get(s.index, "").strip() for s in slots) if v) or name
     t = track_info(layer)
+    warnings += moved
     summary = (f"Added title {shown!r} ({name}) on track {t['track']} at {position:.2f}-{end:.2f}s"
-               + (" on a new track" if created else "") + ".")
+               + (" on a new track" if created else "") + "." + warning_note(warnings))
     receipt = dict(timeline_clip_id=clip.get("id"), file_id=file_id, path=out_path,
                    file_name=os.path.basename(out_path), template=name,
                    fields=_field_rows(slots), position=round(position, 3), duration=round(duration, 3),
-                   end=round(end, 3), new_track=created, screen_position=pos_key, **t, **style_info)
+                   end=round(end, 3), new_track=created, screen_position=pos_key, **t, **style_info,
+                   **warnings_field(warnings))
     if fade_in_seconds or fade_out_seconds:
         receipt.update(fade_in=fade_in_seconds, fade_out=fade_out_seconds)
     if fitted:
