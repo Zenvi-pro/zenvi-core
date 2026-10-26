@@ -350,11 +350,12 @@ def _conflicts(changed: Optional[list], actions: list) -> list:
         return ["the project"]
     touched = {f"{a['key'][0]}/{a['key'][1].get('id')}" for a in actions
                if len(a.get("key") or []) >= 2 and isinstance(a["key"][1], dict)}
-    return [c for c in changed if not c.startswith("files/") or c in touched]
+    # A file imported or updated meanwhile is fine; one removed may be what the answer's clips play.
+    return [c for c in changed if not c.startswith("files/") or c.endswith(" removed") or c in touched]
 
 
 def what_changed(before: str, after: Optional[str]) -> Optional[list]:
-    """Top-level keys, and ``<list>/<id>`` of top-level list items, that differ between two project JSON texts."""
+    """Top-level keys, and ``<list>/<id>`` of top-level list items (``... removed``), that differ between two project JSON texts."""
     if after is None:
         return None
     old, new = json.loads(before), json.loads(after)
@@ -366,7 +367,8 @@ def what_changed(before: str, after: Optional[str]) -> Optional[list]:
         if isinstance(a, list) and isinstance(b, list) and all(isinstance(x, dict) and "id" in x for x in a + b):
             then = {str(x["id"]): x for x in a}
             now = {str(x["id"]): x for x in b}
-            out += [f"{key}/{i}" for i in sorted(set(then) | set(now)) if then.get(i) != now.get(i)]
+            out += [f"{key}/{i}" + (" removed" if i not in now else "")
+                    for i in sorted(set(then) | set(now)) if then.get(i) != now.get(i)]
         else:
             out.append(key)
     return out

@@ -155,8 +155,11 @@ def test_what_changed_names_list_items_by_id_and_other_keys_by_name():
     from classes.editor_tools import engine_bridge as bridged
 
     before = json.dumps({"clips": [{"id": "A", "x": 1}, {"id": "B"}], "files": [], "width": 1})
-    after = json.dumps({"clips": [{"id": "A", "x": 2}, {"id": "B"}], "files": [{"id": "F"}], "width": 2})
-    assert bridged.what_changed(before, after) == ["clips/A", "files/F", "width"]
+    after = json.dumps({"clips": [{"id": "A", "x": 2}], "files": [{"id": "F"}], "width": 2})
+    assert bridged.what_changed(before, after) == ["clips/A", "clips/B removed", "files/F", "width"]
+    # Bin files imported or updated meanwhile leave an answer valid; a removed one does not.
+    actions = [{"type": "update", "key": ["files", {"id": "G"}], "value": {}}]
+    assert bridged._conflicts(["files/F", "files/H removed", "files/G"], actions) == ["files/H removed", "files/G"]
     assert bridged.what_changed(before, None) is None
 
 
