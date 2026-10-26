@@ -25,7 +25,7 @@ import subprocess
 import sys
 import time
 import zipfile
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 from classes import hyperframes_local as hf
 from classes import info
