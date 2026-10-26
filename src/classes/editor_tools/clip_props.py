@@ -10,6 +10,20 @@ set_keyframes_tool requests: "zoom from 100% to 130% between 2 s and 5 s",
 "spin it once". Example call: set_keyframes_tool(timeline_clip_id="ABC123",
 property="scale_x", points=[{"seconds": 0, "value": 1}, {"seconds": 4,
 "value": 1.3, "ease": "ease_in_out"}]).
+
+set_clip_properties_tool requests: "make it 50% transparent" (alpha 0.5), "use
+the multiply blend mode" (composite), "fit/fill the frame" (scale Best Fit /
+Crop), "pin it to the top right" (gravity), "make it half size"
+(scale_x/scale_y 0.5), "move it left" (location_x), "tilt it 10 degrees"
+(rotation), "mirror it" (scale_x -1), "rounded corners" (corner_radius), "turn
+it down" (volume), "show frame numbers" (display). Example call:
+set_clip_properties_tool(timeline_clip_ids=["ABC123"], properties={"alpha":
+0.5, "composite": "multiply"}).
+
+copy_clip_keyframes_tool requests: "give clip B the same zoom as clip A", "copy
+the fade to all clips", "same position and size as that one". Example call:
+copy_clip_keyframes_tool(source_clip_id="A1", timeline_clip_ids=["B2", "C3"],
+groups=["scale", "location"]).
 """
 
 from __future__ import annotations
@@ -211,22 +225,13 @@ def get_clip_properties(timeline_clip_id="", clip_query="", track="", at_seconds
 def set_clip_properties(properties, timeline_clip_ids=None, clip_query="", track="", scope="", at_seconds=None):
     """Set one or more properties of one or more timeline clips to fixed values.
 
-    Use it for "make it 50% transparent" (alpha 0.5), "use the multiply blend
-    mode" (composite), "fit/fill the frame" (scale Best Fit / Crop), "pin it to the
-    top right" (gravity), "make it half size" (scale_x/scale_y 0.5), "move it
-    left" (location_x), "tilt it 10 degrees" (rotation), "mirror it"
-    (scale_x -1; mirrors in place only with a centred gravity, otherwise the
-    receipt warns), "rounded corners" (corner_radius), "turn it down" (volume),
-    "show frame numbers" (display). Several properties and several clips in
-    one call, one undo step. A static value replaces any animation of that
-    property (the receipt says so); to animate or change only part of a
-    curve use set_keyframes_tool, and for fades, zooms, slides or layouts use
-    apply_clip_preset_tool. Timeline position, trim and track are not
-    properties here (use the timeline editing tools). Clips on locked tracks
-    are refused (or skipped with scope).
-
-    Example: set_clip_properties_tool(timeline_clip_ids=["ABC123"],
-    properties={"alpha": 0.5, "composite": "multiply"})
+    Several properties and clips in one call, one undo step. A static value
+    replaces any animation of that property (the receipt says so); mirroring
+    (scale_x -1) off a centred gravity warns in the receipt. To animate or
+    change part of a curve use set_keyframes_tool; for fades, zooms, slides
+    or layouts apply_clip_preset_tool. Position, trim and track are timeline
+    edits, not properties. Clips on locked tracks are refused (skipped with
+    scope).
     """
     if not isinstance(properties, dict) or not properties:
         raise ToolError('properties must be an object such as {"alpha": 0.5}')
@@ -626,8 +631,8 @@ def _without_points(curve, lo, hi, key, channel):
         "source_track": string("Narrow source_query to a track (UI track number, name or layer).", ""),
         **TARGETS,
         "groups": array(enum(list(KEYFRAME_GROUPS), "A Copy > Keyframes group."),
-                        "What to copy, as in the Clip menu's Copy > Keyframes: all, alpha, scale (+gravity), shear, "
-                        "rotation (+gravity), location (+gravity), time, volume.", ["all"]),
+                        "Clip menu Copy > Keyframes groups: all, alpha, scale (+gravity), shear, rotation "
+                        "(+gravity), location (+gravity), time (speed curve), volume.", ["all"]),
         "timing": enum(["stretch", "offset", "exact"],
                        "How keyframe times map onto each target: stretch = scaled to the target's length (a "
                        "whole-clip zoom stays whole-clip, a fade-out stays at the end); offset = same seconds from "
@@ -639,19 +644,10 @@ def copy_clip_keyframes(source_clip_id="", source_query="", source_track="", tim
                         clip_query="", track="", scope="", groups=["all"], timing="stretch"):
     """Copy the animation (keyframes) of one clip onto other clips.
 
-    Use it for "give clip B the same zoom as clip A", "copy the fade to all
-    clips", "same position and size as that one". The groups match the Clip
-    menu's Copy > Keyframes items: all, alpha (opacity), scale, shear, rotation,
-    location, time (speed curve) and volume; scale, rotation and location also
-    copy gravity. With timing='stretch' (default) the keyframes are scaled to
-    each target's length, so a whole-clip Ken Burns or a fade-out lands the
-    same way on a shorter or longer clip; 'offset' keeps the seconds from each
-    clip's start; 'exact' copies the raw frames like the editor's paste. The
-    'time' curve is only copied with timing='exact' (and skipped from 'all'
-    otherwise), since stretching a speed curve changes what the target shows.
-    Targets exclude the source and must not be on locked tracks. One undo step.
-
-    Example: copy_clip_keyframes_tool(source_clip_id="A1", timeline_clip_ids=["B2", "C3"], groups=["scale", "location"])
+    The 'time' (speed) curve is copied only with timing='exact' (refused
+    otherwise; skipped from 'all'), since stretching it changes what the
+    target shows. Targets exclude the source and must not be on locked
+    tracks. One undo step.
     """
     source = resolve_clip(source_clip_id, source_query, source_track)
     wanted = list(dict.fromkeys(str(g).strip().lower() for g in (groups or ["all"]) if str(g).strip()))
