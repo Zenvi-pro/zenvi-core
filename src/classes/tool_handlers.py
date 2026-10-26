@@ -7413,9 +7413,13 @@ def import_stock_media(
     preview_url="",
     filename="",
     local_path="",
+    query="",
     **kwargs,
 ) -> str:
-    """Download stock media (pexels|freesound) and import into Project Files, or import local_path."""
+    """Download stock media (pexels|freesound) and import into Project Files, or import local_path.
+
+    With source='freesound', a missing or failed hit and a query generate a bed on this computer.
+    """
     path = (local_path or "").strip()
     if path:
         return add_stock_media_to_project(local_path=path, **kwargs)
@@ -7432,6 +7436,20 @@ def import_stock_media(
     else:
         return "Error: source must be 'pexels' or 'freesound' (or pass local_path)."
 
+    query = str(query or "").strip()
+    if dl.startswith("Error") and src == "freesound" and query:
+        # No hit, a dead preview or a rate-limited stock search: make the bed here instead.
+        from classes.editor_tools import ai_generation_hyperframes as hfx
+        from classes.editor_tools import ai_generation_music as music
+        from classes.editor_tools._base import ToolError
+        from classes import music_local
+        try:
+            music.ensure_installed("ace_step")
+            path = hfx._guard(music_local.generate_bed, query)
+        except ToolError as exc:
+            return f"{dl} The local fallback also failed: {exc}"
+        return "Stock music unavailable; generated locally with ACE-Step. " + add_stock_media_to_project(
+            local_path=path, **kwargs)
     if dl.startswith("Error"):
         return dl
     if "Downloaded to:" in dl:

@@ -15,7 +15,7 @@ download workers, result cards and async image loaders are reused as-is from
 
 from typing import Dict
 
-from qt_api import Qt, QSize, QThread, QThreadPool, QEvent, pyqtSlot
+from qt_api import Qt, QSize, QThread, QThreadPool, QEvent, QObject, pyqtSignal, pyqtSlot
 from qt_api import QPixmap, QCursor
 from qt_api import (
     QWidget, QVBoxLayout, QScrollArea, QGridLayout, QLabel, QApplication,
@@ -62,6 +62,27 @@ _FILES_STYLE = tokens.resolve("""
 """)
 
 
+class _LocalBedWorker(QObject):
+    """Generates an instrumental bed for a query on this computer (ACE-Step), off the GUI thread."""
+    finished = pyqtSignal(dict)   # {path, error, query}
+
+    def __init__(self, query: str):
+        super().__init__()
+        self._query = query
+
+    @pyqtSlot()
+    def run(self):
+        path, error = "", ""
+        try:
+            from classes import music_local
+            from classes.editor_tools import ai_generation_music as music
+            music.ensure_installed("ace_step")
+            path = music_local.generate_bed(self._query)
+        except Exception as exc:
+            error = str(exc)
+        self.finished.emit({"path": path, "error": error, "query": self._query})
+
+
 class StockSearchView(QWidget):
     """Project files + stock footage + stock music, sharing one scroll area."""
 
@@ -80,6 +101,8 @@ class StockSearchView(QWidget):
         self._dl_workers: Dict[str, object] = {}
         self._cards: Dict[str, object] = {}
         self._pool = QThreadPool.globalInstance()
+        self._bed_busy = False
+        self._bed_declined = False   # asked once per session; a "no" is not asked again
 
         self._build_ui()
 
@@ -331,12 +354,10 @@ class StockSearchView(QWidget):
     @pyqtSlot(dict)
     def _on_music_results(self, data: dict):
         error = data.get("error")
-        if error:
-            self._music_status.setText(f"Error: {error}")
-            return
         sounds = data.get("sounds", [])
-        if not sounds:
-            self._music_status.setText("No music found.")
+        if error or not sounds:
+            self._music_status.setText(f"{error} " if error else "No stock music found. ")
+            self._start_local_bed(self._query)
             return
         self._music_status.setText(f"{data.get('count', 0):,} results")
 
@@ -355,6 +376,28 @@ class StockSearchView(QWidget):
                 runnable = _WaveformRunnable(sid, wave_url)
                 runnable.signals.ready.connect(self._on_waveform_ready)
                 self._pool.start(runnable)
+
+    def _start_local_bed(self, query: str):
+        """No stock music for this query: generate a 30 s bed here and add it to Project Files."""
+        if self._bed_declined or self._bed_busy or not query:
+            return
+        self._bed_busy = True
+        self._music_status.setText(self._music_status.text() + "Generating a 30 s bed on this computer...")
+        self._start_search(_LocalBedWorker(query), self._on_local_bed_done)
+
+    @pyqtSlot(dict)
+    def _on_local_bed_done(self, data: dict):
+        self._bed_busy = False
+        error, path = data.get("error", ""), data.get("path", "")
+        if error:
+            self._bed_declined = self._bed_declined or "declined" in error
+            log.warning("Local music bed failed: %s", error)
+            self._music_status.setText("No stock music found; local generation is off (download declined)."
+                                       if "declined" in error else f"Local music generation failed: {error}")
+            return
+        self._add_to_project(path)
+        if data.get("query") == self._query:
+            self._music_status.setText("No stock music found; generated a 30 s bed and added it to Project Files.")
 
     @pyqtSlot(int, QPixmap)
     def _on_thumbnail_ready(self, video_id: int, pix: QPixmap):

@@ -93,3 +93,27 @@ def test_music_download_worker_carries_a_uuid_id(qapp):
          patch("classes.credits_client.charge_operation_on_success"):
         w.run()
     assert seen == [("3b4580e1-uuid", "/tmp/a.mp3", "")]
+
+
+def test_no_stock_music_generates_a_bed_for_the_query(qapp):
+    from windows.views.stock_search_view import StockSearchView
+
+    v = StockSearchView()
+    v._query = "ocean waves"
+    with patch.object(v, "_start_local_bed") as bed:
+        v._on_music_results({"sounds": [], "count": 0})
+        bed.assert_called_once_with("ocean waves")
+        v._on_music_results({"sounds": [], "rate_limited": True, "error": "Stock search is busy, try again in 30s."})
+        assert bed.call_count == 2
+
+
+def test_a_declined_music_download_is_not_asked_again(qapp):
+    from windows.views.stock_search_view import StockSearchView
+
+    v = StockSearchView()
+    v._query = "rain"
+    v._on_local_bed_done({"path": "", "error": "the user declined the music download"})
+    with patch.object(v, "_start_search") as start:
+        v._start_local_bed("rain")
+        start.assert_not_called()
+    assert "declined" in v._music_status.text().lower()
