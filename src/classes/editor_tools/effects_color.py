@@ -668,9 +668,9 @@ TARGETS = {
     **CLIP_TARGET,
     "timeline_clip_ids": array({"type": "string"}, "Several timeline clip ids to change in one step."),
     "scope": enum(["", "selected", "track", "all"],
-                  "Instead of ids/query: 'selected' = timeline selection, 'track' = every clip on `track`, "
-                  "'all' = every clip. Clips that cannot take the effect (locked track, no picture/sound) are "
-                  "skipped and listed.", ""),
+                  "Instead of ids/query: selected (timeline selection), track (every clip on track), all (every "
+                  "clip). Clips that cannot take the effect (locked track, no picture/sound) are skipped and "
+                  "listed.", ""),
 }
 
 
