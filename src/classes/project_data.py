@@ -299,8 +299,11 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 parent = obj
 
 
-        # After processing each key, we've found object and parent, return former value/s on update
-        ret = json.loads(json.dumps(obj))
+        # After processing each key, we've found object and parent, return former value/s on update.
+        # An insert into a list returns None: its undo deletes the new item by id, and a copy of the
+        # whole list (every clip) would make each insert's undo entry as large as the timeline.
+        appending = add and isinstance(parent, list)
+        ret = None if appending else json.loads(json.dumps(obj))
 
         # Apply the correct action to the found item
         if remove:
@@ -310,7 +313,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
             # Add or Full Update
             # For adds to list perform an insert to index or the end if not specified
-            if add and isinstance(parent, list):
+            if appending:
                 parent.append(values)
 
             # Otherwise, set the given index
