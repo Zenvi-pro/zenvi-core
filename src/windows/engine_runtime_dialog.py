@@ -4,7 +4,8 @@ Opened from AI Tools > Zenvi Engine Tools... and from Preferences > AI. The
 status check and the install run on a QThread of this dialog (both read the
 disk, start Node and download): the GUI thread only shows their progress.
 The dialog cannot be closed while an install runs; Cancel stops it and leaves
-what was installed before.
+what was installed before. Closing it during the status check is instant: the
+check finishes on its own, detached.
 """
 
 from __future__ import annotations
@@ -222,7 +223,9 @@ class EngineRuntimeDialog(QDialog):
             if self._worker.install:
                 self.cancel_install()
                 return
-            self._worker.wait()          # the status check: file checks and one ``node --version``
+            # The status check (file checks, a ``node --version``): never waited for here, it ends on its own.
+            _detach(self._worker)
+            self._worker = None
         super().reject()
 
     def closeEvent(self, event) -> None:
@@ -231,6 +234,27 @@ class EngineRuntimeDialog(QDialog):
             self.reject()
             return
         super().closeEvent(event)
+
+
+# Status checks a closed dialog let go of, kept alive until they end: a QThread destroyed while it
+# runs aborts the process.
+_DETACHED: set = set()
+
+
+def _detach(worker: _RuntimeWorker) -> None:
+    """Let *worker* finish without its dialog: nothing it answers reaches the dialog, it deletes itself."""
+    for signal in (worker.progressed, worker.finished_ok, worker.finished_err, worker.finished):
+        try:
+            signal.disconnect()
+        except TypeError:
+            pass                       # nothing connected
+    worker.setParent(None)
+    _DETACHED.add(worker)
+    worker.finished.connect(lambda: _DETACHED.discard(worker))
+    worker.finished.connect(worker.deleteLater)
+    if worker.isFinished():            # it ended before the connections above
+        _DETACHED.discard(worker)
+        worker.deleteLater()
 
 
 def show_engine_runtime_dialog(parent=None) -> None:

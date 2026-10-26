@@ -94,3 +94,29 @@ def test_an_outdated_install_says_update_not_not_installed(dialog_env, monkeypat
     assert "bridge protocol (2)" in dlg._label.text() and dlg._install_btn.text() == "Update"
     assert _wait(lambda: dlg._worker is None)
     dlg.reject()
+
+
+def test_close_during_the_status_check_is_instant_and_the_check_ends_detached(dialog_env, monkeypatch):
+    import gc
+
+    dlg_mod, calls = dialog_env
+    slow = threading.Event()
+    answered = []
+
+    def status():
+        slow.wait(10)                      # a cold ``node --version``
+        answered.append(True)
+        return {"ready": False, "home": "/tmp/engine", "source": "", "node_needed": False, "protocol": 2}
+    monkeypatch.setattr(engine_runtime, "status", status)
+    dlg = dlg_mod.EngineRuntimeDialog()
+    assert dlg._busy()
+    started = time.monotonic()
+    dlg.reject()
+    assert time.monotonic() - started < 0.5 and dlg.result() == 0
+    assert dlg._worker is None and len(dlg_mod._DETACHED) == 1
+    (worker,) = dlg_mod._DETACHED
+    assert worker.parent() is None
+    del dlg
+    gc.collect()                           # the dialog goes; its running check does not take the process with it
+    slow.set()
+    assert _wait(lambda: answered and not dlg_mod._DETACHED)
