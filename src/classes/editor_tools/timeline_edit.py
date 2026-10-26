@@ -13,6 +13,11 @@ crossfades", "make a slideshow of these photos, 3 seconds each". Per-file in/out
 points: items=[{"file_id": "F1", "source_start": 4, "source_end": 9},
 {"file_id": "F2"}]. fit_total_seconds keeps the middle of each clip because
 heads and tails are usually shaky.
+
+move_clips_tool requests: "move the intro to the end" (timeline_clip_ids=[intro],
+after_clip_id=<last clip>, ripple=true), "put the drone shot before the beach
+clip", "move this to track 2", "shift everything on track 1 two seconds later",
+"nudge it 3 frames left".
 """
 
 from __future__ import annotations
@@ -387,8 +392,8 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
                            "Empty = stay on the same track(s).", ""),
         "after_clip_id": string("Place the clip(s) right after this timeline clip, on its track.", ""),
         "before_clip_id": string("Place the clip(s) right before this timeline clip, on its track.", ""),
-        "ripple": boolean("Reorder instead of overwrite: close the hole the clips leave and push the clips at the "
-                          "destination later to make room (use this to reorder a sequence).", False),
+        "ripple": boolean("Reorder instead of overwrite: close the hole left behind and push the clips at the "
+                          "destination later to make room.", False),
         "allow_overlap": _OVERLAP_ARG,
     }),
     covers=("clip.move", "clip.nudge"),
@@ -397,19 +402,14 @@ def move_clips(timeline_clip_ids=[], clip_query="", track="", scope="", position
                by_frames=0, to_track="", after_clip_id="", before_clip_id="", ripple=False, allow_overlap=False):
     """Move clips to another time and/or track, nudge them by frames, or reorder a sequence.
 
-    Use for "move the intro to the end", "put the drone shot before the beach clip", "move this
-    to track 2", "shift everything on track 1 two seconds later", "nudge it 3 frames left".
-    Several clips keep their spacing and their relative tracks. Give exactly one of
-    position_seconds, by_seconds, by_frames, after_clip_id or before_clip_id (or only to_track).
-
-    Without ripple the clips are placed over whatever is there; the tool refuses if that would
-    cover another clip unless allow_overlap=true. With ripple=true the move is a reorder: the
-    hole left behind closes and the clips at the destination slide later to make room, e.g.
-    move the first clip to the end of track 1: timeline_clip_ids=[intro], after_clip_id=<last
-    clip>, ripple=true. position_seconds counts in the timeline as it is before the move.
-    Transitions stay where they are (only clips move). On a crossfaded sequence an insertion
-    point falls inside the previous clip's tail and is refused: reorder first, then add the
-    transitions. One undo step. Locked tracks are refused.
+    Several clips keep their spacing and relative tracks. Give exactly one of
+    position_seconds, by_seconds, by_frames, after_clip_id, before_clip_id (or
+    only to_track). Without ripple, covering another clip is refused unless
+    allow_overlap=true. position_seconds counts in the timeline as it is
+    before the move. Transitions stay put (only clips move). On a crossfaded
+    sequence an insertion point falls inside the previous clip's tail and is
+    refused: reorder first, then add the transitions. One undo step. Locked
+    tracks are refused.
     """
     from classes.query import Clip
 
