@@ -10,7 +10,7 @@ on:
 
 permissions:
   contents: write
-  id-token: write # Azure OIDC (Artifact Signing) when the variables below are set
+  id-token: write # Azure OIDC (Artifact Signing): the federated credential trusts main and tags only
 
 env:
   ACESTEP_REF: de858d8e1a94f0e1939cf9bdd8ff7d9631953077
@@ -101,7 +101,7 @@ jobs:
           fi
 
       - name: Azure login (OIDC for Artifact Signing)
-        if: ${{ runner.os == 'Windows' && vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
+        if: ${{ runner.os == 'Windows' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CODESIGNING_CLIENT_ID }}
@@ -109,7 +109,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_CODESIGNING_SUBSCRIPTION_ID }}
 
       - name: Sign (Azure Artifact Signing)
-        if: ${{ runner.os == 'Windows' && vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
+        if: ${{ runner.os == 'Windows' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
         uses: azure/artifact-signing-action@v1
         with:
           endpoint: ${{ vars.AZURE_CODESIGNING_ENDPOINT }}
@@ -135,7 +135,12 @@ jobs:
         run: |
           set -euo pipefail
           ext=""; [ "${RUNNER_OS}" = "Windows" ] && ext=".exe"
-          for b in ace-lm ace-synth yue-synth; do (cd dist && ./$b$ext --help 2>&1 | head -1); done
+          # --help exits 1 after the usage text; a missing library prints no Usage at all.
+          for b in ace-lm ace-synth yue-synth; do
+            out=$(cd dist && "./$b$ext" --help 2>&1 || true)
+            echo "$out" | head -1
+            echo "$out" | grep -q "Usage" || { echo "::error::$b did not start"; exit 1; }
+          done
 
       - name: Zip
         run: |
