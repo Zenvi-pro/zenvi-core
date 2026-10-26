@@ -300,9 +300,28 @@ def test_an_unknown_tool_says_where_engine_tools_come_from_while_none_is_listed(
     receipt = json.loads(tool_handlers.execute_tool("add_motion_block_tool", {}))
     assert "Unknown tool 'add_motion_block_tool'" in receipt["summary"]
     assert "AI Tools > Zenvi Engine Tools... installs them" in receipt["summary"]
+    # Before the catalog arrives (start-up, or just after an install): still loading, not "not installed".
+    monkeypatch.setattr(bridged, "_loading", [1])
+    receipt = json.loads(tool_handlers.execute_tool("add_motion_block_tool", {}))
+    assert "engine tools are still loading" in receipt["summary"] and "installs them" not in receipt["summary"]
+    monkeypatch.setattr(bridged, "_loading", [0])
     monkeypatch.setenv("ZENVI_ENGINE_BRIDGE", "off")
     receipt = json.loads(tool_handlers.execute_tool("add_motion_block_tool", {}))
     assert receipt["summary"].endswith("Unknown tool 'add_motion_block_tool'.")
+
+
+def test_listing_counts_as_loading_until_the_catalog_read_ends(monkeypatch):
+    from classes.editor_tools import engine_bridge as bridged
+
+    monkeypatch.setattr(bridged, "_loading", [0])
+    monkeypatch.setenv("ZENVI_ENGINE_BRIDGE", "auto")
+    gate = threading.Event()
+    monkeypatch.setattr(bridged, "register_tools", lambda existing: gate.wait(5) and {})
+    thread = bridged.register_in_background(set, lambda handlers: None)
+    assert bridged.loading()
+    gate.set()
+    thread.join(5)
+    assert not bridged.loading()
 
 
 def test_a_remote_source_must_be_https(runtime):
@@ -310,3 +329,54 @@ def test_a_remote_source_must_be_https(runtime):
     with pytest.raises(rt.RuntimeInstallError, match="only downloaded over https"):
         rt.install("http://releases.example.com/engine-cli.json")
     assert runtime.downloads == []
+
+
+def _tar_members(path, members):
+    """A .tar.gz of raw TarInfo members ((info, text) pairs) -- for archives no honest release makes."""
+    with tarfile.open(path, "w:gz") as bundle:
+        for member, text in members:
+            data = text.encode()
+            member.size = len(data) if member.isfile() else 0
+            bundle.addfile(member, io.BytesIO(data) if member.isfile() else None)
+    return str(path)
+
+
+def _member(name, kind=tarfile.REGTYPE, mode=0o644, link=""):
+    member = tarfile.TarInfo(name)
+    member.type, member.mode, member.linkname = kind, mode, link
+    return member
+
+
+def test_without_tarfile_filters_archives_are_checked_before_extracting(runtime, tmp_path, monkeypatch):
+    rt = runtime.module
+    monkeypatch.delattr(tarfile, "data_filter")
+    # An honest archive (the Node layout: a top folder, an executable, a relative link) unpacks as with filters.
+    good = _tar_members(tmp_path / "good.tar.gz", [
+        (_member("top/bin/node", mode=0o4755), "#!/bin/sh\n"),
+        (_member("top/lib/npm-cli.js"), "//"),
+        (_member("top/bin/npm", tarfile.SYMTYPE, link="../lib/npm-cli.js"), ""),
+    ])
+    folder = rt._unpack(good, str(tmp_path / "out-good"))
+    assert folder == str(tmp_path / "out-good" / "top")
+    node_mode = os.stat(os.path.join(folder, "bin", "node")).st_mode
+    assert node_mode & stat.S_IXUSR and not node_mode & stat.S_ISUID
+    assert os.path.realpath(os.path.join(folder, "bin", "npm")) == os.path.realpath(
+        os.path.join(folder, "lib", "npm-cli.js"))
+    bad = {
+        "dotdot": [(_member("top/../../evil"), "x")],
+        "absolute": [(_member("/tmp/w35-desktop-runtime-evil"), "x")],
+        "link out": [(_member("top/out", tarfile.SYMTYPE, link="../../.."), "")],
+        "absolute link": [(_member("top/out", tarfile.SYMTYPE, link="/etc"), "")],
+        "hard link": [(_member("top/a"), "x"), (_member("top/b", tarfile.LNKTYPE, link="top/a"), "")],
+        "device": [(_member("top/dev", tarfile.CHRTYPE), "")],
+        "fifo": [(_member("top/pipe", tarfile.FIFOTYPE), "")],
+    }
+    for label, members in bad.items():
+        archive = _tar_members(tmp_path / f"{label.replace(' ', '-')}.tar.gz", members)
+        dest = tmp_path / f"out-{label.replace(' ', '-')}"
+        with pytest.raises(rt.RuntimeInstallError, match="The archive"):
+            rt._unpack(archive, str(dest))
+        assert os.listdir(dest) == [], label          # checked first: nothing extracted
+    assert not os.path.exists("/tmp/w35-desktop-runtime-evil")
+    # And a whole install still works this way.
+    assert rt.install(runtime.release())["ready"]

@@ -354,13 +354,41 @@ def _unpack(archive: str, dest: str) -> str:
                 bundle.extractall(dest)          # zipfile drops absolute and '..' member paths
         else:
             with tarfile.open(archive) as bundle:
-                bundle.extractall(dest, filter="data")
+                _extract_tar(bundle, dest)
     except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
         raise RuntimeInstallError(f"Could not unpack {os.path.basename(archive)}: {exc}") from exc
     entries = os.listdir(dest)
     if len(entries) == 1 and os.path.isdir(os.path.join(dest, entries[0])):
         return os.path.join(dest, entries[0])
     return dest
+
+
+def _extract_tar(bundle: tarfile.TarFile, dest: str) -> None:
+    """Extract like ``filter="data"``; on a Python without tarfile filters, the same checks made here."""
+    if hasattr(tarfile, "data_filter"):
+        bundle.extractall(dest, filter="data")
+        return
+    # Python < 3.10.12 / 3.11.4 (e.g. a Linux build on Debian 11's or Ubuntu 20.04's system Python).
+    root = os.path.abspath(dest)
+    members = []
+    for member in bundle.getmembers():
+        name = member.name.replace("\\", "/")
+        if not (member.isfile() or member.isdir() or member.issym()):
+            raise RuntimeInstallError(f"The archive holds {member.name}, which is not a file, folder or link")
+        target = os.path.normpath(os.path.join(root, name))
+        if name.startswith("/") or os.path.isabs(name) or ".." in name.split("/") or not _inside(target, root):
+            raise RuntimeInstallError(f"The archive holds {member.name}, outside the folder it unpacks into")
+        if member.issym():
+            link = os.path.normpath(os.path.join(os.path.dirname(target), member.linkname))
+            if os.path.isabs(member.linkname) or not _inside(link, root):
+                raise RuntimeInstallError(f"The archive links {member.name} outside the folder it unpacks into")
+        member.mode &= 0o755          # no setuid/setgid/sticky, no group/other write
+        members.append(member)
+    bundle.extractall(dest, members=members)
+
+
+def _inside(path: str, root: str) -> bool:
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
 
 def _stage_cli(release: dict, staging: str, report: Progress, cancel: threading.Event) -> str:
