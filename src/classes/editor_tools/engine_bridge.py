@@ -23,7 +23,8 @@ the MCP server lists tools as they arrive. A call runs like this:
    tool and answers the change as desktop UpdateManager actions, the files it
    wrote and the tool's contract-3 receipt (plus any frames it rendered).
 3. GUI thread: refuse when the project changed meanwhile (which also catches a
-   copy torn by an edit during step 2); otherwise resolve ``@transitions``-
+   copy torn by an edit during step 2) -- unless only bin files the answer
+   does not touch changed (indexing, thumbnails during a long render); otherwise resolve ``@transitions``-
    style paths with the desktop's own rules and apply the actions inside the
    caller's transaction, with the timeline refreshing once. execute_tool
    groups the call into one undo step; a refused or failed call applies
@@ -68,6 +69,8 @@ SURFACE_NOTE = "Runs in the Zenvi engine (engine bridge)."
 BRIDGED: dict = {}
 # Bumped when BRIDGED changes, so listings built from it (the MCP server's) know to rebuild.
 REVISION = 0
+
+STALE = "the project changed while the engine ran the tool; nothing was applied, try again"
 
 # Answer action kinds -> the UpdateManager call that applies them.
 _APPLY = {
@@ -243,7 +246,7 @@ def _apply(answer: dict, project_file: str, version) -> Optional[str]:
     """Apply the answer's actions on the GUI thread; an error message when refused."""
     app = get_app()
     if getattr(app.updates, "data_version", None) != version:
-        return "the project changed while the engine ran the tool; nothing was applied, try again"
+        return STALE
     # The engine keeps the bundled-asset aliases (@transitions/…); resolve them like a project load.
     text = app.project.convert_paths_to_absolute(project_file, json.dumps(answer.get("actions") or []))
     actions = json.loads(text)
@@ -306,11 +309,67 @@ def run_tool(name: str, args: dict):
     if not answer.get("ok"):
         return text if text.lstrip().startswith("{") else fail(text or f"{name} failed in the engine")
     if answer.get("actions"):
-        refusal = on_main(_apply, answer, project_file, version)
+        refusal = _apply_current(name, answer, project_file, version, project_json, data)
         if refusal:
             _discard(answer.get("files") or [], project_file)
             return fail(refusal)
     return _output(name, answer)
+
+
+def _version():
+    return getattr(get_app().updates, "data_version", None)
+
+
+def _apply_current(name: str, answer: dict, project_file: str, version, project_json: str, data: dict) -> Optional[str]:
+    """Apply the answer, also when the desktop changed only bin files it does not touch meanwhile.
+
+    Indexing, thumbnails and fingerprints update Project Files records while a
+    long engine call (a Blender render) runs. Those leave the answer valid;
+    any other change -- clips, tracks, transitions, settings, or a file the
+    answer itself updates -- refuses it.
+    """
+    refusal = on_main(_apply, answer, project_file, version)
+    for _round in range(3):
+        if refusal != STALE:
+            return refusal
+        version = on_main(_version)
+        changed = what_changed(project_json, _serialize(data))
+        conflicts = _conflicts(changed, answer.get("actions") or [])
+        if conflicts:
+            log.info("engine bridge: %s refused, the project changed meanwhile: %s", name, ", ".join(conflicts))
+            return f"{STALE} (changed: {', '.join(conflicts[:4])})"
+        if changed:
+            log.info("engine bridge: %s applied over changes to bin files it does not touch: %s", name, ", ".join(changed))
+        refusal = on_main(_apply, answer, project_file, version)
+    return refusal
+
+
+def _conflicts(changed: Optional[list], actions: list) -> list:
+    """The changes made meanwhile that invalidate an answer of *actions* (None: unknown, everything)."""
+    if changed is None:
+        return ["the project"]
+    touched = {f"{a['key'][0]}/{a['key'][1].get('id')}" for a in actions
+               if len(a.get("key") or []) >= 2 and isinstance(a["key"][1], dict)}
+    return [c for c in changed if not c.startswith("files/") or c in touched]
+
+
+def what_changed(before: str, after: Optional[str]) -> Optional[list]:
+    """Top-level keys, and ``<list>/<id>`` of top-level list items, that differ between two project JSON texts."""
+    if after is None:
+        return None
+    old, new = json.loads(before), json.loads(after)
+    out = []
+    for key in sorted(set(old) | set(new)):
+        a, b = old.get(key), new.get(key)
+        if a == b:
+            continue
+        if isinstance(a, list) and isinstance(b, list) and all(isinstance(x, dict) and "id" in x for x in a + b):
+            then = {str(x["id"]): x for x in a}
+            now = {str(x["id"]): x for x in b}
+            out += [f"{key}/{i}" for i in sorted(set(then) | set(now)) if then.get(i) != now.get(i)]
+        else:
+            out.append(key)
+    return out
 
 
 def _discard(files: list, project_file: str) -> None:

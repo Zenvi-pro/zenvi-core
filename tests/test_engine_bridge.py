@@ -98,15 +98,27 @@ def test_an_unsaved_project_is_refused_before_the_cli_runs(bridge):
     assert bridge.undo_steps_since_mark() == 0
 
 
-def test_a_project_changed_while_the_engine_ran_is_not_overwritten(bridge, monkeypatch):
-    from classes.editor_tools import engine_bridge as bridged
+def _during_the_run(monkeypatch, change):
+    """Make *change* while the engine runs the next call (as the GUI thread would meanwhile)."""
+    from classes import engine_bridge
 
-    real = bridged._snapshot
-    monkeypatch.setattr(bridged, "_snapshot", lambda: (real()[0], "an older version", real()[2]))
+    client = engine_bridge.get_client()
+    real = client.run
+
+    def run(*args, **kwargs):
+        answer = real(*args, **kwargs)
+        change()
+        return answer
+
+    monkeypatch.setattr(client, "run", run)
+
+
+def test_a_project_changed_while_the_engine_ran_is_not_overwritten(bridge, monkeypatch):
+    f = bridge.add_file("video")
+    _during_the_run(monkeypatch, lambda: bridge.add_clip(f, position=9.0))
     receipt = bridge.call_receipt("add_motion_template_tool", template="end_card")
-    assert "changed while" in receipt["summary"]
+    assert "changed while" in receipt["summary"] and "clips/" in receipt["summary"]
     assert bridge.clip("FAKECLIP01") is None
-    assert bridge.undo_steps_since_mark() == 0
 
 
 def test_a_crashed_cli_fails_the_call_and_the_next_call_restarts_it(bridge):

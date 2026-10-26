@@ -117,6 +117,49 @@ def test_engine_frames_come_back_as_images_with_the_receipt(bridge):  # noqa: F8
     assert bridge.undo_steps_since_mark() == 0
 
 
+def test_bin_files_indexed_while_the_engine_ran_do_not_refuse_the_answer(bridge, monkeypatch):  # noqa: F811
+    from classes.query import File
+    from test_engine_bridge import _during_the_run
+
+    f = bridge.add_file("video")
+
+    def index():
+        record = File.get(id=f)
+        record.data["summary"] = "a test card"
+        record.save()
+
+    _during_the_run(monkeypatch, index)
+    receipt = bridge.call_receipt("add_motion_template_tool", template="end_card")
+    assert receipt["status"] == "applied", receipt
+    assert bridge.clip("FAKECLIP01") is not None and bridge.file(f)["summary"] == "a test card"
+
+
+def test_a_file_the_answer_updates_that_changed_meanwhile_refuses_it(bridge, monkeypatch, tmp_path):  # noqa: F811
+    from classes.query import File
+    from test_engine_bridge import _during_the_run
+
+    f = bridge.add_file("video", path=str(tmp_path / "counter.mov"), zenvi_link=_link("zenvi-motion"))
+
+    def rename():
+        record = File.get(id=f)
+        record.data["name"] = "renamed meanwhile"
+        record.save()
+
+    _during_the_run(monkeypatch, rename)
+    receipt = bridge.call_receipt("rerender_linked_clip_tool", file_id=f)
+    assert "changed while" in receipt["summary"] and f"files/{f}" in receipt["summary"]
+    assert bridge.file(f)["path"].endswith("counter.mov") and bridge.file(f)["name"] == "renamed meanwhile"
+
+
+def test_what_changed_names_list_items_by_id_and_other_keys_by_name():
+    from classes.editor_tools import engine_bridge as bridged
+
+    before = json.dumps({"clips": [{"id": "A", "x": 1}, {"id": "B"}], "files": [], "width": 1})
+    after = json.dumps({"clips": [{"id": "A", "x": 2}, {"id": "B"}], "files": [{"id": "F"}], "width": 2})
+    assert bridged.what_changed(before, after) == ["clips/A", "files/F", "width"]
+    assert bridged.what_changed(before, None) is None
+
+
 # -- linked clips the engine rendered -------------------------------------------
 
 def test_get_linked_clip_reads_a_motion_block_and_notices_a_missing_render(bridge, tmp_path):  # noqa: F811
