@@ -1632,6 +1632,31 @@
     "restart": false
   },
   {
+    "category": "AI",
+    "title": "Zenvi Engine Tools (experimental, through the zenvi CLI)",
+    "setting": "engine-bridge",
+    "value": "off",
+    "type": "dropdown",
+    "values": [{"value": "off", "name": "Off"}, {"value": "server", "name": "On"}, {"value": "oneshot", "name": "On, one process per call"}],
+    "restart": true
+  },
+  {
+    "category": "AI",
+    "title": "Zenvi CLI for Engine Tools (zenvi.mjs, blank = bundled)",
+    "setting": "engine-cli-path",
+    "value": "",
+    "type": "browse",
+    "restart": true
+  },
+  {
+    "category": "AI",
+    "title": "Node.js for Engine Tools (blank = find it)",
+    "setting": "engine-node-path",
+    "value": "",
+    "type": "browse",
+    "restart": true
+  },
+  {
     "value": 5,
     "title": "Video Generation Duration (seconds)",
     "category": "AI",
