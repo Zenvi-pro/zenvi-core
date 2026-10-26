@@ -17,7 +17,7 @@ env:
   YUE2_REF: 8af01740686824ffd4a1839a457954f42e2a8ce7
   RELEASE_TAG: music-runtimes-v1
   # Portable CPU code (no -march=native) with AVX2, for the CPU fallback.
-  GGML_FLAGS: -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+  GGML_FLAGS: -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
 
 jobs:
   build:
@@ -98,6 +98,7 @@ jobs:
           if [ "${RUNNER_OS}" = "Windows" ]; then
             # The MinGW runtime and the Vulkan loader; without a Vulkan driver ggml runs on the CPU.
             ldd dist/*.exe | awk '$3 ~ /^\/mingw64\// {print $3}' | sort -u | xargs -r cp -t dist/
+            cp /mingw64/bin/vulkan-1.dll dist/   # ldd resolves the driver's copy; machines without one still start
           fi
 
       - name: Azure login (OIDC for Artifact Signing)
@@ -135,6 +136,7 @@ jobs:
         run: |
           set -euo pipefail
           ext=""; [ "${RUNNER_OS}" = "Windows" ] && ext=".exe"
+          rm -rf acestep.cpp/build yue2.cpp/build   # the zip must not lean on anything left in the build tree
           # --help exits 1 after the usage text; a missing library prints no Usage at all.
           for b in ace-lm ace-synth yue-synth; do
             out=$(cd dist && "./$b$ext" --help 2>&1 || true)
