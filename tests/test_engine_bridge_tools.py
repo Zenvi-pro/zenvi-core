@@ -366,11 +366,14 @@ def _only_under(root, candidates):
     return wrapped
 
 
-def test_the_bridge_turns_on_from_the_setting_too(editor, monkeypatch):
-    from classes import engine_bridge
+def test_the_bridge_turns_on_from_the_setting_too(editor, tmp_path, monkeypatch):
+    from classes import engine_bridge, info
 
     monkeypatch.delenv("ZENVI_ENGINE_BRIDGE", raising=False)
-    assert engine_bridge.bridge_mode() == ""
+    monkeypatch.delenv("ZENVI_ENGINE_CLI", raising=False)
+    monkeypatch.setattr(info, "PATH", str(tmp_path / "app"))
+    monkeypatch.setattr(info, "USER_PATH", str(tmp_path / "user"))
+    assert engine_bridge.bridge_setting() == "auto" and engine_bridge.bridge_mode() == ""
     editor.settings["engine-bridge"] = "server"
     assert engine_bridge.bridge_mode() == "server"
     editor.settings["engine-bridge"] = "off"

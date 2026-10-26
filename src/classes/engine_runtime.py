@@ -29,8 +29,10 @@ Where the CLI comes from (:func:`source`): ``ZENVI_ENGINE_SOURCE``, else the
 
 Either way the CLI is started once before it is installed and must answer
 this desktop's protocol, so a mismatched build is refused, never half used.
-Everything is staged next to its destination and swapped in at the end: a
-failed, cancelled or refused install leaves the previous runtime untouched.
+Remote sources must be https (http only from this computer). Everything is
+staged next to its destination and swapped in at the end: a failed,
+cancelled or refused install leaves the previous CLI untouched (a Node it
+downloaded first stays: it is complete and checked on its own).
 
 Nothing here imports Qt and every function blocks (network, disk, Node):
 call it off the GUI thread. ``windows/engine_runtime_dialog.py`` is the UI.
@@ -168,16 +170,21 @@ def install(src: Optional[str] = None, progress: Optional[Progress] = None,
             report("Checking the zenvi CLI", 0, 0)
             version = _check_cli(node, os.path.join(cli_dir, engine_bridge.CLI_NAME))
             _check(cancel)
+            # A running bridge holds the old build (Windows cannot move it then); the next call starts the new one.
+            engine_bridge.set_client(None)
             _swap_in(cli_dir, engine_bridge.managed_cli_dir())
             _write_runtime({"cli": {"version": release.get("version") or version, "protocol": engine_bridge.PROTOCOL,
                                     "source": src, "sha256": release.get("sha256", ""),
                                     "installed": time.strftime("%Y-%m-%dT%H:%M:%S")}})
+        except RuntimeInstallError:
+            raise
+        except OSError as exc:
+            # A full disk, a folder that cannot be written: what is installed stays as it was.
+            raise RuntimeInstallError(f"Could not install Zenvi engine tools into {home()}: {exc}") from exc
         finally:
             shutil.rmtree(staging, ignore_errors=True)
     finally:
         _install_lock.release()
-    # A running bridge holds the old build; the next call starts the new one.
-    engine_bridge.set_client(None)
     engine_bridge.forget_node_versions()
     log.info("Zenvi engine tools installed from %s", src)
     return status(env)
@@ -192,6 +199,12 @@ def _is_url(text: str) -> bool:
     return urllib.parse.urlparse(text).scheme in ("http", "https", "file")
 
 
+def _plain_http_elsewhere(url: str) -> bool:
+    """http:// to another computer: the manifest names the archive and its checksum, so it must come over TLS."""
+    parsed = urllib.parse.urlparse(url)
+    return parsed.scheme == "http" and parsed.hostname not in ("localhost", "127.0.0.1", "::1")
+
+
 def _resolve(src: str, report: Progress, cancel: threading.Event) -> dict:
     """The release to install: {"version", "url", "sha256", "size"} or, for a local build, {"path"}."""
     if not _is_url(src) and not src.lower().endswith(".json"):
@@ -202,6 +215,8 @@ def _resolve(src: str, report: Progress, cancel: threading.Event) -> dict:
                                       f"{engine_bridge.CLI_NAME} (zenvi-web: npm run build -w @zenvi/cli)")
         return {"path": folder}
     url = src if _is_url(src) else Path(os.path.abspath(os.path.expanduser(src))).as_uri()
+    if _plain_http_elsewhere(url):
+        raise RuntimeInstallError(f"{src}: Zenvi engine tools are only downloaded over https (or from this computer)")
     report("Reading the Zenvi engine tools release list", 0, 0)
     try:
         manifest = json.loads(_read(url, cancel))
@@ -218,7 +233,10 @@ def _resolve(src: str, report: Progress, cancel: threading.Event) -> dict:
             f"{src} has no zenvi CLI for this Zenvi (bridge protocol {engine_bridge.PROTOCOL}; it offers "
             f"{', '.join(spoken) or 'none'}): update Zenvi, or point the source at a matching build")
     best = max(usable, key=lambda r: _version_key(str(r.get("version") or "")))
-    return dict(best, url=urllib.parse.urljoin(url, str(best["url"])))
+    archive = urllib.parse.urljoin(url, str(best["url"]))
+    if _plain_http_elsewhere(archive):
+        raise RuntimeInstallError(f"{archive}: Zenvi engine tools are only downloaded over https (or from this computer)")
+    return dict(best, url=archive)
 
 
 def _version_key(version: str) -> tuple:

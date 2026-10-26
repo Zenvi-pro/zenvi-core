@@ -13,10 +13,13 @@ import threading
 from typing import Optional
 
 from qt_api import Qt, QThread, pyqtSignal
-from qt_api import QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout
+from qt_api import QDialog, QHBoxLayout, QLabel, QLayout, QProgressBar, QPushButton, QVBoxLayout
 
 from classes.app import get_app
 from classes.logger import log
+
+
+TEXT_WIDTH = 520
 
 
 class _RuntimeWorker(QThread):
@@ -55,21 +58,23 @@ class EngineRuntimeDialog(QDialog):
         super().__init__(parent)
         _ = get_app()._tr
         self.setWindowTitle(_("Zenvi Engine Tools"))
-        self.setMinimumWidth(520)
         self._worker: Optional[_RuntimeWorker] = None
         self._status: dict = {}
 
         root = QVBoxLayout(self)
+        root.setSizeConstraint(QLayout.SetFixedSize)
         intro = QLabel(_("Zenvi engine tools (motion blocks, 3D scenes, FX, new edits) run in the Zenvi engine: "
                          "Node.js and the zenvi CLI, downloaded once into Zenvi's settings folder. "
                          "Nothing outside that folder is changed."))
         intro.setWordWrap(True)
+        self._intro = intro
         root.addWidget(intro)
         self._label = QLabel(_("Checking what is installed..."))
         self._label.setWordWrap(True)
         self._label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         root.addWidget(self._label)
         self._progress_text = QLabel("")
+        self._progress_text.setWordWrap(True)
         self._progress = QProgressBar()
         self._progress_text.hide()
         self._progress.hide()
@@ -89,6 +94,7 @@ class EngineRuntimeDialog(QDialog):
         for button in (self._install_btn, self._cancel_btn, self._close_btn):
             buttons.addWidget(button)
         root.addLayout(buttons)
+        self._fit()
         self._run(install=False)
 
     # -- worker ---------------------------------------------------------------
@@ -139,6 +145,7 @@ class EngineRuntimeDialog(QDialog):
                                "or not, none is listed until that is turned back on.")
         self._label.setText(text)
         self._install_btn.setEnabled(bool(source))
+        self._fit()
 
     # -- install --------------------------------------------------------------
     def start_install(self) -> None:
@@ -150,6 +157,7 @@ class EngineRuntimeDialog(QDialog):
         self._cancel_btn.setEnabled(True)
         self._cancel_btn.show()
         self._progress_text.setText(_("Starting..."))
+        self._fit()
         self._progress_text.show()
         self._progress.setRange(0, 0)
         self._progress.show()
@@ -171,6 +179,7 @@ class EngineRuntimeDialog(QDialog):
         else:
             self._progress.setRange(0, 0)
         self._progress_text.setText(text)
+        self._fit()
 
     def _on_installed(self, status: dict) -> None:
         from classes import engine_bridge, tool_handlers
@@ -188,7 +197,14 @@ class EngineRuntimeDialog(QDialog):
         self._progress.hide()
         self._progress_text.setText(message)
         self._progress_text.show()
+        self._fit()
         self._install_btn.setEnabled(bool(self._status.get("source")) or not self._status)
+
+    def _fit(self) -> None:
+        # Wrapped labels report no useful minimum height: size them for their text, the dialog follows.
+        for label in (self._intro, self._label, self._progress_text):
+            label.setFixedWidth(TEXT_WIDTH)
+            label.setMinimumHeight(label.heightForWidth(TEXT_WIDTH))
 
     # -- closing --------------------------------------------------------------
     def reject(self) -> None:

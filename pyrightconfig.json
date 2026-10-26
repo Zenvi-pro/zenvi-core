@@ -11,6 +11,8 @@
     "src/classes/conversion.py",
     "src/classes/emoji_catalog.py",
     "src/classes/encoder_trial.py",
+    "src/classes/engine_bridge.py",
+    "src/classes/engine_runtime.py",
     "src/classes/export_acceleration/hw_encode.py",
     "src/classes/ffmpeg_cli.py",
     "src/classes/headless.py",

@@ -277,3 +277,10 @@ def test_an_unknown_tool_says_where_engine_tools_come_from_while_none_is_listed(
     monkeypatch.setenv("ZENVI_ENGINE_BRIDGE", "off")
     receipt = json.loads(tool_handlers.execute_tool("add_motion_block_tool", {}))
     assert receipt["summary"].endswith("Unknown tool 'add_motion_block_tool'.")
+
+
+def test_a_remote_source_must_be_https(runtime):
+    rt = runtime.module
+    with pytest.raises(rt.RuntimeInstallError, match="only downloaded over https"):
+        rt.install("http://releases.example.com/engine-cli.json")
+    assert runtime.downloads == []
