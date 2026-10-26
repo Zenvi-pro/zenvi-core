@@ -344,3 +344,13 @@ def test_a_lower_source_landing_on_an_existing_track_does_not_call_it_new(ed, to
     assert needle in head and "new track" not in head, out
     assert _numbers(ed)[5:] == [6000000, 7000000]
     assert ed.undo_steps_since_mark() == 1
+
+
+def test_text_on_a_card_stays_vertically_centred_when_the_font_is_scaled(tt):
+    from classes import title_svg
+    rec = receipt(tt.call("add_title_tool", template="Solid_Color", text="DOUBT", font_scale=2.5))
+    doc = title_svg.load(rec["path"])
+    line = title_svg.line_nodes(doc)[0]
+    size = float(line.getAttribute("style").split("font-size:")[1].split("px")[0])
+    assert size == 400 and abs(float(line.getAttribute("y")) - (540 + 0.36 * size)) < 1e-6
+    assert float(line.parentNode.getAttribute("y")) == float(line.getAttribute("y"))

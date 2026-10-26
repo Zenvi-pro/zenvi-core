@@ -473,6 +473,7 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
     doc = _load_doc(path)
     slots = title_svg.fields(doc)
     warnings = []
+    card = ""
     if not slots and given:
         # Agents name Solid_Color for "this text on a coloured frame": draw the text on a text template over the card's colour.
         card, (card_colour, card_alpha) = name, title_svg.background_color(doc)
@@ -510,6 +511,8 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
         if slot.index in values:
             title_svg.set_field_text(doc, slot, values[slot.index])
     style_info = style.apply(doc, families)
+    if card:
+        title_svg.center_lines(doc)
     fitted = _fit(doc, slots, style)
     zone = title_svg.text_zone(slots, title_svg.artboard_size(doc)[1])
     pos_key = ZONE_POSITION.get(zone if screen_position == "auto" else screen_position, "center")
