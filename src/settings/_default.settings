@@ -1633,12 +1633,20 @@
   },
   {
     "category": "AI",
-    "title": "Zenvi Engine Tools (experimental, through the zenvi CLI)",
+    "title": "Zenvi Engine Tools (through the zenvi CLI)",
     "setting": "engine-bridge",
-    "value": "off",
+    "value": "auto",
     "type": "dropdown",
-    "values": [{"value": "off", "name": "Off"}, {"value": "server", "name": "On"}, {"value": "oneshot", "name": "On, one process per call"}],
+    "values": [{"value": "auto", "name": "On when installed"}, {"value": "off", "name": "Off"}, {"value": "server", "name": "On"}, {"value": "oneshot", "name": "On, one process per call"}],
     "restart": true
+  },
+  {
+    "category": "AI",
+    "title": "Zenvi Engine Tools Source (release manifest URL, or a zenvi CLI build folder)",
+    "setting": "engine-runtime-source",
+    "value": "",
+    "type": "text",
+    "restart": false
   },
   {
     "category": "AI",

@@ -83,11 +83,20 @@ def test_the_catalog_is_read_off_the_gui_thread_and_listed_when_it_arrives(edito
     assert {"add_motion_template_tool", "rerender_linked_clip_tool"} <= names
 
 
-def test_nothing_is_registered_or_started_while_the_bridge_is_off(monkeypatch):
+def test_nothing_is_registered_or_started_while_the_bridge_is_off(tmp_path, monkeypatch):
+    from classes import info
     from classes.editor_tools import engine_bridge as bridged
 
-    monkeypatch.delenv("ZENVI_ENGINE_BRIDGE", raising=False)
+    monkeypatch.setenv("ZENVI_ENGINE_BRIDGE", "off")
     assert bridged.register_in_background(set, lambda handlers: pytest.fail("installed")) is None
+    # Auto (the default) without the runtime: looked for on the worker thread, nothing listed.
+    monkeypatch.delenv("ZENVI_ENGINE_BRIDGE")
+    monkeypatch.setattr(info, "PATH", str(tmp_path / "app"))
+    monkeypatch.setattr(info, "USER_PATH", str(tmp_path / "user"))
+    monkeypatch.delenv("ZENVI_ENGINE_CLI", raising=False)
+    thread = bridged.register_in_background(set, lambda handlers: pytest.fail("installed"))
+    thread.join(10)
+    assert not thread.is_alive()
 
 
 # -- running ---------------------------------------------------------------------
@@ -306,9 +315,17 @@ def test_the_cli_is_the_named_one_else_the_bundled_one(tmp_path, monkeypatch):
     with pytest.raises(engine_bridge.BridgeUnavailable, match="ZENVI_ENGINE_CLI") as missing:
         engine_bridge.find_cli({})
     assert os.path.join(str(tmp_path / "app"), "engine", "zenvi.mjs") in str(missing.value)
-    user_copy = tmp_path / "user" / "engine" / "zenvi.mjs"
+    user_copy = tmp_path / "user" / "engine" / "cli" / "zenvi.mjs"
     user_copy.parent.mkdir(parents=True)
     user_copy.write_text("//")
+    # The installed runtime's CLI counts only while it speaks this desktop's protocol.
+    with pytest.raises(engine_bridge.BridgeUnavailable, match="speaks bridge protocol None"):
+        engine_bridge.find_cli({})
+    runtime = tmp_path / "user" / "engine" / "runtime.json"
+    runtime.write_text(json.dumps({"cli": {"protocol": engine_bridge.PROTOCOL - 1}}))
+    with pytest.raises(engine_bridge.BridgeUnavailable, match="update it"):
+        engine_bridge.find_cli({})
+    runtime.write_text(json.dumps({"cli": {"protocol": engine_bridge.PROTOCOL}}))
     assert engine_bridge.find_cli({}) == str(user_copy)
     bundled = tmp_path / "app" / "engine" / "zenvi.mjs"
     bundled.parent.mkdir(parents=True)
