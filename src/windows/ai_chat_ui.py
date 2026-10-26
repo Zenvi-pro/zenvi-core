@@ -1022,6 +1022,7 @@ class AIChatWindow(QDockWidget):
         self._attachment_undo_stack = []
         self._dictation = None
         self._dictation_take = 0                   # numbers each take; words from an older one are dropped
+        self._dictation_open = False               # a take's words may still be written into the shared box
         self.dictation_heard.connect(self._on_dictation_heard)
         self.dictation_failed.connect(self._on_dictation_failed)
         self._dictation_download = ""
@@ -1462,7 +1463,6 @@ class AIChatWindow(QDockWidget):
 
     def _reopen_closed_session(self, session_id: str):
         """Restore a soft-deleted chat as an open tab and switch to it."""
-        self._abandon_dictation()                   # the shared prompt box changes chats
         if not session_id:
             return
         if session_id in self._sessions:
@@ -1474,6 +1474,7 @@ class AIChatWindow(QDockWidget):
         entry = next((r for r in rows if r.get("session_id") == session_id), None)
         if not entry:
             return
+        self._abandon_dictation()                   # the shared prompt box changes chats
         backend = _coerce_backend(entry.get("backend"))
         worker, thread = self._make_worker(session_id, backend, restore=entry)
         title = entry.get("title") or "New Chat"
@@ -1553,7 +1554,6 @@ class AIChatWindow(QDockWidget):
         if none exist).  No backend memory is cleared — old conversations
         remain reachable when the original project is reopened.
         """
-        self._abandon_dictation()                   # the shared prompt box changes chats
         try:
             from classes import chat_history
 
@@ -1567,6 +1567,7 @@ class AIChatWindow(QDockWidget):
                 # ``new_project_path`` (New Project / untitled) is allowed to
                 # fall through so the chat resets to a fresh session.
                 return
+            self._abandon_dictation()               # the shared prompt box changes chats
 
             # Resolve the new bucket first: this is what forks a Save As and
             # adopts a project whose id churned underneath us.
@@ -1711,10 +1712,10 @@ class AIChatWindow(QDockWidget):
         Unlike ``reload_for_project("")`` (File → New), this keeps the prior
         draft conversations instead of minting a fresh empty bucket.
         """
-        self._abandon_dictation()                   # the shared prompt box changes chats
         draft_key = (draft_key or "").strip()
         if not draft_key.startswith("draft:"):
             return
+        self._abandon_dictation()                   # the shared prompt box changes chats
         try:
             from classes import chat_history
 
@@ -2657,30 +2658,46 @@ class AIChatWindow(QDockWidget):
             self._on_dictation_failed(str(exc))
             return
         self._dictation = session
+        self._dictation_open = True
         self._run_js("if(window.setDictationState) window.setDictationState('listening');")
 
     def _abandon_dictation(self):
         """Another chat is about to show: stop the take, take its words back out of the shared box, and
-        drop whatever it still sends (queued signals included: the slots compare the take number)."""
-        if not getattr(self, "_dictation", None):
+        drop whatever it still sends (queued signals included: the slots compare the take number).
+
+        The recorder handle is already gone once the final transcript is queued and the page has not
+        painted it yet, so that gap counts too."""
+        if not getattr(self, "_dictation", None) and not getattr(self, "_dictation_open", False):
             return
         self._dictation_take += 1
-        self._dictation.stop()
-        self._dictation = None
+        self._dictation_open = False
+        if self._dictation:
+            self._dictation.stop()
+            self._dictation = None
         self._run_js("if(window.cancelDictation) window.cancelDictation();")
 
     def _on_dictation_heard(self, text, final, take=None):
         if take is not None and take != self._dictation_take:
             return                                  # an abandoned take's words
-        if final:
-            self._dictation = None
-        self._run_js("if(window.setDictationText) window.setDictationText(%s, %s);"
-                     % (json.dumps(text), "true" if final else "false"))
+        js = ("if(window.setDictationText) window.setDictationText(%s, %s);"
+              % (json.dumps(text), "true" if final else "false"))
+        if not final:
+            self._run_js(js)
+            return
+        self._dictation = None
+
+        def settled(_result=None, take=take):
+            if take == self._dictation_take:        # still this chat: the words belong in the box
+                self._dictation_open = False
+                self._run_js("if(window.commitDictation) window.commitDictation();")
+
+        self._run_js(js, settled)
 
     def _on_dictation_failed(self, message, take=None):
         if take is not None and take != self._dictation_take:
             return
         self._dictation = None
+        self._dictation_open = False
         log.warning("Dictation failed: %s", message)
         self._run_js("if(window.setDictationState) window.setDictationState('off', %s);"
                      % json.dumps("Dictation failed: " + message))

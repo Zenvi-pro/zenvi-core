@@ -75,7 +75,8 @@ _SCENE_BANNED_ATTRS = {"os", "sys", "subprocess", "shutil", "socket", "pathlib",
                        "ctypes", "system", "popen", "spawnv", "urllib", "request", "requests", "http"}
 # numpy reads and writes files, and unpickling with np.load runs code: banned as names and as attributes.
 _NUMPY_IO = {"load", "save", "savez", "savez_compressed", "savetxt", "loadtxt", "genfromtxt", "fromfile",
-             "tofile", "memmap", "DataSource", "lib", "ctypeslib", "f2py", "testing"}
+             "tofile", "memmap", "DataSource", "lib", "ctypeslib", "f2py", "testing",
+             "fromregex", "recfromtxt", "recfromcsv", "dump"}
 _SCENE_BANNED_NAMES |= _NUMPY_IO
 _SCENE_BANNED_ATTRS |= _NUMPY_IO
 # What a scene process sees of the editor's environment: enough to find the system, never its tokens or keys.

@@ -397,6 +397,7 @@ class _Dock:
         self.js, self.pending = [], []
         self._dictation = None
         self._dictation_take = 0
+        self._dictation_open = False
         self.dictation_heard = MagicMock()
         self.dictation_failed = MagicMock()
         self.installed = threading.Event()
@@ -631,7 +632,7 @@ var window = {};
 function setTimeout() {}
 function adjustTextareaHeight() {}
 function hideOverlay() {}
-var dictationState = 'off', dictationPrefix = '', modePlaceholder = '';
+var dictationState = 'off', dictationPrefix = '', dictationSaved = '', dictationUncommitted = false, modePlaceholder = '';
 %s
 %s
 var out = {};
@@ -711,3 +712,86 @@ def test_switching_chat_tabs_stops_the_take_and_drops_its_words(dock, monkeypatc
     assert not dock.js[written:] and dock._dictation is takes[1]     # nothing written, B still running
     takes[1].on_text("words for chat B", True)
     assert 'setDictationText("words for chat B", true)' in dock.js[-1] and dock._dictation is None
+
+
+def test_switching_while_the_words_are_finishing_still_drops_them(dock, monkeypatch):
+    # The final clears the recorder before the page paints, so a tab switch in that gap must still cancel.
+    takes = []
+
+    class FakeSession:
+        def __init__(self, on_text, on_error):
+            self.on_text, self.on_error, self.stopped = on_text, on_error, False
+            takes.append(self)
+
+        def start(self):
+            pass
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(dictation, "wispr_flow_installed", lambda *a: False)
+    monkeypatch.setattr(dictation, "Dictation", FakeSession)
+    dock.dictation_heard.emit.side_effect = lambda *args: dock._on_dictation_heard(*args)
+    dock.toggle_dictation()
+    takes[0].on_text("words for chat A", True)
+    assert dock._dictation is None
+    dock._abandon_dictation()
+    assert "cancelDictation" in dock.js[-1]
+
+
+def test_a_switch_that_does_not_change_the_chat_keeps_the_take(dock):
+    import types
+
+    from windows.ai_chat_ui import AIChatWindow
+
+    calls = []
+    dock._abandon_dictation = lambda: calls.append(1)
+    dock._sessions = {"a": {}}
+    dock._active_sid = "a"
+    dock._current_project_path = r"C:\film.zvn"
+    dock._history_key = "k"
+    for name in ("reload_for_project", "restore_draft", "_reopen_closed_session", "_switch_session"):
+        setattr(dock, name, types.MethodType(getattr(AIChatWindow, name), dock))
+    dock.reload_for_project(r"C:\film.zvn")
+    dock.restore_draft("not-a-draft")
+    dock._reopen_closed_session("")
+    dock._reopen_closed_session("a")
+    assert calls == []
+
+
+def test_cancelling_a_take_puts_back_the_exact_text(dock):
+    """Listening inserts a trailing space so words join on; cancel must not keep that space."""
+    import shutil
+    import subprocess
+    from pathlib import Path
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not on PATH")
+    src = (Path(__file__).resolve().parents[1] / "src" / "chat_ui" / "chat.js").read_text(encoding="utf-8")
+
+    def cut(start, end):
+        i = src.index(start)
+        return src[i:src.index(end, i) + len(end)]
+
+    script = _MIC_HARNESS.split("var out")[0] % (
+        cut("window.setDictationState = function", "\n    };"),
+        cut("window.setDictationText = function", "\n    };"),
+    )
+    script += cut("window.cancelDictation = function", "\n    };")
+    script += r"""
+var out = {};
+inputEl.value = 'hello';
+window.setDictationState('listening');
+window.cancelDictation();
+out.mid = inputEl.value;
+inputEl.value = 'hello';
+window.setDictationState('listening');
+window.setDictationText('there', true);
+window.cancelDictation();
+out.after = inputEl.value;
+console.log(JSON.stringify(out));
+"""
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert out["mid"] == "hello" and out["after"] == "hello"

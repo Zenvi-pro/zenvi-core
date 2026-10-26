@@ -2305,6 +2305,8 @@
     const micBtn = document.getElementById('chat-mic-btn');
     let dictationState = 'off';
     let dictationPrefix = '';
+    let dictationSaved = '';      // the box exactly as it was, before listening added a joining space
+    let dictationUncommitted = false;
     let modePlaceholder = '';     // the Plan/Agent placeholder, put back after a take
 
     function toggleDictation() {
@@ -2317,7 +2319,9 @@
         if (!micBtn) return;
         if (state === 'hearing' && dictationState === 'off') return;   // ended by typing or sending
         if (state === 'listening' && dictationState === 'off') {
+            dictationSaved = inputEl.value;
             dictationPrefix = inputEl.value ? inputEl.value.replace(/\s*$/, ' ') : '';
+            dictationUncommitted = true;
             modePlaceholder = inputEl.placeholder;
         }
         dictationState = state;
@@ -2342,7 +2346,7 @@
     };
 
     window.setDictationText = function (text, final) {
-        if (dictationState === 'off') return;           // the user typed or sent meanwhile: their text wins
+        if (!dictationUncommitted || dictationState === 'off') return;   // typed, sent, or another chat
         inputEl.value = dictationPrefix + (text || '');
         adjustTextareaHeight();
         if (inputEl.value.trim()) hideOverlay();
@@ -2353,11 +2357,17 @@
     };
 
     // Another chat is showing: the box is shared, so the take's words go and what was typed before stays.
+    // This still applies after the final transcript, until commitDictation, because the page paints it late.
     window.cancelDictation = function () {
-        if (dictationState === 'off') return;
-        inputEl.value = dictationPrefix;
+        if (!dictationUncommitted) return;
+        dictationUncommitted = false;
+        inputEl.value = dictationSaved;
         adjustTextareaHeight();
-        window.setDictationState('off');
+        if (dictationState !== 'off') window.setDictationState('off');
+    };
+
+    window.commitDictation = function () {
+        dictationUncommitted = false;
     };
 
     // Typing or sending ends the take; a transcript arriving later is dropped.

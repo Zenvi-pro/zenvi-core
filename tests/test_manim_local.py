@@ -115,6 +115,10 @@ def test_render_refuses_what_is_not_a_scene_in_the_project(home, monkeypatch):
     "from numpy.lib.format import open_memmap",
     "from numpy import ctypeslib",
     "import manim.utils.file_ops",
+    "import numpy as np\nnp.fromregex('C:/secrets.txt', '.', [('', 'i')])",
+    "from numpy import recfromtxt",
+    "import numpy as np\nnp.recfromcsv('C:/secrets.txt')",
+    "import numpy as np\nnp.array([1]).dump('C:/Users/me/out.pkl')",
 ])
 def test_a_scene_that_reaches_beyond_drawing_is_refused_before_it_runs(home, monkeypatch, body):
     _fake_private_install(home)
