@@ -48,9 +48,9 @@ class _SearchWorker(QObject):
 
 class _DownloadWorker(QObject):
     """Downloads a single Freesound MP3 preview on a background thread."""
-    finished = pyqtSignal(int, str, str)   # sound_id, local_path, error
+    finished = pyqtSignal(object, str, str)   # sound_id (Openverse UUID), local_path, error
 
-    def __init__(self, sound_id: int, preview_url: str, filename: str):
+    def __init__(self, sound_id, preview_url: str, filename: str):
         super().__init__()
         self._sound_id = sound_id
         self._preview_url = preview_url
@@ -158,7 +158,8 @@ class _SoundCard(QFrame):
         name = sound.get("name", "")
         username = sound.get("username", "")
         tags = ", ".join((sound.get("tags") or [])[:5])
-        self.setToolTip(f"{name}\nBy: {username}\n{self._dur_text}\nTags: {tags}")
+        credit = sound.get("attribution") or sound.get("license", "")
+        self.setToolTip(f"{name}\nBy: {username}\n{self._dur_text}\nTags: {tags}\n{credit}")
 
     def set_waveform(self, pix: QPixmap):
         self._waveform = pix.scaled(CARD_W, CARD_MEDIA_H, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
