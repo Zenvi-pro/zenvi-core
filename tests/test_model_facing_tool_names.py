@@ -98,6 +98,7 @@ def test_model_facing_text_never_names_the_backend_only_stock_music_workflow():
     for where, text in (("edit playbook", PLAYBOOK), ("audition_music_tool", audition)):
         assert 'run_tool(name="import_stock_media_tool", args={"source": "freesound", "sound_id"' in text, where
         assert "add_clips_to_timeline_tool" in text and "source_start" in text, where
+        assert '"source_end"' in text and "start_seconds=<" in text, where  # a section, placed where it belongs
 
 
 def test_a_stock_import_receipt_points_at_the_listed_placement_tool():
