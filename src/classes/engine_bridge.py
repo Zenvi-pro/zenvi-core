@@ -85,6 +85,9 @@ class EngineBridgeClient:
     def tools(self) -> list:
         """The engine catalog as the bridge runs it (``zenvi bridge --tools``)."""
         out = self._run_once(["bridge", "--tools"], CATALOG_TIMEOUT_SECONDS)
+        if out.get("protocol") != PROTOCOL:
+            raise BridgeUnavailable(
+                f"the zenvi CLI speaks bridge protocol {out.get('protocol')}, this desktop {PROTOCOL}")
         tools = out.get("tools")
         if not isinstance(tools, list):
             raise BridgeUnavailable("the CLI listed no tools")

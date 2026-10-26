@@ -88,7 +88,7 @@ def serve():
 def main(argv):
     if argv[:1] == ["bridge"] and "--tools" in argv:
         log({"catalog": True})
-        print(json.dumps({"engine_version": "fake", "tools": TOOLS}))
+        print(json.dumps({"protocol": int(os.environ.get("FAKE_ZENVI_PROTOCOL", "1")), "engine_version": "fake", "tools": TOOLS}))
     elif argv[:1] == ["bridge"]:
         serve()
     elif argv[:1] == ["tool-run"]:

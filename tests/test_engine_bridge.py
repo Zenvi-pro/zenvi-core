@@ -132,6 +132,8 @@ def test_a_cli_speaking_another_protocol_is_refused(monkeypatch):
     client = engine_bridge.EngineBridgeClient(sys.executable, FAKE, "server", timeout=30)
     with pytest.raises(engine_bridge.BridgeUnavailable, match="protocol 99"):
         client.run("add_motion_template_tool", {}, "{}", "/tmp/x.zvn")
+    with pytest.raises(engine_bridge.BridgeUnavailable, match="protocol 99"):
+        client.tools()
     client.close()
 
 
