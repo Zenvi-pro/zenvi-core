@@ -94,6 +94,17 @@ def execute_tool(tool_name: str, tool_args: dict) -> str:
     return execute_tool_rich(tool_name, tool_args).receipt.to_json()
 
 
+def _engine_hint() -> str:
+    """For an unknown tool while no engine tool is listed: where engine tools come from (in memory only)."""
+    from classes import engine_bridge as runtime
+    from classes.editor_tools import engine_bridge
+
+    if engine_bridge.BRIDGED or runtime.bridge_setting() == "off":
+        return ""
+    return (" If it is a Zenvi engine tool: engine tools are not installed on this computer; "
+            f"{runtime.INSTALL_HINT}. Ask the user to install them, then try again.")
+
+
 def execute_tool_rich(tool_name: str, tool_args: dict):
     """Execute a tool; return ToolOutput (receipt + optional images)."""
     from fractions import Fraction as Fr
@@ -116,7 +127,7 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
 
     handler = _HANDLERS.get(tool_name)
     if not handler:
-        out = ToolOutput(receipt=ToolReceipt.error(tool_name, f"Unknown tool '{tool_name}'."))
+        out = ToolOutput(receipt=ToolReceipt.error(tool_name, f"Unknown tool '{tool_name}'.{_engine_hint()}"))
         set_last_output(out)
         return out
 

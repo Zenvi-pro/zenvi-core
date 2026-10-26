@@ -263,3 +263,17 @@ def test_the_packaging_script_makes_a_release_the_desktop_installs(runtime, tmp_
     assert manifest["releases"][0]["protocol"] == runtime.bridge.PROTOCOL
     status = runtime.module.install(str(out / "engine-cli.json"))
     assert status["ready"] and status["cli_version"] == "0.5.0"
+
+
+def test_an_unknown_tool_says_where_engine_tools_come_from_while_none_is_listed(monkeypatch):
+    from classes import tool_handlers
+    from classes.editor_tools import engine_bridge as bridged
+
+    monkeypatch.setattr(bridged, "BRIDGED", {})
+    monkeypatch.setenv("ZENVI_ENGINE_BRIDGE", "auto")
+    receipt = json.loads(tool_handlers.execute_tool("add_motion_block_tool", {}))
+    assert "Unknown tool 'add_motion_block_tool'" in receipt["summary"]
+    assert "AI Tools > Zenvi Engine Tools... installs them" in receipt["summary"]
+    monkeypatch.setenv("ZENVI_ENGINE_BRIDGE", "off")
+    receipt = json.loads(tool_handlers.execute_tool("add_motion_block_tool", {}))
+    assert receipt["summary"].endswith("Unknown tool 'add_motion_block_tool'.")
