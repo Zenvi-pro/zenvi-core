@@ -69,6 +69,9 @@ def test_install_shows_progress_lists_the_tools_and_runs_off_the_gui_thread(dial
     dlg._install_btn.click()
     assert _wait(lambda: "1.0 of 4.2 MB" in dlg._progress_text.text())
     assert not dlg._close_btn.isEnabled()
+    # The status check's queued end, delivered only now, leaves the running install alone.
+    dlg._on_worker_done(MagicMock())
+    assert dlg._busy() and not dlg._close_btn.isEnabled()
     dlg.reject()                                    # closing while installing cancels instead
     assert _wait(lambda: dlg._progress_text.text() == "Cancelled: nothing was installed")
     assert _wait(lambda: dlg._worker is None) and dlg._close_btn.isEnabled() and calls.refreshed == 0

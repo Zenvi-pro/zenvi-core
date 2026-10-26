@@ -103,14 +103,17 @@ class EngineRuntimeDialog(QDialog):
         worker.progressed.connect(self._on_progress)
         worker.finished_ok.connect(self._on_status if not install else self._on_installed)
         worker.finished_err.connect(self._on_error)
-        worker.finished.connect(self._on_worker_done)
+        # Queued: a status check's end can arrive after an install started; it only clears its own worker.
+        worker.finished.connect(lambda: self._on_worker_done(worker))
         self._worker = worker
         worker.start()
 
     def _busy(self) -> bool:
         return self._worker is not None and self._worker.isRunning()
 
-    def _on_worker_done(self) -> None:
+    def _on_worker_done(self, worker: _RuntimeWorker) -> None:
+        if worker is not self._worker:
+            return
         self._worker = None
         self._cancel_btn.hide()
         self._close_btn.setEnabled(True)
