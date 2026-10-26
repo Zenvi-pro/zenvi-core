@@ -233,6 +233,20 @@ def resolve_layer(track: Any) -> int:
     return int(layer)
 
 
+def resolve_placement_layer(track: Any) -> tuple:
+    """(layer number, new tracks): resolve_layer, or up to three tracks past the top to add
+    (track_display.resolve_placement_track)."""
+    from classes.track_display import resolve_placement_track
+    if track is None or not str(track).strip():
+        raise ToolError("a track is required (UI track number, name, or layer number)")
+    layer, err, new_tracks = resolve_placement_track(str(track).strip(), layers())
+    if err:
+        raise ToolError(err)
+    if layer is None:
+        raise ToolError(f"no track matches {track!r}")
+    return int(layer), int(new_tracks)
+
+
 def track_label(layer_num: int) -> str:
     from classes.track_display import format_track_label_for_llm
     return format_track_label_for_llm(int(layer_num), layers())

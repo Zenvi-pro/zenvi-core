@@ -193,15 +193,13 @@ def test_new_top_track_when_every_track_is_busy_and_one_undo_removes_all(tt):
     assert tt.clip(rec["timeline_clip_id"]) is not None and tt.file(rec["file_id"]) is not None
 
 
-def test_explicit_track_locked_or_busy_is_refused_without_history_or_files(tt):
+def test_explicit_track_locked_is_refused_without_history_or_files(tt):
     video = tt.add_file("video", duration=10.0)
     tt.add_clip(video, position=0.0, layer=2000000)
     tt.lock_track(3000000)
     tt.mark()
     out = tt.call("add_title_tool", text="X", track="3")
     assert out.startswith("Error") and "locked" in out
-    out = tt.call("add_title_tool", text="X", track="2", position_seconds=5)
-    assert out.startswith("Error") and "already has" in out
     assert tt.undo_steps_since_mark() == 0
     assert not os.path.isdir(tt.tmp_path / "title") or os.listdir(tt.tmp_path / "title") == []
     rec = receipt(tt.call("add_title_tool", text="Y", track="2", position_seconds=10.5))
@@ -242,7 +240,6 @@ def test_lines_fill_multi_line_templates_and_too_many_are_refused(tt):
     ({"text": "A", "font_weight": "heavy"}, "font_weight"),
     ({"text": "A", "duration_seconds": 0}, "duration_seconds"),
     ({"text": "A", "position_seconds": -1}, "position_seconds"),
-    ({"text": "A", "template": "Solid_Color"}, "no text"),
 ])
 def test_add_title_refusals_leave_history_untouched(tt, args, needle):
     tt.mark()

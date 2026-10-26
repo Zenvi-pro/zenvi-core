@@ -14,7 +14,7 @@ from classes.editor_tools.titles_text_common import (
     commit_on_main, precheck_on_main,
     GRAVITY, SCREEN_POSITIONS, color_hex_alpha, color_keyframes, constant, create_track, fresh_effect,
     installed_font_families, new_effect_json, overlay_file, overlay_file_path, place_clip,
-    plan_overlay_track, project_size, resolve_font, track_info,
+    plan_overlay_track, project_size, resolve_font, track_info, warning_note, warnings_field,
 )
 
 TIMER_ROLE = "timer"
@@ -192,8 +192,10 @@ def add_timer(mode="count_down", position_seconds=0.0, duration_seconds=0.0, cou
     end = position + duration
     carrier = overlay_file_path(w, h)
 
+    moved = []
+
     def _commit():
-        layer, created = plan_overlay_track(position, end, track)
+        layer, created = plan_overlay_track(position, end, track, moved=moved)
         f = overlay_file(carrier)
         if created:
             create_track(layer, "Timer")
@@ -210,8 +212,8 @@ def add_timer(mode="count_down", position_seconds=0.0, duration_seconds=0.0, cou
     t = track_info(layer)
     what = mode.replace("_", " ")
     summary = (f"Added a {what} timer on track {t['track']} at {position:.2f}-{end:.2f}s "
-               f"({screen_position.replace('_', ' ')}).")
-    return ok(summary, timeline_clip_id=clip.get("id"), effect_id=effect_id, overlay=True, mode=mode, format=format,
+               f"({screen_position.replace('_', ' ')}).{warning_note(moved)}")
+    return ok(summary, **warnings_field(moved), timeline_clip_id=clip.get("id"), effect_id=effect_id, overlay=True, mode=mode, format=format,
               position=round(position, 3), duration=round(duration, 3), end=round(end, 3),
               countdown_from=countdown_from_seconds or (duration if mode == "count_down" else 0),
               screen_position=screen_position, new_track=created, **t)
@@ -321,8 +323,10 @@ def add_emoji(emoji, group="", position_seconds=0.0, duration_seconds=0.0, scree
         "location_y": constant(round(y_off * float(margin) * short / h, 5)),
     }
 
+    moved = []
+
     def _commit():
-        layer, created = plan_overlay_track(position, end, track)
+        layer, created = plan_overlay_track(position, end, track, moved=moved)
         f = emoji_catalog.add_emoji_file(best.path, best.name)
         if created:
             create_track(layer, "Emoji")
@@ -337,9 +341,9 @@ def add_emoji(emoji, group="", position_seconds=0.0, duration_seconds=0.0, scree
         raise ToolError(f"could not add {best.name}: {exc}") from None
     t = track_info(layer)
     summary = (f"Added {best.char} {best.name} on track {t['track']} at {position:.2f}-{end:.2f}s "
-               f"({screen_position.replace('_', ' ')}, size {size:g}).")
+               f"({screen_position.replace('_', ' ')}, size {size:g}).{warning_note(moved)}")
     alternatives = [e.as_dict() for _, e in matches[1:6]]
-    return ok(summary, timeline_clip_id=clip.get("id"), file_id=file_id, emoji=best.as_dict(),
+    return ok(summary, **warnings_field(moved), timeline_clip_id=clip.get("id"), file_id=file_id, emoji=best.as_dict(),
               position=round(position, 3), duration=round(duration, 3), end=round(end, 3),
               screen_position=screen_position, size=size, new_track=created, alternatives=alternatives, **t)
 

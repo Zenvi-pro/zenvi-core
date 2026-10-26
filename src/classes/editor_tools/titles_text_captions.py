@@ -624,7 +624,7 @@ def add_captions(cues=None, srtPath="", clipId="", timeline_clip_id="", clip_que
         for c, ready in prepared:
             if c is None:
                 path, span_start, span_end = overlay
-                layer, created = plan_overlay_track(span_start, span_end, overlay_track)
+                layer, created = plan_overlay_track(span_start, span_end, overlay_track, moved=warnings)
                 f = overlay_file(path)
                 if created:
                     create_track(layer, "Captions")
