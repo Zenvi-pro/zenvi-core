@@ -84,7 +84,8 @@ RERENDER_TOOL = {
 
 
 def is_engine_kind(kind) -> bool:
-    return str(kind or "").strip().lower() in ENGINE_KINDS
+    # Exactly as rerender() looks the kind up: a spelling it would refuse is not an engine kind.
+    return isinstance(kind, str) and kind in ENGINE_KINDS
 
 
 def desktop_tools(bridged, existing) -> list:

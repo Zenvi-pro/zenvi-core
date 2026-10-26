@@ -77,6 +77,9 @@ def main() -> int:
     ap.add_argument("--engine-catalog", default="",
                     help="also list the engine-bridge tools of this catalog (zenvi bridge --tools JSON)")
     args = ap.parse_args()
+    # The manifest lists the catalog given, never a live bridge's: with ZENVI_ENGINE_BRIDGE set in the
+    # shell, importing tool_handlers would read the CLI's catalog on a thread into the same BRIDGED.
+    os.environ["ZENVI_ENGINE_BRIDGE"] = "off"
     text = json.dumps(build_manifest(args.engine_catalog), indent=1, sort_keys=True) + "\n"
     if args.check:
         try:
