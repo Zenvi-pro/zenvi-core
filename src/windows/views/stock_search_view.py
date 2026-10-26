@@ -244,6 +244,8 @@ class StockSearchView(QWidget):
         if not query:
             self.clear_stock()
             return
+        if query == self._query:
+            return
         self._query = query
         self._clear_grids()
         self._set_stock_visible(True)
@@ -255,6 +257,7 @@ class StockSearchView(QWidget):
 
     def clear_stock(self):
         """Hide and empty the stock sections (project files stay visible)."""
+        self._query = ""
         self._clear_grids()
         self._footage_status.setText("")
         self._music_status.setText("")

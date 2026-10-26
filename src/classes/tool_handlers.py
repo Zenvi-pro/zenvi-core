@@ -7951,10 +7951,9 @@ def download_freesound_music_tool(sound_id: str = "", preview_url: str = "", fil
     try:
         if not preview_url:
             return "Error: preview_url is required (from search_freesound_music_tool)."
-        try:
-            sid = int(sound_id)
-        except (ValueError, TypeError):
-            return f"Error: sound_id must be numeric Freesound ID, not '{sound_id}'."
+        sid = str(sound_id or "").strip()
+        if not sid:
+            return "Error: sound_id is required (from the music search result)."
 
         from classes.credits_client import charge_operation_on_success, check_operation
 
