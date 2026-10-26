@@ -59,9 +59,10 @@ from classes.editor_tools.timeline_edit_common import (
     title,
     tolerance,
     track_name,
+    track_numbers_bottom_up,
     transitions_between,
 )
-from classes.track_display import new_tracks_note
+from classes.track_display import added_tracks_notes, new_tracks_note
 
 _OVERLAP_ARG = boolean(
     "Let the result overlap other clips on the track (the receipt lists what it covers). Off by default: "
@@ -555,6 +556,8 @@ def move_clips(timeline_clip_ids=[], clip_query="", track="", scope="", position
             if abs(pos[item_id] - float(obj_.data.get("position") or 0.0)) > 1e-9:
                 moved_items[item_id] = (obj_, pos[item_id], int(obj_.data.get("layer") or 0))
 
+    named = layer_map[int(clips[0].data.get("layer") or 0)]
+    named_is_new = named not in set(track_numbers_bottom_up())
     if new_tracks:
         on_main(ensure_mapped_tracks, layer_map, timeout=HOP_TIMEOUT)
     moved, shifted = [], []
@@ -572,9 +575,10 @@ def move_clips(timeline_clip_ids=[], clip_query="", track="", scope="", position
     extend_timeline()
     refresh()
     first = moved[0]["to"] if moved else {}
-    summary = (f"Moved {len(moved)} clip(s) to {track_name(layer_map[next(iter(src_layers))])}"
-               f"{new_tracks_note(new_tracks)} at {first.get('position', 0):.2f} s" + (f"; {len(shifted)} later clip(s) shifted" if shifted else "")
-               + (f"; overlaps {len(hits)} clip(s)" if hits else "") + ".")
+    on_named, added = added_tracks_notes(new_tracks, named_is_new)
+    summary = (f"Moved {len(moved)} clip(s) to {track_name(named)}{on_named} at {first.get('position', 0):.2f} s"
+               + (f"; {len(shifted)} later clip(s) shifted" if shifted else "")
+               + (f"; overlaps {len(hits)} clip(s)" if hits else "") + added + ".")
     extra = {"new_tracks": new_tracks} if new_tracks else {}
     return ok(summary, moved=moved, shifted=sorted(shifted), overlaps=hits, ripple=bool(ripple), **extra)
 
@@ -992,6 +996,7 @@ def duplicate_clips(timeline_clip_ids=[], clip_query="", track="", scope="", pos
             batch_trans.append(new.id)
         return batch, batch_trans
 
+    layers_before = len(track_numbers_bottom_up())
     if new_tracks:
         on_main(ensure_mapped_tracks, layer_map, timeout=HOP_TIMEOUT)
     created, new_trans = [], []
@@ -1001,10 +1006,11 @@ def duplicate_clips(timeline_clip_ids=[], clip_query="", track="", scope="", pos
         new_trans += batch_trans
     on_main(_finish_edit, timeout=HOP_TIMEOUT)
     first = created[0][0]
+    on_first, added = added_tracks_notes(new_tracks, (first["track"] or 0) > layers_before)
     return ok(f"Made {int(copies)} cop{'y' if copies == 1 else 'ies'} of {len(clips)} clip(s); the first starts at "
-              f"{first['position']:.2f} s on track {first['track']}{new_tracks_note(new_tracks)}"
+              f"{first['position']:.2f} s on track {first['track']}{on_first}"
               + (f"; {len([i for i in shifted if isinstance(i, Clip)])} later clip(s) pushed" if shifted else "")
-              + (f"; overlaps {len(hits)} clip(s)" if hits else "") + ".",
+              + (f"; overlaps {len(hits)} clip(s)" if hits else "") + added + ".",
               copies=created, transition_ids=new_trans, shifted=shifted_receipt(shifted), overlaps=hits,
               **({"new_tracks": new_tracks} if new_tracks else {}))
 

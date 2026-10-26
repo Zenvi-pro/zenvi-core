@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- A solid colour card with one centred line of text. Original to Zenvi (written for add_title_tool: a word card such as DOUBT on a coloured frame). -->
+<svg
+   xmlns="http://www.w3.org/2000/svg"
+   width="1920"
+   height="1080"
+   id="svg2383"
+   version="1.0">
+  <g
+     id="layer1">
+    <rect
+       style="opacity:1;fill:#000000;fill-opacity:1;stroke:none"
+       id="rect3160"
+       width="1920"
+       height="1080"
+       x="0"
+       y="0"
+       rx="0"
+       ry="0" />
+    <text
+       x="960"
+       y="598"
+       id="text2395"
+       xml:space="preserve"
+       style="font-size:160px;font-style:normal;font-weight:bold;text-align:center;text-anchor:middle;line-height:125%;fill:#ffffff;fill-opacity:1;stroke:none;font-family:DejaVu Sans;"><tspan
+         x="960"
+         y="598"
+         id="tspan2397"
+         style="font-size:160px;font-style:normal;font-weight:bold;text-align:center;text-anchor:middle;fill:#ffffff;fill-opacity:1;stroke:none;font-family:DejaVu Sans;">The Title</tspan></text>
+  </g>
+</svg>

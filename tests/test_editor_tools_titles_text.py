@@ -18,7 +18,7 @@ def _doc(name):
 
 def test_every_bundled_template_parses_and_names_resolve():
     paths = [p for p in title_svg.template_paths() if p.endswith(".svg")]
-    assert len(paths) == 50
+    assert len(paths) == 51
     for p in paths:
         doc = title_svg.load(p)
         title_svg.fields(doc)
@@ -113,7 +113,7 @@ def test_write_is_staged_and_leaves_no_partial_files(tmp_path):
 
 def test_list_static_templates_with_fields_and_query(tt):
     out = receipt(tt.call("list_title_templates_tool"))
-    assert len(out["templates"]) == 50
+    assert len(out["templates"]) == 51
     gray = next(t for t in out["templates"] if t["name"] == "Gray_Box_4")
     assert gray["zone"] == "bottom" and [f["role"] for f in gray["fields"]] == ["title", "subtitle"]
     lower = receipt(tt.call("list_title_templates_tool", query="lower third"))

@@ -233,12 +233,12 @@ def test_text_on_solid_color_is_drawn_with_a_text_template_over_the_colour(tt):
     out = tt.call("add_title_tool", template="Solid_Color", text="DOUBT", background_color="#d4141c",
                   text_color="#ffffff")
     rec = receipt(out)
-    assert rec["template"] == "Standard_1" and rec["background_color"] == "#d4141c"
+    assert rec["template"] == "Text_Card" and rec["background_color"] == "#d4141c"
     doc = title_svg.load(rec["path"])
     assert title_svg.background_color(doc) == ("#d4141c", 1.0)
     assert title_svg.line_texts(doc)[0] == "DOUBT"
-    assert rec["warnings"] == ["Solid_Color has no text; drew the text with Standard_1 over the colour #d4141c"]
-    assert " Warning: Solid_Color has no text; drew the text with Standard_1" in out.partition("\n")[0]
+    assert rec["warnings"] == ["Solid_Color has no text; drew the text with Text_Card over the colour #d4141c"]
+    assert " Warning: Solid_Color has no text; drew the text with Text_Card" in out.partition("\n")[0]
     assert tt.undo_steps_since_mark() == 1
 
 
@@ -309,3 +309,38 @@ def test_move_to_an_existing_track_adds_none(ed):
     a = _logo_and_clip(ed)
     out = ed.call("move_clips_tool", timeline_clip_ids=[a], to_track="4")
     assert "new track" not in out and len(_numbers(ed)) == 5
+
+
+def test_text_card_is_one_centred_line_on_a_full_frame_rect():
+    from classes import title_svg
+    doc = title_svg.load(title_svg.find_template("Text_Card"))
+    slots = title_svg.fields(doc)
+    w, h = title_svg.artboard_size(doc)
+    assert [s.text for s in slots] == ["The Title"] and title_svg.text_zone(slots, h) == "center"
+    assert title_svg.background_color(doc) == ("#000000", 1.0)
+
+
+def test_text_on_a_translucent_card_keeps_its_opacity(tt, tmp_path):
+    from classes import title_svg
+    card = tmp_path / "Glass_Card.svg"
+    card.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080"><g>'
+                    '<rect style="opacity:0.5;fill:#112233" width="1920" height="1080" x="0" y="0"/></g></svg>')
+    rec = receipt(tt.call("add_title_tool", template=str(card), text="Hi"))
+    assert rec["template"] == "Text_Card" and rec["background_color"] == "#112233"
+    assert title_svg.background_color(title_svg.load(rec["path"])) == ("#112233", 0.502)
+    assert rec["warnings"] == ["Glass_Card has no text; drew the text with Text_Card over the colour #11223380"]
+
+
+@pytest.mark.parametrize("tool, needle", [
+    ("move_clips_tool", "Moved 2 clip(s) to track 5 at 0.00 s; 2 tracks added on top."),
+    ("duplicate_clips_tool", "on track 5; 2 tracks added on top."),
+])
+def test_a_lower_source_landing_on_an_existing_track_does_not_call_it_new(ed, tool, needle):
+    a = _logo_and_clip(ed, 1000000)
+    b = _logo_and_clip(ed, 3000000)
+    ed.mark()
+    out = ed.call(tool, timeline_clip_ids=[a, b], to_track="7")
+    head = out.partition("\n")[0]
+    assert needle in head and "new track" not in head, out
+    assert _numbers(ed)[5:] == [6000000, 7000000]
+    assert ed.undo_steps_since_mark() == 1

@@ -33,7 +33,7 @@ from classes.editor_tools.titles_text_common import (
 # #183's add_title_tool tried these in order when no template was named.
 DEFAULT_TEMPLATES = ("Bar_1", "Standard_1", "Footer_1")
 # What text is drawn with when the named template is a colour card (Solid_Color has no text field).
-TEXT_OVER_CARD = "Standard_1"
+TEXT_OVER_CARD = "Text_Card"
 
 # What each bundled template looks like (from rendering all 50), for the model.
 TEMPLATE_PURPOSE = {
@@ -86,6 +86,7 @@ TEMPLATE_PURPOSE = {
     "Standard_3": "three centred lines",
     "Standard_4": "four centred lines (credits)",
     "Sunset": "glowing gradient title, centre",
+    "Text_Card": "solid colour card with one centred line of text (set background_color)",
     "TV_Rating": "small TV rating badge (TV / G), top left",
 }
 
@@ -451,7 +452,7 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
     template has but you did not fill (e.g. 'Sub-Title') is blanked. No text with a
     background_color makes a blank colour card (Solid_Color unless a template is named),
     e.g. a 0.1 s white flash frame. Text with template Solid_Color (a card with no text field) is
-    drawn with Standard_1 over background_color (else the card's colour). Optional fades.
+    drawn with Text_Card (one centred line) over background_color (else the card's colour). Optional fades.
     One undo step removes the clip and the file entry.
 
     Examples: {"text": "Tokyo Day 1", "template": "Standard_1", "text_color": "white",
@@ -480,7 +481,8 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
         doc = _load_doc(path)
         slots = title_svg.fields(doc)
         if not str(background_color or "").strip() and card_alpha > 0:
-            background_color = card_colour
+            # '#rrggbb', plus the card's opacity as '#rrggbbaa' when it is not opaque
+            background_color = card_colour + ("" if card_alpha >= 1 else "%02x" % round(card_alpha * 255))
         warnings.append(f"{card} has no text; drew the text with {name} over "
                         + (f"the colour {str(background_color).strip()}" if str(background_color or "").strip()
                            else "the video"))
