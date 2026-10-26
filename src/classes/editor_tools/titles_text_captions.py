@@ -13,6 +13,12 @@ Instagram reels". Example calls: {"timeline_clip_id": "C1", "style": "reels"};
 {"srtPath": "/path/captions.srt", "timeline_clip_id": "C1", "style": "classic"};
 {"cues": [{"start": 1, "end": 3.5, "text": "Welcome back!"}], "style": "yellow",
 "position": "top"}.
+
+edit_captions_tool requests: "fix the typo in caption 3", "the captions are
+half a second late", "make the captions yellow and bigger", "add a caption
+'Thanks!' at 12 s for 2 s", "delete the last caption". Example call:
+{"timeline_clip_id": "C1", "cue_edits": [{"index": 2, "text": "Today we explore
+Tokyo."}], "shift_seconds": -0.4, "style": "reels"}.
 """
 
 from __future__ import annotations
@@ -738,18 +744,17 @@ EDIT_ITEM = {"type": "object", "properties": {
         "effect_id": string("Caption effect id from list_captions_tool.", ""),
         "timeline_clip_id": string("The captioned clip (when it has one caption track).", ""),
         "clip_query": string("Describe the captioned clip instead of an id.", ""),
-        "cue_edits": array(EDIT_ITEM, "Changes to numbered cues: new text, new start/end (timeline seconds) or "
-                           "delete=true. Numbers are the order before this call."),
-        "add_cues": array(CUE_ITEM, "New cues {start, end, text} in timeline seconds (like the Captions dock's "
-                          "Insert Caption)."),
-        "find": string("Replace this text in every cue (e.g. a misspelled name)...", ""),
-        "replace": string("...with this text.", ""),
-        "shift_seconds": number("Move every cue later (positive) or earlier (negative) to fix sync.", 0.0,
+        "cue_edits": array(EDIT_ITEM, "Edits to numbered cues (numbers = order before this call): new text, "
+                           "start/end or delete=true."),
+        "add_cues": array(CUE_ITEM, "New cues {start, end, text}, timeline seconds."),
+        "find": string("Replace this text in every cue...", ""),
+        "replace": string("...with this text (needs find).", ""),
+        "shift_seconds": number("Move every cue later (+) or earlier (-) to fix sync.", 0.0,
                                 minimum=-3600, maximum=3600),
-        "style": enum(["", *sorted(CAPTION_STYLES)], "Switch to a look preset (then apply the overrides below). "
-                      "Empty keeps the current look.", ""),
+        "style": enum(["", *sorted(CAPTION_STYLES)], "Switch look preset (add_captions_tool styles), then apply "
+                      "the overrides. Empty keeps the current look.", ""),
         **{k: v for k, v in _STYLE_ARGS.items() if k != "style"},
-        "uppercase": boolean("Turn every cue's text into capital letters.", False),
+        "uppercase": boolean("Capitalize every cue.", False),
     }),
     covers=("caption.edit",),
 )
@@ -759,15 +764,11 @@ def edit_captions(effect_id="", timeline_clip_id="", clip_query="", cue_edits=No
                   fade_seconds=-1.0, uppercase=False):
     """Change existing captions: fix a cue's words or timing, add or delete cues, shift sync, restyle.
 
-    Use after add_captions_tool or for captions made in the Captions dock ("fix the
-    typo in caption 3", "the captions are half a second late", "make the captions
-    yellow and bigger", "add a caption 'Thanks!' at 12 s for 2 s", "delete the last
-    caption"). Get cue numbers from list_captions_tool. Times are timeline seconds.
-    With no target the selected Caption effect, or the project's only caption track,
-    is used. One undo step. To remove captions entirely use remove_captions_tool.
-
-    Example: {"timeline_clip_id": "C1", "cue_edits": [{"index": 2, "text": "Today we explore Tokyo."}],
-    "shift_seconds": -0.4, "style": "reels"}.
+    For captions from add_captions_tool or the Captions dock. Cue numbers come
+    from list_captions_tool; times are timeline seconds. With no target the
+    selected Caption effect, or the project's only caption track, is used.
+    Refused on locked tracks. One undo step. To remove captions entirely use
+    remove_captions_tool.
     """
     edits = list(cue_edits or [])
     extra = _given_cues(add_cues)
