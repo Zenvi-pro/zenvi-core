@@ -178,10 +178,30 @@ def register_in_background(existing: Callable[[], set], install: Callable[[dict]
                 REVISION += 1
         except Exception:
             log.error("Engine bridge: listing the engine tools failed", exc_info=True)
+        finally:
+            with _loading_lock:
+                _loading[0] -= 1
 
+    with _loading_lock:
+        _loading[0] += 1
     thread = threading.Thread(target=work, name="engine-bridge-catalog", daemon=True)
-    thread.start()
+    try:
+        thread.start()
+    except BaseException:
+        with _loading_lock:
+            _loading[0] -= 1
+        raise
     return thread
+
+
+# Catalog reads under way (start-up, or after an install): engine tools may still appear.
+_loading = [0]
+_loading_lock = threading.Lock()
+
+
+def loading() -> bool:
+    """Whether the engine tools are still being listed (in memory only: safe on the GUI thread)."""
+    return _loading[0] > 0
 
 
 def description(name: str) -> str:

@@ -101,6 +101,8 @@ def _engine_hint() -> str:
 
     if engine_bridge.BRIDGED or runtime.bridge_setting() == "off":
         return ""
+    if engine_bridge.loading():
+        return " If it is a Zenvi engine tool: engine tools are still loading; try again in a moment."
     return (" If it is a Zenvi engine tool: engine tools are not installed on this computer; "
             f"{runtime.INSTALL_HINT}. Ask the user to install them, then try again.")
 
