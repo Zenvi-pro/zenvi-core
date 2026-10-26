@@ -5,6 +5,14 @@ Workstream: timeline-edit. Tools register themselves with ``@editor_tool`` from
 and ``timeline_edit_common``. The rules the menus also use (gaps, align, ripple,
 Add to Timeline placement) live in ``classes.timeline_ops``; speed, repeat,
 freeze and audio tools are in ``timeline_edit_time``.
+
+add_clips_to_timeline_tool requests: "make a 60-second vlog from these clips"
+(e.g. 8 files, fit_total_seconds=60, transition="fade",
+transition_seconds=0.5), "put all the beach shots on the timeline with
+crossfades", "make a slideshow of these photos, 3 seconds each". Per-file in/out
+points: items=[{"file_id": "F1", "source_start": 4, "source_end": 9},
+{"file_id": "F2"}]. fit_total_seconds keeps the middle of each clip because
+heads and tails are usually shaky.
 """
 
 from __future__ import annotations
@@ -90,12 +98,12 @@ _FADES = {"none": None, "in": timeline_ops.FADE_IN, "out": timeline_ops.FADE_OUT
 _ZOOMS = {"none": None, "in": timeline_ops.ZOOM_IN, "out": timeline_ops.ZOOM_OUT,
           "random": timeline_ops.ZOOM_RANDOM}
 _ITEM = mapping(
-    "One file to place, with optional source in/out points in seconds of that file.",
+    "One file, optional source in/out seconds.",
     properties={
-        "file_id": string("Project file id (list_files_tool). Sub-clip file ids work too."),
-        "source_start": number("Source in point in seconds; -1 or omitted = the file's own in point."),
-        "source_end": number("Source out point in seconds; -1 or omitted = the file's own out point. "
-                             "For a still image this sets how long it stays on screen."),
+        "file_id": string("Project file id (list_files_tool); sub-clip ids work."),
+        "source_start": number("Source in point, seconds; -1 or omitted = the file's own."),
+        "source_end": number("Source out point, seconds; -1 or omitted = the file's own. For a still image: "
+                             "how long it shows."),
     },
     additionalProperties=False, required=["file_id"])
 
@@ -171,31 +179,30 @@ def _fit_lengths(durations, fixed, keep, budget):
     "add_clips_to_timeline_tool",
     label="Add clips to timeline",
     schema=obj({
-        "file_ids": array({"type": "string"}, "Project file ids to place, in timeline order (list_files_tool). "
-                          "Use this OR items.", []),
-        "items": array(_ITEM, "Files with their own in/out points, in timeline order. Use this OR file_ids.", []),
-        "order": enum(["as_given", "shuffle", "name"], "Order on the timeline: as given, shuffled, or by file name.",
+        "file_ids": array({"type": "string"}, "Project file ids (list_files_tool), in timeline order. This OR "
+                          "items.", []),
+        "items": array(_ITEM, "Files with their own in/out points, in timeline order. This OR file_ids.", []),
+        "order": enum(["as_given", "shuffle", "name"], "Timeline order: as given, shuffled, or by file name.",
                       "as_given"),
-        "start_seconds": number("Timeline time of the first clip; -1 = right after the last clip already on "
-                                "the track (0 on an empty track).", -1.0),
-        "track": string("Track to fill: UI track number (1 = bottom), name, or layer number. Empty = the "
-                        "selected track, else the bottom track.", ""),
-        "image_seconds": number("How long each still image stays on screen; 0 = the Default Image Length "
-                                "preference.", 0.0, minimum=0),
-        "fit_total_seconds": number("Make the whole sequence last exactly this long (e.g. 60 for a 60-second "
-                                    "vlog) by trimming the longest clips evenly, keeping the middle of each "
-                                    "(heads and tails are usually shaky); 0 = full lengths.", 0.0, minimum=0),
+        "start_seconds": number("Timeline time of the first clip; -1 = after the last clip on the track (0 if "
+                                "empty).", -1.0),
+        "track": string("UI track number (1 = bottom), name, or layer number. Empty = the selected track, else "
+                        "the bottom track.", ""),
+        "image_seconds": number("Seconds per still image; 0 = the Default Image Length preference.", 0.0,
+                                minimum=0),
+        "fit_total_seconds": number("Make the sequence last exactly this long by trimming the longest clips to "
+                                    "one common length, keeping the middle of each; 0 = full lengths.", 0.0,
+                                    minimum=0),
         "min_clip_seconds": number("Shortest a clip may be trimmed to by fit_total_seconds.", 1.0, minimum=0.1),
-        "transition": string("Transition between consecutive clips: '' = hard cuts, 'fade' = crossfade, "
-                             "'random', or a transition name such as 'wipe_left_to_right' or "
-                             "'circle_in_to_out' (list_transitions_tool).", ""),
-        "transition_seconds": number("Length of each transition; clips overlap by this much. 0 = the Default "
-                                     "Transition Length preference.", 0.0, minimum=0),
-        "fade": enum(["none", "in", "out", "in_out"], "Opacity fades on every clip, used instead of a "
-                     "transition; clips overlap by fade_seconds so the fades cross.", "none"),
+        "transition": string("Between consecutive clips: '' = hard cuts, 'fade' = crossfade, 'random', or a "
+                             "list_transitions_tool name ('wipe_left_to_right').", ""),
+        "transition_seconds": number("Transition length; clips overlap by this much. 0 = the Default Transition "
+                                     "Length preference.", 0.0, minimum=0),
+        "fade": enum(["none", "in", "out", "in_out"], "Opacity fades on every clip instead of a transition; "
+                     "clips overlap by fade_seconds so the fades cross.", "none"),
         "fade_seconds": number("Fade length in seconds.", 2.0, minimum=0.04),
-        "zoom": enum(["none", "in", "out", "random"], "Slow zoom on every clip (Ken Burns): in = 100% to 125%, "
-                     "out = 125% to 100%, random = random zoom and pan.", "none"),
+        "zoom": enum(["none", "in", "out", "random"], "Slow zoom on every clip: in = 100% to 125%, out = 125% to "
+                     "100%, random = random zoom and pan.", "none"),
         "allow_overlap": _OVERLAP_ARG,
     }),
     background_safe=True,
@@ -205,23 +212,14 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
                           image_seconds=0.0, fit_total_seconds=0.0, min_clip_seconds=1.0, transition="",
                           transition_seconds=0.0, fade="none", fade_seconds=2.0, zoom="none",
                           allow_overlap=False):
-    """Place several project files back to back on one track in one step: the backbone of
-    "make a 60-second vlog from these clips", "put all the beach shots on the timeline with
-    crossfades", "make a slideshow of these photos, 3 seconds each".
+    """Place several project files back to back on one track in one step (vlogs, slideshows, montages).
 
-    Works like Project Files > Add to Timeline: files go on one track in the given order (or
-    shuffled / by name), starting at start_seconds (default: after the last clip on that track),
-    with optional crossfades or other transitions between consecutive clips, opacity fades, and a
-    slow zoom. Still images last image_seconds. Give per-file in/out points with items, e.g.
-    items=[{"file_id": "F1", "source_start": 4, "source_end": 9}, {"file_id": "F2"}].
-
-    fit_total_seconds trims the sequence to an exact length: the longest clips are cut to one
-    common length (never below min_clip_seconds), keeping the middle of each; clips given with
-    explicit in/out points are never trimmed; transition overlaps are accounted for. Example:
-    8 files, fit_total_seconds=60, transition="fade", transition_seconds=0.5.
-
-    For one file at a precise time use add_clip_to_timeline_tool. The call is one undo step.
-    Returns the new timeline clip ids in order with their positions and source in/out.
+    Like Project Files > Add to Timeline, with optional transitions or fades
+    between clips and a slow zoom. fit_total_seconds never trims clips given
+    explicit in/out points and accounts for transition overlaps. A transition
+    and fades together are refused. For one file at a precise time use
+    add_clip_to_timeline_tool. One undo step. Returns the new timeline clip ids
+    in order with their positions and source in/out.
     """
     from classes.clip_placement import source_window_for_file
     from classes.query import File
