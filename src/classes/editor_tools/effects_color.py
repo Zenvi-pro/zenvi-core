@@ -658,10 +658,9 @@ def _rich_summary(ptype, value):
 # ---------------------------------------------------------------------------
 
 PROPERTIES_ARG = mapping(
-    "Effect properties to set, as {name: value}. A value is a number, true/false, a choice name "
-    "(\"HSV/HSL hue\"), a color (\"#00ff00\") or text; or keyframes [{\"time\": 2.0, \"value\": 10, "
-    "\"interpolation\": \"linear\"}] in timeline seconds to animate it. list_effects_tool(effect=...) "
-    "lists every property with its range, default and choices.")
+    "Effect properties {name: value}: a number, true/false, a choice name (\"HSV/HSL hue\"), a color "
+    "(\"#00ff00\"), text, or keyframes [{\"time\": 2.0, \"value\": 10, \"interpolation\": \"linear\"}] "
+    "(timeline seconds). list_effects_tool(effect=...) lists each property's range, default and choices.")
 INTERPOLATION_ARG = enum(["bezier", "linear", "constant"],
                          "Default interpolation for keyframes that do not name one.", "bezier")
 TARGETS = {
