@@ -1,17 +1,21 @@
-# Enable CYCLES renderer, using GPU (if found)
-bpy.context.scene.render.engine = 'CYCLES'
-bpy.context.scene.cycles.device = 'GPU'
+# Render on the GPU. EEVEE (every bundled template) always runs on the GPU, so the
+# scene keeps its engine; only a Cycles scene needs a GPU compute device.
+if bpy.context.scene.render.engine == 'CYCLES':
+    cprefs = bpy.context.preferences.addons['cycles'].preferences
 
-cprefs = bpy.context.preferences.addons['cycles'].preferences
+    # Fastest backend first. Blender 3.0 removed OPENCL, so the old CUDA/OPENCL list
+    # left every Mac, AMD and Intel GPU rendering Cycles on the CPU.
+    gpu_found = False
+    for compute_device_type in ('OPTIX', 'CUDA', 'HIP', 'METAL', 'ONEAPI'):
+        try:
+            cprefs.compute_device_type = compute_device_type
+        except TypeError:
+            continue
+        cprefs.refresh_devices()
+        if any(device.type == compute_device_type for device in cprefs.devices):
+            for device in cprefs.devices:
+                device.use = device.type == compute_device_type
+            gpu_found = True
+            break
 
-# Attempt to set GPU device types if available
-for compute_device_type in ('CUDA', 'OPENCL', 'NONE'):
-    try:
-        cprefs.compute_device_type = compute_device_type
-        break
-    except TypeError:
-        pass
-
-# Enable all CPU and GPU devices
-for device in cprefs.devices:
-    device.use = True
+    bpy.context.scene.cycles.device = 'GPU' if gpu_found else 'CPU'
