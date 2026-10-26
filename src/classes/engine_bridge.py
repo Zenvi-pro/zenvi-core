@@ -114,10 +114,11 @@ def node_candidates(env=None) -> list:
     from classes import info
     env = _env(env)
     exe = "node.exe" if sys.platform == "win32" else "node"
-    named = [env.get("ZENVI_NODE", "")]
-    if env is os.environ:
-        named.append(_setting("engine-node-path"))
-    out = [os.path.join(p, exe) if os.path.isdir(p) else p for p in named if p]
+    explicit = _explicit_node(env)
+    if explicit:
+        # A Node the user names is the one they mean: no quiet fallback to another install.
+        return [explicit]
+    out = []
     private = os.path.join(info.USER_PATH, "hyperframes", "node")
     out.append(os.path.join(private, exe) if sys.platform == "win32" else os.path.join(private, "bin", exe))
     on_path = shutil.which("node", path=env.get("PATH"))
@@ -135,6 +136,18 @@ def node_candidates(env=None) -> list:
     return unique
 
 
+def _explicit_node(env) -> str:
+    """ZENVI_NODE or the engine-node-path setting: a node executable, the folder holding it, or a name on PATH."""
+    named = env.get("ZENVI_NODE", "") or (_setting("engine-node-path") if env is os.environ else "")
+    if not named:
+        return ""
+    if os.path.isdir(named):
+        return os.path.join(named, "node.exe" if sys.platform == "win32" else "node")
+    if os.path.dirname(named):
+        return named
+    return shutil.which(named, path=env.get("PATH")) or named
+
+
 _node_majors: dict = {}
 
 
@@ -142,14 +155,15 @@ def node_major(node: str) -> Optional[int]:
     """``node --version``'s major number, or None when it does not run (cached per path)."""
     if node in _node_majors:
         return _node_majors[node]
-    major = None
     try:
         done = subprocess.run([node, "--version"], capture_output=True, text=True, timeout=NODE_VERSION_TIMEOUT,
                               stdin=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        found = re.match(r"v?(\d+)\.", (done.stdout or "").strip())
-        major = int(found.group(1)) if found else None
-    except (OSError, subprocess.SubprocessError, ValueError):
-        major = None
+    except subprocess.TimeoutExpired:
+        return None  # a slow first start (antivirus): not remembered, the next call asks again
+    except (OSError, subprocess.SubprocessError):
+        done = None
+    found = re.match(r"v?(\d+)\.", (done.stdout or "").strip()) if done is not None else None
+    major = int(found.group(1)) if found else None
     _node_majors[node] = major
     return major
 
@@ -157,8 +171,11 @@ def node_major(node: str) -> Optional[int]:
 def find_node(env=None) -> str:
     """A Node.js new enough for the CLI; BridgeUnavailable with what was searched."""
     tried = []
+    explicit = _explicit_node(_env(env))
     for path in node_candidates(env):
         if not os.path.isfile(path):
+            if path == explicit:
+                raise BridgeUnavailable(f"Node.js is not at {path} (ZENVI_NODE / the engine-node-path setting)")
             continue
         major = node_major(path)
         if major is not None and major >= MIN_NODE_MAJOR:

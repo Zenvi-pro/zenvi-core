@@ -151,6 +151,44 @@ def test_a_file_the_answer_updates_that_changed_meanwhile_refuses_it(bridge, mon
     assert bridge.file(f)["path"].endswith("counter.mov") and bridge.file(f)["name"] == "renamed meanwhile"
 
 
+def test_an_answer_never_lands_in_a_project_opened_while_the_engine_ran(bridge, monkeypatch):  # noqa: F811
+    import copy
+
+    from test_engine_bridge import _during_the_run
+
+    def open_another():
+        bridge.store._data = copy.deepcopy(bridge.store._data)
+        bridge.manager.commit_data_version()
+
+    _during_the_run(monkeypatch, open_another)
+    receipt = bridge.call_receipt("add_motion_template_tool", template="end_card")
+    assert "another project was opened" in receipt["summary"]
+    assert bridge.clip("FAKECLIP01") is None and bridge.file("FAKEFILE01") is None
+    bridge.store.current_filepath = None  # nor one saved under another name
+    assert bridge.call_receipt("add_motion_template_tool", template="end_card")["status"] in ("refused", "error")
+
+
+def test_a_file_the_answers_clips_play_that_changed_meanwhile_refuses_it():
+    from classes.editor_tools import engine_bridge as bridged
+
+    actions = [{"type": "insert", "key": ["clips"], "value": {"id": "C", "file_id": "F", "reader": {"path": "/a"}}}]
+    assert bridged._conflicts(["files/F"], actions) == ["files/F"]
+    assert bridged._conflicts(["files/G"], actions) == []
+
+
+def test_installing_bridged_tools_lists_them_background_safe_and_labelled(monkeypatch):
+    from classes import tool_handlers
+
+    for name in ("AGENT_TOOL_HANDLERS", "TOOL_HANDLERS", "TOOL_DISPLAY_LABELS"):
+        monkeypatch.setattr(tool_handlers, name, dict(getattr(tool_handlers, name)))
+    monkeypatch.setattr(tool_handlers, "BACKGROUND_SAFE_TOOLS", tool_handlers.BACKGROUND_SAFE_TOOLS)
+    handler = object()
+    tool_handlers.install_bridged_tools({"add_sfx_tool": handler})
+    assert tool_handlers.AGENT_TOOL_HANDLERS["add_sfx_tool"] is handler
+    assert tool_handlers.TOOL_HANDLERS["add_sfx_tool"] is handler
+    assert "add_sfx_tool" in tool_handlers.BACKGROUND_SAFE_TOOLS and tool_handlers.TOOL_DISPLAY_LABELS["add_sfx_tool"]
+
+
 def test_what_changed_names_list_items_by_id_and_other_keys_by_name():
     from classes.editor_tools import engine_bridge as bridged
 
@@ -280,6 +318,10 @@ def test_node_prefers_the_named_one_then_hyperframes_private_copy_and_needs_22(t
     named = _fake_node(tmp_path / "named", "v24.1.0")
     assert engine_bridge.find_node({"ZENVI_NODE": str(tmp_path / "named"), "PATH": ""}) == named
     assert old != named
+    # A bare name is looked up on PATH; a named Node that is not there is refused, not swapped for another.
+    assert engine_bridge.find_node({"ZENVI_NODE": "node", "PATH": str(tmp_path / "named")}) == named
+    with pytest.raises(engine_bridge.BridgeUnavailable, match="not at"):
+        engine_bridge.find_node({"ZENVI_NODE": str(tmp_path / "gone" / "node"), "PATH": str(tmp_path / "bin")})
 
 
 def _only_under(root, candidates):

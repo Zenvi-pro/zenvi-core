@@ -119,6 +119,8 @@ def test_a_project_changed_while_the_engine_ran_is_not_overwritten(bridge, monke
     receipt = bridge.call_receipt("add_motion_template_tool", template="end_card")
     assert "changed while" in receipt["summary"] and "clips/" in receipt["summary"]
     assert bridge.clip("FAKECLIP01") is None
+    # The harness marks the history after its own edit: the refused call added nothing after it.
+    assert bridge.undo_steps_since_mark() == 0
 
 
 def test_a_crashed_cli_fails_the_call_and_the_next_call_restarts_it(bridge):
@@ -172,7 +174,9 @@ def test_the_mcp_server_lists_bridged_tools_with_the_engines_schema(bridge, monk
 
 
 def test_an_untracked_change_is_applied_without_an_undo_step(bridge):
-    assert bridge.call_receipt("add_motion_template_tool", template="seek")["status"] == "applied"
+    receipt = bridge.call_receipt("add_motion_template_tool", template="seek")
+    # The engine counted an undo step; the desktop made none, and the receipt says so.
+    assert receipt["status"] == "applied" and receipt["undoSteps"] == 0
     assert bridge.get("playhead_position") == 2.5
     assert bridge.undo_steps_since_mark() == 0
 

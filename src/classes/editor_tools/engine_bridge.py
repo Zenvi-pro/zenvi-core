@@ -245,6 +245,9 @@ def _serialize(data: dict) -> Optional[str]:
 def _apply(answer: dict, project_file: str, version) -> Optional[str]:
     """Apply the answer's actions on the GUI thread; an error message when refused."""
     app = get_app()
+    current = getattr(app.project, "current_filepath", None)
+    if not current or os.path.abspath(current) != project_file:
+        return SWITCHED
     if getattr(app.updates, "data_version", None) != version:
         return STALE
     # The engine keeps the bundled-asset aliases (@transitions/…); resolve them like a project load.
@@ -274,7 +277,7 @@ def _backend_token() -> Optional[str]:
         return None
 
 
-def _output(name: str, answer: dict):
+def _output(name: str, answer: dict, tracked: bool):
     """The engine's contract-3 receipt text; a ToolOutput with it when the engine rendered frames too."""
     from classes.agent_tools.output import ImageBlock, wrap_str_result
 
@@ -285,6 +288,13 @@ def _output(name: str, answer: dict):
             images.append(ImageBlock(base64.b64decode(image.get("data") or ""), str(image.get("mimeType") or "image/png")))
         except (ValueError, TypeError, AttributeError):
             log.debug("engine bridge: an image of %s could not be decoded", name, exc_info=True)
+    if not tracked:
+        # The engine counts the undo step it would have made; untracked-only (or no) changes make none here.
+        from classes.agent_tools.receipt import parse_receipt
+        receipt = parse_receipt(text)
+        if receipt is not None and receipt.get("undoSteps"):
+            receipt["undoSteps"] = 0
+            text = json.dumps(receipt)
     if not images:
         # execute_tool parses the receipt as is (an untracked-only change stays applied).
         return text
@@ -313,11 +323,20 @@ def run_tool(name: str, args: dict):
         if refusal:
             _discard(answer.get("files") or [], project_file)
             return fail(refusal)
-    return _output(name, answer)
+    tracked = any(a.get("type") in ("insert", "update", "delete") for a in answer.get("actions") or [])
+    return _output(name, answer, tracked)
 
 
-def _version():
-    return getattr(get_app().updates, "data_version", None)
+SWITCHED = "another project was opened while the engine ran the tool; nothing was applied"
+
+
+def _version(data: dict, project_file: str):
+    """The data version, or None when the open project is no longer the one the engine ran on."""
+    app = get_app()
+    current = getattr(app.project, "current_filepath", None)
+    if app.project._data is not data or not current or os.path.abspath(current) != project_file:
+        return None
+    return getattr(app.updates, "data_version", None)
 
 
 def _apply_current(name: str, answer: dict, project_file: str, version, project_json: str, data: dict) -> Optional[str]:
@@ -332,7 +351,9 @@ def _apply_current(name: str, answer: dict, project_file: str, version, project_
     for _round in range(3):
         if refusal != STALE:
             return refusal
-        version = on_main(_version)
+        version = on_main(_version, data, project_file)
+        if version is None:
+            return SWITCHED
         changed = what_changed(project_json, _serialize(data))
         conflicts = _conflicts(changed, answer.get("actions") or [])
         if conflicts:
@@ -350,8 +371,22 @@ def _conflicts(changed: Optional[list], actions: list) -> list:
         return ["the project"]
     touched = {f"{a['key'][0]}/{a['key'][1].get('id')}" for a in actions
                if len(a.get("key") or []) >= 2 and isinstance(a["key"][1], dict)}
+    # Clips the answer writes were built from their files' records (duration, reader) as the engine saw them.
+    touched |= {f"files/{fid}" for fid in _file_ids(actions)}
     # A file imported or updated meanwhile is fine; one removed may be what the answer's clips play.
     return [c for c in changed if not c.startswith("files/") or c.endswith(" removed") or c in touched]
+
+
+def _file_ids(value) -> set:
+    """Every ``file_id`` inside *value* (actions, clips, readers)."""
+    if isinstance(value, dict):
+        found = {str(value["file_id"])} if value.get("file_id") else set()
+        for v in value.values():
+            found |= _file_ids(v)
+        return found
+    if isinstance(value, list):
+        return set().union(*(_file_ids(v) for v in value)) if value else set()
+    return set()
 
 
 def what_changed(before: str, after: Optional[str]) -> Optional[list]:
