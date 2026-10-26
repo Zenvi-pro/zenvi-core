@@ -1,0 +1,155 @@
+# Builds the local music runtimes (acestep.cpp: ace-lm, ace-synth; yue2.cpp: yue-synth)
+# and publishes one zip per platform to the music-runtimes-v1 release, which
+# src/classes/music_local.py downloads (pinned by sha256) on first use.
+# Run by hand; after a run, copy each zip's sha256 from the job summary into
+# music_local.RUNTIME.
+name: Music runtimes
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write # Azure OIDC (Artifact Signing) when the variables below are set
+
+env:
+  ACESTEP_REF: de858d8e1a94f0e1939cf9bdd8ff7d9631953077
+  YUE2_REF: 8af01740686824ffd4a1839a457954f42e2a8ce7
+  RELEASE_TAG: music-runtimes-v1
+  # Portable CPU code (no -march=native) with AVX2, for the CPU fallback.
+  GGML_FLAGS: -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            asset: zenvi-music-windows-x64-vulkan.zip
+            backend: -DGGML_VULKAN=ON
+          - os: ubuntu-24.04
+            asset: zenvi-music-linux-x64-vulkan.zip
+            backend: -DGGML_VULKAN=ON
+          - os: macos-14
+            asset: zenvi-music-macos-arm64-metal.zip
+            backend: -DGGML_METAL=ON
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ServeurpersoCom/acestep.cpp
+          ref: ${{ env.ACESTEP_REF }}
+          path: acestep.cpp
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: ServeurpersoCom/yue2.cpp
+          ref: ${{ env.YUE2_REF }}
+          path: yue2.cpp
+          submodules: recursive
+
+      - name: Toolchain (Windows, MSYS2 MinGW64)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-vulkan-headers mingw-w64-x86_64-vulkan-loader
+            mingw-w64-x86_64-shaderc mingw-w64-x86_64-spirv-headers
+            mingw-w64-x86_64-python zip
+
+      - name: Toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libvulkan-dev glslc spirv-headers zip
+
+      - name: Toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Build
+        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        run: |
+          set -euo pipefail
+          # cpp-httplib needs CreateFile2 (Windows 8+), which MinGW hides by default.
+          extra=""
+          [ "${RUNNER_OS}" = "Windows" ] && extra='-DCMAKE_C_FLAGS=-D_WIN32_WINNT=0x0A00 -DCMAKE_CXX_FLAGS=-D_WIN32_WINNT=0x0A00'
+          for d in acestep.cpp yue2.cpp; do
+            cmake -S "$d" -B "$d/build" -G Ninja -DCMAKE_BUILD_TYPE=Release ${{ matrix.backend }} $GGML_FLAGS $extra
+            cmake --build "$d/build" -j 4
+          done
+
+      - name: Collect
+        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ext=""; [ "${RUNNER_OS}" = "Windows" ] && ext=".exe"
+          cp acestep.cpp/build/ace-lm$ext acestep.cpp/build/ace-synth$ext yue2.cpp/build/yue-synth$ext dist/
+          cp acestep.cpp/LICENSE dist/LICENSE-acestep.cpp.txt
+          cp yue2.cpp/LICENSE dist/LICENSE-yue2.cpp.txt
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            # The MinGW runtime and the Vulkan loader; without a Vulkan driver ggml runs on the CPU.
+            ldd dist/*.exe | awk '$3 ~ /^\/mingw64\// {print $3}' | sort -u | xargs -r cp -t dist/
+          fi
+
+      - name: Azure login (OIDC for Artifact Signing)
+        if: ${{ runner.os == 'Windows' && vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CODESIGNING_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_CODESIGNING_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_CODESIGNING_SUBSCRIPTION_ID }}
+
+      - name: Sign (Azure Artifact Signing)
+        if: ${{ runner.os == 'Windows' && vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ vars.AZURE_CODESIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_CODESIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.AZURE_CODESIGNING_PROFILE_NAME }}
+          files-folder: ${{ github.workspace }}/dist
+          files-folder-filter: dll,exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      - name: Smoke test
+        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        run: |
+          set -euo pipefail
+          ext=""; [ "${RUNNER_OS}" = "Windows" ] && ext=".exe"
+          for b in ace-lm ace-synth yue-synth; do (cd dist && ./$b$ext --help 2>&1 | head -1); done
+
+      - name: Zip
+        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        run: |
+          set -euo pipefail
+          (cd dist && zip -9 -r "../${{ matrix.asset }}" .)
+          sum=$(sha256sum "${{ matrix.asset }}" 2>/dev/null || shasum -a 256 "${{ matrix.asset }}")
+          echo "\`${sum}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --prerelease --title "Music runtimes v1" \
+              --notes "acestep.cpp ${ACESTEP_REF} and yue2.cpp ${YUE2_REF}, built by .github/workflows/music-runtimes.yml." || true
+          gh release upload "$RELEASE_TAG" "${{ matrix.asset }}" -R "$GITHUB_REPOSITORY" --clobber
