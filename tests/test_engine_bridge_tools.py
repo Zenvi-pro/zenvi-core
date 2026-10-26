@@ -176,6 +176,24 @@ def test_a_file_the_answers_clips_play_that_changed_meanwhile_refuses_it():
     assert bridged._conflicts(["files/G"], actions) == []
 
 
+def test_an_answer_replacing_the_whole_files_list_conflicts_with_any_file_changed_meanwhile():
+    from classes.editor_tools import engine_bridge as bridged
+
+    # The engine sends a top-level list update as is: applying it would revert the desktop's indexing.
+    actions = [{"type": "update", "key": ["files"], "value": [{"id": "F"}]}]
+    assert bridged._conflicts(["files/G"], actions) == ["files/G"]
+    # Inserting a record leaves the others alone.
+    assert bridged._conflicts(["files/G"], [{"type": "insert", "key": ["files"], "value": {"id": "N"}}]) == []
+
+
+def test_only_kinds_the_engine_re_renders_are_engine_kinds():
+    from classes.editor_tools import engine_links
+
+    assert engine_links.is_engine_kind("zenvi-motion") and engine_links.is_engine_kind("blender")
+    for kind in ("Blender", " zenvi-fx", "remotion", None, {"kind": "blender"}):
+        assert not engine_links.is_engine_kind(kind), kind
+
+
 def test_installing_bridged_tools_lists_them_background_safe_and_labelled(monkeypatch):
     from classes import tool_handlers
 

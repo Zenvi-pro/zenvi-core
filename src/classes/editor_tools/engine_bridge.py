@@ -71,6 +71,7 @@ BRIDGED: dict = {}
 REVISION = 0
 
 STALE = "the project changed while the engine ran the tool; nothing was applied, try again"
+SWITCHED = "another project was opened while the engine ran the tool; nothing was applied"
 
 # Answer action kinds -> the UpdateManager call that applies them.
 _APPLY = {
@@ -327,8 +328,6 @@ def run_tool(name: str, args: dict):
     return _output(name, answer, tracked)
 
 
-SWITCHED = "another project was opened while the engine ran the tool; nothing was applied"
-
 
 def _version(data: dict, project_file: str):
     """The data version, or None when the open project is no longer the one the engine ran on."""
@@ -373,8 +372,10 @@ def _conflicts(changed: Optional[list], actions: list) -> list:
                if len(a.get("key") or []) >= 2 and isinstance(a["key"][1], dict)}
     # Clips the answer writes were built from their files' records (duration, reader) as the engine saw them.
     touched |= {f"files/{fid}" for fid in _file_ids(actions)}
+    # An update of the whole Project Files list would overwrite every record changed meanwhile.
+    whole = any(a.get("key") == ["files"] and a.get("type") != "insert" for a in actions)
     # A file imported or updated meanwhile is fine; one removed may be what the answer's clips play.
-    return [c for c in changed if not c.startswith("files/") or c.endswith(" removed") or c in touched]
+    return [c for c in changed if not c.startswith("files/") or whole or c.endswith(" removed") or c in touched]
 
 
 def _file_ids(value) -> set:
