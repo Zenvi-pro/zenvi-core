@@ -75,10 +75,19 @@ def test_yue2_uses_the_memory_capped_settings(home):
         ml.generate("yue2", "indie pop", lyrics="[Verse]\nCity lights", duration=60)
     name, argv, req = calls[0]
     assert name.startswith("yue-synth")
-    assert argv[argv.index("--max-seq") + 1] == "8192"
+    assert argv[argv.index("--max-seq") + 1] == "4096"   # 60 s of tokens fits; smaller cache, less RAM
     assert argv[argv.index("--vae-core") + 1] == "128"
-    assert req["output_format"] == "mp3" and req["duration"] == 60
+    assert req["output_format"] == "mp3" and req["duration"] == 60 and req["steps"] == 16
+    assert ml.YUE_MODEL == "YuE2-3B-Q5_K_M.gguf"
     assert os.path.basename(argv[argv.index("--model") + 1]) == ml.YUE_MODEL
+
+
+def test_yue2_long_songs_get_a_cache_big_enough_for_their_tokens(home):
+    calls = []
+    with patch.object(ml, "_run", side_effect=_fake_run(calls)):
+        ml.generate("yue2", "indie pop", lyrics="[Verse]\nCity lights", duration=240)
+    argv = calls[0][1]
+    assert int(argv[argv.index("--max-seq") + 1]) >= 240 * 40
 
 
 def test_a_failed_run_reports_the_tools_output(home):

@@ -8,8 +8,8 @@ returns the MP3 in ``USER_PATH/Downloads`` (where stock downloads land).
 * ACE-Step 1.5 (MIT) is the default. An instrumental bed renders DiT-only
   (about 40 s for 30 s of audio on an Iris Xe); a song with lyrics runs the
   5 Hz LM first and renders its codes.
-* YuE2-3B is CC BY-NC 4.0: non-commercial only. Slower (about 6 min for a 30 s
-  bed on an Iris Xe) but full songs with vocals.
+* YuE2-3B (Q5_K_M) is CC BY-NC 4.0: non-commercial only. Slower (about 3 min
+  for a 30 s bed on an Iris Xe at 16 steps) but full songs with vocals.
 
 Both run on the best ggml device (Vulkan, Metal, CUDA, else CPU). The VAE is
 tiled small: on an iGPU the default tile fails to pin memory and a 30 s decode
@@ -37,7 +37,7 @@ ACE_REPO, ACE_REVISION = "Serveurperso/ACE-Step-1.5-GGUF", "666ac70204440867d8c0
 ACE_DIT, ACE_LM = "acestep-v15-turbo-Q8_0.gguf", "acestep-5Hz-lm-1.7B-Q8_0.gguf"
 ACE_TEXT, ACE_VAE = "Qwen3-Embedding-0.6B-Q8_0.gguf", "vae-BF16.gguf"
 YUE_REPO, YUE_REVISION = "Serveurperso/YuE2-GGUF", "e630f2b8f6aedf8254c3186438633c1b5eeaf80a"
-YUE_MODEL, YUE_VAE = "YuE2-3B-Q8_0.gguf", "YuE2-Vae-F32.gguf"
+YUE_MODEL, YUE_VAE = "YuE2-3B-Q5_K_M.gguf", "YuE2-Vae-F32.gguf"
 
 MODELS = {              # engine -> [(file, sha256, bytes)], sha256 = the Hugging Face LFS oid
     "ace_step": [
@@ -47,7 +47,7 @@ MODELS = {              # engine -> [(file, sha256, bytes)], sha256 = the Huggin
         (ACE_VAE, "0599862ac5d15cd308e1d2e368373aea6c02e25ebd1737ad4a4562a0901b0ef8", 337420928),
     ],
     "yue2": [
-        (YUE_MODEL, "41121ce97786d7795a325bcf123ca196956c03bb252c9e75384cfc1f2fc19e6b", 3810232064),
+        (YUE_MODEL, "cd3efd250b734a229172800f08f33a893ad1f66b521666e176cdae4a0729b281", 2622936832),
         (YUE_VAE, "93e49dfb1970e89ad64cacb17cf13b5d05f6bb30ef7ed3adae3050bcb728638a", 530497344),
     ],
 }
@@ -65,7 +65,9 @@ RUNTIME = {             # (sys.platform, machine) -> (asset, sha256); "" until t
 _BINARIES = {"ace_step": ("ace-lm", "ace-synth"), "yue2": ("yue-synth",)}
 
 ACE_VAE_CHUNK = "128"
-YUE_MAX_SEQ, YUE_VAE_CORE = "8192", "128"
+# Q5_K_M at 16 steps: a 30 s bed in about 165 s at 2.9 GB on an Iris Xe (Q8 at 32 steps: 389 s, 4.7 GB).
+YUE_STEPS, YUE_VAE_CORE = 16, "128"
+YUE_TOKENS_PER_S = 40   # score + semantic tokens per second of audio, with headroom
 RUN_TIMEOUT = 3600
 
 
@@ -157,6 +159,12 @@ def _write(path: str, data: dict) -> str:
     return path
 
 
+def _yue_max_seq(duration: float) -> int:
+    """KV cache rows: enough for the song's tokens (a smaller cache is less RAM), in 1024 steps."""
+    need = int(duration * YUE_TOKENS_PER_S) + 1024
+    return max(4096, -(-need // 1024) * 1024)
+
+
 def generate(engine: str, style: str, lyrics: str = "", duration: float = 30.0, seed: int = -1) -> str:
     """Generate music and return the MP3 path. Empty lyrics = an instrumental bed."""
     if engine not in ENGINES:
@@ -192,10 +200,10 @@ def generate(engine: str, style: str, lyrics: str = "", duration: float = 30.0, 
         os.replace(rendered, out)
     else:
         req = {"style": style, "lyrics": lyrics, "cot": "full" if lyrics else "off", "duration": duration,
-               "lm_seed": seed, "seed": seed, "output_format": "mp3"}
+               "lm_seed": seed, "seed": seed, "steps": YUE_STEPS, "output_format": "mp3"}
         _check([_exe("yue-synth"), "--model", _model(YUE_MODEL), "--vae", _model(YUE_VAE),
                 "--request", _write(os.path.join(work, "song.json"), req), "--out", out,
-                "--max-seq", YUE_MAX_SEQ, "--vae-core", YUE_VAE_CORE], work)
+                "--max-seq", str(_yue_max_seq(duration)), "--vae-core", YUE_VAE_CORE], work)
     if not os.path.isfile(out) or os.path.getsize(out) <= 0:
         raise MusicError("%s finished but the audio file is missing or empty" % engine)
     log.info("Generated %s music: %s", engine, out)
