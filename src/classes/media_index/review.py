@@ -400,7 +400,7 @@ def sound_findings(clips: Sequence[TimelineClip], project: ProjectInfo, brief: B
         status = "needs" if want_music else "info"
         out.append(finding("music", "sound", status, "There is no music bed." if not beds else f"Music covers only {coverage * 100:.0f}% of the edit.",
                            {"coverage": round(coverage, 2), "beds": len(beds), "expected": want_music},
-                           ["audition_music_tool", "stock_music"] if status == "needs" or want_music is None else []))
+                           ["audition_music_tool", "import_stock_media_tool", "add_clips_to_timeline_tool"] if status == "needs" or want_music is None else []))
 
     margins, unknown_levels = [], 0
     for sp in speech:
@@ -455,7 +455,7 @@ def sound_findings(clips: Sequence[TimelineClip], project: ProjectInfo, brief: B
         if duration - t > DEAD_AIR_SECONDS:
             gaps.append([round(t, 2), round(duration, 2)])
         out.append(finding("dead_air", "sound", "needs" if gaps else "ok", f"{len(gaps)} stretch(es) with no sound at all." if gaps else "No dead air.",
-                           {"gaps": gaps[:10]}, ["stock_music", "add_clip_to_timeline_tool", "remove_gaps_tool"] if gaps else []))
+                           {"gaps": gaps[:10]}, ["import_stock_media_tool", "add_clips_to_timeline_tool", "remove_gaps_tool"] if gaps else []))
 
     target = loudness_target(brief)
     if mix and mix.get("integrated_lufs") is not None:

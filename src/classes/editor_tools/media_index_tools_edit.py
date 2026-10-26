@@ -499,9 +499,12 @@ def harmonize_look(reference="median", tolerance=0.15, max_clips=12, measure_lim
 def audition_music(candidates, bpm_min=None, bpm_max=None, seconds_needed=None, energy=""):
     """Listen before you choose: download each candidate's preview, analyse it (tempo, beats, energy curve, sections,
     phrase points) and rank the sounds by how well they fit the music you need, with the measured reason for each.
-    Free (previews cost nothing, the analysis is local) and nothing is imported. Then place the winner with
-    stock_music(query=..., sound_id=<id>, preview_url=<its preview_url>, start_seconds=<a phrase point>, ...) so it
-    starts and ends on a phrase. Tempo and energy are measured on the preview; sections may be incomplete for long sounds.
+    Free (previews cost nothing, the analysis is local) and nothing is imported. Then import the winner with
+    run_tool(name="import_stock_media_tool", args={"source": "freesound", "sound_id": <id>, "preview_url": <its preview_url>})
+    and place it with add_clips_to_timeline_tool(items=[{"file_id": <new file_id>, "source_start": <use_best.start_seconds>,
+    "source_end": <a later phrase point>}], start_seconds=<where it goes on the timeline>) so it
+    starts and ends on a phrase. use_best.start_seconds is a time in the sound: it is the item's source_start, never the
+    call's start_seconds. Tempo and energy are measured on the preview; sections may be incomplete for long sounds.
     """
     cleaned = [c for c in (candidates or []) if isinstance(c, dict)]
     if not cleaned:

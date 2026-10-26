@@ -3665,7 +3665,7 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
     if "freesound.org" in lower_path or any(lower_path.endswith(ext) for ext in _audio_exts):
         return (
             "Error: run_tool(name='ingest_web_video_tool') is for video URLs only. "
-            "For Freesound / music / SFX use stock_music(query=..., track=...)."
+            "For Freesound / music / SFX use run_tool(name='import_stock_media_tool', args={'source': 'freesound', ...})."
         )
     try:
         from classes.web_video_ingest import is_youtube_url
@@ -5628,8 +5628,7 @@ def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
             _last_split_file_id_by_chat_session[chat_session_id] = existing.id
             return (
                 f"File already in project (file_id={existing.id}): {local_path}. "
-                f"IMPORTANT: Call add_clip_to_timeline_tool with file_id='{existing.id}' "
-                f"(or empty file_id to use this just-imported file) to place it on the timeline."
+                f"IMPORTANT: place it with add_clips_to_timeline_tool(items=[{{'file_id': '{existing.id}'}}])."
             )
 
         # MUST run on main thread — files_model.add_files touches Qt objects
@@ -5665,16 +5664,14 @@ def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
                     f"Added to project: {local_path} (file_id={f.id}) but indexing "
                     f"did not finish: {wait_err}. "
                     f"Call reindex_project_file_tool before relying on search. "
-                    f"IMPORTANT: Call add_clip_to_timeline_tool with file_id='{f.id}' "
-                    f"(or empty file_id to use this just-imported file) to place it on the timeline."
+                    f"IMPORTANT: place it with add_clips_to_timeline_tool(items=[{{'file_id': '{f.id}'}}])."
                 )
             log.info("Stock media added to project: %s (id=%s)", local_path, f.id)
             summary_bit = f" Summary: {summary}" if summary else ""
             return (
                 f"Added to project and indexed: {local_path} (file_id={f.id})."
                 f"{summary_bit} "
-                f"IMPORTANT: Call add_clip_to_timeline_tool with file_id='{f.id}' "
-                f"(or empty file_id to use this just-imported file) to place it on the timeline."
+                f"IMPORTANT: place it with add_clips_to_timeline_tool(items=[{{'file_id': '{f.id}'}}])."
             )
         log.error("Stock media import produced no File record: %s", local_path)
         return (
