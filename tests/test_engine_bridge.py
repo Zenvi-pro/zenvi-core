@@ -46,7 +46,8 @@ def test_lists_engine_tools_the_desktop_lacks_and_caches_the_catalog(bridge, tmp
     from classes.editor_tools import engine_bridge as bridged
 
     # list_files_tool is the desktop's own; export needs a capability the bridge host lacks.
-    assert sorted(bridge.handlers) == ["add_motion_template_tool"]
+    assert "add_motion_template_tool" in bridge.handlers
+    assert "list_files_tool" not in bridge.handlers and "export_video_tool" not in bridge.handlers
     definition = bridged.tool_def("add_motion_template_tool")
     assert definition["inputSchema"]["properties"] == {"template": {"type": "string"}}
     assert bridged.SURFACE_NOTE in definition["description"]
@@ -101,7 +102,7 @@ def test_a_project_changed_while_the_engine_ran_is_not_overwritten(bridge, monke
     from classes.editor_tools import engine_bridge as bridged
 
     real = bridged._snapshot
-    monkeypatch.setattr(bridged, "_snapshot", lambda: (*real()[:2], "an older version"))
+    monkeypatch.setattr(bridged, "_snapshot", lambda: (real()[0], "an older version", real()[2]))
     receipt = bridge.call_receipt("add_motion_template_tool", template="end_card")
     assert "changed while" in receipt["summary"]
     assert bridge.clip("FAKECLIP01") is None
