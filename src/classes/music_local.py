@@ -57,10 +57,13 @@ LICENCE = {"ace_step": "MIT (commercial use allowed)",
 
 # Built by .github/workflows/music-runtimes.yml and published to this release.
 RUNTIME_RELEASE = "https://github.com/Zenvi-pro/zenvi-core/releases/download/music-runtimes-v1/%s"
-RUNTIME = {             # (sys.platform, machine) -> (asset, sha256); "" until that build is published
-    ("win32", "amd64"): ("zenvi-music-windows-x64-vulkan.zip", ""),
-    ("linux", "x86_64"): ("zenvi-music-linux-x64-vulkan.zip", ""),
-    ("darwin", "arm64"): ("zenvi-music-macos-arm64-metal.zip", ""),
+RUNTIME = {             # (sys.platform, machine) -> (asset, sha256) of the published zip
+    ("win32", "amd64"): ("zenvi-music-windows-x64-vulkan.zip",
+                         "3b25f6e5f12b7d175f39b0ad43e5b2caa7e5619c0088e29ee4e912b6a8a1762a"),
+    ("linux", "x86_64"): ("zenvi-music-linux-x64-vulkan.zip",
+                         "b28713d6d5e53236a451f34542563362a10073ebf4ad5b2be9d9c08e7361d802"),
+    ("darwin", "arm64"): ("zenvi-music-macos-arm64-metal.zip",
+                         "ad6cc95b57fbf7f0cf196804e2b78c7b8b155e7ea493b2462de8df1dbf5fdea1"),
 }
 _BINARIES = {"ace_step": ("ace-lm", "ace-synth"), "yue2": ("yue-synth",)}
 
