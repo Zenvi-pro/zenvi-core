@@ -40,7 +40,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     defaults:
       run:
-        shell: bash
+        shell: ${{ matrix.shell }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -69,6 +69,7 @@ jobs:
 
       - name: Toolchain (Linux)
         if: runner.os == 'Linux'
+        shell: bash
         run: sudo apt-get update && sudo apt-get install -y ninja-build libvulkan-dev glslc spirv-headers zip
 
       - name: Toolchain (macOS)
@@ -76,7 +77,6 @@ jobs:
         run: brew install ninja
 
       - name: Build
-        shell: ${{ matrix.shell }}
         run: |
           set -euo pipefail
           # cpp-httplib needs CreateFile2 (Windows 8+), which MinGW hides by default.
@@ -88,7 +88,6 @@ jobs:
           done
 
       - name: Collect
-        shell: ${{ matrix.shell }}
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -133,14 +132,12 @@ jobs:
           exclude-interactive-browser-credential: true
 
       - name: Smoke test
-        shell: ${{ matrix.shell }}
         run: |
           set -euo pipefail
           ext=""; [ "${RUNNER_OS}" = "Windows" ] && ext=".exe"
           for b in ace-lm ace-synth yue-synth; do (cd dist && ./$b$ext --help 2>&1 | head -1); done
 
       - name: Zip
-        shell: ${{ matrix.shell }}
         run: |
           set -euo pipefail
           (cd dist && zip -9 -r "../${{ matrix.asset }}" .)
@@ -148,6 +145,7 @@ jobs:
           echo "\`${sum}\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
