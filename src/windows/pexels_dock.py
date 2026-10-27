@@ -109,14 +109,18 @@ class _ThumbnailRunnable(QRunnable):
         ready = pyqtSignal(int, QImage, int)   # video_id, image (QPixmap is GUI-thread only), search
         finished = pyqtSignal(int, int)        # video_id, search; success or not
 
-    def __init__(self, video_id: int, url: str, search: int):
+    def __init__(self, video_id: int, url: str, search: int, alive=None):
         super().__init__()
         self.signals = _ThumbnailRunnable._Signals()
         self._video_id = video_id
         self._url = url
         self._search = search
+        self._alive = alive   # None, or False once its search is gone: skip the fetch
 
     def run(self):
+        if self._alive is not None and not self._alive():
+            self.signals.finished.emit(self._video_id, self._search)
+            return
         try:
             import requests as _req
             resp = _req.get(

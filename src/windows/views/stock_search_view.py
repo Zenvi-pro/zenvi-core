@@ -359,7 +359,9 @@ class StockSearchView(QWidget):
         return key
 
     def _load_image(self, runnable_cls, uid: str, url: str, on_ready):
-        runnable = runnable_cls(self._image_key(uid), url, self._search_gen)
+        gen = self._search_gen
+        # A queued fetch for a superseded search is skipped, so it cannot hold up the next one.
+        runnable = runnable_cls(self._image_key(uid), url, gen, alive=lambda g=gen: g == self._search_gen)
         runnable.signals.ready.connect(on_ready)
         self._pool.start(runnable)
 
@@ -538,15 +540,15 @@ class StockSearchView(QWidget):
     def _keep_credit(self, local_path: str, credit: str):
         """CC BY needs the credit with the clip, not only on the search card."""
         try:
-            from classes.tool_handlers import _ignore_history, resolve_imported_file
+            from classes.tool_handlers import resolve_imported_file
             f = resolve_imported_file(local_path)
             # The resolver falls back to a same-named file; a credit must only go on this one.
             if not f or not _same_path(f.absolute_path(), local_path):
                 log.warning("Imported %s but could not find it to store its credit", local_path)
                 return
-            with _ignore_history(get_app()):   # metadata, not an edit: no undo step
-                f.data["stock_credit"] = credit
-                f.save()
+            f.data["stock_credit"] = credit
+            # Metadata, not an edit: no undo step, and a pending action (an effect drag) is kept.
+            get_app().updates.update_untracked(f.key or ["files", {"id": f.id}], f.data)
         except Exception as exc:
             log.warning("Could not store the stock credit for %s: %s", local_path, exc)
 
