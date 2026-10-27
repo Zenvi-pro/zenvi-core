@@ -770,3 +770,14 @@ def test_a_running_update_keeps_a_heartbeat(linked, tmp_path, monkeypatch):  # n
     assert seen == [True]
     assert not [n for n in os.listdir(str(out)) if n.startswith(exporter.STAGING_PREFIX)]
     assert not os.path.exists(str(out / exporter.HEARTBEAT))
+
+
+def test_a_new_folder_with_only_finder_or_explorer_files_still_counts_as_empty(linked, tmp_path):  # noqa: F811
+    build_project(linked, str(tmp_path / "media"))
+    out = tmp_path / "made-in-finder"
+    out.mkdir()
+    (out / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1")
+    (out / "Thumbs.db").write_bytes(b"x")
+    receipt = _export(linked, out)
+    assert receipt["mode"] == "new" and os.path.isfile(str(out / "package.json"))
+    assert not (out / ".DS_Store").exists()

@@ -105,7 +105,7 @@ class RemotionProject:
 
 def _read_json(path: str) -> Optional[dict]:
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8-sig") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
         return None

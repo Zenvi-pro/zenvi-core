@@ -367,3 +367,12 @@ def test_the_round_trip_export_import_export_needs_no_replace(remotion, tmp_path
     assert len(remotion.store._data["settings"]["remotion_imported"]) == 1
     out = remotion.call("export_to_remotion_tool", output_dir=out_dir)
     assert out.startswith("Error") and "not imported into Zenvi yet" in out
+
+
+def test_export_accepts_a_home_relative_folder(remotion, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    remotion.store._data.update(clips=[], files=[])
+    build_project(remotion, str(tmp_path / "media"))
+    data = _data(remotion.call("export_to_remotion_tool", output_dir="~/trip-remotion"))
+    assert data["clips"] == 4 and os.path.isfile(str(tmp_path / "trip-remotion" / "package.json"))
