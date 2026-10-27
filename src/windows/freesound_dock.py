@@ -6,6 +6,7 @@ image + name + duration) → click a card to download the HQ MP3 preview and
 import it into Project Files.
 """
 
+import html
 from typing import Dict, Any
 
 from qt_api import (
@@ -165,7 +166,9 @@ class _SoundCard(QFrame):
         username = sound.get("username", "")
         tags = ", ".join((sound.get("tags") or [])[:5])
         credit = sound.get("attribution") or sound.get("license", "")
-        self.setToolTip(f"{name}\nBy: {username}\n{self._dur_text}\nTags: {tags}\n{credit}")
+        # Provider text, shown literally: a plain-text tooltip would turn any tags in it into markup.
+        text = html.escape(f"{name}\nBy: {username}\n{self._dur_text}\nTags: {tags}\n{credit}")
+        self.setToolTip(f"<p style='white-space:pre-wrap'>{text}</p>")
 
     def set_waveform(self, pix: QPixmap):
         if (self._sound.get("images") or {}).get("waveform_m"):

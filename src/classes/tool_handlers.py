@@ -7975,6 +7975,47 @@ def download_freesound_music_tool(sound_id: str = "", preview_url: str = "", fil
         return f"Error downloading Freesound audio: {exc}"
 
 
+def resolve_imported_file(path: str):
+    """Match project File after add_files (path keys often differ on Windows)."""
+    import os
+    from classes.query import File
+
+    variants = []
+    for candidate in (path, os.path.normpath(path), os.path.realpath(path)):
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+    for p in variants:
+        f = File.get(path=p)
+        if f:
+            return f
+    base = os.path.basename(path).lower()
+    best = None
+    for candidate in File.filter():
+        try:
+            cpath = candidate.data.get("path") or ""
+            abs_path = ""
+            try:
+                abs_path = candidate.absolute_path() or ""
+            except Exception:
+                abs_path = ""
+            names = {
+                os.path.basename(cpath).lower(),
+                os.path.basename(abs_path).lower(),
+            }
+            if base not in names:
+                continue
+            # Prefer exact absolute-path match when several share a basename.
+            if abs_path and os.path.normcase(os.path.normpath(abs_path)) in {
+                os.path.normcase(os.path.normpath(v)) for v in variants
+            }:
+                return candidate
+            if best is None:
+                best = candidate
+        except Exception:
+            continue
+    return best
+
+
 def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
     """Import a downloaded stock file into Project Files."""
     try:
@@ -7987,44 +8028,8 @@ def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
         files_model = app.window.files_model
         from classes.query import File
 
-        def _resolve_imported_file(path: str):
-            """Match project File after add_files (path keys often differ on Windows)."""
-            variants = []
-            for candidate in (path, os.path.normpath(path), os.path.realpath(path)):
-                if candidate and candidate not in variants:
-                    variants.append(candidate)
-            for p in variants:
-                f = File.get(path=p)
-                if f:
-                    return f
-            base = os.path.basename(path).lower()
-            best = None
-            for candidate in File.filter():
-                try:
-                    cpath = candidate.data.get("path") or ""
-                    abs_path = ""
-                    try:
-                        abs_path = candidate.absolute_path() or ""
-                    except Exception:
-                        abs_path = ""
-                    names = {
-                        os.path.basename(cpath).lower(),
-                        os.path.basename(abs_path).lower(),
-                    }
-                    if base not in names:
-                        continue
-                    # Prefer exact absolute-path match when several share a basename.
-                    if abs_path and os.path.normcase(os.path.normpath(abs_path)) in {
-                        os.path.normcase(os.path.normpath(v)) for v in variants
-                    }:
-                        return candidate
-                    if best is None:
-                        best = candidate
-                except Exception:
-                    continue
-            return best
 
-        existing = _resolve_imported_file(local_path)
+        existing = resolve_imported_file(local_path)
         if existing:
             chat_session_id = str(kwargs.get("chat_session_id", "") or "default")
             _last_split_file_id_by_chat_session[chat_session_id] = existing.id
@@ -8041,7 +8046,7 @@ def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
 
         _run_on_main_thread(_do_add, timeout=30)
 
-        f = _resolve_imported_file(local_path)
+        f = resolve_imported_file(local_path)
         if f:
             chat_session_id = str(kwargs.get("chat_session_id", "") or "default")
             _last_split_file_id_by_chat_session[chat_session_id] = f.id
