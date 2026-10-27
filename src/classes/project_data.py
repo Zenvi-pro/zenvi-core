@@ -304,8 +304,9 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         # After processing each key, we've found object and parent, return former value/s on update.
         # An insert into a list returns None: its undo deletes the new item by id, and a copy of the
         # whole list (every clip) would make each insert's undo entry as large as the timeline.
-        appending = add and isinstance(parent, list)
-        ret = None if appending else json.loads(json.dumps(obj))
+        # A nested list (["clips", {...}, "effects"]) is the last part found, not its parent.
+        target = parent if add and isinstance(parent, list) else obj if add and isinstance(obj, list) else None
+        ret = None if target is not None else json.loads(json.dumps(obj))
 
         # Apply the correct action to the found item
         if remove:
@@ -315,11 +316,11 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
             # Add or Full Update
             # For adds to list perform an insert to index or the end if not specified
-            if appending:
-                if index is not None and 0 <= index <= len(parent):
-                    parent.insert(index, values)
+            if target is not None:
+                if index is not None and 0 <= index <= len(target):
+                    target.insert(index, values)
                 else:
-                    parent.append(values)
+                    target.append(values)
 
             # Otherwise, set the given index
             elif isinstance(values, dict):
@@ -351,16 +352,26 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         return ret
 
     def _list_index(self, key):
-        """Index of the top-level list item *key* names (``["clips", {"id": ...}]``), or None."""
-        if len(key or []) != 2 or not isinstance(key[0], str) or not isinstance(key[1], dict):
+        """Index in its list of the item *key* names by a selector last, or None.
+
+        Top-level (``["clips", {"id": ...}]``) or nested
+        (``["clips", {"id": ...}, "effects", {"id": ...}]``), matched like _set.
+        """
+        if len(key or []) < 2 or not isinstance(key[-1], dict):
             return None
-        items = self._data.get(key[0].lower())
-        if not isinstance(items, list):
-            return None
-        for i, item in enumerate(items):
-            if isinstance(item, dict) and all(k.lower() in item and item[k.lower()] == v for k, v in key[1].items()):
-                return i
-        return None
+        obj, index = self._data, None
+        for part in key:
+            if isinstance(part, str) and isinstance(obj, dict) and part.lower() in obj:
+                obj, index = obj[part.lower()], None
+            elif isinstance(part, dict) and isinstance(obj, list):
+                index = next((i for i, item in enumerate(obj) if isinstance(item, dict)
+                              and all(k.lower() in item and item[k.lower()] == v for k, v in part.items())), None)
+                if index is None:
+                    return None
+                obj = obj[index]
+            else:
+                return None
+        return index
 
     # Load default project data
     def new(self):

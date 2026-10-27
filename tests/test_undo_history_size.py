@@ -95,6 +95,22 @@ def test_an_undone_delete_puts_the_item_back_where_it_was(editor):
     assert _state(editor) == before
 
 
+def test_an_undone_effect_delete_puts_the_effect_back_where_it_was(editor):
+    # Effect.delete() names the effect inside its clip: ["clips", {...}, "effects", {...}].
+    f = _timeline(editor, clips=2)
+    clip_id = editor.add_clip(f, position=10.0, end=2.0)
+    effects = [{"id": f"FX{i}", "type": "Blur"} for i in range(3)]
+    editor.app.updates.update(["clips", {"id": clip_id}], {"effects": effects})
+    before = _state(editor)
+    editor.app.updates.delete(["clips", {"id": clip_id}, "effects", {"id": "FX1"}])
+    assert editor.manager.actionHistory[-1].index == 1
+    editor.undo()
+    assert [e["id"] for e in editor.clip(clip_id)["effects"]] == ["FX0", "FX1", "FX2"]
+    assert _state(editor) == before
+    editor.redo()
+    assert [e["id"] for e in editor.clip(clip_id)["effects"]] == ["FX0", "FX2"]
+
+
 def test_a_replaced_item_is_undone_in_place(editor):
     """Delete + insert of the same id in one step (how an engine answer replaces a clip)."""
     _timeline(editor, clips=4)
