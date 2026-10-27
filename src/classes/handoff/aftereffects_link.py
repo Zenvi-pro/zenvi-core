@@ -19,6 +19,7 @@ Loaded by ``classes.handoff.plugins``.
 from __future__ import annotations
 
 import os
+import threading
 from fractions import Fraction
 from typing import Any, Dict, Optional
 
@@ -30,6 +31,7 @@ from classes.handoff.linked_media import (
 APP = "aftereffects"
 RENDER_TOOL = "ae_render_for_zenvi"
 RENDER_TIMEOUT = 60 * 60
+CANCEL_POLL = 0.25  # seconds between should_cancel() checks while After Effects renders
 _schema_cache: Dict[str, Any] = {}
 
 
@@ -65,6 +67,32 @@ def _fps(value: Any) -> Fraction:
     except (TypeError, ValueError):
         return Fraction(30)
 
+
+
+def _call_cancellable(tool: str, args: Dict[str, Any], should_cancel) -> Any:
+    """call_host_tool in a helper thread, polling *should_cancel* while it waits.
+
+    A cancel raises ``jobs.JobCancelled`` at once; Zenvi stops waiting and drops the
+    staging folder, while After Effects finishes (or fails) its render on its own."""
+    from classes.handoff.jobs import JobCancelled
+
+    box: Dict[str, Any] = {}
+
+    def run():
+        try:
+            box["result"] = adobe_link.call_host_tool(APP, tool, args, timeout=RENDER_TIMEOUT)
+        except BaseException as exc:  # re-raised on the caller's thread below
+            box["error"] = exc
+
+    worker = threading.Thread(target=run, name="ae-render", daemon=True)
+    worker.start()
+    while worker.is_alive():
+        if should_cancel():
+            raise JobCancelled("After Effects render cancelled")
+        worker.join(CANCEL_POLL)
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
 
 class AfterEffectsProvider:
     kind = "aftereffects"
@@ -102,7 +130,7 @@ class AfterEffectsProvider:
             args[names["project"]] = source["aep"]
         on_progress(None, "After Effects is rendering %s" % (source.get("composition") or comp))
         try:
-            result = adobe_link.call_host_tool(APP, RENDER_TOOL, args, timeout=RENDER_TIMEOUT)
+            result = _call_cancellable(RENDER_TOOL, args, should_cancel)
         except adobe_link.LinkHostError as exc:
             raise LinkError(f"After Effects could not render: {exc}") from None
         if result.is_error:

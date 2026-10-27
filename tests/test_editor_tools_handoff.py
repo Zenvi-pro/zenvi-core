@@ -267,6 +267,23 @@ def test_after_effects_provider_renders_through_zenvi_link(linked, tmp_path):
         host.stop()
 
 
+def test_after_effects_render_stops_waiting_when_cancelled(monkeypatch):
+    import threading
+    from classes.handoff import adobe_link, aftereffects_link
+    from classes.handoff.jobs import JobCancelled
+    release = threading.Event()
+    monkeypatch.setattr(adobe_link, "call_host_tool", lambda *a, **k: release.wait(5))
+    monkeypatch.setattr(aftereffects_link, "CANCEL_POLL", 0.01)
+    cancelled = []
+    try:
+        with pytest.raises(JobCancelled):
+            aftereffects_link._call_cancellable("ae_render_for_zenvi", {}, lambda: cancelled.append(1) or len(cancelled) > 2)
+    finally:
+        release.set()
+    monkeypatch.setattr(adobe_link, "call_host_tool", lambda *a, **k: "done")
+    assert aftereffects_link._call_cancellable("ae_render_for_zenvi", {}, lambda: False) == "done"
+
+
 def test_import_linked_media_copies_a_render_from_the_temp_folder(linked):
     import tempfile
     fd, src = tempfile.mkstemp(suffix=".mov")  # a render the user saved in /tmp or $TMPDIR is still theirs
