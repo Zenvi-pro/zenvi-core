@@ -86,6 +86,22 @@ class _DownloadWorker(QObject):
         self.finished.emit(self._video_id, local_path, error)
 
 
+_image_pool = None
+
+
+def image_pool():
+    """Where network image fetches run: never QThreadPool.globalInstance().
+
+    Qt smooth-scales a large image across the global pool and the GUI thread waits
+    for it; fetches parked there on a slow host froze the editor for minutes.
+    """
+    global _image_pool
+    if _image_pool is None:
+        _image_pool = QThreadPool()
+        _image_pool.setMaxThreadCount(4)
+    return _image_pool
+
+
 class _ThumbnailRunnable(QRunnable):
     """Fetches a thumbnail URL and emits the result via a signal carrier."""
 
@@ -266,7 +282,7 @@ class PexelsDock(QDockWidget):
         self._dl_threads: Dict[int, QThread] = {}
         self._dl_workers: Dict[int, _DownloadWorker] = {}
         self._cards: Dict[int, _VideoCard] = {}
-        self._thumb_pool = QThreadPool.globalInstance()
+        self._thumb_pool = image_pool()
 
         self._build_ui()
 

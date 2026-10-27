@@ -241,3 +241,15 @@ def test_footage_tooltips_show_provider_text_literally():
 
     card = _VideoCard(dict(_videos(1)[0], user_name='<a href="https://evil.example">x</a>'))
     assert "<a href" not in card.toolTip() and "&lt;a href" in card.toolTip()
+
+
+def test_image_loads_never_use_the_global_thread_pool():
+    # Qt's smooth scaling of a large image runs on QThreadPool.globalInstance() and the GUI
+    # thread waits for it; network fetches parked there froze the editor for minutes.
+    from PyQt5.QtCore import QThreadPool
+    from windows.freesound_dock import FreesoundDock
+    from windows.pexels_dock import PexelsDock
+    from windows.views.stock_search_view import StockSearchView
+
+    pools = [StockSearchView()._pool, FreesoundDock()._wave_pool, PexelsDock()._thumb_pool]
+    assert all(p is not QThreadPool.globalInstance() for p in pools)
