@@ -47,6 +47,23 @@ _UNVERIFIED_KEY_TRANSPORT = "Your own provider key is only sent to a verified HT
 CLIENT_FEATURES = ["local_motion_graphics"]
 
 
+def client_features() -> list:
+    """Features this desktop can run.
+
+    local_motion_graphics means this build can render HyperFrames and local
+    Manim. local_manim is added only when Manim is actually installed, so the
+    backend falls back to server Manim otherwise.
+    """
+    features = list(CLIENT_FEATURES)
+    try:
+        from classes.manim_local import manim_program
+        if manim_program():
+            features.append("local_manim")
+    except Exception:
+        pass
+    return features
+
+
 def _refresh_credits_after_backend_billing() -> None:
     """Repaint the credits badge after a request the backend bills itself.
 
@@ -475,7 +492,7 @@ class ZenviBackendClient:
                 "model_id": model_id,
                 "session_id": session_id,
                 "auth_token": token,
-                "client_features": CLIENT_FEATURES,
+                "client_features": client_features(),
             }
             if agent_mode in ("planning", "agent"):
                 payload_data["agent_mode"] = agent_mode
