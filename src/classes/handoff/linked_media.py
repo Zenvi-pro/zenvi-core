@@ -928,6 +928,29 @@ def _identity(link: Optional[dict]) -> dict:
             "props": link_props(link)}
 
 
+def project_token() -> Optional[int]:
+    """Which open project this is: its data is replaced only when a project is opened or created."""
+    try:
+        return id(_app().project._data)
+    except Exception:
+        return None
+
+
+def _check_project(file_id: str, expect: Optional[dict]) -> None:
+    """Refuse a swap whose render was made while another project was open (before its file lookup)."""
+    if expect is not None and "project" in expect and expect["project"] != project_token():
+        raise LinkError(f"another project was opened while {file_id!r} was rendering; the new render was dropped")
+
+
+def _check_expect(file_id: str, expect: Optional[dict], link: Optional[dict], name: str = "") -> None:
+    """Refuse a swap whose render was made from a link that changed since."""
+    if expect is None:
+        return
+    if _identity(link) != {k: v for k, v in expect.items() if k != "project"}:
+        raise LinkError(f"{name or file_id!r} was changed while it was rendering (props or source); the "
+                        "new render was dropped -- re-render it again")
+
+
 def _probe_new_media(new_path: str) -> Tuple[str, dict, float]:
     new_path = _check_media_path(new_path)
     reader = probe_media(new_path)
@@ -940,12 +963,11 @@ def _probe_new_media(new_path: str) -> Tuple[str, dict, float]:
 def _swap_on_gui(file_id: str, reader: dict, duration: float, update: dict, expect: Optional[dict]):
     """The GUI-thread half of a swap; joins the caller's transaction. Returns (stored, updated, warnings, notes)."""
     from classes import project_files
+    _check_project(file_id, expect)  # before the file lookup can miss
     f = _linked_file(file_id)
     old = copy.deepcopy(f.data)
     link = read_link(old) or {}
-    if expect is not None and _identity(link) != expect:
-        raise LinkError(f"{old.get('name') or file_id!r} was changed while it was rendering (props or source); the "
-                        "new render was dropped -- re-render it again")
+    _check_expect(file_id, expect, link, old.get("name") or "")
     merged = dict(link, **{k: v for k, v in update.items() if k not in ("source", "render")})
     for sub in ("source", "render"):
         if isinstance(update.get(sub), dict):
@@ -1030,10 +1052,12 @@ def swap_linked_media_many(items: List[Tuple[str, str, dict, Optional[dict]]]) -
     def _commit():
         from classes.updates import nested_transaction
         for fid, _path, _reader, _duration, _update, expect in probed:  # validate all before mutating any
+            _check_project(fid, expect)
             f = _linked_file(fid)
-            if expect is not None and _identity(read_link(f.data)) != expect:
-                raise LinkError(f"{f.data.get('name') or fid!r} was changed while it was rendering; nothing was "
-                                "swapped -- re-render again")
+            try:
+                _check_expect(fid, expect, read_link(f.data), f.data.get("name") or "")
+            except LinkError as exc:
+                raise LinkError(f"{exc}; nothing was swapped") from None
         with nested_transaction(_app().updates):
             return [_swap_on_gui(fid, reader, duration, update, None)
                     for fid, _path, reader, duration, update, _expect in probed]
@@ -1175,13 +1199,10 @@ def render_link(link: dict, *, on_progress: Optional[ProgressFn] = None,
         if path_is_under(produced, staging):
             os.replace(produced, target)
         else:
-            # a host (After Effects) rendered elsewhere: bring it into the staging folder first, so
-            # a failed copy is cleaned up with it; files in the temp folder are ours to take
+            # a host (After Effects) rendered elsewhere: copy it into the staging folder first, so
+            # a failed copy is cleaned up with it (the host's file is not ours to move)
             staged = os.path.join(staging, "incoming" + ext)
-            if path_is_under(produced, tempfile.gettempdir()):
-                shutil.move(produced, staged)
-            else:
-                shutil.copy2(produced, staged)
+            shutil.copy2(produced, staged)
             os.replace(staged, target)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
@@ -1298,9 +1319,12 @@ def is_rendering(file_id: str) -> bool:
 
 
 def _claim(file_id: str) -> None:
-    if is_rendering(file_id):
-        raise LinkError("that linked clip is already rendering; wait for it to finish or cancel it")
-    with _rendering_lock:
+    from classes.handoff import jobs
+    with _rendering_lock:  # check and claim in one hold, so two callers cannot both see it free
+        until = _rendering.get(str(file_id), 0.0)
+        busy = until is None or until > time.monotonic()
+        if busy or jobs.job_for(str(file_id)) is not None:  # jobs never takes _rendering_lock
+            raise LinkError("that linked clip is already rendering; wait for it to finish or cancel it")
         _rendering[str(file_id)] = None
 
 
@@ -1338,7 +1362,7 @@ def prepare_rerender(file_id: str, *, props: Optional[dict] = None, replace_prop
     from classes.handoff import jobs
     f = _read_on_gui(_linked_file, file_id)
     link = read_link(f.data) or {}
-    expect = _identity(link)
+    expect = dict(_identity(link), project=project_token())
     if props is not None:
         if not isinstance(props, dict):
             raise LinkError("props must be an object")
@@ -1516,7 +1540,7 @@ def adopt_linked_renders(files: List[dict], clips: List[dict], project_file_path
     hard links) keeps its old, still-valid path (logged; Collect Media copies
     it) -- never a slow or failed save. File paths and clip readers are
     updated in memory; ``render.output`` tokens (``@assets/links/...``) stay
-    valid. Returns the move ledger ``[(src, dest)]`` for
+    valid. Returns the ledger ``[(src, dest)]`` of moves and links for
     ``assets.reverse_media_moves``; *path_changes* (a dict) receives every
     ``old path -> new path`` (moves and links) for :func:`remap_history_paths`.
 
@@ -1567,6 +1591,7 @@ def adopt_linked_renders(files: List[dict], clips: List[dict], project_file_path
                 moves.append((abs_src, dest))
             else:
                 os.link(abs_src, dest)
+                moves.append((abs_src, dest))  # a failed save removes the link (the source stays)
         except OSError as exc:
             if isinstance(exc, PermissionError) or exc.errno in (errno.EXDEV, errno.EPERM, errno.ENOTSUP,
                                                                  errno.EOPNOTSUPP, errno.EMLINK, errno.EACCES):

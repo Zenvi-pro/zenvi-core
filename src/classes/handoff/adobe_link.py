@@ -494,8 +494,10 @@ def _result_from(tool: str, app: str, result: Any) -> HostResult:
 
 TIMEOUT_SLACK = 15.0
 MAX_TIMEOUT = 3 * 60 * 60
-# The fields of a host tool an agent needs to call it (no outputSchema, timeouts, image flags).
-CATALOG_KEYS = ("name", "title", "description", "inputSchema", "annotations")
+# A host tool as an agent sees it: BRIEF to learn what an app can do (a whole catalog stays small),
+# DETAIL to call it (no outputSchema, timeouts or image flags).
+BRIEF_KEYS = ("name", "title")
+DETAIL_KEYS = ("name", "title", "description", "inputSchema", "annotations")
 _catalogs: Dict[Any, List[dict]] = {}
 _catalogs_lock = threading.Lock()
 
@@ -523,9 +525,14 @@ def host_catalog(app: str, base_dir: Optional[str] = None, *, refresh: bool = Fa
     return rows
 
 
-def compact_tool(row: dict) -> dict:
-    """A catalog row as an agent needs it: ``{name, title, description, inputSchema, annotations}``."""
-    return {k: copy.deepcopy(row[k]) for k in CATALOG_KEYS if k in row}
+def tool_brief(row: dict) -> dict:
+    """A catalog row as ``{name, title}``: enough to know what the tool is for."""
+    return {k: copy.deepcopy(row[k]) for k in BRIEF_KEYS if k in row}
+
+
+def tool_details(row: dict) -> dict:
+    """A catalog row as an agent needs it to call the tool: ``{name, title, description, inputSchema, annotations}``."""
+    return {k: copy.deepcopy(row[k]) for k in DETAIL_KEYS if k in row}
 
 
 def tool_timeout(app: str, tool: str, base_dir: Optional[str] = None) -> float:

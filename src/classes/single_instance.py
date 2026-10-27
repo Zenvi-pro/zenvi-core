@@ -169,6 +169,30 @@ def is_running(name: str, socket_factory=_new_socket) -> bool:
     return connected
 
 
+# How long a launch watches a window it handed off to, in case that window
+# was quitting (it answered, or held its socket, on its way out).
+WENT_AWAY_TIMEOUT_MS = 5000
+
+
+def went_away(name: str, timeout_ms=WENT_AWAY_TIMEOUT_MS, socket_factory=_new_socket,
+              sleep=None) -> bool:
+    """True when the window on *name* stops listening within *timeout_ms*.
+
+    A window closes its socket as it starts shutting down, so a launch that
+    reached one mid-quit (e.g. the window that just restarted to install an
+    update) can tell and start its own instead of leaving nothing on screen.
+    """
+    import time
+    sleep = sleep or time.sleep
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while True:
+        if not is_running(name, socket_factory):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        sleep(0.25)
+
+
 def hand_off(name: str, paths, socket_factory=_new_socket,
              connect_timeout_ms=CONNECT_TIMEOUT_MS, reply_timeout_ms=REPLY_TIMEOUT_MS):
     """Give *paths* to the window listening on *name*.

@@ -345,7 +345,10 @@ def test_export_fcpxml_and_edl(editor, tmp_path, monkeypatch):
 
 # --- media collect / reclaim ----------------------------------------------
 
-def test_collect_then_reclaim_media(editor, tmp_path):
+def test_collect_then_reclaim_media(editor, tmp_path, monkeypatch):
+    from classes.editor_tools import project_export as pe
+
+    monkeypatch.setattr(pe, "save_to", lambda path: None)  # reclaim saves before deleting
     outside = tmp_path / "outside" / "shot.mp4"
     outside.parent.mkdir()
     outside.write_bytes(b"video-bytes")
@@ -426,3 +429,50 @@ def test_edl_files_are_named_after_the_real_track_numbers(editor, tmp_path):
     assert names == ["cut-TRACK 1.edl", "cut-TRACK 3.edl"]
     body = open(tmp_path / "cut-TRACK 3.edl").read()
     assert body.startswith("TITLE: cut - TRACK 3") and "sample_video.mp4" in body
+
+
+def test_reclaim_tool_saves_before_it_deletes(editor, tmp_path, monkeypatch):
+    """Review #216 (#4, agent path): reclaim deleted the copies and left the
+    repointed project unsaved, so "Don't Save" kept references to deleted media."""
+    from classes.editor_tools import project_export as pe
+
+    outside = tmp_path / "outside" / "shot.mp4"
+    outside.parent.mkdir()
+    outside.write_bytes(b"video-bytes")
+    fid = editor.add_file("video", path=str(outside))
+    editor.add_clip(fid)
+    proj_dir = tmp_path / "proj"
+    proj_dir.mkdir()
+    editor.store.current_filepath = str(proj_dir / "film.zvn")
+    _receipt(editor.call("consolidate_project_media_tool", action="collect"))
+    copy_path = editor.file(fid)["path"]
+
+    saves = []
+    monkeypatch.setattr(pe, "save_to", lambda path: saves.append(
+        (path, editor.file(fid)["path"], os.path.isfile(copy_path))))
+    _receipt(editor.call("consolidate_project_media_tool", action="reclaim"))
+    assert saves == [(str(proj_dir / "film.zvn"), str(outside), True)]
+    assert not os.path.exists(copy_path)
+
+
+def test_reclaim_tool_keeps_the_copies_when_the_save_fails(editor, tmp_path, monkeypatch):
+    from classes.editor_tools import project_export as pe
+
+    outside = tmp_path / "outside" / "shot.mp4"
+    outside.parent.mkdir()
+    outside.write_bytes(b"video-bytes")
+    fid = editor.add_file("video", path=str(outside))
+    editor.add_clip(fid)
+    proj_dir = tmp_path / "proj"
+    proj_dir.mkdir()
+    editor.store.current_filepath = str(proj_dir / "film.zvn")
+    _receipt(editor.call("consolidate_project_media_tool", action="collect"))
+    copy_path = editor.file(fid)["path"]
+
+    def broken_save(path):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(pe, "save_to", broken_save)
+    out = editor.call("consolidate_project_media_tool", action="reclaim")
+    assert "disk full" in out
+    assert os.path.isfile(copy_path) and editor.file(fid)["path"] == copy_path

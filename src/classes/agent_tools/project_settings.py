@@ -1,5 +1,10 @@
 """Direct project fps / resolution / sample-rate settings for the agent."""
 
+# DEAD CODE (PR #216 review): set_project_setting_tool is served by classes/editor_tools/project_export_profiles.py
+# (the editor registry overrides PHASE3_HANDLERS in tool_handlers). Delete this module
+# with its entry in agent_tools/handlers/__init__.py and tests/test_agent_new_tools.py's
+# set_project_setting checks.
+
 from __future__ import annotations
 
 import os

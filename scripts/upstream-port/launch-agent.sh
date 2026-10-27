@@ -43,7 +43,7 @@ COMMON=(--dangerously-skip-permissions --strict-mcp-config --mcp-config "$EMPTY_
 tmux pipe-pane -o -t "${TMUX_PANE:-}" "cat >> '$LOG_DIR/$FEATURE.tmux.log'" 2>/dev/null || true
 if [[ -f "$SESSION_MARK" && "$FRESH" == 0 ]]; then
   log "resuming session for $FEATURE"
-  exec "$CLAUDE_BIN" "${COMMON[@]}" --continue "Session resumed by launch-agent.sh. Re-read scripts/upstream-port state ($STATE_DIR/$FEATURE.json), check \`git status\` and \`git log --oneline origin/develop..HEAD\`, then continue the procedure from where you stopped."
+  exec "$CLAUDE_BIN" "${COMMON[@]}" --continue "Session resumed by launch-agent.sh. Re-read scripts/upstream-port state ($STATE_DIR/$FEATURE.json), check \`git status\` and \`git log --oneline origin/main..HEAD\`, then continue the procedure from where you stopped."
 fi
 touch "$SESSION_MARK"
 BRIEF="$(mf describe "$FEATURE")"

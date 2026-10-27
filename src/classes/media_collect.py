@@ -16,24 +16,33 @@ def collect_media_into_project(files, clips, project_file_path, app_root=None):
 
     User-invoked handoff/archive helper. Returns ``(copied, skipped, errors)``.
     """
+    copied, skipped, errors, moves = copy_media_into_project(files, project_file_path, app_root)
+    repoint_media(files, clips, moves, keep_original=True)
+    return copied, skipped, errors
+
+
+def copy_media_into_project(files, project_file_path, app_root=None):
+    """The file-copy half of collect; reads *files*, never changes them.
+
+    Returns ``(copied, skipped, errors, moves)``; *moves* are
+    ``(file_id, old_path, new_path)`` for :func:`repoint_media`.
+    """
     copied = []
     skipped = []
     errors = []
+    moves = []
     if not project_file_path or not files:
-        return copied, skipped, errors
+        return copied, skipped, errors, moves
 
     asset_path = get_assets_path(project_file_path, create_paths=True)
     if not asset_path:
-        return copied, skipped, errors
+        return copied, skipped, errors, moves
     media_dir = os.path.join(asset_path, "media")
     try:
         os.makedirs(media_dir, exist_ok=True)
     except OSError as exc:
         errors.append(str(exc))
-        return copied, skipped, errors
-
-    id_to_new = {}
-    src_to_new = {}
+        return copied, skipped, errors, moves
 
     for file in files:
         src = file.get("path") or ""
@@ -66,30 +75,113 @@ def collect_media_into_project(files, clips, project_file_path, app_root=None):
             log.info("Collected media %s -> %s", abs_src, dest)
         else:
             skipped.append(abs_src)
+        moves.append((file.get("id"), abs_src, dest))
 
-        if not file.get("original_path"):
-            file["original_path"] = abs_src
-        file["path"] = dest
-        file_id = file.get("id")
-        if file_id:
-            id_to_new[file_id] = dest
-        src_to_new[abs_src] = dest
+    return copied, skipped, errors, moves
 
+
+def repoint_media(files, clips, moves, keep_original=False):
+    """Point files and clip readers from each move's old path to its new one.
+
+    Cheap and in-memory: the half of collect/reclaim that touches project data.
+    With *keep_original* a file remembers the path it was collected from.
+    """
+    by_id = {fid: (old, new) for fid, old, new in moves if fid}
+    by_path = {os.path.abspath(old): new for _fid, old, new in moves}
+    for file in files or []:
+        path = file.get("path") or ""
+        hit = by_id.get(file.get("id"))
+        new = hit[1] if hit else (by_path.get(os.path.abspath(path)) if path else None)
+        if new is None:
+            continue
+        if keep_original and not file.get("original_path"):
+            file["original_path"] = os.path.abspath(path)
+        file["path"] = new
     for clip in clips or []:
         reader = clip.get("reader")
         if not isinstance(reader, dict):
             continue
         file_id = clip.get("file_id")
         rpath = reader.get("path") or ""
-        if file_id and file_id in id_to_new:
-            reader["path"] = id_to_new[file_id]
-        elif rpath and os.path.abspath(rpath) in src_to_new:
-            reader["path"] = src_to_new[os.path.abspath(rpath)]
-
-    return copied, skipped, errors
+        if file_id and file_id in by_id:
+            reader["path"] = by_id[file_id][1]
+        elif rpath and os.path.abspath(rpath) in by_path:
+            reader["path"] = by_path[os.path.abspath(rpath)]
 
 
-def reclaim_unused_asset_media(files, clips, project_file_path):
+def find_reclaimable_media(files, project_file_path):
+    """Asset copies whose recorded original still exists byte-for-byte.
+
+    The slow (full-file hash) half of reclaim; reads *files*, never changes
+    them or the disk. Returns ``(moves, kept, errors)`` with moves
+    ``(file_id, copy_path, original_path)``.
+    """
+    moves = []
+    kept = []
+    errors = []
+    if not project_file_path:
+        return moves, kept, errors
+
+    asset_path = get_assets_path(project_file_path, create_paths=False)
+    if not asset_path:
+        return moves, kept, errors
+    media_dir = os.path.join(asset_path, "media")
+    if not os.path.isdir(media_dir):
+        return moves, kept, errors
+
+    for file in files or []:
+        dest = file.get("path") or ""
+        original = file.get("original_path") or ""
+        if not dest or not original or not path_is_under(dest, media_dir):
+            continue
+        if not os.path.isfile(dest) or not os.path.isfile(original):
+            # Without a surviving original the copy may be the only version.
+            kept.append(os.path.abspath(dest))
+            continue
+        try:
+            if files_identical(dest, original):
+                moves.append((file.get("id"), os.path.abspath(dest), original))
+            else:
+                kept.append(os.path.abspath(dest))
+        except Exception as exc:
+            errors.append("%s: %s" % (dest, exc))
+    return moves, kept, errors
+
+
+def commit_reclaim(moves, repoint, save_project=None):
+    """Point the project at the originals, save it, and only then delete the copies.
+
+    *repoint(moves)* applies path moves to the live project. If *save_project*
+    raises, the project is pointed back at the copies and nothing is deleted,
+    so the saved project never references a removed file.
+    Returns ``(removed, errors)``.
+    """
+    if not moves:
+        return [], []
+    repoint(moves)
+    if save_project is not None:
+        try:
+            save_project()
+        except Exception as exc:
+            log.error("Reclaim: project save failed, keeping the copies", exc_info=1)
+            repoint([(fid, original, dest) for fid, dest, original in moves])
+            return [], ["Project not saved, nothing removed: %s" % exc]
+    removed = []
+    errors = []
+    for _fid, dest, original in moves:
+        try:
+            os.remove(dest)
+            removed.append(dest)
+            log.info("Reclaimed duplicate media %s (kept %s)", dest, original)
+        except OSError as exc:
+            errors.append("%s: %s" % (dest, exc))
+    return removed, errors
+
+
+# DEAD CODE (PR #216 review): no app caller left (File > Reclaim and consolidate_project_media_tool
+# use find_reclaimable_media + commit_reclaim directly); only tests/test_media_cache.py
+# calls it. Delete it and point those tests at commit_reclaim.
+def reclaim_unused_asset_media(files, clips, project_file_path, save_project=None):
     """Delete ``_assets/media`` copies whose original still exists and matches.
 
     Never deletes a copy whose original is missing — that copy may be the only
@@ -98,74 +190,10 @@ def reclaim_unused_asset_media(files, clips, project_file_path):
     Collect + Reclaim is intentionally reversible: reclaim undoes collect when
     the external original still exists and is byte-identical.
     """
-    removed = []
-    kept = []
-    errors = []
-    if not project_file_path:
-        return removed, kept, errors
-
-    asset_path = get_assets_path(project_file_path, create_paths=False)
-    if not asset_path:
-        return removed, kept, errors
-    media_dir = os.path.join(asset_path, "media")
-    if not os.path.isdir(media_dir):
-        return removed, kept, errors
-
-    referenced = set()
-    for file in files or []:
-        path = file.get("path") or ""
-        if path and path_is_under(path, media_dir):
-            referenced.add(os.path.abspath(path))
-
-    for name in os.listdir(media_dir):
-        dest = os.path.abspath(os.path.join(media_dir, name))
-        if not os.path.isfile(dest):
-            continue
-        if dest in referenced:
-            kept.append(dest)
-            continue
-        # Look for an original that still exists and fingerprint-matches.
-        # Without a recorded original path we cannot safely delete.
-        kept.append(dest)
-
-    id_to_original = {}
-    src_to_original = {}
-
-    # Safer reclaim: only remove copies that are still referenced AND whose
-    # full-file hash matches a sibling original path stored as file["original_path"].
-    for file in files or []:
-        dest = file.get("path") or ""
-        original = file.get("original_path") or ""
-        if not dest or not original:
-            continue
-        if not path_is_under(dest, media_dir):
-            continue
-        if not os.path.isfile(dest) or not os.path.isfile(original):
-            continue
-        try:
-            if files_identical(dest, original):
-                os.remove(dest)
-                file["path"] = original
-                removed.append(dest)
-                file_id = file.get("id")
-                if file_id:
-                    id_to_original[file_id] = original
-                src_to_original[os.path.abspath(dest)] = original
-                log.info("Reclaimed duplicate media %s (kept %s)", dest, original)
-            else:
-                kept.append(dest)
-        except Exception as exc:
-            errors.append("%s: %s" % (dest, exc))
-
-    for clip in clips or []:
-        reader = clip.get("reader")
-        if not isinstance(reader, dict):
-            continue
-        file_id = clip.get("file_id")
-        rpath = reader.get("path") or ""
-        if file_id and file_id in id_to_original:
-            reader["path"] = id_to_original[file_id]
-        elif rpath and os.path.abspath(rpath) in src_to_original:
-            reader["path"] = src_to_original[os.path.abspath(rpath)]
-
-    return removed, kept, errors
+    moves, kept, errors = find_reclaimable_media(files, project_file_path)
+    removed, commit_errors = commit_reclaim(
+        moves, lambda m: repoint_media(files, clips, m), save_project
+    )
+    if commit_errors and not removed:
+        kept.extend(dest for _fid, dest, _orig in moves)
+    return removed, kept, errors + commit_errors
