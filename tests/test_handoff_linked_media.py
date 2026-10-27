@@ -781,3 +781,29 @@ def test_add_linked_media_passes_the_batch_refresh_opt_in(linked):
     assert timeline.add_calls[-1]["ignore_refresh"] is True and timeline.update_calls[-1]["ignore_refresh"] is True
     lm.add_linked_media(linked.media("b.mov"), remotion_link(composition="B"), position=6.0)
     assert timeline.add_calls[-1]["ignore_refresh"] is False  # the default: refresh as before
+
+
+def test_two_claims_of_one_file_cannot_both_win(linked):
+    provider = FakeProvider(probe=linked.probe, seconds=5.0)
+    lm.register_provider(provider)
+    a, _b = _two_linked(linked, provider)
+    lm._claim(a["file_id"])
+    try:
+        with pytest.raises(lm.LinkError, match="already rendering"):
+            lm._claim(a["file_id"])
+    finally:
+        lm._release(a["file_id"])
+
+
+def test_a_render_made_for_another_project_is_dropped(linked, monkeypatch):
+    provider = FakeProvider(probe=linked.probe, seconds=5.0)
+    lm.register_provider(provider)
+    a, _b = _two_linked(linked, provider)
+    old = linked.file(a["file_id"])["path"]
+    prepared = lm.prepare_rerender(a["file_id"])
+    monkeypatch.setattr(lm, "_project_token", lambda: -1)  # the user opened another project meanwhile
+    with pytest.raises(lm.LinkError, match="another project was opened") as caught:
+        lm.swap_linked_media(prepared.file_id, prepared.path, prepared.link_update, expect=prepared.expect)
+    lm.finish_rerender(prepared, caught.value)
+    assert linked.file(a["file_id"])["path"] == old and linked.undo_steps_since_mark() == 0
+    assert not lm.is_rendering(a["file_id"])
