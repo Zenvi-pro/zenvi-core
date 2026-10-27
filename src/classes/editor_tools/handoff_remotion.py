@@ -17,6 +17,7 @@ only for the project snapshot and the one-undo-step insert.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional
 
 from classes.editor_tools._base import (
@@ -200,8 +201,9 @@ def export_to_remotion(output_dir, copy_media=True, install=False, replace_edits
     from classes.handoff.remotion import exporter
     if not str(output_dir or "").strip():
         raise ToolError("output_dir is required: the folder to create the Remotion project in")
+    output_dir = os.path.abspath(os.path.expanduser(str(output_dir).strip()))
     try:
-        exporter.target_mode(str(output_dir))
+        exporter.target_mode(output_dir)
     except LinkError as exc:
         raise _fail(exc) from None
     taken = precheck_on_main(exporter.snapshot_from_app)

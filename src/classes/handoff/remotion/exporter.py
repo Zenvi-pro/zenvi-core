@@ -724,6 +724,10 @@ def is_zenvi_export(folder: str) -> bool:
     return bool(re.search(r'"zenvi_timeline"\s*:\s*\d+', head))
 
 
+# Files the OS's file manager drops into a folder; a folder holding only these counts as empty.
+FOLDER_JUNK = (".DS_Store", "Thumbs.db")
+
+
 def target_mode(output_dir: str) -> str:
     """``new`` (missing or empty folder) or ``update`` (a previous Zenvi export); ExportError otherwise."""
     if not output_dir:
@@ -735,7 +739,7 @@ def target_mode(output_dir: str) -> str:
         if parent and not os.path.isdir(parent):
             raise ExportError(f"the folder {parent} does not exist")
         return "new"
-    entries = [e for e in os.listdir(output_dir) if e not in (".DS_Store", "Thumbs.db")]
+    entries = [e for e in os.listdir(output_dir) if e not in FOLDER_JUNK]
     if not entries:
         return "new"
     if is_zenvi_export(output_dir):
@@ -1123,6 +1127,9 @@ def export_project(snapshot: TimelineSnapshot, project_data: dict, output_dir: s
             raise JobCancelled("Remotion export cancelled")
         if mode == "new":
             if os.path.isdir(output_dir):
+                for junk in FOLDER_JUNK:  # Finder / Explorer files are all an "empty" folder may hold
+                    if os.path.isfile(os.path.join(output_dir, junk)):
+                        os.unlink(os.path.join(output_dir, junk))
                 os.rmdir(output_dir)  # empty (checked above)
             os.replace(stage, output_dir)
             stage = output_dir
