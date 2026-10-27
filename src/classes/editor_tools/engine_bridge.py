@@ -246,6 +246,9 @@ def _serialize(data: dict) -> Optional[str]:
 def _apply(answer: dict, project_file: str, version) -> Optional[str]:
     """Apply the answer's actions on the GUI thread; an error message when refused."""
     app = get_app()
+    # Before STALE: _apply_current reads the keys of a stale answer's actions.
+    if not _well_formed(answer.get("actions") or []):
+        return "the engine answered a malformed action; nothing was applied"
     current = getattr(app.project, "current_filepath", None)
     if not current or os.path.abspath(current) != project_file:
         return SWITCHED
@@ -254,8 +257,6 @@ def _apply(answer: dict, project_file: str, version) -> Optional[str]:
     # The engine keeps the bundled-asset aliases (@transitions/…); resolve them like a project load.
     text = app.project.convert_paths_to_absolute(project_file, json.dumps(answer.get("actions") or []))
     actions = json.loads(text)
-    if not _well_formed(actions):
-        return "the engine answered a malformed action; nothing was applied"
     unknown = sorted({str(a.get("type")) for a in actions} - set(_APPLY))
     if unknown:
         # Checked before applying anything: a partly applied answer would leave half a change.

@@ -247,6 +247,20 @@ def test_a_malformed_action_applies_nothing_and_removes_the_files(bridge, monkey
     assert bridge.undo_steps_since_mark() == 0
 
 
+def test_a_malformed_action_in_a_stale_answer_is_refused_not_raised(bridge, monkeypatch):
+    # A stale answer goes on to compare what changed with the keys of its actions.
+    from classes import engine_bridge
+    from classes.editor_tools import engine_bridge as bridged
+
+    real = bridged._snapshot
+    monkeypatch.setattr(bridged, "_snapshot", lambda: (real()[0], "an older version", real()[2]))
+    answer = {"ok": True, "text": "{}", "actions": ["insert"], "files": []}
+    monkeypatch.setattr(engine_bridge, "get_client", lambda: _Answering(answer))
+    receipt = bridge.call_receipt("add_motion_template_tool", template="end_card")
+    assert receipt["summary"].startswith("Error") and "malformed" in receipt["summary"]
+    assert bridge.undo_steps_since_mark() == 0
+
+
 def test_discard_does_not_follow_a_symlink_out_of_the_assets_folder(tmp_path):
     from classes.assets import get_assets_path
     from classes.editor_tools import engine_bridge as bridged
