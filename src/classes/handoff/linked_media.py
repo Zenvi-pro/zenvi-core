@@ -70,6 +70,17 @@ RENDER_KEYS = ("codec", "width", "height", "fps", "duration_frames", "output", "
 LINKS_FOLDER = "links"
 STAGING_PREFIX = ".render-"
 LINKED_TRACK_LABEL = "Linked"
+
+
+def is_owned_temp_media(path: str) -> bool:
+    """True when *path* lives in a folder Zenvi created for staging and may be moved.
+
+    System temp alone is not enough: agents, pytest and users also write under
+    ``tempfile.gettempdir()``. Moving those would delete the caller's file (and
+    is why CI failed when pytest's ``tmp_path`` sat under ``/tmp``).
+    """
+    parts = os.path.abspath(path).replace("\\", "/").split("/")
+    return any(part.startswith(STAGING_PREFIX) for part in parts[:-1])
 FINGERPRINT_SMALL_FILE = 2 * 1024 * 1024
 FINGERPRINT_MAX_FILES = 20000
 DEFAULT_EXCLUDED_DIRS = frozenset({"node_modules", ".git", ".hg", ".svn", "out", "dist", "build", ".next",
@@ -1199,10 +1210,14 @@ def render_link(link: dict, *, on_progress: Optional[ProgressFn] = None,
         if path_is_under(produced, staging):
             os.replace(produced, target)
         else:
-            # a host (After Effects) rendered elsewhere: copy it into the staging folder first, so
-            # a failed copy is cleaned up with it (the host's file is not ours to move)
+            # a host (After Effects) rendered elsewhere: bring it into the staging folder first, so
+            # a failed copy is cleaned up with it. Only move files Zenvi staged itself; anything
+            # else (including plain /tmp) is copied so the caller's original stays put.
             staged = os.path.join(staging, "incoming" + ext)
-            shutil.copy2(produced, staged)
+            if is_owned_temp_media(produced):
+                shutil.move(produced, staged)
+            else:
+                shutil.copy2(produced, staged)
             os.replace(staged, target)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
@@ -1627,7 +1642,7 @@ __all__ = [
     "is_linked", "kind_label", "register_provider", "unregister_provider", "provider_for", "registered_kinds",
     "supports_studio", "require_provider", "fingerprint_value", "fingerprint_sources", "short_fingerprint",
     "links_root", "links_dir", "output_token", "render_file_name", "check_link", "check_links", "link_state",
-    "fingerprint_cache", "probe_media",
+    "fingerprint_cache", "probe_media", "is_owned_temp_media",
     "add_linked_media", "swap_linked_media", "update_link", "unlink", "render_link", "import_linked",
     "rerender_linked", "rerender_many", "prepare_rerender", "finish_rerender", "PreparedRender",
     "swap_linked_media_many", "is_rendering", "precheck_placement", "adopt_linked_renders", "remap_history_paths",
