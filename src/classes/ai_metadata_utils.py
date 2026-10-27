@@ -11,6 +11,7 @@ Persisted clip metadata stores:
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Tuple
 
 _SCENE_EPS = 1e-3
@@ -38,9 +39,18 @@ def clip_metadata_is_valid(
     clip_ai: Optional[dict],
     source_start: float,
     source_end: float,
+    root_ai: Optional[dict] = None,
 ) -> bool:
-    """True when persisted clip ai_metadata matches the trim window."""
+    """True when persisted clip ai_metadata matches the trim window.
+
+    With *root_ai*, the clip must also come from the source's current analysis:
+    a snapshot taken before the source was re-indexed has the old analysis_date.
+    """
     if not isinstance(clip_ai, dict) or not clip_ai.get("analyzed"):
+        return False
+    if isinstance(root_ai, dict) and str(clip_ai.get("analysis_date") or "") != str(
+        root_ai.get("analysis_date") or ""
+    ):
         return False
     sw = clip_ai.get("source_window")
     if not isinstance(sw, dict):
@@ -308,8 +318,10 @@ def get_effective_ai_metadata(
     if root_ai is None and isinstance(file_data, dict):
         root_ai = file_data.get("ai_metadata")
     # Hydrate bulky transcript/scene fields from the fingerprint cache when
-    # project JSON only holds index handles (or a thin stub).
-    if isinstance(file_data, dict):
+    # project JSON only holds index handles (or a thin stub). A root with its
+    # own analysis is the live record: merging the cache into it would bring
+    # back fields from an older run.
+    if isinstance(file_data, dict) and not is_ai_metadata_usable(root_ai or {}):
         fp = file_data.get("fingerprint")
         if fp:
             try:
@@ -331,7 +343,7 @@ def get_effective_ai_metadata(
         return {}
 
     # Recompute when clip metadata is missing, stale, or window-mismatched.
-    if clip_metadata_is_valid(clip_ai_metadata, start_time, end_time):
+    if clip_metadata_is_valid(clip_ai_metadata, start_time, end_time, root_ai):
         if rebased:
             scenes = clip_ai_metadata.get("scene_descriptions") or []
             return {
@@ -440,6 +452,39 @@ def is_ai_metadata_usable(ai_metadata: Dict[str, Any]) -> bool:
             if tags.get(key):
                 return True
     return False
+
+
+# What one indexing attempt says about itself, as opposed to the analysis content.
+_ATTEMPT_STATUS_KEYS = ("error", "skip_reason")
+
+
+def merge_indexing_result(previous: Optional[dict], result: Dict[str, Any]) -> Dict[str, Any]:
+    """The ai_metadata a file should hold after an indexing attempt returned *result*.
+
+    A usable result replaces everything, so a successful retry also drops the
+    old ``error``; it is dated so clip snapshots of the old analysis read as
+    stale. An unusable result (a failure, a skip, the in-progress stub) must not
+    wipe earlier good analysis: keep that content but take this attempt's
+    status, so a second failure reports its own error rather than the first.
+    """
+    prev = previous if isinstance(previous, dict) else {}
+    if is_ai_metadata_usable(result) or not is_ai_metadata_usable(prev):
+        merged = dict(result)
+        if is_ai_metadata_usable(merged) and not merged.get("analysis_date"):
+            merged["analysis_date"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        return merged
+
+    merged = {k: v for k, v in prev.items() if k not in _ATTEMPT_STATUS_KEYS}
+    for key in _ATTEMPT_STATUS_KEYS:
+        if result.get(key):
+            merged[key] = result[key]
+    if result.get("index"):
+        merged["index"] = result["index"]
+    if result.get("twelvelabs"):
+        merged["twelvelabs"] = result["twelvelabs"]
+    elif result.get("index"):
+        merged["twelvelabs"] = result["index"]
+    return merged
 
 
 def adjust_scene_descriptions_for_subclip(

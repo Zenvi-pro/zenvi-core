@@ -522,7 +522,8 @@ QDockWidget#AIMediaPanel QTextEdit#descriptionView {
 }
 QDockWidget#AIMediaPanel QProgressBar#indexingProgress { background: {active}; border: none; border-radius: 2px; }
 QDockWidget#AIMediaPanel QProgressBar#indexingProgress::chunk { background: {accent}; border-radius: 2px; }
-QDockWidget#AIMediaPanel QPushButton#refreshBtn { padding: 5px 10px; font-size: 12px; }
+QDockWidget#AIMediaPanel QPushButton#refreshBtn,
+QDockWidget#AIMediaPanel QPushButton#reindexBtn { padding: 5px 10px; font-size: 12px; }
 
 /* ── AI chat dock (Qt wrapper around the web view) ──────── */
 QDockWidget#AIChatWindow QWidget#AIChatWindowContents { background-color: {surface}; }

@@ -222,7 +222,8 @@ QDockWidget#AIMediaPanel QTextEdit#descriptionView {
 }
 QDockWidget#AIMediaPanel QProgressBar#indexingProgress { background: #252525; border: none; }
 QDockWidget#AIMediaPanel QProgressBar#indexingProgress::chunk { background: #2a82da; }
-QDockWidget#AIMediaPanel QPushButton#refreshBtn {
+QDockWidget#AIMediaPanel QPushButton#refreshBtn,
+QDockWidget#AIMediaPanel QPushButton#reindexBtn {
     background-color: #252525;
     color: #ffffff;
     border: 1px solid #404040;
@@ -230,7 +231,9 @@ QDockWidget#AIMediaPanel QPushButton#refreshBtn {
     padding: 6px;
     font-size: 11px;
 }
-QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover { border-color: #2a82da; }
+QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover,
+QDockWidget#AIMediaPanel QPushButton#reindexBtn:hover { border-color: #2a82da; }
+QDockWidget#AIMediaPanel QPushButton#reindexBtn:disabled { color: #6b6b6b; border-color: #303030; }
 QLabel#lblMissingFileHint,
 QLabel#lblMissingFilePath {
     color: #b8b8b8;
@@ -441,7 +444,8 @@ QDockWidget#AIMediaPanel QTextEdit#descriptionView {
 }
 QDockWidget#AIMediaPanel QProgressBar#indexingProgress { background: #ffffff; border: none; }
 QDockWidget#AIMediaPanel QProgressBar#indexingProgress::chunk { background: #2a82da; }
-QDockWidget#AIMediaPanel QPushButton#refreshBtn {
+QDockWidget#AIMediaPanel QPushButton#refreshBtn,
+QDockWidget#AIMediaPanel QPushButton#reindexBtn {
     background-color: #ffffff;
     color: #333333;
     border: 1px solid #cccccc;
@@ -449,7 +453,9 @@ QDockWidget#AIMediaPanel QPushButton#refreshBtn {
     padding: 6px;
     font-size: 11px;
 }
-QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover { border-color: #2a82da; }
+QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover,
+QDockWidget#AIMediaPanel QPushButton#reindexBtn:hover { border-color: #2a82da; }
+QDockWidget#AIMediaPanel QPushButton#reindexBtn:disabled { color: #a0a0a0; border-color: #dddddd; }
         """
 
     def apply_theme(self):
