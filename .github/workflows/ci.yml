@@ -85,8 +85,14 @@ jobs:
 
     - name: Install dependencies
       run: |
-        # Large debs trickle on a broken IPv6 route while apt update stays fast.
-        echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4
+        # azure.archive.ubuntu.com sometimes serves this tree at ~50 KB/s and
+        # drops the large debs. The runner mirror list keeps using it whenever
+        # it answers, so send apt to archive.ubuntu.com instead.
+        for f in /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+          if [ -f "$f" ]; then
+            sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' "$f"
+          fi
+        done
         sudo add-apt-repository ppa:openshot.developers/libopenshot-daily
         sudo apt update
         sudo apt install libopenshot-audio-dev libopenshot-dev python3-openshot
@@ -125,8 +131,14 @@ jobs:
 
     - name: Install dependencies
       run: |
-        # Large debs trickle on a broken IPv6 route while apt update stays fast.
-        echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4
+        # azure.archive.ubuntu.com sometimes serves this tree at ~50 KB/s and
+        # drops the large debs. The runner mirror list keeps using it whenever
+        # it answers, so send apt to archive.ubuntu.com instead.
+        for f in /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+          if [ -f "$f" ]; then
+            sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' "$f"
+          fi
+        done
         sudo add-apt-repository ppa:openshot.developers/libopenshot-daily
         sudo apt update
         sudo apt install libopenshot-audio-dev libopenshot-dev python3-openshot
