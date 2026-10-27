@@ -470,3 +470,32 @@ def test_the_applescript_wait_can_be_cancelled_and_is_bounded(monkeypatch, tmp_p
     with pytest.raises(X.AeHandoffError, match=r"did not report back within 1 second\. .*File > Scripts"):
         X.run_with_applescript(str(script), AE_2026, quiet=True, timeout=0.05, poll=0.001)
     assert fake.killed and sorted(os.listdir(tmp_path)) == ["Trip.jsx"]
+
+
+def test_image_sequences_named_alike_keep_their_frame_names_in_their_own_folders(tmp_path):
+    # After Effects reads the frame number from the end of the name: shot_0001-2.png would not import.
+    b = ProjectBuilder()
+    for folder, body in (("a", b"A"), ("b", b"B")):
+        for i in (1, 2):
+            _file(str(tmp_path / folder), "shot_%04d.png" % i, body + b"%d" % i)
+    first = b.add_file("video", path=str(tmp_path / "a" / "shot_%04d.png"), duration=0.1)
+    second = b.add_file("video", path=str(tmp_path / "b" / "shot_%04d.png"), duration=0.1)
+    b.add_clip(first, track=1, position=0.0, start=0.0, end=0.1)
+    b.add_clip(second, track=2, position=0.0, start=0.0, end=0.1)
+    result = _export(b, tmp_path / "out")
+    media = tmp_path / "out" / "media"
+    assert sorted(os.listdir(media)) == ["shot_04d", "shot_04d-2"]
+    assert {(media / d / "shot_0001.png").read_bytes() for d in os.listdir(media)} == {b"A1", b"B1"}
+    for d in os.listdir(media):
+        assert sorted(os.listdir(media / d)) == ["shot_0001.png", "shot_0002.png"]
+    rels = sorted(f["rel"] for f in _data(result.script_path)["footage"] if f.get("seq"))
+    assert rels == ["media/shot_04d-2/shot_0001.png", "media/shot_04d/shot_0001.png"]
+
+    # Exporting again reuses each folder (identical frames), and changed frames get a new folder.
+    _export(b, tmp_path / "out")
+    assert sorted(os.listdir(media)) == ["shot_04d", "shot_04d-2"]
+    (tmp_path / "a" / "shot_0002.png").write_bytes(b"A2 changed")
+    again = _export(b, tmp_path / "out")
+    assert sorted(os.listdir(media)) == ["shot_04d", "shot_04d-2", "shot_04d-3"]
+    assert sorted(f["rel"] for f in _data(again.script_path)["footage"] if f.get("seq"))[0].startswith(
+        "media/shot_04d-")

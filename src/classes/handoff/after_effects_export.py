@@ -239,6 +239,32 @@ class _Layout:
             self.claimed[rel] = source
             return rel, os.path.exists(dest)
 
+    def sequence_dir(self, frames: List[str], subdir: str) -> str:
+        """A folder (*subdir*, else *subdir*-2, ...) that holds only *frames*, each under its own name.
+
+        After Effects reads the frame number from the end of the name and imports
+        every numbered file in the folder, so a sequence never shares one or gets
+        a ``-2`` suffix on a frame.
+        """
+        names = {os.path.basename(frame): frame for frame in frames}
+        n = 1
+        while True:
+            candidate = subdir if n == 1 else f"{subdir}-{n}"
+            n += 1
+            prefix = candidate + "/"
+            if any(rel.startswith(prefix) and os.path.abspath(holder) != os.path.abspath(
+                    names.get(os.path.basename(rel), "")) for rel, holder in self.claimed.items()):
+                continue  # another sequence (or file) has this folder in this export
+            here = os.path.join(self.folder, candidate)
+            if os.path.exists(here) and not os.path.isdir(here):
+                continue
+            try:
+                present = os.listdir(here) if os.path.isdir(here) else []
+            except OSError:
+                continue
+            if all(name in names and _same_file(names[name], os.path.join(here, name)) for name in present):
+                return candidate
+
 
 def _copy(src: str, dst: str, progress: Callable[[int], None], should_cancel: CancelFn) -> None:
     os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -495,12 +521,13 @@ def _plan_media(snapshot, layout: _Layout, collect: bool):
                 continue
             stem = safe_name(os.path.splitext(os.path.basename(path))[0].replace("%", ""), "sequence")
             first_rel = None
+            folder = layout.sequence_dir(frames, "media/" + stem)
             for frame in frames:
-                rel, present = layout.place(frame, "media/" + stem, os.path.basename(frame))
+                rel, present = layout.place(frame, folder, os.path.basename(frame))
                 first_rel = first_rel or rel
                 if not present:
                     copies.append((frame, rel))
-            rels.append("media/" + stem + "/")
+            rels.append(folder + "/")
             media_map[f.id] = AE.MediaRef(abs=os.path.join(layout.folder, first_rel or ""), rel=first_rel)
             continue
         if not path or not os.path.isfile(path):
