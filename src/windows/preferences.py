@@ -47,6 +47,7 @@ from classes.settings import apply_openmp_settings
 from classes.language import get_all_languages
 from classes.logger import log
 from classes.metrics import track_metric_screen
+from themes.cosmic.tokens import resolve
 
 import openshot
 
@@ -221,6 +222,8 @@ class Preferences(QDialog):
 
                 # Create tab widget and layout
                 layout = QVBoxLayout()
+                layout.setContentsMargins(16, 16, 16, 16)
+                layout.setSpacing(8)
                 tabWidget = QWidget(self)
                 tabWidget.setObjectName("PreferencePanel")
                 tabWidget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
@@ -243,6 +246,8 @@ class Preferences(QDialog):
             scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             scroll_area.setMinimumSize(675, 100)
             layout = QVBoxLayout()
+            layout.setContentsMargins(16, 16, 16, 16)
+            layout.setSpacing(8)
             tabWidget = QWidget(self)
             tabWidget.setObjectName("PreferencePanel")
             tabWidget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
@@ -1025,7 +1030,7 @@ class Preferences(QDialog):
                 if widget:
                     if info['is_duplicate']:
                         # Mark the field with red text and border for duplicates
-                        widget.setStyleSheet("color: red;")
+                        widget.setStyleSheet(resolve("color: {danger};"))
 
     def closeEvent(self, event):
         """Signal for closing Preferences window"""

@@ -54,7 +54,10 @@ def add_linked_source_menu(window, menu, file_id: str, parent=None):
     try:
         f, link = _file_and_link(file_id)
     except Exception:
-        log.debug("linked source menu skipped", exc_info=True)
+        # say so in the menu rather than hide it: the user would lose the action without knowing why
+        log.warning("could not read the link of file %s for its Linked Source menu", file_id, exc_info=True)
+        broken = menu.addAction(_tr("Linked Source: could not read this clip's link (see the log)"))
+        broken.setEnabled(False)
         return None
     if f is None or link is None:
         return None

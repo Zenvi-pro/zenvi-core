@@ -59,6 +59,19 @@ def parse(argv, version: str):
     line that cannot work exits with status 2 and a usage message."""
     parser = build_parser(version)
     args, extra_args = parser.parse_known_args(argv)
+    # REMAINDER keeps everything after the first file name unparsed, so a
+    # --project there would be read as another file: take it back out.
+    rest = list(args.remain)
+    for i, tok in enumerate(rest):
+        if tok == "--project" and i + 1 < len(rest):
+            args.project = rest[i + 1]
+            del rest[i:i + 2]
+            break
+        if tok.startswith("--project="):
+            args.project = tok.split("=", 1)[1]
+            del rest[i]
+            break
+    args.remain = rest
     if "--headless" in args.remain:
         # Everything after the first file name lands in `remain` unparsed.
         parser.error("--headless must come before any file names")

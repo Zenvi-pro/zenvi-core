@@ -21,6 +21,21 @@
    <bool>false</bool>
   </property>
   <layout class="QGridLayout" name="gridLayout">
+   <property name="leftMargin">
+    <number>16</number>
+   </property>
+   <property name="topMargin">
+    <number>16</number>
+   </property>
+   <property name="rightMargin">
+    <number>16</number>
+   </property>
+   <property name="bottomMargin">
+    <number>16</number>
+   </property>
+   <property name="spacing">
+    <number>8</number>
+   </property>
    <item row="0" column="0">
     <widget class="QSplitter" name="splitter">
      <property name="orientation">
@@ -66,7 +81,7 @@
             </size>
            </property>
            <property name="text">
-            <string>&lt;b&gt;Choose a Template&lt;/b&gt;</string>
+            <string>Choose a template</string>
            </property>
           </widget>
          </item>
@@ -117,9 +132,6 @@
            <width>0</width>
            <height>214</height>
           </size>
-         </property>
-         <property name="styleSheet">
-          <string notr="true">background-color: #191919;</string>
          </property>
          <property name="text">
           <string/>

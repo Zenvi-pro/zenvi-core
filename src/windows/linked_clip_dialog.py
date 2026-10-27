@@ -289,24 +289,30 @@ class LinkedClipDialog(QDialog):
                 out[name] = None if (original is None and text == "") else text
         return out
 
-    def _tab_changed(self, index: int) -> None:
+    def _show_page(self, index: int) -> None:
         button = self.page_buttons.button(index)
         if button is not None and not button.isChecked():
             button.setChecked(True)
+
+    def _tab_changed(self, index: int) -> None:
         self.error_label.setText("")
-        if index == 1:
-            try:
+        try:
+            if index == 1:
                 self._props = self._read_form()
-            except ValueError as exc:
-                self.error_label.setText(str(exc))
-            self.json_edit.setPlainText(json.dumps(self._props, indent=2, ensure_ascii=False))
-        else:
-            try:
+                self.json_edit.setPlainText(json.dumps(self._props, indent=2, ensure_ascii=False))
+            else:
                 self._props = parse_props_json(self.json_edit.toPlainText())
-            except ValueError as exc:
-                self.error_label.setText(str(exc))
-                return
-            self._build_form(self._props)
+                self._build_form(self._props)
+        except ValueError as exc:
+            # stay on the page with the bad value, so the user corrects it instead of losing it
+            back = 1 - index
+            self.tabs.blockSignals(True)
+            self.tabs.setCurrentIndex(back)
+            self.tabs.blockSignals(False)
+            self._show_page(back)
+            self.error_label.setText(str(exc))
+            return
+        self._show_page(index)
 
     def _apply(self) -> None:
         try:
