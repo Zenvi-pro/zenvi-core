@@ -68,8 +68,9 @@ jobs:
 
   build:
     runs-on: ${{ matrix.os }}
-    # The apt/PPA install has hung for hours; fail it instead of holding the PR.
-    timeout-minutes: 30
+    # Slow apt downloads of the libopenshot tree have exceeded 30 minutes
+    # and cancelled a still-running install. 50 minutes still kills a hung apt.
+    timeout-minutes: 50
     strategy:
       # One OS timing out must not cancel the other's result.
       fail-fast: false
@@ -84,6 +85,8 @@ jobs:
 
     - name: Install dependencies
       run: |
+        # Large debs trickle on a broken IPv6 route while apt update stays fast.
+        echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4
         sudo add-apt-repository ppa:openshot.developers/libopenshot-daily
         sudo apt update
         sudo apt install libopenshot-audio-dev libopenshot-dev python3-openshot
@@ -110,8 +113,9 @@ jobs:
     # Stale tests should be fixed or explicitly pytest.mark.skip'd rather
     # than silently ignored.
     runs-on: ubuntu-24.04
-    # The apt/PPA install has hung for hours; fail it instead of holding the PR.
-    timeout-minutes: 30
+    # Slow apt downloads of the libopenshot tree have exceeded 30 minutes
+    # and cancelled a still-running install. 50 minutes still kills a hung apt.
+    timeout-minutes: 50
     defaults:
       run:
         shell: bash
@@ -121,6 +125,8 @@ jobs:
 
     - name: Install dependencies
       run: |
+        # Large debs trickle on a broken IPv6 route while apt update stays fast.
+        echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4
         sudo add-apt-repository ppa:openshot.developers/libopenshot-daily
         sudo apt update
         sudo apt install libopenshot-audio-dev libopenshot-dev python3-openshot
