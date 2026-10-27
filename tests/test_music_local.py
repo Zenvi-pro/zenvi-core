@@ -23,6 +23,7 @@ from classes import music_local as ml  # noqa: E402
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     monkeypatch.setattr(ml, "home", lambda: str(tmp_path))
+    monkeypatch.setattr(ml.info, "USER_PATH", str(tmp_path))   # outputs go to USER_PATH/Downloads, never the real one
     monkeypatch.setattr(ml, "status", lambda engine: {"runtime": True, "models": True})
     return tmp_path
 
