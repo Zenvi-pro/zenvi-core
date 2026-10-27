@@ -131,3 +131,47 @@ def test_a_motion_transition_on_a_cut_is_one_undo_step(saved):
     assert {i: json.dumps(saved.clip(i), sort_keys=True) for i in (a, b)} == before
     again = saved.call_receipt("apply_motion_transition_tool", preset="zoom_in", clip1_id=a)
     assert again["status"] == "applied", again
+
+
+def test_a_ten_call_session_saves_small_and_undoes_and_redoes_exactly(saved, tmp_path):
+    """Each undo entry is about the size of what its call changed (E2E round 2, N1: 34 MB after ten calls)."""
+    f = saved.add_file("video", duration=120)
+    clips = [saved.add_clip(f, position=float(i), start=float(i), end=i + 1.0) for i in range(40)]
+    path = saved.store.current_filepath
+    saved.store.write_to_file(path, saved.store._data, path_mode="relative")
+    saved.manager.actionHistory.clear()  # the session starts on the project as opened
+
+    def state():
+        return json.dumps({k: v for k, v in saved.store._data.items() if k != "history"})
+
+    start = state()
+    calls = [("add_sfx_tool", {"recipe": "whoosh_short", "at_seconds": 1}),
+             ("apply_motion_transition_tool", {"preset": "whip", "clip1_id": clips[3]}),
+             ("add_sfx_tool", {"recipe": "impact_punch", "at_seconds": 4}),
+             ("apply_motion_transition_tool", {"preset": "zoom_in", "clip1_id": clips[8]}),
+             ("add_motion_template_tool", {"template": "end_card", "text": "Northwind", "position_seconds": "30"}),
+             ("add_sfx_tool", {"recipe": "riser_noise", "at_seconds": 10}),
+             ("apply_motion_transition_tool", {"preset": "glitch", "clip1_id": clips[15]}),
+             ("auto_sound_design_tool", {"intensity": "hype", "sources": "procedural"}),
+             ("add_sfx_tool", {"recipe": "pop", "at_seconds": 20}),
+             ("apply_motion_transition_tool", {"preset": "flash_white", "clip1_id": clips[25]})]
+    for name, args in calls:
+        saved.mark()
+        receipt = saved.call_receipt(name, **args)
+        assert receipt["status"] == "applied", (name, receipt)
+        assert saved.undo_steps_since_mark() == 1, name
+    end = state()
+
+    saved.manager.save_history(saved.store, 50)
+    saved.store.write_to_file(path, saved.store._data, path_mode="relative")
+    bare = str(tmp_path / "bare.zvn")
+    saved.store.write_to_file(bare, dict(saved.store._data, history={"undo": [], "redo": []}), path_mode="relative")
+    assert os.path.getsize(path) < 2 * os.path.getsize(bare), (os.path.getsize(path), os.path.getsize(bare))
+
+    for _ in calls:
+        saved.undo()
+    assert not saved.manager.actionHistory
+    assert state() == start
+    for _ in calls:
+        saved.redo()
+    assert state() == end
