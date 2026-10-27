@@ -20,6 +20,9 @@ def node(monkeypatch, tmp_path):
     monkeypatch.setattr(info, "USER_PATH", str(tmp_path / "user"))
     monkeypatch.delenv(hf_cli.CLI_ENV_OVERRIDE, raising=False)
     monkeypatch.delenv(hf_cli.WORKERS_ENV, raising=False)
+    # a Zenvi ffmpeg / ffprobe whether or not this machine has one (CI has none); tests of "none" set it
+    fake = {"ffmpeg": str(tmp_path / "zbin" / "ffmpeg"), "ffprobe": str(tmp_path / "zbin" / "ffprobe")}
+    monkeypatch.setattr(hf_cli, "zenvi_ffmpeg", lambda name: fake.get(name))
     return runtime
 
 
