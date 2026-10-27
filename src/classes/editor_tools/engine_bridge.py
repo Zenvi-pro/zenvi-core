@@ -254,6 +254,8 @@ def _apply(answer: dict, project_file: str, version) -> Optional[str]:
     # The engine keeps the bundled-asset aliases (@transitions/…); resolve them like a project load.
     text = app.project.convert_paths_to_absolute(project_file, json.dumps(answer.get("actions") or []))
     actions = json.loads(text)
+    if not _well_formed(actions):
+        return "the engine answered a malformed action; nothing was applied"
     unknown = sorted({str(a.get("type")) for a in actions} - set(_APPLY))
     if unknown:
         # Checked before applying anything: a partly applied answer would leave half a change.
@@ -267,6 +269,15 @@ def _apply(answer: dict, project_file: str, version) -> Optional[str]:
     finally:
         window.IgnoreUpdates.emit(False, True)
     return None
+
+
+def _well_formed(actions) -> bool:
+    """Whether *actions* are all ``{"type", "key": [str | {..}, ...], "value"}`` (no value for a delete)."""
+    return isinstance(actions, list) and all(
+        isinstance(a, dict) and isinstance(a.get("key"), list) and bool(a["key"])
+        and all(isinstance(part, (str, dict)) for part in a["key"])
+        and (a.get("type") == "delete" or "value" in a)
+        for a in actions)
 
 
 def _backend_token() -> Optional[str]:
@@ -413,9 +424,10 @@ def what_changed(before: str, after: Optional[str]) -> Optional[list]:
 def _discard(files: list, project_file: str) -> None:
     """Remove files a refused call wrote (only inside the project's assets folder)."""
     from classes.assets import get_assets_path
-    assets = os.path.abspath(get_assets_path(project_file, create_paths=False)) + os.sep
+    # Canonical paths: a symlink inside the assets folder must not lead the removal outside it.
+    assets = os.path.realpath(get_assets_path(project_file, create_paths=False)) + os.sep
     for path in files:
-        if os.path.abspath(path).startswith(assets):
+        if isinstance(path, str) and os.path.realpath(path).startswith(assets):
             try:
                 os.remove(path)
             except OSError:
