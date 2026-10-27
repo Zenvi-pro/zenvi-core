@@ -5,6 +5,7 @@ updates of items it just inserted, clips replaced by delete + insert. Applied
 as is, every step was an undo entry holding a copy of a clip (E2E round 2, N1).
 """
 
+import copy
 import json
 
 from classes.editor_tools import engine_bridge as bridged
@@ -105,3 +106,46 @@ def test_an_answer_lands_exactly_and_undoes_and_redoes_exactly(editor):
     assert state() == before
     editor.redo()
     assert state() == after
+
+
+def _lands_as_answered(editor, actions):
+    """Applied net, the project is what the answer applied as is makes (list order aside)."""
+    def apply(acts, tid):
+        editor.app.updates.transaction_id = tid
+        try:
+            for action in copy.deepcopy(acts):  # undo appends the id to an insert's key
+                bridged._APPLY[action["type"]](editor.app.updates, action.get("key"), action.get("value"))
+        finally:
+            editor.app.updates.transaction_id = None
+
+    def clips():
+        return sorted(editor.clips(), key=lambda x: x["id"])
+
+    net = bridged.net_actions(actions, bridged._current_item(editor.store._data))
+    apply(actions, "as-answered")
+    answered = clips()
+    editor.undo()
+    apply(net, "net")
+    assert clips() == answered
+
+
+def test_an_item_updated_before_it_is_replaced_lands_as_answered(editor):
+    """The replacement's changed keys are against the item as the answer left it, not as it was."""
+    f = editor.add_file("video", duration=10)
+    a = editor.add_clip(f, position=0.0, end=2.0)
+    old = editor.clip(a)
+    _lands_as_answered(editor, [
+        {"type": "update", "key": ["clips", {"id": a}], "value": {"position": 5.0}},
+        {"type": "delete", "key": ["clips", {"id": a}]},
+        {"type": "insert", "key": ["clips"], "value": dict(old)}])
+
+
+def test_an_item_replaced_twice_lands_as_answered(editor):
+    f = editor.add_file("video", duration=10)
+    a = editor.add_clip(f, position=0.0, end=2.0)
+    old = editor.clip(a)
+    _lands_as_answered(editor, [
+        {"type": "delete", "key": ["clips", {"id": a}]},
+        {"type": "insert", "key": ["clips"], "value": dict(old, position=5.0)},
+        {"type": "delete", "key": ["clips", {"id": a}]},
+        {"type": "insert", "key": ["clips"], "value": dict(old)}])

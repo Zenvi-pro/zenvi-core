@@ -302,13 +302,15 @@ def net_actions(actions: list, current: Callable[[str, str], Optional[dict]]) ->
     * a top-level update of an item the answer inserted folds into its insert;
     * an existing item deleted and inserted again (same id) is an update of the
       keys that changed, when that is exact (``_replacement``); it also stays
-      where it is in its list.
+      where it is in its list. Only when the delete is the answer's first action
+      on it: *current* is the item before the answer, not after its earlier actions.
 
     *current(list, id)* is the item as the project has it now.
     """
     out: list = []
     born: dict = {}  # (list, id) -> indexes in out of the actions on an item this answer inserted
     removed: dict = {}  # (list, id) -> index in out of the delete of an existing item
+    touched: set = set()  # (list, id) of every item an earlier action of the answer named
     for action in actions:
         kind, key, value = action.get("type"), action.get("key") or [], action.get("value")
         if kind == "insert" and len(key) == 1 and isinstance(value, dict) and value.get("id"):
@@ -319,9 +321,11 @@ def net_actions(actions: list, current: Callable[[str, str], Optional[dict]]) ->
                     out[removed.pop(item)] = None
                     if changed:
                         out.append({"type": "update", "key": [key[0], {"id": value["id"]}], "value": changed})
+                    touched.add(item)
                     continue
                 del removed[item]
             born[item] = [len(out)]
+            touched.add(item)
             out.append(dict(action, value=copy.deepcopy(value)))
             continue
         item = _item(key)
@@ -337,8 +341,10 @@ def net_actions(actions: list, current: Callable[[str, str], Optional[dict]]) ->
             born[item].append(len(out))
         elif item in removed:
             del removed[item]  # acted on after its delete: leave both as answered
-        elif kind == "delete" and len(key) == 2 and item is not None:
+        elif kind == "delete" and len(key) == 2 and item is not None and item not in touched:
             removed[item] = len(out)
+        if item is not None:
+            touched.add(item)
         out.append(action)
     return [a for a in out if a is not None]
 
