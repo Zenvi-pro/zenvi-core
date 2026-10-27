@@ -53,7 +53,7 @@ SERVER_INSTRUCTIONS = (
     "with that object (timeline_clip_id/start/end) — or with start_frame/end_frame — before "
     "claiming the edit is correct; you will receive composited JPEG frames with "
     "a 0–1 top-left coordinate grid. To describe, summarise or recreate footage call "
-    "storyboard_tool first (detail=list for the whole video in one call: a row per shot with its own exact time; keep every row; open the keyframe picture before trusting a description): every cut is exact. Use a frame strip (find_tools: view frames) only for "
+    "storyboard_tool first (detail=list for the whole video in one call: a row per shot with its own time; keep every row; open the keyframe picture before trusting a description): cuts are measured at 10 frames a second, about 0.1 s, so run_tool(name='refine_cut_tool') for the exact frame. Use a frame strip (find_tools: view frames) only for "
     "a spot check or a file with no shot list yet; never sample frames at a fixed interval to find cuts, and never guess from filenames. "
     "Do not shell ffmpeg for frames. To cut a placed clip, use slice_clips_tool "
     "(at_seconds is timeline time). After "

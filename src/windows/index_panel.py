@@ -83,9 +83,13 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
         self._lit = -1
         self._word_spans = {}
         win = parent if hasattr(parent, "previewFrameSignal") else getattr(self._app, "window", None)
-        signal = getattr(win, "previewFrameSignal", None)
-        if signal is not None:
-            signal.connect(self.follow)          # one cheap lookup per preview frame; only a changed word repaints
+        if win is not None:
+            # Playback and scrubbing move preview_thread.position_changed. previewFrameSignal
+            # fires only for a frame-step key, so the word has to follow both.
+            for signal in (getattr(win, "previewFrameSignal", None),
+                           getattr(getattr(win, "preview_thread", None), "position_changed", None)):
+                if signal is not None:
+                    signal.connect(self.follow)
 
     def refresh(self):
         """Reload the word list. Transcription can take seconds on a cache

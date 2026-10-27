@@ -114,6 +114,19 @@ def test_a_look_reference_ranks_by_colour(env):
     assert r["hits"][0]["shot_id"] == 1 and r["hits"][0]["scores"]["look_distance"] == pytest.approx(0, abs=1e-3)
 
 
+def test_a_reference_outside_file_ids_is_still_the_query(env):
+    """file_ids limits the footage to search, not the reference those shots are compared with."""
+    from test_media_index_search import build, profile, shot, unit, w
+    sha = "c" * 64
+    build(env.shelf, sha, shots=[shot(0, 0, 8, "static", _look=profile(0.7, 0.2))],
+          watch=[w(0, 0, 8, "A dog runs", shot_type="medium")], duration=8.0,
+          text=[({"kind": "shot", "shot": 0, "start": 0, "end": 8, "text": "A dog runs"}, unit(1))],
+          image=[({"shot": 0, "t": 2.0}, unit(1))])
+    env.files.append(file_obj("F5", "source.mp4", sha))
+    _, r = call("search_footage_tool", reference_file_id="F1", reference_start=10.0, reference_end=20.0, file_ids=["F5"])
+    assert r["hits"] and all(h["file_id"] == "F5" for h in r["hits"])
+
+
 def test_a_reference_that_is_not_fully_indexed_is_a_clear_error(env):
     out = REGISTRY["search_footage_tool"].func(reference_file_id="F2")
     assert out.startswith("Error") and "no picture vectors" in out

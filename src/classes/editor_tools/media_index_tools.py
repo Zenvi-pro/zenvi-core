@@ -198,6 +198,10 @@ def search_footage(query="", look_for="", reference_file_id="", reference_start=
     if reference_file_id:
         ref = next((f for f in files if f.file_id == str(reference_file_id)), None)
         if ref is None:
+            # file_ids limits which footage is searched. The reference is the query, so it may sit outside that list.
+            everyone, _ignored = project_indexes(None)
+            ref = next((f for f in everyone if f.file_id == str(reference_file_id)), None)
+        if ref is None:
             raise ToolError(f"reference file {reference_file_id!r} has no saved index")
         lo, hi = (reference_start, reference_end) if reference_end is not None else (None, None)
         if match == "look":
@@ -212,6 +216,10 @@ def search_footage(query="", look_for="", reference_file_id="", reference_start=
     result = msearch.search(files, query_vector=qv, query_text=query, reference_vector=ref_vec, reference_look=ref_look, look_for=look_for or "",
                             filters=filters or {}, limit=int(limit), offset=int(cursor), sort=str(sort or "relevance"))
     hits = [_nonempty({**h, "sha": None, "scores": h["scores"]}) for h in result["hits"]]
+    if reference_file_id and ref is not None:
+        others = [h for h in hits if h.get("file_id") != ref.file_id]
+        if others:
+            hits = others + [h for h in hits if h.get("file_id") == ref.file_id]
     if person_note:
         for h, raw in zip(hits, result["hits"]):
             h["person_confidence"] = person_note["confidence"].get(raw["sha"], {}).get(raw["shot_id"])

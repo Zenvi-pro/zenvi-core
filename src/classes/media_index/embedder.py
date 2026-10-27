@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import urllib.error
 import wave
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -131,7 +132,10 @@ class LocalEmbedder:
         command, env = self._command, self._env
         if command is None:
             from classes.media_index import embed_runtime
-            command, env = embed_runtime.worker_command()
+            try:
+                command, env = embed_runtime.worker_command()
+            except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+                raise EmbedError(f"the search model could not be downloaded: {exc}", offline=True) from exc
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
         self._proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                       env={**os.environ, **(env or {})}, text=True, encoding="utf-8", bufsize=1,

@@ -4183,12 +4183,8 @@ class AIChatWindow(QDockWidget):
         return text
 
     def _tool_result_summary(self, result: str) -> str:
-        if not result:
-            return ""
-        first_line = result.strip().splitlines()[0] if result.strip() else ""
-        if len(first_line) > 140:
-            return first_line[:140] + "…"
-        return first_line
+        from classes.agent_tools.present import tool_row_summary
+        return tool_row_summary(result)
 
     @pyqtSlot(str, str, str)
     def _on_tool_started(self, call_id: str, tool_name: str, args_json: str):

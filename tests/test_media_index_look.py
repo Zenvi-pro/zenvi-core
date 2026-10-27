@@ -89,6 +89,11 @@ def test_tone_bands_report_the_colour_of_shadows_mids_and_highlights():
     assert sum(b["fraction"] for b in t.values()) == pytest.approx(1.0, abs=1e-3)
 
 
+def test_a_shot_keeps_a_small_colour_layout_of_the_frame():
+    layout = feed([solid(255, 0, 0)] * 3).profile(0, 1)["extras"]["layout"]
+    assert len(layout) == 72 and layout[0] > 0.9 and max(layout[1::3]) < 0.05
+
+
 def test_hue_balance_peaks_where_the_colour_is():
     rgb = solid(0, 0, 255)  # blue = hue 240 = band 8 of 12
     hb = feed([rgb] * 3).profile(0, 1)["extras"]["hue_balance"]

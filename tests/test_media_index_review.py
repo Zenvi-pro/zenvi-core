@@ -82,6 +82,16 @@ def test_no_target_means_no_length_verdict():
     assert "length" not in by_id(run([clip("a", 0, 30)]))
 
 
+def test_a_black_tail_after_the_picture_is_flagged_even_when_music_covers_it():
+    """Picture ending early while the timeline (and the song) keep going is a black ending, not a full edit."""
+    clips = [clip("pic", 0, 28.5), clip("song", 0, 30.5, kind="audio", role="music", layer=3)]
+    found = by_id(run(clips, Brief(target_seconds=30)))
+    assert found["length"]["status"] == "ok"
+    assert found["music"]["status"] == "ok"
+    tail = found["picture_tail"]
+    assert tail["status"] == "needs" and tail["evidence"]["picture_end"] == 28.5
+
+
 def test_a_short_form_has_a_length_cap():
     assert by_id(run([clip("a", 0, 75)], Brief(form="short")))["form_length"]["status"] == "needs"
     assert "form_length" not in by_id(run([clip("a", 0, 75)], Brief(form="vlog")))

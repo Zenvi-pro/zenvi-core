@@ -142,7 +142,9 @@ def test_the_check_notices_an_empty_slot(studio):
     build_it(studio, pid)
     studio.ed.call("delete_from_timeline_tool", timeline_clip_id=picture_clips(studio)[3]["id"])
     result = check(studio, plan_id=pid)
-    assert result["areas"]["coverage"] < 100.0 and any(f["reference_shot"] == 3 and "no clip" in " ".join(f["problems"]) for f in result["failing"])
+    empty = next(f for f in result["failing"] if f["reference_shot"] == 3 and "no clip" in " ".join(f["problems"]))
+    assert result["areas"]["coverage"] < 100.0
+    assert "move_clips_tool" not in (empty.get("fix") or ""), empty
 
 
 def test_the_check_catches_the_same_clip_used_over_and_over(studio):

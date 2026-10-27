@@ -457,6 +457,9 @@ class ZenviBackendClient:
                 "model_id": model_id,
                 "session_id": session_id,
                 "auth_token": token,
+                # This build has the media-index tools. A backend that does not
+                # know the field keeps the shipped tool set.
+                "editor_generation": "media-index-v2",
             }
             if agent_mode in ("planning", "agent"):
                 payload_data["agent_mode"] = agent_mode

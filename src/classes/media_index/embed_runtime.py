@@ -31,8 +31,17 @@ from classes import info
 from classes.logger import log
 
 TRANSFORMERS = "@huggingface/transformers@4.3.1"
-NODE_MAJOR = 22
-NODE_DIST = "https://nodejs.org/dist/latest-v%d.x/" % NODE_MAJOR
+NODE_VERSION = "22.23.4"
+NODE_MAJOR = int(NODE_VERSION.split(".", 1)[0])
+# Checksums from nodejs.org/dist/v22.23.4/SHASUMS256.txt, pinned here so the download is not "whatever latest is today".
+NODE_SHA256 = {
+    "darwin-arm64.tar.gz": "c9e1dbc748b33ed2d14f42445191ecaf14c56259c7a9a26d0042c49ec2b66428",
+    "darwin-x64.tar.gz": "efcc2b0db6f94bf53eddb038fe2b370277a042bd29e4f19b8f8e23598795b819",
+    "linux-arm64.tar.gz": "f7a1e486dbc8b286847815b477d4fb5e9fb963ed4489c3e1588853d685f589f9",
+    "linux-x64.tar.gz": "b8492284c76a54baf58d61668dd0e41ee0fc98adabf9503d30f05d08f55b4406",
+    "win-arm64.zip": "a8b8cd79cbbb3062435f449591d98dd63730bbbf30ce2d7cc3a6376c236cb111",
+    "win-x64.zip": "cbc74b5e0982c9dbb41525fd8fb5dcd32fbee237863f7829072f4639a1ce5f20",
+}
 WORKER_FILES = ("embed_worker.mjs", "embed_reference.json")
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 _setup_lock = threading.Lock()
@@ -73,24 +82,23 @@ def _fetch(url: str):
 
 
 def install_node() -> str:
-    """Download the portable Node.js for this computer, checked against nodejs.org's published checksum."""
+    """Download the pinned portable Node.js for this computer and check it against the checksum in this file."""
     arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64"
-    asset = f"win-{arch}.zip" if sys.platform == "win32" else f"{'darwin' if sys.platform == 'darwin' else 'linux'}-{arch}.tar.gz"
-    with _fetch(NODE_DIST + "SHASUMS256.txt") as response:
-        sums = response.read().decode("utf-8", "replace")
-    row = next((line.split() for line in sums.splitlines() if line.strip().endswith(asset)), None)
-    if not row:
-        raise RuntimeError(f"nodejs.org publishes no Node.js {NODE_MAJOR} build for {asset}")
+    kind = f"win-{arch}.zip" if sys.platform == "win32" else f"{'darwin' if sys.platform == 'darwin' else 'linux'}-{arch}.tar.gz"
+    expect = NODE_SHA256.get(kind)
+    if not expect:
+        raise RuntimeError(f"no pinned Node.js {NODE_VERSION} checksum for {kind}")
+    filename = f"node-v{NODE_VERSION}-{kind}"
     os.makedirs(home(), exist_ok=True)
-    archive, staging = os.path.join(home(), row[1]), os.path.join(home(), "node.partial")
+    archive, staging = os.path.join(home(), filename), os.path.join(home(), "node.partial")
     try:
         sha = hashlib.sha256()
-        with _fetch(NODE_DIST + row[1]) as response, open(archive, "wb") as out:
+        with _fetch(f"https://nodejs.org/dist/v{NODE_VERSION}/{filename}") as response, open(archive, "wb") as out:
             for block in iter(lambda: response.read(1 << 20), b""):
                 sha.update(block)
                 out.write(block)
-        if sha.hexdigest() != row[0]:
-            raise RuntimeError("the Node.js download did not match its published checksum")
+        if sha.hexdigest() != expect:
+            raise RuntimeError("the Node.js download did not match its pinned checksum")
         shutil.rmtree(staging, ignore_errors=True)
         if archive.endswith(".zip"):
             with zipfile.ZipFile(archive) as bundle:
@@ -120,6 +128,16 @@ def _npm(node: str) -> List[str]:
     return [found]
 
 
+def needs_download() -> bool:
+    """True when the first index still has to fetch Node, the runtime, or the model (about 1.2 GB)."""
+    if find_node() is None or _installed_version() != TRANSFORMERS.rsplit("@", 1)[1]:
+        return True
+    try:
+        return not any(os.scandir(model_dir()))
+    except OSError:
+        return True
+
+
 def _installed_version() -> str:
     try:
         with open(os.path.join(home(), "node_modules", "@huggingface", "transformers", "package.json"), encoding="utf-8") as fh:
@@ -132,17 +150,18 @@ def ensure() -> str:
     """Node and Transformers.js in place, the worker copied in; returns the Node executable."""
     with _setup_lock:
         node = find_node() or install_node()
+        here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker")
         if _installed_version() != TRANSFORMERS.rsplit("@", 1)[1]:
             log.info("Installing the search model runtime (%s)", TRANSFORMERS)
             os.makedirs(home(), exist_ok=True)
-            with open(os.path.join(home(), "package.json"), "w", encoding="utf-8") as fh:
-                json.dump({"name": "zenvi-embedder", "private": True, "type": "module"}, fh)
-            proc = subprocess.run([*_npm(node), "install", "--save-exact", "--no-audit", "--no-fund", TRANSFORMERS], cwd=home(),
+            for name in ("package.json", "package-lock.json"):
+                shutil.copyfile(os.path.join(here, name), os.path.join(home(), name))
+            # npm ci installs the pinned lockfile. onnxruntime-node's postinstall fetches its native binary, so scripts stay on.
+            proc = subprocess.run([*_npm(node), "ci", "--no-audit", "--no-fund"], cwd=home(),
                                   capture_output=True, text=True, timeout=1800, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW,
                                   env={**os.environ, "PATH": os.path.dirname(node) + os.pathsep + os.environ.get("PATH", "")})
             if proc.returncode != 0:
                 raise RuntimeError("could not install the search model runtime: " + (proc.stderr or proc.stdout)[-400:])
-        here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker")
         for name in WORKER_FILES:
             shutil.copyfile(os.path.join(here, name), os.path.join(home(), name))
         return node

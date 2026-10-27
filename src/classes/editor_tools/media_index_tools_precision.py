@@ -656,6 +656,8 @@ def view_frames(start_seconds, end_seconds, file_ids=None, file_query="", per_se
     """
     f = resolve_files(file_ids, file_query)[0]
     head, receipt = _frames_pack(f, start_seconds, end_seconds, per_second, count, every_frame, tile_width)
+    if receipt.get("image_path"):
+        _show_sheets([{"image_path": receipt["image_path"]}])
     return ok(head, changed=False, **receipt, hint="every tile is stamped t=<seconds> f=<frame>; zoom in by asking again with a narrower range and a higher per_second, or every_frame")
 
 
@@ -741,7 +743,8 @@ def _frames_pack(f, start_seconds, end_seconds, per_second=None, count=None, eve
 )
 def storyboard(file_ids=None, file_query="", start_seconds=0, detail="full", pictures=True, look=False, describe=True, tile_width=320):
     """Understand or recreate a video in ONE call: every shot with its exact start and end, camera move, shot type and (when the picture
-    layer was built) what happens, plus one stamped keyframe per shot. The cuts are exact and free; this is the first call for "describe
+    layer was built) what happens, plus one stamped keyframe per shot. Cuts are measured at 10 frames a second (about 0.1 s); run_tool(name="refine_cut_tool")
+    gives the exact frame. This is the first call for "describe
     this video", "what happens scene by scene" or "recreate this". Never sample frames at a fixed interval to find cuts. Use detail=list
     for a whole video in one call: one row per shot, each with its own time, so keep every row (do not merge quick shots into ranges). A row marked
     [unsure] has a description that hedges: look at its picture. Camera speeds are fractions of the frame a second. Header lines give the cut rhythm,
@@ -1019,6 +1022,14 @@ def get_moment(start_seconds, end_seconds, file_ids=None, file_query="", frames=
     except Exception as exc:  # noqa: BLE001 - the rest of the pack is still good; say what is missing
         log.warning("moment: timeline context unavailable", exc_info=True)
         pack["timeline"] = {"uses": [], "error": f"timeline context unavailable: {exc}"[:160]}
+    pictures = []
+    frames = pack.get("frames") if isinstance(pack.get("frames"), dict) else {}
+    if frames.get("image_path"):
+        pictures.append({"image_path": frames["image_path"]})
+    if pack["audio_picture"].get("image_path"):
+        pictures.append({"image_path": pack["audio_picture"]["image_path"]})
+    if pictures:
+        _show_sheets(pictures)
     shown = pack["total"]
     return ok(f"{pack['name']} {lo:.2f}-{hi:.2f} s: {shown} shot(s), {pack['words']['count']} word(s)"
               + (", frames" if pack["frames"] and "error" not in pack["frames"] else "") + (", spectrogram" if pack["audio_picture"]["included"] else "") + ".",

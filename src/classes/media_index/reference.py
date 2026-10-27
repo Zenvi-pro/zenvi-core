@@ -81,6 +81,7 @@ MIN_PLAN_SCORE = 0.45          # under this a choice is weak: look for stock or 
 BUCKET_SECONDS = 0.25          # reuse is counted per quarter second of source footage
 MAX_WINDOWS_PER_SHOT = 12
 FIT_MIN = 0.50                 # a pick looks like its reference shot only when its picture similarity is at least this far from the typical pair toward the best pair
+LAYOUT_MIN = 0.82              # mean absolute difference of the saved colour layout under 0.18: the same scene, not merely a similar embedding
 UNMATCHABLE_MIN_GAP = 0.06    # a shot whose best picture match trails the typical shot's best by more than this ...
 UNMATCHABLE_SPREADS = 1.5      # ... and by more than this many spreads of all the shots' bests has nothing like it in the footage
 REPEAT_MIN_GAP = 3             # a repeat comes back at least this many shots later
@@ -92,6 +93,16 @@ def _look_similarity(a: Optional[Dict[str, Any]], b: Optional[Dict[str, Any]]) -
     from classes import color_agent as ca
     d = ca.look_profile_distance(a or {}, b or {})
     return 0.5 if d is None else 1.0 / (1.0 + 2.0 * float(d))
+
+
+def layout_similarity(a: Any, b: Any) -> Optional[float]:
+    """How alike two saved colour layouts are, 1 = the same picture. None when either shot has no layout yet."""
+    if not isinstance(a, (list, tuple)) or not isinstance(b, (list, tuple)) or not a or len(a) != len(b):
+        return None
+    av, bv = np.asarray(a, np.float64), np.asarray(b, np.float64)
+    if not np.isfinite(av).all() or not np.isfinite(bv).all():
+        return None
+    return round(float(np.clip(1.0 - np.mean(np.abs(av - bv)), 0.0, 1.0)), 3)
 
 
 def _motion_match(ref_class: Optional[str], src_class: Optional[str]) -> float:
@@ -135,14 +146,22 @@ def scored_windows(ref: FileIndex, shot: Dict[str, Any], need: float, pool_files
                         inside = (times >= float(src["start"])) & (times < float(src["end"]))
                     pic = float(sims[inside].mean()) if inside.any() else None
                 raw.append((fi_index, w_in, w_out, src["id"], pic, _look_similarity(shot.get("look"), src.get("look")),
-                            _motion_match((shot.get("motion") or {}).get("class"), (src.get("motion") or {}).get("class"))))
+                            _motion_match((shot.get("motion") or {}).get("class"), (src.get("motion") or {}).get("class")),
+                            layout_similarity((shot.get("look_extras") or {}).get("layout"), (src.get("look_extras") or {}).get("layout"))))
     pics = np.array([r[4] for r in raw if r[4] is not None], dtype=np.float64)
     mean, std = (float(pics.mean()), max(float(pics.std()), PICTURE_SPREAD_FLOOR)) if len(pics) else (0.0, 1.0)
     out = []
-    for fi_index, w_in, w_out, src_id, pic, look, motion in raw:
+    for fi_index, w_in, w_out, src_id, pic, look, motion, layout in raw:
         pic_n = 0.5 if pic is None else 1.0 / (1.0 + float(np.exp(-1.2 * (pic - mean) / std)))
-        out.append((fi_index, w_in, w_out, src_id, WEIGHT_PICTURE * pic_n + WEIGHT_LOOK * look + WEIGHT_MOTION * motion,
-                    {"picture": round(pic_n, 3), "look": round(look, 3), "motion": round(motion, 3), "raw_picture": None if pic is None else round(pic, 4)}))
+        # The embedding barely separates some patterns (colour bars, test cards). The saved layout is the scene itself.
+        if layout is None:
+            score = WEIGHT_PICTURE * pic_n + WEIGHT_LOOK * look + WEIGHT_MOTION * motion
+        else:
+            score = 0.70 * layout + 0.15 * pic_n + 0.10 * look + 0.05 * motion
+        out.append((fi_index, w_in, w_out, src_id, score,
+                    {"picture": round(pic_n, 3), "look": round(look, 3), "motion": round(motion, 3),
+                     "layout": None if layout is None else round(layout, 3),
+                     "raw_picture": None if pic is None else round(pic, 4)}))
     return out
 
 
@@ -319,7 +338,11 @@ def plan_recreation(ref: FileIndex, files: Sequence[FileIndex], start: Optional[
                              "source_shot": pick[5], "parts": pick[6]}
             fit = picture_fit(every_raw, pick[6].get("raw_picture"))
             row["choice"]["picture_fit"] = fit
-            row["status"] = "matched" if pick[0] >= min_score and (fit is None or fit >= FIT_MIN or si in repeats) and si not in nothing_like else "weak"
+            layout = pick[6].get("layout")
+            same_scene = layout is None or layout >= LAYOUT_MIN or si in repeats
+            # A saved layout that matches is the scene. The embedding fit is only the judge when there is no layout.
+            embedding_ok = layout is not None or fit is None or fit >= FIT_MIN or si in repeats
+            row["status"] = "matched" if pick[0] >= min_score and same_scene and embedding_ok and si not in nothing_like else "weak"
             if si in nothing_like:
                 row["nothing_like_it"] = nothing_like[si]
             if si in repeats:

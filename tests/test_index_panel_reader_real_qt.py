@@ -14,9 +14,17 @@ from PyQt5.QtWidgets import QApplication, QMainWindow  # noqa: E402
 from windows import index_panel  # noqa: E402
 
 
+class FakeThread(QObject):
+    position_changed = pyqtSignal(int)
+
+
 class FakeWindow(QMainWindow):
     previewFrameSignal = pyqtSignal(int)
     SeekSignal = pyqtSignal(int)
+
+    def __init__(self):
+        super().__init__()
+        self.preview_thread = FakeThread()
 
 
 @pytest.fixture(scope="module")
@@ -59,6 +67,14 @@ def test_playback_lights_the_spoken_word_and_only_repaints_when_it_changes(qapp)
     assert lit(panel) == ["there"]
     win.previewFrameSignal.emit(2000)
     assert lit(panel) == [], "the last word does not stay lit for ever"
+
+
+def test_playback_position_lights_the_word_without_a_frame_step(qapp):
+    win, panel = panel_with_words(qapp)
+    win.preview_thread.position_changed.emit(12)
+    assert lit(panel) == ["Hello"]
+    win.preview_thread.position_changed.emit(41)
+    assert lit(panel) == ["there"]
 
 
 def test_clicking_a_word_seeks_the_playhead_to_it(qapp):

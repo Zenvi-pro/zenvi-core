@@ -25,7 +25,7 @@ LAYER_VERSIONS = {
     LAYER_STRUCTURE: 3,         # 3: black judged against the file's own shots; motion carries typical_jitter_px
     LAYER_AUDIO: 3,             # 3: sections only with a steady tempo, no downbeats, phrase points are section starts
     LAYER_SPEECH: 1,
-    LAYER_LOOK: 1,
+    LAYER_LOOK: 2,             # 2: each shot keeps a 4×6 colour layout, so recreation can tell scenes the embedding confuses
     LAYER_WATCH: 2,             # 2: interest, usable, people, hook (older saved watch layers are kept, never re-bought)
     LAYER_VECTORS: 1,
 }

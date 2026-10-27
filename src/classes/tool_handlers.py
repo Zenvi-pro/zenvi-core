@@ -7972,7 +7972,9 @@ AGENT_TOOL_HANDLERS = {
 from classes.editor_tools import REGISTRY as _EDITOR_TOOL_SPECS  # noqa: E402
 from classes.agent_tools.schema import TOOL_SCHEMAS as _TOOL_SCHEMAS  # noqa: E402
 
-for _phase_handlers in (PHASE4_HANDLERS, PHASE5_HANDLERS):
+from classes.agent_tools.legacy_desktop import LEGACY_HANDLERS, LEGACY_LABELS, LEGACY_SCHEMAS  # noqa: E402
+
+for _phase_handlers in (PHASE4_HANDLERS, PHASE5_HANDLERS, LEGACY_HANDLERS):
     AGENT_TOOL_HANDLERS.update(_phase_handlers)
 _editor_overlap = set(_EDITOR_TOOL_SPECS) & set(AGENT_TOOL_HANDLERS)
 assert not _editor_overlap, f"editor_tools re-registers {sorted(_editor_overlap)}"
@@ -7980,6 +7982,7 @@ AGENT_TOOL_HANDLERS.update({name: spec.func for name, spec in _EDITOR_TOOL_SPECS
 # One source of truth for an editor tool's arguments: its registry schema is the
 # one execute_tool validates against and the MCP server advertises.
 _TOOL_SCHEMAS.update({name: spec.schema for name, spec in _EDITOR_TOOL_SPECS.items()})
+_TOOL_SCHEMAS.update(LEGACY_SCHEMAS)
 
 TOOL_HANDLERS = dict(AGENT_TOOL_HANDLERS)
 
@@ -8012,6 +8015,7 @@ TOOL_DISPLAY_LABELS = {
 TOOL_DISPLAY_LABELS.update(PHASE4_DISPLAY_LABELS)
 TOOL_DISPLAY_LABELS.update(PHASE5_DISPLAY_LABELS)
 TOOL_DISPLAY_LABELS.update({name: spec.label for name, spec in _EDITOR_TOOL_SPECS.items()})
+TOOL_DISPLAY_LABELS.update(LEGACY_LABELS)
 
 assert set(TOOL_DISPLAY_LABELS) == set(AGENT_TOOL_HANDLERS), (
     "TOOL_DISPLAY_LABELS keys must match AGENT_TOOL_HANDLERS"
@@ -8071,7 +8075,7 @@ def humanize_tool_name(tool_name: str) -> str:
 # Tools that only READ project / timeline data and don't mutate Qt widgets.
 # Safe to invoke from worker threads, which lets the agent run several of them
 # concurrently without serializing through the Qt main-thread dispatcher.
-READ_ONLY_TOOLS = frozenset({
+READ_ONLY_TOOLS = frozenset(LEGACY_HANDLERS) | frozenset({
     "get_timeline_state_tool",
     "list_transitions_tool",
     "propose_overlay_windows_tool",

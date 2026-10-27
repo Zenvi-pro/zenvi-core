@@ -133,6 +133,20 @@ def kmeans_palette(pixels: np.ndarray, k: int = PALETTE_COLOURS, iterations: int
     return sorted(out, key=lambda x: -x["weight"])
 
 
+def _layout(samples: List[Sample]) -> List[float]:
+    """A 4×6 colour thumbnail of the shot (72 numbers, 0..1). Embeddings collapse some patterns onto each other; this does not."""
+    grids = []
+    for sample in samples:
+        pix = np.asarray(sample.pixels, np.float32).reshape(-1, 3)
+        if pix.shape[0] != 96:
+            continue
+        grids.append(pix.reshape(8, 12, 3))
+    if not grids:
+        return []
+    small = np.mean(np.stack(grids), axis=0).reshape(4, 2, 6, 2, 3).mean(axis=(1, 3))
+    return [round(float(x), 3) for x in np.clip(small, 0.0, 1.0).reshape(-1)]
+
+
 def _luma_percentiles(hist_luma: np.ndarray) -> Dict[str, float]:
     total = float(hist_luma.sum())
     if total <= 0:
@@ -187,6 +201,7 @@ class LookAccumulator:
             "luma_percentiles": pcts,
             "black_point": pcts.get("p1"), "white_point": pcts.get("p99"),
             "palette": kmeans_palette(np.concatenate([s.pixels for s in picked], axis=0)),
+            "layout": _layout(picked),
         }
         return {"profile": profile, "extras": extras, "samples": len(picked)}
 

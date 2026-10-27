@@ -169,6 +169,34 @@ def test_a_shot_that_nothing_in_the_footage_resembles_stands_out_from_shots_that
     assert mref.unmatchable_shots({0: 0.9, 1: 0.5}) == {}                                          # too few shots to say
 
 
+def _paint(fi, layout):
+    for shot in fi.shots:
+        shot["look_extras"] = {"layout": list(layout)}
+
+
+def test_the_colour_layout_picks_the_same_scene_when_the_embeddings_cannot():
+    """EmbeddingGemma scores synthetic patterns alike, so a red scene must not lose to a blue one that happens to embed closer."""
+    ref = reference(1, kind_of=lambda i: 0)
+    _paint(ref, [1.0, 0.0, 0.0] * 24)
+    same_scene = make_file("bars", [(0, 4)], kind_of=lambda i: 5)
+    _paint(same_scene, [1.0, 0.0, 0.0] * 24)
+    other_scene = make_file("zone", [(0, 4)], kind_of=lambda i: 0)
+    _paint(other_scene, [0.0, 0.0, 1.0] * 24)
+    plan = mref.plan_recreation(ref, [other_scene, same_scene])
+    choice = plan["shots"][0]
+    assert choice["choice"]["file_id"] == "bars" and choice["status"] == "matched"
+
+
+def test_footage_of_a_different_scene_is_weak_even_when_nothing_else_is_available():
+    ref = reference(1, kind_of=lambda i: 0)
+    _paint(ref, [1.0, 0.0, 0.0] * 24)
+    only = make_file("zone", [(0, 4)], kind_of=lambda i: 0)
+    _paint(only, [0.0, 0.0, 1.0] * 24)
+    plan = mref.plan_recreation(ref, [only])
+    assert plan["shots"][0]["status"] == "weak"
+    assert plan["shots"][0]["choice"]["parts"]["layout"] < mref.LAYOUT_MIN
+
+
 def test_a_returning_image_may_use_the_same_footage_even_when_that_file_plays_next_to_it():
     ref = reference(4, kind_of=lambda i: [0, 1, 2, 0][i])
     pool = [make_file("a", [(0, 4), (4, 8)], kind_of=lambda i: [0, 2][i]), make_file("b", [(0, 4)], kind_of=lambda i: 1)]

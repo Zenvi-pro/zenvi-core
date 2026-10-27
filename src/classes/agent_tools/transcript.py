@@ -187,8 +187,8 @@ def _transcript_notes(*, for_edit: bool = True) -> list[str]:
     notes = [
         "data.script is the full dialogue for the user. "
         "data.clipIds are TIMELINE clip ids (not media-bin fileIds). "
-        "For cuts: call run_tool(name='remove_words_tool', args={'timeline_clip_id': data.clipIds[0], "
-        "'matches': [\"FlowCut\", \"flocut\"]}) ONCE next — do NOT call get_transcript_tool again. "
+        "For cuts, for example: run_tool(name='remove_words_tool', args={'timeline_clip_id': data.clipIds[0], "
+        "'matches': [\"FlowCut\", \"flocut\"]}). Do not call get_transcript_tool again for the same clip. "
         "Keep language=auto. Never pass file_id to the word-removal tool.",
     ]
     notes.append(

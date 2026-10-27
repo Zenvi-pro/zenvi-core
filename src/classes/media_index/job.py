@@ -11,8 +11,11 @@
 from __future__ import annotations
 
 import threading
+import urllib.error
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, Tuple
+
+_OFFLINE = (urllib.error.URLError, TimeoutError, ConnectionError)
 
 from classes.logger import log
 
@@ -157,6 +160,12 @@ class IndexingJob:
         metadata["index"], metadata["twelvelabs"], metadata["error"] = block, dict(block), reason
         self._completed(self.file_data, metadata, None)
 
+    def _waiting_for_network(self, metadata, exc):
+        """The search model still needs a download. Leave the file unfailed so it is tried again when the network is back."""
+        log.info("Search model needs the network (%s); the file stays queued", exc)
+        metadata["retry_index"] = True
+        self._completed(self.file_data, metadata, None)
+
     def _skip(self, metadata, index_name, media_type, reason):
         """Finish the file as skipped (nothing wrong with it: out of credits, over a limit)."""
         block = {"status": "skipped", "error": reason, "index_name": index_name, "provider": PROVIDER, "media_type": media_type}
@@ -191,6 +200,10 @@ class IndexingJob:
         model = E.chosen_model(signed_in)
         probe = probe_media(file_path)
         if not vectors.is_current(shelf, sha, model):
+            if model == E.MODEL_LOCAL:
+                from classes.media_index import embed_runtime
+                if embed_runtime.needs_download():
+                    self._progress(file_id, "downloading", 0)
             self._progress(file_id, "indexing", 0)
             try:
                 vectors.compute_vectors(file_path, probe, sha, shelf, E.get_embedder(model), should_cancel=lambda: self._cancelled,
@@ -199,10 +212,16 @@ class IndexingJob:
                 self._completed(self.file_data, metadata, None)
                 return
             except E.EmbedError as exc:
+                if exc.flags.get("offline"):
+                    self._waiting_for_network(metadata, exc)
+                    return
                 if exc.flags.get("credits") or exc.flags.get("rate_limited"):
                     self._skip(metadata, index_name, media_type, str(exc))
                 else:
                     self._v2_failed(metadata, index_name, media_type, f"Could not index this file for search: {exc}")
+                return
+            except _OFFLINE as exc:
+                self._waiting_for_network(metadata, exc)
                 return
 
         if media_type == "video" and signed_in and (E.describe_on_import() or self.file_data.get("index_long_ok")):

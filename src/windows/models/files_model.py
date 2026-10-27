@@ -722,6 +722,17 @@ class FilesModel(QObject, updates.UpdateInterface):
         except Exception:
             return set()
 
+    def _schedule_index_retry(self):
+        """Try the queued search-model downloads again. They finish on their own once the network is back."""
+        timer = getattr(self, "_index_retry_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self.requeue_unsearchable)
+            self._index_retry_timer = timer
+        if not timer.isActive():
+            timer.start(15000)
+
     def requeue_unsearchable(self, *_args):
         """Index again the files with no search vectors from the chosen model: after a sign-in, a project open, or a change
         of Preferences > Footage search model. Files already embedded by that model are left alone."""
@@ -789,6 +800,8 @@ class FilesModel(QObject, updates.UpdateInterface):
                     log.warning(f"Background indexing failed for {file_id}: {error}")
                     # Persist it, or the file keeps no status and shows no badge at all.
                     metadata = dict(metadata or {}, error=str(error))
+                elif (metadata or {}).get("retry_index"):
+                    self._schedule_index_retry()
                 if not metadata or not isinstance(metadata, dict):
                     return
                 f = _File.get(id=file_id)

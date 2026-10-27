@@ -102,8 +102,18 @@ def _plan(plan_id: str, reference_file_id: str = "") -> Optional[Dict[str, Any]]
 
 
 def _effective(row: Dict[str, Any], plan: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """The window that plays this shot: a stock or fix override if there is one, else the planned choice."""
-    return plan["overrides"].get(row["reference_shot"]) or row.get("choice")
+    """The window that plays this shot: a stock or fix override if there is one, else a matched choice.
+
+    A weak or skipped shot stays empty. Filling it with the nearest unrelated footage is what the check used to pass.
+    """
+    if int(row["reference_shot"]) in {int(s) for s in plan.get("skip") or []}:
+        return None
+    override = plan["overrides"].get(row["reference_shot"])
+    if override:
+        return override
+    if row.get("status") not in (None, "matched"):
+        return None
+    return row.get("choice")
 
 
 def _reference(files, reference_file_id: str):
@@ -489,6 +499,7 @@ def _ensure_track(name: str) -> None:
     schema=obj({
         "plan_id": string("The plan from plan_recreation_tool (default: the latest one)."),
         "only_shots": array({"type": "integer"}, "Rebuild just these reference shots (their old clips are replaced). Empty = every shot.", []),
+        "skip_shots": array({"type": "integer"}, "Leave these reference shots empty (a weak match, or a scene that is not in the footage).", []),
         "overrides": array(obj({
             "reference_shot": integer("The reference shot to change.", minimum=0),
             "file_id": string("The project file to use for it (a stock clip you imported, or another of your clips)."),
@@ -503,11 +514,12 @@ def _ensure_track(name: str) -> None:
     }),
     background_safe=True,
 )
-def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=True, framing=True, ramps=True, transitions=True):
+def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=True, framing=True, ramps=True, transitions=True, skip_shots=[]):
     """Place a recreation plan on the timeline: each source window at the reference's exact cut time and length, on a Recreation track,
     in one undoable step. Each clip is graded towards its reference shot's measured look (grade), the reference's audio goes under it
     on a Song track and the footage's own sound is switched off (song). With overrides it swaps the source of the named shots; with
-    only_shots it rebuilds just those, replacing their clips. Does not do the reference's fades and dissolves (run_tool(name='check_recreation_tool')
+    only_shots it rebuilds just those, replacing their clips. skip_shots leaves those shots empty instead of filling them with a weak match.
+    Does not do the reference's fades and dissolves (run_tool(name='check_recreation_tool')
     lists them). Afterwards call run_tool(name='check_recreation_tool') and fix what it names.
     """
     plan = _plan(plan_id)
@@ -521,6 +533,8 @@ def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=T
         out = float(item.get("out") or 0.0) or float(item["in"]) + row["duration"]
         name = next((str(f.data.get("name") or f.id) for f in _all_files() if str(f.id) == str(item["file_id"])), str(item["file_id"]))
         plan["overrides"][shot] = {"file_id": str(item["file_id"]), "name": name, "in": float(item["in"]), "out": out, "stock": True}
+    if skip_shots:
+        plan["skip"] = sorted(set(int(s) for s in plan.get("skip") or []) | {int(s) for s in skip_shots})
     wanted = {int(s) for s in only_shots} if only_shots else None
     todo = [r for r in plan["rows"] if _effective(r, plan) and (wanted is None or r["reference_shot"] in wanted)]
     if not todo:
@@ -821,7 +835,9 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pic
             coverage.append(0.0)
             slot = snap(a)
             nearby = min((c for c in pictures if abs(c.start - slot) <= 1.5), key=lambda c: abs(c.start - slot), default=None)
-            if nearby is not None:
+            owns_another = nearby is not None and any(
+                i != shot_id and snap(sa) <= (nearby.start + nearby.end) / 2.0 < snap(sb) for i, sa, sb, _sr in slots)
+            if nearby is not None and not owns_another:
                 shift = nearby.start - slot
                 findings.setdefault(shot_id, []).append(f"no clip at this slot; the clip starting at {_mmss(nearby.start)} is {abs(shift) / frame:.0f} frame(s) "
                                                         f"{'late' if shift > 0 else 'early'}")
@@ -847,8 +863,9 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pic
                 fixes[shot_id] = f"run_tool(name='move_clips_tool', args={{'timeline_clip_ids': ['{covering.id}'], 'by_seconds': {shift:.3f}}})"
             else:
                 fixes[shot_id] = f"run_tool(name='build_recreation_tool', args={{'only_shots': [{shot_id}]}})"
-        for k in range(int(covering.src_in / mref.BUCKET_SECONDS), int(max(covering.src_in, covering.src_out - 1e-6) / mref.BUCKET_SECONDS) + 1):
-            buckets[(covering.file_id, k)] += 1
+        if (row or {}).get("repeat_of") is None:
+            for k in range(int(covering.src_in / mref.BUCKET_SECONDS), int(max(covering.src_in, covering.src_out - 1e-6) / mref.BUCKET_SECONDS) + 1):
+                buckets[(covering.file_id, k)] += 1
         cand = by_id.get(covering.file_id)
         shot = next((s for s in ref.shots if int(s["id"]) == int(shot_id)), None)
         ref_type = ((shot or {}).get("watch") or {}).get("shot_type")
@@ -893,12 +910,24 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pic
 
     # picture: how alike each placed window is to its reference shot, measured against every shot/window pair (not just the shot's own options),
     # so a "best of a poor lot" cannot pass
+    scene_miss = False
     every_raw = [x[5]["raw_picture"] for sc, _c in slot_info.values() for x in sc if x[5].get("raw_picture") is not None]
     pool_at = {f.file_id: i for i, f in enumerate(pool)}
     row_of = {i: r for i, _a, _b, r in slots}
     best_raw = {sid: max((x[5]["raw_picture"] for x in sc if x[5].get("raw_picture") is not None), default=None) for sid, (sc, _c) in slot_info.items()}
     nothing_like = mref.unmatchable_shots({k: v for k, v in best_raw.items() if v is not None})
     for shot_id, (scored, covering) in slot_info.items():
+        src_shot = (by_id.get(covering.file_id).shot_at((covering.src_in + covering.src_out) / 2.0)
+                    if covering.file_id in by_id else None)
+        ref_shot = next((s for s in ref.shots if int(s["id"]) == int(shot_id)), None)
+        layout = mref.layout_similarity(((ref_shot or {}).get("look_extras") or {}).get("layout"),
+                                        ((src_shot or {}).get("look_extras") or {}).get("layout"))
+        if layout is not None and layout < mref.LAYOUT_MIN and (row_of.get(shot_id) or {}).get("repeat_of") is None:
+            picture.append(0.0)
+            scene_miss = True
+            findings.setdefault(shot_id, []).append(f"different scene from the reference (colour layout {layout:.2f}; needs {mref.LAYOUT_MIN:.2f})")
+            fixes.setdefault(shot_id, f"run_tool(name='build_recreation_tool', args={{'skip_shots': [{shot_id}]}})")
+            continue
         mine = [x[5]["raw_picture"] for x in scored if x[0] == pool_at.get(covering.file_id) and x[1] < covering.src_out - 1e-6
                 and x[2] > covering.src_in + 1e-6 and x[5].get("raw_picture") is not None]
         fit = mref.picture_fit(every_raw, max(mine)) if mine else None
@@ -925,9 +954,12 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pic
                 fixes.setdefault(shot_id, f"run_tool(name='search_stock_video_tool', args={{'query': '{query}'}}) then run_tool(name='build_recreation_tool', args={{'overrides': [...], 'only_shots': [{shot_id}]}})")
 
     reuse_max = max(buckets.values(), default=0)
-    uses = Counter(placed_files)
-    share = max(uses.values(), default=0) / max(1, len(placed_files))
-    back_to_back = sum(1 for x, y in zip(placed_files, placed_files[1:]) if x == y)
+    # A repeat the reference itself has is not a variety failure: the plan already allows that one reuse.
+    variety_files = [c.file_id for sid, a, b, r in slots if (r or {}).get("repeat_of") is None
+                     for c in (clip_at(a, b),) if c is not None]
+    uses = Counter(variety_files)
+    share = max(uses.values(), default=0) / max(1, len(variety_files))
+    back_to_back = sum(1 for x, y in zip(variety_files, variety_files[1:]) if x == y)
     variety_penalty = 0.0
     repeat_slots = {i for i, _a, _b, r in slots if (r or {}).get("repeat_of") is not None}
     reused = 0
@@ -980,7 +1012,7 @@ def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pic
              "picture": _grade_score(picture) if picture else 50.0, "look": _grade_score(look_scores) if look_scores else 50.0, "sound": round(100.0 * max(0.0, sound), 1),
              "framing": _grade_score(framing_scores) if framing_scores else 100.0}
     overall = round(sum(areas[k] * w for k, w in AREA_WEIGHT.items()), 1)
-    passed = overall >= PASS_SCORE and min(areas.values()) >= AREA_FLOOR and worst_cut <= MAX_CUT_ERROR_FRAMES
+    passed = overall >= PASS_SCORE and min(areas.values()) >= AREA_FLOOR and worst_cut <= MAX_CUT_ERROR_FRAMES and not scene_miss
     ref_transitions = sorted((s for s in ref.shots if (s.get("opens_with") or {}).get("kind") in ("fade", "dissolve")), key=lambda s: s["start"])
     failing = [{"reference_shot": sid, "time": _mmss(next(a for i, a, _b, _r in slots if i == sid)), "problems": probs, "fix": fixes.get(sid)}
                for sid, probs in sorted(findings.items())][:20]

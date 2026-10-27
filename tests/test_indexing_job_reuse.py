@@ -141,6 +141,30 @@ def test_cancelling_during_analysis_ends_the_job_without_embedding(monkeypatch, 
     assert seen == [True] and len(done) == 1
 
 
+def test_a_missing_network_while_setting_up_search_leaves_the_file_queued(monkeypatch, tmp_path):
+    """The first search-model download raises URLError offline. That must not fail the file or escape the job."""
+    import urllib.error
+    from classes.media_index import vectors
+    h = Harness(monkeypatch, tmp_path)
+    _stub_vectors(monkeypatch, h)
+
+    def offline(*a, **k):
+        raise urllib.error.URLError("no network")
+
+    monkeypatch.setattr(vectors, "compute_vectors", offline)
+    done = []
+    IndexingJob(
+        {"id": "f1", "path": str(h.media), "media_type": "video", "duration": 5.0, "fingerprint": fingerprint(str(h.media))},
+        "p1", client_factory=lambda: h.client, emit_completed=lambda fd, md, err: done.append((md, err)),
+        emit_progress=lambda *a: None,
+    ).run()
+    meta, err = done[0]
+    assert err is None
+    assert not meta.get("error")
+    assert (meta.get("index") or {}).get("status") != "failed"
+    assert meta.get("retry_index") is True
+
+
 def test_a_failed_embedding_is_reported_and_out_of_credits_is_a_skip(monkeypatch, tmp_path):
     from classes.media_index import embedder as E, vectors
     h = Harness(monkeypatch, tmp_path)

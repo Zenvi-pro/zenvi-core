@@ -379,7 +379,8 @@ def plan_placement(entries, start_position, track_num, fade=None, fade_length=2.
 
         # Create clip object for this file
         new_clip = read_clip_json(file.absolute_path())
-        new_clip["position"] = ft.snap(float(position), fps)
+        start_frame = ft.to_frame(float(position), fps)
+        new_clip["position"] = ft.to_seconds(start_frame, fps)
         new_clip["layer"] = track_num
         new_clip["file_id"] = file.id
         new_clip["title"] = file.data.get("name", filename)
@@ -417,6 +418,8 @@ def plan_placement(entries, start_position, track_num, fade=None, fade_length=2.
         new_clip["duration"] = new_clip["reader"]["duration"]
         if file.data["media_type"] == "image":
             end_time = entry.get("end") if entry.get("end") is not None else image_length
+        # The timeline length is a whole number of frames, so the next clip can start where this one ends.
+        end_time = float(start_time) + ft.to_seconds(ft.duration_frames(float(start_time), float(end_time), fps), fps)
         new_clip["end"] = end_time
 
         # Adjust Fade of Clips (if no transition is chosen)
@@ -495,7 +498,8 @@ def plan_placement(entries, start_position, track_num, fade=None, fade_length=2.
 
         steps.append({"clip": new_clip, "transition": transitions_data})
 
-        # Increment position by length of clip
-        position += (end_time - start_time)
+        # The next clip starts on the frame this one ends on, so rounding cannot open a gap.
+        # Read the position back: a fade or transition may have pulled this clip earlier.
+        position = ft.to_seconds(ft.to_frame(float(new_clip["position"]), fps) + ft.duration_frames(start_time, end_time, fps), fps)
 
     return steps

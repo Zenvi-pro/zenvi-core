@@ -109,5 +109,8 @@ def test_a_stock_import_receipt_points_at_the_listed_placement_tool():
 def test_retired_handlers_are_not_served_over_mcp():
     from classes.tool_handlers import AGENT_TOOL_HANDLERS
     served = {d["name"] for d in iter_tool_defs()}
-    assert not RETIRED & set(AGENT_TOOL_HANDLERS), sorted(RETIRED & set(AGENT_TOOL_HANDLERS))
-    assert not RETIRED & served, sorted(RETIRED & served)
+    # Shipped backends still call this. The handler answers from the local index.
+    keep = {"get_clips_with_full_metadata_tool"}
+    assert not (RETIRED - keep) & set(AGENT_TOOL_HANDLERS), sorted((RETIRED - keep) & set(AGENT_TOOL_HANDLERS))
+    assert not (RETIRED - keep) & served, sorted((RETIRED - keep) & served)
+    assert keep <= served

@@ -24,6 +24,7 @@ from classes.media_index import quality as Q
 
 # ---- story ------------------------------------------------------------------------------------
 LENGTH_TOLERANCE = 0.10          # within 10 % of the requested length is on target
+PICTURE_TAIL_SECONDS = 0.5       # picture ending this far before the timeline leaves a black tail
 HOOK_MIN_HIGHLIGHT = 0.45
 HOOK_MIN_POTENTIAL = 0.40
 FAST_CUT_SECONDS = 0.5
@@ -230,6 +231,13 @@ def story_findings(clips: Sequence[TimelineClip], project: ProjectInfo, brief: B
                            f"{duration:.1f} s against a target of {target:.0f} s ({off * 100:+.0f}%).",
                            {"duration": round(duration, 2), "target": target, "off_pct": round(off * 100, 1)},
                            [] if abs(off) <= LENGTH_TOLERANCE else ["trim_clips_tool", "set_clip_speed_tool", "remove_gaps_tool"]))
+    picture_end = shots[-1]["end"]
+    if duration - picture_end > PICTURE_TAIL_SECONDS:
+        out.append(finding("picture_tail", "picture", "needs",
+                           f"The picture ends at {picture_end:.1f} s and the timeline runs to {duration:.1f} s, so the ending is black.",
+                           {"picture_end": round(picture_end, 2), "duration": round(duration, 2)},
+                           ["trim_clips_tool", "add_clips_to_timeline_tool"]))
+
     cap = FORM_MAX_SECONDS.get(brief.form)
     if cap and duration > cap:
         out.append(finding("form_length", "delivery", "needs", f"A {brief.form} should stay under {cap:.0f} s; this is {duration:.0f} s.",
