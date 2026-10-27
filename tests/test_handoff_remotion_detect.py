@@ -17,6 +17,20 @@ FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "handoff_remotion"
 # detect
 # ---------------------------------------------------------------------------
 
+
+def test_package_json_with_utf8_bom_still_counts_as_remotion(tmp_path):
+    """Windows editors often write UTF-8 BOM; that must not look like 'no remotion dep'."""
+    root = tmp_path / "bom-project"
+    root.mkdir()
+    body = json.dumps({"name": "bom", "dependencies": {"remotion": "4.0.532", "react": "18"}})
+    (root / "package.json").write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
+    (root / "src").mkdir()
+    (root / "src" / "index.ts").write_text("import {registerRoot} from 'remotion';\n")
+    info = detect.inspect_project(str(root))
+    assert info.root == str(root)
+    assert info.name == "bom"
+
+
 def test_a_folder_inside_the_project_resolves_to_its_root(tmp_path):
     root = make_project(str(tmp_path / "promo"))
     info = detect.inspect_project(os.path.join(root, "src"))
