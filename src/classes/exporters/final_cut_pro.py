@@ -592,9 +592,10 @@ class XmemlBuilder:
         target = os.path.join(self.media_dir, base)
         n = 2
         # Windows/macOS default volumes are case-insensitive: Clip.MP4 and clip.mp4
-        # would otherwise plan two targets and silently overwrite on copy.
-        taken = {os.path.normcase(t) for t in self._copy_targets.values()}
-        while os.path.normcase(target) in taken:
+        # would otherwise plan two targets and silently overwrite on copy. casefold,
+        # not os.path.normcase: normcase folds nothing on macOS.
+        taken = {t.casefold() for t in self._copy_targets.values()}
+        while target.casefold() in taken:
             target = os.path.join(self.media_dir, f"{stem} {n}{ext}")
             n += 1
         self._copy_targets[source] = target
