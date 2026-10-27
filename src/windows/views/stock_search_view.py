@@ -15,7 +15,7 @@ download workers, result cards and async image loaders are reused as-is from
 
 from typing import Dict
 
-from qt_api import Qt, QSize, QThread, QThreadPool, QEvent, QObject, pyqtSignal, pyqtSlot
+from qt_api import Qt, QSize, QThread, QEvent, QObject, pyqtSignal, pyqtSlot
 from qt_api import QImage, QPixmap, QCursor
 from qt_api import (
     QWidget, QVBoxLayout, QScrollArea, QGridLayout, QLabel, QApplication, QPushButton,
@@ -34,7 +34,7 @@ from themes.cosmic import tokens
 from windows.pexels_dock import (
     _SearchWorker as PexelsSearchWorker,
     _DownloadWorker as PexelsDownloadWorker,
-    _VideoCard, _ThumbnailRunnable,
+    _VideoCard, _ThumbnailRunnable, image_pool,
     CARD_W as VIDEO_W,
 )
 from windows.freesound_dock import (
@@ -119,7 +119,7 @@ class StockSearchView(QWidget):
         # Credit lines by card uid, taken at click time: the card may be gone by the time
         # its download finishes (a new search clears the grid).
         self._credits: Dict[str, str] = {}
-        self._pool = QThreadPool.globalInstance()
+        self._pool = image_pool()
         self._bed_busy = False
         self._bed_declined = False   # asked once per session; a "no" is not asked again
 

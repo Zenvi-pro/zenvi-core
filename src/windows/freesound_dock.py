@@ -10,7 +10,7 @@ import html
 from typing import Dict, Any
 
 from qt_api import (
-    Qt, QThread, pyqtSignal, QTimer, QRunnable, QThreadPool,
+    Qt, QThread, pyqtSignal, QTimer, QRunnable,
     pyqtSlot, QObject,
 )
 from qt_api import QPixmap, QPainter, QPainterPath, QPen, QRect, QRectF, QImage
@@ -271,7 +271,8 @@ class FreesoundDock(QDockWidget):
         self._dl_threads: Dict[int, QThread] = {}
         self._dl_workers: Dict[int, _DownloadWorker] = {}
         self._cards: Dict[int, _SoundCard] = {}
-        self._wave_pool = QThreadPool.globalInstance()
+        from windows.pexels_dock import image_pool
+        self._wave_pool = image_pool()
         self._search_gen = 0   # results from an older search are ignored
 
         self._build_ui()

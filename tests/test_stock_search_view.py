@@ -257,3 +257,15 @@ def test_only_a_real_decline_turns_local_beds_off(view):
     assert view._bed_declined is False
     view._on_local_bed_done({"path": "", "error": "x", "declined": True, "gen": view._search_gen})
     assert view._bed_declined is True
+
+
+def test_image_loads_never_use_the_global_thread_pool():
+    # Qt's smooth scaling of a large image runs on QThreadPool.globalInstance() and the GUI
+    # thread waits for it; network fetches parked there froze the editor for minutes.
+    from PyQt5.QtCore import QThreadPool
+    from windows.freesound_dock import FreesoundDock
+    from windows.pexels_dock import PexelsDock
+    from windows.views.stock_search_view import StockSearchView
+
+    pools = [StockSearchView()._pool, FreesoundDock()._wave_pool, PexelsDock()._thumb_pool]
+    assert all(p is not QThreadPool.globalInstance() for p in pools)
