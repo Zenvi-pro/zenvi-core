@@ -40,6 +40,9 @@ SURFACE_NOTE = "Runs in the Zenvi engine (engine bridge)."
 # name -> engine catalog entry (name, title, description, inputSchema, annotations)
 BRIDGED: dict = {}
 
+STALE = "the project changed while the engine ran the tool; nothing was applied, try again"
+SWITCHED = "another project was opened while the engine ran the tool; nothing was applied"
+
 # Answer action kinds -> the UpdateManager call that applies them.
 _APPLY = {
     "insert": lambda updates, key, value: updates.insert(key, value),
@@ -138,11 +141,16 @@ def _snapshot() -> tuple:
 def _apply(answer: dict, project_file: str, version) -> Optional[str]:
     """Apply the answer's actions on the GUI thread; an error message when refused."""
     app = get_app()
+    current = getattr(app.project, "current_filepath", None)
+    if not current or os.path.abspath(current) != project_file:
+        return SWITCHED
     if getattr(app.updates, "data_version", None) != version:
-        return "the project changed while the engine ran the tool; nothing was applied, try again"
+        return STALE
     # The engine keeps the bundled-asset aliases (@transitions/…); resolve them like a project load.
     text = app.project.convert_paths_to_absolute(project_file, json.dumps(answer.get("actions") or []))
     actions = json.loads(text)
+    if not _well_formed(actions):
+        return "the engine answered a malformed action; nothing was applied"
     unknown = sorted({str(a.get("type")) for a in actions} - set(_APPLY))
     if unknown:
         # Checked before applying anything: a partly applied answer would leave half a change.
@@ -156,6 +164,15 @@ def _apply(answer: dict, project_file: str, version) -> Optional[str]:
     finally:
         window.IgnoreUpdates.emit(False, True)
     return None
+
+
+def _well_formed(actions) -> bool:
+    """Whether *actions* are all ``{"type", "key": [str | {..}, ...], "value"}`` (no value for a delete)."""
+    return isinstance(actions, list) and all(
+        isinstance(a, dict) and isinstance(a.get("key"), list) and bool(a["key"])
+        and all(isinstance(part, (str, dict)) for part in a["key"])
+        and (a.get("type") == "delete" or "value" in a)
+        for a in actions)
 
 
 def _backend_token() -> Optional[str]:
@@ -190,9 +207,10 @@ def run_tool(name: str, args: dict) -> str:
 def _discard(files: list, project_file: str) -> None:
     """Remove files a refused call wrote (only inside the project's assets folder)."""
     from classes.assets import get_assets_path
-    assets = os.path.abspath(get_assets_path(project_file, create_paths=False)) + os.sep
+    # Canonical paths: a symlink inside the assets folder must not lead the removal outside it.
+    assets = os.path.realpath(get_assets_path(project_file, create_paths=False)) + os.sep
     for path in files:
-        if os.path.abspath(path).startswith(assets):
+        if isinstance(path, str) and os.path.realpath(path).startswith(assets):
             try:
                 os.remove(path)
             except OSError:
