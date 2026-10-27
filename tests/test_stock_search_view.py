@@ -42,7 +42,10 @@ def view():
     v._pool = MagicMock()
     with patch.object(v, "_start_search"):
         v.run_search("ocean")
-    return v
+    # Empty music results call this. The real worker imports editor tools on a
+    # QThread; under real Qt with no libopenshot that aborts the process.
+    with patch.object(v, "_start_local_bed"):
+        yield v
 
 
 def _started(v):
@@ -128,6 +131,10 @@ def test_project_files_say_when_the_search_hides_every_file(view):
 
 def test_a_failed_search_can_be_retried_with_the_same_query(view):
     view._on_music_results({"sounds": [], "rate_limited": True, "error": "Stock search is busy, try again in 30s."})
+    # No stock music asks for a local bed, but this test must not start that worker:
+    # it imports the editor tools (and libopenshot) off the GUI thread and aborts the process.
+    assert view._search_threads == []
+    view._start_local_bed.assert_called_once_with("ocean")
     with patch.object(view, "_start_search") as start:
         view.run_search("ocean")
     assert start.call_count == 2
