@@ -62,6 +62,12 @@ _FILES_STYLE = tokens.resolve("""
 """)
 
 
+def _same_path(a: str, b: str) -> bool:
+    import os
+    norm = lambda p: os.path.normcase(os.path.normpath(str(p or "").replace("\\", "/")))
+    return bool(a) and norm(a) == norm(b)
+
+
 class _LocalBedWorker(QObject):
     """Generates an instrumental bed for a query on this computer (ACE-Step), off the GUI thread."""
     finished = pyqtSignal(dict)   # {path, error, query}
@@ -578,13 +584,15 @@ class StockSearchView(QWidget):
     def _keep_credit(self, local_path: str, credit: str):
         """CC BY needs the credit with the clip, not only on the search card."""
         try:
-            from classes.tool_handlers import resolve_imported_file
+            from classes.tool_handlers import _ignore_history, resolve_imported_file
             f = resolve_imported_file(local_path)
-            if not f:
+            # The resolver falls back to a same-named file; a credit must only go on this one.
+            if not f or not _same_path(f.absolute_path(), local_path):
                 log.warning("Imported %s but could not find it to store its credit", local_path)
                 return
-            f.data["stock_credit"] = credit
-            f.save()
+            with _ignore_history(get_app()):   # metadata, not an edit: no undo step
+                f.data["stock_credit"] = credit
+                f.save()
         except Exception as exc:
             log.warning("Could not store the stock credit for %s: %s", local_path, exc)
 

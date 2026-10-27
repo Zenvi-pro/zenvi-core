@@ -136,8 +136,9 @@ def test_a_failed_search_can_be_retried_with_the_same_query(view):
 def test_a_music_import_keeps_its_credit_line(view):
     view._on_music_results({"sounds": _sounds(1), "count": 1})
     project_file = MagicMock(data={})
+    project_file.absolute_path.return_value = "/tmp/a.mp3"
     with patch("classes.tool_handlers.resolve_imported_file", return_value=project_file), \
-         patch.object(view, "_add_to_project"):
+         patch("windows.views.stock_search_view.get_app"), patch.object(view, "_add_to_project"):
         view._on_download_done("suuid-0", "/tmp/a.mp3", "")
     assert project_file.data["stock_credit"] == "credit"
     project_file.save.assert_called_once()
@@ -198,7 +199,8 @@ def test_the_credit_survives_a_new_search_and_a_windows_path_form(view):
     project_file = MagicMock(data={"path": r"C:\Users\me\Downloads\a.mp3"})
     project_file.absolute_path.return_value = r"C:\Users\me\Downloads\a.mp3"
     with patch("classes.query.File.get", return_value=None), \
-         patch("classes.query.File.filter", return_value=[project_file]), patch.object(view, "_add_to_project"):
+         patch("classes.query.File.filter", return_value=[project_file]), \
+         patch("windows.views.stock_search_view.get_app"), patch.object(view, "_add_to_project"):
         view._on_download_done("suuid-0", "C:/Users/me/Downloads/a.mp3", "")
     assert project_file.data["stock_credit"] == "credit"
 
@@ -207,4 +209,35 @@ def test_card_tooltips_show_provider_text_literally(view):
     from windows.freesound_dock import _SoundCard
 
     card = _SoundCard(dict(_sounds(1)[0], attribution='Artist<br><a href="https://evil.example">x</a>'))
+    assert "<a href" not in card.toolTip() and "&lt;a href" in card.toolTip()
+
+
+def test_the_credit_is_not_an_undo_step(view):
+    view._on_music_results({"sounds": _sounds(1), "count": 1})
+    app = MagicMock()
+    app.updates.ignore_history = False
+    seen = []
+    project_file = MagicMock(data={})
+    project_file.absolute_path.return_value = "/tmp/a.mp3"
+    project_file.save.side_effect = lambda: seen.append(app.updates.ignore_history)
+    with patch("classes.tool_handlers.resolve_imported_file", return_value=project_file), \
+         patch("windows.views.stock_search_view.get_app", return_value=app), patch.object(view, "_add_to_project"):
+        view._on_download_done("suuid-0", "/tmp/a.mp3", "")
+    assert seen == [True] and app.updates.ignore_history is False
+
+
+def test_the_credit_never_lands_on_a_same_named_file_elsewhere(view):
+    view._on_music_results({"sounds": _sounds(1), "count": 1})
+    other = MagicMock(data={})
+    other.absolute_path.return_value = "/projects/old/a.mp3"
+    with patch("classes.tool_handlers.resolve_imported_file", return_value=other), patch.object(view, "_add_to_project"):
+        view._on_download_done("suuid-0", "/tmp/a.mp3", "")
+    assert "stock_credit" not in other.data
+    other.save.assert_not_called()
+
+
+def test_footage_tooltips_show_provider_text_literally():
+    from windows.pexels_dock import _VideoCard
+
+    card = _VideoCard(dict(_videos(1)[0], user_name='<a href="https://evil.example">x</a>'))
     assert "<a href" not in card.toolTip() and "&lt;a href" in card.toolTip()
