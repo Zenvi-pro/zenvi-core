@@ -46,6 +46,15 @@ def test_project_pin(tmp_path):
     assert hf_cli.project_pin(str(tmp_path / "missing")) is None and hf_cli.project_pin(None) is None
 
 
+def test_project_pin_reads_utf8_bom(tmp_path):
+    """Notepad / some editors write a BOM; utf-8 json.load fails, utf-8-sig must not."""
+    root = tmp_path / "bom"
+    root.mkdir()
+    body = json.dumps({"name": "p", "scripts": {"render": "npx --yes hyperframes@0.8.120 render"}})
+    (root / "package.json").write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
+    assert hf_cli.project_pin(str(root)) == "0.8.120"
+
+
 def test_resolution_order(tmp_path, node, monkeypatch):
     proj = _project(tmp_path, "0.8.120")
     cli = hf_cli.resolve_cli(proj)

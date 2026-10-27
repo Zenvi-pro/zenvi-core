@@ -30,9 +30,10 @@ def _project_settings():
 
 
 def _hf_dir(project_dir: str) -> str:
-    path = os.path.abspath(os.path.expanduser(str(project_dir or "").strip()))
+    from classes.handoff.timeline_view import stable_abs
     if not str(project_dir or "").strip():
         raise ToolError("say which HyperFrames project: project_dir (the folder with index.html)")
+    path = stable_abs(str(project_dir).strip())
     if not os.path.isdir(path):
         raise ToolError(f"{path} is not a folder")
     if not os.path.isfile(os.path.join(path, "index.html")):

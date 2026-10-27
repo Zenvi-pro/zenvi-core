@@ -1168,7 +1168,8 @@ def load_project(project_dir: str, *, probe: Optional[ProbeFn] = None, cli_timel
     Raises HyperFramesError for a folder that is not a HyperFrames project,
     timing cycles and unknown references.
     """
-    root_dir = os.path.abspath(os.path.expanduser(str(project_dir or "")))
+    from classes.handoff.timeline_view import stable_abs
+    root_dir = stable_abs(str(project_dir or ""))
     if not os.path.isdir(root_dir):
         raise HyperFramesError(f"{project_dir!r} is not a folder")
     if not os.path.isfile(os.path.join(root_dir, INDEX)):

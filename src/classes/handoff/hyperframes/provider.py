@@ -120,7 +120,8 @@ def canonical_html_digest(path: str) -> str:
         st = os.stat(path)
     except OSError:
         return "missing"
-    key = os.path.abspath(path)
+    from classes.handoff.timeline_view import stable_abs
+    key = stable_abs(path)
     with _canon_lock:
         hit = _canon_cache.get(key)
     if hit and hit[0] == st.st_size and hit[1] == st.st_mtime_ns:

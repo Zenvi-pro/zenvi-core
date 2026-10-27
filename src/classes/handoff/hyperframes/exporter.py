@@ -250,7 +250,7 @@ def read_manifest(folder: str) -> Optional[dict]:
     if not os.path.isfile(path) or os.path.islink(path):
         return None
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8-sig") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
         return None
@@ -266,12 +266,17 @@ def plan_output(output_dir: str, *, overwrite_changes: bool = False) -> OutputPl
     or whose assets/ is a link), and ExportChanged when files of the earlier export were changed since --
     unless *overwrite_changes*.
     """
+    from classes.handoff.timeline_view import stable_abs
     if not str(output_dir or "").strip():
         raise ExportError("say where to write the HyperFrames project: output_dir (a new or empty folder)")
-    path = os.path.abspath(os.path.expanduser(str(output_dir).strip()))
+    path = stable_abs(str(output_dir).strip())
     if os.path.exists(path) and not os.path.isdir(path):
         raise ExportError(f"{path} is a file; pick a folder for the HyperFrames project")
-    parent = os.path.dirname(path)
+    # dirname of a POSIX abs path kept by stable_abs on Windows must not invent a drive
+    if path.startswith("/") and os.name == "nt" and not path.startswith("//"):
+        parent = path.rsplit("/", 1)[0] or "/"
+    else:
+        parent = os.path.dirname(path)
     if not os.path.isdir(parent):
         raise ExportError(f"the folder {parent} does not exist")
     if not os.path.isdir(path):

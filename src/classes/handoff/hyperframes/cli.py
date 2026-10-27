@@ -101,7 +101,8 @@ def project_pin(project_dir: Optional[str]) -> Optional[str]:
     if not project_dir:
         return None
     try:
-        with open(os.path.join(project_dir, "package.json"), encoding="utf-8") as fh:
+        # utf-8-sig: Notepad / some editors write a BOM that breaks plain utf-8 json.load
+        with open(os.path.join(project_dir, "package.json"), encoding="utf-8-sig") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
         return None
@@ -124,7 +125,7 @@ def _at_least(version: Optional[str], minimum: str) -> bool:
 
 def _package_version(pkg_dir: str) -> Optional[str]:
     try:
-        with open(os.path.join(pkg_dir, "package.json"), encoding="utf-8") as fh:
+        with open(os.path.join(pkg_dir, "package.json"), encoding="utf-8-sig") as fh:
             return str(json.load(fh).get("version") or "") or None
     except (OSError, ValueError, AttributeError):
         return None

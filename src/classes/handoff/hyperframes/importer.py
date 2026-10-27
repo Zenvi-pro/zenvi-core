@@ -308,7 +308,8 @@ def inspect_project(project_dir: str, mode: str = "auto", *, fps: float = 30.0, 
     mode = str(mode or "auto").strip().lower()
     if mode not in MODES:
         raise hfp.HyperFramesError(f"mode must be one of {', '.join(MODES)}, got {mode!r}")
-    root_dir = os.path.abspath(os.path.expanduser(str(project_dir or "")))
+    from classes.handoff.timeline_view import stable_abs
+    root_dir = stable_abs(str(project_dir or ""))
     warnings: List[str] = []
     cli_json = None
     cli_version = None
@@ -819,6 +820,8 @@ def _place_native(item: Item, reader: dict, layer: int, position: float, File, p
 
 def _place_linked(item: Item, reader: dict, layer: int, position: float, fps: float, File, place_clip,
                   quiet: bool = False) -> dict:
+    from classes import frame_time as ft
+    from classes import project_files
     link = dict(item.link or {})
     link.pop("warnings", None)
     stored = lm.normalize_link(link)
@@ -826,10 +829,9 @@ def _place_linked(item: Item, reader: dict, layer: int, position: float, fps: fl
         duration = float(reader.get("duration") or 0.0)
     except (TypeError, ValueError):
         duration = 0.0
-    frames = max(1, int(round(duration * fps)))
-    length = frames / fps
-    if length > duration + 1e-6:
-        length = max(1.0 / fps, (frames - 1) / fps)
+    # whole frames like Timeline.addClip / linked_media.import_and_place: float
+    # error in the probe never drops the last frame
+    length = ft.to_seconds(project_files.media_frame_count(duration, fps), fps)
     f = File()
     rec = copy.deepcopy(reader)
     rec["name"] = item.name
