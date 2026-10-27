@@ -200,3 +200,23 @@ def test_detect_beats_tool_returns_its_receipt_shape_with_a_tempo_grid(tmp_path)
     assert first["frame"] == round(first["timeSec"] * 30)
     assert data["downbeats"] and set(data["downbeats"][0]) == {"timeSec", "frame"}
     assert receipt["undoSteps"] == 0
+
+
+def test_a_stalled_ffmpeg_band_split_is_killed_on_cancel(monkeypatch):
+    """CodeRabbit #345: the pipe read blocked while ffmpeg wrote nothing, holding the inference slot."""
+    import subprocess
+    import sys
+    import threading
+    import time
+    from classes import ffmpeg_cli
+
+    def stalled(cmd, **kwargs):
+        return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], **kwargs)
+
+    monkeypatch.setattr(ffmpeg_cli, "popen_ffmpeg", stalled)
+    token = CancelToken()
+    threading.Timer(0.3, token.cancel).start()
+    began = time.monotonic()
+    with pytest.raises(InterruptedError):
+        beats.band_energies("in.wav", token=token)
+    assert time.monotonic() - began < 10

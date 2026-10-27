@@ -45,6 +45,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Protocol, Sequence
 
@@ -203,7 +205,8 @@ def band_energies(path: str, *, token: Optional[CancelToken] = None, max_seconds
     """Per-hop energy of each band of *path*'s audio at 22050 Hz (ffmpeg splits and squares).
 
     The PCM streams in and is summed hop by hop, so a long file never sits in
-    memory whole. Raises RuntimeError when ffmpeg is missing or fails.
+    memory whole. Raises RuntimeError when ffmpeg is missing, fails or stalls past the
+    deadline (twice *max_seconds*, at least a minute).
     """
     from classes.ffmpeg_cli import popen_ffmpeg
 
@@ -220,6 +223,23 @@ def band_energies(path: str, *, token: Optional[CancelToken] = None, max_seconds
             proc = popen_ffmpeg(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=errors)
         except FileNotFoundError:
             raise RuntimeError("ffmpeg not found on PATH") from None
+        # A read blocks until ffmpeg writes: kill a stalled or cancelled ffmpeg so the
+        # inference slot is never held for good (the read then ends with EOF).
+        deadline = time.monotonic() + max(60.0, 2.0 * float(max_seconds))
+        killed = threading.Event()
+
+        def watch() -> None:
+            while proc.poll() is None:
+                if time.monotonic() > deadline or (token is not None and token.is_cancelled):
+                    killed.set()
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                    return
+                time.sleep(0.25)
+
+        threading.Thread(target=watch, name="beats-ffmpeg-watchdog", daemon=True).start()
         try:
             stdout = proc.stdout
             assert stdout is not None
@@ -245,6 +265,10 @@ def band_energies(path: str, *, token: Optional[CancelToken] = None, max_seconds
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+        if killed.is_set():
+            if token is not None:
+                token.raise_if_cancelled()
+            raise RuntimeError("ffmpeg band split timed out")
         if code != 0:
             errors.seek(0)
             message = errors.read().decode("utf-8", "replace").strip()
