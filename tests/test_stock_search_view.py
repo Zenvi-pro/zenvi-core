@@ -136,7 +136,7 @@ def test_a_failed_search_can_be_retried_with_the_same_query(view):
 def test_a_music_import_keeps_its_credit_line(view):
     view._on_music_results({"sounds": _sounds(1), "count": 1})
     project_file = MagicMock(data={})
-    with patch("classes.query.File.get", return_value=project_file), \
+    with patch("classes.tool_handlers.resolve_imported_file", return_value=project_file), \
          patch.object(view, "_add_to_project"):
         view._on_download_done("suuid-0", "/tmp/a.mp3", "")
     assert project_file.data["stock_credit"] == "credit"
@@ -156,3 +156,55 @@ def test_the_freesound_dock_handles_openverse_ids_and_album_art():
     worker = _DownloadWorker("uuid-0", "https://j/0.mp3", "a")
     worker.finished.connect(dock._on_download_done)   # an int-typed slot raises TypeError here
     worker.finished.emit("uuid-0", "", "boom")
+
+
+def test_results_from_a_real_worker_land_on_the_gui_thread(view):
+    from PyQt5.QtCore import QThread
+    from PyQt5.QtTest import QTest
+
+    seen = []
+    backend = MagicMock()
+    backend.pexels_search.return_value = {"videos": [], "total_results": 0}
+    with patch("classes.api_client.get_backend_client", return_value=backend), \
+         patch.object(view, "_on_footage_results", side_effect=lambda d: seen.append(QThread.currentThread())):
+        view._search_page("footage", 1)
+        for _ in range(100):
+            if seen:
+                break
+            QTest.qWait(20)
+    assert seen == [_APP.thread()]
+
+
+def test_a_failed_next_page_says_so_and_can_be_retried(view):
+    view._on_footage_results({"videos": _videos(16), "total_results": 40, "per_page": 16})
+    with patch.object(view, "_start_search") as start:
+        view._footage_more.click()
+    start.call_args.args[1]({"videos": [], "rate_limited": True, "error": "Stock search is busy, try again in 30s."})
+    assert view._footage_grid.count() == 16                     # page 1 stays
+    assert "busy" in view._footage_status.text()
+    assert not view._footage_more.isHidden()                    # retry the same page
+    with patch.object(view, "_start_search") as start:
+        view._footage_more.click()
+    assert start.call_args.args[0]._page == 2
+
+
+def test_the_credit_survives_a_new_search_and_a_windows_path_form(view):
+    view._on_music_results({"sounds": _sounds(1), "count": 1})
+    with patch.object(view, "_start_download"):
+        view._on_music_clicked(view._cards["suuid-0"]._sound)
+    with patch.object(view, "_start_search"):
+        view.run_search("forest")                               # the card is gone
+    # The project stores the Windows form; File.get(path=...) misses it, the basename match finds it.
+    project_file = MagicMock(data={"path": r"C:\Users\me\Downloads\a.mp3"})
+    project_file.absolute_path.return_value = r"C:\Users\me\Downloads\a.mp3"
+    with patch("classes.query.File.get", return_value=None), \
+         patch("classes.query.File.filter", return_value=[project_file]), patch.object(view, "_add_to_project"):
+        view._on_download_done("suuid-0", "C:/Users/me/Downloads/a.mp3", "")
+    assert project_file.data["stock_credit"] == "credit"
+
+
+def test_card_tooltips_show_provider_text_literally(view):
+    from windows.freesound_dock import _SoundCard
+
+    card = _SoundCard(dict(_sounds(1)[0], attribution='Artist<br><a href="https://evil.example">x</a>'))
+    assert "<a href" not in card.toolTip() and "&lt;a href" in card.toolTip()

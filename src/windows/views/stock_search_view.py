@@ -106,6 +106,9 @@ class StockSearchView(QWidget):
         self._pages = {"footage": 1, "music": 1}
         # Picture loaders carry an int key; Openverse ids are strings, so map key -> card uid.
         self._image_keys: Dict[int, str] = {}
+        # Credit lines by card uid, taken at click time: the card may be gone by the time
+        # its download finishes (a new search clears the grid).
+        self._credits: Dict[str, str] = {}
         self._pool = QThreadPool.globalInstance()
         self._bed_busy = False
         self._bed_declined = False   # asked once per session; a "no" is not asked again
@@ -384,6 +387,11 @@ class StockSearchView(QWidget):
         first = self._footage_grid.count()
         if error or not videos:
             self._failed = self._failed or bool(error)
+            if first and error:   # a later page failed: keep what is shown, offer that page again
+                self._pages["footage"] -= 1
+                self._footage_status.setText(f"Error: {error}")
+                self._show_more(self._footage_more, "footage", 0, 1)
+                return
             if not first:
                 self._footage_status.setText(f"Error: {error}" if error else "No footage found.")
             self._footage_more.hide()
@@ -419,6 +427,11 @@ class StockSearchView(QWidget):
         first = self._music_grid.count()
         if error or not sounds:
             self._failed = self._failed or bool(error)
+            if first and error:
+                self._pages["music"] -= 1
+                self._music_status.setText(f"Error: {error}")
+                self._show_more(self._music_more, "music", 0, 1)
+                return
             if not first:
                 self._music_status.setText(f"Error: {error}" if error else "No music found.")
             self._music_more.hide()
@@ -501,6 +514,8 @@ class StockSearchView(QWidget):
         safe_name = re.sub(r"[^\w\-]", "_", raw_name)[:60]
         if card:
             card.set_downloading(True)
+        if sound.get("attribution"):
+            self._credits[uid] = sound["attribution"]
         worker = FreesoundDownloadWorker(sid, preview_url, f"openverse_{sid}_{safe_name}")
         self._start_download(uid, worker)
 
@@ -533,18 +548,20 @@ class StockSearchView(QWidget):
         if card:
             card.set_done()
         self._add_to_project(local_path)
-        credit = (getattr(card, "_sound", None) or {}).get("attribution", "")
+        credit = self._credits.pop(uid, "") or (getattr(card, "_sound", None) or {}).get("attribution", "")
         if credit:
             self._keep_credit(local_path, credit)
 
     def _keep_credit(self, local_path: str, credit: str):
         """CC BY needs the credit with the clip, not only on the search card."""
         try:
-            from classes.query import File
-            f = File.get(path=local_path)
-            if f:
-                f.data["stock_credit"] = credit
-                f.save()
+            from classes.tool_handlers import resolve_imported_file
+            f = resolve_imported_file(local_path)
+            if not f:
+                log.warning("Imported %s but could not find it to store its credit", local_path)
+                return
+            f.data["stock_credit"] = credit
+            f.save()
         except Exception as exc:
             log.warning("Could not store the stock credit for %s: %s", local_path, exc)
 
