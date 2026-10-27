@@ -15,7 +15,7 @@ download workers, result cards and async image loaders are reused as-is from
 
 from typing import Dict
 
-from qt_api import Qt, QSize, QThread, QThreadPool, QEvent, pyqtSlot
+from qt_api import Qt, QSize, QThread, QThreadPool, QEvent, QObject, pyqtSignal, pyqtSlot
 from qt_api import QImage, QPixmap, QCursor
 from qt_api import (
     QWidget, QVBoxLayout, QScrollArea, QGridLayout, QLabel, QApplication, QPushButton,
@@ -432,9 +432,10 @@ class StockSearchView(QWidget):
                 self._music_status.setText(f"Error: {error}")
                 self._show_more(self._music_more, "music", 0, 1)
                 return
-            if not first:
-                self._music_status.setText(f"Error: {error}" if error else "No music found.")
             self._music_more.hide()
+            if not first:   # no stock music at all for this query: make a bed here instead
+                self._music_status.setText(f"{error} " if error else "No stock music found. ")
+                self._start_local_bed(self._query)
             return
         total = int(data.get("count", 0) or 0)
         self._music_status.setText(f"{total:,} results")
@@ -453,6 +454,28 @@ class StockSearchView(QWidget):
             if image_url:
                 self._load_image(_WaveformRunnable, uid, image_url, self._on_waveform_ready)
         self._show_more(self._music_more, "music", self._music_grid.count(), total)
+
+    def _start_local_bed(self, query: str):
+        """No stock music for this query: generate a 30 s bed here and add it to Project Files."""
+        if self._bed_declined or self._bed_busy or not query:
+            return
+        self._bed_busy = True
+        self._music_status.setText(self._music_status.text() + "Generating a 30 s bed on this computer...")
+        self._start_search(_LocalBedWorker(query), self._on_local_bed_done)
+
+    @pyqtSlot(dict)
+    def _on_local_bed_done(self, data: dict):
+        self._bed_busy = False
+        error, path = data.get("error", ""), data.get("path", "")
+        if error:
+            self._bed_declined = self._bed_declined or "declined" in error
+            log.warning("Local music bed failed: %s", error)
+            self._music_status.setText("No stock music found; local generation is off (download declined)."
+                                       if "declined" in error else f"Local music generation failed: {error}")
+            return
+        self._add_to_project(path)
+        if data.get("query") == self._query:
+            self._music_status.setText("No stock music found; generated a 30 s bed and added it to Project Files.")
 
     def _card_for_image(self, key: int, search: int):
         return self._cards.get(self._image_keys.get(key, "")) if search == self._search_gen else None
