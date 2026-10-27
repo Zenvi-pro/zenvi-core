@@ -42,7 +42,7 @@ def test_existing_tracks_resolve_as_before(raw):
     assert resolve_placement_track(raw, LAYERS)[2] == 0
 
 
-@pytest.mark.parametrize("raw", ["9", "0", "-1", "music"])
+@pytest.mark.parametrize("raw", ["9", "0", "-1", "music", "6.5", "track 6.5", "inf"])
 def test_further_past_the_top_is_refused_as_before(raw):
     layer, err, new = resolve_placement_track(raw, LAYERS)
     assert layer is None and new == 0 and err.startswith("Error: Unknown track or layer")
