@@ -353,7 +353,10 @@ def test_adopt_moves_unsaved_renders_and_copies_on_save_as(tmp_path, monkeypatch
     project2 = str(tmp_path / "Trip v2.zvn")
     moves = lm.adopt_linked_renders(files, clips, project2, previous_path=project)
     dest2 = str(tmp_path / "Trip v2_assets" / "links" / "remotion" / "Intro-1.mov")
-    assert moves == [] and os.path.isfile(dest) and os.path.isfile(dest2) and files[0]["path"] == dest2
+    assert moves == [(dest, dest2)] and os.path.isfile(dest) and os.path.isfile(dest2) and files[0]["path"] == dest2
+    from classes.assets import reverse_media_moves
+    reverse_media_moves(moves)  # a failed Save As removes the new link, the old project keeps its render
+    assert os.path.isfile(dest) and not os.path.exists(dest2)
 
 
 def test_save_rolls_back_adopted_renders_when_the_write_fails(tmp_path, monkeypatch):

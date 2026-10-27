@@ -1540,7 +1540,7 @@ def adopt_linked_renders(files: List[dict], clips: List[dict], project_file_path
     hard links) keeps its old, still-valid path (logged; Collect Media copies
     it) -- never a slow or failed save. File paths and clip readers are
     updated in memory; ``render.output`` tokens (``@assets/links/...``) stay
-    valid. Returns the move ledger ``[(src, dest)]`` for
+    valid. Returns the ledger ``[(src, dest)]`` of moves and links for
     ``assets.reverse_media_moves``; *path_changes* (a dict) receives every
     ``old path -> new path`` (moves and links) for :func:`remap_history_paths`.
 
@@ -1591,6 +1591,7 @@ def adopt_linked_renders(files: List[dict], clips: List[dict], project_file_path
                 moves.append((abs_src, dest))
             else:
                 os.link(abs_src, dest)
+                moves.append((abs_src, dest))  # a failed save removes the link (the source stays)
         except OSError as exc:
             if isinstance(exc, PermissionError) or exc.errno in (errno.EXDEV, errno.EPERM, errno.ENOTSUP,
                                                                  errno.EOPNOTSUPP, errno.EMLINK, errno.EACCES):
