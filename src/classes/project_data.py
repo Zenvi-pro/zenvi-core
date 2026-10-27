@@ -217,8 +217,10 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         """Prevent calling JsonDataStore set() method. It is not allowed in ProjectDataStore, as changes come from UpdateManager."""
         raise RuntimeError("ProjectDataStore.set() is not allowed. Changes must route through UpdateManager.")
 
-    def _set(self, key, values=None, add=False, remove=False):
-        """ Store setting, but adding isn't allowed. All possible settings must be in default settings file. """
+    def _set(self, key, values=None, add=False, remove=False, index=None):
+        """ Store setting, but adding isn't allowed. All possible settings must be in default settings file.
+
+        An add goes at *index* of its list (an undone delete), else at the end. """
 
         log.debug(
             "_set key: %s, values: %s, add: %s, remove: %s",
@@ -314,7 +316,10 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             # Add or Full Update
             # For adds to list perform an insert to index or the end if not specified
             if appending:
-                parent.append(values)
+                if index is not None and 0 <= index <= len(parent):
+                    parent.insert(index, values)
+                else:
+                    parent.append(values)
 
             # Otherwise, set the given index
             elif isinstance(values, dict):
@@ -344,6 +349,18 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
         # Return the previous value to the matching item (used for history tracking)
         return ret
+
+    def _list_index(self, key):
+        """Index of the top-level list item *key* names (``["clips", {"id": ...}]``), or None."""
+        if len(key or []) != 2 or not isinstance(key[0], str) or not isinstance(key[1], dict):
+            return None
+        items = self._data.get(key[0].lower())
+        if not isinstance(items, list):
+            return None
+        for i, item in enumerate(items):
+            if isinstance(item, dict) and all(k.lower() in item and item[k.lower()] == v for k, v in key[1].items()):
+                return i
+        return None
 
     # Load default project data
     def new(self):
@@ -1745,7 +1762,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
         if action.type == "insert":
             # Insert new item
-            old_vals = self._set(action.key, action.values, add=True)
+            old_vals = self._set(action.key, action.values, add=True, index=getattr(action, "index", None))
             action.set_old_values(old_vals)  # Save previous values to reverse this action
             mark_dirty()
 
@@ -1796,7 +1813,8 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                     log.warning(f"No profile found for {profile_key}")
 
         elif action.type == "delete":
-            # Delete existing item
+            # Delete existing item (remembering where it was, for its undo)
+            action.index = self._list_index(action.key)
             old_vals = self._set(action.key, remove=True)
             action.set_old_values(old_vals)  # Save previous values to reverse this action
             mark_dirty()
