@@ -43,6 +43,9 @@ def engine_entries(catalog_path: str) -> list:
     with open(catalog_path, encoding="utf-8") as fh:
         catalog = json.load(fh)
     tools = catalog.get("tools") if isinstance(catalog, dict) else catalog
+    if not isinstance(tools, list):
+        # catalog=None would mean "ask the live bridge", which is off here: a manifest without engine tools.
+        raise SystemExit(f"{catalog_path}: not an engine catalog (no tools list)")
     engine_bridge.BRIDGED.clear()
     engine_bridge.register_tools(set(tool_handlers.AGENT_TOOL_HANDLERS) | set(MCP_EXTRA_TOOLS), catalog=tools)
     return engine_bridge.manifest_entries()
