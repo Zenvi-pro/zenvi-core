@@ -68,3 +68,39 @@ def test_waiting_for_indexing_reports_no_undo_step(editor, monkeypatch):
     assert "3 project file(s) indexed" in receipt["summary"]
     assert editor.undo_steps_since_mark() == 0
     assert all(editor.file(fid)["ai_metadata"]["analyzed"] for fid in fids)
+
+
+def _index_lands(fid, status):
+    f = File.get(id=fid)
+    f.data["ai_metadata"] = {"index": {"status": status}}
+    f.save_untracked("ai_metadata")
+
+
+def _status(editor, fid):
+    return editor.file(fid)["ai_metadata"]["index"]["status"]
+
+
+def test_undo_and_redo_of_a_file_edit_keep_the_index_that_landed_since(editor):
+    fid = editor.add_file("video", duration=4)
+    _index_lands(fid, "indexing")
+    path = editor.file(fid)["path"]
+    f = File.get(id=fid)
+    f.data["path"] = "/media/beach.mp4"
+    f.save()  # the user's edit: its snapshots hold the half-done index
+    _index_lands(fid, "ready")
+
+    editor.undo()
+    assert editor.file(fid)["path"] == path and _status(editor, fid) == "ready"
+    editor.redo()
+    assert editor.file(fid)["path"] == "/media/beach.mp4" and _status(editor, fid) == "ready"
+    editor.undo()
+    assert _status(editor, fid) == "ready"
+
+
+def test_redo_of_an_import_keeps_the_index_that_landed_since(editor):
+    fid = editor.add_file("video", duration=4)
+    _index_lands(fid, "ready")
+    editor.undo()
+    assert editor.file(fid) is None
+    editor.redo()
+    assert _status(editor, fid) == "ready"
