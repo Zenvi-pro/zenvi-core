@@ -55,7 +55,9 @@ from classes.track_display import (
     format_track_label_for_llm,
     layer_number_to_display_index,
     layers_sorted_by_number,
+    new_tracks_note,
     normalize_track_or_layer_arg,
+    resolve_placement_track,
 )
 
 try:
@@ -2679,6 +2681,7 @@ def add_clip_to_timeline(
                 fps = app.project.get("fps") or {}
                 fps_float = float(fps.get("num", 30)) / float(fps.get("den", 1) or 1)
 
+                new_tracks = 0
                 if not track or (isinstance(track, str) and not track.strip()):
                     layers = app.project.get("layers") or []
                     if _is_audio_only:
@@ -2692,11 +2695,15 @@ def add_clip_to_timeline(
                             track_num = default_underlay_layer_number(layers)
                 else:
                     layers_for_track = app.project.get("layers") or []
-                    resolved, err = normalize_track_or_layer_arg(str(track).strip(), layers_for_track)
+                    resolved, err, new_tracks = resolve_placement_track(str(track).strip(), layers_for_track)
                     if err:
                         error_box[0] = err
                         return
                     track_num = resolved
+                    if new_tracks:
+                        # Same undo step as the clip (the _atomic below).
+                        from classes import track_ops
+                        track_ops.ensure_track(track_num)
 
                 if pos_arg is None:
                     if _is_audio_only:
@@ -2769,7 +2776,7 @@ def add_clip_to_timeline(
                         actual_end = planned_end
                     if abs(actual_end - planned_end) > 1e-6:
                         _planned_end_by_clip_id[new_id] = (pos_sec, planned_end)
-                result_box[0] = (new_clip, pos_sec, track_num, snapped)
+                result_box[0] = (new_clip, pos_sec, track_num, snapped, new_tracks)
             except Exception as exc:
                 error_box[0] = str(exc)
 
@@ -2785,7 +2792,7 @@ def add_clip_to_timeline(
         if not result_box[0]:
             return "Error: Failed to add clip to timeline."
 
-        placed, pos_sec, track_num, snapped = result_box[0]
+        placed, pos_sec, track_num, snapped, new_tracks = result_box[0]
         _snap_note = ", moved off mid-sentence" if snapped else ""
         if pos_arg is not None and abs(pos_sec - pos_arg) > 1e-9:
             _snap_note += f", moved from {pos_arg}s to butt against the previous clip"
@@ -2804,7 +2811,7 @@ def add_clip_to_timeline(
         id_part = f" timeline_clip_id={clip_id}" if clip_id else ""
         watch_part = " (watched)" if watched_start is not None else ""
         return (
-            f"Added clip to timeline at position {pos_sec}s on track {track_lbl}"
+            f"Added clip to timeline at position {pos_sec}s on track {track_lbl}{new_tracks_note(new_tracks)}"
             f"{dur_part}{id_part}{_snap_note}{watch_part}."
         )
     except Exception as e:
@@ -6044,7 +6051,7 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
     # Check the target track before downloading anything.
     if track and str(track).strip():
         _app = _get_app()
-        _layer, _track_err = normalize_track_or_layer_arg(str(track).strip(), _app.project.get("layers") or [])
+        _layer, _track_err, _new = resolve_placement_track(str(track).strip(), _app.project.get("layers") or [])
         if _track_err or _layer is None:
             return _as_error(_track_err or f"no track matches {track!r}")
         _locked = _locked_track_error(_app, _layer)
@@ -6634,7 +6641,7 @@ def _generated_video_ripple_plan(app, position_seconds, track):
             return None, None, f"Error: position_seconds {position_seconds!r} is not a time (e.g. 12, 12.5, 0:12)."
     layer = None
     if track and str(track).strip():
-        layer, err = normalize_track_or_layer_arg(str(track).strip(), app.project.get("layers") or [])
+        layer, err, _new = resolve_placement_track(str(track).strip(), app.project.get("layers") or [])
         if err or layer is None:
             return None, None, _as_error(err or f"no track matches {track!r}")
         locked = _locked_track_error(app, layer)
