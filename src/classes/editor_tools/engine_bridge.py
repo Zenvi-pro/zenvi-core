@@ -248,6 +248,9 @@ def _serialize(data: dict) -> Optional[str]:
 def _apply(answer: dict, project_file: str, version) -> Optional[str]:
     """Apply the answer's actions on the GUI thread; an error message when refused."""
     app = get_app()
+    # Before STALE: _apply_current reads the keys of a stale answer's actions.
+    if not _well_formed(answer.get("actions") or []):
+        return "the engine answered a malformed action; nothing was applied"
     current = getattr(app.project, "current_filepath", None)
     if not current or os.path.abspath(current) != project_file:
         return SWITCHED
@@ -356,6 +359,15 @@ def _current_item(data: dict) -> Callable[[str, str], Optional[dict]]:
             return next((x for x in items if isinstance(x, dict) and str(x.get("id")) == item_id), None)
         return None
     return find
+
+
+def _well_formed(actions) -> bool:
+    """Whether *actions* are all ``{"type", "key": [str | {..}, ...], "value"}`` (no value for a delete)."""
+    return isinstance(actions, list) and all(
+        isinstance(a, dict) and isinstance(a.get("key"), list) and bool(a["key"])
+        and all(isinstance(part, (str, dict)) for part in a["key"])
+        and (a.get("type") == "delete" or "value" in a)
+        for a in actions)
 
 
 def _backend_token() -> Optional[str]:
@@ -502,9 +514,10 @@ def what_changed(before: str, after: Optional[str]) -> Optional[list]:
 def _discard(files: list, project_file: str) -> None:
     """Remove files a refused call wrote (only inside the project's assets folder)."""
     from classes.assets import get_assets_path
-    assets = os.path.abspath(get_assets_path(project_file, create_paths=False)) + os.sep
+    # Canonical paths: a symlink inside the assets folder must not lead the removal outside it.
+    assets = os.path.realpath(get_assets_path(project_file, create_paths=False)) + os.sep
     for path in files:
-        if os.path.abspath(path).startswith(assets):
+        if isinstance(path, str) and os.path.realpath(path).startswith(assets):
             try:
                 os.remove(path)
             except OSError:

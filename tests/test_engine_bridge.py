@@ -187,3 +187,94 @@ def test_an_action_kind_the_desktop_does_not_know_applies_nothing(bridge):
     assert not any(layer["id"] == "FAKELAYR02" for layer in bridge.get("layers"))
     assert bridge.get("playhead_position") != 2.5
     assert bridge.undo_steps_since_mark() == 0
+
+
+class _Answering:
+    """A bridge client that answers every call with *answer*, after running *meanwhile*."""
+
+    def __init__(self, answer, meanwhile=lambda: None):
+        self.answer, self.meanwhile = answer, meanwhile
+
+    def run(self, name, args, project_json, project_file, token):
+        self.meanwhile()
+        return self.answer
+
+
+def _drawing(project_file):
+    from classes.assets import get_assets_path
+    folder = os.path.join(get_assets_path(project_file, create_paths=False), "title")
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, "generated.svg")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("<svg/>")
+    return path
+
+
+def test_a_project_closed_while_the_engine_ran_gets_nothing(bridge, monkeypatch):
+    # A failed open of another project leaves a blank default project with the same data version.
+    from classes import engine_bridge
+
+    drawing = _drawing(bridge.store.current_filepath)
+    layer = {"type": "insert", "key": ["layers"], "value": {"id": "FAKELAYR02", "number": 9000000}}
+    answer = {"ok": True, "text": "{}", "actions": [layer], "files": [drawing]}
+    monkeypatch.setattr(engine_bridge, "get_client",
+                        lambda: _Answering(answer, lambda: setattr(bridge.store, "current_filepath", None)))
+    receipt = bridge.call_receipt("add_motion_template_tool", template="end_card")
+    assert "another project" in receipt["summary"]
+    assert not any(x["id"] == "FAKELAYR02" for x in bridge.get("layers"))
+    assert not os.path.exists(drawing)
+    assert bridge.undo_steps_since_mark() == 0
+
+
+@pytest.mark.parametrize("bad", [
+    "insert",                                                        # not an action object
+    {"type": "update", "key": "layers", "value": {}},                # key is not a list
+    {"type": "update", "key": [], "value": {}},                      # empty key
+    {"type": "update", "key": ["layers", 3], "value": {}},           # a key part that is neither name nor selector
+    {"type": "insert", "key": ["layers"]},                           # an insert without a value
+])
+def test_a_malformed_action_applies_nothing_and_removes_the_files(bridge, monkeypatch, bad):
+    from classes import engine_bridge
+
+    drawing = _drawing(bridge.store.current_filepath)
+    layer = {"type": "insert", "key": ["layers"], "value": {"id": "FAKELAYR02", "number": 9000000}}
+    answer = {"ok": True, "text": "{}", "actions": [layer, bad], "files": [drawing]}
+    monkeypatch.setattr(engine_bridge, "get_client", lambda: _Answering(answer))
+    receipt = bridge.call_receipt("add_motion_template_tool", template="end_card")
+    assert receipt["summary"].startswith("Error") and "malformed" in receipt["summary"]
+    assert not any(x["id"] == "FAKELAYR02" for x in bridge.get("layers"))
+    assert not os.path.exists(drawing)
+    assert bridge.undo_steps_since_mark() == 0
+
+
+def test_a_malformed_action_in_a_stale_answer_is_refused_not_raised(bridge, monkeypatch):
+    # A stale answer goes on to compare what changed with the keys of its actions.
+    from classes import engine_bridge
+    from classes.editor_tools import engine_bridge as bridged
+
+    real = bridged._snapshot
+    monkeypatch.setattr(bridged, "_snapshot", lambda: (real()[0], "an older version", real()[2]))
+    answer = {"ok": True, "text": "{}", "actions": ["insert"], "files": []}
+    monkeypatch.setattr(engine_bridge, "get_client", lambda: _Answering(answer))
+    receipt = bridge.call_receipt("add_motion_template_tool", template="end_card")
+    assert receipt["summary"].startswith("Error") and "malformed" in receipt["summary"]
+    assert bridge.undo_steps_since_mark() == 0
+
+
+def test_discard_does_not_follow_a_symlink_out_of_the_assets_folder(tmp_path):
+    from classes.assets import get_assets_path
+    from classes.editor_tools import engine_bridge as bridged
+
+    project_file = str(tmp_path / "promo.zvn")
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "generated.svg").write_text("keep me")
+    assets = get_assets_path(project_file, create_paths=False)
+    os.makedirs(assets, exist_ok=True)
+    os.symlink(str(outside), os.path.join(assets, "title"))
+    inside = os.path.join(assets, "drawn.svg")
+    with open(inside, "w", encoding="utf-8") as fh:
+        fh.write("<svg/>")
+    bridged._discard([os.path.join(assets, "title", "generated.svg"), inside], project_file)
+    assert (outside / "generated.svg").exists()
+    assert not os.path.exists(inside)
