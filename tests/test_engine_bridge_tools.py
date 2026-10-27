@@ -380,6 +380,15 @@ def test_the_bridge_turns_on_from_the_setting_too(editor, tmp_path, monkeypatch)
     assert engine_bridge.bridge_mode() == ""
 
 
+def test_bridged_handlers_drop_the_dispatchers_own_arguments(monkeypatch):
+    from classes.editor_tools import engine_bridge as bridged
+
+    linked = bridged._handler("get_linked_clip_tool", "", run=lambda clip_id="", file_id="": clip_id)
+    assert linked(clip_id="C1", transaction_id="t-1", chat_session_id="s-1") == "C1"
+    monkeypatch.setattr(bridged, "run_tool", lambda name, args: args)
+    assert bridged._handler("add_sfx_tool", "")(kind="whoosh", transaction_id="t-1") == {"kind": "whoosh"}
+
+
 # -- the editor-tool manifest ----------------------------------------------------
 
 def test_the_manifest_lists_bridged_tools_only_when_asked(tmp_path):
@@ -399,3 +408,13 @@ def test_the_manifest_lists_bridged_tools_only_when_asked(tmp_path):
     assert bridged["review_frames_tool"]["read_only"] is True and bridged["review_frames_tool"]["workstream"] == "engine"
     assert bridged["get_linked_clip_tool"]["surface"] == "desktop"
     assert len(full["tools"]) == len(plain["tools"]) + len(bridged)
+
+
+def test_the_manifest_refuses_a_catalog_without_tools(tmp_path):
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text('{"protocol": 2}')
+    script = os.path.join(ROOT, "scripts", "export_editor_tool_manifest.py")
+    env = {k: v for k, v in os.environ.items() if k != "ZENVI_ENGINE_BRIDGE"}
+    out = subprocess.run([sys.executable, script, "--engine-catalog", str(catalog)], capture_output=True, text=True,
+                         env=env)
+    assert out.returncode != 0 and "no tools list" in out.stderr and not out.stdout
