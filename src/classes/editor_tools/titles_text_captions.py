@@ -42,6 +42,9 @@ from classes.editor_tools.timeline_edit_common import media_has_audio
 from classes.logger import log
 
 SOURCE = "hyperframes_captions"
+# libopenshot location_y: negative lifts a bottom-anchored caption clear of a lower third.
+CAPTION_CLEARANCE = -0.22
+_NO_SPEECH = object()
 RENDER_TIMEOUT = 1800
 MATTE_TIMEOUT = 3600
 BEHIND_SUBJECT_CENTRE = 0.42          # share of the frame height the captions centre on behind a speaker
@@ -142,7 +145,7 @@ def _speech_words(clip) -> List[dict]:
                                          "-vn", "-ac", "1", "-ar", "16000", "speech.wav"], RENDER_TIMEOUT,
                      inputs=[media])
                 if not _speech_in(os.path.join(hf.project_dir(project), "speech.wav")):
-                    return []                           # no speech to hear: the recogniser would make words up
+                    return _NO_SPEECH                   # no speech to hear: the recogniser would make words up
                 if engine == "parakeet":
                     if not installed:
                         # Too large to fetch unasked: the same confirmation the setup tool shows.
@@ -197,6 +200,11 @@ def transcript_words(clip) -> List[dict]:
     from classes.agent_tools.receipt import parse_receipt
     from classes.agent_tools.transcript import get_transcript
 
+    heard = _speech_words(clip)
+    if heard is _NO_SPEECH:
+        return []                                   # the recogniser answered: silence, not a missing engine
+    if heard:
+        return heard
     try:
         receipt = parse_receipt(get_transcript(clipId=str(clip.id), includeWords=True)) or {}
     except Exception as exc:
@@ -204,7 +212,6 @@ def transcript_words(clip) -> List[dict]:
     words = []
     for entry in (receipt.get("data") or {}).get("clips") or []:
         words.extend(entry.get("words") or [])
-    words = words or _speech_words(clip)
     if words:
         return words
     indexed = _indexed_words(clip)
@@ -498,10 +505,12 @@ def _put_back(placed: list, previous: list, files: list, tracks: set):
             track.delete()
 
 
-def _overlay_note(overlays: list) -> str:
+def _overlay_note(overlays: list, moved: bool = False) -> str:
     if not overlays:
         return ""
     names = ", ".join("'%s'" % title for title in dict.fromkeys(o["title"] for o in overlays))
+    if moved:
+        return " The captions were moved up so they are not drawn over %s." % names
     return " The captions are drawn over %s and were not moved." % names
 
 
@@ -541,7 +550,15 @@ def _place_overlays(clip, caption_file, subject, start, duration, project, out_r
             lift = BEHIND_SUBJECT_CENTRE - (band[0] + band[1]) / 2.0
             _set_geometry(receipt["timeline_clip_id"],
                           {"location_y": {"Points": [{"co": {"X": 1.0, "Y": lift}, "interpolation": 0}]}})
-    receipt["overlapping_overlays"] = on_main(_overlays_over, start, start + duration)
+    overlays = on_main(_overlays_over, start, start + duration)
+    # A lower third sits in the bottom band. Shift plain captions up; behind-the-speaker
+    # captions are already lifted to head height.
+    moved = bool(overlays) and not subject
+    if moved:
+        _set_geometry(receipt["timeline_clip_id"],
+                      {"location_y": {"Points": [{"co": {"X": 1.0, "Y": CAPTION_CLEARANCE}, "interpolation": 0}]}})
+    receipt["overlapping_overlays"] = overlays
+    receipt["captions_moved_up"] = moved
     return receipt
 
 
@@ -592,7 +609,8 @@ def add_captions(timeline_clip_id="", clip_query="", style=cap.DEFAULT_STYLE, be
     elif behind_subject:
         note = "; no speaker was found in the shot, so they sit on top"
     return ok("Added %d-word '%s' captions above the clip%s.%s" % (
-        r["words"], cap.STYLES[style]["label"], note, _overlay_note(r["overlapping_overlays"])), **r)
+        r["words"], cap.STYLES[style]["label"], note, _overlay_note(
+            r["overlapping_overlays"], r.get("captions_moved_up"))), **r)
 
 
 def _speech_clips() -> list:
@@ -621,10 +639,11 @@ def _caption_project(style: str, behind_subject: bool):
         raise ToolError("no clip could be captioned: " + "; ".join(
             "%s: %s" % (s["title"], s["reason"]) for s in skipped[:5]))
     overlays = [o for c in captioned for o in c["overlapping_overlays"]]
+    moved = any(c.get("captions_moved_up") for c in captioned)
     return ok("Captioned %d of %d clip(s) with '%s' captions%s.%s" % (
         len(captioned), len(clips), cap.STYLES.get(style, {}).get("label", style),
         "; %d skipped (no speech found or not captionable)" % len(skipped) if skipped else "",
-        _overlay_note(overlays)),
+        _overlay_note(overlays, moved)),
         captioned=captioned, skipped=skipped, style=style)
 
 

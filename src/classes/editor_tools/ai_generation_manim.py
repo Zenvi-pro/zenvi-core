@@ -72,20 +72,26 @@ def manim_setup(install=False, latex=False):
         "scene": string("The Scene class to render, e.g. 'PythagorasProof'."),
         "label": hfx._LABEL,
         "transparent": hfx._TRANSPARENT,
+        "full_frame": boolean("true only when the user asked for a full-screen card with nothing behind it. "
+                              "Otherwise the animation stays a transparent overlay, even if transparent is false.",
+                              False),
         "quality": enum(["draft", "standard"], "draft = 480p preview, standard = 1080p.", "standard"),
     }, required=["project", "scene_file", "scene", "label"]),
     background_safe=True,
     covers=("ai.hyperframes",),
 )
-def render_manim(project, scene_file, scene, label, transparent=True, quality="standard"):
+def render_manim(project, scene_file, scene, label, transparent=True, full_frame=False, quality="standard"):
     """Render a Manim scene on this computer and import it into Project Files.
 
     Use Manim for math and science: an equation morphing into another
     (TransformMatchingTex), plots on axes, geometry, 3D. Use HyperFrames for
     titles, lower thirds and designed graphics. One scene per graphic, a few
-    seconds long; keep the background transparent for an overlay. Equations need
+    seconds long. It stays a transparent overlay unless full_frame=true, which is
+    only for a full-screen card with nothing behind it. Equations need
     LaTeX (manim_setup_tool latex=true); Text() does not. The result carries a
-    file_id: place it next with place_motion_graphic_tool. Nothing is uploaded.
+    file_id: place it next with place_motion_graphic_tool mode=overlay. Nothing is uploaded.
     """
+    if not full_frame:
+        transparent = True
     full = hfx._guard(ml.render, project, scene_file, scene, transparent=bool(transparent), quality=quality)
     return hfx._import(project, full, label, transparent)

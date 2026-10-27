@@ -75,10 +75,21 @@ def test_render_imports_the_animation_as_a_motion_graphic(editor, studio):
     f = editor.file(r["file_id"])
     assert f["ai_metadata"]["source"] == "hyperframes_motion_graphics"       # placed whole, like any render
     assert f["ai_metadata"]["short_summary"] == "Pythagoras proof"
-    opaque = _receipt(editor.call("render_manim_tool", project="proof", scene_file="scene.py", scene="Pythagoras",
-                                  label="Full frame", transparent=False))
-    assert opaque["transparent"] is False and studio["imported"][-1] == (
-        os.path.join(hf.project_dir("proof"), "manim-media", "Pythagoras.mp4"), False)
+    still_overlay = _receipt(editor.call("render_manim_tool", project="proof", scene_file="scene.py",
+                                         scene="Pythagoras", label="Full frame", transparent=False))
+    assert still_overlay["transparent"] is True and studio["imported"][-1] == (
+        os.path.join(hf.project_dir("proof"), "manim-media", "Pythagoras.webm"), True)
+
+
+def test_an_overlay_stays_transparent_unless_the_user_asked_for_a_full_frame(editor, studio):
+    """transparent=false is what the model passes for an equation over footage. That still overlays."""
+    studio["installed"] = True
+    over = _receipt(editor.call("render_manim_tool", project="proof", scene_file="scene.py", scene="Pythagoras",
+                                label="Equation", transparent=False))
+    assert over["transparent"] is True and studio["imported"][-1][0].endswith(".webm")
+    full = _receipt(editor.call("render_manim_tool", project="proof", scene_file="scene.py", scene="Card",
+                                label="Full card", transparent=False, full_frame=True))
+    assert full["transparent"] is False and studio["imported"][-1][0].endswith(".mp4")
 
 
 def test_render_errors_come_back_as_tool_errors(editor, studio, monkeypatch):

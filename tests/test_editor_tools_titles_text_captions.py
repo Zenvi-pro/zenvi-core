@@ -536,6 +536,22 @@ def test_a_clip_with_no_speech_is_not_counted_as_captioned(studio, monkeypatch):
         captions._caption_project("highlight", False)
 
 
+def test_a_quiet_clip_is_no_speech_not_a_missing_speech_engine(studio, monkeypatch):
+    """Whisper missing must not be the caption error after the on-device recogniser heard nothing."""
+    from classes.agent_tools import transcript
+    from classes.query import Clip
+
+    _recogniser_hears(studio, monkeypatch, AMBIENCE, "Thank you, Mr. President.")
+    monkeypatch.setattr(transcript, "get_transcript", lambda **kw: json.dumps({
+        "contract": 3, "status": "error",
+        "summary": "Error: Could not transcribe any clip. No local speech engine: releases bundle whisper.cpp",
+        "data": {"clips": []},
+    }))
+    with pytest.raises(captions.ToolError, match="no spoken words") as raised:
+        captions.build_captions(Clip.get(id=studio.clip))
+    assert "speech engine" not in str(raised.value).lower()
+
+
 def test_captions_name_the_motion_graphics_and_titles_they_are_drawn_over(editor, studio):
     from classes.query import File
 
@@ -553,3 +569,18 @@ def test_captions_name_the_motion_graphics_and_titles_they_are_drawn_over(editor
     assert named == {lower: ("Dialogue Scene", 10.0, 15.0), box: ("Gray box", 12.0, 14.0)}
     summary = out.split("\n", 1)[0]
     assert summary.endswith("drawn over 'Dialogue Scene', 'Gray box' and were not moved.")
+
+
+def test_captions_move_up_clear_of_a_lower_third(editor, studio):
+    from classes.query import File
+
+    card = File.get(id=editor.add_file("video", path=str(studio.tmp / "dialogue-scene.webm")))
+    tool_handlers._stamp_motion_graphics_file_metadata(card, "Dialogue Scene", True)
+    editor.add_clip(card.id, position=10.0, layer=L1 * 4, start=0.0, end=5.0, title="Dialogue Scene")
+
+    out = editor.call("add_captions_tool", timeline_clip_id=studio.clip)
+    receipt = _receipt(out)
+    y = editor.clip(receipt["timeline_clip_id"])["location_y"]["Points"][0]["co"]["Y"]
+    assert y < 0
+    summary = out.split("\n", 1)[0]
+    assert "moved up" in summary and "Dialogue Scene" in summary

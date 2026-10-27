@@ -8388,8 +8388,8 @@ def place_motion_graphic(
     """Place a HyperFrames render with overlay/gap/cut_in enforcement.
 
     mode=overlay → transparent file on a HIGH layer (refuses opaque).
-    mode=gap → opaque only when primary track is clear at [t,t+dur).
-    mode=cut_in → opaque: ripple primary-track clips at/after t, then place as a cut.
+    mode=gap → opaque only when the picture track is clear at [t, t+dur).
+    mode=cut_in → shifts clips already on the picture track. Not how an overlay is placed.
     """
     from classes.editor_tools.titles_text_common import _is_visual
     from classes.mg_placement import (
@@ -8489,8 +8489,8 @@ def place_motion_graphic(
                 return (
                     "Error: mode=overlay requires a transparent HyperFrames import "
                     "(ai_metadata.transparent / transparent_overlay tag / webm). "
-                    "Use mode=gap or mode=cut_in for opaque plates — never stack opaque "
-                    "over hero footage."
+                    "Re-render with transparent=true and place it on a track above the footage. "
+                    "Do not place an opaque file over the picture, and do not move clips to make room."
                 )
             if track_num < mid_layer:
                 track_num = int(overlay_layer)
@@ -8522,8 +8522,9 @@ def place_motion_graphic(
                 ):
                     return (
                         "Error: gap mode refused — primary track has footage overlapping "
-                        f"[{t:.2f}, {t + dur:.2f}). Use mode=cut_in to ripple clips, or "
-                        "pick a true gap from propose_overlay_windows_tool."
+                        f"[{t:.2f}, {t + dur:.2f}). Re-render with transparent=true and place "
+                        "mode=overlay on a free track above the picture. "
+                        "Do not move the clips that are already there."
                     )
 
         region = str(layout_region or "").strip()

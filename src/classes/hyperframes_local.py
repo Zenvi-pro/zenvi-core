@@ -48,6 +48,7 @@ from classes import info
 from classes.logger import log
 
 CLI_VERSION = "0.8.115"
+CHROME_MB = 360                   # chrome-headless-shell on disk, so the consent dialog can say so
 NODE_MAJOR = 22                       # the CLI's package.json: engines.node >= 22
 NODE_DIST = "https://nodejs.org/dist/latest-v%d.x/" % NODE_MAJOR
 SKILLS_CLI = "skills@1.7.2"           # the skills installer, pinned like the CLI rather than 'latest'
@@ -454,9 +455,10 @@ def install_plan(st: dict, platform: Optional[str] = None, captions: bool = Fals
                                              % (NODE_MAJOR, _node_asset(platform))})
     if st.get("cli") != CLI_VERSION:
         steps.append({"id": "cli", "label": "Install the HyperFrames CLI %s" % CLI_VERSION,
-                      "argv": ["npm", "install", "hyperframes@" + CLI_VERSION, "--no-audit", "--no-fund"]})
+                      "argv": ["npm", "ci", "--no-audit", "--no-fund"]})
     if not st.get("browser"):
-        steps.append({"id": "browser", "label": "Download the Chrome build HyperFrames renders with",
+        steps.append({"id": "browser", "label": "Download the Chrome build HyperFrames renders with (about %d MB)"
+                                              % CHROME_MB,
                       "argv": ["hyperframes", "browser", "ensure"]})
     if not st.get("skills"):
         steps.append({"id": "skills", "label": "Install the HyperFrames skills",
@@ -694,6 +696,14 @@ def _exec(argv: List[str], cwd: str, node: Optional[str], timeout: float,
     return proc.returncode, _clean((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else ""))
 
 
+def _pin_npm(folder: str) -> None:
+    """Copy the lockfile shipped with Zenvi so ``npm ci`` installs one exact tree."""
+    bundled = os.path.join(os.path.dirname(__file__), "hyperframes_npm")
+    os.makedirs(folder, exist_ok=True)
+    for name in ("package.json", "package-lock.json"):
+        shutil.copyfile(os.path.join(bundled, name), os.path.join(folder, name))
+
+
 def install(captions: bool = False, progress: Optional[Callable[[str], None]] = None,
             parakeet: bool = False) -> dict:
     """Run every missing step of :func:`install_plan`; returns the new status."""
@@ -715,6 +725,8 @@ def install(captions: bool = False, progress: Optional[Callable[[str], None]] = 
         if step["id"] == "speech":
             install_speech()
             continue
+        if step["id"] == "cli":
+            _pin_npm(home())
         if step["id"] == "skills":
             shutil.rmtree(skills_dir(), ignore_errors=True)   # an older or unpinned set: start clean
         node, argv = find_program("node"), list(step["argv"])

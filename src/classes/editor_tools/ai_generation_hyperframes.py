@@ -329,7 +329,9 @@ def _import(project, full, label, transparent):
     on_main(handlers._stamp_motion_graphics_file_metadata, f, label, bool(transparent))
     where = ("a transparent overlay: place it with place_motion_graphic_tool mode=overlay on a track above "
              "the footage" if transparent else
-             "an opaque clip: place it with place_motion_graphic_tool mode=gap or cut_in")
+             "an opaque clip: place it with place_motion_graphic_tool mode=gap where the picture track "
+             "is empty (after the existing footage). Do not move clips to make room. An overlay on "
+             "footage must be re-rendered with transparent=true and placed mode=overlay")
     return ok("Imported '%s' into Project Files as %s." % (label, where), file_id=f.id, project=project,
               transparent=bool(transparent), path=f.absolute_path(),
               size_mb=round(os.path.getsize(full) / 1048576.0, 2))
