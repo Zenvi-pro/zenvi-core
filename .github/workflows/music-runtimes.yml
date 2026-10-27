@@ -1,21 +1,23 @@
 # Builds the local music runtimes (acestep.cpp: ace-lm, ace-synth; yue2.cpp: yue-synth)
-# and publishes one zip per platform to the music-runtimes-v1 release, which
+# and publishes one zip per platform to the RELEASE_TAG release, which
 # src/classes/music_local.py downloads (pinned by sha256) on first use.
-# Run by hand; after a run, copy each zip's sha256 from the job summary into
-# music_local.RUNTIME.
+# Run by hand. Published assets are never replaced: a rebuild needs a new RELEASE_TAG,
+# and each zip's sha256 (in the publish job summary) goes into music_local.RUNTIME.
+#
+# The third-party build runs with a read-only token and no Azure credentials; signing
+# and publishing happen in later jobs that only handle the built artifacts.
 name: Music runtimes
 
 on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  id-token: write # Azure OIDC (Artifact Signing): the federated credential trusts main and tags only
+  contents: read
 
 env:
   ACESTEP_REF: de858d8e1a94f0e1939cf9bdd8ff7d9631953077
   YUE2_REF: 8af01740686824ffd4a1839a457954f42e2a8ce7
-  RELEASE_TAG: music-runtimes-v1
+  RELEASE_TAG: music-runtimes-v2
   # Portable CPU code (no -march=native) with AVX2, for the CPU fallback.
   GGML_FLAGS: -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
 
@@ -48,12 +50,14 @@ jobs:
           ref: ${{ env.ACESTEP_REF }}
           path: acestep.cpp
           submodules: recursive
+          persist-credentials: false
       - uses: actions/checkout@v4
         with:
           repository: ServeurpersoCom/yue2.cpp
           ref: ${{ env.YUE2_REF }}
           path: yue2.cpp
           submodules: recursive
+          persist-credentials: false
 
       - name: Toolchain (Windows, MSYS2 MinGW64)
         if: runner.os == 'Windows'
@@ -100,18 +104,52 @@ jobs:
             ldd dist/*.exe | awk '$3 ~ /^\/mingw64\// {print $3}' | sort -u | xargs -r cp -t dist/
             cp /mingw64/bin/vulkan-1.dll dist/   # ldd resolves the driver's copy; machines without one still start
           fi
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            # The loader, so machines without the libvulkan1 package still start (music_local sets LD_LIBRARY_PATH).
+            cp -L "$(ldconfig -p | awk '/libvulkan\.so\.1 / {print $NF; exit}')" dist/libvulkan.so.1
+          fi
 
-      - name: Azure login (OIDC for Artifact Signing)
-        if: ${{ runner.os == 'Windows' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
-        uses: azure/login@v2
+      - name: Smoke test (no build tree, no system Vulkan loader)
+        run: |
+          set -euo pipefail
+          ext=""; [ "${RUNNER_OS}" = "Windows" ] && ext=".exe"
+          rm -rf acestep.cpp/build yue2.cpp/build   # the zip must not lean on anything left in the build tree
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            sudo apt-get remove -y libvulkan-dev libvulkan1 >/dev/null
+            export LD_LIBRARY_PATH="$PWD/dist"
+          fi
+          # --help exits 1 after the usage text; a missing library prints no Usage at all.
+          for b in ace-lm ace-synth yue-synth; do
+            out=$(cd dist && "./$b$ext" --help 2>&1 || true)
+            echo "$out" | head -1
+            echo "$out" | grep -q "Usage" || { echo "::error::$b did not start"; exit 1; }
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/
+          if-no-files-found: error
+
+  sign-windows:
+    # Only this job gets the Azure identity, and it runs nothing from the third-party repos.
+    needs: build
+    if: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write   # Azure OIDC: the federated credential trusts main and tags only
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: zenvi-music-windows-x64-vulkan.zip
+          path: dist
+      - uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CODESIGNING_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_CODESIGNING_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_CODESIGNING_SUBSCRIPTION_ID }}
-
-      - name: Sign (Azure Artifact Signing)
-        if: ${{ runner.os == 'Windows' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
-        uses: azure/artifact-signing-action@v1
+      - uses: azure/artifact-signing-action@v1
         with:
           endpoint: ${{ vars.AZURE_CODESIGNING_ENDPOINT }}
           signing-account-name: ${{ vars.AZURE_CODESIGNING_ACCOUNT_NAME }}
@@ -131,33 +169,35 @@ jobs:
           exclude-azure-powershell-credential: true
           exclude-azure-developer-cli-credential: true
           exclude-interactive-browser-credential: true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zenvi-music-windows-x64-vulkan.zip
+          path: dist/
+          overwrite: true
 
-      - name: Smoke test
-        run: |
-          set -euo pipefail
-          ext=""; [ "${RUNNER_OS}" = "Windows" ] && ext=".exe"
-          rm -rf acestep.cpp/build yue2.cpp/build   # the zip must not lean on anything left in the build tree
-          # --help exits 1 after the usage text; a missing library prints no Usage at all.
-          for b in ace-lm ace-synth yue-synth; do
-            out=$(cd dist && "./$b$ext" --help 2>&1 || true)
-            echo "$out" | head -1
-            echo "$out" | grep -q "Usage" || { echo "::error::$b did not start"; exit 1; }
-          done
-
-      - name: Zip
-        run: |
-          set -euo pipefail
-          (cd dist && zip -9 -r "../${{ matrix.asset }}" .)
-          sum=$(sha256sum "${{ matrix.asset }}" 2>/dev/null || shasum -a 256 "${{ matrix.asset }}")
-          echo "\`${sum}\`" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Publish
-        shell: bash
+  publish:
+    needs: [build, sign-windows]
+    # Publish after signing, or unsigned when signing is not set up for this ref.
+    if: ${{ always() && needs.build.result == 'success' && (needs.sign-windows.result == 'success' || needs.sign-windows.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Zip and publish (never replaces a published asset)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
-            gh release create "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --prerelease --title "Music runtimes v1" \
-              --notes "acestep.cpp ${ACESTEP_REF} and yue2.cpp ${YUE2_REF}, built by .github/workflows/music-runtimes.yml." || true
-          gh release upload "$RELEASE_TAG" "${{ matrix.asset }}" -R "$GITHUB_REPOSITORY" --clobber
+          if ! gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --prerelease --title "Music runtimes ($RELEASE_TAG)" \
+              --notes "acestep.cpp ${ACESTEP_REF} and yue2.cpp ${YUE2_REF}, built by .github/workflows/music-runtimes.yml."
+          fi
+          for dir in artifacts/*/; do
+            asset=$(basename "$dir")
+            (cd "$dir" && chmod +x ace-lm* ace-synth* yue-synth* && zip -9 -r "$GITHUB_WORKSPACE/$asset" .)
+            echo "\`$(sha256sum "$asset")\`" >> "$GITHUB_STEP_SUMMARY"
+            gh release upload "$RELEASE_TAG" "$asset" -R "$GITHUB_REPOSITORY"   # fails if it already exists
+          done

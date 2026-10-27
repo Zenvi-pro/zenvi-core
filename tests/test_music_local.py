@@ -149,3 +149,16 @@ def test_two_runs_in_the_same_millisecond_do_not_share_output(home, monkeypatch)
         a = ml.generate("ace_step", "lofi")
         b = ml.generate("ace_step", "lofi")
     assert a != b and os.path.isfile(a) and os.path.isfile(b)
+
+
+def test_linux_runs_find_the_bundled_vulkan_loader(home, monkeypatch):
+    monkeypatch.setattr(ml.sys, "platform", "linux")
+    seen = {}
+
+    def fake(argv, **kw):
+        seen.update(kw.get("env") or {})
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(ml.subprocess, "run", fake)
+    ml._run(["x"], str(home), 5)
+    assert seen["LD_LIBRARY_PATH"].split(os.pathsep)[0] == os.path.join(str(home), "bin")

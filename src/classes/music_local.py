@@ -58,7 +58,7 @@ LICENCE = {"ace_step": "MIT (commercial use allowed)",
            "yue2": "CC BY-NC 4.0: non-commercial use only; not for monetised or client work"}
 
 # Built by .github/workflows/music-runtimes.yml and published to this release.
-RUNTIME_RELEASE = "https://github.com/Zenvi-pro/zenvi-core/releases/download/music-runtimes-v1/%s"
+RUNTIME_RELEASE = "https://github.com/Zenvi-pro/zenvi-core/releases/download/music-runtimes-v2/%s"
 RUNTIME = {             # (sys.platform, machine) -> (asset, sha256) of the published zip
     ("win32", "amd64"): ("zenvi-music-windows-x64-vulkan.zip",
                          "3b25f6e5f12b7d175f39b0ad43e5b2caa7e5619c0088e29ee4e912b6a8a1762a"),
@@ -146,9 +146,14 @@ def install(engine: str) -> dict:
 
 
 def _run(argv: List[str], cwd: str, timeout: float) -> Tuple[int, str]:
+    env = dict(os.environ)
+    if sys.platform.startswith("linux"):   # the zip ships libvulkan.so.1 beside the binaries
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(
+            p for p in (os.path.join(home(), "bin"), env.get("LD_LIBRARY_PATH", "")) if p)
     try:
-        proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=timeout, stdin=subprocess.DEVNULL, creationflags=hf._NO_WINDOW)
+        proc = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=timeout, stdin=subprocess.DEVNULL,
+                              creationflags=hf._NO_WINDOW)
     except subprocess.TimeoutExpired:
         raise MusicError("%s did not finish within %d s" % (os.path.basename(argv[0]), timeout))
     except OSError as exc:
