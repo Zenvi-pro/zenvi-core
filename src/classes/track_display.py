@@ -144,9 +144,12 @@ def _resolve_track(raw: str, layers, new_on_top: int) -> tuple[int | None, str |
     numbers = {e["layer_number"] for e in stack}
 
     try:
-        n = int(float(raw))
-    except ValueError:
+        value = float(raw)
+        n = int(value)
+    except (ValueError, OverflowError):
         n = None
+    # Only a whole number names a track to add ("6.5" picks no new track 6).
+    whole = n is not None and value == n
 
     # 1) Real layer_number
     if n is not None and n in numbers:
@@ -171,8 +174,10 @@ def _resolve_track(raw: str, layers, new_on_top: int) -> tuple[int | None, str |
     ui_number = n
     if ui_number is None and m:
         try:
-            ui_number = int(float(label_query))
-        except ValueError:
+            value = float(label_query)
+            ui_number = int(value)
+            whole = value == ui_number
+        except (ValueError, OverflowError):
             ui_number = None
 
     label_hits = [
@@ -201,7 +206,7 @@ def _resolve_track(raw: str, layers, new_on_top: int) -> tuple[int | None, str |
     if ui_number is not None and layers and 1 <= ui_number <= len(stack):
         return int(stack[ui_number - 1]["layer_number"]), None, 0
     missing = 0 if ui_number is None else ui_number - len(stack)
-    if 1 <= missing <= new_on_top:
+    if whole and 1 <= missing <= new_on_top:
         top = int(stack[-1]["layer_number"]) if stack else 0
         return top + missing * TRACK_STRIDE, None, missing
 
