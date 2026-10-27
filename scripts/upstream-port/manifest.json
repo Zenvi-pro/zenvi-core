@@ -1,6 +1,6 @@
 {
   "repo": "zenvi-pro/zenvi-core",
-  "base": "develop",
+  "base": "main",
   "upstream_remote": "openshot",
   "upstream_ref": "openshot/develop",
   "fork_point": "8204a244e331aeacfbf0c741d2926a624bfa7b42",

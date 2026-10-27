@@ -288,7 +288,7 @@ def test_agent_runners_prompt_source_steers_windows_import():
     assert "individual file paths" in text
     assert "_agent_import_prompt" in text
     # Codex must receive the same steering (no --append-system-prompt).
-    assert "steered = _agent_import_prompt()" in text
+    assert "self._stdin_prompt = _agent_import_prompt()" in text
 
 
 def test_import_files_downloads_alias_and_videos_only(monkeypatch, tmp_path):
@@ -382,4 +382,54 @@ def test_normalize_agent_fs_path_windows_file_urls(monkeypatch, url, expected):
     monkeypatch.setattr(fd.os.path, "exists", lambda p: False)
     monkeypatch.setattr(fd.os.path, "isabs", lambda p: True)
     monkeypatch.setattr(fd.os.path, "abspath", lambda p: p)
-    assert fd.normalize_agent_fs_path(url) == expected
+    # On a real Windows host the result is also normpath'd (backslashes).
+    assert os.path.normpath(fd.normalize_agent_fs_path(url)) == os.path.normpath(expected)
+
+
+def test_a_glob_honours_media_types(monkeypatch, tmp_path):
+    """Review #216: media_types=video with Downloads/* still imported audio and images."""
+    from classes import tool_handlers as th
+
+    for name in ("a.mp4", "song.wav", "still.png", "notes.txt"):
+        (tmp_path / name).write_bytes(b"x")
+    win = MagicMock()
+    monkeypatch.setattr(th, "_get_app", lambda: SimpleNamespace(window=win))
+
+    out = th.import_files(paths=str(tmp_path / "*"), dry_run="true", media_types="video")
+    assert "would_import=1 (video=1 audio=0 image=0)" in out
+    assert "skipped_non_media=3" in out
+
+
+def test_a_missing_explicit_path_never_silently_becomes_a_file_elsewhere(monkeypatch, tmp_path):
+    """Review #216: /external/project/scene.mp4 resolved to the only scene.mp4 in Downloads."""
+    from classes import tool_handlers as th
+
+    home = tmp_path / "home"
+    downloads = home / "Downloads"
+    downloads.mkdir(parents=True)
+    (downloads / "scene.mp4").write_bytes(b"x")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr("os.path.expanduser", lambda p: str(home) if p == "~" else p)
+    win = MagicMock()
+    monkeypatch.setattr(th, "_get_app", lambda: SimpleNamespace(window=win))
+
+    out = th.import_files(path=str(tmp_path / "external" / "project" / "scene.mp4"), dry_run="true")
+    assert out.startswith("Error:")
+    assert str(downloads / "scene.mp4") in out and "ask the user" in out.lower()
+    win.files_model.add_files.assert_not_called()
+
+    # A bare name may still be found under the media folders.
+    out = th.import_files(path="scene.mp4", dry_run="true")
+    assert out.startswith("dry_run=true") and "would_import=1" in out
+
+
+@pytest.mark.parametrize("args", [
+    {"paths": ["C:/clips/a.mp4", "C:/clips/b.mp4"]},
+    {"paths": "C:/clips/a.mp4"},
+    {"files": ["C:/clips/a.mp4"]},
+])
+def test_the_import_schema_accepts_every_form_the_handler_reads(args):
+    from classes.agent_tools.schema import validate_args
+
+    assert validate_args("import_files_tool", args) is None

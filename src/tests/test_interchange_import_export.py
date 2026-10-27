@@ -77,6 +77,7 @@ class _ClipRecord:
 
     def __init__(self, data=None):
         self.data = data or {}
+        self.id = "clip-%d" % (len(_ClipRecord.saved) + 1)
 
     def save(self):
         self.__class__.saved.append(self)
@@ -209,7 +210,7 @@ class InterchangeImportExportTests(unittest.TestCase):
             with patch.object(self.edl_importer, "get_app", return_value=app), \
                  patch.object(self.edl_importer.QFileDialog, "getOpenFileName", return_value=(edl_path, "")), \
                  patch.object(self.edl_importer, "Track", _TrackRecord), \
-                 patch.object(self.edl_importer, "create_clip", side_effect=lambda ctx, track: contexts.append(dict(ctx))):
+                 patch.object(self.edl_importer, "create_clip", side_effect=lambda ctx, track, **kw: contexts.append(dict(ctx))):
                 self.edl_importer.import_edl()
 
         self.assertEqual(len(_TrackRecord.saved), 1)

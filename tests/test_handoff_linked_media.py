@@ -353,7 +353,10 @@ def test_adopt_moves_unsaved_renders_and_copies_on_save_as(tmp_path, monkeypatch
     project2 = str(tmp_path / "Trip v2.zvn")
     moves = lm.adopt_linked_renders(files, clips, project2, previous_path=project)
     dest2 = str(tmp_path / "Trip v2_assets" / "links" / "remotion" / "Intro-1.mov")
-    assert moves == [] and os.path.isfile(dest) and os.path.isfile(dest2) and files[0]["path"] == dest2
+    assert moves == [(dest, dest2)] and os.path.isfile(dest) and os.path.isfile(dest2) and files[0]["path"] == dest2
+    from classes.assets import reverse_media_moves
+    reverse_media_moves(moves)  # a failed Save As removes the new link, the old project keeps its render
+    assert os.path.isfile(dest) and not os.path.exists(dest2)
 
 
 def test_save_rolls_back_adopted_renders_when_the_write_fails(tmp_path, monkeypatch):
@@ -781,3 +784,29 @@ def test_add_linked_media_passes_the_batch_refresh_opt_in(linked):
     assert timeline.add_calls[-1]["ignore_refresh"] is True and timeline.update_calls[-1]["ignore_refresh"] is True
     lm.add_linked_media(linked.media("b.mov"), remotion_link(composition="B"), position=6.0)
     assert timeline.add_calls[-1]["ignore_refresh"] is False  # the default: refresh as before
+
+
+def test_two_claims_of_one_file_cannot_both_win(linked):
+    provider = FakeProvider(probe=linked.probe, seconds=5.0)
+    lm.register_provider(provider)
+    a, _b = _two_linked(linked, provider)
+    lm._claim(a["file_id"])
+    try:
+        with pytest.raises(lm.LinkError, match="already rendering"):
+            lm._claim(a["file_id"])
+    finally:
+        lm._release(a["file_id"])
+
+
+def test_a_render_made_for_another_project_is_dropped(linked, monkeypatch):
+    provider = FakeProvider(probe=linked.probe, seconds=5.0)
+    lm.register_provider(provider)
+    a, _b = _two_linked(linked, provider)
+    old = linked.file(a["file_id"])["path"]
+    prepared = lm.prepare_rerender(a["file_id"])
+    monkeypatch.setattr(lm, "project_token", lambda: -1)  # the user opened another project meanwhile
+    with pytest.raises(lm.LinkError, match="another project was opened") as caught:
+        lm.swap_linked_media(prepared.file_id, prepared.path, prepared.link_update, expect=prepared.expect)
+    lm.finish_rerender(prepared, caught.value)
+    assert linked.file(a["file_id"])["path"] == old and linked.undo_steps_since_mark() == 0
+    assert not lm.is_rendering(a["file_id"])

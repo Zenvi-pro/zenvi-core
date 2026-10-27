@@ -5,17 +5,48 @@
 # installers and publishes them as a GitHub Release so the in-app auto-updater
 # can pick them up.
 #
+# A push to the releases branch (an RC PR squash-merged, or a direct commit)
+# runs the same builds but publishes a prerelease ("releases-test", replaced
+# on every push). A prerelease never reaches /releases/latest, so the website
+# and the default auto-update channel ignore it; testers download it there, or
+# get it through the opt-in rc channel (ZENVI_UPDATE_CHANNEL=rc).
+#
+# A pull request that changes how Zenvi is packaged or updated runs every
+# build and the auto-update end-to-end test, and publishes nothing.
+#
+# Nothing is published unless the update-e2e job passed: the previous release
+# must update to this build, and this build must update itself, on macOS,
+# Windows and Linux, coming back up signed in and without crashing.
+#
 # Asset naming convention expected by the auto-updater:
 #   Linux   → Zenvi-v<VER>-x86_64.AppImage
 #   macOS   → Zenvi-v<VER>-x86_64.dmg   (Intel)
 #             Zenvi-v<VER>-arm64.dmg     (Apple Silicon)
 #   Windows → Zenvi-v<VER>-x86_64.exe
+# Every shipped updater takes the first asset whose name ends with its package
+# type and contains its CPU name: never publish a second one per platform.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Zenvi Production Release
 
 on:
   push:
     tags: ["v*.*.*"]
+    branches: ["releases"]
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "installer/**"
+      - "freeze.py"
+      - "src/launch.py"
+      - "src/classes/update_installer.py"
+      - "src/classes/auto_updater.py"
+      - "src/classes/single_instance.py"
+  workflow_dispatch:
+
+# A newer push to releases supersedes the build still running for it.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type == 'branch' }}
 
 permissions:
   contents: write # needed for creating releases & uploading assets
@@ -63,6 +94,7 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.version }}
       tag: ${{ steps.ver.outputs.tag }}
+      name: ${{ steps.ver.outputs.name }}
     steps:
       - uses: actions/checkout@v4
 
@@ -75,12 +107,17 @@ jobs:
           m = re.search(r'VERSION\s*=\s*\"([^\"]+)\"', text)
           print(m.group(1))
           ")
-          if [ "${GITHUB_REF_NAME}" != "v${VER}" ]; then
+          if [ "${GITHUB_REF_TYPE}" = "branch" ]; then
+            echo "tag=${GITHUB_REF_NAME}-test" >> "$GITHUB_OUTPUT"
+            echo "name=Zenvi ${GITHUB_REF_NAME} test build (${GITHUB_SHA::7})" >> "$GITHUB_OUTPUT"
+          elif [ "${GITHUB_REF_NAME}" != "v${VER}" ]; then
             echo "::error::Tag ${GITHUB_REF_NAME} does not match version v${VER}"
             exit 1
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "name=Zenvi v${VER}" >> "$GITHUB_OUTPUT"
           fi
           echo "version=$VER" >> "$GITHUB_OUTPUT"
-          echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           echo "### Version: $VER" >> "$GITHUB_STEP_SUMMARY"
 
   # ── 2. Linux build (AppImage + .deb) ──────────────────────────────────
@@ -92,21 +129,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        run: |
-          sudo add-apt-repository -y ppa:openshot.developers/libopenshot-daily
-          sudo apt-get update
-          sudo apt-get install -y \
-            libopenshot-audio-dev libopenshot-dev python3-openshot \
-            libfuse2 desktop-file-utils
+      # Built from source (not the apt PPA) so the version is the same v1.0.0 as
+      # the macOS and Windows jobs; the script fails if it is below the app's
+      # MINIMUM_LIBOPENSHOT_VERSION. Also installs libfuse2 and desktop-file-utils.
+      - name: Build libopenshot from source
+        run: bash installer/ci-linux-libopenshot.sh
 
       - name: Install Python dependencies
         run: |
           pip3 install --upgrade pip
           pip3 install -r requirements.txt
 
+      - name: Bundle local transcription (whisper.cpp + base model)
+        run: |
+          sudo apt-get install -y cmake ninja-build
+          bash installer/build-whisper-cli.sh
+
       - name: Freeze with cx_Freeze
         run: python3 freeze.py build --git-branch=production
+
+      - name: Verify local transcription is in the frozen app
+        run: |
+          # freeze.py ships src/whisper only because it copies all of src/:
+          # fail here if the engine or its models did not reach the app.
+          for f in ggml-base-q5_1.bin ggml-silero-v5.1.2.bin whisper-cli; do
+            found="$(find build -path '*/lib/whisper/*' -not -path 'build/whisper.cpp/*' -name "$f" -type f | head -1)"
+            [ -n "$found" ] || { echo "::error::$f is missing from the frozen app"; exit 1; }
+          done
 
       - name: Smoke test frozen zenvi
         run: |
@@ -150,8 +199,8 @@ jobs:
           cp "$DESKTOP" "$APPDIR/zenvi.desktop"
           [ -f "$APPDATA" ] && cp "$APPDATA" "$APPDIR/usr/share/metainfo/"
 
-          # Icon (same branding as installer/dmg-icon.png)
-          ICON="installer/dmg-icon.png"
+          # Icon (the 256px Zenvi app icon)
+          ICON="xdg/icon/256/zenvi.png"
           if [ ! -f "$ICON" ]; then
             echo "::error::Missing packaging icon: $ICON"
             exit 1
@@ -215,8 +264,8 @@ jobs:
           fi
           cp "$DESKTOP" "$DEB_DIR/usr/share/applications/"
 
-          # Icon (same branding as installer/dmg-icon.png)
-          ICON="installer/dmg-icon.png"
+          # Icon (the 256px Zenvi app icon)
+          ICON="xdg/icon/256/zenvi.png"
           if [ ! -f "$ICON" ]; then
             echo "::error::Missing packaging icon: $ICON"
             exit 1
@@ -247,23 +296,20 @@ jobs:
             Zenvi-v*.deb
 
   # ── 3. macOS build (.dmg) ─────────────────────────────────────────────
-  # Produces two DMGs: Intel (x86_64) and Apple Silicon (arm64).
-  # Both jobs run on macos-15 (Apple Silicon). macos-13 (last Intel runner)
-  # was retired by GitHub. x86_64 build uses Rosetta 2 Python (architecture: x64)
-  # so cx_Freeze produces an x86_64-native frozen app that runs on Intel Macs.
-  # arm64 build uses the native Apple Silicon Python.
+  # Produces two DMGs: Intel (x86_64) and Apple Silicon (arm64), each built
+  # natively: x86_64 on GitHub's Intel image (macos-15-intel), arm64 on Apple
+  # Silicon. Both build libopenshot from source with the matching Python ABI.
   #
-  # arm64: libopenshot is built from source with matching Python ABI and bundled.
-  # x86_64: libopenshot is NOT bundled (cross-compiling C++ via Rosetta is complex;
-  # Homebrew Qt5/FFmpeg bottles are arm64-only on macos-15 runners).
-  # Full x86_64 video support will come with proper Intel build infrastructure.
+  # The x86_64 build used to run on an Apple Silicon runner with "x64" Python,
+  # which still produced arm64 binaries and no libopenshot: v1.2.1's Intel DMG
+  # could not start on any Intel Mac. verify-arch below now refuses such a build.
   build-macos:
     needs: version
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15   # Apple Silicon; x64 Python via Rosetta → x86_64 app
+          - runner: macos-15-intel   # Intel: native x86_64 Python, Homebrew and libopenshot
             arch: x86_64
           - runner: macos-14   # macOS 14 Sonoma arm64; targets macOS 14+ users
             arch: arm64
@@ -274,8 +320,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # x86_64: force Rosetta Python so the frozen app is x86_64.
-      - name: Set up Python 3.11 (x86_64, via Rosetta)
+      - name: Set up Python 3.11 (x86_64)
         if: matrix.arch == 'x86_64'
         uses: actions/setup-python@v5
         with:
@@ -298,8 +343,7 @@ jobs:
       # That only reproduced on a warm cache, which is why the first run of a new
       # cache key passed and the next one failed.
       # cppzmq provides zmq.hpp C++ header (separate from zeromq's libzmq/zmq.h)
-      - name: Install Homebrew dependencies (arm64 only)
-        if: matrix.arch == 'arm64'
+      - name: Install Homebrew dependencies
         run: |
           set -eo pipefail
           brew install swig zeromq cppzmq libsamplerate qt@5 || true
@@ -313,19 +357,16 @@ jobs:
           brew unlink qt@5 || true
           brew install opencv@4 protobuf
 
-      # Build libopenshot from source only for arm64 (native build, no cross-compilation).
-      # x86_64 skips this: cross-compiling C++ for x86_64 via Rosetta is complex and
-      # the Homebrew Qt5/ffmpeg bottles are arm64-only on macos-15 runners.
+      # Built natively on each runner (no cross-compilation).
       - name: Cache libopenshot build
         id: cache-libopenshot
-        if: matrix.arch == 'arm64'
         uses: actions/cache@v4
         with:
           path: /tmp/libopenshot-install
-          key: libopenshot-v1.0.0-audio-v1.0.0-opencv4-arm64-macos14-py311-v1-${{ hashFiles('installer/mac-patches/**', 'installer/patch-libopenshot-ffmpeg.py', 'installer/apply-libopenshot-patches.sh') }}
+          key: libopenshot-v1.0.0-audio-v1.0.0-opencv4-${{ matrix.arch }}-${{ matrix.runner }}-py311-v1-${{ hashFiles('installer/mac-patches/**', 'installer/patch-libopenshot-ffmpeg.py', 'installer/apply-libopenshot-patches.sh') }}
 
-      - name: Build libopenshot from source (arm64 only)
-        if: matrix.arch == 'arm64' && steps.cache-libopenshot.outputs.cache-hit != 'true'
+      - name: Build libopenshot from source
+        if: steps.cache-libopenshot.outputs.cache-hit != 'true'
         run: |
           set -eo pipefail
           INSTALL_PREFIX="/tmp/libopenshot-install"
@@ -411,8 +452,7 @@ jobs:
           cmake --build /tmp/libopenshot/build --parallel $(sysctl -n hw.logicalcpu)
           cmake --install /tmp/libopenshot/build
 
-      - name: Verify libopenshot Python bindings (arm64)
-        if: matrix.arch == 'arm64'
+      - name: Verify libopenshot Python bindings
         run: |
           INSTALL_PREFIX="/tmp/libopenshot-install"
           PYVER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
@@ -428,6 +468,13 @@ jobs:
           echo "ZENVI_OPENSHOT_PYROOT=$PYROOT" >> $GITHUB_ENV
           echo "ZENVI_OPENSHOT_INSTALL=$INSTALL_PREFIX" >> $GITHUB_ENV
           echo "DYLD_LIBRARY_PATH=$INSTALL_PREFIX/lib:${DYLD_LIBRARY_PATH:-}" >> $GITHUB_ENV
+
+          # Hard check, independent of dlopen: the installed library file carries
+          # its version (libopenshot.1.0.0.dylib). Fail the build if it is older
+          # than the app's MINIMUM_LIBOPENSHOT_VERSION.
+          LIB_VER=$(ls "$INSTALL_PREFIX"/lib/libopenshot.[0-9]*.[0-9]*.[0-9]*.dylib 2>/dev/null | head -1 | sed -E 's/.*libopenshot\.([0-9]+\.[0-9]+\.[0-9]+)\.dylib/\1/')
+          [ -n "$LIB_VER" ] || { echo "::error::no versioned libopenshot dylib found in $INSTALL_PREFIX/lib"; exit 1; }
+          python3 installer/check_libopenshot_version.py --version "$LIB_VER"
 
           # Verify the binding is importable (soft check — freeze.py uses filesystem
           # discovery via ZENVI_OPENSHOT_PYROOT, so a dlopen failure here is non-fatal)
@@ -458,9 +505,23 @@ jobs:
           pip3 install -r requirements.txt
           pip3 install pyobjc-framework-Cocoa 2>/dev/null || true
 
+      - name: Bundle local transcription (whisper.cpp + base model)
+        env:
+          WHISPER_ARCH: ${{ matrix.arch }}
+        run: bash installer/build-whisper-cli.sh
+
       - name: Freeze with cx_Freeze
         run: |
           python3 freeze.py build --git-branch=production
+
+      - name: Verify local transcription is in the frozen app
+        run: |
+          # freeze.py ships src/whisper only because it copies all of src/:
+          # fail here if the engine or its models did not reach the app.
+          for f in ggml-base-q5_1.bin ggml-silero-v5.1.2.bin whisper-cli; do
+            found="$(find build -path '*/lib/whisper/*' -not -path 'build/whisper.cpp/*' -name "$f" -type f | head -1)"
+            [ -n "$found" ] || { echo "::error::$f is missing from the frozen app"; exit 1; }
+          done
 
       # Fix OpenSSL dylib mismatch (arm64 only).
       # cx_Freeze may bundle libssl.3.dylib from the Python toolchain (OpenSSL 3.2+)
@@ -471,8 +532,7 @@ jobs:
       #   Referenced from: libssl.3.dylib
       #   Expected in: libcrypto.3.dylib
       # Fix: after freeze, replace libcrypto with the one from the same source as libssl.
-      - name: Fix OpenSSL dylib mismatch in frozen build (arm64)
-        if: matrix.arch == 'arm64'
+      - name: Fix OpenSSL dylib mismatch in frozen build
         run: |
           set -eo pipefail
           FROZEN_DIR=$(find build -maxdepth 1 -type d -name 'exe.*' | head -1)
@@ -595,8 +655,7 @@ jobs:
       # but does NOT rewrite the references in _openshot.so.
       # This step rewrites all absolute, non-system dep references to @loader_path
       # so they resolve correctly inside the frozen app bundle.
-      - name: Fix Mach-O rpath references in frozen build (arm64)
-        if: matrix.arch == 'arm64'
+      - name: Fix Mach-O rpath references in frozen build
         run: |
           set -eo pipefail
           FROZEN_DIR=$(find build -maxdepth 1 -type d -name 'exe.*' | head -1)
@@ -739,8 +798,7 @@ jobs:
                       print(f"Fixed @rpath/{soname} in {os.path.basename(openshot_so)} -> @loader_path/{rel}")
           PYEOF
 
-      - name: Verify openshot bindings in frozen build (arm64)
-        if: matrix.arch == 'arm64'
+      - name: Verify openshot bindings in frozen build
         run: |
           FROZEN_DIR=$(find build -maxdepth 1 -type d -name 'exe.*' | head -1)
           [ -n "$FROZEN_DIR" ] || { echo "No frozen dir"; exit 0; }
@@ -947,7 +1005,19 @@ jobs:
           echo "Bundle assembled and ad-hoc signed. Contents:"
           ls "$APP/Contents/MacOS/" | head -20
 
+      # Every Mac updater installs the DMG named for its CPU, so an app that
+      # can't start there breaks every Mac on that architecture at once
+      # (v1.2.1's x86_64 DMG was arm64-only and had no libopenshot). An arm64
+      # failure stops the release. An x86_64 one leaves the Intel DMG out of
+      # it -- Intel Macs keep the version they have -- until the Intel build
+      # bundles a working libopenshot.
+      - name: Verify the app can start on ${{ matrix.arch }} Macs
+        id: verify-arch
+        continue-on-error: ${{ matrix.arch == 'x86_64' }}
+        run: python3 installer/verify_mac_bundle.py --arch "$ARCH" Zenvi.app
+
       - name: Sign .app bundle
+        if: steps.verify-arch.outcome == 'success'
         env:
           SIGN_IDENTITY: "Developer ID Application: NILAY GOYAL (LF75V32M27)"
         run: |
@@ -997,9 +1067,11 @@ jobs:
           spctl -a -vv "$APP" 2>&1 || true
 
       - name: Install create-dmg
+        if: steps.verify-arch.outcome == 'success'
         run: brew install create-dmg
 
       - name: Create DMG
+        if: steps.verify-arch.outcome == 'success'
         run: |
           DMG_NAME="Zenvi-v${VER}-${ARCH}.dmg"
           xattr -cr Zenvi.app 2>/dev/null || true
@@ -1007,6 +1079,7 @@ jobs:
           [ -f "$DMG_NAME" ] || { echo "::error::DMG not created"; exit 1; }
 
       - name: Sign and notarize DMG
+        if: steps.verify-arch.outcome == 'success'
         env:
           SIGN_IDENTITY: "Developer ID Application: NILAY GOYAL (LF75V32M27)"
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -1059,13 +1132,33 @@ jobs:
             exit 1
           fi
 
-          # Staple the notarization ticket so Gatekeeper can verify offline
-          xcrun stapler staple "$DMG_NAME"
-          xcrun stapler validate "$DMG_NAME"
+          # Staple the notarization ticket so Gatekeeper can verify offline.
+          # Both ask Apple's ticket service over the network, which drops
+          # connections now and then ("The network connection was lost",
+          # exit 68): retry rather than fail a build Apple already accepted.
+          # 'stapler staple' validates the ticket it attaches ("The staple and
+          # validate action worked!"); the separate validate is a second look
+          # that some runners can't complete (it keeps losing its IPv6
+          # connection to Apple), so it warns instead of failing the build.
+          for attempt in 1 2 3 4; do
+            if xcrun stapler staple "$DMG_NAME"; then break; fi
+            if [ "$attempt" = 4 ]; then echo "::error::stapler staple failed 4 times"; exit 1; fi
+            echo "::warning::stapler staple failed (attempt $attempt); retrying in 30 s"
+            sleep 30
+          done
+          for attempt in 1 2 3; do
+            if xcrun stapler validate "$DMG_NAME"; then break; fi
+            if [ "$attempt" = 3 ]; then
+              echo "::warning::stapler validate could not reach Apple; the staple step already validated the ticket"
+              break
+            fi
+            sleep 30
+          done
           spctl -a -t open --context context:primary-signature -vv "$DMG_NAME" || true
           echo "Notarization complete: $DMG_NAME"
 
       - name: Upload macOS artifact
+        if: steps.verify-arch.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: macos-package-${{ matrix.arch }}
@@ -1172,6 +1265,15 @@ jobs:
           # FastMCP import dies with ModuleNotFoundError: pywintypes without it.
           ./.venv/bin/python -c "import pywintypes, win32api, win32con, win32job; import mcp.types; from mcp.server.fastmcp import FastMCP; print('mcp import OK'); print('pywin32', pywintypes.__file__)"
 
+      - name: Bundle local transcription (whisper.cpp + base model)
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          export MSYSTEM=UCRT64
+          export PATH="/ucrt64/bin:$PATH"
+          cd "${GITHUB_WORKSPACE}"
+          bash installer/build-whisper-cli.sh
+
       - name: Freeze with cx_Freeze
         shell: msys2 {0}
         run: |
@@ -1180,6 +1282,18 @@ jobs:
           export PATH="/ucrt64/bin:$PATH"
           cd "${GITHUB_WORKSPACE}"
           ./.venv/bin/python freeze.py build --git-branch=production
+
+      - name: Verify local transcription is in the frozen app
+        shell: msys2 {0}
+        run: |
+          cd "${GITHUB_WORKSPACE}"
+          set -euo pipefail
+          # freeze.py ships src/whisper only because it copies all of src/:
+          # fail here if the engine or its models did not reach the app.
+          for f in ggml-base-q5_1.bin ggml-silero-v5.1.2.bin whisper-cli.exe; do
+            found="$(find build -path '*/lib/whisper/*' -not -path 'build/whisper.cpp/*' -name "$f" -type f | head -1)"
+            [ -n "$found" ] || { echo "::error::$f is missing from the frozen app"; exit 1; }
+          done
 
       - name: Verify production env present in frozen build (Supabase)
         shell: powershell
@@ -1207,6 +1321,73 @@ jobs:
             throw "Verification failed: 'class Profile' missing from frozen lib/openshot.py"
           }
           Write-Host "Verification OK: SWIG openshot.py present in frozen build"
+
+      # freeze.py lists every shipped DLL/PYD/EXE so a startup failure can name
+      # the one antivirus software quarantined (src/classes/openshot_import_diag.py).
+      - name: Verify bundled native file list
+        id: frozen
+        shell: powershell
+        run: |
+          $exeDir = Get-ChildItem -Path "build" -Directory -Filter "exe.*" | Select-Object -First 1
+          if (!$exeDir) { throw "cx_Freeze output directory build/exe.* not found" }
+          $manifest = Join-Path $exeDir.FullName "lib\bundled-native-files.txt"
+          if (!(Test-Path $manifest)) { throw "freeze.py did not write $manifest" }
+          $names = Get-Content $manifest
+          if ($names -notcontains "lib/libopenshot.dll") { throw "$manifest does not list lib/libopenshot.dll" }
+          Write-Host "OK: $($names.Count) native files listed in $manifest"
+          # Add-Content, not >>: Windows PowerShell's >> writes UTF-16.
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "dir=$($exeDir.FullName)"
+
+      # Sign every DLL/PYD/EXE before Inno Setup packs them. The installer's own
+      # signature does not cover the files it extracts, and antivirus heuristics
+      # quarantine unsigned binaries (Sophos removed lib\libva.dll from v1.2.3,
+      # so Zenvi could not start). Same setup as the installer signing below;
+      # each signing step logs in itself so neither depends on a token's lifetime.
+      - name: Azure login (OIDC for Artifact Signing, app binaries)
+        if: ${{ vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CODESIGNING_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_CODESIGNING_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_CODESIGNING_SUBSCRIPTION_ID }}
+
+      - name: Sign app binaries (Azure Artifact Signing)
+        if: ${{ vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ vars.AZURE_CODESIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_CODESIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.AZURE_CODESIGNING_PROFILE_NAME }}
+          files-folder: ${{ steps.frozen.outputs.dir }}
+          files-folder-filter: dll,pyd,exe
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      - name: Verify app binaries are signed
+        if: ${{ vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
+        shell: powershell
+        env:
+          FROZEN_DIR: ${{ steps.frozen.outputs.dir }}
+        run: |
+          $files = Get-ChildItem -Path $env:FROZEN_DIR -Recurse -File -Include *.dll,*.pyd,*.exe
+          $unsigned = $files | Where-Object { (Get-AuthenticodeSignature $_.FullName).Status -ne "Valid" }
+          if ($unsigned) {
+            $unsigned | ForEach-Object { Write-Host "::error::not signed: $($_.FullName)" }
+            throw "$(@($unsigned).Count) of $($files.Count) binaries are not validly signed"
+          }
+          Write-Host "OK: all $($files.Count) binaries signed"
 
       - name: Install Inno Setup 6
         run: choco install innosetup --yes --no-progress
@@ -1290,12 +1471,143 @@ jobs:
           path: Zenvi-v*.exe
           if-no-files-found: error
 
-  # ── 5. Create GitHub Release with all artifacts ───────────────────────
+  # ── 5. Auto-update, end to end ────────────────────────────────────────
+  # On real machines and real installers: the previous release updates to
+  # this build exactly as installed apps will (its own updater does the work),
+  # and this build updates itself (its installer helper does). Each must come
+  # back up, stay up, and still be signed in. Logs land in the job artifact.
+  # The previous release's AppImage updater can't replace a running AppImage
+  # (Text file busy), and v1.2.1's Intel DMG never started, so on Linux and
+  # Intel Macs only this build's own update is tested. The Intel leg is
+  # optional: an Intel DMG that failed verification isn't in the release.
+  update-e2e:
+    needs: [version, build-linux, build-macos, build-windows]
+    if: always() && !cancelled() && needs.version.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            artifact: macos-package-arm64
+            pattern: "Zenvi-v*-arm64.dmg"
+            old_to_new: true
+          - runner: windows-latest
+            artifact: windows-package
+            pattern: "Zenvi-v*-x86_64.exe"
+            old_to_new: true
+          - runner: ubuntu-22.04
+            artifact: linux-packages
+            pattern: "Zenvi-v*-x86_64.AppImage"
+            old_to_new: false
+          - runner: macos-15-intel
+            artifact: macos-package-x86_64
+            pattern: "Zenvi-v*-x86_64.dmg"
+            old_to_new: false
+            optional: true
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    env:
+      VER: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download this build
+        id: download
+        continue-on-error: ${{ matrix.optional == true }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: new/
+
+      - name: Find this build's installer
+        id: new
+        if: steps.download.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE=$(ls new/${{ matrix.pattern }} | head -1)
+          [ -n "$FILE" ] || { echo "::error::No ${{ matrix.pattern }} in this build"; exit 1; }
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Download the previous release
+        id: previous
+        if: matrix.old_to_new && steps.download.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName || true)
+          PREV="${TAG#v}"
+          # python, not python3: setup-python provides python on every runner.
+          if [ -z "$TAG" ] || ! python -c "import sys; p=lambda v: tuple(int(x) for x in v.split('.')); sys.exit(0 if p(sys.argv[1]) < p(sys.argv[2]) else 1)" "$PREV" "$VER"; then
+            echo "::notice::No published release older than $VER to update from"
+            exit 0
+          fi
+          mkdir -p previous
+          if gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "${{ matrix.pattern }}" --dir previous; then
+            echo "file=$(ls previous/* | head -1)" >> "$GITHUB_OUTPUT"
+            echo "version=$PREV" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::$TAG has no ${{ matrix.pattern }} to update from"
+          fi
+
+      - name: Display and AppImage runtime (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse2 xvfb libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-xkb1 \
+            libxcb-shape0 libxcb-cursor0 libegl1 libgl1 libnss3 libxcomposite1 libxdamage1 \
+            libxrandr2 libxtst6 libasound2 libpulse0
+          Xvfb :99 -screen 0 1920x1080x24 >/dev/null 2>&1 &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+
+      - name: The previous release updates to this build
+        if: steps.previous.outputs.file != ''
+        shell: bash
+        run: >-
+          python installer/e2e_update_test.py --scenario old-to-new
+          --previous "${{ steps.previous.outputs.file }}"
+          --previous-version "${{ steps.previous.outputs.version }}"
+          --new "${{ steps.new.outputs.file }}" --new-version "$VER"
+
+      - name: This build updates itself
+        if: steps.download.outcome == 'success'
+        shell: bash
+        run: >-
+          python installer/e2e_update_test.py --scenario new-to-new
+          --new "${{ steps.new.outputs.file }}" --new-version "$VER"
+
+      - name: Upload update test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-e2e-${{ matrix.runner }}
+          path: e2e-artifacts/
+          if-no-files-found: ignore
+
+  # ── 6. Create GitHub Release with all artifacts ───────────────────────
   # Run even if some platform builds fail so that successful artifacts
   # are still published.
   release:
-    needs: [version, build-linux, build-macos, build-windows, unit-tests]
-    if: always() && needs.version.result == 'success'
+    needs: [version, build-linux, build-macos, build-windows, unit-tests, update-e2e]
+    # A tag release goes to /releases/latest, which the website and every installed
+    # app trust, so it needs all three platforms. v1.2.0 skipped this check, shipped
+    # Windows-only as "Latest" after the Linux and macOS builds failed, and left
+    # every Mac and Linux user with nothing to update to.
+    # A pull request only builds and tests; and nothing ships whose update fails.
+    if: >-
+      always() && github.event_name == 'push' &&
+      needs.version.result == 'success' &&
+      needs.build-linux.result == 'success' &&
+      needs.build-macos.result == 'success' &&
+      needs.build-windows.result == 'success' &&
+      needs.update-e2e.result == 'success'
     runs-on: ubuntu-latest
     env:
       VER: ${{ needs.version.outputs.version }}
@@ -1346,6 +1658,21 @@ jobs:
           echo "Found $COUNT artifact(s):"
           find dist/ -type f -exec ls -lh {} \;
 
+      # Each shipped updater takes the first asset with its package type and
+      # CPU in the name. A platform without one gets no update; that is
+      # acceptable only for Intel Macs, whose DMG is left out when it fails
+      # verification (see build-macos).
+      - name: Check every platform's installer is here
+        run: |
+          missing=0
+          for f in "Zenvi-v${VER}-x86_64.exe" "Zenvi-v${VER}-x86_64.AppImage" \
+                   "Zenvi-v${VER}-x86_64.deb" "Zenvi-v${VER}-arm64.dmg"; do
+            [ -f "dist/$f" ] || { echo "::error::Missing $f"; missing=1; }
+          done
+          [ -f "dist/Zenvi-v${VER}-x86_64.dmg" ] \
+            || echo "::warning::No Intel Mac DMG in this release: Intel Macs keep the version they have"
+          exit $missing
+
       - name: Generate checksums
         run: |
           cd dist
@@ -1363,11 +1690,38 @@ jobs:
             gh api -X DELETE "repos/${{ github.repository }}/git/refs/tags/production" || true
           fi
 
+      - name: Remove the previous test release
+        if: github.ref_type == 'branch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # --cleanup-tag: otherwise the tag stays on the old commit.
+        run: gh release delete "$TAG" --yes --cleanup-tag || true
+
+      # Only a release newer than the current Latest replaces it, so a fix
+      # tagged on an older line never sends the website and every installed
+      # app back to that version.
+      - name: Decide whether this release becomes Latest
+        id: latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MAKE_LATEST=false
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            CURRENT=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || echo v0)
+            if python3 -c "import sys; p=lambda v: tuple(int(x) for x in v.split('.')); sys.exit(0 if p(sys.argv[1]) >= p(sys.argv[2]) else 1)" "$VER" "${CURRENT#v}"; then
+              MAKE_LATEST=true
+            else
+              echo "::warning::$VER is older than the current Latest ($CURRENT): publishing it without making it Latest"
+            fi
+          fi
+          echo "make_latest=$MAKE_LATEST" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
-          name: "Zenvi v${{ env.VER }}"
+          target_commitish: ${{ github.sha }}
+          name: ${{ needs.version.outputs.name }}
           body: |
             ## Downloads
 
@@ -1384,8 +1738,11 @@ jobs:
             ## Checksums
 
             See `SHA256SUMS.txt` for verification.
+          # The rc update channel reads this prerelease from /releases; a draft
+          # would be invisible to it.
           draft: false
-          prerelease: false
+          prerelease: ${{ github.ref_type == 'branch' }}
+          make_latest: ${{ steps.latest.outputs.make_latest }}
           files: dist/*
           generate_release_notes: true
         env:

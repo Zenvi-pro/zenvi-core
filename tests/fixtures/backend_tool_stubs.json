@@ -59,11 +59,18 @@
    "supabase_path": "str",
    "supabase_url": "str"
   },
+  "generate_image_and_add_to_timeline_tool": {
+   "duration_seconds": "str",
+   "position_seconds": "str",
+   "prompt": "str!",
+   "track": "str"
+  },
   "generate_transition_clip_tool": {
    "clip_a_id": "str",
    "clip_a_query": "str",
    "clip_b_id": "str",
    "clip_b_query": "str",
+   "duration_seconds": "str",
    "prompt_hint": "str"
   },
   "generate_tts_and_add_to_timeline_tool": {

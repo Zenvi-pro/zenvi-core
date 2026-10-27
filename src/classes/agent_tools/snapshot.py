@@ -36,6 +36,7 @@ class ClipPlacement:
             self.track == other.track
             and self.start_frame == other.start_frame
             and self.duration_frames == other.duration_frames
+            and abs(self.start - other.start) < 1e-6  # a slip moves the in-point only
         )
 
 
@@ -147,7 +148,8 @@ def mutation_result(
         prior = before.placements.get(cid)
         if prior is None or prior.same_place(placement) or cid in changed:
             continue
-        if prior.track == placement.track and prior.duration_frames == placement.duration_frames:
+        if (prior.track == placement.track and prior.duration_frames == placement.duration_frames
+                and abs(prior.start - placement.start) < 1e-6):
             pure_shifts[cid] = (prior.start_frame, placement.start_frame - prior.start_frame)
         else:
             changed.add(cid)

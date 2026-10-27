@@ -23,6 +23,10 @@ from classes.export_acceleration.export_tuning import (
 from classes.logger import log
 
 
+# Timelines (and their caches) a compositor was still using when export returned.
+_BUSY_TIMELINES: list = []
+
+
 class PipelineCancelled(Exception):
     """Raised when export is cancelled mid-flight."""
 
@@ -31,6 +35,25 @@ class PipelineCancelled(Exception):
 class _CompositedFrame:
     frame_number: int
     frame_obj: Any
+
+
+def _reap_busy_timelines() -> None:
+    """Close timelines parked by a stuck cancel whose compositor has since exited.
+
+    Runs when the next export starts; until then a parked timeline stays open.
+    """
+    for entry in list(_BUSY_TIMELINES):
+        thread, tl, _keep_alive = entry
+        if thread.is_alive():
+            continue
+        try:
+            _BUSY_TIMELINES.remove(entry)
+        except ValueError:
+            continue  # another export reaped it
+        try:
+            tl.Close()
+        except Exception:
+            log.debug("Failed closing parked export timeline", exc_info=True)
 
 
 def _clone_timeline(project_data: dict, video_settings: dict, audio_settings: dict, cache_bytes: int):
@@ -119,6 +142,7 @@ def run_pipelined_export(
     if end_frame < start_frame:
         raise ValueError("end_frame must be >= start_frame")
 
+    _reap_busy_timelines()
     total_frames = end_frame - start_frame + 1
     pending: queue.Queue = queue.Queue(maxsize=profile.max_pending_frames)
     error_box: list[BaseException] = []
@@ -270,6 +294,12 @@ def run_pipelined_export(
     # Close cloned timelines (not the caller's existing_timeline)
     for i, tl in enumerate(timelines):
         if existing_timeline is not None and tl is existing_timeline:
+            continue
+        if composite_threads[i].is_alive():
+            # Still inside GetFrame: closing would free native state under it.
+            # Parked until a later export finds the thread gone (_reap_busy_timelines).
+            log.warning("Export compositor %s still busy after cancel; leaving its timeline open", i)
+            _BUSY_TIMELINES.append((composite_threads[i], tl, keep_alive))
             continue
         try:
             tl.Close()

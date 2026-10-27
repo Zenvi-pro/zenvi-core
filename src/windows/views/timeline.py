@@ -310,6 +310,11 @@ def _save_waveform(item, tid, inserted_by_tid=False):
             break
 
 
+# Paused cache-bar polling stops after this many unchanged 300 ms ticks: a slow fill
+# can leave the cache JSON unchanged for a second, so allow a few seconds
+CACHE_POLL_IDLE_TICKS = 10
+
+
 class TimelineView(updates.UpdateInterface, ViewClass):
     """ A Web(Engine/Kit)View QWidget used to load the Timeline """
 
@@ -771,6 +776,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):
+        self.resume_cache_renderer()
         if action is None:
             if ViewClass == TimelineWidget:
                 TimelineWidget.changed(self, None)
@@ -2155,7 +2161,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             clip.data = ui_data
             _save_waveform(clip, tid, inserted_by_tid=True)
             if hasattr(self, "clip_painter"):
-                self.clip_painter.clear_cache()
+                self.clip_painter.clear_render_cache()
             QTimer.singleShot(0, self.update)
 
         # Clear transaction id
@@ -5801,7 +5807,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 if lock is not None:
                     acquired = lock.acquire(False)
                     if not acquired:
-                        return
+                        return False  # busy (an edit is applying): try again next tick
                 try:
                     cache_object = self.window.timeline_sync.timeline.GetCache()
                 finally:
@@ -5829,12 +5835,46 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Log the exception and ignore
             log.warning("Exception processing timeline cache: %s", ex)
 
+    def poll_cache_renderer(self):
+        """Timer tick: render the cache; stop after CACHE_POLL_IDLE_TICKS idle ticks while paused"""
+        version = self.cache_renderer_version
+        if self.render_cache_json() is False:
+            return  # could not read the cache, so this tick says nothing about idleness
+        try:
+            playing = self.window.preview_thread.player.Mode() == openshot.PLAYBACK_PLAY
+        except Exception:
+            playing = False
+        if playing or self.cache_renderer_version != version:
+            self.cache_renderer_idle_ticks = 0
+            return
+        self.cache_renderer_idle_ticks += 1
+        if self.cache_renderer_idle_ticks >= CACHE_POLL_IDLE_TICKS:
+            self.cache_renderer.stop()
+
+    def resume_cache_renderer(self):
+        """Poll the cache again after play, a seek or a timeline change"""
+        self.cache_renderer_idle_ticks = 0
+        renderer = getattr(self, "cache_renderer", None)  # changed() can fire before __init__ makes it
+        if renderer is not None and not renderer.isActive():
+            renderer.start()
+
     def handle_selection(self):
         # Force recalculation of clips and repaint
         if ViewClass == TimelineWidget:
             TimelineWidget.handle_selection(self)
             return
         self.run_js(JS_SCOPE_SELECTOR + ".refreshTimeline();")
+
+    def _delete_on_shutdown(self):
+        """Delete the timeline once the editor's last window has closed.
+
+        Qt also reports the last window closed when the sign-in dialog closes
+        while the main window is hidden behind it (Log Out, then sign in
+        again). The timeline is still in use then, and deleting it destroys
+        its running thumbnail thread, which aborts the process.
+        """
+        if self.window.shutting_down:
+            self.deleteLater()
 
     def __init__(self, window):
         if ViewClass == TimelineWidget:
@@ -5879,17 +5919,20 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # QTimer for cache rendering
         self.cache_renderer_version = None
+        self.cache_renderer_idle_ticks = 0
         self.cache_renderer = QTimer(self)
         self.cache_renderer.setInterval(300)
-        self.cache_renderer.timeout.connect(self.render_cache_json)
+        self.cache_renderer.timeout.connect(self.poll_cache_renderer)
 
         # Connect shutdown signals
         app.aboutToQuit.connect(self.redraw_audio_timer.stop)
         app.aboutToQuit.connect(self.cache_renderer.stop)
-        app.lastWindowClosed.connect(self.deleteLater)
+        app.lastWindowClosed.connect(self._delete_on_shutdown)
 
-        # Delay the start of cache rendering
+        # Delay the start of cache rendering, then restart it on play and seek
         QTimer.singleShot(1500, self.cache_renderer.start)
+        window.PlaySignal.connect(self.resume_cache_renderer)
+        window.SeekSignal.connect(self.resume_cache_renderer)
 
         # connect signal to receive waveform data
         self.clipAudioDataReady.connect(self.clipAudioDataReady_Triggered)

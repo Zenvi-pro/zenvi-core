@@ -30,6 +30,7 @@ from qt_api import QTimer, Qt, QModelIndex, QItemSelectionModel
 from qt_api import QListView
 
 from windows.models.titles_model import TitlesModel, TitleRoles
+from windows.views.files_thumbnail_overlay import TileDelegate, tile_grid_size
 
 
 class TitlesListView(QListView):
@@ -86,7 +87,8 @@ class TitlesListView(QListView):
         # Setup header columns
         self.setModel(self.title_model.proxy_model)
         self.setIconSize(info.LIST_ICON_SIZE)
-        self.setGridSize(info.LIST_GRID_SIZE)
+        self.setGridSize(tile_grid_size(info.LIST_ICON_SIZE))
+        self.setItemDelegate(TileDelegate(self))
         self.setViewMode(QListView.IconMode)
         self.setResizeMode(QListView.Adjust)
         self.setUniformItemSizes(True)
