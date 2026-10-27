@@ -40,7 +40,7 @@ from windows.pexels_dock import (
 from windows.freesound_dock import (
     _SearchWorker as FreesoundSearchWorker,
     _DownloadWorker as FreesoundDownloadWorker,
-    _SoundCard, _WaveformRunnable,
+    _SoundCard, _WaveformRunnable, _image_url,
     CARD_W as SOUND_W,
 )
 from windows.views.files_thumbnail_overlay import tile_grid_size
@@ -81,6 +81,7 @@ class StockSearchView(QWidget):
         self._cards: Dict[str, object] = {}
         # Bumped on every new search: late pages and pictures from an older one are dropped.
         self._search_gen = 0
+        self._failed = False   # a failed or rate-limited section lets the same query run again
         self._pages = {"footage": 1, "music": 1}
         # Picture loaders carry an int key; Openverse ids are strings, so map key -> card uid.
         self._image_keys: Dict[int, str] = {}
@@ -129,6 +130,7 @@ class StockSearchView(QWidget):
         cv.addWidget(self._footage_header)
         self._footage_status = QLabel("")
         self._footage_status.setObjectName("sectionStatus")
+        self._footage_status.setTextFormat(Qt.PlainText)   # provider text is never markup
         cv.addWidget(self._footage_status)
         self._footage_container = QWidget()
         self._footage_grid = QGridLayout(self._footage_container)
@@ -145,6 +147,7 @@ class StockSearchView(QWidget):
         cv.addWidget(self._music_header)
         self._music_status = QLabel("")
         self._music_status.setObjectName("sectionStatus")
+        self._music_status.setTextFormat(Qt.PlainText)
         cv.addWidget(self._music_status)
         self._music_container = QWidget()
         self._music_grid = QGridLayout(self._music_container)
@@ -264,9 +267,10 @@ class StockSearchView(QWidget):
         if not query:
             self.clear_stock()
             return
-        if query == self._query:
+        if query == self._query and not self._failed:
             return
         self._query = query
+        self._failed = False
         self._clear_grids()
         self._set_stock_visible(True)
         self._footage_status.setText("Searching…")
@@ -356,6 +360,7 @@ class StockSearchView(QWidget):
         videos = data.get("videos", [])
         first = self._footage_grid.count()
         if error or not videos:
+            self._failed = self._failed or bool(error)
             if not first:
                 self._footage_status.setText(f"Error: {error}" if error else "No footage found.")
             self._footage_more.hide()
@@ -390,6 +395,7 @@ class StockSearchView(QWidget):
         sounds = data.get("sounds", [])
         first = self._music_grid.count()
         if error or not sounds:
+            self._failed = self._failed or bool(error)
             if not first:
                 self._music_status.setText(f"Error: {error}" if error else "No music found.")
             self._music_more.hide()
@@ -407,7 +413,7 @@ class StockSearchView(QWidget):
             self._music_grid.addWidget(card, row, col)
 
             # Openverse has no waveform image; its album art fills the same slot.
-            image_url = (sound.get("images") or {}).get("waveform_m", "") or sound.get("thumbnail", "")
+            image_url = _image_url(sound)
             if image_url:
                 self._load_image(_WaveformRunnable, uid, image_url, self._on_waveform_ready)
         self._show_more(self._music_more, "music", self._music_grid.count(), total)
@@ -421,7 +427,7 @@ class StockSearchView(QWidget):
         if card:
             card.set_thumbnail(QPixmap.fromImage(image))
 
-    @pyqtSlot(int, QImage, int)
+    @pyqtSlot(object, QImage, int)
     def _on_waveform_ready(self, key: int, image: QImage, search: int):
         card = self._card_for_image(key, search)
         if card:
@@ -504,6 +510,20 @@ class StockSearchView(QWidget):
         if card:
             card.set_done()
         self._add_to_project(local_path)
+        credit = (getattr(card, "_sound", None) or {}).get("attribution", "")
+        if credit:
+            self._keep_credit(local_path, credit)
+
+    def _keep_credit(self, local_path: str, credit: str):
+        """CC BY needs the credit with the clip, not only on the search card."""
+        try:
+            from classes.query import File
+            f = File.get(path=local_path)
+            if f:
+                f.data["stock_credit"] = credit
+                f.save()
+        except Exception as exc:
+            log.warning("Could not store the stock credit for %s: %s", local_path, exc)
 
     def _add_to_project(self, local_path: str):
         """Import the downloaded file into Project Files (re-tag if already present)."""

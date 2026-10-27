@@ -1352,7 +1352,8 @@ class ZenviBackendClient:
         try:
             r = self.session.get(f"{self.api_url}{route}", params=params, timeout=20)
             if r.status_code == 429:
-                wait = r.headers.get("Retry-After") or "60"
+                wait = str(r.headers.get("Retry-After") or "").strip()
+                wait = wait if wait.isdigit() else "60"   # an HTTP-date or anything else: a safe default
                 return {empty_key: [], "rate_limited": True,
                         "error": f"Stock search is busy, try again in {wait}s."}
             r.raise_for_status()

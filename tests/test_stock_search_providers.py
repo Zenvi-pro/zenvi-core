@@ -58,3 +58,9 @@ def test_agent_download_accepts_an_openverse_uuid():
         )
     assert out == "Downloaded to: /tmp/a.mp3"
     assert backend.freesound_download.call_args.args[0] == "3b4580e1-1454-4b4c"
+
+
+def test_a_non_numeric_retry_after_is_not_shown_raw():
+    for header in ("Wed, 21 Oct 2015 07:28:00 GMT", "<b>soon</b>"):
+        out = _client(status=429, headers={"Retry-After": header}).freesound_search("ocean")
+        assert out["error"] == "Stock search is busy, try again in 60s."

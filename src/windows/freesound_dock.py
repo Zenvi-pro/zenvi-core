@@ -85,14 +85,20 @@ class _DownloadWorker(QObject):
         self.finished.emit(self._sound_id, local_path, error)
 
 
+def _image_url(sound: Dict[str, Any]) -> str:
+    """Freesound's waveform image, else Openverse's album art."""
+    return (sound.get("images") or {}).get("waveform_m", "") or sound.get("thumbnail", "")
+
+
 class _WaveformRunnable(QRunnable):
     """Fetches a waveform image URL and emits the result via a signal carrier."""
 
     class _Signals(QObject):
-        ready = pyqtSignal(int, QImage, int)   # sound_id, image (QPixmap is GUI-thread only), search
-        finished = pyqtSignal(int, int)        # sound_id, search; success or not
+        # sound_id is an Openverse UUID string (or an int key from StockSearchView)
+        ready = pyqtSignal(object, QImage, int)   # sound_id, image (QPixmap is GUI-thread only), search
+        finished = pyqtSignal(object, int)        # sound_id, search; success or not
 
-    def __init__(self, sound_id: int, url: str, search: int):
+    def __init__(self, sound_id, url: str, search: int):
         super().__init__()
         self.signals = _WaveformRunnable._Signals()
         self._sound_id = sound_id
@@ -133,7 +139,7 @@ class _SoundCard(QFrame):
         super().__init__(parent)
         self._sound = sound
         self._waveform: QPixmap | None = None
-        self._media_pending = bool((sound.get("images") or {}).get("waveform_m"))
+        self._media_pending = bool(_image_url(sound))
         self._downloading = False
 
         self.setFixedSize(CARD_W, CARD_H)
@@ -162,7 +168,12 @@ class _SoundCard(QFrame):
         self.setToolTip(f"{name}\nBy: {username}\n{self._dur_text}\nTags: {tags}\n{credit}")
 
     def set_waveform(self, pix: QPixmap):
-        self._waveform = pix.scaled(CARD_W, CARD_MEDIA_H, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        if (self._sound.get("images") or {}).get("waveform_m"):
+            self._waveform = pix.scaled(CARD_W, CARD_MEDIA_H, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        else:   # square album art: fill the strip and crop rather than squash it
+            art = pix.scaled(CARD_W, CARD_MEDIA_H, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            self._waveform = art.copy((art.width() - CARD_W) // 2, (art.height() - CARD_MEDIA_H) // 2,
+                                      CARD_W, CARD_MEDIA_H)
         self._media_pending = False
         self.update()
 
@@ -441,7 +452,7 @@ class FreesoundDock(QDockWidget):
             self._grid.addWidget(card, row, col)
 
             # Fetch waveform image asynchronously
-            wave_url = (sound.get("images") or {}).get("waveform_m", "")
+            wave_url = _image_url(sound)
             if wave_url:
                 runnable = _WaveformRunnable(sid, wave_url, self._search_gen)
                 runnable.signals.ready.connect(self._on_waveform_ready)
@@ -456,14 +467,14 @@ class FreesoundDock(QDockWidget):
         else:
             self._load_more_btn.hide()
 
-    @pyqtSlot(int, QImage, int)
-    def _on_waveform_ready(self, sound_id: int, image: QImage, search: int):
+    @pyqtSlot(object, QImage, int)
+    def _on_waveform_ready(self, sound_id, image: QImage, search: int):
         card = self._cards.get(sound_id) if search == self._search_gen else None
         if card:
             card.set_waveform(QPixmap.fromImage(image))
 
-    @pyqtSlot(int, int)
-    def _on_waveform_finished(self, sound_id: int, search: int):
+    @pyqtSlot(object, int)
+    def _on_waveform_finished(self, sound_id, search: int):
         # Failed or invalid waveform: stop showing "Loading…" (a stale search is ignored)
         card = self._cards.get(sound_id) if search == self._search_gen else None
         if card:
@@ -509,8 +520,8 @@ class FreesoundDock(QDockWidget):
         self._dl_threads.pop(sound_id, None)
         self._dl_workers.pop(sound_id, None)
 
-    @pyqtSlot(int, str, str)
-    def _on_download_done(self, sound_id: int, local_path: str, error: str):
+    @pyqtSlot(object, str, str)
+    def _on_download_done(self, sound_id, local_path: str, error: str):
         card = self._cards.get(sound_id)
         if error or not local_path:
             log.error("Freesound download error: %s", error)
