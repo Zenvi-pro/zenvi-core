@@ -46,6 +46,15 @@ def test_project_pin(tmp_path):
     assert hf_cli.project_pin(str(tmp_path / "missing")) is None and hf_cli.project_pin(None) is None
 
 
+def test_project_pin_reads_utf8_bom(tmp_path):
+    """Notepad / some editors write a BOM; utf-8 json.load fails, utf-8-sig must not."""
+    root = tmp_path / "bom"
+    root.mkdir()
+    body = json.dumps({"name": "p", "scripts": {"render": "npx --yes hyperframes@0.8.120 render"}})
+    (root / "package.json").write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
+    assert hf_cli.project_pin(str(root)) == "0.8.120"
+
+
 def test_resolution_order(tmp_path, node, monkeypatch):
     proj = _project(tmp_path, "0.8.120")
     cli = hf_cli.resolve_cli(proj)
@@ -114,6 +123,21 @@ def test_json_is_found_in_noisy_output_and_missing_json_is_an_error(tmp_path, no
                         lambda argv, cwd, **kw: ([kw["on_line"](x) for x in ["Unknown command"]], (1, ""))[1])
     with pytest.raises(hf_cli.CliError, match="printed no JSON"):
         hf_cli.timeline(_project(tmp_path), cli=cli)
+
+
+def test_run_json_rejects_failed_timeline_but_keeps_lint_findings(tmp_path, node, monkeypatch):
+    """A failed timeline that still prints JSON must not win; lint exits 1 with findings and is OK."""
+    cli = hf_cli.Cli((sys.executable, "hf.mjs"), "0.8.126", "env", node)
+    bad = json.dumps({"timeline": {"duration": 0, "tracks": []}})
+    monkeypatch.setattr(node_runtime, "run_node",
+                        lambda argv, cwd, **kw: ([kw["on_line"](bad)], (1, ""))[1])
+    with pytest.raises(hf_cli.CliError, match="failed \\(exit 1\\)"):
+        hf_cli.timeline(_project(tmp_path), cli=cli)
+    lint_payload = json.dumps({"ok": False, "errorCount": 2, "warningCount": 0, "findings": [{"code": "X"}]})
+    monkeypatch.setattr(node_runtime, "run_node",
+                        lambda argv, cwd, **kw: ([kw["on_line"](lint_payload)], (1, ""))[1])
+    report = hf_cli.lint(_project(tmp_path), cli=cli)
+    assert report["ok"] is False and report["errorCount"] == 2 and len(report["findings"]) == 1
 
 
 def test_timeline_runs_plain_node_in_the_project_never_npm(tmp_path, node, monkeypatch):
@@ -199,6 +223,29 @@ def test_studio_starts_once_reuses_and_stops(tmp_path, node, monkeypatch):
         assert hf_cli.stop_studios() == 1
     studio.proc.wait(timeout=10)
     assert studio.proc.poll() is not None and hf_cli.running_studio(proj) is None
+
+
+def test_studio_start_honours_cancel(tmp_path, node, monkeypatch):
+    from classes.handoff.jobs import JobCancelled
+    script = tmp_path / "slow_preview.py"
+    script.write_text(textwrap.dedent("""
+        import json, sys, time
+        port = sys.argv[sys.argv.index("--port") + 1]
+        time.sleep(30)
+        print(json.dumps({"result": {"ready": True, "studioUrl": "http://127.0.0.1:%s/" % port}}), flush=True)
+        time.sleep(60)
+    """))
+    cli = hf_cli.Cli((sys.executable, str(script)), "0.8.126", "env", node)
+    monkeypatch.setattr(hf_cli, "resolve_cli", lambda project_dir=None, **kw: cli)
+    cancelled = {"n": 0}
+
+    def should_cancel():
+        cancelled["n"] += 1
+        return cancelled["n"] > 2
+
+    with pytest.raises(JobCancelled, match="cancelled"):
+        hf_cli.start_studio(_project(tmp_path), timeout=30, should_cancel=should_cancel)
+    assert hf_cli.running_studio(_project(tmp_path)) is None
 
 
 def test_two_quick_opens_start_one_studio(tmp_path, node, monkeypatch):

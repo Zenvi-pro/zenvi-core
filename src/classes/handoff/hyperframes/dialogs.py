@@ -29,6 +29,15 @@ from classes.logger import log
 TRUST_NOTE = ("Linked parts render with the HyperFrames CLI (Node.js 22 or newer), which runs the project's own "
               "HTML and scripts in a headless browser, like `npx hyperframes render`: import projects you trust.")
 
+_TRUST_ACTION = {
+    "render": ("Re-render this HyperFrames linked clip?",
+               "Zenvi will run the project's HTML and scripts in a headless browser again, like "
+               "`npx hyperframes render`. Only continue with projects you trust."),
+    "studio": ("Open this project in HyperFrames Studio?",
+               "HyperFrames Studio runs the project's HTML and scripts, like `npx hyperframes preview`. "
+               "Only continue with projects you trust."),
+}
+
 
 def _tr(text: str) -> str:
     try:
@@ -147,6 +156,16 @@ class HyperFramesImportDialog(QDialog):
         return "auto"
 
 
+def ask_trust_for(root: str, name: str, action: str) -> bool:
+    """The trust question for a re-render or Open in Studio of a linked clip (``trust.require``; GUI thread)."""
+    _ = _tr
+    title, body = _TRUST_ACTION.get(action, _TRUST_ACTION["render"])
+    answer = QMessageBox.question(
+        None, _(title), "%s\n\n%s (%s)" % (_(body), name or os.path.basename(root), root),
+        QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+    return answer == QMessageBox.Yes
+
+
 def import_hyperframes_project(window) -> None:
     """File > Import Project > HyperFrames Project...: folder, summary + mode, then render and add (a job)."""
     from classes.handoff import jobs
@@ -172,6 +191,8 @@ def import_hyperframes_project(window) -> None:
         dialog = HyperFramesImportDialog(job.result, window, cli_later=True)
         if dialog.exec_() != QDialog.Accepted:
             return
+        from classes.handoff.hyperframes import trust
+        trust.trust_folder(folder)  # Import clicked after the trust note: remember for re-render / Studio
         _run_import(window, folder, dialog.mode(), fps, canvas, shown=job.result.warnings)
 
     jobs.submit_job(read, label=_("Reading HyperFrames project"), kind="hyperframes", on_done=read_done)
@@ -288,7 +309,7 @@ def _run_export(window, folder: str, snapshot, raw: dict, copy_media: bool, *, o
 
     def done(job):
         if job.state == jobs.CANCELLED:
-            _notify(window, _("HyperFrames export cancelled"))
+            _notify(window, _("HyperFrames export cancelled; nothing was written"))
             return
         if isinstance(job.error, exporter.ExportChanged) and not overwrite_changes:
             files = "\n".join("• " + f for f in job.error.changed[:12])
@@ -335,16 +356,21 @@ def open_studio(window, project_dir: str) -> None:
 
     def work(job):
         from classes.handoff.hyperframes import cli as hf_cli
-        return hf_cli.open_studio(project_dir)
+        from classes.handoff.hyperframes import trust
+        trust.require(project_dir, os.path.basename(project_dir) or "HyperFrames project", action="studio")
+        return hf_cli.open_studio(project_dir, should_cancel=job.should_cancel)
 
     def done(job):
+        if job.state == jobs.CANCELLED:
+            _notify(window, _("HyperFrames Studio cancelled"))
+            return
         if job.error is not None:
             QMessageBox.warning(window, _("HyperFrames Studio"), _("The Studio did not start:\n%s") % job.error)
-        elif job.state != jobs.CANCELLED:
+        else:
             _notify(window, _("HyperFrames Studio: %s") % job.result)
 
     jobs.submit_job(work, label=_("Starting HyperFrames Studio"), kind="hyperframes", on_done=done)
 
 
 __all__ = ["HyperFramesImportDialog", "HyperFramesExportDialog", "import_hyperframes_project",
-           "export_hyperframes_project", "open_studio"]
+           "export_hyperframes_project", "open_studio", "ask_trust_for"]

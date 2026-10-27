@@ -62,6 +62,8 @@ NON_VISUAL_TAGS = frozenset({"script", "style", "template", "meta", "link", "nos
 IMAGE_DEFAULT_DURATION = 3.0
 DEFAULT_SIZE = (1920, 1080)
 MAX_COMPOSITION_DEPTH = 16
+# Hosts multiply: a file mounting three copies of the next, 16 deep, is 43 million compositions.
+MAX_COMPOSITIONS = 2000
 _START_REF = re.compile(r"^\s*([A-Za-z_][\w:.\-]*)\s*(?:([+-])\s*(\d*\.?\d+))?\s*$")
 
 ProbeFn = Callable[[str], Optional[float]]
@@ -443,7 +445,8 @@ def _split_semicolons(text: str) -> List[str]:
 
 def parse_css(text: str, start_order: int = 0) -> List[Rule]:
     """Style rules of a stylesheet (comments, @keyframes and other at-rule blocks skipped; @media flattened)."""
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    # An unclosed comment runs to the end (as in CSS); that also keeps many unclosed ones linear.
+    text = re.sub(r"/\*.*?(?:\*/|\Z)", "", text, flags=re.S)
     rules: List[Rule] = []
     i, n, order = 0, len(text), start_order
     while i < n:
@@ -675,7 +678,7 @@ def _ref_targets(clips: Sequence["Clip"]) -> Dict[str, "Clip"]:
 def _int(value: Any, default: int = 0) -> int:
     try:
         return int(float(str(value).strip()))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: "1e999" and "Infinity"
         return default
 
 
@@ -717,9 +720,11 @@ def resolve_src(raw: str, project_dir: str, base_rel: str = "") -> Tuple[Optiona
         return None, False
     if re.match(r"^(https?:|data:|blob:)", text, re.I) or text.startswith("//"):
         return None, True
-    if text.lower().startswith("file://"):
-        path = urllib.parse.unquote(urllib.parse.urlparse(text).path)
-        return (path if os.path.isfile(path) else None), False
+    if text.lower().startswith("file:"):
+        # Premiere's pathurl rules: /C:/x -> C:/x, UNC hosts, POSIX /Users/... kept as-is
+        from classes.importers.final_cut_pro import path_from_pathurl
+        path = path_from_pathurl(text)
+        return (path if path and os.path.isfile(path) else None), False
     text = urllib.parse.unquote(text.split("#", 1)[0].split("?", 1)[0])
     candidates = []
     if text.startswith("/"):
@@ -853,6 +858,8 @@ class _Loader:
             key = "%s#%d" % (comp_id, n)
             n += 1
         self.compositions[key] = comp
+        if len(self.compositions) > MAX_COMPOSITIONS:
+            raise HyperFramesError("the project mounts more than %d compositions; Zenvi cannot read it" % MAX_COMPOSITIONS)
         nested_hosts: List[Element] = []
         self._collect_clips(comp, _content_scope(doc, el), nested_hosts)
         # the root and a composition file own every script of their document; an inline
@@ -1163,7 +1170,8 @@ def load_project(project_dir: str, *, probe: Optional[ProbeFn] = None, cli_timel
     Raises HyperFramesError for a folder that is not a HyperFrames project,
     timing cycles and unknown references.
     """
-    root_dir = os.path.abspath(os.path.expanduser(str(project_dir or "")))
+    from classes.handoff.timeline_view import stable_abs
+    root_dir = stable_abs(str(project_dir or ""))
     if not os.path.isdir(root_dir):
         raise HyperFramesError(f"{project_dir!r} is not a folder")
     if not os.path.isfile(os.path.join(root_dir, INDEX)):
