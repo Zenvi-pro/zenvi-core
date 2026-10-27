@@ -354,7 +354,7 @@ class LinkedClipsStatus(QFrame):
             self._refresh_view()
             return
         self._checking = True
-        project = linked_media._project_token()
+        project = linked_media.project_token()
 
         def work(job):
             return linked_media.check_links(files)  # one tree hash per project; a bad file is just "error"
@@ -365,7 +365,7 @@ class LinkedClipsStatus(QFrame):
             if job.error is not None:
                 log.warning("Linked clip freshness check failed: %s", job.error)
                 return
-            if linked_media._project_token() != project:  # another project was opened meanwhile
+            if linked_media.project_token() != project:  # another project was opened meanwhile
                 self.check_soon(force=True)
                 return
             checks = list(job.result or [])

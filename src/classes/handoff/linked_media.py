@@ -928,7 +928,7 @@ def _identity(link: Optional[dict]) -> dict:
             "props": link_props(link)}
 
 
-def _project_token() -> Optional[int]:
+def project_token() -> Optional[int]:
     """Which open project this is: its data is replaced only when a project is opened or created."""
     try:
         return id(_app().project._data)
@@ -938,7 +938,7 @@ def _project_token() -> Optional[int]:
 
 def _check_project(file_id: str, expect: Optional[dict]) -> None:
     """Refuse a swap whose render was made while another project was open (before its file lookup)."""
-    if expect is not None and "project" in expect and expect["project"] != _project_token():
+    if expect is not None and "project" in expect and expect["project"] != project_token():
         raise LinkError(f"another project was opened while {file_id!r} was rendering; the new render was dropped")
 
 
@@ -1362,7 +1362,7 @@ def prepare_rerender(file_id: str, *, props: Optional[dict] = None, replace_prop
     from classes.handoff import jobs
     f = _read_on_gui(_linked_file, file_id)
     link = read_link(f.data) or {}
-    expect = dict(_identity(link), project=_project_token())
+    expect = dict(_identity(link), project=project_token())
     if props is not None:
         if not isinstance(props, dict):
             raise LinkError("props must be an object")
