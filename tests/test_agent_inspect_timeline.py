@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import types
 
+import pytest
+
 from classes.agent_tools.output import ImageBlock, ToolOutput
 from classes.agent_tools.receipt import ToolReceipt, parse_receipt
 from classes.agent_tools.schema import TOOL_SCHEMAS, validate_args
@@ -155,3 +157,29 @@ def test_unknown_clip_refused(monkeypatch):
     )
     out = insp.inspect_timeline(clipId="missing", start=0, end=1)
     assert out.status == "refused"
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"startFrame": 0, "endFrame": 900},                    # past the 300-frame end
+    {"startFrame": -10, "endFrame": 20},
+    {"startFrame": 0, "endFrame": 900, "overview": True},
+    {"startFrame": 400, "overview": True},
+])
+def test_inspect_ranges_outside_the_project_are_refused(monkeypatch, kwargs):
+    """Review #216: only the single-frame form checked the project's range."""
+    from classes.agent_tools import inspect as insp
+
+    project = {"width": 1280, "height": 720, "fps": {"num": 30, "den": 1}, "duration": 10.0,
+               "clips": [{"id": "a", "layer": 0, "position": 0.0, "start": 0.0, "end": 10.0}],
+               "layers": [{"number": 0, "y": 1}]}
+    app = types.SimpleNamespace(project=types.SimpleNamespace(_data=project))
+    monkeypatch.setattr("classes.app.get_app", lambda: app)
+    monkeypatch.setattr("classes.agent_tools.inspect_render.snapshot_project",
+                        lambda _app: dict(project))
+    rendered = []
+    monkeypatch.setattr("classes.agent_tools.inspect_render.render_timeline_frames",
+                        lambda project_data, frames_0, **_kw: rendered.append(frames_0) or [])
+    out = insp.inspect_timeline(**kwargs)
+    assert isinstance(out, ToolReceipt) and out.status == "refused", out
+    assert "out of range" in out.summary
+    assert rendered == []

@@ -15,6 +15,9 @@ def main() -> int:
     import openshot
 
     print("libopenshot", openshot.OPENSHOT_VERSION_FULL)
+    from check_libopenshot_version import check
+    if check(openshot.OPENSHOT_VERSION_FULL):
+        return 1
     effects = sorted(e.get("class_name", "") for e in json.loads(openshot.EffectInfo.Json()))
     print("%d effects: %s" % (len(effects), ", ".join(effects)))
     if os.environ.get("ZENVI_OPENCV", "ON").upper() == "OFF":

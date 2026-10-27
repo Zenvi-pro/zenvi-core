@@ -148,7 +148,7 @@ def test_local_path_from_url_string_and_none(tmp_path):
     clip.write_bytes(b"n")
     assert local_path_from_url(None) == ""
     assert local_path_from_url(str(clip)) == str(clip)
-    file_url = "file://" + str(clip)
+    file_url = clip.as_uri()  # file:///C:/... on Windows, file:///tmp/... elsewhere
     assert os.path.normpath(local_path_from_url(file_url)) == os.path.normpath(str(clip))
     files, notes = collect_import_paths(file_url)
     assert not notes

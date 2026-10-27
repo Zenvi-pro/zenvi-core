@@ -17,7 +17,7 @@ until mkdir "$LOCK" 2>/dev/null; do
 done
 trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
 # Which build script? The default (0.5.0) prefix uses the main checkout's script. A 1.0 prefix needs the
-# parametrized script from the libopenshot-1.0 feature branch (worktree, or develop once merged).
+# parametrized script from the libopenshot-1.0 feature branch (worktree, or main once merged).
 SCRIPT="$PORT_MAIN_REPO/scripts/build-mac-libopenshot.sh"
 if [[ -n "$TAG" && "$TAG" != "v0.5.0" ]]; then
   if [[ -f "$PORT_ROOT/libopenshot-1.0/scripts/build-mac-libopenshot.sh" ]] && grep -q 'LIBOPENSHOT_AUDIO_TAG' "$PORT_ROOT/libopenshot-1.0/scripts/build-mac-libopenshot.sh"; then

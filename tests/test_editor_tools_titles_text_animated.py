@@ -27,16 +27,29 @@ print("Blender quit")
 '''
 
 
+def _script_command(path, source):
+    """Write a Python *source* script that runs as a command; returns the command.
+
+    Windows does not honour the #! line, so there a .cmd beside it runs it.
+    """
+    path.write_text(source)
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    if os.name != "nt":
+        return str(path)
+    wrapper = path.with_suffix(".cmd")
+    wrapper.write_text('@"%s" "%s" %%*\n' % (sys.executable, path))
+    return str(wrapper)
+
+
 def _xml(name):
     return os.path.join(blender_titles.blender_dir(), name + ".xml")
 
 
 @pytest.fixture
 def blender(tt, tmp_path, monkeypatch):
-    path = tmp_path / "blender-fake"
-    path.write_text(FAKE_BLENDER.replace("{python}", sys.executable))
-    path.chmod(path.stat().st_mode | stat.S_IEXEC)
-    tt.settings["blender_command"] = str(path)
+    command = _script_command(tmp_path / "blender-fake", FAKE_BLENDER.replace("{python}", sys.executable))
+    tt.settings["blender_command"] = command
+    tt.blender_command = command
     tt.settings["blender_gpu_enabled"] = False
     monkeypatch.setenv("FAKE_BLENDER_FRAMES", "4")
     return tt
@@ -115,7 +128,7 @@ def test_missing_or_old_blender_is_refused_before_anything_happens(tt, monkeypat
     out = blender.call("add_animated_title_tool", template="fly_by_1", text="x")
     assert out.startswith("Error") and "Blender is not available" in out and "add_title_tool" in out
     monkeypatch.setenv("FAKE_BLENDER_VERSION", "4.2.0")
-    blender.settings["blender_command"] = str(blender.tmp_path / "blender-fake")
+    blender.settings["blender_command"] = blender.blender_command
     out = blender.call("add_animated_title_tool", template="fly_by_1", text="x")
     assert out.startswith("Error") and "too old" in out
     assert blender.undo_steps_since_mark() == 0
@@ -151,10 +164,9 @@ def test_parameter_refusals(blender, args, needle):
 def test_a_silent_blender_is_stopped_at_the_timeout(tmp_path):
     """Blender that stalls without printing a line must not outlive timeout_seconds."""
     import time
-    stalled = tmp_path / "blender-stalled"
-    stalled.write_text("#!%s\nimport time\ntime.sleep(60)\n" % sys.executable)
-    stalled.chmod(stalled.stat().st_mode | stat.S_IEXEC)
+    stalled = _script_command(tmp_path / "blender-stalled",
+                              "#!%s\nimport time\ntime.sleep(60)\n" % sys.executable)
     began = time.monotonic()
     with pytest.raises(TimeoutError):
-        blender_titles.render(str(stalled), str(tmp_path / "t.blend"), str(tmp_path / "t.py"), timeout=1)
+        blender_titles.render(stalled, str(tmp_path / "t.blend"), str(tmp_path / "t.py"), timeout=1)
     assert time.monotonic() - began < 20

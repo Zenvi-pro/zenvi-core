@@ -112,6 +112,20 @@ _DEFAULT_WINDOW_STATE = (
 )
 
 
+def _report_media_left_out(parent, summary):
+    """Say which sources an EDL / XML import skipped (not found, or unreadable)."""
+    left_out = sorted({str(p) for p in ((summary or {}).get("missing") or []) if p})
+    if not left_out:
+        return
+    _ = get_app()._tr
+    listed = "\n".join(left_out[:10])
+    if len(left_out) > 10:
+        listed += "\n..."
+    QMessageBox.warning(
+        parent, _("Import"),
+        _("These media files could not be opened and their clips were left out:") + "\n\n" + listed)
+
+
 class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     """ This class contains the logic for the main window widget """
 
@@ -242,10 +256,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             # that never happened, and sends it through libopenshot_crash_recovery().
             self.destroy_lock_file()
 
-        # If this shutdown was triggered by "Restart to Apply Update", spawn a
-        # new instance now (after the lock file is gone, so the fresh process
-        # doesn't mistake the clean exit for a crash) — it will apply the
-        # staged update at startup, before this old process has fully exited.
+        # If this shutdown was triggered by "Restart to Update", start the
+        # installer helper now (after the lock file is gone, so the reopened
+        # Zenvi doesn't mistake this clean exit for a crash). It waits for
+        # this process to exit before installing, then opens Zenvi again.
         if getattr(self, "_restart_for_update", False):
             self._relaunch_for_update()
 
@@ -258,6 +272,15 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         """
         # Log the exit routine
         log.info('---------------- Shutting down -----------------')
+
+        # A launch arriving now must start its own window rather than hand its
+        # files to this one on its way out (it would answer, then vanish).
+        try:
+            server = getattr(app, "instance_server", None)
+            if server is not None:
+                server.close()
+        except Exception:
+            log.debug("Failed to close the single-instance server", exc_info=True)
 
         # Stop answering external agents first: the MCP discovery file goes
         # away before the editor they would drive starts tearing down.
@@ -642,9 +665,26 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 sleep(0.25)
 
     def _relaunch_for_update(self):
-        """Spawn a new instance of the app so the update staged by AutoUpdater
-        gets applied (launch.py applies pending updates at startup, before
-        this old process needs to have fully exited)."""
+        """Hand the update staged by AutoUpdater to the installer helper.
+
+        The helper waits for this process to exit, installs (with a rollback)
+        and opens Zenvi again -- the new version, or this one if installing
+        failed. Starting a second Zenvi here instead, as this used to, ran it
+        alongside this one's teardown while it swapped the app on disk.
+        """
+        if getattr(sys, "frozen", False):
+            try:
+                from classes import update_installer
+                if update_installer.apply_pending_update(wait_pid=os.getpid(), user_requested=True):
+                    log.info("Update helper started; it installs the update once Zenvi has quit")
+                    return
+                log.warning("No update could be handed to the installer; restarting as is")
+            except Exception:
+                log.error("Failed to start the update helper; restarting as is", exc_info=True)
+        self._relaunch_app()
+
+    def _relaunch_app(self):
+        """Start a new Zenvi (nothing to install): this one is quitting."""
         import subprocess
 
         try:
@@ -662,14 +702,18 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
                 if bundle and sys.platform == "darwin":
                     subprocess.Popen(["open", "-n", bundle])
+                elif os.environ.get("APPIMAGE"):
+                    # sys.executable lives in this AppImage's mount, which
+                    # disappears when this process exits.
+                    subprocess.Popen([os.environ["APPIMAGE"]], start_new_session=True)
                 else:
                     subprocess.Popen([sys.executable])
             else:
                 # Running from source (e.g. via run.sh)
                 subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:])
-            log.info("Spawned new Zenvi instance to apply staged update")
+            log.info("Spawned a new Zenvi instance")
         except Exception:
-            log.error("Failed to relaunch Zenvi for update", exc_info=True)
+            log.error("Failed to relaunch Zenvi", exc_info=True)
 
     def actionNew_trigger(self):
 
@@ -834,7 +878,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # If filesView doesn't have focus, duplicate timeline selections
         # at the current cursor position
         else:
-            self.copyAll()
+            # Not copyAll(): a highlighted chat transcript would take that Copy and
+            # pasteAll() would paste stale clipboard content.
+            self.timeline.Copy_Triggered(MenuCopy.ALL, self.selected_clips, self.selected_transitions, [])
             self.pasteAll()
 
     def actionClearWaveformData_trigger(self):
@@ -883,6 +929,12 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             previous_filepath = getattr(app.project, "current_filepath", None) or ""
 
             try:
+                from classes import project_lock
+                free, holder = project_lock.may_save(file_path)
+                if not free:
+                    raise RuntimeError(project_lock.in_use_message(file_path, holder)
+                                       + " Or save under another name.")
+
                 # Update history in project data
                 s = app.get_settings()
                 app.updates.save_history(app.project, s.get("history-limit"))
@@ -1052,6 +1104,26 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 # User canceled prompt
                 return False
 
+        # One session owns a project: two that both save overwrite each other.
+        from classes import project_lock
+        if file_exists(file_path):
+            free, holder = project_lock.claim(file_path)
+            if not free:
+                message = project_lock.in_use_message(file_path, holder)
+                if not interactive:
+                    raise RuntimeError(message)
+                if headless.is_active():
+                    # Nobody can choose, and overwriting the user's work is the
+                    # worst guess: leave it to the session that has it open.
+                    headless.report("did not open %s: %s" % (file_path, message))
+                    return False
+                ret = QMessageBox.warning(
+                    self, _("Project In Use"), message,
+                    QMessageBox.Open | QMessageBox.Cancel, QMessageBox.Cancel)
+                if ret != QMessageBox.Open:
+                    return False
+                project_lock.override(file_path)
+
         # Set cursor to waiting
         app.setOverrideCursor(QCursor(Qt.WaitCursor))
 
@@ -1112,13 +1184,22 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
             # Ensure that playhead, preview thread, and cache all agree that
             # Frame 1 is being previewed
-            self.preview_thread.player.Seek(1)
+            # Queued to the preview thread: Seek clears the player cache under
+            # the timeline lock, which froze the GUI while frames decoded.
+            self.SeekSignal.emit(1)
             self.movePlayhead(1)
             if loaded_project:
                 self._pending_project_open_refresh = True
 
         except Exception as ex:
             log.error("Couldn't open project %s.", file_path, exc_info=1)
+            still_open = app.project.current_filepath
+            if still_open != file_path:
+                # The lock went to the project that failed to load; the one
+                # still open must not be left for another session to take.
+                # (A load that fails has already blanked the project: no path.)
+                if not still_open or not project_lock.claim(still_open)[0]:
+                    project_lock.release()  # at least not the failed project's
             if not interactive:
                 app.restoreOverrideCursor()
                 raise
@@ -1349,15 +1430,30 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 _("Save the project first, then collect media into it."),
             )
             return
+        import copy
         from classes import info as _info
-        from classes.media_collect import collect_media_into_project
+        from classes.media_collect import copy_media_into_project, repoint_media
+        from classes.qt_main_thread import run_off_gui
 
-        files = project._data.get("files") or []
-        clips = project._data.get("clips") or []
-        copied, skipped, errors = collect_media_into_project(
-            files, clips, project.current_filepath, app_root=_info.PATH
-        )
-        project.has_unsaved_changes = True
+        # Copying can take minutes: on a worker, against a snapshot. The editor
+        # keeps painting but takes no input meanwhile, so the project cannot be
+        # edited, closed or swapped under the operation.
+        files = copy.deepcopy(project._data.get("files") or [])
+        app.setOverrideCursor(QCursor(Qt.WaitCursor))
+        try:
+            copied, skipped, errors, moves = run_off_gui(
+                copy_media_into_project, files, project.current_filepath, app_root=_info.PATH)
+        except Exception as ex:
+            # Re-raised here from the worker: report it, do not crash the editor.
+            log.error("Collect Media failed", exc_info=1)
+            QMessageBox.warning(self, _("Collect Media"), str(ex))
+            return
+        finally:
+            app.restoreOverrideCursor()
+        repoint_media(project._data.get("files") or [], project._data.get("clips") or [],
+                      moves, keep_original=True)
+        if moves:
+            project.has_unsaved_changes = True
         QMessageBox.information(
             self,
             _("Collect Media"),
@@ -1377,15 +1473,41 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 _("Save the project first."),
             )
             return
-        from classes.media_collect import reclaim_unused_asset_media
+        import copy
+        from classes.media_collect import commit_reclaim, find_reclaimable_media, repoint_media
+        from classes.qt_main_thread import call_on_gui, run_off_gui
 
-        files = project._data.get("files") or []
-        clips = project._data.get("clips") or []
-        removed, kept, errors = reclaim_unused_asset_media(
-            files, clips, project.current_filepath
-        )
-        if removed:
-            project.has_unsaved_changes = True
+        # Full-file hashing, the save and the deletes run on a worker; only the
+        # in-memory path rewrite runs on the GUI thread. No input is taken
+        # meanwhile (see Collect), so what was hashed is what gets deleted.
+        files = copy.deepcopy(project._data.get("files") or [])
+        project_path = project.current_filepath
+
+        def _repoint(moves):
+            call_on_gui(lambda: repoint_media(
+                project._data.get("files") or [], project._data.get("clips") or [], moves))
+
+        def _work():
+            moves, kept, errors = find_reclaimable_media(files, project_path)
+            # Saved before any copy is deleted, so the file on disk never
+            # references removed media (closing with "Don't Save" stays safe).
+            removed, commit_errors = commit_reclaim(
+                moves, _repoint,
+                lambda: self.save_project(project_path, raise_errors=True),
+            )
+            if commit_errors and not removed:
+                kept.extend(dest for _fid, dest, _orig in moves)
+            return removed, kept, errors + commit_errors
+
+        app.setOverrideCursor(QCursor(Qt.WaitCursor))
+        try:
+            removed, kept, errors = run_off_gui(_work)
+        except Exception as ex:
+            log.error("Reclaim Space failed", exc_info=1)
+            QMessageBox.warning(self, _("Reclaim Space"), str(ex))
+            return
+        finally:
+            app.restoreOverrideCursor()
         QMessageBox.information(
             self,
             _("Reclaim Space"),
@@ -1509,11 +1631,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def actionImportEDL_trigger(self, checked=True):
         """Import EDL File"""
-        import_edl()
+        _report_media_left_out(self, import_edl())
 
     def actionImportFCPXML_trigger(self, checked=True):
         """Import XML (Final Cut Pro) File"""
-        import_xml()
+        _report_media_left_out(self, import_xml())
 
     def actionUndo_trigger(self, checked=True):
         log.info('actionUndo_trigger')
@@ -4328,11 +4450,6 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.filesFilter.setObjectName("filesFilter")
         self.filesFilter.setPlaceholderText(_("Search files, footage & music…"))
         self.filesFilter.setClearButtonEnabled(True)
-        self.filesFilter.setStyleSheet(
-            "QLineEdit#filesFilter { background: #1a1a1a; color: #d4d4d4;"
-            " border: 1px solid rgba(255,255,255,0.09); border-radius: 15px;"
-            " padding: 7px 14px; font-size: 12px; }"
-            "QLineEdit#filesFilter:focus { border: 1px solid #4d9cf6; }")
         self.filesToolbar.addWidget(self.filesFilter)
         self.tabFiles.layout().insertWidget(0, self.filesToolbar)
         # Debounce stock searches so we don't hit the network on every keystroke.
@@ -4401,6 +4518,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Add Video Preview toolbar
         self.captionToolbar = QToolBar(_("Caption Toolbar"))
+        self.captionToolbar.setObjectName("captionToolbar")
 
         # Add Caption text editor widget
         self.captionTextEdit = QTextEdit()
@@ -4440,6 +4558,27 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Add timeline toolbar to web frame
         self.frameWeb.addWidget(self.timelineToolbar)
 
+    def zenvi_session_ended(self):
+        """The auth server rejected the stored sign-in (it was revoked or expired).
+
+        Explains and waits for a click before opening the browser, and keeps
+        the editor open if the user would rather sign in later.
+        """
+        if getattr(self, "_session_ended_prompt_open", False) or self.shutting_down:
+            return
+        self._session_ended_prompt_open = True
+        try:
+            from windows.login_window import LoginWindow
+            login_dlg = LoginWindow(
+                parent=None,
+                auto_open_browser=False,
+                message="Your Zenvi sign-in has ended",
+            )
+            if login_dlg.exec_() == LoginWindow.Accepted and getattr(self, "dockAIChat", None):
+                self.dockAIChat.refresh_credits_for_account()
+        finally:
+            self._session_ended_prompt_open = False
+
     def logout_clicked(self, checked=False):
         """Sign the current user out of their Zenvi account."""
         reply = QMessageBox.question(
@@ -4455,10 +4594,12 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         from classes.auth_manager import AuthManager
         AuthManager.instance().clear_session()
 
-        # Hide main window and re-show login dialog
+        # Hide main window and re-show login dialog. The browser opens only
+        # when asked: it may still be signed in to the account just left.
         self.hide()
         from windows.login_window import LoginWindow
-        login_dlg = LoginWindow(parent=None)
+        login_dlg = LoginWindow(parent=None, auto_open_browser=False,
+                                message="You're signed out of Zenvi")
         result = login_dlg.exec_()
         if result == LoginWindow.Accepted:
             self.show()
@@ -4559,7 +4700,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # The manifest carries the size, so a session that finds an update
         # staged by a previous run can still report how large it is
         manifest = get_update_manifest() or {}
-        self.update_status_button.set_ready(version, manifest.get("size", 0))
+        from classes import update_installer
+        self.update_status_button.set_ready(
+            version, manifest.get("size", 0), note=update_installer.last_failure(version))
         self._ensure_update_button()
         self._sync_update_panel()
 
@@ -5178,8 +5321,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         chat = getattr(self, "dockAIChat", None)
         view = getattr(chat, "_chat_view", None) if chat is not None else None
         under_mouse = bool(view is not None and view.underMouse())
+        timeline_has_selection = bool(getattr(self, "selected_clips", None) or getattr(self, "selected_transitions", None))
         return dispatch_chat_edit_action(
-            chat, name, QApplication.focusWidget(), under_mouse
+            chat, name, QApplication.focusWidget(), under_mouse, timeline_has_selection
         )
 
     def selectAll(self):
@@ -5208,7 +5352,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         """Copy and remove the currently selected clip/transition"""
         if self._dispatch_chat_edit_action("cut"):
             return
-        self.copyAll()
+        # Not copyAll(): it would hand a highlighted chat transcript the Copy and
+        # leave the clips deleted without ever reaching the clipboard.
+        self.timeline.Copy_Triggered(MenuCopy.ALL, self.selected_clips, self.selected_transitions, [])
         self.deleteItem()
 
     def pasteAll(self):
@@ -6148,7 +6294,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self._pending_preview_size = None
         self._scope_timer = QTimer(self)
         self._scope_timer.setSingleShot(True)
-        self._scope_timer.setInterval(0)   # latest-wins worker path handles stale frame dropping
+        self._scope_timer.setInterval(66)  # ~15 Hz; scopes analysed every played frame cost a second frame fetch
         self._scope_timer.timeout.connect(self._run_scope_analysis)
         self.preview_thread.position_changed.connect(self._on_scope_frame)
         self.SeekSignal.connect(self._on_scope_seek)

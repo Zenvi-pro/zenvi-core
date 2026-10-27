@@ -88,6 +88,13 @@ def inspect_media(path, max_width=0, max_height=0):
         return _inspect(openshot.FFmpegReader(path))
 
 
+def needs_optimized_preview(file):
+    """Video bigger than 1080p: playing it decodes full-size frames, too slow on most laptops."""
+    data = file.data or {}
+    pixels = int(data.get("width") or 0) * int(data.get("height") or 0)
+    return data.get("media_type") == "video" and pixels > 1920 * 1088
+
+
 class BackendIndexingWorker(QThread):
     """Background worker: Gemini index + Flash audiovisual summary."""
     completed = pyqtSignal(dict, object, object)  # file_data, metadata, error
@@ -1183,6 +1190,12 @@ class FilesModel(QObject, updates.UpdateInterface):
                 except Exception as _e:
                     log.warning("Failed to start background indexing: %s", _e)
             QTimer.singleShot(0, _start)
+
+        # Play heavy footage from a small optimized copy (exports still use the original)
+        heavy = [f for f in scroll_to_files if needs_optimized_preview(f)]
+        proxy_service = self._proxy_service()
+        if heavy and proxy_service and settings.get("optimize-preview-auto"):
+            QTimer.singleShot(0, lambda: proxy_service.create_for_files(heavy))
 
         return scroll_to_files
 

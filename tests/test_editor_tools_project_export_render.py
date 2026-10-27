@@ -147,7 +147,7 @@ def test_ranges_and_paths(studio):
     from classes.editor_tools.project_export_render import build_export_plan
     plan = build_export_plan(start=2.0, end=7.0, output_path="~/zenvi-test/reel")
     assert (plan["range"], plan["start_frame"], plan["end_frame"]) == ("custom", 61, 210)
-    assert plan["path"] == os.path.expanduser("~/zenvi-test/reel.mp4")
+    assert plan["path"] == os.path.normpath(os.path.expanduser("~/zenvi-test/reel.mp4"))
     assert build_export_plan(output_path=str(studio.out_dir / "a.mov"))["vformat"] == "mov"
     # A .gif path with an MP4 preset would hand the GIF muxer H.264/AAC.
     with pytest.raises(ToolError, match="preset='GIF'"):
@@ -301,21 +301,70 @@ def test_export_settings_are_validated_and_outside_undo(studio):
 
 # --- frames and files -----------------------------------------------------
 
-def test_save_frame_image(studio):
-    def save_frame_to_path(path, frame, fmt):
-        with open(path, "wb") as fh:
-            fh.write(b"\x89PNG" if fmt == "PNG" else b"\xff\xd8")
-        return True
-    studio.window.save_frame_to_path = MagicMock(side_effect=save_frame_to_path)
+def test_save_frame_image(studio, monkeypatch):
+    """Review #216: the full-resolution render ran on the GUI thread (via the
+    preview timeline); it now renders a private timeline on a QThread."""
+    from classes.editor_tools import effects_color_analysis as eca
+    from classes.editor_tools import project_export_render as render
+
+    renders, fmts, closed = [], [], []
+
+    class _Frame:
+        def __init__(self, works=True):
+            self.works = works
+
+        def Save(self, path, scale, fmt):
+            fmts.append(fmt)
+            if self.works:
+                with open(path, "wb") as fh:
+                    fh.write(b"img")
+
+    def fake_render(clip_data, time_s, strip=None):
+        renders.append(clip_data)
+        return types.SimpleNamespace(frame=_Frame(), close=lambda: closed.append(1))
+
+    monkeypatch.setattr(eca, "render_frame", fake_render)
+    monkeypatch.setattr(render, "on_main", MagicMock(side_effect=AssertionError("GUI thread")))
+    on_qthread = []
+    monkeypatch.setattr(render, "run_on_qthread", lambda func, *a, **k: (on_qthread.append(1), func())[1])
+
     data = _receipt(studio.call("save_frame_image_tool", time=2.0, file_path=str(studio.out_dir / "still")))
     assert data["path"].endswith("still.png") and data["frame"] == 61 and data["width"] == 1920
+    assert renders == [None] and on_qthread and closed  # the composite, on a QThread
     assert "already exists" in studio.call("save_frame_image_tool", time=2.0, file_path=data["path"])
-    data = _receipt(studio.call("save_frame_image_tool", time=3, file_path=str(studio.out_dir / "s.jpg")))
-    assert studio.window.save_frame_to_path.call_args[0][2] == "JPG"
+    _receipt(studio.call("save_frame_image_tool", time=3, file_path=str(studio.out_dir / "s.jpg")))
+    assert fmts[-1] == "JPG"
     assert "after the end" in studio.call("save_frame_image_tool", time=99)
-    studio.window.save_frame_to_path = MagicMock(return_value=False)
+    monkeypatch.setattr(eca, "render_frame", lambda *a, **k: types.SimpleNamespace(
+        frame=_Frame(works=False), close=lambda: None))
     assert studio.call("save_frame_image_tool", time=1, file_path=str(studio.out_dir / "x.png")).startswith("Error")
     assert studio.undo_steps_since_mark() == 0
+
+    # PR #275 review: a render that outlives its timeout must not publish its
+    # frame after the tool already reported the failure.
+    monkeypatch.setattr(eca, "render_frame", fake_render)
+    late = []
+
+    def timed_out(func, *a, **k):
+        late.append(func)
+        raise render.ToolError("the render did not finish within 120 s")
+
+    monkeypatch.setattr(render, "run_on_qthread", timed_out)
+    target = studio.out_dir / "late.png"
+    assert studio.call("save_frame_image_tool", time=1, file_path=str(target)).startswith("Error")
+    assert late[0]() is False
+    assert not target.exists()
+    assert [n for n in os.listdir(str(studio.out_dir)) if "late" in n] == []
+
+    # ...and one that had already published when the wait gave up is a success,
+    # not an error the caller would retry over a file that is there.
+    def published_then_timed_out(func, *a, **k):
+        func()
+        raise render.ToolError("the render did not finish within 120 s")
+
+    monkeypatch.setattr(render, "run_on_qthread", published_then_timed_out)
+    data = _receipt(studio.call("save_frame_image_tool", time=1, file_path=str(studio.out_dir / "slow.png")))
+    assert os.path.isfile(data["path"])
 
 
 def test_export_files_to_folder(studio, tmp_path, monkeypatch):
@@ -411,3 +460,36 @@ def test_a_timed_out_render_thread_is_stopped_and_kept_alive(monkeypatch):
         per.run_on_qthread(lambda: None, timeout_seconds=0.01)
     assert made[0].interrupted
     assert per._ABANDONED_JOBS == [made[0]]
+
+
+def test_a_failed_subclip_render_leaves_no_file_to_skip_later(studio, tmp_path, monkeypatch):
+    """Review #216: the file was removed before the writer closed, and Close
+    wrote it back, so the next export skipped a broken file as existing."""
+    from classes.editor_tools import project_export_render as render
+
+    src = tmp_path / "long.mp4"
+    src.write_bytes(b"data")
+    fid = studio.add_file("video", path=str(src), start=1.0, end=2.0)
+    fake = types.ModuleType("windows.export_clips")
+    fake.isClip = lambda f: True
+    fake.isImageSequence = lambda f: False
+    fake.nameOfExport = lambda f: "long [1.00 - 2.00].mp4"
+    fake.startAndEndFrames = lambda c: (31, 60)
+    fake.setupWriter = lambda c, w: None
+    monkeypatch.setitem(sys.modules, "windows.export_clips", fake)
+    import windows
+    monkeypatch.setattr(windows, "export_clips", fake, raising=False)
+
+    def broken_write(fr):
+        raise RuntimeError("encoder died")
+
+    fake_os = types.ModuleType("openshot")
+    fake_os.FFmpegWriter = lambda path: MagicMock(WriteFrame=broken_write,
+                                                   Close=lambda: open(path, "wb").write(b"partial"))
+    fake_os.Clip = lambda path: MagicMock(GetFrame=lambda n: n)
+    monkeypatch.setitem(sys.modules, "openshot", fake_os)
+    monkeypatch.setattr(render, "run_on_qthread", lambda func, *a: func())
+    out_dir = tmp_path / "out"
+    out = studio.call("export_files_to_folder_tool", file_ids=[fid], folder=str(out_dir))
+    assert "encoder died" in out
+    assert os.listdir(out_dir) == []
