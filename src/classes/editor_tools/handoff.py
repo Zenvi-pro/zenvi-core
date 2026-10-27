@@ -31,7 +31,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 from classes.editor_tools._base import (
@@ -314,9 +313,10 @@ def _staged_webm(path: str, kind: str) -> str:
 
 
 def _adopt_media(path: str, kind: str) -> tuple:
-    """(media path, undo) for a new linked clip: moved from the temp folder, else copied, into
-    ``<project>_assets/links/<kind>/``. ``undo()`` puts things back if the clip cannot be added."""
-    """Media for a new linked clip, inside <project>_assets/links/<kind>/ (moved from temp, else copied)."""
+    """(media path, undo) for a new linked clip, copied into ``<project>_assets/links/<kind>/``.
+
+    The caller's file is never moved: a render saved in /tmp or $TMPDIR is still the
+    user's. ``undo()`` removes the copy if the clip cannot be added."""
     lm = _lm()
     root = lm.links_root()
     if path_is_under(path, root):
@@ -329,24 +329,21 @@ def _adopt_media(path: str, kind: str) -> tuple:
     while os.path.exists(target):
         target = "%s-%d%s" % (stem, n, ext)
         n += 1
-    moved = path_is_under(path, tempfile.gettempdir())
     try:
-        if moved:
-            shutil.move(path, target + ".partial")
-        else:
-            shutil.copy2(path, target + ".partial")
+        shutil.copy2(path, target + ".partial")
         os.replace(target + ".partial", target)
     except OSError as exc:
+        try:
+            os.unlink(target + ".partial")
+        except OSError:
+            pass
         raise ToolError(f"could not bring {os.path.basename(path)} into the project's links folder: {exc}") from None
 
     def undo():
         try:
-            if moved:
-                shutil.move(target, path)  # the caller's file is back where it was (a retry finds it)
-            else:
-                os.unlink(target)
+            os.unlink(target)
         except OSError:
-            log.warning("could not put %s back after a refused import", target, exc_info=True)
+            log.warning("could not remove %s after a refused import", target, exc_info=True)
 
     return target, undo
 
@@ -373,8 +370,8 @@ def import_linked_media(path, link, position=None, track="", name=""):
 
     Use for "bring this After Effects comp into Zenvi" after ae_render_for_zenvi
     rendered it, or any render whose source should stay editable (Remotion and
-    HyperFrames imports use their own tools). The media is moved (from the temp
-    folder) or copied into the project's links folder, added to Project Files
+    HyperFrames imports use their own tools). The media is copied into the
+    project's links folder (the original stays where it is), added to Project Files
     with the link and placed at position (default the playhead) on the lowest
     free track above the video. Later: get_linked_clip_tool (freshness),
     update_linked_clip_tool / rerender_linked_clip_tool, open_linked_source_tool,
@@ -388,7 +385,7 @@ def import_linked_media(path, link, position=None, track="", name=""):
         raise ToolError(f"no media file at {path!r}")
     try:
         stored = lm.normalize_link(link or {})
-        # refuse a bad placement before the caller's file is moved anywhere
+        # refuse a bad placement before the caller's file is copied anywhere
         lm.precheck_placement(position, str(track or ""))
     except lm.LinkError as exc:
         raise _link_error(exc) from None

@@ -16,11 +16,20 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 HELPER = os.path.join(ROOT, "installer", "apply-libopenshot-patches.sh")
 PATCH_DIR = os.path.join(ROOT, "installer", "mac-patches")
 DISCARD_PATCH = os.path.join(PATCH_DIR, "libopenshot-v1.0.0-discard-preroll.patch")
+REFRESH_PATCH = os.path.join(PATCH_DIR, "libopenshot-v1.0.0-same-frame-refresh.patch")
 
 JASHAN = ("Jashan Pratap Singh", "88160290+jashanpratapsingh@users.noreply.github.com")
 
 pytestmark = pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("git") is None, reason="needs bash and git")
+
+# The bash on PATH (Git Bash on Windows): a bare "bash" makes Windows run
+# the WSL bash in System32, which cannot see C:/ paths.
+BASH = shutil.which("bash") or "bash"
+
+
+def _sh_path(path):
+    return str(path).replace(os.sep, "/")
 
 UPSTREAM = "line one\nline two\nline three\n"
 PATCHED = "line one\nline two, fixed\nline three\n"
@@ -34,7 +43,7 @@ def _git(repo, *args):
 
 def run_helper(src, *patches):
     env = {k: v for k, v in os.environ.items() if k != "GITHUB_ACTIONS"}
-    return subprocess.run(["bash", HELPER, str(src), *map(str, patches)],
+    return subprocess.run([BASH, _sh_path(HELPER), _sh_path(src), *map(_sh_path, patches)],
                           capture_output=True, text=True, timeout=60, env=env)
 
 
@@ -43,7 +52,7 @@ def src(tmp_path):
     """A one-file checkout standing in for a fresh upstream libopenshot clone."""
     repo = tmp_path / "libopenshot"
     (repo / "src").mkdir(parents=True)
-    (repo / "src" / "FFmpegReader.cpp").write_text(UPSTREAM)
+    (repo / "src" / "FFmpegReader.cpp").write_text(UPSTREAM, newline="\n")
     _git(repo, "init", "-q")
     _git(repo, "add", ".")
     _git(repo, "commit", "-q", "-m", "upstream")
@@ -54,11 +63,11 @@ def src(tmp_path):
 def patch(src, tmp_path):
     """A patch with a prose header, like the real ones (git apply ignores text before the diff)."""
     target = src / "src" / "FFmpegReader.cpp"
-    target.write_text(PATCHED)
+    target.write_text(PATCHED, newline="\n")
     diff = _git(src, "diff").stdout
-    target.write_text(UPSTREAM)
+    target.write_text(UPSTREAM, newline="\n")
     path = tmp_path / "libopenshot-v1.0.0-fix.patch"
-    path.write_text("Why this patch exists.\n\n" + diff)
+    path.write_text("Why this patch exists.\n\n" + diff, newline="\n")
     return path
 
 
@@ -82,7 +91,7 @@ def test_rerun_skips_an_already_applied_patch(src, patch):
 
 
 def test_patch_that_no_longer_applies_fails_the_build(src, patch):
-    (src / "src" / "FFmpegReader.cpp").write_text("line one\nline 2, rewritten upstream\nline three\n")
+    (src / "src" / "FFmpegReader.cpp").write_text("line one\nline 2, rewritten upstream\nline three\n", newline="\n")
     proc = run_helper(src, patch)
     assert proc.returncode != 0
     assert "libopenshot-v1.0.0-fix.patch does not apply" in proc.stderr
@@ -90,8 +99,8 @@ def test_patch_that_no_longer_applies_fails_the_build(src, patch):
 
 
 def test_failure_is_a_github_actions_error_annotation(src, patch):
-    (src / "src" / "FFmpegReader.cpp").write_text("rewritten upstream\n")
-    proc = subprocess.run(["bash", HELPER, str(src), str(patch)], capture_output=True, text=True,
+    (src / "src" / "FFmpegReader.cpp").write_text("rewritten upstream\n", newline="\n")
+    proc = subprocess.run([BASH, _sh_path(HELPER), _sh_path(src), _sh_path(patch)], capture_output=True, text=True,
                           timeout=60, env=dict(os.environ, GITHUB_ACTIONS="true"))
     assert proc.returncode != 0
     assert "::error::libopenshot-v1.0.0-fix.patch does not apply" in proc.stdout
@@ -153,3 +162,30 @@ def test_run_win_applies_the_discard_preroll_patch():
     # run-win.ps1 builds libopenshot's default branch, not a tag, so it names the patch directly.
     with open(os.path.join(ROOT, "run-win.ps1"), encoding="utf-8") as fh:
         assert "installer/mac-patches/libopenshot-v1.0.0-discard-preroll.patch" in fh.read()
+
+def test_same_frame_refresh_patch_keeps_the_cache_on_a_paused_edit():
+    # #320/#332: a paused edit's same-frame seek cleared every cached frame under the timeline lock
+    proc = subprocess.run(["git", "apply", "--numstat", REFRESH_PATCH], capture_output=True, text=True,
+                          timeout=30, cwd=ROOT)
+    assert proc.returncode == 0, proc.stderr
+    assert [line.split(chr(9))[2] for line in proc.stdout.splitlines()] == ["src/Qt/VideoCacheThread.cpp"]
+    with open(REFRESH_PATCH, "rb") as fh:
+        patch = fh.read()
+    assert bytes([13]) not in patch
+    lines = patch.split(b"\n")
+    removed = [l for l in lines if l.startswith(b"-") and not l.startswith(b"---")]
+    added = [l for l in lines if l.startswith(b"+") and not l.startswith(b"+++")]
+    assert sum(b"ClearAllCache" in l for l in removed) == 2  # both full clears go
+    assert not any(b"ClearAllCache" in l for l in added)
+
+
+def test_run_win_applies_the_same_frame_refresh_patch():
+    with open(os.path.join(ROOT, "run-win.ps1"), encoding="utf-8") as fh:
+        assert "installer/mac-patches/libopenshot-v1.0.0-same-frame-refresh.patch" in fh.read()
+
+
+def test_run_win_rebuilds_an_existing_build_missing_any_patch():
+    # An install built with only the preroll patch must rebuild to pick up the refresh patch
+    with open(os.path.join(ROOT, "run-win.ps1"), encoding="utf-8") as fh:
+        text = fh.read()
+    assert 'for patch in "$PREROLL_PATCH" "$REFRESH_PATCH"; do' in text

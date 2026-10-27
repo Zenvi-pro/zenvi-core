@@ -287,6 +287,7 @@ try:
     print("Imported classes.info", flush=True)
     from classes.logger import log
     print("Imported classes.logger", flush=True)
+    from classes.openshot_import_diag import write_bundle_manifest
 except BaseException:
     import traceback
     traceback.print_exc()
@@ -1066,6 +1067,12 @@ if sys.platform == "win32":
             else:
                 log.warning("WARNING: %s not found — Gemini indexing will fail in the frozen build" % _name)
 
+    # Last Windows post-build step, so the list covers everything shipped. When
+    # antivirus quarantines one of these, the startup error names it.
+    for frozen_path in os.listdir(build_path):
+        if frozen_path.startswith("exe") and os.path.isdir(os.path.join(build_path, frozen_path, "lib")):
+            log.info("Wrote %s" % write_bundle_manifest(os.path.join(build_path, frozen_path)))
+
 # Post-build: bundle shared library dependencies of _openshot and libopenshot.
 # cx_Freeze's include_files silently drops many .so files, so we use ldd to
 # find ALL deps of the bundled native libraries and copy them ourselves.
@@ -1127,6 +1134,18 @@ if sys.platform == "darwin":
     # Mac issues with frozen folder and *.app folder
     # We need to rewrite many dependency paths and library IDs
     from installer.fix_qt5_rpath import *
+    from installer.pin_opencv_dylibs import pin_opencv_dylibs
+    # cx_Freeze keeps one copy per dylib name; make it the one OpenCV links
+    # (a stale libtiff otherwise fails with "Symbol not found: _TIFFOpen...").
+    for frozen_path in os.listdir(build_path):
+        _frozen_dir = None
+        if frozen_path.startswith("exe"):
+            _frozen_dir = os.path.join(build_path, frozen_path)
+        elif frozen_path.endswith(".app"):
+            _frozen_dir = os.path.join(build_path, frozen_path, "Contents", "MacOS")
+        if _frozen_dir:
+            for changed in pin_opencv_dylibs(_frozen_dir):
+                log.info("Pinned OpenCV dependency: %s", changed)
     for frozen_path in os.listdir(build_path):
             if frozen_path.startswith("exe"):
                 fix_rpath(os.path.join(build_path, frozen_path))

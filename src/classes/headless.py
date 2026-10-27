@@ -60,6 +60,8 @@ _REPLY_GRACE_MS = 300
 # Python runs signal handlers between bytecodes on the main thread only; while
 # Qt's event loop idles in C++ no bytecode runs, so a timer gives it a turn.
 _SIGNAL_POLL_MS = 250
+# DEAD CODE (PR #216 review): unused since shutdown_from_tool saves on the MCP worker
+# thread instead of through call_on_gui. Delete it.
 _SAVE_TIMEOUT_S = 120
 
 _active = False
@@ -406,7 +408,10 @@ class HeadlessRuntime(QObject):
             if target is None:
                 return {"ok": False, "error": "the project has never been saved: pass file_path "
                                               "to save it. The session is still running."}
-            if not call_on_gui(self._save_project, target, timeout=_SAVE_TIMEOUT_S):
+            # On this worker thread, like the window's own Save: the save
+            # fingerprints media and writes a recovery zip, and marshals its
+            # UI follow-up to the GUI thread itself.
+            if not self._save_project(target):
                 return {"ok": False, "error": "saving the project to %s failed (see %s). The "
                                               "session is still running." % (target, _log_path())}
             saved_to, dirty = target, False

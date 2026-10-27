@@ -267,6 +267,39 @@ def test_after_effects_provider_renders_through_zenvi_link(linked, tmp_path):
         host.stop()
 
 
+def test_a_host_wait_stops_when_cancelled(monkeypatch):
+    import threading
+    from classes.handoff import jobs
+    release = threading.Event()
+    monkeypatch.setattr(jobs, "CANCEL_POLL", 0.01)
+    polls = []
+    try:
+        with pytest.raises(jobs.JobCancelled, match="render cancelled"):
+            jobs.wait_cancellable(lambda: release.wait(5), lambda: polls.append(1) or len(polls) > 2,
+                                  "render cancelled")
+    finally:
+        release.set()
+    assert jobs.wait_cancellable(lambda: "done", lambda: False) == "done"
+    with pytest.raises(ValueError):
+        jobs.wait_cancellable(lambda: int("x"), lambda: False)
+
+
+def test_import_linked_media_copies_a_render_from_the_temp_folder(linked):
+    import tempfile
+    fd, src = tempfile.mkstemp(suffix=".mov")  # a render the user saved in /tmp or $TMPDIR is still theirs
+    os.write(fd, b"movie")
+    os.close(fd)
+    linked.probe.durations[src] = 3.0
+    try:
+        r = linked.call_receipt("import_linked_media_tool", path=src,
+                                link={"kind": "aftereffects", "source": {"composition": "Promo"}})
+        assert r["status"] == "applied", r["summary"]
+        assert os.path.isfile(src) and os.path.isfile(r["data"]["path"])
+        assert not os.path.exists(r["data"]["path"] + ".partial")
+    finally:
+        os.unlink(src)
+
+
 def test_import_linked_media_leaves_the_callers_file_alone_when_refused(linked):
     import tempfile
     fd, src = tempfile.mkstemp(suffix=".mov")

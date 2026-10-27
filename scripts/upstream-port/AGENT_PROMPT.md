@@ -7,12 +7,12 @@ autonomously and carefully. Everything you ship must be testable by a human who 
 ## Hard rules (a PreToolUse hook enforces most of these; do not try to work around it)
 - Work ONLY inside your worktree (`$PWD`). Never touch `~/Projects/zenvi` (the main checkout) or another
   feature's worktree under `$PORT_ROOT`. Never `cd` out of your worktree.
-- Stay on your branch `$PORT_BRANCH`. Never check out, reset, rebase or push `develop`, `releases` or `main`.
+- Stay on your branch `$PORT_BRANCH`. Never check out, reset, rebase or push `main`, `releases` or `develop`.
 - Push only `$PORT_BRANCH`. No force pushes (only `--force-with-lease` of your own branch during a retarget).
 - Every commit must be authored AND committed by `Jashan Pratap Singh <88160290+jashanpratapsingh@users.noreply.github.com>`.
   `git cherry-pick` keeps the upstream author, so after EVERY cherry-pick run
   `git commit --amend --reset-author --no-edit`. No `Co-Authored-By` trailers, ever. No mention of any
-  other identity. The push/PR hook verifies this over `origin/develop..HEAD`.
+  other identity. The push/PR hook verifies this over `origin/main..HEAD`.
 - No `pip install` into `.venv` (it is a symlink shared with the main checkout). If a new dependency is
   required, add it to `requirements*.txt`, explain in the PR, set status `needs_human`, and stop.
 - `git add` explicit paths only (never `-A`, `--all`, `.`). `.venv`, `.port-env`, `graphify-out/` must never be committed.
@@ -33,7 +33,7 @@ Update the note whenever your plan or blocker changes; the human reads it from `
 
 ## Procedure
 ### 0. Orientation (do not skip)
-1. `source .port-env` mentally: `PORT_FEATURE`, `PORT_BRANCH`, `PORT_BASE_BRANCH` (PR base: `develop` or a
+1. `source .port-env` mentally: `PORT_FEATURE`, `PORT_BRANCH`, `PORT_BASE_BRANCH` (PR base: `main` or a
    `jashan/<dep>` branch you are stacked on), `ZENVI_DEPS` (the libopenshot prefix to test against).
 2. Read `AGENTS.md`, `docs/PR_FORMAT.md`, `README.md` (dev setup), `run.sh`.
 3. For each upstream merge commit in your brief: `git show --stat <sha>`, `git log --no-merges --reverse --format='%h %s' <sha>^1..<sha>`,
@@ -103,7 +103,7 @@ Set `set-status.sh testing` while doing this. If libopenshot is missing for your
 4. Confirm `gh pr view --json author -q .author.login` prints `jashanpratapsingh`.
 5. When the test gate is green on the pushed HEAD: `gh pr ready <url>` and `set-status.sh ready --pr <url>`.
 6. Stay in the session. If the human asks for changes, iterate: fix, re-run the gate, push, update the PR body.
-   If `develop` moves and your branch conflicts, rebase onto `origin/develop` (or your stack base) and
+   If `main` moves and your branch conflicts, rebase onto `origin/main` (or your stack base) and
    `git push --force-with-lease origin $PORT_BRANCH`.
 
 ## Judgement

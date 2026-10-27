@@ -22,7 +22,7 @@ import os
 from fractions import Fraction
 from typing import Any, Dict, Optional
 
-from classes.handoff import adobe_link
+from classes.handoff import adobe_link, jobs
 from classes.handoff.linked_media import (
     LinkError, RenderResult, SourceMissing, fingerprint_value, link_props, register_provider,
 )
@@ -66,6 +66,7 @@ def _fps(value: Any) -> Fraction:
         return Fraction(30)
 
 
+
 class AfterEffectsProvider:
     kind = "aftereffects"
     label = "After Effects"
@@ -84,8 +85,9 @@ class AfterEffectsProvider:
 
     def render(self, link: dict, out_dir: str, *, on_progress, should_cancel) -> RenderResult:
         source = link.get("source") or {}
-        comp = source.get("composition_key") or source.get("composition")
-        if comp is None:
+        key = source.get("composition_key")
+        comp = key if key is not None else source.get("composition")  # a comp id 0 is still an id
+        if comp is None or comp == "":
             raise LinkError("this After Effects link names no comp; re-import it from After Effects")
         try:
             names = _render_arg_names()
@@ -102,7 +104,10 @@ class AfterEffectsProvider:
             args[names["project"]] = source["aep"]
         on_progress(None, "After Effects is rendering %s" % (source.get("composition") or comp))
         try:
-            result = adobe_link.call_host_tool(APP, RENDER_TOOL, args, timeout=RENDER_TIMEOUT)
+            # Cancel stops the wait at once; After Effects finishes (or fails) its render on its own
+            result = jobs.wait_cancellable(lambda: adobe_link.call_host_tool(APP, RENDER_TOOL, args,
+                                                                             timeout=RENDER_TIMEOUT),
+                                           should_cancel, "After Effects render cancelled")
         except adobe_link.LinkHostError as exc:
             raise LinkError(f"After Effects could not render: {exc}") from None
         if result.is_error:

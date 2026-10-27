@@ -9,8 +9,9 @@ repositories at a specific tag. They are applied at build time by
 - `run-win.ps1` (Windows setup from source; it builds libopenshot's default
   branch, so it applies `libopenshot-v1.0.0-discard-preroll.patch` by name).
 
-The Linux release job installs libopenshot from the `libopenshot-daily` PPA
-instead of building it, so **no patch here reaches the Linux packages**.
+The Linux release job builds libopenshot from source too
+(`installer/ci-linux-libopenshot.sh`), applying the tag-locked
+`libopenshot-v1.0.0-*.patch` files; the `-mac` patch is not applied there.
 
 All of them call `installer/apply-libopenshot-patches.sh`, which applies every
 `libopenshot-<tag>-*.patch` / `libopenshot-audio-<tag>-*.patch` file with one

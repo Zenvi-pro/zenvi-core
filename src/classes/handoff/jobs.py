@@ -304,6 +304,36 @@ def shutdown(wait: bool = False) -> None:
         executor.shutdown(wait=wait, cancel_futures=True)
 
 
+CANCEL_POLL = 0.25  # seconds between should_cancel() checks in wait_cancellable
+
+
+def wait_cancellable(func: Callable[[], Any], should_cancel: Optional[Callable[[], bool]],
+                     message: str = "cancelled") -> Any:
+    """``func()`` on a helper thread, polling *should_cancel* while it runs (a blocking host call).
+
+    A cancel raises JobCancelled(*message*) at once; *func* is left to finish on its
+    own (the host keeps working; its result is dropped). Errors of *func* re-raise here."""
+    if should_cancel is None:
+        return func()
+    box: Dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            box["result"] = func()
+        except BaseException as exc:  # re-raised on the caller's thread below
+            box["error"] = exc
+
+    worker = threading.Thread(target=run, name="handoff-wait", daemon=True)
+    worker.start()
+    while worker.is_alive():
+        if should_cancel():
+            raise JobCancelled(message)
+        worker.join(CANCEL_POLL)
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
+
+
 def run_on_qthread(func: Callable[[], Any], timeout_seconds: float = 6 * 60 * 60) -> Any:
     """Run *func()* on a fresh QThread and wait (Qt painting off the GUI thread).
 

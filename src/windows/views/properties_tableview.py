@@ -50,6 +50,7 @@ from classes.logger import log
 from classes.app import get_app
 from classes import info
 from classes.query import Clip, Effect, Transition, File
+from themes.cosmic.tokens import TOKENS, qcolor, resolve
 
 from windows.models.properties_model import PropertiesModel
 from windows.color_picker import ColorPicker
@@ -75,6 +76,21 @@ from .menu import StyledContextMenu, populate_keyframe_context_menu
 import openshot
 
 
+_token_color = qcolor
+
+
+def _style_state(name):
+    """A QStyle.State_* flag, also under PyQt6 where the enum is scoped."""
+    flag = getattr(QStyle, name, None)
+    return flag if flag is not None else getattr(QStyle.StateFlag, name)
+
+
+def _value_font(base):
+    font = QFont(base)
+    font.setPixelSize(12)
+    return font
+
+
 class PropertyDelegate(QItemDelegate):
     def __init__(self, parent=None, *args, **kwargs):
 
@@ -95,6 +111,7 @@ class PropertyDelegate(QItemDelegate):
         painter.save()
         try:
             painter.setRenderHint(QPainter.Antialiasing)
+            painter.setFont(_value_font(option.font))
 
             # Get data model and selection
             model = self.model
@@ -132,77 +149,54 @@ class PropertyDelegate(QItemDelegate):
             else:
                 value_percent = 0.0
 
-            # Get theme colors
-            if get_app().theme_manager:
-                theme = get_app().theme_manager.get_current_theme()
-                if not theme:
-                    log.warning("No theme loaded yet. Skip rendering properties widget.")
-                    return
-                foreground_color = theme.get_color(".property_value", "foreground-color")
-                background_color = theme.get_color(".property_value", "background-color")
-            else:
-                log.warning("No ThemeManager loaded yet. Skip rendering properties widget.")
+            rect = QRectF(option.rect)
+            selected = bool(option.state & _style_state("State_Selected"))
+            hovered = bool(option.state & _style_state("State_MouseOver"))
 
-            # set background color
+            # Opaque surface first, so the view's row highlight cannot show through the tint.
+            # Selected rows take the accent tint, hovered rows the hover fill; a color keyframe is its swatch.
             painter.setPen(QPen(Qt.NoPen))
+            painter.fillRect(rect, QColor(TOKENS["surface"]))
             if property_type == "color":
-                # Color keyframe
-                red = int(cur_property[1]["red"]["value"])
-                green = int(cur_property[1]["green"]["value"])
-                blue = int(cur_property[1]["blue"]["value"])
-                painter.setBrush(QColor(red, green, blue))
-            elif property_type in ["colorgrade_curve", "colorgrade_wheels"]:
-                painter.setBrush(background_color)
-            else:
-                # Normal Keyframe
-                state_selected = getattr(QStyle, "State_Selected", None)
-                if state_selected is None:
-                    state_flag = getattr(QStyle, "StateFlag", None)
-                    if state_flag:
-                        state_selected = getattr(state_flag, "State_Selected", None)
-                if state_selected and option.state & state_selected:
-                    painter.setBrush(background_color)
-                else:
-                    painter.setBrush(background_color)
+                painter.fillRect(rect, QColor(int(cur_property[1]["red"]["value"]),
+                                              int(cur_property[1]["green"]["value"]),
+                                              int(cur_property[1]["blue"]["value"])))
+                if selected:  # the swatch stays; selection is an accent outline
+                    painter.setPen(QPen(QColor(TOKENS["accent"]), 2))
+                    painter.drawRect(rect.adjusted(1, 1, -1, -1))
+                    painter.setPen(QPen(Qt.NoPen))
+            elif selected:
+                painter.fillRect(rect, _token_color("accent_soft"))
+            elif hovered:
+                painter.fillRect(rect, QColor(TOKENS["hover"]))
 
-            if readonly:
-                # Set text color for read only fields
-                painter.setPen(QPen(get_app().window.palette().color(QPalette.Disabled, QPalette.Text)))
-            else:
-                path = QPainterPath()
-                path.addRoundedRect(QRectF(option.rect), 6, 6)
-                painter.fillPath(path, background_color)
-                painter.drawPath(path)
+            if property_type in ["float", "int"] and not readonly:
+                # The value range: a 2px track along the bottom, filled up to the value
+                track = QRectF(rect.left() + 8, rect.bottom() - 3, rect.width() - 16, 2)
+                painter.setBrush(QColor(TOKENS["active"]))
+                painter.drawRoundedRect(track, 1, 1)
+                fill_width = track.width() * min(max(value_percent, 0.0), 1.0)
+                if fill_width > 0:
+                    painter.setBrush(QColor(TOKENS["accent"] if selected else TOKENS["text_muted"]))
+                    painter.drawRoundedRect(QRectF(track.left(), track.top(), fill_width, track.height()), 1, 1)
 
-                # Render mask rectangle
-                painter.setBrush(QBrush(QColor("#000000")))
-                mask_rect = QRectF(option.rect)
-                mask_rect.setWidth(option.rect.width() * value_percent)
-                painter.setClipRect(mask_rect, Qt.IntersectClip)
+            value = index.data(Qt.DisplayRole)
+            # Keyframed cells keep room at the right for the interpolation icon
+            text_rect = option.rect.adjusted(8, 0, -(34 if points > 1 else 8), 0)
 
-                # gradient for value box
-                gradient = QLinearGradient(QPointF(option.rect.topLeft()), QPointF(option.rect.topRight()))
-                gradient.setColorAt(0, foreground_color)
-                gradient.setColorAt(1, foreground_color)
+            if points > 1 and property_type not in ["colorgrade_curve", "colorgrade_wheels"]:
+                # Keyframed value: a small accent dot just before the value text
+                text_width = painter.fontMetrics().horizontalAdvance(value) if value else 0
+                dot_x = text_rect.right() - text_width - 6 if value else rect.left() + 12
+                painter.setPen(QPen(Qt.NoPen))
+                painter.setBrush(QColor(TOKENS["accent"]))
+                painter.drawEllipse(QPointF(dot_x, rect.center().y()), 2.5, 2.5)
 
-                # Render progress
-                painter.setBrush(gradient)
-                path = QPainterPath()
-                value_rect = QRectF(option.rect)
-                path.addRoundedRect(value_rect, 6, 6)
-                painter.fillPath(path, gradient)
-                painter.drawPath(path)
-                painter.setClipping(False)
-
-                if points > 1 and property_type not in ["colorgrade_curve", "colorgrade_wheels"]:
-                    # Draw interpolation icon on top
-                    painter.drawPixmap(
-                        int(option.rect.x() + option.rect.width() - 30.0),
-                        int(option.rect.y() + 4),
-                        self.curve_pixmaps[interpolation])
-
-                # Set text color
-                painter.setPen(QPen(Qt.white))
+                # Draw interpolation icon on top
+                painter.drawPixmap(
+                    int(option.rect.x() + option.rect.width() - 30.0),
+                    int(option.rect.y() + 4),
+                    self.curve_pixmaps[interpolation])
 
             if property_type == "colorgrade_curve":
                 frame_number = getattr(get_app().window.propertyTableView.clip_properties_model, "frame_number", 1)
@@ -303,9 +297,9 @@ class PropertyDelegate(QItemDelegate):
                     int(option.rect.y() + 4),
                     self.curve_pixmaps[interpolation])
 
-            value = index.data(Qt.DisplayRole)
             if value and property_type not in ["colorgrade_curve", "colorgrade_wheels"]:
-                painter.drawText(option.rect, Qt.AlignCenter, value)
+                painter.setPen(QPen(QColor(TOKENS["text_faint"] if readonly else TOKENS["text"])))
+                painter.drawText(text_rect, Qt.AlignRight | Qt.AlignVCenter, value)
         finally:
             painter.restore()
 
@@ -1856,7 +1850,7 @@ class PropertiesTableView(QTableView):
             self.clip_properties_model.value_updated(self.selected_item, interpolation=0, interpolation_details=preset)
         else:
             # Update colors interpolation mode
-            self.clip_properties_model.color_update(self.selected_item, QColor("#000"), interpolation=0, interpolation_details=preset)
+            self.clip_properties_model.color_update(self.selected_item, QColor(Qt.black), interpolation=0, interpolation_details=preset)
 
     def Linear_Action_Triggered(self):
         log.info("Linear_Action_Triggered")
@@ -1865,7 +1859,7 @@ class PropertiesTableView(QTableView):
             self.clip_properties_model.value_updated(self.selected_item, interpolation=1)
         else:
             # Update colors interpolation mode
-            self.clip_properties_model.color_update(self.selected_item, QColor("#000"), interpolation=1, interpolation_details=[])
+            self.clip_properties_model.color_update(self.selected_item, QColor(Qt.black), interpolation=1, interpolation_details=[])
 
     def Constant_Action_Triggered(self):
         log.info("Constant_Action_Triggered")
@@ -1874,7 +1868,7 @@ class PropertiesTableView(QTableView):
             self.clip_properties_model.value_updated(self.selected_item, interpolation=2)
         else:
             # Update colors interpolation mode
-            self.clip_properties_model.color_update(self.selected_item, QColor("#000"), interpolation=2, interpolation_details=[])
+            self.clip_properties_model.color_update(self.selected_item, QColor(Qt.black), interpolation=2, interpolation_details=[])
 
     def Reset_Color_Grade_Action_Triggered(self):
         log.info("Reset_Color_Grade_Action_Triggered")
@@ -2027,6 +2021,10 @@ class PropertiesTableView(QTableView):
         # Set delegate
         delegate = PropertyDelegate(model=self.clip_properties_model.model)
         self.setItemDelegateForColumn(1, delegate)
+        # Selection is painted by the delegate and the stylesheet (accent tint), not the palette
+        palette = self.palette()
+        palette.setColor(QPalette.Highlight, QColor(Qt.transparent))
+        self.setPalette(palette)
         self.previous_x = -1
 
         # Enable hover cursor updates without requiring a button press
@@ -2037,6 +2035,7 @@ class PropertiesTableView(QTableView):
         horizontal_header.setSectionResizeMode(QHeaderView.Stretch)
         vertical_header = self.verticalHeader()
         vertical_header.setVisible(False)
+        vertical_header.setDefaultSectionSize(28)
 
         # Refresh view
         self.clip_properties_model.update_model()
@@ -2356,7 +2355,7 @@ class SelectionLabel(QFrame):
 
         # Look up item for more info
         if self.item_type == "multi":
-            self.lblSelection.setText("<strong>%s</strong>" % _("Selection:"))
+            self.lblSelection.setText(_("Selection:"))
             self.btnSelectionName.setText(_("%d selections") % count)
             self.btnSelectionName.setVisible(True)
             self.btnSelectionName.setIcon(QIcon())
@@ -2390,13 +2389,13 @@ class SelectionLabel(QFrame):
 
         # Set label
         if self.item_id:
-            self.lblSelection.setText("<strong>%s</strong>" % _("Selection:"))
+            self.lblSelection.setText(_("Selection:"))
             self.btnSelectionName.setText(self.item_name)
             self.btnSelectionName.setVisible(True)
             if self.item_icon:
                 self.btnSelectionName.setIcon(self.item_icon)
         else:
-            self.lblSelection.setText("<strong>%s</strong>" % _("No Selection"))
+            self.lblSelection.setText(_("No Selection"))
             self.btnSelectionName.setVisible(False)
 
         # Set the menu on the button
@@ -2416,7 +2415,8 @@ class SelectionLabel(QFrame):
 
         # Widgets
         self.lblSelection = QLabel()
-        self.lblSelection.setText("<strong>%s</strong>" % _("No Selection"))
+        self.lblSelection.setStyleSheet(resolve("color: {text_faint}; font-size: 12px;"))
+        self.lblSelection.setText(_("No Selection"))
         self.btnSelectionName = QPushButton()
         self.setObjectName("selectionLabel")
         self.btnSelectionName.setObjectName("btnSelectionName")

@@ -252,6 +252,14 @@
     "type": "spinner-int"
   },
   {
+    "value": true,
+    "title": "Optimize Videos Above 1080p on Import",
+    "category": "Preview",
+    "setting": "optimize-preview-auto",
+    "type": "bool",
+    "restart": false
+  },
+  {
     "title": "Optimized Preview Resolution",
     "category": "Preview",
     "setting": "optimize-preview-max-size",
@@ -742,7 +750,7 @@
     "restart": false
   },
   {
-    "value": true,
+    "value": false,
     "title": "Background Cache Warming While Idle",
     "type": "bool",
     "category": "Performance",
@@ -994,7 +1002,7 @@
     "title": "Redo",
     "restart": false,
     "setting": "actionRedo",
-    "value": "Ctrl+Shift+Z",
+    "value": "Ctrl+Shift+Z | Ctrl+Y",
     "type": "text"
   },
   {
@@ -1210,7 +1218,7 @@
     "title": "Add Track",
     "restart": false,
     "setting": "actionAddTrack",
-    "value": "Ctrl+Y",
+    "value": "Ctrl+Shift+Y",
     "type": "text"
   },
   {
