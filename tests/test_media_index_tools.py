@@ -192,7 +192,7 @@ def test_index_status_lists_each_layer_and_skips_non_media(env):
     rows = {x["file_id"]: x for x in r["files"]}
     assert set(rows) == {"F1", "F2", "F3"}
     assert rows["F1"]["missing"] == ["audio"] and rows["F1"]["searchable"] is True
-    assert rows["F1"]["stale"] == ["structure"], "a local layer saved by an older version: refreshed on the next index run"
+    assert rows["F1"]["stale"] == ["structure", "look"], "local layers saved by an older version: refreshed on the next index run"
     assert rows["F1"]["vector_model"] == E.MODEL_LOCAL and rows["F1"]["described_shots"] == 0
     assert rows["F2"]["ready"] == ["structure"] and "vectors_local" in rows["F2"]["missing"]
     assert rows["F3"]["missing"] == ["structure", "look", "audio", "speech", "vectors_local"] and rows["F3"]["searchable"] is False

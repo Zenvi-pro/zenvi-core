@@ -53,6 +53,9 @@ if [[ ! -f "${prefix}/lib/libx264.a" ]]; then
   if [[ "$ARCH" == "x86_64" && "$(uname -m)" != "x86_64" ]]; then
     # Cross-building the Intel app on an Apple Silicon runner: no nasm, no asm.
     x264_flags+=(--host=x86_64-apple-darwin --disable-asm)
+  elif [[ "$ARCH" == "x86_64" ]] && ! command -v nasm >/dev/null 2>&1; then
+    # Native Intel (macos-15-intel) has no nasm; x264 refuses to configure without it.
+    x264_flags+=(--disable-asm)
   fi
   (cd "${work}/x264" && CC="$cc_cmd" ./configure "${x264_flags[@]}" && make -j"$jobs" && make install)
 fi
@@ -73,6 +76,8 @@ ff_flags=(--prefix="${prefix}/ff" --arch="$ARCH" --cc="$cc_cmd"
           --extra-cflags="-I${prefix}/include" --extra-ldflags="-L${prefix}/lib")
 if [[ "$ARCH" == "x86_64" && "$(uname -m)" != "x86_64" ]]; then
   ff_flags+=(--enable-cross-compile --target-os=darwin --disable-x86asm)
+elif [[ "$ARCH" == "x86_64" ]] && ! command -v nasm >/dev/null 2>&1; then
+  ff_flags+=(--disable-x86asm)
 fi
 (cd "${work}/ffmpeg" && make distclean >/dev/null 2>&1 || true)
 (cd "${work}/ffmpeg" && PKG_CONFIG_PATH="${prefix}/lib/pkgconfig" ./configure "${ff_flags[@]}" \
