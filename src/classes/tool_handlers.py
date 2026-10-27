@@ -7568,7 +7568,10 @@ def resolve_imported_file(path: str):
         f = File.get(path=p)
         if f:
             return f
-    base = os.path.basename(path).lower()
+    def _base(p):   # both separators: os.path.basename on Linux/macOS keeps a whole C:\ path
+        return str(p or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+    base = _base(path)
     best = None
     for candidate in File.filter():
         try:
@@ -7579,8 +7582,8 @@ def resolve_imported_file(path: str):
             except Exception:
                 abs_path = ""
             names = {
-                os.path.basename(cpath).lower(),
-                os.path.basename(abs_path).lower(),
+                _base(cpath),
+                _base(abs_path),
             }
             if base not in names:
                 continue

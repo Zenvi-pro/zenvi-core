@@ -32,15 +32,26 @@ def qapp():
     yield _APP
 
 
-def _window(text):
+@pytest.fixture
+def isolated_main_window(monkeypatch):
+    """windows.main_window imported against a stub timeline, both undone after the test.
+
+    monkeypatch restores sys.modules, so neither the stub timeline nor a main_window
+    built on it leaks into later tests in the same process.
+    """
     import types
 
-    if "windows.views.timeline" not in sys.modules:
-        stub = types.ModuleType("windows.views.timeline")
-        stub.TimelineView = type("TimelineView", (), {})
-        sys.modules["windows.views.timeline"] = stub
+    stub = types.ModuleType("windows.views.timeline")
+    stub.TimelineView = type("TimelineView", (), {})
+    monkeypatch.setitem(sys.modules, "windows.views.timeline", stub)
+    monkeypatch.delitem(sys.modules, "windows.main_window", raising=False)
     from windows.main_window import MainWindow
 
+    yield MainWindow
+    sys.modules.pop("windows.main_window", None)
+
+
+def _window(MainWindow, text):
     view = MagicMock()
     fake = SimpleNamespace(
         stockSearchView=view,
@@ -50,8 +61,8 @@ def _window(text):
     return MainWindow, fake, view
 
 
-def test_two_chars_never_search_three_chars_debounce(qapp):
-    mw, fake, view = _window("oc")
+def test_two_chars_never_search_three_chars_debounce(qapp, isolated_main_window):
+    mw, fake, view = _window(isolated_main_window, "oc")
     mw._on_files_filter_changed(fake, "oc")
     fake._stock_search_timer.start.assert_not_called()
     view.clear_stock.assert_called_once()
@@ -60,8 +71,8 @@ def test_two_chars_never_search_three_chars_debounce(qapp):
     fake._stock_search_timer.start.assert_called_once_with(700)
 
 
-def test_enter_cancels_the_pending_timer(qapp):
-    mw, fake, view = _window("ocean")
+def test_enter_cancels_the_pending_timer(qapp, isolated_main_window):
+    mw, fake, view = _window(isolated_main_window, "ocean")
     mw._on_files_search(fake)
     fake._stock_search_timer.stop.assert_called_once()
     view.run_search.assert_called_once_with("ocean")

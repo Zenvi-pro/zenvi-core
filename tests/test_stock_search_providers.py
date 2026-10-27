@@ -64,3 +64,16 @@ def test_a_non_numeric_retry_after_is_not_shown_raw():
     for header in ("Wed, 21 Oct 2015 07:28:00 GMT", "<b>soon</b>"):
         out = _client(status=429, headers={"Retry-After": header}).freesound_search("ocean")
         assert out["error"] == "Stock search is busy, try again in 60s."
+
+
+def test_imported_files_resolve_from_a_windows_path_on_any_os(monkeypatch):
+    # Linux/macOS os.path.basename only splits on "/": a stored C:\... path never matched.
+    import posixpath
+    from classes import tool_handlers
+
+    stored = MagicMock(data={"path": r"C:\Users\me\Downloads\a.mp3"})
+    stored.absolute_path.return_value = r"C:\Users\me\Downloads\a.mp3"
+    monkeypatch.setattr(os, "path", posixpath)
+    with patch("classes.query.File.get", return_value=None), \
+         patch("classes.query.File.filter", return_value=[stored]):
+        assert tool_handlers.resolve_imported_file("C:/Users/me/Downloads/a.mp3") is stored
