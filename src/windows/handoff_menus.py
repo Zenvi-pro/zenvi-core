@@ -333,7 +333,10 @@ class LinkedClipsStatus(QFrame):
     def _linked_files(self) -> List[dict]:
         from classes.handoff.linked_media import LINK_KEY
         from classes.query import File
-        return [copy.deepcopy(f.data) for f in File.filter() if isinstance(f.data.get(LINK_KEY), dict)]
+        # only what a freshness check reads: a full record can carry large waveform arrays
+        return [{"id": f.data.get("id"), "path": f.data.get("path"), "name": f.data.get("name"),
+                 LINK_KEY: copy.deepcopy(f.data[LINK_KEY])}
+                for f in File.filter() if isinstance(f.data.get(LINK_KEY), dict)]
 
     def check_soon(self, force: bool = False) -> None:
         """Recompute linked files' freshness off the GUI thread (skipped while one check runs)."""
@@ -351,6 +354,7 @@ class LinkedClipsStatus(QFrame):
             self._refresh_view()
             return
         self._checking = True
+        project = linked_media._project_token()
 
         def work(job):
             return linked_media.check_links(files)  # one tree hash per project; a bad file is just "error"
@@ -360,6 +364,9 @@ class LinkedClipsStatus(QFrame):
             self._last_check = time.monotonic()
             if job.error is not None:
                 log.warning("Linked clip freshness check failed: %s", job.error)
+                return
+            if linked_media._project_token() != project:  # another project was opened meanwhile
+                self.check_soon(force=True)
                 return
             checks = list(job.result or [])
             self.last_checks = {c.file_id: c for c in checks}

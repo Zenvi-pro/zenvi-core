@@ -804,7 +804,7 @@ def test_a_render_made_for_another_project_is_dropped(linked, monkeypatch):
     a, _b = _two_linked(linked, provider)
     old = linked.file(a["file_id"])["path"]
     prepared = lm.prepare_rerender(a["file_id"])
-    monkeypatch.setattr(lm, "_project_token", lambda: -1)  # the user opened another project meanwhile
+    monkeypatch.setattr(lm, "project_token", lambda: -1)  # the user opened another project meanwhile
     with pytest.raises(lm.LinkError, match="another project was opened") as caught:
         lm.swap_linked_media(prepared.file_id, prepared.path, prepared.link_update, expect=prepared.expect)
     lm.finish_rerender(prepared, caught.value)
