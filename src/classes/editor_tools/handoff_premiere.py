@@ -83,8 +83,12 @@ def export_to_premiere(output_path="", collect_media=False, overwrite=False):
     """
     from classes.exporters import final_cut_pro as fcp
     from classes.handoff import jobs
-    path = os.path.abspath(os.path.expanduser(str(output_path or "").strip())) if str(output_path or "").strip() \
-        else ""
+    raw_out = str(output_path or "").strip()
+    # Expand ~; only abspath relative paths so a POSIX agent path like /tmp/Edit.xml
+    # is not rewritten to C:\tmp\... before export_timeline (_stable_abs) sees it.
+    path = os.path.expanduser(raw_out) if raw_out else ""
+    if path and not (os.path.isabs(path) or path.startswith(("\\\\", "//"))):
+        path = os.path.abspath(path)
     if path:
         if os.path.isdir(path):
             raise ToolError(f"{path} is a folder; give a file name ending in .xml")
@@ -107,7 +111,7 @@ def export_to_premiere(output_path="", collect_media=False, overwrite=False):
         raise ToolError("the export was cancelled; nothing was written") from None
     except fcp.ExportError as exc:
         raise ToolError(str(exc)) from None
-    except OSError as exc:
+    except (OSError, UnicodeEncodeError, ValueError) as exc:
         raise ToolError(f"could not write {path}: {exc}") from None
     return ok(f"Exported the timeline for Premiere Pro: {os.path.basename(result.path)} -- {_export_summary(result)}.",
               **result.as_dict())
@@ -149,6 +153,8 @@ def send_to_premiere():
         raise ToolError("sending was cancelled") from None
     except (ppro.SendError, fcp.ExportError) as exc:
         raise ToolError(str(exc)) from None
+    except (OSError, UnicodeEncodeError, ValueError) as exc:
+        raise ToolError(f"could not write the Premiere handoff files: {exc}") from None
     offline = result["offline"]
     extra = f"; Premiere could not find {len(offline)} media file(s)" if offline else ""
     return ok(f"Opened “{result['sequence_name']}” in Premiere Pro{extra}.", **result)
@@ -186,7 +192,9 @@ def import_timeline_xml(path, placement="new_tracks", sequence=""):
     from classes.editor_tools.titles_text_common import commit_on_main, precheck_on_main
     from classes.handoff import jobs
     from classes.importers import final_cut_pro as importer
-    target = os.path.abspath(os.path.expanduser(str(path or "").strip()))
+    raw = os.path.expanduser(str(path or "").strip())
+    # Relative → abspath; absolute / POSIX / UNC left alone (importer resolves).
+    target = raw if (os.path.isabs(raw) or raw.startswith(("\\\\", "//"))) else os.path.abspath(raw)
     if not os.path.isfile(target):
         raise ToolError(f"no XML file at {target}")
     info = precheck_on_main(importer.read_project_info)

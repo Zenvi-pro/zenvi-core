@@ -185,13 +185,46 @@ def frames(seconds: float, rate: Rate) -> int:
 _DRIVE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
+def _posix_abs_on_windows(path: str) -> Optional[str]:
+    """Forward-slash POSIX absolute form when *path* is ``/media/...`` (or ``\\media\\...``).
+
+    On Windows those look absolute but ``os.path.abspath`` invents the current
+    drive (``C:\\media\\...``), which Premiere writes as ``C%3a`` and breaks Mac
+    fixtures / remaps. Drive paths and UNC are not POSIX abs.
+    """
+    if os.name != "nt":
+        return None
+    raw = str(path or "")
+    if _DRIVE.match(raw) or raw.startswith(("\\\\", "//")):
+        return None
+    slash = raw.replace("\\", "/")
+    if slash.startswith("/") and not (len(slash) > 2 and slash[2] == ":"):
+        return slash
+    return None
+
+
+def _stable_abs(path: str) -> str:
+    """Absolute path for export without inventing a Windows drive on POSIX paths."""
+    posix = _posix_abs_on_windows(path)
+    if posix is not None:
+        return posix
+    return os.path.abspath(str(path or ""))
+
+
 def pathurl(path: str) -> str:
     """Premiere's ``pathurl`` for a local path: ``file://localhost/`` + percent-encoded UTF-8.
 
     Drive letters are written ``C%3a`` and UNC paths ``file://server/share/...``,
-    as Premiere writes them; POSIX paths are made absolute.
+    as Premiere writes them; POSIX paths stay POSIX (never invent a Windows drive).
+    Relative Windows paths are absolutised first so they never become
+    ``file://localhostC%3A/...`` (drive check must run on the absolute form).
     """
     raw = str(path or "")
+    # Windows extended-length prefixes are not real UNC hosts.
+    if raw.startswith("\\\\?\\UNC\\") or raw.startswith("//?/UNC/"):
+        raw = "\\\\" + raw[8:].lstrip("\\/")
+    elif raw.startswith("\\\\?\\") or raw.startswith("//?/"):
+        raw = raw[4:]
     if raw.startswith(("\\\\", "//")):
         rest = raw.replace("\\", "/").lstrip("/")
         host, _sep, tail = rest.partition("/")
@@ -199,7 +232,10 @@ def pathurl(path: str) -> str:
     if _DRIVE.match(raw):
         tail = raw[2:].replace("\\", "/")
         return "file://localhost/" + raw[0] + "%3a" + quote(tail, safe="/")
-    absolute = raw if os.path.isabs(raw) else os.path.abspath(raw)
+    absolute = _stable_abs(raw)
+    if _DRIVE.match(absolute):
+        tail = absolute[2:].replace("\\", "/")
+        return "file://localhost/" + absolute[0] + "%3a" + quote(tail, safe="/")
     return "file://localhost" + quote(absolute.replace("\\", "/"), safe="/")
 
 
@@ -212,15 +248,24 @@ def num(value: float, places: int = 6) -> str:
     return "0" if text in ("", "-0") else text
 
 
+# XML 1.0 forbids these; lone surrogates also break UTF-8 writes / Premiere's importer.
+_XML_ILLEGAL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
+
+
+def _xml_safe(text: str) -> str:
+    """Strip characters that make xmeml not well-formed or unencodable as UTF-8."""
+    return _XML_ILLEGAL.sub("", str(text or ""))
+
+
 def _sub(parent: ET.Element, tag: str, text: Any = None, attrs: Optional[Dict[str, str]] = None) -> ET.Element:
-    node = ET.SubElement(parent, tag, {k: str(v) for k, v in (attrs or {}).items()})
+    node = ET.SubElement(parent, tag, {k: _xml_safe(v) for k, v in (attrs or {}).items()})
     if text is not None:
-        node.text = str(text)
+        node.text = _xml_safe(str(text))
     return node
 
 
 def _safe_stem(text: str, fallback: str = "title") -> str:
-    stem = re.sub(r"[^A-Za-z0-9._ -]+", "_", str(text or "")).strip(" ._") or fallback
+    stem = re.sub(r"[^A-Za-z0-9._ -]+", "_", _xml_safe(text)).strip(" ._") or fallback
     return stem[:60]
 
 
@@ -448,9 +493,9 @@ class XmemlBuilder:
         self._ = translate or (lambda text: text)      # warnings: English for agents, the app's _tr in menus
         self.alpha_media = set(alpha_media)           # file ids of videos with transparency (export_timeline)
         self.snap = snapshot
-        self.xml_path = os.path.abspath(xml_path)
+        self.xml_path = _stable_abs(xml_path)
         stem = os.path.splitext(os.path.basename(self.xml_path))[0]
-        self.media_dir = os.path.abspath(media_dir or os.path.join(os.path.dirname(self.xml_path), stem + "_media"))
+        self.media_dir = _stable_abs(media_dir or os.path.join(os.path.dirname(self.xml_path), stem + "_media"))
         self.collect = bool(collect_media)
         self.name = sequence_name or snapshot.name or stem
         self.uuid = sequence_uuid or str(uuid_module.uuid4())
@@ -463,6 +508,7 @@ class XmemlBuilder:
         self._clip_ids = 0
         self._file_ids = 0
         self._copy_targets: Dict[str, str] = {}
+        self._missing_warned: Set[str] = set()
         self._track_plans: Dict[int, List[_Plan]] = {}
         self._items: Dict[str, ET.Element] = {}
         self.counts = {"clips": 0, "video_items": 0, "audio_items": 0, "transitions": 0, "markers": 0,
@@ -502,11 +548,17 @@ class XmemlBuilder:
             path, alpha, still = target, True, True
             if fv.is_title:
                 self.counts["titles"] += 1
-        elif self.collect and fv.path:
-            path = self._collect(fv.path)
-        if fv.is_image_sequence:
+        elif fv.is_image_sequence:
+            # Pattern paths (frame_%04d.png) are not real files — collecting them aborts the export.
             self.warn.add(self._("image sequence '%s' is written as its file pattern; import the sequence in "
                                  "Premiere and relink it") % os.path.basename(fv.path))
+        elif self.collect and fv.path:
+            path = self._collect(fv.path)
+        elif fv.path and not still and not os.path.isfile(fv.path):
+            if fv.path not in self._missing_warned:
+                self._missing_warned.add(fv.path)
+                self.warn.add(self._("media '%s' is missing; Premiere will show it offline")
+                              % (fv.name or os.path.basename(fv.path)))
         data = fv.data or {}
         try:
             channels = int(data.get("channels") or 2)
@@ -529,12 +581,20 @@ class XmemlBuilder:
         known = self._copy_targets.get(source)
         if known:
             return known
+        if not os.path.isfile(source):
+            if source not in self._missing_warned:
+                self._missing_warned.add(source)
+                self.warn.add(self._("media '%s' is missing; left at its original path (not copied)")
+                              % os.path.basename(source))
+            return source
         base = os.path.basename(source) or "media"
         stem, ext = os.path.splitext(base)
         target = os.path.join(self.media_dir, base)
         n = 2
-        taken = set(self._copy_targets.values())
-        while target in taken:
+        # Windows/macOS default volumes are case-insensitive: Clip.MP4 and clip.mp4
+        # would otherwise plan two targets and silently overwrite on copy.
+        taken = {os.path.normcase(t) for t in self._copy_targets.values()}
+        while os.path.normcase(target) in taken:
             target = os.path.join(self.media_dir, f"{stem} {n}{ext}")
             n += 1
         self._copy_targets[source] = target
@@ -767,6 +827,12 @@ class XmemlBuilder:
             start, media_start = head.cut, head.start
         if tail is not None:
             end, media_end = tail.cut, tail.end
+        # Two dissolves that together cover the whole clip make start == end → invalid xmeml.
+        if start >= end:
+            title = p.clip.title or p.id
+            self.warn.add(self._("clip '%s' has overlapping dissolves that cover it; exported without those "
+                                 "transitions") % title)
+            return _Span(p.start, p.end, p.start, p.end, None, None, None, None)
         return _Span(start, end, media_start, media_end, head, tail, join_from, join_to)
 
     # -- lanes ----------------------------------------------------------------
@@ -1506,14 +1572,22 @@ def _xml_text(root: ET.Element) -> str:
 
 
 def _install(path: str, write: Callable[[str], Any]) -> None:
-    """Write through ``<path>.partial`` and move it into place (never a half-written file at *path*)."""
+    """Write through a unique ``.partial`` and move it into place (never a half-written file at *path*)."""
     folder = os.path.dirname(path)
     if folder:
         os.makedirs(folder, exist_ok=True)
-    partial = path + ".partial"
+    # Unique suffix so two exports to the same path do not share one .partial.
+    partial = f"{path}.{os.getpid()}.{uuid_module.uuid4().hex[:6]}.partial"
     try:
         write(partial)
-        os.replace(partial, path)
+        try:
+            os.replace(partial, path)
+        except PermissionError as exc:
+            # Windows: Premiere (or Explorer) holds the previous PNG/XML open → WinError 5.
+            raise ExportError(
+                f"could not replace {os.path.basename(path)} (it is open in another program, often Premiere). "
+                f"Close that project or export under a new name ({exc})"
+            ) from None
     except BaseException:
         try:
             os.remove(partial)
@@ -1571,7 +1645,9 @@ def _copy_media(copies: List[CopyJob], should_cancel: Optional[Callable[[], bool
         if on_progress is not None:
             on_progress(i / max(1, len(copies)), _("Copying %s") % os.path.basename(job.source))
         if not os.path.isfile(job.source):
-            raise ExportError(f"the media {job.source} is missing; relink it before collecting media")
+            # Builder should have skipped these; never abort the whole export for one stale path.
+            log.warning("Skipping missing media during collect: %s", job.source)
+            continue
         try:
             same = os.path.isfile(job.target) and os.path.getsize(job.target) == os.path.getsize(job.source) \
                 and int(os.path.getmtime(job.target)) == int(os.path.getmtime(job.source))
@@ -1690,7 +1766,7 @@ def export_timeline(snapshot: TimelineSnapshot, xml_path: str, *, collect_media:
     if not snapshot.clips:
         raise ExportError("the timeline has no clips to export")
     _ = translate or (lambda text: text)
-    xml_path = os.path.abspath(xml_path)
+    xml_path = _stable_abs(xml_path)
     if not xml_path.lower().endswith(".xml"):
         xml_path += ".xml"
     replaced = os.path.exists(xml_path)
@@ -1736,14 +1812,18 @@ def snapshot_from_app() -> TimelineSnapshot:
 
 
 def default_export_path(ext: str = ".xml", suffix: str = "") -> str:
-    """Next to the saved project (``<name><suffix>.xml``), else in the home folder."""
+    """Next to the saved project (``<name><suffix>.xml``), else in Documents (not the user profile root)."""
     from classes import info
     from classes.app import get_app
     project_path = getattr(get_app().project, "current_filepath", "") or ""
     if project_path:
         stem = os.path.splitext(os.path.basename(project_path))[0]
         return os.path.join(os.path.dirname(project_path), stem + suffix + ext)
-    return os.path.join(info.HOME_PATH, "Untitled Project" + suffix + ext)
+    # HOME_PATH is the profile root on Windows (C:\\Users\\You) — opening that folder after
+    # export looks like "it opened my user profile". Prefer Documents when it exists.
+    documents = os.path.join(info.HOME_PATH, "Documents")
+    folder = documents if os.path.isdir(documents) else info.HOME_PATH
+    return os.path.join(folder, "Untitled Project" + suffix + ext)
 
 
 def report_text(result: ExportResult, translate: Callable[[str], str]) -> str:
@@ -1794,11 +1874,45 @@ def run_export_job(window, xml_path: str, *, collect_media: bool = False, open_f
         if result.warnings:
             QMessageBox.information(window, title or _("Export XML"), report_text(result, _))
         if open_folder:
-            from qt_api import QDesktopServices, QUrl
-            QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(result.path)))
+            folder = os.path.dirname(os.path.abspath(result.path)) or result.path
+            notify(window, _("Opening %s") % folder)
+            _reveal_export(result.path)
 
     return jobs.submit_job(work, label=_("Exporting %s") % os.path.basename(xml_path), kind="xml-export",
                            on_done=on_done)
+
+
+def _reveal_export(path: str) -> None:
+    """Open Explorer/Finder on the exported XML (highlight the file), not a vague parent folder.
+
+    ``QDesktopServices.openUrl(dirname)`` is easy to mis-resolve on Windows (empty dirname,
+    relative paths, or an unsaved project defaulting under the user profile). Selecting the
+    file matches After Effects' Reveal behaviour.
+    """
+    import subprocess
+    import sys
+    target = os.path.abspath(os.path.expanduser(str(path or "")))
+    if not target:
+        return
+    folder = target if os.path.isdir(target) else (os.path.dirname(target) or target)
+    try:
+        if sys.platform == "win32":
+            if os.path.isfile(target):
+                subprocess.Popen(["explorer", "/select," + target])
+            else:
+                subprocess.Popen(["explorer", folder])
+        elif sys.platform == "darwin":
+            if os.path.isfile(target):
+                subprocess.Popen(["open", "-R", target], stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.Popen(["open", folder], stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.Popen(["xdg-open", folder], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as exc:
+        log.warning("could not open export folder %s: %s", folder, exc)
 
 
 def export_xml(file_path: Optional[str] = None):

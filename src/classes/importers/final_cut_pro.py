@@ -317,7 +317,13 @@ def _bool(el: Optional[ET.Element], path: str, default: bool) -> bool:
 
 
 def path_from_pathurl(url: str, base_folder: str = "") -> str:
-    """A filesystem path from an xmeml ``pathurl`` (file URLs, raw paths, relative paths)."""
+    """A filesystem path from an xmeml ``pathurl`` (file URLs, raw paths, relative paths).
+
+    POSIX absolute paths (``/Users/...``, ``/media/...``) stay forward-slashed even
+    on Windows. ``os.path.normpath`` would turn them into ``\\Users\\...``, which
+    breaks remaps, Find Missing File prompts, and imports of Mac-exported XML.
+    Windows drive paths (``C%3a`` / ``/C:/``) and UNC hosts are unchanged.
+    """
     raw = str(url or "").strip()
     if not raw:
         return ""
@@ -328,6 +334,9 @@ def path_from_pathurl(url: str, base_folder: str = "") -> str:
             return "//" + netloc + path                       # UNC: file://server/share/...
         if len(path) > 2 and path[0] == "/" and path[2] == ":":
             return path[1:]                                   # /C:/x -> C:/x
+        # Keep POSIX absolute paths as-is (Premiere Mac exports, fixtures).
+        if path.startswith("/"):
+            return path
         return os.path.normpath(path) if path else ""
     if raw.startswith("@"):
         from classes.path_utils import absolute_media_path
@@ -1312,6 +1321,7 @@ class _Planner:
         if reader.get("media_type") == "audio" or not aw or not ah:
             return
         fit_w, fit_h = qsize_scaled(aw, ah, int(info.width), int(info.height), "keep")
+        fit_w, fit_h = max(1, int(fit_w or 0)), max(1, int(fit_h or 0))
         params = motion.params if motion is not None else {}
         scale = self._fn(seq, item, params.get("scale"), 100.0, lambda v: _float(v, 100.0))
         rotation = self._fn(seq, item, params.get("rotation"), 0.0, lambda v: _float(v, 0.0))
@@ -1626,7 +1636,8 @@ def read_project_info() -> ProjectInfo:
     files, data = {}, {}
     for f in project.get("files") or []:
         if isinstance(f, dict) and f.get("path") and f.get("id"):
-            key = os.path.normpath(str(f["path"]))
+            # normcase so Windows C:\\Media\\A.mov matches c:\\media\\a.mov from locate_media.
+            key = os.path.normcase(os.path.normpath(str(f["path"])))
             files[key] = str(f["id"])
             data[key] = {k: copy.deepcopy(v) for k, v in f.items() if k != "ui"}
     return ProjectInfo(fps=rate, width=int(project.get("width") or 1920), height=int(project.get("height") or 1080),
@@ -1657,6 +1668,7 @@ def locate_media(paths: Iterable[str], remap: Optional[Dict[str, str]] = None,
         if hit is None:
             missing.append(path)
         else:
+            # Keep the on-disk path; callers key Project Files with normcase(normpath(...)).
             found[path] = os.path.normpath(hit)
     return found, missing
 
@@ -1690,8 +1702,10 @@ def plan_import(path: str, *, placement: str = "new_tracks", info: Optional[Proj
         if should_cancel is not None and should_cancel():
             from classes.handoff.jobs import JobCancelled
             raise JobCancelled("import cancelled")
-        if disk in info.file_ids:   # already in Project Files: its data has the media facts
-            probes[original] = dict(info.file_data.get(disk) or {}, path=disk, _existing=info.file_ids[disk])
+        disk_key = os.path.normcase(os.path.normpath(disk))
+        if disk_key in info.file_ids:   # already in Project Files: its data has the media facts
+            probes[original] = dict(info.file_data.get(disk_key) or {}, path=disk,
+                                    _existing=info.file_ids[disk_key])
             continue
         try:
             reader = dict(probe(disk))
@@ -1883,6 +1897,10 @@ def _add_to_project(plan: ImportPlan, fade: Optional[Tuple[dict, dict]], crop_te
             f = File.get(id=c.file_id or file_ids.get(c.path, "")) if (c.file_id or c.path in file_ids) else None
             f = f or File.get(path=c.path)
             if not f:
+                # Should be unreachable after plan_import; never drop a clip without a trail.
+                msg = "clip '%s' was skipped: its media is not in Project Files" % (c.title or c.path)
+                log.error(msg)
+                plan.warnings.append(_app_tr(msg))
                 continue
             data = copy.deepcopy(template)
             data.update({"file_id": f.id, "title": c.title, "reader": copy.deepcopy(f.data),

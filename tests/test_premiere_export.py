@@ -84,6 +84,15 @@ def test_pathurl_is_premiere_style_and_reads_back(path, url):
     assert back.replace("\\", "/") == path.replace("\\", "/").replace("//server", "//server")
 
 
+@pytest.mark.skipif(os.name != "nt", reason="relative path → drive letter is a Windows pathurl concern")
+def test_pathurl_absolutises_relative_windows_paths():
+    """Relative paths must not become ``file://localhostC%3A/...`` (missing slash)."""
+    url = fcp.pathurl("relative\\clip.mp4")
+    assert url.startswith("file://localhost/")
+    assert "localhostC%" not in url
+    assert "%3a" in url.lower() or "%3A" in url
+
+
 def test_module_imports_without_qt_or_libopenshot():
     """The stub has no openshot constants: nothing at module level may need them (or Qt)."""
     for rel in ("exporters/final_cut_pro.py", "importers/final_cut_pro.py"):
@@ -592,6 +601,77 @@ def test_collect_media_copies_files_and_points_the_xml_at_them(tmp_path):
     copy = tmp_path / "out" / "Edit_media" / "clip one.mp4"
     assert out.copied == [str(copy)] and copy.read_bytes() == b"movie"
     assert parse(out.path).find(".//file/pathurl").text == fcp.pathurl(str(copy))
+
+
+def test_collect_media_avoids_case_only_filename_collisions(tmp_path):
+    """On case-insensitive volumes, Clip.MP4 and clip.mp4 must not overwrite each other."""
+    media = tmp_path / "src"
+    media.mkdir()
+    a, b = media / "Clip.MP4", media / "other" / "clip.mp4"
+    b.parent.mkdir()
+    a.write_bytes(b"AAA")
+    b.write_bytes(b"BBB")
+    files = [video_file("F1", str(a), duration=5.0), video_file("F2", str(b), duration=5.0)]
+    clips = [clip("A", "F1", end=2.0), clip("B", "F2", position=2.0, end=2.0)]
+    out = fcp.export_timeline(snapshot(project(files=files, clips=clips)),
+                              str(tmp_path / "out" / "Edit.xml"), collect_media=True, render_stills=FakeStills())
+    assert len(out.copied) == 2
+    bodies = sorted(pathlib.Path(p).read_bytes() for p in out.copied)
+    assert bodies == [b"AAA", b"BBB"]
+    names = {os.path.basename(p) for p in out.copied}
+    assert len(names) == 2 and len({os.path.normcase(n) for n in names}) == 2
+
+
+def test_resolve_media_path_keeps_posix_absolute_on_windows():
+    from classes.handoff.timeline_view import resolve_media_path
+    assert resolve_media_path("/media/Interview A.mp4") == "/media/Interview A.mp4"
+    assert fcp.pathurl(r"\media\Interview A.mp4") == "file://localhost/media/Interview%20A.mp4"
+    assert fcp.pathurl("/media/Interview A.mp4") == "file://localhost/media/Interview%20A.mp4"
+
+
+def test_export_scrubs_illegal_xml_characters_from_titles(tmp_path):
+    """Control chars / surrogates must not produce ill-formed XML or UnicodeEncodeError."""
+    from classes.importers import final_cut_pro as imp
+    f = video_file("F1", str(tmp_path / "a.mp4"), duration=5.0)
+    (tmp_path / "a.mp4").write_bytes(b"x")
+    dirty = clip("A", "F1", end=2.0, title="Take\x0b1\udc80")
+    out = fcp.export_timeline(snapshot(project(files=[f], clips=[dirty])),
+                              str(tmp_path / "Edit.xml"), render_stills=FakeStills())
+    text = pathlib.Path(out.path).read_text(encoding="utf-8")
+    assert "\x0b" not in text and "\udc80" not in text
+    assert "Take1" in text
+    assert imp.parse_xml(out.path)  # must be well-formed
+
+
+def test_missing_media_warns_instead_of_aborting(tmp_path):
+    f = video_file("F1", str(tmp_path / "gone.mp4"), duration=5.0)
+    out = fcp.export_timeline(snapshot(project(files=[f], clips=[clip("A", "F1", end=2.0)])),
+                              str(tmp_path / "Edit.xml"), render_stills=FakeStills())
+    assert (tmp_path / "Edit.xml").is_file()
+    assert any("missing" in w.lower() for w in out.warnings)
+
+
+def test_collect_skips_missing_and_image_sequences(tmp_path):
+    from classes import project_files
+    media = tmp_path / "src"
+    media.mkdir()
+    ok = media / "ok.mp4"
+    ok.write_bytes(b"movie")
+    seq = {"id": "F3", "path": str(media / "frame_%04d.png"), "name": "frame_%04d.png",
+           "media_type": "video", "has_video": True, "has_audio": False, "width": 100, "height": 100,
+           "duration": 1.0, "fps": {"num": 30, "den": 1}}
+    assert project_files.is_image_sequence(seq)
+    files = [video_file("F1", str(ok), duration=5.0),
+             video_file("F2", str(media / "gone.mp4"), duration=5.0), seq]
+    clips = [clip("A", "F1", end=1.0), clip("B", "F2", position=1.0, end=1.0),
+             clip("C", "F3", position=2.0, end=1.0)]
+    out = fcp.export_timeline(snapshot(project(files=files, clips=clips)),
+                              str(tmp_path / "out" / "Edit.xml"), collect_media=True,
+                              render_stills=FakeStills())
+    assert (tmp_path / "out" / "Edit.xml").is_file()
+    assert len(out.copied) == 1
+    assert any("missing" in w.lower() for w in out.warnings)
+    assert any("image sequence" in w.lower() for w in out.warnings)
 
 
 def test_export_is_staged_and_a_failure_leaves_the_old_file(tmp_path):

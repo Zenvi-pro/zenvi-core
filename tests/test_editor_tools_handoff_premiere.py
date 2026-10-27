@@ -34,8 +34,14 @@ def ppro(linked, tmp_path, monkeypatch):
     return linked
 
 
-def _timeline(editor):
-    f = editor.add_file("video")
+def _timeline(editor, tmp_path=None):
+    """Add a short clip. When *tmp_path* is given, the media file exists on disk (no offline warning)."""
+    if tmp_path is not None:
+        media = tmp_path / "clip.mp4"
+        media.write_bytes(b"movie")
+        f = editor.add_file("video", path=str(media))
+    else:
+        f = editor.add_file("video")
     editor.add_clip(f, position=0.0, end=4.0)
     editor.mark()
 
@@ -261,6 +267,16 @@ def test_send_folder_lives_with_the_project(tmp_path):
     assert folder == str(tmp_path / "Trip_assets" / "premiere" / "20261005-093000 Trip_ cut_2")
 
 
+def test_send_folder_avoids_same_second_collisions(tmp_path):
+    import datetime
+    from classes.handoff.premiere import send_folder
+    now = datetime.datetime(2026, 10, 5, 9, 30, 0)
+    first = send_folder("Trip", str(tmp_path / "Trip.zvn"), now=now)
+    os.makedirs(first)
+    second = send_folder("Trip", str(tmp_path / "Trip.zvn"), now=now)
+    assert second == first + "-2" and second != first
+
+
 # --- the menu flows (background jobs, then GUI callbacks; inline under the stub) ------------------------------------
 
 class Boxes:
@@ -290,7 +306,7 @@ def _shown(editor):
 
 def test_menu_export_runs_in_the_background(ppro, tmp_path, boxes):
     from classes.exporters import final_cut_pro as fcp
-    _timeline(ppro)
+    _timeline(ppro, tmp_path)
     job = fcp.run_export_job(ppro.window, str(tmp_path / "Menu.xml"), title="Export XML")
     result = job.wait(30)
     assert os.path.isfile(result.path) and _shown(ppro) == ["Exported Menu.xml"]

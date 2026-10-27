@@ -343,6 +343,28 @@ def test_existing_project_files_are_reused(importer, tmp_path):
     assert len(clips) == 3 and {c["file_id"] for c in clips} == {files_before[-1]["id"]}
 
 
+@pytest.mark.skipif(os.name != "nt", reason="case-insensitive Project Files matching is a Windows concern")
+def test_existing_project_files_match_case_insensitively(importer, tmp_path):
+    """Windows paths that differ only by case must reuse Project Files, not re-add."""
+    folder = tmp_path / "Media"
+    folder.mkdir()
+    (disk,) = media_on_disk(folder, video_file("", "/media/speed/clip.mp4", duration=20.0))
+    alt = disk["path"].swapcase()
+    assert alt != disk["path"] and os.path.normcase(alt) == os.path.normcase(disk["path"])
+    fid = importer.add_file("video", path=alt, duration=20.0)
+    for f in importer.get("files") or []:
+        if f.get("id") == fid:
+            f["path"] = alt
+            break
+    xml = tmp_path / "speed.xml"
+    xml.write_text((FIXTURES / "premiere_speed.xml").read_text(encoding="utf-8"), encoding="utf-8")
+    probe = FakeMediaProbe({disk["path"]: disk, alt: disk})
+    p = imp.plan_import(str(xml), info=imp.read_project_info(),
+                        remap={"/media/speed/clip.mp4": disk["path"]}, probe=probe)
+    assert p.media == {}
+    assert all(c.file_id == fid for c in p.clips)
+
+
 def test_legacy_import_xml_entry_returns_the_summary_in_one_step(importer, tmp_path, monkeypatch):
     folder = tmp_path / "media"
     folder.mkdir()
@@ -800,7 +822,8 @@ def test_assets_pathurls_resolve_through_the_project(tmp_path, monkeypatch):
     from classes import path_utils
     monkeypatch.setattr(path_utils, "absolute_media_path", lambda raw: "/projects/Trip_assets/" + raw[len("@assets/"):])
     assert imp.path_from_pathurl("@assets/renders/intro.mov") == "/projects/Trip_assets/renders/intro.mov"
-    assert imp.path_from_pathurl("file:///tmp/My%20Clip.mov") == os.path.normpath("/tmp/My Clip.mov")
+    # POSIX absolute stays forward-slashed on Windows (Mac Premiere XML / fixtures).
+    assert imp.path_from_pathurl("file:///tmp/My%20Clip.mov") == "/tmp/My Clip.mov"
     assert imp.path_from_pathurl("media/clip.mov", str(tmp_path)) == os.path.join(str(tmp_path), "media", "clip.mov")
 
 

@@ -18,6 +18,7 @@ The system-default route hops to the GUI thread for ``QDesktopServices``.
 from __future__ import annotations
 
 import os
+import posixpath
 import shlex
 import shutil
 import subprocess
@@ -52,29 +53,36 @@ class EditorChoice:
 
 
 def _cli_candidates(editor: str, platform: str, env: dict) -> List[str]:
-    """Launcher executables for *editor* ('cursor' or 'code'), most specific first."""
+    """Launcher executables for *editor* ('cursor' or 'code'), most specific first.
+
+    Uses the path module for *platform* (not the host OS), so a darwin/linux
+    resolution is the same when unit-tested on Windows.
+    """
+    import ntpath
+    join = ntpath.join if platform == "win32" else posixpath.join
     home = env.get("HOME") or env.get("USERPROFILE") or os.path.expanduser("~")
     out = []
-    on_path = shutil.which(editor, path=env.get("PATH") or None)
+    # Honour an explicit empty PATH (do not fall through to the process env).
+    on_path = shutil.which(editor, path=env["PATH"] if "PATH" in env else None)
     if on_path:
         out.append(on_path)
     if platform == "darwin":
         bundles = {"cursor": ["Cursor.app"], "code": ["Visual Studio Code.app", "Visual Studio Code - Insiders.app"]}
-        for root in ("/Applications", os.path.join(home, "Applications")):
+        for root in ("/Applications", join(home, "Applications")):
             for bundle in bundles[editor]:
-                out.append(os.path.join(root, bundle, "Contents", "Resources", "app", "bin", editor))
+                out.append(join(root, bundle, "Contents", "Resources", "app", "bin", editor))
     elif platform == "win32":
-        local = env.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
+        local = env.get("LOCALAPPDATA") or join(home, "AppData", "Local")
         program_files = env.get("ProgramFiles") or r"C:\Program Files"
         if editor == "cursor":
-            out.append(os.path.join(local, "Programs", "cursor", "resources", "app", "bin", "cursor.cmd"))
+            out.append(join(local, "Programs", "cursor", "resources", "app", "bin", "cursor.cmd"))
         else:
-            out.append(os.path.join(local, "Programs", "Microsoft VS Code", "bin", "code.cmd"))
-            out.append(os.path.join(program_files, "Microsoft VS Code", "bin", "code.cmd"))
+            out.append(join(local, "Programs", "Microsoft VS Code", "bin", "code.cmd"))
+            out.append(join(program_files, "Microsoft VS Code", "bin", "code.cmd"))
     else:
         if editor == "cursor":
-            out += ["/usr/bin/cursor", "/opt/cursor/resources/app/bin/cursor", os.path.join(home, ".local", "bin",
-                                                                                          "cursor")]
+            out += ["/usr/bin/cursor", "/opt/cursor/resources/app/bin/cursor",
+                    join(home, ".local", "bin", "cursor")]
         else:
             out += ["/usr/bin/code", "/snap/bin/code", "/usr/share/code/bin/code"]
     return out
@@ -111,10 +119,15 @@ def resolve_editor(setting: Optional[str] = None, *, platform: Optional[str] = N
         return EditorChoice(name, (cli, "-g", "{file}:{line}"))
     if key == "system":
         return EditorChoice("system", None)
+    host = platform or sys.platform
     try:
-        argv = shlex.split(value, posix=(platform or sys.platform) != "win32")
+        argv = shlex.split(value, posix=host != "win32")
     except ValueError as exc:
         raise EditorError(f"the code editor command {value!r} is not valid: {exc}") from None
+    if host == "win32":
+        # Windows shlex keeps surrounding quotes as part of the token; strip them
+        # so ``python -c "import sys; sys.exit(3)"`` reaches Python as intended.
+        argv = [a[1:-1] if len(a) >= 2 and a[0] == a[-1] == '"' else a for a in argv]
     if not argv:
         return EditorChoice("system", None)
     if not any("{file}" in a for a in argv):

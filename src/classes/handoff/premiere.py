@@ -21,7 +21,7 @@ from __future__ import annotations
 import datetime
 import os
 import re
-from typing import Callable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from classes.handoff.ui_registry import register_export_action, register_import_action, register_send_action
 from classes.logger import log
@@ -49,13 +49,24 @@ def _tr(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 def send_folder(name: str, project_path: Optional[str], *, now: Optional[datetime.datetime] = None) -> str:
-    """``<project>_assets/premiere/<stamp> <name>`` (the user folder while the project is unsaved)."""
+    """``<project>_assets/premiere/<stamp> <name>`` (the user folder while the project is unsaved).
+
+    A free ``-2``, ``-3``, … suffix is added when that stamp/name already exists
+    (two sends in the same second, or an agent retry) so title PNGs are not
+    overwritten while Premiere still holds them open.
+    """
     from classes import info
     from classes.assets import get_assets_path
     root = get_assets_path(project_path, create_paths=False) if project_path else info.USER_PATH
     stamp = (now or datetime.datetime.now()).strftime("%Y%m%d-%H%M%S")
+    # Keep the leaf short: deep project folders + titles/ already push Windows MAX_PATH.
     safe = re.sub(r"[^A-Za-z0-9._ -]+", "_", name or "Timeline").strip(" ._") or "Timeline"
-    return os.path.join(root or info.USER_PATH, SEND_FOLDER, f"{stamp} {safe[:60]}")
+    base = os.path.join(root or info.USER_PATH, SEND_FOLDER, f"{stamp} {safe[:40]}")
+    folder, n = base, 2
+    while os.path.exists(folder):
+        folder = f"{base}-{n}"
+        n += 1
+    return folder
 
 
 def _path_arg(base_dir: Optional[str] = None) -> str:
@@ -94,16 +105,14 @@ def send_to_premiere(snapshot, *, base_dir: Optional[str] = None,
                             + ".xml")
     result = fcp.export_timeline(snapshot, xml_path, media_dir=os.path.join(folder, "media"),
                                  on_progress=on_progress, should_cancel=should_cancel, translate=translate)
+    if should_cancel is not None and should_cancel():
+        from classes.handoff.jobs import JobCancelled
+        raise JobCancelled("sending was cancelled")
     if on_progress is not None:
         on_progress(0.9, (translate or _tr)("Premiere Pro is importing the sequence"))
     args = {_path_arg(base_dir): result.path}
-    try:
-        reply = adobe_link.call_host_tool(APP, IMPORT_TOOL, args, timeout=None, base_dir=base_dir)
-    except adobe_link.HostNotConnected as exc:
-        raise SendError(str(exc)) from None
-    except adobe_link.LinkHostError as exc:
-        raise SendError(f"Premiere Pro could not import the sequence ({exc.code}): {exc}. The XML is at "
-                        f"{result.path}; import it in Premiere with File > Import") from None
+    # Host import blocks for minutes with no cancel hook — same pattern as After Effects render.
+    reply = _call_premiere_import(args, base_dir=base_dir, should_cancel=should_cancel, xml_path=result.path)
     receipt = reply.receipt or {}
     if reply.is_error:
         raise SendError(f"Premiere Pro refused the import: {reply.summary}. The XML is at {result.path}")
@@ -112,9 +121,39 @@ def send_to_premiere(snapshot, *, base_dir: Optional[str] = None,
     name = str(sequences[0].get("name")) if sequences and sequences[0].get("name") else result.sequence_name
     offline = [o for o in (data.get("offline") or []) if isinstance(o, dict)]
     warnings: List[str] = list(result.warnings) + [str(w) for w in (receipt.get("warnings") or [])]
+    if not sequences:
+        warnings.append("Premiere did not report a new sequence; check the Zenvi Imports bin "
+                        f"(XML is at {result.path})")
     log.info("Sent %s to Premiere Pro as %r", result.path, name)
     return {"xml": result.path, "media_dir": result.media_dir, "sequence_name": name, "sequences": sequences,
             "offline": offline, "warnings": warnings, "host_summary": reply.summary, "counts": result.counts}
+
+
+def _call_premiere_import(args: dict, *, base_dir: Optional[str], should_cancel: Optional[Callable[[], bool]],
+                          xml_path: str):
+    """Run ``premiere_import_xml`` with a cancellable wait (Premiere may still finish after Cancel)."""
+    from classes.handoff import adobe_link, jobs
+
+    try:
+        return jobs.wait_cancellable(
+            lambda: adobe_link.call_host_tool(APP, IMPORT_TOOL, args, timeout=None, base_dir=base_dir),
+            should_cancel,
+            "sending was cancelled",
+        )
+    except adobe_link.HostNotConnected as exc:
+        raise SendError(str(exc)) from None
+    except adobe_link.LinkHostError as exc:
+        if getattr(exc, "code", "") == "TIMEOUT":
+            # Premiere's ExtendScript often keeps going after we stop waiting — do not tell
+            # the user to File > Import again (that duplicates the sequence).
+            raise SendError(
+                f"Premiere Pro is still importing (timed out waiting). Check its project panel for the "
+                f"new sequence before sending again. The XML is at {xml_path}"
+            ) from None
+        raise SendError(
+            f"Premiere Pro could not import the sequence ({exc.code}): {exc}. The XML is at "
+            f"{xml_path}; import it in Premiere with File > Import"
+        ) from None
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +190,10 @@ def build_export_dialog(window):
     layout.addWidget(collect)
     open_folder = QCheckBox(_("Open the folder when done"))
     layout.addWidget(open_folder)
+    hint = QLabel(_("Tip: save the Zenvi project first so the default path is next to it "
+                    "(unsaved projects default under your user folder)."))
+    hint.setWordWrap(True)
+    layout.addWidget(hint)
     note = QLabel(_("Titles are rendered as transparent PNG stills next to the XML: Premiere cannot read SVG."))
     note.setWordWrap(True)
     layout.addWidget(note)
@@ -163,7 +206,7 @@ def build_export_dialog(window):
 
 def _export_dialog(window) -> Optional[dict]:
     """Ask for the XML path and options. Returns {path, collect_media, open_folder} or None."""
-    from qt_api import QDialog
+    from qt_api import QDialog, QMessageBox
     dialog, path_edit, collect, open_folder = build_export_dialog(window)
     if dialog.exec_() != QDialog.Accepted:
         return None
@@ -172,6 +215,14 @@ def _export_dialog(window) -> Optional[dict]:
         return None
     if not path.lower().endswith(".xml"):
         path += ".xml"
+    # Browse uses the platform save dialog's own confirm; a typed path does not.
+    if os.path.exists(path):
+        reply = QMessageBox.question(
+            dialog, _tr("Export to Premiere Pro"),
+            _tr("“%s” already exists. Replace it?") % os.path.basename(path),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return None
     return {"path": path, "collect_media": collect.isChecked(), "open_folder": open_folder.isChecked()}
 
 

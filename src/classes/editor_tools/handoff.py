@@ -33,10 +33,10 @@ import os
 import shutil
 from typing import Any, Dict, List, Optional, Tuple
 
+from classes.assets import path_is_under
 from classes.editor_tools._base import (
     ToolError, array, boolean, enum, mapping, nullable, number, obj, ok, string,
 )
-from classes.assets import path_is_under
 from classes.editor_tools._registry import editor_tool
 from classes.logger import log
 
@@ -313,10 +313,12 @@ def _staged_webm(path: str, kind: str) -> str:
 
 
 def _adopt_media(path: str, kind: str) -> tuple:
-    """(media path, undo) for a new linked clip, copied into ``<project>_assets/links/<kind>/``.
+    """(media path, undo) for a new linked clip inside ``<project>_assets/links/<kind>/``.
 
-    The caller's file is never moved: a render saved in /tmp or $TMPDIR is still the
-    user's. ``undo()`` removes the copy if the clip cannot be added."""
+    Files Zenvi staged itself (``.render-…`` folders) are moved; everything else
+    is copied so the caller's original stays put. ``undo()`` puts things back if
+    the clip cannot be added.
+    """
     lm = _lm()
     root = lm.links_root()
     if path_is_under(path, root):
@@ -329,14 +331,26 @@ def _adopt_media(path: str, kind: str) -> tuple:
     while os.path.exists(target):
         target = "%s-%d%s" % (stem, n, ext)
         n += 1
+    moved = lm.is_owned_temp_media(path)
+    partial = target + ".partial"
     try:
-        shutil.copy2(path, target + ".partial")
-        os.replace(target + ".partial", target)
+        if moved:
+            shutil.move(path, partial)
+        else:
+            shutil.copy2(path, partial)
+        os.replace(partial, target)
     except OSError as exc:
-        try:
-            os.unlink(target + ".partial")
-        except OSError:
-            pass
+        # Put the caller's file back if we moved it; never leave a stranded .partial.
+        if moved and not os.path.exists(path) and os.path.isfile(partial):
+            try:
+                shutil.move(partial, path)
+            except OSError:
+                log.warning("could not restore %s after a failed import", path, exc_info=True)
+        elif os.path.isfile(partial):
+            try:
+                os.unlink(partial)
+            except OSError:
+                pass
         raise ToolError(f"could not bring {os.path.basename(path)} into the project's links folder: {exc}") from None
 
     def undo():
@@ -606,7 +620,11 @@ def open_linked_source(clip_id="", file_id="", target="code"):
             return ok(f"Opened the {lm.kind_label(kind)} source.", file_id=fid, target="code", kind=kind)
         # no provider in this build: open the recorded file directly
         file_rel, root = source.get("file"), source.get("project_dir")
-        path = os.path.join(root, file_rel) if root and file_rel else (source.get("aep") or root)
+        if root and file_rel:
+            # Links store project-relative paths with `/`; normalize for the host OS.
+            path = os.path.normpath(os.path.join(str(root), str(file_rel).replace("/", os.sep)))
+        else:
+            path = source.get("aep") or root
         if not path:
             raise ToolError("this link records no source file to open")
         opened = open_source.open_in_editor(path, source.get("line"))
