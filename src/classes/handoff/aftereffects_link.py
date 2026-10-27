@@ -112,8 +112,9 @@ class AfterEffectsProvider:
 
     def render(self, link: dict, out_dir: str, *, on_progress, should_cancel) -> RenderResult:
         source = link.get("source") or {}
-        comp = source.get("composition_key") or source.get("composition")
-        if comp is None:
+        key = source.get("composition_key")
+        comp = key if key is not None else source.get("composition")  # a comp id 0 is still an id
+        if comp is None or comp == "":
             raise LinkError("this After Effects link names no comp; re-import it from After Effects")
         try:
             names = _render_arg_names()
