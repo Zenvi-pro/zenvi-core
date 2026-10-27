@@ -184,6 +184,25 @@ def _popen_kwargs() -> dict:
     return {"start_new_session": True}
 
 
+# The system's default action for these runs them instead of showing them. A link's source path comes
+# from the project file, so a shared project must not be able to start a program through "Open Code".
+_LAUNCHABLE = {
+    "darwin": {".app", ".command", ".tool", ".terminal", ".workflow", ".action", ".pkg", ".mpkg", ".dmg",
+               ".scpt", ".scptd", ".applescript", ".webloc", ".inetloc", ".fileloc", ".prefpane", ".jar"},
+    "win32": {".exe", ".com", ".bat", ".cmd", ".scr", ".pif", ".msi", ".msp", ".lnk", ".url", ".ps1", ".psm1",
+              ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".hta", ".reg", ".cpl", ".jar", ".appref-ms",
+              ".application", ".library-ms", ".settingcontent-ms"},
+    "linux": {".desktop", ".appimage", ".run", ".sh", ".jar"},
+}
+
+
+def launches_with_system(path: str, platform: Optional[str] = None) -> bool:
+    """True when the system's default app would run *path* (a program, script, installer or shortcut)."""
+    platform = platform or sys.platform
+    key = "darwin" if platform == "darwin" else "win32" if platform == "win32" else "linux"
+    return os.path.splitext(path.rstrip("/\\"))[1].lower() in _LAUNCHABLE[key]
+
+
 def _open_with_system(path: str) -> bool:
     from classes.qt_main_thread import call_on_gui
 
@@ -223,6 +242,9 @@ def open_in_editor(file: str, line: Optional[int] = None, *, setting: Optional[s
     root = os.path.abspath(os.path.expanduser(str(folder))) if folder else None
     argv = build_command(choice, target, line, root)
     if argv is None:
+        if launches_with_system(target):
+            raise EditorError(f"{os.path.basename(target)} is a program or shortcut, not a source file; Zenvi does "
+                              "not run it. Set Preferences > General > Code Editor to an editor to open it there")
         if not _open_with_system(target):
             raise EditorError(f"the system could not open {os.path.basename(target)}; set Preferences > General > "
                               "Code Editor to an editor command")

@@ -99,3 +99,29 @@ def test_windows_cmd_shims_run_the_electron_cli_directly_or_refuse_dangerous_nam
         osrc.windows_launcher(["C:\\tools\\edit.cmd", "C:\\a&calc.tsx"], exists=lambda p: False)
     assert osrc.windows_launcher(["C:\\tools\\edit.cmd", "C:\\plain.tsx"], exists=lambda p: False)[0][0].endswith(".cmd")
     assert osrc.windows_launcher(["/usr/bin/code", "x"])[1] == {}
+
+
+@pytest.mark.parametrize("name", ["Evil.app", "run.command", "setup.exe", "go.bat", "Docs.lnk", "x.desktop"])
+def test_the_system_app_never_runs_a_program_a_link_points_at(tmp_path, monkeypatch, name):
+    platform = {".app": "darwin", ".command": "darwin", ".desktop": "linux"}.get(os.path.splitext(name)[1], "win32")
+    monkeypatch.setattr(osrc.sys, "platform", platform)
+    target = tmp_path / name
+    if name.endswith(".app"):
+        target.mkdir()  # a macOS app bundle is a folder
+    else:
+        target.write_text("x")
+    opened = []
+    monkeypatch.setattr(osrc, "_open_with_system", lambda path: opened.append(path) or True)
+    with pytest.raises(osrc.EditorError, match="not run it"):
+        osrc.open_in_editor(str(target), 1, setting="system")
+    assert opened == []
+
+
+def test_the_system_app_still_opens_source_files_and_projects(tmp_path, monkeypatch):
+    opened = []
+    monkeypatch.setattr(osrc, "_open_with_system", lambda path: opened.append(path) or True)
+    for name in ("Intro.tsx", "promo.aep", "index.html"):
+        (tmp_path / name).write_text("x")
+        assert osrc.open_in_editor(str(tmp_path / name), None, setting="system")["editor"] == "system"
+    assert [os.path.basename(p) for p in opened] == ["Intro.tsx", "promo.aep", "index.html"]
+    assert osrc.launches_with_system("/a/Evil.app/", "darwin") and not osrc.launches_with_system("/a/b.js", "darwin")
