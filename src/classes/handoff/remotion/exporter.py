@@ -1,0 +1,1188 @@
+"""A Zenvi project as a working Remotion project (SPEC §3.7, ``export_to_remotion_tool``).
+
+``export_project(snapshot, project_data, output_dir)`` writes::
+
+    package.json          remotion 4.0.532 + react 19.1 + zod (pinned; verified on macOS)
+    tsconfig.json  remotion.config.ts  .gitignore  README.md
+    src/index.ts          registerRoot
+    src/Root.tsx          <Composition id="ZenviTimeline" schema=... defaultProps=...>
+    src/zenvi/timeline.json   the readable timeline + the original project (lossless re-import)
+    src/zenvi/*.tsx|ts    the generic renderer (Sequence, OffthreadVideo, Img, Audio, interpolate)
+    public/zenvi-media/*  the media (copied, or symlinked)
+
+The template files live in ``template/`` next to this module (package
+data). Everything is computed from a ``TimelineSnapshot`` (taken on the GUI
+thread) and a copy of the project data, so the export runs off the GUI
+thread. A new folder is built in a hidden sibling and renamed into place
+when complete; exporting again into a previous Zenvi export stages the
+update in a hidden folder inside it and renames it into place at the end,
+keeping ``node_modules``, any dependencies and files you added. It refuses
+(``ExportHasEdits``) to discard changes made there since -- the export
+records what Zenvi wrote under ``zenvi.files`` / ``zenvi.media_files`` --
+unless ``replace_edits``, and never writes or deletes through linked
+folders.
+
+Mapping (exact unless noted; README lists the approximations):
+
+* timing: ``from`` / ``durationInFrames`` from position and duration on the
+  composition's frame grid; tracks bottom -> top (later draws on top);
+* transform: scale mode, gravity, location, scale, rotation, origin, shear
+  and margin through ``geometry.ts`` (a port of ``handoff.transform.geometry``);
+* keyframes: every point as ``{frame, value, easing}``; ``easing`` is the
+  segment ending at the point (libopenshot's rule): ``linear``, ``hold`` or
+  the cubic-bezier of the two points' handles;
+* speed: the clip's ``time`` curve sampled over its visible frames (it is
+  what libopenshot plays): 1:1 -> ``trimBefore``; a constant rate ->
+  ``playbackRate``; anything else (hold, reverse, ramps) -> one source frame
+  per output frame (picture only);
+* transitions: libopenshot's Mask math sampled per frame into an opacity
+  multiplier for the clips on that track -- exact for fades, wipes as fades;
+* effects: Brightness/Contrast, Saturation, Hue, Blur, Negate as CSS
+  filters, Crop as a clip-path, blend modes as ``mix-blend-mode``; the rest
+  are listed in the README (they still come back on re-import).
+"""
+
+from __future__ import annotations
+
+import copy
+import datetime
+import hashlib
+import json
+import math
+import os
+import re
+import shutil
+import stat
+import struct
+import tempfile
+from dataclasses import dataclass
+from fractions import Fraction
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from classes.handoff.keyframes import Curve, Segment
+from classes.handoff.linked_media import LinkError
+from classes.handoff.timeline_view import ClipView, FileView, TimelineSnapshot, TransitionView
+from classes.handoff.transform import SCALE_NONE
+from classes.logger import log
+
+REMOTION_VERSION = "4.0.532"
+DEPENDENCIES = {
+    "@remotion/cli": REMOTION_VERSION,
+    "@remotion/zod-types": REMOTION_VERSION,
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "remotion": REMOTION_VERSION,
+    "zod": "4.5.4",  # what Remotion 4.0.532 itself pins (@remotion/studio-shared package-info)
+}
+DEV_DEPENDENCIES = {"@types/react": "19.1.0", "typescript": "5.9.3"}
+COMPOSITION_ID = "ZenviTimeline"
+TIMELINE_VERSION = 1
+MEDIA_DIR = "zenvi-media"
+TIMELINE_REL = "src/zenvi/timeline.json"
+TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "template")
+# (template file, destination) copied verbatim
+STATIC_FILES = (
+    ("tsconfig.json", "tsconfig.json"),
+    ("remotion.config.ts", "remotion.config.ts"),
+    ("gitignore.txt", ".gitignore"),
+    ("src/index.ts", "src/index.ts"),
+    ("src/zenvi/types.ts", "src/zenvi/types.ts"),
+    ("src/zenvi/geometry.ts", "src/zenvi/geometry.ts"),
+    ("src/zenvi/curves.ts", "src/zenvi/curves.ts"),
+    ("src/zenvi/timing.ts", "src/zenvi/timing.ts"),
+    ("src/zenvi/ZenviClip.tsx", "src/zenvi/ZenviClip.tsx"),
+    ("src/zenvi/ZenviTimeline.tsx", "src/zenvi/ZenviTimeline.tsx"),
+)
+GENERATED_FILES = ("package.json", "src/Root.tsx", TIMELINE_REL, "README.md")
+# Clip keyframes the renderer reads, with the value an absent key has (Clip.cpp init_settings).
+CLIP_KEYS = {"alpha": 1.0, "location_x": 0.0, "location_y": 0.0, "scale_x": 1.0, "scale_y": 1.0, "rotation": 0.0,
+             "origin_x": 0.5, "origin_y": 0.5, "shear_x": 0.0, "shear_y": 0.0, "volume": 1.0, "margin": 0.0,
+             "corner_radius": 0.0}
+# libopenshot CompositeType (src/Enums.h) -> CSS mix-blend-mode
+BLEND_MODES = {12: "plus-lighter", 13: "multiply", 14: "screen", 15: "overlay", 16: "darken", 17: "lighten",
+               18: "color-dodge", 19: "color-burn", 20: "hard-light", 21: "soft-light", 22: "difference",
+               23: "exclusion"}
+ALPHA_VCODECS = ("qtrle", "png", "prores", "prores_ks", "rawvideo", "ffv1", "utvideo", "hap")
+LOSSY_UI_KEYS = ("ui",)   # waveform caches: regenerated by Zenvi, not exported
+BASELINE_KEYS = ("composition", "background", "tracks", "media", "clips", "transitions", "markers")
+
+ProgressFn = Callable[[Optional[float], str], None]
+
+
+class ExportError(LinkError):
+    """The export cannot run; the message says what to change."""
+
+
+@dataclass(frozen=True)
+class Asset:
+    key: str      # file id, or "mask:<path>"
+    source: str   # absolute path of the original
+    src: str      # path under public/ ("zenvi-media/beach.mp4")
+    size: int
+
+
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+
+def round_half_up(x: float) -> int:
+    return int(math.floor(float(x) + 0.5))
+
+
+def _num(value: float) -> float:
+    v = round(float(value), 6)
+    return 0.0 if v == 0 else v
+
+
+def _clamp01(x: float) -> float:
+    return max(0.0, min(1.0, float(x)))
+
+
+def _f32(x: float) -> float:
+    return struct.unpack("f", struct.pack("f", float(x)))[0]
+
+
+def _clamp_u8(x: int) -> int:
+    return 0 if x < 0 else 255 if x > 255 else int(x)
+
+
+def _safe(text: str, fallback: str = "media") -> str:
+    out = re.sub(r"[^A-Za-z0-9._-]+", "-", str(text or "")).strip("-._")
+    return (out or fallback)[:80]
+
+
+def npm_name(project_name: str) -> str:
+    slug = re.sub(r"[^a-z0-9._~-]+", "-", str(project_name or "").lower()).strip("-._~")
+    return ("zenvi-" + (slug or "timeline"))[:214]
+
+
+def fps_number(fps: Fraction) -> float:
+    value = float(fps)
+    return int(value) if value == int(value) else round(value, 12)
+
+
+def _write_text(path: str, text: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    partial = path + ".partial"
+    with open(partial, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+    os.replace(partial, path)
+
+
+def _template(rel: str) -> str:
+    path = os.path.join(TEMPLATE_DIR, *rel.split("/"))
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    except OSError as exc:
+        raise ExportError(f"this Zenvi build is missing the Remotion template file {rel}: {exc}") from None
+
+
+def _one_line(text: str) -> str:
+    return " ".join(str(text or "").split())
+
+
+# ---------------------------------------------------------------------------
+# Keyframes, speed, transitions, effects
+# ---------------------------------------------------------------------------
+
+def curve_keys(curve: Curve, offset: int = 0, convert: Optional[Callable[[float], float]] = None) -> List[dict]:
+    """Keyframes of *curve* as ``{frame, value, easing}``.
+
+    ``frame`` is a clip frame: 0 is the clip's first frame before any trim
+    (libopenshot's keyframe X - 1), so keyframes stay on the source when the
+    clip's ``start`` changes -- in Remotion as in Zenvi. *offset* shifts them
+    (0 for clips). Each key's easing shapes the segment ending at it.
+    """
+    conv = convert or (lambda v: v)
+    pts = curve.points
+    if not pts:
+        return [{"frame": 0, "value": _num(conv(curve.default)), "easing": None}]
+    out: List[dict] = []
+    for i, p in enumerate(pts):
+        easing: Any = None
+        if i:
+            seg = Segment(pts[i - 1], p)
+            if seg.easing == "hold":
+                easing = "hold"
+            elif seg.easing == "linear":
+                easing = "linear"
+            else:
+                x1, y1, x2, y2 = seg.bezier or (0.0, 0.0, 1.0, 1.0)
+                easing = [_num(_clamp01(x1)), _num(y1), _num(_clamp01(x2)), _num(y2)]
+        out.append({"frame": _num(p.frame - 1 - offset), "value": _num(conv(p.value)), "easing": easing})
+    return out
+
+
+def _is_default(curve: Curve, default: float) -> bool:
+    return curve.is_constant and abs(curve.first_value - default) < 1e-9
+
+
+def clip_frames(clip: ClipView, fps: Fraction) -> Tuple[int, int, int]:
+    """(from, durationInFrames, offset) of a clip on the composition's grid."""
+    rate = float(fps)
+    start = round_half_up(clip.timeline_in * rate)
+    end = round_half_up(clip.timeline_out * rate)
+    return start, max(1, end - start), round_half_up(clip.start * rate)
+
+
+def time_spec(clip: ClipView, fps: Fraction, offset: int, frames: int) -> Tuple[dict, Optional[str]]:
+    """How the clip's source plays: normal / rate / freeze / map (and a warning when sound is lost).
+
+    Samples the clip's ``time`` curve over the frames it shows, like
+    libopenshot (``time.GetLong(clip_frame)``), instead of trusting a
+    one-number speed: a curve that ends inside the clip holds its last frame.
+    ``normal`` carries nothing (the renderer plays the media from the clip's
+    ``start``); ``rate`` and ``map`` carry ``forTrim``, the trimmed clip
+    frames they were sampled for, so the renderer can follow an edited
+    ``start``.
+    """
+    raw = clip.data.get("time")
+    curve = Curve.from_json(raw, fps=fps, position=clip.position, start=clip.start) if raw is not None else None
+    if curve is None or len(curve.points) < 2:
+        return {"mode": "normal"}, None
+    first = offset + 1
+    sources = [max(1, round_half_up(curve.value_at_frame(first + i))) for i in range(max(1, frames))]
+    deltas = [b - a for a, b in zip(sources, sources[1:])]
+    if (not deltas or all(d == 1 for d in deltas)) and sources[0] - 1 == offset:
+        return {"mode": "normal"}, None
+    if deltas and all(d == 0 for d in deltas):
+        return {"mode": "freeze", "trimBefore": sources[0] - 1}, f"clip {clip.title!r} holds one frame: no sound in Remotion"
+    rate = (sources[-1] - sources[0]) / float(len(sources) - 1) if len(sources) > 1 else 1.0
+    if rate > 0 and max(abs(sources[i] - (sources[0] + rate * i)) for i in range(len(sources))) <= 1.0:
+        return {"mode": "rate", "trimBefore": sources[0] - 1, "playbackRate": _num(rate), "forTrim": offset}, None
+    return ({"mode": "map", "map": [s - 1 for s in sources], "forTrim": offset},
+            f"clip {clip.title!r} changes speed or plays backwards: Remotion shows the right frames but no sound")
+
+
+def mask_multiplier(brightness: float, contrast: float, gray: int = 0, mask_alpha: int = 255) -> float:
+    """libopenshot 1.0 Mask (src/effects/Mask.cpp, as ported by the web engine): alpha factor for one pixel."""
+    adjust = math.trunc(255 * float(brightness))
+    factor = _f32(20 / max(0.5, _f32(20 - _f32(contrast))))
+    adjusted = _clamp_u8(math.trunc(_f32(factor * (gray + adjust - 128) + 128)))
+    return _clamp_u8(mask_alpha - adjusted) / 255.0
+
+
+def transition_entry(tr: TransitionView, fps: Fraction, mask_src: Optional[str]) -> dict:
+    rate = float(fps)
+    start = round_half_up(tr.position * rate)
+    count = max(1, round_half_up((tr.position + tr.duration) * rate) - start)
+    is_fade = (not tr.mask_path) or os.path.basename(tr.mask_path).lower().startswith("fade")
+    gray = 0 if is_fade else 128
+    invert = bool(tr.data.get("mask_invert")) if hasattr(tr.data, "get") else False
+    opacity = []
+    for i in range(count):
+        t = (start + i) / rate
+        value = mask_multiplier(tr.brightness.value_at(t), tr.contrast.value_at(t), gray)
+        opacity.append(round(1.0 - value if invert else value, 4))
+    return {"id": tr.id, "title": tr.title, "track": tr.track_index, "layer": tr.layer, "from": start,
+            "durationInFrames": count, "kind": "fade" if is_fade else "wipe", "mask": mask_src, "opacity": opacity}
+
+
+def _contrast_factor(c: float) -> float:
+    """libopenshot Brightness contrast: ((c + 255) * 259) / ((259 - c) * 255)."""
+    return ((c + 255.0) * 259.0) / max(1e-6, (259.0 - c) * 255.0)
+
+
+def effect_filters(clip: ClipView, offset: int) -> Tuple[List[dict], Optional[dict], List[str]]:
+    """(CSS filters, crop, notes about effects that are not exported) for a clip's effects."""
+    filters: List[dict] = []
+    crop: Optional[dict] = None
+    notes: List[str] = []
+
+    def keys(effect, name: str, default: float, convert=None) -> List[dict]:
+        curve = effect.curve(name)
+        if curve is None:
+            value = effect.params.get(name, default)
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                value = default
+            curve = Curve.constant(value, fps=clip.fps, position=clip.position, start=clip.start)
+        return curve_keys(curve, offset, convert)
+
+    for effect in clip.effects:
+        cls = effect.class_name
+        if cls == "Brightness":
+            filters.append({"fn": "contrast", "unit": "", "keys": keys(effect, "contrast", 3.0, _contrast_factor)})
+            filters.append({"fn": "brightness", "unit": "", "keys": keys(effect, "brightness", 0.0, lambda v: 1 + v)})
+        elif cls == "Saturation":
+            filters.append({"fn": "saturate", "unit": "", "keys": keys(effect, "saturation", 1.0)})
+        elif cls == "Hue":
+            filters.append({"fn": "hue-rotate", "unit": "deg", "keys": keys(effect, "hue", 0.0, lambda v: v * 360)})
+        elif cls == "Blur":
+            vertical = effect.curve("vertical_radius")
+            v0 = vertical.first_value if vertical is not None else 0.0
+            iters = effect.curve("iterations")
+            n = max(1.0, iters.first_value if iters is not None else 3.0)
+            filters.append({"fn": "blur", "unit": "px", "keys": keys(
+                effect, "horizontal_radius", 0.0,
+                lambda r: math.sqrt(max(0.0, n * max(r, v0) * (max(r, v0) + 1) / 3.0)))})
+        elif cls == "Negate":
+            filters.append({"fn": "invert", "unit": "", "keys": [{"frame": 0, "value": 1, "easing": None}]})
+        elif cls == "Crop":
+            crop = {side: keys(effect, side, 0.0) for side in ("left", "right", "top", "bottom")}
+            if effect.params.get("resize"):
+                notes.append(f"clip {clip.title!r}: Crop 'resize' is shown uncropped-size in Remotion")
+        else:
+            notes.append(f"clip {clip.title!r}: effect {effect.name or cls} is not drawn in Remotion "
+                         "(it comes back when the project is re-imported)")
+        mask = effect.data.get("mask_reader") if hasattr(effect.data, "get") else None
+        if isinstance(mask, dict) and str(mask.get("path") or ""):
+            notes.append(f"clip {clip.title!r}: the mask of effect {effect.name or cls} is not exported")
+    return filters, crop, notes
+
+
+# ---------------------------------------------------------------------------
+# Media
+# ---------------------------------------------------------------------------
+
+def clip_kind(file: FileView) -> str:
+    if file.is_title:
+        return "title"
+    if file.media_type == "image" or bool(file.data.get("has_single_image")):
+        return "image"
+    if file.media_type == "audio" or not file.has_video:
+        return "audio"
+    return "video"
+
+
+def metadata_rotation(data: Any) -> float:
+    """The ``rotate`` metadata of a probed file (phone videos), in degrees; 0 when there is none."""
+    metadata = (data or {}).get("metadata") if hasattr(data, "get") else None
+    try:
+        return float((metadata or {}).get("rotate") or 0.0) if hasattr(metadata or {}, "get") else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def has_alpha(file: FileView) -> bool:
+    link = file.zenvi_link
+    if link is not None:
+        codec = str(((link.get("render") or {}) if hasattr(link, "get") else {}).get("codec") or "")
+        if codec in ("prores4444", "qtrle"):
+            return True
+    return str(file.data.get("vcodec") or "").lower() in ALPHA_VCODECS
+
+
+def plan_assets(snapshot: TimelineSnapshot) -> Tuple[Dict[str, Asset], List[str]]:
+    """file id (or ``mask:<path>``) -> where its copy goes under public/, plus warnings for media left out."""
+    assets: Dict[str, Asset] = {}
+    by_source: Dict[str, Asset] = {}
+    taken: set = set()
+    warnings: List[str] = []
+
+    def _add(key: str, source: str, name: str) -> Optional[Asset]:
+        if source in by_source:
+            assets[key] = by_source[source]
+            return assets[key]
+        stem = _safe(os.path.splitext(name)[0] or os.path.splitext(os.path.basename(source))[0])
+        ext = os.path.splitext(source)[1].lower()
+        candidate, n = stem + ext, 2
+        while candidate.lower() in taken:
+            candidate, n = f"{stem}-{n}{ext}", n + 1
+        taken.add(candidate.lower())
+        try:
+            size = os.path.getsize(source)
+        except OSError:
+            size = 0
+        asset = Asset(key, source, f"{MEDIA_DIR}/{candidate}", size)
+        assets[key] = by_source[source] = asset
+        return asset
+
+    for f in snapshot.used_files():
+        if f.is_image_sequence:
+            warnings.append(f"{f.name}: image sequences are not exported to Remotion (its clips are left out)")
+            continue
+        if not f.path or not os.path.isfile(f.path):
+            warnings.append(f"{f.name}: the media file {f.path or '(none)'} is missing (its clips are left out)")
+            continue
+        _add(f.id, f.path, f.name or os.path.basename(f.path))
+    for tr in snapshot.transitions:
+        if tr.mask_path and os.path.isfile(tr.mask_path):
+            _add("mask:" + tr.mask_path, tr.mask_path, os.path.basename(tr.mask_path))
+    return assets, warnings
+
+
+def install_media(assets: Dict[str, Asset], public_dir: str, *, copy_media: bool = True,
+                  on_progress: Optional[ProgressFn] = None, should_cancel: Optional[Callable[[], bool]] = None,
+                  keep: Optional[set] = None, live_dir: Optional[str] = None,
+                  moves: Optional[List[Tuple[str, str]]] = None) -> List[str]:
+    """Copy (or symlink) each asset into *public_dir*; returns warnings. Files already identical are kept.
+
+    With *live_dir* (updating an earlier export) the existing copies are
+    looked up there and new ones are written to *public_dir* (a staging
+    folder): each ``(staged, live)`` pair is appended to *moves* for the
+    caller to rename into place once everything is ready.
+    """
+    from classes.handoff.jobs import JobCancelled
+    unique = {a.src: a for a in assets.values()}
+    total = sum(a.size for a in unique.values()) or 1
+    done = 0
+    warnings: List[str] = []
+    report = on_progress or (lambda _f, _m: None)
+    for src, asset in sorted(unique.items()):
+        if should_cancel is not None and should_cancel():
+            raise JobCancelled("Remotion export cancelled")
+        dest = os.path.join(public_dir, *src.split("/"))
+        live = os.path.join(live_dir, *src.split("/")) if live_dir else dest
+        report(done / total, f"Copying {os.path.basename(asset.source)}")
+        if os.path.lexists(live):
+            same = False
+            try:
+                if os.path.islink(live):
+                    same = (not copy_media) and os.path.realpath(live) == os.path.realpath(asset.source)
+                else:
+                    st, sd = os.stat(asset.source), os.stat(live)
+                    same = copy_media and st.st_size == sd.st_size and int(st.st_mtime) == int(sd.st_mtime)
+            except OSError:
+                same = False
+            if same:
+                done += asset.size
+                continue
+            if live == dest:
+                os.remove(dest)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        if live != dest and moves is not None:
+            moves.append((dest, live))
+        if not copy_media:
+            try:
+                os.symlink(asset.source, dest)
+                done += asset.size
+                continue
+            except (OSError, NotImplementedError):
+                warnings.append(f"could not symlink {os.path.basename(asset.source)}; copied it instead")
+        partial = dest + ".partial"
+        shutil.copy2(asset.source, partial)
+        os.replace(partial, dest)
+        done += asset.size
+    report(1.0, "Media ready")
+    if keep is not None:
+        keep.update(unique)
+    return warnings
+
+
+def media_record(path: str) -> Optional[dict]:
+    """What Zenvi wrote at *path* (a media copy or link): size, mtime and whether it is a link."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    if stat.S_ISLNK(st.st_mode):
+        return {"link": True}
+    return {"size": int(st.st_size), "mtime_ns": int(st.st_mtime_ns), "link": False}
+
+
+# ---------------------------------------------------------------------------
+# timeline.json
+# ---------------------------------------------------------------------------
+
+def project_copy(data: Any) -> dict:
+    """A deep copy of project data minus undo history and clip waveform caches (``ui``).
+
+    Cheap enough for the GUI thread: the waveform samples are what make a
+    plain deep copy of a big project slow.
+    """
+    out: dict = {}
+    for key, value in dict(data or {}).items():
+        if key == "history":
+            continue
+        if key == "clips" and isinstance(value, list):
+            out[key] = [{k: copy.deepcopy(v) for k, v in c.items() if k not in LOSSY_UI_KEYS}
+                        if isinstance(c, dict) else copy.deepcopy(c) for c in value]
+        else:
+            out[key] = copy.deepcopy(value)
+    return out
+
+
+def snapshot_from_app() -> Tuple[TimelineSnapshot, dict]:
+    """(snapshot, project data copy) of the open project. GUI thread; export from them off it."""
+    from classes.app import get_app
+    app = get_app()
+    data = project_copy(app.project._data)
+    path = getattr(app.project, "current_filepath", None) or None
+    return TimelineSnapshot.from_project(data, path), data
+
+
+def lossless_project(project_data: dict) -> dict:
+    """The project as re-import restores it: everything but undo history and waveform caches."""
+    data = copy.deepcopy(dict(project_data or {}))
+    data.pop("history", None)
+    for clip in data.get("clips") or []:
+        if isinstance(clip, dict):
+            for key in LOSSY_UI_KEYS:
+                clip.pop(key, None)
+    return data
+
+
+def readable_hash(timeline: dict) -> str:
+    body = {k: v for k, v in timeline.items() if k != "zenvi"}
+    blob = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def clip_entry(clip: ClipView, asset: Asset, fps: Fraction) -> Tuple[dict, List[str]]:
+    file = clip.file
+    assert file is not None
+    start, frames, offset = clip_frames(clip, fps)
+    kind = clip_kind(file)
+    notes: List[str] = []
+    keyframes = {}
+    for key, default in CLIP_KEYS.items():
+        curve = clip.curve(key)
+        if key in ("alpha", "volume") or not _is_default(curve, default):
+            keyframes[key] = curve_keys(curve)
+    time, note = (time_spec(clip, fps, offset, frames) if kind in ("video", "audio")
+                  else ({"mode": "normal", "trimBefore": 0, "playbackRate": 1}, None))
+    if note:
+        notes.append(note)
+    filters, crop, effect_notes = effect_filters(clip, 0) if kind != "audio" else ([], None, [])
+    notes += effect_notes
+    composite = clip.data.get("composite")
+    blend = None
+    try:
+        code = int(composite) if composite is not None else 0
+    except (TypeError, ValueError):
+        code = 0
+    if code in BLEND_MODES:
+        blend = BLEND_MODES[code]
+    elif code not in (0,):
+        notes.append(f"clip {clip.title!r}: composite mode {code} is drawn as normal in Remotion")
+    if clip.parent_id:
+        notes.append(f"clip {clip.title!r} follows a parent clip in Zenvi; Remotion draws it on its own")
+    max_scale = None
+    if int(clip.scale_mode) == SCALE_NONE:  # libopenshot decodes at the largest scale first (delivered_size)
+        tops = [max((p.value for p in clip.curve(k).points), default=None) for k in ("scale_x", "scale_y")]
+        if tops[0] is not None and tops[1] is not None:
+            max_scale = [_num(tops[0]), _num(tops[1])]
+    has_audio = file.has_audio if clip.has_audio is None else bool(clip.has_audio)
+    has_video = (kind != "audio") if clip.has_video is None else (bool(clip.has_video) and kind != "audio")
+    entry = {
+        "id": clip.id, "title": clip.title, "fileId": file.id, "track": clip.track_index, "layer": clip.layer,
+        "position": _num(clip.position), "start": _num(clip.start),
+        "end": _num(clip.end), "kind": kind, "src": asset.src, "transparent": kind in ("image", "title") or has_alpha(file),
+        "sourceWidth": int(file.width or 0) or None, "sourceHeight": int(file.height or 0) or None,
+        "scaleMode": int(clip.scale_mode), "gravity": int(clip.gravity), "maxScale": max_scale, "time": time,
+        "keyframes": keyframes,
+        "hasAudio": bool(has_audio), "hasVideo": bool(has_video), "filters": filters, "crop": crop,
+        "blendMode": blend,
+    }
+    return entry, notes
+
+
+def build_timeline(snapshot: TimelineSnapshot, project_data: dict, assets: Dict[str, Asset], *,
+                   generator: str, exported_at: Optional[str] = None) -> Tuple[dict, List[str]]:
+    """timeline.json for *snapshot* (+ the lossless project) and notes on what Remotion cannot show."""
+    fps = snapshot.fps
+    width, height = int(snapshot.width), int(snapshot.height)
+    notes: List[str] = []
+    clips: List[dict] = []
+    end_frame = 1
+    for track in snapshot.tracks:
+        for clip in track.clips:
+            file = clip.file
+            if file is None:
+                notes.append(f"clip {clip.title or clip.id!r} has no project file and is left out")
+                continue
+            asset = assets.get(file.id)
+            if asset is None:
+                continue  # missing or unsupported media: already warned about
+            entry, clip_notes = clip_entry(clip, asset, fps)
+            if entry["sourceWidth"] is None or entry["sourceHeight"] is None:
+                entry["sourceWidth"], entry["sourceHeight"] = width, height
+            clips.append(entry)
+            notes += clip_notes
+            from_frame, frames, _trim = clip_frames(clip, fps)
+            end_frame = max(end_frame, from_frame + frames)
+    transitions = []
+    for tr in snapshot.transitions:
+        mask = assets.get("mask:" + tr.mask_path) if tr.mask_path else None
+        entry = transition_entry(tr, fps, mask.src if mask else None)
+        transitions.append(entry)
+        if entry["kind"] == "wipe":
+            notes.append(f"transition {tr.title or tr.id!r} is a wipe; Remotion plays it as a fade")
+        end_frame = max(end_frame, entry["from"] + entry["durationInFrames"])
+    media = {}
+    for key, asset in sorted(assets.items()):
+        if key.startswith("mask:"):
+            continue
+        f = snapshot.file(key)
+        if f is None:
+            continue
+        info = {"src": asset.src, "name": f.name, "type": clip_kind(f), "width": int(f.width or 0),
+                "height": int(f.height or 0), "duration": _num(f.duration), "hasAudio": bool(f.has_audio),
+                "hasVideo": bool(f.has_video)}
+        if f.zenvi_link is not None:
+            link = dict(f.zenvi_link)
+            info["linked"] = {"kind": link.get("kind"),
+                              "composition": (link.get("source") or {}).get("composition")}
+        rotation = metadata_rotation(f.data)
+        if rotation % 360:
+            notes.append(f"{f.name} is stored rotated ({rotation:g}°, phone video): the browser applies that rotation "
+                         "itself, so check it in Remotion Studio -- it can look rotated twice or squashed")
+        media[key] = info
+    rate = float(fps)
+    timeline = {
+        "zenvi_timeline": TIMELINE_VERSION,
+        "source_project": snapshot.name,
+        "generator": generator,
+        "exported_at": exported_at or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "conventions": {
+            "timing": "clips: position (timeline start), start (source in) and end (source out) in seconds -- the "
+                      "renderer and the round trip read these; transitions: from / durationInFrames (frames, "
+                      "0-based); markers: time (seconds) or frame",
+            "frames": "clip keyframe frames are clip frames: 0 is the clip's first frame before any trim; the clip "
+                      "shows them from start x fps on",
+            "easing": "each keyframe's easing shapes the segment that ENDS at it: linear, hold, or a cubic-bezier "
+                      "[x1, y1, x2, y2]",
+            "units": "location: fraction of the canvas; scale: factor; rotation: degrees clockwise; alpha and "
+                     "volume: 0..1; scaleMode 0 crop / 1 fit / 2 stretch / 3 none; gravity 0..8 = top-left .. "
+                     "bottom-right",
+        },
+        "composition": {"id": COMPOSITION_ID, "width": width, "height": height, "fps": fps_number(fps),
+                        "fpsFraction": {"num": fps.numerator, "den": fps.denominator},
+                        "durationInFrames": end_frame},
+        "background": "#000000",
+        "tracks": [{"index": t.index, "layer": t.number, "name": t.name, "locked": t.locked}
+                   for t in snapshot.tracks],
+        "media": media,
+        "clips": clips,
+        "transitions": transitions,
+        "markers": [{"id": m.id, "frame": round_half_up(m.time * rate), "time": _num(m.time), "name": m.name,
+                     "color": m.color} for m in snapshot.markers],
+        "notes": sorted(set(notes)),
+    }
+    timeline["zenvi"] = {
+        "project": lossless_project(project_data),
+        "assets": {a.source: a.src for a in assets.values()},
+        # the readable timeline as exported: re-import compares it with the (possibly edited) one above
+        "baseline": copy.deepcopy({k: timeline[k] for k in BASELINE_KEYS}),
+        "readable_sha256": readable_hash(timeline),
+    }
+    return timeline, sorted(set(notes))
+
+
+# ---------------------------------------------------------------------------
+# Files
+# ---------------------------------------------------------------------------
+
+def render_root_tsx(source_project: str, generator: str) -> str:
+    return (_template("src/Root.tsx").replace("{{GENERATOR}}", _one_line(generator))
+            .replace("{{SOURCE_PROJECT}}", _one_line(source_project).replace('"', "'")))
+
+
+def package_json(source_project: str, existing: Optional[dict] = None) -> dict:
+    """Our package.json, or *existing* (a previous export) with our pins refreshed and the user's additions kept."""
+    base = {"name": npm_name(source_project), "version": "1.0.0", "private": True,
+            "description": _one_line(f"Remotion project exported from the Zenvi project {source_project}"),
+            "scripts": {"studio": "remotion studio", "render": f"remotion render {COMPOSITION_ID} out/video.mp4",
+                        "upgrade": "remotion upgrade"},
+            "dependencies": dict(DEPENDENCIES), "devDependencies": dict(DEV_DEPENDENCIES)}
+    if not isinstance(existing, dict):
+        return base
+    out = copy.deepcopy(existing)
+    for section in ("dependencies", "devDependencies"):
+        current = out.get(section)
+        if not isinstance(current, dict):
+            current = {}
+        current.update(base[section])
+        out[section] = current
+    scripts = out.get("scripts")
+    if not isinstance(scripts, dict):
+        scripts = {}
+    for name, cmd in base["scripts"].items():
+        scripts.setdefault(name, cmd)
+    out["scripts"] = scripts
+    return out
+
+
+def render_readme(timeline: dict, *, generator: str, copy_media: bool, notes: List[str]) -> str:
+    comp = timeline["composition"]
+    seconds = comp["durationInFrames"] / float(comp["fps"] or 30)
+    duration = "%d:%05.2f" % (int(seconds // 60), seconds % 60)
+    lines = ["Notes for this export:", ""] + [f"- {n}" for n in notes] if notes else []
+    return (_template("README.md")
+            .replace("{{SOURCE_PROJECT}}", _one_line(timeline.get("source_project") or "Untitled"))
+            .replace("{{GENERATOR}}", _one_line(generator))
+            .replace("{{WIDTH}}", str(comp["width"])).replace("{{HEIGHT}}", str(comp["height"]))
+            .replace("{{FPS}}", str(comp["fps"])).replace("{{DURATION}}", duration)
+            .replace("{{REMOTION_VERSION}}", REMOTION_VERSION)
+            .replace("{{MEDIA_MODE}}", "copies of the project's media" if copy_media
+                     else "symbolic links to the project's media")
+            .replace("{{NOTES}}", "\n".join(lines).strip()))
+
+
+def is_zenvi_export(folder: str) -> bool:
+    path = os.path.join(folder, *TIMELINE_REL.split("/"))
+    if not os.path.isfile(path):
+        return False
+    try:
+        with open(path, encoding="utf-8") as fh:
+            head = fh.read(4096)
+    except OSError:
+        return False
+    return bool(re.search(r'"zenvi_timeline"\s*:\s*\d+', head))
+
+
+def target_mode(output_dir: str) -> str:
+    """``new`` (missing or empty folder) or ``update`` (a previous Zenvi export); ExportError otherwise."""
+    if not output_dir:
+        raise ExportError("output_dir is required: the folder to create the Remotion project in")
+    if os.path.isfile(output_dir):
+        raise ExportError(f"{output_dir} is a file; pick a folder for the Remotion project")
+    if not os.path.isdir(output_dir):
+        parent = os.path.dirname(output_dir)
+        if parent and not os.path.isdir(parent):
+            raise ExportError(f"the folder {parent} does not exist")
+        return "new"
+    entries = [e for e in os.listdir(output_dir) if e not in (".DS_Store", "Thumbs.db")]
+    if not entries:
+        return "new"
+    if is_zenvi_export(output_dir):
+        return "update"
+    raise ExportError(f"{output_dir} is not empty and is not a Zenvi Remotion export; pick an empty folder or a "
+                      "new folder name (Zenvi creates it)")
+
+
+def project_texts(snapshot: TimelineSnapshot, timeline: dict, *, generator: str, copy_media: bool,
+                  notes: List[str], existing_package: Optional[dict]) -> Dict[str, str]:
+    """Every file Zenvi writes except timeline.json: relative path -> text."""
+    texts = {rel_dest: _template(rel_src) for rel_src, rel_dest in STATIC_FILES}
+    texts["package.json"] = json.dumps(package_json(snapshot.name, existing_package), indent=2) + "\n"
+    texts["src/Root.tsx"] = render_root_tsx(snapshot.name, generator)
+    texts["README.md"] = render_readme(timeline, generator=generator, copy_media=copy_media, notes=notes)
+    return texts
+
+
+def text_sha256(text: str) -> str:
+    """sha256 of a generated text file, line endings normalized (a Windows ``core.autocrlf`` checkout is no edit)."""
+    return "sha256:" + hashlib.sha256(text.replace("\r\n", "\n").encode("utf-8")).hexdigest()
+
+
+def file_sha256(path: str) -> Optional[str]:
+    """:func:`text_sha256` of the file at *path* (CRLF read as LF); None when it cannot be read."""
+    try:
+        with open(path, "rb") as fh:
+            return "sha256:" + hashlib.sha256(fh.read().replace(b"\r\n", b"\n")).hexdigest()
+    except OSError:
+        return None
+
+
+TEXT_MEDIA_SUFFIXES = (".svg", ".json", ".txt", ".srt", ".vtt", ".csv", ".xml", ".html", ".css")
+TEXT_MEDIA_LIMIT = 4 * 1024 * 1024
+
+
+def same_media(a: str, b: str) -> bool:
+    """*a* and *b* hold the same media: text files (title SVGs ...) with line endings normalized, others sampled."""
+    from classes.handoff.remotion import restore
+    try:
+        small = max(os.path.getsize(a), os.path.getsize(b)) <= TEXT_MEDIA_LIMIT
+    except OSError:
+        return False
+    if small and a.lower().endswith(TEXT_MEDIA_SUFFIXES):
+        try:
+            with open(a, "rb") as fa, open(b, "rb") as fb:
+                return fa.read().replace(b"\r\n", b"\n") == fb.read().replace(b"\r\n", b"\n")
+        except OSError:
+            return False
+    return restore._same_content(a, b)
+
+
+IMPORTED_KEY = "remotion_imported"   # under the project's "settings": readable hashes of imported Remotion timelines
+IMPORTED_KEEP = 20
+
+
+def imported_timelines(project_data: Any) -> List[str]:
+    """The readable hashes of the Remotion timelines whose edits this project already contains (restore records
+    them), so exporting into that folder again does not count them as edits to keep."""
+    settings = (project_data or {}).get("settings") if hasattr(project_data, "get") else None
+    value = settings.get(IMPORTED_KEY) if isinstance(settings, dict) else None
+    return [str(v) for v in value if isinstance(v, str)] if isinstance(value, list) else []
+
+
+def with_imported(project_data: Any, digest: str) -> List[str]:
+    """:func:`imported_timelines` plus *digest* (the newest last, at most IMPORTED_KEEP)."""
+    found = [d for d in imported_timelines(project_data) if d != digest] + [digest]
+    return found[-IMPORTED_KEEP:]
+
+
+def _write_files(root: str, texts: Dict[str, str], timeline: dict) -> List[str]:
+    for rel, text in texts.items():
+        _write_text(os.path.join(root, *rel.split("/")), text)
+    _write_text(os.path.join(root, *TIMELINE_REL.split("/")), json.dumps(timeline, indent=1, ensure_ascii=False) + "\n")
+    return list(texts) + [TIMELINE_REL]
+
+
+# ---------------------------------------------------------------------------
+# Exporting into an earlier export
+# ---------------------------------------------------------------------------
+
+class ExportHasEdits(ExportError):
+    """Exporting into this earlier export would throw away changes made in it; ``edits`` lists them."""
+
+    def __init__(self, message: str, edits: List[str]):
+        super().__init__(message)
+        self.edits = list(edits)
+
+
+# Folders an update writes into: as links they would make Zenvi write (and delete) files elsewhere.
+UPDATED_FOLDERS = ("public", "public/" + MEDIA_DIR, "src", "src/zenvi")
+_MEDIA_NAME_RE = re.compile(r"^" + re.escape(MEDIA_DIR) + r"/[^/\\]+$")
+
+
+def _is_link(path: str) -> bool:
+    isjunction = getattr(os.path, "isjunction", None)
+    return os.path.islink(path) or bool(isjunction and isjunction(path))
+
+
+def check_update_target(output_dir: str) -> None:
+    """Refuse an earlier export whose folders Zenvi updates are symbolic links (or junctions) or files."""
+    for rel in UPDATED_FOLDERS:
+        path = os.path.join(output_dir, *rel.split("/"))
+        if _is_link(path):
+            raise ExportError(f"{rel} in {output_dir} is a link (to {os.path.realpath(path)}); Zenvi only updates an "
+                              "export's own folders, so it will not write or delete files through it. Replace the link "
+                              "with a folder, or export into a new folder")
+        if os.path.lexists(path) and not os.path.isdir(path):
+            raise ExportError(f"{rel} in {output_dir} is not a folder; export into a new folder")
+
+
+def read_previous_timeline(output_dir: str) -> Optional[dict]:
+    """The earlier export's timeline.json, or None when it cannot be read."""
+    try:
+        with open(os.path.join(output_dir, *TIMELINE_REL.split("/")), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _same_as_source(path: str, source: Optional[str]) -> bool:
+    """*path* holds what Zenvi copies from *source* (a fresh clone or checkout of the export has new dates)."""
+    if not source or not os.path.isfile(source):
+        return False
+    try:
+        st, sd = os.stat(source), os.stat(path)
+    except OSError:
+        return False
+    if st.st_size == sd.st_size and int(st.st_mtime) == int(sd.st_mtime):
+        return True  # copy2 keeps both
+    return same_media(source, path)
+
+
+def _zenvi_block(timeline: Optional[dict]) -> dict:
+    block = (timeline or {}).get("zenvi")
+    return block if isinstance(block, dict) else {}
+
+
+def update_losses(output_dir: str, previous: Optional[dict], texts: Dict[str, str],
+                  assets: Optional[Dict[str, Asset]] = None, imported: Optional[List[str]] = None) -> List[str]:
+    """What exporting into *output_dir* again would discard: changes made in the Remotion project since Zenvi
+    wrote it (timeline edits not imported yet, code and docs, edited media copies). Blocking (reads files).
+
+    A file counts only when it differs both from what Zenvi recorded writing
+    and from what this export would write, so the files a part-way update
+    already replaced are not mistaken for edits; line endings do not count
+    (a ``core.autocrlf`` checkout), nor do new dates on unchanged media (a
+    clone). Timeline edits whose readable hash is in *imported* (the project
+    restored them) are in the project already.
+    """
+    by_src = {a.src: a for a in (assets or {}).values()}
+    if previous is None:
+        return [f"{TIMELINE_REL} cannot be read (it was changed and is no longer valid JSON)"]
+    zenvi = _zenvi_block(previous)
+    out: List[str] = []
+    stored = zenvi.get("readable_sha256")
+    current = readable_hash(previous)
+    if stored and stored != current and current not in set(imported or []):
+        out.append(f"edits to {TIMELINE_REL} that were not imported into Zenvi yet")
+    originals = {str(src): str(original) for original, src in (zenvi.get("assets") or {}).items()
+                 if isinstance(original, str) and isinstance(src, str)}
+    files = zenvi.get("files")
+    if isinstance(files, dict):
+        for rel, digest in sorted(files.items()):
+            path = os.path.join(output_dir, *str(rel).split("/"))
+            now = file_sha256(path) if os.path.isfile(path) else None
+            if now is not None and now != digest and (rel not in texts or now != text_sha256(texts[rel])):
+                out.append(f"changes to {rel}")
+    else:  # an export from before the manifest: anything that differs from what Zenvi writes now
+        for rel, text in sorted(texts.items()):
+            if rel == "package.json":
+                continue  # merged: the project's own additions are kept
+            path = os.path.join(output_dir, *rel.split("/"))
+            if os.path.isfile(path) and file_sha256(path) != text_sha256(text):
+                out.append(f"changes to {rel} (or an older Zenvi wrote it)")
+    media = zenvi.get("media_files")
+    if isinstance(media, dict):
+        for rel, record in sorted(media.items()):
+            if not isinstance(record, dict) or not _MEDIA_NAME_RE.match(str(rel)):
+                continue
+            path = os.path.join(output_dir, "public", *str(rel).split("/"))
+            now = media_record(path)
+            if now is None or now.get("link"):
+                continue
+            if not record.get("link") and (now.get("size"), now.get("mtime_ns")) == (record.get("size"),
+                                                                                     record.get("mtime_ns")):
+                continue  # as Zenvi wrote it
+            asset = by_src.get(str(rel))
+            if _same_as_source(path, asset.source if asset else originals.get(str(rel))):
+                continue
+            out.append(f"changes to public/{rel}")
+    else:
+        for original, src in sorted((zenvi.get("assets") or {}).items()):
+            copy_path = os.path.join(output_dir, "public", *str(src).split("/"))
+            if not os.path.isfile(copy_path) or os.path.islink(copy_path) or not os.path.isfile(str(original)):
+                continue
+            try:
+                newer = os.path.getmtime(copy_path) > os.path.getmtime(str(original))
+            except OSError:
+                newer = False
+            asset = by_src.get(str(src))
+            if newer and not same_media(str(original), copy_path) \
+                    and not _same_as_source(copy_path, asset.source if asset else None):
+                out.append(f"changes to public/{src}")
+    return out
+
+
+def _recorded_media(previous: Optional[dict]) -> List[str]:
+    """The media files (``zenvi-media/<name>``) the earlier export says Zenvi wrote."""
+    zenvi = _zenvi_block(previous)
+    media, assets = zenvi.get("media_files"), zenvi.get("assets")
+    names = list(media.keys()) if isinstance(media, dict) else []
+    names += [str(v) for v in assets.values()] if isinstance(assets, dict) else []
+    return sorted({str(n) for n in names if _MEDIA_NAME_RE.match(str(n))})
+
+
+STAGING_PREFIX = ".zenvi-update-"
+STAGING_MAX_AGE = 3600.0
+HEARTBEAT = ".zenvi-heartbeat"
+HEARTBEAT_EVERY = 30.0
+STAGING_SCAN_LIMIT = 20000
+
+
+def last_activity(folder: str) -> float:
+    """The newest mtime of *folder* and everything in it (a copy in progress keeps touching its file)."""
+    newest = 0.0
+    seen = 0
+    for dirpath, dirnames, filenames in os.walk(folder):
+        for name in [dirpath] + [os.path.join(dirpath, n) for n in filenames + dirnames]:
+            try:
+                newest = max(newest, os.lstat(name).st_mtime)
+            except OSError:
+                continue
+            seen += 1
+            if seen >= STAGING_SCAN_LIMIT:
+                return newest
+    return newest
+
+
+class _Heartbeat:
+    """Touches ``<stage>/.zenvi-heartbeat`` at most every HEARTBEAT_EVERY seconds while an update runs."""
+
+    def __init__(self, stage: str):
+        import time
+        self.path = os.path.join(stage, HEARTBEAT)
+        self._time = time.monotonic
+        self._last = -HEARTBEAT_EVERY
+        self.beat()
+
+    def beat(self) -> None:
+        now = self._time()
+        if now - self._last < HEARTBEAT_EVERY:
+            return
+        self._last = now
+        try:
+            with open(self.path, "w") as fh:
+                fh.write(str(os.getpid()))
+        except OSError:
+            pass
+
+
+def _remove_old_staging(output_dir: str) -> None:
+    """Staging folders an interrupted update left behind: Zenvi's by name, and nothing in them changed for an
+    hour (a running update's copies and heartbeat keep its folder fresh)."""
+    import time
+    try:
+        names = os.listdir(output_dir)
+    except OSError:
+        return
+    for name in names:
+        path = os.path.join(output_dir, name)
+        if not name.startswith(STAGING_PREFIX) or os.path.islink(path) or not os.path.isdir(path):
+            continue
+        if time.time() - last_activity(path) > STAGING_MAX_AGE:
+            shutil.rmtree(path, ignore_errors=True)
+
+
+def _remove_stale_media(output_dir: str, previous: Optional[dict], kept: set) -> List[str]:
+    """Delete the media an earlier export recorded and this one no longer uses (never anything else)."""
+    removed = []
+    for rel in _recorded_media(previous):
+        if rel in kept:
+            continue
+        path = os.path.join(output_dir, "public", *rel.split("/"))
+        try:
+            st = os.lstat(path)
+        except OSError:
+            continue
+        if stat.S_ISDIR(st.st_mode):
+            continue
+        try:
+            os.remove(path)
+            removed.append("public/" + rel)
+        except OSError as exc:
+            log.warning("could not remove stale Remotion media %s: %s", path, exc)
+    return removed
+
+
+def export_project(snapshot: TimelineSnapshot, project_data: dict, output_dir: str, *, copy_media: bool = True,
+                   install: bool = False, generator: Optional[str] = None, on_progress: Optional[ProgressFn] = None,
+                   should_cancel: Optional[Callable[[], bool]] = None, replace_edits: bool = False) -> dict:
+    """Write the Remotion project for *snapshot* into *output_dir*; returns a receipt. Blocking (disk, npm).
+
+    A new folder is built in a hidden sibling and renamed into place. An
+    earlier export is updated the same way: everything is staged first and
+    renamed into place at the end, so a cancel or failure before that leaves
+    it as it was. It is refused (:class:`ExportHasEdits`) when that would
+    discard changes made in it -- timeline edits not imported yet, changed
+    code or docs, edited media copies -- unless *replace_edits*.
+    """
+    from classes.handoff.jobs import JobCancelled
+    output_dir = os.path.abspath(os.path.expanduser(str(output_dir or "")))
+    mode = target_mode(output_dir)
+    if not snapshot.clips:
+        raise ExportError("the timeline is empty; add clips before exporting to Remotion")
+    if generator is None:
+        from classes import info
+        generator = f"{info.PRODUCT_NAME} {info.VERSION}"
+    report = on_progress or (lambda _f, _m: None)
+    cancel = should_cancel or (lambda: False)
+    assets, warnings = plan_assets(snapshot)
+    timeline, notes = build_timeline(snapshot, project_data, assets, generator=generator)
+    if not timeline["clips"]:
+        raise ExportError("none of the timeline's clips can be exported (their media is missing or unsupported): "
+                          + "; ".join(warnings[:3]))
+    existing_package = None
+    previous = None
+    if mode == "update":
+        check_update_target(output_dir)
+        try:
+            with open(os.path.join(output_dir, "package.json"), encoding="utf-8") as fh:
+                existing_package = json.load(fh)
+        except (OSError, ValueError):
+            existing_package = None
+    texts = project_texts(snapshot, timeline, generator=generator, copy_media=copy_media, notes=notes,
+                          existing_package=existing_package)
+    if mode == "update":
+        previous = read_previous_timeline(output_dir)
+        losses = update_losses(output_dir, previous, texts, assets, imported_timelines(project_data))
+        if losses and not replace_edits:
+            raise ExportHasEdits(
+                f"{output_dir} is an earlier Zenvi export with changes made in it that exporting again would discard: "
+                + "; ".join(losses[:6]) + ("; ..." if len(losses) > 6 else "")
+                + ". Import it into Zenvi first to keep them, export into a new folder, or replace them", losses)
+        if losses:
+            warnings.append("replaced changes made in the earlier export: " + "; ".join(losses[:6]))
+        _remove_old_staging(output_dir)
+        stage = tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=output_dir)
+    else:
+        parent = os.path.dirname(output_dir)
+        os.makedirs(parent, exist_ok=True)
+        stage = tempfile.mkdtemp(prefix="." + os.path.basename(output_dir) + ".zenvi-partial-", dir=parent)
+    live_public = os.path.join(output_dir, "public")
+    removed: List[str] = []
+    heartbeat = _Heartbeat(stage) if mode == "update" else None
+
+    def media_progress(fraction: Optional[float], message: str) -> None:
+        if heartbeat is not None:
+            heartbeat.beat()
+        report(0.85 * (fraction or 0.0), message)
+
+    try:
+        moves: List[Tuple[str, str]] = []
+        kept: set = set()
+        warnings += install_media(assets, os.path.join(stage, "public"), copy_media=copy_media,
+                                  on_progress=media_progress, should_cancel=cancel,
+                                  keep=kept, live_dir=live_public if mode == "update" else None, moves=moves)
+        if cancel():
+            raise JobCancelled("Remotion export cancelled")
+        report(0.9, "Writing the Remotion project")
+        staged = {staged_path for staged_path, _live in moves}
+        records = {}
+        for src in sorted(kept):
+            in_stage = os.path.join(stage, "public", *src.split("/"))
+            record = media_record(in_stage if (mode == "new" or in_stage in staged)
+                                  else os.path.join(live_public, *src.split("/")))
+            if record is not None:
+                records[src] = record
+        timeline["zenvi"]["files"] = {rel: text_sha256(text) for rel, text in sorted(texts.items())
+                                      if rel != "package.json"}
+        timeline["zenvi"]["media_files"] = records
+        written = _write_files(stage, texts, timeline)
+        if cancel():
+            raise JobCancelled("Remotion export cancelled")
+        if mode == "new":
+            if os.path.isdir(output_dir):
+                os.rmdir(output_dir)  # empty (checked above)
+            os.replace(stage, output_dir)
+            stage = output_dir
+        else:
+            # Everything is ready: rename it into place (quick; never cancelled), timeline.json last so the
+            # project never points at media that is not there yet.
+            done = 0
+            try:
+                for staged_path, live in moves:
+                    os.makedirs(os.path.dirname(live), exist_ok=True)
+                    os.replace(staged_path, live)
+                    done += 1
+                for rel in written:
+                    if rel == TIMELINE_REL:
+                        continue
+                    live = os.path.join(output_dir, *rel.split("/"))
+                    os.makedirs(os.path.dirname(live), exist_ok=True)
+                    os.replace(os.path.join(stage, *rel.split("/")), live)
+                    done += 1
+                live_timeline = os.path.join(output_dir, *TIMELINE_REL.split("/"))
+                os.makedirs(os.path.dirname(live_timeline), exist_ok=True)
+                os.replace(os.path.join(stage, *TIMELINE_REL.split("/")), live_timeline)
+            except OSError as exc:
+                raise ExportError(f"updating {output_dir} stopped part-way ({done} of {len(moves) + len(written)} "
+                                  f"files replaced): {exc}. Export again to finish the update") from None
+            removed = _remove_stale_media(output_dir, previous, kept)
+    except BaseException:
+        if stage != output_dir:
+            shutil.rmtree(stage, ignore_errors=True)
+        raise
+    if mode == "update":
+        shutil.rmtree(stage, ignore_errors=True)
+    receipt: Dict[str, Any] = {
+        "output_dir": output_dir, "mode": mode, "composition": dict(timeline["composition"]),
+        "clips": len(timeline["clips"]), "transitions": len(timeline["transitions"]),
+        "media_files": len({a.src for a in assets.values()}), "copy_media": bool(copy_media), "files": written,
+        "removed_media": removed,
+        "remotion_version": REMOTION_VERSION, "warnings": warnings, "notes": notes, "installed": False,
+        "next_steps": [f"cd {output_dir}", "npm install" if not install else None, "npx remotion studio",
+                       f"npx remotion render {COMPOSITION_ID} out/video.mp4"],
+    }
+    receipt["next_steps"] = [s for s in receipt["next_steps"] if s]
+    if install:
+        from classes.handoff.remotion.install import install_dependencies
+        try:
+            done = install_dependencies(output_dir, on_progress=lambda _f, m: report(None, m), should_cancel=cancel)
+            receipt["installed"] = True
+            receipt["warnings"] += done.get("warnings") or []
+        except JobCancelled:
+            receipt["warnings"].append("npm install was cancelled; run npm install in the folder")
+        except LinkError as exc:
+            receipt["warnings"].append(f"the project was written but {exc}; run npm install in the folder")
+    report(1.0, "Exported")
+    return receipt
+
+
+__all__ = ["export_project", "build_timeline", "plan_assets", "install_media", "curve_keys", "time_spec",
+           "transition_entry", "mask_multiplier", "effect_filters", "clip_entry", "lossless_project", "readable_hash",
+           "render_root_tsx", "package_json", "render_readme", "target_mode", "is_zenvi_export", "ExportError",
+           "ExportHasEdits", "check_update_target", "update_losses", "project_texts", "media_record",
+           "imported_timelines", "with_imported", "IMPORTED_KEY", "same_media", "last_activity",
+           "REMOTION_VERSION", "DEPENDENCIES", "DEV_DEPENDENCIES", "COMPOSITION_ID", "TIMELINE_REL", "MEDIA_DIR",
+           "STATIC_FILES", "GENERATED_FILES", "TEMPLATE_DIR", "round_half_up", "project_copy", "snapshot_from_app"]

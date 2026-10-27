@@ -23,7 +23,8 @@ import copy
 import time
 from typing import Dict, List, Optional
 
-from qt_api import QFrame, QHBoxLayout, QLabel, QMenu, QMessageBox, QObject, QProgressBar, QPushButton, Qt, QTimer
+from qt_api import (QFrame, QHBoxLayout, QLabel, QMenu, QMessageBox, QObject, QProgressBar, QPushButton,
+                    QSizePolicy, Qt, QTimer)
 
 from classes.app import get_app
 from classes.logger import log
@@ -259,6 +260,12 @@ class LinkedClipsStatus(QFrame):
         layout.setSpacing(6)
         self.label = QLabel("")
         self.label.setObjectName("handoffStatusLabel")
+        # Toolbar used to crush long Send To / export lines into a few pixels at the left;
+        # keep a readable width and put the full text on the tooltip when we elide.
+        self.label.setMinimumWidth(180)
+        self.label.setMaximumWidth(420)
+        self.label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self.label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.progress = QProgressBar()
         self.progress.setFixedSize(70, 5)
         self.progress.setTextVisible(False)
@@ -270,8 +277,11 @@ class LinkedClipsStatus(QFrame):
         self.rerender_button.setObjectName("handoffRerender")
         self.rerender_button.setCursor(Qt.PointingHandCursor)
         self.rerender_button.clicked.connect(self._rerender_stale)
-        for w in (self.label, self.progress, self.cancel_button, self.rerender_button):
+        layout.addWidget(self.label, 1)
+        for w in (self.progress, self.cancel_button, self.rerender_button):
             layout.addWidget(w)
+        self.setMinimumWidth(220)
+        self.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
         self.message_timer = QTimer(self)
         self.message_timer.setSingleShot(True)
         self.message_timer.timeout.connect(self._clear_message)
@@ -304,17 +314,34 @@ class LinkedClipsStatus(QFrame):
         self._message = ""
         self._refresh_view()
 
-    def _sync_visibility(self, visible: bool) -> None:
-        self.setVisible(visible)
+    def _on_toolbar(self) -> bool:
         toolbar = getattr(self.window, "toolBar", None)
         if toolbar is None or not hasattr(toolbar, "actions"):
-            return
+            return False
         for action in toolbar.actions():
             try:
                 if toolbar.widgetForAction(action) is self:
-                    action.setVisible(visible)
+                    return True
             except Exception:
                 log.debug("toolbar slot lookup failed", exc_info=True)
+        return False
+
+    def _sync_visibility(self, visible: bool) -> None:
+        # Never show as a free-floating MainWindow child (that paints over File/Edit
+        # at 0,0 when the Cosmic theme forgot to place us on the toolbar).
+        if visible and not self._on_toolbar():
+            attach_handoff_status_to_toolbar(self.window)
+        toolbar = getattr(self.window, "toolBar", None)
+        shown = False
+        if toolbar is not None and hasattr(toolbar, "actions"):
+            for action in toolbar.actions():
+                try:
+                    if toolbar.widgetForAction(action) is self:
+                        action.setVisible(visible)
+                        shown = True
+                except Exception:
+                    log.debug("toolbar slot lookup failed", exc_info=True)
+        self.setVisible(bool(visible and (shown or self._on_toolbar())))
 
     # -- jobs -----------------------------------------------------------------
     def _on_job(self, _job) -> None:
@@ -388,7 +415,7 @@ class LinkedClipsStatus(QFrame):
         self.rerender_button.setVisible(not running and bool(self._stale))
         if running:
             job = running[-1]
-            self.label.setText(job.message or job.label)
+            text = job.message or job.label
             if job.progress is None:
                 self.progress.setRange(0, 0)
             else:
@@ -396,13 +423,48 @@ class LinkedClipsStatus(QFrame):
                 self.progress.setValue(int(job.progress * 1000))
         elif self._stale:
             n = len(self._stale)
-            self.label.setText(_tr("%d linked clip changed") % n if n == 1 else _tr("%d linked clips changed") % n)
+            text = _tr("%d linked clip changed") % n if n == 1 else _tr("%d linked clips changed") % n
         else:
-            self.label.setText(self._message)
+            text = self._message
+        self.label.setText(text)
+        self.label.setToolTip(text)
         self._sync_visibility(self.is_active)
 
     def stale_file_ids(self) -> List[str]:
         return list(self._stale)
+
+
+def attach_handoff_status_to_toolbar(window) -> bool:
+    """Put ``window.handoff_status`` on the main toolbar (before the agent picker when present).
+
+    Themes are supposed to do this, but an older Cosmic install omits the pill — then
+    ``setVisible(True)`` draws it at the top-left over the File menu. Idempotent.
+    """
+    status = getattr(window, "handoff_status", None)
+    toolbar = getattr(window, "toolBar", None)
+    if status is None or toolbar is None:
+        return False
+    for action in toolbar.actions():
+        try:
+            if toolbar.widgetForAction(action) is status:
+                return True
+        except Exception:
+            continue
+    # Insert before the agent selector when that widget is already on the bar; else append.
+    agent = getattr(window, "agent_selector_button", None)
+    before = None
+    if agent is not None:
+        for action in toolbar.actions():
+            try:
+                if toolbar.widgetForAction(action) is agent:
+                    before = action
+                    break
+            except Exception:
+                continue
+    status.setVisible(False)
+    action = toolbar.insertWidget(before, status) if before is not None else toolbar.addWidget(status)
+    action.setVisible(False)
+    return True
 
 
 def install_handoff_menus(window):
@@ -412,6 +474,15 @@ def install_handoff_menus(window):
     menus = HandoffMenus(window)
     window.handoff_menus = menus
     window.handoff_status = LinkedClipsStatus(window)
+    window.handoff_status.setVisible(False)
+    # Theme apply may have already run without us; attach now as a fallback.
+    attach_handoff_status_to_toolbar(window)
+    # Theme apply happens later in MainWindow init — re-attach after the event loop starts
+    # so a theme that clears the toolbar does not leave us floating at (0, 0).
+    later = QTimer(window.handoff_status)
+    later.setSingleShot(True)
+    later.timeout.connect(lambda: attach_handoff_status_to_toolbar(window))
+    later.start(0)
     # Owned by the status widget so it cannot fire after the window is gone (a bare singleShot can).
     first_check = QTimer(window.handoff_status)
     first_check.setSingleShot(True)
