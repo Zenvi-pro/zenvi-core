@@ -398,7 +398,8 @@ def prepare_recording(sources=None, track="", start_seconds=None, timeline_clip_
 
     Sets sources, devices, formats, screen area, webcam layout, target track
     and start time in the Recording dock; empty / 0 arguments keep the dock's
-    current setting. Returns the setup (ready_to_record, what is selected, the
+    current setting, except start_seconds (0 is the timeline start; omit it
+    for the playhead). Returns the setup (ready_to_record, what is selected, the
     available devices and screens). Never starts recording: the person presses
     Start Recording, and the clip lands on the timeline when they stop.
     Choosing mic or webcam turns on the dock's level meter / camera preview.
