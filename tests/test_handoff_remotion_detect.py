@@ -23,10 +23,9 @@ def test_package_json_with_utf8_bom_still_counts_as_remotion(tmp_path):
     root = tmp_path / "bom-project"
     root.mkdir()
     body = json.dumps({"name": "bom", "dependencies": {"remotion": "4.0.532", "react": "18"}})
-    (root / "package.json").write_bytes(b"ï»¿" + body.encode("utf-8"))
+    (root / "package.json").write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
     (root / "src").mkdir()
-    (root / "src" / "index.ts").write_text("import {registerRoot} from 'remotion';
-")
+    (root / "src" / "index.ts").write_text("import {registerRoot} from 'remotion';\n")
     info = detect.inspect_project(str(root))
     assert info.root == str(root)
     assert info.name == "bom"
