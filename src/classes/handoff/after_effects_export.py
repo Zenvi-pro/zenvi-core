@@ -181,10 +181,8 @@ def _same_file(a: str, b: str) -> bool:
         return False
     if sa.st_size != sb.st_size:
         return False
-    if abs(sa.st_mtime - sb.st_mtime) < 1.0:
-        return True
-    if sa.st_size > HASH_LIMIT:
-        return False
+    if sa.st_size > HASH_LIMIT:  # too big to hash on every export: an earlier copy keeps its mtime
+        return abs(sa.st_mtime - sb.st_mtime) < 1.0
 
     def digest(path: str) -> str:
         h = hashlib.sha256()
@@ -318,9 +316,23 @@ def _title_png_size(snapshot, f) -> Tuple[int, int]:
     return max(4, int(round(aw * scale))), max(4, int(round(ah * scale)))
 
 
+README_TITLE = "Zenvi → After Effects export"
+
+
+def _replaceable(path: str, marker: str) -> bool:
+    """True when *path* is absent or starts with *marker* (an earlier Zenvi export of it)."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return fh.read(len(marker)) == marker
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
 def _readme(snapshot, result: ExportResult, export: AE.AeExport, generator: str, created: str) -> str:
     lines = [
-        "Zenvi → After Effects export",
+        README_TITLE,
         "=" * 30,
         "",
         f"Project:  {snapshot.name}" + (f" ({snapshot.project_path})" if snapshot.project_path else " (unsaved)"),
@@ -378,12 +390,16 @@ def export_after_effects(snapshot, output_dir: str, *, collect_media: bool = Tru
     folder = os.path.abspath(os.path.expanduser(output_dir))
     if os.path.exists(folder) and not os.path.isdir(folder):
         raise AeHandoffError(f"{folder} is a file; choose a folder for the After Effects export")
+    name = safe_name(script_name or snapshot.name)
+    for own_file, marker in ((name + ".jsx", AE.HEADER), ("README.txt", README_TITLE)):
+        if not _replaceable(os.path.join(folder, own_file), marker):
+            raise AeHandoffError(f"{folder} already has a {own_file} that Zenvi did not write; choose another "
+                                 "folder for the After Effects export")
     try:
         os.makedirs(folder, exist_ok=True)
         staging = tempfile.mkdtemp(prefix=".zenvi-ae-", dir=folder)
     except OSError as exc:
         raise AeHandoffError(f"cannot write to {folder}: {exc.strerror or exc}") from None
-    name = safe_name(script_name or snapshot.name)
     layout = _Layout(folder)
     staged: List[str] = []      # relative paths written into the staging folder
     try:
@@ -524,8 +540,9 @@ def _prepare_titles(snapshot, layout: _Layout, staging: str, staged: List[str], 
         except NotNative as exc:
             reason = str(exc)
         width, height = _title_png_size(snapshot, f)
-        os.makedirs(scratch, exist_ok=True)
-        produced = os.path.join(scratch, safe_name(os.path.splitext(f.name)[0], "Title") + ".png")
+        own = os.path.join(scratch, safe_name(str(f.id), "title"))  # two titles named alike never share a PNG
+        os.makedirs(own, exist_ok=True)
+        produced = os.path.join(own, safe_name(os.path.splitext(f.name)[0], "Title") + ".png")
         try:
             render_svg(f.path, produced, width, height)
         except AeCancelled:
