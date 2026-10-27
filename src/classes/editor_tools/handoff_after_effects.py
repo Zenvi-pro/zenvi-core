@@ -79,24 +79,25 @@ def export_to_after_effects(output_dir="", collect_media=True, open_folder=False
         raise ToolError("the After Effects export was cancelled; nothing was written") from None
     except AeHandoffError as exc:
         raise ToolError(str(exc)) from None
-    revealed = False
+    revealed, reveal_error = False, None
     if open_folder:
         try:
             reveal(result.script_path)
             revealed = True
-        except AeHandoffError:
-            revealed = False
+        except AeHandoffError as exc:  # the export is written; say why the folder did not open
+            reveal_error = str(exc)
     stats = result.stats
     native = sum(1 for t in result.titles if t.get("mode") == "native")
     summary = (f"Exported {stats.get('layers', 0)} layer(s) for After Effects to {result.script_path}"
                + (f"; {len(result.titles)} title(s), {native} as editable text" if result.titles else "")
                + (f"; {len(result.missing)} missing media file(s) become placeholders" if result.missing else "")
                + (f"; {len(result.warnings)} warning(s)" if result.warnings else "")
+               + (f"; the folder could not be opened: {reveal_error}" if reveal_error else "")
                + ". Run it in After Effects with File > Scripts > Run Script File.")
     return ok(summary, script=result.script_path, folder=result.folder, readme=result.readme_path,
               collected_media=result.collected, media_files=len(result.media), layers=stats.get("layers", 0),
               footage=stats.get("footage", 0), titles=_titles(result.titles), missing_media=result.missing,
-              warnings=result.warnings, stats=stats, revealed=revealed)
+              warnings=result.warnings, stats=stats, revealed=revealed, reveal_error=reveal_error)
 
 
 @editor_tool(

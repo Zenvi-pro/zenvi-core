@@ -208,6 +208,44 @@ class AeHost(FakeHost):
                 "isError": False}
 
 
+def test_footage_with_the_same_size_and_mtime_is_compared_by_content(tmp_path):
+    b = _project(tmp_path, titles=False, transitions=False)
+    out = tmp_path / "out"
+    _export(b, out)
+    other = ProjectBuilder()
+    path = _file(str(tmp_path / "elsewhere"), "beach.mp4", b"BEACH")  # same size, same mtime, other bytes
+    st = os.stat(out / "media" / "beach.mp4")
+    os.utime(path, (st.st_atime, st.st_mtime))
+    clash = other.add_file("video", path=path)
+    other.add_clip(clash, track=1, position=0.0, start=0.0, end=2.0)
+    result = _export(other, out)
+    assert (out / "media" / "beach.mp4").read_bytes() == b"beach"
+    assert _data(result.script_path)["footage"][0]["rel"] == "media/beach-2.mp4"
+
+
+def test_two_png_titles_with_one_name_get_their_own_images(tmp_path):
+    b = ProjectBuilder()
+    for sub in ("a", "b"):
+        os.makedirs(tmp_path / sub)
+        gold = shutil.copy(os.path.join(SRC, "titles", "Gold_1.svg"), tmp_path / sub / "Gold_1.svg")
+        b.add_clip(b.add_title(str(gold)), track=2 if sub == "a" else 3, position=0.0, start=0.0, end=2.0)
+    out = tmp_path / "out"
+    result = _export(b, out)
+    assert sorted(os.listdir(out / "titles")) == ["Gold_1-2.png", "Gold_1.png"]
+    assert sorted(f["rel"] for f in _data(result.script_path)["footage"]) == ["titles/Gold_1-2.png",
+                                                                             "titles/Gold_1.png"]
+
+
+def test_a_script_or_readme_zenvi_did_not_write_is_never_replaced(tmp_path):
+    b = _project(tmp_path, titles=False, transitions=False)
+    for name in ("Trip.jsx", "README.txt"):
+        out = tmp_path / ("out-" + name)
+        _file(str(out), name, b"my own notes")
+        with pytest.raises(X.AeHandoffError, match="Zenvi did not write"):
+            _export(b, out)
+        assert (out / name).read_bytes() == b"my own notes" and os.listdir(out) == [name]
+
+
 @pytest.fixture
 def ae_host(tmp_path):
     host = AeHost()

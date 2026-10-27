@@ -735,7 +735,13 @@ def send_to_after_effects(snapshot, *, collect_media: bool = False, include_audi
                                   render_svg=render_svg, analyze_mask=analyze_mask)
     _check_cancel(should_cancel)
     _report(progress, 0.65, "Building the comp in After Effects")
-    summary, receipt = run_in_after_effects(export.script_path, timeout=timeout, base_dir=base_dir)
+    from classes.handoff import jobs
+    try:  # Cancel stops the wait; After Effects may still finish building the comp
+        summary, receipt = jobs.wait_cancellable(
+            lambda: run_in_after_effects(export.script_path, timeout=timeout, base_dir=base_dir),
+            should_cancel, "Send To After Effects cancelled")
+    except jobs.JobCancelled as exc:
+        raise AeCancelled(str(exc)) from None
     _report(progress, 1.0, "Done")
     return SendResult(export=export, summary=summary, host_receipt=receipt)
 
