@@ -109,7 +109,7 @@ class UpdatePanel(QFrame):
         self.later.setCursor(Qt.PointingHandCursor)
         self.later.setFlat(True)
         self.later.setFixedHeight(24)
-        self.later.clicked.connect(self.close)
+        self.later.clicked.connect(self._on_secondary)
         layout.addWidget(self.later)
 
         self._glyphs = {
@@ -148,8 +148,9 @@ class UpdatePanel(QFrame):
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.progress.setVisible(False)
-        self.primary.setText(self._tr("Download from zenvi.pro"))
+        self.primary.setText(self._tr("Download update"))
         self.primary.setEnabled(True)
+        self.later.setText(self._tr("Later"))
 
     def _show_downloading(self, percent, downloaded, total):
         self.title.setText(
@@ -171,6 +172,7 @@ class UpdatePanel(QFrame):
         self.progress.setVisible(True)
         self.primary.setText(self._tr("Downloading…"))
         self.primary.setEnabled(False)
+        self.later.setText(self._tr("Later"))
 
     def _show_ready(self, size):
         self.title.setText(
@@ -187,19 +189,22 @@ class UpdatePanel(QFrame):
         self.progress.setVisible(True)
         self.primary.setText(self._tr("Restart to Update"))
         self.primary.setEnabled(True)
+        self.later.setText(self._tr("Later"))
 
     def _show_failed(self):
         self.title.setText(
-            self._tr("Zenvi %s is available") % self.version)
+            self._tr("Couldn't download Zenvi %s") % self.version)
         if self.reason:
             self.detail.setText(
-                self._tr("Couldn't update automatically (%s) — download it from zenvi.pro")
+                self._tr("%s — try again, or open the download page.")
                 % self._short(self.reason))
         else:
-            self.detail.setText(self._tr("The download failed — try downloading it manually"))
+            self.detail.setText(
+                self._tr("The download failed — try again, or open the download page."))
         self.progress.setVisible(False)
-        self.primary.setText(self._tr("Download from zenvi.pro"))
+        self.primary.setText(self._tr("Try again"))
         self.primary.setEnabled(True)
+        self.later.setText(self._tr("Open download page"))
 
     @staticmethod
     def _short(text, limit=140):
@@ -219,7 +224,21 @@ class UpdatePanel(QFrame):
             self.window.close()
             return
 
+        if self.state in (STATE_AVAILABLE, STATE_FAILED):
+            self.close()
+            # Prefer the in-app downloader; the website is a secondary fallback.
+            if hasattr(self.window, "retry_auto_update"):
+                self.window.retry_auto_update()
+            return
+
         self.close()
+
+    def _on_secondary(self):
+        """Later (dismiss) — or open the website when the download failed."""
+        open_site = self.state == STATE_FAILED
+        self.close()
+        if not open_site:
+            return
         try:
             webbrowser.open(DOWNLOAD_URL, new=1)
         except Exception:
