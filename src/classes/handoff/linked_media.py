@@ -1175,13 +1175,10 @@ def render_link(link: dict, *, on_progress: Optional[ProgressFn] = None,
         if path_is_under(produced, staging):
             os.replace(produced, target)
         else:
-            # a host (After Effects) rendered elsewhere: bring it into the staging folder first, so
-            # a failed copy is cleaned up with it; files in the temp folder are ours to take
+            # a host (After Effects) rendered elsewhere: copy it into the staging folder first, so
+            # a failed copy is cleaned up with it (the host's file is not ours to move)
             staged = os.path.join(staging, "incoming" + ext)
-            if path_is_under(produced, tempfile.gettempdir()):
-                shutil.move(produced, staged)
-            else:
-                shutil.copy2(produced, staged)
+            shutil.copy2(produced, staged)
             os.replace(staged, target)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
