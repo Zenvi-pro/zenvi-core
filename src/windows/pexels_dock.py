@@ -6,6 +6,7 @@ duration overlay) → click a card to download and import into Project Files.
 """
 
 import os
+import html
 from typing import List, Dict, Any
 
 from qt_api import (
@@ -163,7 +164,10 @@ class _VideoCard(QFrame):
         self._status_label.setGeometry(4, CARD_MEDIA_H // 2, CARD_W - 8, CARD_MEDIA_H // 2)
         self._status_label.hide()
 
-        self.setToolTip(f"User: {video.get('user_name','')}\n{video.get('width',0)}×{video.get('height',0)}  {self._dur_text}")
+        # Provider text, shown literally: a plain-text tooltip would turn any tags in it into markup.
+        tip = html.escape(f"User: {video.get('user_name','')}\n{video.get('width',0)}×{video.get('height',0)}  "
+                          f"{self._dur_text}")
+        self.setToolTip(f"<p style='white-space:pre-wrap'>{tip}</p>")
 
     def set_thumbnail(self, pix: QPixmap):
         scaled = pix.scaled(CARD_W, CARD_MEDIA_H, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
