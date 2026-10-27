@@ -301,6 +301,146 @@ def test_generate_transition_end_to_end(editor, generation, tmp_path):
     assert editor.undo_steps_since_mark() == 1
 
 
+@pytest.mark.parametrize("asked, sent", [("", 5), ("7", 7), ("12.4", 12), ("1", 2), ("40", 15), ("soon", 5),
+                                         ("inf", 5)])
+def test_generate_video_sends_any_duration_from_2_to_15_seconds(editor, generation, monkeypatch, asked, sent):
+    placed = {}
+    monkeypatch.setattr(th, "add_clip_to_timeline", lambda **kw: placed.update(kw) or "Error: not placing here")
+    editor.call("generate_video_and_add_to_timeline_tool", prompt="waves", duration_seconds=asked)
+    assert generation.client.generate_video.call_args.kwargs["duration_seconds"] == sent
+    # Placement keeps exactly what was generated (never trims a paid second away).
+    assert placed["duration_seconds"] == (str(sent) if asked else "")
+
+
+@pytest.mark.parametrize("asked, sent", [(None, 5), ("3", 3), ("60", 15)])
+def test_generate_transition_morph_length_is_variable(editor, generation, tmp_path, asked, sent):
+    pa, pb = tmp_path / "a.mp4", tmp_path / "b.mp4"
+    pa.write_bytes(b"a")
+    pb.write_bytes(b"b")
+    a = editor.add_clip(editor.add_file("video", path=str(pa), duration=20), position=0.0, layer=L1, end=4.0)
+    b = editor.add_clip(editor.add_file("video", path=str(pb), duration=20), position=4.0, layer=L1, end=3.0)
+    args = {} if asked is None else {"duration_seconds": asked}
+    editor.call("generate_transition_clip_tool", clip_a_id=a, clip_b_id=b, **args)
+    call = generation.client.generate_video.call_args.kwargs
+    assert call["mode"] == "frame_morph" and call["duration_seconds"] == sent
+
+
+def test_modify_clip_replace_never_sends_more_than_the_8s_edit_limit(editor, generation, monkeypatch, tmp_path):
+    src = tmp_path / "source.mp4"
+    src.write_bytes(b"src")
+    c = editor.add_clip(editor.add_file("video", path=str(src), duration=30), position=0.0, layer=L1, end=20.0)
+    extracted = []
+    real = th._ffmpeg_run
+    monkeypatch.setattr(th, "_ffmpeg_run", lambda args: (extracted.append(args), real(args))[1])
+    editor.call("modify_clip_tool", mode="replace", description="make the car red", timeline_clip_id=c,
+                duration_seconds="15")
+    assert extracted[0][extracted[0].index("-t") + 1] == "8.0"
+
+
+# --- AI image generation ----------------------------------------------------------------------------
+
+@pytest.fixture
+def image_generation(editor, generation, monkeypatch):
+    """generate_image answers with a URL; the import adds a real image File (same undo step)."""
+    from classes.editor_tools import titles_text_common
+    from classes.query import File
+
+    generation.client.generate_image.return_value = {"image_base64": "iVBORw0KGgo=", "mime_type": "image/png"}
+
+    def fake_import(path, name="", extra=None):
+        f = File()
+        f.data = {"path": path, "media_type": "image", "duration": 3600.0, "has_video": True,
+                  "has_audio": False, "width": 1280, "height": 720, "fps": {"num": 30, "den": 1},
+                  "video_length": "108000"}
+        f.save()
+        return f
+
+    monkeypatch.setattr(titles_text_common, "import_media_file", fake_import)
+    return generation
+
+
+def test_generate_image_imports_and_places_it_as_one_undo_step(editor, image_generation, monkeypatch):
+    placed = {}
+
+    def fake_add(**kw):
+        placed.update(kw)
+        new = editor.window.timeline.addClip(kw["file_id"], FakePoint(float(kw["position_seconds"])), L1,
+                                             call_manual_move=False)
+        return f"Added clip to timeline at position {kw['position_seconds']}s timeline_clip_id={new['id']}."
+
+    monkeypatch.setattr(th, "add_clip_to_timeline", fake_add)
+    out = editor.call("generate_image_and_add_to_timeline_tool", prompt="a red fox in snow",
+                      position_seconds="4", track="1", duration_seconds="3")
+    assert out.startswith("Added clip"), out
+    call = image_generation.client.generate_image.call_args
+    assert call.args[0] == "a red fox in snow" and set(call.kwargs) == {"width", "height"}
+    image = editor.get("files")[-1]
+    assert image["media_type"] == "image" and image["path"].endswith(".png")
+    assert image["ai_metadata"]["short_summary"] == "a red fox in snow"
+    assert placed["file_id"] == image["id"] and placed["duration_seconds"] == "3"
+    assert editor.undo_steps_since_mark() == 1, "import and placement undo together"
+    editor.undo()
+    assert not editor.get("files")
+
+
+def test_generate_image_stays_on_screen_five_seconds_by_default(editor, image_generation, monkeypatch):
+    out = editor.call("generate_image_and_add_to_timeline_tool", prompt="a red fox")   # the real placement
+    assert out.startswith("Added clip"), out
+    clip = editor.get("clips")[-1]
+    assert clip["end"] - clip["start"] == pytest.approx(5.0)
+
+
+@pytest.mark.parametrize("args, message", [
+    ({"prompt": " "}, "Prompt must be at least 2 characters"),
+    ({"prompt": "a fox", "duration_seconds": "soon"}, "duration_seconds"),
+    ({"prompt": "a fox", "duration_seconds": "0"}, "duration_seconds"),
+])
+def test_generate_image_checks_its_arguments_before_spending_credits(editor, image_generation, args, message):
+    out = editor.call("generate_image_and_add_to_timeline_tool", **args)
+    assert out.startswith("Error") and message in out
+    image_generation.client.generate_image.assert_not_called()
+
+
+def test_generate_image_reports_backend_and_placement_failures(editor, image_generation, monkeypatch):
+    image_generation.client.generate_image.return_value = {"error": "Out of credits for image generation."}
+    out = editor.call("generate_image_and_add_to_timeline_tool", prompt="a red fox")
+    assert out == "Error: Out of credits for image generation." and not editor.get("files")
+
+    image_generation.client.generate_image.return_value = {"image_base64": "not base64!"}
+    assert editor.call("generate_image_and_add_to_timeline_tool", prompt="a red fox") == (
+        "Error: The backend returned no image data.")
+
+    image_generation.client.generate_image.return_value = {"image_base64": "/9j/4AAQ", "mime_type": "image/jpeg"}
+    monkeypatch.setattr(th, "add_clip_to_timeline", lambda **kw: "Error: Track 9 not found")
+    out = editor.call("generate_image_and_add_to_timeline_tool", prompt="a red fox", track="9")
+    file_id = editor.get("files")[-1]["id"]
+    assert out.startswith(f"Error: Image imported (file_id={file_id}) but timeline placement failed")
+    assert "Do NOT regenerate" in out
+
+
+def test_generate_image_client_surfaces_the_backends_credit_message(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from classes import api_client
+
+    client = api_client.ZenviBackendClient.__new__(api_client.ZenviBackendClient)
+    client.api_url = "http://backend/api/v1"
+    monkeypatch.setattr(api_client.ZenviBackendClient, "session", MagicMock())
+    monkeypatch.setattr(api_client, "_refresh_credits_after_backend_billing", lambda: None)
+
+    resp = client.session.post.return_value
+    resp.status_code = 402
+    resp.json.return_value = {"detail": {"code": "insufficient_credits", "message": "Out of credits for image generation."}}
+    assert client.generate_image("a fox", width=1920, height=1080) == {
+        "error": "Out of credits for image generation."}
+    assert client.session.post.call_args.args[0] == "http://backend/api/v1/generation/image"
+    assert client.session.post.call_args.kwargs["json"] == {"prompt": "a fox", "width": 1920, "height": 1080}
+
+    resp.status_code = 200
+    resp.json.return_value = {"image_base64": "QUJD", "mime_type": "image/png", "error": None}
+    assert client.generate_image("a fox")["image_base64"] == "QUJD"
+
+
 def test_generate_video_ripple_and_placement_are_one_step(editor, generation, monkeypatch):
     video = editor.add_file("video", duration=30)
     first = editor.add_clip(video, position=0.0, layer=L1, end=4.0)

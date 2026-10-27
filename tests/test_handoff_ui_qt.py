@@ -246,6 +246,9 @@ def test_props_dialog_raw_json_round_trip_and_errors(qapp, monkeypatch):
     d.json_edit.setPlainText("[1]")
     d._apply()
     assert d.props() is None and "JSON object" in d.error_label.text()
+    d.tabs.setCurrentIndex(0)  # bad Raw JSON: stays on Raw JSON, the text kept for correcting
+    assert d.tabs.currentIndex() == 1 and d.json_edit.toPlainText() == "[1]"
+    assert "JSON object" in d.error_label.text() and d.findChild(QPushButton, "propsPage1").isChecked()
 
 
 def test_quit_stops_handoff_jobs(ui):

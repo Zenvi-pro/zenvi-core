@@ -88,6 +88,10 @@ class TimelineSync(UpdateInterface):
         if action and len(action.key) >= 1 and action.key[0].lower() in ["files", "history", "markers", "layers", "scale", "profile", "export_settings", "export_overrides", "zenvi_cloud"]:
             return
 
+        warmer = getattr(self.window, "background_render_manager", None)
+        if warmer is not None:
+            warmer.invalidate()  # warm the changed timeline again (it warms one pass, then idles)
+
         with self.timeline_lock:
             # Enter edit mode for property updates — disable caching until the user seeks or plays.
             # Only "update" actions represent manual property edits; structural changes like
@@ -135,11 +139,9 @@ class TimelineSync(UpdateInterface):
                     payload = action.json(is_array=True)
                     if proxy_service:
                         payload = proxy_service.rewrite_json_for_preview(payload)
+                    # ApplyJsonDiff drops the edited item's old and new frame ranges and its
+                    # clip cache; clearing everything on top starved playback on every drop (#332)
                     self.timeline.ApplyJsonDiff(payload)
-
-                    # Clear frame cache so the next render picks up the new clip data
-                    # (without this, libopenshot serves the cached pre-change frame)
-                    self.timeline.ClearAllCache(True)
 
                     # Refresh the preview so the video widget reflects the change
                     self.window.refreshFrameSignal.emit()

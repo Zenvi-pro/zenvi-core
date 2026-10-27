@@ -125,3 +125,12 @@ def test_priority_tools_in_schema_registry():
         "export_video_tool",
     ):
         assert name in TOOL_SCHEMAS
+
+
+def test_ducking_runs_off_the_gui_thread():
+    """Review #216: duck_under_speech can extract audio and run VAD (minutes on
+    long media); it marshals its own volume writes, so it must not be sent
+    whole to the GUI thread."""
+    from classes import tool_handlers
+
+    assert "duck_under_speech_tool" in tool_handlers.BACKGROUND_SAFE_TOOLS

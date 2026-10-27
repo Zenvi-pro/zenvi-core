@@ -68,6 +68,14 @@ class _Service(ProxyService):
         self.proxy_generated.connect(self._on_proxy_generated)
 
 
+@pytest.fixture(autouse=True)
+def posix_paths(monkeypatch):
+    """These tests model POSIX paths ("/project/optimized/..."); join them the
+    same way on Windows, where os.path.join would insert a backslash."""
+    import posixpath
+    monkeypatch.setattr(proxy_service.os.path, "join", posixpath.join)
+
+
 @pytest.fixture
 def app():
     fake = types.SimpleNamespace(
@@ -467,7 +475,7 @@ def test_delete_and_unlink_for_files_deletes_linked_proxy_and_unlinks_all(servic
          patch.object(service, "_emit_job_change"):
         deleted = service.delete_and_unlink_for_files([_file("F1"), _file("F2")])
     assert deleted == 2
-    assert removed == ["/project/optimized/F1.mp4", "/external/F2.mp4"]
+    assert removed == [os.path.abspath(p) for p in ("/project/optimized/F1.mp4", "/external/F2.mp4")]
     fresh[0].save.assert_called_once_with()
     fresh[2].save.assert_called_once_with()
     assert delete_calls == [["files", {"id": "F1"}, "proxy_reader"], ["files", {"id": "F2"}, "proxy_reader"]]

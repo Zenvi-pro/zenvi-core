@@ -29,6 +29,7 @@ from classes.file_drop import (
     urls_from_mime,
 )
 from classes.logger import log
+from themes.cosmic import tokens
 
 from windows.pexels_dock import (
     _SearchWorker as PexelsSearchWorker,
@@ -42,28 +43,23 @@ from windows.freesound_dock import (
     _SoundCard, _WaveformRunnable,
     CARD_W as SOUND_W,
 )
+from windows.views.files_thumbnail_overlay import tile_grid_size
 
 
-_STYLESHEET = """
-    QWidget#StockSearchView { background: #0d0d0d; }
-    QScrollArea { background: #0d0d0d; border: none; }
-    QWidget#scrollContents { background: #0d0d0d; }
-    QLabel#sectionHeader { color: #d4d4d4; font-size: 12px; font-weight: bold;
+_STYLESHEET = tokens.resolve("""
+    QWidget#StockSearchView { background: {surface}; }
+    QScrollArea { background: {surface}; border: none; }
+    QWidget#scrollContents { background: {surface}; }
+    QLabel#sectionHeader { color: {text}; font-size: 12px; font-weight: 600;
         padding: 8px 2px 2px 2px; }
-    QLabel#sectionStatus { color: #8a8a8a; font-size: 10px; padding-left: 2px; }
-"""
+    QLabel#sectionStatus { color: {text_faint}; font-size: 11px; padding-left: 2px; }
+""")
 
-# Project-file cards, sized to match the Pexels footage cards for a consistent grid.
-FILE_ICON = QSize(150, 84)
-FILE_GRID = QSize(162, 118)
-_FILES_STYLE = """
-    QListView { background: #0d0d0d; border: none; }
-    QListView::item { background: #1a1a1a; color: #d4d4d4;
-        border: 1px solid rgba(255,255,255,0.06); border-radius: 6px;
-        padding-top: 2px; }
-    QListView::item:hover { border: 1px solid #4d9cf6; }
-    QListView::item:selected { border: 1px solid #4d9cf6; background: #1d2b3a; }
-"""
+# Project-file thumbnails; their tile grid comes from tile_grid_size.
+FILE_ICON = QSize(128, 72)  # 16:9; two columns fit the default panel width
+_FILES_STYLE = tokens.resolve("""
+    QListView { background: {surface}; border: none; }
+""")
 
 
 class StockSearchView(QWidget):
@@ -128,7 +124,7 @@ class StockSearchView(QWidget):
         self._footage_container = QWidget()
         self._footage_grid = QGridLayout(self._footage_container)
         self._footage_grid.setContentsMargins(0, 4, 0, 8)
-        self._footage_grid.setSpacing(6)
+        self._footage_grid.setSpacing(8)
         cv.addWidget(self._footage_container)
 
         # Stock music section (hidden until a query is active).
@@ -141,7 +137,7 @@ class StockSearchView(QWidget):
         self._music_container = QWidget()
         self._music_grid = QGridLayout(self._music_container)
         self._music_grid.setContentsMargins(0, 4, 0, 8)
-        self._music_grid.setSpacing(6)
+        self._music_grid.setSpacing(8)
         cv.addWidget(self._music_container)
 
         cv.addStretch(1)
@@ -168,7 +164,7 @@ class StockSearchView(QWidget):
         files_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         files_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         files_view.setIconSize(FILE_ICON)
-        files_view.setGridSize(FILE_GRID)
+        files_view.setGridSize(tile_grid_size(FILE_ICON))
         files_view.setStyleSheet(_FILES_STYLE)
         self._files_holder_layout.addWidget(files_view)
 
@@ -466,7 +462,7 @@ class StockSearchView(QWidget):
     # ── Helpers ─────────────────────────────────────────────────────────────────
 
     def _cols(self, card_w: int) -> int:
-        return max(1, (self.width() - 24) // (card_w + 6))
+        return max(1, (self.width() - 24) // (card_w + 8))
 
     def _clear_grid(self, grid: QGridLayout):
         while grid.count():

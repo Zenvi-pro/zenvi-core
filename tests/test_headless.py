@@ -200,7 +200,7 @@ def signed_in(monkeypatch):
 def test_bad_project_exits_before_anything_starts(reported, lock):
     runtime = _runtime(FakeApp(), project_path="/nowhere/cut.zvn")
     assert runtime.run() == headless.EXIT_PROJECT
-    assert reported == ["project not found: /nowhere/cut.zvn"]
+    assert reported == ["project not found: %s" % os.path.abspath("/nowhere/cut.zvn")]
 
 
 def test_second_headless_session_is_refused(reported, lock, signed_in):
@@ -580,3 +580,31 @@ def test_activate_gives_the_session_its_own_title_folder(monkeypatch, tmp_path):
     headless.activate({})
     assert info.TITLE_PATH == os.path.join(str(tmp_path), "title-headless")
     assert info.get_default_path("TITLE_PATH") == info.TITLE_PATH  # survives reset_userdirs()
+
+
+def test_tool_save_writes_the_project_off_the_gui_thread(fake_server, timers, tmp_path, monkeypatch):
+    """Review #216: the whole save (fingerprints, assets, recovery zip) ran
+    inside call_on_gui, freezing the editor and risking the tool's timeout."""
+    from classes import qt_main_thread
+
+    on_gui = []
+
+    def fake_call_on_gui(func, *args, timeout=30, **kwargs):
+        on_gui.append(func)
+        try:
+            return func(*args, **kwargs)
+        finally:
+            on_gui.pop()
+
+    monkeypatch.setattr(qt_main_thread, "call_on_gui", fake_call_on_gui)
+    cut = str(tmp_path / "cut.zvn")
+    app = FakeApp(FakeProject(cut, dirty=True))
+    saved_on_gui = []
+    window_save = app.window.save_project
+    app.window.save_project = lambda path: (saved_on_gui.append(bool(on_gui)), window_save(path))
+    runtime = _runtime(app)
+    runtime._loop_started = True
+
+    receipt = _tool(save=True)
+    assert receipt["ok"] is True and receipt["saved_to"] == cut
+    assert saved_on_gui == [False]

@@ -33,6 +33,15 @@ def clip_speed(clip: dict) -> float:
     return 1.0
 
 
+def is_retimed(clip: dict) -> bool:
+    """True when the clip plays at another speed or through a time curve."""
+    from classes.export_acceleration.smart_render import _time_curve_is_identity
+
+    # Exact: a one-frame hold is fine for a stream copy, but word cuts land a frame off.
+    return (abs(clip_speed(clip) - 1.0) > 1e-9
+            or not _time_curve_is_identity(clip.get("time"), tolerance=0.0))
+
+
 def source_to_timeline_sec(
     source_sec: float,
     *,

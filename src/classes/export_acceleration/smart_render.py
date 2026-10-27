@@ -119,8 +119,11 @@ def _deviates_from_identity(obj: Any, identity: float) -> bool:
 
 
 
-def _time_curve_is_identity(obj: Any) -> bool:
-    """True when clip.time is a no-op (forward 1x), including post-double-reverse."""
+def _time_curve_is_identity(obj: Any, tolerance: float = 1.0) -> bool:
+    """True when clip.time is a no-op (forward 1x), including post-double-reverse.
+
+    *tolerance* is how many frames a point may sit off the 1:1 line.
+    """
     if obj is None:
         return True
     if isinstance(obj, str):
@@ -146,13 +149,13 @@ def _time_curve_is_identity(obj: Any) -> bool:
         return False
     if len(coords) == 1:
         x, y = coords[0]
-        return abs(y - 1.0) <= 1e-3 or abs(y - x) <= 1.0 + 1e-6
+        return abs(y - 1.0) <= 1e-3 or abs(y - x) <= tolerance + 1e-6
     coords.sort(key=lambda pair: pair[0])
     for index in range(1, len(coords)):
         if coords[index][1] + 1e-6 < coords[index - 1][1]:
             return False  # reverse / rewind
     for x, y in coords:
-        if abs(y - x) > 1.0 + 1e-6:
+        if abs(y - x) > tolerance + 1e-6:
             return False
     return True
 
@@ -187,16 +190,54 @@ def _is_identity_color_grade(effect: dict) -> bool:
             continue
         if _deviates_from_identity(effect.get(key), identity):
             return False
-    # Curves: any multi-point or non-passthrough is a grade.
     for curve_key in ("curve_all", "curve_red", "curve_green", "curve_blue"):
-        curve = effect.get(curve_key)
-        if not curve:
-            continue
-        if isinstance(curve, dict):
-            points = curve.get("Points") or curve.get("points") or []
-            if len(points) > 2:
-                return False
+        if not _curve_is_identity(effect.get(curve_key)):
+            return False
+    wheels = effect.get("wheels")
+    if isinstance(wheels, dict):
+        for entry in wheels.values():
+            if not isinstance(entry, dict):
+                continue
+            for key in ("amount", "luma", "amount_keyframes", "luma_keyframes"):
+                if _deviates_from_identity(entry.get(key), 0.0):
+                    return False
     return True
+
+
+_LINEAR = 1  # openshot.LINEAR (Point.h InterpolationType)
+
+
+def _curve_is_identity(curve: Any) -> bool:
+    """True for a missing, disabled, or passthrough Color Grade curve: a straight
+    (LINEAR) line from (0,0) to (1,1)."""
+    if not curve:
+        return True
+    if not isinstance(curve, dict):
+        return False
+    if "enabled" in curve and _keyframe_y(curve.get("enabled"), 1.0) == 0.0:
+        return True
+    try:
+        if "nodes" in curve:
+            points = curve.get("nodes") or []
+            coords = [(_keyframe_y(n.get("x"), None), _keyframe_y(n.get("y"), None)) for n in points]
+        else:
+            points = curve.get("Points") or curve.get("points") or []
+            coords = [(float((p.get("co") or {}).get("X")), float((p.get("co") or {}).get("Y")))
+                      for p in points]
+        # Bezier handles bend the segment and CONSTANT steps it. A point that
+        # does not say is not known to be straight (libopenshot's Point
+        # defaults to BEZIER).
+        straight = all(p.get("interpolation") == _LINEAR for p in points)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if not coords:
+        return True
+    if not straight:
+        return False
+    # Anything but the two passthrough end points reshapes the tone curve.
+    if len(coords) != 2 or any(x is None or y is None for x, y in coords):
+        return False
+    return sorted(coords) == [(0.0, 0.0), (1.0, 1.0)]
 
 
 def _effects_block_smart_render(effects: Any) -> bool:
@@ -343,7 +384,10 @@ def clip_format_reasons(
     reader = clip.get("reader") or {}
     width = int(reader.get("width") or clip.get("width") or 0)
     height = int(reader.get("height") or clip.get("height") or 0)
-    if width and height and (width != export_width or height != export_height):
+    if not (width and height):
+        # The scale mode (fit/crop/stretch) only stays a no-op at matching sizes.
+        reasons.append("resolution-unknown")
+    elif width != export_width or height != export_height:
         reasons.append("resolution-mismatch")
 
     src_fps = reader.get("fps") or {}
@@ -891,7 +935,9 @@ def _has_frames(path: str, expected: int) -> bool:
 def _concat_copy(paths: list[str], output_path: str) -> bool:
     if not paths:
         return False
-    if len(paths) == 1:
+    same_container = (os.path.splitext(paths[0])[1].lower()
+                      == os.path.splitext(output_path)[1].lower())
+    if len(paths) == 1 and same_container:
         # Single segment: move/copy into place without concat demuxer.
         try:
             import shutil

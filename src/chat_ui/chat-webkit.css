@@ -23,9 +23,9 @@ html[data-zenvi-webkit="1"] body {
     margin: 0;
     padding: 0;
     /* --chat-wk-bg is set by chat.js applyZenviWebKitInlineTheme() */
-    background: var(--chat-wk-bg, #0d0d0d) !important;
-    color: var(--chat-text, #d4d4d4) !important;
-    font-family: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
+    background: var(--chat-wk-bg, #0a0a0a) !important;
+    color: var(--chat-text, #ededed) !important;
+    font-family: Inter, "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
     font-size: 13px;
     height: 100%;
     overflow: hidden;
@@ -48,7 +48,7 @@ html[data-zenvi-webkit="1"] .chat-container {
 
 /* ui-sans-serif / system-ui / ui-monospace resolve to Arial / Courier New here. */
 html[data-zenvi-webkit="1"] .font-sans {
-    font-family: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
+    font-family: Inter, "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
 }
 html[data-zenvi-webkit="1"] .font-mono,
 html[data-zenvi-webkit="1"] code,
@@ -60,7 +60,7 @@ html[data-zenvi-webkit="1"] .chat-thought-badge {
 }
 html[data-zenvi-webkit="1"] textarea::-webkit-input-placeholder,
 html[data-zenvi-webkit="1"] input::-webkit-input-placeholder {
-    color: var(--chat-placeholder, #6b7280);
+    color: var(--chat-placeholder, #6b6b6b);
     opacity: 1;
 }
 
@@ -90,7 +90,7 @@ html[data-zenvi-webkit="1"] #chat-tab-history,
 html[data-zenvi-webkit="1"] #chat-tab-add {
     position: -webkit-sticky;
     z-index: 2;
-    background: var(--chat-wk-bg, #0d0d0d) !important;
+    background: var(--chat-wk-bg, #0a0a0a) !important;
 }
 html[data-zenvi-webkit="1"] #chat-tab-bar > * {
     margin-right: 4px;
@@ -105,7 +105,7 @@ html[data-zenvi-webkit="1"] #chat-tab-history {
 }
 html[data-zenvi-webkit="1"] #chat-tab-add {
     right: 0;
-    box-shadow: 8px 0 0 var(--chat-wk-bg, #0d0d0d);
+    box-shadow: 8px 0 0 var(--chat-wk-bg, #0a0a0a);
 }
 
 /* Messages — flex-1 scroll (0% basis so WebKit gives remaining height reliably) */
@@ -118,7 +118,7 @@ html[data-zenvi-webkit="1"] #chat-messages {
     overflow-y: auto;
     background: transparent !important;
 }
-/* Preamble card: index.html paints it #0d0d0d inline. */
+/* Preamble card: index.html leaves it transparent, so the dock surface shows through. */
 html[data-zenvi-webkit="1"] .chat-container > .flex-shrink-0.mt-2 {
     background: transparent !important;
 }
@@ -193,13 +193,15 @@ html[data-zenvi-webkit="1"] .chat-mention-kind {
     margin-right: 8px;
     padding-top: 0;
 }
-html[data-zenvi-webkit="1"] .chat-mention-item:hover,
+html[data-zenvi-webkit="1"] .chat-mention-item:hover {
+    background: var(--chat-button-bg, #1f1f1f);
+}
 html[data-zenvi-webkit="1"] .chat-mention-item.active {
-    background: rgba(77, 156, 246, 0.14);
+    background: var(--accent-soft);
 }
 
 html[data-zenvi-webkit="1"] .chat-command-item.active {
-    background: rgba(77, 156, 246, 0.14) !important;
+    background: var(--accent-soft) !important;
 }
 
 /* Message enter animation — vendor prefixed */
@@ -208,15 +210,18 @@ html[data-zenvi-webkit="1"] .chat-command-item.active {
         opacity: 0;
         -webkit-transform: translateY(12px);
     }
-    to {
-        opacity: 1;
-        -webkit-transform: translateY(0);
-    }
 }
 
+/* No fill-mode: after the animation the node carries no transform, so text in it stays selectable. */
 html[data-zenvi-webkit="1"] .chat-message {
-    -webkit-animation: chat-message-enter-wk 0.3s ease forwards;
-    animation: chat-message-enter-wk 0.3s ease forwards;
+    -webkit-animation: chat-message-enter-wk 0.3s ease;
+    animation: chat-message-enter-wk 0.3s ease;
+}
+
+html[data-zenvi-webkit="1"] #chat-messages,
+html[data-zenvi-webkit="1"] #chat-messages * {
+    -webkit-user-select: text;
+    user-select: text;
 }
 
 /* Glow: WebKit-safe pulse (no conic-gradient / @property) */
@@ -227,10 +232,10 @@ html[data-zenvi-webkit="1"] .chat-input-glow-border {
     bottom: -1px;
     left: -1px;
     background: transparent !important;
-    border: 1px solid rgba(77, 156, 246, 0.35);
+    border: none;
 }
 html[data-zenvi-webkit="1"] .chat-input-glow-wrap.glow-active .chat-input-glow-inner {
-    box-shadow: inset 0 0 0 1px rgba(77, 156, 246, 0.4);
+    box-shadow: inset 0 0 0 1px var(--chat-accent, #3a72f5);
 }
 /* The "/" and "@" palettes are mounted inside the card and open upwards out of it. */
 html[data-zenvi-webkit="1"] .chat-input-glow-inner {
@@ -238,21 +243,6 @@ html[data-zenvi-webkit="1"] .chat-input-glow-inner {
 }
 html[data-zenvi-webkit="1"] .chat-input-row .border-t {
     border-radius: 0 0 9px 9px;
-}
-
-html[data-zenvi-webkit="1"] .chat-input-glow-wrap.glow-active .chat-input-glow-border {
-    -webkit-animation: webkit-glow-pulse 2s ease-in-out infinite;
-    animation: webkit-glow-pulse 2s ease-in-out infinite;
-}
-
-@-webkit-keyframes webkit-glow-pulse {
-    0%, 100% { opacity: 0.35; border-color: rgba(77, 156, 246, 0.25); }
-    50% { opacity: 0.95; border-color: rgba(77, 156, 246, 0.65); }
-}
-
-@keyframes webkit-glow-pulse {
-    0%, 100% { opacity: 0.35; border-color: rgba(77, 156, 246, 0.25); }
-    50% { opacity: 0.95; border-color: rgba(77, 156, 246, 0.65); }
 }
 
 /* Activity spinner */
@@ -311,9 +301,8 @@ html[data-zenvi-webkit="1"] .chat-model-menu {
     max-height: 240px;
     max-width: 260px;
     width: 260px;
-    background: #1e1e1e;
-    border: 1px solid #2a2a2a;
-    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+    background: var(--chat-surface, #171717);
+    border: 1px solid var(--chat-border-strong, #2a2a2a);
     -webkit-animation: chat-menu-enter-wk 0.15s ease;
     animation: chat-menu-enter-wk 0.15s ease;
 }
@@ -423,7 +412,7 @@ html[data-zenvi-webkit="1"] .chat-activity-step.running .activity-icon svg {
 
 /* Input row bottom bar */
 html[data-zenvi-webkit="1"] .chat-input-row .border-t {
-    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    border-top: 1px solid var(--chat-border, #1c1c1c);
 }
 
 /*

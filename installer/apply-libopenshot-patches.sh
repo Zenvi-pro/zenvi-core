@@ -48,7 +48,8 @@ for patch in "$@"; do
   else
     # Show git's own reason (which hunk failed) before failing.
     git -C "$src_dir" apply --check --whitespace=nowarn "$patch" >&2 || true
-    if grep -q $'\r' "$patch"; then
+    # -U: Git Bash's grep otherwise drops the \r before matching (DOS text mode).
+    if grep -qU $'\r' "$patch"; then
       fail "$name has CRLF line endings, so it cannot apply. .gitattributes keeps installer/mac-patches/*.patch LF; check the patches out again (rm installer/mac-patches/*.patch && git checkout -- installer/mac-patches)."
     fi
     fail "$name does not apply to $src_dir. Upstream changed the patched code: drop the patch if upstream fixed the bug, otherwise rebase it."
