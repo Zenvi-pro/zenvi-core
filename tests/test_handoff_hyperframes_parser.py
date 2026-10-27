@@ -298,13 +298,25 @@ def test_studio_reserialized_html_reads_the_same(tmp_path):
 def test_resolve_src(tmp_path):
     root = str(tmp_path)
     os.makedirs(os.path.join(root, "assets"))
-    open(os.path.join(root, "assets", "a b.png"), "w").close()
+    media = os.path.join(root, "assets", "a b.png")
+    open(media, "w").close()
     assert hfp.resolve_src("assets/a%20b.png?v=2", root) == (os.path.join(root, "assets", "a b.png"), False)
     assert hfp.resolve_src("/assets/a b.png", root)[0] == os.path.join(root, "assets", "a b.png")
     assert hfp.resolve_src("../assets/a b.png", root, "compositions/x.html")[0] == os.path.join(root, "assets",
                                                                                                 "a b.png")
     assert hfp.resolve_src("https://x.test/a.mp4", root) == (None, True)
     assert hfp.resolve_src("missing.mp4", root) == (None, False)
+    # file:// URLs: Windows /C:/... form (urlparse) and localhost, same as Premiere pathurl
+    abs_media = os.path.abspath(media)
+    if os.name == "nt":
+        slash_url = "file:///" + abs_media.replace("\\", "/")
+        got, remote = hfp.resolve_src(slash_url, root)
+        assert not remote and got and os.path.normcase(os.path.normpath(got)) == os.path.normcase(abs_media)
+        pct = "file://localhost/" + abs_media[0] + "%3a" + abs_media[2:].replace("\\", "/")
+        got2, _ = hfp.resolve_src(pct, root)
+        assert got2 and os.path.isfile(got2)
+    else:
+        assert hfp.resolve_src("file://" + abs_media, root)[0] == abs_media
 
 
 def test_remaining_visuals(tmp_path):

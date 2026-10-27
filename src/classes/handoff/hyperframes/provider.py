@@ -267,7 +267,7 @@ def to_h264(src: str, dst: str, *, has_audio: bool, should_cancel=None) -> str:
     cmd += ["-c:a", "aac", "-b:a", "192k"] if has_audio else ["-an"]
     cmd.append(dst)
     result = ffmpeg_cli.run_ffmpeg_with_progress(cmd, should_cancel=should_cancel)
-    if result.returncode != 0 or not os.path.isfile(dst):
+    if result.returncode != 0 or not os.path.isfile(dst) or os.path.getsize(dst) == 0:
         if should_cancel is not None and should_cancel():
             from classes.handoff.jobs import JobCancelled
             raise JobCancelled("the H.264 encode was cancelled")
@@ -443,11 +443,13 @@ class HyperFramesProvider:
 
     # -- rendering ---------------------------------------------------------------
     def render(self, link: dict, out_dir: str, *, on_progress, should_cancel) -> lm.RenderResult:
+        from classes.handoff.hyperframes import trust
         root = _project_dir(link)
         block = _block(link)
         role = str(block.get("role") or "project")
         if role not in ROLES:
             raise HyperFramesLinkError(f"unknown HyperFrames link role {role!r}; re-import the project")
+        trust.require(root, os.path.basename(root) or "HyperFrames project", action="render")
         fps = str(block.get("fps") or "") or None
         on_progress(None, "Preparing HyperFrames")
         cli = hf_cli.resolve_cli(root)
@@ -547,7 +549,10 @@ class HyperFramesProvider:
             raise HyperFramesLinkError(str(exc)) from None
 
     def open_studio(self, link: dict) -> None:
-        hf_cli.open_studio(_project_dir(link))
+        from classes.handoff.hyperframes import trust
+        root = _project_dir(link)
+        trust.require(root, os.path.basename(root) or "HyperFrames project", action="studio")
+        hf_cli.open_studio(root)
 
     def editable_props(self, link: dict) -> dict:
         """The variables as the HTML sets them now, with the props changed in Zenvi on top."""

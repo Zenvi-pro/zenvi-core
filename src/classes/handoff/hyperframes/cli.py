@@ -50,6 +50,7 @@ import re
 import socket
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -282,7 +283,12 @@ def _json_from(text: str) -> Optional[dict]:
 
 def run_json(cli: Cli, args: Sequence[str], *, timeout: float = JSON_TIMEOUT, cwd: Optional[str] = None,
              should_cancel: Optional[Callable[[], bool]] = None) -> dict:
-    """``hyperframes <args> --json``, parsed. CliError with the CLI's message on failure."""
+    """``hyperframes <args> --json``, parsed. CliError with the CLI's message on failure.
+
+    A non-zero exit is an error unless this is ``lint`` with a findings payload
+    (HyperFrames exits 1 when the project has lint errors, but the JSON is still
+    the report). Failed ``timeline`` JSON must never win silently.
+    """
     lines: List[str] = []
     code, tail = run(cli, list(args) + ["--json"], timeout=timeout, on_line=lines.append,
                      should_cancel=should_cancel, cwd=cwd)
@@ -291,6 +297,12 @@ def run_json(cli: Cli, args: Sequence[str], *, timeout: float = JSON_TIMEOUT, cw
     if data is None:
         last = "\n".join(clean_line(x) for x in text.splitlines()[-6:])
         raise CliError(f"hyperframes {args[0]} printed no JSON (exit {code}): {last or 'no output'}")
+    if code != 0:
+        soft_lint = (args and args[0] == "lint"
+                     and (isinstance(data.get("findings"), list) or "ok" in data or "errorCount" in data))
+        if not soft_lint:
+            last = "\n".join(clean_line(x) for x in text.splitlines()[-6:])
+            raise CliError(f"hyperframes {args[0]} failed (exit {code}): {last or 'no output'}")
     return data
 
 
@@ -440,10 +452,12 @@ def running_studio(project_dir: str) -> Optional[Studio]:
     return st
 
 
-def start_studio(project_dir: str, *, cli: Optional[Cli] = None, timeout: float = STUDIO_READY_TIMEOUT) -> Studio:
+def start_studio(project_dir: str, *, cli: Optional[Cli] = None, timeout: float = STUDIO_READY_TIMEOUT,
+                 should_cancel: Optional[Callable[[], bool]] = None) -> Studio:
     """Start ``hyperframes preview`` for *project_dir* (or reuse Zenvi's running one); returns when it is ready.
 
     A second call while the first is still starting waits for it and gets the same Studio.
+    *should_cancel* kills the process tree and raises ``JobCancelled``.
     """
     key = os.path.realpath(project_dir)
     with _studio_lock:
@@ -452,10 +466,12 @@ def start_studio(project_dir: str, *, cli: Optional[Cli] = None, timeout: float 
         existing = running_studio(project_dir)
         if existing is not None:
             return existing
-        return _launch_studio(project_dir, cli, timeout)
+        return _launch_studio(project_dir, cli, timeout, should_cancel)
 
 
-def _launch_studio(project_dir: str, cli: Optional[Cli], timeout: float) -> Studio:
+def _launch_studio(project_dir: str, cli: Optional[Cli], timeout: float,
+                   should_cancel: Optional[Callable[[], bool]] = None) -> Studio:
+    from classes.handoff.jobs import JobCancelled
     cli = cli or resolve_cli(project_dir)
     port = free_port()
     argv = cli.command("preview", project_dir, "--foreground", "--json", "--no-open", "--port", str(port))
@@ -484,10 +500,20 @@ def _launch_studio(project_dir: str, cli: Optional[Cli], timeout: float) -> Stud
         done.set()
 
     threading.Thread(target=reader, name="hyperframes-studio-output", daemon=True).start()
-    done.wait(timeout)
+    deadline = time.monotonic() + max(0.1, float(timeout))
+    while not done.is_set():
+        if should_cancel is not None and should_cancel():
+            node_runtime.kill_process_tree(proc)
+            raise JobCancelled("the HyperFrames Studio start was cancelled")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        done.wait(min(0.2, remaining))
     url = found.get("url")
     if not url:
         node_runtime.kill_process_tree(proc)
+        if should_cancel is not None and should_cancel():
+            raise JobCancelled("the HyperFrames Studio start was cancelled")
         detail = " | ".join(x for x in tail[-5:] if x) or "no output"
         raise CliError(f"the HyperFrames Studio did not start within {int(timeout)} s: {detail}")
     studio = Studio(project_dir, url, port, proc)
@@ -527,9 +553,9 @@ def open_url(url: str) -> None:
         raise CliError(f"could not open a browser; the Studio is at {url}")
 
 
-def open_studio(project_dir: str) -> str:
+def open_studio(project_dir: str, *, should_cancel: Optional[Callable[[], bool]] = None) -> str:
     """Start (or reuse) the Studio for *project_dir* and open it in the browser; returns its URL. Blocking."""
-    studio = start_studio(project_dir)
+    studio = start_studio(project_dir, should_cancel=should_cancel)
     open_url(studio.url)
     return studio.url
 

@@ -832,6 +832,8 @@ def _place_linked(item: Item, reader: dict, layer: int, position: float, fps: fl
     # whole frames like Timeline.addClip / linked_media.import_and_place: float
     # error in the probe never drops the last frame
     length = ft.to_seconds(project_files.media_frame_count(duration, fps), fps)
+    if item.expected_duration is not None and float(item.expected_duration) > 0:
+        length = min(length, float(item.expected_duration))
     f = File()
     rec = copy.deepcopy(reader)
     rec["name"] = item.name

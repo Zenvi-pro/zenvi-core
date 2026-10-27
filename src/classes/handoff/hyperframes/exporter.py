@@ -1039,12 +1039,17 @@ def export_project(snapshot: TimelineSnapshot, raw: dict, output_dir: str, *, co
             assets[f.id] = rel
             originals[f.id] = f.path
             path_map[f.path] = rel
+        from classes.handoff.jobs import JobCancelled
+        if cancel():
+            raise JobCancelled("the HyperFrames export was cancelled")
         project_copy = _remap_paths(raw, path_map)
         progress(0.85, "Writing index.html")
         text, count, duration = build_index(snapshot, media, project_copy, warnings=warnings, assets=assets,
                                             originals=originals)
         if count == 0:
             raise ExportError("none of the timeline's clips could be exported: " + "; ".join(warnings[:3]))
+        if cancel():
+            raise JobCancelled("the HyperFrames export was cancelled")
         with open(os.path.join(staging, INDEX), "w", encoding="utf-8") as fh:
             fh.write(text)
         name = snapshot.name if snapshot.name and snapshot.name != "Untitled" else os.path.basename(target)
@@ -1054,8 +1059,12 @@ def export_project(snapshot: TimelineSnapshot, raw: dict, output_dir: str, *, co
         warnings = list(dict.fromkeys(warnings))
         with open(os.path.join(staging, "README.md"), "w", encoding="utf-8") as fh:
             fh.write(readme(name, warnings, copy_media))
+        if cancel():
+            raise JobCancelled("the HyperFrames export was cancelled")
         _write_manifest(staging)
         progress(0.95, "Installing the project")
+        if cancel():
+            raise JobCancelled("the HyperFrames export was cancelled")
         files = _install(staging, plan)
     finally:
         shutil.rmtree(staging, ignore_errors=True)

@@ -720,9 +720,11 @@ def resolve_src(raw: str, project_dir: str, base_rel: str = "") -> Tuple[Optiona
         return None, False
     if re.match(r"^(https?:|data:|blob:)", text, re.I) or text.startswith("//"):
         return None, True
-    if text.lower().startswith("file://"):
-        path = urllib.parse.unquote(urllib.parse.urlparse(text).path)
-        return (path if os.path.isfile(path) else None), False
+    if text.lower().startswith("file:"):
+        # Premiere's pathurl rules: /C:/x -> C:/x, UNC hosts, POSIX /Users/... kept as-is
+        from classes.importers.final_cut_pro import path_from_pathurl
+        path = path_from_pathurl(text)
+        return (path if path and os.path.isfile(path) else None), False
     text = urllib.parse.unquote(text.split("#", 1)[0].split("?", 1)[0])
     candidates = []
     if text.startswith("/"):
