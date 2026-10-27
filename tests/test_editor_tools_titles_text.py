@@ -472,3 +472,19 @@ def test_undo_of_a_title_edit_is_reported_as_a_change(tt):
     assert tt.clip(rec["timeline_clip_id"])["reader"]["path"] == rec["path"]
     out = tt.call("redo_tool", steps=1)
     assert not out.startswith("Error"), out
+
+
+def test_place_clip_can_skip_the_preview_refresh_for_batches(tt):
+    """Batch importers skip the per-clip preview refresh; a single clip refreshes as before."""
+    from classes.editor_tools import titles_text_common as common
+    timeline = tt.window.timeline
+    f = tt.add_file("video", duration=4.0)
+    common.place_clip(f, 0.0, 2.0, 1000000)
+    assert timeline.add_calls[-1]["ignore_refresh"] is False and timeline.update_calls[-1]["ignore_refresh"] is False
+    for i in range(3):
+        common.place_clip(f, 3.0 + i * 3, 2.0, 1000000, ignore_refresh=i < 2)
+    assert [c["ignore_refresh"] for c in timeline.add_calls[-3:]] == [True, True, False]
+    assert [c["ignore_refresh"] for c in timeline.update_calls[-3:]] == [True, True, False]
+    tt.window.IgnoreUpdates.emit.reset_mock()
+    common.end_clip_batch()
+    tt.window.IgnoreUpdates.emit.assert_called_once_with(False, False)

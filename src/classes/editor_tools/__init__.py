@@ -19,6 +19,7 @@ WORKSTREAM_MODULES = (
     "tracks_nav",
     "media_files",
     "ai_generation",
+    "handoff",
 )
 
 WORKSTREAM_OF_MODULE = {
@@ -30,6 +31,12 @@ WORKSTREAM_OF_MODULE = {
     "tracks_nav": "tracks-nav",
     "media_files": "media-files",
     "ai_generation": "ai-generation",
+    "handoff": "handoff",
+    # Each handoff package's tools (classes.editor_tools.handoff_<package>, loaded by handoff.py).
+    "handoff_after_effects": "handoff-after-effects",
+    "handoff_premiere": "handoff-premiere",
+    "handoff_remotion": "handoff-remotion",
+    "handoff_hyperframes": "handoff-hyperframes",
 }
 
 
@@ -51,4 +58,5 @@ from classes.editor_tools import (  # noqa: E402,F401
     tracks_nav,
     media_files,
     ai_generation,
+    handoff,
 )
