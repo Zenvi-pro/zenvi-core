@@ -44,6 +44,7 @@ import hashlib
 import json
 import os
 import platform as _platform
+import posixpath
 import shutil
 import socket
 import sys
@@ -205,10 +206,20 @@ def _is_url(text: str) -> bool:
     return urllib.parse.urlparse(text).scheme in ("http", "https", "file")
 
 
-def _plain_http_elsewhere(url: str) -> bool:
-    """http:// to another computer: the manifest names the archive and its checksum, so it must come over TLS."""
+def _local(url: str) -> bool:
     parsed = urllib.parse.urlparse(url)
-    return parsed.scheme == "http" and parsed.hostname not in ("localhost", "127.0.0.1", "::1")
+    return parsed.scheme == "file" or (parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1", "::1"))
+
+
+def _refused(url: str, local_origin: bool) -> bool:
+    """Whether the installer must not fetch *url*: the manifest names the archive and its checksum, so both come
+    over https, or from this computer (http://localhost; file:// only when the release list is local too)."""
+    scheme = urllib.parse.urlparse(url).scheme
+    if scheme == "https":
+        return False
+    if scheme == "file":
+        return not local_origin
+    return not (scheme == "http" and _local(url))
 
 
 def _resolve(src: str, report: Progress, cancel: threading.Event) -> dict:
@@ -221,7 +232,7 @@ def _resolve(src: str, report: Progress, cancel: threading.Event) -> dict:
                                       f"{engine_bridge.CLI_NAME} (zenvi-web: npm run build -w @zenvi/cli)")
         return {"path": folder}
     url = src if _is_url(src) else Path(os.path.abspath(os.path.expanduser(src))).as_uri()
-    if _plain_http_elsewhere(url):
+    if _refused(url, local_origin=True):
         raise RuntimeInstallError(f"{src}: Zenvi engine tools are only downloaded over https (or from this computer)")
     report("Reading the Zenvi engine tools release list", 0, 0)
     try:
@@ -240,7 +251,7 @@ def _resolve(src: str, report: Progress, cancel: threading.Event) -> dict:
             f"{', '.join(spoken) or 'none'}): update Zenvi, or point the source at a matching build")
     best = max(usable, key=lambda r: _version_key(str(r.get("version") or "")))
     archive = urllib.parse.urljoin(url, str(best["url"]))
-    if _plain_http_elsewhere(archive):
+    if _refused(archive, local_origin=_local(url)):
         raise RuntimeInstallError(f"{archive}: Zenvi engine tools are only downloaded over https (or from this computer)")
     return dict(best, url=archive)
 
@@ -252,9 +263,20 @@ def _version_key(version: str) -> tuple:
     return tuple(parts)
 
 
+class _Redirects(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only to where the installer may fetch from in the first place (_refused)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if _refused(newurl, local_origin=False):
+            raise urllib.error.HTTPError(newurl, code, f"redirected to {newurl}, which is not https", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_Redirects)
+
+
 def _open(url: str):
-    return urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "Zenvi"}),
-                                  timeout=FETCH_TIMEOUT)
+    return _OPENER.open(urllib.request.Request(url, headers={"User-Agent": "Zenvi"}), timeout=FETCH_TIMEOUT)
 
 
 def _offline(url: str, exc: Exception) -> RuntimeInstallError:
@@ -370,9 +392,19 @@ def _extract_tar(bundle: tarfile.TarFile, dest: str) -> None:
         return
     # Python < 3.10.12 / 3.11.4 (e.g. a Linux build on Debian 11's or Ubuntu 20.04's system Python).
     root = os.path.abspath(dest)
+    # normpath is textual: a path through a link the archive itself makes (top/b -> a/.., then top/b/evil)
+    # would be checked as written but land wherever the links lead. Refuse any path through one of its links.
+    links = {posixpath.normpath(m.name.replace("\\", "/")) for m in bundle.getmembers() if m.issym()}
+
+    def through_link(rel: str, itself: bool) -> bool:
+        parts = rel.split("/")
+        return any("/".join(parts[:i]) in links for i in range(1, len(parts) + itself))
+
     members = []
     for member in bundle.getmembers():
         name = member.name.replace("\\", "/")
+        if through_link(posixpath.normpath(name), itself=False):
+            raise RuntimeInstallError(f"The archive holds {member.name} inside one of its own links")
         if not (member.isfile() or member.isdir() or member.issym()):
             raise RuntimeInstallError(f"The archive holds {member.name}, which is not a file, folder or link")
         target = os.path.normpath(os.path.join(root, name))
@@ -382,6 +414,8 @@ def _extract_tar(bundle: tarfile.TarFile, dest: str) -> None:
             link = os.path.normpath(os.path.join(os.path.dirname(target), member.linkname))
             if os.path.isabs(member.linkname) or not _inside(link, root):
                 raise RuntimeInstallError(f"The archive links {member.name} outside the folder it unpacks into")
+            if through_link(posixpath.normpath(posixpath.join(posixpath.dirname(name), member.linkname)), itself=True):
+                raise RuntimeInstallError(f"The archive links {member.name} through another of its links")
         member.mode &= 0o755          # no setuid/setgid/sticky, no group/other write
         members.append(member)
     bundle.extractall(dest, members=members)

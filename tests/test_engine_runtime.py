@@ -17,6 +17,7 @@ import sys
 import tarfile
 import threading
 import urllib.error
+import urllib.request
 
 import pytest
 
@@ -331,6 +332,32 @@ def test_a_remote_source_must_be_https(runtime):
     assert runtime.downloads == []
 
 
+def test_archives_and_redirects_come_over_https_or_from_this_computer(runtime):
+    rt = runtime.module
+    assert not rt._refused("https://releases.example.com/cli.tar.gz", local_origin=False)
+    assert not rt._refused("http://localhost:8123/cli.tar.gz", local_origin=False)
+    assert not rt._refused("file:///tmp/cli.tar.gz", local_origin=True)
+    for url in ("ftp://releases.example.com/cli.tar.gz", "http://releases.example.com/cli.tar.gz",
+                "file:///tmp/cli.tar.gz", "data:,x"):
+        assert rt._refused(url, local_origin=False), url
+    request = urllib.request.Request("https://releases.example.com/cli.tar.gz")
+    with pytest.raises(urllib.error.HTTPError, match="not https"):
+        rt._Redirects().redirect_request(request, None, 302, "Found", {}, "http://mirror.example.com/cli.tar.gz")
+    moved = rt._Redirects().redirect_request(request, None, 302, "Found", {}, "https://mirror.example.com/cli.tar.gz")
+    assert moved.full_url == "https://mirror.example.com/cli.tar.gz"
+
+
+def test_a_local_release_list_cannot_name_an_ftp_archive(runtime, tmp_path):
+    rt = runtime.module
+    manifest = json.loads(open(runtime.release().replace("file://", ""), encoding="utf-8").read())
+    for release in manifest["releases"]:
+        release["url"] = "ftp://releases.example.com/cli.tar.gz"
+    path = tmp_path / "ftp-release.json"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(rt.RuntimeInstallError, match="only downloaded over https"):
+        rt.install(path.as_uri())
+
+
 def _tar_members(path, members):
     """A .tar.gz of raw TarInfo members ((info, text) pairs) -- for archives no honest release makes."""
     with tarfile.open(path, "w:gz") as bundle:
@@ -368,6 +395,11 @@ def test_without_tarfile_filters_archives_are_checked_before_extracting(runtime,
         "link out": [(_member("top/out", tarfile.SYMTYPE, link="../../.."), "")],
         "absolute link": [(_member("top/out", tarfile.SYMTYPE, link="/etc"), "")],
         "hard link": [(_member("top/a"), "x"), (_member("top/b", tarfile.LNKTYPE, link="top/a"), "")],
+        # Each link checks out as written; through them, top/b/evil lands beside the folder.
+        "link chain": [(_member("top/a", tarfile.SYMTYPE, link=".."), ""),
+                       (_member("top/b", tarfile.SYMTYPE, link="a/.."), ""), (_member("top/b/evil"), "x")],
+        "inside a link": [(_member("top/sub", tarfile.DIRTYPE), ""), (_member("top/a", tarfile.SYMTYPE, link="sub"), ""),
+                          (_member("top/a/x"), "x")],
         "device": [(_member("top/dev", tarfile.CHRTYPE), "")],
         "fifo": [(_member("top/pipe", tarfile.FIFOTYPE), "")],
     }
