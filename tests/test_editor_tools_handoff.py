@@ -84,6 +84,42 @@ def test_import_linked_media_copies_into_the_links_folder_as_one_step(linked):
     assert linked.file(data["file_id"]) is None
 
 
+def test_import_linked_media_copies_a_system_temp_file_instead_of_moving_it(linked):
+    """Regression for CI: pytest / agents write under gettempdir(); those must stay put."""
+    import tempfile
+    fd, src = tempfile.mkstemp(suffix=".mov")
+    os.write(fd, b"movie")
+    os.close(fd)
+    linked.probe.durations[src] = 3.0
+    try:
+        r = linked.call_receipt(
+            "import_linked_media_tool", path=src, position=0.0,
+            link={"kind": "aftereffects", "source": {"composition": "Temp", "composition_key": 1}},
+        )
+        assert r["status"] == "applied", r["summary"]
+        assert os.path.isfile(src), "system-temp originals must be copied, not moved"
+        assert os.path.isfile(r["data"]["path"])
+    finally:
+        if os.path.exists(src):
+            os.unlink(src)
+
+
+def test_import_linked_media_moves_only_zenvi_staging_files(linked, tmp_path):
+    staging = tmp_path / (lm.STAGING_PREFIX + "abc")
+    staging.mkdir()
+    src = str(staging / "Promo.mov")
+    with open(src, "wb") as fh:
+        fh.write(b"movie")
+    linked.probe.durations[src] = 2.0
+    r = linked.call_receipt(
+        "import_linked_media_tool", path=src, position=0.0,
+        link={"kind": "aftereffects", "source": {"composition": "Promo", "composition_key": 9}},
+    )
+    assert r["status"] == "applied", r["summary"]
+    assert not os.path.exists(src)  # Zenvi-owned staging may be moved
+    assert os.path.isfile(r["data"]["path"])
+
+
 def test_import_linked_media_refuses_bad_links_without_history(linked):
     src = linked.media("x.mov")
     r = linked.call_receipt("import_linked_media_tool", path=src, link={"kind": "remotion", "source": {"path": "/x"}})
