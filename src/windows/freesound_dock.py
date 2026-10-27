@@ -99,14 +99,18 @@ class _WaveformRunnable(QRunnable):
         ready = pyqtSignal(object, QImage, int)   # sound_id, image (QPixmap is GUI-thread only), search
         finished = pyqtSignal(object, int)        # sound_id, search; success or not
 
-    def __init__(self, sound_id, url: str, search: int):
+    def __init__(self, sound_id, url: str, search: int, alive=None):
         super().__init__()
         self.signals = _WaveformRunnable._Signals()
         self._sound_id = sound_id
         self._url = url
         self._search = search
+        self._alive = alive   # None, or False once its search is gone: skip the fetch
 
     def run(self):
+        if self._alive is not None and not self._alive():
+            self.signals.finished.emit(self._sound_id, self._search)
+            return
         try:
             import requests as _req
             resp = _req.get(

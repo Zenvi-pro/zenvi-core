@@ -138,10 +138,10 @@ def test_a_music_import_keeps_its_credit_line(view):
     project_file = MagicMock(data={})
     project_file.absolute_path.return_value = "/tmp/a.mp3"
     with patch("classes.tool_handlers.resolve_imported_file", return_value=project_file), \
-         patch("windows.views.stock_search_view.get_app"), patch.object(view, "_add_to_project"):
+         patch("windows.views.stock_search_view.get_app") as get_app, patch.object(view, "_add_to_project"):
         view._on_download_done("suuid-0", "/tmp/a.mp3", "")
     assert project_file.data["stock_credit"] == "credit"
-    project_file.save.assert_called_once()
+    get_app.return_value.updates.update_untracked.assert_called_once()
 
 
 def test_the_freesound_dock_handles_openverse_ids_and_album_art():
@@ -212,18 +212,19 @@ def test_card_tooltips_show_provider_text_literally(view):
     assert "<a href" not in card.toolTip() and "&lt;a href" in card.toolTip()
 
 
-def test_the_credit_is_not_an_undo_step(view):
+def test_the_credit_is_not_an_undo_step_and_keeps_a_pending_one(view):
+    # update_untracked: no history entry, and the pending action (an effect drag in
+    # progress) is restored, so a finishing download cannot replace it.
     view._on_music_results({"sounds": _sounds(1), "count": 1})
     app = MagicMock()
-    app.updates.ignore_history = False
-    seen = []
-    project_file = MagicMock(data={})
+    project_file = MagicMock(data={}, key=["files", {"id": "F1"}])
     project_file.absolute_path.return_value = "/tmp/a.mp3"
-    project_file.save.side_effect = lambda: seen.append(app.updates.ignore_history)
-    with patch("classes.tool_handlers.resolve_imported_file", return_value=project_file), \
-         patch("windows.views.stock_search_view.get_app", return_value=app), patch.object(view, "_add_to_project"):
+    with patch("classes.tool_handlers.resolve_imported_file", return_value=project_file),          patch("windows.views.stock_search_view.get_app", return_value=app), patch.object(view, "_add_to_project"):
         view._on_download_done("suuid-0", "/tmp/a.mp3", "")
-    assert seen == [True] and app.updates.ignore_history is False
+    app.updates.update_untracked.assert_called_once()
+    key, data = app.updates.update_untracked.call_args.args
+    assert key == ["files", {"id": "F1"}] and data["stock_credit"] == "credit"
+    project_file.save.assert_not_called()
 
 
 def test_the_credit_never_lands_on_a_same_named_file_elsewhere(view):
@@ -269,3 +270,14 @@ def test_image_loads_never_use_the_global_thread_pool():
 
     pools = [StockSearchView()._pool, FreesoundDock()._wave_pool, PexelsDock()._thumb_pool]
     assert all(p is not QThreadPool.globalInstance() for p in pools)
+
+
+
+def test_queued_image_fetches_from_an_older_search_are_skipped(view):
+    view._on_footage_results({"videos": _videos(2), "total_results": 2})
+    runnable = _started(view)[0]
+    with patch.object(view, "_start_search"):
+        view.run_search("forest")                         # supersedes the search that queued it
+    with patch("requests.get") as get:
+        runnable.run()
+    get.assert_not_called()
