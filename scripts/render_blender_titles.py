@@ -31,6 +31,12 @@ class _Project:
         return self.data[key]
 
 
+def _inside(path, folder):
+    """Whether *path* is *folder* or under it (by directory, not by string prefix)."""
+    path, folder = os.path.realpath(path), os.path.realpath(folder)
+    return os.path.commonpath([path, folder]) == folder
+
+
 def log_problems(returncode, log, frames, folder):
     """What went wrong in one Blender run, from its exit code, its output and the frames it left."""
     problems = []
@@ -43,7 +49,8 @@ def log_problems(returncode, log, frames, folder):
         problems.append(next((ln for ln in lines[at + 1:] if ln and not ln.startswith(" ")), "Traceback")[:160])
     if not frames:
         problems.append("no frame written")
-    stray = [ln.strip() for ln in lines if "Saved: '" in ln and not ln.split("Saved: '")[1].startswith(folder)]
+    stray = [ln.strip() for ln in lines
+             if "Saved: '" in ln and not _inside(ln.split("Saved: '")[1].rsplit("'", 1)[0], folder)]
     if stray:
         problems.append("wrote outside the output folder: " + stray[0][:120])
     return problems
@@ -52,8 +59,12 @@ def log_problems(returncode, log, frames, folder):
 def render_one(xml_path, blender, out_root, frame, gpu, timeout, size):
     details = bt.animation_details(xml_path)
     name = os.path.splitext(os.path.basename(xml_path))[0]
-    folder = os.path.join(out_root, name)
+    # Absolute: Blender runs in the folder, so a relative -P script path would point inside it again.
+    folder = os.path.abspath(os.path.join(out_root, name))
     os.makedirs(folder, exist_ok=True)
+    # A frame left by an earlier run must not pass for this run's.
+    for stale in glob.glob(os.path.join(folder, name + "*.png")):
+        os.remove(stale)
     blend, source, target = bt.script_paths(details["service"], folder)
     params = bt.default_params(details)
     params.update(bt.project_params(_Project(*size), os.path.join(folder, name + "####"), is_preview=False))
@@ -82,6 +93,9 @@ def main():
     args = ap.parse_args()
     out = args.out or tempfile.mkdtemp(prefix="zenvi-blender-titles-")
     only = {n for n in args.only.split(",") if n}
+    unknown = only - {os.path.splitext(os.path.basename(p))[0] for p in bt.template_paths()}
+    if unknown:
+        ap.error("no template named " + ", ".join(sorted(unknown)))
     failed = 0
     for xml_path in bt.template_paths():
         if only and os.path.splitext(os.path.basename(xml_path))[0] not in only:

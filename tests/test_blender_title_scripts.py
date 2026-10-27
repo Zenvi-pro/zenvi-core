@@ -45,6 +45,32 @@ def test_render_check_reports_a_script_traceback_and_a_frame_saved_outside_the_f
     assert problems[1].startswith("wrote outside the output folder")
     assert _render_tool().log_problems(0, "Saved: '/tmp/out/x0030.png'\n", ["/tmp/out/x0030.png"], "/tmp/out") == []
 
+    # A sibling folder that shares the prefix is outside.
+    assert _render_tool().log_problems(0, "Saved: '/tmp/outside/x0030.png'\n", ["/tmp/out/x0030.png"], "/tmp/out")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the fake Blender is a shell script")
+def test_render_check_needs_a_frame_from_this_run_and_works_with_a_relative_folder(tmp_path, monkeypatch):
+    # A fake Blender that, like the real one, needs the -P script to exist (it runs in the
+    # template's folder) and here writes no frame: the frame an earlier run left must not pass.
+    fake = tmp_path / "blender"
+    fake.write_text('#!/bin/sh\n[ -f "$6" ] || { echo "Traceback (most recent call last):"; '
+                    'echo "FileNotFoundError: $6"; exit 1; }\n')
+    fake.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    os.makedirs("out/glass_slider")
+    open("out/glass_slider/glass_slider0060.png", "w").close()
+    xml_path = os.path.join(blender_titles.blender_dir(), "glass_slider.xml")
+    _, frames, problems = _render_tool().render_one(xml_path, str(fake), "out", 60, False, 60, (160, 90))
+    assert frames == [] and problems == ["no frame written"]
+
+
+def test_render_check_refuses_an_only_that_names_no_template(monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["render_blender_titles.py", "--only", "glass_slider,glas_slider"])
+    with pytest.raises(SystemExit) as exc:
+        _render_tool().main()
+    assert exc.value.code == 2 and "glas_slider" in capsys.readouterr().err
+
 
 BLENDER = shutil.which("blender")
 
