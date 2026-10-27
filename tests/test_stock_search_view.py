@@ -124,3 +124,35 @@ def test_project_files_say_when_the_search_hides_every_file(view):
     files.setModel(QStringListModel(["clip.mp4"]))
     view._refit_files()
     assert view._files_empty.isHidden()
+
+
+def test_a_failed_search_can_be_retried_with_the_same_query(view):
+    view._on_music_results({"sounds": [], "rate_limited": True, "error": "Stock search is busy, try again in 30s."})
+    with patch.object(view, "_start_search") as start:
+        view.run_search("ocean")
+    assert start.call_count == 2
+
+
+def test_a_music_import_keeps_its_credit_line(view):
+    view._on_music_results({"sounds": _sounds(1), "count": 1})
+    project_file = MagicMock(data={})
+    with patch("classes.query.File.get", return_value=project_file), \
+         patch.object(view, "_add_to_project"):
+        view._on_download_done("suuid-0", "/tmp/a.mp3", "")
+    assert project_file.data["stock_credit"] == "credit"
+    project_file.save.assert_called_once()
+
+
+def test_the_freesound_dock_handles_openverse_ids_and_album_art():
+    from windows.freesound_dock import FreesoundDock, _DownloadWorker
+
+    dock = FreesoundDock()
+    dock._wave_pool = MagicMock()
+    dock._current_page, dock._search_gen = 1, 1
+    dock._on_search_done({"sounds": _sounds(1), "count": 1}) if hasattr(dock, "_on_search_done") else \
+        dock._on_results({"sounds": _sounds(1), "count": 1})
+    runnable = dock._wave_pool.start.call_args.args[0]
+    assert runnable._url == "https://ov/0/thumb/"
+    worker = _DownloadWorker("uuid-0", "https://j/0.mp3", "a")
+    worker.finished.connect(dock._on_download_done)   # an int-typed slot raises TypeError here
+    worker.finished.emit("uuid-0", "", "boom")
