@@ -111,8 +111,15 @@ def load_catalog(client: engine_bridge.EngineBridgeClient) -> list:
     return tools
 
 
+# What execute_tool passes every handler besides the tool's own arguments.
+_DISPATCH_ARGS = ("transaction_id", "chat_session_id")
+
+
 def _handler(name: str, description: str, run: Optional[Callable] = None):
     def handler(**args):
+        # Neither is an engine tool argument; execute_tool already groups the call into one undo step.
+        for key in _DISPATCH_ARGS:
+            args.pop(key, None)
         return run(**args) if run is not None else run_tool(name, args)
     handler.__name__ = name
     handler.__doc__ = description
