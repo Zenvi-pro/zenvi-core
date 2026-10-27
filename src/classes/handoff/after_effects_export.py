@@ -153,10 +153,28 @@ def safe_name(text: str, fallback: str = "Untitled") -> str:
     return title_svg.safe_base_name(text, fallback=fallback)
 
 
+def _stable_abs(path: str) -> str:
+    """Absolute path without inventing a Windows drive letter on POSIX paths (agents / CI)."""
+    raw = str(path or "")
+    if os.name == "nt":
+        n = raw.replace("\\", "/")
+        # ``/work/...`` must stay POSIX; ``//server/...`` UNC and ``C:/...`` are real Windows paths.
+        if n.startswith("/") and not n.startswith("//") and not (len(n) > 2 and n[2] == ":"):
+            return n
+    return os.path.abspath(raw)
+
+
 def default_output_dir(project_path: Optional[str], name: str) -> str:
     """``<project folder>/<name>_AfterEffects``, or ``~/Downloads/<name>_AfterEffects`` for an unsaved project."""
     from classes import info
-    base = os.path.dirname(os.path.abspath(project_path)) if project_path else info.DOWNLOADS_PATH
+    if project_path:
+        abs_project = _stable_abs(project_path)
+        if abs_project.startswith("/") and not abs_project.startswith("//") and os.name == "nt":
+            base = abs_project.rsplit("/", 1)[0] or "/"
+            return base.rstrip("/") + "/" + safe_name(name) + "_AfterEffects"
+        base = os.path.dirname(abs_project)
+    else:
+        base = info.DOWNLOADS_PATH
     return os.path.join(base, safe_name(name) + "_AfterEffects")
 
 
@@ -387,7 +405,7 @@ def export_after_effects(snapshot, output_dir: str, *, collect_media: bool = Tru
     created = created if created is not None else datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     if not snapshot.clips:
         raise AeHandoffError("the timeline has no clips to export")
-    folder = os.path.abspath(os.path.expanduser(output_dir))
+    folder = _stable_abs(os.path.expanduser(output_dir))
     if os.path.exists(folder) and not os.path.isdir(folder):
         raise AeHandoffError(f"{folder} is a file; choose a folder for the After Effects export")
     name = safe_name(script_name or snapshot.name)
