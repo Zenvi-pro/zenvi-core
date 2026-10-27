@@ -241,3 +241,19 @@ def test_footage_tooltips_show_provider_text_literally():
 
     card = _VideoCard(dict(_videos(1)[0], user_name='<a href="https://evil.example">x</a>'))
     assert "<a href" not in card.toolTip() and "&lt;a href" in card.toolTip()
+
+
+def test_a_bed_for_an_older_search_is_not_imported(view):
+    view._bed_busy = True
+    stale = view._search_gen - 1
+    with patch.object(view, "_add_to_project") as add:
+        view._on_local_bed_done({"path": "/tmp/bed.mp3", "error": "", "query": "ocean", "gen": stale})
+    add.assert_not_called()
+    assert view._bed_busy is False
+
+
+def test_only_a_real_decline_turns_local_beds_off(view):
+    view._on_local_bed_done({"path": "", "error": "ggml: device declined to allocate", "gen": view._search_gen})
+    assert view._bed_declined is False
+    view._on_local_bed_done({"path": "", "error": "x", "declined": True, "gen": view._search_gen})
+    assert view._bed_declined is True

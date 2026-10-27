@@ -72,21 +72,25 @@ class _LocalBedWorker(QObject):
     """Generates an instrumental bed for a query on this computer (ACE-Step), off the GUI thread."""
     finished = pyqtSignal(dict)   # {path, error, query}
 
-    def __init__(self, query: str):
+    def __init__(self, query: str, gen: int):
         super().__init__()
         self._query = query
+        self._gen = gen
 
     @pyqtSlot()
     def run(self):
-        path, error = "", ""
+        path, error, declined = "", "", False
         try:
             from classes import music_local
             from classes.editor_tools import ai_generation_music as music
             music.ensure_installed("ace_step")
             path = music_local.generate_bed(self._query)
+        except music.Declined as exc:
+            error, declined = str(exc), True
         except Exception as exc:
             error = str(exc)
-        self.finished.emit({"path": path, "error": error, "query": self._query})
+        self.finished.emit({"path": path, "error": error, "declined": declined, "query": self._query,
+                            "gen": self._gen})
 
 
 class StockSearchView(QWidget):
@@ -467,21 +471,25 @@ class StockSearchView(QWidget):
             return
         self._bed_busy = True
         self._music_status.setText(self._music_status.text() + "Generating a 30 s bed on this computer...")
-        self._start_search(_LocalBedWorker(query), self._on_local_bed_done)
+        self._start_search(_LocalBedWorker(query, self._search_gen), self._on_local_bed_done)
 
     @pyqtSlot(dict)
     def _on_local_bed_done(self, data: dict):
         self._bed_busy = False
         error, path = data.get("error", ""), data.get("path", "")
+        current = data.get("gen") == self._search_gen
         if error:
-            self._bed_declined = self._bed_declined or "declined" in error
+            self._bed_declined = self._bed_declined or bool(data.get("declined"))
             log.warning("Local music bed failed: %s", error)
-            self._music_status.setText("No stock music found; local generation is off (download declined)."
-                                       if "declined" in error else f"Local music generation failed: {error}")
+            if current:
+                self._music_status.setText("No stock music found; local generation is off (download declined)."
+                                           if data.get("declined") else f"Local music generation failed: {error}")
+            return
+        if not current:   # the user searched for something else meanwhile; the file stays in Downloads
+            log.info("Local bed for an earlier search not imported: %s", path)
             return
         self._add_to_project(path)
-        if data.get("query") == self._query:
-            self._music_status.setText("No stock music found; generated a 30 s bed and added it to Project Files.")
+        self._music_status.setText("No stock music found; generated a 30 s bed and added it to Project Files.")
 
     def _card_for_image(self, key: int, search: int):
         return self._cards.get(self._image_keys.get(key, "")) if search == self._search_gen else None
@@ -609,7 +617,7 @@ class StockSearchView(QWidget):
                     if not (existing.data.get("ai_metadata") or {}).get("analyzed"):
                         files_model._index_file_async(existing.id)
                 else:
-                    files_model.add_files([local_path])
+                    files_model.add_files([local_path], quiet=True)   # an unreadable file is logged, no modal
                     log.info("Stock media added to Project Files: %s", local_path)
         except Exception as exc:
             log.error("Failed to add stock media to Project Files: %s", exc)

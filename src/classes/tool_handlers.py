@@ -7448,8 +7448,10 @@ def import_stock_media(
             path = hfx._guard(music_local.generate_bed, query)
         except ToolError as exc:
             return f"{dl} The local fallback also failed: {exc}"
-        return "Stock music unavailable; generated locally with ACE-Step. " + add_stock_media_to_project(
-            local_path=path, **kwargs)
+        added = add_stock_media_to_project(local_path=path, **kwargs)
+        if added.startswith("Error"):
+            return f"{dl} The local fallback generated a bed but could not import it: {added}"
+        return "Stock music unavailable; generated locally with ACE-Step. " + added
     if dl.startswith("Error"):
         return dl
     if "Downloaded to:" in dl:

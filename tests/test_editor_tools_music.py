@@ -82,3 +82,10 @@ def test_stock_music_download_failure_also_falls_back(editor, studio, monkeypatc
 def test_without_a_query_a_missing_hit_is_still_an_error(editor, studio):
     out = tool_handlers.import_stock_media(source="freesound", sound_id="", preview_url="")
     assert out.startswith("Error") and studio["generated"] == []
+
+
+def test_a_failed_fallback_import_is_still_an_error(editor, studio, monkeypatch):
+    monkeypatch.setattr(tool_handlers, "add_stock_media_to_project",
+                        lambda **kw: "Error: Failed to import /tmp/bed.mp3")
+    out = tool_handlers.import_stock_media(source="freesound", sound_id="", preview_url="", query="rain")
+    assert out.startswith("Error")

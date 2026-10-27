@@ -123,3 +123,29 @@ def test_install_plan_lists_sizes_and_yue2_licence(tmp_path, monkeypatch):
     labels = " | ".join(s["label"] for s in ml.install_plan("yue2"))
     assert "GB" in labels
     assert "non-commercial" in labels.lower()
+
+
+def test_unpack_makes_every_engines_binary_executable(tmp_path, monkeypatch):
+    import zipfile as zf
+
+    monkeypatch.setattr(ml, "home", lambda: str(tmp_path))
+    monkeypatch.setattr(ml.sys, "platform", "linux")
+    monkeypatch.setattr(ml._platform, "machine", lambda: "x86_64")
+    asset = ml.RUNTIME[("linux", "x86_64")][0]
+    os.makedirs(tmp_path / "downloads")
+    with zf.ZipFile(tmp_path / "downloads" / asset, "w") as z:
+        for b in ("ace-lm", "ace-synth", "yue-synth"):
+            z.writestr(b, "#!/bin/sh\n")
+    monkeypatch.setattr(ml, "_download_pinned", lambda *a: None)
+    chmods = []
+    monkeypatch.setattr(ml.os, "chmod", lambda p, mode: chmods.append(os.path.basename(p)))
+    ml._unpack_runtime("ace_step")
+    assert sorted(chmods) == ["ace-lm", "ace-synth", "yue-synth"]
+
+
+def test_two_runs_in_the_same_millisecond_do_not_share_output(home, monkeypatch):
+    monkeypatch.setattr(ml.time, "time", lambda: 1700000000.0)
+    with patch.object(ml, "_run", side_effect=_fake_run([])):
+        a = ml.generate("ace_step", "lofi")
+        b = ml.generate("ace_step", "lofi")
+    assert a != b and os.path.isfile(a) and os.path.isfile(b)

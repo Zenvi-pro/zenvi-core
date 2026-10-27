@@ -24,6 +24,10 @@ def th():
     return tool_handlers
 
 
+class Declined(ToolError):
+    """The user said no to the one-time download."""
+
+
 def ensure_installed(engine: str) -> None:
     steps = ml.install_plan(engine)
     if not steps:
@@ -31,8 +35,8 @@ def ensure_installed(engine: str) -> None:
     if not hfx._ask_install_consent(
             steps, title="Set up music generation",
             intro="Zenvi generates music on this computer; nothing is uploaded. This needs a one-time download:"):
-        raise ToolError("the user declined the music download; local music generation is unavailable until it "
-                        "is installed")
+        raise Declined("the user declined the music download; local music generation is unavailable until it "
+                       "is installed")
     hfx._guard(ml.install, engine)
 
 

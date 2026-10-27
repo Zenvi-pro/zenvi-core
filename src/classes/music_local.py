@@ -23,6 +23,8 @@ import os
 import platform as _platform
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import zipfile
 from typing import List, Tuple
@@ -72,6 +74,7 @@ ACE_VAE_CHUNK = "128"
 YUE_STEPS, YUE_VAE_CORE = 16, "128"
 YUE_TOKENS_PER_S = 40   # score + semantic tokens per second of audio, with headroom
 RUN_TIMEOUT = 3600
+_unpack_lock = threading.Lock()   # two first-time installs must not extract into bin/ together
 
 
 class MusicError(hf.HyperframesError):
@@ -118,11 +121,14 @@ def _unpack_runtime(engine: str) -> None:
         raise MusicError("the Zenvi music runtime is not published for this computer (%s %s) yet" % key)
     downloads = os.path.join(home(), "downloads")
     _download_pinned(downloads, [(RUNTIME_RELEASE % asset, asset, digest)], "music runtime")
-    with zipfile.ZipFile(os.path.join(downloads, asset)) as zf:
+    with _unpack_lock, zipfile.ZipFile(os.path.join(downloads, asset)) as zf:
         zf.extractall(os.path.join(home(), "bin"))
-    if sys.platform != "win32":
-        for b in _BINARIES[engine]:
-            os.chmod(_exe(b), 0o755)
+        if sys.platform != "win32":
+            # extractall drops the executable bit, and one zip holds every engine's binaries:
+            # status() would call the other engine installed while it cannot run.
+            for b in sorted({b for names in _BINARIES.values() for b in names}):
+                if os.path.isfile(_exe(b)):
+                    os.chmod(_exe(b), 0o755)
 
 
 def install(engine: str) -> dict:
@@ -178,11 +184,13 @@ def generate(engine: str, style: str, lyrics: str = "", duration: float = 30.0, 
     if not all(status(engine).values()):
         raise MusicError("%s is not installed on this computer yet" % engine)
     duration = max(5.0, min(float(duration or 30.0), 240.0))
-    work = os.path.join(home(), "jobs", "%s-%d" % (engine, int(time.time() * 1000)))
-    os.makedirs(work, exist_ok=True)
+    jobs = os.path.join(home(), "jobs")
+    os.makedirs(jobs, exist_ok=True)
+    # A fresh folder per run: the agent and the Files dock can generate at the same moment.
+    work = tempfile.mkdtemp(prefix="%s-%d-" % (engine, int(time.time())), dir=jobs)
     out_dir = os.path.join(info.USER_PATH, "Downloads")
     os.makedirs(out_dir, exist_ok=True)
-    out = os.path.join(out_dir, "zenvi_%s_%s.mp3" % (engine, os.path.basename(work).split("-")[-1]))
+    out = os.path.join(out_dir, "zenvi_%s_%s.mp3" % (engine, os.path.basename(work)[len(engine) + 1:]))
     models = os.path.join(home(), "models")
 
     if engine == "ace_step":

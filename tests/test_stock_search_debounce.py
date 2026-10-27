@@ -112,7 +112,8 @@ def test_a_declined_music_download_is_not_asked_again(qapp):
 
     v = StockSearchView()
     v._query = "rain"
-    v._on_local_bed_done({"path": "", "error": "the user declined the music download"})
+    v._on_local_bed_done({"path": "", "error": "the user declined the music download", "declined": True,
+                          "gen": v._search_gen})
     with patch.object(v, "_start_search") as start:
         v._start_local_bed("rain")
         start.assert_not_called()
