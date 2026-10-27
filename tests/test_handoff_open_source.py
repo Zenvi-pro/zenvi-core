@@ -34,7 +34,8 @@ def test_named_editor_that_is_missing_says_how_to_fix_it():
 
 def test_windows_launchers_are_found_in_their_install_folders():
     env = {"USERPROFILE": "C:\\Users\\me", "LOCALAPPDATA": "C:\\Users\\me\\AppData\\Local", "PATH": ""}
-    code = os.path.join(env["LOCALAPPDATA"], "Programs", "Microsoft VS Code", "bin", "code.cmd")
+    import ntpath  # Windows paths whatever the host: resolve_editor joins them with ntpath for win32
+    code = ntpath.join(env["LOCALAPPDATA"], "Programs", "Microsoft VS Code", "bin", "code.cmd")
     choice = osrc.resolve_editor("vscode", platform="win32", env=env, exists=_exists_only(code))
     assert choice.argv[0] == code
 

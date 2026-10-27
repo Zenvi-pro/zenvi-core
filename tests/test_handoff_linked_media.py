@@ -83,6 +83,13 @@ def test_fps_forms_and_fingerprint_helpers(tmp_path):
     assert lm.short_fingerprint("sha256:3f9a1c2bdeadbeef") == "3f9a1c2b"
 
 
+def test_is_owned_temp_media_only_matches_zenvi_staging():
+    assert lm.is_owned_temp_media(os.path.join("/tmp", lm.STAGING_PREFIX + "x", "out.mov"))
+    assert lm.is_owned_temp_media(os.path.join("C:\\Users\\x", "links", lm.STAGING_PREFIX + "y", "a.mov"))
+    assert not lm.is_owned_temp_media(os.path.join("/tmp", "Promo.mov"))
+    assert not lm.is_owned_temp_media(os.path.join("/tmp", "pytest-of-runner", "media", "Promo.mov"))
+
+
 def test_provider_registry():
     provider = FakeProvider(kind="hyperframes", label="HyperFrames")
     lm.register_provider(provider)
