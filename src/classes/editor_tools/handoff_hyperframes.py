@@ -30,9 +30,10 @@ def _project_settings():
 
 
 def _hf_dir(project_dir: str) -> str:
-    path = os.path.abspath(os.path.expanduser(str(project_dir or "").strip()))
+    from classes.handoff.timeline_view import stable_abs
     if not str(project_dir or "").strip():
         raise ToolError("say which HyperFrames project: project_dir (the folder with index.html)")
+    path = stable_abs(str(project_dir).strip())
     if not os.path.isdir(path):
         raise ToolError(f"{path} is not a folder")
     if not os.path.isfile(os.path.join(path, "index.html")):
@@ -179,23 +180,24 @@ def export_to_hyperframes(output_dir, copy_media=True, replace_edits=False):
             result = exporter.export_project(snapshot, raw, target, copy_media=bool(copy_media),
                                              overwrite_changes=bool(replace_edits), on_progress=job.report,
                                              should_cancel=job.should_cancel)
+            lint = None
+            try:
+                report = hf_cli.lint(result.output_dir, timeout=LINT_TIMEOUT, should_cancel=job.should_cancel)
+                lint = {"ok": bool(report.get("ok")), "errors": report.get("errorCount"),
+                        "warnings": report.get("warningCount"),
+                        "findings": [{"code": f.get("code"), "severity": f.get("severity"),
+                                      "message": f.get("message")}
+                                     for f in (report.get("findings") or [])][:20]}
+            except (hf_cli.CliError, OSError) as exc:
+                lint = {"ok": None, "skipped": str(exc)}
+            except jobs.JobCancelled:
+                lint = {"ok": None, "skipped": "cancelled"}
     except jobs.JobCancelled:
         raise ToolError("the HyperFrames export was cancelled; nothing was written") from None
     except exporter.ExportChanged as exc:
         raise ToolError(f"{exc} (replace_edits=true replaces them -- only if the user agrees)") from None
     except LinkError as exc:
         raise ToolError(str(exc)) from None
-    lint = None
-    try:
-        report = hf_cli.lint(result.output_dir, timeout=LINT_TIMEOUT)
-        lint = {"ok": bool(report.get("ok")), "errors": report.get("errorCount"),
-                "warnings": report.get("warningCount"),
-                "findings": [{"code": f.get("code"), "severity": f.get("severity"), "message": f.get("message")}
-                             for f in (report.get("findings") or [])][:20]}
-    except (hf_cli.CliError, OSError) as exc:
-        lint = {"ok": None, "skipped": str(exc)}
-    except jobs.JobCancelled:
-        lint = {"ok": None, "skipped": "cancelled"}
     return ok("Exported %d clip(s) (%.2fs) to the HyperFrames project %s%s." % (
         result.clips, result.duration, result.output_dir,
         "; lint clean" if lint and lint.get("ok") else ("; lint: %s error(s)" % lint.get("errors")

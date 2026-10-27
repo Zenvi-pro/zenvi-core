@@ -69,6 +69,21 @@ def _frac(value: Any, default: Fraction) -> Fraction:
     return default
 
 
+def stable_abs(path: str) -> str:
+    """Absolute path without inventing a Windows drive letter on POSIX paths (agents / CI).
+
+    ``/work/...`` stays POSIX on Windows; ``C:/...`` and ``//server/...`` still
+    go through ``os.path.abspath``. Expand ``~`` first when present.
+    """
+    raw = os.path.expanduser(str(path or "").strip())
+    if os.name == "nt":
+        n = raw.replace("\\", "/")
+        # ``/work/...`` must stay POSIX; ``//server/...`` UNC and ``C:/...`` are real Windows paths.
+        if n.startswith("/") and not n.startswith("//") and not (len(n) > 2 and n[2] == ":"):
+            return n
+    return os.path.abspath(raw)
+
+
 def resolve_media_path(raw: str, project_path: Optional[str] = None) -> str:
     """Absolute path of a project media path, resolved like ``path_utils.absolute_media_path``.
 

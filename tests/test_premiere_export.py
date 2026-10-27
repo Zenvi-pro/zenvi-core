@@ -623,8 +623,10 @@ def test_collect_media_avoids_case_only_filename_collisions(tmp_path):
 
 
 def test_resolve_media_path_keeps_posix_absolute_on_windows():
-    from classes.handoff.timeline_view import resolve_media_path
+    from classes.handoff.timeline_view import resolve_media_path, stable_abs
     assert resolve_media_path("/media/Interview A.mp4") == "/media/Interview A.mp4"
+    assert stable_abs("/work/Trip") == "/work/Trip"
+    assert not stable_abs("/work/Trip").startswith("C:")
     if os.name == "nt":  # a backslash is a path separator only on Windows
         assert fcp.pathurl(r"\media\Interview A.mp4") == "file://localhost/media/Interview%20A.mp4"
     assert fcp.pathurl("/media/Interview A.mp4") == "file://localhost/media/Interview%20A.mp4"

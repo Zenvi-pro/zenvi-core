@@ -405,7 +405,12 @@ def test_embedded_timeline_is_safe_html_and_maps_media(tmp_path):
 def test_copy_media_false_links_the_originals(tmp_path):
     res, _snap, _html = export(tmp_path, project(tmp_path), copy_media=False)
     link = os.path.join(res.output_dir, "assets", "clip.mp4")
-    assert os.path.islink(link) and os.path.realpath(link) == os.path.realpath(str(tmp_path / "media" / "clip.mp4"))
+    assert os.path.isfile(link)
+    if os.path.islink(link):
+        assert os.path.realpath(link) == os.path.realpath(str(tmp_path / "media" / "clip.mp4"))
+    else:
+        # Windows without SeCreateSymbolicLinkPrivilege: exporter copies and warns (C5 symlink fallback)
+        assert any("could not link" in w for w in res.warnings)
 
 
 def test_output_folder_rules_and_re_export(tmp_path):
@@ -469,7 +474,10 @@ def test_re_export_refuses_a_linked_assets_folder(tmp_path):
     library = tmp_path / "library"
     os.rename(os.path.join(out, "assets"), str(library))
     (library / "unrelated.png").write_bytes(b"keep")
-    os.symlink(str(library), os.path.join(out, "assets"))
+    try:
+        os.symlink(str(library), os.path.join(out, "assets"))
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create symlinks here")
     before = sorted(os.listdir(library))
     with pytest.raises(exporter.ExportError, match="is a link to another folder"):
         export(tmp_path, project(tmp_path))
@@ -527,6 +535,37 @@ def test_nothing_to_export(tmp_path):
 GOLDEN = os.path.join(HERE, "fixtures", "hyperframes", "golden", "index.html")
 
 
+def _scrub_tmp(html: str, tmp_path) -> str:
+    """Replace the temp project folder with ``<TMP>`` across JSON-escaped and slash forms.
+
+    ``json.dumps`` doubles every backslash, so a Windows ``C:\\Users\\...\\media\\a.mp4``
+    appears in the HTML as ``C:\\\\Users\\\\...\\\\media\\\\a.mp4``. After the folder
+    prefix is swapped for ``<TMP>``, remaining ``\\\\`` seps are folded to ``/`` so the
+    golden stays POSIX-shaped on every OS.
+    """
+    tmp = str(tmp_path)
+    for needle in (tmp.replace("\\", "\\\\"), tmp, tmp.replace("\\", "/")):
+        html = html.replace(needle, "<TMP>")
+    parts, i = [], 0
+    while True:
+        j = html.find("<TMP>", i)
+        if j < 0:
+            parts.append(html[i:])
+            break
+        parts.append(html[i:j])
+        end = html.find('"', j)
+        if end < 0:
+            parts.append(html[j:])
+            break
+        chunk = html[j:end].replace("\\\\", "/").replace("\\", "/")
+        chunk = re.sub(r"/{2,}", "/", chunk)
+        if not chunk.startswith("<TMP>/"):
+            chunk = "<TMP>/" + chunk[len("<TMP>"):].lstrip("/")
+        parts.append(chunk)
+        i = end
+    return "".join(parts)
+
+
 def test_golden_index_html(tmp_path):
     """The exported index.html for a fixed project; regenerate with UPDATE_GOLDEN=1 after a deliberate change."""
     def clips(clip, v, i, a, t):
@@ -537,7 +576,7 @@ def test_golden_index_html(tmp_path):
                 clip("CA", a, 3000000, 3.5, 0.0, 1.5, has_video=kf((1, 0.0, 2)), volume=kf((1, 0.5))),
                 clip("CT", t, 4000000, 0.5, 0.0, 2.5)]
     _res, _snap, html = export(tmp_path, project(tmp_path, clips))
-    html = html.replace(str(tmp_path), "<TMP>").replace('"Zenvi %s"' % exporter._zenvi_version(), '"Zenvi <v>"')
+    html = _scrub_tmp(html, tmp_path).replace('"Zenvi %s"' % exporter._zenvi_version(), '"Zenvi <v>"')
     html = re.sub(r'"generator":"Zenvi [^"]*"', '"generator":"Zenvi <v>"', html)
     if os.environ.get("UPDATE_GOLDEN"):
         os.makedirs(os.path.dirname(GOLDEN), exist_ok=True)

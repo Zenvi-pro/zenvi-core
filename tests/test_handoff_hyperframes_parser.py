@@ -298,13 +298,25 @@ def test_studio_reserialized_html_reads_the_same(tmp_path):
 def test_resolve_src(tmp_path):
     root = str(tmp_path)
     os.makedirs(os.path.join(root, "assets"))
-    open(os.path.join(root, "assets", "a b.png"), "w").close()
+    media = os.path.join(root, "assets", "a b.png")
+    open(media, "w").close()
     assert hfp.resolve_src("assets/a%20b.png?v=2", root) == (os.path.join(root, "assets", "a b.png"), False)
     assert hfp.resolve_src("/assets/a b.png", root)[0] == os.path.join(root, "assets", "a b.png")
     assert hfp.resolve_src("../assets/a b.png", root, "compositions/x.html")[0] == os.path.join(root, "assets",
                                                                                                 "a b.png")
     assert hfp.resolve_src("https://x.test/a.mp4", root) == (None, True)
     assert hfp.resolve_src("missing.mp4", root) == (None, False)
+    # file:// URLs: Windows /C:/... form (urlparse) and localhost, same as Premiere pathurl
+    abs_media = os.path.abspath(media)
+    if os.name == "nt":
+        slash_url = "file:///" + abs_media.replace("\\", "/")
+        got, remote = hfp.resolve_src(slash_url, root)
+        assert not remote and got and os.path.normcase(os.path.normpath(got)) == os.path.normcase(abs_media)
+        pct = "file://localhost/" + abs_media[0] + "%3a" + abs_media[2:].replace("\\", "/")
+        got2, _ = hfp.resolve_src(pct, root)
+        assert got2 and os.path.isfile(got2)
+    else:
+        assert hfp.resolve_src("file://" + abs_media, root)[0] == abs_media
 
 
 def test_remaining_visuals(tmp_path):
@@ -361,3 +373,24 @@ def test_a_composition_id_names_its_host_in_data_start(tmp_path):
         files={"assets/b.png": b"i"})
     p = hfp.load_project(root)
     assert p.root.clip("pic").start == 2.5
+
+
+def test_hosts_that_multiply_stop_at_the_composition_limit(tmp_path):
+    def hosts(n):
+        return "".join('<div id="h%d" data-composition-id="c%d" data-composition-src="compositions/c%d.html" '
+                       'data-start="0" data-duration="1"></div>' % (k, n, n) for k in range(3))
+    files = {"compositions/c%d.html" % n: '<template><div data-composition-id="c%d">%s</div></template>' % (
+        n, hosts(n + 1) if n < 15 else "") for n in range(1, 16)}
+    root = write_project(tmp_path / "p", root_div(hosts(1)), files=files)
+    with pytest.raises(hfp.HyperFramesError, match="more than %d compositions" % hfp.MAX_COMPOSITIONS):
+        hfp.load_project(root)
+
+
+def test_unclosed_css_comments_and_huge_numbers_do_not_hang_or_crash(tmp_path):
+    import time
+    started = time.monotonic()
+    assert hfp.parse_css("/* " * 40000 + "a { color: red }") == []
+    assert time.monotonic() - started < 2.0
+    assert [r.declarations for r in hfp.parse_css("/* x */ a { color: red } /* y */")] == [{"color": "red"}]
+    p = hfp.load_project(write_project(tmp_path / "p", root_div("", extra='data-width="1e999" data-height="1080"')))
+    assert p.root.width == hfp.DEFAULT_SIZE[0]

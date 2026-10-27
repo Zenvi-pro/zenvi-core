@@ -350,7 +350,10 @@ def test_fingerprint_follows_files_in_symlinked_folders(tmp_path, provider):
     library.mkdir()
     (library / "card.html").write_text("<div>one</div>")
     (library / "pic.png").write_bytes(b"one")
-    os.symlink(str(library), os.path.join(root, "shared"))
+    try:
+        os.symlink(str(library), os.path.join(root, "shared"))
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create symlinks here")
     lk = link(root)
     before = provider.fingerprint(lk)
     (library / "card.html").write_text("<div>two</div>")

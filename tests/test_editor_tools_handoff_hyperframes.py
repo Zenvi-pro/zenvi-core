@@ -406,6 +406,29 @@ def test_clips_are_placed_as_one_batch(hf, tmp_path, monkeypatch):
     assert flags == [True, True, True, True, False]
 
 
+def test_linked_clip_length_uses_media_frame_count(hf, tmp_path, monkeypatch):
+    """Float probe durations must not drop the last project frame (same rule as linked_media)."""
+    from classes import project_files, frame_time as ft
+    from classes.editor_tools import titles_text_common as ttc
+    lengths = []
+    real = ttc.place_clip
+
+    def recording(file_id, position, length, layer, **k):
+        lengths.append(length)
+        return real(file_id, position, length, layer, **k)
+    monkeypatch.setattr(ttc, "place_clip", recording)
+    # 2.5999999 s at 30 fps is 78 frames via media_frame_count; int(round()) can disagree
+    monkeypatch.setattr(lm, "probe_media", lambda path: {
+        "path": path, "duration": 2.5999999, "width": 1920, "height": 1080, "has_video": True,
+        "has_audio": False, "fps": {"num": 30, "den": 1}, "video_timebase": {"num": 1, "den": 30},
+        "type": "FFmpegReader", "media_type": "video"})
+    r = hf.call_receipt("import_hyperframes_project_tool", project_dir=project(tmp_path), mode="flatten",
+                        position=0.0)
+    assert r["status"] == "applied", r.get("summary")
+    expected = ft.to_seconds(project_files.media_frame_count(2.5999999, 30.0), 30.0)
+    assert lengths and abs(lengths[0] - expected) < 1e-9
+
+
 def test_cli_starts_after_unmeasured_media_are_not_taken(hf, tmp_path, monkeypatch):
     """#1: `hyperframes timeline --json` puts data-start="<id>" at that clip's START when it has no
     data-duration; the import keeps Zenvi's (media length) start for it."""
