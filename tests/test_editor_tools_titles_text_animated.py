@@ -98,10 +98,12 @@ def test_script_injection_and_sequence_details(tmp_path):
 
 class _CyclesPrefs:
     """Cycles add-on preferences as Blender 5 exposes them: setting a compute type the
-    build lacks raises TypeError; refresh_devices lists that type's devices plus the CPU."""
+    build lacks raises TypeError; get_devices_for_type returns that type's devices plus the
+    CPU and adds them to `devices`, which keeps the entries earlier probes added."""
 
     def __init__(self, supported, devices):
         self._supported, self._all, self._type, self.devices = supported, devices, "NONE", []
+        self.probes = []
 
     @property
     def compute_device_type(self):
@@ -113,8 +115,11 @@ class _CyclesPrefs:
             raise TypeError(value)
         self._type = value
 
-    def refresh_devices(self):
-        self.devices = [d for d in self._all if d.type in (self._type, "CPU")]
+    def get_devices_for_type(self, compute_device_type):
+        self.probes.append(compute_device_type)
+        found = [d for d in self._all if d.type in (compute_device_type, "CPU")]
+        self.devices += [d for d in found if d not in self.devices]
+        return found
 
 
 def _run_gpu_enable(supported, device_types, engine="CYCLES"):
@@ -140,6 +145,15 @@ def test_gpu_enable_picks_the_gpu_backend(supported, device_types, backend):
     assert scene.render.engine == "CYCLES" and scene.cycles.device == "GPU"
     assert prefs.compute_device_type == backend
     assert used[backend] and not used["CPU"]
+
+
+def test_gpu_enable_probes_one_backend_per_attempt():
+    # An AMD card on a build with every backend: OptiX and CUDA find nothing, HIP wins.
+    # Each attempt probes only its own backend, and the CPU entry the first probe added stays off.
+    scene, prefs, used = _run_gpu_enable(
+        ("NONE", "OPTIX", "CUDA", "HIP", "METAL", "ONEAPI"), ("CPU", "HIP"))
+    assert prefs.probes == ["OPTIX", "CUDA", "HIP"]
+    assert scene.cycles.device == "GPU" and used == {"CPU": False, "HIP": True}
 
 
 def test_gpu_enable_falls_back_to_cpu_without_a_gpu():

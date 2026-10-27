@@ -11,8 +11,10 @@ if bpy.context.scene.render.engine == 'CYCLES':
             cprefs.compute_device_type = compute_device_type
         except TypeError:
             continue
-        cprefs.refresh_devices()
-        if any(device.type == compute_device_type for device in cprefs.devices):
+        # Probe only this backend; refresh_devices() probes all five on every call.
+        # The probe also adds its devices to cprefs.devices.
+        if any(device.type == compute_device_type
+               for device in cprefs.get_devices_for_type(compute_device_type)):
             for device in cprefs.devices:
                 device.use = device.type == compute_device_type
             gpu_found = True
