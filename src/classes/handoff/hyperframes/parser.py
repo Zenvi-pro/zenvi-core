@@ -62,6 +62,8 @@ NON_VISUAL_TAGS = frozenset({"script", "style", "template", "meta", "link", "nos
 IMAGE_DEFAULT_DURATION = 3.0
 DEFAULT_SIZE = (1920, 1080)
 MAX_COMPOSITION_DEPTH = 16
+# Hosts multiply: a file mounting three copies of the next, 16 deep, is 43 million compositions.
+MAX_COMPOSITIONS = 2000
 _START_REF = re.compile(r"^\s*([A-Za-z_][\w:.\-]*)\s*(?:([+-])\s*(\d*\.?\d+))?\s*$")
 
 ProbeFn = Callable[[str], Optional[float]]
@@ -443,7 +445,8 @@ def _split_semicolons(text: str) -> List[str]:
 
 def parse_css(text: str, start_order: int = 0) -> List[Rule]:
     """Style rules of a stylesheet (comments, @keyframes and other at-rule blocks skipped; @media flattened)."""
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    # An unclosed comment runs to the end (as in CSS); that also keeps many unclosed ones linear.
+    text = re.sub(r"/\*.*?(?:\*/|\Z)", "", text, flags=re.S)
     rules: List[Rule] = []
     i, n, order = 0, len(text), start_order
     while i < n:
@@ -675,7 +678,7 @@ def _ref_targets(clips: Sequence["Clip"]) -> Dict[str, "Clip"]:
 def _int(value: Any, default: int = 0) -> int:
     try:
         return int(float(str(value).strip()))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: "1e999" and "Infinity"
         return default
 
 
@@ -853,6 +856,8 @@ class _Loader:
             key = "%s#%d" % (comp_id, n)
             n += 1
         self.compositions[key] = comp
+        if len(self.compositions) > MAX_COMPOSITIONS:
+            raise HyperFramesError("the project mounts more than %d compositions; Zenvi cannot read it" % MAX_COMPOSITIONS)
         nested_hosts: List[Element] = []
         self._collect_clips(comp, _content_scope(doc, el), nested_hosts)
         # the root and a composition file own every script of their document; an inline

@@ -361,3 +361,24 @@ def test_a_composition_id_names_its_host_in_data_start(tmp_path):
         files={"assets/b.png": b"i"})
     p = hfp.load_project(root)
     assert p.root.clip("pic").start == 2.5
+
+
+def test_hosts_that_multiply_stop_at_the_composition_limit(tmp_path):
+    def hosts(n):
+        return "".join('<div id="h%d" data-composition-id="c%d" data-composition-src="compositions/c%d.html" '
+                       'data-start="0" data-duration="1"></div>' % (k, n, n) for k in range(3))
+    files = {"compositions/c%d.html" % n: '<template><div data-composition-id="c%d">%s</div></template>' % (
+        n, hosts(n + 1) if n < 15 else "") for n in range(1, 16)}
+    root = write_project(tmp_path / "p", root_div(hosts(1)), files=files)
+    with pytest.raises(hfp.HyperFramesError, match="more than %d compositions" % hfp.MAX_COMPOSITIONS):
+        hfp.load_project(root)
+
+
+def test_unclosed_css_comments_and_huge_numbers_do_not_hang_or_crash(tmp_path):
+    import time
+    started = time.monotonic()
+    assert hfp.parse_css("/* " * 40000 + "a { color: red }") == []
+    assert time.monotonic() - started < 2.0
+    assert [r.declarations for r in hfp.parse_css("/* x */ a { color: red } /* y */")] == [{"color": "red"}]
+    p = hfp.load_project(write_project(tmp_path / "p", root_div("", extra='data-width="1e999" data-height="1080"')))
+    assert p.root.width == hfp.DEFAULT_SIZE[0]
