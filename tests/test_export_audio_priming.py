@@ -220,3 +220,49 @@ def test_clicks_land_on_time_after_trimming(tmp_path):
     video_after = subprocess.run([FFMPEG, "-v", "error", "-i", tone, "-map", "0:v", "-c", "copy", "-f", "md5", "-"],
                                  check=True, capture_output=True).stdout
     assert video_after == video_before
+
+
+def _real_openshot():
+    try:
+        import openshot
+    except ImportError:
+        return None
+    return openshot if hasattr(openshot, "FFmpegWriter") else None
+
+
+@pytest.mark.skipif(FFMPEG is None, reason="needs ffmpeg")
+@pytest.mark.parametrize("name", ["out.mp4", "out.mov", "out.m4a"])
+def test_a_real_libopenshot_export_lands_on_time(tmp_path, name):
+    """Pins the layout this module assumes to the libopenshot we ship.
+
+    Runs only with the real binding (ZENVI_REAL_QT=1 and libopenshot on
+    PYTHONPATH); the default suite stubs openshot.
+    """
+    openshot = _real_openshot()
+    if openshot is None:
+        pytest.skip("needs libopenshot")
+    src = str(tmp_path / "click.wav")
+    _ffmpeg("-f", "lavfi", "-i", "aevalsrc=if(between(t\\,%s\\,%s)\\,0.8*sin(2*PI*1000*t)\\,0):s=48000:c=stereo:d=1.5"
+            % (CLICK, CLICK + 0.004), src)
+    out = str(tmp_path / name)
+    timeline = openshot.Timeline(64, 64, openshot.Fraction(30, 1), 48000, 2, openshot.LAYOUT_STEREO)
+    clip = openshot.Clip(src)
+    timeline.AddClip(clip)
+    timeline.Open()
+    writer = openshot.FFmpegWriter(out)
+    if not name.endswith(".m4a"):
+        writer.SetVideoOptions(True, "libx264", openshot.Fraction(30, 1), 64, 64, openshot.Fraction(1, 1),
+                               False, False, 200000)
+    writer.SetAudioOptions(True, "aac", 48000, 2, openshot.LAYOUT_STEREO, 192000)
+    writer.Open()
+    for frame in range(1, 46):
+        writer.WriteFrame(timeline.GetFrame(frame))
+    writer.Close()
+    timeline.Close()
+    # What libopenshot leaves: 2048 samples late, or 1024 as ffmpeg measures an
+    # audio-only file (it rebases the file's start onto the empty edit).
+    assert _first_click_seconds(out) - CLICK > 1000 / 48000
+
+    assert priming.trim_audio_priming(out, "aac")["status"] == "trimmed"
+
+    assert abs(_first_click_seconds(out) - CLICK) < 0.0005
