@@ -26,7 +26,7 @@ import copy
 import os
 import random
 
-from classes import timeline_ops
+from classes import timeline_ops, track_ops
 from classes.editor_tools._base import (
     CLIPS_TARGET,
     ToolError,
@@ -42,6 +42,7 @@ from classes.editor_tools._base import (
     ok,
     on_main,
     resolve_layer,
+    resolve_placement_layer,
     string,
     timeline_ui,
     ui_track_number,
@@ -72,6 +73,7 @@ from classes.editor_tools.timeline_edit_common import (
     track_name,
     transitions_between,
 )
+from classes.track_display import new_tracks_note
 
 _OVERLAP_ARG = boolean(
     "Let the result overlap other clips on the track (the receipt lists what it covers). Off by default: "
@@ -315,7 +317,7 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
     elif fit_total_seconds > 0:
         fit_note = f", already within {fit_total_seconds:g} s so nothing was trimmed"
 
-    layer = resolve_layer(track) if (track or "").strip() else default_layer()
+    layer, new_tracks = resolve_placement_layer(track) if (track or "").strip() else (default_layer(), 0)
     require_unlocked([layer])
     start = snap(start_seconds) if start_seconds >= 0 else snap(timeline_ops.track_end(layer))
 
@@ -358,6 +360,8 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
         return timeline_ops.insert_placement_step(step)
 
     clip_ids, transition_ids = [], []
+    if new_tracks:
+        on_main(track_ops.ensure_track, layer, timeout=HOP_TIMEOUT)
     for step in steps:
         clip_id, transition_id = on_main(_insert, step, timeout=HOP_TIMEOUT)
         clip_ids.append(clip_id)
@@ -369,11 +373,12 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
     end = max(p["end"] for p in placed)
     how = f", {os.path.splitext(os.path.basename(trans_path))[0]} transitions" if trans_path else (
         ", random transitions" if trans_random else (f", fade {fade}" if fade != "none" else ""))
-    return ok(f"Placed {len(placed)} clip(s) on {track_name(layer)} from {start:.2f} s to {end:.2f} s "
-              f"({end - start:.1f} s{how}{fit_note}).",
+    extra = {"new_tracks": new_tracks} if new_tracks else {}
+    return ok(f"Placed {len(placed)} clip(s) on {track_name(layer)}{new_tracks_note(new_tracks)} from {start:.2f} s "
+              f"to {end:.2f} s ({end - start:.1f} s{how}{fit_note}).",
               track=ui_track_number(layer), start=r3(start), end=r3(end), total_seconds=r3(end - start),
               clips=placed, transition_ids=transition_ids, trimmed_file_ids=trimmed_ids,
-              overlap_seconds=r3(overlap))
+              overlap_seconds=r3(overlap), **extra)
 
 
 # ---------------------------------------------------------------------------

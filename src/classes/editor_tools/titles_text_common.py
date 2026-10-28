@@ -14,7 +14,7 @@ from typing import Optional, Tuple
 
 from classes.editor_tools._base import (
     BEZIER, ToolError, clip_extent, ensure_unlocked, get_app, is_locked, keyframe, layers,
-    on_main, parse_color, project, project_fps, resolve_layer, track_label, ui_track_number,
+    on_main, parse_color, project, project_fps, resolve_placement_layer, track_label, ui_track_number,
 )
 from classes.logger import log
 
@@ -204,12 +204,15 @@ def clips_in_window(layer_num: Optional[int], start: float, end: float, exclude_
 def plan_overlay_track(start: float, end: float, track: str = "", exclude_ids=()) -> Tuple[int, bool]:
     """(layer number, needs_new_track) for an overlay shown over [start, end).
 
-    Explicit *track*: it must exist, be unlocked and be free in the window.
+    Explicit *track*: it must exist, be unlocked and be free in the window, or
+    be one to three tracks past the top (created, with the ones between).
     Otherwise: the lowest free, unlocked track above every clip with video in
     the window; a new track on top when none is free. Read-only.
     """
     if str(track or "").strip():
-        layer = resolve_layer(track)
+        layer, new_tracks = resolve_placement_layer(track)
+        if new_tracks:
+            return layer, True
         ensure_unlocked(layer)
         busy = clips_in_window(layer, start, end, exclude_ids)
         if busy:
@@ -235,12 +238,10 @@ def plan_overlay_track(start: float, end: float, track: str = "", exclude_ids=()
 
 
 def create_track(number: int, label: str) -> int:
-    """Add a track lane on top (actionAddTrack_trigger's record + a label). GUI thread."""
-    from classes.query import Track
-    t = Track()
-    t.data = {"number": int(number), "y": 0, "label": str(label or ""), "lock": False}
-    t.save()
-    return int(number)
+    """Add a track lane on top (actionAddTrack_trigger's record + a label), and the
+    empty lanes below it when *number* is more than one stride above the top. GUI thread."""
+    from classes import track_ops
+    return track_ops.ensure_track(number, label)
 
 
 def overlay_track(start: float, end: float, track: str, label: str, exclude_ids=()) -> Tuple[int, bool]:

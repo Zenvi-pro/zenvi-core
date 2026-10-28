@@ -449,21 +449,27 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
     countdowns (add_timer_tool), emoji (add_emoji_tool) or 3D animated titles
     (add_animated_title_tool). Writes a new SVG title from the template, adds
     it to Project Files and places it above the video (never under it).
-    Unfilled placeholder text (e.g. 'Sub-Title') is blanked. One undo step
-    removes the clip and the file entry.
+    Unfilled placeholder text (e.g. 'Sub-Title') is blanked. No text with a
+    background_color makes a blank colour card (Solid_Color unless a template
+    is named), e.g. a 0.1 s white flash frame. One undo step removes the clip
+    and the file entry.
     """
     lines = [str(v) for v in (lines or [])]
     text = str(text or "")
     subtitle = str(subtitle or "")
-    path = _resolve_template(template)
+    given = bool(text.strip() or subtitle.strip() or any(v.strip() for v in lines))
+    colour_card = not given and bool(str(background_color or "").strip())
+    # A blank title with a background colour is a colour card (agents cut white flash frames this way).
+    path = _resolve_template(str(template or "").strip() or ("Solid_Color" if colour_card else ""))
     name = _template_name(path)
     doc = _load_doc(path)
     slots = title_svg.fields(doc)
-    if not slots and (text.strip() or subtitle.strip() or any(v.strip() for v in lines)):
+    if not slots and given:
         raise ToolError(f"{name} has no text; it is a background card (set background_color), or pick a "
                         "template with text")
-    if slots and not (text.strip() or subtitle.strip() or any(v.strip() for v in lines)):
-        raise ToolError("add_title_tool needs text (or subtitle / lines)")
+    if slots and not given and not colour_card:
+        raise ToolError("add_title_tool needs text (or subtitle / lines), or a background_color for a blank "
+                        "colour card")
     style = _Style(font, font_weight, font_style, font_scale, text_color, background_color, fit_text)
     values = _assign_texts(slots, text, subtitle, lines, name, blank_rest=True)
     fps = project_fps()
