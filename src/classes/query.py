@@ -281,6 +281,15 @@ class File(QueryObject):
         """ Save the object back to the project data store """
         super().save(File)
 
+    def save_untracked(self, *keys):
+        """ Save *keys* of this file's record without an undo step.
+
+        For what the editor learns about a file by itself (indexing results):
+        the user did not make that change, so Ctrl+Z must not take it back
+        before their own last edit. """
+        if self.id and self.type == "update":
+            get_app().updates.update_untracked(list(self.key), {k: self.data.get(k) for k in keys})
+
     def delete(self):
         """ Delete the object from the project data store """
         super().delete(File)

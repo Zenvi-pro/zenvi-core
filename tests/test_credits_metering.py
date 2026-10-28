@@ -168,7 +168,7 @@ def test_a_blocked_stock_download_neither_downloads_nor_charges(monkeypatch, cha
 def _reindex(monkeypatch, *, result, ai_metadata=None):
     fake_file = types.SimpleNamespace(
         data={"path": "/media/clip.mp4", "duration": 6.0, "ai_metadata": ai_metadata or {}},
-        save=lambda: None,
+        save=lambda: None, save_untracked=lambda *keys: None,
     )
     query = types.ModuleType("classes.query")
     query.File = types.SimpleNamespace(get=lambda **kw: fake_file)

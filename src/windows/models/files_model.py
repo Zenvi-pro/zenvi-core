@@ -974,7 +974,7 @@ class FilesModel(QObject, updates.UpdateInterface):
                 if not f:
                     return
                 self._apply_ai_metadata(f, metadata)
-                f.save()
+                f.save_untracked("ai_metadata")
                 get_app().window.FileUpdated.emit(str(fid))
                 try:
                     get_app().window.schedule_flush_project_to_disk()
@@ -995,7 +995,7 @@ class FilesModel(QObject, updates.UpdateInterface):
                 if not f:
                     return
                 self._apply_ai_metadata(f, metadata)
-                f.save()
+                f.save_untracked("ai_metadata")
                 get_app().window.FileUpdated.emit(str(file_id))
                 try:
                     get_app().window.schedule_flush_project_to_disk()
