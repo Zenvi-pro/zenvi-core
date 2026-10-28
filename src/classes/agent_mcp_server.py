@@ -146,9 +146,15 @@ def iter_tool_defs() -> list:
     from classes.agent_tools.schema import UNSCHEMATIZED, get_schema
 
     from classes.editor_tools import REGISTRY as editor_specs
+    from classes.editor_tools import engine_bridge
 
     defs = []
     for name, func in list(AGENT_TOOL_HANDLERS.items()) + list(_extra_tools().items()):
+        bridged = engine_bridge.tool_def(name)
+        if bridged is not None:
+            # Engine tools: the engine's own schema and description.
+            defs.append(bridged)
+            continue
         spec = editor_specs.get(name)
         if spec is not None:
             # Editor tools carry an explicit schema and a docstring written for

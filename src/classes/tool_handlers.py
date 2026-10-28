@@ -12169,6 +12169,20 @@ _MAIN_THREAD_TIMEOUTS = {
 # actions pushed into redoHistory, gluing separate steps together.
 _UNGROUPED_TOOLS = READ_ONLY_TOOLS | frozenset({"undo_tool", "redo_tool"})
 
+# Engine tools the desktop does not implement, run by the bundled zenvi CLI
+# (classes/editor_tools/engine_bridge.py; off unless ZENVI_ENGINE_BRIDGE is
+# set). Background-safe: Node runs on the worker thread, the change is applied
+# on the GUI thread inside the call's one undo step.
+from classes.agent_api_proxy import MCP_EXTRA_TOOLS as _MCP_EXTRA_TOOLS  # noqa: E402
+from classes.editor_tools import engine_bridge as _engine_bridge  # noqa: E402
+
+_BRIDGED_HANDLERS = _engine_bridge.register_tools(set(AGENT_TOOL_HANDLERS) | set(_MCP_EXTRA_TOOLS))
+if _BRIDGED_HANDLERS:
+    AGENT_TOOL_HANDLERS.update(_BRIDGED_HANDLERS)
+    TOOL_HANDLERS.update(_BRIDGED_HANDLERS)
+    BACKGROUND_SAFE_TOOLS = BACKGROUND_SAFE_TOOLS | frozenset(_BRIDGED_HANDLERS)
+    TOOL_DISPLAY_LABELS.update({name: _engine_bridge.label(name) for name in _BRIDGED_HANDLERS})
+
 
 # Tools whose main-thread runtime scales with a `steps` argument.  A fixed 30s
 # budget is fine for a single undo but can sever a steps=20 run mid-loop --
