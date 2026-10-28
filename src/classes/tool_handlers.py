@@ -8341,7 +8341,7 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
                 ai["index"] = index_block
                 ai["twelvelabs"] = dict(index_block)  # legacy key for older readers
                 f.data["ai_metadata"] = ai
-                f.save()
+                f.save_untracked("ai_metadata")
 
             _run_on_main_thread(_persist_index_metadata, timeout=10)
 
@@ -8376,7 +8376,7 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
                             **tl,
                         }
                         f.data["ai_metadata"] = summarized
-                        f.save()
+                        f.save_untracked("ai_metadata")
 
                     _run_on_main_thread(_persist_summary, timeout=10)
                     summarize_note = " Gemini Flash summary updated."
@@ -12087,6 +12087,8 @@ READ_ONLY_TOOLS = frozenset({
     "diarize_media_tool",
     "search_media_local_tool",
     "export_captions_tool",
+    # Indexing lands its results itself, outside history: waiting for it changes nothing.
+    "wait_until_project_indexed_tool",
 }) | frozenset(name for name, spec in _EDITOR_TOOL_SPECS.items() if spec.read_only)
 
 # Tools that perform long-running network/IO work and only briefly touch Qt

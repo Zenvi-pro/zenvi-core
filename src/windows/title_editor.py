@@ -335,7 +335,7 @@ class TitleEditor(QDialog):
         layout = self.settingsContainer.layout()
 
         # Parse the svg object
-        self.xmldoc = minidom.parse(self.filename)
+        self.xmldoc = title_svg.load(self.filename)  # outlined titles come back as text
         # get the text elements (every tspan for styling; the ones holding text are the lines)
         self.tspan_nodes = self.xmldoc.getElementsByTagName('tspan')
         self.line_nodes = title_svg.line_nodes(self.xmldoc)
