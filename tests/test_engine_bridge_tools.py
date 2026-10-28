@@ -42,14 +42,16 @@ def test_native_tools_and_their_engine_twins_are_never_bridged(bridge):  # noqa:
 def test_linked_clip_tools_are_added_only_when_the_desktop_lacks_them(bridge):  # noqa: F811
     from classes.editor_tools import engine_bridge as bridged
 
-    assert {"get_linked_clip_tool", "rerender_linked_clip_tool"} <= set(bridge.handlers)
+    # The desktop has its own (editor_tools/handoff.py), which hand engine kinds to engine_links.
+    assert not {"get_linked_clip_tool", "rerender_linked_clip_tool"} & set(bridge.handlers)
+    catalog = [t for t in bridged.BRIDGED.values() if not t.get("desktop")]
+    # A build without them lists engine_links' own.
+    bridged.BRIDGED.clear()
+    alone = bridged.register_tools(set(), catalog=catalog)
+    assert {"get_linked_clip_tool", "rerender_linked_clip_tool", "update_motion_block_tool"} <= set(alone)
     listed = bridged.tool_def("rerender_linked_clip_tool")
     assert bridged.SURFACE_NOTE not in listed["description"]  # it runs on the desktop
     assert set(listed["inputSchema"]["properties"]) == {"clip_id", "file_id"}
-    # With native linked-clip tools (handoff-core), native wins.
-    catalog = [t for t in bridged.BRIDGED.values() if not t.get("desktop")]
-    again = bridged.register_tools({"get_linked_clip_tool", "rerender_linked_clip_tool"}, catalog=catalog)
-    assert "rerender_linked_clip_tool" not in again and "update_motion_block_tool" in again
     # Without an engine tool that re-renders a kind, there is nothing for them to do.
     plain = [t for t in catalog if t["name"] not in ("update_motion_block_tool", "update_fx_tool")]
     bridged.BRIDGED.clear()
@@ -283,7 +285,8 @@ def test_an_fx_render_re_renders_on_its_clip_with_the_whole_stack(bridge, tmp_pa
 def test_links_the_engine_does_not_render_are_refused_without_history(bridge, tmp_path):  # noqa: F811
     remotion = bridge.add_file("video", path=str(tmp_path / "intro.mov"), zenvi_link=_link("remotion"))
     receipt = bridge.call_receipt("rerender_linked_clip_tool", file_id=remotion)
-    assert receipt["status"] in ("error", "refused") and "linked-clip support" in receipt["summary"]
+    # The desktop's own path (Remotion's provider, when a test registered one), never the engine.
+    assert receipt["status"] in ("error", "refused") and "Remotion" in receipt["summary"]
     scene = bridge.add_file("video", path=str(tmp_path / "cube.mov"), zenvi_link=_link("blender"))
     receipt = bridge.call_receipt("rerender_linked_clip_tool", file_id=scene)
     # This CLI build lists no rerender_3d_scene_tool: say so instead of guessing.
@@ -293,6 +296,13 @@ def test_links_the_engine_does_not_render_are_refused_without_history(bridge, tm
     assert "say which" in bridge.call_receipt("rerender_linked_clip_tool")["summary"]
     assert bridge.undo_steps_since_mark() == 0
     assert not [c for c in _calls(bridge.log) if c.get("tool") == "rerender_3d_scene_tool"]
+
+
+def test_updating_an_engine_clips_props_points_at_its_engine_tool(bridge, tmp_path):  # noqa: F811
+    block = bridge.add_file("video", path=str(tmp_path / "counter.mov"), zenvi_link=_link("zenvi-motion"))
+    receipt = bridge.call_receipt("update_linked_clip_tool", file_id=block, props={"title": "x"})
+    assert receipt["status"] in ("error", "refused") and "update_motion_block_tool" in receipt["summary"]
+    assert bridge.undo_steps_since_mark() == 0
 
 
 # -- finding the CLI and Node ----------------------------------------------------
@@ -403,10 +413,10 @@ def test_the_manifest_lists_bridged_tools_only_when_asked(tmp_path):
     full = json.loads(subprocess.run([sys.executable, script, "--engine-catalog", str(catalog)], capture_output=True,
                                      text=True, check=True, env=env).stdout)
     bridged = {t["name"]: t for t in full["tools"] if t.get("surface")}
+    # get_linked_clip_tool / rerender_linked_clip_tool are the desktop's own (handoff), not bridged.
     assert set(bridged) == {"add_motion_template_tool", "update_motion_block_tool", "update_fx_tool",
-                            "review_frames_tool", "get_linked_clip_tool", "rerender_linked_clip_tool"}
+                            "review_frames_tool"}
     assert bridged["review_frames_tool"]["read_only"] is True and bridged["review_frames_tool"]["workstream"] == "engine"
-    assert bridged["get_linked_clip_tool"]["surface"] == "desktop"
     assert len(full["tools"]) == len(plain["tools"]) + len(bridged)
 
 
