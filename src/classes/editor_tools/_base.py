@@ -152,9 +152,9 @@ def nullable(schema: dict) -> dict:
 
 CLIP_TARGET = {
     "timeline_clip_id": string("Timeline clip id from list_clips_tool / get_timeline_state_tool. Preferred.", ""),
-    "clip_query": string("Describe the clip instead of an id: its file name or what it shows (e.g. 'beach "
-                         "sunset'). Add track when several clips match. Prefer timeline_clip_id.", ""),
-    "track": string("Narrow clip_query to a track: UI track number (1 = bottom), track name, or layer number.", ""),
+    "clip_query": string("Instead of an id: the clip's file name or what it shows ('beach sunset'); add track "
+                         "when several match.", ""),
+    "track": string("Narrows clip_query: UI track number (1 = bottom), name, or layer number.", ""),
 }
 
 CLIPS_TARGET = {
@@ -162,8 +162,8 @@ CLIPS_TARGET = {
     "clip_query": string("Describe one clip instead of ids.", ""),
     "track": string("Track for clip_query or scope='track': UI track number (1 = bottom), name, or layer number.", ""),
     "scope": enum(["", "selected", "track", "all"],
-                  "Instead of ids/query: 'selected' = the timeline selection, 'track' = every clip on track, "
-                  "'all' = every clip on the timeline.", ""),
+                  "Instead of ids/query: selected (timeline selection), track (every clip on track), all "
+                  "(every clip).", ""),
 }
 
 
