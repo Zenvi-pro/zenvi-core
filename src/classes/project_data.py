@@ -217,8 +217,10 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         """Prevent calling JsonDataStore set() method. It is not allowed in ProjectDataStore, as changes come from UpdateManager."""
         raise RuntimeError("ProjectDataStore.set() is not allowed. Changes must route through UpdateManager.")
 
-    def _set(self, key, values=None, add=False, remove=False):
-        """ Store setting, but adding isn't allowed. All possible settings must be in default settings file. """
+    def _set(self, key, values=None, add=False, remove=False, index=None):
+        """ Store setting, but adding isn't allowed. All possible settings must be in default settings file.
+
+        An add goes at *index* of its list (an undone delete), else at the end. """
 
         log.debug(
             "_set key: %s, values: %s, add: %s, remove: %s",
@@ -299,8 +301,12 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 parent = obj
 
 
-        # After processing each key, we've found object and parent, return former value/s on update
-        ret = json.loads(json.dumps(obj))
+        # After processing each key, we've found object and parent, return former value/s on update.
+        # An insert into a list returns None: its undo deletes the new item by id, and a copy of the
+        # whole list (every clip) would make each insert's undo entry as large as the timeline.
+        # A nested list (["clips", {...}, "effects"]) is the last part found, not its parent.
+        target = parent if add and isinstance(parent, list) else obj if add and isinstance(obj, list) else None
+        ret = None if target is not None else json.loads(json.dumps(obj))
 
         # Apply the correct action to the found item
         if remove:
@@ -310,8 +316,11 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
             # Add or Full Update
             # For adds to list perform an insert to index or the end if not specified
-            if add and isinstance(parent, list):
-                parent.append(values)
+            if target is not None:
+                if index is not None and 0 <= index <= len(target):
+                    target.insert(index, values)
+                else:
+                    target.append(values)
 
             # Otherwise, set the given index
             elif isinstance(values, dict):
@@ -341,6 +350,28 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
         # Return the previous value to the matching item (used for history tracking)
         return ret
+
+    def _list_index(self, key):
+        """Index in its list of the item *key* names by a selector last, or None.
+
+        Top-level (``["clips", {"id": ...}]``) or nested
+        (``["clips", {"id": ...}, "effects", {"id": ...}]``), matched like _set.
+        """
+        if len(key or []) < 2 or not isinstance(key[-1], dict):
+            return None
+        obj, index = self._data, None
+        for part in key:
+            if isinstance(part, str) and isinstance(obj, dict) and part.lower() in obj:
+                obj, index = obj[part.lower()], None
+            elif isinstance(part, dict) and isinstance(obj, list):
+                index = next((i for i, item in enumerate(obj) if isinstance(item, dict)
+                              and all(k.lower() in item and item[k.lower()] == v for k, v in part.items())), None)
+                if index is None:
+                    return None
+                obj = obj[index]
+            else:
+                return None
+        return index
 
     # Load default project data
     def new(self):
@@ -1193,6 +1224,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         # Move all temp files (i.e. Blender Animations, Titles, Thumbnails, Protobuf files) to the project folder
         media_snapshot = None
         media_moves = None
+        path_changes = {}
         if not backup_only:
             self.move_temp_paths_to_project_folder(
                 file_path, previous_path=self.current_filepath)
@@ -1214,6 +1246,19 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 log.debug("Fingerprint backfill failed", exc_info=1)
             media_snapshot = snapshot_media_paths(files, clips)
             media_moves = relocate_generated_media(files, clips, file_path)
+            # Linked clips' renders (classes.handoff) go to <project>_assets/links/<kind>/.
+            from classes.handoff.linked_media import adopt_linked_renders, remap_history_paths
+            path_changes = {}
+            media_moves = list(media_moves or []) + adopt_linked_renders(
+                files, clips, file_path, previous_path=self.current_filepath, path_changes=path_changes)
+            # Undo/redo history holds its own copies of moved paths: point them at the new
+            # files too (the live actions and the history about to be written).
+            for moved_from, moved_to in media_moves:
+                path_changes.setdefault(moved_from, moved_to)
+            try:
+                remap_history_paths(path_changes, updates=get_app().updates, history=self._data.get("history"))
+            except Exception:
+                log.warning("Undo history still points at media moved by this save", exc_info=1)
 
         # Append version info
         self._data["version"] = {"openshot-qt": info.VERSION,
@@ -1228,6 +1273,13 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         except Exception:
             reverse_media_moves(media_moves)
             restore_media_paths(media_snapshot)
+            if not backup_only and path_changes:
+                try:
+                    from classes.handoff.linked_media import remap_history_paths
+                    remap_history_paths({new: old for old, new in path_changes.items()},
+                                        updates=get_app().updates, history=self._data.get("history"))
+                except Exception:
+                    log.warning("Could not restore undo history paths after a failed save", exc_info=1)
             raise
 
         if not backup_only:
@@ -1742,7 +1794,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
         if action.type == "insert":
             # Insert new item
-            old_vals = self._set(action.key, action.values, add=True)
+            old_vals = self._set(action.key, action.values, add=True, index=getattr(action, "index", None))
             action.set_old_values(old_vals)  # Save previous values to reverse this action
             mark_dirty()
 
@@ -1793,7 +1845,8 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                     log.warning(f"No profile found for {profile_key}")
 
         elif action.type == "delete":
-            # Delete existing item
+            # Delete existing item (remembering where it was, for its undo)
+            action.index = self._list_index(action.key)
             old_vals = self._set(action.key, remove=True)
             action.set_old_values(old_vals)  # Save previous values to reverse this action
             mark_dirty()

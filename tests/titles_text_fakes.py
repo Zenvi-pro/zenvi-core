@@ -78,12 +78,13 @@ class FakeTimeline:
     def __init__(self, editor):
         self.editor = editor
         self.add_calls = []
+        self.update_calls = []
 
     def addClip(self, file_id, position, track, ignore_refresh=False, call_manual_move=True,
                 auto_transition=False):
         from classes.query import Clip, File, Track
         self.add_calls.append({"file_id": file_id, "position": position.x(), "track": track,
-                               "call_manual_move": call_manual_move})
+                               "call_manual_move": call_manual_move, "ignore_refresh": ignore_refresh})
         f = File.get(id=file_id)
         if not f:
             return None
@@ -115,6 +116,7 @@ class FakeTimeline:
     def update_clip_data(self, clip_json, only_basic_props=True, ignore_reader=False, ignore_refresh=False,
                          transaction_id=None):
         from classes.query import Clip
+        self.update_calls.append({"id": clip_json.get("id"), "ignore_refresh": ignore_refresh})
         c = Clip.get(id=clip_json["id"])
         c.data = copy.deepcopy(clip_json)
         c.save()

@@ -55,7 +55,9 @@ from classes.track_display import (
     format_track_label_for_llm,
     layer_number_to_display_index,
     layers_sorted_by_number,
+    new_tracks_note,
     normalize_track_or_layer_arg,
+    resolve_placement_track,
 )
 
 try:
@@ -2679,6 +2681,7 @@ def add_clip_to_timeline(
                 fps = app.project.get("fps") or {}
                 fps_float = float(fps.get("num", 30)) / float(fps.get("den", 1) or 1)
 
+                new_tracks = 0
                 if not track or (isinstance(track, str) and not track.strip()):
                     layers = app.project.get("layers") or []
                     if _is_audio_only:
@@ -2692,11 +2695,15 @@ def add_clip_to_timeline(
                             track_num = default_underlay_layer_number(layers)
                 else:
                     layers_for_track = app.project.get("layers") or []
-                    resolved, err = normalize_track_or_layer_arg(str(track).strip(), layers_for_track)
+                    resolved, err, new_tracks = resolve_placement_track(str(track).strip(), layers_for_track)
                     if err:
                         error_box[0] = err
                         return
                     track_num = resolved
+                    if new_tracks:
+                        # Same undo step as the clip (the _atomic below).
+                        from classes import track_ops
+                        track_ops.ensure_track(track_num)
 
                 if pos_arg is None:
                     if _is_audio_only:
@@ -2769,7 +2776,7 @@ def add_clip_to_timeline(
                         actual_end = planned_end
                     if abs(actual_end - planned_end) > 1e-6:
                         _planned_end_by_clip_id[new_id] = (pos_sec, planned_end)
-                result_box[0] = (new_clip, pos_sec, track_num, snapped)
+                result_box[0] = (new_clip, pos_sec, track_num, snapped, new_tracks)
             except Exception as exc:
                 error_box[0] = str(exc)
 
@@ -2785,7 +2792,7 @@ def add_clip_to_timeline(
         if not result_box[0]:
             return "Error: Failed to add clip to timeline."
 
-        placed, pos_sec, track_num, snapped = result_box[0]
+        placed, pos_sec, track_num, snapped, new_tracks = result_box[0]
         _snap_note = ", moved off mid-sentence" if snapped else ""
         if pos_arg is not None and abs(pos_sec - pos_arg) > 1e-9:
             _snap_note += f", moved from {pos_arg}s to butt against the previous clip"
@@ -2804,7 +2811,7 @@ def add_clip_to_timeline(
         id_part = f" timeline_clip_id={clip_id}" if clip_id else ""
         watch_part = " (watched)" if watched_start is not None else ""
         return (
-            f"Added clip to timeline at position {pos_sec}s on track {track_lbl}"
+            f"Added clip to timeline at position {pos_sec}s on track {track_lbl}{new_tracks_note(new_tracks)}"
             f"{dur_part}{id_part}{_snap_note}{watch_part}."
         )
     except Exception as e:
@@ -6044,7 +6051,7 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
     # Check the target track before downloading anything.
     if track and str(track).strip():
         _app = _get_app()
-        _layer, _track_err = normalize_track_or_layer_arg(str(track).strip(), _app.project.get("layers") or [])
+        _layer, _track_err, _new = resolve_placement_track(str(track).strip(), _app.project.get("layers") or [])
         if _track_err or _layer is None:
             return _as_error(_track_err or f"no track matches {track!r}")
         _locked = _locked_track_error(_app, _layer)
@@ -6634,7 +6641,7 @@ def _generated_video_ripple_plan(app, position_seconds, track):
             return None, None, f"Error: position_seconds {position_seconds!r} is not a time (e.g. 12, 12.5, 0:12)."
     layer = None
     if track and str(track).strip():
-        layer, err = normalize_track_or_layer_arg(str(track).strip(), app.project.get("layers") or [])
+        layer, err, _new = resolve_placement_track(str(track).strip(), app.project.get("layers") or [])
         if err or layer is None:
             return None, None, _as_error(err or f"no track matches {track!r}")
         locked = _locked_track_error(app, layer)
@@ -8334,7 +8341,7 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
                 ai["index"] = index_block
                 ai["twelvelabs"] = dict(index_block)  # legacy key for older readers
                 f.data["ai_metadata"] = ai
-                f.save()
+                f.save_untracked("ai_metadata")
 
             _run_on_main_thread(_persist_index_metadata, timeout=10)
 
@@ -8369,7 +8376,7 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
                             **tl,
                         }
                         f.data["ai_metadata"] = summarized
-                        f.save()
+                        f.save_untracked("ai_metadata")
 
                     _run_on_main_thread(_persist_summary, timeout=10)
                     summarize_note = " Gemini Flash summary updated."
@@ -12080,6 +12087,8 @@ READ_ONLY_TOOLS = frozenset({
     "diarize_media_tool",
     "search_media_local_tool",
     "export_captions_tool",
+    # Indexing lands its results itself, outside history: waiting for it changes nothing.
+    "wait_until_project_indexed_tool",
 }) | frozenset(name for name, spec in _EDITOR_TOOL_SPECS.items() if spec.read_only)
 
 # Tools that perform long-running network/IO work and only briefly touch Qt
@@ -12159,6 +12168,38 @@ _MAIN_THREAD_TIMEOUTS = {
 # transaction around that would stamp the caller's id onto the reversal
 # actions pushed into redoHistory, gluing separate steps together.
 _UNGROUPED_TOOLS = READ_ONLY_TOOLS | frozenset({"undo_tool", "redo_tool"})
+
+# Engine tools the desktop does not implement, run by the zenvi CLI
+# (classes/editor_tools/engine_bridge.py; on once classes/engine_runtime.py has
+# installed it, unless ZENVI_ENGINE_BRIDGE or the engine-bridge setting is off).
+# The catalog is read on a worker thread at start-up, or after an install, and
+# the tools appear when it arrives. Background-safe: Node runs on
+# the worker thread, the change is applied on the GUI thread inside the call's
+# one undo step.
+from classes.agent_api_proxy import MCP_EXTRA_TOOLS as _MCP_EXTRA_TOOLS  # noqa: E402
+from classes.editor_tools import engine_bridge as _engine_bridge  # noqa: E402
+
+
+def install_bridged_tools(handlers: dict) -> None:
+    """List bridged engine tools next to the desktop's (engine_bridge.register_tools' handlers)."""
+    global BACKGROUND_SAFE_TOOLS
+    TOOL_DISPLAY_LABELS.update({name: _engine_bridge.label(name) for name in handlers})
+    BACKGROUND_SAFE_TOOLS = BACKGROUND_SAFE_TOOLS | frozenset(handlers)
+    TOOL_HANDLERS.update(handlers)
+    AGENT_TOOL_HANDLERS.update(handlers)
+
+
+def _native_tool_names() -> set:
+    # Bridged tools listed before (an update re-lists them from the new catalog) are not native.
+    return (set(AGENT_TOOL_HANDLERS) - set(_engine_bridge.BRIDGED)) | set(_MCP_EXTRA_TOOLS)
+
+
+def refresh_bridged_tools():
+    """List the engine tools again on a worker thread (after the runtime was installed or updated)."""
+    return _engine_bridge.register_in_background(_native_tool_names, install_bridged_tools)
+
+
+refresh_bridged_tools()
 
 
 # Tools whose main-thread runtime scales with a `steps` argument.  A fixed 30s

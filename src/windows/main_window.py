@@ -5171,6 +5171,15 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         settings_action = menu.addAction(_("ComfyUI Settings..."))
         settings_action.triggered.connect(lambda checked=False: self.actionPreferences.trigger())
 
+        # The engine bridge runtime (Node + zenvi CLI): its status is read by the dialog, off this thread.
+        menu.addSeparator()
+        engine_action = menu.addAction(_("Zenvi Engine Tools..."))
+        engine_action.triggered.connect(lambda checked=False: self.show_engine_runtime_dialog())
+
+    def show_engine_runtime_dialog(self):
+        from windows.engine_runtime_dialog import show_engine_runtime_dialog
+        show_engine_runtime_dialog(self)
+
     def _init_ui_trace_recorder(self):
         """Enable env-configured UI trace recording for automated test capture."""
         try:
@@ -5996,6 +6005,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # File → Zenvi Cloud: push, open in the web editor, open a cloud project.
         from windows.cloud_sync_ui import install_cloud_menu
         self.cloud_sync = install_cloud_menu(self)
+        # Handoffs (After Effects, Premiere, Remotion, HyperFrames): Export / Import Project
+        # entries, File > Send To, and the linked-clips status bar (classes/handoff).
+        from windows.handoff_menus import install_handoff_menus
+        install_handoff_menus(self)
         self.refresh_comfy_availability_async()
 
         # Add window as watcher to receive undo/redo status updates

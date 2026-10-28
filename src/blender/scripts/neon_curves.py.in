@@ -129,7 +129,8 @@ def _apply_glare_type(node):
         node.glare_type = params["glare_type"]
         return True
     if hasattr(node, "inputs") and len(node.inputs) > 1 and hasattr(node.inputs[1], "default_value"):
-        node.inputs[1].default_value = params["glare_type"]
+        # Blender 5's compositor Glare takes menu names ('Fog Glow'), not enum ids ('FOG_GLOW')
+        node.inputs[1].default_value = params["glare_type"].replace("_", " ").title()
         return True
     return False
 
