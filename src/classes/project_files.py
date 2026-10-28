@@ -146,8 +146,23 @@ def fps_fraction(value):
 # File Properties (the dialog's accept, minus the widgets)
 # ---------------------------------------------------------------------------
 
+# A printf frame-number conversion: %d, %4d, %04d (not an escaped %%d).
+_FRAME_PATTERN_RE = re.compile(r"(?<!%)%0?\d*d")
+
+
 def is_image_sequence(file_data):
-    return "%" in str((file_data or {}).get("path") or "")
+    """True for a numbered image sequence file record.
+
+    libopenshot has no flag for it: Zenvi imports a sequence as one file whose
+    path is an image file name with a printf frame pattern (``frame_%04d.png``,
+    read by FFmpegReader's image2 demuxer; ``media_type`` is "video"). A ``%``
+    anywhere else -- ``promo 50% off.mp4``, ``clip 50%20off.mp4`` -- is just a
+    character in the name.
+    """
+    from classes.image_types import is_image
+    path = str((file_data or {}).get("path") or "")
+    name = os.path.basename(path.replace("\\", "/"))
+    return bool(_FRAME_PATTERN_RE.search(name)) and is_image({"path": name})
 
 
 def apply_sequence_fps(file_data, fps_num, fps_den):
@@ -207,14 +222,36 @@ def relinked_file_data(old_data, reader_data, media_type, fingerprint=None):
     return data
 
 
+def media_frame_count(duration, fps):
+    """Whole project frames in *duration* seconds of media, like ``Timeline.addClip``.
+
+    Rounded half-up (``frame_time.duration_frames``): media that falls short of
+    a frame boundary by float error (a ProRes probe saying 2.5999999 s for 2.6 s)
+    still counts its last frame. At least 1.
+    """
+    from classes import frame_time as ft
+    return ft.duration_frames(0.0, max(0.0, float(duration or 0.0)), fps)
+
+
+def _project_fps_fraction():
+    try:
+        fps = get_app().project.get("fps") or {}
+        return Fraction(int(fps.get("num") or 30), int(fps.get("den") or 1))
+    except (AttributeError, TypeError, ValueError, ZeroDivisionError):
+        return Fraction(30, 1)
+
+
 def save_file_and_sync_clips(file_obj, removed_keys=()):
     """Save a changed file and update every clip that uses it (reader, duration, clamped end).
 
     Project updates merge into the stored record, so keys the new record no longer
     has (a cleared in/out, a stale fingerprint) are deleted explicitly via
-    *removed_keys*. Returns the ids of the clips updated. Joins the caller's undo
-    transaction.
+    *removed_keys*. A clip's end is clamped only when it lies past the media's
+    last whole project frame (:func:`media_frame_count`), never because of float
+    error in the probed duration, and then onto the frame grid. Returns the ids
+    of the clips updated. Joins the caller's undo transaction.
     """
+    from classes import frame_time as ft
     from classes.query import Clip
 
     file_obj.save()
@@ -229,12 +266,14 @@ def save_file_and_sync_clips(file_obj, removed_keys=()):
 
     fps = file_obj.data.get("fps") or {"num": 30, "den": 1}
     fps_float = float(fps["num"]) / float(fps["den"] or 1)
+    project_fps = _project_fps_fraction()
+    last_frame = media_frame_count(file_obj.data["duration"], project_fps)
     updated = []
     for clip in Clip.filter(file_id=file_obj.id):
         clip.data["reader"] = copy.deepcopy(file_obj.data)
         clip.data["duration"] = file_obj.data["duration"]
-        if clip.data["end"] > clip.data["duration"]:
-            clip.data["end"] = clip.data["duration"]
+        if ft.to_frame(float(clip.data["end"]), project_fps) > last_frame:
+            clip.data["end"] = ft.to_seconds(last_frame, project_fps)
         clip.save()
         updated.append(clip.id)
         try:
