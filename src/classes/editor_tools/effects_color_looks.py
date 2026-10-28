@@ -154,34 +154,35 @@ GRADE_PARAMS = ("exposure", "contrast", "highlights", "shadows", "saturation", "
 
 # Named looks: a Color preset (or neutral), then a built-in LUT, then parameter changes.
 NAMED_LOOKS = {
-    "neutral": {"base": None, "about": "every control neutral, no LUT (undo a grade)"},
-    "natural": {"base": "auto_contrast", "about": "gentle contrast S-curve, a little vibrance"},
-    "auto_contrast": {"base": "auto_contrast", "about": "Look > Color > Auto Contrast"},
-    "lift_shadows": {"base": "lift_shadows", "about": "Look > Color > Lift Shadows (open up dark footage)"},
-    "warm_up": {"base": "warm_up", "about": "Look > Color > Warm Up"},
-    "boost_color": {"base": "boost_color", "about": "Look > Color > Boost Color"},
+    "neutral": {"base": None, "about": "all neutral, no LUT (undo a grade)"},
+    "natural": {"base": "auto_contrast", "about": "gentle S-curve, a little vibrance"},
+    # The four Look > Color presets; "about" left empty, they are named as a group.
+    "auto_contrast": {"base": "auto_contrast", "about": ""},
+    "lift_shadows": {"base": "lift_shadows", "about": ""},
+    "warm_up": {"base": "warm_up", "about": ""},
+    "boost_color": {"base": "boost_color", "about": ""},
     "cinematic": {"base": "auto_contrast", "lut": "cinematic_&_blockbuster/teal_&_orange_cinema",
                   "lut_intensity": 0.5, "params": {"saturation": 0.95, "highlights": -0.1, "shadows": 0.0},
-                  "about": "blockbuster teal/orange LUT at 50%, contrast curve, slightly muted"},
+                  "about": "teal/orange LUT at 50%, contrast, slightly muted"},
     "teal_orange": {"base": "auto_contrast", "lut": "teal_&_orange_vibes/signature_teal_&_orange",
                     "lut_intensity": 0.8, "params": {"vibrance": 0.1},
-                    "about": "strong teal shadows / orange skin tones"},
+                    "about": "strong teal shadows, orange skin"},
     "warm": {"base": "warm_up", "params": {"temperature": 0.25}, "about": "warmer white balance"},
     "golden_hour": {"base": "warm_up", "lut": "teal_&_orange_vibes/sunset_orange", "lut_intensity": 0.6,
-                    "params": {"temperature": 0.15}, "about": "sunset orange glow"},
-    "cool": {"base": None, "params": {"temperature": -0.22, "tint": -0.03}, "about": "cooler, bluer"},
+                    "params": {"temperature": 0.15}, "about": "sunset orange"},
+    "cool": {"base": None, "params": {"temperature": -0.22, "tint": -0.03}, "about": "bluer"},
     "vintage": {"base": "lift_shadows", "lut": "film_stock_&_vintage/faded_memories", "lut_intensity": 0.7,
                 "params": {"saturation": 0.85, "contrast": -0.05}, "about": "faded film, lifted blacks"},
     "black_and_white": {"base": None, "params": {"saturation": 0.0, "vibrance": 0.0, "contrast": 0.15},
-                        "about": "monochrome with a little contrast"},
+                        "about": "mono, a little contrast"},
     "film_noir": {"base": None, "params": {"saturation": 0.0, "contrast": 0.35, "shadows": -0.12,
                                            "highlights": 0.05},
-                  "about": "hard-contrast black and white"},
+                  "about": "hard-contrast mono"},
     "moody": {"base": None, "lut": "dark_&_moody/cold_shadows", "lut_intensity": 0.6,
               "params": {"exposure": -0.15, "contrast": 0.2, "saturation": 0.8, "shadows": -0.15},
               "about": "darker, desaturated, cold shadows"},
     "vibrant": {"base": "boost_color", "lut": "vibrant_&_colorful/color_pop", "lut_intensity": 0.5,
-                "about": "punchy saturated color"},
+                "about": "punchy saturated"},
     "bright_airy": {"base": "lift_shadows", "params": {"exposure": 0.2, "contrast": -0.08, "saturation": 0.92,
                                                        "highlights": -0.1},
                     "about": "light, soft, lifted"},
@@ -189,8 +190,8 @@ NAMED_LOOKS = {
 
 
 def _grade_param_schema(name, lo, hi, about):
-    return nullable(number(f"{about} Range {lo:g}..{hi:g}; leave out to keep the current/look value.",
-                           minimum=lo, maximum=hi))
+    # The range is in minimum/maximum; "omitted = keep the current/look value" is said once in the docstring.
+    return nullable(number(about, minimum=lo, maximum=hi))
 
 
 def _grade_values(effect_json) -> dict:
@@ -207,8 +208,10 @@ def _grade_values(effect_json) -> dict:
     schema=obj({
         **TARGETS,
         "look": enum([""] + sorted(NAMED_LOOKS),
-                     "Named grade: " + "; ".join(f"{k} = {v['about']}" for k, v in NAMED_LOOKS.items())
-                     + ". Starts from neutral; the other arguments then adjust it.", ""),
+                     "Named grade, starting from neutral; the other arguments then adjust it. "
+                     + "; ".join(f"{k}: {v['about']}" for k, v in NAMED_LOOKS.items() if v["about"])
+                     + "; " + ", ".join(k for k, v in NAMED_LOOKS.items() if not v["about"])
+                     + ": the Look > Color presets.", ""),
         "exposure": _grade_param_schema("exposure", -2, 2, "Brightness in stops (+0.3 = brighter)."),
         "contrast": _grade_param_schema("contrast", -1, 1, "Contrast."),
         "highlights": _grade_param_schema("highlights", -1, 1, "Bright areas (negative recovers blown skies)."),
@@ -218,14 +221,13 @@ def _grade_values(effect_json) -> dict:
         "temperature": _grade_param_schema("temperature", -1, 1, "White balance: + warmer (orange), - cooler (blue)."),
         "tint": _grade_param_schema("tint", -1, 1, "White balance: + magenta, - green."),
         "mix": _grade_param_schema("mix", 0, 1, "Grade strength: 1 = full, 0.5 = half-way to the original."),
-        "lut": string("LUT to apply: a name from list_luts_tool ('teal & orange cinema', "
-                      "'film_stock_&_vintage/classic_film'), a .cube path, or 'none' to remove it.", ""),
+        "lut": string("A list_luts_tool name ('teal & orange cinema', 'film_stock_&_vintage/classic_film'), a "
+                      ".cube path, or 'none' to remove it.", ""),
         "lut_intensity": _grade_param_schema("lut_intensity", 0, 1, "How strongly the LUT applies."),
-        "wheels": mapping("Color wheels, e.g. {\"shadows\": {\"color\": \"#2a6cff\", \"amount\": 0.15}, "
-                          "\"highlights\": {\"color\": \"#ffb36b\", \"amount\": 0.12, \"luma\": 0.02}}: tint color, "
-                          "amount 0-1, luma -1..1 per wheel (global, shadows, midtones, highlights)."),
-        "curves": mapping("Tone curves {\"all\"|\"red\"|\"green\"|\"blue\": [[x, y], ...]} with input->output points "
-                          "in 0-1, e.g. an S-curve {\"all\": [[0,0],[0.25,0.2],[0.75,0.82],[1,1]]}; 'reset' flattens."),
+        "wheels": mapping("{wheel: {color, amount 0-1, luma -1..1}}, wheel = global, shadows, midtones or "
+                          "highlights, e.g. {\"shadows\": {\"color\": \"#2a6cff\", \"amount\": 0.15}}."),
+        "curves": mapping("Tone curves {\"all\"|\"red\"|\"green\"|\"blue\": [[x, y], ...]}, input->output in 0-1, "
+                          "e.g. {\"all\": [[0,0],[0.25,0.2],[0.75,0.82],[1,1]]}; 'reset' flattens."),
         "reset": boolean("Start from a neutral grade instead of the clip's current one.", False),
     }),
     background_safe=True,
@@ -235,18 +237,16 @@ def color_grade_clip(timeline_clip_id="", clip_query="", track="", timeline_clip
                      exposure=None, contrast=None, highlights=None, shadows=None, saturation=None, vibrance=None,
                      temperature=None, tint=None, mix=None, lut="", lut_intensity=None, wheels=None, curves=None,
                      reset=False):
-    """Color grade clips with the Color Grade effect: a named look ("make it cinematic", "teal and
-    orange", "warm it up", "cooler", "vintage", "black and white", "film noir", "moody", "vibrant",
-    "bright and airy"), a LUT, and/or exact controls (exposure, contrast, highlights, shadows,
-    saturation, vibrance, temperature, tint, wheels, curves). Each clip keeps ONE Color Grade effect:
-    it is updated in place, never stacked. One undo step for all clips.
+    """Color grade clips: a named look, a LUT and/or exact controls, in the Color Grade effect.
 
-    Without look/reset only the given controls change and the rest of the current grade stays
-    ("a bit brighter" -> exposure=0.3). With a look the grade starts from neutral, then the look,
-    then your controls ("cinematic but less saturated" -> look="cinematic", saturation=0.8).
-    To fix exposure or color casts objectively, call analyze_frame_colors_tool first and use its
-    suggested values, then analyze again to verify. Refused: audio-only clips, locked tracks,
-    unknown LUT names (closest matches listed), out-of-range values.
+    Each clip keeps ONE Color Grade effect, updated in place, never stacked.
+    One undo step for all clips. Without look/reset only the given controls
+    change; omitted ones keep the current grade ("a bit brighter" ->
+    exposure=0.3). With a look: neutral, then the look, then your controls
+    ("cinematic but less saturated" -> look="cinematic", saturation=0.8). For
+    objective exposure/cast fixes call analyze_frame_colors_tool first, use its
+    suggested values, then analyze again. Refused: audio-only clips, locked
+    tracks, unknown LUT names (closest matches listed), out-of-range values.
     """
     explicit_params = {k: v for k, v in (("exposure", exposure), ("contrast", contrast), ("highlights", highlights),
                                          ("shadows", shadows), ("saturation", saturation), ("vibrance", vibrance),
@@ -495,22 +495,21 @@ def _placement(keyed, background, align):
     label="Chroma key",
     schema=obj({
         **CLIP_TARGET,
-        "key_color": string("Screen color to remove: 'auto' (sampled from the frame), 'green' / 'blue' (that "
-                            "screen's actual shade, sampled from the footage), or #RRGGBB.", "auto"),
-        "method": enum(sorted(KEY_METHODS), "Keying method; basic_soft (default) suits most green/blue screens, "
-                       "hsv_hue helps uneven lighting, cbcr_vector for spill-heavy footage.", "basic_soft"),
-        "fuzz": nullable(number("Tolerance around the key color (0-125): raise it if screen remains, lower it if "
-                                "the subject gets holes. Default: estimated from how uneven the screen is with "
-                                "key_color='auto', else 20.", minimum=0, maximum=125)),
-        "halo": number("Edge softening/spill cleanup (0-125).", 10.0, minimum=0, maximum=125),
-        "background_clip_id": string("Background clip to show through (timeline clip id). The keyed clip is put "
-                                     "on a track above it.", ""),
+        "key_color": string("'auto' (sampled from the frame), 'green' / 'blue' (that screen's real shade, "
+                            "sampled; the stock shade if none is found) or #RRGGBB.", "auto"),
+        "method": enum(sorted(KEY_METHODS), "basic_soft suits most screens, hsv_hue uneven lighting, cbcr_vector "
+                       "spill-heavy footage.", "basic_soft"),
+        "fuzz": nullable(number("Tolerance around the key color: raise if screen remains, lower if the subject "
+                                "gets holes. Default: estimated with key_color='auto', else 20.",
+                                minimum=0, maximum=125)),
+        "halo": number("Edge softening / spill cleanup.", 10.0, minimum=0, maximum=125),
+        "background_clip_id": string("Timeline clip to show through; the keyed clip goes on a track above it.",
+                                     ""),
         "background_query": string("Or describe the background clip ('the beach clip').", ""),
         "align": enum(["auto", "start", "keep"],
-                      "With a background: auto = move the keyed clip to the background's start only if they do "
-                      "not overlap in time; start = always start together; keep = keep the keyed clip's time.",
-                      "auto"),
-        "sample_time": nullable(number("Timeline time to sample the key color from (default: middle of the clip).")),
+                      "With a background: auto = move to the background's start only if they do not overlap; "
+                      "start = always; keep = keep the keyed clip's time.", "auto"),
+        "sample_time": nullable(number("Timeline second to sample the key color at (default: clip middle).")),
     }),
     background_safe=True,
     covers=("color.chroma_key",),
@@ -518,19 +517,17 @@ def _placement(keyed, background, align):
 def chroma_key_clip(timeline_clip_id="", clip_query="", track="", key_color="auto", method="basic_soft",
                     fuzz=None, halo=10.0, background_clip_id="", background_query="", align="auto",
                     sample_time=None):
-    """Remove a green or blue screen from a clip with the Chroma Key effect, and optionally composite it
-    over a background clip ("remove the green screen and put me on the beach"). key_color='auto'
-    samples the screen color from the frame edges, or from the frame's screen areas when the screen
-    does not reach the edges; 'green' / 'blue' sample that screen's real shade (the stock shade if
-    none is found). One ChromaKey per clip (updated if present).
-    With background_clip_id/background_query the keyed clip moves to a free track above the
-    background (a new top track if needed) so the background shows through, and to the background's
-    start if they did not overlap. One undo step for key + placement.
+    """Remove a green or blue screen with the Chroma Key effect, optionally compositing over a background clip.
 
-    The receipt's keyed_pct is the share of the frame the key made transparent: roughly the screen's
-    share means it worked, a few percent means it missed the screen (try key_color='auto', a sampled
-    #RRGGBB or a higher fuzz). analyze_frame_colors_tool on the composite checks the rest. Refused: audio-only clips, locked tracks, a
-    background that is the same clip, 'auto' when the frame edges are not a green/blue screen.
+    key_color='auto' samples the frame edges, or the frame's screen areas
+    when the screen does not reach the edges. One ChromaKey per clip (updated
+    if present). With a background the keyed clip moves to a free track above
+    it (a new top track if needed). One undo step for key + placement. The
+    receipt's keyed_pct is the share of the frame made transparent: about the
+    screen's share = worked; a few percent = missed (try 'auto', a sampled
+    #RRGGBB or higher fuzz); analyze_frame_colors_tool on the composite checks
+    the rest. Refused: audio-only clips, locked tracks, a background that is
+    the same clip, 'auto' when the frame edges are not a green/blue screen.
     """
     clip = resolve_clip(timeline_clip_id, clip_query, track)
     problem = compatibility_problem(clip, "ChromaKey")

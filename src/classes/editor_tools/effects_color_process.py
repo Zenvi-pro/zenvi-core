@@ -8,6 +8,14 @@ thread, on a private one-clip Timeline (same frame mapping as the preview, so
 the analysis lines up with playback). Only the final effect insert touches
 the GUI thread. Model files come from ``classes.effect_models`` (the dialog's
 allow-listed, sha256-verified downloads).
+
+process_clip_effect_tool requests: "stabilize the shaky shot" (Stabilizer),
+"track the ball / the car" (Tracker with a region box), "detect people"
+(ObjectDetection), "cut out the person / mask the dog" (ObjectMask with points
+or a box), "blur the face / licence plate" (then a Blur or Pixelate effect with
+mask_source_id), "blur the background" (plus mask_invert). Example call:
+effect="Tracker", region={"x":0.42,"y":0.30,"width":0.12,"height":0.20},
+region_time=3.0.
 """
 
 from __future__ import annotations
@@ -436,33 +444,32 @@ def run_processing_tool(timeline_clip_id, clip_query, track, class_name, opts, p
         **CLIP_TARGET,
         "effect": enum(list(PROCESSING_EFFECTS),
                        "Stabilizer = remove camera shake; Tracker = follow a boxed object; ObjectDetection = "
-                       "find people/cars/animals... (YOLO); ObjectMask = cut out an object you point at."),
-        "smoothing": integer("Stabilizer: frames averaged, 1-100 (30 default; higher = steadier, more crop).", 30,
+                       "people/cars/animals (YOLO); ObjectMask = cut out an object you point at."),
+        "smoothing": integer("Stabilizer: frames averaged (higher = steadier, more crop).", 30,
                              minimum=1, maximum=100),
-        "region": mapping("Tracker: box around the object at region_time, {\"x\", \"y\", \"width\", \"height\"} as "
-                          "fractions of the frame (0,0 = top-left)."),
-        "region_time": nullable(number("Tracker/ObjectMask: timeline seconds of the frame the region/points refer to "
+        "region": mapping("Tracker: box around the object at region_time, {x, y, width, height} as frame "
+                          "fractions (0,0 = top-left)."),
+        "region_time": nullable(number("Tracker/ObjectMask: timeline seconds of the frame region/points refer to "
                                        "(default: the clip's first frame).")),
-        "tracker_type": enum(list(TRACKER_TYPES), "Tracker algorithm: KCF fast (default), CSRT most accurate, "
-                             "MOSSE fastest.", "KCF"),
-        "model": enum([""] + _yolo_ids(), "ObjectDetection model ('' = recommended YOLO26 Nano; yoloe-* know more "
-                      "labels).", ""),
-        "device": enum(list(DEVICES), "ObjectDetection/ObjectMask processing device.", "CPU"),
-        "download_model": boolean("Download the model files if missing (Object Detector ~10-90 MB, Object Mask "
-                                  "~175 MB, from the OpenShot model releases, sha256-verified).", False),
-        "class_filter": string("ObjectDetection: only show these labels, comma separated ('person,car').", ""),
-        "confidence": nullable(number("ObjectDetection: minimum confidence 0-1 (default 0.25).", minimum=0,
+        "tracker_type": enum(list(TRACKER_TYPES), "Tracker: KCF fast, CSRT most accurate, MOSSE fastest.", "KCF"),
+        "model": enum([""] + _yolo_ids(), "ObjectDetection model ('' = YOLO26 Nano; yoloe-* know more labels).",
+                      ""),
+        "device": enum(list(DEVICES), "ObjectDetection/ObjectMask device.", "CPU"),
+        "download_model": boolean("Download missing model files (Object Detector ~10-90 MB, Object Mask ~175 MB; "
+                                  "sha256-verified).", False),
+        "class_filter": string("ObjectDetection: only these labels, comma separated ('person,car').", ""),
+        "confidence": nullable(number("ObjectDetection: minimum confidence (default 0.25).", minimum=0,
                                       maximum=1)),
         "points": array({"type": "object"}, "ObjectMask: points ON the object, [{\"x\": 0.5, \"y\": 0.4}] (fractions)."),
-        "negative_points": array({"type": "object"}, "ObjectMask: points NOT on the object (background)."),
-        "boxes": array({"type": "object"}, "ObjectMask: box(es) around the object, [{\"x\", \"y\", \"width\", "
-                       "\"height\"}] (fractions)."),
-        "mask_quality": enum([""] + _cutie_ids(), "ObjectMask Cutie tracking quality ('' = recommended medium).", ""),
+        "negative_points": array({"type": "object"}, "ObjectMask: background points (NOT the object)."),
+        "boxes": array({"type": "object"}, "ObjectMask: box(es) around the object, [{x, y, width, height}] "
+                       "(fractions)."),
+        "mask_quality": enum([""] + _cutie_ids(), "ObjectMask tracking quality ('' = medium).", ""),
         "properties": PROPERTIES_ARG,
         "interpolation": INTERPOLATION_ARG,
         "if_exists": enum(["auto", "update", "add"],
-                          "If the clip already has this effect: auto = replace a Stabilizer/Object Detector, add "
-                          "another Tracker/Object Mask; update = replace; add = keep both.", "auto"),
+                          "Clip already has this effect: auto = replace a Stabilizer/Object Detector, add another "
+                          "Tracker/Object Mask; update = replace; add = keep both.", "auto"),
         "timeout_seconds": number("Give up (changing nothing) after this long.", 900, minimum=5, maximum=3600),
     }, required=["effect"]),
     background_safe=True,
@@ -473,19 +480,17 @@ def process_clip_effect(*, effect, timeline_clip_id="", clip_query="", track="",
                         class_filter="", confidence=None, points=None, negative_points=None, boxes=None,
                         mask_quality="", properties=None, interpolation="bezier", if_exists="auto",
                         timeout_seconds=900):
-    """Run an analysis effect on a video clip, off the GUI thread, and add the result as an effect:
-    "stabilize the shaky shot" (Stabilizer), "track the ball / the car" (Tracker with a region box),
-    "detect people" (ObjectDetection, YOLO), "cut out the person / mask the dog" (ObjectMask with points
-    or a box). Takes seconds to minutes (about real time for Stabilizer); changes nothing on failure
-    or timeout; one undo step.
+    """Run an analysis effect (stabilize, track, detect, mask) on a video clip and add the result as an effect.
 
-    The result's tracked objects (Tracker/ObjectDetection/ObjectMask) can drive other effects: add Blur
-    or Pixelate with properties {"mask_source_id": "<effect_id>"} to blur only the tracked object
-    ("blur the face / licence plate"), plus "mask_invert": 1 to blur everything else ("blur the
-    background"). Use analyze_frame_colors_tool(save_frame_path=...) to look at a frame before picking
-    a region. Model files are downloaded only with download_model=true. Refused: still images,
-    audio-only clips, locked tracks, a missing region/points, builds without OpenCV.
-    Example: effect="Tracker", region={"x":0.42,"y":0.30,"width":0.12,"height":0.20}, region_time=3.0.
+    Runs off the GUI thread: seconds to minutes (about real time for
+    Stabilizer); changes nothing on failure or timeout; one undo step.
+    Tracked objects (Tracker/ObjectDetection/ObjectMask) drive other effects:
+    Blur or Pixelate with properties {"mask_source_id": "<effect_id>"} blurs
+    only the object; add "mask_invert": 1 to blur everything else. Look at a
+    frame first with analyze_frame_colors_tool(save_frame_path=...) to pick a
+    region. Models download only with download_model=true. Refused: still
+    images, audio-only clips, locked tracks, missing region/points, builds
+    without OpenCV.
     """
     opts = {"smoothing": smoothing, "region": region, "region_time": region_time, "tracker_type": tracker_type,
             "model": model, "device": device, "download_model": download_model, "class_filter": class_filter,
