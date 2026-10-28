@@ -19,6 +19,7 @@
     "src/classes/engine_bridge.py",
     "src/classes/engine_runtime.py",
     "src/classes/export_acceleration/hw_encode.py",
+    "src/classes/export_audio_priming.py",
     "src/classes/exporters/after_effects.py",
     "src/classes/exporters/after_effects_effects.py",
     "src/classes/exporters/after_effects_js.py",

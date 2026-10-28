@@ -1019,6 +1019,7 @@ def export_files_to_folder(file_ids, folder=""):
     os.makedirs(dest, exist_ok=True)
 
     import openshot
+    from classes.export_audio_priming import trim_export_audio_priming
     from windows import export_clips as ec
 
     results = []
@@ -1057,6 +1058,8 @@ def export_files_to_folder(file_ids, folder=""):
                                 if reader:
                                     reader.Close()
                                 writer.Close()
+                            if clip.data.get("has_audio"):
+                                trim_export_audio_priming(staged, ec.CLIP_AUDIO_CODEC)
                             os.replace(staged, out)
                         finally:
                             if os.path.exists(staged):
