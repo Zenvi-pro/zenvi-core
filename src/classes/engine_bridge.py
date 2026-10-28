@@ -6,20 +6,26 @@ snapshot of the open project and applies the change it answers -- desktop
 UpdateManager actions -- as one undo step (``editor_tools/engine_bridge.py``).
 Design, protocol and measurements: zenvi-web ``docs/ENGINE_BRIDGE.md``.
 
-Off unless ``ZENVI_ENGINE_BRIDGE`` or the ``engine-bridge`` setting turns it on:
+On by default once its runtime is installed (``classes.engine_runtime``:
+Node and the CLI, downloaded on demand into ``~/.openshot_qt/engine``);
+``ZENVI_ENGINE_BRIDGE`` or the ``engine-bridge`` setting choose otherwise:
 
+* ``auto`` (default) -- ``server`` when the CLI and a Node are found, else off.
 * ``1`` / ``server`` -- one long-lived ``zenvi bridge`` process, JSON-RPC lines
   on its stdin/stdout (Node starts once per session).
 * ``oneshot`` -- ``zenvi tool-run`` per call (a Node start each time).
+* ``off`` -- the kill switch: no engine tools, whatever is installed.
 
 Where the CLI comes from (:func:`find_cli`, first hit wins):
 ``ZENVI_ENGINE_CLI``, the ``engine-cli-path`` setting, the copy a build bundles
-at ``<app>/engine/zenvi.mjs``, then ``~/.openshot_qt/engine/zenvi.mjs``. Node
-(:func:`find_node`, 22 or newer): ``ZENVI_NODE``, the ``engine-node-path``
-setting, the private Node the local HyperFrames setup installs under
-``~/.openshot_qt/hyperframes/node``, then ``PATH`` and the folders installers
-use that a GUI app's PATH misses. Neither found: every bridged call is refused
-with what was searched and what to set.
+at ``<app>/engine/zenvi.mjs``, then the installed runtime's
+``~/.openshot_qt/engine/cli/zenvi.mjs`` (only while its recorded bridge
+protocol is this desktop's). Node (:func:`find_node`, 22 or newer):
+``ZENVI_NODE``, the ``engine-node-path`` setting, the runtime's own
+``~/.openshot_qt/engine/node``, the private Node the local HyperFrames setup
+installs under ``~/.openshot_qt/hyperframes/node``, then ``PATH`` and the
+folders installers use that a GUI app's PATH misses. Neither found: every
+bridged call is refused with what was searched and how to install it.
 
 Every method blocks (file checks, ``node --version``, the CLI itself): call
 them off the GUI thread.
@@ -47,6 +53,9 @@ CATALOG_TIMEOUT_SECONDS = 30.0
 MIN_NODE_MAJOR = 22
 NODE_VERSION_TIMEOUT = 10.0
 CLI_NAME = "zenvi.mjs"
+# Under info.USER_PATH: the runtime engine_runtime installs (cli/, node/, runtime.json).
+RUNTIME_DIR = "engine"
+INSTALL_HINT = "AI Tools > Zenvi Engine Tools... installs them (a one-time download)"
 
 
 class BridgeUnavailable(Exception):
@@ -67,8 +76,11 @@ def _env(env):
     return env if env is not None else os.environ
 
 
-def bridge_mode(env=None) -> str:
-    """'' (off), 'server' or 'oneshot', from ``ZENVI_ENGINE_BRIDGE`` or the ``engine-bridge`` setting."""
+def bridge_setting(env=None) -> str:
+    """'auto', 'server', 'oneshot' or 'off', from ``ZENVI_ENGINE_BRIDGE`` or the ``engine-bridge`` setting.
+
+    Reads no files: safe on the GUI thread.
+    """
     value = str(_env(env).get("ZENVI_ENGINE_BRIDGE", "")).strip().lower()
     if not value and env is None:
         value = _setting("engine-bridge").lower()
@@ -76,7 +88,59 @@ def bridge_mode(env=None) -> str:
         return "server"
     if value == "oneshot":
         return "oneshot"
-    return ""
+    if value in ("0", "false", "no", "off"):
+        return "off"
+    return "auto"
+
+
+def bridge_mode(env=None) -> str:
+    """'' (off), 'server' or 'oneshot'. ``auto`` looks for the runtime: blocks, off the GUI thread."""
+    setting = bridge_setting(env)
+    if setting == "off":
+        return ""
+    if setting == "auto":
+        return "server" if runtime_ready(env) else ""
+    return setting
+
+
+def runtime_ready(env=None) -> bool:
+    """Whether the CLI and a Node it runs on are found (blocks: file checks, ``node --version``)."""
+    try:
+        locate_cli(env)
+    except BridgeUnavailable:
+        return False
+    return True
+
+
+def managed_cli_dir() -> str:
+    from classes import info
+    return os.path.join(info.USER_PATH, RUNTIME_DIR, "cli")
+
+
+def managed_cli() -> str:
+    return os.path.join(managed_cli_dir(), CLI_NAME)
+
+
+def managed_node_dir() -> str:
+    from classes import info
+    return os.path.join(info.USER_PATH, RUNTIME_DIR, "node")
+
+
+def managed_node() -> str:
+    if sys.platform == "win32":
+        return os.path.join(managed_node_dir(), "node.exe")
+    return os.path.join(managed_node_dir(), "bin", "node")
+
+
+def installed_runtime() -> dict:
+    """The installed runtime's runtime.json ({} when there is none or it is unreadable)."""
+    from classes import info
+    try:
+        with open(os.path.join(info.USER_PATH, RUNTIME_DIR, "runtime.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def cli_candidates(env=None) -> list:
@@ -86,8 +150,7 @@ def cli_candidates(env=None) -> list:
     named = [env.get("ZENVI_ENGINE_CLI", "")]
     if env is os.environ:
         named.append(_setting("engine-cli-path"))
-    bundled = [os.path.join(info.PATH, "engine", CLI_NAME), os.path.join(info.USER_PATH, "engine", CLI_NAME)]
-    return [p for p in named if p] + bundled
+    return [p for p in named if p] + [os.path.join(info.PATH, "engine", CLI_NAME), managed_cli()]
 
 
 def find_cli(env=None) -> str:
@@ -100,13 +163,22 @@ def find_cli(env=None) -> str:
         if os.path.isfile(explicit):
             return os.path.abspath(explicit)
         raise BridgeUnavailable(f"the zenvi CLI is not at {explicit} (ZENVI_ENGINE_CLI / the engine-cli-path setting)")
+    outdated = ""
     for path in candidates:
-        if os.path.isfile(path):
-            return os.path.abspath(path)
+        if not os.path.isfile(path):
+            continue
+        if path == managed_cli():
+            spoken = (installed_runtime().get("cli") or {}).get("protocol")
+            if spoken != PROTOCOL:
+                # An older install (or one cut short): never run a CLI this desktop cannot talk to.
+                outdated = (f" The installed zenvi CLI speaks bridge protocol {spoken}, this Zenvi {PROTOCOL}: "
+                            "update it (AI Tools > Zenvi Engine Tools...).")
+                continue
+        return os.path.abspath(path)
     raise BridgeUnavailable(
-        "Zenvi engine tools need the zenvi CLI (zenvi.mjs), which this build does not bundle: set "
-        "ZENVI_ENGINE_CLI or Preferences > AI > Zenvi CLI for Engine Tools to a built zenvi.mjs (zenvi-web: "
-        "npm run build -w @zenvi/cli). Looked in: " + ", ".join(candidates))
+        f"Zenvi engine tools are not installed: {INSTALL_HINT}, or set ZENVI_ENGINE_CLI / Preferences > AI > "
+        f"Zenvi CLI for Engine Tools to a built zenvi.mjs (zenvi-web: npm run build -w @zenvi/cli).{outdated} "
+        "Looked in: " + ", ".join(candidates))
 
 
 def node_candidates(env=None) -> list:
@@ -118,7 +190,7 @@ def node_candidates(env=None) -> list:
     if explicit:
         # A Node the user names is the one they mean: no quiet fallback to another install.
         return [explicit]
-    out = []
+    out = [managed_node()]
     private = os.path.join(info.USER_PATH, "hyperframes", "node")
     out.append(os.path.join(private, exe) if sys.platform == "win32" else os.path.join(private, "bin", exe))
     on_path = shutil.which("node", path=env.get("PATH"))
@@ -149,6 +221,11 @@ def _explicit_node(env) -> str:
 
 
 _node_majors: dict = {}
+
+
+def forget_node_versions() -> None:
+    """Ask every Node its version again (after an install put a new one in place)."""
+    _node_majors.clear()
 
 
 def node_major(node: str) -> Optional[int]:
@@ -183,9 +260,8 @@ def find_node(env=None) -> str:
         tried.append(f"{path} ({'v%d' % major if major is not None else 'does not run'})")
     found = f" Found only: {', '.join(tried)}." if tried else ""
     raise BridgeUnavailable(
-        f"Zenvi engine tools need Node.js {MIN_NODE_MAJOR} or newer.{found} Install it (https://nodejs.org, "
-        "or Zenvi's local HyperFrames setup, which installs a private copy), or set ZENVI_NODE / "
-        "Preferences > AI > Node.js for Engine Tools.")
+        f"Zenvi engine tools need Node.js {MIN_NODE_MAJOR} or newer.{found} {INSTALL_HINT} with a private "
+        "copy; or install it (https://nodejs.org), or set ZENVI_NODE / Preferences > AI > Node.js for Engine Tools.")
 
 
 def locate_cli(env=None) -> tuple:
@@ -354,11 +430,11 @@ def get_client() -> EngineBridgeClient:
     global _client
     with _client_lock:
         if _client is None:
-            mode = bridge_mode()
-            if not mode:
-                raise BridgeUnavailable("the engine bridge is off (set ZENVI_ENGINE_BRIDGE=1 or Preferences > AI > "
-                                        "Zenvi Engine Tools)")
+            setting = bridge_setting()
+            if setting == "off":
+                raise BridgeUnavailable("Zenvi engine tools are turned off (Preferences > AI > Zenvi Engine Tools)")
             node, cli = locate_cli()
+            mode = "server" if setting == "auto" else setting
             _client = EngineBridgeClient(node, cli, mode)
         return _client
 

@@ -5171,6 +5171,15 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         settings_action = menu.addAction(_("ComfyUI Settings..."))
         settings_action.triggered.connect(lambda checked=False: self.actionPreferences.trigger())
 
+        # The engine bridge runtime (Node + zenvi CLI): its status is read by the dialog, off this thread.
+        menu.addSeparator()
+        engine_action = menu.addAction(_("Zenvi Engine Tools..."))
+        engine_action.triggered.connect(lambda checked=False: self.show_engine_runtime_dialog())
+
+    def show_engine_runtime_dialog(self):
+        from windows.engine_runtime_dialog import show_engine_runtime_dialog
+        show_engine_runtime_dialog(self)
+
     def _init_ui_trace_recorder(self):
         """Enable env-configured UI trace recording for automated test capture."""
         try:

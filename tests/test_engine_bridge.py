@@ -152,13 +152,23 @@ def test_a_cli_speaking_another_protocol_is_refused(monkeypatch):
     client.close()
 
 
-def test_the_bridge_is_off_by_default(monkeypatch):
-    from classes import engine_bridge
+def test_the_bridge_is_on_by_default_only_with_its_runtime(tmp_path, monkeypatch):
+    from classes import engine_bridge, info
     from classes.editor_tools import engine_bridge as bridged
 
     monkeypatch.delenv("ZENVI_ENGINE_BRIDGE", raising=False)
+    monkeypatch.delenv("ZENVI_ENGINE_CLI", raising=False)
+    monkeypatch.setattr(info, "PATH", str(tmp_path / "app"))
+    monkeypatch.setattr(info, "USER_PATH", str(tmp_path / "user"))
+    assert engine_bridge.bridge_setting() == "auto"
     assert engine_bridge.bridge_mode() == ""
     assert bridged.register_tools(set()) == {}
+    # A CLI is found (and the Python running this test stands in for Node): on.
+    monkeypatch.setenv("ZENVI_ENGINE_CLI", FAKE)
+    monkeypatch.setenv("ZENVI_NODE", sys.executable)
+    monkeypatch.setattr(engine_bridge, "node_major", lambda node: 24)
+    assert engine_bridge.bridge_mode() == "server"
+    assert engine_bridge.bridge_mode({"ZENVI_ENGINE_BRIDGE": "off"}) == ""
     assert engine_bridge.bridge_mode({"ZENVI_ENGINE_BRIDGE": "1"}) == "server"
     assert engine_bridge.bridge_mode({"ZENVI_ENGINE_BRIDGE": "oneshot"}) == "oneshot"
 
