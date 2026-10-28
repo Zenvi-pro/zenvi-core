@@ -14,6 +14,8 @@
     "src/classes/editor_tools/handoff_hyperframes.py",
     "src/classes/emoji_catalog.py",
     "src/classes/encoder_trial.py",
+    "src/classes/engine_bridge.py",
+    "src/classes/engine_runtime.py",
     "src/classes/export_acceleration/hw_encode.py",
     "src/classes/exporters/after_effects.py",
     "src/classes/exporters/after_effects_effects.py",

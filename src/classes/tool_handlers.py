@@ -12169,10 +12169,11 @@ _MAIN_THREAD_TIMEOUTS = {
 # actions pushed into redoHistory, gluing separate steps together.
 _UNGROUPED_TOOLS = READ_ONLY_TOOLS | frozenset({"undo_tool", "redo_tool"})
 
-# Engine tools the desktop does not implement, run by the bundled zenvi CLI
-# (classes/editor_tools/engine_bridge.py; off unless ZENVI_ENGINE_BRIDGE or the
-# engine-bridge setting is on). The catalog is read on a worker thread at
-# start-up and the tools appear when it arrives. Background-safe: Node runs on
+# Engine tools the desktop does not implement, run by the zenvi CLI
+# (classes/editor_tools/engine_bridge.py; on once classes/engine_runtime.py has
+# installed it, unless ZENVI_ENGINE_BRIDGE or the engine-bridge setting is off).
+# The catalog is read on a worker thread at start-up, or after an install, and
+# the tools appear when it arrives. Background-safe: Node runs on
 # the worker thread, the change is applied on the GUI thread inside the call's
 # one undo step.
 from classes.agent_api_proxy import MCP_EXTRA_TOOLS as _MCP_EXTRA_TOOLS  # noqa: E402
@@ -12188,7 +12189,17 @@ def install_bridged_tools(handlers: dict) -> None:
     AGENT_TOOL_HANDLERS.update(handlers)
 
 
-_engine_bridge.register_in_background(lambda: set(AGENT_TOOL_HANDLERS) | set(_MCP_EXTRA_TOOLS), install_bridged_tools)
+def _native_tool_names() -> set:
+    # Bridged tools listed before (an update re-lists them from the new catalog) are not native.
+    return (set(AGENT_TOOL_HANDLERS) - set(_engine_bridge.BRIDGED)) | set(_MCP_EXTRA_TOOLS)
+
+
+def refresh_bridged_tools():
+    """List the engine tools again on a worker thread (after the runtime was installed or updated)."""
+    return _engine_bridge.register_in_background(_native_tool_names, install_bridged_tools)
+
+
+refresh_bridged_tools()
 
 
 # Tools whose main-thread runtime scales with a `steps` argument.  A fixed 30s
