@@ -27,7 +27,8 @@ the MCP server lists tools as they arrive. A call runs like this:
    copy torn by an edit during step 2) -- unless only bin files the answer
    does not touch changed (indexing, thumbnails during a long render); otherwise resolve ``@transitions``-
    style paths with the desktop's own rules and apply the actions inside the
-   caller's transaction, with the timeline refreshing once. execute_tool
+   caller's transaction, with the timeline refreshing once (as the fewest
+   updates that make the same project, ``net_actions``). execute_tool
    groups the call into one undo step; a refused or failed call applies
    nothing and leaves no undo step. ``update_untracked`` actions (cached
    transcripts, the saved playhead) go through
@@ -41,6 +42,7 @@ They are not indexed (the engine's generated drawings never need it).
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import os
 import threading
@@ -294,11 +296,98 @@ def _apply(answer: dict, project_file: str, version) -> Optional[str]:
     window = app.window
     window.IgnoreUpdates.emit(True, True)
     try:
-        for action in actions:
+        for action in net_actions(actions, _current_item(app.project._data)):
             _APPLY[action["type"]](updates, action.get("key"), action.get("value"))
     finally:
         window.IgnoreUpdates.emit(False, True)
     return None
+
+
+def _item(key) -> Optional[tuple]:
+    """(list, id) of the top-level list item an action key names (``["clips", {"id": ...}, ...]``), else None."""
+    if len(key or []) >= 2 and isinstance(key[0], str) and isinstance(key[1], dict) and list(key[1]) == ["id"]:
+        return key[0], str(key[1]["id"])
+    return None
+
+
+def _replacement(old: Optional[dict], new: dict) -> Optional[dict]:
+    """The keys of *new* that differ from *old*, when an update of them makes *old* exactly *new* (else None).
+
+    An update merges into the stored item (and merges ``objects`` per object),
+    and its undo merges the whole old item back: exact only with the same keys
+    and the same ``objects``.
+    """
+    if not isinstance(old, dict) or set(old) != set(new) or old.get("objects") != new.get("objects"):
+        return None
+    return {k: v for k, v in new.items() if old[k] != v}
+
+
+def net_actions(actions: list, current: Callable[[str, str], Optional[dict]]) -> list:
+    """*actions* as the fewest desktop updates that make the same project.
+
+    The engine answers its own edit log. A sound effect inserts a scratch clip,
+    updates it, deletes it and inserts the final one; a motion transition
+    replaces both clips of the cut by deleting and inserting them. Applied as
+    is, every step was an undo entry holding a copy of a clip. Here:
+
+    * an item the answer inserts and then deletes, and every action on it, is dropped;
+    * a top-level update of an item the answer inserted folds into its insert;
+    * an existing item deleted and inserted again (same id) is an update of the
+      keys that changed, when that is exact (``_replacement``); it also stays
+      where it is in its list. Only when the delete is the answer's first action
+      on it: *current* is the item before the answer, not after its earlier actions.
+
+    *current(list, id)* is the item as the project has it now.
+    """
+    out: list = []
+    born: dict = {}  # (list, id) -> indexes in out of the actions on an item this answer inserted
+    removed: dict = {}  # (list, id) -> index in out of the delete of an existing item
+    touched: set = set()  # (list, id) of every item an earlier action of the answer named
+    for action in actions:
+        kind, key, value = action.get("type"), action.get("key") or [], action.get("value")
+        if kind == "insert" and len(key) == 1 and isinstance(value, dict) and value.get("id"):
+            item = (key[0], str(value["id"]))
+            if item in removed:
+                changed = _replacement(current(*item), value)
+                if changed is not None:
+                    out[removed.pop(item)] = None
+                    if changed:
+                        out.append({"type": "update", "key": [key[0], {"id": value["id"]}], "value": changed})
+                    touched.add(item)
+                    continue
+                del removed[item]
+            born[item] = [len(out)]
+            touched.add(item)
+            out.append(dict(action, value=copy.deepcopy(value)))
+            continue
+        item = _item(key)
+        if item in born:
+            if kind == "delete" and len(key) == 2:
+                for i in born.pop(item):
+                    out[i] = None
+                continue
+            if kind == "update" and len(key) == 2 and isinstance(value, dict) and "objects" not in value \
+                    and len(born[item]) == 1:
+                out[born[item][0]]["value"].update(copy.deepcopy(value))
+                continue
+            born[item].append(len(out))
+        elif item in removed:
+            del removed[item]  # acted on after its delete: leave both as answered
+        elif kind == "delete" and len(key) == 2 and item is not None and item not in touched:
+            removed[item] = len(out)
+        if item is not None:
+            touched.add(item)
+        out.append(action)
+    return [a for a in out if a is not None]
+
+
+def _current_item(data: dict) -> Callable[[str, str], Optional[dict]]:
+    def find(name: str, item_id: str) -> Optional[dict]:
+        items = data.get(name)
+        if isinstance(items, list):
+            return next((x for x in items if isinstance(x, dict) and str(x.get("id")) == item_id), None)
+        return None
+    return find
 
 
 def _well_formed(actions) -> bool:
