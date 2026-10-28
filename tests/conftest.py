@@ -29,6 +29,10 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+# The engine bridge turns itself on when this computer has its runtime
+# (~/.openshot_qt/engine): tests never list a developer's real engine tools.
+os.environ.setdefault("ZENVI_ENGINE_BRIDGE", "off")
+
 
 def _qtcore_stub():
     qt = MagicMock()

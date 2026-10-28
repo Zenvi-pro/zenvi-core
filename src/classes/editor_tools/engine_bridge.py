@@ -1,7 +1,8 @@
 """Engine tools the desktop runs through the engine bridge (``classes.engine_bridge``).
 
-Prototype, off unless ``ZENVI_ENGINE_BRIDGE`` or the ``engine-bridge`` setting
-turns it on. Every tool of the engine's catalog the desktop can use is listed
+On once the engine runtime is installed (``classes.engine_runtime``), unless
+``ZENVI_ENGINE_BRIDGE`` or the ``engine-bridge`` setting turn it off; without
+the runtime no engine tool is listed anywhere. Every tool of the engine's catalog the desktop can use is listed
 next to the desktop's own (chat, MCP, the editor-tool manifest), except:
 
 * tools the desktop implements itself -- by name, or as a NATIVE_TWINS
@@ -170,9 +171,10 @@ def register_in_background(existing: Callable[[], set], install: Callable[[dict]
     """Read the catalog on a worker thread and hand the handlers to *install* (None when the bridge is off).
 
     *existing* is called on that thread, once the desktop's own tools are all
-    registered; *install* runs there too (it only updates dicts).
+    registered; *install* runs there too (it only updates dicts). Whether the
+    runtime is installed is checked there as well: it reads files and starts Node.
     """
-    if not engine_bridge.bridge_mode():
+    if engine_bridge.bridge_setting() == "off":
         return None
 
     def work():
@@ -185,10 +187,30 @@ def register_in_background(existing: Callable[[], set], install: Callable[[dict]
                 REVISION += 1
         except Exception:
             log.error("Engine bridge: listing the engine tools failed", exc_info=True)
+        finally:
+            with _loading_lock:
+                _loading[0] -= 1
 
+    with _loading_lock:
+        _loading[0] += 1
     thread = threading.Thread(target=work, name="engine-bridge-catalog", daemon=True)
-    thread.start()
+    try:
+        thread.start()
+    except BaseException:
+        with _loading_lock:
+            _loading[0] -= 1
+        raise
     return thread
+
+
+# Catalog reads under way (start-up, or after an install): engine tools may still appear.
+_loading = [0]
+_loading_lock = threading.Lock()
+
+
+def loading() -> bool:
+    """Whether the engine tools are still being listed (in memory only: safe on the GUI thread)."""
+    return _loading[0] > 0
 
 
 def description(name: str) -> str:
