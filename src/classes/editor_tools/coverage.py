@@ -62,6 +62,9 @@ CAPABILITIES = [
     ("clip.separate_audio", "timeline-edit", "Clip menu > Audio > Separate (single / per channel)", "Split a clip's audio onto its own clip(s) and mute the original"),
     ("clip.waveform", "timeline-edit", "Clip menu > Audio > Show/Hide Waveform", "Show or hide a clip's waveform"),
     ("clip.enable_av", "timeline-edit", "Properties > Enable Audio / Enable Video", "Turn a clip's audio or video on/off (mute, audio-only)"),
+    ("reel.build", "timeline-edit", "build_reel_tool (no single menu: the Assistant's one-step edit)",
+     "Cut a finished short-form reel from Project Files media: shots on the music's beats, camera moves, "
+     "looks, flashes, hook/label/end-card titles and a faded music bed, in one undo step"),
 
     # ------------------------------------------------------------------ clip-props
     ("clip.properties_get", "clip-props", "Properties dock", "Read every property of a clip at a time: value, range, choices, keyframes"),

@@ -9,6 +9,8 @@
     "src/classes/chat_navigation.py",
     "src/classes/cloud_sync.py",
     "src/classes/conversion.py",
+    "src/classes/editor_tools/timeline_edit_reels_cards.py",
+    "src/classes/editor_tools/timeline_edit_reels_plan.py",
     "src/classes/editor_tools/handoff_after_effects.py",
     "src/classes/editor_tools/handoff_remotion.py",
     "src/classes/editor_tools/handoff_hyperframes.py",
@@ -75,6 +77,7 @@
     "src/classes/qt_platform.py",
     "src/classes/title_svg.py",
     "src/classes/single_instance.py",
+    "src/classes/speech/beats.py",
     "src/classes/track_display.py",
     "src/classes/zenvi_env.py"
   ],
