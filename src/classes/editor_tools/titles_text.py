@@ -481,12 +481,19 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
         name = _template_name(path)
         doc = _load_doc(path)
         slots = title_svg.fields(doc)
-        if not str(background_color or "").strip() and card_alpha > 0:
-            # '#rrggbb', plus the card's opacity as '#rrggbbaa' when it is not opaque
-            background_color = card_colour + ("" if card_alpha >= 1 else "%02x" % round(card_alpha * 255))
+        if not str(background_color or "").strip() and card_colour:
+            try:
+                card_hex = color_hex_alpha(card_colour, "the card's colour")[0]
+            except ToolError:
+                card_hex = ""  # a fill this cannot read (a gradient): Text_Card's own background
+            if card_hex:
+                # '#rrggbb', plus the card's opacity as '#rrggbbaa' when it is not opaque (0: see-through stays so)
+                alpha = max(0.0, min(1.0, card_alpha))
+                background_color = card_hex + ("" if alpha >= 1 else "%02x" % round(alpha * 255))
+        shown = str(background_color or "").strip()
+        see_through = bool(shown) and color_hex_alpha(shown, "background_color")[1] <= 0
         warnings.append(f"{card} has no text; drew the text with {name} over "
-                        + (f"the colour {str(background_color).strip()}" if str(background_color or "").strip()
-                           else "the video"))
+                        + (f"the colour {shown}" if shown and not see_through else "the video"))
     if slots and not given and not colour_card:
         raise ToolError("add_title_tool needs text (or subtitle / lines), or a background_color for a blank "
                         "colour card")
@@ -511,9 +518,10 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
         if slot.index in values:
             title_svg.set_field_text(doc, slot, values[slot.index])
     style_info = style.apply(doc, families)
-    if card:
-        title_svg.center_lines(doc)
     fitted = _fit(doc, slots, style)
+    if card:
+        # After _fit: the baseline goes with the font size the line ends up with.
+        title_svg.center_lines(doc)
     zone = title_svg.text_zone(slots, title_svg.artboard_size(doc)[1])
     pos_key = ZONE_POSITION.get(zone if screen_position == "auto" else screen_position, "center")
     lift = VERTICAL_SAFE_OFFSET.get(pos_key, 0.0) if is_vertical() else 0.0

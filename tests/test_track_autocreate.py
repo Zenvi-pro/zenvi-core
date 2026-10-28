@@ -354,3 +354,27 @@ def test_text_on_a_card_stays_vertically_centred_when_the_font_is_scaled(tt):
     size = float(line.getAttribute("style").split("font-size:")[1].split("px")[0])
     assert size == 400 and abs(float(line.getAttribute("y")) - (540 + 0.36 * size)) < 1e-6
     assert float(line.parentNode.getAttribute("y")) == float(line.getAttribute("y"))
+
+
+@pytest.mark.parametrize("fill, alpha, kept, over", [
+    ("red", 0.5, ("#ff0000", 0.502), "the colour #ff000080"),     # a colour name, translucent
+    ("#123456", 0.0, ("#123456", 0.0), "the video"),              # see-through stays see-through
+])
+def test_text_on_a_named_or_see_through_card_keeps_its_colour(tt, monkeypatch, fill, alpha, kept, over):
+    from classes import title_svg
+    real = title_svg.background_color
+    monkeypatch.setattr(title_svg, "background_color",
+                        lambda doc: (fill, alpha) if not title_svg.fields(doc) else real(doc))
+    rec = receipt(tt.call("add_title_tool", template="Solid_Color", text="Hi"))
+    assert real(title_svg.load(rec["path"])) == kept
+    assert rec["warnings"] == [f"Solid_Color has no text; drew the text with Text_Card over {over}"]
+
+
+def test_a_long_line_on_a_card_is_centred_at_the_size_it_was_fitted_to(tt):
+    from classes import title_svg
+    rec = receipt(tt.call("add_title_tool", template="Solid_Color", font_scale=2.5,
+                          text="THE LONGEST HEADLINE ANYONE EVER PUT ON ONE CARD"))
+    line = title_svg.line_nodes(title_svg.load(rec["path"]))[0]
+    size = float(line.getAttribute("style").split("font-size:")[1].split("px")[0])
+    assert size < 400                                             # _fit shrank it
+    assert abs(float(line.getAttribute("y")) - (540 + 0.36 * size)) < 1e-3
