@@ -138,6 +138,22 @@ def _create_track(number: int, label: str = "", lock: bool = False) -> int:
     return int(number)
 
 
+def ensure_track(number: int, label: str = "") -> int:
+    """Create track *number* when no track has it; returns *number*.
+
+    A number more than one TRACK_STRIDE above the top also adds the empty,
+    unlabelled tracks in between (an agent placing on track 11 of 9).
+    """
+    numbers = track_numbers()
+    if int(number) in numbers:
+        return int(number)
+    lane = max(numbers, default=0) + TRACK_STRIDE
+    while lane < int(number):
+        _create_track(lane)
+        lane += TRACK_STRIDE
+    return _create_track(number, label)
+
+
 def renumber_tracks(insert_at: Optional[int] = None, stride: int = TRACK_STRIDE,
                     new_track_label: str = "") -> Optional[int]:
     """Renumber every track to multiples of *stride*; their clips and transitions follow.

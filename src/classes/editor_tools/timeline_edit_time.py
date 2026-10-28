@@ -4,6 +4,11 @@ audio/video on-off and waveforms.
 Each one validates, then runs the editor's own Clip menu handler (Time_Triggered,
 Repeat_Triggered, Split_Audio_Triggered, Show/Hide_Waveform_Triggered), which joins
 the tool call's undo step.
+
+set_clip_speed_tool requests: "speed up the drone shot 2x" (speed=2), "slow
+motion" (speed=0.5), "play it in reverse" (reverse=true), "make this clip
+exactly 3 seconds" (target_duration_seconds=3), "back to normal speed"
+(speed=1, absolute=true; or reset=true, the menu's Reset).
 """
 
 from __future__ import annotations
@@ -159,15 +164,11 @@ def set_clip_speed(timeline_clip_ids=[], clip_query="", track="", scope="", spee
     """Speed clips up or slow them down, play them backwards, or retime them to an exact length
     (Clip menu > Speed). Keyframes and the audio follow the new timing.
 
-    Use for "speed up the drone shot 2x" (speed=2), "slow motion" (speed=0.5), "play it in
-    reverse" (reverse=true), "make this clip exactly 3 seconds" (target_duration_seconds=3),
-    "back to normal speed" (speed=1, absolute=true keeps the same part of the source; reset=true
-    is the menu's Reset). speed combines with reverse. Speeds from 1/16x to 16x.
-
-    A slower clip gets longer and may run into the next clip on its track: the tool refuses
-    unless ripple=true (push later clips along) or allow_overlap=true. Looped clips
-    (repeat_clip_tool) need reset=true before a new speed. For a still frame use
-    freeze_frame_tool; to loop use repeat_clip_tool. One undo step for all clips. Returns each
+    speed combines with reverse; speed and target_duration_seconds do not.
+    Speeds from 1/16x to 16x. A slower clip that would run into the next clip
+    on its track is refused unless ripple=true or allow_overlap=true. Looped
+    clips (repeat_clip_tool) need reset=true before a new speed. For a still
+    frame use freeze_frame_tool. One undo step for all clips. Returns each
     clip's length before/after and its effective speed.
     """
     from windows.views.timeline_backend.enums import MenuTime
