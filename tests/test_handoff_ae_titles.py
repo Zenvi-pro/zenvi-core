@@ -10,7 +10,8 @@ TITLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "
 
 # Templates whose visible content is only solid text and rectangles (checked one by one).
 NATIVE = {"Box", "Footer_1", "Footer_2", "Footer_3", "Gray_Box_1", "Gray_Box_2", "Gray_Box_3", "Gray_Box_4",
-          "Header_1", "Header_2", "Header_3", "Solid_Color", "Standard_1", "Standard_3", "Standard_4"}
+          "Header_1", "Header_2", "Header_3", "Solid_Color", "Standard_1", "Standard_3", "Standard_4",
+          "Text_Card"}
 
 
 def _read(name):

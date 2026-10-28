@@ -201,11 +201,14 @@ def clips_in_window(layer_num: Optional[int], start: float, end: float, exclude_
     return out
 
 
-def plan_overlay_track(start: float, end: float, track: str = "", exclude_ids=()) -> Tuple[int, bool]:
+def plan_overlay_track(start: float, end: float, track: str = "", exclude_ids=(),
+                       moved: Optional[list] = None) -> Tuple[int, bool]:
     """(layer number, needs_new_track) for an overlay shown over [start, end).
 
-    Explicit *track*: it must exist, be unlocked and be free in the window, or
-    be one to three tracks past the top (created, with the ones between).
+    Explicit *track*: it must exist and be unlocked, or be one to three tracks
+    past the top (created, with the ones between). When it has a clip in the
+    window the overlay goes to the first free track above it instead, and the
+    reason is appended to *moved* (a receipt warning) when a list is given.
     Otherwise: the lowest free, unlocked track above every clip with video in
     the window; a new track on top when none is free. Read-only.
     """
@@ -215,17 +218,37 @@ def plan_overlay_track(start: float, end: float, track: str = "", exclude_ids=()
             return layer, True
         ensure_unlocked(layer)
         busy = clips_in_window(layer, start, end, exclude_ids)
-        if busy:
-            d = busy[0].data
-            s, e, _ = clip_extent(d)
-            raise ToolError(
-                f"track {ui_track_number(layer) or layer} already has {d.get('title') or busy[0].id!r} at "
-                f"{s:.2f}-{e:.2f}s during {start:.2f}-{end:.2f}s; pick another track or leave track "
-                f"empty to use the first free track above the video")
-        return layer, False
+        if not busy:
+            return layer, False
+        d = busy[0].data
+        s, e, _ = clip_extent(d)
+        # Agents name a track they believe is free; the overlay is what matters, not the lane.
+        found, created = _first_free_track(start, end, exclude_ids, above=layer)
+        where = (f"a new track on top (track {len(layers()) + 1})" if created
+                 else f"track {ui_track_number(found) or found}")
+        if moved is not None:
+            moved.append(f"track {ui_track_number(layer) or layer} already has {d.get('title') or busy[0].id!r} at "
+                         f"{s:.2f}-{e:.2f}s during {start:.2f}-{end:.2f}s; placed on {where} instead")
+        return found, created
+    return _first_free_track(start, end, exclude_ids)
+
+
+def warning_note(warnings) -> str:
+    """The summary suffix for receipt warnings (" Warning: ....") so an agent that reads only the summary sees them."""
+    return "".join(f" Warning: {w}." for w in warnings)
+
+
+def warnings_field(warnings) -> dict:
+    """``{"warnings": [...]}`` for the receipt, or nothing when there are none."""
+    return {"warnings": list(warnings)} if warnings else {}
+
+
+def _first_free_track(start: float, end: float, exclude_ids=(), above: Optional[int] = None) -> Tuple[int, bool]:
+    """The lowest free, unlocked track above *above* and above every picture in the window; a new track on top otherwise."""
     numbers = sorted(int(t.get("number") or 0) for t in layers())
     visual = [c for c in clips_in_window(None, start, end, exclude_ids) if _is_visual(c.data)]
-    floor = max((int(c.data.get("layer") or 0) for c in visual), default=None)
+    floors = [int(c.data.get("layer") or 0) for c in visual] + ([] if above is None else [int(above)])
+    floor = max(floors, default=None)
     for num in numbers:
         if floor is not None and num <= floor:
             continue
