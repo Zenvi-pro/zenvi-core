@@ -1072,5 +1072,6 @@ def align_clips(timeline_clip_ids=[], clip_query="", track="", scope="", edge="s
               edge=edge, at_seconds=r3(at), moved=moved, overlaps=hits)
 
 
-# Speed, repeat, freeze and audio/video tools register from their own module.
-from classes.editor_tools import timeline_edit_time  # noqa: E402,F401
+# Speed, repeat, freeze and audio/video tools register from their own module, and so
+# does build_reel_tool (a whole short-form edit cut to the music).
+from classes.editor_tools import timeline_edit_reels, timeline_edit_time  # noqa: E402,F401
