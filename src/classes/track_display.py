@@ -106,6 +106,19 @@ def new_tracks_note(count: int) -> str:
     return " on a new track" if count == 1 else f" on a new track ({count} tracks added on top)"
 
 
+def added_tracks_notes(new_tracks: int, named_is_new: bool) -> tuple:
+    """(note after the named track, note at the end of the summary) for the tracks a move/copy added.
+
+    A selection from several tracks can name an existing track while the lower sources' tracks
+    are the new ones, so the count then goes at the end instead of "on a new track".
+    """
+    if not new_tracks or new_tracks <= 0:
+        return "", ""
+    if named_is_new:
+        return new_tracks_note(new_tracks), ""
+    return "", f"; {new_tracks} track{'' if new_tracks == 1 else 's'} added on top"
+
+
 def _resolve_track(raw: str, layers, new_on_top: int) -> tuple[int | None, str | None, int]:
     """
     Resolve user/LLM track input to storage layer number against LIVE layers.

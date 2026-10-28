@@ -346,6 +346,28 @@ def apply_font(nodes, family: Optional[str] = None, italic: Optional[bool] = Non
     return last
 
 
+# Where the middle of capital letters sits above the baseline, as a share of the font size.
+CAP_MIDDLE = 0.36
+
+
+def center_lines(xmldoc) -> None:
+    """Put each line's capitals on the artboard's middle at its current font size.
+
+    A card with one centred word (Text_Card) stays centred when the font size is scaled;
+    QtSvg ignores dy="0.36em", so the baseline is written as a number.
+    """
+    middle = artboard_size(xmldoc)[1] / 2.0
+    for node in line_nodes(xmldoc):
+        size = _px(node_property(node, "font-size"))
+        if size is None:
+            continue
+        y = _fmt(middle + CAP_MIDDLE * size)
+        node.setAttribute("y", y)
+        parent = node.parentNode
+        if parent is not None and parent.nodeName == "text" and parent.hasAttribute("y"):
+            parent.setAttribute("y", y)
+
+
 def _fmt(value: float) -> str:
     return ("%.4f" % float(value)).rstrip("0").rstrip(".")
 
