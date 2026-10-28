@@ -180,12 +180,53 @@ def suggest_templates(name: str, limit: int = 6) -> List[str]:
 # Documents
 # ---------------------------------------------------------------------------
 
+# zenvi-web's typography pass draws a title's text again as glyph outlines (a
+# <g data-zenvi-outline="family"> of <path>s) so every renderer shows one font,
+# and keeps the original <text> hidden beside it (display="none",
+# data-zenvi-outlined). Names match packages/engine/src/typography/outline.ts.
+OUTLINE_ATTR = "data-zenvi-outline"
+OUTLINED_ATTR = "data-zenvi-outlined"
+
+
+def strip_outlines(xmldoc) -> int:
+    """Turn an outlined title back into its text: drop the outline groups, show the <text> again.
+
+    Outlines do not follow an edit, so any change to the words, font or colour
+    needs them gone; the title then draws in the installed font until the web
+    engine outlines it again. Returns how many outline groups were removed.
+    """
+    def nested(group):
+        parent = group.parentNode
+        while parent is not None:
+            if getattr(parent, "hasAttribute", None) and parent.hasAttribute(OUTLINE_ATTR):
+                return True
+            parent = parent.parentNode
+        return False
+
+    groups = [g for g in xmldoc.getElementsByTagName("g") if g.hasAttribute(OUTLINE_ATTR)]
+    removed = 0
+    for group in groups:
+        if not nested(group):  # a group inside another goes with it
+            group.parentNode.removeChild(group)
+            removed += 1
+    for node in xmldoc.getElementsByTagName("text"):
+        if node.hasAttribute(OUTLINED_ATTR):
+            node.removeAttribute(OUTLINED_ATTR)
+            node.removeAttribute("display")
+    return removed
+
+
 def load(path: str):
-    return minidom.parse(path)
+    """Parse a title for editing: an outlined title comes back as plain text."""
+    xmldoc = minidom.parse(path)
+    strip_outlines(xmldoc)
+    return xmldoc
 
 
 def parse_string(text: str):
-    return minidom.parseString(text)
+    xmldoc = minidom.parseString(text)
+    strip_outlines(xmldoc)
+    return xmldoc
 
 
 def text_nodes(xmldoc) -> list:
@@ -303,6 +344,28 @@ def apply_font(nodes, family: Optional[str] = None, italic: Optional[bool] = Non
                 style["font-size"] = "%spx" % _fmt(size * float(font_size_ratio))
         last = set_node_style(node, style)
     return last
+
+
+# Where the middle of capital letters sits above the baseline, as a share of the font size.
+CAP_MIDDLE = 0.36
+
+
+def center_lines(xmldoc) -> None:
+    """Put each line's capitals on the artboard's middle at its current font size.
+
+    A card with one centred word (Text_Card) stays centred when the font size is scaled;
+    QtSvg ignores dy="0.36em", so the baseline is written as a number.
+    """
+    middle = artboard_size(xmldoc)[1] / 2.0
+    for node in line_nodes(xmldoc):
+        size = _px(node_property(node, "font-size"))
+        if size is None:
+            continue
+        y = _fmt(middle + CAP_MIDDLE * size)
+        node.setAttribute("y", y)
+        parent = node.parentNode
+        if parent is not None and parent.nodeName == "text" and parent.hasAttribute("y"):
+            parent.setAttribute("y", y)
 
 
 def _fmt(value: float) -> str:
