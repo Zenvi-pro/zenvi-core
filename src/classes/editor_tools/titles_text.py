@@ -9,6 +9,20 @@ through ``classes.title_svg``.
 This module holds the SVG title tools; the sibling modules register the rest:
 ``titles_text_captions`` (Caption effect), ``titles_text_overlays`` (Timer,
 emoji) and ``titles_text_animated`` (Blender).
+
+add_title_tool requests: "add a title 'Tokyo Day 1'", "lower third with my
+name", "end card saying Thanks for watching". Example calls: {"text": "Tokyo
+Day 1", "template": "Standard_1", "text_color": "white", "fade_in_seconds": 0.5,
+"fade_out_seconds": 0.5}; lower third {"text": "Jane Doe", "subtitle":
+"Founder, Acme", "template": "Gray_Box_4", "position_seconds": 3,
+"duration_seconds": 4}; end card {"text": "Thanks for watching", "subtitle":
+"Subscribe for more", "template": "Standard_1", "background_color": "#000000",
+"text_color": "white", "position_seconds": 58}. A background_color of
+'#00000080' is a 50% dark veil over the video.
+
+edit_title_tool requests: "change the title to 'Day 2'", "make the lower third
+yellow", "use Georgia for the end card", "make a copy of this title". Example:
+{"timeline_clip_id": "C1A2", "text": "Tokyo Day 2", "text_color": "#FFD700"}.
 """
 
 from __future__ import annotations
@@ -385,18 +399,16 @@ def list_title_templates(kind="static", query=""):
 # ---------------------------------------------------------------------------
 
 _STYLE_PROPS = {
-    "font": string("Font family for every line, e.g. 'Arial Black', 'Helvetica Neue', 'Georgia'. Must be "
-                   "installed; empty keeps the template's font.", ""),
-    "font_weight": enum(["", "bold", "normal"], "Make the text bold or normal weight; empty keeps the template's.", ""),
-    "font_style": enum(["", "italic", "normal"], "Italic or upright text; empty keeps the template's.", ""),
-    "font_scale": number("Text size relative to the template: 1 = as designed, 1.5 = half again as big, 0.7 = smaller.",
-                         1.0, minimum=0.2, maximum=5.0),
-    "text_color": string("Colour of every line: '#RRGGBB', '#RRGGBBAA' (alpha = opacity), 'rgba(r,g,b,a)' or a "
-                         "basic name ('white', 'yellow'). Empty keeps the template's colours.", ""),
-    "background_color": string("Colour of the title's full-frame background (transparent in most templates) "
-                               "with optional alpha, e.g. '#000000' for a solid black end card or '#00000080' for a "
-                               "50% dark veil over the video. Empty keeps it.", ""),
-    "fit_text": boolean("Shrink a line whose text would run off the frame (templates do not wrap text).", True),
+    "font": string("Font family for every line, e.g. 'Georgia'. Must be installed; empty keeps the template's.",
+                   ""),
+    "font_weight": enum(["", "bold", "normal"], "Empty keeps the template's.", ""),
+    "font_style": enum(["", "italic", "normal"], "Empty keeps the template's.", ""),
+    "font_scale": number("Text size vs the template (1 = as designed).", 1.0, minimum=0.2, maximum=5.0),
+    "text_color": string("Every line: '#RRGGBB', '#RRGGBBAA' (alpha = opacity), 'rgba(r,g,b,a)' or a name. "
+                         "Empty keeps the template's.", ""),
+    "background_color": string("Full-frame background (transparent in most templates), alpha allowed, e.g. "
+                               "'#000000' for a black end card. Empty keeps it.", ""),
+    "fit_text": boolean("Shrink a line that would run off the frame (templates do not wrap).", True),
 }
 
 
@@ -404,32 +416,28 @@ _STYLE_PROPS = {
     "add_title_tool",
     label="Add title",
     schema=obj({
-        "text": string("Main title text, e.g. 'Tokyo Day 1'. A '\\n' puts the rest on the template's next "
-                       "field(s): 'Jane Doe\\nFounder' fills a lower third's name and role.", ""),
-        "template": string("Template name from list_title_templates_tool (e.g. 'Standard_1', 'Gray_Box_4', "
-                           "'Bar_3', 'OpenShot'), or the path of an existing .svg title to start from. Empty = "
-                           "Bar_1 (centre title on a blue bar).", ""),
+        "text": string("Main title text. '\\n' continues into the template's next field(s): 'Jane Doe\\nFounder' "
+                       "fills a lower third's name and role.", ""),
+        "template": string("list_title_templates_tool name (e.g. 'Standard_1', 'Gray_Box_4') or an existing .svg "
+                           "path. Empty = Bar_1 (centre title on a blue bar).", ""),
         "position_seconds": number("Timeline second where the title starts.", 0.0, minimum=0),
-        "track": string("UI track number (1 = bottom), name or layer for the title. Empty = the lowest free track "
-                        "above every clip with video at that time (a new top track when none is free). A named "
-                        "track that is busy then also falls back to the first free track above it (with a warning).", ""),
-        "duration_seconds": number("How long the title stays on screen, in seconds.", 5.0, minimum=0.01, maximum=86400),
-        "file_name": string("Name for the new title file in Project Files (without .svg). Empty = from the text. "
-                            "An existing name gets ' (1)', ' (2)'... instead of being overwritten.", ""),
-        "subtitle": string("Text for the template's subtitle field (second line), e.g. a role under a name.", ""),
-        "lines": array({"type": "string"}, "Every field in order (as listed by list_title_templates_tool), for "
-                       "templates with several lines such as Standard_4 or credits. Overrides text/subtitle; fields "
-                       "left out are blanked."),
+        "track": string("UI track number (1 = bottom), name or layer. Empty = the lowest free track above every "
+                        "clip with video at that time (a new top track when none is free). A busy named track "
+                        "falls back to the first free track above it (with a warning).", ""),
+        "duration_seconds": number("Seconds on screen.", 5.0, minimum=0.01, maximum=86400),
+        "file_name": string("Project Files name (no .svg). Empty = from the text. Taken names get ' (1)', ' (2)'... "
+                            "(never overwritten).", ""),
+        "subtitle": string("The template's subtitle field (second line), e.g. a role under a name.", ""),
+        "lines": array({"type": "string"}, "Every field in order (list_title_templates_tool lists them), for "
+                       "multi-line templates (Standard_4, credits). Overrides text/subtitle; omitted fields are "
+                       "blanked."),
         **_STYLE_PROPS,
-        "fade_in_seconds": number("Fade the title in over this many seconds (0 = appear at once).", 0.0,
-                                  minimum=0, maximum=10),
-        "fade_out_seconds": number("Fade the title out over this many seconds (0 = disappear at once).", 0.0,
-                                   minimum=0, maximum=10),
+        "fade_in_seconds": number("Fade-in seconds (0 = none).", 0.0, minimum=0, maximum=10),
+        "fade_out_seconds": number("Fade-out seconds (0 = none).", 0.0, minimum=0, maximum=10),
         "screen_position": enum(["auto", "top", "center", "bottom"],
-                                "Where the 16:9 title artboard sits when the project is not 16:9 (vertical "
-                                "reels, square): auto = by where the template's text is (lower thirds at the "
-                                "bottom, headers at the top). On 9:16 video bottom/top titles are lifted clear of "
-                                "the platform UI bands.", "auto"),
+                                "Where the 16:9 artboard sits on non-16:9 projects: auto = by where the "
+                                "template's text is (lower thirds bottom, headers top). On 9:16, bottom/top "
+                                "titles are lifted clear of the platform UI bands.", "auto"),
     }),
     background_safe=True,
     covers=("title.create",),
@@ -440,27 +448,17 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
               screen_position="auto"):
     """Create an on-screen title from a template and place it on the timeline, over the video.
 
-    Use for titles, title cards, lower thirds, end cards, credits and any static
-    text over video ("add a title 'Tokyo Day 1'", "lower third with my name",
-    "end card saying Thanks for watching"). Not for subtitles or captions of speech
-    (add_captions_tool), countdowns (add_timer_tool), emoji (add_emoji_tool) or 3D
-    animated titles (add_animated_title_tool).
-
-    Writes a new SVG title from the template with your text, font and colours,
-    adds it to Project Files and places it at position_seconds for duration_seconds
-    on the lowest free track above the video (never under it). Placeholder text the
-    template has but you did not fill (e.g. 'Sub-Title') is blanked. No text with a
-    background_color makes a blank colour card (Solid_Color unless a template is named),
-    e.g. a 0.1 s white flash frame. Text with template Solid_Color (a card with no text field) is
-    drawn with Text_Card (one centred line) over background_color (else the card's colour). Optional fades.
-    One undo step removes the clip and the file entry.
-
-    Examples: {"text": "Tokyo Day 1", "template": "Standard_1", "text_color": "white",
-    "fade_in_seconds": 0.5, "fade_out_seconds": 0.5};
-    lower third {"text": "Jane Doe", "subtitle": "Founder, Acme", "template": "Gray_Box_4",
-    "position_seconds": 3, "duration_seconds": 4};
-    end card {"text": "Thanks for watching", "subtitle": "Subscribe for more", "template": "Standard_1",
-    "background_color": "#000000", "text_color": "white", "position_seconds": 58}.
+    For titles, title cards, lower thirds, end cards, credits and any static
+    text over video. Not for captions of speech (add_captions_tool),
+    countdowns (add_timer_tool), emoji (add_emoji_tool) or 3D animated titles
+    (add_animated_title_tool). Writes a new SVG title from the template, adds
+    it to Project Files and places it above the video (never under it).
+    Unfilled placeholder text (e.g. 'Sub-Title') is blanked. No text with a
+    background_color makes a blank colour card (Solid_Color unless a template
+    is named), e.g. a 0.1 s white flash frame. Text with template Solid_Color
+    (a card with no text field) is drawn with Text_Card (one centred line)
+    over background_color (else the card's colour). One undo step removes the
+    clip and the file entry.
     """
     lines = [str(v) for v in (lines or [])]
     text = str(text or "")
@@ -662,18 +660,18 @@ def _version_path(folder: str, current: str) -> str:
     "edit_title_tool",
     label="Edit title",
     schema=obj({
-        "timeline_clip_id": string("A title clip on the timeline (from add_title_tool or get_timeline_state_tool).", ""),
+        "timeline_clip_id": string("A title clip on the timeline. Best target.", ""),
         "file_id": string("The title's Project Files id instead of a clip.", ""),
         "title_query": string("Find the title by its current text or file name, e.g. 'Tokyo'.", ""),
-        "text": string("New main title text ('\\n' continues into the next fields). Empty keeps it.", ""),
-        "subtitle": string("New subtitle text. Empty keeps it.", ""),
+        "text": string("New main text ('\\n' continues into the next fields). Empty keeps it.", ""),
+        "subtitle": string("New subtitle. Empty keeps it.", ""),
         "lines": array({"type": "string"}, "New text for fields 1..N in order (list_title_templates_tool "
                        "kind=project shows them); '' blanks a field; fields after N are kept."),
         **_STYLE_PROPS,
         "scope": enum(["all_clips", "this_clip", "duplicate"],
-                      "all_clips = change the title everywhere it is used (Edit Title); this_clip = change only "
-                      "timeline_clip_id, as its own copy; duplicate = save the changed copy as a new title in "
-                      "Project Files without touching any clip (Duplicate).", "all_clips"),
+                      "all_clips = every clip using the title (Edit Title); this_clip = only timeline_clip_id, "
+                      "as its own copy; duplicate = save the edit as a new Project Files title, no clip changes "
+                      "(place it with add_clip_to_timeline_tool).", "all_clips"),
     }),
     background_safe=True,
     covers=("title.edit",),
@@ -683,18 +681,9 @@ def edit_title(timeline_clip_id="", file_id="", title_query="", text="", subtitl
                fit_text=True, scope="all_clips"):
     """Change an existing title's text, font or colours, or duplicate it.
 
-    Use when the user wants to fix or restyle a title that is already there ("change
-    the title to 'Day 2'", "make the lower third yellow", "use Georgia for the end
-    card", "make a copy of this title"). Target it by timeline_clip_id (best),
-    file_id or title_query (its text); with no target the selected title clip, or the
-    project's only title, is used. Only what you pass changes; other fields keep their
-    text. scope=all_clips (default) updates every clip showing that title, like the
-    editor's Edit Title; this_clip gives just that clip its own edited copy;
-    duplicate saves an edited copy as a new title (place it with
-    add_clip_to_timeline_tool). One undo step restores the previous look.
-    To move, trim or re-time a title clip use the timeline tools instead.
-
-    Example: {"timeline_clip_id": "C1A2", "text": "Tokyo Day 2", "text_color": "#FFD700"}.
+    With no target, the selected title clip or the project's only title is
+    used. Only what you pass changes. One undo step restores the previous
+    look. To move, trim or re-time a title clip use the timeline tools.
     """
     lines = [str(v) for v in (lines or [])]
     text = str(text or "")

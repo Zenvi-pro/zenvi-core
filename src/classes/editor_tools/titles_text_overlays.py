@@ -1,4 +1,11 @@
-"""Timer overlays (libopenshot Timer effect) and emoji stickers (Emojis dock). Workstream: titles-text."""
+"""Timer overlays (libopenshot Timer effect) and emoji stickers (Emojis dock). Workstream: titles-text.
+
+add_timer_tool requests: "add a 10-second countdown", "show a stopwatch in the
+top right", "burn in timecode", "a clock starting at 9:30". Example calls:
+{"mode": "count_down", "countdown_from_seconds": 10, "position_seconds": 5,
+"screen_position": "center", "text_size": 0.15}; {"mode": "timecode", "format":
+"timecode", "screen_position": "bottom_right"}.
+"""
 
 from __future__ import annotations
 
@@ -45,34 +52,31 @@ def _timeline_end() -> float:
     label="Add timer",
     schema=obj({
         "mode": enum(list(TIMER_MODES),
-                     "count_down = remaining time to zero; count_up = elapsed time (stopwatch); clock = a time "
-                     "of day starting at start_at_seconds; timecode = HH:MM:SS:FF; frame_number = frame count.",
-                     "count_down"),
-        "position_seconds": number("Timeline second where the timer appears (overlay mode).", 0.0, minimum=0),
-        "duration_seconds": number("How long the timer shows. 0 = automatic: a countdown's length, otherwise "
-                                   "until the end of the timeline.", 0.0, minimum=0, maximum=86400),
-        "countdown_from_seconds": number("count_down: the number it starts from (0 = the timer's duration).",
+                     "count_down = to zero; count_up = stopwatch; clock = time of day from start_at_seconds; "
+                     "timecode = HH:MM:SS:FF; frame_number = frame count.", "count_down"),
+        "position_seconds": number("Timeline second the overlay appears.", 0.0, minimum=0),
+        "duration_seconds": number("0 = a countdown's length, else until the timeline's end.", 0.0, minimum=0,
+                                   maximum=86400),
+        "countdown_from_seconds": number("count_down start value (0 = the timer's duration).",
                                          0.0, minimum=0, maximum=86400),
-        "start_at_seconds": number("count_up: starting offset; clock: the time of day to start at, in seconds "
-                                   "after midnight (9:30 = 34200).", 0.0, minimum=-86400, maximum=86400),
+        "start_at_seconds": number("count_up: starting offset; clock: seconds after midnight (9:30 = 34200).",
+                                   0.0, minimum=-86400, maximum=86400),
         "format": enum(list(TIMER_FORMATS), "How the time is written.", "mm:ss"),
-        "prefix": string("Text before the time, e.g. 'T-' or 'Starts in '.", ""),
+        "prefix": string("Text before the time, e.g. 'T-'.", ""),
         "suffix": string("Text after the time, e.g. ' left'.", ""),
-        "screen_position": enum(SCREEN_POSITIONS, "Where on the frame the timer sits.", "bottom_center"),
-        "margin_percent": number("Distance from the frame edges it hugs, in % of the frame.", 3.0,
-                                 minimum=0, maximum=40),
-        "font": string("Font family, e.g. 'Menlo', 'Arial Black'. Empty = the default sans font.", ""),
-        "text_size": number("Digit height as a fraction of the frame's shorter side (0.07 = normal, 0.15 = a big "
-                            "centre countdown).", 0.07, minimum=0.01, maximum=0.5),
-        "text_color": string("Digit colour ('#RRGGBB[AA]', 'rgba(...)', name).", "#ffffff"),
+        "screen_position": enum(SCREEN_POSITIONS, "Where on the frame.", "bottom_center"),
+        "margin_percent": number("Distance from the edges it hugs, % of the frame.", 3.0, minimum=0, maximum=40),
+        "font": string("Font family, e.g. 'Menlo'. Empty = the default sans font.", ""),
+        "text_size": number("Digit height, fraction of the frame's shorter side (0.15 = big centre countdown).",
+                            0.07, minimum=0.01, maximum=0.5),
+        "text_color": string("'#RRGGBB[AA]', 'rgba(...)' or a name.", "#ffffff"),
         "stroke_color": string("Outline colour.", "#000000"),
-        "stroke_width": number("Outline thickness relative to the digit height (0 = none).", 0.03,
-                               minimum=0, maximum=0.5),
-        "background": boolean("Draw a rounded box behind the digits.", True),
+        "stroke_width": number("Outline thickness / digit height (0 = none).", 0.03, minimum=0, maximum=0.5),
+        "background": boolean("Rounded box behind the digits.", True),
         "background_color": string("Box colour.", "#000000"),
-        "background_opacity": number("Box opacity 0-1.", 0.45, minimum=0, maximum=1),
-        "timeline_clip_id": string("Draw the timer on this clip instead of a new overlay (it then follows the "
-                                   "clip; count_up shows the time since the clip's first visible frame).", ""),
+        "background_opacity": number("Box opacity.", 0.45, minimum=0, maximum=1),
+        "timeline_clip_id": string("Put the Timer effect on this clip instead of an overlay (follows the clip; "
+                                   "count_up counts from its first visible frame).", ""),
         "track": string("Overlay track: UI track number (1 = bottom), name or layer. Empty = the lowest free track "
                         "above the video.", ""),
     }),
@@ -86,17 +90,9 @@ def add_timer(mode="count_down", position_seconds=0.0, duration_seconds=0.0, cou
               timeline_clip_id="", track=""):
     """Put a live timer on screen: countdown, stopwatch, clock, timecode or frame counter.
 
-    Use for "add a 10-second countdown", "show a stopwatch in the top right", "burn in
-    timecode", "a clock starting at 9:30". By default it adds a transparent 'Timer'
-    overlay clip from position_seconds for duration_seconds on the lowest free track
-    above the video; with timeline_clip_id the Timer effect goes on that clip instead.
-    Rendered by libopenshot's Timer effect (live digits, not an image). The time is
-    written as mm:ss unless format says otherwise ('00:10' counts to '00:00'). One undo
-    step. For static text use add_title_tool.
-
-    Examples: {"mode": "count_down", "countdown_from_seconds": 10, "position_seconds": 5,
-    "screen_position": "center", "text_size": 0.15}; {"mode": "timecode", "format": "timecode",
-    "screen_position": "bottom_right"}.
+    Adds a transparent 'Timer' overlay clip (or, with timeline_clip_id, a
+    Timer effect on that clip) drawn live by libopenshot's Timer effect, not
+    an image. One undo step. For static text use add_title_tool.
     """
     fps = project_fps()
     font_name = str(font or "").strip()

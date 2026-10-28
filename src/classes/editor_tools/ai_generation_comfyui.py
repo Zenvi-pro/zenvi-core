@@ -14,6 +14,13 @@ ComfyUI is optional and ships unconfigured (blank URL = off). A blank URL or an
 unreachable server is a clean ``Error:`` before anything is queued. The reachability
 ping runs on the calling worker thread (``background_safe``), never on the GUI thread.
 Queueing changes the generation queue, not the project: these tools add no undo step.
+
+enhance_file_with_comfyui_tool requests: "upscale this video 4x", "make the
+motion smoother", "split this into scenes", "caption it from the speech", "blur
+the license plate", "highlight the player", "cut out the dog (mask)", "clean up
+the noise / make the speech clearer", "turn this photo into a video", "restyle
+it like a watercolor". Example call: {"file_id": "F12", "action":
+"blur_object", "prompt": "license plate"}.
 """
 
 from __future__ import annotations
@@ -511,8 +518,8 @@ def create_media_with_comfyui(prompt, kind="", template="", name="", reference_i
               job=row, template=template_row(tmpl))
 
 
-_POINT = {"type": "object", "properties": {"x": {"type": "number", "description": "Source pixel column."},
-                                           "y": {"type": "number", "description": "Source pixel row."}},
+_POINT = {"type": "object", "properties": {"x": {"type": "number", "description": "Source pixels from the left."},
+                                           "y": {"type": "number", "description": "Source pixels from the top."}},
           "required": ["x", "y"], "additionalProperties": False}
 _BOX = {"type": "object", "properties": {k: {"type": "number", "description": d} for k, d in (
     ("x1", "Left edge, source pixels."), ("y1", "Top edge."), ("x2", "Right edge."), ("y2", "Bottom edge."))},
@@ -523,37 +530,34 @@ _BOX = {"type": "object", "properties": {k: {"type": "number", "description": d}
     "enhance_file_with_comfyui_tool",
     label="Enhance with ComfyUI",
     schema=obj({
-        "file_id": string("The Project Files item to process (list_files_tool). The result is a NEW file; the "
+        "file_id": string("Project Files item to process (list_files_tool). The result is a NEW file; the "
                           "original is untouched."),
-        "action": enum([""] + list(ACTION_NAMES), "What to do. Images: upscale, restyle, image_to_video, "
-                       "blur_object, highlight_object, mask_object, depth, lines. Videos: upscale, smooth_motion "
-                       "(2x frame rate), split_scenes, captions (from speech), restyle, blur_object, "
-                       "highlight_object, mask_object, depth, lines. Audio: speech_clarity, reduce_noise, "
-                       "remove_noise.", ""),
-        "template": string("A template id or menu name from list_comfyui_templates_tool(file_id) instead of "
-                           "action (user templates).", ""),
-        "prompt": string("For restyle / image_to_video: the look or motion to create. For blur/highlight/mask: "
-                         "the object to find, in words ('the red car'), instead of or with points/boxes.", ""),
-        "name": string("Name for the new Project Files item (default: '<file>_genN').", ""),
-        "reference_image_file_id": string("An image in Project Files whose look to copy (video restyle needs "
-                                          "one).", ""),
-        "points": array(_POINT, "Object tracking: clicks ON the object, in source pixels of the file "
-                        "(x from the left, y from the top) on seed_frame."),
-        "negative_points": array(_POINT, "Object tracking: clicks on things that are NOT the object."),
-        "boxes": array(_BOX, "Object tracking: rectangles around the object (source pixels)."),
+        "action": enum([""] + list(ACTION_NAMES), "Images: upscale, restyle, image_to_video, blur_object, "
+                       "highlight_object, mask_object, depth, lines. Videos: upscale, smooth_motion (2x frame "
+                       "rate), split_scenes, captions (from speech), restyle, blur_object, highlight_object, "
+                       "mask_object, depth, lines. Audio: speech_clarity, reduce_noise, remove_noise.", ""),
+        "template": string("Instead of action: a template id or menu name from "
+                           "list_comfyui_templates_tool(file_id) (user templates).", ""),
+        "prompt": string("restyle / image_to_video: the look or motion. blur/highlight/mask: the object in words "
+                         "('the red car'), instead of or with points/boxes.", ""),
+        "name": string("Name for the new Project Files item (default '<file>_genN').", ""),
+        "reference_image_file_id": string("Project Files image whose look to copy (video restyle needs one).",
+                                          ""),
+        "points": array(_POINT, "Object tracking: clicks ON the object, source pixels on seed_frame."),
+        "negative_points": array(_POINT, "Object tracking: clicks NOT on the object."),
+        "boxes": array(_BOX, "Object tracking: rectangles around the object."),
         "negative_boxes": array(_BOX, "Object tracking: rectangles to exclude."),
-        "auto_detect": boolean("Object tracking: let SAM2 pick the main objects itself (no points needed).",
-                               False),
-        "seed_frame": integer("Object tracking in video: the 1-based source frame the points/boxes were chosen "
-                              "on.", 1, minimum=1),
-        "highlight_color": string("highlight_object: fill color, #RRGGBB or a color name (#AARRGGBB keeps its "
-                                  "alpha).", DEFAULT_HIGHLIGHT_COLOR),
-        "highlight_opacity": number("highlight_object: fill opacity 0-1.", 0.28, minimum=0, maximum=1),
-        "border_color": string("highlight_object: outline color.", DEFAULT_BORDER_COLOR),
-        "border_width": integer("highlight_object: outline width in pixels (0-64).", 2, minimum=0, maximum=64),
-        "mask_brightness": number("highlight_object: brightness of the object (1 = unchanged, 0-3).", 1.15,
+        "auto_detect": boolean("Object tracking: SAM2 picks the main objects (no points needed).", False),
+        "seed_frame": integer("Object tracking in video: 1-based source frame the points/boxes are on.", 1,
+                              minimum=1),
+        "highlight_color": string("highlight_object fill: #RRGGBB or a name (#AARRGGBB keeps alpha).",
+                                  DEFAULT_HIGHLIGHT_COLOR),
+        "highlight_opacity": number("highlight_object fill opacity.", 0.28, minimum=0, maximum=1),
+        "border_color": string("highlight_object outline color.", DEFAULT_BORDER_COLOR),
+        "border_width": integer("highlight_object outline width, pixels.", 2, minimum=0, maximum=64),
+        "mask_brightness": number("highlight_object: object brightness (1 = unchanged).", 1.15,
                                   minimum=0, maximum=3),
-        "background_brightness": number("highlight_object: brightness of everything else (0-3).", 0.75,
+        "background_brightness": number("highlight_object: brightness of everything else.", 0.75,
                                         minimum=0, maximum=3),
     }, required=["file_id"]),
     background_safe=True,
@@ -566,15 +570,13 @@ def enhance_file_with_comfyui(file_id, action="", template="", prompt="", name="
                               mask_brightness=1.15, background_brightness=0.75):
     """Process a Project Files image, video or audio file with a local ComfyUI template (Project Files > Enhance with AI).
 
-    For "upscale this video 4x", "make the motion smoother", "split this into scenes", "caption
-    it from the speech", "blur the license plate", "highlight the player", "cut out the dog
-    (mask)", "clean up the noise / make the speech clearer", "turn this photo into a video",
-    "restyle it like a watercolor". Needs comfyui.status=ready (list_comfyui_templates_tool);
-    otherwise refuses with setup steps. Queues a job and returns its job_id at once; the output
-    becomes a NEW Project Files item (captions are stored on the file, split_scenes creates one
-    file per scene). Wait with list_comfyui_jobs_tool(job_id, wait_seconds). No undo step.
-    Object tracking (blur/highlight/mask) needs points, boxes, a prompt naming the object, or
-    auto_detect. Example: {"file_id": "F12", "action": "blur_object", "prompt": "license plate"}.
+    Needs comfyui.status=ready (list_comfyui_templates_tool); otherwise refuses
+    with setup steps. Queues a job and returns its job_id at once; the output
+    becomes a NEW Project Files item (captions are stored on the file,
+    split_scenes makes one file per scene). Wait with
+    list_comfyui_jobs_tool(job_id, wait_seconds). No undo step. Object
+    tracking (blur/highlight/mask) needs points, boxes, a prompt naming the
+    object, or auto_detect.
     """
     _require_configured()
     f = _file(file_id)
