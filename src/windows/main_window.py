@@ -4879,8 +4879,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         """Run the stock footage + music search for the current query."""
         if not hasattr(self, "stockSearchView"):
             return
+        self._stock_search_timer.stop()  # Enter must not let the pending debounce re-send it
         text = self.filesFilter.text().strip()
-        if len(text) >= 2:
+        if len(text) >= 3:
             self.stockSearchView.run_search(text)
         else:
             self.stockSearchView.clear_stock()
@@ -4890,8 +4891,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         stock search so it fires as the user types (not only on Enter)."""
         if not hasattr(self, "stockSearchView"):
             return
-        if len(text.strip()) >= 2:
-            self._stock_search_timer.start(400)
+        if len(text.strip()) >= 3:
+            self._stock_search_timer.start(700)
         else:
             self._stock_search_timer.stop()
             self.stockSearchView.clear_stock()

@@ -1324,6 +1324,23 @@ class ZenviBackendClient:
             meta["error"] = str(exc)
             return meta
 
+    def write_song_lyrics(self, description: str) -> dict:
+        """Ask the indexing model for lyrics. ``{lyrics, model}`` or ``{error}``."""
+        try:
+            response = self.session.post(
+                f"{self.api_url}/indexing/lyrics",
+                json={"description": description},
+                timeout=60,
+            )
+            data = response.json() if response.content else {}
+            if response.status_code >= 400:
+                detail = data.get("detail") if isinstance(data, dict) else ""
+                return {"error": detail or "Lyrics request failed (%s)" % response.status_code}
+            return data if isinstance(data, dict) else {"error": "The indexing model returned nothing."}
+        except Exception as exc:
+            log.error("Song lyrics request failed: %s", exc)
+            return {"error": str(exc)}
+
     def is_indexing_configured(self) -> bool:
         """Check whether the backend has video indexing configured."""
         try:
@@ -1366,19 +1383,26 @@ class ZenviBackendClient:
     # ------------------------------------------------------------------
     # Pexels stock video
     # ------------------------------------------------------------------
-    def pexels_search(self, query: str, per_page: int = 15, page: int = 1) -> Dict[str, Any]:
-        """Search Pexels for stock videos."""
+    def _stock_get(self, route: str, params: Dict[str, Any], empty_key: str) -> Dict[str, Any]:
+        """GET a cached backend /stock route; a provider 429 comes back as a short "busy" note."""
         try:
-            r = self.session.get(
-                f"{self.api_url}/pexels/search",
-                params={"query": query, "per_page": per_page, "page": page},
-                timeout=20,
-            )
+            r = self.session.get(f"{self.api_url}{route}", params=params, timeout=20)
+            if r.status_code == 429:
+                wait = str(r.headers.get("Retry-After") or "").strip()
+                wait = wait if wait.isdigit() else "60"   # an HTTP-date or anything else: a safe default
+                return {empty_key: [], "rate_limited": True,
+                        "error": f"Stock search is busy, try again in {wait}s."}
             r.raise_for_status()
             return r.json()
         except Exception as e:
-            log.error("Pexels search failed: %s", e)
-            return {"videos": [], "error": str(e)}
+            log.error("Stock search %s failed: %s", route, e)
+            return {empty_key: [], "error": str(e)}
+
+    def pexels_search(self, query: str, per_page: int = 15, page: int = 1) -> Dict[str, Any]:
+        """Search stock videos (backend: Pixabay, falling back to Pexels)."""
+        return self._stock_get(
+            "/stock/videos/search", {"query": query, "per_page": per_page, "page": page}, "videos"
+        )
 
     def pexels_download(self, video_id: int, link: str, filename: str = "") -> Dict[str, Any]:
         """Download a Pexels MP4 from the CDN URL to the local machine."""
@@ -1389,18 +1413,10 @@ class ZenviBackendClient:
     # Freesound stock music / SFX
     # ------------------------------------------------------------------
     def freesound_search(self, query: str, page_size: int = 15, page: int = 1) -> Dict[str, Any]:
-        """Search Freesound for stock music and sound effects."""
-        try:
-            r = self.session.get(
-                f"{self.api_url}/freesound/search",
-                params={"query": query, "page_size": page_size, "page": page},
-                timeout=20,
-            )
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            log.error("Freesound search failed: %s", e)
-            return {"sounds": [], "error": str(e)}
+        """Search commercial-safe stock music (backend: Openverse, CC BY / CC0 / PD)."""
+        return self._stock_get(
+            "/stock/music/search", {"query": query, "page_size": page_size, "page": page}, "sounds"
+        )
 
     # ------------------------------------------------------------------
     # Re-indexing (manual trigger via agent tools)
