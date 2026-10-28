@@ -1307,6 +1307,23 @@ class ZenviBackendClient:
             meta["error"] = str(exc)
             return meta
 
+    def write_song_lyrics(self, description: str) -> dict:
+        """Ask the indexing model for lyrics. ``{lyrics, model}`` or ``{error}``."""
+        try:
+            response = self.session.post(
+                f"{self.api_url}/indexing/lyrics",
+                json={"description": description},
+                timeout=60,
+            )
+            data = response.json() if response.content else {}
+            if response.status_code >= 400:
+                detail = data.get("detail") if isinstance(data, dict) else ""
+                return {"error": detail or "Lyrics request failed (%s)" % response.status_code}
+            return data if isinstance(data, dict) else {"error": "The indexing model returned nothing."}
+        except Exception as exc:
+            log.error("Song lyrics request failed: %s", exc)
+            return {"error": str(exc)}
+
     def is_indexing_configured(self) -> bool:
         """Check whether the backend has video indexing configured."""
         try:

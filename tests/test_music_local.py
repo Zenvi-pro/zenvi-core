@@ -104,6 +104,17 @@ def test_unknown_engine_and_empty_prompt_are_refused(home):
         ml.generate("ace_step", "  ")
 
 
+def test_install_tells_the_caller_which_download_is_running(tmp_path, monkeypatch):
+    monkeypatch.setattr(ml, "home", lambda: str(tmp_path))
+    monkeypatch.setattr(ml, "_download_pinned", lambda folder, files, what, progress=None: None)
+    monkeypatch.setattr(ml, "_unpack_runtime", lambda engine, progress=None: None)
+    monkeypatch.setattr(ml, "status", lambda engine: {"runtime": False, "models": False})
+    notes = []
+    ml.install("ace_step", progress=notes.append)
+    assert any("model" in note.lower() for note in notes)
+    assert any("runtime" in note.lower() for note in notes)
+
+
 def test_install_downloads_pinned_models_and_the_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(ml, "home", lambda: str(tmp_path))
     got = []

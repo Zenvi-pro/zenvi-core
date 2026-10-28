@@ -131,13 +131,110 @@ def test_project_files_say_when_the_search_hides_every_file(view):
 
 def test_a_failed_search_can_be_retried_with_the_same_query(view):
     view._on_music_results({"sounds": [], "rate_limited": True, "error": "Stock search is busy, try again in 30s."})
-    # No stock music asks for a local bed, but this test must not start that worker:
-    # it imports the editor tools (and libopenshot) off the GUI thread and aborts the process.
     assert view._search_threads == []
-    view._start_local_bed.assert_called_once_with("ocean")
+    view._start_local_bed.assert_not_called()
     with patch.object(view, "_start_search") as start:
         view.run_search("ocean")
     assert start.call_count == 2
+
+
+def test_no_stock_music_offers_a_prompt_and_a_model_dropdown(view):
+    view._on_music_results({"sounds": [], "count": 0})
+    view._start_local_bed.assert_not_called()
+    assert view._music_prompt.text() == "ocean"
+    assert not view._music_prompt.isHidden()
+    assert [view._music_engine.itemData(i) for i in range(view._music_engine.count())] == ["ace_step", "yue2"]
+    view._music_prompt.setText("rain on a piano")
+    assert view._music_lyrics.isHidden()
+    view._music_kind.setCurrentIndex(1)
+    assert not view._music_lyrics.isHidden()
+    view._music_lyrics.setText("[Chorus] hello")
+    view._music_engine.setCurrentIndex(1)
+    view._music_generate.click()
+    view._start_local_bed.assert_called_once_with("rain on a piano", "yue2", "[Chorus] hello", "song")
+
+
+def test_generate_stays_off_until_the_description_is_filled(view):
+    view._music_prompt.clear()
+    assert not view._music_generate.isEnabled()
+    view._music_generate.click()
+    view._start_local_bed.assert_not_called()
+    view._music_prompt.setText("soft piano")
+    assert view._music_generate.isEnabled()
+    assert view._music_lyrics.isHidden()
+    view._music_generate.click()
+    view._start_local_bed.assert_called_once_with("soft piano", "ace_step", "", "bed")
+
+
+def test_song_with_an_empty_lyrics_box_still_sings_the_description(view):
+    view._music_prompt.setText("rain on a piano")
+    view._music_kind.setCurrentIndex(1)
+    view._music_lyrics.clear()
+    view._music_generate.click()
+    view._start_local_bed.assert_called_once_with("rain on a piano", "ace_step", "", "song")
+
+
+def _stub_generation(monkeypatch, lyrics_out):
+    import sys
+    import types
+
+    seen = {}
+    music_local = types.ModuleType("classes.music_local")
+
+    def generate(engine, style, lyrics, duration):
+        seen["lyrics"] = lyrics
+        return "track.mp3"
+
+    music_local.generate = generate
+    music = types.ModuleType("classes.editor_tools.ai_generation_music")
+    music.Declined = type("Declined", (Exception,), {})
+    music.ensure_installed = lambda *args, **kwargs: None
+    package = types.ModuleType("classes.editor_tools")
+    package.__path__ = []
+    package.ai_generation_music = music
+    song_lyrics = types.ModuleType("classes.song_lyrics")
+
+    def prepare(prompt, typed):
+        if lyrics_out is None:
+            raise AssertionError("a bed must not write lyrics")
+        seen["prepared"] = True
+        return lyrics_out
+
+    song_lyrics.prepare_lyrics = prepare
+    monkeypatch.setitem(sys.modules, "classes.music_local", music_local)
+    monkeypatch.setitem(sys.modules, "classes.editor_tools", package)
+    monkeypatch.setitem(sys.modules, "classes.editor_tools.ai_generation_music", music)
+    monkeypatch.setitem(sys.modules, "classes.song_lyrics", song_lyrics)
+    return seen
+
+
+def test_a_music_bed_stays_instrumental(monkeypatch):
+    from windows.views.stock_search_view import _MusicGenWorker
+
+    seen = _stub_generation(monkeypatch, None)
+    _MusicGenWorker("soft piano", "", "ace_step", 1, "bed").run()
+    assert seen["lyrics"] == ""
+    assert "prepared" not in seen
+
+
+def test_a_song_without_typed_lyrics_writes_them(monkeypatch):
+    from windows.views.stock_search_view import _MusicGenWorker
+
+    seen = _stub_generation(monkeypatch, "[Verse]\nRain")
+    _MusicGenWorker("rain on a piano", "", "ace_step", 1, "song").run()
+    assert seen["prepared"] is True
+    assert seen["lyrics"] == "[Verse]\nRain"
+
+
+def test_download_progress_drives_the_files_dock_bar(view):
+    view._music_status.setText("12 results")
+    view._on_music_progress("Downloading ACE-Step 1.5 models")
+    assert view._gen_progress.minimum() == view._gen_progress.maximum()
+    assert not view._gen_progress.isHidden()
+    view._on_music_progress("Downloading music model 1 of 4: ace.gguf, 15%")
+    assert view._gen_status.text() == "Downloading music model 1 of 4: ace.gguf, 15%"
+    assert view._gen_progress.value() == 15
+    assert view._music_status.text() == "12 results"
 
 
 def test_a_music_import_keeps_its_credit_line(view):
@@ -260,11 +357,13 @@ def test_a_bed_for_an_older_search_is_not_imported(view):
     assert view._bed_busy is False
 
 
-def test_only_a_real_decline_turns_local_beds_off(view):
-    view._on_local_bed_done({"path": "", "error": "ggml: device declined to allocate", "gen": view._search_gen})
-    assert view._bed_declined is False
-    view._on_local_bed_done({"path": "", "error": "x", "declined": True, "gen": view._search_gen})
-    assert view._bed_declined is True
+def test_only_a_real_decline_turns_that_engine_off(view):
+    view._on_local_bed_done({"path": "", "error": "ggml: device declined to allocate", "engine": "ace_step",
+                             "gen": view._search_gen})
+    assert "ace_step" not in view._declined_engines
+    view._on_local_bed_done({"path": "", "error": "x", "declined": True, "engine": "ace_step",
+                             "gen": view._search_gen})
+    assert view._declined_engines == {"ace_step"}
 
 
 def test_image_loads_never_use_the_global_thread_pool():

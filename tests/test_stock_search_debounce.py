@@ -106,26 +106,73 @@ def test_music_download_worker_carries_a_uuid_id(qapp):
     assert seen == [("3b4580e1-uuid", "/tmp/a.mp3", "")]
 
 
-def test_no_stock_music_generates_a_bed_for_the_query(qapp):
+def test_showing_the_files_view_inside_a_dock_does_not_crash(qapp):
+    from qt_api import QWidget, QVBoxLayout, QGridLayout
+    from windows.views.stock_search_view import StockSearchView
+
+    host = QWidget()
+    grid = QGridLayout(host)
+    column = QVBoxLayout()
+    grid.addLayout(column, 0, 0)
+    view = StockSearchView()
+    column.addWidget(view)
+    host.resize(420, 640)
+    host.show()
+    qapp.processEvents()
+    assert not view._music_gen_header.isHidden()
+
+
+def test_the_composer_stays_in_the_files_dock_with_no_search(qapp):
+    from windows.views.stock_search_view import FILE_CANVAS_MIN, StockSearchView
+
+    v = StockSearchView()
+    assert v._footage_header.isHidden() and v._music_header.isHidden()
+    assert not v._music_prompt.isHidden()
+    assert v._music_lyrics.isHidden()
+    assert [v._music_kind.itemData(i) for i in range(v._music_kind.count())] == ["bed", "song"]
+    assert not v._music_engine.isHidden()
+    assert not v._music_generate.isHidden()
+    assert v._gen_progress.isHidden()
+    v.resize(420, 400)
+    v.show()
+    qapp.processEvents()
+    assert v._files_block.minimumHeight() == FILE_CANVAS_MIN
+    v.resize(420, 800)
+    qapp.processEvents()
+    assert v._files_block.minimumHeight() == max(FILE_CANVAS_MIN, v._scroll.viewport().height() // 2)
+    assert v._music_gen_header.text() == "Music Gen"
+    assert v._music_gen_header.objectName() == "sectionHeader"
+    assert not v._music_rule.isHidden()
+    assert v._music_rule.y() >= v._files_block.y() + v._files_block.minimumHeight() - 2
+    v._music_prompt.setText("lofi piano")
+    v._music_engine.setCurrentIndex(1)
+    with patch.object(v, "_start_local_bed") as bed:
+        v._music_generate.click()
+    bed.assert_called_once_with("lofi piano", "yue2", "")
+
+
+def test_no_stock_music_fills_the_prompt_and_does_not_start(qapp):
     from windows.views.stock_search_view import StockSearchView
 
     v = StockSearchView()
     v._query = "ocean waves"
     with patch.object(v, "_start_local_bed") as bed:
         v._on_music_results({"sounds": [], "count": 0})
-        bed.assert_called_once_with("ocean waves")
+        bed.assert_not_called()
+        assert v._music_prompt.text() == "ocean waves"
         v._on_music_results({"sounds": [], "rate_limited": True, "error": "Stock search is busy, try again in 30s."})
-        assert bed.call_count == 2
+        bed.assert_not_called()
 
 
-def test_a_declined_music_download_is_not_asked_again(qapp):
+def test_a_declined_download_blocks_only_that_engine(qapp):
     from windows.views.stock_search_view import StockSearchView
 
     v = StockSearchView()
-    v._query = "rain"
     v._on_local_bed_done({"path": "", "error": "the user declined the music download", "declined": True,
-                          "gen": v._search_gen})
+                          "engine": "ace_step", "gen": v._search_gen})
+    assert "declined" in v._gen_status.text().lower()
     with patch.object(v, "_start_search") as start:
-        v._start_local_bed("rain")
+        v._start_local_bed("rain", "ace_step")
         start.assert_not_called()
-    assert "declined" in v._music_status.text().lower()
+        v._start_local_bed("rain", "yue2")
+        start.assert_called_once()

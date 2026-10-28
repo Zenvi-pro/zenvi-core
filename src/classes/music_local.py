@@ -110,17 +110,18 @@ def install_plan(engine: str) -> List[dict]:
     return steps
 
 
-def _download_pinned(folder: str, files: List[tuple], what: str) -> None:
-    hf._download_pinned(folder, files, what)
+def _download_pinned(folder: str, files: List[tuple], what: str, progress=None) -> None:
+    hf._download_pinned(folder, files, what, progress)
 
 
-def _unpack_runtime(engine: str) -> None:
+def _unpack_runtime(engine: str, progress=None) -> None:
     key = (sys.platform, _platform.machine().lower())
     asset, digest = RUNTIME.get(key, ("", ""))
     if not digest:
         raise MusicError("the Zenvi music runtime is not published for this computer (%s %s) yet" % key)
     downloads = os.path.join(home(), "downloads")
-    _download_pinned(downloads, [(RUNTIME_RELEASE % asset, asset, digest)], "music runtime")
+    extra = {"progress": progress} if progress else {}
+    _download_pinned(downloads, [(RUNTIME_RELEASE % asset, asset, digest)], "music runtime", **extra)
     with _unpack_lock, zipfile.ZipFile(os.path.join(downloads, asset)) as zf:
         zf.extractall(os.path.join(home(), "bin"))
         if sys.platform != "win32":
@@ -131,17 +132,26 @@ def _unpack_runtime(engine: str) -> None:
                     os.chmod(_exe(b), 0o755)
 
 
-def install(engine: str) -> dict:
+def install(engine: str, progress=None) -> dict:
     if engine not in ENGINES:
         raise MusicError("unknown music engine %r; use one of %s" % (engine, ", ".join(ENGINES)))
     st = status(engine)
     if not st["models"]:
         repo, rev = _MODEL_SOURCE[engine]
+        name = "ACE-Step 1.5" if engine == "ace_step" else "YuE2"
+        if progress:
+            progress("Downloading %s models" % name)
         files = [("https://huggingface.co/%s/resolve/%s/%s" % (repo, rev, name), name, digest)
                  for name, digest, _ in MODELS[engine]]
-        _download_pinned(os.path.join(home(), "models"), files, "music model")
+        extra = {"progress": progress} if progress else {}
+        _download_pinned(os.path.join(home(), "models"), files, "music model", **extra)
     if not st["runtime"]:
-        _unpack_runtime(engine)
+        if progress:
+            progress("Downloading the music runtime")
+        if progress:
+            _unpack_runtime(engine, progress=progress)
+        else:
+            _unpack_runtime(engine)
     return status(engine)
 
 

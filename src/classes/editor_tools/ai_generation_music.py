@@ -28,7 +28,7 @@ class Declined(ToolError):
     """The user said no to the one-time download."""
 
 
-def ensure_installed(engine: str) -> None:
+def ensure_installed(engine: str, progress=None) -> None:
     steps = ml.install_plan(engine)
     if not steps:
         return
@@ -37,7 +37,7 @@ def ensure_installed(engine: str) -> None:
             intro="Zenvi generates music on this computer; nothing is uploaded. This needs a one-time download:"):
         raise Declined("the user declined the music download; local music generation is unavailable until it "
                        "is installed")
-    hfx._guard(ml.install, engine)
+    hfx._guard(ml.install, engine, progress=progress)
 
 
 def import_track(path: str) -> str:

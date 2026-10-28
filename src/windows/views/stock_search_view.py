@@ -18,7 +18,8 @@ from typing import Dict
 from qt_api import Qt, QSize, QThread, QEvent, QObject, pyqtSignal, pyqtSlot
 from qt_api import QImage, QPixmap, QCursor
 from qt_api import (
-    QWidget, QVBoxLayout, QScrollArea, QGridLayout, QLabel, QApplication, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QGridLayout, QLabel, QApplication,
+    QPushButton, QLineEdit, QComboBox, QProgressBar, QSizePolicy,
 )
 
 from classes.app import get_app
@@ -57,6 +58,8 @@ _STYLESHEET = tokens.resolve("""
 
 # Project-file thumbnails; their tile grid comes from tile_grid_size.
 FILE_ICON = QSize(128, 72)  # 16:9; two columns fit the default panel width
+# Open area under the tiles when the dock is short, so it still reads as room for more files.
+FILE_CANVAS_MIN = 320
 _FILES_STYLE = tokens.resolve("""
     QListView { background: {surface}; border: none; }
 """)
@@ -68,14 +71,36 @@ def _same_path(a: str, b: str) -> bool:
     return bool(a) and norm(a) == norm(b)
 
 
-class _LocalBedWorker(QObject):
-    """Generates an instrumental bed for a query on this computer (ACE-Step), off the GUI thread."""
-    finished = pyqtSignal(dict)   # {path, error, query}
+def _length_for(prompt: str, lyrics: str) -> float:
+    """Seconds for this request. A time written in the prompt wins; a song grows with its lines."""
+    import re
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(minutes?|mins?|min|seconds?|secs?|sec|s)\b",
+                      "%s\n%s" % (prompt or "", lyrics or ""), re.I)
+    if match:
+        seconds = float(match.group(1))
+        if match.group(2).lower().startswith("min"):
+            seconds *= 60
+        return max(5.0, min(seconds, 240.0))
+    lines = [line for line in (lyrics or "").splitlines()
+             if line.strip() and not line.strip().startswith("[")]
+    if lines:
+        # A sung line needs a section, not the short instrumental bed.
+        return max(45.0, min(240.0, 12.0 + 8.0 * len(lines)))
+    return 30.0
 
-    def __init__(self, query: str, gen: int):
+
+class _MusicGenWorker(QObject):
+    """Generates a bed or song on this computer, off the GUI thread."""
+    finished = pyqtSignal(dict)   # {path, error, query, engine}
+    progress = pyqtSignal(str)
+
+    def __init__(self, prompt: str, lyrics: str, engine: str, gen: int, kind: str = "bed"):
         super().__init__()
-        self._query = query
+        self._prompt = prompt
+        self._lyrics = lyrics
+        self._engine = engine
         self._gen = gen
+        self._kind = kind
 
     @pyqtSlot()
     def run(self):
@@ -83,14 +108,26 @@ class _LocalBedWorker(QObject):
         try:
             from classes import music_local
             from classes.editor_tools import ai_generation_music as music
-            music.ensure_installed("ace_step")
-            path = music_local.generate_bed(self._query)
+            music.ensure_installed(self._engine, progress=self.progress.emit)
+            if self._kind == "song":
+                from classes.song_lyrics import prepare_lyrics
+                if (self._lyrics or "").strip():
+                    self.progress.emit("Rendering the song with your lyrics. ACE-Step is quicker; YuE2 takes several minutes.")
+                else:
+                    self.progress.emit("Writing lyrics from the description with the indexing model...")
+                lyrics = prepare_lyrics(self._prompt, self._lyrics)
+                self.progress.emit("Rendering the song. ACE-Step is quicker; YuE2 takes several minutes.")
+            else:
+                lyrics = ""
+                self.progress.emit("Rendering the instrumental bed. ACE-Step is quicker; YuE2 takes several minutes.")
+            path = music_local.generate(
+                self._engine, self._prompt, lyrics, _length_for(self._prompt, lyrics))
         except music.Declined as exc:
             error, declined = str(exc), True
         except Exception as exc:
             error = str(exc)
-        self.finished.emit({"path": path, "error": error, "declined": declined, "query": self._query,
-                            "gen": self._gen})
+        self.finished.emit({"path": path, "error": error, "declined": declined, "query": self._prompt,
+                            "engine": self._engine, "gen": self._gen})
 
 
 class StockSearchView(QWidget):
@@ -99,6 +136,7 @@ class StockSearchView(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("StockSearchView")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setStyleSheet(_STYLESHEET)
 
         self._query = ""
@@ -121,7 +159,8 @@ class StockSearchView(QWidget):
         self._credits: Dict[str, str] = {}
         self._pool = image_pool()
         self._bed_busy = False
-        self._bed_declined = False   # asked once per session; a "no" is not asked again
+        self._declined_engines = set()   # a "no" on one model does not block the other
+        self._prompt_seed = ""
 
         self._build_ui()
 
@@ -138,18 +177,26 @@ class StockSearchView(QWidget):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         content = QWidget()
         content.setObjectName("scrollContents")
+        self._scroll = scroll
         cv = QVBoxLayout(content)
-        cv.setContentsMargins(4, 4, 4, 4)
-        cv.setSpacing(2)
+        cv.setContentsMargins(8, 0, 8, 0)
+        cv.setSpacing(0)
 
         # Project Files section — the real QListView is injected via set_files_view().
+        # The block stays at least half the dock tall, so the generator starts at the middle
+        # until the files grow and push it down the scroll.
+        self._files_block = QWidget()
+        files_layout = QVBoxLayout(self._files_block)
+        files_layout.setContentsMargins(0, 0, 0, 0)
+        files_layout.setSpacing(2)
         self._files_header = QLabel("Project Files")
         self._files_header.setObjectName("sectionHeader")
-        cv.addWidget(self._files_header)
+        files_layout.addWidget(self._files_header)
         self._files_holder = QWidget()
         self._files_holder_layout = QVBoxLayout(self._files_holder)
         self._files_holder_layout.setContentsMargins(0, 2, 0, 6)
@@ -157,8 +204,11 @@ class StockSearchView(QWidget):
         self._files_empty = QLabel("No project files match this search.")
         self._files_empty.setObjectName("sectionStatus")
         self._files_empty.hide()
-        cv.addWidget(self._files_empty)
-        cv.addWidget(self._files_holder)
+        files_layout.addWidget(self._files_empty)
+        files_layout.addWidget(self._files_holder)
+        files_layout.addStretch(1)
+        cv.addWidget(self._files_block)
+        self._build_music_composer(cv)
 
         # Stock Footage section (hidden until a query is active).
         self._footage_header = QLabel("Stock Footage")
@@ -203,13 +253,135 @@ class StockSearchView(QWidget):
         scroll.viewport().setAcceptDrops(True)
         content.setAcceptDrops(True)
         self._files_holder.setAcceptDrops(True)
+        self._files_block.setAcceptDrops(True)
         for widget in (
             self, scroll, scroll.viewport(), content,
-            self._files_holder, self._files_header,
+            self._files_block, self._files_holder, self._files_header,
         ):
             widget.installEventFilter(self)
 
         self._set_stock_visible(False)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._pin_files_half()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fill_dock()
+        self._pin_files_half()
+
+    def _fill_dock(self):
+        """Take the free height of the Files dock. A preferred-size widget leaves Music Gen at the top."""
+        widget = self
+        while widget is not None:
+            parent = widget.parentWidget()
+            if parent is None:
+                return
+            layout = parent.layout()
+            if layout is not None and layout.indexOf(widget) >= 0:
+                # PyQt often hands back a plain QLayout here, which has no stretch method.
+                stretch = getattr(layout, "setStretchFactor", None)
+                if stretch is not None:
+                    stretch(widget, 1)
+                return
+            widget = parent
+
+    def _pin_files_half(self):
+        height = max(self.height(), self._scroll.viewport().height())
+        if height <= 0:
+            return
+        # Half the dock, and never a short strip: the open area is where more files land.
+        canvas = max(FILE_CANVAS_MIN, height // 2)
+        if self._files_block.minimumHeight() != canvas:
+            self._files_block.setMinimumHeight(canvas)
+
+    def _build_music_composer(self, parent_layout):
+        """Generator sits under the files. A search is optional; the prompt can stay empty."""
+        self._music_rule = QWidget()
+        self._music_rule.setFixedHeight(1)
+        self._music_rule.setAttribute(Qt.WA_StyledBackground, True)
+        self._music_rule.setStyleSheet(tokens.resolve("background: {line_strong};"))
+        parent_layout.addWidget(self._music_rule)
+
+        box = QWidget()
+        box.setObjectName("musicComposer")
+        self._music_composer = box
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, 2, 0, 16)
+        layout.setSpacing(8)
+
+        self._music_gen_header = QLabel("Music Gen")
+        self._music_gen_header.setObjectName("sectionHeader")
+        layout.addWidget(self._music_gen_header)
+
+        self._music_prompt = QLineEdit()
+        self._music_prompt.setPlaceholderText("Describe the music")
+        self._music_prompt.returnPressed.connect(self._on_generate_music)
+        self._music_prompt.textChanged.connect(self._sync_generate_enabled)
+        layout.addWidget(self._music_prompt)
+
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self._music_kind = QComboBox()
+        self._music_kind.addItem("Music bed", "bed")
+        self._music_kind.addItem("Song", "song")
+        self._music_engine = QComboBox()
+        self._music_engine.addItem("ACE-Step 1.5", "ace_step")
+        self._music_engine.addItem("YuE2 (non-commercial)", "yue2")
+        row.addWidget(self._music_kind, 1)
+        row.addWidget(self._music_engine, 1)
+        layout.addLayout(row)
+
+        self._music_lyrics = QLineEdit()
+        self._music_lyrics.setPlaceholderText("Lyrics, or leave empty to sing the description")
+        self._music_lyrics.returnPressed.connect(self._on_generate_music)
+        self._music_lyrics.hide()
+        self._music_kind.currentIndexChanged.connect(self._on_music_kind_changed)
+        layout.addWidget(self._music_lyrics)
+
+        self._music_generate = QPushButton("Generate")
+        self._music_generate.setObjectName("acceptButton")
+        self._music_generate.clicked.connect(self._on_generate_music)
+        self._music_generate.setEnabled(False)
+        layout.addWidget(self._music_generate)
+
+        self._gen_progress = QProgressBar()
+        self._gen_progress.setTextVisible(False)
+        self._gen_progress.setFixedHeight(3)
+        self._gen_progress.setStyleSheet(tokens.resolve(
+            "QProgressBar { background: {sunken}; border: none; border-radius: 1px; }"
+            "QProgressBar::chunk { background: {accent}; border-radius: 1px; }"
+        ))
+        self._gen_progress.hide()
+        layout.addWidget(self._gen_progress)
+
+        self._gen_status = QLabel("")
+        self._gen_status.setObjectName("sectionStatus")
+        self._gen_status.setTextFormat(Qt.PlainText)
+        self._gen_status.setWordWrap(True)
+        self._gen_status.hide()
+        layout.addWidget(self._gen_status)
+        parent_layout.addWidget(box)
+
+    def _on_music_kind_changed(self):
+        self._music_lyrics.setVisible(self._music_kind.currentData() == "song")
+
+    def _show_gen_progress(self, message: str):
+        self._gen_status.setText(message)
+        self._gen_status.show()
+        tail = message.rstrip()
+        pct = None
+        if tail.endswith("%"):
+            digits = tail[:-1].rsplit(" ", 1)[-1]
+            if digits.isdigit():
+                pct = int(digits)
+        self._gen_progress.show()
+        if pct is None:
+            self._gen_progress.setRange(0, 0)
+        else:
+            self._gen_progress.setRange(0, 100)
+            self._gen_progress.setValue(pct)
 
     def set_files_view(self, files_view):
         """Embed the project-files QListView as the top section and restyle it
@@ -255,11 +427,15 @@ class StockSearchView(QWidget):
         rows = (count + cols - 1) // cols
         content_h = rows * gh + 8 if rows else 0
         view.setFixedHeight(max(content_h, EMPTY_FILES_DROP_MIN_HEIGHT))
+        self._pin_files_half()
 
     def eventFilter(self, obj, event):
         # Catch Finder drops on the scroll area / empty Project Files space.
         # The embedded list view keeps its own handlers for drops on cards.
         etype = event.type()
+        if obj is self._scroll.viewport() and etype == QEvent.Resize:
+            self._pin_files_half()
+            return False
         if etype in (QEvent.DragEnter, QEvent.DragMove):
             if mime_has_file_drop(event.mimeData()):
                 accept_os_file_drag(event)
@@ -309,6 +485,7 @@ class StockSearchView(QWidget):
         self._failed = False
         self._clear_grids()
         self._set_stock_visible(True)
+        self._offer_local_prompt(query)
         self._footage_status.setText("Searching…")
         self._music_status.setText("Searching…")
         self._search_page("footage", 1)
@@ -445,9 +622,9 @@ class StockSearchView(QWidget):
                 self._show_more(self._music_more, "music", 0, 1)
                 return
             self._music_more.hide()
-            if not first:   # no stock music at all for this query: make a bed here instead
-                self._music_status.setText(f"{error} " if error else "No stock music found. ")
-                self._start_local_bed(self._query)
+            if not first:
+                self._music_status.setText(error if error else "No stock music found.")
+                self._offer_local_prompt(self._query)
             return
         total = int(data.get("count", 0) or 0)
         self._music_status.setText(f"{total:,} results")
@@ -467,31 +644,71 @@ class StockSearchView(QWidget):
                 self._load_image(_WaveformRunnable, uid, image_url, self._on_waveform_ready)
         self._show_more(self._music_more, "music", self._music_grid.count(), total)
 
-    def _start_local_bed(self, query: str):
-        """No stock music for this query: generate a 30 s bed here and add it to Project Files."""
-        if self._bed_declined or self._bed_busy or not query:
+    def _offer_local_prompt(self, query: str):
+        """Fill the prompt from the search until the user edits it."""
+        current = self._music_prompt.text().strip()
+        if not current or current == self._prompt_seed:
+            self._music_prompt.setText(query)
+            self._prompt_seed = query
+        self._sync_generate_enabled()
+
+    def _sync_generate_enabled(self):
+        self._music_generate.setEnabled(bool(self._music_prompt.text().strip()) and not self._bed_busy)
+
+    def _on_generate_music(self):
+        prompt = self._music_prompt.text().strip()
+        kind = self._music_kind.itemData(self._music_kind.currentIndex())
+        typed = self._music_lyrics.text() if kind == "song" else ""
+        self._start_local_bed(
+            prompt,
+            self._music_engine.itemData(self._music_engine.currentIndex()) or "ace_step",
+            typed,
+            kind or "bed",
+        )
+
+    @pyqtSlot(str)
+    def _on_music_progress(self, message: str):
+        self._show_gen_progress(message)
+
+    def _start_local_bed(self, prompt: str, engine: str = "ace_step", lyrics: str = "", kind: str = "bed"):
+        """Generate a bed or song on this computer and add it to Project Files."""
+        engine = engine or "ace_step"
+        prompt = str(prompt or "").strip()
+        if not prompt:
+            self._gen_status.setText("Describe the music first.")
+            self._gen_status.show()
+            return
+        if engine in self._declined_engines or self._bed_busy:
             return
         self._bed_busy = True
-        self._music_status.setText(self._music_status.text() + "Generating a 30 s bed on this computer...")
-        self._start_search(_LocalBedWorker(query, self._search_gen), self._on_local_bed_done)
+        self._sync_generate_enabled()
+        self._show_gen_progress("Preparing music generation...")
+        worker = _MusicGenWorker(prompt, lyrics or "", engine, self._search_gen, kind or "bed")
+        worker.progress.connect(self._on_music_progress)
+        self._start_search(worker, self._on_local_bed_done)
 
     @pyqtSlot(dict)
     def _on_local_bed_done(self, data: dict):
         self._bed_busy = False
+        self._sync_generate_enabled()
+        self._gen_progress.hide()
         error, path = data.get("error", ""), data.get("path", "")
         current = data.get("gen") == self._search_gen
         if error:
-            self._bed_declined = self._bed_declined or bool(data.get("declined"))
-            log.warning("Local music bed failed: %s", error)
+            if data.get("declined") and data.get("engine"):
+                self._declined_engines.add(data["engine"])
+            log.warning("Local music generation failed: %s", error)
             if current:
-                self._music_status.setText("No stock music found; local generation is off (download declined)."
-                                           if data.get("declined") else f"Local music generation failed: {error}")
+                self._gen_status.setText("Local generation is off for this model (download declined)."
+                                         if data.get("declined") else f"Local music generation failed: {error}")
+                self._gen_status.show()
             return
         if not current:   # the user searched for something else meanwhile; the file stays in Downloads
-            log.info("Local bed for an earlier search not imported: %s", path)
+            log.info("Local music for an earlier search not imported: %s", path)
             return
         self._add_to_project(path)
-        self._music_status.setText("No stock music found; generated a 30 s bed and added it to Project Files.")
+        self._gen_status.setText("Generated the track and added it to Project Files.")
+        self._gen_status.show()
 
     def _card_for_image(self, key: int, search: int):
         return self._cards.get(self._image_keys.get(key, "")) if search == self._search_gen else None

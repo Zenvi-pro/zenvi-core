@@ -479,6 +479,26 @@ def _fetch(url: str):
     return urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "Zenvi"}), timeout=120)
 
 
+def _copy_with_progress(response, out, progress, what, index, count, name) -> None:
+    """Write a download in 1 MB blocks and report percent when the server sends a length."""
+    length = response.headers.get("Content-Length") if getattr(response, "headers", None) else None
+    total = int(length) if length and str(length).isdigit() else 0
+    got, mark = 0, 0
+    progress("Downloading %s %d of %d: %s" % (what, index, count, name))
+    while True:
+        block = response.read(1 << 20)
+        if not block:
+            break
+        out.write(block)
+        got += len(block)
+        if not total:
+            continue
+        pct = int(got * 100 / total)
+        if pct >= mark:
+            progress("Downloading %s %d of %d: %s, %d%%" % (what, index, count, name, pct))
+            mark = pct + 5
+
+
 def install_node() -> str:
     """Download the portable Node.js for this computer into ``node/``; returns the executable."""
     asset = _node_asset()
@@ -532,10 +552,11 @@ def install_speech() -> None:
     _download_pinned(os.path.join(home(), "speech"), _speech_downloads(), "speech recogniser")
 
 
-def _download_pinned(folder: str, files: List[tuple], what: str) -> None:
+def _download_pinned(folder: str, files: List[tuple], what: str, progress: Optional[Callable[[str], None]] = None) -> None:
     os.makedirs(folder, exist_ok=True)
     with _speech_install_lock:                          # setup and a first caption may both get here
-        for url, name, digest in files:
+        count = len(files)
+        for index, (url, name, digest) in enumerate(files, 1):
             target, partial = os.path.join(folder, name), os.path.join(folder, name + ".partial")
             if _sha256(target) == digest:               # anything else there is replaced, never trusted
                 continue
@@ -543,7 +564,10 @@ def _download_pinned(folder: str, files: List[tuple], what: str) -> None:
                 if os.path.lexists(partial):
                     os.remove(partial)                  # never write through a link someone left here
                 with _fetch(url) as response, open(partial, "xb") as out:
-                    shutil.copyfileobj(response, out, 1 << 20)
+                    if progress:
+                        _copy_with_progress(response, out, progress, what, index, count, name)
+                    else:
+                        shutil.copyfileobj(response, out, 1 << 20)
                 if _sha256(partial) != digest:          # what is on disk, not what went past
                     raise HyperframesError("the %s download (%s) did not match its pinned checksum; try again"
                                            % (what, name))
