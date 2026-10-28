@@ -630,6 +630,29 @@ class UpdateManager:
         self.update(key, values)
         self.ignore_history = previous_ignore
         self.pending_action = previous_pending
+        self._keep_untracked_in_history(key, values)
+
+    def _keep_untracked_in_history(self, key, values):
+        """ Write untracked *values* of item *key* into the earlier undo and redo snapshots of that item.
+
+        Those hold the item as it was when the user edited it: undoing a tag
+        edit made while indexing ran would put the half-done ai_metadata back
+        over the result that landed since. """
+        if not isinstance(values, dict) or len(key or []) < 2 or not isinstance(key[-1], dict):
+            return
+        item_id = key[-1].get("id")
+        for action in [*self.actionHistory, *self.redoHistory]:
+            # An undone insert's key ends in its item's id (get_reverse_action appends it).
+            same = action.key == key or (
+                action.type == "insert" and item_id is not None and action.key in (key[:-1], key)
+                and isinstance(action.values, dict) and action.values.get("id") == item_id)
+            if not same:
+                continue
+            for snapshot in (action.values, action.old_values):
+                if isinstance(snapshot, dict):
+                    for name, value in values.items():
+                        if name in snapshot:
+                            snapshot[name] = json.loads(json.dumps(value))
 
     def delete(self, key):
         """ Delete an item from the UpdateManager with an UpdateAction
