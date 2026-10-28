@@ -4,8 +4,9 @@ Run as ``python fake_zenvi.py bridge`` (JSON-RPC lines on stdio),
 ``python fake_zenvi.py bridge --tools`` or ``python fake_zenvi.py tool-run ...``.
 ``run`` answers like the real CLI: add_motion_template_tool inserts a track, a
 drawing file and its clip (template ``seek``: only moves the saved playhead,
-untracked; ``future``: an action kind no desktop knows); anything else is
-refused. Every request is appended
+untracked; ``future``: an action kind no desktop knows); update_motion_block_tool
+and update_fx_tool re-render a linked file (a new path on its record);
+review_frames_tool answers a PNG frame; anything else is refused. Every request is appended
 to ``$FAKE_ZENVI_LOG`` (one JSON object per line) for the test to inspect.
 ``$FAKE_ZENVI_PROTOCOL`` overrides the protocol hello reports.
 """
@@ -21,7 +22,18 @@ TOOLS = [
      "inputSchema": {"type": "object"}, "available": True},
     {"name": "export_video_tool", "title": "Export", "description": "Needs an exporter.",
      "inputSchema": {"type": "object"}, "available": False, "missing": ["exporter"]},
+    {"name": "move_clip_tool", "title": "Move clip", "description": "The engine's simple move.",
+     "inputSchema": {"type": "object"}, "available": True},
+    {"name": "update_motion_block_tool", "title": "Update a motion block", "description": "Re-render a block.",
+     "inputSchema": {"type": "object", "properties": {"file_id": {"type": "string"}}}, "available": True},
+    {"name": "update_fx_tool", "title": "Update FX", "description": "Re-render FX.",
+     "inputSchema": {"type": "object", "properties": {"clip_id": {"type": "string"}}}, "available": True},
+    {"name": "review_frames_tool", "title": "Review frames", "description": "Frames as images.",
+     "inputSchema": {"type": "object"}, "available": True,
+     "annotations": {"title": "Review frames", "readOnlyHint": True}},
 ]
+# A 1x1 PNG.
+PNG = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
 
 
 def log(entry):
@@ -43,7 +55,30 @@ def run(params):
          "clips": len((params.get("project") or {}).get("clips") or [])})
     tool = params.get("tool")
     base = {"protocol": 2, "engine_version": "fake", "files": [], "timings": {"parse_ms": 0, "run_ms": 0, "translate_ms": 0}}
-    if tool != "add_motion_template_tool" or (params.get("args") or {}).get("template") == "nope":
+    args = params.get("args") or {}
+    if tool in ("update_motion_block_tool", "update_fx_tool"):
+        project = params.get("project") or {}
+        file_id = args.get("file_id")
+        if tool == "update_fx_tool":
+            clip = next((c for c in project.get("clips") or [] if c.get("id") == args.get("clip_id")), None)
+            file_id = clip and clip.get("file_id")
+        record = next((f for f in project.get("files") or [] if f.get("id") == file_id), None)
+        if record is None:
+            r = receipt("refused", tool, f"Error: unknown file {file_id}")
+            return {**base, "ok": False, "text": json.dumps(r), "receipt": r, "actions": []}
+        if (record.get("zenvi_link") or {}).get("render", {}).get("fingerprint") == "sha256:same":
+            r = receipt("unchanged", tool, "Already shows these params; nothing changed.")
+            return {**base, "ok": True, "text": json.dumps(r), "receipt": r, "actions": []}
+        rendered = dict(record, path=record["path"] + ".v2.mov")
+        r = receipt("applied", tool, "Re-rendered", file_id=file_id)
+        return {**base, "ok": True, "text": json.dumps(r), "receipt": r, "label": "Re-render",
+                "actions": [{"type": "update", "key": ["files", {"id": file_id}], "value": rendered}]}
+    if tool == "review_frames_tool":
+        r = receipt("applied", tool, "2 frames", frames=2)
+        r["undoSteps"] = 0
+        return {**base, "ok": True, "text": json.dumps(r), "receipt": r, "actions": [],
+                "images": [{"mimeType": "image/png", "data": PNG}, {"mimeType": "image/png", "data": PNG}]}
+    if tool != "add_motion_template_tool" or args.get("template") == "nope":
         r = receipt("refused", tool, "Error: the fake refuses this")
         return {**base, "ok": False, "text": json.dumps(r), "receipt": r, "actions": []}
     template = (params.get("args") or {}).get("template")

@@ -46,7 +46,8 @@ def test_lists_engine_tools_the_desktop_lacks_and_caches_the_catalog(bridge, tmp
     from classes.editor_tools import engine_bridge as bridged
 
     # list_files_tool is the desktop's own; export needs a capability the bridge host lacks.
-    assert sorted(bridge.handlers) == ["add_motion_template_tool"]
+    assert "add_motion_template_tool" in bridge.handlers
+    assert "list_files_tool" not in bridge.handlers and "export_video_tool" not in bridge.handlers
     definition = bridged.tool_def("add_motion_template_tool")
     assert definition["inputSchema"]["properties"] == {"template": {"type": "string"}}
     assert bridged.SURFACE_NOTE in definition["description"]
@@ -97,14 +98,28 @@ def test_an_unsaved_project_is_refused_before_the_cli_runs(bridge):
     assert bridge.undo_steps_since_mark() == 0
 
 
-def test_a_project_changed_while_the_engine_ran_is_not_overwritten(bridge, monkeypatch):
-    from classes.editor_tools import engine_bridge as bridged
+def _during_the_run(monkeypatch, change):
+    """Make *change* while the engine runs the next call (as the GUI thread would meanwhile)."""
+    from classes import engine_bridge
 
-    real = bridged._snapshot
-    monkeypatch.setattr(bridged, "_snapshot", lambda: (*real()[:2], "an older version"))
+    client = engine_bridge.get_client()
+    real = client.run
+
+    def run(*args, **kwargs):
+        answer = real(*args, **kwargs)
+        change()
+        return answer
+
+    monkeypatch.setattr(client, "run", run)
+
+
+def test_a_project_changed_while_the_engine_ran_is_not_overwritten(bridge, monkeypatch):
+    f = bridge.add_file("video")
+    _during_the_run(monkeypatch, lambda: bridge.add_clip(f, position=9.0))
     receipt = bridge.call_receipt("add_motion_template_tool", template="end_card")
-    assert "changed while" in receipt["summary"]
+    assert "changed while" in receipt["summary"] and "clips/" in receipt["summary"]
     assert bridge.clip("FAKECLIP01") is None
+    # The harness marks the history after its own edit: the refused call added nothing after it.
     assert bridge.undo_steps_since_mark() == 0
 
 
@@ -159,7 +174,9 @@ def test_the_mcp_server_lists_bridged_tools_with_the_engines_schema(bridge, monk
 
 
 def test_an_untracked_change_is_applied_without_an_undo_step(bridge):
-    assert bridge.call_receipt("add_motion_template_tool", template="seek")["status"] == "applied"
+    receipt = bridge.call_receipt("add_motion_template_tool", template="seek")
+    # The engine counted an undo step; the desktop made none, and the receipt says so.
+    assert receipt["status"] == "applied" and receipt["undoSteps"] == 0
     assert bridge.get("playhead_position") == 2.5
     assert bridge.undo_steps_since_mark() == 0
 
@@ -227,6 +244,20 @@ def test_a_malformed_action_applies_nothing_and_removes_the_files(bridge, monkey
     assert receipt["summary"].startswith("Error") and "malformed" in receipt["summary"]
     assert not any(x["id"] == "FAKELAYR02" for x in bridge.get("layers"))
     assert not os.path.exists(drawing)
+    assert bridge.undo_steps_since_mark() == 0
+
+
+def test_a_malformed_action_in_a_stale_answer_is_refused_not_raised(bridge, monkeypatch):
+    # A stale answer goes on to compare what changed with the keys of its actions.
+    from classes import engine_bridge
+    from classes.editor_tools import engine_bridge as bridged
+
+    real = bridged._snapshot
+    monkeypatch.setattr(bridged, "_snapshot", lambda: (real()[0], "an older version", real()[2]))
+    answer = {"ok": True, "text": "{}", "actions": ["insert"], "files": []}
+    monkeypatch.setattr(engine_bridge, "get_client", lambda: _Answering(answer))
+    receipt = bridge.call_receipt("add_motion_template_tool", template="end_card")
+    assert receipt["summary"].startswith("Error") and "malformed" in receipt["summary"]
     assert bridge.undo_steps_since_mark() == 0
 
 

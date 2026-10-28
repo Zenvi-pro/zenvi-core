@@ -97,3 +97,37 @@ def test_an_engine_refusal_leaves_no_undo_step_and_no_files(saved, tmp_path):
     assert saved.undo_steps_since_mark() == 0
     title = tmp_path / "promo_assets" / "title"
     assert not title.exists() or not any(title.iterdir())
+
+
+def test_the_new_engine_tools_are_listed_and_native_twins_are_not(saved):
+    for name in ("add_sfx_tool", "apply_motion_transition_tool", "speed_ramp_tool", "align_match_cut_tool"):
+        assert name in saved.handlers, name
+    for twin in ("move_clip_tool", "trim_clip_tool", "split_clip_tool", "add_transition_tool"):
+        assert twin not in saved.handlers, twin
+
+
+def test_a_sound_effect_is_one_undo_step_with_its_audio_in_the_assets_folder(saved, tmp_path):
+    receipt = saved.call_receipt("add_sfx_tool", recipe="whoosh_short", at_seconds=1)
+    assert receipt["status"] == "applied", receipt
+    clip = saved.clip(receipt["data"]["clip_id"])
+    assert clip is not None and saved.undo_steps_since_mark() == 1
+    path = saved.file(clip["file_id"])["path"]
+    assert path.startswith(str(tmp_path / "promo_assets")) and os.path.isfile(path), path
+    saved.undo()
+    assert saved.clip(receipt["data"]["clip_id"]) is None
+
+
+def test_a_motion_transition_on_a_cut_is_one_undo_step(saved):
+    f = saved.add_file("video", duration=4)
+    a = saved.add_clip(f, position=0.0, end=2.0)
+    b = saved.add_clip(f, position=2.0, start=2.0, end=4.0)
+    before = {i: json.dumps(saved.clip(i), sort_keys=True) for i in (a, b)}
+    receipt = saved.call_receipt("apply_motion_transition_tool", preset="whip", clip1_id=a)
+    assert receipt["status"] == "applied", receipt
+    assert saved.undo_steps_since_mark() == 1
+    assert {i: json.dumps(saved.clip(i), sort_keys=True) for i in (a, b)} != before
+    # Undone exactly (no leftover zenvi_motion_transitions tag), so the cut takes a transition again.
+    saved.undo()
+    assert {i: json.dumps(saved.clip(i), sort_keys=True) for i in (a, b)} == before
+    again = saved.call_receipt("apply_motion_transition_tool", preset="zoom_in", clip1_id=a)
+    assert again["status"] == "applied", again
