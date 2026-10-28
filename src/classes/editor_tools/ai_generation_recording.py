@@ -11,6 +11,11 @@ up. Starting a capture stays a human action (coverage OUT_OF_SCOPE
 Selecting the mic starts the dock's input level meter and selecting the webcam its live
 preview, as clicking those cards does; nothing is recorded until the person presses
 Start Recording. Dock settings are UI state, not project data: no undo step.
+
+Requests it serves: "set up a voiceover for this clip", "get ready to record my
+screen with my webcam in the corner", "record narration onto track 3 at 0:30".
+Example call: {"sources": ["mic"], "timeline_clip_id": "C7"} -> voiceover over
+clip C7 on the free track below it.
 """
 
 from __future__ import annotations
@@ -349,41 +354,37 @@ _REGION = {"type": "object", "properties": {
     "prepare_recording_tool",
     label="Prepare recording",
     schema=obj({
-        "sources": array({"type": "string", "enum": list(SOURCES)}, "What to record: mic (voice), screen, webcam; "
-                         "any combination. Empty = keep the dock's current choice."),
-        "track": string("Track for the recording: UI track number (1 = bottom), name or layer number; extra "
-                        "sources go on the tracks below it. 'none' = add to Project Files only. Empty = keep.", ""),
-        "start_seconds": nullable(number("Timeline seconds where the recording will be placed (also moves the "
-                                         "playhead there). Omit = wherever the playhead is when Record is "
-                                         "pressed.", minimum=0)),
-        "timeline_clip_id": string("Record over this clip, like its menu's Audio > Record: starts at the clip, "
-                                   "on the nearest free unlocked track below it (track/start_seconds override).",
-                                   ""),
-        "mic_device": string("Microphone by name (the dock's Input list); empty = keep.", ""),
+        "sources": array({"type": "string", "enum": list(SOURCES)}, "Any combination of mic (voice), screen, "
+                         "webcam."),
+        "track": string("UI track number (1 = bottom), name or layer number; extra sources go on the tracks "
+                        "below it. 'none' = Project Files only.", ""),
+        "start_seconds": nullable(number("Timeline seconds to place the recording (moves the playhead there). "
+                                         "Omit = the playhead when Record is pressed.", minimum=0)),
+        "timeline_clip_id": string("Record over this clip (its Audio > Record): starts at the clip, on the "
+                                   "nearest free unlocked track below it (track/start_seconds override).", ""),
+        "mic_device": string("Microphone name (the dock's Input list).", ""),
         "channels": enum(["", "mono", "stereo"], "Microphone channels.", ""),
-        "audio_format": enum(["", *AUDIO_FORMATS], "Microphone file format (the dock defaults to flac).", ""),
-        "sample_rate": integer("Microphone sample rate: 44100, 48000 or 96000 (0 = keep).", 0, minimum=0),
-        "screen": string("Which screen to capture, by its name in the dock's Screen list; empty = keep.", ""),
-        "screen_region": nullable(mapping("Capture only this area of the screen (Region mode): {x, y, width, "
-                                          "height} in screen pixels. Omit for the full screen.",
+        "audio_format": enum(["", *AUDIO_FORMATS], "Microphone file format (dock default flac).", ""),
+        "sample_rate": integer("Microphone sample rate: 44100, 48000 or 96000.", 0, minimum=0),
+        "screen": string("Screen name from the dock's Screen list.", ""),
+        "screen_region": nullable(mapping("Region mode: capture only {x, y, width, height}, screen pixels. Omit "
+                                          "for the full screen.",
                                           _REGION["properties"], required=_REGION["required"],
                                           additionalProperties=False)),
-        "screen_fps": integer("Screen capture frame rate: 15, 24, 30 or 60 (0 = keep).", 0, minimum=0),
+        "screen_fps": integer("Screen capture fps: 15, 24, 30 or 60.", 0, minimum=0),
         "system_audio": nullable(boolean("Screen: also record the computer's sound output.")),
         "show_cursor": nullable(boolean("Screen: include the mouse cursor.")),
         "hide_zenvi": nullable(boolean("Screen: hide the Zenvi window while recording a window or region.")),
-        "webcam_device": string("Webcam by name; empty = keep.", ""),
-        "webcam_resolution": string("Webcam resolution such as '1280x720' (from the dock's list); empty = keep.",
-                                    ""),
-        "webcam_fps": integer("Webcam recording frame rate (0 = keep).", 0, minimum=0),
+        "webcam_device": string("Webcam name.", ""),
+        "webcam_resolution": string("Webcam resolution from the dock's list, e.g. '1280x720'.", ""),
+        "webcam_fps": integer("Webcam fps.", 0, minimum=0),
         "webcam_layout": enum(["", *WEBCAM_LAYOUTS], "Where the webcam sits over a screen recording.", ""),
-        "webcam_size": number("Webcam corner size over a screen recording: 0.2, 0.3 or 0.4 of the frame (0 = keep).",
+        "webcam_size": number("Webcam corner size over a screen recording: 0.2, 0.3 or 0.4 of the frame.",
                               0, minimum=0, maximum=0.4),
         "webcam_corners": enum(["", *WEBCAM_CORNERS], "Webcam frame shape.", ""),
         "preview": enum(["", *PREVIEWS], "Play the timeline while recording: off, full, half or quarter resolution "
                         "(always off when recording the screen).", ""),
-        "recording_view": boolean("Also switch the editor to the Recording View layout (View > Recording View).",
-                                  False),
+        "recording_view": boolean("Also switch to the Recording View layout.", False),
     }),
     background_safe=True,
     covers=("recording.prepare",),
@@ -395,15 +396,14 @@ def prepare_recording(sources=None, track="", start_seconds=None, timeline_clip_
                       recording_view=False):
     """Open the Recording panel set up for a voiceover, screen recording or webcam recording, ready for the person to press Record.
 
-    Use for "set up a voiceover for this clip", "get ready to record my screen with my webcam
-    in the corner", "record narration onto track 3 at 0:30". It selects the sources, devices,
-    formats, screen area, webcam layout, target track and start time in the Recording dock and
-    returns the resulting setup (ready_to_record, what is selected, the available devices and
-    screens). It never starts recording: the person presses Start Recording, and the clip
-    lands on the timeline when they stop. Choosing mic or webcam turns on the dock's level
-    meter / camera preview as clicking them does. No undo step. Example:
-    {"sources": ["mic"], "timeline_clip_id": "C7"} -> voiceover over clip C7 on the free
-    track below it.
+    Sets sources, devices, formats, screen area, webcam layout, target track
+    and start time in the Recording dock; empty / 0 arguments keep the dock's
+    current setting, except start_seconds (0 is the timeline start; omit it
+    for the playhead). Returns the setup (ready_to_record, what is selected, the
+    available devices and screens). Never starts recording: the person presses
+    Start Recording, and the clip lands on the timeline when they stop.
+    Choosing mic or webcam turns on the dock's level meter / camera preview.
+    No undo step.
     """
     report = on_main(lambda: _prepare(
         list(sources or []), track, start_seconds, timeline_clip_id, mic_device, channels, audio_format,
