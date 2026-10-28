@@ -9,14 +9,12 @@ them: ``rerender_linked_clip_tool`` runs the kind's own engine tool (ENGINE_KIND
 through the bridge, which swaps the render into the same bin file as one undo
 step, and answers ``unchanged`` when the new render is the one already there.
 
-These tools only exist while the desktop has no linked-clip tools of its own.
-handoff-core (``origin/jashan/handoff-core``, not on main yet) brings native
-``get_linked_clip_tool`` / ``rerender_linked_clip_tool`` for Remotion,
-HyperFrames and After Effects; once it lands, native wins by name here and its
-``rerender_linked`` should hand an engine kind to :func:`rerender` (``is_engine_kind``)
-instead of looking for a render provider -- the engine's re-render is a whole
-tool call (new file record, clips that follow a longer render), not a file
-written into a staging folder.
+The desktop's own ``get_linked_clip_tool`` / ``rerender_linked_clip_tool``
+(``editor_tools/handoff.py``: Remotion, HyperFrames, After Effects) hand these
+kinds here (``is_engine_kind``) instead of looking for a render provider -- the
+engine's re-render is a whole tool call (new file record, clips that follow a
+longer render), not a file written into a staging folder. The tools below are
+listed only in a build without the desktop's own.
 """
 
 from __future__ import annotations
