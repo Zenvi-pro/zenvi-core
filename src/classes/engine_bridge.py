@@ -6,23 +6,33 @@ snapshot of the open project and applies the change it answers -- desktop
 UpdateManager actions -- as one undo step (``editor_tools/engine_bridge.py``).
 Design, protocol and measurements: zenvi-web ``docs/ENGINE_BRIDGE.md``.
 
-Off unless ``ZENVI_ENGINE_BRIDGE`` is set:
+Off unless ``ZENVI_ENGINE_BRIDGE`` or the ``engine-bridge`` setting turns it on:
 
 * ``1`` / ``server`` -- one long-lived ``zenvi bridge`` process, JSON-RPC lines
   on its stdin/stdout (Node starts once per session).
 * ``oneshot`` -- ``zenvi tool-run`` per call (a Node start each time).
 
-``ZENVI_ENGINE_CLI`` is the CLI bundle (``zenvi.mjs``); ``ZENVI_NODE`` the
-Node binary (default: ``node`` on PATH). Every method blocks: call them off
-the GUI thread.
+Where the CLI comes from (:func:`find_cli`, first hit wins):
+``ZENVI_ENGINE_CLI``, the ``engine-cli-path`` setting, the copy a build bundles
+at ``<app>/engine/zenvi.mjs``, then ``~/.openshot_qt/engine/zenvi.mjs``. Node
+(:func:`find_node`, 22 or newer): ``ZENVI_NODE``, the ``engine-node-path``
+setting, the private Node the local HyperFrames setup installs under
+``~/.openshot_qt/hyperframes/node``, then ``PATH`` and the folders installers
+use that a GUI app's PATH misses. Neither found: every bridged call is refused
+with what was searched and what to set.
+
+Every method blocks (file checks, ``node --version``, the CLI itself): call
+them off the GUI thread.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 from typing import Optional
@@ -33,15 +43,35 @@ from classes.logger import log
 PROTOCOL = 2
 DEFAULT_TIMEOUT_SECONDS = 120.0
 CATALOG_TIMEOUT_SECONDS = 30.0
+# zenvi-web package.json "engines".
+MIN_NODE_MAJOR = 22
+NODE_VERSION_TIMEOUT = 10.0
+CLI_NAME = "zenvi.mjs"
 
 
 class BridgeUnavailable(Exception):
     """The CLI cannot be started, crashed, timed out or speaks another protocol."""
 
 
+def _setting(name: str) -> str:
+    """A desktop setting as text ('' without an app, e.g. in the headless test suite)."""
+    try:
+        from classes.app import get_app
+        value = get_app().get_settings().get(name)
+    except Exception:
+        return ""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _env(env):
+    return env if env is not None else os.environ
+
+
 def bridge_mode(env=None) -> str:
-    """'' (off), 'server' or 'oneshot', from ``ZENVI_ENGINE_BRIDGE``."""
-    value = str((env if env is not None else os.environ).get("ZENVI_ENGINE_BRIDGE", "")).strip().lower()
+    """'' (off), 'server' or 'oneshot', from ``ZENVI_ENGINE_BRIDGE`` or the ``engine-bridge`` setting."""
+    value = str(_env(env).get("ZENVI_ENGINE_BRIDGE", "")).strip().lower()
+    if not value and env is None:
+        value = _setting("engine-bridge").lower()
     if value in ("1", "true", "yes", "on", "server"):
         return "server"
     if value == "oneshot":
@@ -49,21 +79,124 @@ def bridge_mode(env=None) -> str:
     return ""
 
 
+def cli_candidates(env=None) -> list:
+    """Where the CLI bundle may be, in the order :func:`find_cli` tries them."""
+    from classes import info
+    env = _env(env)
+    named = [env.get("ZENVI_ENGINE_CLI", "")]
+    if env is os.environ:
+        named.append(_setting("engine-cli-path"))
+    bundled = [os.path.join(info.PATH, "engine", CLI_NAME), os.path.join(info.USER_PATH, "engine", CLI_NAME)]
+    return [p for p in named if p] + bundled
+
+
+def find_cli(env=None) -> str:
+    """The zenvi CLI bundle (``zenvi.mjs``), absolute; BridgeUnavailable with what was searched."""
+    env = _env(env)
+    candidates = cli_candidates(env)
+    explicit = env.get("ZENVI_ENGINE_CLI", "") or (_setting("engine-cli-path") if env is os.environ else "")
+    if explicit:
+        # A path the user gave is the one they mean: no quiet fallback to another build.
+        if os.path.isfile(explicit):
+            return os.path.abspath(explicit)
+        raise BridgeUnavailable(f"the zenvi CLI is not at {explicit} (ZENVI_ENGINE_CLI / the engine-cli-path setting)")
+    for path in candidates:
+        if os.path.isfile(path):
+            return os.path.abspath(path)
+    raise BridgeUnavailable(
+        "Zenvi engine tools need the zenvi CLI (zenvi.mjs), which this build does not bundle: set "
+        "ZENVI_ENGINE_CLI or Preferences > AI > Zenvi CLI for Engine Tools to a built zenvi.mjs (zenvi-web: "
+        "npm run build -w @zenvi/cli). Looked in: " + ", ".join(candidates))
+
+
+def node_candidates(env=None) -> list:
+    """Node executables to try, in order (a folder named by ZENVI_NODE means the node inside it)."""
+    from classes import info
+    env = _env(env)
+    exe = "node.exe" if sys.platform == "win32" else "node"
+    explicit = _explicit_node(env)
+    if explicit:
+        # A Node the user names is the one they mean: no quiet fallback to another install.
+        return [explicit]
+    out = []
+    private = os.path.join(info.USER_PATH, "hyperframes", "node")
+    out.append(os.path.join(private, exe) if sys.platform == "win32" else os.path.join(private, "bin", exe))
+    on_path = shutil.which("node", path=env.get("PATH"))
+    if on_path:
+        out.append(on_path)
+    if sys.platform == "win32":
+        out.append(os.path.join(env.get("ProgramFiles", r"C:\Program Files"), "nodejs", exe))
+    else:
+        out += ["/opt/homebrew/bin/node", "/usr/local/bin/node", os.path.expanduser("~/.volta/bin/node")]
+    seen, unique = set(), []
+    for path in out:
+        if path not in seen:
+            seen.add(path)
+            unique.append(path)
+    return unique
+
+
+def _explicit_node(env) -> str:
+    """ZENVI_NODE or the engine-node-path setting: a node executable, the folder holding it, or a name on PATH."""
+    named = env.get("ZENVI_NODE", "") or (_setting("engine-node-path") if env is os.environ else "")
+    if not named:
+        return ""
+    if os.path.isdir(named):
+        return os.path.join(named, "node.exe" if sys.platform == "win32" else "node")
+    if os.path.dirname(named):
+        return named
+    return shutil.which(named, path=env.get("PATH")) or named
+
+
+_node_majors: dict = {}
+
+
+def node_major(node: str) -> Optional[int]:
+    """``node --version``'s major number, or None when it does not run (cached per path)."""
+    if node in _node_majors:
+        return _node_majors[node]
+    try:
+        done = subprocess.run([node, "--version"], capture_output=True, text=True, timeout=NODE_VERSION_TIMEOUT,
+                              stdin=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except subprocess.TimeoutExpired:
+        return None  # a slow first start (antivirus): not remembered, the next call asks again
+    except (OSError, subprocess.SubprocessError):
+        done = None
+    found = re.match(r"v?(\d+)\.", (done.stdout or "").strip()) if done is not None else None
+    major = int(found.group(1)) if found else None
+    _node_majors[node] = major
+    return major
+
+
+def find_node(env=None) -> str:
+    """A Node.js new enough for the CLI; BridgeUnavailable with what was searched."""
+    tried = []
+    explicit = _explicit_node(_env(env))
+    for path in node_candidates(env):
+        if not os.path.isfile(path):
+            if path == explicit:
+                raise BridgeUnavailable(f"Node.js is not at {path} (ZENVI_NODE / the engine-node-path setting)")
+            continue
+        major = node_major(path)
+        if major is not None and major >= MIN_NODE_MAJOR:
+            return path
+        tried.append(f"{path} ({'v%d' % major if major is not None else 'does not run'})")
+    found = f" Found only: {', '.join(tried)}." if tried else ""
+    raise BridgeUnavailable(
+        f"Zenvi engine tools need Node.js {MIN_NODE_MAJOR} or newer.{found} Install it (https://nodejs.org, "
+        "or Zenvi's local HyperFrames setup, which installs a private copy), or set ZENVI_NODE / "
+        "Preferences > AI > Node.js for Engine Tools.")
+
+
 def locate_cli(env=None) -> tuple:
-    """(node, zenvi.mjs) from the environment; BridgeUnavailable when either is missing."""
-    env = env if env is not None else os.environ
-    cli = env.get("ZENVI_ENGINE_CLI", "")
-    if not cli or not os.path.isfile(cli):
-        raise BridgeUnavailable("set ZENVI_ENGINE_CLI to the zenvi CLI bundle (zenvi.mjs)")
-    node = env.get("ZENVI_NODE") or shutil.which("node")
-    if not node:
-        raise BridgeUnavailable("Node.js was not found (set ZENVI_NODE)")
-    return node, os.path.abspath(cli)
+    """(node, zenvi.mjs); BridgeUnavailable when either is missing."""
+    cli = find_cli(env)
+    return find_node(env), cli
 
 
 def _timeout(env=None) -> float:
     try:
-        return float((env if env is not None else os.environ).get("ZENVI_ENGINE_BRIDGE_TIMEOUT", DEFAULT_TIMEOUT_SECONDS))
+        return float(_env(env).get("ZENVI_ENGINE_BRIDGE_TIMEOUT", DEFAULT_TIMEOUT_SECONDS))
     except ValueError:
         return DEFAULT_TIMEOUT_SECONDS
 
@@ -223,7 +356,8 @@ def get_client() -> EngineBridgeClient:
         if _client is None:
             mode = bridge_mode()
             if not mode:
-                raise BridgeUnavailable("the engine bridge is off (set ZENVI_ENGINE_BRIDGE=1)")
+                raise BridgeUnavailable("the engine bridge is off (set ZENVI_ENGINE_BRIDGE=1 or Preferences > AI > "
+                                        "Zenvi Engine Tools)")
             node, cli = locate_cli()
             _client = EngineBridgeClient(node, cli, mode)
         return _client

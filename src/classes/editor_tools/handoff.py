@@ -80,6 +80,17 @@ def _query(name: str) -> Any:
     return getattr(query, name)
 
 
+def _engine_kind(file_id: str) -> str:
+    """The link kind when the Zenvi engine renders the file (``engine_links.ENGINE_KINDS``), else ""."""
+    from classes.editor_tools import engine_links
+    try:
+        link = _lm().read_link(_linked_file(file_id).data) or {}
+    except _lm().LinkError:
+        return ""
+    kind = str(link.get("kind") or "")
+    return kind if engine_links.is_engine_kind(kind) else ""
+
+
 def _linked_file(file_id: str):
     f = _query("File").get(id=file_id)
     if not f:
@@ -485,6 +496,10 @@ def get_linked_clip(clip_id="", file_id=""):
     the timeline clips that use the file. Read-only.
     """
     fid = _resolve_file_id(clip_id, file_id)
+    if _engine_kind(fid):
+        # Zenvi Motion / 3D / FX renders: the engine's link, read the engine's way.
+        from classes.editor_tools import engine_links
+        return engine_links.get_linked_clip(clip_id=clip_id, file_id=fid)
     report = _link_report(fid)
     return ok(f"{report['kind_label']} clip {report['name']!r} is {report['state']}"
               + (f": {report['detail']}" if report["detail"] else "") + ".", **report)
@@ -524,6 +539,12 @@ def update_linked_clip(clip_id="", file_id="", props=None, rerender=True):
     lm = _lm()
     fid = _resolve_file_id(clip_id, file_id)
     _linked_file(fid)
+    kind = _engine_kind(fid)
+    if kind:
+        from classes.editor_tools import engine_links
+        engine = engine_links.ENGINE_KINDS[kind]
+        raise ToolError(f"{engine.label} clips change through {engine.rerender_tool}, which takes its own "
+                        "arguments; rerender_linked_clip_tool renders one again as it is")
     if props is not None and not isinstance(props, dict):
         raise ToolError("props must be an object of prop names to values")
     if not props and not rerender:
@@ -578,6 +599,10 @@ def rerender_linked_clip(clip_id="", file_id=""):
     """
     fid = _resolve_file_id(clip_id, file_id)
     _linked_file(fid)
+    if _engine_kind(fid):
+        # The engine re-renders its own kinds: a whole tool call through the bridge, not a render provider.
+        from classes.editor_tools import engine_links
+        return engine_links.rerender_linked_clip(clip_id=clip_id, file_id=fid)
     return _rerender(fid, None)
 
 

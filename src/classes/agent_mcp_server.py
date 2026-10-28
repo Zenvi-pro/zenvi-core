@@ -475,12 +475,21 @@ class ZenviMcpServer:
                      stateless_http=True, json_response=True,
                      instructions=SERVER_INSTRUCTIONS)
 
-        tools = [types.Tool(name=d["name"], description=d["description"],
-                            inputSchema=d["inputSchema"]) for d in iter_tool_defs()]
+        from classes.editor_tools import engine_bridge
+
+        def build():
+            return [types.Tool(name=d["name"], description=d["description"],
+                               inputSchema=d["inputSchema"]) for d in iter_tool_defs()]
+
+        # Engine-bridge tools arrive from a worker thread after start-up: rebuild when they do.
+        listed = {"revision": engine_bridge.REVISION, "tools": build()}
 
         @fm._mcp_server.list_tools()
         async def _list_tools():
-            return tools
+            if listed["revision"] != engine_bridge.REVISION:
+                listed["revision"] = engine_bridge.REVISION
+                listed["tools"] = build()
+            return listed["tools"]
 
         # validate_input=False: schemas are intentionally permissive; let the tool
         # itself report bad args (matching the WebSocket tool path's behaviour).
