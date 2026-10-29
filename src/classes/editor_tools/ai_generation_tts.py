@@ -29,7 +29,7 @@ from classes.editor_tools._base import (
     ok,
     on_main,
     playhead_seconds,
-    resolve_layer,
+    resolve_placement_layer,
     snap_seconds,
     string,
     ui_track_number,
@@ -198,7 +198,7 @@ def _explicit_layer(track) -> Optional[int]:
     raw = str(track if track is not None else "").strip()
     if raw in ("", "0"):
         return None
-    layer = resolve_layer(raw)
+    layer, _new_tracks = resolve_placement_layer(raw)
     if is_locked(layer):
         raise ToolError(f"track {ui_track_number(layer) or layer} is locked; unlock it or leave track empty "
                         "to use a free narration track")
@@ -278,6 +278,10 @@ def _import_and_place(path: str, text: str, start: float, explicit_layer: Option
     overlaps: list = []
     if explicit_layer is not None:
         layer = explicit_layer
+        if layer not in track_ops.track_numbers():
+            # A track named just past the top (resolve_placement_layer).
+            track_ops.ensure_track(layer)
+            created = True
         clips_now = list(get_app().project.get("clips") or [])
         overlaps = [c.get("id") for c in overlapping_clips(clips_now, layer, start, end)]
         why = "the requested track"

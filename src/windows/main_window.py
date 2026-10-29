@@ -4879,8 +4879,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         """Run the stock footage + music search for the current query."""
         if not hasattr(self, "stockSearchView"):
             return
+        self._stock_search_timer.stop()  # Enter must not let the pending debounce re-send it
         text = self.filesFilter.text().strip()
-        if len(text) >= 2:
+        if len(text) >= 3:
             self.stockSearchView.run_search(text)
         else:
             self.stockSearchView.clear_stock()
@@ -4890,8 +4891,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         stock search so it fires as the user types (not only on Enter)."""
         if not hasattr(self, "stockSearchView"):
             return
-        if len(text.strip()) >= 2:
-            self._stock_search_timer.start(400)
+        if len(text.strip()) >= 3:
+            self._stock_search_timer.start(700)
         else:
             self._stock_search_timer.stop()
             self.stockSearchView.clear_stock()
@@ -4954,6 +4955,15 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         menu.addSeparator()
         settings_action = menu.addAction(_("ComfyUI Settings..."))
         settings_action.triggered.connect(lambda checked=False: self.actionPreferences.trigger())
+
+        # The engine bridge runtime (Node + zenvi CLI): its status is read by the dialog, off this thread.
+        menu.addSeparator()
+        engine_action = menu.addAction(_("Zenvi Engine Tools..."))
+        engine_action.triggered.connect(lambda checked=False: self.show_engine_runtime_dialog())
+
+    def show_engine_runtime_dialog(self):
+        from windows.engine_runtime_dialog import show_engine_runtime_dialog
+        show_engine_runtime_dialog(self)
 
     def _init_ui_trace_recorder(self):
         """Enable env-configured UI trace recording for automated test capture."""
@@ -5779,6 +5789,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # File → Zenvi Cloud: push, open in the web editor, open a cloud project.
         from windows.cloud_sync_ui import install_cloud_menu
         self.cloud_sync = install_cloud_menu(self)
+        # Handoffs (After Effects, Premiere, Remotion, HyperFrames): Export / Import Project
+        # entries, File > Send To, and the linked-clips status bar (classes/handoff).
+        from windows.handoff_menus import install_handoff_menus
+        install_handoff_menus(self)
         self.refresh_comfy_availability_async()
 
         # Add window as watcher to receive undo/redo status updates
