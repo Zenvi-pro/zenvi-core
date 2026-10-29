@@ -48,6 +48,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 from fractions import Fraction
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -112,10 +113,13 @@ class _Canon(html.parser.HTMLParser):
 
 _canon_cache: Dict[str, Tuple[int, int, str]] = {}
 _canon_lock = threading.Lock()
+# A file written within this long of its cached read can have changed without its size or mtime
+# changing (the clock ticks coarsely on some file systems), so it is read again ("racily clean" in git).
+_RACY_NS = 2_000_000_000
 
 
 def canonical_html_digest(path: str) -> str:
-    """sha256 of an html file's structure (cached by size + mtime)."""
+    """sha256 of an html file's structure (cached by size + mtime, except for a file just written)."""
     try:
         st = os.stat(path)
     except OSError:
@@ -124,7 +128,7 @@ def canonical_html_digest(path: str) -> str:
     key = stable_abs(path)
     with _canon_lock:
         hit = _canon_cache.get(key)
-    if hit and hit[0] == st.st_size and hit[1] == st.st_mtime_ns:
+    if hit and hit[0] == st.st_size and hit[1] == st.st_mtime_ns and time.time_ns() - st.st_mtime_ns > _RACY_NS:
         return hit[2]
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
