@@ -406,12 +406,6 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
         ]
         self.set_toolbar_buttons(self.app.window.timelineToolbar, icon_size=16, settings=timeline_buttons)
 
-        # ── Captions toolbar: one quiet text button ──────────────────
-        self.set_toolbar_buttons(self.app.window.captionToolbar, icon_size=16, settings=[
-            {"action": self.app.window.actionInsertTimestamp, "icon": "themes/cosmic/images/tool-add-track.svg",
-             "style": Qt.ToolButtonTextBesideIcon},
-        ])
-
         # ── Video toolbar ─────────────────────────────────────────────
         toolbar_buttons = [
             {"expand": True},

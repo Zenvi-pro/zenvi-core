@@ -362,6 +362,17 @@ def test_fingerprint_follows_files_in_symlinked_folders(tmp_path, provider):
     assert len({before, middle, provider.fingerprint(lk)}) == 3
 
 
+def test_an_edit_inside_one_clock_tick_still_changes_the_html_digest(tmp_path):
+    # Same size, same mtime: what a quick save looks like where the file clock is coarse (Windows).
+    page = tmp_path / "card.html"
+    page.write_text("<div>one</div>")
+    stamp = os.stat(page).st_mtime_ns
+    before = hfprov.canonical_html_digest(str(page))
+    page.write_text("<div>two</div>")
+    os.utime(page, ns=(stamp, stamp))
+    assert hfprov.canonical_html_digest(str(page)) != before
+
+
 def test_missing_host_and_cli_failures_are_link_errors(tmp_path, monkeypatch, provider):
     FakeCli(tmp_path, monkeypatch, fail="the HyperFrames render failed (exit 1): boom")
     root = make(tmp_path)

@@ -402,20 +402,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "layout_region": _str(),
         "query": _str(),
     }),
-    "fetch_motion_graphics_video_tool": _obj({
-        "segment_urls": _url_list(),
-        "supabase_url": _str(),
-        "supabase_path": _str(),
-        "render_job_id": _str(),
-        "label": _str(),
-    }),
-    "fetch_remotion_video_from_supabase_tool": _obj({
-        "segment_urls": _url_list(),
-        "supabase_url": _str(),
-        "supabase_path": _str(),
-        "render_job_id": _str(),
-        "label": _str(),
-    }),
     "generate_video_and_add_to_timeline_tool": _obj({
         "prompt": _str(),
         "position_seconds": _str_or_num(),
@@ -638,20 +624,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
             minimum=0.1, maximum=0.99,
             description="Refuse if more than this fraction would be deleted.",
         ),
-    }),
-
-    "add_captions_tool": _obj({
-        "clipId": _str(),
-        "timeline_clip_id": _str(description="Alias for clipId."),
-        "trackIndex": _int(minimum=0),
-        "maxWords": _int(minimum=1, maximum=24),
-        "maxChars": _int(minimum=8, maximum=120),
-        "language": _str(),
-        "modelId": _str(),
-        "engine": _str(
-            description="auto|apple|whisper — same on-device ASR as get_transcript_tool (never cloud).",
-        ),
-        "srtPath": _str(description="Import SRT/VTT instead of transcribing."),
     }),
 
     "export_captions_tool": _obj({

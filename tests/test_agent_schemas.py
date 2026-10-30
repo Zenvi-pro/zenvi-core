@@ -114,8 +114,8 @@ def test_validate_accepts_remove_words_matches():
         "matches": ["FlowCut", "flocut"],
     }) is None
     assert validate_args("add_captions_tool", {
-        "clipId": "c1",
-        "engine": "auto",
+        "timeline_clip_id": "c1",
+        "style": "highlight",
     }) is None
 
 

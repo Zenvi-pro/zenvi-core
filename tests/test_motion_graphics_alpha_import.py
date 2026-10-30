@@ -1,4 +1,4 @@
-"""Unit tests for HyperFrames fetch metadata stamping (no Qt app)."""
+"""Alpha-preserving import and metadata stamping for HyperFrames renders (no Qt app)."""
 
 from __future__ import annotations
 
@@ -35,12 +35,6 @@ from classes.tool_handlers import (  # noqa: E402
 import classes.tool_handlers as th  # noqa: E402
 
 
-@pytest.fixture(autouse=True)
-def _fresh_import_dedupe(monkeypatch):
-    """The fetch dedupe is process-global; another module's import of the same
-    URL made these tests answer "Already imported" instead of fetching."""
-    monkeypatch.setattr(th, "_MG_IMPORTED_URLS", {})
-
 from motion_graphics.build_vp9 import (  # noqa: E402
     build_vp9_alpha_overlay,
     build_vp9_opaque_plate,
@@ -51,14 +45,6 @@ from motion_graphics.build_vp9 import (  # noqa: E402
 
 # tool_handlers calls bare "ffmpeg"/"ffprobe" — ensure MSYS bins resolve under Windows pytest.
 ensure_ffmpeg_on_path()
-
-
-@pytest.fixture(autouse=True)
-def _clear_mg_import_cache():
-    """fetch_motion_graphics_video caches URLs in a module global; reset per test."""
-    th._MG_IMPORTED_URLS.clear()
-    yield
-    th._MG_IMPORTED_URLS.clear()
 
 
 def _ffmpeg_available():
@@ -73,13 +59,6 @@ requires_ffmpeg = pytest.mark.skipif(
     not _ffmpeg_available(),
     reason="ffmpeg + libvpx-vp9 required for VP9 alpha fixtures",
 )
-
-
-@pytest.fixture(autouse=True)
-def _clear_mg_import_cache():
-    th._MG_IMPORTED_URLS.clear()
-    yield
-    th._MG_IMPORTED_URLS.clear()
 
 
 def test_import_generated_video_calls_add_files_with_skip_indexing(monkeypatch):
@@ -214,134 +193,6 @@ def test_stamp_motion_graphics_file_metadata():
     f.save.assert_called_once()
 
 
-def test_fetch_resolves_label_from_job_when_empty():
-    with patch.object(
-        th,
-        "_resolve_motion_graphics_label_from_job",
-        return_value=("HyperFrames hw-title: HOLD.", {"transparent": False}),
-    ) as resolve, patch.object(
-        th,
-        "_download_and_import_one",
-        return_value=("F99", 1.2, None, False, "yuv420p"),
-    ) as download, patch.object(th, "_motion_graphics_cleanup_storage"):
-        msg = th.fetch_motion_graphics_video(
-            segment_urls=["https://x/output.mp4"],
-            render_job_id="job-99",
-            label="",
-        )
-    resolve.assert_called_once_with("job-99", fallback="")
-    assert "F99" in msg
-    assert download.call_args.kwargs.get("label") == "HyperFrames hw-title: HOLD."
-    assert download.call_args.kwargs.get("job_transparent") is False
-    assert "transparent_ok=false" in msg
-    assert "pix_fmt=yuv420p" in msg
-
-
-def test_download_rejects_empty_file(tmp_path, monkeypatch):
-    class _Resp:
-        def read(self, n):
-            return b""
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    with patch("urllib.request.urlopen", return_value=_Resp()), patch(
-        "tempfile.mkdtemp", return_value=str(tmp_path)
-    ):
-        try:
-            th._download_motion_graphics_file("https://x/output.mp4")
-            assert False, "expected empty-file ValueError"
-        except ValueError as e:
-            assert "empty" in str(e).lower()
-
-
-def test_fetch_rewrites_mp4_to_webm_when_job_transparent():
-    with patch.object(
-        th,
-        "_resolve_motion_graphics_label_from_job",
-        return_value=("HyperFrames lt-clean-bar: Alex (transparent overlay)", {"transparent": True}),
-    ), patch.object(
-        th,
-        "_download_and_import_one",
-        return_value=("F1", 0.2, None, True, "yuv420p;alpha_mode=1"),
-    ) as download, patch.object(th, "_motion_graphics_cleanup_storage"):
-        msg = th.fetch_motion_graphics_video(
-            segment_urls=["https://x/motion/j1/output.mp4"],
-            render_job_id="j1",
-            label="",
-        )
-    assert "F1" in msg
-    called_url = download.call_args.args[0] if download.call_args.args else download.call_args[0][0]
-    assert called_url.endswith(".webm")
-    assert download.call_args.kwargs.get("job_transparent") is True
-    assert "transparent_ok=true" in msg
-    assert "alpha_mode=1" in msg or "yuv420p" in msg
-
-
-def test_fetch_transparent_webm_fail_no_mp4_fallback():
-    with patch.object(
-        th,
-        "_resolve_motion_graphics_label_from_job",
-        return_value=("HyperFrames lt-clean-bar: Title", {"transparent": True}),
-    ), patch.object(
-        th,
-        "_download_and_import_one",
-        return_value=("", 0.0, "alpha import failed (no opaque fallback): boom", False, ""),
-    ) as download, patch.object(th, "_motion_graphics_cleanup_storage") as cleanup:
-        msg = th.fetch_motion_graphics_video(
-            segment_urls=["https://x/motion/j1/output.webm"],
-            render_job_id="j1",
-            label="HyperFrames lt-clean-bar: Title",
-        )
-    assert "failed" in msg.lower()
-    assert "no opaque mp4 fallback" in msg.lower() or "re-compose" in msg.lower()
-    assert download.call_count == 1
-    cleanup.assert_not_called()
-
-
-def test_fetch_warns_when_summary_generic():
-    with patch.object(
-        th,
-        "_resolve_motion_graphics_label_from_job",
-        return_value=("HyperFrames motion graphic", {}),
-    ), patch.object(
-        th,
-        "_download_and_import_one",
-        return_value=("F2", 1.0, None, False, "yuv420p"),
-    ), patch.object(th, "_motion_graphics_cleanup_storage"):
-        msg = th.fetch_motion_graphics_video(
-            segment_urls=["https://x/output.mp4"],
-            render_job_id="j2",
-            label="",
-        )
-    assert "short_summary is generic" in msg
-
-
-def test_download_motion_graphics_preserves_webm_ext():
-    class _Resp:
-        def read(self, n):
-            if getattr(self, "_done", False):
-                return b""
-            self._done = True
-            return b"webm-bytes"
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    with patch("urllib.request.urlopen", return_value=_Resp()):
-        path, size = th._download_motion_graphics_file(
-            "https://x.supabase.co/storage/v1/object/public/motion/clips/j1/output.webm"
-        )
-    assert path.endswith(".webm")
-    assert size > 0
-
-
 def test_alpha_probe_contract_json_shape():
     contract = load_alpha_probe_contract()
     assert contract["vp9_alpha_webm"]["expect_pix_fmt"] == "yuv420p"
@@ -410,82 +261,3 @@ def test_vp9_webm_native_decode_is_opaque_black(tmp_path):
     assert th._verify_decoded_alpha_pixels(str(src), force_libvpx=False) is False
 
 
-@requires_ffmpeg
-def test_download_and_import_transparent_accepts_alpha_mode(tmp_path):
-    """job_transparent=True must accept qtrle MOV after import (not refuse on WebM probe)."""
-    src = build_vp9_alpha_overlay(tmp_path / "dl_alpha.webm")
-    mov = tmp_path / "imported.mov"
-    clean, err = th._reencode_alpha_for_openshot(str(src), output_path=str(mov), width=320, height=180)
-    assert err is None, err
-    fake_file = SimpleNamespace(
-        id="FALPHA",
-        data={"path": clean},
-        absolute_path=lambda: clean,
-        save=MagicMock(),
-    )
-    with patch.object(th, "_download_motion_graphics_file", return_value=(str(src), 0.1)), patch.object(
-        th, "_import_generated_video", return_value=(fake_file, None)
-    ), patch.object(th, "_stamp_motion_graphics_file_metadata") as stamp:
-        file_id, size_mb, err, transparent_ok, probe = th._download_and_import_one(
-            "https://x/output.webm",
-            label="HyperFrames lt-clean-bar: HOLD",
-            job_transparent=True,
-        )
-    assert err is None, err
-    assert file_id == "FALPHA"
-    assert transparent_ok is True
-    assert "argb" in probe or "rgba" in probe or "yuva" in probe
-    stamp.assert_called_once()
-    assert stamp.call_args.kwargs.get("transparent") is True
-
-
-@requires_ffmpeg
-def test_download_and_import_transparent_refuses_opaque_plate(tmp_path):
-    src = build_vp9_opaque_plate(tmp_path / "dl_opaque.webm")
-    fake_file = SimpleNamespace(
-        id="FOPAQUE",
-        data={"path": str(src)},
-        absolute_path=lambda: str(src),
-        save=MagicMock(),
-    )
-    with patch.object(th, "_download_motion_graphics_file", return_value=(str(src), 0.1)), patch.object(
-        th, "_import_generated_video", return_value=(fake_file, None)
-    ), patch.object(th, "_stamp_motion_graphics_file_metadata") as stamp:
-        file_id, _size, err, transparent_ok, _probe = th._download_and_import_one(
-            "https://x/output.webm",
-            label="bad",
-            job_transparent=True,
-        )
-    assert file_id == ""
-    assert transparent_ok is False
-    assert err is not None
-    assert "usable VP9 alpha" in err or "refusing solid plate" in err
-    stamp.assert_not_called()
-
-
-def test_fetch_idempotent_same_url():
-    th._MG_IMPORTED_URLS.clear()
-    with patch.object(
-        th,
-        "_resolve_motion_graphics_label_from_job",
-        return_value=("HyperFrames x", {"transparent": False}),
-    ), patch.object(
-        th,
-        "_download_and_import_one",
-        return_value=("F77", 0.5, None, False, "yuv420p"),
-    ) as download, patch.object(th, "_motion_graphics_cleanup_storage"):
-        first = th.fetch_motion_graphics_video(
-            segment_urls=["https://x/out.webm"],
-            render_job_id="j-idem",
-            label="L",
-        )
-        second = th.fetch_motion_graphics_video(
-            segment_urls=["https://x/out.webm"],
-            render_job_id="j-idem",
-            label="L",
-        )
-    assert "F77" in first
-    assert "Already imported" in second
-    assert "file_id=F77" in second
-    assert download.call_count == 1
-    th._MG_IMPORTED_URLS.clear()
