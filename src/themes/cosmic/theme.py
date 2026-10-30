@@ -377,6 +377,12 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
                 "visible": self.app.window.update_status_button.is_active,
             },
         ]
+        # Linked clips pill (classes/handoff): render progress, "N linked clips changed"
+        handoff_status = getattr(self.app.window, "handoff_status", None)
+        if handoff_status is not None:
+            toolbar_buttons.insert(toolbar_buttons.index(next(
+                b for b in toolbar_buttons if b.get("widget") is self.app.window.agent_selector_button)),
+                {"widget": handoff_status, "visible": handoff_status.is_active})
         self.set_toolbar_buttons(self.app.window.toolBar, icon_size=20, settings=toolbar_buttons)
 
         self.app.window.actionColor_Grade_View.setIcon(
@@ -399,12 +405,6 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
             {"widget": spacer},
         ]
         self.set_toolbar_buttons(self.app.window.timelineToolbar, icon_size=16, settings=timeline_buttons)
-
-        # ── Captions toolbar: one quiet text button ──────────────────
-        self.set_toolbar_buttons(self.app.window.captionToolbar, icon_size=16, settings=[
-            {"action": self.app.window.actionInsertTimestamp, "icon": "themes/cosmic/images/tool-add-track.svg",
-             "style": Qt.ToolButtonTextBesideIcon},
-        ])
 
         # ── Video toolbar ─────────────────────────────────────────────
         toolbar_buttons = [

@@ -160,14 +160,18 @@ def test_an_unpresent_profile_is_not_a_measurement():
 
 
 # ============================ captions and clip kinds ============================
-def test_caption_cues_become_timeline_intervals():
-    data = {"position": 10.0, "start": 0.0, "end": 8.0,
-            "effects": [{"class_name": "Caption", "caption_text": "00:00:00:500 --> 00:00:03:000\nHello there\n\n00:00:04:000 --> 00:00:06:000\nSecond line"}]}
-    got = TR.caption_intervals({"c": SimpleNamespace(data=data)})
-    assert got == [pytest.approx((10.5, 13.0)), pytest.approx((14.0, 16.0))]
-    trimmed = dict(data, start=2.0, position=0.0)
-    assert TR.caption_intervals({"c": SimpleNamespace(data=trimmed)})[0] == pytest.approx((-1.5, 1.0)), "cues are in source time; trimming shifts them"
-    assert TR.caption_intervals({"c": SimpleNamespace(data={"effects": []})}) == []
+def test_caption_overlays_become_timeline_intervals(editor):
+    # add_captions_tool places a HyperFrames overlay clip whose file says role "captions" (titles_text_captions).
+    from classes.query import Clip
+    info = {"clip_id": "C", "style": "highlight", "behind_subject": False, "role": "captions", "text": "Hello there"}
+    captions = editor.add_file("video", ai_metadata={"source": "hyperframes_captions", "captions": info})
+    cutout = editor.add_file("video", ai_metadata={"source": "hyperframes_captions", "captions": dict(info, role="subject")})
+    editor.add_clip(captions, position=10.0, start=0.0, end=3.0)
+    editor.add_clip(captions, position=20.0, start=1.0, end=4.0)
+    editor.add_clip(cutout, position=10.0, start=0.0, end=3.0)          # a speaker cut-out is not a caption
+    editor.add_clip(editor.add_file("video"), position=0.0, start=0.0, end=5.0)
+    got = TR.caption_intervals({str(c.id): c for c in Clip.filter()})
+    assert sorted(got) == [pytest.approx((10.0, 13.0)), pytest.approx((20.0, 23.0))], "a trimmed caption keeps its own range"
 
 
 @pytest.mark.parametrize("media,path,kind", [("video", "a.mp4", "video"), ("audio", "a.mp3", "audio"), ("image", "a.png", "image"),

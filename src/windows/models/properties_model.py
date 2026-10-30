@@ -25,6 +25,7 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
+import math
 import os
 from collections import OrderedDict
 from operator import itemgetter
@@ -399,6 +400,9 @@ class PropertiesModel(updates.UpdateInterface):
 
             # Determine the frame needed for this clip (based on the position on the timeline)
             time_diff = (requested_time - clip.Position()) + clip.Start()
+            if not math.isfinite(time_diff):
+                # The selected clip was just replaced or removed (e.g. captions re-rendered during playback).
+                return
             new_frame_number = round(time_diff * fps_float) + 1
             if new_frame_number != self.frame_number:
                 # If frame # has changed
@@ -1252,9 +1256,6 @@ class PropertiesModel(updates.UpdateInterface):
 
             # Append ROW to MODEL (if does not already exist in model)
             self.model.appendRow(row)
-            if type == "caption":
-                # Load caption editor after both label/value cells exist.
-                get_app().window.CaptionTextLoaded.emit(memo, row)
 
         elif name in self.items and self.items[name]["row"]:
             # Update the value of the existing model
@@ -1336,9 +1337,6 @@ class PropertiesModel(updates.UpdateInterface):
 
             # Update helper dictionary
             row.append(col)
-            if type == "caption":
-                # Keep the editor enabled and synchronized on property refreshes.
-                get_app().window.CaptionTextLoaded.emit(memo, row)
 
         # Keep track of items in a dictionary (for quick look up)
         self.items[name] = {"row": row, "property": property}
@@ -1430,9 +1428,6 @@ class PropertiesModel(updates.UpdateInterface):
 
                     # Add Headers
                     self.model.setHorizontalHeaderLabels([_("Property"), _("Value")])
-
-                    # Clear caption editor
-                    get_app().window.CaptionTextLoaded.emit("", None)
 
                 # Loop through properties, and build/update the model
                 for property in all_properties.items():

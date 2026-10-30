@@ -187,13 +187,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "layout_region": _str(),
         "query": _str(),
     }),
-    "fetch_motion_graphics_video_tool": _obj({
-        "segment_urls": _url_list(),
-        "supabase_url": _str(),
-        "supabase_path": _str(),
-        "render_job_id": _str(),
-        "label": _str(),
-    }),
     "generate_video_and_add_to_timeline_tool": _obj({
         "prompt": _str(),
         "position_seconds": _str_or_num(),
@@ -324,7 +317,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
             description="Refuse if more than this fraction would be deleted.",
         ),
     }),
-
 
     "export_captions_tool": _obj({
         "path": _str(description="Destination .srt or .vtt path."),

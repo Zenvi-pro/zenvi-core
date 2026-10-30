@@ -1,5 +1,5 @@
 {
-  "_source": "zenvi-backend harkit/tool-dedupe 01d5763: @tool stubs under core/tools/ whose names are desktop agent tools. Values are the stub annotation; a trailing ! marks a parameter without a default.",
+  "_source": "zenvi-backend nilay-media-index-v2-pr (merged with main): @tool stubs under core/tools/ whose names are desktop agent tools. Values are the stub annotation; a trailing ! marks a parameter without a default.",
   "tools": {
     "add_clip_to_timeline_tool": {
       "file_id": "str",
@@ -11,6 +11,8 @@
       "query": "str",
       "full_file": "str"
     },
+    "add_marker_tool": {},
+    "add_track_tool": {},
     "analyze_timeline_audio_tool": {
       "track": "str",
       "timeline_clip_id": "str",
@@ -60,6 +62,10 @@
       "track": "int | None",
       "language": "str"
     },
+    "export_video_tool": {
+      "show_dialog": "str",
+      "output_path": "str"
+    },
     "generate_image_and_add_to_timeline_tool": {
       "prompt": "str!",
       "duration_seconds": "str",
@@ -80,6 +86,11 @@
       "position_seconds": "str",
       "track": "str"
     },
+    "get_clips_with_full_metadata_tool": {
+      "detail_level": "str"
+    },
+    "get_export_settings_tool": {},
+    "get_project_info_tool": {},
     "get_timeline_state_tool": {
       "detail_level": "str"
     },
@@ -124,6 +135,7 @@
       "end": "float",
       "overview": "bool"
     },
+    "list_markers_tool": {},
     "list_transitions_tool": {
       "category": "str",
       "query": "str"
@@ -139,6 +151,10 @@
       "track": "str",
       "occurrence": "str"
     },
+    "new_project_tool": {},
+    "open_project_tool": {
+      "file_path": "str!"
+    },
     "place_motion_graphic_tool": {
       "file_id": "str",
       "position_seconds": "str",
@@ -148,6 +164,7 @@
       "layout_region": "str",
       "query": "str"
     },
+    "play_tool": {},
     "propose_overlay_windows_tool": {
       "beat_count": "str",
       "prefer_transparent": "str"
@@ -174,6 +191,9 @@
       "model_id": "str",
       "engine": "str"
     },
+    "save_project_tool": {
+      "file_path": "str!"
+    },
     "set_clip_volume_tool": {
       "timeline_clip_id": "str",
       "clip_query": "str",
@@ -185,6 +205,10 @@
       "end_seconds": "str",
       "fade_ms": "str",
       "mode": "str"
+    },
+    "set_export_setting_tool": {
+      "key": "str!",
+      "value": "str!"
     },
     "suggest_motion_graphics_placements_tool": {
       "brief": "str",

@@ -11,6 +11,12 @@ Threading: listing is read-only (worker thread). Relinking, sequence import,
 file removal and proxies are background-safe: disk checks and media probes run
 on the worker thread and only the project edit hops to the GUI thread, so each
 call is still one undo step. Sub-clips are a plain project edit (GUI thread).
+
+update_project_files_tool requests: "rename the clip to Intro" (name, plus
+rename_clips=true), "tag these as b-roll" (file_ids=["A1","B2"],
+add_tags=["b-roll"]), "I moved my footage to ~/Movies/shoot, fix the missing
+files" (search_folder, or path for one file), "only use 0:05-0:20 of this file"
+(source_start/end_seconds), "play this image sequence at 12 fps" (fps).
 """
 
 from __future__ import annotations
@@ -530,16 +536,11 @@ def update_project_files(file_ids=None, file_query="", name="", tags=None, add_t
                          reset_in_out=False, fps=0.0, rename_clips=False):
     """Change project files (File Properties): rename, tag, relink moved media, set in/out, set sequence fps.
 
-    Use for "rename the clip to Intro" (with rename_clips=true the timeline clips get the label
-    too), "tag these as b-roll" (add_tags on many file_ids at once), "I moved my footage to
-    ~/Movies/shoot, fix the missing files" (search_folder, or path for one file), "only use
-    0:05-0:20 of this file" (source_start/end_seconds, source seconds), "play this image
-    sequence at 12 fps" (fps; image sequences only). Timeline clips that use a changed file
-    are refreshed (their end is clamped to the new length, as the dialog does). Relinking
-    keeps the name, tags, AI metadata, in/out and optimized preview, and reports
-    same_content=false when the new media is a different file. One undo step. Does not
-    trim timeline clips (that is a timeline edit) and never deletes anything.
-    Example: file_ids=["A1","B2"], add_tags=["b-roll"].
+    Timeline clips using a changed file are refreshed (their end clamped to
+    the new length, as the dialog does). Relinking keeps the name, tags, AI
+    metadata, in/out and optimized preview, and reports same_content=false
+    when the new media is a different file. One undo step. Does not trim
+    timeline clips (a timeline edit) and never deletes anything.
     """
     from classes.query import Clip
 

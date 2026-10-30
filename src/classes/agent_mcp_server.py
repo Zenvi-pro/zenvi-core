@@ -78,7 +78,7 @@ SERVER_INSTRUCTIONS = (
     "engine=apple to pin. Tighten pacing with remove silent pauses "
     "first, then remove filler words (pass transcript_generation; filler_preset "
     "um_uh is allowed). After cuts, call get_transcript_tool again — stale "
-    "indices are refused. add_captions_tool burns timed dialogue; "
+    "indices are refused. add_captions_tool adds animated word-timed captions over a clip (HyperFrames styles; find_tools: list caption styles); "
     "export captions writes SRT/VTT. diarize media labels speakers "
     "offline. music analysis (find_tools: analyze music) finds the beats. "
     "To recreate a video from the user's footage run the loop: plan recreation, build recreation, check recreation, fix what the check names, check again; never place it by length alone. search_footage_tool searches everything the index knows (what happens, what is said, how it looks)."
@@ -154,9 +154,15 @@ def iter_tool_defs() -> list:
     from classes.agent_tools.schema import UNSCHEMATIZED, get_schema
 
     from classes.editor_tools import REGISTRY as editor_specs
+    from classes.editor_tools import engine_bridge
 
     defs = []
     for name, func in list(AGENT_TOOL_HANDLERS.items()) + list(_extra_tools().items()):
+        bridged = engine_bridge.tool_def(name)
+        if bridged is not None:
+            # Engine tools: the engine's own schema and description.
+            defs.append(bridged)
+            continue
         spec = editor_specs.get(name)
         if spec is not None:
             # Editor tools carry an explicit schema and a docstring written for
@@ -536,12 +542,21 @@ class ZenviMcpServer:
                      stateless_http=True, json_response=True,
                      instructions=SERVER_INSTRUCTIONS)
 
-        tools = [types.Tool(name=d["name"], description=d["description"],
-                            inputSchema=d["inputSchema"]) for d in listed_tool_defs()]
+        from classes.editor_tools import engine_bridge
+
+        def build():
+            return [types.Tool(name=d["name"], description=d["description"],
+                               inputSchema=d["inputSchema"]) for d in listed_tool_defs()]
+
+        # Engine-bridge tools arrive from a worker thread after start-up: rebuild when they do.
+        listed = {"revision": engine_bridge.REVISION, "tools": build()}
 
         @fm._mcp_server.list_tools()
         async def _list_tools():
-            return tools
+            if listed["revision"] != engine_bridge.REVISION:
+                listed["revision"] = engine_bridge.REVISION
+                listed["tools"] = build()
+            return listed["tools"]
 
         # validate_input=False: schemas are intentionally permissive; let the tool
         # itself report bad args (matching the WebSocket tool path's behaviour).

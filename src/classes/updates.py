@@ -150,12 +150,14 @@ class UpdateAction:
     """A data structure representing a single update manager action,
     including any necessary data to reverse the action."""
 
-    def __init__(self, type=None, key=None, values=None, old_values=None, transaction=None):
+    def __init__(self, type=None, key=None, values=None, old_values=None, transaction=None, index=None):
         self.type = type  # insert, update, or delete
         self.key = key or []  # list which contains the path to the item, for example: ["clips",{"id":"123"}]
         self.values = values
         self.old_values = old_values
         self.transaction = transaction
+        # A delete: where the item was in its list, so undo puts it back there (None: appended).
+        self.index = index
 
         # Set transaction id - used with undo/redo to group
         # a set of related UpdateAction objects
@@ -183,6 +185,8 @@ class UpdateAction:
                          "value": json.loads(json.dumps(self.values)),
                          "old_values": json.loads(json.dumps(self.old_values)),
                          "transaction": self.transaction}
+            if self.index is not None:
+                data_dict["index"] = self.index
 
             # Always remove 'history' key (if found). This prevents nested "history"
             # attributes when a project dict is loaded.
@@ -216,6 +220,11 @@ class UpdateAction:
         self.values = update_action_dict.get("value")
         self.old_values = update_action_dict.get("old_values")
         self.transaction = update_action_dict.get("transaction", self.transaction)
+        self.index = update_action_dict.get("index")
+        if self.type == "insert" and isinstance(self.old_values, list):
+            # Saved by an older version: a copy of the whole list the item went into, which
+            # undo never reads (it deletes the item by id). Drop it, and the next save is small.
+            self.old_values = None
 
         # Always remove 'history' key (if found). This prevents nested "history"
         # attributes when a project dict is loaded.
@@ -314,13 +323,13 @@ class UpdateManager:
         if history_length_int == 0:
             self.update_untracked(["history"], {"redo": [], "undo": []})
             return
-        for action in self.redoHistory[-history_length_int:]:
+        for action in self._last_steps(self.redoHistory, history_length_int):
             if action.type != "load" and action.key[0] != "history":
                 actionDict = json.loads(action.json(), strict=False)
                 redo_list.append(actionDict)
             else:
                 log.info("Saving redo history, skipped key: %s" % str(action.key))
-        for action in self.actionHistory[-history_length_int:]:
+        for action in self._last_steps(self.actionHistory, history_length_int):
             if action.type != "load" and action.key[0] != "history":
                 actionDict = json.loads(action.json(), strict=False)
                 undo_list.append(actionDict)
@@ -329,6 +338,21 @@ class UpdateManager:
 
         # Set history data in project
         self.update_untracked(["history"], {"redo": redo_list, "undo": undo_list})
+
+    @staticmethod
+    def _last_steps(history, steps):
+        """The actions of the last *steps* undo steps (transactions), in history order.
+
+        history-limit counts undo steps: a slice of actions would save part of
+        one tool call (a sound design is hundreds of actions), and after a
+        reopen its undo would take back only that part.
+        """
+        kept = set()
+        for action in reversed(history):
+            if len(kept) == steps:
+                break
+            kept.add(action.transaction)
+        return [a for a in history if a.transaction in kept]
 
     def reset(self):
         """ Reset the UpdateManager, and clear all UpdateActions and History.
@@ -394,9 +418,10 @@ class UpdateManager:
             id = action.values["id"]
             action.key.append({"id": id})
 
-        # On removes, setup add with old value
+        # On removes, setup add with old value, where it was
         elif action.type == "delete":
             reverse.type = "insert"
+            reverse.index = action.index
             # Remove last item from key (usually the id of the inserted item)
             if reverse.type == "insert" and isinstance(reverse.key[-1], dict) and "id" in reverse.key[-1]:
                 reverse.key = reverse.key[:-1]
@@ -605,6 +630,29 @@ class UpdateManager:
         self.update(key, values)
         self.ignore_history = previous_ignore
         self.pending_action = previous_pending
+        self._keep_untracked_in_history(key, values)
+
+    def _keep_untracked_in_history(self, key, values):
+        """ Write untracked *values* of item *key* into the earlier undo and redo snapshots of that item.
+
+        Those hold the item as it was when the user edited it: undoing a tag
+        edit made while indexing ran would put the half-done ai_metadata back
+        over the result that landed since. """
+        if not isinstance(values, dict) or len(key or []) < 2 or not isinstance(key[-1], dict):
+            return
+        item_id = key[-1].get("id")
+        for action in [*self.actionHistory, *self.redoHistory]:
+            # An undone insert's key ends in its item's id (get_reverse_action appends it).
+            same = action.key == key or (
+                action.type == "insert" and item_id is not None and action.key in (key[:-1], key)
+                and isinstance(action.values, dict) and action.values.get("id") == item_id)
+            if not same:
+                continue
+            for snapshot in (action.values, action.old_values):
+                if isinstance(snapshot, dict):
+                    for name, value in values.items():
+                        if name in snapshot:
+                            snapshot[name] = json.loads(json.dumps(value))
 
     def delete(self, key):
         """ Delete an item from the UpdateManager with an UpdateAction

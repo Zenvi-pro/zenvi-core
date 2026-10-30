@@ -113,7 +113,7 @@ def test_validate_accepts_remove_words_matches():
     }) is None
     assert validate_args("add_captions_tool", {
         "timeline_clip_id": "c1",
-        "engine": "auto",
+        "style": "highlight",
     }) is None
 
 

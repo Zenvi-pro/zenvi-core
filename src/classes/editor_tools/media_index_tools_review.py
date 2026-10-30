@@ -82,16 +82,17 @@ def build_timeline() -> Tuple[List[R.TimelineClip], R.ProjectInfo, Dict[str, Any
 
 
 def caption_intervals(objs: Dict[str, Any]) -> List[Tuple[float, float]]:
-    """Timeline [start, end) of every caption cue on every clip that carries a Caption effect."""
-    from classes import caption_cues
-    from classes.editor_tools.titles_text_captions import caption_effects, caption_to_timeline
+    """Timeline [start, end) of every caption overlay: the HyperFrames captions add_captions_tool places over a clip."""
+    from classes import audio_mix as am
+    from classes.query import File
 
     out: List[Tuple[float, float]] = []
     for clip_obj in objs.values():
         data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
-        for effect in caption_effects(data):
-            for cue in caption_cues.parse_caption_text(str(effect.get("caption_text") or "")):
-                out.append((caption_to_timeline(data, cue.start), caption_to_timeline(data, cue.end)))
+        f = File.get(id=str(data.get("file_id") or ""))
+        info = ((f.data.get("ai_metadata") or {}).get("captions") if f else None) or {}
+        if info.get("role") == "captions":
+            out.append(am.clip_timeline_extent(data))
     return out
 
 

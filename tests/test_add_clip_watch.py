@@ -574,3 +574,15 @@ def test_end_seconds_alone_still_bounds_the_window():
     # the whole 600s file.
     assert placed["start"] < placed["end"]
     assert placed["end"] - placed["start"] < 100.0
+
+
+def test_a_whole_render_is_placed_frame_exact_with_no_watch():
+    """Captions: full_file with both edges named. The watch moved a 20 s render to its 2-18 s."""
+    out, calls, placed = _run_add(
+        {"path": "/renders/captions.webm", "name": "captions.webm", "duration": 20.0, "start": 0.0, "end": 20.0,
+         "has_video": True, "ai_metadata": {"transparent": True}},
+        duration_seconds="20", end_seconds="20", full_file="true", query="Captions: interview.mp4",
+    )
+    assert not out.startswith("Error:"), out
+    assert calls == [] and "watched" not in out
+    assert placed["start"] == 0.0 and abs(placed["end"] - 20.0) < 1e-9

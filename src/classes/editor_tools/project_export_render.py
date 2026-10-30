@@ -12,6 +12,8 @@ responsive while it renders; ``export_video_headless`` builds its Export dialog
 object on the GUI thread and touches no widget after that (off-thread widget
 access is what crashed macOS before PR #151). Everything else (preset parsing,
 path and codec checks, verification) happens on the calling worker thread.
+
+export_video_tool example call: {"preset": "Instagram Reels", "start": 0, "end": 5}.
 """
 
 from __future__ import annotations
@@ -517,39 +519,39 @@ def list_export_presets(category="", query="", include_unavailable=False):
 
 
 _EXPORT_SCHEMA = {
-    "preset": string("Target: an Export dialog preset title or a common name -- 'MP4 (h.264)' (default), 'YouTube', "
+    "preset": string("Export dialog preset title or common name: 'MP4 (h.264)' (default), 'YouTube', "
                      "'YouTube (4K)', 'YouTube Shorts', 'Instagram Reels', 'Instagram', 'TikTok', 'Facebook', "
                      "'Twitter / X', 'LinkedIn', 'Vimeo', 'GIF', 'MP3', 'WEBM', 'ProRes', 'MOV', 'MKV', 'HEVC'. "
                      "See find_tools (list export presets).", ""),
-    "quality": enum(["", "low", "med", "high"], "Preset quality (bitrate). Empty = stored setting or high.", ""),
+    "quality": enum(["", "low", "med", "high"], "Preset bitrate. Empty = stored setting or high.", ""),
     "export_type": enum(["auto", "video_audio", "video_only", "audio_only", "image_sequence"],
-                        "auto = the preset's (GIF = video only, MP3 = audio only). audio_only with container "
-                        "'wav'/'flac' writes uncompressed/lossless audio.", "auto"),
+                        "auto = the preset's (GIF video only, MP3 audio only). audio_only + container wav/flac = "
+                        "uncompressed/lossless.", "auto"),
     "range": enum(["", "whole", "selection", "custom"],
-                  "whole = first clip to last clip; selection = the selected clips' span; custom = start/end. "
-                  "Empty = custom when start/end are given (or stored), else whole.", ""),
-    "start": number("Range start in timeline seconds (custom range).", 0, minimum=0),
-    "end": number("Range end in timeline seconds (custom range). 0 = end of the last clip.", 0, minimum=0),
-    "output_path": string("Full output file path. Empty = folder + file_name. The extension follows the container.", ""),
+                  "whole = first to last clip; selection = selected clips' span; custom = start/end. Empty = "
+                  "custom when start/end are given (or stored), else whole.", ""),
+    "start": number("Custom range start, timeline seconds.", 0, minimum=0),
+    "end": number("Custom range end, timeline seconds. 0 = end of the last clip.", 0, minimum=0),
+    "output_path": string("Full output path. Empty = folder + file_name. Extension follows the container.", ""),
     "folder": string("Output folder (default: the Export folder preference, usually Downloads).", ""),
-    "file_name": string("Output file name without folder (default: the project name).", ""),
-    "profile": string("Export video profile/size instead of the preset's (Advanced > Profile): a profile name, "
-                      "social preset or 'WIDTHxHEIGHT'.", ""),
-    "width": integer("Override export width in pixels (even). 0 = from profile.", 0, minimum=0, maximum=16384),
-    "height": integer("Override export height in pixels (even). 0 = from profile.", 0, minimum=0, maximum=16384),
-    "fps": number("Override export frame rate. 0 = from profile.", 0, minimum=0, maximum=240),
-    "container": string("Override container/extension, e.g. 'mov', 'mkv', 'wav', 'flac'.", ""),
-    "video_codec": string("Override video codec, e.g. 'libx264', 'libx265', 'prores_ks', 'libvpx-vp9'.", ""),
-    "audio_codec": string("Override audio codec, e.g. 'aac', 'libmp3lame', 'pcm_s16le', 'flac'.", ""),
-    "video_bitrate": string("Override video rate: '8 Mb/s', '500 kb/s' or a quality like '20 crf'.", ""),
-    "audio_bitrate": string("Override audio bitrate, e.g. '192 kb/s'.", ""),
-    "sample_rate": integer("Override audio sample rate (Hz), e.g. 44100, 48000. 0 = preset's.", 0, minimum=0,
-                           maximum=192000),
-    "channels": string("Override audio channels: mono, stereo, surround, 5.1, 7.1.", ""),
+    "file_name": string("File name without folder (default: the project name).", ""),
+    "profile": string("Profile/size instead of the preset's (Advanced > Profile): profile name, social preset "
+                      "or 'WIDTHxHEIGHT'.", ""),
+    "width": integer("Width override, pixels (even). 0 = from profile.", 0, minimum=0, maximum=16384),
+    "height": integer("Height override, pixels (even). 0 = from profile.", 0, minimum=0, maximum=16384),
+    "fps": number("Frame rate override. 0 = from profile.", 0, minimum=0, maximum=240),
+    "container": string("Container/extension override, e.g. 'mov', 'mkv', 'wav', 'flac'.", ""),
+    "video_codec": string("Override, e.g. 'libx264', 'libx265', 'prores_ks', 'libvpx-vp9'.", ""),
+    "audio_codec": string("Override, e.g. 'aac', 'libmp3lame', 'pcm_s16le', 'flac'.", ""),
+    "video_bitrate": string("Override: '8 Mb/s', '500 kb/s' or a quality like '20 crf'.", ""),
+    "audio_bitrate": string("Override, e.g. '192 kb/s'.", ""),
+    "sample_rate": integer("Override, Hz, e.g. 44100, 48000. 0 = preset's.", 0, minimum=0, maximum=192000),
+    "channels": string("Override: mono, stereo, surround, 5.1 or 7.1.", ""),
     "interlaced": boolean("Interlaced output (top field first).", False),
     "image_format": enum(["png", "jpg", "bmp", "tiff"], "Image type for export_type='image_sequence'.", "png"),
     "overwrite": boolean("Replace an existing output file.", False),
-    "show_dialog": boolean("Instead of rendering, open the Export Video dialog for the user (returns at once).", False),
+    "show_dialog": boolean("Open the Export Video dialog for the user instead of rendering (returns at once).",
+                           False),
 }
 
 
@@ -566,17 +568,13 @@ def export_video(preset="", quality="", export_type="auto", range="", start=0, e
                  image_format="png", overwrite=False, show_dialog=False):
     """Render the timeline to a file: video, audio only (MP3/WAV/FLAC), animated GIF or an image sequence.
 
-    Picks the target like the Export dialog: preset (YouTube, Instagram Reels,
-    TikTok, YouTube Shorts, MP4 (h.264), GIF, MP3...), quality low/med/high, the
-    preset's video profile (closest to the project), and optional Advanced
-    overrides (size, fps, codecs, bitrates, sample rate, channels, container).
-    Range: the whole timeline (first to last clip), the selected clips, or
-    start/end seconds. Never opens a dialog unless show_dialog=true; refuses to
-    overwrite unless overwrite=true. Waits for the render (the editor stays
-    usable meanwhile) and returns the file path, size, format and range. For social
-    vertical formats, switch the project first (find_tools: set project setting)
-    (reframe='fill'), otherwise landscape footage renders with bars.
-    Example: {"preset": "Instagram Reels", "start": 0, "end": 5}
+    Picks the target like the Export dialog: preset, quality, the preset's
+    video profile closest to the project, then any Advanced overrides. Refuses
+    to overwrite unless overwrite=true, and while another export is running.
+    Waits for the render (the editor stays usable) and returns the file path,
+    size, format and range. For vertical social formats switch the project
+    first with run_tool(name='set_project_setting_tool', args={'profile': ..., 'reframe': 'fill'}),
+    or landscape footage renders with bars.
     """
     if not _EXPORT_LOCK.acquire(blocking=False):
         running = dict(_RUNNING_EXPORT)
@@ -1021,6 +1019,7 @@ def export_files_to_folder(file_ids, folder=""):
     os.makedirs(dest, exist_ok=True)
 
     import openshot
+    from classes.export_audio_priming import trim_export_audio_priming
     from windows import export_clips as ec
 
     results = []
@@ -1059,6 +1058,8 @@ def export_files_to_folder(file_ids, folder=""):
                                 if reader:
                                     reader.Close()
                                 writer.Close()
+                            if clip.data.get("has_audio"):
+                                trim_export_audio_priming(staged, ec.CLIP_AUDIO_CODEC)
                             os.replace(staged, out)
                         finally:
                             if os.path.exists(staged):

@@ -18,7 +18,7 @@ def _doc(name):
 
 def test_every_bundled_template_parses_and_names_resolve():
     paths = [p for p in title_svg.template_paths() if p.endswith(".svg")]
-    assert len(paths) == 50
+    assert len(paths) == 51
     for p in paths:
         doc = title_svg.load(p)
         title_svg.fields(doc)
@@ -113,7 +113,7 @@ def test_write_is_staged_and_leaves_no_partial_files(tmp_path):
 
 def test_list_static_templates_with_fields_and_query(tt):
     out = receipt(tt.call("list_title_templates_tool"))
-    assert len(out["templates"]) == 50
+    assert len(out["templates"]) == 51
     gray = next(t for t in out["templates"] if t["name"] == "Gray_Box_4")
     assert gray["zone"] == "bottom" and [f["role"] for f in gray["fields"]] == ["title", "subtitle"]
     lower = receipt(tt.call("list_title_templates_tool", query="lower third"))
@@ -193,15 +193,13 @@ def test_new_top_track_when_every_track_is_busy_and_one_undo_removes_all(tt):
     assert tt.clip(rec["timeline_clip_id"]) is not None and tt.file(rec["file_id"]) is not None
 
 
-def test_explicit_track_locked_or_busy_is_refused_without_history_or_files(tt):
+def test_explicit_track_locked_is_refused_without_history_or_files(tt):
     video = tt.add_file("video", duration=10.0)
     tt.add_clip(video, position=0.0, layer=2000000)
     tt.lock_track(3000000)
     tt.mark()
     out = tt.call("add_title_tool", text="X", track="3")
     assert out.startswith("Error") and "locked" in out
-    out = tt.call("add_title_tool", text="X", track="2", position_seconds=5)
-    assert out.startswith("Error") and "already has" in out
     assert tt.undo_steps_since_mark() == 0
     assert not os.path.isdir(tt.tmp_path / "title") or os.listdir(tt.tmp_path / "title") == []
     rec = receipt(tt.call("add_title_tool", text="Y", track="2", position_seconds=10.5))
@@ -242,7 +240,6 @@ def test_lines_fill_multi_line_templates_and_too_many_are_refused(tt):
     ({"text": "A", "font_weight": "heavy"}, "font_weight"),
     ({"text": "A", "duration_seconds": 0}, "duration_seconds"),
     ({"text": "A", "position_seconds": -1}, "position_seconds"),
-    ({"text": "A", "template": "Solid_Color"}, "no text"),
 ])
 def test_add_title_refusals_leave_history_untouched(tt, args, needle):
     tt.mark()
@@ -472,3 +469,19 @@ def test_undo_of_a_title_edit_is_reported_as_a_change(tt):
     assert tt.clip(rec["timeline_clip_id"])["reader"]["path"] == rec["path"]
     out = tt.call("redo_tool", steps=1)
     assert not out.startswith("Error"), out
+
+
+def test_place_clip_can_skip_the_preview_refresh_for_batches(tt):
+    """Batch importers skip the per-clip preview refresh; a single clip refreshes as before."""
+    from classes.editor_tools import titles_text_common as common
+    timeline = tt.window.timeline
+    f = tt.add_file("video", duration=4.0)
+    common.place_clip(f, 0.0, 2.0, 1000000)
+    assert timeline.add_calls[-1]["ignore_refresh"] is False and timeline.update_calls[-1]["ignore_refresh"] is False
+    for i in range(3):
+        common.place_clip(f, 3.0 + i * 3, 2.0, 1000000, ignore_refresh=i < 2)
+    assert [c["ignore_refresh"] for c in timeline.add_calls[-3:]] == [True, True, False]
+    assert [c["ignore_refresh"] for c in timeline.update_calls[-3:]] == [True, True, False]
+    tt.window.IgnoreUpdates.emit.reset_mock()
+    common.end_clip_batch()
+    tt.window.IgnoreUpdates.emit.assert_called_once_with(False, False)

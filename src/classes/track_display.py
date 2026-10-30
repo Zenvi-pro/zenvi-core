@@ -11,6 +11,14 @@ import json
 import re
 from typing import Any, Dict, List
 
+# Track number spacing (track_ops.TRACK_STRIDE; kept here so this module stays import-free).
+TRACK_STRIDE = 1000000
+
+# How far past the top a placement may name a track. Agents name track 10 of 9
+# to mean "a new track on top" (most refusals in the W28 transcript replay); a
+# bigger jump is more likely a wrong number than an intent.
+MAX_NEW_TRACKS_ON_TOP = 3
+
 
 def layers_sorted_by_number(layers):
     """Ascending by layer number; bottom of the stack is first (lowest number)."""
@@ -74,6 +82,44 @@ def track_stack_json(layers) -> str:
 
 
 def normalize_track_or_layer_arg(raw: str, layers) -> tuple[int | None, str | None]:
+    """(layer number, error) for a track reference; see :func:`_resolve_track`."""
+    layer, err, _new = _resolve_track(raw, layers, 0)
+    return layer, err
+
+
+def resolve_placement_track(raw: str, layers) -> tuple[int | None, str | None, int]:
+    """(layer number, error, new tracks) for a tool that puts something new on a track.
+
+    As :func:`normalize_track_or_layer_arg`, and a ui_track 1 to
+    MAX_NEW_TRACKS_ON_TOP past the top resolves to the number the topmost added
+    track will get (each new track takes the top number plus TRACK_STRIDE, as
+    add_track_tool numbers them), with how many to add. The caller adds them in
+    the same undo step (track_ops.ensure_track).
+    """
+    return _resolve_track(raw, layers, MAX_NEW_TRACKS_ON_TOP)
+
+
+def new_tracks_note(count: int) -> str:
+    """Receipt wording for the tracks a placement added on top ("" for none)."""
+    if not count or count <= 0:
+        return ""
+    return " on a new track" if count == 1 else f" on a new track ({count} tracks added on top)"
+
+
+def added_tracks_notes(new_tracks: int, named_is_new: bool) -> tuple:
+    """(note after the named track, note at the end of the summary) for the tracks a move/copy added.
+
+    A selection from several tracks can name an existing track while the lower sources' tracks
+    are the new ones, so the count then goes at the end instead of "on a new track".
+    """
+    if not new_tracks or new_tracks <= 0:
+        return "", ""
+    if named_is_new:
+        return new_tracks_note(new_tracks), ""
+    return "", f"; {new_tracks} track{'' if new_tracks == 1 else 's'} added on top"
+
+
+def _resolve_track(raw: str, layers, new_on_top: int) -> tuple[int | None, str | None, int]:
     """
     Resolve user/LLM track input to storage layer number against LIVE layers.
 
@@ -83,27 +129,31 @@ def normalize_track_or_layer_arg(raw: str, layers) -> tuple[int | None, str | No
       3) exact label / name (case-insensitive; unique) — labels may be numeric —
          then a unique part of a name (never for numbers)
       4) ui_track index 1..N counted from the BOTTOM of the stack ("2", "track 2")
+      5) ui_track N+1..N+new_on_top: tracks to add on top (third value: how many)
 
     Labels are never used for z-order — only to find which layer the user meant.
     """
     raw = (raw or "").strip()
     if not raw:
-        return None, None
+        return None, None, 0
     layers = layers or []
-    if not layers:
-        return None, "Error: No tracks in project."
+    if not layers and not new_on_top:
+        return None, "Error: No tracks in project.", 0
 
     stack = build_track_stack(layers)
     numbers = {e["layer_number"] for e in stack}
 
     try:
-        n = int(float(raw))
-    except ValueError:
+        value = float(raw)
+        n = int(value)
+    except (ValueError, OverflowError):
         n = None
+    # Only a whole number names a track to add ("6.5" picks no new track 6).
+    whole = n is not None and value == n
 
     # 1) Real layer_number
     if n is not None and n in numbers:
-        return n, None
+        return n, None, 0
 
     # 2) track_id from TRACK_STACK_JSON (agents often pass track_id=L4)
     tid_query = raw.strip()
@@ -113,7 +163,7 @@ def normalize_track_or_layer_arg(raw: str, layers) -> tuple[int | None, str | No
         and (e.get("track_id") or "").strip().lower() == tid_query.lower()
     ]
     if len(tid_hits) == 1:
-        return int(tid_hits[0]["layer_number"]), None
+        return int(tid_hits[0]["layer_number"]), None, 0
 
     # 3) Label / name (including numeric labels like "1" / "5")
     low = raw.lower()
@@ -124,8 +174,10 @@ def normalize_track_or_layer_arg(raw: str, layers) -> tuple[int | None, str | No
     ui_number = n
     if ui_number is None and m:
         try:
-            ui_number = int(float(label_query))
-        except ValueError:
+            value = float(label_query)
+            ui_number = int(value)
+            whole = value == ui_number
+        except (ValueError, OverflowError):
             ui_number = None
 
     label_hits = [
@@ -134,12 +186,12 @@ def normalize_track_or_layer_arg(raw: str, layers) -> tuple[int | None, str | No
         or (e.get("label") or "").strip().lower() == low
     ]
     if len(label_hits) == 1:
-        return int(label_hits[0]["layer_number"]), None
+        return int(label_hits[0]["layer_number"]), None, 0
     if len(label_hits) > 1:
         return None, (
             f"Error: Ambiguous track label {raw!r} matches multiple layers. "
             "Pass layer_number from get_timeline_state_tool TRACK_STACK_JSON."
-        )
+        ), 0
 
     # A number never matches part of a name: "1" is UI track 1, not "Music 1".
     contains = [
@@ -148,17 +200,22 @@ def normalize_track_or_layer_arg(raw: str, layers) -> tuple[int | None, str | No
         and label_query in (e.get("label") or "").strip().lower()
     ]
     if len(contains) == 1:
-        return int(contains[0]["layer_number"]), None
+        return int(contains[0]["layer_number"]), None, 0
 
     # 4) ui_track from bottom
     if ui_number is not None and layers and 1 <= ui_number <= len(stack):
-        return int(stack[ui_number - 1]["layer_number"]), None
+        return int(stack[ui_number - 1]["layer_number"]), None, 0
+    missing = 0 if ui_number is None else ui_number - len(stack)
+    if whole and 1 <= missing <= new_on_top:
+        top = int(stack[-1]["layer_number"]) if stack else 0
+        return top + missing * TRACK_STRIDE, None, missing
 
     return (
         None,
         f"Error: Unknown track or layer {raw!r}. "
         "Call get_timeline_state_tool and use layer_number (preferred), track_id, "
         "ui_track (1=bottom), or the exact label.",
+        0,
     )
 
 

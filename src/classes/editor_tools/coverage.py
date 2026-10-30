@@ -62,6 +62,9 @@ CAPABILITIES = [
     ("clip.separate_audio", "timeline-edit", "Clip menu > Audio > Separate (single / per channel)", "Split a clip's audio onto its own clip(s) and mute the original"),
     ("clip.waveform", "timeline-edit", "Clip menu > Audio > Show/Hide Waveform", "Show or hide a clip's waveform"),
     ("clip.enable_av", "timeline-edit", "Properties > Enable Audio / Enable Video", "Turn a clip's audio or video on/off (mute, audio-only)"),
+    ("reel.build", "timeline-edit", "build_reel_tool (no single menu: the Assistant's one-step edit)",
+     "Cut a finished short-form reel from Project Files media: shots on the music's beats, camera moves, "
+     "looks, flashes, hook/label/end-card titles and a faded music bed, in one undo step"),
 
     # ------------------------------------------------------------------ clip-props
     ("clip.properties_get", "clip-props", "Properties dock", "Read every property of a clip at a time: value, range, choices, keyframes"),
@@ -93,8 +96,8 @@ CAPABILITIES = [
     ("title.create", "titles-text", "Title Editor > Save", "Create a title from a template with texts, font, colors, alpha, and place it on the timeline"),
     ("title.edit", "titles-text", "Project Files > Edit Title / Duplicate", "Change an existing title's text/font/colors (updating its clips) or duplicate it"),
     ("title.animated", "titles-text", "Title > Animated Title (Blender, 19 templates)", "List Blender templates with parameters and render one into an image sequence clip"),
-    ("caption.add", "titles-text", "Caption effect / Captions dock", "Add captions from the transcript, an SRT/VTT file or given cues, with style (font, size, colors, stroke, background, position, fades)"),
-    ("caption.edit", "titles-text", "Captions dock (edit text, Insert Caption)", "Edit caption cues of a Caption effect"),
+    ("caption.add", "titles-text", "Captions dock", "Add animated word-timed captions from the clip's on-device transcript in a HyperFrames caption style, optionally behind the speaker"),
+    ("caption.edit", "titles-text", "Captions dock (styles, Remove)", "List caption styles and caption overlays; remove a clip's captions"),
     ("text.timer", "titles-text", "Timer effect", "Add a styled count-up/down/clock/timecode overlay"),
     ("emoji.add", "titles-text", "Emojis dock", "Search the 1,239 emoji by name/group and place one on the timeline"),
 
@@ -130,12 +133,13 @@ CAPABILITIES = [
 
     # ------------------------------------------------------------------ ai-generation
     ("ai.comfyui_create", "ai-generation", "AI Tools > Create with AI (Image, Video, Sound, Music)", "Generate new media with local ComfyUI templates"),
-    ("ai.comfyui_enhance", "ai-generation", "AI Tools > Enhance with AI", "Upscale, restyle, image-to-video, track object blur/highlight/mask, depth/lines, split scenes, captions from speech, speech clarity, noise reduction"),
+    ("ai.comfyui_enhance", "ai-generation", "AI Tools > Enhance with AI", "Upscale, restyle, image-to-video, track object blur/highlight/mask, depth/lines, split scenes, speech clarity, noise reduction"),
     ("ai.jobs", "ai-generation", "Cancel Job / generation queue", "List and cancel generation jobs"),
     ("ai.tts", "ai-generation", "generate_tts_and_add_to_timeline_tool", "Narration from text placed on a real track with its real duration (off the GUI thread)"),
     ("ai.video_generation", "ai-generation", "generate_video/modify_clip/generate_transition_clip tools", "AI video generation/edit/morph that replaces (not stacks on) the originals and reports failures as errors"),
     ("ai.search", "ai-generation", "search_footage_tool", "Semantic search tools without crashes; failures reported as errors"),
     ("ai.stock_media", "ai-generation", "Stock search in Project Files", "Pexels/Freesound import (existing tools) with errors reported as errors"),
+    ("ai.hyperframes", "ai-generation", "HyperFrames motion graphics, product demos and captions", "Author, check and render HTML compositions with the local HyperFrames CLI and its skills; import the render from disk"),
     ("recording.prepare", "ai-generation", "View > Recording View / Clip > Audio > Record", "Open and configure the Recording dock (sources mic/screen/webcam, devices, track, start time); starting capture stays a human action"),
     # ------------------------------------------------------------------ media-index
     ("index.search", "media-index", "Project Files search / agent search", "Search every indexed file by description, speech, picture or reference, with measured-fact filters"),
@@ -171,6 +175,27 @@ CAPABILITIES = [
     ("index.balance_mix", "media-index", "Audio mix", "Even out voices, duck music under speech and set the overall loudness in one undo step"),
     ("index.brief", "media-index", "Project notes", "Save and read the plan and intent of an edit with the project"),
     ("index.audio_view", "media-index", "Audio waveform / spectrum", "Spectrogram strip of a file's audio as an image"),
+
+    # ------------------------------------------------------------------ handoff (classes.handoff core, C1)
+    ("handoff.link_hosts", "handoff", "File > Send To (host status)", "List the Adobe apps Zenvi Link connects (After Effects, Premiere Pro): connected, active, project, how to connect"),
+    ("handoff.call_host", "handoff", "Zenvi Link panel in After Effects / Premiere Pro", "Drive a connected After Effects or Premiere Pro through its Zenvi Link tools, returning the host's receipt and frame captures"),
+    ("handoff.linked_import", "handoff", "Import rendered media with a source link (AE -> Zenvi)", "Add a rendered file that keeps a link to its source (Remotion, HyperFrames, After Effects comp) as one undo step"),
+    ("handoff.linked_info", "handoff", "Clip menu / Project Files menu > Linked Source", "Read a linked clip's source, props, render settings and freshness (fresh, stale, rendering, error, missing source)"),
+    ("handoff.linked_update", "handoff", "Linked Source > Edit Props... / Re-render", "Change a linked clip's props and re-render it from its source; the media swap is one undo step"),
+    ("handoff.linked_open", "handoff", "Linked Source > Open Code / Open in Studio", "Open a linked clip's source file at its line in the code editor, or its studio"),
+    ("handoff.linked_unlink", "handoff", "Linked Source > Unlink", "Drop a clip's source link and keep its rendered media"),
+
+    # ------------------------------------------------------------------ handoff packages (C2-C5)
+    ("handoff.ae_export", "handoff-after-effects", "File > Export Project > After Effects", "Export the timeline as an After Effects ExtendScript (.jsx) with media, timing, keyframes, text and transitions"),
+    ("handoff.ae_send", "handoff-after-effects", "File > Send To > After Effects", "Build the timeline in a connected After Effects through Zenvi Link"),
+    ("handoff.premiere_export", "handoff-premiere", "File > Export Project > Premiere Pro", "Export the timeline as FCP7 XML tuned for Premiere Pro"),
+    ("handoff.premiere_send", "handoff-premiere", "File > Send To > Premiere Pro", "Open the timeline as a sequence in a connected Premiere Pro through Zenvi Link"),
+    ("handoff.timeline_xml_import", "handoff-premiere", "File > Import Project > Premiere Pro XML", "Bring a Premiere / FCP7 XML sequence into the project as one undo step"),
+    ("handoff.remotion_list", "handoff-remotion", "File > Import Project > Remotion Project", "List a Remotion project's compositions with size, fps, duration and default props"),
+    ("handoff.remotion_import", "handoff-remotion", "File > Import Project > Remotion Project", "Render Remotion compositions as linked clips (or restore a Zenvi-made project natively)"),
+    ("handoff.remotion_export", "handoff-remotion", "File > Export Project > Remotion Project", "Generate a Remotion project that plays the timeline and comes back losslessly"),
+    ("handoff.hyperframes_import", "handoff-hyperframes", "File > Import Project > HyperFrames Project", "Bring a HyperFrames project in: primitives as native clips, compositions as linked clips"),
+    ("handoff.hyperframes_export", "handoff-hyperframes", "File > Export Project > HyperFrames Project", "Generate a HyperFrames project that plays the timeline and comes back losslessly"),
 ]
 
 OUT_OF_SCOPE = {

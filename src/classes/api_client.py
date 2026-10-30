@@ -40,6 +40,24 @@ load_zenvi_dotenv()
 _DEFAULT_BACKEND_URL = "https://api.zenvi.pro"
 PROVIDER_KEY_HEADER = "X-Zenvi-Provider-Key"
 _UNVERIFIED_KEY_TRANSPORT = "Your own provider key is only sent to a verified HTTPS Zenvi backend."
+CLIENT_FEATURES = ["local_motion_graphics"]
+
+
+def client_features() -> list:
+    """Features this desktop can run.
+
+    local_motion_graphics means this build can render HyperFrames and local
+    Manim. local_manim is added only when Manim is actually installed, so the
+    backend falls back to server Manim otherwise.
+    """
+    features = list(CLIENT_FEATURES)
+    try:
+        from classes.manim_local import manim_program
+        if manim_program():
+            features.append("local_manim")
+    except Exception:
+        pass
+    return features
 
 
 def _refresh_credits_after_backend_billing() -> None:
@@ -460,6 +478,7 @@ class ZenviBackendClient:
                 # This build has the media-index tools. A backend that does not
                 # know the field keeps the shipped tool set.
                 "editor_generation": "media-index-v2",
+                "client_features": client_features(),
             }
             if agent_mode in ("planning", "agent"):
                 payload_data["agent_mode"] = agent_mode
@@ -961,19 +980,26 @@ class ZenviBackendClient:
     # ------------------------------------------------------------------
     # Pexels stock video
     # ------------------------------------------------------------------
-    def pexels_search(self, query: str, per_page: int = 15, page: int = 1) -> Dict[str, Any]:
-        """Search Pexels for stock videos."""
+    def _stock_get(self, route: str, params: Dict[str, Any], empty_key: str) -> Dict[str, Any]:
+        """GET a cached backend /stock route; a provider 429 comes back as a short "busy" note."""
         try:
-            r = self.session.get(
-                f"{self.api_url}/pexels/search",
-                params={"query": query, "per_page": per_page, "page": page},
-                timeout=20,
-            )
+            r = self.session.get(f"{self.api_url}{route}", params=params, timeout=20)
+            if r.status_code == 429:
+                wait = str(r.headers.get("Retry-After") or "").strip()
+                wait = wait if wait.isdigit() else "60"   # an HTTP-date or anything else: a safe default
+                return {empty_key: [], "rate_limited": True,
+                        "error": f"Stock search is busy, try again in {wait}s."}
             r.raise_for_status()
             return r.json()
         except Exception as e:
-            log.error("Pexels search failed: %s", e)
-            return {"videos": [], "error": str(e)}
+            log.error("Stock search %s failed: %s", route, e)
+            return {empty_key: [], "error": str(e)}
+
+    def pexels_search(self, query: str, per_page: int = 15, page: int = 1) -> Dict[str, Any]:
+        """Search stock videos (backend: Pixabay, falling back to Pexels)."""
+        return self._stock_get(
+            "/stock/videos/search", {"query": query, "per_page": per_page, "page": page}, "videos"
+        )
 
     def pexels_download(self, video_id: int, link: str, filename: str = "") -> Dict[str, Any]:
         """Download a Pexels MP4 from the CDN URL to the local machine."""
@@ -984,18 +1010,10 @@ class ZenviBackendClient:
     # Freesound stock music / SFX
     # ------------------------------------------------------------------
     def freesound_search(self, query: str, page_size: int = 15, page: int = 1) -> Dict[str, Any]:
-        """Search Freesound for stock music and sound effects."""
-        try:
-            r = self.session.get(
-                f"{self.api_url}/freesound/search",
-                params={"query": query, "page_size": page_size, "page": page},
-                timeout=20,
-            )
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            log.error("Freesound search failed: %s", e)
-            return {"sounds": [], "error": str(e)}
+        """Search commercial-safe stock music (backend: Openverse, CC BY / CC0 / PD)."""
+        return self._stock_get(
+            "/stock/music/search", {"query": query, "page_size": page_size, "page": page}, "sounds"
+        )
 
     def freesound_download(self, sound_id: int, preview_url: str, filename: str = "") -> Dict[str, Any]:
         """Download a Freesound preview to the local machine.

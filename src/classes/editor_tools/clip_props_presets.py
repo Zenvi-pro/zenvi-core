@@ -5,6 +5,15 @@ Each preset calls the same handler the menu item calls
 ``Crop_Triggered`` / ``Layout_Triggered`` / ``No_Transform_Triggered`` /
 ``Volume_Triggered``) with the same menu constant, inside the tool call's one
 undo transaction. Workstream: clip-props.
+
+Typical requests: "fade in the first clip", "fade everything in and out over
+2 seconds" (scope="all", preset="fade_in_out", duration_seconds=2), "slow zoom
+on the speaker" (zoom_in), "Ken Burns the photos" (ken_burns_in), "slide the
+title in from the left", "make it bounce", "picture-in-picture top right"
+(layout_quarter_top_right), "rotate it 90 degrees", "mirror it"
+(flip_horizontal), "crop it" (crop / crop_resize), "tile these clips in a
+grid" (layout_grid), "reset the transform", "set the music to 60%"
+(volume_level + level_percent=60), "fade the music out".
 """
 
 from __future__ import annotations
@@ -322,14 +331,14 @@ for _p in PRESETS.values():
     label="Apply clip preset",
     schema=obj({
         **TARGETS,
-        "preset": enum(list(PRESET_NAMES), "The Clip-menu preset to apply (see the tool description for the list)."),
+        "preset": enum(list(PRESET_NAMES), "Clip-menu preset (families in the tool description)."),
         "duration_seconds": nullable(number(
-            "Length in seconds of a fade (fade_in/fade_out/fade_in_out and volume_fade_*; default 1 s, "
-            "*_fast = 1 s, *_slow = 3 s) or of an In / Out / Emphasis motion (default 1 s). Camera moves "
-            "and credits always span the whole clip.", minimum=0.04, maximum=600)),
+            "Seconds of a fade (fade_in/out/in_out, volume_fade_*; default 1 s, *_fast 1 s, *_slow 3 s) or "
+            "In/Out/Emphasis motion (default 1 s). Refused for camera moves and credits (whole clip).",
+            minimum=0.04, maximum=600)),
         "at_seconds": nullable(number(
-            "Emphasis presets only: timeline time (seconds) where the emphasis starts. Default: the playhead "
-            "if it is over the clip, else the clip's start.")),
+            "Emphasis presets only: timeline seconds where it starts. Default: the playhead if over the clip, "
+            "else the clip's start.")),
         "level_percent": nullable(integer("volume_level only: the level in percent, 0-130 (100 = unchanged).",
                                           minimum=0, maximum=130)),
     }, required=["preset"]),
@@ -339,62 +348,34 @@ def apply_clip_preset(preset, timeline_clip_ids=None, clip_query="", track="", s
                       at_seconds=None, level_percent=None):
     """Apply a one-click Fade, Motion, Transform or Volume preset from the timeline's clip menu.
 
-    Exactly what the clip menu does, on one or many clips, as one undo step.
-    Use it for "fade in the first clip", "fade everything in and out over 2
-    seconds", "slow zoom on the speaker" (zoom_in), "Ken Burns the photos"
-    (ken_burns_in), "slide the title in from the left", "make it bounce",
-    "picture-in-picture top right" (layout_quarter_top_right), "rotate it 90
-    degrees", "mirror it" (flip_horizontal), "crop it" (crop / crop_resize adds
-    the Crop effect; set its left/top/right/bottom with the effect tools), "tile
-    these clips in a grid" (layout_grid), "reset the transform", "set the music
-    to 60%" (volume_level + level_percent=60), "fade the music out".
+    Same as the clip menu, on one or many clips, as one undo step. E.g. slow
+    zoom = zoom_in, Ken Burns = ken_burns_in, PiP top right =
+    layout_quarter_top_right, mirror = flip_horizontal, music to 60% =
+    volume_level + level_percent=60.
 
-    Presets:
-    fade (picture and sound): fade_none, fade_in, fade_in_fast, fade_in_slow,
-    fade_out, fade_out_fast, fade_out_slow, fade_in_out, fade_in_out_fast,
-    fade_in_out_slow.
-    motion In (first second): back_in_from_{bottom,left,right,top}, blur_in,
-    bounce_in, bounce_in_from_{bottom,left,right,top}, pop_in,
-    slide_in_from_{bottom,left,right,top}, spiral_in,
-    wipe_in_{circle_expand,circle_shrink}, wipe_in_from_{bottom,left,right,top},
-    blur_wipe_in_{circle_expand,circle_shrink}, blur_wipe_in_from_{...}.
-    motion Out (last second): back_out_to_{...}, blur_out, bounce_out,
-    bounce_out_to_{...}, pop_out, slide_out_to_{bottom,left,right,top},
-    spiral_out, wipe_out_{circle_expand,circle_shrink}, wipe_out_to_{...},
-    blur_wipe_out_{circle_expand,circle_shrink}, blur_wipe_out_to_{...}.
-    motion Emphasis (1 s at the playhead or at_seconds): bounce, flash,
-    heartbeat, jello, pulse, rubber_band, shake_x, shake_y, swing, tada, wobble.
-    motion Camera (whole clip): zoom_in, zoom_out, pan_auto, pan_left_to_right,
-    pan_right_to_left, pan_top_to_bottom, pan_bottom_to_top, ken_burns_in,
-    ken_burns_in_{left_to_right,right_to_left,top_to_bottom,bottom_to_top},
-    ken_burns_out, ken_burns_out_{...}; credits_scroll_up, credits_scroll_down;
-    motion_none resets all motion (scale, position, rotation, shear, opacity,
-    motion blur/wipe effects).
-    transform: transform_none, rotate_none, rotate_90_right, rotate_90_left,
-    rotate_180, flip_horizontal, flip_vertical, crop_none, crop, crop_resize,
-    layout_reset, layout_quarter_{center,top_left,top_right,bottom_left,
-    bottom_right} (half width and height = picture-in-picture), layout_grid,
-    layout_grid_stretch.
-    volume (clips with sound): volume_reset, volume_level, volume_fade_in,
-    volume_fade_in_fast, volume_fade_in_slow, volume_fade_out, _fast, _slow,
-    volume_fade_in_out, _fast, _slow.
+    Families: fade_* (picture and sound; fade_none removes fades). Motion:
+    Camera, whole clip (zoom_*, pan_*, ken_burns_*, credits_scroll_*);
+    Emphasis, 1 s at the playhead or at_seconds (bounce, flash, heartbeat,
+    jello, pulse, rubber_band, shake_x, shake_y, swing, tada, wobble); other
+    *_in* = In (first second), *_out* = Out (last second); motion_none resets
+    all motion (scale, position, rotation, shear, opacity, motion blur/wipe
+    effects). Transform: rotate_*, flip_*, crop / crop_resize (add the Crop
+    effect; set its sides with the effect tools), crop_none, layout_quarter_*
+    (half size = picture-in-picture), layout_grid, layout_grid_stretch,
+    layout_reset, transform_none. volume_* (clips with sound).
 
-    flip_horizontal/flip_vertical mirror in place only when the clip's gravity is
-    centred on that axis (Center, Top Center, Bottom Center for left-right); a
-    corner PiP is refused with how to fix it.
-    Motion presets are relative to the clip's current look and only replace
-    keyframes inside their zone, so they combine (e.g. zoom_in plus fade_in).
-    In/Out/Emphasis motions keep the clip's gravity, so a corner PiP slides or
-    pops in its corner (the menu would recentre it); camera moves and credits
-    fill the frame and centre it, like the menu.
-    Re-applying a blur or wipe motion adds another Blur/Mask effect; use
-    motion_none first to start over. On clips shorter than 6 s prefer
-    fade_in_out over separate fade_in and fade_out. Motion and transform
-    presets skip audio-only clips, volume presets skip silent clips, and clips
-    on locked tracks are refused (skipped with scope); the receipt lists what
-    changed and which effects were added (e.g. the Crop effect id).
-
-    Example: run_tool(name='apply_clip_preset_tool', args={'scope': "all", 'preset': "fade_in_out", 'duration_seconds': 2})
+    Motion presets are relative to the clip's current look and replace
+    keyframes only inside their zone, so they combine (zoom_in + fade_in).
+    In/Out/Emphasis keep the clip's gravity (a corner PiP animates in its
+    corner); camera moves and credits fill the frame and centre it.
+    Re-applying a blur/wipe motion adds another Blur/Mask effect; use
+    motion_none first to start over. Under 6 s prefer fade_in_out over
+    fade_in + fade_out. flip_* is refused unless the clip's gravity is centred
+    on that axis (Center, Top Center, Bottom Center for left-right); the error
+    says how to fix it. Motion/transform skip audio-only clips, volume skips
+    silent clips; clips on locked tracks are refused (skipped with scope).
+    Receipt: what changed and which effects were added (e.g. the Crop effect
+    id).
     """
     spec = PRESETS.get(preset)
     if spec is None:
