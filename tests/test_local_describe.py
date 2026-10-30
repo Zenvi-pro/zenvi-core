@@ -69,7 +69,8 @@ def test_install_downloads_once_unpacks_llama_and_is_then_ready(home, monkeypatc
     assert ld.ready() and os.path.basename(ld.llama_program()) == EXE
     names = [a[1] for a in asked]
     assert ld._llama_download()[1] in names and [m[1] for m in ld._model_downloads()] == names[-2:]
-    assert not [f for f in os.listdir(ld.home()) if f.endswith((".zip", ".tar.gz"))]   # the archive is not kept
+    assert not [f for _r, _d, files in os.walk(ld.home()) for f in files
+                if f.endswith((".zip", ".tar.gz"))]                     # the archive is not kept, in any folder
     asked.clear()
     ld.install()
     assert asked == []
