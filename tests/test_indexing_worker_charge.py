@@ -27,15 +27,17 @@ importlib.import_module("qt_api")  # QtWebEngine must load before any QApplicati
 files_model = importlib.import_module("windows.models.files_model")
 
 from classes import credits_client as cc  # noqa: E402
+from classes import local_describe  # noqa: E402
 from classes.api_client import ZenviBackendClient  # noqa: E402
 
 READY = {"success": True, "index_id": "zenvi-p1", "video_id": "f1",
          "ai_metadata": {"analyzed": True, "short_summary": "a street at night"}}
 
 
-def _index(monkeypatch, *, result=READY, ai_metadata=None, blocked=None):
+def _index(monkeypatch, *, result=READY, ai_metadata=None, blocked=None, local=False):
     """Run one BackendIndexingWorker synchronously; return (charges, client)."""
     charges = []
+    monkeypatch.setattr(local_describe, "enabled", lambda: local)
     monkeypatch.setattr(cc, "check_operation", lambda *a, **k: (blocked is None, 1000, blocked))
     monkeypatch.setattr(cc, "charge_operation_on_success", lambda *a, **k: charges.append((a, k)))
     client = MagicMock()
@@ -77,4 +79,11 @@ def test_a_blocked_preflight_neither_indexes_nor_charges(monkeypatch):
     charges, client = _index(monkeypatch, blocked="Insufficient credits")
 
     client.start_direct_indexing_job.assert_not_called()
+    assert charges == []
+
+
+def test_a_clip_indexed_on_this_computer_costs_nothing(monkeypatch):
+    charges, client = _index(monkeypatch, local=True, blocked="Out of credits")
+
+    client.start_direct_indexing_job.assert_called_once()       # no credit pre-check stops it
     assert charges == []
