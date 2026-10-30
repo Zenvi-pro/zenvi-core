@@ -1717,6 +1717,24 @@
   },
   {
     "category": "AI",
+    "title": "Index Footage With",
+    "setting": "index-describe",
+    "value": "local",
+    "type": "dropdown",
+    "values": [
+      {
+        "value": "local",
+        "name": "This computer (LFM3-Omni, downloads 1.6 GB once)"
+      },
+      {
+        "value": "gemini",
+        "name": "Gemini (cloud credits)"
+      }
+    ],
+    "restart": false
+  },
+  {
+    "category": "AI",
     "title": "Chat Dictation (mic button)",
     "setting": "dictation-engine",
     "value": "auto",
