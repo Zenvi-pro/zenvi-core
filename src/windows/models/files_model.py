@@ -177,11 +177,14 @@ class BackendIndexingWorker(QThread):
                     self.completed.emit(self.file_data, metadata, None)
                     return
 
+                from classes import local_describe
+                # Described on this computer: no cloud model runs, so it costs nothing.
+                describe_locally = local_describe.enabled()
                 try:
                     from classes.credits_client import check_operation
 
                     credit_duration = duration if media_type != "image" else 60.0
-                    _, balance, blocked = check_operation(
+                    _, balance, blocked = (True, None, None) if describe_locally else check_operation(
                         "indexing_per_minute",
                         f"{media_type} indexing",
                         duration_seconds=credit_duration,
@@ -241,6 +244,7 @@ class BackendIndexingWorker(QThread):
                         duration_sec=duration,
                         force=bool(self.summarize_only),
                         media_type=media_type,
+                        describe_locally=describe_locally,
                     )
                 except Exception as idx_exc:
                     log.warning("Gemini indexing failed: %s", idx_exc)
@@ -277,14 +281,15 @@ class BackendIndexingWorker(QThread):
                     or (idx_result.get("video_id") and not idx_result.get("error"))
                 )
                 if has_payload:
-                    from classes.credits_client import charge_operation_on_success
-                    charge_operation_on_success(
-                        True,
-                        "indexing_per_minute",
-                        provider="gemini",
-                        note=f"import {file_id}",
-                        duration_seconds=duration if media_type != "image" else 60.0,
-                    )
+                    if not describe_locally:
+                        from classes.credits_client import charge_operation_on_success
+                        charge_operation_on_success(
+                            True,
+                            "indexing_per_minute",
+                            provider="gemini",
+                            note=f"import {file_id}",
+                            duration_seconds=duration if media_type != "image" else 60.0,
+                        )
                     ai_meta = idx_result.get("ai_metadata")
                     if isinstance(ai_meta, dict) and ai_meta:
                         metadata = ai_meta

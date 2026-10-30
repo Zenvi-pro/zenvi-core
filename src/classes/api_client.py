@@ -845,13 +845,17 @@ class ZenviBackendClient:
         duration_sec: float = 0.0,
         force: bool = False,
         media_type: str = "video",
+        describe_locally: Optional[bool] = None,
     ) -> Dict[str, Any]:
-        """Index via editor-side chunks + Gemini Files direct upload (no backend media store)."""
+        """Index via editor-side chunks, described here (LFM3-Omni) or uploaded to Gemini Files."""
         from classes.index_chunker import extract_chunks, cleanup_chunk_dir, guess_mime
         from classes.gemini_direct_upload import upload_file_to_gemini_resumable
 
         if not file_path or not os.path.isfile(file_path):
             return {"success": False, "error": f"File not found: {file_path}"}
+        if describe_locally is None:
+            from classes import local_describe
+            describe_locally = local_describe.enabled()
 
         mt = (media_type or "video").strip().lower() or "video"
         if mt not in ("video", "image", "audio"):
@@ -915,6 +919,9 @@ class ZenviBackendClient:
 
             if progress_callback:
                 progress_callback("chunking", 5)
+            if describe_locally:
+                from classes import local_describe
+                max_height = min(max_height, local_describe.MAX_HEIGHT)
             chunk_infos, work_dir, chunk_err = extract_chunks(
                 file_path, plan, media_type=mt, max_height=max_height,
             )
@@ -980,12 +987,41 @@ class ZenviBackendClient:
                     "media_type": mt,
                 }
 
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            workers = min(8, max(1, total))
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futs = [pool.submit(_upload_one, info) for info in chunk_infos]
-                for fut in as_completed(futs):
-                    uploaded_chunks.append(fut.result())
+            if describe_locally:
+                if not local_describe.ready():
+                    if progress_callback:
+                        progress_callback("installing", 0)
+                    local_describe.install()
+                words = local_describe.speech_words(file_path) if mt != "image" else []
+                # One at a time: each chunk runs the whole model.
+                starts = [float(i["start"]) for i in chunk_infos] + [float("inf")]
+                for n, info in enumerate(chunk_infos):
+                    description = local_describe.describe(
+                        info["path"], mt, str(plan_data.get("describe_prompt") or ""),
+                        plan_data.get("describe_schema") or {},
+                        duration=float(info["end"]) - float(info["start"]))
+                    if mt != "image":
+                        # Up to the next chunk's start: overlapping chunks would each hold those words.
+                        stop = min(float(info["end"]), starts[n + 1])
+                        description.update(local_describe.speech(words, float(info["start"]), stop))
+                    uploaded_chunks.append({
+                        "chunk_index": int(info["chunk_index"]),
+                        "start_ts": float(info["start"]),
+                        "end_ts": float(info["end"]),
+                        "size": int(info["size"]),
+                        "mime_type": str(info.get("mime_type") or guess_mime(info["path"], mt)),
+                        "media_type": mt,
+                        "description": description,
+                    })
+                    if progress_callback and total > 0:
+                        progress_callback("describing", int(len(uploaded_chunks) * 80 / total))
+            else:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                workers = min(8, max(1, total))
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futs = [pool.submit(_upload_one, info) for info in chunk_infos]
+                    for fut in as_completed(futs):
+                        uploaded_chunks.append(fut.result())
             uploaded_chunks.sort(key=lambda c: int(c.get("chunk_index") or 0))
 
             cr = s.post(
