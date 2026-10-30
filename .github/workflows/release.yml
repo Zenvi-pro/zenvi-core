@@ -315,7 +315,7 @@ jobs:
         include:
           - runner: macos-15-intel   # Intel: native x86_64 Python, Homebrew and libopenshot
             arch: x86_64
-          - runner: macos-14   # macOS 14 Sonoma arm64; targets macOS 14+ users
+          - runner: macos-15   # Apple Silicon arm64; macOS 14 images are retired 2026-11-02
             arch: arm64
     runs-on: ${{ matrix.runner }}
     env:
@@ -1507,7 +1507,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14
+          - runner: macos-15
             artifact: macos-package-arm64
             pattern: "Zenvi-v*-arm64.dmg"
             old_to_new: true
