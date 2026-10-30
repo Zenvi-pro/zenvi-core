@@ -237,10 +237,11 @@ def _local_prompt(members: List[Dict[str, Any]], start: float) -> str:
 def _local_answers(answer: Dict[str, Any], members: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
     """The model's entries by shot id; an entry without a usable id is dropped. A one-shot clip may be answered
     with the shot itself instead of a shots list."""
-    if not isinstance(answer.get("shots"), list) and len(members) == 1 and answer.get("description"):
+    rows = answer.get("shots")
+    if not isinstance(rows, list) and len(members) == 1 and answer.get("description"):
         return {int(members[0]["id"]): answer}
     found: Dict[int, Dict[str, Any]] = {}
-    for raw in (answer.get("shots") if isinstance(answer.get("shots"), list) else []):
+    for raw in (rows if isinstance(rows, list) else []):
         try:
             found[int(raw["id"])] = raw
         except (KeyError, TypeError, ValueError):
@@ -278,14 +279,15 @@ def _local_shot(raw: Dict[str, Any], shot: Dict[str, Any], clip_start: float = 0
         return " ".join(str(v or "").split())[:160]
 
     sounds = []
-    for o in (raw.get("sound_events") if isinstance(raw.get("sound_events"), list) else []):
+    events = raw.get("sound_events")
+    for o in (events if isinstance(events, list) else []):
         label = str(o.get("label") or "").strip() if isinstance(o, dict) else ""
         if label:
             start, end = (number(_minus(o.get(k), offset), 0.0, length) for k in ("start", "end"))
             sounds.append({"label": label, "start": start, "end": start if end is None else end})
     try:
-        people = max(0, min(200, int(raw.get("people_count"))))
-    except (TypeError, ValueError):
+        people = max(0, min(200, int(raw["people_count"])))
+    except (KeyError, TypeError, ValueError):
         people = None
     return {
         "id": int(shot["id"]), "start": float(shot["start"]), "end": float(shot["end"]),
