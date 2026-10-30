@@ -9,18 +9,17 @@ import unittest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 sys.modules.setdefault("openshot", types.ModuleType("openshot"))
 
-from classes import app, info  # noqa: E402
+from classes import app  # noqa: E402
 
 
 class UserPathWritableTests(unittest.TestCase):
 
-    def test_file_held_by_another_process_does_not_fail(self):
-        # A leftover probe file still open elsewhere (antivirus, a second
-        # instance) must not make a writable directory look read-only.
+    def test_probe_does_not_depend_on_the_old_shared_path(self):
+        # Whatever sits at the old fixed PERMISSION path (a held or stale entry)
+        # must not make a writable directory look read-only.
         with tempfile.TemporaryDirectory() as path:
-            os.makedirs(os.path.join(path, "PERMISSION"))
-            with open(os.path.join(path, "PERMISSION", "test%s" % info.PROJECT_EXT), "w"):
-                app.check_user_path_writable(path)
+            open(os.path.join(path, "PERMISSION"), "w").close()
+            app.check_user_path_writable(path)
 
     @unittest.skipIf(os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
                      "directory chmod is not enforced here")
