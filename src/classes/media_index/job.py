@@ -263,7 +263,7 @@ class IndexingJob:
         try:
             result = cloud.compute_cloud(client, file_path, probe, sha, shelf, file_id=file_id, media_type="video",
                                          should_cancel=lambda: self._cancelled,
-                                         on_progress=lambda f: self._progress(file_id, "describing", int(f * 100)))
+                                         on_progress=lambda f: self._progress(file_id, "describing" if local else "indexing", int(f * 100)))
             if result.get("error"):
                 log.info("Describing %s on import failed: %s", file_path, result["error"])
             vectors.add_descriptions(shelf, sha, E.get_embedder(model), (result.get("watch") or {}).get("shots") or [])

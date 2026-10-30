@@ -335,3 +335,14 @@ def test_a_one_shot_clip_answered_without_the_shots_list_is_still_described():
     assert cloud._local_answers(bare, [{"id": 4}]) == {4: bare}
     assert cloud._local_answers(bare, [{"id": 4}, {"id": 5}]) == {}       # which shot it meant is unknown
     assert cloud._local_answers({"shots": [{"id": 5, "description": "x"}]}, [{"id": 4}, {"id": 5}]) == {5: {"id": 5, "description": "x"}}
+
+
+def test_sound_times_in_a_shared_clip_are_moved_onto_each_shot():
+    from classes.media_index import cloud
+
+    # Shots 0-4 s and 4-8 s share one clip; the model times sounds from the clip's start.
+    raw = {"description": "A dog barks.", "sound_events": [{"label": "bark", "start": 5.0, "end": 5.5}]}
+    shot = cloud._local_shot(raw, {"id": 1, "start": 4.0, "end": 8.0}, clip_start=0.0)
+    assert shot["sound_events"] == [{"label": "bark", "start": 1.0, "end": 1.5}]
+    assert "from the start of the segment" in cloud.LOCAL_PROMPT
+

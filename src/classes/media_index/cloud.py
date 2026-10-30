@@ -203,7 +203,7 @@ LOCAL_PROMPT = ("You describe the shots of a video for a video editor's search i
                 "pictures and sound, one entry per shot, with its id. description: 1-2 plain sentences of what happens: who or "
                 "what, doing what, where. actions: short verb phrases. objects: the main visible things. on_screen_text: text "
                 "visible in the picture, exactly as written. sound_events: non-speech sounds with start and end seconds from the "
-                "start of that shot. shot_type: wide, medium, close, insert, screen or other. interest: 0 to 1; about 0.1 for "
+                "start of the segment. shot_type: wide, medium, close, insert, screen or other. interest: 0 to 1; about 0.1 for "
                 "filler, 0.3 to 0.5 for ordinary footage, above 0.8 only for striking moments. usable: false only when the shot "
                 "cannot be used. hook_potential: 0 to 1, how well the shot could open a video. Do not transcribe speech.")
 LOCAL_SCHEMA: Dict[str, Any] = {
@@ -248,9 +248,18 @@ def _local_answers(answer: Dict[str, Any], members: List[Dict[str, Any]]) -> Dic
     return found
 
 
-def _local_shot(raw: Dict[str, Any], shot: Dict[str, Any]) -> Dict[str, Any]:
-    """One shot's answer from this computer in the cloud pass's shape: the fields the shelf reads, clamped as the backend clamps them."""
+def _minus(v: Any, offset: float) -> Any:
+    try:
+        return float(v) - offset
+    except (TypeError, ValueError):
+        return v
+
+
+def _local_shot(raw: Dict[str, Any], shot: Dict[str, Any], clip_start: float = 0.0) -> Dict[str, Any]:
+    """One shot's answer from this computer in the cloud pass's shape: the fields the shelf reads, clamped as the backend clamps them.
+    Sound times come on the clip's clock (shots share a clip) and are moved onto the shot's."""
     length = max(0.0, float(shot["end"]) - float(shot["start"]))
+    offset = float(shot["start"]) - float(clip_start)
 
     def number(v: Any, lo: float, hi: float) -> Optional[float]:
         try:
@@ -272,7 +281,7 @@ def _local_shot(raw: Dict[str, Any], shot: Dict[str, Any]) -> Dict[str, Any]:
     for o in (raw.get("sound_events") if isinstance(raw.get("sound_events"), list) else []):
         label = str(o.get("label") or "").strip() if isinstance(o, dict) else ""
         if label:
-            start, end = number(o.get("start"), 0.0, length), number(o.get("end"), 0.0, length)
+            start, end = (number(_minus(o.get(k), offset), 0.0, length) for k in ("start", "end"))
             sounds.append({"label": label, "start": start, "end": start if end is None else end})
     try:
         people = max(0, min(200, int(raw.get("people_count"))))
@@ -321,6 +330,7 @@ def _describe_here(path: str, probe: Dict[str, Any], shots: List[Dict[str, Any]]
     by_id = {int(s["id"]): s for s in shots}
     groups = _clips_of(shots)
     answers: Dict[int, Dict[str, Any]] = {}
+    clip_starts: Dict[int, float] = {}
     errors: List[str] = []
     # ponytail: a cancel drops the clips finished so far; keep each on the shelf as it lands if long runs get cancelled.
     with tempfile.TemporaryDirectory(prefix="zenvi_describe_") as tmp:
@@ -337,6 +347,7 @@ def _describe_here(path: str, probe: Dict[str, Any], shots: List[Dict[str, Any]]
                 found = _local_answers(local_describe.describe(clip, "video", _local_prompt(members, start), LOCAL_SCHEMA,
                                                                duration=end - start), members)
                 answers.update((i, raw) for i, raw in found.items() if i in ids)
+                clip_starts.update((i, start) for i in ids)
             except Exception as exc:         # this clip's shots are missing; the rest of the file is kept
                 log.warning("describing shots %s on this computer failed: %s", sorted(ids), exc)
                 errors.append(str(exc))
@@ -344,7 +355,7 @@ def _describe_here(path: str, probe: Dict[str, Any], shots: List[Dict[str, Any]]
                 on_progress((n + 1) / len(groups))
     if not answers:
         return {"error": errors[0] if errors else "no shot descriptions came back"}
-    out = [_local_shot(answers[i], by_id[i]) if i in answers else
+    out = [_local_shot(answers[i], by_id[i], clip_starts[i]) if i in answers else
            {"id": i, "start": float(by_id[i]["start"]), "end": float(by_id[i]["end"]), "missing": True} for i in sorted(by_id)]
     return {"shots": out, "usage": {"prompt_tokens": 0, "output_tokens": 0, "batches": len(groups), "model": LOCAL_MODEL},
             "missing": sum(1 for s in out if s.get("missing")), "errors": errors}
