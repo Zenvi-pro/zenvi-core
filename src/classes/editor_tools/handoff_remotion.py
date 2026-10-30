@@ -50,7 +50,7 @@ def _fail(exc: Exception) -> ToolError:
 def list_remotion_compositions(project_dir):
     """List a Remotion project's compositions before importing them into Zenvi.
 
-    Use for "what's in this Remotion project", or before import_remotion_project_tool to pick
+    Use for "what's in this Remotion project", or before run_tool(name='import_remotion_project_tool', args={...}) to pick
     composition ids and see which props they take. Returns each composition's id, kind
     (composition or still), width x height, fps, duration (frames and seconds), defaultProps and the
     file:line of the component that renders it, plus the project's entry point, Remotion version,
@@ -115,8 +115,9 @@ def import_remotion_project(project_dir, compositions=None, props=None, codec="a
     RUNS THE PROJECT'S CODE in Node.js and headless Chrome like `npx remotion render` -- only for
     projects the user trusts -- seconds to minutes, and becomes a linked clip that remembers its source
     (restoring a Zenvi export natively runs nothing): change props with
-    update_linked_clip_tool, open the code or Remotion Studio with open_linked_source_tool, re-render
-    after code edits with rerender_linked_clip_tool. Clips land together at position (default the
+    run_tool(name='update_linked_clip_tool', args={...}), open the code or Remotion Studio with
+    run_tool(name='open_linked_source_tool', args={...}), re-render after code edits with
+    run_tool(name='rerender_linked_clip_tool', args={...}). Clips land together at position (default the
     playhead) on free tracks above the video, transparent ones on top. A project Zenvi exported comes
     back as native clips (lossless) when restore_native is true. Everything one call adds is ONE
     undo step; a failed or cancelled render changes nothing. Example: {"project_dir":
@@ -188,7 +189,7 @@ def export_to_remotion(output_dir, copy_media=True, install=False, replace_edits
     keyframes with easing, transitions, markers, plus the original project for the round trip), a
     generic renderer built on Remotion primitives, the media in public/zenvi-media and a README with
     the studio/render commands and what is approximated (wipes play as fades; some effects are CSS
-    filters, others are listed). Re-importing the folder with import_remotion_project_tool restores
+    filters, others are listed). Re-importing the folder with run_tool(name='import_remotion_project_tool', args={...}) restores
     the native clips. Exporting into an earlier export updates it in place (node_modules and added
     dependencies kept; everything staged, then swapped in) and refuses when that would discard changes
     made there unless replace_edits. Changes nothing in the project. Example:

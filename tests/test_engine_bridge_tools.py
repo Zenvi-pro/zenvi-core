@@ -32,7 +32,7 @@ def test_native_tools_and_their_engine_twins_are_never_bridged(bridge):  # noqa:
     from classes import tool_handlers
     from classes.editor_tools import engine_bridge as bridged
 
-    assert "list_files_tool" not in bridge.handlers  # the desktop's own, by name
+    assert "list_project_files_tool" not in bridge.handlers  # the desktop's own, by name
     assert "move_clip_tool" not in bridge.handlers  # the engine's twin of move_clips_tool
     assert bridged.NATIVE_TWINS["move_clip_tool"] in tool_handlers.AGENT_TOOL_HANDLERS
     assert "export_video_tool" not in bridge.handlers  # needs a host capability the bridge lacks

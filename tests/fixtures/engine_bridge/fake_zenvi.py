@@ -18,7 +18,7 @@ import sys
 TOOLS = [
     {"name": "add_motion_template_tool", "title": "Add motion template", "description": "Place a motion template.",
      "inputSchema": {"type": "object", "properties": {"template": {"type": "string"}}}, "available": True},
-    {"name": "list_files_tool", "title": "List files", "description": "Desktop has this one.",
+    {"name": "list_project_files_tool", "title": "List files", "description": "Desktop has this one.",
      "inputSchema": {"type": "object"}, "available": True},
     {"name": "export_video_tool", "title": "Export", "description": "Needs an exporter.",
      "inputSchema": {"type": "object"}, "available": False, "missing": ["exporter"]},

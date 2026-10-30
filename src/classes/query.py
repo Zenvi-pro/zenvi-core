@@ -28,6 +28,7 @@ import copy
 import json
 import os
 import threading
+from typing import Any
 
 import openshot
 
@@ -298,7 +299,7 @@ class File(QueryObject):
         """ Take any arguments given as filters, and find a list of matching objects """
         return QueryObject.filter(File, **kwargs)
 
-    def get(**kwargs):
+    def get(**kwargs: Any):
         """ Take any arguments given as filters, and find the first matching object """
         file_path = kwargs.pop("path", None)
         if file_path is None:

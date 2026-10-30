@@ -1,0 +1,1 @@
+{"name":"zenvi-embedder","private":true,"type":"module","dependencies":{"@huggingface/transformers":"4.3.1"}}

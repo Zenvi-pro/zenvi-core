@@ -109,12 +109,14 @@ def _engine_hint() -> str:
 
 def execute_tool_rich(tool_name: str, tool_args: dict):
     """Execute a tool; return ToolOutput (receipt + optional images)."""
+    from contextlib import nullcontext
     from fractions import Fraction as Fr
 
     from classes.agent_tools.output import (
         ToolOutput,
         clear_last_output,
         set_last_output,
+        take_attached_images,
         wrap_str_result,
     )
     from classes.agent_tools.receipt import (
@@ -126,6 +128,7 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
     from classes.agent_tools.snapshot import mutation_result, timeline_snapshot
 
     clear_last_output()
+    take_attached_images()      # nothing left over from an earlier call
 
     handler = _HANDLERS.get(tool_name)
     if not handler:
@@ -137,7 +140,7 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
     chat_session_id = raw_args.pop("chat_session_id", None)
     transaction_id = raw_args.pop("transaction_id", None)
 
-    # Coerce Assistant stringly stubs (trackIndex="", force="false") before
+    # Coerce Assistant stringly stubs (track="", force="false") before
     # validation and before the handler sees kwargs. Editor tools were already
     # coerced by their registry, where "" is a value (name="" clears a track name).
     from classes.editor_tools import REGISTRY as _editor_tools
@@ -151,7 +154,6 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
 
     public_args = dict(args)
     if chat_session_id is not None and tool_name in (
-        "split_file_add_clip_tool",
         "add_clip_to_timeline_tool",
         "place_motion_graphic_tool",
         "import_stock_media_tool",
@@ -162,6 +164,13 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
         public_args["transaction_id"] = transaction_id
 
     def _invoke() -> ToolOutput:
+        out = _invoke_inner()
+        attached = take_attached_images()
+        if attached and not out.images:
+            out = ToolOutput(receipt=out.receipt, images=attached)
+        return out
+
+    def _invoke_inner() -> ToolOutput:
         app = _GET_APP()
         before_len = _history_len(app)
         # The before/after scan only feeds a mutation receipt: read-only calls skip it.
@@ -189,10 +198,15 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
                 before_snap = None
 
         try:
-            if tool_name in _UNGROUPED:
-                raw = handler(**public_args)
-            else:
-                raw = _ATOMIC(app, handler)(**public_args)
+            from classes import update_batch
+            on_gui = _QTHREAD is None or _QTHREAD.currentThread() is app.thread()
+            # On the GUI thread a mutating tool (and undo/redo) tells the timeline and preview once at the end, not once per clip.
+            # Tools running on a worker batch their own hops (editor_tools._base.on_main).
+            with update_batch.batch() if (on_gui and tool_name not in _READ_ONLY) else nullcontext():
+                if tool_name in _UNGROUPED:
+                    raw = handler(**public_args)
+                else:
+                    raw = _ATOMIC(app, handler)(**public_args)
         except Exception as e:
             log.error("Tool %s execution failed: %s", tool_name, e, exc_info=True)
             return ToolOutput(receipt=ToolReceipt.error(tool_name, str(e)))

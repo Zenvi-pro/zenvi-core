@@ -51,7 +51,7 @@ def export_to_after_effects(output_dir="", collect_media=True, open_folder=False
 
     Use for "open this edit in After Effects", "make an AE comp of this
     timeline", or to hand the edit to someone with After Effects. When After
-    Effects is open with the Zenvi Link panel, prefer send_to_after_effects_tool,
+    Effects is open with the Zenvi Link panel, prefer run_tool(name='send_to_after_effects_tool', args={...}),
     which also builds it. The script imports every media file once (a
     placeholder when one is missing), adds a folder "Zenvi - <project>" and a
     comp with the project's size and frame rate, and makes one layer per
@@ -115,8 +115,8 @@ def send_to_after_effects(collect_media=False):
     """Build the timeline as a comp in the open After Effects through the Zenvi Link panel (File > Send To > After Effects).
 
     Use for "send this to After Effects" / "build it in AE" when After Effects
-    is running with Zenvi Link (list_link_hosts_tool shows it connected). It
-    exports the same script as export_to_after_effects_tool into the
+    is running with Zenvi Link (run_tool(name='list_link_hosts_tool') shows it connected). It
+    exports the same script as run_tool(name='export_to_after_effects_tool', args={...}) into the
     project's assets folder (titles and wipe images stay there for After
     Effects to read), runs it in After Effects, and returns After Effects'
     own summary: the comp name and id, layers built, placeholders for missing
@@ -133,7 +133,8 @@ def send_to_after_effects(collect_media=False):
             result = send(snapshot, collect_media=bool(collect_media), progress=job.report,
                           should_cancel=job.should_cancel)
     except adobe_link.HostNotConnected as exc:
-        raise ToolError(f"{exc} Or write a script with export_to_after_effects_tool and run it in After Effects "
+        raise ToolError(f"{exc} Or write a script with run_tool(name='export_to_after_effects_tool') "
+                        "and run it in After Effects "
                         "(File > Scripts > Run Script File...).") from None
     except AeCancelled:
         raise ToolError("sending to After Effects was cancelled") from None

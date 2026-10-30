@@ -250,6 +250,22 @@ class AuthManager:
         self._file_lock_owner = threading.local()
         # Whether the in-memory session is the one in the file (read or written).
         self._session_on_disk = False
+        self._session_listeners: list = []
+
+    def add_session_listener(self, callback) -> None:
+        """Call *callback()* (on whichever thread saved it) after a session is saved.
+
+        Used to resume work that waited for a signed-in user. Keep it fast and thread-safe,
+        for example emitting a Qt signal.
+        """
+        if callback not in self._session_listeners:
+            self._session_listeners.append(callback)
+
+    def remove_session_listener(self, callback) -> None:
+        try:
+            self._session_listeners.remove(callback)
+        except ValueError:
+            pass
 
     # ── HTTP helpers ───────────────────────────────────────────────────────────
 
@@ -327,13 +343,19 @@ class AuthManager:
         session = self._with_identity(session)
         if getattr(self._file_lock_owner, "held", False):
             # Inside this thread's own refresh, which holds both locks.
-            self._store(session)
-            return
-        # A sign-in must not interleave with a refresh -- this process's, or
-        # another's -- which would then write the old sign-in over this one.
-        with self._refresh_lock:
-            with _interprocess_lock(AUTH_LOCK_FILE, 5):
-                self._store(session)
+            stored = self._store(session)
+        else:
+            # A sign-in must not interleave with a refresh -- this process's, or
+            # another's -- which would then write the old sign-in over this one.
+            with self._refresh_lock:
+                with _interprocess_lock(AUTH_LOCK_FILE, 5):
+                    stored = self._store(session)
+        if stored:          # outside the locks: a listener may hop threads
+            for callback in list(self._session_listeners):
+                try:
+                    callback()
+                except Exception as exc:  # a dead listener must never break sign-in
+                    log.debug("Session listener failed: %s", exc)
 
     def _store(self, session: dict, sign_outs: int | None = None) -> bool:
         """Make *session* current, on disk and in memory.

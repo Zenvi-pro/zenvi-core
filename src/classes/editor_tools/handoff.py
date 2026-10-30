@@ -102,7 +102,9 @@ def _linked_file(file_id: str):
     if not linked:
         name = f.data.get("name") or os.path.basename(str(f.data.get("path") or ""))
         raise ToolError(f"{name!r} is not a linked clip (it has no source link); linked clips come from "
-                        "import_remotion_project_tool, import_hyperframes_project_tool or import_linked_media_tool")
+                        "run_tool(name='import_remotion_project_tool', args={...}), "
+                        "run_tool(name='import_hyperframes_project_tool', args={...}) "
+                        "or run_tool(name='import_linked_media_tool', args={...})")
     return f
 
 
@@ -187,12 +189,12 @@ def _host_tools(catalog: List[dict], include_tools: bool, wanted: List[str], bud
 def list_link_hosts(include_tools=False, tools=None):
     """List the Adobe apps Zenvi Link connects -- After Effects and Premiere Pro -- and which one is active.
 
-    Use before call_link_host_tool or a Send To After Effects / Premiere
+    Use before run_tool(name='call_link_host_tool', args={...}) or a Send To After Effects / Premiere
     handoff, or when the user asks "is After Effects connected?". Each host
     reports connected, active (the one used most recently), app version and
     open project; a host that is not connected says why and how to connect it
     (open the app with the Zenvi Link panel; `zenvi adobe install` installs the
-    panel). Before call_link_host_tool, call once with include_tools=true to
+    panel). Before run_tool(name='call_link_host_tool', args={...}), call once with include_tools=true to
     see what an app can do (its tools by name and title), then with
     tools=[...] for the few you will call: those come back with description,
     inputSchema and annotations, so you pass arguments the schema accepts.
@@ -246,7 +248,7 @@ def list_link_hosts(include_tools=False, tools=None):
     schema=obj({
         "host": enum(list(HOSTS), "Which Adobe app: aftereffects (ae_* tools) or premiere (premiere_* tools)."),
         "tool": string("The host tool to run, e.g. 'ae_get_state', 'ae_add_text', 'premiere_get_sequence'. "
-                       "list_link_hosts_tool(include_tools=true) lists an app's tools."),
+                       "run_tool(name='list_link_hosts_tool', args={'include_tools': true}) lists an app's tools."),
         "arguments": mapping("The host tool's arguments as an object, exactly as its inputSchema describes "
                              "(list_link_hosts_tool with tools=[name] gives it; times in seconds, ids from earlier "
                              "receipts). {} for none."),
@@ -264,7 +266,7 @@ def call_link_host(host, tool, arguments=None):
     unchanged; the result carries the host's contract-3 receipt (status,
     summary, data, warnings, undoSteps) and any frame images. Changes happen
     in the Adobe app (its own undo), never in the Zenvi project. Refused when
-    the app is not connected -- list_link_hosts_tool says how to connect.
+    the app is not connected -- run_tool(name='list_link_hosts_tool') says how to connect.
     Example: {"host": "aftereffects", "tool": "ae_add_text", "arguments":
     {"text": "Launch day", "placement": "lower-third"}}.
     """
@@ -398,9 +400,10 @@ def import_linked_media(path, link, position=None, track="", name=""):
     HyperFrames imports use their own tools). The media is copied into the
     project's links folder (the original stays where it is), added to Project Files
     with the link and placed at position (default the playhead) on the lowest
-    free track above the video. Later: get_linked_clip_tool (freshness),
-    update_linked_clip_tool / rerender_linked_clip_tool, open_linked_source_tool,
-    unlink_clip_tool. One undo step removes the clip and the file.
+    free track above the video. Later: run_tool(name='get_linked_clip_tool', args={...}) (freshness),
+    run_tool(name='update_linked_clip_tool', args={...}) / run_tool(name='rerender_linked_clip_tool', args={...}),
+    run_tool(name='open_linked_source_tool', args={...}), run_tool(name='unlink_clip_tool', args={...}).
+    One undo step removes the clip and the file.
     Example: {"path": "/tmp/Promo.mov", "link": {"kind": "aftereffects", "source":
     {"aep": "/Users/me/promo.aep", "composition": "Promo", "composition_key": 12}}}.
     """
@@ -455,7 +458,7 @@ def _link_report(file_id: str, *, compute: bool = True) -> dict:
     try:
         link = lm.read_link(f.data) or {}
     except lm.LinkError as exc:
-        raise ToolError(f"the clip's link data is damaged ({exc}); unlink_clip_tool keeps its media") from None
+        raise ToolError(f"the clip's link data is damaged ({exc}); run_tool(name='unlink_clip_tool') keeps its media") from None
     check = lm.check_link(f.data, compute=compute)
     provider = lm.provider_for(link.get("kind", ""))
     editable: Dict[str, Any] = {}
@@ -490,7 +493,7 @@ def get_linked_clip(clip_id="", file_id=""):
     Use before editing or re-rendering a linked clip (Remotion / HyperFrames
     composition or After Effects comp) or when the user asks "is this clip up
     to date?". state is fresh (rendered from the current source), stale (the
-    code / comp / props changed: rerender_linked_clip_tool), rendering, error
+    code / comp / props changed: run_tool(name='rerender_linked_clip_tool', args={...})), rendering, error
     (the last render failed; detail says why) or missing_source (the project
     folder or .aep is gone). Also lists editable_props with current values and
     the timeline clips that use the file. Read-only.
@@ -544,7 +547,8 @@ def update_linked_clip(clip_id="", file_id="", props=None, rerender=True):
         from classes.editor_tools import engine_links
         engine = engine_links.ENGINE_KINDS[kind]
         raise ToolError(f"{engine.label} clips change through {engine.rerender_tool}, which takes its own "
-                        "arguments; rerender_linked_clip_tool renders one again as it is")
+                        "arguments; run_tool(name='rerender_linked_clip_tool', args={...}) "
+                        "renders one again as it is")
     if props is not None and not isinstance(props, dict):
         raise ToolError("props must be an object of prop names to values")
     if not props and not rerender:
@@ -557,7 +561,8 @@ def update_linked_clip(clip_id="", file_id="", props=None, rerender=True):
         if not res["changed"]:
             return ok("No change: the clip already has those props.", changed=False, file_id=fid,
                       props=res["link"]["props"])
-        return ok("Stored the new props; the clip is stale until it is re-rendered (rerender_linked_clip_tool).",
+        return ok("Stored the new props; the clip is stale until it is re-rendered "
+                  "(run_tool(name='rerender_linked_clip_tool', args={...})).",
                   changed=True, file_id=fid, props=res["link"]["props"], state="stale")
     return _rerender(fid, props or None)
 
@@ -590,12 +595,12 @@ def _rerender(file_id: str, props: Optional[dict]) -> str:
 def rerender_linked_clip(clip_id="", file_id=""):
     """Re-render a linked clip from its source after the code, comp or assets changed.
 
-    Use when get_linked_clip_tool says stale, or the user says "I edited the
+    Use when run_tool(name='get_linked_clip_tool', args={...}) says stale, or the user says "I edited the
     Remotion composition, update it in Zenvi". Renders with the source's own
     toolchain (Remotion / HyperFrames CLI, or After Effects through Zenvi Link)
     with the stored props, then swaps the media of every clip using the file as
     one undo step. A failed or cancelled render changes nothing (the error is
-    reported and get_linked_clip_tool shows it).
+    reported and run_tool(name='get_linked_clip_tool', args={...}) shows it).
     """
     fid = _resolve_file_id(clip_id, file_id)
     _linked_file(fid)
@@ -623,7 +628,7 @@ def open_linked_source(clip_id="", file_id="", target="code"):
 
     Use for "show me the code for this intro", "open it in Remotion Studio",
     "open the After Effects project". Opens an app on the user's screen; the
-    project is not changed. After they edit, rerender_linked_clip_tool brings
+    project is not changed. After they edit, run_tool(name='rerender_linked_clip_tool', args={...}) brings
     the change in.
     """
     lm = _lm()

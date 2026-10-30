@@ -98,7 +98,7 @@ def resolve_preset(name: str) -> dict:
     if hits:
         raise ToolError(f"'{text}' matches several presets: " + ", ".join(sorted({h['title'] for h in hits})))
     raise ToolError(f"no export preset matches '{text}'. Try 'MP4 (h.264)', 'YouTube', 'Instagram Reels', "
-                    "'TikTok', 'YouTube Shorts', 'GIF', 'MP3', 'WEBM', 'ProRes' (list_export_presets_tool lists all)")
+                    "'TikTok', 'YouTube Shorts', 'GIF', 'MP3', 'WEBM', 'ProRes' (run_tool(name='list_export_presets_tool') lists all)")
 
 
 # Render threads that outlived their timeout, kept until they stop: a QThread
@@ -224,7 +224,7 @@ def _pick_profile(preset: dict, project_record: dict) -> tuple:
                 sizes = ", ".join(sorted({"%dx%d" % (o["width"], o["height"]) for o in options}))
                 note = (f"'{preset['title']}' only renders {sizes}; exporting {best['width']}x{best['height']} "
                         f"from a {pw}x{ph} project re-frames every clip (bars on 'fit' clips, crops on 'fill' "
-                        "clips). For a proper vertical/square edit switch the project with set_project_profile_tool "
+                        "clips). For a proper vertical/square edit switch the project with set_project_setting_tool "
                         "(reframe='fill') first, or pass profile= to keep the project size")
             return best, note
     return project_record, None
@@ -522,7 +522,7 @@ _EXPORT_SCHEMA = {
     "preset": string("Export dialog preset title or common name: 'MP4 (h.264)' (default), 'YouTube', "
                      "'YouTube (4K)', 'YouTube Shorts', 'Instagram Reels', 'Instagram', 'TikTok', 'Facebook', "
                      "'Twitter / X', 'LinkedIn', 'Vimeo', 'GIF', 'MP3', 'WEBM', 'ProRes', 'MOV', 'MKV', 'HEVC'. "
-                     "See list_export_presets_tool.", ""),
+                     "See find_tools (list export presets).", ""),
     "quality": enum(["", "low", "med", "high"], "Preset bitrate. Empty = stored setting or high.", ""),
     "export_type": enum(["auto", "video_audio", "video_only", "audio_only", "image_sequence"],
                         "auto = the preset's (GIF video only, MP3 audio only). audio_only + container wav/flac = "
@@ -573,8 +573,8 @@ def export_video(preset="", quality="", export_type="auto", range="", start=0, e
     to overwrite unless overwrite=true, and while another export is running.
     Waits for the render (the editor stays usable) and returns the file path,
     size, format and range. For vertical social formats switch the project
-    first with set_project_profile_tool (reframe='fill'), or landscape footage
-    renders with bars.
+    first with run_tool(name='set_project_setting_tool', args={'profile': ..., 'reframe': 'fill'}),
+    or landscape footage renders with bars.
     """
     if not _EXPORT_LOCK.acquire(blocking=False):
         running = dict(_RUNNING_EXPORT)
@@ -814,7 +814,7 @@ def get_export_settings():
 
     Reports preset, quality, type, output path, size, fps, codecs, bitrates,
     audio format and frame range (seconds and frames), the overrides saved with
-    set_export_setting_tool, and the keys that tool accepts.
+    run_tool(name='set_export_setting_tool'), and the keys that tool accepts.
     """
     overrides = {k: v for k, v in dict(get_app().project.get("export_overrides") or {}).items() if v is not None}
     try:
@@ -982,7 +982,7 @@ def save_frame_image(time=-1, file_path="", overwrite=False):
     "export_files_to_folder_tool",
     label="Export project files",
     schema=obj({
-        "file_ids": array({"type": "string"}, "Project file ids (media_bin_file_id from list_files_tool)."),
+        "file_ids": array({"type": "string"}, "Project file ids (media_bin_file_id from list_project_files_tool)."),
         "folder": string("Destination folder (created if missing). Empty = the export folder preference.", ""),
     }, required=["file_ids"]),
     background_safe=True,
@@ -992,7 +992,7 @@ def export_files_to_folder(file_ids, folder=""):
     """Export chosen project files to a folder (Project Files > Export Selected Clips).
 
     Plain files are copied; sub-clips (files with in/out points, e.g. from
-    split_file_add_clip_tool) and image sequences are rendered as H.264/AAC MP4
+    run_tool(name='create_subclips_tool')) and image sequences are rendered as H.264/AAC MP4
     of just that part, at the file's own size and frame rate (on a QThread,
     never the GUI or a plain worker thread). Existing
     destination files are skipped, like the dialog. Changes nothing in the project.

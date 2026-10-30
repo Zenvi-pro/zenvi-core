@@ -134,7 +134,7 @@ def test_place_failure_reports_the_file_id_and_says_do_not_regenerate():
     assert msg.startswith("Error:")
     assert "file_id=F42" in msg
     assert "Do NOT regenerate" in msg
-    assert "add_clip_to_timeline_tool" in msg
+    assert "add_clips_to_timeline_tool(file_ids=[" in msg
 
 
 def test_stamp_reports_a_save_failure():

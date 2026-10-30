@@ -4808,6 +4808,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.filesTreeView = FilesTreeView(self.files_model)
         self.filesListView = FilesListView(self.files_model)
         self.files_model.update_model()
+        # Footage indexed before (or with the other search model) is embedded again in the background.
+        self.projectChanged.connect(self.files_model.requeue_unsearchable)
 
         # Unified media browser: the project-files card view (filesListView) is
         # embedded together with stock footage + music in a single scroll area, so

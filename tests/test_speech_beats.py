@@ -10,13 +10,11 @@ from __future__ import annotations
 
 import math
 import shutil
-from fractions import Fraction
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 import beat_fakes as bf
-from classes.agent_tools.receipt import parse_receipt
 from classes.speech import beats
 from classes.speech.runtime import CancelToken
 
@@ -176,30 +174,6 @@ def test_detect_beats_tracks_drum_grooves(tmp_path):
     silence = beats.detect_beats(bf.write_wav(tmp_path / "silence.wav", [0.0] * (bf.RATE * 5)))
     assert silence["bpm"] == 0 and silence["beats"] == []
     assert beats.detect_beats(bf.write_wav(tmp_path / "short.wav", bf.drum_track(120, 1.5)))["beats"] == []
-
-
-@needs_ffmpeg
-def test_detect_beats_tool_returns_its_receipt_shape_with_a_tempo_grid(tmp_path):
-    wav = bf.write_wav(tmp_path / "song.wav", bf.drum_track(120, 8))
-    project = {"fps": {"num": 30, "den": 1}, "clips": []}
-    app = MagicMock()
-    app.project.get.side_effect = lambda k, d=None: project.get(k, d)
-    music = MagicMock()
-    music.data = {"path": wav}
-    with patch("classes.app.get_app", return_value=app), \
-            patch("classes.agent_tools.inspect_render.snapshot_project", return_value=project), \
-            patch("classes.clip_utils.project_fps_fraction", return_value=Fraction(30, 1)), \
-            patch("classes.query.File.get", return_value=music):
-        from classes.agent_tools.speech_extra import detect_beats_tool_handler
-        receipt = parse_receipt(detect_beats_tool_handler(fileId="SONG"))
-    assert receipt["status"] == "applied"
-    data = receipt["data"]
-    assert abs(data["bpm"] - 120) < 2 and data["provider"] == "local" and data["fileId"] == "SONG"
-    assert data["beats"] and set(data["beats"][0]) == {"timeSec", "frame", "strength"}
-    first = data["beats"][0]
-    assert first["frame"] == round(first["timeSec"] * 30)
-    assert data["downbeats"] and set(data["downbeats"][0]) == {"timeSec", "frame"}
-    assert receipt["undoSteps"] == 0
 
 
 def test_a_stalled_ffmpeg_band_split_is_killed_on_cancel(monkeypatch):

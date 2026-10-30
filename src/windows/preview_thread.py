@@ -695,11 +695,15 @@ class PlayerWorker(QObject):
 
         # Seek to frame
         if self.parent.initialized:
+            # Read before seeking, and count loading as playing: a seek during
+            # playback reports a loading mode until it lands, and the timeline
+            # echoes the playhead every frame. Nudging then paused playback.
+            playing = self.player.Mode() in (openshot.PLAYBACK_PLAY, openshot.PLAYBACK_LOADING)
             self.player.Seek(number)
             # Force frame delivery when paused — libopenshot doesn't emit the
             # present signal on Seek alone when the player is not playing.
             # Play+Pause triggers the same frame-render path used at startup.
-            if self.player.Mode() != openshot.PLAYBACK_PLAY:
+            if not playing:
                 self.player.Play()
                 self.player.Pause()
 

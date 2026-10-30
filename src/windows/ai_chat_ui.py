@@ -1,6 +1,7 @@
 import html
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -18,6 +19,7 @@ from qt_api import (
 )
 from qt_api import QColor, QTextCursor
 
+from classes import assistant_turns
 from classes.bridge_guard import guarded_slot
 from classes.logger import log
 from classes.api_client import get_backend_client
@@ -196,9 +198,6 @@ def _markdown_to_html(text: str) -> str:
     return f'<div style="{style}">{body}</div>'
 
 
-def _plain_to_html(text: str) -> str:
-    """Escape plain text for safe HTML display."""
-    return "<p>" + html.escape(text).replace("\n", "<br/>") + "</p>"
 
 
 # Wrapper blocks prepended before sending to the LLM (editor snapshot + legacy clip context).
@@ -248,19 +247,16 @@ def _summarize_prompt(prompt: str, max_words: int = 6) -> str:
     return _short_title(prompt, max_words)
 
 
-REQUEST_TIMEOUT_SECONDS = 120
+
 
 # Mirrors backend PLANNING_ALLOWLIST — tools safe to run in Plan mode.
 _PLANNING_SAFE_TOOLS = frozenset({
-    "get_project_info_tool", "list_files_tool", "list_clips_tool", "list_layers_tool",
-    "get_timeline_state_tool", "list_markers_tool", "get_file_info_tool",
-    "get_clips_with_full_metadata_tool", "get_timeline_placements_metadata_tool",
-    "search_clip_scenes_tool", "search_clips_tool", "search_pexels_videos_tool",
-    "search_freesound_music_tool", "list_transitions_tool", "search_transitions_tool",
+    "get_project_info_tool", "get_timeline_state_tool", "list_markers_tool",
+    "search_pexels_videos_tool",
+    "search_freesound_music_tool", "list_transitions_tool",
     "save_edit_plan_tool", "save_planning_research_brief_tool",
     "update_edit_plan_step_tool", "finalize_edit_plan_tool",
     "present_planning_questions_tool",
-    "save_edit_checkpoint_tool", "watch_clip_tool",
 })
 
 
@@ -311,38 +307,81 @@ def _planning_block_message(tool_name: str) -> str:
     )
 
 
-def _format_tool_command(tool_name: str, args: dict) -> str:
-    """Build a `$`-style preview line summarising the tool invocation."""
-    parts = [tool_name]
-    if isinstance(args, dict):
-        for k, v in args.items():
-            try:
-                if isinstance(v, str):
-                    if len(v) > 80:
-                        v_disp = v[:80] + "…"
-                    else:
-                        v_disp = v
-                    parts.append('%s=%s' % (k, json.dumps(v_disp)))
-                elif isinstance(v, (int, float, bool)) or v is None:
-                    parts.append('%s=%s' % (k, json.dumps(v)))
-                else:
-                    s = json.dumps(v, default=str)
-                    if len(s) > 80:
-                        s = s[:80] + "…"
-                    parts.append('%s=%s' % (k, s))
-            except Exception:
-                parts.append(str(k))
-    return " ".join(parts)
+_FILE_ARG_KEYS = ("file_id", "file_path", "path", "source")
+_TEXT_ARG_KEYS = ("query", "text", "prompt", "title")
+_TIME_WORDS = {"position": "at", "start": "at", "at": "at", "end": "to", "duration": "for", "length": "for"}
+
+
+def _file_name(value: str):
+    """File name for a path; None for a bare id, which means nothing to a person."""
+    value = value.strip()
+    if "/" not in value and "\\" not in value and not re.search(r"\.\w{1,5}$", value):
+        return None
+    return os.path.basename(value.replace("\\", "/")) or None
+
+
+def _number(value):
+    """*value* as a finite float when it is a number or a numeric string, else None."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def describe_tool_call(tool_name: str, args) -> str:
+    """One plain sentence for a tool row: its label plus up to three key args.
+
+    Only the args named above are shown; anything else is skipped, never dumped.
+    """
+    label = humanize_tool_name(tool_name)
+    files, texts, times, tracks = [], [], [], []
+    for key, value in (args.items() if isinstance(args, dict) else []):
+        if key in _FILE_ARG_KEYS and isinstance(value, str) and value.strip():
+            name = _file_name(value)
+            if name:
+                files.append(name)
+        elif key in _TEXT_ARG_KEYS and isinstance(value, str) and value.strip():
+            texts.append('"%s"' % value.strip()[:40])
+        elif key.endswith("_seconds") and _number(value) is not None:
+            minutes, secs = divmod(max(0, round(_number(value))), 60)
+            word = _TIME_WORDS.get(key[: -len("_seconds")], "")
+            times.append(" ".join(filter(None, (word, "%d:%02d" % (minutes, secs)))))
+        elif key == "track" and _number(value) is not None and _number(value).is_integer():
+            tracks.append("on track %d" % _number(value))
+    parts = (files + texts + times + tracks)[:3]
+    text = f"{label}: {' '.join(parts)}" if parts else label
+    return text if len(text) <= 90 else text[:89] + "…"
+
+
+# Raw args and results for expanding a tool row. They stay here and reach the
+# page only when the user opens that row, and the store is bounded.
+_TOOL_DETAILS: dict = {}
+_TOOL_DETAILS_MAX = 200
+
+
+def _remember_tool_detail(call_id: str, **fields: str) -> None:
+    entry = _TOOL_DETAILS.pop(call_id, {})
+    entry.update(fields)
+    _TOOL_DETAILS[call_id] = entry
+    while len(_TOOL_DETAILS) > _TOOL_DETAILS_MAX:
+        del _TOOL_DETAILS[next(iter(_TOOL_DETAILS))]
+
+
+def _tool_call_detail(call_id: str) -> dict:
+    return dict(_TOOL_DETAILS.get(call_id) or {})
 
 
 class WidgetToolBlock(QFrame):
     """Collapsible tool-run block for native Qt chat (mirrors chat.js tool blocks)."""
 
-    def __init__(self, call_id: str, title: str, cmd: str, parent=None):
+    def __init__(self, call_id: str, title: str, parent=None):
         super().__init__(parent)
         self.call_id = call_id
         self._title = title
-        self._cmd = cmd
+        self._cmd = ""
         self._expanded = True
         self._running = True
 
@@ -526,6 +565,7 @@ class AIChatWorker(QObject):
     response_ready = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     token_received = pyqtSignal(str)
+    thinking_received = pyqtSignal(str)
     tool_started = pyqtSignal(str, str, str)   # call_id, tool_name, args_json
     tool_log = pyqtSignal(str, str)            # call_id, line
     tool_completed = pyqtSignal(str, bool, str)  # call_id, ok, result_text
@@ -537,8 +577,10 @@ class AIChatWorker(QObject):
         self._stopping = False  # Set to True during app shutdown to suppress fallback/emit
         # Vision parts for the next hosted-chat turn (set by AIChatWindow before invoke).
         self._pending_chat_images = []
+        self._pending_project_id = ""
 
     @pyqtSlot(str, str, str, str, str)
+    @assistant_turns.counts_as_turn
     def run_request(self, text: str, model_id: str, agent_mode: str = "agent", action: str = "chat", plan_id: str = ""):
         """Send the user message to the backend via WebSocket (with tool delegation)."""
         self._agent_mode = agent_mode or "agent"
@@ -610,6 +652,10 @@ class AIChatWorker(QObject):
                 if text and not self._stopping:
                     self.token_received.emit(text)
 
+            def on_thinking(text):
+                if text and not self._stopping:
+                    self.thinking_received.emit(text)
+
             def on_tool_progress(kind, call_id, tool_name, payload):
                 if self._stopping:
                     return
@@ -680,6 +726,7 @@ class AIChatWorker(QObject):
                 on_response=on_response,
                 on_error=on_error,
                 on_token=on_token,
+                on_thinking=on_thinking,
                 on_tool_progress=on_tool_progress,
                 auth_token=client.auth_token(),
                 agent_mode=agent_mode or "agent",
@@ -687,6 +734,7 @@ class AIChatWorker(QObject):
                 plan_id=plan_id or None,
                 on_plan_event=on_plan_event,
                 images=images or None,
+                project_id=self._pending_project_id or None,
             )
 
             if final_error:
@@ -961,6 +1009,11 @@ class ChatBridge(QObject):
             self.window._sign_in_zenvi()
 
     @guarded_slot(str, result=str)
+    def toolDetail(self, call_id: str) -> str:
+        """Args and result of one tool row, asked for when the row is expanded."""
+        return json.dumps(_tool_call_detail(call_id))
+
+    @guarded_slot(str, result=str)
     def listMentionables(self, query: str = "") -> str:
         if not self.window:
             return "[]"
@@ -1015,6 +1068,8 @@ class AIChatWindow(QDockWidget):
         self._chat_web_initial_sync_done = False
         self._user_cancelled = False
         self._token_buffer = []
+        self._js_queue = []
+        self._js_flush_scheduled = False
         self._token_buffer_sid = None  # tab the buffered chunks were streamed for
         self._token_flush_scheduled = False
         self._mention_armed = False
@@ -1141,6 +1196,8 @@ class AIChatWindow(QDockWidget):
         worker.response_ready.connect(self._on_response_ready)
         worker.error_occurred.connect(self._on_error)
         worker.token_received.connect(self._on_token)
+        if hasattr(worker, "thinking_received"):
+            worker.thinking_received.connect(self._on_thinking)
         worker.tool_started.connect(self._on_tool_started)
         worker.tool_log.connect(self._on_tool_log)
         worker.tool_completed.connect(self._on_tool_completed)
@@ -2116,8 +2173,6 @@ class AIChatWindow(QDockWidget):
         payload = {
             "call_id": event.get("call_id") or "",
             "title": event.get("title") or humanize_tool_name(event.get("tool_name") or ""),
-            "cmd": "",
-            "args_detail": "",
             "tool_name": event.get("tool_name") or "",
         }
         self._run_js(
@@ -3191,9 +3246,33 @@ class AIChatWindow(QDockWidget):
         self._chat_view.loadFinished.connect(on_load_finished)
 
     def _run_js(self, code, callback=None):
-        """Run JavaScript in the embedded WebEngine or WebKit chat page."""
+        """Run JavaScript in the embedded WebEngine or WebKit chat page.
+
+        Fire-and-forget snippets are queued and sent together on a ~60 ms flush,
+        so a burst of tool events costs one page call. A call that wants a
+        result flushes the queue first, so the page still sees calls in order.
+        """
         if not self._use_web_ui or not getattr(self, "_chat_view", None):
             return
+        if callback is None:
+            self._js_queue.append(code)
+            if not self._js_flush_scheduled:
+                self._js_flush_scheduled = True
+                QTimer.singleShot(60, self._flush_js)
+            return
+        self._flush_js()
+        self._exec_js(code, callback)
+
+    def _flush_js(self):
+        self._js_flush_scheduled = False
+        if not self._js_queue:
+            return
+        # One try per snippet: a snippet that throws must not drop the rest of the batch.
+        code = "\n".join("try{%s}catch(e){console.error(e)}" % snippet for snippet in self._js_queue)
+        self._js_queue = []
+        self._exec_js(code)
+
+    def _exec_js(self, code, callback=None):
         if getattr(self, "_chat_embed_backend", "webengine") == "webkit":
             from windows.embedded_web import run_js as web_run_js
 
@@ -3660,8 +3739,6 @@ class AIChatWindow(QDockWidget):
             sess["last_user_model_id"] = model_id or ""
             sess["last_user_effort"] = effort or ""
             sess["last_user_images"] = list(images or []) if images else []
-        if action == "chat" and cmd and self._try_local_command(cmd):
-            return True
         if action == "chat" and cmd:
             self._request_preamble_summary(cmd)
         augmented_text = self._prepend_editor_snapshot(text) if text else text
@@ -3672,6 +3749,7 @@ class AIChatWindow(QDockWidget):
             worker._pending_chat_images = list(images)
         else:
             worker._pending_chat_images = []
+        worker._pending_project_id = self._project_id()
         # CLI agents only: Zenvi Assistant has no effort levels, so there is
         # no per-effort pricing to keep (#147).
         is_cli = sess.get("backend", BACKEND_ZENVI) != BACKEND_ZENVI
@@ -4121,30 +4199,6 @@ class AIChatWindow(QDockWidget):
         else:
             QTextEdit.keyPressEvent(self.msg_input, event)
 
-    _WATCH_CLIP_PATTERNS = [
-        "watch clip", "view clip", "show clip", "play clip",
-        "play the feral", "show the feral", "watch the feral",
-        "play the trailer", "show me the clip", "show me the trailer",
-        "load the feral", "open the feral",
-    ]
-
-    def _try_local_command(self, text: str) -> bool:
-        """Execute certain commands locally without sending to the backend.
-        Returns True if the command was handled and no backend call is needed.
-        """
-        lower = text.lower().strip()
-        if any(pat in lower for pat in self._WATCH_CLIP_PATTERNS):
-            self._add_system_msg("Loading Feral trailer and starting playback...")
-            try:
-                from classes.tool_handlers import execute_tool
-                result = execute_tool("watch_clip_tool", {})
-                self._add_assistant_msg(result)
-            except Exception as exc:
-                self._add_assistant_msg(f"Error: {exc}")
-            self._set_processing_ui(False)
-            return True
-        return False
-
     def send_message(self):
         if self.is_processing:
             QMessageBox.warning(self, "Wait", "Processing previous message...")
@@ -4223,6 +4277,16 @@ class AIChatWindow(QDockWidget):
             "if(window.appendOrUpdateStreamingMessage) window.appendOrUpdateStreamingMessage(%s);"
             % json.dumps(chunk)
         )
+
+    @pyqtSlot(str)
+    def _on_thinking(self, text: str):
+        """Backend reasoning text, streamed into the open Thinking block."""
+        if not text or self._user_cancelled:
+            return
+        sid = getattr(self.sender(), "_session_id", self._active_sid)
+        if sid != self._active_sid or not self._use_web_ui:
+            return
+        self._run_js("if(window.appendThinkingText) window.appendThinkingText(%s);" % json.dumps(text))
 
     @pyqtSlot(str)
     def _on_token(self, text: str):
@@ -4308,12 +4372,8 @@ class AIChatWindow(QDockWidget):
         return text
 
     def _tool_result_summary(self, result: str) -> str:
-        if not result:
-            return ""
-        first_line = result.strip().splitlines()[0] if result.strip() else ""
-        if len(first_line) > 140:
-            return first_line[:140] + "…"
-        return first_line
+        from classes.agent_tools.present import tool_row_summary
+        return tool_row_summary(result)
 
     @pyqtSlot(str, str, str)
     def _on_tool_started(self, call_id: str, tool_name: str, args_json: str):
@@ -4340,8 +4400,7 @@ class AIChatWindow(QDockWidget):
             args = json.loads(args_json) if args_json else {}
         except Exception:
             args = {}
-        title = humanize_tool_name(tool_name)
-        cmd = _format_tool_command(tool_name, args)
+        title = describe_tool_call(tool_name, args)
         # Full args for expand/inspect (bounded)
         try:
             args_pretty = json.dumps(args, indent=2, ensure_ascii=False, default=str)
@@ -4350,11 +4409,11 @@ class AIChatWindow(QDockWidget):
         if len(args_pretty) > 4000:
             args_pretty = args_pretty[:4000] + "\n…"
         if self._use_web_ui:
+            _remember_tool_detail(call_id, args=args_pretty)
             payload = {
                 "call_id": call_id,
                 "title": title,
-                "cmd": cmd,
-                "args_detail": args_pretty,
+                "label": humanize_tool_name(tool_name),
                 "tool_name": tool_name or "",
             }
             self._run_js("if(window.addToolBlock) window.addToolBlock(%s);"
@@ -4363,8 +4422,9 @@ class AIChatWindow(QDockWidget):
         if not getattr(self, "_widget_tool_container", None):
             return
         block_id = call_id or tool_name or ("tool_%s" % time.time())
-        block = WidgetToolBlock(block_id, title, cmd, parent=self._widget_tool_blocks_host)
+        block = WidgetToolBlock(block_id, title, parent=self._widget_tool_blocks_host)
         if args_pretty:
+            # The native widget has no lazy fetch, so its collapsed body holds the details.
             block.append_log("ARGS:\n" + args_pretty)
         insert_at = max(0, self._widget_tool_container.count() - 1)
         self._widget_tool_container.insertWidget(insert_at, block)
@@ -4387,7 +4447,7 @@ class AIChatWindow(QDockWidget):
 
     @pyqtSlot(str, bool, str)
     def _on_tool_completed(self, call_id: str, ok: bool, result: str):
-        """Mark a tool block as done/error and keep result text for inspection."""
+        """Mark a tool block as done/error. The result is kept for expanding the row."""
         sid = getattr(self.sender(), "_session_id", self._active_sid)
         self._record_tool_completed(sid, call_id, ok)
         if sid != self._active_sid:
@@ -4397,11 +4457,7 @@ class AIChatWindow(QDockWidget):
         if len(detail) > 6000:
             detail = detail[:6000] + "\n…"
         if self._use_web_ui:
-            if detail:
-                self._run_js(
-                    "if(window.appendToolLog) window.appendToolLog(%s, %s);"
-                    % (json.dumps(call_id), json.dumps("RESULT:\n" + detail))
-                )
+            _remember_tool_detail(call_id, result=detail)
             self._run_js(
                 "if(window.completeToolBlock) window.completeToolBlock(%s, %s, %s);"
                 % (json.dumps(call_id), "true" if ok else "false", json.dumps(summary))

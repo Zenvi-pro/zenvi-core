@@ -62,7 +62,7 @@ def test_message_survives_a_missing_session_row(store):
 def test_clear_session_messages_keeps_the_session(store):
     store.upsert_session("s1", "P1", title="Keep me")
     store.record_message("s1", "user", "hi")
-    store.record_tool_event("s1", "c1", "list_clips_tool", "Listing")
+    store.record_tool_event("s1", "c1", "get_timeline_state_tool", "Listing")
     store.clear_session_messages("s1")
     assert store.load_messages("s1") == []
     assert store.load_tool_events("s1") == []
@@ -140,7 +140,7 @@ def test_load_closed_sessions_skips_empty_and_open_tabs(store):
 def test_tool_events_record_status_and_anchor_to_the_turn(store):
     store.upsert_session("s1", "P1")
     store.record_message("s1", "user", "list my clips")
-    store.record_tool_event("s1", "c1", "list_clips_tool", "Listing clips")
+    store.record_tool_event("s1", "c1", "get_timeline_state_tool", "Listing clips")
     store.complete_tool_event("s1", "c1", True)
     store.record_tool_event("s1", "c2", "export_video_tool", "Exporting")
     store.complete_tool_event("s1", "c2", False)

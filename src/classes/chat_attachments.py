@@ -102,7 +102,7 @@ def format_referenced_files_block(attachments) -> str:
         "The user attached these local files as references (like Cursor @file).",
         "They are not in the media bin unless media_bin_file_id is set.",
         "To edit them on the timeline, call import_files_tool with the path, then "
-        "add_clip_to_timeline_tool with file_id= the returned media_bin_file_id.",
+        "add_clips_to_timeline_tool with file_ids=[the returned media_bin_file_id].",
     ]
     for item in attachments:
         path = item.get("path") or ""

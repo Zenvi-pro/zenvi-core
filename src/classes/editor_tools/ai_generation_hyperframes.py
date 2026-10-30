@@ -140,8 +140,9 @@ def hyperframes_setup(install=False, captions=False, accurate_speech=False):
     if not install:
         # Rendering does not wait for the speech recogniser; only captions' word timing does.
         state = "can render, but setup is not complete" if st["ready"] else "is NOT ready"
-        return ok("HyperFrames " + state + ": " + _status_line(st) + ". Call hyperframes_setup_tool with "
-                  "install=true to install: " + "; ".join(s["label"] for s in steps) + ".", **st)
+        return ok("HyperFrames " + state + ": " + _status_line(st) + ". Call "
+                  "run_tool(name='hyperframes_setup_tool', args={'install': true}) to install: "
+                  + "; ".join(s["label"] for s in steps) + ".", **st)
     if not _ask_install_consent(steps):
         raise ToolError("the user declined the HyperFrames install; motion graphics, product demos and "
                         "HyperFrames captions are unavailable until it is installed")
@@ -178,7 +179,8 @@ def hyperframes_read_file(project, path, offset=1, limit=MAX_READ_LINES):
     """
     full = _guard(hf.resolve_path, project, path)
     if not os.path.isfile(full):
-        raise ToolError("no such file: %s (hyperframes_list_files_tool shows what exists)" % path)
+        raise ToolError("no such file: %s (run_tool(name='hyperframes_list_files_tool', args={'project': ...}) "
+                        "shows what exists)" % path)
     with open(full, encoding="utf-8", errors="replace") as fh:
         lines = fh.read().splitlines()
     first = int(offset)
@@ -202,8 +204,8 @@ def hyperframes_read_file(project, path, offset=1, limit=MAX_READ_LINES):
 def hyperframes_write_file(project, path, content):
     """Create or replace a text file in a HyperFrames project (HTML composition, JSON plan, CSS).
 
-    For a small change to an existing file use hyperframes_edit_file_tool instead
-    of rewriting it. The installed skills are read-only.
+    For a small change to an existing file use run_tool(name='hyperframes_edit_file_tool', args={...})
+    instead of rewriting it. The installed skills are read-only.
     """
     full = _guard(hf.resolve_path, project, path, writable=True)
     data = content.encode("utf-8")
@@ -299,8 +301,8 @@ def hyperframes_run(project, program, args, timeout_seconds=hf.DEFAULT_TIMEOUT):
     Files may be read by its absolute path, and a URL argument is accepted only
     by 'hyperframes capture <https url>'. (A composition's own HTML still loads
     what it references, e.g. GSAP or fonts from a CDN, when Chrome renders it.)
-    To put a render on the timeline use
-    render_motion_graphic_tool or import_motion_graphic_tool, not this tool.
+    To put a render on the timeline use run_tool(name='render_motion_graphic_tool', args={...}) or
+    run_tool(name='import_motion_graphic_tool', args={...}), not this tool.
 
     Example: {"project": "intro-title", "program": "hyperframes", "args": ["lint", ".", "--json"]}.
     """
@@ -441,7 +443,7 @@ def render_motion_graphic(project, label, transparent=True, composition="", fps=
     marked with data-layout-allow-overflow). Render one graphic per project (title,
     lower third, end card...), each a few seconds long. The render takes from a few seconds
     to a few minutes. The result carries a file_id: place it next with
-    place_motion_graphic_tool. Nothing is uploaded.
+    run_tool(name='place_motion_graphic_tool', args={...}). Nothing is uploaded.
     """
     root = _guard(hf.project_dir, project)
     entry = _guard(hf.resolve_path, project, composition or "index.html")
@@ -477,8 +479,8 @@ def render_motion_graphic(project, label, transparent=True, composition="", fps=
 def import_motion_graphic(project, path, label, transparent=True):
     """Import a video a skill script already rendered in a HyperFrames project into Project Files.
 
-    For outputs that hyperframes_run_tool produced (a captions skill's
+    For outputs that run_tool(name='hyperframes_run_tool', args={...}) produced (a captions skill's
     final.mp4, a demo's composite). For a plain composition use
-    render_motion_graphic_tool, which renders and imports in one call.
+    run_tool(name='render_motion_graphic_tool', args={...}), which renders and imports in one call.
     """
     return _import(project, _guard(hf.resolve_path, project, path), label, transparent)

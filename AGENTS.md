@@ -52,6 +52,15 @@ cut anything that becomes aspirational.
   history untouched.
 - `agent_gap_log.py` records capabilities users ask for that we lack.
   Prefer implementing a logged gap over inventing a speculative tool.
+- One tool per job. Before adding a tool, check whether an existing tool
+  already does the job well enough, or can with one more argument. A new tool
+  needs a solid reason (a job no tool covers); duplicates make agents pick at
+  random (see `tests/test_retired_tools.py`).
+- Text the model reads (prompts, the playbook, tool descriptions, refusals,
+  next-step hints) names only the core tools in `agent_tools/core_tools.py`.
+  Any other tool is written `run_tool(name="x_tool", args={...})` or described
+  in words for `find_tools`. Enforced by `tests/test_model_facing_tool_names.py`
+  and `tests/test_refusals_name_listed_tools.py`.
 
 ## Tests
 

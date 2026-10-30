@@ -64,7 +64,7 @@ NATIVE_TWINS = {
     "set_clip_property_tool": "set_clip_properties_tool",
     "set_effect_property_tool": "update_effect_tool",
     "add_transition_tool": "apply_transition_tool",
-    "probe_media_tool": "inspect_media_tool",
+    "probe_media_tool": "view_frames_tool",
 }
 SURFACE_NOTE = "Runs in the Zenvi engine (engine bridge)."
 

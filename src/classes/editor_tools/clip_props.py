@@ -7,9 +7,9 @@ and the property/keyframe model in ``clip_props_model``. The menu presets
 
 set_keyframes_tool requests: "zoom from 100% to 130% between 2 s and 5 s",
 "move the logo from left to right", "fade the music down to 20% at 10 s",
-"spin it once". Example call: set_keyframes_tool(timeline_clip_id="ABC123",
-property="scale_x", points=[{"seconds": 0, "value": 1}, {"seconds": 4,
-"value": 1.3, "ease": "ease_in_out"}]).
+"spin it once". Example call: run_tool(name='set_keyframes_tool', args={'timeline_clip_id': "ABC123",
+'property': "scale_x", 'points': [{"seconds": 0, "value": 1}, {"seconds": 4,
+"value": 1.3, "ease": "ease_in_out"}]}).
 
 set_clip_properties_tool requests: "make it 50% transparent" (alpha 0.5), "use
 the multiply blend mode" (composite), "fit/fill the frame" (scale Best Fit /
@@ -17,13 +17,13 @@ Crop), "pin it to the top right" (gravity), "make it half size"
 (scale_x/scale_y 0.5), "move it left" (location_x), "tilt it 10 degrees"
 (rotation), "mirror it" (scale_x -1), "rounded corners" (corner_radius), "turn
 it down" (volume), "show frame numbers" (display). Example call:
-set_clip_properties_tool(timeline_clip_ids=["ABC123"], properties={"alpha":
-0.5, "composite": "multiply"}).
+run_tool(name='set_clip_properties_tool', args={'timeline_clip_ids': ["ABC123"], 'properties': {"alpha":
+0.5, "composite": "multiply"}}).
 
 copy_clip_keyframes_tool requests: "give clip B the same zoom as clip A", "copy
 the fade to all clips", "same position and size as that one". Example call:
-copy_clip_keyframes_tool(source_clip_id="A1", timeline_clip_ids=["B2", "C3"],
-groups=["scale", "location"]).
+run_tool(name='copy_clip_keyframes_tool', args={'source_clip_id': "A1", 'timeline_clip_ids': ["B2", "C3"],
+'groups': ["scale", "location"]}).
 """
 
 from __future__ import annotations
@@ -152,7 +152,7 @@ def get_clip_properties(timeline_clip_id="", clip_query="", track="", at_seconds
     interpolation and ease. Also lists the clip's effects (id, class). Changes
     nothing.
 
-    Example: get_clip_properties_tool(timeline_clip_id="ABC123", properties=["scale_x", "alpha"])
+    Example: run_tool(name='get_clip_properties_tool', args={'timeline_clip_id': "ABC123", 'properties': ["scale_x", "alpha"]})
     """
     clip = resolve_clip(timeline_clip_id, clip_query, track)
     data = clip.data
@@ -228,10 +228,10 @@ def set_clip_properties(properties, timeline_clip_ids=None, clip_query="", track
     Several properties and clips in one call, one undo step. A static value
     replaces any animation of that property (the receipt says so); mirroring
     (scale_x -1) off a centred gravity warns in the receipt. To animate or
-    change part of a curve use set_keyframes_tool; for fades, zooms, slides
-    or layouts apply_clip_preset_tool. Position, trim and track are timeline
-    edits, not properties. Clips on locked tracks are refused (skipped with
-    scope).
+    change part of a curve use run_tool(name='set_keyframes_tool'); for fades,
+    zooms, slides or layouts apply run_tool(name='apply_clip_preset_tool').
+    Position, trim and track are timeline edits, not properties. Clips on
+    locked tracks are refused (skipped with scope).
     """
     if not isinstance(properties, dict) or not properties:
         raise ToolError('properties must be an object such as {"alpha": 0.5}')
@@ -242,7 +242,7 @@ def set_clip_properties(properties, timeline_clip_ids=None, clip_query="", track
             raise ToolError(f"{name!r} sets {key}, which is already in properties")
         if key == "time":
             raise ToolError("time maps clip frames to source frames (speed); change speed with the speed tools, "
-                            "or animate it with set_keyframes_tool(property='time')")
+                            "or animate it with run_tool(name='set_keyframes_tool', args={'property': 'time'})")
         keys[name] = key
     clips, skipped = resolve_targets(timeline_clip_ids, clip_query, track, scope)
 
@@ -390,9 +390,10 @@ def set_keyframes(property, points, timeline_clip_id="", clip_query="", track=""
 
     For custom motion the presets do not cover, or any exact curve. Every
     point must land inside the clip. For whole-clip zooms, pans, fades and
-    slides prefer apply_clip_preset_tool; to remove keyframes use
-    remove_keyframes_tool. Refused: locked tracks, single-value properties
-    (set those with set_clip_properties_tool). One undo step.
+    slides prefer run_tool(name='apply_clip_preset_tool'); to remove keyframes
+    use run_tool(name='remove_keyframes_tool'). Refused: locked tracks,
+    single-value properties (set those with run_tool(name='set_clip_properties_tool')).
+    One undo step.
     """
     clip = resolve_clip(timeline_clip_id, clip_query, track, occurrence, position_near)
     data = clip.data
@@ -402,7 +403,7 @@ def set_keyframes(property, points, timeline_clip_id="", clip_query="", track=""
     key = cpm.resolve_key(property)
     info = cpm.property_info(key, data)
     if not info.keyframable:
-        raise ToolError(f"{key} holds a single value and cannot be animated; set it with set_clip_properties_tool")
+        raise ToolError(f"{key} holds a single value and cannot be animated; set it with run_tool(name='set_clip_properties_tool')")
     if not isinstance(points, list) or not points:
         raise ToolError("points must list at least one keyframe, e.g. [{\"seconds\": 0, \"value\": 1}]")
     if ease and interpolation not in ("", "bezier"):
@@ -536,10 +537,10 @@ def remove_keyframes(properties, timeline_clip_ids=None, clip_query="", track=""
     loses its last keyframe it falls back to the Properties dock default
     (alpha 1, scale 1, location 0, rotation 0, shear 0, origin 0.5, volume 1),
     exactly like Remove Keyframe in the Properties dock; to keep some other
-    fixed value use set_clip_properties_tool instead. To remove fades use
-    apply_clip_preset_tool(preset='fade_none'). One undo step.
+    fixed value use run_tool(name='set_clip_properties_tool') instead. To remove fades use
+    run_tool(name='apply_clip_preset_tool', args={'preset': 'fade_none'}). One undo step.
 
-    Example: remove_keyframes_tool(timeline_clip_ids=["ABC123"], properties=["scale_x", "scale_y"])
+    Example: run_tool(name='remove_keyframes_tool', args={'timeline_clip_ids': ["ABC123"], 'properties': ["scale_x", "scale_y"]})
     """
     names = [str(p).strip() for p in (properties or []) if str(p).strip()]
     if not names:
@@ -565,7 +566,7 @@ def remove_keyframes(properties, timeline_clip_ids=None, clip_query="", track=""
         for key in clip_keys:
             info = cpm.property_info(key, data)
             if not info.keyframable:
-                raise ToolError(f"{key} holds a single value and has no keyframes; set it with set_clip_properties_tool")
+                raise ToolError(f"{key} holds a single value and has no keyframes; set it with run_tool(name='set_clip_properties_tool')")
             if info.kind == "color":
                 curves = copy.deepcopy(data.get(key) or {})
                 removed = 0

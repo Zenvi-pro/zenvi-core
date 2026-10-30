@@ -55,7 +55,7 @@ def saved(editor, tmp_path, monkeypatch):
 
 def test_motion_template_lands_in_one_undo_step_and_survives_save_and_reopen(saved, tmp_path):
     assert "add_motion_template_tool" in saved.handlers
-    assert "list_files_tool" not in saved.handlers  # the desktop's own tools are never bridged
+    assert "list_project_files_tool" not in saved.handlers  # the desktop's own tools are never bridged
 
     receipt = saved.call_receipt("add_motion_template_tool", template="end_card", text="Northwind",
                                  subtitle="Brews in four minutes", position_seconds="1")

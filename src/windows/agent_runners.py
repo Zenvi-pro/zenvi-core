@@ -29,6 +29,7 @@ import threading
 import time
 import uuid
 
+from classes import assistant_turns
 from qt_api import QObject, pyqtSignal, pyqtSlot
 
 log = logging.getLogger(__name__)
@@ -402,13 +403,13 @@ def _agent_import_prompt() -> str:
     return (
         "Importing local media (import_files_tool):\n"
         "- To put files into Project Files you MUST call import_files_tool. "
-        "list_files_tool only lists media already in the project — it never "
+        "list_project_files_tool only lists media already in the project — it never "
         "imports from disk.\n"
         "- If the user named a folder (Downloads, Desktop, a path, or "
         "\"folder X in Downloads\"), call import_files_tool with that folder "
         "and dry_run=true IMMEDIATELY. Do NOT ask for individual file paths "
         "when they named a folder. Do NOT use Glob, Read, Bash, or "
-        "list_files_tool to preflight — Zenvi resolves the path.\n"
+        "list_project_files_tool to preflight — Zenvi resolves the path.\n"
         "- Bare names work: folder=\"Downloads\" or folder=\"Desktop\". "
         "For “all videos”, pass media_types=video (skips images/audio).\n"
         "- Windows: prefer C:/Users/.../folder (forward slashes). Git Bash "
@@ -450,16 +451,15 @@ def _claude_code_system_prompt():
         "with url + intent. Add/place on timeline → intent=timeline. "
         "Colour/look/grade → intent=reference (Imports only). "
         "Recreate → intent=recreate.\n"
-        "- Do NOT ToolSearch, list_files, get_timeline_state_tool, "
-        "import_files_tool, or import_video_url_and_add_to_timeline_tool "
-        "before ingest for a bare YouTube/web video URL.\n"
+        "- Do NOT ToolSearch, list_project_files_tool, get_timeline_state_tool, "
+        "or import_files_tool before ingest for a bare YouTube/web video URL.\n"
         "- If status=running, call ingest_web_video_tool(job_id=...) again — "
         "each call waits until done or ~45s. A client timeout is not failure; "
         "keep calling the same job_id. Do not abandon it for Import.\n"
         "- On ok=false / status=failed: quote the short reason once and stop. "
         "Do not start a second download of the same URL in that turn.\n"
         "- After a successful ingest+place: one short sentence. "
-        "Do NOT call watch_clip_window_tool unless the user asked to check "
+        "Do NOT call inspect_timeline_tool unless the user asked to check "
         "the picture.\n"
         "\n"
         + _agent_bash_prompt()
@@ -1922,6 +1922,7 @@ class BaseAgentRunner(QObject):
     # and Qt resolves the slot by its registered signature ΓÇö a shorter one is
     # simply never found and the request silently does nothing.
     @pyqtSlot(str, str, str, str, str)
+    @assistant_turns.counts_as_turn
     def run_request(self, text: str, model_id: str, agent_mode: str = "agent",
                     action: str = "chat", plan_id: str = ""):
         # ``agent_mode``/``action``/``plan_id`` drive the Zenvi backend's

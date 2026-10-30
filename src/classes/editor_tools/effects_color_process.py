@@ -167,8 +167,8 @@ def build_context(class_name: str, clip, opts: dict) -> tuple:
     if class_name == "Tracker":
         if not opts.get("region"):
             raise ToolError('Tracker needs region: the box around the object on the frame at region_time, e.g. '
-                            '{"x": 0.4, "y": 0.3, "width": 0.15, "height": 0.25} (use analyze_frame_colors_tool '
-                            'with save_frame_path to look at the frame first)')
+                            '{"x": 0.4, "y": 0.3, "width": 0.15, "height": 0.25} (use run_tool(name="analyze_frame_colors_tool", args={"save_frame_path": "<a .png path>"}) '
+                            'to look at the frame first)')
         r = _rect(opts["region"], "region")
         t = _seconds_in_clip(data, opts.get("region_time"), "region_time")
         first = int(round((t - float(data.get("position") or 0.0)) * project_fps()))
@@ -487,8 +487,8 @@ def process_clip_effect(*, effect, timeline_clip_id="", clip_query="", track="",
     Tracked objects (Tracker/ObjectDetection/ObjectMask) drive other effects:
     Blur or Pixelate with properties {"mask_source_id": "<effect_id>"} blurs
     only the object; add "mask_invert": 1 to blur everything else. Look at a
-    frame first with analyze_frame_colors_tool(save_frame_path=...) to pick a
-    region. Models download only with download_model=true. Refused: still
+    frame first with run_tool(name='analyze_frame_colors_tool', args={'save_frame_path': ...})
+    to pick a region. Models download only with download_model=true. Refused: still
     images, audio-only clips, locked tracks, missing region/points, builds
     without OpenCV.
     """
