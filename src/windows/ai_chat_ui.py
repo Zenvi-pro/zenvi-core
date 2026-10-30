@@ -1,6 +1,7 @@
 import html
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -18,12 +19,14 @@ from qt_api import (
 )
 from qt_api import QColor, QTextCursor
 
+from classes import assistant_turns
 from classes.bridge_guard import guarded_slot
 from classes.logger import log
 from classes.api_client import get_backend_client
 from classes.tool_handlers import humanize_tool_name
 from windows.agent_runners import CLI_RUNNERS
 from windows.embedded_web import web_embed_backend
+from themes.cosmic.tokens import TOKENS
 
 # Theme colors for chat CEP UI (match theme QSS). Keys match ThemeName.value.
 # Bloomberg Light: high information density, sharp edges, accent #6366F1.
@@ -33,47 +36,67 @@ CHAT_THEME_COLORS = {
         "chat-preamble-bg": "#F1F5F9",
         "chat-text": "#0F172A",
         "chat-border": "#E2E8F0",
+        "chat-border-strong": "#E2E8F0",
         "chat-input-bg": "#FFFFFF",
         "chat-button-bg": "#F1F5F9",
-        "chat-button-hover-bg": "#6366F1",
         "chat-accent": "#6366F1",
+        "chat-primary": "#6366F1",
+        "chat-primary-text": "#FFFFFF",
         "chat-code-bg": "#E2E8F0",
         "chat-placeholder": "rgba(15, 23, 42, 0.5)",
+        "chat-surface": "#F1F5F9",
+        "chat-muted": "#475569",
+        "accent-soft": "rgba(99, 102, 241, 0.14)",
     },
     "Humanity: Dark": {
         "chat-bg": "#191919",
-        "chat-preamble-bg": "#252525",
+        "chat-preamble-bg": "#26282c",
         "chat-text": "#ffffff",
         "chat-border": "#404040",
-        "chat-input-bg": "#252525",
+        "chat-border-strong": "#404040",
+        "chat-input-bg": "#26282c",
         "chat-button-bg": "#353535",
-        "chat-button-hover-bg": "#2a82da",
         "chat-accent": "#6366F1",
+        "chat-primary": "#6366F1",
+        "chat-primary-text": "#FFFFFF",
         "chat-placeholder": "rgba(255, 255, 255, 0.5)",
+        "chat-surface": "#26282c",
+        "chat-muted": "#b0b0b0",
+        "chat-code-bg": "#2a2a2a",
+        "accent-soft": "rgba(99, 102, 241, 0.18)",
     },
     "Retro": {
         "chat-bg": "#f0f0f0",
         "chat-preamble-bg": "#e8e8e8",
-        "chat-text": "#333333",
+        "chat-text": "#35383d",
         "chat-border": "#ccc",
+        "chat-border-strong": "#ccc",
         "chat-input-bg": "#ffffff",
         "chat-button-bg": "#e8e8e8",
-        "chat-button-hover-bg": "#217dd4",
         "chat-accent": "#217dd4",
+        "chat-primary": "#217dd4",
+        "chat-primary-text": "#FFFFFF",
         "chat-placeholder": "rgba(51, 51, 51, 0.5)",
+        "chat-surface": "#e8e8e8",
+        "chat-muted": "#5f626a",
+        "chat-code-bg": "#e8e8e8",
+        "accent-soft": "rgba(33, 125, 212, 0.14)",
     },
     "Cosmic Dusk": {
-        "chat-bg":              "#161616",
-        "chat-surface":         "#1e1e1e",
-        "chat-text":            "#d4d4d4",
-        "chat-muted":           "#6b7280",
-        "chat-placeholder":     "#6b7280",
-        "chat-border":          "#2a2a2a",
-        "chat-input-bg":        "#1a1a1a",
-        "chat-button-bg":       "#252525",
-        "chat-button-hover-bg": "#2e2e2e",
-        "chat-accent":          "#4d9cf6",
-        "chat-code-bg":         "#252525",
+        "chat-bg": TOKENS["surface"],
+        "chat-surface": TOKENS["raised"],
+        "chat-text": TOKENS["text"],
+        "chat-muted": TOKENS["text_muted"],
+        "chat-placeholder": TOKENS["text_faint"],
+        "chat-border": TOKENS["line"],
+        "chat-border-strong": TOKENS["line_strong"],
+        "chat-input-bg": TOKENS["sunken"],
+        "chat-button-bg": TOKENS["hover"],
+        "chat-accent": TOKENS["accent"],
+        "chat-primary": TOKENS["primary"],
+        "chat-primary-text": TOKENS["primary_text"],
+        "chat-code-bg": TOKENS["raised"],
+        "accent-soft": TOKENS["accent_soft"],
     },
 }
 
@@ -164,7 +187,7 @@ def _markdown_to_html(text: str) -> str:
     # Wrap in a div and style code blocks so they don't override theme colors
     # Use 'currentColor' so code inherits the widget's text color
     style = (
-        "pre, code { background: rgba(0,0,0,0.15); padding: 4px 6px; border-radius: 0; "
+        "pre, code { background: " + TOKENS["raised"] + "; padding: 4px 6px; border-radius: 0; "
         "font-family: monospace; color: inherit; } "
         "pre { margin: 8px 0; overflow-x: auto; } "
         "pre code { padding: 0; background: transparent; } "
@@ -175,9 +198,6 @@ def _markdown_to_html(text: str) -> str:
     return f'<div style="{style}">{body}</div>'
 
 
-def _plain_to_html(text: str) -> str:
-    """Escape plain text for safe HTML display."""
-    return "<p>" + html.escape(text).replace("\n", "<br/>") + "</p>"
 
 
 # Wrapper blocks prepended before sending to the LLM (editor snapshot + legacy clip context).
@@ -227,19 +247,16 @@ def _summarize_prompt(prompt: str, max_words: int = 6) -> str:
     return _short_title(prompt, max_words)
 
 
-REQUEST_TIMEOUT_SECONDS = 120
+
 
 # Mirrors backend PLANNING_ALLOWLIST — tools safe to run in Plan mode.
 _PLANNING_SAFE_TOOLS = frozenset({
-    "get_project_info_tool", "list_files_tool", "list_clips_tool", "list_layers_tool",
-    "get_timeline_state_tool", "list_markers_tool", "get_file_info_tool",
-    "get_clips_with_full_metadata_tool", "get_timeline_placements_metadata_tool",
-    "search_clip_scenes_tool", "search_clips_tool", "search_pexels_videos_tool",
-    "search_freesound_music_tool", "list_transitions_tool", "search_transitions_tool",
+    "get_project_info_tool", "get_timeline_state_tool", "list_markers_tool",
+    "search_pexels_videos_tool",
+    "search_freesound_music_tool", "list_transitions_tool",
     "save_edit_plan_tool", "save_planning_research_brief_tool",
     "update_edit_plan_step_tool", "finalize_edit_plan_tool",
     "present_planning_questions_tool",
-    "save_edit_checkpoint_tool", "watch_clip_tool",
 })
 
 
@@ -290,38 +307,81 @@ def _planning_block_message(tool_name: str) -> str:
     )
 
 
-def _format_tool_command(tool_name: str, args: dict) -> str:
-    """Build a `$`-style preview line summarising the tool invocation."""
-    parts = [tool_name]
-    if isinstance(args, dict):
-        for k, v in args.items():
-            try:
-                if isinstance(v, str):
-                    if len(v) > 80:
-                        v_disp = v[:80] + "…"
-                    else:
-                        v_disp = v
-                    parts.append('%s=%s' % (k, json.dumps(v_disp)))
-                elif isinstance(v, (int, float, bool)) or v is None:
-                    parts.append('%s=%s' % (k, json.dumps(v)))
-                else:
-                    s = json.dumps(v, default=str)
-                    if len(s) > 80:
-                        s = s[:80] + "…"
-                    parts.append('%s=%s' % (k, s))
-            except Exception:
-                parts.append(str(k))
-    return " ".join(parts)
+_FILE_ARG_KEYS = ("file_id", "file_path", "path", "source")
+_TEXT_ARG_KEYS = ("query", "text", "prompt", "title")
+_TIME_WORDS = {"position": "at", "start": "at", "at": "at", "end": "to", "duration": "for", "length": "for"}
+
+
+def _file_name(value: str):
+    """File name for a path; None for a bare id, which means nothing to a person."""
+    value = value.strip()
+    if "/" not in value and "\\" not in value and not re.search(r"\.\w{1,5}$", value):
+        return None
+    return os.path.basename(value.replace("\\", "/")) or None
+
+
+def _number(value):
+    """*value* as a finite float when it is a number or a numeric string, else None."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def describe_tool_call(tool_name: str, args) -> str:
+    """One plain sentence for a tool row: its label plus up to three key args.
+
+    Only the args named above are shown; anything else is skipped, never dumped.
+    """
+    label = humanize_tool_name(tool_name)
+    files, texts, times, tracks = [], [], [], []
+    for key, value in (args.items() if isinstance(args, dict) else []):
+        if key in _FILE_ARG_KEYS and isinstance(value, str) and value.strip():
+            name = _file_name(value)
+            if name:
+                files.append(name)
+        elif key in _TEXT_ARG_KEYS and isinstance(value, str) and value.strip():
+            texts.append('"%s"' % value.strip()[:40])
+        elif key.endswith("_seconds") and _number(value) is not None:
+            minutes, secs = divmod(max(0, round(_number(value))), 60)
+            word = _TIME_WORDS.get(key[: -len("_seconds")], "")
+            times.append(" ".join(filter(None, (word, "%d:%02d" % (minutes, secs)))))
+        elif key == "track" and _number(value) is not None and _number(value).is_integer():
+            tracks.append("on track %d" % _number(value))
+    parts = (files + texts + times + tracks)[:3]
+    text = f"{label}: {' '.join(parts)}" if parts else label
+    return text if len(text) <= 90 else text[:89] + "…"
+
+
+# Raw args and results for expanding a tool row. They stay here and reach the
+# page only when the user opens that row, and the store is bounded.
+_TOOL_DETAILS: dict = {}
+_TOOL_DETAILS_MAX = 200
+
+
+def _remember_tool_detail(call_id: str, **fields: str) -> None:
+    entry = _TOOL_DETAILS.pop(call_id, {})
+    entry.update(fields)
+    _TOOL_DETAILS[call_id] = entry
+    while len(_TOOL_DETAILS) > _TOOL_DETAILS_MAX:
+        del _TOOL_DETAILS[next(iter(_TOOL_DETAILS))]
+
+
+def _tool_call_detail(call_id: str) -> dict:
+    return dict(_TOOL_DETAILS.get(call_id) or {})
 
 
 class WidgetToolBlock(QFrame):
     """Collapsible tool-run block for native Qt chat (mirrors chat.js tool blocks)."""
 
-    def __init__(self, call_id: str, title: str, cmd: str, parent=None):
+    def __init__(self, call_id: str, title: str, parent=None):
         super().__init__(parent)
         self.call_id = call_id
         self._title = title
-        self._cmd = cmd
+        self._cmd = ""
         self._expanded = True
         self._running = True
 
@@ -349,7 +409,7 @@ class WidgetToolBlock(QFrame):
         mono.setFamily("Consolas")
         mono.setPointSize(9)
         self._body.setFont(mono)
-        self._body.setStyleSheet("background: #1a1a1a; color: #c8c8c8; border: none;")
+        self._body.setStyleSheet(f"background: {TOKENS['sunken']}; color: {TOKENS['text']}; border: none;")
         outer.addWidget(self._body)
 
     def _refresh_header(self):
@@ -505,6 +565,7 @@ class AIChatWorker(QObject):
     response_ready = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     token_received = pyqtSignal(str)
+    thinking_received = pyqtSignal(str)
     tool_started = pyqtSignal(str, str, str)   # call_id, tool_name, args_json
     tool_log = pyqtSignal(str, str)            # call_id, line
     tool_completed = pyqtSignal(str, bool, str)  # call_id, ok, result_text
@@ -516,8 +577,10 @@ class AIChatWorker(QObject):
         self._stopping = False  # Set to True during app shutdown to suppress fallback/emit
         # Vision parts for the next hosted-chat turn (set by AIChatWindow before invoke).
         self._pending_chat_images = []
+        self._pending_project_id = ""
 
     @pyqtSlot(str, str, str, str, str)
+    @assistant_turns.counts_as_turn
     def run_request(self, text: str, model_id: str, agent_mode: str = "agent", action: str = "chat", plan_id: str = ""):
         """Send the user message to the backend via WebSocket (with tool delegation)."""
         self._agent_mode = agent_mode or "agent"
@@ -589,6 +652,10 @@ class AIChatWorker(QObject):
                 if text and not self._stopping:
                     self.token_received.emit(text)
 
+            def on_thinking(text):
+                if text and not self._stopping:
+                    self.thinking_received.emit(text)
+
             def on_tool_progress(kind, call_id, tool_name, payload):
                 if self._stopping:
                     return
@@ -659,6 +726,7 @@ class AIChatWorker(QObject):
                 on_response=on_response,
                 on_error=on_error,
                 on_token=on_token,
+                on_thinking=on_thinking,
                 on_tool_progress=on_tool_progress,
                 auth_token=client.auth_token(),
                 agent_mode=agent_mode or "agent",
@@ -666,6 +734,7 @@ class AIChatWorker(QObject):
                 plan_id=plan_id or None,
                 on_plan_event=on_plan_event,
                 images=images or None,
+                project_id=self._pending_project_id or None,
             )
 
             if final_error:
@@ -751,6 +820,20 @@ class ChatBridge(QObject):
             mode = agent_mode if agent_mode in ("planning", "agent") else None
             self.window._handle_web_send_message(text.strip(), model_id or "", mode)
 
+    @guarded_slot(str, str, str, str)
+    def sendMessageWithEffort(self, text: str, model_id: str, agent_mode: str, effort: str):
+        """sendMessage plus the effort picked for a CLI agent's model (#147)."""
+        if self.window:
+            mode = agent_mode if agent_mode in ("planning", "agent") else None
+            self.window._handle_web_send_message(
+                text.strip(), model_id or "", mode, effort=effort or "")
+
+    @guarded_slot(str)
+    def setCliMode(self, mode: str):
+        """The permission mode picked for CLI agents' turns ("" = their default)."""
+        if self.window:
+            self.window._cli_mode = mode or ""
+
     @guarded_slot(str, str)
     def executePlan(self, plan_id: str, model_id: str):
         if self.window:
@@ -787,6 +870,16 @@ class ChatBridge(QObject):
     def openAgentTrace(self):
         if self.window:
             self.window.open_agent_trace()
+
+    @guarded_slot()
+    def toggleDictation(self):
+        if self.window:
+            self.window.toggle_dictation()
+
+    @guarded_slot()
+    def openDictationMenu(self):
+        if self.window:
+            self.window.open_dictation_menu()
 
     @guarded_slot(str)
     def submitPlanAnswers(self, answers_json: str):
@@ -916,6 +1009,11 @@ class ChatBridge(QObject):
             self.window._sign_in_zenvi()
 
     @guarded_slot(str, result=str)
+    def toolDetail(self, call_id: str) -> str:
+        """Args and result of one tool row, asked for when the row is expanded."""
+        return json.dumps(_tool_call_detail(call_id))
+
+    @guarded_slot(str, result=str)
     def listMentionables(self, query: str = "") -> str:
         if not self.window:
             return "[]"
@@ -944,6 +1042,10 @@ class ChatBridge(QObject):
 class AIChatWindow(QDockWidget):
     """Zenvi Assistant chat dock. Supports markdown in assistant replies and matches app theme."""
 
+    dictation_heard = pyqtSignal(str, bool, int)   # text, final, take (from the dictation threads)
+    dictation_failed = pyqtSignal(str, int)        # message, take
+    dictation_installed = pyqtSignal(str, str)   # engine, error ("" when it downloaded)
+
     def __init__(self, parent=None):
         # Titled "Agents": the top selector chooses the backend (Zenvi Assistant,
         # Claude Code, Codex). objectName is kept stable so saved dock-state /
@@ -966,11 +1068,20 @@ class AIChatWindow(QDockWidget):
         self._chat_web_initial_sync_done = False
         self._user_cancelled = False
         self._token_buffer = []
+        self._js_queue = []
+        self._js_flush_scheduled = False
         self._token_buffer_sid = None  # tab the buffered chunks were streamed for
         self._token_flush_scheduled = False
         self._mention_armed = False
         # Composer attachment undo: snapshots before each drop/paste batch.
         self._attachment_undo_stack = []
+        self._dictation = None
+        self._dictation_take = 0                   # numbers each take; words from an older one are dropped
+        self._dictation_open = False               # a take's words may still be written into the shared box
+        self.dictation_heard.connect(self._on_dictation_heard)
+        self.dictation_failed.connect(self._on_dictation_failed)
+        self._dictation_download = ""
+        self.dictation_installed.connect(self._on_dictation_installed)
 
         # Per-session state: each entry holds {"worker", "thread", "title",
         # "messages", "processing", "first_prompt_summary"}.
@@ -1025,6 +1136,7 @@ class AIChatWindow(QDockWidget):
                     "backend": backend,
                     "agent_mode": entry.get("agent_mode", "agent"),
                     "current_plan": None,
+                    "seen_seq": AIChatWindow._seen_from_row(entry),
                 }
                 self._persist_session(sid)
 
@@ -1084,6 +1196,8 @@ class AIChatWindow(QDockWidget):
         worker.response_ready.connect(self._on_response_ready)
         worker.error_occurred.connect(self._on_error)
         worker.token_received.connect(self._on_token)
+        if hasattr(worker, "thinking_received"):
+            worker.thinking_received.connect(self._on_thinking)
         worker.tool_started.connect(self._on_tool_started)
         worker.tool_log.connect(self._on_tool_log)
         worker.tool_completed.connect(self._on_tool_completed)
@@ -1136,6 +1250,7 @@ class AIChatWindow(QDockWidget):
 
     def _create_session(self, model_id: str = "", backend: str = BACKEND_ZENVI):
         """Create a new chat session and switch to it (called from the + tab button)."""
+        self._abandon_dictation()                   # the shared prompt box changes chats
         import uuid
         backend = _coerce_backend(backend)
         sid = str(uuid.uuid4())
@@ -1228,8 +1343,15 @@ class AIChatWindow(QDockWidget):
         if not sess or sess.get("backend") == backend:
             return
         old_worker = sess.get("worker")
+        # Whatever the old backend is told from here on, the next one has not
+        # seen: remember where its view of the chat ends (see _handoff_prefix).
+        from classes import chat_history
+        seen = chat_history.load_messages(session_id)
+        sess.setdefault("seen_seq", {})[sess.get("backend")] = seen[-1]["seq"] if seen else 0
         if old_worker is not None:
             try:
+                # A reply still in flight must not land in the new backend's tab.
+                old_worker.blockSignals(True)
                 old_worker._stopping = True
             except Exception:
                 pass
@@ -1259,12 +1381,17 @@ class AIChatWindow(QDockWidget):
                 "cli_cwd": getattr(old_worker, "_cli_cwd", "") or "",
             }
         restore = parked.pop(backend, None)
+        if restore is None and backend != BACKEND_ZENVI:
+            # No conversation of its own to resume (first visit, or a restart
+            # dropped the parked one): it starts new and needs every turn.
+            sess["seen_seq"].pop(backend, None)
         worker, thread = self._make_worker(session_id, backend, restore=restore)
         sess["worker"] = worker
         sess["thread"] = thread
         sess["backend"] = backend
         if backend != BACKEND_ZENVI:
-            # See _resolve_agent_mode: CLI backends have no planning mode.
+            # A newly attached CLI agent starts in Agent mode with no plan:
+            # its own plan mode is offered once its models are known.
             sess["agent_mode"] = "agent"
             sess["current_plan"] = None
         if session_id == self._active_sid:
@@ -1286,6 +1413,7 @@ class AIChatWindow(QDockWidget):
         """Switch the displayed session to *session_id* (called when user clicks a tab)."""
         if session_id not in self._sessions or session_id == self._active_sid:
             return
+        self._abandon_dictation()
         self._active_sid = session_id
         self._clear_attachment_undo()
         sess = self._sessions[session_id]
@@ -1403,6 +1531,7 @@ class AIChatWindow(QDockWidget):
         entry = next((r for r in rows if r.get("session_id") == session_id), None)
         if not entry:
             return
+        self._abandon_dictation()                   # the shared prompt box changes chats
         backend = _coerce_backend(entry.get("backend"))
         worker, thread = self._make_worker(session_id, backend, restore=entry)
         title = entry.get("title") or "New Chat"
@@ -1417,6 +1546,7 @@ class AIChatWindow(QDockWidget):
             "backend": backend,
             "agent_mode": entry.get("agent_mode", "agent"),
             "current_plan": None,
+            "seen_seq": AIChatWindow._seen_from_row(entry),
         }
         self._persist_session(session_id)
         items = self._local_history_items(session_id)
@@ -1494,6 +1624,7 @@ class AIChatWindow(QDockWidget):
                 # ``new_project_path`` (New Project / untitled) is allowed to
                 # fall through so the chat resets to a fresh session.
                 return
+            self._abandon_dictation()               # the shared prompt box changes chats
 
             # Resolve the new bucket first: this is what forks a Save As and
             # adopts a project whose id churned underneath us.
@@ -1591,6 +1722,7 @@ class AIChatWindow(QDockWidget):
                         "backend": backend,
                         "agent_mode": entry.get("agent_mode", "agent"),
                         "current_plan": None,
+                        "seen_seq": AIChatWindow._seen_from_row(entry),
                     }
                     self._persist_session(sid)
                 self._active_sid = self._pick_active_sid(store)
@@ -1640,6 +1772,7 @@ class AIChatWindow(QDockWidget):
         draft_key = (draft_key or "").strip()
         if not draft_key.startswith("draft:"):
             return
+        self._abandon_dictation()                   # the shared prompt box changes chats
         try:
             from classes import chat_history
 
@@ -1687,6 +1820,7 @@ class AIChatWindow(QDockWidget):
                         "backend": backend,
                         "agent_mode": entry.get("agent_mode", "agent"),
                         "current_plan": None,
+                        "seen_seq": AIChatWindow._seen_from_row(entry),
                     }
                     self._persist_session(sid)
                 self._active_sid = self._pick_active_sid(store)
@@ -1831,7 +1965,17 @@ class AIChatWindow(QDockWidget):
             cli_session_id=fields.get("cli_session_id"),
             cli_started=fields.get("cli_started"),
             cli_cwd=fields.get("cli_cwd"),
+            handoff_seen=json.dumps(sess["seen_seq"]) if sess.get("seen_seq") else None,
         )
+
+    @staticmethod
+    def _seen_from_row(row: dict) -> dict:
+        """A stored session row's handoff markers (see _handoff_prefix)."""
+        try:
+            seen = json.loads(row.get("handoff_seen") or "{}")
+        except Exception:
+            return {}
+        return seen if isinstance(seen, dict) else {}
 
     def _record_message(self, session_id: str, role: str, text: str) -> None:
         """Persist one final message. Never let a store failure break a turn."""
@@ -2029,8 +2173,6 @@ class AIChatWindow(QDockWidget):
         payload = {
             "call_id": event.get("call_id") or "",
             "title": event.get("title") or humanize_tool_name(event.get("tool_name") or ""),
-            "cmd": "",
-            "args_detail": "",
             "tool_name": event.get("tool_name") or "",
         }
         self._run_js(
@@ -2213,7 +2355,7 @@ class AIChatWindow(QDockWidget):
         if is_assistant:
             role_label = f'<span style="font-weight: bold;">{html.escape(role_display)}</span><br/>'
         else:
-            role_style = "color: #3B82F6;" if role == "user" else ""
+            role_style = f"color: {TOKENS['text_muted']};" if role == "user" else ""
             role_label = (
                 f'<span style="font-weight: bold; {role_style}">{html.escape(role_display)}</span><br/>'
             )
@@ -2286,7 +2428,7 @@ class AIChatWindow(QDockWidget):
             tab_btn.setStyleSheet(
                 "text-align: left; background: transparent; border: 1px solid transparent;"
                 if sid != self._active_sid else
-                "text-align: left; background: rgba(77,156,246,0.14); border: 1px solid rgba(77,156,246,0.35);"
+                f"text-align: left; background: {TOKENS['raised']}; border: 1px solid {TOKENS['line']};"
             )
             tab_btn.clicked.connect(lambda _=False, s=sid: self._switch_session(s))
             layout.addWidget(tab_btn)
@@ -2296,21 +2438,21 @@ class AIChatWindow(QDockWidget):
                 close_btn.setObjectName("chatWidgetTabCloseBtn")
                 close_btn.setAutoRaise(True)
                 close_btn.setText("x")
-                close_btn.setStyleSheet("border: none; color: #6b7280;")
+                close_btn.setStyleSheet(f"border: none; color: {TOKENS['text_faint']};")
                 close_btn.clicked.connect(lambda _=False, s=sid: self._close_session(s))
                 layout.addWidget(close_btn)
 
         hist_btn = QPushButton("History")
         hist_btn.setObjectName("chatWidgetTabHistoryBtn")
         hist_btn.setFlat(True)
-        hist_btn.setStyleSheet("border: 1px solid rgba(255,255,255,0.08);")
+        hist_btn.setStyleSheet(f"border: 1px solid {TOKENS['line']};")
         hist_btn.clicked.connect(lambda _=False, b=hist_btn: self._show_closed_session_menu(b))
         layout.addWidget(hist_btn)
 
         add_btn = QPushButton("+")
         add_btn.setObjectName("chatWidgetTabAddBtn")
         add_btn.setFlat(True)
-        add_btn.setStyleSheet("border: 1px solid rgba(255,255,255,0.08);")
+        add_btn.setStyleSheet(f"border: 1px solid {TOKENS['line']};")
         add_btn.clicked.connect(
             lambda _=False: self._create_session(
                 self.model_combo.currentData() if getattr(self, "model_combo", None) else "",
@@ -2454,6 +2596,167 @@ class AIChatWindow(QDockWidget):
         self._rebuild_widget_tabs()
         self._start_restore_chat_histories_async()
 
+    def open_dictation_menu(self):
+        """The chevron by the mic: Whistle, Parakeet or Wispr Flow, each saying what it needs."""
+        from classes import dictation
+        from classes.app import get_app
+        from qt_api import QCursor
+
+        choice = get_app().get_settings().get("dictation-engine") or "auto"
+        menu = QMenu(self)
+        for engine in dictation.engines(choice, dictation.wispr_flow_installed()):
+            act = menu.addAction("%s (%s)" % (engine["label"], engine["note"]))
+            act.setCheckable(True)
+            act.setChecked(engine["checked"])
+            act.setEnabled(engine["enabled"] and not self._dictation_download)
+            # after exec_ returns: a download dialog opened inside the menu's loop can miss clicks
+            act.triggered.connect(lambda _checked=False, name=engine["id"]: QTimer.singleShot(
+                0, lambda: self.pick_dictation_engine(name)))
+        menu.exec_(QCursor.pos())
+
+    def pick_dictation_engine(self, name):
+        """Use *name* for the mic: Whistle / Parakeet are downloaded first if need be (and become the
+        Captions recogniser too); Wispr Flow not installed opens its website."""
+        from classes import dictation
+        from classes import hyperframes_local as hf
+        from classes.app import get_app
+
+        settings = get_app().get_settings()
+        if name == "wispr":
+            if dictation.wispr_flow_installed():
+                settings.set("dictation-engine", "wispr")
+                settings.save()
+            else:
+                import webbrowser
+
+                webbrowser.open(dictation.WISPR_FLOW_SITE)
+            return
+        engine = next(e for e in dictation.engines("zenvi", False) if e["id"] == name)
+        if engine["note"] == "installed":
+            hf.choose_recogniser(name)
+            settings.set("dictation-engine", "zenvi")
+            settings.save()
+            return
+        if self._dictation_download:
+            return
+        label = "%s (%s)" % (engine["label"].split(":")[0], engine["note"])
+        if not self._confirm_dictation_download(label):
+            return
+        self._dictation_download = name
+        self._dictation_note("Downloading %s..." % label, sticky=True)
+        install = hf.install_speech if name == "whistle" else hf.install_parakeet
+
+        def work():
+            try:
+                install()
+                error = ""
+            except Exception as exc:
+                log.warning("Dictation: could not install %s", name, exc_info=True)
+                error = str(exc) or exc.__class__.__name__
+            self.dictation_installed.emit(name, error)
+
+        threading.Thread(target=work, name="zenvi-dictation-install", daemon=True).start()
+
+    def _confirm_dictation_download(self, label):
+        return QMessageBox.question(
+            self, "Download speech recogniser",
+            "%s is not on this computer yet. Download it now? It is a one-time download, "
+            "also used for caption word timing." % label,
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) == QMessageBox.Yes
+
+    def _on_dictation_installed(self, name, error):
+        from classes import hyperframes_local as hf
+        from classes.app import get_app
+
+        self._dictation_download = ""
+        if error:
+            self._dictation_note("The speech recogniser could not be downloaded: %s" % error)
+            return
+        hf.choose_recogniser(name)
+        get_app().get_settings().set("dictation-engine", "zenvi")
+        get_app().get_settings().save()
+        self._dictation_note("Dictation now uses %s." % name.capitalize())
+
+    def _dictation_note(self, message, sticky=False):
+        """A note in the empty prompt box (unless a take is running); *sticky* stays until the next one."""
+        if not self._dictation:
+            self._run_js("if(window.setDictationState) window.setDictationState('off', %s, %s);"
+                         % (json.dumps(message), "true" if sticky else "false"))
+
+    def toggle_dictation(self):
+        """Mic button: start or stop speaking the prompt (Wispr Flow instead, when the user has it)."""
+        from classes import dictation
+
+        if self._dictation:
+            self._dictation.stop()
+            self._run_js("if(window.setDictationState) window.setDictationState('hearing');")
+            return
+        from classes.app import get_app
+
+        choice = get_app().get_settings().get("dictation-engine") or "auto"
+        if dictation.use_wispr_flow(choice, dictation.wispr_flow_installed()):
+            import webbrowser
+
+            def hand_off(_result=None):             # Wispr Flow types into the focused box: focus first
+                if not webbrowser.open(dictation.WISPR_FLOW_URL):
+                    self._on_dictation_failed("Wispr Flow could not be opened")
+
+            self._run_js("var el=document.getElementById('chat-input'); if(el) el.focus(); true;", hand_off)
+            return
+        self._dictation_take += 1
+        take = self._dictation_take
+        session = dictation.Dictation(lambda text, final: self.dictation_heard.emit(text, final, take),
+                                      lambda message: self.dictation_failed.emit(message, take))
+        try:
+            session.start()
+        except Exception as exc:
+            self._on_dictation_failed(str(exc))
+            return
+        self._dictation = session
+        self._dictation_open = True
+        self._run_js("if(window.setDictationState) window.setDictationState('listening');")
+
+    def _abandon_dictation(self):
+        """Another chat is about to show: stop the take, take its words back out of the shared box, and
+        drop whatever it still sends (queued signals included: the slots compare the take number).
+
+        The recorder handle is already gone once the final transcript is queued and the page has not
+        painted it yet, so that gap counts too."""
+        if not getattr(self, "_dictation", None) and not getattr(self, "_dictation_open", False):
+            return
+        self._dictation_take += 1
+        self._dictation_open = False
+        if self._dictation:
+            self._dictation.stop()
+            self._dictation = None
+        self._run_js("if(window.cancelDictation) window.cancelDictation();")
+
+    def _on_dictation_heard(self, text, final, take=None):
+        if take is not None and take != self._dictation_take:
+            return                                  # an abandoned take's words
+        js = ("if(window.setDictationText) window.setDictationText(%s, %s);"
+              % (json.dumps(text), "true" if final else "false"))
+        if not final:
+            self._run_js(js)
+            return
+        self._dictation = None
+
+        def settled(_result=None, take=take):
+            if take == self._dictation_take:        # still this chat: the words belong in the box
+                self._dictation_open = False
+                self._run_js("if(window.commitDictation) window.commitDictation();")
+
+        self._run_js(js, settled)
+
+    def _on_dictation_failed(self, message, take=None):
+        if take is not None and take != self._dictation_take:
+            return
+        self._dictation = None
+        self._dictation_open = False
+        log.warning("Dictation failed: %s", message)
+        self._run_js("if(window.setDictationState) window.setDictationState('off', %s);"
+                     % json.dumps("Dictation failed: " + message))
+
     def open_agent_trace(self):
         """Open the Agent Trace dialog for the active session."""
         try:
@@ -2470,6 +2773,23 @@ class AIChatWindow(QDockWidget):
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
+
+    def _handoff_prefix(self, sess: dict) -> str:
+        """Recap of the turns the active backend missed because the tab was on
+        another agent (Zenvi <-> a local harness each keep their own memory).
+
+        Only tabs that ever switched backend carry ``seen_seq`` (stored with
+        the tab, so a restart keeps it); a backend absent from it has seen
+        nothing yet, and one mapped to None is caught up (see
+        _on_response_ready).
+        """
+        seen = sess.get("seen_seq")
+        backend = sess.get("backend", BACKEND_ZENVI)
+        if not seen or seen.get(backend, 0) is None:
+            return ""
+        from classes import chat_history
+        return chat_history.handoff_recap(
+            chat_history.load_messages(self._active_sid), seen.get(backend, 0))
 
     def _prepend_editor_snapshot(self, text: str) -> str:
         """Ground the model with a bounded timeline snapshot (main thread).
@@ -2824,16 +3144,16 @@ class AIChatWindow(QDockWidget):
 
         inject_js = (
             "var r = document.documentElement.style;"
-            "r.setProperty('--chat-bg',       '#0d0d0d');"
-            "r.setProperty('--chat-surface',  '#0d0d0d');"
-            "r.setProperty('--chat-input-bg', '#171717');"
-            "r.setProperty('--chat-border',   'transparent');"
-            "document.body.style.background = '#0d0d0d';"
+            "r.setProperty('--chat-bg',       '%(surface)s');"
+            "r.setProperty('--chat-surface',  '%(raised)s');"
+            "r.setProperty('--chat-input-bg', '%(sunken)s');"
+            "r.setProperty('--chat-border',   '%(line)s');"
+            "document.body.style.background = 'var(--chat-bg)';"
             "var msgs = document.getElementById('chat-messages');"
-            "if (msgs) { msgs.style.background = '#0d0d0d'; msgs.style.border = 'none'; }"
+            "if (msgs) { msgs.style.background = 'transparent'; msgs.style.border = 'none'; }"
             "var preamble = document.querySelector('.chat-container > div');"
-            "if (preamble) { preamble.style.background = '#0d0d0d'; preamble.style.border = 'none'; }"
-        )
+            "if (preamble) { preamble.style.background = 'transparent'; preamble.style.border = 'none'; }"
+        ) % TOKENS
 
         self._chat_view = ChatWebEngineView(chat_ui_dir, self)
         self._chat_view.setObjectName("AIChatWindowContents")
@@ -2891,7 +3211,7 @@ class AIChatWindow(QDockWidget):
             self._chat_view = QWebView(self)
         self._chat_view.setObjectName("AIChatWindowContents")
         pal = self._chat_view.palette()
-        pal.setColor(self._chat_view.backgroundRole(), QColor(13, 13, 13))
+        pal.setColor(self._chat_view.backgroundRole(), QColor(TOKENS["surface"]))
         self._chat_view.setAutoFillBackground(True)
         self._chat_view.setPalette(pal)
 
@@ -2906,16 +3226,16 @@ class AIChatWindow(QDockWidget):
 
         inject_js = (
             "var r = document.documentElement.style;"
-            "r.setProperty('--chat-bg',       '#0d0d0d');"
-            "r.setProperty('--chat-surface',  '#0d0d0d');"
-            "r.setProperty('--chat-input-bg', '#171717');"
-            "r.setProperty('--chat-border',   'transparent');"
-            "document.body.style.background = '#0d0d0d';"
+            "r.setProperty('--chat-bg',       '%(surface)s');"
+            "r.setProperty('--chat-surface',  '%(raised)s');"
+            "r.setProperty('--chat-input-bg', '%(sunken)s');"
+            "r.setProperty('--chat-border',   '%(line)s');"
+            "document.body.style.background = 'var(--chat-bg)';"
             "var msgs = document.getElementById('chat-messages');"
-            "if (msgs) { msgs.style.background = '#0d0d0d'; msgs.style.border = 'none'; }"
+            "if (msgs) { msgs.style.background = 'transparent'; msgs.style.border = 'none'; }"
             "var preamble = document.querySelector('.chat-container > div');"
-            "if (preamble) { preamble.style.background = '#0d0d0d'; preamble.style.border = 'none'; }"
-        )
+            "if (preamble) { preamble.style.background = 'transparent'; preamble.style.border = 'none'; }"
+        ) % TOKENS
 
         def on_load_finished(ok):
             if ok:
@@ -2926,9 +3246,33 @@ class AIChatWindow(QDockWidget):
         self._chat_view.loadFinished.connect(on_load_finished)
 
     def _run_js(self, code, callback=None):
-        """Run JavaScript in the embedded WebEngine or WebKit chat page."""
+        """Run JavaScript in the embedded WebEngine or WebKit chat page.
+
+        Fire-and-forget snippets are queued and sent together on a ~60 ms flush,
+        so a burst of tool events costs one page call. A call that wants a
+        result flushes the queue first, so the page still sees calls in order.
+        """
         if not self._use_web_ui or not getattr(self, "_chat_view", None):
             return
+        if callback is None:
+            self._js_queue.append(code)
+            if not self._js_flush_scheduled:
+                self._js_flush_scheduled = True
+                QTimer.singleShot(60, self._flush_js)
+            return
+        self._flush_js()
+        self._exec_js(code, callback)
+
+    def _flush_js(self):
+        self._js_flush_scheduled = False
+        if not self._js_queue:
+            return
+        # One try per snippet: a snippet that throws must not drop the rest of the batch.
+        code = "\n".join("try{%s}catch(e){console.error(e)}" % snippet for snippet in self._js_queue)
+        self._js_queue = []
+        self._exec_js(code)
+
+    def _exec_js(self, code, callback=None):
         if getattr(self, "_chat_embed_backend", "webengine") == "webkit":
             from windows.embedded_web import run_js as web_run_js
 
@@ -3356,16 +3700,14 @@ class AIChatWindow(QDockWidget):
 
     def _resolve_agent_mode(self, agent_mode: str = None) -> str:
         sess = self._active_session() or {}
-        # Planning mode is a Zenvi-backend feature (the plan events come over
-        # the WebSocket). CLI agents plan internally and never emit them, so
-        # honouring a stale "planning" here would only mislabel the turn.
-        if sess.get("backend", BACKEND_ZENVI) != BACKEND_ZENVI:
-            return "agent"
+        # One toggle for every agent: Zenvi Assistant plans on the backend
+        # (plan events over the WebSocket), a CLI agent in its own plan mode
+        # (see _dispatch_user_message).
         if agent_mode in ("planning", "agent"):
             return agent_mode
         return sess.get("agent_mode", "agent")
 
-    def _dispatch_user_message(self, text: str, model_id: str, agent_mode: str = None, action: str = "chat", plan_id: str = "", display_text: str = None, command_text: str = None, images=None):
+    def _dispatch_user_message(self, text: str, model_id: str, agent_mode: str = None, action: str = "chat", plan_id: str = "", display_text: str = None, command_text: str = None, images=None, effort: str = ""):
         """Shared send pipeline for web and widget chat UIs."""
         self._user_cancelled = False
         sess = self._active_session()
@@ -3386,6 +3728,7 @@ class AIChatWindow(QDockWidget):
         self._clear_widget_tool_blocks()
         shown = display_text if display_text is not None else text
         cmd = command_text if command_text is not None else text
+        handoff = self._handoff_prefix(sess) if action == "chat" else ""
         if action == "chat" and shown:
             self._add_user_msg(shown)
         if action == "chat" and (cmd or text):
@@ -3394,17 +3737,29 @@ class AIChatWindow(QDockWidget):
             sess["last_user_display"] = (shown or "").strip()
             sess["last_user_command"] = (cmd or "").strip()
             sess["last_user_model_id"] = model_id or ""
+            sess["last_user_effort"] = effort or ""
             sess["last_user_images"] = list(images or []) if images else []
-        if action == "chat" and cmd and self._try_local_command(cmd):
-            return True
         if action == "chat" and cmd:
             self._request_preamble_summary(cmd)
         augmented_text = self._prepend_editor_snapshot(text) if text else text
+        if action == "chat" and augmented_text:
+            augmented_text = handoff + augmented_text
         # Hosted Zenvi only: CLI agents read attachment paths themselves.
         if sess.get("backend", BACKEND_ZENVI) == BACKEND_ZENVI and images:
             worker._pending_chat_images = list(images)
         else:
             worker._pending_chat_images = []
+        worker._pending_project_id = self._project_id()
+        # CLI agents only: Zenvi Assistant has no effort levels, so there is
+        # no per-effort pricing to keep (#147).
+        is_cli = sess.get("backend", BACKEND_ZENVI) != BACKEND_ZENVI
+        worker._pending_effort = (effort or "") if is_cli else ""
+        # Plan on the Plan/Agent toggle is the CLI's own plan mode, and wins
+        # over the permission pill. (Zenvi Assistant plans on the backend.)
+        planning = is_cli and mode == "planning"
+        sess["cli_planning"] = planning
+        worker._pending_mode = (
+            ("plan" if planning else getattr(self, "_cli_mode", "") or "") if is_cli else "")
         self._set_processing_ui(True)
         QMetaObject.invokeMethod(
             worker,
@@ -3419,7 +3774,7 @@ class AIChatWindow(QDockWidget):
         self._save_chat_sessions_store()
         return True
 
-    def _handle_web_send_message(self, text: str, model_id: str, agent_mode: str = None):
+    def _handle_web_send_message(self, text: str, model_id: str, agent_mode: str = None, effort: str = ""):
         """Handle send from CEP UI (same logic as send_message but with args)."""
         if self.is_processing:
             self._run_js("alert('Processing previous message...');")
@@ -3451,6 +3806,7 @@ class AIChatWindow(QDockWidget):
             display_text=display,
             command_text=typed,
             images=vision,
+            effort=effort,
         )
         if sent:
             sess = self._active_session()
@@ -3468,12 +3824,42 @@ class AIChatWindow(QDockWidget):
             self._persist_session(self._active_sid, agent_mode=sess["agent_mode"])
         self._save_chat_sessions_store()
 
+    def _cli_plan_ready(self, sid: str):
+        """A CLI agent answered a Plan turn: show the plan chip Zenvi
+        Assistant's plans get, so the plan can be executed from it."""
+        sess = self._sessions.get(sid) or {}
+        if not sess.pop("cli_planning", False):
+            return
+        runner = CLI_RUNNERS.get(sess.get("backend"))
+        plan = {
+            "plan_id": "cli", "status": "ready", "steps": [], "cli": True,
+            "title": "%s plan" % (runner.DISPLAY_NAME if runner else "Agent"),
+        }
+        sess["current_plan"] = plan
+        if sid == self._active_sid and self._use_web_ui:
+            self._run_js("if(window.setPlanChip) window.setPlanChip(%s);" % json.dumps(plan))
+
     def _execute_plan(self, plan_id: str, model_id: str):
         """Run deterministic plan executor via backend."""
         if self.is_processing:
             self._run_js("alert('Processing previous message...');")
             return
         sess = self._active_session()
+        if sess.get("backend", BACKEND_ZENVI) != BACKEND_ZENVI:
+            # A CLI agent's plan lives in its own conversation: carrying it
+            # out is that conversation's next turn, in Agent mode.
+            if not (sess.get("current_plan") or {}).get("cli") or plan_id not in ("", "cli"):
+                return      # e.g. the plan dock still showing another chat's plan
+            sess["current_plan"] = None
+            if self._use_web_ui:
+                self._run_js("if(window.setPlanChip) window.setPlanChip(null);")
+            self._set_agent_mode("agent")
+            # Straight to the dispatcher: the composer's send would spend the
+            # files staged for the user's next message on this one.
+            self._dispatch_user_message(
+                "Carry out the plan.", sess.get("last_user_model_id") or "",
+                agent_mode="agent", effort=sess.get("last_user_effort") or "")
+            return
         worker = sess.get("worker")
         if worker is None or not getattr(worker, "_backend_session_id", None):
             self._run_js("alert('Start planning in this chat tab first so the plan is linked to a session.');")
@@ -3698,6 +4084,8 @@ class AIChatWindow(QDockWidget):
             get_backend_client().cancel_current_request()
         except Exception:
             pass
+        if getattr(self, "_dictation", None):        # quitting mid-take must not leave ffmpeg holding the mic
+            self._dictation.stop()
         if getattr(self, "_credits_timer", None):
             try:
                 self._credits_timer.stop()
@@ -3811,30 +4199,6 @@ class AIChatWindow(QDockWidget):
         else:
             QTextEdit.keyPressEvent(self.msg_input, event)
 
-    _WATCH_CLIP_PATTERNS = [
-        "watch clip", "view clip", "show clip", "play clip",
-        "play the feral", "show the feral", "watch the feral",
-        "play the trailer", "show me the clip", "show me the trailer",
-        "load the feral", "open the feral",
-    ]
-
-    def _try_local_command(self, text: str) -> bool:
-        """Execute certain commands locally without sending to the backend.
-        Returns True if the command was handled and no backend call is needed.
-        """
-        lower = text.lower().strip()
-        if any(pat in lower for pat in self._WATCH_CLIP_PATTERNS):
-            self._add_system_msg("Loading Feral trailer and starting playback...")
-            try:
-                from classes.tool_handlers import execute_tool
-                result = execute_tool("watch_clip_tool", {})
-                self._add_assistant_msg(result)
-            except Exception as exc:
-                self._add_assistant_msg(f"Error: {exc}")
-            self._set_processing_ui(False)
-            return True
-        return False
-
     def send_message(self):
         if self.is_processing:
             QMessageBox.warning(self, "Wait", "Processing previous message...")
@@ -3913,6 +4277,16 @@ class AIChatWindow(QDockWidget):
             "if(window.appendOrUpdateStreamingMessage) window.appendOrUpdateStreamingMessage(%s);"
             % json.dumps(chunk)
         )
+
+    @pyqtSlot(str)
+    def _on_thinking(self, text: str):
+        """Backend reasoning text, streamed into the open Thinking block."""
+        if not text or self._user_cancelled:
+            return
+        sid = getattr(self.sender(), "_session_id", self._active_sid)
+        if sid != self._active_sid or not self._use_web_ui:
+            return
+        self._run_js("if(window.appendThinkingText) window.appendThinkingText(%s);" % json.dumps(text))
 
     @pyqtSlot(str)
     def _on_token(self, text: str):
@@ -3998,12 +4372,8 @@ class AIChatWindow(QDockWidget):
         return text
 
     def _tool_result_summary(self, result: str) -> str:
-        if not result:
-            return ""
-        first_line = result.strip().splitlines()[0] if result.strip() else ""
-        if len(first_line) > 140:
-            return first_line[:140] + "…"
-        return first_line
+        from classes.agent_tools.present import tool_row_summary
+        return tool_row_summary(result)
 
     @pyqtSlot(str, str, str)
     def _on_tool_started(self, call_id: str, tool_name: str, args_json: str):
@@ -4030,8 +4400,7 @@ class AIChatWindow(QDockWidget):
             args = json.loads(args_json) if args_json else {}
         except Exception:
             args = {}
-        title = humanize_tool_name(tool_name)
-        cmd = _format_tool_command(tool_name, args)
+        title = describe_tool_call(tool_name, args)
         # Full args for expand/inspect (bounded)
         try:
             args_pretty = json.dumps(args, indent=2, ensure_ascii=False, default=str)
@@ -4040,11 +4409,11 @@ class AIChatWindow(QDockWidget):
         if len(args_pretty) > 4000:
             args_pretty = args_pretty[:4000] + "\n…"
         if self._use_web_ui:
+            _remember_tool_detail(call_id, args=args_pretty)
             payload = {
                 "call_id": call_id,
                 "title": title,
-                "cmd": cmd,
-                "args_detail": args_pretty,
+                "label": humanize_tool_name(tool_name),
                 "tool_name": tool_name or "",
             }
             self._run_js("if(window.addToolBlock) window.addToolBlock(%s);"
@@ -4053,8 +4422,9 @@ class AIChatWindow(QDockWidget):
         if not getattr(self, "_widget_tool_container", None):
             return
         block_id = call_id or tool_name or ("tool_%s" % time.time())
-        block = WidgetToolBlock(block_id, title, cmd, parent=self._widget_tool_blocks_host)
+        block = WidgetToolBlock(block_id, title, parent=self._widget_tool_blocks_host)
         if args_pretty:
+            # The native widget has no lazy fetch, so its collapsed body holds the details.
             block.append_log("ARGS:\n" + args_pretty)
         insert_at = max(0, self._widget_tool_container.count() - 1)
         self._widget_tool_container.insertWidget(insert_at, block)
@@ -4077,7 +4447,7 @@ class AIChatWindow(QDockWidget):
 
     @pyqtSlot(str, bool, str)
     def _on_tool_completed(self, call_id: str, ok: bool, result: str):
-        """Mark a tool block as done/error and keep result text for inspection."""
+        """Mark a tool block as done/error. The result is kept for expanding the row."""
         sid = getattr(self.sender(), "_session_id", self._active_sid)
         self._record_tool_completed(sid, call_id, ok)
         if sid != self._active_sid:
@@ -4087,11 +4457,7 @@ class AIChatWindow(QDockWidget):
         if len(detail) > 6000:
             detail = detail[:6000] + "\n…"
         if self._use_web_ui:
-            if detail:
-                self._run_js(
-                    "if(window.appendToolLog) window.appendToolLog(%s, %s);"
-                    % (json.dumps(call_id), json.dumps("RESULT:\n" + detail))
-                )
+            _remember_tool_detail(call_id, result=detail)
             self._run_js(
                 "if(window.completeToolBlock) window.completeToolBlock(%s, %s, %s);"
                 % (json.dumps(call_id), "true" if ok else "false", json.dumps(summary))
@@ -4108,6 +4474,17 @@ class AIChatWindow(QDockWidget):
         sid = getattr(self.sender(), "_session_id", self._active_sid)
         if sid in self._sessions:
             self._sessions[sid]["processing"] = False
+            # It answered, so it has the handoff recap: stop sending it. Not at
+            # send time, because a turn that fails never reached the agent; and
+            # not for a stopped turn, or a reply the replaced worker had queued
+            # before the tab switched agent.
+            seen = self._sessions[sid].get("seen_seq")
+            backend = self._sessions[sid].get("backend", BACKEND_ZENVI)
+            stopped = sid == self._active_sid and self._user_cancelled
+            if (seen and seen.get(backend, 0) is not None and not stopped
+                    and self.sender() is self._sessions[sid].get("worker")):
+                seen[backend] = None
+                self._persist_session(sid)
             if sid == self._active_sid:
                 self._sessions[sid]["unread"] = False
             else:
@@ -4115,6 +4492,11 @@ class AIChatWindow(QDockWidget):
                 # tracked inside chat.js.
                 if not self._use_web_ui:
                     self._sessions[sid]["unread"] = True
+            if (stopped or not (text or "").strip()
+                    or self.sender() is not self._sessions[sid].get("worker")):
+                self._sessions[sid].pop("cli_planning", None)
+            else:
+                self._cli_plan_ready(sid)
         if sid == self._active_sid:
             if self._user_cancelled:
                 self._user_cancelled = False
@@ -4215,9 +4597,12 @@ class AIChatWindow(QDockWidget):
 
     @pyqtSlot(str)
     def _on_auth_required(self, text: str):
-        """Claude Code OAuth missing/expired — guided Sign-in card, not a raw dump."""
+        """A CLI's login is missing/expired — guided Sign-in card, not a raw dump."""
         sid = getattr(self.sender(), "_session_id", self._active_sid)
         sess = self._sessions.get(sid) if sid else None
+        backend = (sess or {}).get("backend") or BACKEND_CLAUDE
+        runner = CLI_RUNNERS.get(backend)
+        notice = "%s needs you to sign in again." % (runner.DISPLAY_NAME if runner else backend)
         if sess is not None:
             sess["processing"] = False
             self._reset_turn_segments(sess)
@@ -4229,6 +4614,7 @@ class AIChatWindow(QDockWidget):
                     "display": sess.get("last_user_display") or "",
                     "command": sess.get("last_user_command") or pending,
                     "model_id": sess.get("last_user_model_id") or "",
+                    "effort": sess.get("last_user_effort") or "",
                     "images": list(sess.get("last_user_images") or []),
                     "generation": sess.get("retry_generation", 0),
                 }
@@ -4249,14 +4635,11 @@ class AIChatWindow(QDockWidget):
             self._run_js("if(window.resetStreamingMessage) window.resetStreamingMessage();")
             self._run_js(
                 "if(window.showCliAuthRecovery) showCliAuthRecovery(%s, %s);"
-                % (json.dumps(BACKEND_CLAUDE), json.dumps(
-                    "Claude Code needs you to sign in again. Your last request was not run."
-                ))
+                % (json.dumps(backend), json.dumps(notice + " Your last request was not run."))
             )
         else:
             self._add_system_msg(
-                "Claude Code needs you to sign in again. "
-                "Run: claude auth login — then retry your message."
+                notice + " Sign in from its CLI, then retry your message."
             )
         self._set_processing_ui(False)
         self._detect_clis()
@@ -4282,6 +4665,10 @@ class AIChatWindow(QDockWidget):
 
         try:
             _url, state = auth.start_auth_flow()
+            if self._use_web_ui:
+                from classes.auth_manager import confirmation_code
+                self._run_js("if(window.onZenviSignInStarted) onZenviSignInStarted(%s);"
+                             % json.dumps(confirmation_code(state)))
             auth.poll_for_session(
                 state,
                 on_success=lambda session: report(True, str((session or {}).get("user_email") or "")),
@@ -4308,13 +4695,14 @@ class AIChatWindow(QDockWidget):
             self._run_js("if(window.onZenviSignInResult) onZenviSignInResult(%s, %s);" % (json.dumps(bool(ok)), json.dumps(email or "")))
 
     def _sign_in_cli(self, backend_id: str):
-        """Open Claude's browser login; on success auto-retry the pending message."""
-        if backend_id != BACKEND_CLAUDE:
+        """Open the CLI's browser login; on success auto-retry the pending message."""
+        from windows.agent_runners import CLI_LOGINS
+        if backend_id not in CLI_LOGINS:
             if self._use_web_ui:
                 self._run_js(
                     "if(window.onCliAuthResult) onCliAuthResult(%s, %s, %s);"
                     % (json.dumps(backend_id), json.dumps(False),
-                       json.dumps("Sign-in is only available for Claude Code."))
+                       json.dumps("Sign in from this agent's own CLI in a terminal."))
                 )
             return
 
@@ -4323,8 +4711,10 @@ class AIChatWindow(QDockWidget):
 
         def run():
             try:
-                from windows.agent_runners import start_claude_auth_login
-                ok, message = start_claude_auth_login()
+                from windows.agent_runners import start_cli_login
+                ok, message = start_cli_login(backend_id)
+                if not ok and not message:
+                    return      # replaced by a newer click, which reports
             except Exception as e:
                 log.debug("sign_in_cli failed: %s", e, exc_info=True)
                 ok, message = False, str(e)
@@ -4350,7 +4740,7 @@ class AIChatWindow(QDockWidget):
             return
         sid = session_id or self._active_sid
         sess = self._sessions.get(sid) if sid else None
-        if not sess or sess.get("backend") != BACKEND_CLAUDE:
+        if not sess or sess.get("backend") != backend_id:
             return
         pending = sess.pop("pending_retry", None)
         sess.pop("pending_retry_text", None)
@@ -4373,6 +4763,7 @@ class AIChatWindow(QDockWidget):
                 display_text="",
                 command_text=pending.get("command") or text,
                 images=pending.get("images") or None,
+                effort=pending.get("effort") or "",
             )
         finally:
             self._active_sid = prev_sid
@@ -4400,6 +4791,7 @@ class AIChatWindow(QDockWidget):
                 sess.pop("last_user_display", None)
                 sess.pop("last_user_command", None)
                 sess.pop("last_user_model_id", None)
+                sess.pop("last_user_effort", None)
                 sess.pop("last_user_images", None)
                 self._clear_attachment_undo()
                 from classes import chat_history

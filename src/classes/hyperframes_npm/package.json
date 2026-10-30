@@ -1,0 +1,7 @@
+{
+  "name": "zenvi-hyperframes",
+  "private": true,
+  "dependencies": {
+    "hyperframes": "0.8.115"
+  }
+}

@@ -14,7 +14,6 @@ if not hasattr(openshot, "EffectInfo"):
     pytest.skip("needs the real libopenshot module", allow_module_level=True)
 
 from classes import color_agent as ca  # noqa: E402
-from classes import color_presets as cp  # noqa: E402
 
 
 def _fresh_grade():
@@ -38,11 +37,3 @@ def _render_grey(payload, level, tmp_path):
 def test_neutral_agent_grade_leaves_pixels_alone(level, tmp_path):
     # With BEZIER curve nodes this came out (4, 4, 4) for level 64.
     assert _render_grey(ca.blank_color_grade("g"), level, tmp_path) == (level, level, level)
-
-
-@pytest.mark.parametrize("preset", ["warm_up", "sunny", "auto_contrast", "boost_color"])
-def test_agent_presets_render_like_the_look_menu(preset, tmp_path):
-    for level in (64, 128, 192):
-        agent = _render_grey(ca.apply_soft_color_preset(_fresh_grade(), preset), level, tmp_path)
-        menu = _render_grey(cp.apply_color_grade_preset(_fresh_grade(), preset), level, tmp_path)
-        assert agent == menu, (preset, level)

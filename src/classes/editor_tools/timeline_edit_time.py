@@ -4,6 +4,11 @@ audio/video on-off and waveforms.
 Each one validates, then runs the editor's own Clip menu handler (Time_Triggered,
 Repeat_Triggered, Split_Audio_Triggered, Show/Hide_Waveform_Triggered), which joins
 the tool call's undo step.
+
+set_clip_speed_tool requests: "speed up the drone shot 2x" (speed=2), "slow
+motion" (speed=0.5), "play it in reverse" (reverse=true), "make this clip
+exactly 3 seconds" (target_duration_seconds=3), "back to normal speed"
+(speed=1, absolute=true; or reset=true, the menu's Reset).
 """
 
 from __future__ import annotations
@@ -159,15 +164,12 @@ def set_clip_speed(timeline_clip_ids=[], clip_query="", track="", scope="", spee
     """Speed clips up or slow them down, play them backwards, or retime them to an exact length
     (Clip menu > Speed). Keyframes and the audio follow the new timing.
 
-    Use for "speed up the drone shot 2x" (speed=2), "slow motion" (speed=0.5), "play it in
-    reverse" (reverse=true), "make this clip exactly 3 seconds" (target_duration_seconds=3),
-    "back to normal speed" (speed=1, absolute=true keeps the same part of the source; reset=true
-    is the menu's Reset). speed combines with reverse. Speeds from 1/16x to 16x.
-
-    A slower clip gets longer and may run into the next clip on its track: the tool refuses
-    unless ripple=true (push later clips along) or allow_overlap=true. Looped clips
-    (repeat_clip_tool) need reset=true before a new speed. For a still frame use
-    freeze_frame_tool; to loop use repeat_clip_tool. One undo step for all clips. Returns each
+    speed combines with reverse; speed and target_duration_seconds do not.
+    Speeds from 1/16x to 16x. A slower clip that would run into the next clip
+    on its track is refused unless ripple=true or allow_overlap=true. Looped
+    clips (run_tool(name='repeat_clip_tool')) need reset=true before a new
+    speed. For a still frame use run_tool(name='freeze_frame_tool'). One undo
+    step for all clips. Returns each
     clip's length before/after and its effective speed.
     """
     from windows.views.timeline_backend.enums import MenuTime
@@ -189,7 +191,7 @@ def set_clip_speed(timeline_clip_ids=[], clip_query="", track="", scope="", spee
         duration = span(c.data)[1] - span(c.data)[0]
         eff, direction = effective_speed(c.data)
         if (speed or target_duration_seconds) and eff is None and not reset:
-            raise ToolError(f"{name!r} is looped (repeat_clip_tool); pass reset=true to clear the loop before "
+            raise ToolError(f"{name!r} is looped (run_tool(name='repeat_clip_tool')); pass reset=true to clear the loop before "
                             "changing its speed")
         base_duration = _reset_duration(c) if reset else duration
         base_speed = 1.0 if reset else eff
@@ -271,8 +273,8 @@ def repeat_clip(timeline_clip_ids=[], clip_query="", track="", scope="", times=2
     "repeat it with a half-second pause" (delay_seconds=0.5), "loop it, speeding up each time"
     (speed_ramp_percent=25). The clip becomes N times as long (plus delays); the tool refuses
     to run into the next clip unless ripple=true or allow_overlap=true. A clip that is already
-    looped must be reset first (set_clip_speed_tool reset=true) or undone. To place separate
-    copies instead, use duplicate_clips_tool. One undo step.
+    looped must be reset first (run_tool(name='set_clip_speed_tool', args={'timeline_clip_ids': [...], 'reset': true})) or undone. To place separate
+    copies instead, use run_tool(name='duplicate_clips_tool'). One undo step.
     """
     _require_targets(timeline_clip_ids, clip_query, scope, "repeat")
     clips = targets(timeline_clip_ids, clip_query, track, scope)
@@ -284,7 +286,7 @@ def repeat_clip(timeline_clip_ids=[], clip_query="", track="", scope="", times=2
     plans = []
     for c in clips:
         if timeline_ops.repeat_is_active(c.data):
-            raise ToolError(f"{title(c)!r} is already looped; reset it first (set_clip_speed_tool reset=true) or "
+            raise ToolError(f"{title(c)!r} is already looped; reset it first (run_tool(name='set_clip_speed_tool', args={{'timeline_clip_ids': ['{c.id}'], 'reset': true}})) or "
                             "undo the earlier repeat")
         duration = span(c.data)[1] - span(c.data)[0]
         span_frames = max(1, int(round(duration * fps)))
@@ -347,7 +349,7 @@ def freeze_frame(timeline_clip_id="", clip_query="", track="", at_seconds=-1.0, 
     playhead), "hold the frame at 12.5 s for 3 seconds with a slight zoom" (zoom=true). The
     clip gets hold_seconds longer and its sound is muted during the hold. The tool refuses to
     run into the next clip unless ripple=true or allow_overlap=true. For slow motion use
-    set_clip_speed_tool. One undo step.
+    run_tool(name='set_clip_speed_tool'). One undo step.
     """
     from windows.views.timeline_backend.enums import MenuTime
 
@@ -427,7 +429,7 @@ def separate_clip_audio(timeline_clip_ids=[], clip_query="", track="", scope="",
             raise ToolError(f"{title(c)!r} has no audio to separate")
         if keyframe_value(c.data.get("has_audio")) == 0.0:
             raise ToolError(f"{title(c)!r} already has its audio off (separated before?); turn it back on with "
-                            "set_clip_audio_video_tool(audio='auto') first")
+                            "run_tool(name='set_clip_audio_video_tool', args={'audio': 'auto'}) first")
         if not media_has_video(c) and not per_channel:
             raise ToolError(f"{title(c)!r} is already audio-only; use per_channel=true to split its channels")
 
@@ -502,7 +504,7 @@ def set_clip_audio_video(timeline_clip_ids=[], clip_query="", track="", scope=""
     Use for "mute this clip" (audio='off'), "unmute it" (audio='auto'), "make it audio only" /
     "hide the video but keep the sound" (video='off'), "show the waveform" (waveform='show').
     This switches the track of sound or picture entirely; to change how loud a clip is use
-    set_clip_volume_tool, and to get the sound onto its own clip use separate_clip_audio_tool.
+    run_tool(name='set_clip_volume_tool'), and to get the sound onto its own clip use run_tool(name='separate_clip_audio_tool').
     Refused on locked tracks and for 'on'/'show' when the media has no audio/video. Already in
     that state is not an error (no undo step). One undo step. Waveforms are drawn a moment later.
     """

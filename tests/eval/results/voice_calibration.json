@@ -1,0 +1,20 @@
+{
+  "what": "Voice matching thresholds, measured on LibriSpeech dev-clean-2 (26 speakers with 4+ utterances of 4 s or more, 307 utterances, first 10 s of each). Development data only; no audio is kept in the repository.",
+  "model": "WeSpeaker ResNet34-LM, 256 numbers a voice (CC-BY-4.0, trained on VoxCeleb2 dev); features computed in numpy the way Kaldi does",
+  "pairs": {"same_speaker": 1663, "different_speaker": 45308},
+  "auc": 1.0,
+  "cosine": {"same_speaker_p5": 0.667, "different_speaker_p99": 0.425},
+  "equal_error": {"rate": 0.0006, "threshold": 0.545},
+  "by_threshold": {"0.40": {"same_accepted": 1.0, "false_merge": 0.01554}, "0.45": {"same_accepted": 1.0, "false_merge": 0.00616},
+                   "0.50": {"same_accepted": 1.0, "false_merge": 0.00216}, "0.55": {"same_accepted": 0.998, "false_merge": 0.0009},
+                   "0.60": {"same_accepted": 0.99, "false_merge": 0.00026}},
+  "conversations": {
+    "what": "60 mixed conversations of 2-4 speakers, 6-9 turns of 3-7 s each; speech grouped by voiceprint.speakers_of with word times; share of words given the right speaker",
+    "with_a_pause_at_each_change_of_speaker": {"0.45": {"words_right": 0.9955, "right_number_of_speakers": 0.983}, "0.50": {"words_right": 0.9942, "right_number_of_speakers": 0.967}, "0.55": {"words_right": 0.9875, "right_number_of_speakers": 0.917}},
+    "rapid_turn_taking_no_pause": {"0.50": {"words_right": 0.7708, "right_number_of_speakers": 0.7}},
+    "shorter_stretches": "3 s stretches lifted rapid turn-taking to 0.88 but cut the right number of speakers from 0.95 to 0.58 (a voice split in two); 2 s stretches broke it (0.10). 6 s kept."
+  },
+  "chosen": {"IN_FILE": 0.50, "SAME_VOICE": 0.55, "UNSURE_VOICE": 0.45,
+             "why": "inside one file the cost of a mistake is a wrong label on some words, so 0.50 (99.4% of words right); across files a merge puts two people's edits together, so the line is 0.55 (1 in 1,100 different pairs) with an unsure band below it"},
+  "limits": "LibriSpeech is clean read speech. Phone audio, music under speech, laughter and overlapping talk are harder; speakers who answer within a breath of each other (no pause) are merged into one stretch and mislabelled, as the rapid-turn-taking numbers show. A speaker heard for under a second in total is not placed."
+}

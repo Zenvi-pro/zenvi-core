@@ -99,6 +99,9 @@ find "$OS_PATH" \( -name '*.dylib' -o -name '*.so' \) -exec chmod +x {} \;
 for bin in zenvi launch launch-zenvi launch-mac; do
     [ -f "$OS_PATH/MacOS/$bin" ] && chmod +x "$OS_PATH/MacOS/$bin"
 done
+# ffmpeg/ffprobe have no extension, so the *.dylib/*.so find above skips them.
+[ -f "$OS_PATH/MacOS/lib/ffmpeg" ] && chmod +x "$OS_PATH/MacOS/lib/ffmpeg"
+[ -f "$OS_PATH/MacOS/lib/ffprobe" ] && chmod +x "$OS_PATH/MacOS/lib/ffprobe"
 
 echo "Loop through bundled files and sign all binary files"
 if [ -n "$SIGN_IDENTITY" ]; then
@@ -108,6 +111,16 @@ if [ -n "$SIGN_IDENTITY" ]; then
             --timestamp=http://timestamp.apple.com/ts01 \
             --entitlements "installer/zenvi.entitlements" \
             --force "{}" \;
+
+    for bin in ffmpeg ffprobe; do
+        if [ -f "$OS_PATH/MacOS/lib/$bin" ]; then
+            codesign -s "$SIGN_IDENTITY" --force \
+                --entitlements "installer/zenvi.entitlements" \
+                --options runtime \
+                --timestamp=http://timestamp.apple.com/ts01 \
+                "$OS_PATH/MacOS/lib/$bin"
+        fi
+    done
 
     echo "Code Sign App Bundle"
     codesign -s "$SIGN_IDENTITY" --force \
@@ -132,6 +145,11 @@ else
     echo "Note: Gatekeeper will still warn users for downloaded apps (expected without a cert)"
     find "build" \( -iname '*.dylib' -o -iname '*.so' \) \
         -exec codesign -s - --force "{}" \; 2>/dev/null || true
+    for bin in ffmpeg ffprobe; do
+        if [ -f "$OS_PATH/MacOS/lib/$bin" ]; then
+            codesign -s - --force "$OS_PATH/MacOS/lib/$bin"
+        fi
+    done
     codesign -s - --force "build/$OS_APP_NAME"
     codesign -dv --verbose=4 "build/$OS_APP_NAME" 2>&1 || true
 fi

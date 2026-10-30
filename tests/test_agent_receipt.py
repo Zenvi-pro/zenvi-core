@@ -33,7 +33,7 @@ def test_from_handler_str_error():
 
 
 def test_from_handler_str_success_unmutated():
-    r = from_handler_str("list_files_tool", "3 files", mutated=False)
+    r = from_handler_str("list_project_files_tool", "3 files", mutated=False)
     assert r.undoSteps == 0
 
 

@@ -164,6 +164,7 @@ export UNITTEST_DIR="${MSYS2_ROOT_WIN}\usr"
 LIBOPENSHOT_SRC="$DEPS_DIR/libopenshot"
 BINDINGS_DIR="$LIBOPENSHOT_SRC/build/bindings/python"
 PREROLL_PATCH="$REPO_ROOT_UNIX/installer/mac-patches/libopenshot-v1.0.0-discard-preroll.patch"
+REFRESH_PATCH="$REPO_ROOT_UNIX/installer/mac-patches/libopenshot-v1.0.0-same-frame-refresh.patch"
 LIBOPENSHOT_OK=""
 REBUILD_AUDIO=""
 if find "$BINDINGS_DIR" -iname 'openshot.py' 2>/dev/null | grep -q .; then
@@ -176,11 +177,14 @@ if find "$BINDINGS_DIR" -iname 'openshot.py' 2>/dev/null | grep -q .; then
         echo "The existing libopenshot build has no OpenCV effects -- rebuilding it."
     fi
     # A Zenvi source patch that still applies cleanly to the checkout has not
-    # been built in yet.
-    if [ -n "$LIBOPENSHOT_OK" ] &&
-        git -C "$LIBOPENSHOT_SRC" apply --check --whitespace=nowarn "$PREROLL_PATCH" 2>/dev/null; then
-        echo "The existing libopenshot build predates a Zenvi source patch -- rebuilding it."
-        LIBOPENSHOT_OK=""
+    # been built in yet (each new patch has to trigger a rebuild of older installs).
+    if [ -n "$LIBOPENSHOT_OK" ]; then
+        for patch in "$PREROLL_PATCH" "$REFRESH_PATCH"; do
+            if git -C "$LIBOPENSHOT_SRC" apply --check --whitespace=nowarn "$patch" 2>/dev/null; then
+                echo "The existing libopenshot build predates $(basename "$patch") -- rebuilding it."
+                LIBOPENSHOT_OK=""
+            fi
+        done
     fi
 fi
 
@@ -272,7 +276,7 @@ if [ -z "$LIBOPENSHOT_OK" ]; then
     # stream-copy trimmed MP4 decodes the whole file and comes back black.
     # Written against v1.0.0; it also applies to the default branch built here.
     # Skipped if already applied; the setup stops if upstream changed the code.
-    bash "$REPO_ROOT_UNIX/installer/apply-libopenshot-patches.sh" . "$PREROLL_PATCH"
+    bash "$REPO_ROOT_UNIX/installer/apply-libopenshot-patches.sh" . "$PREROLL_PATCH" "$REFRESH_PATCH"
 
     rm -rf build
     mkdir -p build && cd build
@@ -332,7 +336,6 @@ source .venv/bin/activate
 REQS_FILTERED="$DEPS_DIR/requirements-noqt.filtered.txt"
 grep -viE '^(cryptography|rpds-py)([=<>~[:space:]]|$)' requirements-noqt.txt > "$REQS_FILTERED"
 pip install -r "$REQS_FILTERED"
-# pip install -r requirements-manim.txt   # uncomment if your build needs it
 
 echo ""
 echo "=== Setup complete. Launching Zenvi Core... ==="

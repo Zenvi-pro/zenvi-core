@@ -39,7 +39,8 @@ from qt_api import QSizePolicy, QWidget
 
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
-from classes import updates
+from classes import update_batch, updates
+from themes.cosmic.tokens import TOKENS
 
 
 def _event_posf(event):
@@ -121,7 +122,20 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
 
         # A committed change ends any live drag mirroring; recompute from persisted data.
         self._drag_overrides = None
+        if update_batch.active():
+            self._recompute_after_batch = True        # one rebuild when the batch ends, not one per change
+            return
         self._schedule_recompute()
+
+    def _flush_batch(self):
+        """End of an update batch: rebuild the minimap once if anything changed during it."""
+        from qt_api import isdeleted
+        if isdeleted(self):
+            update_batch.unregister(self._flush_batch)
+            return
+        if self._recompute_after_batch:
+            self._recompute_after_batch = False
+            self._schedule_recompute()
 
     def apply_drag_overrides(self, overrides):
         """Mirror the timeline's live drag overrides on the minimap.
@@ -220,18 +234,19 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         painter.fillRect(event.rect(), background_color)
 
         # Create pens / colors
-        clip_pen = QPen(QBrush(QColor("#53a0ed")), 1.5)
+        clip_pen = QPen(QBrush(QColor(TOKENS["text_faint"])), 1.5)
         clip_pen.setCosmetic(True)
         painter.setPen(clip_pen)
 
-        selected_clip_pen = QPen(QBrush(QColor("Red")), 1.5)
+        selected_clip_pen = QPen(QBrush(QColor(TOKENS["accent"])), 1.5)
         selected_clip_pen.setCosmetic(True)
 
-        scroll_color = QColor("#4053a0ed")
+        scroll_color = QColor(TOKENS["text"])
+        scroll_color.setAlpha(40)  # translucent: clips stay visible under the viewport window
         scroll_pen = QPen(QBrush(scroll_color), 2.0)
         scroll_pen.setCosmetic(True)
 
-        marker_color = QColor("#4053a0ed")
+        marker_color = QColor(TOKENS["text_faint"])
         marker_pen = QPen(QBrush(marker_color), 1.0)
         marker_pen.setCosmetic(True)
 
@@ -239,7 +254,7 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         playhead_pen = QPen(QBrush(playhead_color), 1.0)
         playhead_pen.setCosmetic(True)
 
-        handle_color = QColor("#a653a0ed")
+        handle_color = QColor(TOKENS["text_muted"])
         handle_pen = QPen(QBrush(handle_color), 1.5)
         handle_pen.setCosmetic(True)
 
@@ -715,6 +730,10 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
 
         # Live drag overrides mirrored from the timeline track (or None when idle)
         self._drag_overrides = None
+
+        # Changes made inside an update batch rebuild the minimap once, when the batch ends
+        self._recompute_after_batch = False
+        update_batch.register(self._flush_batch)
 
         # Coalescing latest-wins recompute pipeline (keeps geometry off the GUI thread)
         self._recompute_queue = CoalescingRecomputeQueue()

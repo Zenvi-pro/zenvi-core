@@ -1,4 +1,4 @@
-"""Unit tests for single-placement timeline delete (remove_clip_tool)."""
+"""Unit tests for single-placement timeline delete (delete_from_timeline_tool, scope=clip)."""
 
 import os
 import sys
@@ -58,7 +58,7 @@ def _run(app, resolved, **kwargs):
         with patch.object(
             tool_handlers, "_resolve_timeline_clip_for_tool", return_value=resolved
         ) as resolver:
-            out = tool_handlers.remove_clip(**kwargs)
+            out = tool_handlers.delete_from_timeline(scope="clip", **kwargs)
     return out, resolver
 
 
@@ -165,7 +165,7 @@ def test_success_uses_transaction_selection_and_refresh():
         seen = []
         target.delete.side_effect = lambda: seen.append(app.updates.transaction_id)
         out = tool_handlers.execute_tool(
-            "remove_clip_tool", {"timeline_clip_id": "c2"}
+            "delete_from_timeline_tool", {"timeline_clip_id": "c2", "scope": "clip"}
         )
 
     from classes.agent_tools.receipt import is_error_result

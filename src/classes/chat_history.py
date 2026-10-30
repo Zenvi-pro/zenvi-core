@@ -42,7 +42,7 @@ from classes.logger import log
 # Module-level so tests can point it at a tmp path (cf. agent_gap_log.GAP_LOG_PATH).
 CHAT_DB_PATH = os.path.join(info.USER_PATH, "chat_history.db")
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _lock = threading.RLock()
 _conn = None
@@ -119,6 +119,11 @@ def _migrate(conn) -> None:
     if version < 1:
         conn.executescript(_SCHEMA_V1)
         version = 1
+    if version < 2:
+        # JSON {backend: last message seq it saw | null}: which turns each
+        # agent missed while the tab was on another one (see handoff_recap).
+        conn.execute("ALTER TABLE sessions ADD COLUMN handoff_seen TEXT")
+        version = 2
 
     conn.execute(
         "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
@@ -197,7 +202,7 @@ def close() -> None:
 
 _SESSION_FIELDS = (
     "project_key", "project_path", "title", "backend",
-    "agent_mode", "cli_session_id", "cli_started", "cli_cwd",
+    "agent_mode", "cli_session_id", "cli_started", "cli_cwd", "handoff_seen",
 )
 
 
@@ -668,3 +673,32 @@ def import_legacy_sessions(conn, project_key: str, project_path: str, sessions: 
         count += 1
     conn.commit()
     return count
+
+
+def handoff_recap(messages: list, after_seq: int, max_chars: int = 6000,
+                  max_each: int = 1500) -> str:
+    """The turns after *after_seq*, as a recap for an agent that missed them.
+
+    Used when a chat switches agent harness mid-conversation: each harness keeps
+    its own memory, so it is told what the others said. Newest turns win when
+    the recap has to be cut to *max_chars*; "" when there is nothing new.
+    """
+    lines = []
+    for m in messages:
+        if m["seq"] <= after_seq or m["role"] not in ("user", "assistant"):
+            continue
+        who = "User" if m["role"] == "user" else "Assistant"
+        text = (m["content"] or "").strip()
+        if len(text) > max_each:
+            text = text[:max_each] + " [...]"
+        lines.append("%s: %s" % (who, text))
+    kept, used = [], 0
+    for line in reversed(lines):
+        if used + len(line) > max_chars and kept:
+            break
+        kept.append(line)
+        used += len(line)
+    if not kept:
+        return ""
+    return ("[Earlier in this chat, handled by a different agent - for context only]\n"
+            + "\n".join(reversed(kept)) + "\n[End of earlier conversation]\n\n")

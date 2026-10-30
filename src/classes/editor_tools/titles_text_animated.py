@@ -13,7 +13,7 @@ from classes.editor_tools._base import (
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.titles_text_common import (
     CommitTimeout, commit_on_main, precheck_on_main,
-    color_hex_alpha, create_track, place_clip, plan_overlay_track, track_info,
+    color_hex_alpha, create_track, place_clip, plan_overlay_track, track_info, warning_note, warnings_field,
 )
 from classes.logger import log
 
@@ -82,7 +82,7 @@ def _min_version() -> str:
 def _find_template(name: str):
     raw = str(name or "").strip()
     if not raw:
-        raise ToolError("template is required (list_title_templates_tool kind=animated lists them)")
+        raise ToolError("template is required (run_tool(name='list_title_templates_tool', args={'kind': 'animated'}) lists them)")
     key = raw.lower().replace(" ", "_").replace(".xml", "").replace(".blend", "")
     for path in blender_titles.template_paths():
         summary = blender_titles.template_summary(path)
@@ -179,10 +179,10 @@ def add_animated_title(template="", text="", params=None, length_multiplier=1, p
 
     Use for "animated title", "3D flying title", "neon title", "space movie intro".
     Needs Blender (Preferences > General > Blender Command); without it the call is
-    refused with setup steps -- offer add_title_tool (static SVG titles with fades)
+    refused with setup steps -- offer run_tool(name='add_title_tool') (static SVG titles with fades)
     instead. Rendering runs in the background and takes from tens of seconds to
     several minutes; the result is a transparent image-sequence clip on the lowest
-    free track above the video. list_title_templates_tool kind=animated lists the
+    free track above the video. run_tool(name='list_title_templates_tool') kind=animated lists the
     templates and their parameters. One undo step removes the clip and file.
 
     Example: {"template": "fly_by_1", "text": "Tokyo Day 1", "params": {"diffuse_color": "#ffcc00"},
@@ -206,7 +206,7 @@ def add_animated_title(template="", text="", params=None, length_multiplier=1, p
     if not exe:
         raise ToolError(f"Blender is not available (Blender Command = {command or 'not set'!r}). Install Blender "
                         f"{_min_version()}+ from blender.org and set Preferences > General > Blender Command to "
-                        "its executable; or use add_title_tool for a static title with fades")
+                        "its executable; or use run_tool(name='add_title_tool') for a static title with fades")
     try:
         version = blender_titles.blender_version(exe)
     except Exception as exc:
@@ -240,6 +240,8 @@ def add_animated_title(template="", text="", params=None, length_multiplier=1, p
         shutil.rmtree(folder, ignore_errors=True)
         raise ToolError(f"Blender render failed: {exc}") from None
 
+    moved = []
+
     def _commit():
         from classes.query import File
         win = get_app().window
@@ -248,7 +250,7 @@ def add_animated_title(template="", text="", params=None, length_multiplier=1, p
         if not f:
             raise ToolError("the rendered frames could not be imported")
         duration = float(f.data.get("duration") or estimate)
-        layer, created = plan_overlay_track(position, position + duration, track)
+        layer, created = plan_overlay_track(position, position + duration, track, moved=moved)
         if created:
             create_track(layer, "Titles")
         clip = place_clip(f.id, position, duration, layer)
@@ -265,7 +267,7 @@ def add_animated_title(template="", text="", params=None, length_multiplier=1, p
     shown = {k: v for k, v in values.items() if k not in ("output_path", "horizon_color", "quality",
                                                           "file_format", "color_mode", "alpha_mode", "animation")}
     return ok(f"Rendered animated title {summary['title']!r} ({saved} frames with Blender {version}) on track "
-              f"{t['track']} at {position:.2f}-{position + duration:.2f}s.",
-              timeline_clip_id=clip.get("id"), file_id=file_id, template=summary["name"], frames=saved,
+              f"{t['track']} at {position:.2f}-{position + duration:.2f}s.{warning_note(moved)}",
+              **warnings_field(moved), timeline_clip_id=clip.get("id"), file_id=file_id, template=summary["name"], frames=saved,
               folder=folder, position=round(position, 3), duration=round(duration, 3), new_track=created,
               blender_version=version, params=shown, **t)

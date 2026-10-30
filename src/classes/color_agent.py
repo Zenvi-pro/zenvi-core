@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 from typing import Any, Optional
 
 
@@ -59,64 +58,6 @@ CURVE_ALIASES = {
     "blue_curve": "curve_blue",
 }
 WHEEL_NAMES = ("global", "shadows", "midtones", "highlights")
-
-# Stable Look / LUT IDs for later list_looks / apply_look (Phase 6.3).
-# Soft ColorGrade presets from color_presets.py — reset removes the effect.
-LOOK_PRESET_IDS = (
-    "reset",
-    "auto_contrast",
-    "lift_shadows",
-    "warm_up",
-    "sunny",
-    "gloomy",
-    "boost_color",
-)
-
-# Relative paths under src/colors/ (info.COLORS_PATH). Basename without .cube
-# is the LUT look id; category folder is the vibe tag family.
-LUT_CATALOG = (
-    ("cinematic_&_blockbuster", (
-        "bold_red_cinema", "city_neon_cinema", "cool_cinema", "dreamy_cinema",
-        "elegant_dark_cinema", "heroic_cinema", "romantic_cinema", "sunlit_cinema",
-        "teal_&_orange_cinema", "teal_cinema", "warm_cinema",
-    )),
-    ("dark_&_moody", (
-        "city_night_film", "cold_shadows", "cool_haze", "dramatic_warmth",
-        "icy_drama", "mystic_emerald_drama", "night_glow", "noir_era",
-        "retro_red_shadows", "spy_night", "teal_horror", "woodland_drama",
-    )),
-    ("film_stock_&_vintage", (
-        "classic_film", "dark_orange_film", "emerald_film", "faded_memories",
-        "golden_wood_film", "golden_years_film", "green_film_pop", "low_key_film",
-        "red_film", "standard_film", "vintage_400_film", "vintage_green_film",
-        "warm_roast_film",
-    )),
-    ("teal_&_orange_vibes", (
-        "moonlight_orange", "signature_teal_&_orange", "sunset_orange",
-        "teal_punch", "tropical_teal", "western_sunset",
-    )),
-    ("utility_&_correction", (
-        "clean_&_denoise", "protect_highlights", "warm_correction",
-    )),
-    ("vibrant_&_colorful", (
-        "color_pop", "photo_contrast", "valentine_pop", "warm_pop", "warm_to_cool",
-    )),
-)
-
-FILM_GRAIN_LOOK_IDS = (
-    "none",
-    "35mm_fine",
-    "35mm_classic",
-    "35mm_gritty",
-    "16mm_classic",
-    "super_8",
-    "high_iso",
-)
-
-
-def lut_relative_path(category: str, look_id: str) -> str:
-    return f"{category}/{look_id}.cube"
-
 
 def is_color_grade_effect(effect_json: Any) -> bool:
     return isinstance(effect_json, dict) and effect_json.get("class_name") == COLOR_GRADE_CLASS_NAME
@@ -378,53 +319,6 @@ def create_color_grade_effect_json(generate_id) -> dict:
         raise RuntimeError(f"Could not create ColorGrade effect: {exc}") from exc
 
 
-def parse_clip_ids(
-    clip_ids=None,
-    clipIds=None,
-    timeline_clip_id="",
-    clipId="",
-) -> list[str]:
-    """Normalize clip id args from agent tool calls into a de-duplicated list."""
-    collected: list[str] = []
-
-    def _extend(raw):
-        if raw is None or raw == "":
-            return
-        if isinstance(raw, (list, tuple)):
-            for item in raw:
-                _extend(item)
-            return
-        text = str(raw).strip()
-        if not text:
-            return
-        if text.startswith("["):
-            try:
-                parsed = json.loads(text)
-            except json.JSONDecodeError:
-                parsed = None
-            if isinstance(parsed, list):
-                for item in parsed:
-                    _extend(item)
-                return
-        for part in text.split(","):
-            piece = part.strip().strip('"').strip("'")
-            if piece:
-                collected.append(piece)
-
-    _extend(clip_ids)
-    _extend(clipIds)
-    _extend(timeline_clip_id)
-    _extend(clipId)
-
-    seen = set()
-    ordered = []
-    for cid in collected:
-        if cid not in seen:
-            seen.add(cid)
-            ordered.append(cid)
-    return ordered
-
-
 def _coerce_float(value, name: str) -> float:
     try:
         out = float(value)
@@ -505,7 +399,7 @@ def validate_color_patch(patch: dict) -> None:
             if canon == "saturation" and value < 0.5:
                 raise ValueError(
                     "saturation neutral is 1.0 (not 0). Values below 0.5 look grey. "
-                    "For more color use ~1.1–1.3, or apply_look_tool lookId='sunny' / "
+                    "For more color use ~1.1–1.3, or color_grade_clip_tool look='vibrant' / "
                     "'boost_color'. For less color use ~0.7–0.9, never 0.2."
                 )
     lut = patch.get("lut")
@@ -565,7 +459,7 @@ def merge_color_grade(effect_json: dict, patch: dict) -> dict:
         if value < 0.5:
             raise ValueError(
                 "saturation neutral is 1.0 (not 0). Values below 0.5 look grey. "
-                "For more color use ~1.1–1.3, or apply_look_tool lookId='sunny' / "
+                "For more color use ~1.1–1.3, or color_grade_clip_tool look='vibrant' / "
                 "'boost_color'. For less color use ~0.7–0.9, never 0.2."
             )
 
@@ -701,7 +595,7 @@ def match_grade_action(subject_effect: Optional[dict], reference_effect: Optiona
     if not ref_sum.get("present"):
         return {"mode": "reset"}
     paste = copy.deepcopy(reference_effect)
-    # Drop identity so apply_color keeps/creates the subject's effect id.
+    # Drop identity so the paste keeps/creates the subject's effect id.
     if isinstance(paste, dict):
         paste.pop("id", None)
         paste.pop("order", None)
@@ -726,6 +620,36 @@ def _hist_mean(bins: list) -> Optional[float]:
     return weighted / total
 
 
+def _hist_total(bins: Any) -> float:
+    """Number of pixels a histogram was built from (its bins sum to the frame's pixel count)."""
+    try:
+        return float(sum(float(b) for b in (bins or [])))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def clipped_fraction(value: Any, pixels: float) -> Optional[float]:
+    """Clipped shadows/highlights as a 0..1 fraction of the frame.
+
+    libopenshot's FrameScope reports these as pixel COUNTS (3836 clipped pixels in a
+    640x360 frame). Everything downstream (look distance, the grade solver, the
+    over-grade check) treats them as fractions, so a raw count made a pixel or two of
+    difference swamp every other term. Counts are integers above 1, fractions are
+    within 0..1, so a value over 1 is a count; an integer-valued 1.0 is one pixel.
+    """
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if v <= 0.0:
+        return 0.0
+    if pixels > 0.0 and (v > 1.0 or v == 1.0):
+        return min(1.0, v / pixels)
+    return min(1.0, v)
+
+
 def summarize_scope_video(video: Optional[dict]) -> dict:
     """Compact FrameScope video payload → agent-facing inspect JSON."""
     if not isinstance(video, dict) or not video.get("present"):
@@ -733,11 +657,12 @@ def summarize_scope_video(video: Optional[dict]) -> dict:
 
     summary = {"present": True}
     scope_summary = video.get("summary") if isinstance(video.get("summary"), dict) else {}
-    summary["avg_luma"] = scope_summary.get("avg_luma")
-    summary["clipped_shadows"] = scope_summary.get("clipped_shadows")
-    summary["clipped_highlights"] = scope_summary.get("clipped_highlights")
-
     hist = video.get("histogram") if isinstance(video.get("histogram"), dict) else {}
+    summary["avg_luma"] = scope_summary.get("avg_luma")
+    pixels = _hist_total(hist.get("luma"))
+    summary["clipped_shadows"] = clipped_fraction(scope_summary.get("clipped_shadows"), pixels)
+    summary["clipped_highlights"] = clipped_fraction(scope_summary.get("clipped_highlights"), pixels)
+
     channel_means = {}
     for channel in ("luma", "red", "green", "blue"):
         mean = _hist_mean(list(hist.get(channel) or []))
@@ -790,52 +715,11 @@ def scope_look_distance(subject: dict, reference: dict) -> Optional[float]:
     return round(sum(parts), 4)
 
 
-def reference_gap_hints(subject: dict, reference: dict) -> dict:
-    """Map scope differences to apply_color knob hints."""
-    gap = {}
-    hints = []
-    if not subject.get("present") or not reference.get("present"):
-        return {"gap": gap, "hints": hints}
-
-    sub_luma = subject.get("avg_luma")
-    ref_luma = reference.get("avg_luma")
-    if sub_luma is not None and ref_luma is not None:
-        delta = float(ref_luma) - float(sub_luma)
-        gap["avg_luma"] = round(delta, 4)
-        if abs(delta) >= 0.015:
-            # Rough exposure nudge toward reference (~±1.0 exposure spans a lot).
-            exposure_hint = round(max(-0.5, min(0.5, delta * 0.8)), 3)
-            hints.append({"exposure": exposure_hint, "reason": "match average luma"})
-
-    sub_warm = subject.get("warm_cool")
-    ref_warm = reference.get("warm_cool")
-    if sub_warm is not None and ref_warm is not None:
-        delta = float(ref_warm) - float(sub_warm)
-        gap["warm_cool"] = round(delta, 4)
-        if abs(delta) >= 0.012:
-            temp_hint = round(max(-0.4, min(0.4, delta * 0.6)), 3)
-            hints.append({"temperature": temp_hint, "reason": "match warm/cool balance"})
-
-    sub_gm = subject.get("green_magenta")
-    ref_gm = reference.get("green_magenta")
-    if sub_gm is not None and ref_gm is not None:
-        delta = float(ref_gm) - float(sub_gm)
-        gap["green_magenta"] = round(delta, 4)
-        if abs(delta) >= 0.01:
-            tint_hint = round(max(-0.3, min(0.3, delta * 0.5)), 3)
-            hints.append({"tint": tint_hint, "reason": "match green/magenta balance"})
-
-    distance = scope_look_distance(subject, reference)
-    if distance is not None:
-        gap["look_distance"] = distance
-
-    return {"gap": gap, "hints": hints}
-
-
 # --- LookProfile: dense sample aggregation + inverse grade ---------------------
 
 LOOK_DISTANCE_MATCHED = 0.045
-LOOK_DISTANCE_CLOSE = 0.08
+
+
 _MAX_STEP = {
     "exposure": 0.35,
     "contrast": 0.25,
@@ -1239,305 +1123,4 @@ def is_outdoor_bright_profile(profile: dict) -> bool:
     return luma >= 0.55 or hi >= 0.05
 
 
-def target_profile_for_look(look_id: str) -> Optional[dict]:
-    """Synthetic LookProfile goals for named vibes / soft presets (no media)."""
-    lid = str(look_id or "").strip().lower()
-    presets = {
-        "sunny": {
-            "present": True, "samples": 0, "avg_luma": 0.58, "warm_cool": 0.08,
-            "green_magenta": 0.0, "sat_proxy": 0.22, "contrast_span": 0.45,
-            "clipped_shadows": 0.01, "clipped_highlights": 0.03,
-            "channel_means": {"red": 0.55, "green": 0.52, "blue": 0.47, "luma": 0.58},
-        },
-        "gloomy": {
-            "present": True, "samples": 0, "avg_luma": 0.38, "warm_cool": -0.06,
-            "green_magenta": 0.0, "sat_proxy": 0.10, "contrast_span": 0.40,
-            "clipped_shadows": 0.04, "clipped_highlights": 0.01,
-            "channel_means": {"red": 0.34, "green": 0.36, "blue": 0.40, "luma": 0.38},
-        },
-        "warm_up": {
-            "present": True, "samples": 0, "avg_luma": 0.50, "warm_cool": 0.10,
-            "green_magenta": 0.02, "sat_proxy": 0.20, "contrast_span": 0.42,
-            "clipped_shadows": 0.02, "clipped_highlights": 0.02,
-            "channel_means": {"red": 0.52, "green": 0.48, "blue": 0.42, "luma": 0.50},
-        },
-        "boost_color": {
-            "present": True, "samples": 0, "avg_luma": 0.50, "warm_cool": 0.02,
-            "green_magenta": 0.0, "sat_proxy": 0.32, "contrast_span": 0.48,
-            "clipped_shadows": 0.02, "clipped_highlights": 0.03,
-            "channel_means": {"red": 0.52, "green": 0.48, "blue": 0.46, "luma": 0.50},
-        },
-    }
-    if lid in ("horror", "teal_horror", "noir", "noir_era"):
-        return {
-            "present": True, "samples": 0, "avg_luma": 0.32, "warm_cool": -0.08,
-            "green_magenta": 0.04, "sat_proxy": 0.14, "contrast_span": 0.52,
-            "clipped_shadows": 0.08, "clipped_highlights": 0.02,
-            "channel_means": {"red": 0.26, "green": 0.34, "blue": 0.38, "luma": 0.32},
-        }
-    if lid in ("teal_orange", "teal_&_orange_cinema", "signature_teal_&_orange"):
-        return {
-            "present": True, "samples": 0, "avg_luma": 0.48, "warm_cool": 0.04,
-            "green_magenta": -0.02, "sat_proxy": 0.28, "contrast_span": 0.50,
-            "clipped_shadows": 0.03, "clipped_highlights": 0.03,
-            "channel_means": {"red": 0.50, "green": 0.44, "blue": 0.46, "luma": 0.48},
-        }
-    return presets.get(lid)
-
-
 # --- Looks catalog / resolve / match (Phase 6.3) ---------------------------------
-
-_LOOK_PRESET_META = {
-    "reset": {
-        "label": "Reset Color",
-        "description": "Remove ColorGrade from the clip",
-        "vibe_tags": ["neutral", "reset"],
-    },
-    "auto_contrast": {
-        "label": "Auto Contrast",
-        "description": "Mild S-curve contrast with lifted shadows",
-        "vibe_tags": ["contrast", "punchy", "documentary"],
-    },
-    "lift_shadows": {
-        "label": "Lift Shadows",
-        "description": "Open shadows, soft contrast",
-        "vibe_tags": ["soft", "interview", "low_contrast"],
-    },
-    "warm_up": {
-        "label": "Warm Up",
-        "description": "Warmer temperature and slight vibrance",
-        "vibe_tags": ["warm", "tungsten", "cozy", "golden", "sunny"],
-    },
-    "sunny": {
-        "label": "Sunny",
-        "description": "Bright daylight: warm, lifted exposure, healthy color",
-        "vibe_tags": [
-            "sunny", "sun", "bright", "daylight", "golden", "summer", "outdoors",
-        ],
-    },
-    "gloomy": {
-        "label": "Gloomy",
-        "description": "Overcast / muted: cooler, slightly darker, less punch",
-        "vibe_tags": ["gloomy", "overcast", "grey", "gray", "muted", "cloudy", "dreary"],
-    },
-    "boost_color": {
-        "label": "Boost Color",
-        "description": "Higher saturation and vibrance with mild S-curve",
-        "vibe_tags": ["vibrant", "saturated", "pop", "instagram", "candy"],
-    },
-}
-
-# Query synonyms so "sunny" hits sunlit LUTs / sunny preset, etc.
-_LOOK_QUERY_SYNONYMS = {
-    "sunny": ("sunny", "sunlit", "sun", "warm", "golden", "daylight", "bright"),
-    "sun": ("sunny", "sunlit", "warm", "golden"),
-    "bright": ("sunny", "bright", "sunlit", "boost"),
-    "gloomy": ("gloomy", "overcast", "muted", "grey", "gray", "cloudy", "dark"),
-    "grey": ("gloomy", "muted", "grey", "gray"),
-    "gray": ("gloomy", "muted", "grey", "gray"),
-    "candy": ("candy", "boost", "vibrant", "pop", "saturated"),
-    "horror": ("horror", "teal_horror", "noir", "dark", "moody", "cold"),
-    "noir": ("noir", "noir_era", "dark", "moody", "black"),
-    "vhs": ("vhs", "vintage", "super8", "retro", "analog", "film_stock"),
-    "teal": ("teal", "teal_orange", "teal_horror", "cinematic"),
-    "orange": ("teal_orange", "sunset", "warm", "orange"),
-    "overcast": ("gloomy", "overcast", "muted", "cloudy"),
-    "vintage": ("vintage", "film_stock", "analog", "retro", "vhs", "super8"),
-}
-
-_CATEGORY_VIBE_TAGS = {
-    "cinematic_&_blockbuster": ["cinematic", "blockbuster", "film"],
-    "dark_&_moody": ["dark", "moody", "night", "noir", "horror"],
-    "film_stock_&_vintage": ["vintage", "film_stock", "analog", "retro", "vhs"],
-    "teal_&_orange_vibes": ["teal_orange", "cinematic", "hollywood", "teal", "orange"],
-    "utility_&_correction": ["utility", "correction", "neutral"],
-    "vibrant_&_colorful": ["vibrant", "colorful", "pop", "candy"],
-}
-
-_GRAIN_META = {
-    "none": {"label": "No Film Grain", "vibe_tags": ["clean"]},
-    "35mm_fine": {"label": "35mm Fine", "vibe_tags": ["film", "subtle", "35mm"]},
-    "35mm_classic": {"label": "35mm Classic", "vibe_tags": ["film", "35mm", "cinematic"]},
-    "35mm_gritty": {"label": "35mm Gritty", "vibe_tags": ["film", "gritty", "35mm"]},
-    "16mm_classic": {"label": "16mm Classic", "vibe_tags": ["film", "16mm", "documentary"]},
-    "super_8": {"label": "Super 8", "vibe_tags": ["vintage", "super8", "home_movie"]},
-    "high_iso": {"label": "High ISO", "vibe_tags": ["grainy", "night", "high_iso"]},
-}
-
-
-def list_looks_catalog(query: str = "") -> dict:
-    """Return agent-facing Look / LUT / Film Grain catalog (optionally filtered)."""
-    q = str(query or "").strip().lower()
-    looks = []
-
-    for look_id, meta in _LOOK_PRESET_META.items():
-        entry = {
-            "id": look_id,
-            "kind": "color_preset",
-            "label": meta["label"],
-            "description": meta["description"],
-            "vibe_tags": list(meta["vibe_tags"]),
-        }
-        if _look_matches(entry, q):
-            looks.append(entry)
-
-    for category, look_ids in LUT_CATALOG:
-        cat_tags = list(_CATEGORY_VIBE_TAGS.get(category, []))
-        for look_id in look_ids:
-            entry = {
-                "id": look_id,
-                "kind": "lut",
-                "label": look_id.replace("_", " "),
-                "description": f"LUT pack {category}",
-                "category": category,
-                "lut_path": lut_relative_path(category, look_id),
-                "vibe_tags": cat_tags + [look_id.replace("_", " "), category.replace("_", " ")],
-            }
-            if _look_matches(entry, q):
-                looks.append(entry)
-
-    for grain_id, meta in _GRAIN_META.items():
-        entry = {
-            "id": f"grain:{grain_id}",
-            "kind": "film_grain",
-            "grain_id": grain_id,
-            "label": meta["label"],
-            "description": "Film Grain look",
-            "vibe_tags": list(meta["vibe_tags"]),
-        }
-        if _look_matches(entry, q):
-            looks.append(entry)
-
-    # Rank: color presets first for vibe words, then LUTs, then grain.
-    kind_rank = {"color_preset": 0, "lut": 1, "film_grain": 2}
-    looks.sort(key=lambda e: (kind_rank.get(e.get("kind"), 9), str(e.get("id") or "")))
-    return {"ok": True, "count": len(looks), "looks": looks, "query": query or ""}
-
-
-def _look_matches(entry: dict, query: str) -> bool:
-    if not query:
-        return True
-    hay = " ".join(
-        [
-            str(entry.get("id") or ""),
-            str(entry.get("label") or ""),
-            str(entry.get("description") or ""),
-            str(entry.get("category") or ""),
-            str(entry.get("lut_path") or ""),
-            " ".join(entry.get("vibe_tags") or []),
-        ]
-    ).lower()
-    tokens = [t for t in query.replace(",", " ").split() if t]
-
-    def _token_hit(token: str) -> bool:
-        if token in hay:
-            return True
-        for syn in _LOOK_QUERY_SYNONYMS.get(token, ()):
-            if syn in hay:
-                return True
-        return False
-
-    return all(_token_hit(token) for token in tokens)
-
-
-def resolve_look_id(look_id: str) -> dict:
-    """Resolve lookId / lutPath string into an actionable look descriptor."""
-    raw = str(look_id or "").strip()
-    if not raw:
-        raise ValueError("lookId is required")
-
-    lowered = raw.lower()
-    if lowered.startswith("grain:"):
-        grain_id = raw.split(":", 1)[1].strip()
-        if grain_id not in FILM_GRAIN_LOOK_IDS:
-            raise ValueError(f"Unknown film grain look '{grain_id}'")
-        return {"kind": "film_grain", "grain_id": grain_id, "id": f"grain:{grain_id}"}
-
-    if lowered in LOOK_PRESET_IDS:
-        return {"kind": "color_preset", "preset_name": lowered, "id": lowered}
-
-    if lowered.endswith(".cube") or "/" in raw or "\\" in raw or raw.startswith("@colors"):
-        return {"kind": "lut", "lut_path": raw, "id": raw}
-
-    matches = []
-    for category, look_ids in LUT_CATALOG:
-        for lid in look_ids:
-            if lid == raw or lid.lower() == lowered:
-                matches.append((category, lid))
-    if len(matches) == 1:
-        category, lid = matches[0]
-        return {
-            "kind": "lut",
-            "id": lid,
-            "lut_path": lut_relative_path(category, lid),
-            "category": category,
-        }
-    if len(matches) > 1:
-        options = ", ".join(lut_relative_path(c, i) for c, i in matches)
-        raise ValueError(f"Ambiguous LUT id '{raw}'; use one of: {options}")
-
-    if lowered in FILM_GRAIN_LOOK_IDS:
-        return {"kind": "film_grain", "grain_id": lowered, "id": f"grain:{lowered}"}
-
-    raise ValueError(
-        f"Unknown lookId '{raw}'. Call list_looks_tool to see preset, LUT, and grain ids."
-    )
-
-
-def hints_to_color_patch(hints: list) -> dict:
-    """Collapse reference_gap_hints list into a single apply_color merge patch."""
-    patch: dict[str, float] = {}
-    for hint in hints or []:
-        if not isinstance(hint, dict):
-            continue
-        for key, value in hint.items():
-            if key == "reason" or value is None:
-                continue
-            if key in SCALAR_KEYS or key in SCALAR_ALIASES:
-                canon = SCALAR_ALIASES.get(key, key)
-                try:
-                    patch[canon] = float(value) + float(patch.get(canon, 0.0))
-                except (TypeError, ValueError):
-                    continue
-    return patch
-
-
-def resolve_lut_filesystem_path(
-    lut_path: str, colors_path: str = "", user_colors_path: str = ""
-) -> str:
-    """Map agent lut_path to an absolute path when possible."""
-    raw = str(lut_path or "").strip()
-    if not raw:
-        return ""
-    if raw.startswith("@colors/"):
-        raw = raw[len("@colors/"):]
-    if os.path.isabs(raw) and os.path.isfile(raw):
-        return raw
-    candidates = []
-    # Prefer a user LUT over a bundled file with the same relative path.
-    if user_colors_path:
-        candidates.append(os.path.join(user_colors_path, raw))
-    if colors_path:
-        candidates.append(os.path.join(colors_path, raw))
-    candidates.append(raw)
-    for path in candidates:
-        if path and os.path.isfile(path):
-            return os.path.normpath(path)
-    if colors_path:
-        return os.path.normpath(os.path.join(colors_path, raw))
-    return raw
-
-
-def apply_soft_color_preset(effect_json: dict, preset_name: str) -> dict:
-    """Apply a soft ColorGrade Look preset via color_presets (single source of truth)."""
-    name = str(preset_name or "").strip().lower()
-    if name == "reset":
-        raise ValueError("reset removes ColorGrade; do not call apply_soft_color_preset")
-    if name not in LOOK_PRESET_IDS:
-        raise ValueError(f"Unknown color preset: {preset_name}")
-    from classes import color_presets as cp
-
-    payload = cp.apply_color_grade_preset(effect_json, name)
-    if not payload.get("class_name"):
-        payload["class_name"] = COLOR_GRADE_CLASS_NAME
-    return payload

@@ -66,6 +66,11 @@ def make_window(monkeypatch, auth=None, use_web=True):
     return win, main, js, queued, FakeAuth.instance_
 
 
+from classes.auth_manager import confirmation_code  # noqa: E402
+
+CODE_JS = 'if(window.onZenviSignInStarted) onZenviSignInStarted("%s");' % confirmation_code("abc")
+
+
 def sign_in(win):
     ai_chat_ui.AIChatWindow._sign_in_zenvi(win)
 
@@ -74,7 +79,9 @@ def sign_in(win):
 def test_the_sign_in_opens_the_website_flow_and_waits_five_minutes_on_a_plain_thread(monkeypatch):
     win, main, js, queued, auth = make_window(monkeypatch)
     sign_in(win)
-    assert auth.started == 1 and auth.poll_kwargs["state"] == "abc" and auth.poll_kwargs["timeout"] == 300 and js == [] and win._zenvi_sign_in_waiting is True
+    assert auth.started == 1 and auth.poll_kwargs["state"] == "abc" and auth.poll_kwargs["timeout"] == 300 and win._zenvi_sign_in_waiting is True
+    # The page shows the code the website will show, so the user can tell it is their own sign-in.
+    assert js == [CODE_JS]
 
 
 def test_on_success_the_app_comes_to_the_front_credits_refresh_and_the_page_is_told(monkeypatch):
@@ -82,7 +89,7 @@ def test_on_success_the_app_comes_to_the_front_credits_refresh_and_the_page_is_t
     sign_in(win)
     auth.poll_kwargs["on_success"]({"user_email": "nilay@example.com", "access_token": "x"})
     assert main.calls == ["raise", "activate", "credits"]
-    assert js == ['if(window.onZenviSignInResult) onZenviSignInResult(true, "nilay@example.com");']
+    assert js == [CODE_JS, 'if(window.onZenviSignInResult) onZenviSignInResult(true, "nilay@example.com");']
     assert win._zenvi_sign_in_waiting is False, "ready for another sign-in later"
     assert [q[0] for q in queued] == ["_on_zenvi_sign_in_done"], "the GUI is reached through one queued call, not from the waiting thread"
 
@@ -91,14 +98,14 @@ def test_a_session_without_an_email_still_counts_as_signed_in(monkeypatch):
     win, main, js, queued, auth = make_window(monkeypatch)
     sign_in(win)
     auth.poll_kwargs["on_success"]({"access_token": "x"})
-    assert js == ['if(window.onZenviSignInResult) onZenviSignInResult(true, "");']
+    assert js == [CODE_JS, 'if(window.onZenviSignInResult) onZenviSignInResult(true, "");']
 
 
 def test_a_timeout_tells_the_page_it_did_not_finish_and_leaves_the_app_alone(monkeypatch):
     win, main, js, queued, auth = make_window(monkeypatch)
     sign_in(win)
     auth.poll_kwargs["on_timeout"]()
-    assert js == ['if(window.onZenviSignInResult) onZenviSignInResult(false, "");'] and main.calls == [] and win._zenvi_sign_in_waiting is False
+    assert js == [CODE_JS, 'if(window.onZenviSignInResult) onZenviSignInResult(false, "");'] and main.calls == [] and win._zenvi_sign_in_waiting is False
 
 
 def test_a_second_click_while_the_browser_is_open_does_not_start_another(monkeypatch):
@@ -153,7 +160,8 @@ def test_a_failed_tool_with_a_login_error_gets_a_sign_in_button():
         assert not pattern.search(message), message
     body = text[text.index("window.completeToolBlock = function"):]
     body = body[:body.index("window.replayToolBlock")]
-    assert "!ok && AUTH_FAILURE_RE.test(" in body and "addSignInPrompt(block)" in body
+    assert "AUTH_FAILURE_RE.test(" in body and "addSignInPrompt(block)" in body
+    assert "fetchToolDetail(callId" in body, "the failed call's own stored result is what gets checked"
 
 
 def test_the_button_opens_the_sign_in_and_after_it_offers_continue():
@@ -179,5 +187,4 @@ def test_the_sign_in_button_ignores_log_lines_other_tools_produced():
     body = text[text.index("window.completeToolBlock = function"):]
     body = body[:body.index("window.replayToolBlock")]
     check = body[body.index("AUTH_FAILURE_RE.test("):body.index("addSignInPrompt(block)")]
-    assert "block.lines).join" not in check and "ownResult" in check
-    assert "indexOf('RESULT:') === 0" in body
+    assert "block.lines" not in body and "detail.result" in check

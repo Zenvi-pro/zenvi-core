@@ -144,7 +144,7 @@ def _require_clean(discard_unsaved: bool, save_first: bool, action: str) -> None
     if not project_path():
         raise ToolError(
             "the current project has unsaved changes and has never been saved; call "
-            "save_project_tool with a file_path first, or pass discard_unsaved=true")
+            "run_tool(name='save_project_tool') with a file_path first, or pass discard_unsaved=true")
 
 
 def save_to(path: str) -> None:
@@ -277,7 +277,7 @@ def open_project(file_path="", recent_index=0, discard_unsaved=False, save_first
         raise ToolError("give file_path (a .zvn project) or recent_index")
     if not path.lower().endswith(info.ALL_PROJECT_EXTS):
         raise ToolError(f"{os.path.basename(path)} is not a project file (.zvn, .osp or .flow); "
-                        "use import_files_tool for media or import_project_file_tool for EDL/XML")
+                        "use import_files_tool for media or run_tool(name='import_project_file_tool') for EDL/XML")
     if not os.path.isfile(path):
         raise ToolError(f"project file not found: {path}")
     _require_clean(discard_unsaved, save_first, "opening another project")
@@ -370,8 +370,8 @@ def save_project(file_path="", overwrite=False):
 def list_recent_projects():
     """List File > Recent Projects, most recent first, with whether each file still exists.
 
-    Use the index with open_project_tool(recent_index=N) ("open my last
-    project"), or forget_recent_projects_tool to tidy the list.
+    Use the index with run_tool(name='open_project_tool', args={'recent_index': N}) ("open my last
+    project"), or run_tool(name='forget_recent_projects_tool') to tidy the list.
     """
     out = []
     for i, path in enumerate(_recent_projects(), start=1):
@@ -463,7 +463,7 @@ def _recovery_versions() -> list:
 def list_recovery_versions():
     """List File > Recovery: the automatic copies saved each time this project was saved, newest first.
 
-    Use before restore_recovery_version_tool ("go back to the version from an
+    Use before run_tool(name='restore_recovery_version_tool') ("go back to the version from an
     hour ago"). A project that was never saved has none.
     """
     if not project_path():
@@ -585,31 +585,19 @@ def import_project_file(file_path, format="auto"):
             raise ToolError(f"{os.path.basename(path)} has no clips with a media path (FROM CLIP NAME / SOURCE FILE)")
         if not any(_media_resolvable(m) for m in media):
             raise ToolError("none of the media in this EDL can be found: " + ", ".join(sorted(set(media))[:5]))
-    else:
-        from xml.dom import minidom
-        try:
-            doc = minidom.parse(path)
-        except Exception as exc:
-            raise ToolError(f"{os.path.basename(path)} is not valid XML: {exc}") from exc
-        try:
-            if not doc.getElementsByTagName("clipitem"):
-                raise ToolError(f"{os.path.basename(path)} has no clips (no <clipitem>); is it a Final Cut Pro 7 XML?")
-        finally:
-            doc.unlink()
 
-    def _import():
-        if fmt == "edl":
+        def _import():
             from classes.importers.edl import import_edl
             return import_edl(path, prompt=False)
-        from classes.importers.final_cut_pro import import_xml
-        return import_xml(path, prompt=False)
 
-    try:
-        summary = on_main(_import, timeout=_LOAD_TIMEOUT)
-    except ToolError:
-        raise
-    except Exception as exc:
-        raise ToolError(f"importing {os.path.basename(path)} failed: {exc}") from exc
+        try:
+            summary = on_main(_import, timeout=_LOAD_TIMEOUT)
+        except ToolError:
+            raise
+        except Exception as exc:
+            raise ToolError(f"importing {os.path.basename(path)} failed: {exc}") from exc
+    else:
+        summary = _import_xml(path)
     summary = summary or {}
     clip_ids = list(summary.get("clip_ids") or [])
     missing = sorted(set(summary.get("missing") or []))
@@ -619,6 +607,20 @@ def import_project_file(file_path, format="auto"):
     return ok(f"Imported {len(clip_ids)} clip(s) from {os.path.basename(path)} onto {len(tracks)} new track(s)"
               f"{f'; {len(missing)} missing media skipped' if missing else ''}.",
               format=fmt, timeline_clip_ids=clip_ids, layers=tracks, missing_media=missing)
+
+
+def _import_xml(path: str) -> dict:
+    """FCP7 / Premiere XML: parse, find and probe the media here (off the GUI thread), commit on it."""
+    from classes.editor_tools.titles_text_common import commit_on_main, precheck_on_main
+    from classes.importers import final_cut_pro as importer
+    info = precheck_on_main(importer.read_project_info)
+    try:
+        plan = importer.plan_import(path, info=info)
+        summary = dict(commit_on_main(importer.commit_import, plan) or {})
+    except importer.XmlImportError as exc:
+        raise ToolError(str(exc)) from None
+    summary["warnings"] = list(plan.warnings)
+    return summary
 
 
 @editor_tool(
@@ -638,8 +640,11 @@ def export_project_file(format="fcpxml", file_path="", overwrite=False):
 
     Use for "send this edit to Premiere/Resolve" or "give me an EDL". Not a
     video render (that is export_video_tool). EDL holds one track per file, so
-    each non-empty track is written as '<name>-<track>.edl'. Changes nothing in
-    the project.
+    each non-empty track is written as '<name>-<track>.edl'. The XML gives each
+    clip its scale relative to its own size (Premiere's convention): tell
+    DaVinci Resolve users to set Image Scaling > Mismatched resolution files to
+    'Center crop with no resizing' before importing. Changes nothing in the
+    project.
     """
     from classes import info
 
@@ -732,7 +737,7 @@ def consolidate_project_media(action):
     proj = get_app().project
     path = project_path()
     if not path:
-        raise ToolError("save the project first (save_project_tool); media is collected next to the project file")
+        raise ToolError("save the project first (run_tool(name='save_project_tool')); media is collected next to the project file")
     files = copy.deepcopy(proj.get("files") or [])
     clips = copy.deepcopy(proj.get("clips") or [])
     before_files, before_clips = copy.deepcopy(files), copy.deepcopy(clips)

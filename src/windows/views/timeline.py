@@ -96,6 +96,7 @@ from classes.camera_motion import (
     PAN_TOP_TO_BOTTOM,
     PAN_BOTTOM_TO_TOP,
     PAN_UP,
+    apply_camera_keyframes,
     camera_pan_keyframes,
     ken_burns_keyframes,
     push_pull_keyframes,
@@ -125,7 +126,7 @@ from .timeline_backend.qwidget import TimelineWidget
 from .timeline_backend.colors import effect_color_hex
 from .menu import StyledContextMenu
 from classes.clip_utils import (
-    clamp_timing_to_media, is_single_image_media, apply_file_caption_to_clip, project_fps_fraction,
+    clamp_timing_to_media, is_single_image_media, project_fps_fraction,
 )
 from classes.keyframe_rules import COPY_KEYFRAME_GROUPS, curve_plateau
 from classes.clip_placement import apply_audio_only_clip_overrides
@@ -308,6 +309,11 @@ def _save_waveform(item, tid, inserted_by_tid=False):
                 and isinstance(action.values, dict) and action.values.get("id") == item.id):
             action.values["ui"] = dict(action.values.get("ui") or {}, **ui)
             break
+
+
+# Paused cache-bar polling stops after this many unchanged 300 ms ticks: a slow fill
+# can leave the cache JSON unchanged for a second, so allow a few seconds
+CACHE_POLL_IDLE_TICKS = 10
 
 
 class TimelineView(updates.UpdateInterface, ViewClass):
@@ -771,6 +777,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):
+        self.resume_cache_renderer()
         if action is None:
             if ViewClass == TimelineWidget:
                 TimelineWidget.changed(self, None)
@@ -2017,6 +2024,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
                 menu.addMenu(Slice_Menu)
 
+        # Linked Source (a clip rendered from code / an After Effects comp)
+        from windows.linked_source_menu import add_linked_source_menu
+        add_linked_source_menu(self.window, menu, clip.data.get("file_id"), parent=self)
+
         # Properties
         menu.addSeparator()
         menu.addAction(self.window.actionProperties)
@@ -2151,7 +2162,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             clip.data = ui_data
             _save_waveform(clip, tid, inserted_by_tid=True)
             if hasattr(self, "clip_painter"):
-                self.clip_painter.clear_cache()
+                self.clip_painter.clear_render_cache()
             QTimer.singleShot(0, self.update)
 
         # Clear transaction id
@@ -2972,12 +2983,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
                 def _apply_camera_motion(values):
                     clip.data["scale"] = openshot.SCALE_CROP
-                    for prop in ("scale_x", "scale_y", "location_x", "location_y"):
-                        self._remove_keypoints_in_range(clip.data[prop], s, e)
-                    add("scale_x", kf(s, values.scale_x[0]), kf(e, values.scale_x[1]))
-                    add("scale_y", kf(s, values.scale_y[0]), kf(e, values.scale_y[1]))
-                    add("location_x", kf(s, values.location_x[0]), kf(e, values.location_x[1]))
-                    add("location_y", kf(s, values.location_y[0]), kf(e, values.location_y[1]))
+                    apply_camera_keyframes(clip.data, values, s, e, kf)
 
                 if action == MenuAnimate.NONE:
                     _reset_motion()
@@ -5165,10 +5171,6 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if not new_clip.get("reader"):
             return  # Skip this clip
 
-        # If the source file has stored caption text (e.g. ComfyUI Whisper
-        # captions), attach a Caption effect to this new clip.
-        apply_file_caption_to_clip(new_clip, file)
-
         # Audio-only media must not composite video (cover-art MP3s otherwise
         # paint an opaque frame over every lower layer)
         apply_audio_only_clip_overrides(
@@ -5797,7 +5799,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 if lock is not None:
                     acquired = lock.acquire(False)
                     if not acquired:
-                        return
+                        return False  # busy (an edit is applying): try again next tick
                 try:
                     cache_object = self.window.timeline_sync.timeline.GetCache()
                 finally:
@@ -5824,6 +5826,29 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         except Exception as ex:
             # Log the exception and ignore
             log.warning("Exception processing timeline cache: %s", ex)
+
+    def poll_cache_renderer(self):
+        """Timer tick: render the cache; stop after CACHE_POLL_IDLE_TICKS idle ticks while paused"""
+        version = self.cache_renderer_version
+        if self.render_cache_json() is False:
+            return  # could not read the cache, so this tick says nothing about idleness
+        try:
+            playing = self.window.preview_thread.player.Mode() == openshot.PLAYBACK_PLAY
+        except Exception:
+            playing = False
+        if playing or self.cache_renderer_version != version:
+            self.cache_renderer_idle_ticks = 0
+            return
+        self.cache_renderer_idle_ticks += 1
+        if self.cache_renderer_idle_ticks >= CACHE_POLL_IDLE_TICKS:
+            self.cache_renderer.stop()
+
+    def resume_cache_renderer(self):
+        """Poll the cache again after play, a seek or a timeline change"""
+        self.cache_renderer_idle_ticks = 0
+        renderer = getattr(self, "cache_renderer", None)  # changed() can fire before __init__ makes it
+        if renderer is not None and not renderer.isActive():
+            renderer.start()
 
     def handle_selection(self):
         # Force recalculation of clips and repaint
@@ -5886,17 +5911,20 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # QTimer for cache rendering
         self.cache_renderer_version = None
+        self.cache_renderer_idle_ticks = 0
         self.cache_renderer = QTimer(self)
         self.cache_renderer.setInterval(300)
-        self.cache_renderer.timeout.connect(self.render_cache_json)
+        self.cache_renderer.timeout.connect(self.poll_cache_renderer)
 
         # Connect shutdown signals
         app.aboutToQuit.connect(self.redraw_audio_timer.stop)
         app.aboutToQuit.connect(self.cache_renderer.stop)
         app.lastWindowClosed.connect(self._delete_on_shutdown)
 
-        # Delay the start of cache rendering
+        # Delay the start of cache rendering, then restart it on play and seek
         QTimer.singleShot(1500, self.cache_renderer.start)
+        window.PlaySignal.connect(self.resume_cache_renderer)
+        window.SeekSignal.connect(self.resume_cache_renderer)
 
         # connect signal to receive waveform data
         self.clipAudioDataReady.connect(self.clipAudioDataReady_Triggered)

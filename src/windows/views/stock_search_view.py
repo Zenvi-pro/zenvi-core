@@ -5,8 +5,8 @@ A single scroll area stacks three titled sections:
   * "Project Files" — the real project-files QListView, embedded here so it
     scrolls together with the stock results (drag-to-timeline, context menus and
     the hover quick-actions all keep working — it is the same widget).
-  * "Stock Footage" — Pexels results.
-  * "Stock music" — Freesound results.
+  * "Stock Footage" — Pixabay results (Pexels when Pixabay has none).
+  * "Stock music" — Openverse results (CC BY / CC0 / public domain).
 
 The stock sections only appear while a query is active. The search workers,
 download workers, result cards and async image loaders are reused as-is from
@@ -15,10 +15,10 @@ download workers, result cards and async image loaders are reused as-is from
 
 from typing import Dict
 
-from qt_api import Qt, QSize, QThread, QThreadPool, QEvent, pyqtSlot
-from qt_api import QPixmap, QCursor
+from qt_api import Qt, QSize, QThread, QEvent, pyqtSlot
+from qt_api import QImage, QPixmap, QCursor
 from qt_api import (
-    QWidget, QVBoxLayout, QScrollArea, QGridLayout, QLabel, QApplication,
+    QWidget, QVBoxLayout, QScrollArea, QGridLayout, QLabel, QApplication, QPushButton,
 )
 
 from classes.app import get_app
@@ -29,41 +29,43 @@ from classes.file_drop import (
     urls_from_mime,
 )
 from classes.logger import log
+from themes.cosmic import tokens
 
 from windows.pexels_dock import (
     _SearchWorker as PexelsSearchWorker,
     _DownloadWorker as PexelsDownloadWorker,
-    _VideoCard, _ThumbnailRunnable,
+    _VideoCard, _ThumbnailRunnable, image_pool,
     CARD_W as VIDEO_W,
 )
 from windows.freesound_dock import (
     _SearchWorker as FreesoundSearchWorker,
     _DownloadWorker as FreesoundDownloadWorker,
-    _SoundCard, _WaveformRunnable,
+    _SoundCard, _WaveformRunnable, _image_url,
     CARD_W as SOUND_W,
 )
+from windows.views.files_thumbnail_overlay import tile_grid_size
 
 
-_STYLESHEET = """
-    QWidget#StockSearchView { background: #0d0d0d; }
-    QScrollArea { background: #0d0d0d; border: none; }
-    QWidget#scrollContents { background: #0d0d0d; }
-    QLabel#sectionHeader { color: #d4d4d4; font-size: 12px; font-weight: bold;
+_STYLESHEET = tokens.resolve("""
+    QWidget#StockSearchView { background: {surface}; }
+    QScrollArea { background: {surface}; border: none; }
+    QWidget#scrollContents { background: {surface}; }
+    QLabel#sectionHeader { color: {text}; font-size: 12px; font-weight: 600;
         padding: 8px 2px 2px 2px; }
-    QLabel#sectionStatus { color: #8a8a8a; font-size: 10px; padding-left: 2px; }
-"""
+    QLabel#sectionStatus { color: {text_faint}; font-size: 11px; padding-left: 2px; }
+""")
 
-# Project-file cards, sized to match the Pexels footage cards for a consistent grid.
-FILE_ICON = QSize(150, 84)
-FILE_GRID = QSize(162, 118)
-_FILES_STYLE = """
-    QListView { background: #0d0d0d; border: none; }
-    QListView::item { background: #1a1a1a; color: #d4d4d4;
-        border: 1px solid rgba(255,255,255,0.06); border-radius: 6px;
-        padding-top: 2px; }
-    QListView::item:hover { border: 1px solid #4d9cf6; }
-    QListView::item:selected { border: 1px solid #4d9cf6; background: #1d2b3a; }
-"""
+# Project-file thumbnails; their tile grid comes from tile_grid_size.
+FILE_ICON = QSize(128, 72)  # 16:9; two columns fit the default panel width
+_FILES_STYLE = tokens.resolve("""
+    QListView { background: {surface}; border: none; }
+""")
+
+
+def _same_path(a: str, b: str) -> bool:
+    import os
+    norm = lambda p: os.path.normcase(os.path.normpath(str(p or "").replace("\\", "/")))
+    return bool(a) and norm(a) == norm(b)
 
 
 class StockSearchView(QWidget):
@@ -83,7 +85,16 @@ class StockSearchView(QWidget):
         self._dl_threads: Dict[str, QThread] = {}
         self._dl_workers: Dict[str, object] = {}
         self._cards: Dict[str, object] = {}
-        self._pool = QThreadPool.globalInstance()
+        # Bumped on every new search: late pages and pictures from an older one are dropped.
+        self._search_gen = 0
+        self._failed = False   # a failed or rate-limited section lets the same query run again
+        self._pages = {"footage": 1, "music": 1}
+        # Picture loaders carry an int key; Openverse ids are strings, so map key -> card uid.
+        self._image_keys: Dict[int, str] = {}
+        # Credit lines by card uid, taken at click time: the card may be gone by the time
+        # its download finishes (a new search clears the grid).
+        self._credits: Dict[str, str] = {}
+        self._pool = image_pool()
 
         self._build_ui()
 
@@ -116,6 +127,10 @@ class StockSearchView(QWidget):
         self._files_holder_layout = QVBoxLayout(self._files_holder)
         self._files_holder_layout.setContentsMargins(0, 2, 0, 6)
         self._files_holder_layout.setSpacing(0)
+        self._files_empty = QLabel("No project files match this search.")
+        self._files_empty.setObjectName("sectionStatus")
+        self._files_empty.hide()
+        cv.addWidget(self._files_empty)
         cv.addWidget(self._files_holder)
 
         # Stock Footage section (hidden until a query is active).
@@ -124,12 +139,16 @@ class StockSearchView(QWidget):
         cv.addWidget(self._footage_header)
         self._footage_status = QLabel("")
         self._footage_status.setObjectName("sectionStatus")
+        self._footage_status.setTextFormat(Qt.PlainText)   # provider text is never markup
         cv.addWidget(self._footage_status)
         self._footage_container = QWidget()
         self._footage_grid = QGridLayout(self._footage_container)
         self._footage_grid.setContentsMargins(0, 4, 0, 8)
-        self._footage_grid.setSpacing(6)
+        self._footage_grid.setSpacing(8)
         cv.addWidget(self._footage_container)
+        self._footage_more = QPushButton("Load more footage")
+        self._footage_more.clicked.connect(lambda: self._load_more("footage"))
+        cv.addWidget(self._footage_more)
 
         # Stock music section (hidden until a query is active).
         self._music_header = QLabel("Stock music")
@@ -137,12 +156,16 @@ class StockSearchView(QWidget):
         cv.addWidget(self._music_header)
         self._music_status = QLabel("")
         self._music_status.setObjectName("sectionStatus")
+        self._music_status.setTextFormat(Qt.PlainText)
         cv.addWidget(self._music_status)
         self._music_container = QWidget()
         self._music_grid = QGridLayout(self._music_container)
         self._music_grid.setContentsMargins(0, 4, 0, 8)
-        self._music_grid.setSpacing(6)
+        self._music_grid.setSpacing(8)
         cv.addWidget(self._music_container)
+        self._music_more = QPushButton("Load more music")
+        self._music_more.clicked.connect(lambda: self._load_more("music"))
+        cv.addWidget(self._music_more)
 
         cv.addStretch(1)
         scroll.setWidget(content)
@@ -168,7 +191,7 @@ class StockSearchView(QWidget):
         files_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         files_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         files_view.setIconSize(FILE_ICON)
-        files_view.setGridSize(FILE_GRID)
+        files_view.setGridSize(tile_grid_size(FILE_ICON))
         files_view.setStyleSheet(_FILES_STYLE)
         self._files_holder_layout.addWidget(files_view)
 
@@ -192,6 +215,11 @@ class StockSearchView(QWidget):
             return
         model = view.model()
         count = model.rowCount() if model is not None else 0
+        try:
+            total = view.files_model.proxy_model.sourceModel().rowCount()
+        except Exception:
+            total = count
+        self._files_empty.setVisible(count == 0 and total > 0)
         grid = view.gridSize()
         gw = grid.width() or 110
         gh = grid.height() or 95
@@ -248,17 +276,40 @@ class StockSearchView(QWidget):
         if not query:
             self.clear_stock()
             return
+        if query == self._query and not self._failed:
+            return
         self._query = query
+        self._failed = False
         self._clear_grids()
         self._set_stock_visible(True)
         self._footage_status.setText("Searching…")
         self._music_status.setText("Searching…")
+        self._search_page("footage", 1)
+        self._search_page("music", 1)
 
-        self._start_search(PexelsSearchWorker(query, 1), self._on_footage_results)
-        self._start_search(FreesoundSearchWorker(query, 1), self._on_music_results)
+    def _search_page(self, section: str, page: int):
+        self._pages[section] = page
+        gen = self._search_gen
+        if section == "footage":
+            worker, done = PexelsSearchWorker(self._query, page), self._on_footage_results
+        else:
+            worker, done = FreesoundSearchWorker(self._query, page), self._on_music_results
+        self._start_search(worker, lambda data, g=gen: done(data) if g == self._search_gen else None)
+
+    def _load_more(self, section: str):
+        more = self._footage_more if section == "footage" else self._music_more
+        more.setEnabled(False)
+        more.setText("Loading…")
+        self._search_page(section, self._pages[section] + 1)
+
+    def _show_more(self, more: QPushButton, section: str, shown: int, total: int):
+        more.setText("Load more " + section)
+        more.setEnabled(True)
+        more.setVisible(shown < total)
 
     def clear_stock(self):
         """Hide and empty the stock sections (project files stay visible)."""
+        self._query = ""
         self._clear_grids()
         self._footage_status.setText("")
         self._music_status.setText("")
@@ -270,11 +321,18 @@ class StockSearchView(QWidget):
         for w in (self._footage_header, self._footage_status, self._footage_container,
                   self._music_header, self._music_status, self._music_container):
             w.setVisible(visible)
+        if not visible:
+            self._footage_more.hide()
+            self._music_more.hide()
 
     def _clear_grids(self):
+        self._search_gen += 1
         self._clear_grid(self._footage_grid)
         self._clear_grid(self._music_grid)
         self._cards.clear()
+        self._image_keys.clear()
+        self._footage_more.hide()
+        self._music_more.hide()
 
     # ── Search flow ───────────────────────────────────────────────────────────────
 
@@ -295,22 +353,42 @@ class StockSearchView(QWidget):
         if worker in self._search_workers:
             self._search_workers.remove(worker)
 
+    def _image_key(self, uid: str) -> int:
+        key = len(self._image_keys)
+        self._image_keys[key] = uid
+        return key
+
+    def _load_image(self, runnable_cls, uid: str, url: str, on_ready):
+        gen = self._search_gen
+        # A queued fetch for a superseded search is skipped, so it cannot hold up the next one.
+        runnable = runnable_cls(self._image_key(uid), url, gen, alive=lambda g=gen: g == self._search_gen)
+        runnable.signals.ready.connect(on_ready)
+        self._pool.start(runnable)
+
     @pyqtSlot(dict)
     def _on_footage_results(self, data: dict):
         error = data.get("error")
-        if error:
-            self._footage_status.setText(f"Error: {error}")
-            return
         videos = data.get("videos", [])
-        if not videos:
-            self._footage_status.setText("No footage found.")
+        first = self._footage_grid.count()
+        if error or not videos:
+            self._failed = self._failed or bool(error)
+            if first and error:   # a later page failed: keep what is shown, offer that page again
+                self._pages["footage"] -= 1
+                self._footage_status.setText(f"Error: {error}")
+                self._show_more(self._footage_more, "footage", 0, 1)
+                return
+            if not first:
+                self._footage_status.setText(f"Error: {error}" if error else "No footage found.")
+            self._footage_more.hide()
             return
-        self._footage_status.setText(f"{data.get('total_results', 0):,} results")
+        total = int(data.get("total_results", 0) or 0)
+        self._footage_status.setText(f"{total:,} results")
+        provider = data.get("provider") or "pexels"
 
         cols = self._cols(VIDEO_W)
-        for idx, video in enumerate(videos):
-            vid_id = video.get("id", idx)
-            uid = f"v{vid_id}"
+        for idx, video in enumerate(videos, start=first):
+            video = dict(video, provider=provider)
+            uid = f"v{video.get('id', idx)}"
             card = _VideoCard(video)
             card.clicked.connect(self._on_footage_clicked)
             self._cards[uid] = card
@@ -322,52 +400,59 @@ class StockSearchView(QWidget):
             if pictures:
                 pic0 = next((p for p in pictures if p.get("nr") == 0), pictures[0])
                 thumb_url = pic0.get("picture", "")
-            if not thumb_url:
-                thumb_url = video.get("image", "")
+            thumb_url = thumb_url or video.get("image", "")
             if thumb_url:
-                runnable = _ThumbnailRunnable(vid_id, thumb_url)
-                runnable.signals.ready.connect(self._on_thumbnail_ready)
-                self._pool.start(runnable)
+                self._load_image(_ThumbnailRunnable, uid, thumb_url, self._on_thumbnail_ready)
+        self._show_more(self._footage_more, "footage", self._footage_grid.count(), total)
 
     @pyqtSlot(dict)
     def _on_music_results(self, data: dict):
         error = data.get("error")
-        if error:
-            self._music_status.setText(f"Error: {error}")
-            return
         sounds = data.get("sounds", [])
-        if not sounds:
-            self._music_status.setText("No music found.")
+        first = self._music_grid.count()
+        if error or not sounds:
+            self._failed = self._failed or bool(error)
+            if first and error:
+                self._pages["music"] -= 1
+                self._music_status.setText(f"Error: {error}")
+                self._show_more(self._music_more, "music", 0, 1)
+                return
+            if not first:
+                self._music_status.setText(f"Error: {error}" if error else "No music found.")
+            self._music_more.hide()
             return
-        self._music_status.setText(f"{data.get('count', 0):,} results")
+        total = int(data.get("count", 0) or 0)
+        self._music_status.setText(f"{total:,} results")
 
         cols = self._cols(SOUND_W)
-        for idx, sound in enumerate(sounds):
-            sid = sound.get("id", idx)
-            uid = f"s{sid}"
+        for idx, sound in enumerate(sounds, start=first):
+            uid = f"s{sound.get('id', idx)}"
             card = _SoundCard(sound)
             card.clicked.connect(self._on_music_clicked)
             self._cards[uid] = card
             row, col = divmod(idx, cols)
             self._music_grid.addWidget(card, row, col)
 
-            wave_url = (sound.get("images") or {}).get("waveform_m", "")
-            if wave_url:
-                runnable = _WaveformRunnable(sid, wave_url)
-                runnable.signals.ready.connect(self._on_waveform_ready)
-                self._pool.start(runnable)
+            # Openverse has no waveform image; its album art fills the same slot.
+            image_url = _image_url(sound)
+            if image_url:
+                self._load_image(_WaveformRunnable, uid, image_url, self._on_waveform_ready)
+        self._show_more(self._music_more, "music", self._music_grid.count(), total)
 
-    @pyqtSlot(int, QPixmap)
-    def _on_thumbnail_ready(self, video_id: int, pix: QPixmap):
-        card = self._cards.get(f"v{video_id}")
-        if card:
-            card.set_thumbnail(pix)
+    def _card_for_image(self, key: int, search: int):
+        return self._cards.get(self._image_keys.get(key, "")) if search == self._search_gen else None
 
-    @pyqtSlot(int, QPixmap)
-    def _on_waveform_ready(self, sound_id: int, pix: QPixmap):
-        card = self._cards.get(f"s{sound_id}")
+    @pyqtSlot(int, QImage, int)
+    def _on_thumbnail_ready(self, key: int, image: QImage, search: int):
+        card = self._card_for_image(key, search)
         if card:
-            card.set_waveform(pix)
+            card.set_thumbnail(QPixmap.fromImage(image))
+
+    @pyqtSlot(object, QImage, int)
+    def _on_waveform_ready(self, key: int, image: QImage, search: int):
+        card = self._card_for_image(key, search)
+        if card:
+            card.set_waveform(QPixmap.fromImage(image))
 
     # ── Download + add-to-project flow ────────────────────────────────────────────
 
@@ -390,7 +475,9 @@ class StockSearchView(QWidget):
         if card:
             card.set_downloading(True)
         vid_id = video.get("id", 0)
-        worker = PexelsDownloadWorker(vid_id, chosen.get("link", ""), f"pexels_{vid_id}")
+        # Pixabay and Pexels ids overlap, and a download reuses a same-named file.
+        name = f"{video.get('provider') or 'pexels'}_{vid_id}"
+        worker = PexelsDownloadWorker(vid_id, chosen.get("link", ""), name)
         self._start_download(uid, worker)
 
     @pyqtSlot(dict)
@@ -408,11 +495,13 @@ class StockSearchView(QWidget):
 
         import re
         sid = sound.get("id", 0)
-        raw_name = sound.get("name", "") or f"freesound_{sid}"
+        raw_name = sound.get("name", "") or f"openverse_{sid}"
         safe_name = re.sub(r"[^\w\-]", "_", raw_name)[:60]
         if card:
             card.set_downloading(True)
-        worker = FreesoundDownloadWorker(sid, preview_url, f"freesound_{sid}_{safe_name}")
+        if sound.get("attribution"):
+            self._credits[uid] = sound["attribution"]
+        worker = FreesoundDownloadWorker(sid, preview_url, f"openverse_{sid}_{safe_name}")
         self._start_download(uid, worker)
 
     def _start_download(self, uid: str, worker):
@@ -444,6 +533,24 @@ class StockSearchView(QWidget):
         if card:
             card.set_done()
         self._add_to_project(local_path)
+        credit = self._credits.pop(uid, "") or (getattr(card, "_sound", None) or {}).get("attribution", "")
+        if credit:
+            self._keep_credit(local_path, credit)
+
+    def _keep_credit(self, local_path: str, credit: str):
+        """CC BY needs the credit with the clip, not only on the search card."""
+        try:
+            from classes.tool_handlers import resolve_imported_file
+            f = resolve_imported_file(local_path)
+            # The resolver falls back to a same-named file; a credit must only go on this one.
+            if not f or not _same_path(f.absolute_path(), local_path):
+                log.warning("Imported %s but could not find it to store its credit", local_path)
+                return
+            f.data["stock_credit"] = credit
+            # Metadata, not an edit: no undo step, and a pending action (an effect drag) is kept.
+            get_app().updates.update_untracked(f.key or ["files", {"id": f.id}], f.data)
+        except Exception as exc:
+            log.warning("Could not store the stock credit for %s: %s", local_path, exc)
 
     def _add_to_project(self, local_path: str):
         """Import the downloaded file into Project Files (re-tag if already present)."""
@@ -466,7 +573,7 @@ class StockSearchView(QWidget):
     # ── Helpers ─────────────────────────────────────────────────────────────────
 
     def _cols(self, card_w: int) -> int:
-        return max(1, (self.width() - 24) // (card_w + 6))
+        return max(1, (self.width() - 24) // (card_w + 8))
 
     def _clear_grid(self, grid: QGridLayout):
         while grid.count():

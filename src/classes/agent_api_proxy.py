@@ -32,7 +32,6 @@ MAX_RESPONSE_CHARS = 12_000   # keep a huge payload from swamping the agent's co
 ALLOWED_PATH_PREFIXES = (
     "/api/v1/models",
     "/api/v1/chat/",
-    "/api/v1/indexing/",
     "/api/v1/credits",
     "/api/v1/projects",
     "/api/v1/usage",
@@ -73,6 +72,10 @@ def zenvi_api_request(method: str = "GET", path: str = "", body: str = "",
     ``query`` is a JSON object of query-string parameters. Returns the HTTP
     status followed by the response body.
     """
+    from classes import assistant_turns
+
+    if assistant_turns.running():
+        return assistant_turns.REFUSAL
     import requests
 
     verb = (method or "GET").strip().upper()
@@ -307,6 +310,10 @@ def send_assistant_prompt_tool(message: str = "", session_id: str = "",
     timeout_seconds (default 900) it is cancelled and reported as status=timeout
     rather than left running.
     """
+    from classes import assistant_turns
+
+    if assistant_turns.running():
+        return assistant_turns.REFUSAL
     import threading
     import uuid
 

@@ -21,6 +21,21 @@
    <bool>false</bool>
   </property>
   <layout class="QGridLayout" name="gridLayout">
+   <property name="leftMargin">
+    <number>16</number>
+   </property>
+   <property name="topMargin">
+    <number>16</number>
+   </property>
+   <property name="rightMargin">
+    <number>16</number>
+   </property>
+   <property name="bottomMargin">
+    <number>16</number>
+   </property>
+   <property name="spacing">
+    <number>8</number>
+   </property>
    <item row="4" column="0">
     <widget class="QDialogButtonBox" name="buttonBox">
      <property name="enabled">
@@ -167,9 +182,6 @@
                <widget class="QPushButton" name="btnAddClip">
                 <property name="enabled">
                  <bool>false</bool>
-                </property>
-                <property name="styleSheet">
-                 <string notr="true">font-weight: bold</string>
                 </property>
                 <property name="text">
                  <string>Create</string>

@@ -3,7 +3,7 @@ on: [push, pull_request]
 jobs:
   # Headless unit suite in tests/. Conftest stubs PyQt5 and libopenshot, so
   # this job needs no apt Qt/openshot packages. Landed non-required first;
-  # make it a required branch check once it has been green twice on develop.
+  # make it a required branch check once it has been green twice on main.
   unit-tests:
     runs-on: ubuntu-latest
     steps:
@@ -21,6 +21,10 @@ jobs:
 
     - name: Install dependencies
       run: pip install -r requirements-dev.txt
+
+    # The media index tests decode real (synthetic) video; they skip without ffmpeg.
+    - name: Install ffmpeg
+      run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
     - name: Run unit tests
       run: pytest tests/ -q
@@ -68,8 +72,9 @@ jobs:
 
   build:
     runs-on: ${{ matrix.os }}
-    # The apt/PPA install has hung for hours; fail it instead of holding the PR.
-    timeout-minutes: 30
+    # Slow apt downloads of the libopenshot tree have exceeded 30 minutes
+    # and cancelled a still-running install. 50 minutes still kills a hung apt.
+    timeout-minutes: 50
     strategy:
       # One OS timing out must not cancel the other's result.
       fail-fast: false
@@ -84,6 +89,14 @@ jobs:
 
     - name: Install dependencies
       run: |
+        # azure.archive.ubuntu.com sometimes serves this tree at ~50 KB/s and
+        # drops the large debs. The runner mirror list keeps using it whenever
+        # it answers, so send apt to archive.ubuntu.com instead.
+        for f in /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+          if [ -f "$f" ]; then
+            sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' "$f"
+          fi
+        done
         sudo add-apt-repository ppa:openshot.developers/libopenshot-daily
         sudo apt update
         sudo apt install libopenshot-audio-dev libopenshot-dev python3-openshot
@@ -110,8 +123,9 @@ jobs:
     # Stale tests should be fixed or explicitly pytest.mark.skip'd rather
     # than silently ignored.
     runs-on: ubuntu-24.04
-    # The apt/PPA install has hung for hours; fail it instead of holding the PR.
-    timeout-minutes: 30
+    # Slow apt downloads of the libopenshot tree have exceeded 30 minutes
+    # and cancelled a still-running install. 50 minutes still kills a hung apt.
+    timeout-minutes: 50
     defaults:
       run:
         shell: bash
@@ -121,6 +135,14 @@ jobs:
 
     - name: Install dependencies
       run: |
+        # azure.archive.ubuntu.com sometimes serves this tree at ~50 KB/s and
+        # drops the large debs. The runner mirror list keeps using it whenever
+        # it answers, so send apt to archive.ubuntu.com instead.
+        for f in /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+          if [ -f "$f" ]; then
+            sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' "$f"
+          fi
+        done
         sudo add-apt-repository ppa:openshot.developers/libopenshot-daily
         sudo apt update
         sudo apt install libopenshot-audio-dev libopenshot-dev python3-openshot
@@ -160,3 +182,27 @@ jobs:
 
     - name: Test
       run: python ./src/tests/update_installer_tests.py -v
+
+  mac-update-installer-tests:
+    # The macOS update helper mounts a real disk image and swaps a real app
+    # bundle (tests/test_update_installer_helpers.py); Ubuntu has no hdiutil,
+    # so those tests only run here. Pure Python + /bin/sh, no Qt or openshot.
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install dependencies
+      run: pip install -r requirements-dev.txt
+
+    - name: Test
+      run: |
+        pytest tests/test_update_installer_helpers.py tests/test_auto_updater_install_flow.py \
+          tests/test_auth_session_retention.py tests/test_verify_mac_bundle.py -q -rs
+        python ./src/tests/update_installer_tests.py -v

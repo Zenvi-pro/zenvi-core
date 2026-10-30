@@ -29,7 +29,7 @@ import os
 import sys
 from time import strftime
 
-VERSION = "1.2.2"
+VERSION = "1.2.3"
 # libopenshot 1.0.0 ships the 4.0-era effects and the corrected Crop location math.
 MINIMUM_LIBOPENSHOT_VERSION = "1.0.0"
 DATE = "20260813000000"
@@ -423,7 +423,6 @@ try:
     LIST_GRID_SIZE = LIST_ICON_SIZE + QSize(5, 25)
     TREE_ICON_SIZE = QSize(75, 49)
     EMOJI_ICON_SIZE = QSize(75, 75)
-    EMOJI_GRID_SIZE = EMOJI_ICON_SIZE + QSize(5, 25)
     # Runtime emoji selections
     EMOJI_FILES = {}
     EMOJI_PATH = ""
@@ -636,14 +635,3 @@ def website_language():
         "zh_TW": "zh-hant/",
         "en_US": ""}.get(CURRENT_LANGUAGE,
                          "%s/" % CURRENT_LANGUAGE.split("_")[0].lower())
-
-
-def check_user_path_writable(path=None):
-    """Raise PermissionError if ``path`` (default USER_PATH) is not writable."""
-    import tempfile
-    # Unique name, deleted by the OS on close: concurrent launches and
-    # antivirus handles on a shared probe file reported false errors (#313).
-    path = path or USER_PATH
-    os.makedirs(path, exist_ok=True)
-    with tempfile.TemporaryFile(dir=path):
-        pass

@@ -97,6 +97,8 @@ if not ARCHLIB.endswith('/'):
 python_packages = ["os",
                    "sys",
                    QT_BINDING_PACKAGE,
+                   # Media index v2 searches saved vectors with numpy (classes/media_index).
+                   "numpy",
                    "time",
                    "uuid",
                    "idna",
@@ -287,6 +289,7 @@ try:
     print("Imported classes.info", flush=True)
     from classes.logger import log
     print("Imported classes.logger", flush=True)
+    from classes.openshot_import_diag import write_bundle_manifest
 except BaseException:
     import traceback
     traceback.print_exc()
@@ -952,7 +955,6 @@ build_exe_options["packages"] = python_packages
 build_exe_options["include_files"] = src_files + external_so_files
 build_exe_options["includes"] = python_modules
 build_exe_options["excludes"] = ["distutils",
-                                 "numpy",
                                  "setuptools",
                                  "tkinter",
                                  "pydoc_data",
@@ -1065,6 +1067,36 @@ if sys.platform == "win32":
                     break
             else:
                 log.warning("WARNING: %s not found — Gemini indexing will fail in the frozen build" % _name)
+
+    # Last Windows post-build step, so the list covers everything shipped. When
+    # antivirus quarantines one of these, the startup error names it.
+    for frozen_path in os.listdir(build_path):
+        if frozen_path.startswith("exe") and os.path.isdir(os.path.join(build_path, frozen_path, "lib")):
+            log.info("Wrote %s" % write_bundle_manifest(os.path.join(build_path, frozen_path)))
+
+# Frozen macOS: indexing, transcription audio extraction and thumbnails shell out to
+# the ffmpeg CLI, and the .app only carries the libav* dylibs libopenshot needs.
+# installer/build-ffmpeg-cli.sh builds a self-contained ffmpeg/ffprobe (static, libx264)
+# into build/ffmpeg-cli; classes/ffmpeg_cli.find_ffmpeg looks in <app>/lib first.
+if sys.platform == "darwin":
+    _mac_ff_dir = os.environ.get("ZENVI_FFMPEG_CLI_DIR") or os.path.join(PATH, "build", "ffmpeg-cli")
+    for frozen_path in os.listdir(build_path):
+        if not frozen_path.startswith("exe"):
+            continue
+        lib_dir = os.path.join(build_path, frozen_path, "lib")
+        if not os.path.isdir(lib_dir):
+            continue
+        for _name in ("ffmpeg", "ffprobe"):
+            _src = os.path.join(_mac_ff_dir, _name)
+            _dst = os.path.join(lib_dir, _name)
+            if os.path.isfile(_dst):
+                continue
+            if os.path.isfile(_src):
+                log.info("Post-build ffmpeg CLI copy: %s -> %s" % (_src, _dst))
+                shutil.copy2(_src, _dst)
+            else:
+                log.warning("WARNING: %s not found in %s - run installer/build-ffmpeg-cli.sh; "
+                            "indexing needs the ffmpeg CLI in the frozen build" % (_name, _mac_ff_dir))
 
 # Post-build: bundle shared library dependencies of _openshot and libopenshot.
 # cx_Freeze's include_files silently drops many .so files, so we use ldd to

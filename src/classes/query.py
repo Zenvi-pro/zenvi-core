@@ -28,6 +28,7 @@ import copy
 import json
 import os
 import threading
+from typing import Any
 
 import openshot
 
@@ -281,6 +282,15 @@ class File(QueryObject):
         """ Save the object back to the project data store """
         super().save(File)
 
+    def save_untracked(self, *keys):
+        """ Save *keys* of this file's record without an undo step.
+
+        For what the editor learns about a file by itself (indexing results):
+        the user did not make that change, so Ctrl+Z must not take it back
+        before their own last edit. """
+        if self.id and self.type == "update":
+            get_app().updates.update_untracked(list(self.key), {k: self.data.get(k) for k in keys})
+
     def delete(self):
         """ Delete the object from the project data store """
         super().delete(File)
@@ -289,7 +299,7 @@ class File(QueryObject):
         """ Take any arguments given as filters, and find a list of matching objects """
         return QueryObject.filter(File, **kwargs)
 
-    def get(**kwargs):
+    def get(**kwargs: Any):
         """ Take any arguments given as filters, and find the first matching object """
         file_path = kwargs.pop("path", None)
         if file_path is None:

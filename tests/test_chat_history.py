@@ -62,7 +62,7 @@ def test_message_survives_a_missing_session_row(store):
 def test_clear_session_messages_keeps_the_session(store):
     store.upsert_session("s1", "P1", title="Keep me")
     store.record_message("s1", "user", "hi")
-    store.record_tool_event("s1", "c1", "list_clips_tool", "Listing")
+    store.record_tool_event("s1", "c1", "get_timeline_state_tool", "Listing")
     store.clear_session_messages("s1")
     assert store.load_messages("s1") == []
     assert store.load_tool_events("s1") == []
@@ -140,7 +140,7 @@ def test_load_closed_sessions_skips_empty_and_open_tabs(store):
 def test_tool_events_record_status_and_anchor_to_the_turn(store):
     store.upsert_session("s1", "P1")
     store.record_message("s1", "user", "list my clips")
-    store.record_tool_event("s1", "c1", "list_clips_tool", "Listing clips")
+    store.record_tool_event("s1", "c1", "get_timeline_state_tool", "Listing clips")
     store.complete_tool_event("s1", "c1", True)
     store.record_tool_event("s1", "c2", "export_video_tool", "Exporting")
     store.complete_tool_event("s1", "c2", False)
@@ -307,3 +307,34 @@ def test_a_draft_that_was_actually_used_is_kept(store):
     store.record_message("s1", "user", "worth keeping")
     assert store.discard_empty_bucket(draft) == 0
     assert len(store.load_sessions(draft)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Agent handoff markers (#136)
+# ---------------------------------------------------------------------------
+
+def test_handoff_markers_survive_a_restart(store):
+    store.upsert_session("s1", "P1", backend="codex", handoff_seen='{"zenvi": 4}')
+    store.upsert_session("s1", "P1", title="later")          # None leaves it alone
+    assert store.load_sessions("P1")[0]["handoff_seen"] == '{"zenvi": 4}'
+    store.update_session("s1", handoff_seen='{"zenvi": 4, "codex": null}')
+    store.close()                                             # "restart"
+    assert store.load_sessions("P1")[0]["handoff_seen"] == '{"zenvi": 4, "codex": null}'
+
+
+def test_a_database_from_before_handoff_markers_is_upgraded(store, tmp_path):
+    import sqlite3
+    store.close()
+    conn = sqlite3.connect(str(tmp_path / "chat_history.db"))
+    conn.executescript(store._SCHEMA_V1)
+    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute("INSERT INTO meta VALUES ('schema_version', '1')")
+    conn.execute("INSERT INTO sessions (session_id, project_key, created_at, updated_at) "
+                 "VALUES ('old', 'P1', 't', 't')")
+    conn.commit()
+    conn.close()
+
+    rows = store.load_sessions("P1")
+    assert rows[0]["session_id"] == "old" and rows[0]["handoff_seen"] is None
+    store.update_session("old", handoff_seen='{"zenvi": 1}')
+    assert store.load_sessions("P1")[0]["handoff_seen"] == '{"zenvi": 1}'

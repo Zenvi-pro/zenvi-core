@@ -14,12 +14,13 @@ import re
 import shutil
 import socket
 import time
+import urllib.request
 from typing import Any, Optional
 from urllib.parse import urlparse
 
 
 # Pin floor documented in requirements; runtime checks major capability only.
-YT_DLP_MIN_VERSION = (2024, 1, 1)
+
 
 # Cache entries older than this are eligible for purge (seconds).
 DEFAULT_CACHE_TTL_SECONDS = 7 * 24 * 3600
@@ -68,7 +69,7 @@ def assert_public_http_url(url: str) -> None:
     if not is_probable_web_video_url(url):
         raise WebVideoIngestError(
             "URL must be http(s). Local paths use import_files_tool; "
-            "direct MP4s may use import_video_url_and_add_to_timeline_tool."
+            "direct MP4s may use ingest_web_video_tool."
         )
     host = (urlparse(str(url).strip()).hostname or "").strip()
     if not host:
@@ -97,6 +98,23 @@ def assert_public_http_url(url: str) -> None:
                 "That URL points at a private or local network address, "
                 "which cannot be fetched."
             )
+
+
+class _PublicOnlyRedirects(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect only to a public address: checking the first URL is not enough when the server can send us elsewhere."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        assert_public_http_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def open_public_url(request, timeout: float):
+    """``urlopen`` for a user-supplied URL that also refuses redirects to private, loopback or link-local addresses.
+
+    The URL itself is checked with ``assert_public_http_url`` before anything is opened. Raises WebVideoIngestError on a refused hop.
+    """
+    assert_public_http_url(request.full_url if isinstance(request, urllib.request.Request) else request)
+    return urllib.request.build_opener(_PublicOnlyRedirects).open(request, timeout=timeout)
 
 
 def requested_height_for_intent(intent: str) -> int:

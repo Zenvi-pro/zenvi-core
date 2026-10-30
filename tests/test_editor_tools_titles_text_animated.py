@@ -96,6 +96,80 @@ def test_script_injection_and_sequence_details(tmp_path):
     assert blender_titles.version_newer_or_equal("10.1", "5.0")   # not a string comparison
 
 
+class _CyclesPrefs:
+    """Cycles add-on preferences as Blender 5 exposes them: setting a compute type the
+    build lacks raises TypeError; get_devices_for_type returns that type's devices plus the
+    CPU and adds them to `devices`, which keeps the entries earlier probes added."""
+
+    def __init__(self, supported, devices):
+        self._supported, self._all, self._type, self.devices = supported, devices, "NONE", []
+        self.probes = []
+
+    @property
+    def compute_device_type(self):
+        return self._type
+
+    @compute_device_type.setter
+    def compute_device_type(self, value):
+        if value not in self._supported:
+            raise TypeError(value)
+        self._type = value
+
+    def get_devices_for_type(self, compute_device_type):
+        self.probes.append(compute_device_type)
+        found = [d for d in self._all if d.type in (compute_device_type, "CPU")]
+        self.devices += [d for d in found if d not in self.devices]
+        return found
+
+
+def _run_gpu_enable(supported, device_types, engine="CYCLES"):
+    from types import SimpleNamespace as NS
+    devices = [NS(name=t.lower(), type=t, use=False) for t in device_types]
+    prefs = _CyclesPrefs(supported, devices)
+    scene = NS(render=NS(engine=engine), cycles=NS(device="CPU"))
+    bpy = NS(context=NS(scene=scene, preferences=NS(addons={"cycles": NS(preferences=prefs)})))
+    with open(os.path.join(blender_titles.blender_dir(), "scripts", "gpu_enable.py.in")) as f:
+        exec(f.read(), {"bpy": bpy})
+    return scene, prefs, {d.type: d.use for d in devices}
+
+
+@pytest.mark.parametrize("supported, device_types, backend", [
+    (("NONE", "METAL"), ("CPU", "METAL"), "METAL"),                       # Apple silicon
+    (("NONE", "CUDA", "OPTIX"), ("CPU", "CUDA", "OPTIX"), "OPTIX"),       # NVIDIA RTX
+    (("NONE", "CUDA"), ("CPU", "CUDA"), "CUDA"),                          # older NVIDIA
+    (("NONE", "HIP"), ("CPU", "HIP"), "HIP"),                             # AMD
+    (("NONE", "ONEAPI"), ("CPU", "ONEAPI"), "ONEAPI"),                    # Intel Arc
+])
+def test_gpu_enable_picks_the_gpu_backend(supported, device_types, backend):
+    scene, prefs, used = _run_gpu_enable(supported, device_types)
+    assert scene.render.engine == "CYCLES" and scene.cycles.device == "GPU"
+    assert prefs.compute_device_type == backend
+    assert used[backend] and not used["CPU"]
+
+
+def test_gpu_enable_probes_one_backend_per_attempt():
+    # An AMD card on a build with every backend: OptiX and CUDA find nothing, HIP wins.
+    # Each attempt probes only its own backend, and the CPU entry the first probe added stays off.
+    scene, prefs, used = _run_gpu_enable(
+        ("NONE", "OPTIX", "CUDA", "HIP", "METAL", "ONEAPI"), ("CPU", "HIP"))
+    assert prefs.probes == ["OPTIX", "CUDA", "HIP"]
+    assert scene.cycles.device == "GPU" and used == {"CPU": False, "HIP": True}
+
+
+def test_gpu_enable_falls_back_to_cpu_without_a_gpu():
+    # The build has CUDA support but the machine has no CUDA card.
+    scene, prefs, used = _run_gpu_enable(("NONE", "CUDA"), ("CPU",))
+    assert scene.render.engine == "CYCLES" and scene.cycles.device == "CPU"
+    assert used == {"CPU": False}
+
+
+def test_gpu_enable_keeps_eevee_templates_on_eevee():
+    # EEVEE already renders on the GPU; switching it to Cycles changed every bundled title's look.
+    scene, prefs, used = _run_gpu_enable(("NONE", "METAL"), ("CPU", "METAL"), engine="BLENDER_EEVEE")
+    assert scene.render.engine == "BLENDER_EEVEE" and scene.cycles.device == "CPU"
+    assert prefs.compute_device_type == "NONE" and not any(used.values())
+
+
 # ---------------------------------------------------------------------------
 # add_animated_title_tool
 # ---------------------------------------------------------------------------

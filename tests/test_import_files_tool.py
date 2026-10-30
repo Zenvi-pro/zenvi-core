@@ -171,7 +171,7 @@ def test_import_files_real_import_caps_response_at_25(monkeypatch, tmp_path):
     assert "Imported 30 file(s)" in out
     assert out.count("file_id=") == 25
     assert "... and 5 more" in out
-    assert "list_files_tool" in out
+    assert "list_project_files_tool" in out
     win.files_model.add_files.assert_called_once()
 
 

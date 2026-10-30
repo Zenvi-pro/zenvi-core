@@ -17,24 +17,7 @@ from jsonschema import Draft202012Validator
 HIDDEN_PARAMS = frozenset({"self", "chat_session_id", "transaction_id"})
 
 # First wave (plan 3.3) — kept as a named set for tests / docs.
-PRIORITY_SCHEMAS = frozenset({
-    "add_clip_to_timeline_tool",
-    "delete_from_timeline_tool",
-    "slice_clip_at_playhead_tool",
-    "slice_clip_at_best_match_tool",
-    "place_motion_graphic_tool",
-    "apply_transition_tool",
-    "set_clip_volume_tool",
-    "duck_under_speech_tool",
-    "import_files_tool",
-    "split_file_add_clip_tool",
-    "add_track_tool",
-    "add_marker_tool",
-    "modify_clip_tool",
-    "undo_tool",
-    "redo_tool",
-    "export_video_tool",
-})
+
 
 # Empty until every registered tool has a schema. CI fails if a handler is
 # registered but missing from TOOL_SCHEMAS and not listed here.
@@ -105,48 +88,12 @@ def _url_list(**kw) -> dict:
 # ---------------------------------------------------------------------------
 
 TOOL_SCHEMAS: dict[str, dict] = {
-    "get_project_info_tool": _obj({}),
-    "list_files_tool": _obj({}),
-    "list_clips_tool": _obj({
-        "layer": _str(description="Optional layer_number or UI track filter."),
-        "detail_level": _str(
-            description="summary (default) or full — accepted for Assistant/LLM compat; listing is always complete.",
-        ),
-    }),
-    "list_layers_tool": _obj({}),
-    "list_markers_tool": _obj({}),
-    "new_project_tool": _obj({}),
-    "save_project_tool": _obj({
-        "file_path": _str(description="Optional destination path; empty saves in place."),
-    }),
-    "open_project_tool": _obj({
-        "file_path": _str(description="Project file path."),
-    }, required=["file_path"]),
-    "watch_clip_tool": _obj({
-        "file_path": _str(description="Media path to import, place and play."),
-        "query": _str(),
-    }),
-    "watch_clip_window_tool": _obj({
-        "query": _str(),
-        "start": _str_or_num(),
-        "end": _str_or_num(),
-        "timeline_clip_id": _str(),
-        "clip_query": _str(),
-        "track": _str(),
-        "occurrence": _str_or_num(),
-        "position_near": _opt_str_or_num(),
-    }),
-    "play_tool": _obj({}),
-    "go_to_start_tool": _obj({}),
-    "go_to_end_tool": _obj({}),
     "undo_tool": _obj({
         "steps": _str_or_num(description="Number of undo steps."),
     }),
     "redo_tool": _obj({
         "steps": _str_or_num(),
     }),
-    "add_track_tool": _obj({}),
-    "add_marker_tool": _obj({}),
     "delete_from_timeline_tool": _obj({
         "timeline_clip_id": _str(),
         "clip_query": _str(),
@@ -156,17 +103,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "position_near": _opt_str_or_num(),
         "include_transitions": _bool(),
         "ripple": _str_or_bool(),
-    }),
-    "remove_clip_tool": _obj({
-        "timeline_clip_id": _str(),
-        "clip_query": _str(),
-        "track": _str(),
-        "occurrence": _str_or_num(),
-        "position_near": _opt_str_or_num(),
-    }),
-    "delete_clips_on_track_tool": _obj({
-        "track": _str(),
-        "include_transitions": _bool(),
     }),
     "analyze_timeline_audio_tool": _obj({
         "track": _str(),
@@ -185,13 +121,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "fade_ms": _str_or_num(),
         "mode": _str(description="'replace' (default) or another handler mode."),
     }),
-    "reverse_clip_tool": _obj({
-        "timeline_clip_id": _str(),
-        "clip_query": _str(),
-        "track": _str(),
-        "occurrence": _str_or_num(),
-        "mode": _str(description="'reverse' (default) or 'reset'."),
-    }),
     "duck_under_speech_tool": _obj({
         "bed_clip_ids": _str(),
         "bed_query": _str(),
@@ -205,9 +134,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "boost_speech_db": _str_or_num(),
         "dry_run": _str_or_bool(description="true/false — preview without writing."),
     }),
-    "zoom_in_tool": _obj({}),
-    "zoom_out_tool": _obj({}),
-    "center_on_playhead_tool": _obj({}),
     "import_files_tool": _obj({
         "paths": {"oneOf": [{"type": "array", "items": {"type": "string"}}, {"type": "string"}],
                   "description": "List of paths, or one comma-separated string."},
@@ -222,28 +148,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "wait_until_project_indexed_tool": _obj({
         "timeout_seconds": _str_or_num(),
     }),
-    "export_video_tool": _obj({
-        "show_dialog": _str_or_bool(),
-        "output_path": _str(),
-    }),
-    "get_export_settings_tool": _obj({}),
-    "set_export_setting_tool": _obj({
-        "key": _str(),
-        "value": {"type": ["string", "number", "boolean", "null"]},
-    }, required=["key"]),
-    "get_file_info_tool": _obj({
-        "file_id": _str(),
-    }, required=["file_id"]),
-    "split_file_add_clip_tool": _obj({
-        "file_id": _str(),
-        "query": _str(),
-        "start_seconds": _str_or_num(),
-        "end_seconds": _str_or_num(),
-        "start_frame": _str_or_num(),
-        "end_frame": _str_or_num(),
-        "name": _str(),
-        "require_visual_match": _str_or_bool(),
-    }),
     "add_clip_to_timeline_tool": _obj({
         "file_id": _str(description="Media-bin file id."),
         "position_seconds": _str_or_num(),
@@ -252,16 +156,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "start_seconds": _str_or_num(),
         "end_seconds": _str_or_num(),
         "query": _str(),
-        "full_file": _str_or_bool(),
-    }),
-    "import_video_url_and_add_to_timeline_tool": _obj({
-        "video_url": _str(),
-        "position_seconds": _str_or_num(),
-        "track": _str_or_num(),
-        "query": _str(),
-        "start_seconds": _str_or_num(),
-        "end_seconds": _str_or_num(),
-        "duration_seconds": _str_or_num(),
         "full_file": _str_or_bool(),
     }),
     "ingest_web_video_tool": _obj({
@@ -276,115 +170,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "write_subs": _str_or_bool(),
         "job_id": _str(description="Long-poll id from a prior status=running reply."),
     }),
-    "apply_color_tool": _obj({
-        "clipIds": _str(description="JSON list, comma-separated ids, or 'all'."),
-        "clip_ids": _str(),
-        "timeline_clip_id": _str(),
-        "clipId": _str(),
-        "all_clips": _str_or_bool(),
-        "allClips": _str_or_bool(),
-        "reset": _str_or_bool(description="true removes ColorGrade."),
-        "color": _str(description="Full grade object JSON to paste."),
-        "exposure": _str_or_num(),
-        "contrast": _str_or_num(),
-        "saturation": _str_or_num(),
-        "vibrance": _str_or_num(),
-        "temperature": _str_or_num(),
-        "tint": _str_or_num(),
-        "temperature_delta": _str_or_num(),
-        "tint_delta": _str_or_num(),
-        "exposure_delta": _str_or_num(),
-        "vibrance_delta": _str_or_num(),
-        "highlights": _str_or_num(),
-        "shadows": _str_or_num(),
-        "mix": _str_or_num(),
-        "lut_path": _str(),
-        "lut_intensity": _str_or_num(),
-        "lut": _str(),
-        "wheels": _str(description="Wheels JSON."),
-        "curve_all": _str(),
-        "curve_red": _str(),
-        "curve_green": _str(),
-        "curve_blue": _str(),
-        "masterCurve": _str(),
-        "redCurve": _str(),
-        "greenCurve": _str(),
-        "blueCurve": _str(),
-    }),
-    "inspect_color_tool": _obj({
-        "clipId": _str(),
-        "timeline_clip_id": _str(),
-        "clip_id": _str(),
-        "atFrame": _str_or_num(),
-        "at_frame": _str_or_num(),
-        "reference": _str(),
-        "referenceClipId": _str(),
-        "include_preview": _str_or_bool(),
-    }),
-    "list_looks_tool": _obj({
-        "query": _str(),
-        "vibe": _str(),
-    }),
-    "apply_look_tool": _obj({
-        "clipIds": _str(description="JSON list, comma-separated ids, or 'all'."),
-        "clip_ids": _str(),
-        "timeline_clip_id": _str(),
-        "clipId": _str(),
-        "lookId": _str(description="Id from list_looks_tool."),
-        "look_id": _str(),
-        "lutPath": _str(),
-        "lut_path": _str(),
-        "lutIntensity": _str_or_num(),
-        "lut_intensity": _str_or_num(),
-        "mix": _str_or_num(),
-        "stackGrain": _str_or_bool(),
-        "stack_grain": _str_or_bool(),
-        "grainPreset": _str(),
-        "grain_preset": _str(),
-        "all_clips": _str_or_bool(),
-        "allClips": _str_or_bool(),
-    }),
-    "match_color_to_reference_tool": _obj({
-        "clipId": _str(),
-        "timeline_clip_id": _str(),
-        "clip_id": _str(),
-        "clipIds": _str(),
-        "clip_ids": _str(),
-        "reference": _str(),
-        "referenceClipId": _str(),
-        "referenceFileId": _str(),
-        "referenceImagePath": _str(),
-        "all_clips": _str_or_bool(),
-        "allClips": _str_or_bool(),
-        "dry_run": _str_or_bool(),
-        "dryRun": _str_or_bool(),
-        "max_iterations": _str_or_num(),
-    }),
-    "slice_clip_at_playhead_tool": _obj({}),
-    "search_clips_tool": _obj({
-        "query": _str(),
-        "top_k": _str_or_num(),
-        "look_for": _str(description="'on_screen' (what is visible), 'spoken' (what is said); omit for both."),
-    }, required=["query"]),
-    "search_clip_scenes_tool": _obj({
-        "query": _str(),
-        "top_k": _str_or_num(),
-        "timeline_clip_id": _str(),
-        "clip_query": _str(),
-        "track": _str(),
-        "occurrence": _str_or_num(),
-        "position_near": _opt_str_or_num(),
-    }, required=["query"]),
-    "get_project_catalog_tool": _obj({}),
-    "slice_clip_at_best_match_tool": _obj({
-        "query": _str(),
-        "occurrence": _str_or_num(),
-        "timeline_clip_id": _str(),
-        "clip_query": _str(),
-        "track": _str(),
-        "start_seconds": _str_or_num(description="Known cut time in source seconds."),
-        "end_seconds": _str_or_num(description="End of a known range in source seconds."),
-    }, required=["query"]),
     "suggest_motion_graphics_placements_tool": _obj({
         "brief": _str(),
         "beat_count": _str_or_num(),
@@ -401,20 +186,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "track": _str(),
         "layout_region": _str(),
         "query": _str(),
-    }),
-    "fetch_motion_graphics_video_tool": _obj({
-        "segment_urls": _url_list(),
-        "supabase_url": _str(),
-        "supabase_path": _str(),
-        "render_job_id": _str(),
-        "label": _str(),
-    }),
-    "fetch_remotion_video_from_supabase_tool": _obj({
-        "segment_urls": _url_list(),
-        "supabase_url": _str(),
-        "supabase_path": _str(),
-        "render_job_id": _str(),
-        "label": _str(),
     }),
     "generate_video_and_add_to_timeline_tool": _obj({
         "prompt": _str(),
@@ -450,10 +221,8 @@ TOOL_SCHEMAS: dict[str, dict] = {
     }),
     "list_transitions_tool": _obj({
         "category": _str(description="'all' (default), 'common' or 'extra'."),
+        "query": _str(description="Name filter, case-insensitive (e.g. 'wipe')."),
     }),
-    "search_transitions_tool": _obj({
-        "query": _str(),
-    }, required=["query"]),
     "apply_transition_tool": _obj({
         "clip1_id": _str(),
         "clip2_id": _str(description="Required when placement is 'between'."),
@@ -461,14 +230,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "duration": _str_or_num(description="Seconds."),
         "placement": _str(description="'between' (default), 'start' or 'end'."),
     }, required=["clip1_id"]),
-    "generate_tts_and_add_to_timeline_tool": _obj({
-        "text": _str(),
-        "voice": _str(),
-        "model": _str(),
-        "speed": _str_or_num(),
-        "track": _str_or_num(),
-        "position": _str_or_num(description="Timeline position in seconds."),
-    }, required=["text"]),
     "import_stock_media_tool": _obj({
         "source": _str(description="'pexels' or 'freesound'; empty with local_path."),
         "video_id": _str_or_num(),
@@ -478,104 +239,31 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "filename": _str(),
         "local_path": _str(),
     }),
-    "resummarize_project_file_tool": _obj({
-        "file_id": _str(),
-    }, required=["file_id"]),
     "reindex_project_file_tool": _obj({
         "file_id": _str(),
-        "force": _str_or_bool(),
     }, required=["file_id"]),
-    "get_clips_with_full_metadata_tool": _obj({
-        "detail_level": _str(description="summary (default) or full."),
-    }),
-    "get_timeline_placements_metadata_tool": _obj({
-        "detail_level": _str(description="summary (default) or full."),
-    }),
     "get_timeline_state_tool": _obj({
         "detail_level": _str(
-            description="summary (default) or full — accepted for Assistant/LLM compat.",
+            description="summary (default) or full: full adds each clip's trim-aware AI scene descriptions.",
         ),
     }),
     # Phase 3.8 new tools
-    "add_effect_tool": _obj({
-        "timeline_clip_id": _str(),
-        "clip_query": _str(),
-        "track": _str(),
-        "occurrence": _str_or_num(),
-        "position_near": _opt_str_or_num(),
-        "effect": _str(description="libopenshot EffectInfo class_name."),
-        "effect_name": _str(),
-    }),
-    "add_title_tool": _obj({
-        "text": _str(description="Title / lower-third text."),
-        "template": _str(description="Bundled SVG template basename without .svg."),
-        "position_seconds": _str_or_num(),
-        "track": _str(),
-        "duration_seconds": _str_or_num(),
-        "file_name": _str(),
-    }, required=["text"]),
-    "set_keyframes_tool": _obj({
-        "timeline_clip_id": _str(),
-        "clip_query": _str(),
-        "track": _str(),
-        "occurrence": _str_or_num(),
-        "position_near": _opt_str_or_num(),
-        "property": _str(enum=[
-            "volume", "alpha", "location_x", "location_y",
-            "scale_x", "scale_y", "rotation",
-        ]),
-        "points": {
-            "type": "array",
-            "minItems": 1,
-            "items": {
-                "type": "object",
-                "properties": {
-                    "frame": _int(minimum=1),
-                    "seconds": _num(minimum=0),
-                    "value": _num(),
-                },
-                "additionalProperties": False,
-                "required": ["value"],
-            },
-        },
-    }, required=["property", "points"]),
-    "set_project_setting_tool": _obj({
-        "fps": _str_or_num(),
-        "fps_num": _int(minimum=1),
-        "fps_den": _int(minimum=1),
-        "width": _int(minimum=16, maximum=8192),
-        "height": _int(minimum=16, maximum=8192),
-        "sample_rate": _int(minimum=8000, maximum=192000),
-    }),
 
     "inspect_timeline_tool": _obj({
-        "startFrame": _int(minimum=0, description="0-index project frame."),
-        "endFrame": _int(minimum=0, description="Exclusive end in 0-index frames."),
-        "maxFrames": _int(minimum=1, maximum=12, description="Default 6, max 12."),
-        "clipId": {"type": "string", "description": "From watchSuggested.clipId."},
+        "start_frame": _int(minimum=0, description="0-index project frame."),
+        "end_frame": _int(minimum=0, description="Exclusive end in 0-index frames."),
+        "max_frames": _int(minimum=1, maximum=12, description="Default 6, max 12."),
+        "timeline_clip_id": {"type": "string", "description": "From watchSuggested.timeline_clip_id."},
         "start": _num(description="watchSuggested.start seconds"),
         "end": _num(description="watchSuggested.end seconds"),
         "overview": {"type": "boolean", "description": "One storyboard instead of N frames."},
     }),
-    "inspect_media_tool": _obj({
-        "fileId": {"type": "string", "description": "Zenvi file id from list_files."},
-        "clipId": {"type": "string"},
-        "start": _num(minimum=0),
-        "end": _num(minimum=0),
-        "maxFrames": _int(minimum=1, maximum=12),
-        "overview": {"type": "boolean"},
-    }, required=["fileId"]),
-
     "get_transcript_tool": _obj({
-        "clipId": _str(description="Timeline clip id. Prefer this after edits."),
-        "timeline_clip_id": _str(
-            description="Alias for clipId (Assistant / list_clips naming).",
-        ),
-        "fileId": _str(description="Media-bin file id (source seconds at timeline 0)."),
-        "file_id": _str(description="Alias for fileId."),
-        "trackIndex": _int(minimum=0, description="UI track index; omit for all clips."),
+        "timeline_clip_id": _str(description="Timeline clip id. Prefer this after edits."),
+        "file_id": _str(description="Media-bin file id (source seconds at timeline 0)."),
+        "track": _int(minimum=0, description="UI track index; omit for all clips."),
         "language": _str(description="BCP-47 / whisper code, or 'auto'."),
-        "modelId": _str(description="faster-whisper model, e.g. faster-whisper-base; ignored by the bundled whisper.cpp engine (one model)."),
+        "model_id": _str(description="faster-whisper model, e.g. faster-whisper-base; ignored by the bundled whisper.cpp engine (one model)."),
         "force": _bool(description="Ignore cache and re-run ASR."),
         "engine": _str(
             description="auto|apple|whisper. auto=Apple SpeechAnalyzer on macOS 26+ when helper is present, else Whisper. Windows always Whisper.",
@@ -583,22 +271,13 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "detail_level": _str(
             description="Omit for a compact receipt (script + compactWords). Pass 'full' to also include the verbose words array.",
         ),
-        "includeWords": _bool(
+        "include_words": _bool(
             description="If true, include the verbose per-word timing array (same as detail_level=full).",
         ),
     }),
-    "transcribe_media_tool": _obj({
-        "fileId": _str(description="Media-bin file id."),
-        "file_id": _str(description="Alias for fileId."),
-        "language": _str(description="BCP-47 / whisper code, or 'auto'."),
-        "modelId": _str(description="faster-whisper model, e.g. faster-whisper-base; ignored by the bundled whisper.cpp engine."),
-        "force": _bool(description="Ignore cache and re-run ASR."),
-        "engine": _str(description="auto|apple|whisper"),
-    }),
     "remove_words_tool": _obj({
-        "clipId": _str(description="Timeline clip to cut."),
-        "timeline_clip_id": _str(description="Alias for clipId."),
-        "wordIndices": {
+        "timeline_clip_id": _str(description="Timeline clip to cut."),
+        "word_indices": {
             "type": "array",
             "items": {"type": "integer", "minimum": 0},
             "description": "Word indices from get_transcript_tool for this clip.",
@@ -612,79 +291,49 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "brand/name/phrase by text. Do NOT delete the clip from the timeline."
             ),
         },
-        "fillerPreset": _str(
+        "filler_preset": _str(
             description="Built-in preset: um_uh or english_fillers.",
         ),
-        "transcriptGeneration": _int(
+        "transcript_generation": _int(
             minimum=1,
             description=(
-                "Pin from get_transcript when using wordIndices. Optional for "
-                "matches/fillerPreset cuts (stale pins are ignored)."
+                "Pin from get_transcript when using word_indices. Optional for "
+                "matches/filler_preset cuts (stale pins are ignored)."
             ),
         ),
         "language": _str(
             description="Prefer 'auto'. Do not pass detected language from a prior receipt.",
         ),
-        "modelId": _str(),
+        "model_id": _str(),
         "engine": _str(description="auto|apple|whisper"),
     }),
 
     "remove_silence_tool": _obj({
-        "clipId": _str(description="Timeline clip to tighten."),
-        "timeline_clip_id": _str(description="Alias for clipId."),
-        "minPauseSec": _num(minimum=0.05, description="Minimum silence gap to remove."),
-        "padSec": _num(minimum=0.0, description="Keep this much audio around speech."),
-        "maxRemoveFraction": _num(
+        "timeline_clip_id": _str(description="Timeline clip to tighten."),
+        "min_pause_seconds": _num(minimum=0.05, description="Minimum silence gap to remove."),
+        "pad_seconds": _num(minimum=0.0, description="Keep this much audio around speech."),
+        "max_remove_fraction": _num(
             minimum=0.1, maximum=0.99,
             description="Refuse if more than this fraction would be deleted.",
         ),
     }),
 
-    "add_captions_tool": _obj({
-        "clipId": _str(),
-        "timeline_clip_id": _str(description="Alias for clipId."),
-        "trackIndex": _int(minimum=0),
-        "maxWords": _int(minimum=1, maximum=24),
-        "maxChars": _int(minimum=8, maximum=120),
-        "language": _str(),
-        "modelId": _str(),
-        "engine": _str(
-            description="auto|apple|whisper — same on-device ASR as get_transcript_tool (never cloud).",
-        ),
-        "srtPath": _str(description="Import SRT/VTT instead of transcribing."),
-    }),
-
     "export_captions_tool": _obj({
         "path": _str(description="Destination .srt or .vtt path."),
         "format": _str(description="srt or vtt."),
-        "clipId": _str(),
-        "timeline_clip_id": _str(description="Alias for clipId."),
-        "trackIndex": _int(minimum=0),
+        "timeline_clip_id": _str(description="Timeline clip id."),
+        "track": _int(minimum=0),
         "language": _str(),
     }, required=["path"]),
 
-    "detect_beats_tool": _obj({
-        "fileId": _str(),
-        "file_id": _str(description="Alias for fileId."),
-        "clipId": _str(),
-        "timeline_clip_id": _str(description="Alias for clipId."),
-    }),
 
     "diarize_media_tool": _obj({
-        "fileId": _str(),
-        "file_id": _str(description="Alias for fileId."),
-        "clipId": _str(),
-        "timeline_clip_id": _str(description="Alias for clipId."),
-        "maxSpeakers": _int(minimum=1, maximum=8),
+        "file_id": _str(description="Media-bin file id."),
+        "timeline_clip_id": _str(description="Timeline clip id."),
+        "max_speakers": _int(minimum=1, maximum=8),
         "language": _str(),
-        "modelId": _str(),
+        "model_id": _str(),
     }),
-
-    "search_media_local_tool": _obj({
-        "query": _str(description="Visual / semantic query."),
-        "top_k": _int(minimum=1, maximum=50),
-        "provider": _str(description="local or auto."),
-    }, required=["query"]),
 
 }
 
@@ -702,7 +351,7 @@ def normalize_args(tool_name: str, args: Optional[dict]) -> dict:
     """Coerce Assistant/LLM stringly-typed args into schema shapes.
 
     LangChain frontend stubs often advertise every field as ``str``, so models
-    send ``trackIndex=""`` / ``trackIndex="0"`` / ``force="false"``. Drop empty
+    send ``track=""`` / ``track="0"`` / ``force="false"``. Drop empty
     optionals and coerce integers/booleans/arrays before jsonschema runs.
     """
     import json

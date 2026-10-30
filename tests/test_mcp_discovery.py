@@ -113,7 +113,7 @@ def tool_stub():
         """List the media files in the current project bin."""
         return "FILES"
 
-    th.AGENT_TOOL_HANDLERS = {"list_files_tool": list_files}
+    th.AGENT_TOOL_HANDLERS = {"list_project_files_tool": list_files}
     th.humanize_tool_name = lambda n: n
     th.execute_tool = lambda name, args: th.AGENT_TOOL_HANDLERS[name](**(args or {}))
     saved = sys.modules.get("classes.tool_handlers")

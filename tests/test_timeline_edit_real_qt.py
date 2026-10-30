@@ -123,22 +123,6 @@ def test_slice_tool_runs_the_real_slice_as_one_undo_step(ed):
     assert ed.clip(right) is None and ed.clip(a)["end"] == pytest.approx(10.0)
 
 
-def test_double_slice_inside_one_transaction_is_one_undo_step(ed):
-    """Regression: Slice_Triggered minted and cleared its own id, so the explicit
-    range of slice_clip_at_best_match_tool ("4 s to 7 s") was two undo steps."""
-    from classes import tool_handlers
-    a = _clip(ed)
-    data = ed.clip(a)
-    with tool_handlers._transaction(ed.app):
-        out = tool_handlers._slice_timeline_clip_at_source_times(
-            a, data["start"], data["end"], data["position"], T2, data["file_id"], 4.0, 7.0)
-    assert not out.startswith("Error"), out
-    assert len(ed.clips()) == 3
-    assert ed.undo_steps_since_mark() == 1
-    ed.undo()
-    assert len(ed.clips()) == 1
-
-
 def test_real_speed_reverse_and_undo(ed):
     a = _clip(ed, duration=6.0)
     r = receipt(ed.call("set_clip_speed_tool", timeline_clip_ids=[a], speed=2))

@@ -25,6 +25,7 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
+import math
 import os
 from collections import OrderedDict
 from operator import itemgetter
@@ -32,7 +33,7 @@ from operator import itemgetter
 from qt_api import QMimeData, Qt, QLocale, QTimer
 from qt_api import (
     QStandardItemModel, QStandardItem,
-    QPixmap, QColor,
+    QPixmap, QColor, QFont,
     )
 
 from classes.waveform import get_audio_data
@@ -43,9 +44,16 @@ from classes.keyframe_rules import default_keyframe_value, max_transform_multipl
 from classes.query import Clip, Transition, Effect, File
 from classes.logger import log
 from classes.app import get_app
+from themes.cosmic.tokens import TOKENS
 import openshot
 
 import json
+
+
+def _property_name_font():
+    font = QFont()
+    font.setPixelSize(12)
+    return font
 
 
 class ClipStandardItemModel(QStandardItemModel):
@@ -180,7 +188,7 @@ class PropertiesModel(updates.UpdateInterface):
             wheel = updated.get(name, {})
             wheel_snapshot = snapshot.get(name, {})
             wheel["color_keyframes"] = _set_color_value(
-                wheel.get("color_keyframes"), frame_number, QColor(wheel_snapshot.get("color", "#ffffff")),
+                wheel.get("color_keyframes"), frame_number, QColor(wheel_snapshot.get("color", "white")),
                 openshot.LINEAR)
             wheel["amount_keyframes"] = _set_keyframe_value(
                 wheel.get("amount_keyframes"), frame_number, wheel_snapshot.get("amount", 0.0), openshot.LINEAR)
@@ -392,6 +400,9 @@ class PropertiesModel(updates.UpdateInterface):
 
             # Determine the frame needed for this clip (based on the position on the timeline)
             time_diff = (requested_time - clip.Position()) + clip.Start()
+            if not math.isfinite(time_diff):
+                # The selected clip was just replaced or removed (e.g. captions re-rendered during playback).
+                return
             new_frame_number = round(time_diff * fps_float) + 1
             if new_frame_number != self.frame_number:
                 # If frame # has changed
@@ -1155,10 +1166,8 @@ class PropertiesModel(updates.UpdateInterface):
             col = QStandardItem("Property")
             col.setText(_(label))
             col.setData(property)
-            if keyframe and points > 1:
-                col.setBackground(QColor("green"))  # Highlight keyframe background
-            elif points > 1:
-                col.setBackground(QColor(42, 130, 218))  # Highlight interpolated value background
+            col.setFont(_property_name_font())
+            col.setForeground(QColor(TOKENS["text_muted"]))
             if readonly or type in ["color", "font", "caption"] or choices or label == "Track":
                 col.setFlags(Qt.ItemIsEnabled)
             else:
@@ -1226,12 +1235,6 @@ class PropertiesModel(updates.UpdateInterface):
                 my_icon = QPixmap(":/curves/keyframe-%s.png" % interpolation)
                 col.setData(my_icon, Qt.DecorationRole)
 
-                # Set the background color of the cell
-                if keyframe:
-                    col.setBackground(QColor("green"))  # Highlight keyframe background
-                else:
-                    col.setBackground(QColor(42, 130, 218))  # Highlight interpolated value background
-
             if type == "color":
                 # Color needs to be handled special
                 vals = property[1]
@@ -1253,23 +1256,12 @@ class PropertiesModel(updates.UpdateInterface):
 
             # Append ROW to MODEL (if does not already exist in model)
             self.model.appendRow(row)
-            if type == "caption":
-                # Load caption editor after both label/value cells exist.
-                get_app().window.CaptionTextLoaded.emit(memo, row)
 
         elif name in self.items and self.items[name]["row"]:
             # Update the value of the existing model
             # Get 1st Column
             col = self.items[name]["row"][0]
             col.setData(property)
-
-            # For non-color types, update the background color
-            if keyframe and points > 1:
-                col.setBackground(QColor("green"))  # Highlight keyframe background
-            elif points > 1:
-                col.setBackground(QColor(42, 130, 218))  # Highlight interpolated value background
-            else:
-                col.setBackground(QStandardItem("Empty").background())
 
             # Update helper dictionary
             row.append(col)
@@ -1326,12 +1318,6 @@ class PropertiesModel(updates.UpdateInterface):
                 my_icon = QPixmap(":/curves/keyframe-%s.png" % interpolation)
                 col.setData(my_icon, Qt.DecorationRole)
 
-                # Set the background color of the cell
-                if keyframe:
-                    col.setBackground(QColor("green"))  # Highlight keyframe background
-                else:
-                    col.setBackground(QColor(42, 130, 218))  # Highlight interpolated value background
-
             else:
                 # clear background color
                 col.setBackground(QStandardItem("Empty").background())
@@ -1351,9 +1337,6 @@ class PropertiesModel(updates.UpdateInterface):
 
             # Update helper dictionary
             row.append(col)
-            if type == "caption":
-                # Keep the editor enabled and synchronized on property refreshes.
-                get_app().window.CaptionTextLoaded.emit(memo, row)
 
         # Keep track of items in a dictionary (for quick look up)
         self.items[name] = {"row": row, "property": property}
@@ -1445,9 +1428,6 @@ class PropertiesModel(updates.UpdateInterface):
 
                     # Add Headers
                     self.model.setHorizontalHeaderLabels([_("Property"), _("Value")])
-
-                    # Clear caption editor
-                    get_app().window.CaptionTextLoaded.emit("", None)
 
                 # Loop through properties, and build/update the model
                 for property in all_properties.items():
