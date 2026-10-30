@@ -823,6 +823,16 @@ class ChatBridge(QObject):
         if self.window:
             self.window.open_agent_trace()
 
+    @guarded_slot()
+    def toggleDictation(self):
+        if self.window:
+            self.window.toggle_dictation()
+
+    @guarded_slot()
+    def openDictationMenu(self):
+        if self.window:
+            self.window.open_dictation_menu()
+
     @guarded_slot(str)
     def submitPlanAnswers(self, answers_json: str):
         if not self.window:
@@ -979,6 +989,10 @@ class ChatBridge(QObject):
 class AIChatWindow(QDockWidget):
     """Zenvi Assistant chat dock. Supports markdown in assistant replies and matches app theme."""
 
+    dictation_heard = pyqtSignal(str, bool, int)   # text, final, take (from the dictation threads)
+    dictation_failed = pyqtSignal(str, int)        # message, take
+    dictation_installed = pyqtSignal(str, str)   # engine, error ("" when it downloaded)
+
     def __init__(self, parent=None):
         # Titled "Agents": the top selector chooses the backend (Zenvi Assistant,
         # Claude Code, Codex). objectName is kept stable so saved dock-state /
@@ -1006,6 +1020,13 @@ class AIChatWindow(QDockWidget):
         self._mention_armed = False
         # Composer attachment undo: snapshots before each drop/paste batch.
         self._attachment_undo_stack = []
+        self._dictation = None
+        self._dictation_take = 0                   # numbers each take; words from an older one are dropped
+        self._dictation_open = False               # a take's words may still be written into the shared box
+        self.dictation_heard.connect(self._on_dictation_heard)
+        self.dictation_failed.connect(self._on_dictation_failed)
+        self._dictation_download = ""
+        self.dictation_installed.connect(self._on_dictation_installed)
 
         # Per-session state: each entry holds {"worker", "thread", "title",
         # "messages", "processing", "first_prompt_summary"}.
@@ -1172,6 +1193,7 @@ class AIChatWindow(QDockWidget):
 
     def _create_session(self, model_id: str = "", backend: str = BACKEND_ZENVI):
         """Create a new chat session and switch to it (called from the + tab button)."""
+        self._abandon_dictation()                   # the shared prompt box changes chats
         import uuid
         backend = _coerce_backend(backend)
         sid = str(uuid.uuid4())
@@ -1334,6 +1356,7 @@ class AIChatWindow(QDockWidget):
         """Switch the displayed session to *session_id* (called when user clicks a tab)."""
         if session_id not in self._sessions or session_id == self._active_sid:
             return
+        self._abandon_dictation()
         self._active_sid = session_id
         self._clear_attachment_undo()
         sess = self._sessions[session_id]
@@ -1451,6 +1474,7 @@ class AIChatWindow(QDockWidget):
         entry = next((r for r in rows if r.get("session_id") == session_id), None)
         if not entry:
             return
+        self._abandon_dictation()                   # the shared prompt box changes chats
         backend = _coerce_backend(entry.get("backend"))
         worker, thread = self._make_worker(session_id, backend, restore=entry)
         title = entry.get("title") or "New Chat"
@@ -1543,6 +1567,7 @@ class AIChatWindow(QDockWidget):
                 # ``new_project_path`` (New Project / untitled) is allowed to
                 # fall through so the chat resets to a fresh session.
                 return
+            self._abandon_dictation()               # the shared prompt box changes chats
 
             # Resolve the new bucket first: this is what forks a Save As and
             # adopts a project whose id churned underneath us.
@@ -1690,6 +1715,7 @@ class AIChatWindow(QDockWidget):
         draft_key = (draft_key or "").strip()
         if not draft_key.startswith("draft:"):
             return
+        self._abandon_dictation()                   # the shared prompt box changes chats
         try:
             from classes import chat_history
 
@@ -2514,6 +2540,167 @@ class AIChatWindow(QDockWidget):
         self._add_chrome_msg("Chat started. Ask to list files, add tracks, export video, or describe your project.")
         self._rebuild_widget_tabs()
         self._start_restore_chat_histories_async()
+
+    def open_dictation_menu(self):
+        """The chevron by the mic: Whistle, Parakeet or Wispr Flow, each saying what it needs."""
+        from classes import dictation
+        from classes.app import get_app
+        from qt_api import QCursor
+
+        choice = get_app().get_settings().get("dictation-engine") or "auto"
+        menu = QMenu(self)
+        for engine in dictation.engines(choice, dictation.wispr_flow_installed()):
+            act = menu.addAction("%s (%s)" % (engine["label"], engine["note"]))
+            act.setCheckable(True)
+            act.setChecked(engine["checked"])
+            act.setEnabled(engine["enabled"] and not self._dictation_download)
+            # after exec_ returns: a download dialog opened inside the menu's loop can miss clicks
+            act.triggered.connect(lambda _checked=False, name=engine["id"]: QTimer.singleShot(
+                0, lambda: self.pick_dictation_engine(name)))
+        menu.exec_(QCursor.pos())
+
+    def pick_dictation_engine(self, name):
+        """Use *name* for the mic: Whistle / Parakeet are downloaded first if need be (and become the
+        Captions recogniser too); Wispr Flow not installed opens its website."""
+        from classes import dictation
+        from classes import hyperframes_local as hf
+        from classes.app import get_app
+
+        settings = get_app().get_settings()
+        if name == "wispr":
+            if dictation.wispr_flow_installed():
+                settings.set("dictation-engine", "wispr")
+                settings.save()
+            else:
+                import webbrowser
+
+                webbrowser.open(dictation.WISPR_FLOW_SITE)
+            return
+        engine = next(e for e in dictation.engines("zenvi", False) if e["id"] == name)
+        if engine["note"] == "installed":
+            hf.choose_recogniser(name)
+            settings.set("dictation-engine", "zenvi")
+            settings.save()
+            return
+        if self._dictation_download:
+            return
+        label = "%s (%s)" % (engine["label"].split(":")[0], engine["note"])
+        if not self._confirm_dictation_download(label):
+            return
+        self._dictation_download = name
+        self._dictation_note("Downloading %s..." % label, sticky=True)
+        install = hf.install_speech if name == "whistle" else hf.install_parakeet
+
+        def work():
+            try:
+                install()
+                error = ""
+            except Exception as exc:
+                log.warning("Dictation: could not install %s", name, exc_info=True)
+                error = str(exc) or exc.__class__.__name__
+            self.dictation_installed.emit(name, error)
+
+        threading.Thread(target=work, name="zenvi-dictation-install", daemon=True).start()
+
+    def _confirm_dictation_download(self, label):
+        return QMessageBox.question(
+            self, "Download speech recogniser",
+            "%s is not on this computer yet. Download it now? It is a one-time download, "
+            "also used for caption word timing." % label,
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) == QMessageBox.Yes
+
+    def _on_dictation_installed(self, name, error):
+        from classes import hyperframes_local as hf
+        from classes.app import get_app
+
+        self._dictation_download = ""
+        if error:
+            self._dictation_note("The speech recogniser could not be downloaded: %s" % error)
+            return
+        hf.choose_recogniser(name)
+        get_app().get_settings().set("dictation-engine", "zenvi")
+        get_app().get_settings().save()
+        self._dictation_note("Dictation now uses %s." % name.capitalize())
+
+    def _dictation_note(self, message, sticky=False):
+        """A note in the empty prompt box (unless a take is running); *sticky* stays until the next one."""
+        if not self._dictation:
+            self._run_js("if(window.setDictationState) window.setDictationState('off', %s, %s);"
+                         % (json.dumps(message), "true" if sticky else "false"))
+
+    def toggle_dictation(self):
+        """Mic button: start or stop speaking the prompt (Wispr Flow instead, when the user has it)."""
+        from classes import dictation
+
+        if self._dictation:
+            self._dictation.stop()
+            self._run_js("if(window.setDictationState) window.setDictationState('hearing');")
+            return
+        from classes.app import get_app
+
+        choice = get_app().get_settings().get("dictation-engine") or "auto"
+        if dictation.use_wispr_flow(choice, dictation.wispr_flow_installed()):
+            import webbrowser
+
+            def hand_off(_result=None):             # Wispr Flow types into the focused box: focus first
+                if not webbrowser.open(dictation.WISPR_FLOW_URL):
+                    self._on_dictation_failed("Wispr Flow could not be opened")
+
+            self._run_js("var el=document.getElementById('chat-input'); if(el) el.focus(); true;", hand_off)
+            return
+        self._dictation_take += 1
+        take = self._dictation_take
+        session = dictation.Dictation(lambda text, final: self.dictation_heard.emit(text, final, take),
+                                      lambda message: self.dictation_failed.emit(message, take))
+        try:
+            session.start()
+        except Exception as exc:
+            self._on_dictation_failed(str(exc))
+            return
+        self._dictation = session
+        self._dictation_open = True
+        self._run_js("if(window.setDictationState) window.setDictationState('listening');")
+
+    def _abandon_dictation(self):
+        """Another chat is about to show: stop the take, take its words back out of the shared box, and
+        drop whatever it still sends (queued signals included: the slots compare the take number).
+
+        The recorder handle is already gone once the final transcript is queued and the page has not
+        painted it yet, so that gap counts too."""
+        if not getattr(self, "_dictation", None) and not getattr(self, "_dictation_open", False):
+            return
+        self._dictation_take += 1
+        self._dictation_open = False
+        if self._dictation:
+            self._dictation.stop()
+            self._dictation = None
+        self._run_js("if(window.cancelDictation) window.cancelDictation();")
+
+    def _on_dictation_heard(self, text, final, take=None):
+        if take is not None and take != self._dictation_take:
+            return                                  # an abandoned take's words
+        js = ("if(window.setDictationText) window.setDictationText(%s, %s);"
+              % (json.dumps(text), "true" if final else "false"))
+        if not final:
+            self._run_js(js)
+            return
+        self._dictation = None
+
+        def settled(_result=None, take=take):
+            if take == self._dictation_take:        # still this chat: the words belong in the box
+                self._dictation_open = False
+                self._run_js("if(window.commitDictation) window.commitDictation();")
+
+        self._run_js(js, settled)
+
+    def _on_dictation_failed(self, message, take=None):
+        if take is not None and take != self._dictation_take:
+            return
+        self._dictation = None
+        self._dictation_open = False
+        log.warning("Dictation failed: %s", message)
+        self._run_js("if(window.setDictationState) window.setDictationState('off', %s);"
+                     % json.dumps("Dictation failed: " + message))
 
     def open_agent_trace(self):
         """Open the Agent Trace dialog for the active session."""
@@ -3819,6 +4006,8 @@ class AIChatWindow(QDockWidget):
             get_backend_client().cancel_current_request()
         except Exception:
             pass
+        if getattr(self, "_dictation", None):        # quitting mid-take must not leave ffmpeg holding the mic
+            self._dictation.stop()
         if getattr(self, "_credits_timer", None):
             try:
                 self._credits_timer.stop()

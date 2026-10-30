@@ -365,7 +365,7 @@ def plan_placement(entries, start_position, track_num, fade=None, fade_length=2.
     """
     from classes import frame_time as ft
     from classes.clip_placement import apply_audio_only_clip_overrides
-    from classes.clip_utils import apply_file_caption_to_clip, project_fps_fraction
+    from classes.clip_utils import project_fps_fraction
 
     # Frame-exact like the dialog since #181: positions snap to frames, keyframes use frame_time.
     fps = project_fps_fraction()
@@ -396,9 +396,6 @@ def plan_placement(entries, start_position, track_num, fade=None, fade_length=2.
         # Skip any clips that are missing a 'reader' attribute
         if not new_clip.get("reader"):
             continue
-
-        # If the source file has stored caption text, attach a Caption effect to this new clip.
-        apply_file_caption_to_clip(new_clip, file)
 
         # Source in/out: the entry's override, else the file's own (sub-clips), else all of it
         start_time = 0
