@@ -95,6 +95,7 @@ def test_describe_asks_the_model_with_the_backend_prompt_and_schema(home, monkey
     assert ld.describe(str(clip), "video", "You analyze a video segment.", schema) == answer
     argv = seen["argv"]
     assert argv[:2] == [ld.llama_program(), "cli"]
+    assert "-st" in argv and "--no-display-prompt" in argv      # one answer, without the prompt echoed
     assert argv[argv.index("--video") + 1] == str(clip)
     assert argv[argv.index("-m") + 1].endswith(ld.MODEL[0]) and argv[argv.index("-mm") + 1].endswith(ld.PROJECTOR[0])
     assert "You analyze a video segment." in " ".join(argv) and argv[argv.index("--temp") + 1] == "0"
@@ -140,7 +141,7 @@ def test_local_indexing_never_uploads_to_gemini_and_sends_the_descriptions(tmp_p
          patch.object(client, "_poll_indexing_job", return_value={"success": True, "video_id": "f1"}):
         result = client.start_direct_indexing_job(
             str(media), "zenvi-p1", file_id="f1", filename="clip.mp4", session=session, project_id="p1",
-            duration_sec=5.0, media_type="video", describe_locally=True)
+            duration_sec=5.0, media_type="video")      # no flag: the setting decides, and local is the default
 
     assert result.get("success") is True
     install.assert_called_once()
@@ -162,3 +163,16 @@ def test_the_media_bin_says_what_local_indexing_is_doing():
 
     assert "download" in phase_label("installing").lower()
     assert phase_label("describing", 40) == "Describing on this computer… (40%)"
+
+
+def test_two_first_imports_install_once_and_never_into_a_half_made_folder(home, monkeypatch):
+    import threading
+
+    asked = _fake_downloads(monkeypatch)
+    threads = [threading.Thread(target=ld.install) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert ld.ready() and sum(1 for a in asked if a[1] == ld._llama_download()[1]) == 1
+    assert not os.path.exists(os.path.join(ld.home(), "llama.partial"))

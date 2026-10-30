@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import zipfile
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -54,6 +55,7 @@ SYSTEM = {"video": "Answer questions about the video using what you see and hear
 MEDIA_FLAG = {"video": "--video", "audio": "--audio", "image": "--image"}
 DESCRIBE_TIMEOUT = 900
 _EXE = "llama.exe" if sys.platform == "win32" else "llama"
+_install_lock = threading.Lock()       # two index workers may both be the first
 
 
 def home() -> str:
@@ -91,8 +93,12 @@ def _model_downloads() -> List[Tuple[str, str, str]]:
 
 def install(progress: Optional[Callable[[str], None]] = None) -> None:
     """Download and unpack whatever local describing still needs. Safe to call when it is all there."""
-    if ready():
-        return
+    with _install_lock:
+        if not ready():
+            _install(progress)
+
+
+def _install(progress: Optional[Callable[[str], None]]) -> None:
     if not llama_program():
         if progress:
             progress("Downloading llama.cpp (%s)" % LLAMA_BUILD)
@@ -100,15 +106,19 @@ def install(progress: Optional[Callable[[str], None]] = None) -> None:
         downloads = os.path.join(home(), "downloads")
         hf._download_pinned(downloads, [(url, name, digest)], "local describe engine (llama.cpp)")
         archive, target = os.path.join(downloads, name), os.path.join(home(), "llama")
-        shutil.rmtree(target, ignore_errors=True)
+        staging = target + ".partial"
+        shutil.rmtree(staging, ignore_errors=True)
         try:
             if name.endswith(".zip"):
                 with zipfile.ZipFile(archive) as bundle:
-                    bundle.extractall(target)
+                    bundle.extractall(staging)
             else:
                 with tarfile.open(archive) as bundle:
-                    bundle.extractall(target, filter="data")
+                    bundle.extractall(staging, filter="data")
+            shutil.rmtree(target, ignore_errors=True)
+            os.replace(staging, target)                 # in one step: never a half-unpacked llama.cpp
         finally:
+            shutil.rmtree(staging, ignore_errors=True)
             os.remove(archive)
         if not llama_program():
             raise hf.HyperframesError("the llama.cpp download had no %s in it" % _EXE)
@@ -151,7 +161,7 @@ def describe(path: str, media_type: str, prompt: str, schema: Dict[str, Any]) ->
         with open(schema_file, "w", encoding="utf-8") as fh:
             json.dump(schema or {}, fh)
         argv = [llama_program(), "cli", "-m", _model_path(MODEL[0]), "-mm", _model_path(PROJECTOR[0]),
-                MEDIA_FLAG[mt], path, "-sys", SYSTEM[mt], "-p", prompt, "--temp", "0",
+                MEDIA_FLAG[mt], path, "-sys", SYSTEM[mt], "-p", prompt, "-st", "--no-display-prompt", "--temp", "0",
                 "--json-schema-file", schema_file]
         try:
             proc = subprocess.run(argv, cwd=tmp, env=_environment(), capture_output=True, text=True,

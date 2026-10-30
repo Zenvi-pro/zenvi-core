@@ -106,6 +106,7 @@ def test_start_direct_indexing_job_orchestration(tmp_path):
             project_id="proj1",
             duration_sec=5.0,
             media_type="video",
+            describe_locally=False,
         )
 
     assert result.get("success") is True
@@ -193,6 +194,7 @@ def test_start_direct_indexing_job_uploads_in_parallel(tmp_path):
             project_id="proj1",
             duration_sec=10.0,
             media_type="video",
+            describe_locally=False,
         )
     assert result.get("success") is True
     assert len(session_posts) == 2

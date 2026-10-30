@@ -845,7 +845,7 @@ class ZenviBackendClient:
         duration_sec: float = 0.0,
         force: bool = False,
         media_type: str = "video",
-        describe_locally: bool = False,
+        describe_locally: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Index via editor-side chunks, described here (LFM3-Omni) or uploaded to Gemini Files."""
         from classes.index_chunker import extract_chunks, cleanup_chunk_dir, guess_mime
@@ -853,6 +853,12 @@ class ZenviBackendClient:
 
         if not file_path or not os.path.isfile(file_path):
             return {"success": False, "error": f"File not found: {file_path}"}
+        if describe_locally is None:                # the AI setting; this computer unless Gemini was picked
+            try:
+                from classes.app import get_app
+                describe_locally = get_app().get_settings().get("index-describe") != "gemini"
+            except Exception:                       # no editor running (headless): the default
+                describe_locally = True
 
         mt = (media_type or "video").strip().lower() or "video"
         if mt not in ("video", "image", "audio"):
