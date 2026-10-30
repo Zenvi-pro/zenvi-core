@@ -845,8 +845,9 @@ class ZenviBackendClient:
         duration_sec: float = 0.0,
         force: bool = False,
         media_type: str = "video",
+        describe_locally: bool = False,
     ) -> Dict[str, Any]:
-        """Index via editor-side chunks + Gemini Files direct upload (no backend media store)."""
+        """Index via editor-side chunks, described here (LFM3-Omni) or uploaded to Gemini Files."""
         from classes.index_chunker import extract_chunks, cleanup_chunk_dir, guess_mime
         from classes.gemini_direct_upload import upload_file_to_gemini_resumable
 
@@ -980,12 +981,35 @@ class ZenviBackendClient:
                     "media_type": mt,
                 }
 
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            workers = min(8, max(1, total))
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futs = [pool.submit(_upload_one, info) for info in chunk_infos]
-                for fut in as_completed(futs):
-                    uploaded_chunks.append(fut.result())
+            if describe_locally:
+                from classes import local_describe
+
+                if not local_describe.ready():
+                    if progress_callback:
+                        progress_callback("installing", 0)
+                    local_describe.install()
+                # One at a time: each chunk runs the whole model.
+                for info in chunk_infos:
+                    uploaded_chunks.append({
+                        "chunk_index": int(info["chunk_index"]),
+                        "start_ts": float(info["start"]),
+                        "end_ts": float(info["end"]),
+                        "size": int(info["size"]),
+                        "mime_type": str(info.get("mime_type") or guess_mime(info["path"], mt)),
+                        "media_type": mt,
+                        "description": local_describe.describe(
+                            info["path"], mt, str(plan_data.get("describe_prompt") or ""),
+                            plan_data.get("describe_schema") or {}),
+                    })
+                    if progress_callback and total > 0:
+                        progress_callback("describing", int(len(uploaded_chunks) * 80 / total))
+            else:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                workers = min(8, max(1, total))
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futs = [pool.submit(_upload_one, info) for info in chunk_infos]
+                    for fut in as_completed(futs):
+                        uploaded_chunks.append(fut.result())
             uploaded_chunks.sort(key=lambda c: int(c.get("chunk_index") or 0))
 
             cr = s.post(

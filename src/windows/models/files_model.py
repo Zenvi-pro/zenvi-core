@@ -241,6 +241,7 @@ class BackendIndexingWorker(QThread):
                         duration_sec=duration,
                         force=bool(self.summarize_only),
                         media_type=media_type,
+                        describe_locally=not get_app() or get_app().get_settings().get("index-describe") != "gemini",
                     )
                 except Exception as idx_exc:
                     log.warning("Gemini indexing failed: %s", idx_exc)
