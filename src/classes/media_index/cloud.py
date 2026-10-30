@@ -1,13 +1,14 @@
 """
  @file
- @brief The one cloud layer of the media index: Gemini's words for what happens in a shot, made on demand.
+ @brief The one layer of the media index that says what happens in a shot: made on demand, here or by Gemini.
 
  Search does not need it (every file is searchable from its local vectors). Descriptions are made when an agent
  asks for some shots (``describe_shots``), or for a whole file when the user turned on "Describe all footage on
  import" (``compute_cloud``). A low-resolution proxy of the needed range is uploaded with the measured shot list and
  the local transcript, so Gemini neither guesses cuts nor transcribes. Each shot is described once and kept on the
  shelf; a shot already described is never paid for again. Nothing here raises for a backend problem: it returns an
- ``error``.
+ ``error``. On this computer (the Preferences choice, the default) the shots are described from clips here by LFM3-Omni
+ instead: no backend, no sign-in, no credits (``_describe_here``).
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from classes.ffmpeg_cli import run_ffmpeg
+from classes.logger import log
 from classes.media_index import schema as S
 from classes.media_index.store import Shelf
 
@@ -138,14 +140,14 @@ def metadata_view(watch: Dict[str, Any], speech: Optional[Dict[str, Any]], struc
 
 # ============================ proxy and keyframes (ffmpeg) ============================
 def make_proxy(path: str, probe: Dict[str, Any], out_path: str, start: Optional[float] = None,
-               end: Optional[float] = None) -> Tuple[bool, str]:
-    """A small copy of a video for the watch pass: 480 px high, 15 fps, mono 48k audio.
+               end: Optional[float] = None, max_height: int = S.PROXY_HEIGHT) -> Tuple[bool, str]:
+    """A small copy of a video for the watch pass: 480 px high (or *max_height*), 15 fps, mono 48k audio.
 
     With *start* and *end* only that stretch is copied (its time starts at 0), for long files done in chunks.
     """
     video = (probe or {}).get("video") or {}
     height = int(video.get("height") or 0)
-    scale = f"scale=-2:{S.PROXY_HEIGHT}," if height > S.PROXY_HEIGHT or height <= 0 else ""
+    scale = f"scale=-2:{max_height}," if height > max_height or height <= 0 else ""
     window: List[str] = []
     if start:
         window += ["-ss", f"{max(0.0, float(start)):.3f}"]
@@ -194,6 +196,160 @@ def _wait_for_job(client: Any, session: Any, job_id: str, should_cancel: Optiona
     return {"error": f"{what} timed out"}
 
 
+# ============================ on this computer (LFM3-Omni, see local_describe) ============================
+LOCAL_CLIP_SECONDS = 20.0       # adjacent shots share one model run up to this long: every run reloads the model
+LOCAL_MODEL = "LFM3-Omni-2B"
+LOCAL_PROMPT = ("You describe the shots of a video for a video editor's search index. Describe every shot listed below from its "
+                "pictures and sound, one entry per shot, with its id. description: 1-2 plain sentences of what happens: who or "
+                "what, doing what, where. actions: short verb phrases. objects: the main visible things. on_screen_text: text "
+                "visible in the picture, exactly as written. sound_events: non-speech sounds with start and end seconds from the "
+                "start of that shot. shot_type: wide, medium, close, insert, screen or other. interest: 0 to 1; about 0.1 for "
+                "filler, 0.3 to 0.5 for ordinary footage, above 0.8 only for striking moments. usable: false only when the shot "
+                "cannot be used. hook_potential: 0 to 1, how well the shot could open a video. Do not transcribe speech.")
+LOCAL_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {"shots": {"type": "array", "items": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "integer"}, "description": {"type": "string"},
+            "actions": {"type": "array", "items": {"type": "string"}},
+            "objects": {"type": "array", "items": {"type": "string"}},
+            "on_screen_text": {"type": "array", "items": {"type": "string"}},
+            "sound_events": {"type": "array", "items": {"type": "object", "properties": {
+                "label": {"type": "string"}, "start": {"type": "number"}, "end": {"type": "number"}}, "required": ["label"]}},
+            "mood": {"type": "string"}, "shot_type": {"type": "string"}, "confidence": {"type": "number"},
+            "interest": {"type": "number"}, "highlight_reason": {"type": "string"}, "usable": {"type": "boolean"},
+            "usable_reason": {"type": "string"}, "people_count": {"type": "integer"}, "on_camera_speaker": {"type": "boolean"},
+            "emotion": {"type": "string"}, "hook_potential": {"type": "number"},
+        },
+        "required": ["id", "description"],
+    }}},
+    "required": ["shots"],
+}
+
+
+def _local_prompt(members: List[Dict[str, Any]], start: float) -> str:
+    spans = ["SHOT %d runs from %.2f to %.2f seconds of this segment." % (int(s["id"]), float(s["start"]) - start, float(s["end"]) - start)
+             for s in members]
+    return "\n".join([LOCAL_PROMPT] + spans + ["Describe shots %s." % ", ".join(str(int(s["id"])) for s in members)])
+
+
+def _local_answers(answer: Dict[str, Any], members: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+    """The model's entries by shot id; an entry without a usable id is dropped. A one-shot clip may be answered
+    with the shot itself instead of a shots list."""
+    if not isinstance(answer.get("shots"), list) and len(members) == 1 and answer.get("description"):
+        return {int(members[0]["id"]): answer}
+    found: Dict[int, Dict[str, Any]] = {}
+    for raw in (answer.get("shots") if isinstance(answer.get("shots"), list) else []):
+        try:
+            found[int(raw["id"])] = raw
+        except (KeyError, TypeError, ValueError):
+            pass
+    return found
+
+
+def _local_shot(raw: Dict[str, Any], shot: Dict[str, Any]) -> Dict[str, Any]:
+    """One shot's answer from this computer in the cloud pass's shape: the fields the shelf reads, clamped as the backend clamps them."""
+    length = max(0.0, float(shot["end"]) - float(shot["start"]))
+
+    def number(v: Any, lo: float, hi: float) -> Optional[float]:
+        try:
+            return round(min(hi, max(lo, float(v))), 3)
+        except (TypeError, ValueError):
+            return None
+
+    def flag(v: Any) -> Optional[bool]:
+        return v if isinstance(v, bool) else None
+
+    def strings(v: Any, key: Optional[str] = None) -> List[str]:
+        found = (str((o.get(key) if key and isinstance(o, dict) else o) or "").strip() for o in (v if isinstance(v, list) else []))
+        return [s for s in found if s]
+
+    def short(v: Any) -> str:
+        return " ".join(str(v or "").split())[:160]
+
+    sounds = []
+    for o in (raw.get("sound_events") if isinstance(raw.get("sound_events"), list) else []):
+        label = str(o.get("label") or "").strip() if isinstance(o, dict) else ""
+        if label:
+            start, end = number(o.get("start"), 0.0, length), number(o.get("end"), 0.0, length)
+            sounds.append({"label": label, "start": start, "end": start if end is None else end})
+    try:
+        people = max(0, min(200, int(raw.get("people_count"))))
+    except (TypeError, ValueError):
+        people = None
+    return {
+        "id": int(shot["id"]), "start": float(shot["start"]), "end": float(shot["end"]),
+        "description": str(raw.get("description") or "").strip(), "actions": strings(raw.get("actions")),
+        "objects": [{"label": s} for s in strings(raw.get("objects"), "label")],
+        "on_screen_text": [{"text": s} for s in strings(raw.get("on_screen_text"), "text")], "sound_events": sounds,
+        "mood": str(raw.get("mood") or "").strip(), "shot_type": str(raw.get("shot_type") or "").strip().lower(),
+        "confidence": number(raw.get("confidence"), 0.0, 1.0), "interest": number(raw.get("interest"), 0.0, 1.0),
+        "highlight_reason": short(raw.get("highlight_reason")), "usable": flag(raw.get("usable")),
+        "usable_reason": short(raw.get("usable_reason")), "people_count": people,
+        "on_camera_speaker": flag(raw.get("on_camera_speaker")), "emotion": short(raw.get("emotion")),
+        "hook_potential": number(raw.get("hook_potential"), 0.0, 1.0),
+    }
+
+
+def _clips_of(shots: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """Adjacent shots grouped into clips of up to LOCAL_CLIP_SECONDS. Shots with a gap between them never share a clip."""
+    groups: List[List[Dict[str, Any]]] = []
+    for s in sorted((s for s in shots if float(s["end"]) > float(s["start"])), key=lambda s: float(s["start"])):
+        last = groups[-1] if groups else []
+        if last and abs(float(s["start"]) - float(last[-1]["end"])) < 0.05 and float(s["end"]) - float(last[0]["start"]) <= LOCAL_CLIP_SECONDS:
+            last.append(s)                   # within 50 ms counts as touching
+        else:
+            groups.append([s])
+    return groups
+
+
+def _describe_here(path: str, probe: Dict[str, Any], shots: List[Dict[str, Any]], *, should_cancel: Optional[Callable[[], bool]],
+                   on_progress: Optional[Callable[[float], None]]) -> Dict[str, Any]:
+    """Describe *shots* with LFM3-Omni on this computer: adjacent shots share one clip (up to LOCAL_CLIP_SECONDS), one model run each.
+
+    The model is installed on first use. A clip that fails marks its shots missing and the rest are kept; only when no shot
+    comes back is it an error.
+    """
+    from classes import local_describe
+    if should_cancel and should_cancel():
+        raise Cancelled()
+    try:
+        local_describe.install()             # the first run downloads the engine and the model; after that a no-op
+    except Exception as exc:
+        return {"error": f"describing on this computer is not ready: {exc}"}
+    by_id = {int(s["id"]): s for s in shots}
+    groups = _clips_of(shots)
+    answers: Dict[int, Dict[str, Any]] = {}
+    errors: List[str] = []
+    # ponytail: a cancel drops the clips finished so far; keep each on the shelf as it lands if long runs get cancelled.
+    with tempfile.TemporaryDirectory(prefix="zenvi_describe_") as tmp:
+        for n, members in enumerate(groups):
+            if should_cancel and should_cancel():
+                raise Cancelled()
+            start, end = float(members[0]["start"]), float(members[-1]["end"])
+            ids = {int(s["id"]) for s in members}
+            clip = os.path.join(tmp, "clip%d.mp4" % n)
+            try:
+                ok, err = make_proxy(path, probe, clip, start, end, max_height=local_describe.MAX_HEIGHT)
+                if not ok:
+                    raise RuntimeError("could not make the clip: %s" % err)
+                found = _local_answers(local_describe.describe(clip, "video", _local_prompt(members, start), LOCAL_SCHEMA,
+                                                               duration=end - start), members)
+                answers.update((i, raw) for i, raw in found.items() if i in ids)
+            except Exception as exc:         # this clip's shots are missing; the rest of the file is kept
+                log.warning("describing shots %s on this computer failed: %s", sorted(ids), exc)
+                errors.append(str(exc))
+            if on_progress:
+                on_progress((n + 1) / len(groups))
+    if not answers:
+        return {"error": errors[0] if errors else "no shot descriptions came back"}
+    out = [_local_shot(answers[i], by_id[i]) if i in answers else
+           {"id": i, "start": float(by_id[i]["start"]), "end": float(by_id[i]["end"]), "missing": True} for i in sorted(by_id)]
+    return {"shots": out, "usage": {"prompt_tokens": 0, "output_tokens": 0, "batches": len(groups), "model": LOCAL_MODEL},
+            "missing": sum(1 for s in out if s.get("missing")), "errors": errors}
+
+
 PASS_UP = ("error", "unsupported", "auth", "credits", "rate_limited", "forbidden", "retry_after")
 
 
@@ -201,7 +357,13 @@ def _watch_window(client: Any, path: str, probe: Dict[str, Any], file_id: str, s
                   transcript: List[Dict[str, Any]], *, start: Optional[float], end: Optional[float],
                   should_cancel: Optional[Callable[[], bool]], on_progress: Optional[Callable[[float], None]],
                   uploader: Callable[..., Any]) -> Dict[str, Any]:
-    """Describe *shots* from a proxy of the whole file, or of [start, end) when given (then times are shifted to match)."""
+    """Describe *shots* from a proxy of the whole file, or of [start, end) when given (then times are shifted to match).
+
+    On this computer (the Preferences choice, the default) they are described from clips here instead: ``_describe_here``.
+    """
+    from classes import local_describe
+    if local_describe.enabled():
+        return _describe_here(path, probe, shots, should_cancel=should_cancel, on_progress=on_progress)
     offset = float(start or 0.0)
     request = [{**s, "start": s["start"] - offset, "end": s["end"] - offset} for s in shots] if offset else shots
     rows = ([{**r, "start": r["start"] - offset, "end": r["end"] - offset} for r in transcript

@@ -1,4 +1,4 @@
-"""Index chunks described on this computer: pinned on-demand install, one llama.cpp call per chunk."""
+"""Shot descriptions on this computer: pinned on-demand install, one llama.cpp call per clip, no backend."""
 
 import io
 import json
@@ -12,9 +12,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from classes import credits_client as cc  # noqa: E402
 from classes import hyperframes_local as hf  # noqa: E402
 from classes import local_describe as ld  # noqa: E402
+from classes.media_index import cloud  # noqa: E402
+from classes.media_index import embedder as E  # noqa: E402
+from classes.media_index.store import Shelf  # noqa: E402
+from test_indexing_job_reuse import Harness, _stub_vectors  # noqa: E402
 
 _REPO = Path(__file__).resolve().parents[1]
 EXE = "llama.exe" if sys.platform == "win32" else "llama"
@@ -120,70 +126,6 @@ def test_a_failed_or_unparseable_answer_is_an_error(home, monkeypatch, tmp_path)
         ld.describe(str(clip), "video", "p", {})
 
 
-def _index_locally(tmp_path, transcript):
-    """Index a 9 s clip in two chunks on this computer; returns (result, mocks, chunks sent to the backend)."""
-    from classes.api_client import ZenviBackendClient
-
-    media = tmp_path / "clip.mp4"
-    media.write_bytes(b"video-bytes")
-    client = ZenviBackendClient.__new__(ZenviBackendClient)
-    client.api_url = "http://backend.test/api/v1"
-    client._ssl_verify = True
-    session = MagicMock()
-    plan = MagicMock(json=MagicMock(return_value={
-        "chunks": [{"chunk_index": 0, "start": 0.0, "end": 5.0}, {"chunk_index": 1, "start": 4.0, "end": 9.0}],
-        "index_max_height": 720,
-        "describe_prompt": "You analyze a video segment.", "describe_schema": {"type": "object"}}))
-    complete = MagicMock(json=MagicMock(return_value={"success": True, "job_id": "job-1"}))
-    session.post.side_effect = [plan, complete]
-    chunks = [{"chunk_index": i, "path": str(media), "size": 11, "start": s, "end": e, "mime_type": "video/mp4"}
-              for i, (s, e) in enumerate(((0.0, 5.0), (4.0, 9.0)))]
-
-    with patch("classes.index_chunker.extract_chunks", return_value=(chunks, str(tmp_path / "w"), "")) as extract, \
-         patch("classes.index_chunker.cleanup_chunk_dir"), \
-         patch("classes.gemini_direct_upload.upload_file_to_gemini_resumable") as gemini_upload, \
-         patch("classes.local_describe.speech_words", **transcript) as transcribe, \
-         patch("classes.local_describe.ready", return_value=False), \
-         patch("classes.local_describe.install") as install, \
-         patch("classes.local_describe.describe", side_effect=lambda *a, **k: {"short_summary": "a dog"}) as describe, \
-         patch.object(client, "_poll_indexing_job", return_value={"success": True, "video_id": "f1"}):
-        result = client.start_direct_indexing_job(
-            str(media), "zenvi-p1", file_id="f1", filename="clip.mp4", session=session, project_id="p1",
-            duration_sec=9.0, media_type="video")      # no flag: the setting decides, and local is the default
-    mocks = SimpleNamespace(extract=extract, gemini_upload=gemini_upload, install=install, describe=describe,
-                            transcribe=transcribe, posts=[c.args[0].rsplit("/", 1)[-1] for c in session.post.call_args_list])
-    return result, mocks, session.post.call_args_list[-1].kwargs["json"]["chunks"]
-
-
-def test_local_indexing_never_uploads_to_gemini_and_takes_speech_from_the_recogniser(tmp_path):
-    words = [{"text": "Hello", "start": 1.0, "end": 1.5}, {"text": "world.", "start": 1.6, "end": 2.0},
-             {"text": "Overlap", "start": 4.5, "end": 4.8},     # in both chunks' video (4-5 s)
-             {"text": "Bye", "start": 6.0, "end": 6.5}]
-    result, m, sent = _index_locally(tmp_path, {"return_value": words})
-
-    assert result.get("success") is True
-    m.install.assert_called_once()
-    m.gemini_upload.assert_not_called()
-    assert m.posts == ["plan-chunks", "upload-complete"]
-    assert m.extract.call_args.kwargs["max_height"] == 360          # a quarter of the image tokens of 720p
-    assert m.transcribe.call_count == 1                             # once per file, not per chunk
-    assert m.describe.call_args_list[0].args[2:] == ("You analyze a video segment.", {"type": "object"})
-    assert [c.kwargs["duration"] for c in m.describe.call_args_list] == [5.0, 5.0]
-    assert [c["description"]["short_summary"] for c in sent] == ["a dog", "a dog"]
-    assert not any(c.get("gemini_file_uri") for c in sent)
-    # each chunk's own words, timed from the chunk's start
-    assert sent[0]["description"]["transcript"] == "Hello world."
-    assert sent[0]["description"]["transcript_cues"] == [{"start": 1.0, "end": 2.0, "text": "Hello world."}]
-    assert sent[1]["description"]["transcript_cues"] == [{"start": 0.5, "end": 0.8, "text": "Overlap"},
-                                                         {"start": 2.0, "end": 2.5, "text": "Bye"}]  # once, not twice
-
-
-def test_a_clip_whose_speech_cannot_be_recognised_is_still_indexed(tmp_path):
-    result, _m, sent = _index_locally(tmp_path, {"return_value": []})
-    assert result.get("success") is True
-    assert sent[0]["description"]["transcript_cues"] == [] and sent[0]["description"]["transcript"] == ""
-
-
 def test_the_model_is_not_asked_to_transcribe(home, monkeypatch, tmp_path):
     _fake_downloads(monkeypatch)
     ld.install()
@@ -198,6 +140,166 @@ def test_the_model_is_not_asked_to_transcribe(home, monkeypatch, tmp_path):
     ld.describe(str(clip), "video", "p", schema)
     asked = json.loads(seen["prompt"].rsplit("\n", 1)[-1])
     assert asked == {"type": "object", "required": ["visual"], "properties": {"visual": {"type": "string"}}}
+
+
+# ---- shot descriptions on this computer (the cloud pass's layer, no backend) -----------------
+SHA = "e" * 64
+SHORT = [{"id": 0, "start": 0.0, "end": 4.0}, {"id": 1, "start": 4.0, "end": 8.0}, {"id": 2, "start": 8.0, "end": 9.0}]
+LONG = [{"id": 0, "start": 0.0, "end": 30.0}, {"id": 1, "start": 30.0, "end": 60.0}, {"id": 2, "start": 60.0, "end": 90.0}]
+PROBE = {"video": {"height": 720}, "duration": 90.0}
+
+
+@pytest.fixture
+def clips(monkeypatch):
+    """Clips are cut without ffmpeg: each one remembers the span it came from and the height asked for."""
+    cut = {}
+
+    def proxy(path, probe, out, start=None, end=None, max_height=None):
+        cut[out] = {"start": float(start or 0.0), "end": None if end is None else float(end), "height": max_height}
+        Path(out).write_bytes(b"clip")
+        return True, ""
+
+    monkeypatch.setattr(cloud, "make_proxy", proxy)
+    return cut
+
+
+def _model(monkeypatch, clips, shots, fail_on=(), events=None):
+    """Stand in for LFM3-Omni: answers for the shots inside the clip it is shown, and fails when one of them is in fail_on."""
+    calls = []
+
+    def describe(clip, media_type, prompt, schema, duration=0.0):
+        span = clips[clip]
+        inside = [s for s in shots if span["start"] <= s["start"] and s["end"] <= span["end"]]
+        calls.append({"prompt": prompt, "schema": schema, "duration": duration, "media_type": media_type})
+        if events is not None:
+            events.append("describe")
+        if any(s["id"] in fail_on for s in inside):
+            raise hf.HyperframesError("the local model gave no description")
+        return {"shots": [{"id": s["id"], "description": "A dog on shot %d." % s["id"], "objects": ["dog"],
+                           "sound_events": [{"label": "bark"}], "interest": 0.4, "usable": True} for s in inside]}
+
+    monkeypatch.setattr(ld, "describe", describe)
+    monkeypatch.setattr(ld, "ready", lambda: True)
+    return SimpleNamespace(calls=calls)
+
+
+def _shelf(tmp_path, shots):
+    shelf = Shelf(str(tmp_path / "shelf"))
+    shelf.write_json(SHA, "structure.json", {"shots": [{**s, "motion": {}} for s in shots]})
+    return shelf
+
+
+def test_local_shots_share_one_clip_at_360p_and_need_no_backend(tmp_path, monkeypatch, clips):
+    model = _model(monkeypatch, clips, SHORT)
+    client, uploader = MagicMock(), MagicMock()
+    out = cloud.run_watch(client, "/m/clip.mp4", PROBE, "F1", {"shots": SHORT}, None, uploader=uploader)
+
+    assert not uploader.called and not client.v2_upload_session.called and not client.v2_understand.called
+    assert list(clips.values()) == [{"start": 0.0, "end": 9.0, "height": 360}]      # three short shots, one model run
+    call = model.calls[0]
+    assert call["duration"] == 9.0 and call["media_type"] == "video"
+    assert set(call["schema"]["properties"]["shots"]["items"]["properties"]) >= {"description", "interest", "usable", "hook_potential"}
+    first = out["shots"][0]
+    assert (first["id"], first["start"], first["end"]) == (0, 0.0, 4.0) and first["interest"] == 0.4 and first["usable"] is True
+    assert cloud.shot_document(first) == "A dog on shot 0. Seen: dog. Sounds: bark."
+
+
+def test_a_shot_whose_clip_fails_is_missing_and_the_rest_are_kept(tmp_path, monkeypatch, clips):
+    _model(monkeypatch, clips, LONG, fail_on={1})         # each shot is longer than a clip, so each one is described alone
+    shelf = _shelf(tmp_path, LONG)
+    out = cloud.compute_cloud(MagicMock(), "/m/clip.mp4", PROBE, SHA, shelf, file_id="F1", uploader=MagicMock())
+    assert "error" not in out and out["layers"] == {"watch": "ready"}
+    assert [s["id"] for s in shelf.read_json(SHA, "watch.json")["shots"]] == [0, 2]      # shot 1 is asked for again next time
+
+
+def test_shots_separated_by_a_gap_are_cut_as_separate_clips(tmp_path, monkeypatch, clips):
+    gapped = [{"id": 0, "start": 0.0, "end": 4.0}, {"id": 1, "start": 10.0, "end": 14.0}]     # the footage between is not theirs
+    _model(monkeypatch, clips, gapped)
+    cloud.run_watch(MagicMock(), "/m/clip.mp4", PROBE, "F1", {"shots": gapped}, None, uploader=MagicMock())
+    assert sorted((c["start"], c["end"]) for c in clips.values()) == [(0.0, 4.0), (10.0, 14.0)]
+
+
+def test_cancelling_stops_between_clips(tmp_path, monkeypatch, clips):
+    model = _model(monkeypatch, clips, LONG)
+    with pytest.raises(cloud.Cancelled):
+        cloud.run_watch(MagicMock(), "/m/clip.mp4", PROBE, "F1", {"shots": LONG}, None, uploader=MagicMock(),
+                        should_cancel=lambda: bool(model.calls))
+    assert len(model.calls) == 1
+
+
+def test_the_model_is_installed_before_the_first_clip_and_a_failed_install_is_an_error(tmp_path, monkeypatch, clips):
+    events = []
+    model = _model(monkeypatch, clips, SHORT, events=events)
+    monkeypatch.setattr(ld, "install", lambda progress=None: events.append("install"))
+    out = cloud.run_watch(MagicMock(), "/m/clip.mp4", PROBE, "F1", {"shots": SHORT}, None, uploader=MagicMock())
+    assert events == ["install", "describe"] and "error" not in out
+
+    def offline(progress=None):
+        raise OSError("no network")
+    monkeypatch.setattr(ld, "install", offline)
+    out = cloud.run_watch(MagicMock(), "/m/clip.mp4", PROBE, "F1", {"shots": SHORT}, None, uploader=MagicMock())
+    assert "no network" in out["error"] and len(model.calls) == 1
+
+
+def test_the_gemini_choice_still_describes_in_the_cloud(monkeypatch, clips):
+    monkeypatch.setattr(ld, "enabled", lambda: False)
+    model = _model(monkeypatch, clips, SHORT)
+    client = MagicMock()
+    client.v2_upload_session.return_value = {"upload_url": "https://u/x"}
+    client.v2_understand.return_value = {"job_id": "j1"}
+    client.v2_job.return_value = {"status": "done", "result": {
+        "shots": [{"id": 0, "start": 0.0, "end": 4.0, "description": "A dog."}], "usage": {"model": "m"}}}
+    out = cloud.run_watch(client, "/m/clip.mp4", PROBE, "F1", {"shots": SHORT}, None,
+                          uploader=lambda path, url, mime_type="video/mp4": ({"name": "files/a", "uri": "u"}, ""))
+    assert client.v2_understand.called and model.calls == [] and out["shots"][0]["description"] == "A dog."
+
+
+def test_describing_on_import_runs_on_this_computer_without_sign_in_or_credits(monkeypatch, tmp_path):
+    h = Harness(monkeypatch, tmp_path, signed_in=False)
+    _stub_vectors(monkeypatch, h)
+    monkeypatch.setattr(E, "describe_on_import", lambda: True)
+    monkeypatch.setattr(ld, "ready", lambda: False)
+    described = []
+    monkeypatch.setattr(cloud, "compute_cloud", lambda *a, **k: described.append(a) or {"layers": {}})
+    charge = MagicMock(return_value=(True, 1000, None))
+    monkeypatch.setattr(cc, "check_operation", charge)
+    _meta, progress = h.run()
+    assert len(described) == 1 and ("installing", 0) in progress
+    charge.assert_not_called()
+
+
+def test_gemini_describing_on_import_still_needs_sign_in(monkeypatch, tmp_path):
+    h = Harness(monkeypatch, tmp_path, signed_in=False)
+    _stub_vectors(monkeypatch, h)
+    monkeypatch.setattr(E, "describe_on_import", lambda: True)
+    monkeypatch.setattr(ld, "enabled", lambda: False)
+    described = []
+    monkeypatch.setattr(cloud, "compute_cloud", lambda *a, **k: described.append(a) or {"layers": {}})
+    h.run()
+    assert described == []
+
+
+def test_the_describe_tool_on_this_computer_needs_no_sign_in_or_credits(monkeypatch):
+    from classes.editor_tools import media_index_tools as T
+    from classes.media_index.job import IndexingJob
+    f = SimpleNamespace(id="F1", data={"path": "/m/clip.mp4", "media_type": "video", "duration": 9.0})
+    fi = SimpleNamespace(sha=SHA, shots=SHORT, vector_model=None)
+    described = []
+    charge = MagicMock(return_value=(True, 1000, None))
+    monkeypatch.setattr(IndexingJob, "_signed_in", staticmethod(lambda: False))
+    monkeypatch.setattr(cc, "check_operation", charge)
+    monkeypatch.setattr("classes.api_client.get_backend_client", lambda: "client")
+    monkeypatch.setattr("classes.media_index.probe.probe_media", lambda p: {"duration": 9.0})
+    monkeypatch.setattr("classes.path_utils.absolute_media_path", lambda p: p)
+    monkeypatch.setattr(E, "get_embedder", lambda model: "embedder")
+    monkeypatch.setattr(T, "default_shelf", lambda: "shelf")
+    monkeypatch.setattr(cloud, "describe_shots", lambda *a, **k: described.append(a) or {"described": [0], "shots": [], "usage": {}})
+
+    out, why = T.describe_file_shots(f, fi, [0])
+    assert why is None and out["described"] == [0] and not charge.called
+    monkeypatch.setattr(ld, "enabled", lambda: False)
+    out, why = T.describe_file_shots(f, fi, [1])
+    assert out is None and "sign in" in why and len(described) == 1
 
 
 def test_local_is_the_default_and_gemini_credits_is_the_other_choice():
@@ -246,3 +348,12 @@ def test_without_whistle_whisper_hears_it_and_a_failure_means_no_transcript(home
         assert ld.speech_words(str(tmp_path / "clip.mp4")) == [{"text": "Yo", "start": 1.0, "end": 1.2}]
     with patch("classes.speech.asr.transcribe_file", side_effect=RuntimeError("no engine")):
         assert ld.speech_words(str(tmp_path / "clip.mp4")) == []
+
+
+def test_a_one_shot_clip_answered_without_the_shots_list_is_still_described():
+    from classes.media_index import cloud
+
+    bare = {"description": "A dog runs on the beach.", "mood": "playful"}
+    assert cloud._local_answers(bare, [{"id": 4}]) == {4: bare}
+    assert cloud._local_answers(bare, [{"id": 4}, {"id": 5}]) == {}       # which shot it meant is unknown
+    assert cloud._local_answers({"shots": [{"id": 5, "description": "x"}]}, [{"id": 4}, {"id": 5}]) == {5: {"id": 5, "description": "x"}}

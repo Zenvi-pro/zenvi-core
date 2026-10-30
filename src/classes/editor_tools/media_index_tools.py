@@ -397,7 +397,7 @@ def _vectors_current(shelf, sha) -> bool:
 def index_status(file_ids=None, only_incomplete=False):
     """Which parts of each file's index are ready: structure (cuts, camera motion), look (colour), audio (loudness,
     tempo), speech (transcript) and vectors_local (search; vector_model names the model that made them).
-    described_shots counts the shots Gemini has described so far (made on demand by run_tool(name='describe_shots_tool'), not needed
+    described_shots counts the shots described so far, on this computer or by Gemini (made on demand by run_tool(name='describe_shots_tool'), not needed
     for search). Use it to know whether search_footage_tool can already see a file, and what is still being worked on.
     """
     shelf = default_shelf()
@@ -438,14 +438,16 @@ def index_status(file_ids=None, only_incomplete=False):
     }),
 )
 def index_long_file(file_ids=None, file_query="", approve=False):
-    """Describe every shot of a file longer than 30 minutes. Every file is searchable without this; describing a long one
-    takes several cloud passes and uses credits, so it needs a yes (shorter files: run_tool(name='describe_shots_tool')). Call with approve=false to see
-    how many passes and the most it can cost (a ceiling: the real charge follows what the AI used and is usually lower);
-    ask the user; then call with approve=true. Each pass is charged on its own, so an interrupted run never repays what
-    already finished.
+    """Describe every shot of a file longer than 30 minutes. Every file is searchable without this. On this computer (the default)
+    it is free but slow; with Gemini it takes several cloud passes and uses credits. So it needs a yes (shorter files:
+    run_tool(name='describe_shots_tool')). Call with approve=false to see how many passes it takes and, with Gemini, the most
+    it can cost (a ceiling: the real charge follows what the AI used and is usually lower); ask the user; then call with
+    approve=true. Each Gemini pass is charged on its own, so an interrupted run never repays what already finished.
     """
+    from classes import local_describe
     from classes.media_index import longfile
     shelf = default_shelf()
+    local = local_describe.enabled()
     rows, to_queue = [], []
     for f in resolve_files(file_ids, file_query):
         data = f.data
@@ -461,6 +463,8 @@ def index_long_file(file_ids=None, file_query="", approve=False):
             row.update(state="not_ready", note="the file has no fingerprint yet; wait for import to finish")
         else:
             row.update(longfile.estimate(duration))
+            if local:
+                row.pop("max_credits")
             if shelf.layer_ready(sha, S.LAYER_WATCH):
                 row.update(state="described", note="already described")
             elif data.get("index_long_ok") and not approve:
@@ -470,6 +474,9 @@ def index_long_file(file_ids=None, file_query="", approve=False):
                 if approve:
                     to_queue.append(f)
         rows.append(row)
+
+    def cost(r):
+        return "on this computer, no credits" if local else f"up to {r['max_credits']} credits"
 
     def queue():
         files_model = get_app().window.files_model
@@ -484,23 +491,27 @@ def index_long_file(file_ids=None, file_query="", approve=False):
         head = f"Queued {len(to_queue)} long file(s) to be described." if to_queue else "Nothing to queue."
     else:
         asking = [r for r in rows if r["state"] == "needs_approval"]
-        head = (f"{len(asking)} file(s) need a yes: " + "; ".join(f"{r['name']} ({r['minutes']} min, {r['chunks']} passes, up to {r['max_credits']} credits)" for r in asking)
+        head = (f"{len(asking)} file(s) need a yes: " + "; ".join(f"{r['name']} ({r['minutes']} min, {r['chunks']} passes, {cost(r)})" for r in asking)
                 if asking else "No long file is waiting for approval.")
-    return ok(head, changed=bool(to_queue), files=rows, ceiling_note="max_credits is a flat ceiling per minute; the real charge follows token use")
+    note = {} if local else {"ceiling_note": "max_credits is a flat ceiling per minute; the real charge follows token use"}
+    return ok(head, changed=bool(to_queue), files=rows, **note)
 
 
 MAX_DESCRIBE_SHOTS = 300
 
 
 def describe_file_shots(f, fi, shot_ids):
-    """Gemini descriptions for *shot_ids* of one file, made now for the ones that have none: (result, None) or (None, why not)."""
+    """Descriptions for *shot_ids* of one file, made now for the ones that have none: (result, None) or (None, why not).
+    On this computer by default (no sign-in, no credits); with Gemini when picked in Preferences (sign-in, credits)."""
+    from classes import local_describe
     from classes.api_client import get_backend_client
     from classes.credits_client import check_operation
     from classes.media_index import cloud, embedder as E
     from classes.media_index.job import IndexingJob
     from classes.media_index.probe import probe_media
     from classes.path_utils import absolute_media_path
-    if not IndexingJob._signed_in():
+    local = local_describe.enabled()
+    if not local and not IndexingJob._signed_in():
         return None, "sign in to Zenvi for shot descriptions (search, pictures and measured facts work without them)"
     by_id = {int(s["id"]): s for s in fi.shots}
     from classes.media_index import longfile
@@ -512,7 +523,8 @@ def describe_file_shots(f, fi, shot_ids):
         seconds = cloud.upload_seconds([by_id[i] for i in todo])          # what is uploaded and billed, gaps between runs excluded
         if longfile.is_long(seconds) and not f.data.get("index_long_ok"):
             return None, "that is over 30 minutes of footage to describe: ask for a shorter range, or approve it with index_long_file_tool"
-        _, _balance, blocked = check_operation("indexing_per_minute", "shot descriptions", duration_seconds=max(1.0, seconds))
+        _, _balance, blocked = (True, None, None) if local else check_operation(
+            "indexing_per_minute", "shot descriptions", duration_seconds=max(1.0, seconds))
         if blocked:
             return None, blocked
     path = absolute_media_path(f.data.get("path")) or str(f.data.get("path") or "")
@@ -541,10 +553,11 @@ def describe_file_shots(f, fi, shot_ids):
     read_only=True,
 )
 def describe_shots(file_id="", shot_ids=None, start_seconds=None, end_seconds=None):
-    """Words for shots, from Gemini: what happens, actions, objects, text on screen, sounds, mood, shot type, how interesting and
-    usable each is. Search does NOT need this (every file is searchable from its pictures, speech and sound); call it for the shots
-    you are about to reason about or write about. Each shot is described once and kept, so asking again is free; new shots use
-    credits and need sign-in. The new descriptions also become searchable.
+    """Words for shots: what happens, actions, objects, text on screen, sounds, mood, shot type, how interesting and
+    usable each is. Made on this computer by default (free, no sign-in, but slow on a laptop: several times the footage's length), or
+    by Gemini when Preferences > Index Footage With picks it (uses credits and needs sign-in). Search does NOT need this
+    (every file is searchable from its pictures, speech and sound); call it for the shots you are about to reason about or
+    write about. Each shot is described once and kept, so asking again is free. The new descriptions also become searchable.
     """
     f = next(iter(resolve_files([file_id])))
     fi = _index_for(f)

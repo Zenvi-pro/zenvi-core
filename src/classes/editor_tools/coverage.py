@@ -147,7 +147,7 @@ CAPABILITIES = [
     ("index.look", "media-index", "Color scopes / grading", "Read a file's or range's measured look without rendering"),
     ("index.status", "media-index", "Indexing badges", "Per-file index layer status"),
     ("index.long_file", "media-index", "Project Files", "Approve describing a file over 30 minutes after seeing the passes and the cost ceiling"),
-    ("index.describe", "media-index", "Assistant", "Gemini words for chosen shots, made once and kept"),
+    ("index.describe", "media-index", "Assistant", "Words for chosen shots, made once and kept, on this computer or by Gemini"),
     ("index.health", "media-index", "Project Files", "What about the footage will cause trouble: variable frame rate, interlacing, HDR, frame rate and size that do not fit the project"),
     ("index.context", "media-index", "Timeline", "What is under, above and around a clip, and what a delete, trim or lengthen would move"),
     ("index.frames", "media-index", "Preview / storyboard", "Frames of a range as one readable picture, each stamped with its exact time and frame, at two zoom levels"),

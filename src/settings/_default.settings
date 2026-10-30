@@ -593,7 +593,7 @@
   },
   {
     "value": false,
-    "title": "Describe all footage on import with Gemini (uses credits; otherwise shots are described when the assistant needs them)",
+    "title": "Describe all footage on import (on this computer, or Gemini when picked under Index Footage With; otherwise shots are described when the assistant needs them)",
     "type": "bool",
     "restart": false,
     "category": "General",

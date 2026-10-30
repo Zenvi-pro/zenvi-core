@@ -4,7 +4,7 @@ Nothing ships with Zenvi. The first local index downloads a pinned llama.cpp bui
 (Vulkan on Windows and Linux, so a GPU is used when there is one; Metal on macOS) and
 the model (about 1.6 GB) into ``~/.openshot_qt/describe``; each file is kept only if it
 matches its sha256. The model sees the frames and hears the soundtrack of a chunk and
-answers in the backend's own JSON schema, so the backend indexes it like a Gemini answer.
+answers in the schema the cloud pass uses, so the index stores it like a Gemini answer.
 
 ponytail: one llama.cpp process per chunk reloads the model each time (a few seconds);
 keep one ``llama serve`` up for the whole job if that ever dominates indexing time.

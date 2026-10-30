@@ -9,7 +9,7 @@
      vectors_local.json  one row per vector: its kind and the time it stands for, plus the model that made them
 
  Row kinds: ``image`` (a keyframe: shot, t), ``speech`` (a transcript sentence: start, end, text), ``audio`` (10 s of
- sound: start, end) and ``shot`` (a Gemini description of a shot, added when one is asked for).
+ sound: start, end) and ``shot`` (a description of a shot, added when one is asked for).
 """
 
 from __future__ import annotations

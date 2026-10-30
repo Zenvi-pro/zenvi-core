@@ -12,6 +12,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from classes import credits_client as cc  # noqa: E402
+from classes import local_describe  # noqa: E402
 from classes.indexing_status import SKIPPED, derive_indexing_status  # noqa: E402
 from classes.media_index import cloud, longfile  # noqa: E402
 from classes.media_index import schema as S  # noqa: E402
@@ -91,6 +92,7 @@ def upload_ok(path, url, mime_type="video/mp4"):
 def small(monkeypatch, tmp_path):
     monkeypatch.setattr(longfile, "LONG_SECONDS", 100.0)
     monkeypatch.setattr(longfile, "CHUNK_SECONDS", 240.0)
+    monkeypatch.setattr(local_describe, "enabled", lambda: False)     # chunks are Gemini jobs here
     windows = []
 
     def fake_proxy(path, probe, out, start=None, end=None):
@@ -293,7 +295,8 @@ def library(monkeypatch, tmp_path):
     return SimpleNamespace(files={x.id: x for x in files}, shelf=shelf, queued=queued)
 
 
-def test_without_approval_it_only_reports_the_passes_and_the_cost_ceiling(library):
+def test_without_approval_it_only_reports_the_passes_and_the_cost_ceiling(library, monkeypatch):
+    monkeypatch.setattr(local_describe, "enabled", lambda: False)      # Gemini: the passes use credits
     head, r = tool(file_ids=["L1", "L2"])
     rows = {x["file_id"]: x for x in r["files"]}
     assert rows["L1"]["state"] == "needs_approval"
@@ -301,6 +304,12 @@ def test_without_approval_it_only_reports_the_passes_and_the_cost_ceiling(librar
     assert (rows["L2"]["minutes"], rows["L2"]["chunks"], rows["L2"]["max_credits"]) == (40, 2, 720)
     assert "podcast.mp4 (90 min, 5 passes, up to 1620 credits)" in head and r["changed"] is False
     assert library.queued == [] and "index_long_ok" not in library.files["L1"].data and library.files["L1"].saves == 0
+
+
+def test_on_this_computer_the_passes_are_free_and_no_credit_ceiling_is_shown(library):
+    head, r = tool(file_ids=["L1"])
+    assert head == "1 file(s) need a yes: podcast.mp4 (90 min, 5 passes, on this computer, no credits)"
+    assert "max_credits" not in r["files"][0] and r["changed"] is False
 
 
 def test_approval_marks_the_file_saves_it_and_queues_it_once(library):

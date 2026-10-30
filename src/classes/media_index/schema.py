@@ -19,7 +19,7 @@ LAYER_STRUCTURE = "structure"
 LAYER_AUDIO = "audio"
 LAYER_SPEECH = "speech"
 LAYER_LOOK = "look"
-LAYER_WATCH = "watch"        # cloud: what happens in each shot, described on demand by Gemini
+LAYER_WATCH = "watch"        # what happens in each shot, described on demand (on this computer or by Gemini)
 LAYER_VECTORS = "vectors_local"    # search vectors of every kind, from the model chosen in Preferences (see vectors.py)
 LAYER_VERSIONS = {
     LAYER_STRUCTURE: 3,         # 3: black judged against the file's own shots; motion carries typical_jitter_px

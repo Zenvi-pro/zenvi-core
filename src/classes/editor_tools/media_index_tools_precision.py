@@ -735,8 +735,9 @@ def _frames_pack(f, start_seconds, end_seconds, per_second=None, count=None, eve
         "pictures": boolean("Also make the keyframe pictures (one per shot, 48 a sheet). Look at them when a description matters: the text is a model's "
                             "reading and can be wrong about hair colour, who is who and small details.", True),
         "look": boolean("Add each shot's brightness and three main colours to its row (list mode; measured, a few tokens a row).", False),
-        "describe": boolean("Full detail only: get words for the shots on this page that have none yet (Gemini; once per shot, uses "
-                            "credits, needs sign-in). False = pictures and measured facts only. List mode never describes.", True),
+        "describe": boolean("Full detail only: get words for the shots on this page that have none yet (once per shot; on this "
+                            "computer by default, or with Gemini when picked in Preferences: then it uses credits and needs sign-in). "
+                            "False = pictures and measured facts only. List mode never describes.", True),
         "tile_width": integer("Width of each keyframe in pixels.", 320, minimum=96, maximum=640),
     }),
     read_only=True,

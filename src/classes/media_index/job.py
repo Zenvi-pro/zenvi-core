@@ -177,8 +177,9 @@ class IndexingJob:
 
         The search vectors are made by the model chosen in Preferences: EmbeddingGemma 2 on this computer (the default,
         free, no sign-in), or Gemini Embedding 2 in the cloud when picked and signed in. A file whose vectors from that
-        model are already on the shelf is not embedded again, in any project. Gemini descriptions are made here only when
-        the user turned on "Describe all footage on import"; otherwise agents ask for them shot by shot.
+        model are already on the shelf is not embedded again, in any project. Descriptions are made here only when
+        the user turned on "Describe all footage on import" (on this computer, or with Gemini when picked); otherwise agents
+        ask for them shot by shot.
         """
         from classes.media_index import cloud, default_shelf, embedder as E, vectors
         from classes.media_index import schema as S
@@ -196,6 +197,7 @@ class IndexingJob:
                             "This footage shares a fingerprint with a different file, so it cannot be indexed safely.")
             return
 
+        from classes import local_describe
         signed_in = self._signed_in()
         model = E.chosen_model(signed_in)
         probe = probe_media(file_path)
@@ -224,7 +226,7 @@ class IndexingJob:
                 self._waiting_for_network(metadata, exc)
                 return
 
-        if media_type == "video" and signed_in and (E.describe_on_import() or self.file_data.get("index_long_ok")):
+        if media_type == "video" and (signed_in or local_describe.enabled()) and (E.describe_on_import() or self.file_data.get("index_long_ok")):
             # A cancel here stops only the descriptions: the file is searchable, so it is still reported indexed.
             self._describe_on_import(client, file_path, probe, sha, shelf, model, duration, file_id, metadata)
 
@@ -242,14 +244,19 @@ class IndexingJob:
         self._completed(self.file_data, meta, None)
 
     def _describe_on_import(self, client, file_path, probe, sha, shelf, model, duration, file_id, metadata):
-        """Gemini descriptions of every shot, when the user asked for them up front (the preference, or a yes for a long
+        """Descriptions of every shot, when the user asked for them up front (the preference, or a yes for a long
         file). Never fails the index: search works without them, and an agent can still ask for any shot later."""
+        from classes import local_describe
         from classes.credits_client import check_operation
         from classes.media_index import cloud, embedder as E, vectors
         if duration > self._MAX_INDEXING_SECONDS and not self.file_data.get("index_long_ok"):
             log.info("Not describing %s on import: over 30 minutes and not approved", file_path)
             return
-        _, _balance, blocked = check_operation("indexing_per_minute", "video descriptions", duration_seconds=duration)
+        local = local_describe.enabled()          # on this computer there are no credits to check, and no sign-in
+        _, _balance, blocked = (True, None, None) if local else check_operation("indexing_per_minute", "video descriptions",
+                                                                              duration_seconds=duration)
+        if local and not local_describe.ready():
+            self._progress(file_id, "installing", 0)      # the first run downloads the model; cloud.compute_cloud installs it
         if blocked:
             log.info("Not describing %s on import: %s", file_path, blocked)
             return

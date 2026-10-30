@@ -81,7 +81,7 @@ def _setting() -> str:
 
 
 def describe_on_import() -> bool:
-    """True when the user asked for Gemini descriptions of all footage on import (default: off)."""
+    """True when the user asked for descriptions of all footage on import (default: off)."""
     try:
         from classes.app import get_settings
         return bool(get_settings().get(DESCRIBE_SETTING))

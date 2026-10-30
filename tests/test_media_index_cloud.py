@@ -12,6 +12,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 import media_fixtures as mf  # noqa: E402
+from classes import local_describe  # noqa: E402
 from classes.ai_metadata_utils import is_ai_metadata_usable  # noqa: E402
 from classes.indexing_status import SUCCESS, derive_indexing_status  # noqa: E402
 from classes.media_index import cloud, schema as S  # noqa: E402
@@ -114,6 +115,13 @@ def test_the_proxy_is_small_keeps_the_audio_and_is_480_high(video, tmp_path):
     assert Path(out).stat().st_size < Path(video).stat().st_size
 
 
+def test_a_proxy_can_be_cut_at_another_height(video, tmp_path):
+    out = str(tmp_path / "p.mp4")
+    ok, err = cloud.make_proxy(video, probe_media(video), out, max_height=360)
+    assert ok, err
+    assert probe_media(out)["video"]["height"] == 360
+
+
 def test_a_proxy_of_a_missing_file_fails_cleanly(tmp_path):
     mf.need_ffmpeg()
     ok, err = cloud.make_proxy(str(tmp_path / "nope.mp4"), {"video": {"height": 720}}, str(tmp_path / "p.mp4"))
@@ -157,6 +165,7 @@ uploader.sent = []
 def _reset(monkeypatch):
     uploader.sent.clear()
     monkeypatch.setattr(cloud, "POLL_SECONDS", 0.0)
+    monkeypatch.setattr(local_describe, "enabled", lambda: False)     # these tests are the Gemini pass; local ones are in test_local_describe.py
 
 
 # ============================ the watch run ============================
