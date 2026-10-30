@@ -18,9 +18,14 @@ def test_timeline_schema_golden():
     assert schema["additionalProperties"] is False
     props = set(schema["properties"])
     assert props == {
-        "startFrame", "endFrame", "maxFrames", "clipId", "start", "end", "overview",
+        "start_frame", "end_frame", "max_frames", "timeline_clip_id", "start", "end", "overview",
     }
     assert validate_args("inspect_timeline_tool", {"unknown": 1}) is not None
+
+
+def test_a_watch_window_is_inspect_arguments():
+    """The MCP instructions pass watchSuggested {timeline_clip_id, start, end} straight to inspect."""
+    assert validate_args("inspect_timeline_tool", {"timeline_clip_id": "clip-a", "start": 1.0, "end": 3.0}) is None
 
 
 def test_mid_bin_matches_plan_example():
@@ -39,7 +44,7 @@ def test_empty_timeline_refused(monkeypatch):
         "classes.agent_tools.inspect_render.snapshot_project",
         lambda _app: dict(app.project._data),
     )
-    out = insp.inspect_timeline(startFrame=0, endFrame=30)
+    out = insp.inspect_timeline(start_frame=0, end_frame=30)
     assert isinstance(out, ToolReceipt)
     assert out.status == "refused"
     assert out.undoSteps == 0
@@ -85,7 +90,7 @@ def test_watch_suggested_window_and_mid_bin(monkeypatch):
     monkeypatch.setattr(
         "classes.agent_tools.inspect_render.render_timeline_frames", fake_render,
     )
-    out = insp.inspect_timeline(clipId="clip-a", start=1.0, end=3.0, maxFrames=6)
+    out = insp.inspect_timeline(timeline_clip_id="clip-a", start=1.0, end=3.0, max_frames=6)
     assert isinstance(out, ToolOutput)
     assert out.receipt.status == "applied"
     assert out.receipt.undoSteps == 0
@@ -133,7 +138,7 @@ def test_overview_single_image(monkeypatch):
             "timestamps": [r[time_key] for r in rendered[:4]],
         },
     )
-    out = insp.inspect_timeline(overview=True, startFrame=0, endFrame=60)
+    out = insp.inspect_timeline(overview=True, start_frame=0, end_frame=60)
     assert isinstance(out, ToolOutput)
     assert len(out.images) == 1
     assert out.receipt.data["mode"] == "overview"
@@ -155,15 +160,15 @@ def test_unknown_clip_refused(monkeypatch):
         "classes.agent_tools.inspect_render.snapshot_project",
         lambda _app: dict(project),
     )
-    out = insp.inspect_timeline(clipId="missing", start=0, end=1)
+    out = insp.inspect_timeline(timeline_clip_id="missing", start=0, end=1)
     assert out.status == "refused"
 
 
 @pytest.mark.parametrize("kwargs", [
-    {"startFrame": 0, "endFrame": 900},                    # past the 300-frame end
-    {"startFrame": -10, "endFrame": 20},
-    {"startFrame": 0, "endFrame": 900, "overview": True},
-    {"startFrame": 400, "overview": True},
+    {"start_frame": 0, "end_frame": 900},                    # past the 300-frame end
+    {"start_frame": -10, "end_frame": 20},
+    {"start_frame": 0, "end_frame": 900, "overview": True},
+    {"start_frame": 400, "overview": True},
 ])
 def test_inspect_ranges_outside_the_project_are_refused(monkeypatch, kwargs):
     """Review #216: only the single-frame form checked the project's range."""
@@ -183,3 +188,48 @@ def test_inspect_ranges_outside_the_project_are_refused(monkeypatch, kwargs):
     assert isinstance(out, ToolReceipt) and out.status == "refused", out
     assert "out of range" in out.summary
     assert rendered == []
+
+
+def test_inspect_tools_create_zero_undo_via_execute():
+    """READ_ONLY inspect must not open an undo group / bump history."""
+    from classes.agent_tools import execute as ex
+    from classes.agent_tools.output import ToolOutput
+    from classes.agent_tools.receipt import ToolReceipt
+
+    history = []
+
+    def handler(**_kw):
+        return ToolOutput(
+            receipt=ToolReceipt.applied(
+                "inspect_timeline_tool", "Rendered 1", undo_steps=0, data={"frames": []},
+            ),
+            images=[],
+        )
+
+    app = types.SimpleNamespace(
+        updates=types.SimpleNamespace(actionHistory=history),
+        project={},
+        thread=lambda: None,
+    )
+
+    def atomic(app_, fn):
+        def wrapped(**kw):
+            history.append("atomic")
+            return fn(**kw)
+        return wrapped
+
+    ex.bind_runtime(
+        handlers={"inspect_timeline_tool": handler},
+        read_only=frozenset({"inspect_timeline_tool"}),
+        background_safe=frozenset({"inspect_timeline_tool"}),
+        ungrouped=frozenset({"inspect_timeline_tool"}),
+        main_thread_timeouts={},
+        get_app=lambda: app,
+        run_on_main_thread=lambda fn, timeout=30: fn(),
+        atomic=atomic,
+        coerce_steps=lambda x: 1,
+        qthread=None,
+    )
+    out = ex.execute_tool_rich("inspect_timeline_tool", {"start_frame": 0})
+    assert out.receipt.undoSteps == 0
+    assert history == []

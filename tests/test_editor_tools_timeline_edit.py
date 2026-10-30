@@ -338,6 +338,22 @@ def test_slice_one_clip_keep_both(ed):
     assert ed.clip(right) is None and ed.clip(a)["end"] == 4.0
 
 
+def test_a_cut_that_would_leave_a_sliver_is_refused_with_the_tool_to_use_instead(ed):
+    a = ed.add_clip(ed.add_file("video", duration=5.0), position=0.0, end=5.0, layer=T1)
+    refused(ed, ed.call("slice_clips_tool", timeline_clip_ids=[a], at_seconds=0.033), "under two frames", "get_voice_edges_tool")
+    refused(ed, ed.call("slice_clips_tool", timeline_clip_ids=[a], at_seconds=4.97), "under two frames")
+    receipt(ed.call("slice_clips_tool", timeline_clip_ids=[a], at_seconds=0.5))        # a real cut still works
+    one_step(ed)
+
+
+def test_slicing_everything_leaves_alone_a_clip_the_cut_would_only_graze(ed):
+    f = ed.add_file("video", duration=10.0)
+    grazed = ed.add_clip(f, position=0.0, end=4.0, layer=T1)          # ends 0.02 s after the cut
+    cut = ed.add_clip(f, position=0.0, end=10.0, layer=T2)
+    receipt(ed.call("slice_clips_tool", scope="all", at_seconds=3.98))
+    assert ed.fake.calls[-1][2] == [cut] and grazed not in ed.fake.calls[-1][2]
+
+
 def test_slice_at_playhead_and_keep_right_ripple(ed):
     a, b = _seq(ed, 2)
     ed.window.preview_thread.player.Position.return_value = 31  # frame 31 = 1.0 s
@@ -486,7 +502,7 @@ def test_align_refusals_and_no_op(ed):
 
 
 # ---------------------------------------------------------------------------
-# slice_clip_at_playhead_tool (existing tool, fixed)
+# slice_clips_tool(scope='all') cuts everything under the playhead
 # ---------------------------------------------------------------------------
 
 def test_slice_at_playhead_skips_locked_and_edge_items(ed):
@@ -495,9 +511,8 @@ def test_slice_at_playhead_skips_locked_and_edge_items(ed):
     ed.add_clip(f, position=0.0, end=4.0, layer=T2)            # locked
     ed.add_clip(f, position=2.0, end=3.0, layer=T3)            # starts at the playhead
     ed.lock_track(T2)
-    ed.window.preview_thread.current_frame = 61                # 2.0 s
-    out = ed.call("slice_clip_at_playhead_tool")
-    assert out.startswith("Sliced 1 item(s)"), out
+    out = ed.call("slice_clips_tool", at_seconds=2.0, scope="all")
+    assert out.startswith("Sliced 1 clip(s)"), out
     assert ed.fake.calls[-1][:3] == ("slice", "KEEP_BOTH", [a])
 
 
@@ -505,8 +520,7 @@ def test_slice_at_playhead_with_nothing_sliceable_is_an_error(ed):
     f = ed.add_file("video", duration=10.0)
     ed.add_clip(f, position=0.0, end=4.0, layer=T2)
     ed.lock_track(T2)
-    ed.window.preview_thread.current_frame = 31
-    out = ed.call("slice_clip_at_playhead_tool")
+    out = ed.call("slice_clips_tool", at_seconds=1.0, scope="all")
     assert out.startswith("Error:") and ed.fake.calls == []
 
 
@@ -564,9 +578,9 @@ def test_background_tools_wait_long_enough_for_each_hop(ed, monkeypatch):
     timeouts = []
     real_on_main = timeline_edit.on_main
 
-    def recording_on_main(func, *args, timeout=None):
+    def recording_on_main(func, *args, timeout=None, **kw):
         timeouts.append(timeout)
-        return real_on_main(func, *args, timeout=timeout)
+        return real_on_main(func, *args, timeout=timeout, **kw)
 
     monkeypatch.setattr(timeline_edit, "on_main", recording_on_main)
     a, b = _seq(ed, 2)
@@ -585,3 +599,41 @@ def test_duplicate_leaves_a_clips_incoming_crossfade_behind(ed):
     r = receipt(ed.call("duplicate_clips_tool", timeline_clip_ids=[a, b], position_seconds=20))
     assert len(r["transition_ids"]) == 1
     assert Transition.get(id=r["transition_ids"][0]).data["position"] == 23.5
+
+
+# ---- one timeline update per edit, not one per clip (measured: 85 placements went from over 2 minutes to 18 s) ----
+@pytest.fixture
+def flushes():
+    from classes import update_batch
+    count = []
+    flush = lambda: count.append(1)  # noqa: E731
+    update_batch.register(flush)
+    yield count
+    update_batch.unregister(flush)
+
+
+def test_placing_many_clips_updates_the_timeline_once(ed, flushes):
+    files = [ed.add_file("video", duration=6.0) for _ in range(6)]
+    r = receipt(ed.call("add_clips_to_timeline_tool", items=[{"file_id": f, "source_start": 0, "source_end": 2} for f in files], track="2"))
+    assert len(r["clips"]) == 6 and len(flushes) == 1
+    one_step(ed)
+
+
+def test_a_whole_track_edit_updates_the_timeline_once(ed, flushes):
+    clips = _seq(ed, 5)
+    receipt(ed.call("set_clip_audio_video_tool", timeline_clip_ids=clips, audio="off"))
+    assert len(flushes) == 1
+
+
+def test_a_read_only_call_opens_no_batch(ed, flushes):
+    _seq(ed, 3)
+    ed.call("get_timeline_state_tool")
+    assert flushes == []
+
+
+def test_undo_updates_the_timeline_once_however_many_clips_it_removes(ed, flushes):
+    f = ed.add_file("video", duration=6.0)
+    receipt(ed.call("add_clips_to_timeline_tool", items=[{"file_id": f, "source_start": 0, "source_end": 1}] * 4, track="2"))
+    flushes.clear()
+    receipt(ed.call("undo_tool"))
+    assert len(flushes) == 1

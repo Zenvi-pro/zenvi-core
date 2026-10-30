@@ -185,7 +185,7 @@ def test_ingest_web_video_tool_reference_imports_without_place(monkeypatch, tmp_
     assert out["file_id"] == "file-xyz"
     assert out["placed"] is False
     assert placed == []
-    assert "match_color_to_reference" in out["next"]
+    assert "get_look_profile_tool" in out["next"]
 
     out2 = json.loads(
         th.ingest_web_video(
@@ -568,3 +568,69 @@ def test_download_skips_cache_when_height_too_low(tmp_path, monkeypatch):
     assert meta.get("from_cache") is not True
     assert meta["height"] == 1080
     assert meta["requested_height"] == 1080
+
+
+# -- a public URL must not be able to send the download to a private address -------------
+def test_a_redirect_to_a_private_or_loopback_address_is_refused_not_followed(monkeypatch):
+    import http.server
+    import threading
+    import urllib.request
+
+    from classes import web_video_ingest as wvi
+    from classes.web_video_ingest import open_public_url
+
+    class Redirect(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/secret":
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"internal")
+                return
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.1:%d/secret" % self.server.server_port)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Redirect)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        url = "http://127.0.0.1:%d/video.mp4" % server.server_port
+        real_check = wvi.assert_public_http_url
+        # open_public_url refuses a loopback first URL up front: let this test's own server through so the redirect guard is what gets tested
+        monkeypatch.setattr(wvi, "assert_public_http_url", lambda u: None if u == url else real_check(u))
+        req = urllib.request.Request(url)
+        with pytest.raises(WebVideoIngestError, match="private or local"):
+            open_public_url(req, timeout=5)
+        with urllib.request.urlopen(req, timeout=5) as plain:       # what the code did before: it followed the redirect
+            assert plain.read() == b"internal"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize("url,refusal", [("file:///etc/passwd", "must be http"), ("http://127.0.0.1/x", "private or local")])
+def test_open_public_url_refuses_a_non_public_url_before_opening_anything(monkeypatch, url, refusal):
+    import socket
+    import urllib.request
+
+    from classes import web_video_ingest as wvi
+
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))])
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *a, **k: pytest.fail("a refused URL must not reach urllib"))
+    with pytest.raises(WebVideoIngestError, match=refusal):
+        wvi.open_public_url(urllib.request.Request(url), timeout=5)
+
+
+def test_a_redirect_to_a_public_address_is_still_followed(monkeypatch):
+    import socket
+    import urllib.request
+
+    from classes import web_video_ingest as wvi
+
+    monkeypatch.setattr(socket, "getaddrinfo", lambda host, *_a, **_k: [(2, 1, 6, "", ("93.184.216.34", 0))])
+    handler = wvi._PublicOnlyRedirects()
+    req = urllib.request.Request("https://cdn.example.org/a.mp4")
+    new = handler.redirect_request(req, None, 302, "Found", {}, "https://media.example.org/a.mp4")
+    assert new is not None and new.full_url == "https://media.example.org/a.mp4"

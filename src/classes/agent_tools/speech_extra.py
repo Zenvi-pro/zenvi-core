@@ -42,13 +42,13 @@ def _media_path_for_clip(clip: dict) -> str:
 
 
 def remove_silence(
-    clipId: str = "",
-    minPauseSec=0.4,
-    padSec=0.08,
-    maxRemoveFraction=0.85,
+    timeline_clip_id: str = "",
+    min_pause_seconds=0.4,
+    pad_seconds=0.08,
+    max_remove_fraction=0.85,
     **_kw,
 ):
-    """Remove quiet non-speech gaps inside a clip and close them (one undo)."""
+    """Remove silent pauses: quiet non-speech gaps inside a clip, closed (one undo)."""
     from classes.agent_tools.receipt import ToolReceipt
     from classes.agent_tools.transcript import (
         _first_nonempty,
@@ -58,11 +58,11 @@ def remove_silence(
     from classes.speech.word_ranges import compact_fragments_after_remove
     from classes.tool_handlers import _new_transaction_id
 
-    clipId = _first_nonempty(clipId, _kw.get("timeline_clip_id"))
+    clipId = _first_nonempty(timeline_clip_id)
 
     if not clipId:
         return ToolReceipt.refused(
-            "remove_silence_tool", "Error: clipId is required.",
+            "remove_silence_tool", "Error: timeline_clip_id is required.",
         ).to_json()
 
     try:
@@ -75,7 +75,7 @@ def remove_silence(
     clip = _find_clip(project_data, str(clipId))
     if clip is None:
         return ToolReceipt.refused(
-            "remove_silence_tool", f"Error: Unknown clipId '{clipId}'.",
+            "remove_silence_tool", f"Error: Unknown timeline_clip_id '{clipId}'.",
         ).to_json()
 
     path = _media_path_for_clip(clip)
@@ -85,9 +85,9 @@ def remove_silence(
         ).to_json()
 
     try:
-        min_pause = float(minPauseSec)
-        pad = float(padSec)
-        max_frac = float(maxRemoveFraction)
+        min_pause = float(min_pause_seconds)
+        pad = float(pad_seconds)
+        max_frac = float(max_remove_fraction)
     except (TypeError, ValueError):
         return ToolReceipt.refused(
             "remove_silence_tool", "Error: Invalid numeric arguments.",
@@ -143,7 +143,7 @@ def remove_silence(
         return ToolReceipt.refused(
             "remove_silence_tool",
             f"Error: Would remove {removed / duration:.0%} of the clip — "
-            "refusing (raise maxRemoveFraction or lower minPauseSec).",
+            "refusing (raise max_remove_fraction or lower min_pause_seconds).",
             data={"removedDurationSec": removed, "clipDurationSec": duration},
         ).to_json()
     if removed <= 1e-9:
@@ -184,8 +184,8 @@ def remove_silence(
 def export_captions(
     path: str = "",
     format: str = "srt",
-    clipId: str = "",
-    trackIndex=None,
+    timeline_clip_id: str = "",
+    track=None,
     language: str = "auto",
     **_kw,
 ):
@@ -194,9 +194,7 @@ def export_captions(
     from classes.agent_tools.transcript import _first_nonempty, get_transcript
     from classes.speech.captions import cues_to_srt, cues_to_vtt, phrase_words
 
-    clipId = _first_nonempty(clipId, _kw.get("timeline_clip_id"))
-    if trackIndex in (None, "") and _kw.get("track_index") not in (None, ""):
-        trackIndex = _kw.get("track_index")
+    clipId = _first_nonempty(timeline_clip_id)
 
     if not path:
         return ToolReceipt.refused(
@@ -211,10 +209,10 @@ def export_captions(
         return ToolReceipt.error("export_captions_tool", str(exc)).to_json()
 
     raw = get_transcript(
-        clipId=clipId or "",
-        trackIndex=trackIndex,
+        timeline_clip_id=clipId or "",
+        track=track,
         language=language,
-        includeWords=True,
+        include_words=True,
         engine="auto",
     )
     receipt = parse_receipt(raw)
@@ -247,95 +245,12 @@ def export_captions(
     ).to_json()
 
 
-def detect_beats_tool_handler(
-    fileId: str = "",
-    clipId: str = "",
-    **_kw,
-):
-    from classes.agent_tools.receipt import ToolReceipt
-    from classes.agent_tools.transcript import _first_nonempty
-    from classes.speech.beats import detect_beats
-    from classes.frame_time import to_frame
-
-    clipId = _first_nonempty(clipId, _kw.get("timeline_clip_id"))
-    fileId = _first_nonempty(fileId, _kw.get("file_id"))
-
-    try:
-        from classes.app import get_app
-        app = get_app()
-        fps = _fps(app)
-        project_data = _snapshot(app)
-    except Exception as exc:
-        return ToolReceipt.error("detect_beats_tool", str(exc)).to_json()
-
-    path = ""
-    if clipId:
-        clip = _find_clip(project_data, str(clipId))
-        if clip is None:
-            return ToolReceipt.refused(
-                "detect_beats_tool", f"Error: Unknown clipId '{clipId}'.",
-            ).to_json()
-        path = _media_path_for_clip(clip)
-    elif fileId:
-        from classes.query import File
-        from classes.speech.map_timeline import resolve_media_path
-        f = File.get(id=str(fileId))
-        if f is None or not isinstance(getattr(f, "data", None), dict):
-            return ToolReceipt.refused(
-                "detect_beats_tool", f"Error: Unknown fileId '{fileId}'.",
-            ).to_json()
-        path = resolve_media_path(f.data)
-    else:
-        return ToolReceipt.refused(
-            "detect_beats_tool", "Error: Provide fileId or clipId.",
-        ).to_json()
-
-    if not path or not os.path.isfile(path):
-        return ToolReceipt.refused(
-            "detect_beats_tool", "Error: Media path missing.",
-        ).to_json()
-
-    try:
-        result = detect_beats(path)
-    except Exception as exc:
-        return ToolReceipt.error(
-            "detect_beats_tool", f"Error: Beat detection failed: {exc}",
-        ).to_json()
-
-    beats = []
-    for b in result.get("beats") or []:
-        t = float(b["timeSec"])
-        beats.append({
-            "timeSec": t,
-            "frame": to_frame(t, fps),
-            "strength": b.get("strength"),
-        })
-    downbeats = []
-    for b in result.get("downbeats") or []:
-        t = float(b["timeSec"])
-        downbeats.append({"timeSec": t, "frame": to_frame(t, fps)})
-
-    return ToolReceipt.applied(
-        "detect_beats_tool",
-        f"Detected {len(beats)} beat(s), BPM≈{result.get('bpm', 0):.1f}.",
-        undo_steps=0,
-        data={
-            "beats": beats,
-            "downbeats": downbeats,
-            "bpm": result.get("bpm"),
-            "fileId": fileId or "",
-            "clipId": clipId or "",
-            "provider": "local",
-        },
-    ).to_json()
-
-
 def diarize_media(
-    fileId: str = "",
-    clipId: str = "",
-    maxSpeakers=2,
+    file_id: str = "",
+    timeline_clip_id: str = "",
+    max_speakers=2,
     language: str = "auto",
-    modelId: str = "",
+    model_id: str = "",
     **_kw,
 ):
     """Attach speakerIds to cached transcript words for a file/clip."""
@@ -346,8 +261,8 @@ def diarize_media(
     from classes.speech.diarize import diarize_file_words, speaker_turns
     from classes.speech.map_timeline import resolve_media_path, words_for_clip
 
-    clipId = _first_nonempty(clipId, _kw.get("timeline_clip_id"))
-    fileId = _first_nonempty(fileId, _kw.get("file_id"))
+    clipId = _first_nonempty(timeline_clip_id)
+    fileId = _first_nonempty(file_id)
 
     try:
         from classes.app import get_app
@@ -363,7 +278,7 @@ def diarize_media(
         clip = _find_clip(project_data, str(clipId))
         if clip is None:
             return ToolReceipt.refused(
-                "diarize_media_tool", f"Error: Unknown clipId '{clipId}'.",
+                "diarize_media_tool", f"Error: Unknown timeline_clip_id '{clipId}'.",
             ).to_json()
         path = _media_path_for_clip(clip)
     elif fileId:
@@ -371,12 +286,12 @@ def diarize_media(
         f = File.get(id=str(fileId))
         if f is None or not isinstance(getattr(f, "data", None), dict):
             return ToolReceipt.refused(
-                "diarize_media_tool", f"Error: Unknown fileId '{fileId}'.",
+                "diarize_media_tool", f"Error: Unknown file_id '{fileId}'.",
             ).to_json()
         path = resolve_media_path(f.data)
     else:
         return ToolReceipt.refused(
-            "diarize_media_tool", "Error: Provide fileId or clipId.",
+            "diarize_media_tool", "Error: Provide file_id or timeline_clip_id.",
         ).to_json()
 
     if not path:
@@ -384,11 +299,11 @@ def diarize_media(
             "diarize_media_tool", "Error: Media path missing.",
         ).to_json()
 
-    model = (modelId or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
+    model = (model_id or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
     try:
         record = transcribe_file(path, language=language or "auto", model_id=model)
         labelled, warnings = diarize_file_words(
-            path, record.words, max_speakers=int(maxSpeakers or 2),
+            path, record.words, max_speakers=int(max_speakers or 2),
         )
     except Exception as exc:
         return ToolReceipt.error(
@@ -421,7 +336,7 @@ def diarize_media(
                 "startFrame": to_frame(w.startSec, fps),
                 "endFrame": to_frame(w.endSec, fps),
                 "speakerId": w.speakerId,
-                "transcriptGeneration": record.generation,
+                "transcript_generation": record.generation,
             })
 
     speakers = sorted({w.get("speakerId") for w in mapped if w.get("speakerId")})
@@ -434,80 +349,7 @@ def diarize_media(
             "speakers": speakers,
             "words": mapped,
             "turns": speaker_turns(mapped),
-            "transcriptGeneration": record.generation,
+            "transcript_generation": record.generation,
             "transcriptionSource": record.transcriptionSource,
         },
-    ).to_json()
-
-
-def search_media_local(
-    query: str = "",
-    top_k=5,
-    provider: str = "local",
-    **_kw,
-):
-    """Search the local visual embedding index (CLIP/hash). Cloud is opt-in elsewhere."""
-    from classes.agent_tools.receipt import ToolReceipt
-    from classes.speech.visual_index import get_visual_index
-
-    q = str(query or "").strip()
-    if not q:
-        return ToolReceipt.refused(
-            "search_media_local_tool", "Error: query is required.",
-        ).to_json()
-
-    prov = (provider or "local").lower().strip()
-    if prov not in ("local", "auto"):
-        return ToolReceipt.refused(
-            "search_media_local_tool",
-            "Error: provider must be 'local' or 'auto' (cloud via search_clips_tool).",
-        ).to_json()
-
-    try:
-        k = int(top_k)
-    except (TypeError, ValueError):
-        k = 5
-
-    # Best-effort: index media-bin files that aren't in the index yet.
-    try:
-        from classes.app import get_app
-        from classes.query import File
-        app = get_app()
-        index = get_visual_index()
-        project = _snapshot(app)
-        project_ids = set()
-        for fdata in project.get("files") or []:
-            if not isinstance(fdata, dict):
-                continue
-            path = str(fdata.get("path") or "")
-            fid = str(fdata.get("id") or "")
-            if fid:
-                project_ids.add(fid)
-            if path and os.path.isfile(path):
-                try:
-                    index.upsert_file(fid, path)
-                except Exception:
-                    continue
-        # Also try File.query if snapshot lacks files
-        try:
-            for fobj in File.filter():
-                if fobj and isinstance(fobj.data, dict):
-                    project_ids.add(str(fobj.id))
-                    p = str(fobj.data.get("path") or "")
-                    if p and os.path.isfile(p):
-                        index.upsert_file(str(fobj.id), p)
-        except Exception:
-            pass
-        hits = index.search(q, top_k=k, file_ids=project_ids)
-    except Exception as exc:
-        return ToolReceipt.error(
-            "search_media_local_tool", f"Error: Local search failed: {exc}",
-        ).to_json()
-
-    return ToolReceipt.applied(
-        "search_media_local_tool",
-        f"{len(hits)} local hit(s) for {q!r}.",
-        undo_steps=0,
-        data={"query": q, "hits": hits, "provider": "local"},
-        notes=["Scores are for ordering only — uncalibrated."] if hits else [],
     ).to_json()

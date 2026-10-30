@@ -10,7 +10,6 @@ if _ROOT not in sys.path:
 
 from classes.clip_resolver import (  # noqa: E402
     MIN_CONFIDENCE,
-    _score_clip_against_query,
     resolve_clip_pair,
     resolve_timeline_clip,
     search_timeline_placements,
@@ -96,47 +95,6 @@ def _patch_contexts(contexts):
     )
 
 
-def test_score_substring_and_tag_overlap():
-    score = _score_clip_against_query(
-        {"title": "Beach Interview", "layer": 1000000},
-        {"name": "interview.mp4"},
-        {
-            "tags": {"objects": ["dog"], "scenes": ["beach"]},
-            "description": "person talks on the beach",
-        },
-        "beach interview",
-    )
-    assert score >= MIN_CONFIDENCE
-
-
-def test_score_ignores_scenes_outside_trim():
-    ai = {
-        "analyzed": True,
-        "tags": {"objects": ["car"], "scenes": []},
-        "scene_descriptions": [{"time": 50.0, "description": "car on highway"}],
-    }
-    score = _score_clip_against_query(
-        {"title": "Trimmed", "start": 0.0, "end": 10.0},
-        {"name": "clip.mp4", "duration": 120.0},
-        ai,
-        "car highway",
-    )
-    assert score == 0.0
-
-
-def test_score_includes_scenes_inside_trim():
-    ai = {
-        "analyzed": True,
-        "tags": {"objects": ["cat"], "scenes": []},
-        "scene_descriptions": [{"time": 5.0, "description": "cat playing"}],
-    }
-    score = _score_clip_against_query(
-        {"title": "Trimmed", "start": 0.0, "end": 10.0},
-        {"name": "clip.mp4", "duration": 120.0},
-        ai,
-        "cat",
-    )
-    assert score >= MIN_CONFIDENCE
 
 
 def test_timeline_clip_id_takes_priority():
@@ -324,47 +282,33 @@ def test_search_timeline_placements_ranked():
     assert len(hits) == 2
 
 
-def test_twelvelabs_project_candidates_pass_index_id():
-    from classes.clip_resolver import _twelvelabs_project_candidates
+def test_a_clip_matched_by_its_name_resolves_without_the_backend():
+    backend = MagicMock()
+    with _patch_contexts([_make_context("a", "Harbour walk")]), \
+            patch("classes.clip_resolver._playhead_position", return_value=0.0), \
+            patch("classes.api_client.get_backend_client", return_value=backend), \
+            _resolver_env({"a": MagicMock(id="a")}):
+        result = resolve_timeline_clip(clip_query="harbour")
+    assert result.ok and result.clip.id == "a"
+    backend.is_indexing_configured.assert_not_called()
+    backend.search.assert_not_called()
 
-    ctx = _make_context(
-        "c1",
-        "Talk",
-        ai={
-            "twelvelabs": {
-                "status": "ready",
-                "index_id": "idx-shared",
-                "video_id": "vid-1",
-            }
-        },
-    )
-    client = MagicMock()
-    client.is_indexing_configured.return_value = True
-    client.search.return_value = {
-        "results": [{"video_id": "vid-1", "start": 1.0, "end": 2.0, "rank": 1}]
-    }
 
-    with patch(
-        "classes.project_tl_index.collect_project_twelvelabs_index",
-        return_value={
-            "index_id": "idx-shared",
-            "video_map": {"vid-1": {"file_id": "file-1"}},
-        },
-    ), patch(
-        "classes.api_client.get_backend_client",
-        return_value=client,
-    ):
-        cands = _twelvelabs_project_candidates("when does she say hello", [ctx])
-
-    assert client.search.call_args.kwargs.get("index_id") == "idx-shared"
-    assert len(cands) == 1
-    assert cands[0].timeline_clip_id == "c1"
+def test_a_query_no_clip_matches_is_an_error_and_never_asks_the_backend():
+    ai = {"analyzed": True, "tags": {"objects": ["dog"]}, "description": "a dog runs"}
+    backend = MagicMock()
+    with _patch_contexts([_make_context("a", "Clip A", ai=ai)]), \
+            patch("classes.clip_resolver._playhead_position", return_value=0.0), \
+            patch("classes.api_client.get_backend_client", return_value=backend), \
+            _resolver_env({"a": MagicMock(id="a")}):
+        result = resolve_timeline_clip(clip_query="volcano eruption")
+    assert not result.ok
+    assert "volcano eruption" in result.error
+    backend.is_indexing_configured.assert_not_called()
+    backend.search.assert_not_called()
 
 
 if __name__ == "__main__":
-    test_score_substring_and_tag_overlap()
-    test_score_ignores_scenes_outside_trim()
-    test_score_includes_scenes_inside_trim()
     test_timeline_clip_id_takes_priority()
     test_single_clip_shortcut_without_query()
     test_ambiguous_query_returns_candidates()

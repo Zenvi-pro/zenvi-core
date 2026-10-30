@@ -160,7 +160,8 @@ def test_a_failed_tool_with_a_login_error_gets_a_sign_in_button():
         assert not pattern.search(message), message
     body = text[text.index("window.completeToolBlock = function"):]
     body = body[:body.index("window.replayToolBlock")]
-    assert "!ok && AUTH_FAILURE_RE.test(" in body and "addSignInPrompt(block)" in body
+    assert "AUTH_FAILURE_RE.test(" in body and "addSignInPrompt(block)" in body
+    assert "fetchToolDetail(callId" in body, "the failed call's own stored result is what gets checked"
 
 
 def test_the_button_opens_the_sign_in_and_after_it_offers_continue():
@@ -186,5 +187,4 @@ def test_the_sign_in_button_ignores_log_lines_other_tools_produced():
     body = text[text.index("window.completeToolBlock = function"):]
     body = body[:body.index("window.replayToolBlock")]
     check = body[body.index("AUTH_FAILURE_RE.test("):body.index("addSignInPrompt(block)")]
-    assert "block.lines).join" not in check and "ownResult" in check
-    assert "indexOf('RESULT:') === 0" in body
+    assert "block.lines" not in body and "detail.result" in check

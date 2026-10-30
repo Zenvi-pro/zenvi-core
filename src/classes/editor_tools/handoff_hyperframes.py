@@ -74,8 +74,8 @@ def import_hyperframes_project(project_dir, mode="auto", position=None, track=""
     rendered on its own with transparency; titles and other scripted DOM of
     the root become one linked graphics layer. Linked clips read their
     variables from the HTML at every render (so edits made in HyperFrames
-    come through); update_linked_clip_tool's props override them. They open
-    their code or the HyperFrames Studio (open_linked_source_tool) and
+    come through); run_tool(name='update_linked_clip_tool', args={...})'s props override them. They open
+    their code or the HyperFrames Studio (run_tool(name='open_linked_source_tool', args={...})) and
     re-render when the code changes. A Zenvi export comes back natively and
     losslessly, with timing edits, splits and duplicates made in HyperFrames
     applied. Renders take seconds to minutes and run the project's HTML and
@@ -143,7 +143,7 @@ def export_to_hyperframes(output_dir, copy_media=True, replace_edits=False):
     keyframes (a GSAP timeline whose eases match Zenvi frame for frame),
     opacity transitions, constant speed (data-playback-rate) and audio levels.
     The Zenvi project is embedded in index.html, so
-    import_hyperframes_project_tool on the folder restores the clips natively.
+    run_tool(name='import_hyperframes_project_tool', args={...}) on the folder restores the clips natively.
     Effects, rounded corners, blend modes, reversed / ramped speed and wipe
     transitions do not translate; the receipt and README.md list each one.
     When the HyperFrames CLI is available the result is linted and the lint

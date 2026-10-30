@@ -39,7 +39,7 @@ def _status_line(st: dict) -> str:
 def manim_setup(install=False, latex=False):
     """Check, and with install=true install, Manim on this computer (its own Python; LaTeX on request).
 
-    Call it first whenever render_manim_tool says Manim is not set up, or that a
+    Call it first whenever run_tool(name='render_manim_tool', args={...}) says Manim is not set up, or that a
     scene needs LaTeX. Nothing needs admin rights; the user sees a confirmation
     dialog before anything is downloaded -- if they decline, stop and tell them.
     """
@@ -48,8 +48,9 @@ def manim_setup(install=False, latex=False):
     if not steps:
         return ok("Manim is ready. " + _status_line(st), **st)
     if not install:
-        return ok("Manim is NOT fully set up: " + _status_line(st) + ". Call manim_setup_tool with install=true "
-                  "to install: " + "; ".join(s["label"] for s in steps) + ".", **st)
+        return ok("Manim is NOT fully set up: " + _status_line(st) + ". Call "
+                  "run_tool(name='manim_setup_tool', args={'install': true}) to install: "
+                  + "; ".join(s["label"] for s in steps) + ".", **st)
     if not hfx._ask_install_consent(
             steps, title="Set up math animations",
             intro="Zenvi renders math and science animations on this computer with Manim. The scenes the "
@@ -88,8 +89,8 @@ def render_manim(project, scene_file, scene, label, transparent=True, full_frame
     titles, lower thirds and designed graphics. One scene per graphic, a few
     seconds long. It stays a transparent overlay unless full_frame=true, which is
     only for a full-screen card with nothing behind it. Equations need
-    LaTeX (manim_setup_tool latex=true); Text() does not. The result carries a
-    file_id: place it next with place_motion_graphic_tool mode=overlay. Nothing is uploaded.
+    LaTeX (run_tool(name='manim_setup_tool', args={'latex': true})); Text() does not. The result carries a
+    file_id: place it next with run_tool(name='place_motion_graphic_tool', args={'mode': 'overlay'}). Nothing is uploaded.
     """
     if not full_frame:
         transparent = True

@@ -333,67 +333,6 @@ def test_result_states_the_undo_cost():
     assert "1 undo step" in out
 
 
-# --- deprecated aliases ----------------------------------------------------
-
-def test_remove_clip_alias_still_deletes_one_clip():
-    app = _mock_app()
-    target = _clip("c2", position=4.0)
-    with patch.object(tool_handlers, "_get_app", return_value=app), \
-         patch.object(tool_handlers, "_resolve_timeline_clip_for_tool",
-                      return_value=ResolveResult(ok=True, clip=target)):
-        out = tool_handlers.remove_clip(timeline_clip_id="c2")
-    assert not out.startswith("Error:"), out
-    target.delete.assert_called_once_with()
-
-
-def test_remove_clip_alias_never_widens_to_a_track_clear():
-    app = _mock_app()
-    with patch.object(tool_handlers, "_get_app", return_value=app), \
-         patch.object(tool_handlers, "_resolve_timeline_clip_for_tool") as resolver:
-        out = tool_handlers.remove_clip(track=str(TRACK_A))
-    assert out.startswith("Error:")
-    resolver.assert_not_called()
-
-
-def test_delete_clips_on_track_alias_still_clears_a_track():
-    app = _mock_app()
-    clip = _clip("c1")
-    query = MagicMock(Clip=MagicMock(), Transition=MagicMock())
-    query.Clip.filter.return_value = [clip]
-    query.Transition.filter.return_value = []
-    with patch.object(tool_handlers, "_get_app", return_value=app), \
-         patch.dict(sys.modules, {"classes.query": query}):
-        out = tool_handlers.delete_clips_on_track(track=str(TRACK_A))
-    assert not out.startswith("Error:"), out
-    clip.delete.assert_called_once_with()
-
-
-def test_delete_clips_on_track_alias_still_requires_a_track():
-    app = _mock_app()
-    with patch.object(tool_handlers, "_get_app", return_value=app):
-        out = tool_handlers.delete_clips_on_track()
-    assert out == "Error: track is required."
-
-
-# --- registration ----------------------------------------------------------
-
-def test_all_three_names_dispatch():
-    for name in ("delete_from_timeline_tool", "remove_clip_tool",
-                 "delete_clips_on_track_tool"):
-        assert name in tool_handlers.AGENT_TOOL_HANDLERS
-        assert name in tool_handlers.TOOL_DISPLAY_LABELS
-
-
-def test_the_three_names_share_one_display_label():
-    """Distinct labels are what made the agent read them as distinct tools."""
-    labels = {
-        tool_handlers.TOOL_DISPLAY_LABELS[n]
-        for n in ("delete_from_timeline_tool", "remove_clip_tool",
-                  "delete_clips_on_track_tool")
-    }
-    assert labels == {"Delete from timeline"}
-
-
 def test_track_scope_refuses_a_contradictory_clip_target():
     """One clip named + "clear the track" must not clear the track.
 

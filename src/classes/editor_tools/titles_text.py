@@ -135,7 +135,7 @@ def _resolve_template(template: str) -> str:
     if not path:
         hint = ", ".join(title_svg.suggest_templates(raw)) or ", ".join(DEFAULT_TEMPLATES)
         raise ToolError(f"unknown title template {raw!r}; close matches: {hint} "
-                        "(list_title_templates_tool lists them all)")
+                        "(run_tool(name='list_title_templates_tool') lists them all)")
     return path
 
 
@@ -361,9 +361,9 @@ def _project_titles(query: str) -> list:
 def list_title_templates(kind="static", query=""):
     """List title templates (and the titles already in the project) with their editable text fields.
 
-    Use before add_title_tool when the user wants a particular look ("lower third",
-    "end card", "gold title"), before edit_title_tool to see a title's current text,
-    and with kind="animated" before add_animated_title_tool. Each static template
+    Use before run_tool(name='add_title_tool') when the user wants a particular look ("lower third",
+    "end card", "gold title"), before run_tool(name='edit_title_tool') to see a title's current text,
+    and with kind="animated" before run_tool(name='add_animated_title_tool'). Each static template
     lists its fields in order (index, role title/subtitle/line, placeholder text),
     its text colour, background and where its text sits (zone top/center/bottom).
     Good defaults: Standard_1 (plain centred title + subtitle), Gray_Box_4 (lower
@@ -450,15 +450,15 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
 
     For titles, title cards, lower thirds, end cards, credits and any static
     text over video. Not for captions of speech (add_captions_tool),
-    countdowns (add_timer_tool), emoji (add_emoji_tool) or 3D animated titles
-    (add_animated_title_tool). Writes a new SVG title from the template, adds
-    it to Project Files and places it above the video (never under it).
-    Unfilled placeholder text (e.g. 'Sub-Title') is blanked. No text with a
-    background_color makes a blank colour card (Solid_Color unless a template
-    is named), e.g. a 0.1 s white flash frame. Text with template Solid_Color
-    (a card with no text field) is drawn with Text_Card (one centred line)
-    over background_color (else the card's colour). One undo step removes the
-    clip and the file entry.
+    countdowns (run_tool(name='add_timer_tool')), emoji (run_tool(name='add_emoji_tool'))
+    or 3D animated titles (run_tool(name='add_animated_title_tool')). Writes a new SVG
+    title from the template, adds it to Project Files and places it above the
+    video (never under it). Unfilled placeholder text (e.g. 'Sub-Title') is
+    blanked. No text with a background_color makes a blank colour card
+    (Solid_Color unless a template is named), e.g. a 0.1 s white flash frame.
+    Text with template Solid_Color (a card with no text field) is drawn with
+    Text_Card (one centred line) over background_color (else the card's colour).
+    One undo step removes the clip and the file entry.
     """
     lines = [str(v) for v in (lines or [])]
     text = str(text or "")
@@ -493,8 +493,8 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
         warnings.append(f"{card} has no text; drew the text with {name} over "
                         + (f"the colour {shown}" if shown and not see_through else "the video"))
     if slots and not given and not colour_card:
-        raise ToolError("add_title_tool needs text (or subtitle / lines), or a background_color for a blank "
-                        "colour card")
+        raise ToolError("run_tool(name='add_title_tool') needs text (or subtitle / lines), or a background_color "
+                        "for a blank colour card")
     style = _Style(font, font_weight, font_style, font_scale, text_color, background_color, fit_text)
     values = _assign_texts(slots, text, subtitle, lines, name, blank_rest=True)
     fps = project_fps()
@@ -581,7 +581,7 @@ def _svg_file(file_obj):
         raise ToolError(f"{data.get('name') or os.path.basename(str(data.get('path') or ''))!r} is not a title "
                         "(only .svg titles can be edited)")
     if data.get("zenvi_role") == OVERLAY_ROLE:
-        raise ToolError("that clip is a timer overlay, not a title; use add_timer_tool")
+        raise ToolError("that clip is a timer overlay, not a title; use run_tool(name='add_timer_tool')")
     return file_obj
 
 
@@ -620,7 +620,7 @@ def _resolve_title(timeline_clip_id: str, file_id: str, title_query: str):
                 scored.append((1, f))
         if not scored:
             raise ToolError(f"no title in the project matches {title_query!r} "
-                            "(list_title_templates_tool kind=project lists them)")
+                            "(run_tool(name='list_title_templates_tool', args={'kind': 'project'}) lists them)")
         best = max(s for s, _ in scored)
         top = [f for s, f in scored if s == best]
         if len(top) > 1:
@@ -637,7 +637,7 @@ def _resolve_title(timeline_clip_id: str, file_id: str, title_query: str):
     if len(titles) == 1:
         return titles[0], ""
     raise ToolError("which title? pass timeline_clip_id, file_id or title_query "
-                    f"({len(titles)} titles in the project; list_title_templates_tool kind=project lists them)")
+                    f"({len(titles)} titles in the project; run_tool(name='list_title_templates_tool', args={{'kind': 'project'}}) lists them)")
 
 
 def _clips_of(file_id: str) -> list:

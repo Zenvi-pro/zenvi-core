@@ -92,7 +92,7 @@ def add_timer(mode="count_down", position_seconds=0.0, duration_seconds=0.0, cou
 
     Adds a transparent 'Timer' overlay clip (or, with timeline_clip_id, a
     Timer effect on that clip) drawn live by libopenshot's Timer effect, not
-    an image. One undo step. For static text use add_title_tool.
+    an image. One undo step. For static text use run_tool(name='add_title_tool').
     """
     fps = project_fps()
     font_name = str(font or "").strip()
@@ -242,8 +242,8 @@ def search_emojis(query="", group="", limit=10):
     people, hands or flags).
 
     Use when the user wants to see options ("what fire emojis are there", "show me food
-    emoji") or when add_emoji_tool picked the wrong one. Each match has the emoji
-    character, its name, group and code (pass the code to add_emoji_tool). Read-only.
+    emoji") or when run_tool(name='add_emoji_tool') picked the wrong one. Each match has the emoji
+    character, its name, group and code (pass the code to run_tool(name='add_emoji_tool')). Read-only.
     """
     q = str(query or "").strip()
     if not q and not group:
@@ -282,7 +282,7 @@ def add_emoji(emoji, group="", position_seconds=0.0, duration_seconds=0.0, scree
     """Put an emoji sticker on the video, e.g. "put a 🔥 emoji top right", "add a heart at 5 seconds".
 
     Finds the emoji by name, character or code among the Emojis dock's OpenMoji
-    stickers (search_emojis_tool shows alternatives), adds it to Project Files the
+    stickers (run_tool(name='search_emojis_tool') shows alternatives), adds it to Project Files the
     way the dock does, and places it on the lowest free track above the video at
     position_seconds, sized and pinned to screen_position. The receipt lists close
     alternatives in case the match was not the intended one. One undo step.
@@ -293,7 +293,7 @@ def add_emoji(emoji, group="", position_seconds=0.0, duration_seconds=0.0, scree
     matches = emoji_catalog.search(str(emoji or "").strip(), group, 6)
     if not matches:
         raise ToolError(f"no emoji matches {emoji!r}" + (f" in group {group}" if group else "")
-                        + "; try search_emojis_tool with a simpler word")
+                        + "; try run_tool(name='search_emojis_tool') with a simpler word")
     best_score, best = matches[0]
     if best_score < 20.0:
         raise ToolError(f"no good emoji match for {emoji!r}; closest: "

@@ -49,33 +49,3 @@ def audit(event: str, **fields: Any) -> None:
     summary = fields.get("summary") or fields.get("tool") or event
     log.info("SPEECH_AUDIT %s %s", event, summary)
 
-
-def audit_receipt(tool: str, receipt_json: str) -> str:
-    """Parse a receipt JSON string, audit it, return unchanged."""
-    if not enabled():
-        return receipt_json
-    try:
-        from classes.agent_tools.receipt import parse_receipt
-        data = parse_receipt(receipt_json)
-    except Exception:
-        audit("tool_raw", tool=tool, raw=str(receipt_json)[:2000])
-        return receipt_json
-    payload = data.get("data") if isinstance(data.get("data"), dict) else {}
-    # Truncate huge word lists but keep count + sample
-    words_sample = None
-    clips = payload.get("clips") if isinstance(payload, dict) else None
-    if isinstance(clips, list) and clips:
-        w0 = (clips[0] or {}).get("words") or []
-        words_sample = w0[:12]
-    audit(
-        "tool_receipt",
-        tool=tool,
-        status=data.get("status"),
-        summary=data.get("summary"),
-        transcriptionSource=payload.get("transcriptionSource") if isinstance(payload, dict) else None,
-        modelId=payload.get("modelId") if isinstance(payload, dict) else None,
-        transcriptGeneration=payload.get("transcriptGeneration") if isinstance(payload, dict) else None,
-        wordSample=words_sample,
-        warnings=data.get("warnings"),
-    )
-    return receipt_json

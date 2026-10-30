@@ -144,7 +144,7 @@ def _require_clean(discard_unsaved: bool, save_first: bool, action: str) -> None
     if not project_path():
         raise ToolError(
             "the current project has unsaved changes and has never been saved; call "
-            "save_project_tool with a file_path first, or pass discard_unsaved=true")
+            "run_tool(name='save_project_tool') with a file_path first, or pass discard_unsaved=true")
 
 
 def save_to(path: str) -> None:
@@ -277,7 +277,7 @@ def open_project(file_path="", recent_index=0, discard_unsaved=False, save_first
         raise ToolError("give file_path (a .zvn project) or recent_index")
     if not path.lower().endswith(info.ALL_PROJECT_EXTS):
         raise ToolError(f"{os.path.basename(path)} is not a project file (.zvn, .osp or .flow); "
-                        "use import_files_tool for media or import_project_file_tool for EDL/XML")
+                        "use import_files_tool for media or run_tool(name='import_project_file_tool') for EDL/XML")
     if not os.path.isfile(path):
         raise ToolError(f"project file not found: {path}")
     _require_clean(discard_unsaved, save_first, "opening another project")
@@ -370,8 +370,8 @@ def save_project(file_path="", overwrite=False):
 def list_recent_projects():
     """List File > Recent Projects, most recent first, with whether each file still exists.
 
-    Use the index with open_project_tool(recent_index=N) ("open my last
-    project"), or forget_recent_projects_tool to tidy the list.
+    Use the index with run_tool(name='open_project_tool', args={'recent_index': N}) ("open my last
+    project"), or run_tool(name='forget_recent_projects_tool') to tidy the list.
     """
     out = []
     for i, path in enumerate(_recent_projects(), start=1):
@@ -463,7 +463,7 @@ def _recovery_versions() -> list:
 def list_recovery_versions():
     """List File > Recovery: the automatic copies saved each time this project was saved, newest first.
 
-    Use before restore_recovery_version_tool ("go back to the version from an
+    Use before run_tool(name='restore_recovery_version_tool') ("go back to the version from an
     hour ago"). A project that was never saved has none.
     """
     if not project_path():
@@ -737,7 +737,7 @@ def consolidate_project_media(action):
     proj = get_app().project
     path = project_path()
     if not path:
-        raise ToolError("save the project first (save_project_tool); media is collected next to the project file")
+        raise ToolError("save the project first (run_tool(name='save_project_tool')); media is collected next to the project file")
     files = copy.deepcopy(proj.get("files") or [])
     clips = copy.deepcopy(proj.get("clips") or [])
     before_files, before_clips = copy.deepcopy(files), copy.deepcopy(clips)

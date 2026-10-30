@@ -17,10 +17,12 @@ FAILED = "failed"
 SKIPPED = "skipped"
 
 PHASE_LABELS = {
+    "analyzing": "Analyzing shots, colour and sound…",
     "installing": "Downloading the local indexing model (once)…",
     "describing": "Describing on this computer…",
     "uploading": "Uploading for search…",
     "indexing": "Indexing for search…",
+    "downloading": "Downloading the search model (about 1.2 GB the first time)…",
     "summarizing": "Generating description…",
     "done": "Indexing complete",
 }

@@ -21,8 +21,10 @@ While it listens, the app's server also advertises itself in a discovery file
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 import os
+import re
 import secrets
 import socket
 import threading
@@ -40,46 +42,52 @@ SERVER_NAME = "zenvi-editor"
 # The built-in Zenvi Assistant bakes watch into its place/slice workflows; CLI
 # harnesses do not run those, so they must watch their own edits explicitly.
 SERVER_INSTRUCTIONS = (
-    "These tools drive a live video editor. Every tool returns a JSON receipt "
+    "These tools drive a live video editor. Only the core tools are listed: find any "
+    "other tool named here (or anything else you need) with find_tools, then call it "
+    "with run_tool. Every tool returns a JSON receipt "
     "with contract=3: status (applied|unchanged|refused|error), summary, clips, "
     "shifted, removedClipIds, createdTracks, watchSuggested, undoSteps. After a "
     "successful mutation (status=applied), patch your timeline state from the "
     "receipt — do not re-call get_timeline_state_tool unless notes say track "
     "indexes shifted. If watchSuggested is non-null, call inspect_timeline_tool "
-    "with that object (clipId/start/end) — or with startFrame/endFrame — before "
+    "with that object (timeline_clip_id/start/end) — or with start_frame/end_frame — before "
     "claiming the edit is correct; you will receive composited JPEG frames with "
-    "a 0–1 top-left coordinate grid. Use inspect_media_tool (prefer overview=true "
-    "first on long files) before describing footage; never guess from filenames. "
-    "Do not shell ffmpeg for frames. Do not use watch_clip_window_tool for "
-    "verification — that path is Assistant place/slice backend confirm and does "
-    "not return images to you. To cut at a known source time, pass start_seconds "
-    "(and end_seconds for a range) to slice_clip_at_best_match_tool. After "
+    "a 0–1 top-left coordinate grid. To describe, summarise or recreate footage call "
+    "storyboard_tool first (detail=list for the whole video in one call: a row per shot with its own time; keep every row; open the keyframe picture before trusting a description): cuts are measured at 10 frames a second, about 0.1 s, so run_tool(name='refine_cut_tool') for the exact frame. Use a frame strip (find_tools: view frames) only for "
+    "a spot check or a file with no shot list yet; never sample frames at a fixed interval to find cuts, and never guess from filenames. "
+    "Do not shell ffmpeg for frames. To cut a placed clip, use slice_clips_tool "
+    "(at_seconds is timeline time). After "
     "delete_from_timeline_tool, check the receipt removedClipIds. If inspect shows "
     "the edit is wrong, undo_tool and retry. "
-    "YouTube / youtu.be / similar URL: call ingest_web_video_tool once "
+    "YouTube / youtu.be / similar URL: call the web video ingest (find_tools: ingest web video) once "
     "(intent=timeline if the user asked to add/place it; intent=reference for "
-    "colour/look only). Do not ToolSearch or use import_files_tool / "
-    "import_video_url_and_add_to_timeline_tool for a YouTube page URL. "
-    "If status=running, call ingest_web_video_tool(job_id=...) again — each "
+    "colour/look only). Do not ToolSearch or use import_files_tool "
+    "for a YouTube page URL. "
+    "If status=running, call the web video ingest again with job_id=... — each "
     "call waits until completed/failed or ~45s. Do not start a second download. "
     "A client 'operation timed out' is not failure; keep calling the same job_id. "
     "On ok=false / status=failed, report the reason once and stop. "
-    "After a successful ingest_web_video_tool place, reply briefly — do not "
+    "After a successful web video ingest place, reply briefly — do not "
     "call inspect_timeline_tool unless the user asked to check the picture. "
     "SPEECH WORKFLOW: You HAVE on-device transcription. For any dialogue, "
     "transcript, filler-word, or caption request call get_transcript_tool "
     "(never suggest Whisper/Rev/Otter/external ASR). It returns spoken words "
     "in project frames (never put ASR inside inspect_*). On macOS, engine=auto "
     "prefers Apple SpeechAnalyzer when the helper is present (macOS 26+); "
-    "Windows and older Macs use faster-whisper. Pass engine=whisper or "
-    "engine=apple to pin. Tighten pacing with remove_silence_tool "
-    "first, then remove_words_tool (pass transcriptGeneration; fillerPreset "
+    "Windows and older Macs use whisper.cpp. Pass engine=whisper or "
+    "engine=apple to pin. Tighten pacing with remove silent pauses "
+    "first, then remove filler words (pass transcript_generation; filler_preset "
     "um_uh is allowed). After cuts, call get_transcript_tool again — stale "
-    "indices are refused. add_captions_tool adds animated word-timed captions over a clip (HyperFrames styles; list_captions_tool names them); "
-    "export_captions_tool writes SRT/VTT. diarize_media_tool labels speakers "
-    "offline. detect_beats_tool finds music beats. search_media_local_tool is "
-    "on-device visual search; search_clips_tool remains the cloud TwelveLabs tier."
+    "indices are refused. add_captions_tool adds animated word-timed captions over a clip (HyperFrames styles; find_tools: list caption styles); "
+    "export captions writes SRT/VTT. diarize media labels speakers "
+    "offline. music analysis (find_tools: analyze music) finds the beats. "
+    "To recreate a video from the user's footage run the loop: plan recreation, build recreation, check recreation, fix what the check names, check again; never place it by length alone. search_footage_tool searches everything the index knows (what happens, what is said, how it looks)."
 )
+
+# The editing playbook (how to finish a whole piece) is one text shared with the Zenvi Assistant; see classes.edit_playbook.
+from classes.edit_playbook import PLAYBOOK  # noqa: E402
+
+SERVER_INSTRUCTIONS = SERVER_INSTRUCTIONS + "\n\n" + PLAYBOOK
 
 # Preferred port: stable across restarts so a CLI registered once (e.g.
 # ``claude mcp add zenvi --transport http http://127.0.0.1:7434/mcp``) keeps
@@ -178,6 +186,65 @@ def iter_tool_defs() -> list:
             "inputSchema": schema,
         })
     return defs
+
+
+_META_TOOLS = (
+    {"name": "find_tools",
+     "description": "Search every editor tool not listed here. Returns the best matches with "
+                    "their input schemas. Call it before saying something cannot be done.",
+     "inputSchema": {"type": "object", "additionalProperties": False, "required": ["query"],
+                     "properties": {"query": {"type": "string", "description": "What you want to do, in plain words."},
+                                    "limit": {"type": "integer", "description": "How many tools (1-10).", "default": 5}}}},
+    {"name": "run_tool",
+     "description": "Run a tool found with find_tools: run_tool(name=<tool name>, args={...}).",
+     "inputSchema": {"type": "object", "additionalProperties": False, "required": ["name"],
+                     "properties": {"name": {"type": "string"},
+                                    "args": {"type": "object", "description": "Arguments matching that tool's inputSchema."}}}},
+)
+
+
+def listed_tool_defs() -> list:
+    """What the server lists: the core tools, find_tools / run_tool and the MCP extras."""
+    from classes.agent_tools.core_tools import CORE_TOOL_NAMES
+
+    keep = set(CORE_TOOL_NAMES) | set(_extra_tools())
+    return [d for d in iter_tool_defs() if d["name"] in keep] + [dict(d) for d in _META_TOOLS]
+
+
+def _words(text: str) -> set:
+    return {w[:-1] if len(w) > 4 and w.endswith("s") else w
+            for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(w) > 2}
+
+
+def call_meta_tool(name: str, args: dict):
+    """find_tools ranks every tool by word overlap; run_tool checks args, then executes."""
+    from classes.tool_handlers import execute_tool_rich
+
+    defs = {d["name"]: d for d in iter_tool_defs()}
+    if name == "find_tools":
+        terms = _words(args.get("query", ""))
+        from classes.agent_tools.core_tools import CORE_TOOL_NAMES
+
+        listed = set(CORE_TOOL_NAMES) | set(_extra_tools())
+        scored = sorted((-(3 * len(terms & _words(n.replace("_", " "))) + len(terms & _words(d["description"]))), n)
+                        for n, d in defs.items() if n not in listed)
+        try:
+            limit = max(1, min(int(args.get("limit") or 5), 10))
+        except (TypeError, ValueError):
+            return "Error: limit must be an integer from 1 to 10."
+        return json.dumps([dict(defs[n], call='run_tool(name="%s", args={...}) -- not a direct tool, calling it by name fails' % n)
+                           for score, n in scored[:limit] if score < 0])
+    target, inner = str(args.get("name") or ""), args.get("args") or {}
+    if not isinstance(inner, dict):
+        return "Error: run_tool args must be an object."
+    d = defs.get(target)
+    if d is None:
+        return "Error: no tool named %r. Call find_tools to look it up." % target
+    unknown = sorted(set(inner) - set(d["inputSchema"].get("properties") or {}))
+    if unknown:
+        return "Error: unknown arguments for %s: %s" % (target, ", ".join(unknown))
+    # After the argument check: chat_session_id is not in any schema.
+    return execute_tool_rich(target, {**inner, "chat_session_id": "mcp"})
 
 
 # Tools a launch mode adds on top of MCP_EXTRA_TOOLS -- the headless session's
@@ -479,7 +546,7 @@ class ZenviMcpServer:
 
         def build():
             return [types.Tool(name=d["name"], description=d["description"],
-                               inputSchema=d["inputSchema"]) for d in iter_tool_defs()]
+                               inputSchema=d["inputSchema"]) for d in listed_tool_defs()]
 
         # Engine-bridge tools arrive from a worker thread after start-up: rebuild when they do.
         listed = {"revision": engine_bridge.REVISION, "tools": build()}
@@ -499,6 +566,12 @@ class ZenviMcpServer:
             from classes.tool_handlers import execute_tool_rich
             args = dict(arguments or {})
 
+            if name in ("find_tools", "run_tool"):
+                output = await anyio.to_thread.run_sync(lambda: call_meta_tool(name, args))
+                if isinstance(output, ToolOutput):
+                    return mcp_content(output)
+                return mcp_content(wrap_str_result(name, "" if output is None else str(output)))
+
             extra = _extra_tools().get(name)
             if extra is not None:
                 # Called directly on the worker thread rather than through
@@ -510,6 +583,8 @@ class ZenviMcpServer:
                 text = "" if result is None else str(result)
                 return mcp_content(wrap_str_result(name, text))
 
+            # MCP calls carry no chat session: give them their own split/import slot, not "default".
+            args["chat_session_id"] = "mcp"
             output = await anyio.to_thread.run_sync(
                 lambda: execute_tool_rich(name, args)
             )

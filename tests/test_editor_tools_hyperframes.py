@@ -93,7 +93,7 @@ def test_run_refuses_what_is_not_allowlisted_and_reports_exit_codes(editor, home
 def test_setup_reports_what_is_missing_and_installs_only_with_consent(editor, home, monkeypatch):
     monkeypatch.setattr(hf, "find_program", lambda name: None)
     out = editor.call("hyperframes_setup_tool")
-    assert "not ready" in out.lower() and "install=true" in out
+    assert "not ready" in out.lower() and "args={'install': true}" in out
 
     ran = []
     monkeypatch.setattr(hf, "install", lambda **kw: ran.append(kw) or hf.status())

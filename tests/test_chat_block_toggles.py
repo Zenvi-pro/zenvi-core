@@ -36,14 +36,19 @@ function makeEl() {
         set: function (v) { el._cls = String(v).split(/\s+/).filter(Boolean); }
     });
     el.appendChild = function (c) { c.parentNode = el; el.children.push(c); return c; };
+    el.insertBefore = function (c, ref) { c.parentNode = el; var i = el.children.indexOf(ref); el.children.splice(i < 0 ? el.children.length : i, 0, c); return c; };
+    Object.defineProperty(el, 'firstChild', { get: function () { return el.children[0] || null; } });
+    Object.defineProperty(el, 'lastChild', { get: function () { return el.children[el.children.length - 1] || null; } });
     el.setAttribute = function () {};
     el.querySelector = function () { return null; };
     el.addEventListener = function (t, fn) { el._listeners[t] = fn; };
     el.click = function () { el._listeners.click(); };
     return el;
 }
-var document = { createElement: makeEl };
+var document = { createElement: makeEl, documentElement: { getAttribute: function () { return '1'; } } };
 var window = {};
+// A tool row's args come from Python when it is opened (WebKit's synchronous bridge here).
+function getBridge(cb) { cb({ toolDetail: function () { return '{"args": "{}"}'; } }); }
 var messagesEl = makeEl();
 var TOOL_CHEVRON_SVG = '', ACTIVITY_SPINNER_SVG = '';
 var thinkingBlockEl = null, thinkingBlockBody = null, thinkingBlockHeader = null;

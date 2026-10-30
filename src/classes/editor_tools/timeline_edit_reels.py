@@ -628,7 +628,8 @@ _STYLE_LINES = " ".join(f"{sid}: {REEL_STYLES[sid].summary}" for sid in REEL_STY
         "labels": array({"type": "string", "maxLength": 40},
                         "Small labels shown on each file's shots, in file_ids order (\"\" for none).", maxItems=60),
         "beats": array({"type": "number", "minimum": 0},
-                       "Beat times of the music in seconds (e.g. from detect_beats_tool) instead of analysing it "
+                       "Beat times of the music in seconds (e.g. from run_tool(name='analyze_music_tool', args={...})) "
+                       "instead of analysing it "
                        "here.", maxItems=4000),
         "replace": boolean("Clear the timeline first when it already has clips (they are removed in the same undo "
                            "step).", False),
@@ -646,14 +647,15 @@ def build_reel(style="hype", file_ids=None, music_file_id="", duration_seconds=N
     give file_ids in story order with the payoff last. The music is analysed on this machine (tempo, beat
     grid, downbeats, loudness): the reel starts on a downbeat of its loudest stretch and ends on a downbeat;
     without music the cuts follow the style's own tempo. Pick the style that fits the ask (hype, cinematic,
-    highlight, match_cut, minimal, editorial, retro). Set the frame first (set_project_profile_tool, e.g.
-    vertical 9:16 for Reels/TikTok/Shorts): footage whose aspect differs from the frame is cropped to fill it.
+    highlight, match_cut, minimal, editorial, retro). Set the frame first
+    (run_tool(name='set_project_setting_tool', args={...}), e.g. vertical 9:16 for Reels/TikTok/Shorts):
+    footage whose aspect differs from the frame is cropped to fill it.
     The timeline must be empty unless replace=true. The reel uses the bottom five tracks (music, video,
     flash, labels, titles) and adds tracks when there are fewer.
 
     The receipt has the timeline's beat grid (beats, downbeats: where anything else should land on the
     beat), every shot's timeline and source range with its timeline_clip_id, the hook and end-card clip ids
-    (edit_title_tool changes their text), the tracks, and a brief (format, story, pace, look).
+    (run_tool(name='edit_title_tool', args={...}) changes their text), the tracks, and a brief (format, story, pace, look).
 
     Example: {"style": "hype", "file_ids": ["F1", "F2", "F3", "F4"], "hook": "Match day",
     "end_card": "Full game Sunday", "duration_seconds": 15}.
@@ -702,7 +704,7 @@ def build_reel(style="hype", file_ids=None, music_file_id="", duration_seconds=N
     for fid in dict.fromkeys(ids + ([music_id] if music_id else [])):
         if not os.path.isfile(project.paths[fid]):
             raise ToolError(f"{names[fid]} is missing on disk ({project.paths[fid]}); relink it "
-                            "(update_project_files_tool) or leave it out")
+                            "with run_tool(name='update_project_files_tool', args={...}) or leave it out")
 
     label_of: Dict[str, str] = {}
     for fid, label in zip(ids, labels or []):

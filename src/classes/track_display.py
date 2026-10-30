@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 # Track number spacing (track_ops.TRACK_STRIDE; kept here so this module stays import-free).
 TRACK_STRIDE = 1000000
@@ -190,7 +190,7 @@ def _resolve_track(raw: str, layers, new_on_top: int) -> tuple[int | None, str |
     if len(label_hits) > 1:
         return None, (
             f"Error: Ambiguous track label {raw!r} matches multiple layers. "
-            "Pass layer_number from list_layers_tool / TRACK_STACK_JSON."
+            "Pass layer_number from get_timeline_state_tool TRACK_STACK_JSON."
         ), 0
 
     # A number never matches part of a name: "1" is UI track 1, not "Music 1".
@@ -213,36 +213,12 @@ def _resolve_track(raw: str, layers, new_on_top: int) -> tuple[int | None, str |
     return (
         None,
         f"Error: Unknown track or layer {raw!r}. "
-        "Call list_layers_tool and use layer_number (preferred), track_id, "
+        "Call get_timeline_state_tool and use layer_number (preferred), track_id, "
         "ui_track (1=bottom), or the exact label.",
         0,
     )
 
 
-def resolve_track_arg_to_layer_number(
-    raw: str,
-    stack: List[Dict[str, Any]],
-) -> Optional[int]:
-    """Resolve a plan/tool track arg against a previously fetched TRACK_STACK."""
-    if not stack:
-        return None
-    raw = (raw or "").strip()
-    if not raw:
-        return None
-
-    # Fake layers list for normalize
-    fake_layers = [
-        {
-            "number": e["layer_number"],
-            "label": e.get("label") or "",
-            "id": e.get("track_id") or "",
-        }
-        for e in stack
-    ]
-    resolved, err = normalize_track_or_layer_arg(raw, fake_layers)
-    if err or resolved is None:
-        return None
-    return int(resolved)
 
 
 def format_track_label_for_llm(layer_num: int, layers) -> str:
@@ -258,34 +234,3 @@ def format_track_label_for_llm(layer_num: int, layers) -> str:
             )
     return str(layer_num)
 
-
-def parse_track_stack_from_tool_text(text: str) -> List[Dict[str, Any]]:
-    """Extract TRACK_STACK_JSON=[...] from list_layers / timeline tool output."""
-    if not text:
-        return []
-    m = re.search(r"TRACK_STACK_JSON=(\[[\s\S]*?\])\s*(?:\n|$)", text)
-    if not m:
-        return []
-    try:
-        data = json.loads(m.group(1))
-    except Exception:
-        return []
-    if not isinstance(data, list):
-        return []
-    out: List[Dict[str, Any]] = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        try:
-            out.append(
-                {
-                    "layer_number": int(item.get("layer_number") or 0),
-                    "ui_track": int(item.get("ui_track") or 0),
-                    "z_from_bottom": int(item.get("z_from_bottom") or 0),
-                    "label": str(item.get("label") or ""),
-                    "track_id": str(item.get("track_id") or ""),
-                }
-            )
-        except Exception:
-            continue
-    return out

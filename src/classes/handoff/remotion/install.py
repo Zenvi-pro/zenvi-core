@@ -1,7 +1,7 @@
 """Install a Remotion project's dependencies (``npm install``), off the GUI thread.
 
 Used by File > Import Project > Remotion Project... ("Install dependencies"
-when ``node_modules`` is missing) and by ``export_to_remotion_tool(install=true)``.
+when ``node_modules`` is missing) and by ``run_tool(name='export_to_remotion_tool', args={'install': true})``.
 npm comes with Node, so it is the default; a project with a pnpm / yarn /
 bun lockfile uses that tool when it is installed (npm otherwise, with a
 warning). Output lines stream to ``on_progress(None, line)``; a cancel kills

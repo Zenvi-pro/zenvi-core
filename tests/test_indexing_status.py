@@ -177,3 +177,14 @@ def test_persisted_running_block_with_live_progress_is_still_running():
         {"index": {"status": "indexing"}}, progress={"phase": "indexing", "percent": -1}
     )
     assert st.state == RUNNING
+
+
+def test_other_skips_keep_their_own_label():
+    st = derive_indexing_status({"skip_reason": "Clip exceeds the 30-minute limit."})
+    assert st.state == SKIPPED and st.label == "Indexing skipped"
+
+
+
+def test_analysing_shows_its_own_phase_label():
+    st = derive_indexing_status({}, progress={"phase": "analyzing", "percent": 40})
+    assert st.state == RUNNING and "Analyzing" in st.tooltip

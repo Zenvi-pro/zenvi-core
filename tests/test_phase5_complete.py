@@ -16,8 +16,6 @@ from classes.speech.diarize import WindowClusterDiarize, speaker_turns
 from classes.speech.cache import Word
 from classes.speech.runtime import CancelToken
 from classes.speech.vad import EnergyVad, silence_ranges_from_speech
-from classes.speech.visual_index import HashEmbedder, VisualIndex, reset_visual_index_for_tests
-from classes.speech.beats import EnergyBeatEngine
 from classes.speech.word_ranges import compact_fragments_after_remove
 
 
@@ -115,38 +113,6 @@ def test_diarize_labels_speakers():
     assert turns
 
 
-def test_beats_detect_something(tmp_path):
-    wav = tmp_path / "b.wav"
-    _write_tone_wav(wav, seconds=2.0, amp=12000)
-    result = EnergyBeatEngine().detect(str(wav), token=CancelToken())
-    assert "beats" in result
-    assert "bpm" in result
-
-
-def test_visual_index_search(tmp_path):
-    reset_visual_index_for_tests(VisualIndex(root=str(tmp_path / "idx")))
-    idx = VisualIndex(root=str(tmp_path / "idx"))
-    a = tmp_path / "a.bin"
-    b = tmp_path / "b.bin"
-    a.write_bytes(b"red car photo data AAA")
-    b.write_bytes(b"blue ocean other BBB")
-    idx.upsert_file("f1", str(a))
-    idx.upsert_file("f2", str(b))
-    hits = idx.search("red car", top_k=2)
-    assert len(hits) == 2
-    assert hits[0]["provider"] == "local"
-    # Same query embedding should prefer a over random — hash stub may not
-    # be semantic; just ensure deterministic ordering for same query.
-    hits2 = idx.search("red car", top_k=2)
-    assert [h["fileId"] for h in hits] == [h["fileId"] for h in hits2]
-    reset_visual_index_for_tests(None)
-
-
-def test_hash_embedder_normalized():
-    v = HashEmbedder().embed_text("hello")
-    assert abs(sum(x * x for x in v) - 1.0) < 1e-6
-
-
 def test_remove_silence_tool_mocked(tmp_path):
     wav = tmp_path / "talk.wav"
     _write_tone_wav(wav, seconds=2.0)
@@ -175,7 +141,7 @@ def test_remove_silence_tool_mocked(tmp_path):
              return_value=([], []),
          ) as apply_mock:
         from classes.agent_tools.speech_extra import remove_silence
-        raw = remove_silence(clipId="c1", minPauseSec=0.2, padSec=0.05)
+        raw = remove_silence(timeline_clip_id="c1", min_pause_seconds=0.2, pad_seconds=0.05)
     receipt = parse_receipt(raw)
     assert receipt["status"] == "applied"
     assert apply_mock.called
@@ -201,7 +167,7 @@ def test_remove_silence_refuses_total_wipe(tmp_path):
          patch("classes.speech.vad.detect_speech_windows", return_value=[]):
         from classes.agent_tools.speech_extra import remove_silence
         # No speech → entire file is silence → refuse entire delete or applied remove
-        raw = remove_silence(clipId="c1", maxRemoveFraction=0.5)
+        raw = remove_silence(timeline_clip_id="c1", max_remove_fraction=0.5)
     receipt = parse_receipt(raw)
     assert receipt["status"] in ("refused", "unchanged", "applied", "error")
     if receipt["status"] == "refused":
@@ -237,48 +203,6 @@ def test_export_captions_writes_srt(tmp_path):
     assert "Hi" in out.read_text(encoding="utf-8")
 
 
-def test_search_media_local_tool(tmp_path):
-    reset_visual_index_for_tests(VisualIndex(root=str(tmp_path / "idx")))
-    media = tmp_path / "shot.bin"
-    media.write_bytes(b"harbor sunset frame")
-    project = {"files": [{"id": "f1", "path": str(media)}], "clips": [], "fps": {"num": 30, "den": 1}}
-    app = MagicMock()
-    with patch("classes.app.get_app", return_value=app), \
-         patch("classes.agent_tools.inspect_render.snapshot_project", return_value=project), \
-         patch("classes.query.File.filter", return_value=[]):
-        from classes.agent_tools.speech_extra import search_media_local
-        raw = search_media_local(query="harbor", top_k=3)
-    receipt = parse_receipt(raw)
-    assert receipt["status"] == "applied"
-    assert receipt["data"]["provider"] == "local"
-    reset_visual_index_for_tests(None)
-
-
-def test_detect_beats_tool(tmp_path):
-    wav = tmp_path / "m.wav"
-    _write_tone_wav(wav, seconds=1.5, amp=10000)
-    project = {
-        "fps": {"num": 30, "den": 1},
-        "clips": [{
-            "id": "c1", "position": 0, "start": 0, "end": 1.5, "layer": 0,
-            "reader": {"path": str(wav)},
-        }],
-    }
-    app = MagicMock()
-    app.project = MagicMock()
-    app.project.get.side_effect = lambda k, d=None: project.get(k, d)
-    with patch("classes.app.get_app", return_value=app), \
-         patch("classes.agent_tools.inspect_render.snapshot_project", return_value=project), \
-         patch("classes.agent_tools.speech_extra._media_path_for_clip", return_value=str(wav)), \
-         patch("classes.clip_utils.project_fps_fraction", return_value=Fraction(30, 1)), \
-         patch("classes.speech.beats.extract_mono_16k_wav", return_value=(str(wav), "")):
-        from classes.agent_tools.speech_extra import detect_beats_tool_handler
-        raw = detect_beats_tool_handler(clipId="c1")
-    receipt = parse_receipt(raw)
-    assert receipt["status"] == "applied"
-    assert "beats" in receipt["data"]
-
-
 def test_diarize_media_tool(tmp_path):
     wav = tmp_path / "d.wav"
     _write_tone_wav(wav, seconds=2.0)
@@ -309,7 +233,7 @@ def test_diarize_media_tool(tmp_path):
          patch("classes.clip_utils.project_fps_fraction", return_value=Fraction(30, 1)), \
          patch("classes.speech.diarize.extract_mono_16k_wav", return_value=(str(wav), "")):
         from classes.agent_tools.speech_extra import diarize_media
-        raw = diarize_media(clipId="c1", maxSpeakers=2)
+        raw = diarize_media(timeline_clip_id="c1", max_speakers=2)
     receipt = parse_receipt(raw)
     assert receipt["status"] == "applied"
     assert receipt["data"]["speakers"]
@@ -322,13 +246,10 @@ def test_all_phase5_tools_registered():
     names = [
         "get_transcript_tool",
         "remove_words_tool",
-        "transcribe_media_tool",
         "remove_silence_tool",
         "add_captions_tool",
         "export_captions_tool",
-        "detect_beats_tool",
         "diarize_media_tool",
-        "search_media_local_tool",
     ]
     for name in names:
         assert name in th.AGENT_TOOL_HANDLERS, name
@@ -341,7 +262,7 @@ def test_all_phase5_tools_registered():
 
 def test_inspect_still_has_no_transcription_key():
     from classes.agent_tools.schema import TOOL_SCHEMAS
-    for name in ("inspect_timeline_tool", "inspect_media_tool"):
+    for name in ("inspect_timeline_tool",):
         props = TOOL_SCHEMAS[name]["properties"]
         assert "transcription" not in props
         assert "transcribe" not in props
@@ -350,7 +271,7 @@ def test_inspect_still_has_no_transcription_key():
 def test_server_instructions_mention_speech():
     from classes.agent_mcp_server import SERVER_INSTRUCTIONS
     assert "get_transcript_tool" in SERVER_INSTRUCTIONS
-    assert "remove_silence_tool" in SERVER_INSTRUCTIONS
+    assert "remove silent pauses" in SERVER_INSTRUCTIONS  # in words: the tool is not listed
     assert "inspect" in SERVER_INSTRUCTIONS.lower()
 
 
@@ -363,39 +284,9 @@ def test_audio_mix_speech_windows_best_prefers_cues():
     assert windows
 
 
-def test_search_media_local_only_returns_the_open_projects_media(tmp_path):
-    """Review #216: the shared index returned another project's files and paths."""
-    idx = VisualIndex(root=str(tmp_path / "idx"))
-    reset_visual_index_for_tests(idx)
-    other = tmp_path / "other_project_secret.bin"
-    other.write_bytes(b"harbor sunset frame")
-    idx.upsert_file("OTHER", str(other))
-    mine = tmp_path / "shot.bin"
-    mine.write_bytes(b"harbor at dusk")
-    project = {"files": [{"id": "f1", "path": str(mine)}], "clips": [], "fps": {"num": 30, "den": 1}}
-    with patch("classes.app.get_app", return_value=MagicMock()), \
-         patch("classes.agent_tools.inspect_render.snapshot_project", return_value=project), \
-         patch("classes.query.File.filter", return_value=[]):
-        from classes.agent_tools.speech_extra import search_media_local
-        receipt = parse_receipt(search_media_local(query="harbor", top_k=5))
-    assert [h["fileId"] for h in receipt["data"]["hits"]] == ["f1"]
-    reset_visual_index_for_tests(None)
+def test_transcript_results_say_word_times_are_not_cut_points():
+    from classes.agent_tools.transcript import _transcript_notes
 
-
-def test_visual_index_follows_a_file_id_to_its_new_path(tmp_path):
-    """PR #275 review: a copied project keeps its file ids; a hit for one must
-    not come back with the other project's path."""
-    import os
-
-    idx = VisualIndex(root=str(tmp_path / "idx"))
-    first = tmp_path / "a" / "shot.bin"
-    second = tmp_path / "b" / "shot.bin"
-    for path in (first, second):
-        path.parent.mkdir()
-        path.write_bytes(b"harbor at dusk")
-    st = first.stat()
-    os.utime(second, ns=(st.st_atime_ns, st.st_mtime_ns))
-    idx.upsert_file("f1", str(first))
-    entry = idx.upsert_file("f1", str(second))
-    assert entry.path == os.path.abspath(str(second))
-    assert [h["path"] for h in idx.search("harbor", file_ids={"f1"})] == [os.path.abspath(str(second))]
+    for for_edit in (True, False):
+        text = " ".join(_transcript_notes(for_edit=for_edit))
+        assert "get_voice_edges_tool" in text and "never slice at a word time" in text

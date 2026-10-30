@@ -63,7 +63,7 @@ def test_claude_parser_emits_expected_signals(qapp):
     events = _collect(runner)
     _feed(runner, "claude_stream.jsonl")
 
-    assert any(e[0] == "tool_started" and "list_files" in e[1] for e in events)
+    assert any(e[0] == "tool_started" and "list_project_files" in e[1] for e in events)
     assert any(e[0] == "tool_completed" and "FIXTURE" in e[3] for e in events)
     assert any(e[0] == "response_ready" and e[1] for e in events)
     # Extended thinking is surfaced as a collapsible "thinking" tool block.
@@ -78,7 +78,7 @@ def test_codex_parser_emits_expected_signals(qapp):
     _feed(runner, "codex_stream.jsonl")
 
     assert runner._cli_session_id == "cdx-abc-123"  # captured for resume
-    assert any(e[0] == "tool_started" and "list_files" in e[1] for e in events)
+    assert any(e[0] == "tool_started" and "list_project_files" in e[1] for e in events)
     assert any(e[0] == "tool_completed" and "FIXTURE" in e[3] for e in events)
     assert any(e[0] == "response_ready" and "3 files" in e[1] for e in events)
 
@@ -792,7 +792,7 @@ def test_agent_bash_prompt_covers_heic_and_zsh():
     text = _agent_bash_prompt()
     assert "dry_run=true" in text
     assert "import_files_tool" in text
-    assert "list_files_tool only lists" in text
+    assert "list_project_files_tool only lists" in text
     assert "C:/Users/" in text or "/c/Users/" in text
     assert "IMMEDIATELY" in text
     assert "/mnt/c" in text
@@ -821,7 +821,7 @@ def test_claude_argv_appends_system_prompt(qapp, monkeypatch, tmp_path):
     assert prompt == _claude_code_system_prompt()
     assert "ingest_web_video_tool" in prompt
     assert "ToolSearch" in prompt
-    assert "watch_clip_window_tool" in prompt
+    assert "watch_clip_window_tool" not in prompt
     assert "HEIC" in prompt
 
 
@@ -1142,7 +1142,7 @@ def test_coerce_model_honours_the_live_lineup(qapp, clear_live_lineups):
 # server named zenvi-editor: one tool schema lookup, a successful and a failing
 # MCP call, and one of Cursor's own shell calls.
 _CURSOR_FIRST = ("I'll inspect the zenvi-editor tool schemas, then call "
-                 "`list_files_tool` and `add_clip_to_timeline_tool` as requested.")
+                 "`list_project_files_tool` and `add_clip_to_timeline_tool` as requested.")
 _CURSOR_LAST = "`city.mp4` could not be added because Track 1 is locked."
 
 
@@ -1156,7 +1156,7 @@ def test_cursor_parser_emits_expected_signals(qapp):
     assert runner._cli_session_id == "cur-abc-123"
     assert runner._cli_id_from_cli is True
     started = [e[1] for e in events if e[0] == "tool_started" and e[1] != "thinking"]
-    assert started == ["look_up_tools", "list_files_tool", "add_clip_to_timeline_tool",
+    assert started == ["look_up_tools", "list_project_files_tool", "add_clip_to_timeline_tool",
                        "run_shell_command"]
     assert any(e[0] == "tool_started" and e[1] == "thinking" for e in events)
     # Every block that opened is closed, thinking included.
@@ -1165,8 +1165,8 @@ def test_cursor_parser_emits_expected_signals(qapp):
     assert sorted(opened) == sorted(closed)
     names = {e[2]: e[1] for e in events if e[0] == "tool_started"}
     by_name = {names[e[1]]: (e[2], e[3]) for e in events if e[0] == "tool_completed"}
-    assert by_name["list_files_tool"][0] is True
-    assert "FIXTURE" in by_name["list_files_tool"][1]
+    assert by_name["list_project_files_tool"][0] is True
+    assert "FIXTURE" in by_name["list_project_files_tool"][1]
     # An MCP tool that raised still arrives as "success" with isError.
     assert by_name["add_clip_to_timeline_tool"] == (
         False, "Error executing tool add_clip_to_timeline_tool: Track 1 is locked")
@@ -1192,7 +1192,7 @@ def test_cursor_mcp_tool_args_are_the_tools_own(qapp):
 
     args = dict(seen)
     assert args["add_clip_to_timeline_tool"] == {"file_name": "city.mp4", "position_seconds": 0}
-    assert args["list_files_tool"] == {}
+    assert args["list_project_files_tool"] == {}
     # Cursor's own tools show what they work on, not the CLI's bookkeeping.
     assert args["run_shell_command"] == {"command": "ls"}
     assert args["look_up_tools"] == {"server": "zenvi-editor"}
@@ -1806,7 +1806,7 @@ def test_opencode_parser_emits_expected_signals(qapp):
     assert sessions == ["ses_f2b3f9489ffelMwif35FMOUI5P"]
 
     started = [e for e in events if e[0] == "tool_started"]
-    assert started[0][1] == "list_files_tool", "server prefix stripped"
+    assert started[0][1] == "list_project_files_tool", "server prefix stripped"
     done = {e[1]: e for e in events if e[0] == "tool_completed"}
     assert done[started[0][2]][2:] == (True, "FIXTURE: 3 files")
     # OpenCode's own "read" is renamed so it is not labelled a motion-graphics step.
@@ -2033,7 +2033,7 @@ def test_opencode_mcp_turn_maps_tools_and_failures(qapp):
 
     names = {e[2]: e[1] for e in events if e[0] == "tool_started"}
     done = {names[e[1]]: (e[2], e[3]) for e in events if e[0] == "tool_completed"}
-    assert done["list_files_tool"][0] is True and "city.mp4" in done["list_files_tool"][1]
+    assert done["list_project_files_tool"][0] is True and "city.mp4" in done["list_project_files_tool"][1]
     assert done["add_clip_to_timeline_tool"] == (
         False, "Error executing tool add_clip_to_timeline_tool: Track 1 is locked")
     # Two text parts with a tool between them: the separator streams too.
@@ -2212,7 +2212,7 @@ def test_hermes_parser_drives_a_new_acp_session(qapp):
 
     started = [e for e in events if e[0] == "tool_started"]
     # Hermes' own "read" is renamed so it is not labelled a motion-graphics step.
-    assert [e[1] for e in started] == ["list_files_tool", "terminal", "read_file"]
+    assert [e[1] for e in started] == ["list_project_files_tool", "terminal", "read_file"]
     done = {e[1]: e for e in events if e[0] == "tool_completed"}
     assert done["tc-list"][2] is True and "FIXTURE: 3 files" in done["tc-list"][3]
     assert done["tc-read"][2] is False and "File not found" in done["tc-read"][3]
@@ -2432,11 +2432,11 @@ def test_hermes_019_names_editor_tools_and_sees_a_failure_inside_completed(qapp)
     _feed(runner, "hermes_acp_v019_turn.jsonl")
 
     names = {e[2]: e[1] for e in events if e[0] == "tool_started"}
-    assert sorted(names.values()) == ["add_clip_to_timeline_tool", "list_files_tool"]
+    assert sorted(names.values()) == ["add_clip_to_timeline_tool", "list_project_files_tool"]
     done = {names[e[1]]: (e[2], e[3]) for e in events if e[0] == "tool_completed"}
     # The untrusted-content wrapper and its warning are gone; the payload stays.
-    assert done["list_files_tool"][0] is True
-    assert done["list_files_tool"][1].startswith('[{"name": "beach.mp4"')
+    assert done["list_project_files_tool"][0] is True
+    assert done["list_project_files_tool"][1].startswith('[{"name": "beach.mp4"')
     # Hermes reports a tool that raised as "completed"; the error is in the body.
     assert done["add_clip_to_timeline_tool"] == (
         False, "Error executing tool add_clip_to_timeline_tool: Track 1 is locked")
@@ -2445,8 +2445,8 @@ def test_hermes_019_names_editor_tools_and_sees_a_failure_inside_completed(qapp)
 
 
 @pytest.mark.parametrize("title,name", [
-    ("mcp__zenvi_editor__list_files_tool", "list_files_tool"),
-    ("mcp_zenvi_editor_list_files_tool", "list_files_tool"),       # Hermes 0.15
+    ("mcp__zenvi_editor__list_files_tool", "list_project_files_tool"),
+    ("mcp_zenvi_editor_list_files_tool", "list_project_files_tool"),       # Hermes 0.15
     ("python: import json", "python"),
     ("read: notes.txt", "read_file"),
     ("terminal: ls -la", "terminal"),

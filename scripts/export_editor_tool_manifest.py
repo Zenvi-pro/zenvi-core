@@ -67,10 +67,13 @@ def build_manifest(engine_catalog: str = "") -> dict:
             "input_schema": spec.schema,
             "covers": list(spec.covers),
         })
+    from classes.agent_tools.core_tools import CORE_TOOL_NAMES
+    from classes.edit_playbook import playbook_manifest
+
     if engine_catalog:
         tools.extend(engine_entries(engine_catalog))
     return {"manifest_version": MANIFEST_VERSION, "source": "zenvi-core src/classes/editor_tools",
-            "tools": tools}
+            "playbook": playbook_manifest(), "tools": tools, "core_tools": list(CORE_TOOL_NAMES)}
 
 
 def main() -> int:

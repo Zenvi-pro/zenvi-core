@@ -78,7 +78,7 @@ def export_to_premiere(output_path="", collect_media=False, overwrite=False):
     PNG stills in '<xml name>_media/titles/' (Premiere cannot read SVG). Effects
     without a Premiere equivalent are listed in warnings. Not a video render
     (export_video_tool) and changes nothing in the project. For a connected
-    Premiere use send_to_premiere_tool. Example: {"output_path":
+    Premiere use run_tool(name='send_to_premiere_tool', args={...}). Example: {"output_path":
     "/Users/me/Desktop/Promo.xml"}.
     """
     from classes.exporters import final_cut_pro as fcp
@@ -133,7 +133,7 @@ def send_to_premiere():
     (Zenvi Link panel) to import it into the "Zenvi Imports" bin and open it.
     Returns the new sequence's name and id, media Premiere could not find,
     and conversion warnings. Refused when Premiere is not connected
-    (list_link_hosts_tool says how to connect). Changes nothing in the Zenvi
+    (run_tool(name='list_link_hosts_tool') says how to connect). Changes nothing in the Zenvi
     project; the import is one step in Premiere's own undo history.
     """
     from classes.exporters import final_cut_pro as fcp

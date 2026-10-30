@@ -21,30 +21,30 @@ class IndexingQueueLogic:
       fid = str(file_id or "")
       return any(str(w.get("id", "")) == fid for w in self._active_indexers)
 
-  def _enqueue_index(self, file_id, summarize_only=False):
+  def _enqueue_index(self, file_id):
       fid = str(file_id or "")
       if not fid or self.is_file_indexing(fid):
           return
-      if any(qid == fid for qid, _ in self._indexing_queue):
+      if any(qid == fid for qid in self._indexing_queue):
           return
-      self._indexing_queue.append((fid, bool(summarize_only)))
+      self._indexing_queue.append(fid)
       self._drain_indexing_queue()
 
   def _drain_indexing_queue(self):
       while len(self._active_indexers) < self._MAX_INDEXING_WORKERS and self._indexing_queue:
-          file_id, summarize_only = self._indexing_queue.pop(0)
+          file_id = self._indexing_queue.pop(0)
           if self.is_file_indexing(file_id):
               continue
-          self._start_indexing_worker(file_id, summarize_only)
+          self._start_indexing_worker(file_id)
 
   def is_file_queued(self, file_id):
       fid = str(file_id or "")
-      return any(qid == fid for qid, _ in self._indexing_queue)
+      return any(qid == fid for qid in self._indexing_queue)
 
   def has_active_indexing(self):
       return bool(self._active_indexers or self._indexing_queue)
 
-  def _start_indexing_worker(self, file_id, summarize_only=False):
+  def _start_indexing_worker(self, file_id):
       self._active_indexers.append({"id": str(file_id)})
 
 
@@ -52,16 +52,16 @@ class IndexingQueueTests(unittest.TestCase):
     def test_enqueue_dedupes_active_and_queued(self):
         model = IndexingQueueLogic()
         model._active_indexers = [{"id": "a"}]
-        model._indexing_queue = [("a", False)]
-        model._enqueue_index("a", summarize_only=False)
-        self.assertEqual(model._indexing_queue, [("a", False)])
+        model._indexing_queue = ["a"]
+        model._enqueue_index("a")
+        self.assertEqual(model._indexing_queue, ["a"])
 
     def test_drain_respects_max_workers(self):
         model = IndexingQueueLogic()
-        model._indexing_queue = [("1", False), ("2", False), ("3", False)]
+        model._indexing_queue = ["1", "2", "3"]
         started = []
 
-        def fake_start(fid, summarize_only=False):
+        def fake_start(fid):
             started.append(fid)
             model._active_indexers.append({"id": str(fid)})
 
@@ -77,7 +77,7 @@ class IndexingQueueTests(unittest.TestCase):
         model._active_indexers.pop()
         model._drain_indexing_queue()
         self.assertEqual(started, ["1", "2"])
-        self.assertEqual(model._indexing_queue, [("3", False)])
+        self.assertEqual(model._indexing_queue, ["3"])
 
 
 class QueuedBadgeStatusTests(unittest.TestCase):
@@ -92,7 +92,7 @@ class QueuedBadgeStatusTests(unittest.TestCase):
 
     def test_queued_file_reports_pending_badge(self):
         model = self._full_model()
-        self.assertEqual(model._indexing_queue, [("c", False)])
+        self.assertEqual(model._indexing_queue, ["c"])
         status = derive_indexing_status(
             {},
             is_active=model.is_file_indexing("c"),

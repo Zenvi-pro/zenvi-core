@@ -45,9 +45,9 @@ def bridge(editor, tmp_path, monkeypatch):
 def test_lists_engine_tools_the_desktop_lacks_and_caches_the_catalog(bridge, tmp_path):
     from classes.editor_tools import engine_bridge as bridged
 
-    # list_files_tool is the desktop's own; export needs a capability the bridge host lacks.
+    # list_project_files_tool is the desktop's own; export needs a capability the bridge host lacks.
     assert "add_motion_template_tool" in bridge.handlers
-    assert "list_files_tool" not in bridge.handlers and "export_video_tool" not in bridge.handlers
+    assert "list_project_files_tool" not in bridge.handlers and "export_video_tool" not in bridge.handlers
     definition = bridged.tool_def("add_motion_template_tool")
     assert definition["inputSchema"]["properties"] == {"template": {"type": "string"}}
     assert bridged.SURFACE_NOTE in definition["description"]

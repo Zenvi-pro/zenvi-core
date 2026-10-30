@@ -8,10 +8,12 @@ The backend bills AI video and morph generation itself (/generation/video and
 /generation/morph deduct after success), so the desktop must not charge those
 keys a second time; check_operation remains for preflight UX.
 
-Indexing and stock downloads never pass through a billed backend route: the
-/indexing routes are unauthenticated and their Gemini calls are not metered,
-and Pexels / Freesound files download straight from the CDN. The desktop's
-charge is the only one for those, so they are not in BACKEND_METERED_OPS.
+Media index v2 is metered by the backend (/index/v2/* checks credits first and
+charges from Gemini's real token usage after), so the desktop fires no charge
+for it. The original indexing routes and stock downloads (Pexels / Freesound
+files come straight from the CDN) are not billed by a backend route; the
+desktop's charge is the only one for those, so they are not in
+BACKEND_METERED_OPS.
 """
 
 import json

@@ -200,7 +200,7 @@ def resolve_transitions(transition_ids=None, between_clip_ids=None, track="", at
         for tid in transition_ids:
             t = Transition.get(id=str(tid).strip())
             if not t:
-                raise ToolError(f"no transition with id={tid!r} (list_timeline_transitions_tool lists them)")
+                raise ToolError(f"no transition with id={tid!r} (run_tool(name='list_timeline_transitions_tool') lists them)")
             out.append(t)
         return out
     if between_clip_ids:
@@ -283,7 +283,7 @@ def _pick_mask(name):
     entry, candidates = transition_ops.find_transition(name)
     if entry is None:
         hint = f"; did you mean {', '.join(candidates)}" if candidates else ""
-        raise ToolError(f"unknown transition {name!r}{hint} (list_transitions_tool / search_transitions_tool)")
+        raise ToolError(f"unknown transition {name!r}{hint} (run_tool(name='list_transitions_tool'))")
     return entry
 
 
@@ -341,7 +341,7 @@ def list_timeline_transitions(track="", timeline_clip_id="", at_seconds=None):
     'later_first' = the later clip shows first and flashes back) or the clip edge it fades
     (on_clip_start = fade in, on_clip_end = fade out).
     Use before changing, reversing, copying or removing a transition. The catalog of
-    transitions you can add is list_transitions_tool / search_transitions_tool. Read-only.
+    transitions you can add is run_tool(name='list_transitions_tool') (query narrows it by name). Read-only.
     """
     layer = resolve_layer(track) if str(track or "").strip() else None
     items = [t for t in _transitions() if layer is None or _layer_of(t.data) == layer]
@@ -584,7 +584,7 @@ def reverse_transition(transition_ids=None, between_clip_ids=None, track="", at_
     fade-in becomes a fade-out and back. On a crossfade/wipe BETWEEN two clips it makes the
     later clip show first and the earlier one flash back before the cut (the receipt's
     order becomes 'later_first'), which is rarely wanted: for "make the wipe go the other
-    way" use update_transition_tool(flip_wipe_side=true). Several transitions in one undo
+    way" use run_tool(name='update_transition_tool', args={'flip_wipe_side': true}). Several transitions in one undo
     step (scope='track' reverses a whole track). Refused on locked tracks; never deletes clips.
     """
     targets = resolve_transitions(transition_ids, between_clip_ids, track, at_seconds, scope)
@@ -744,7 +744,7 @@ def _retimed(data):
         "timeline_clip_ids": array({"type": "string"}, "Only join these clips (all on one track, joined in "
                                                        "timeline order). Leave out for every clip on the track."),
         "transition": string("'fade' (crossfade, default), 'random', or any transition name ('wipe_left_to_right', "
-                             "'circle_in_to_out', list_transitions_tool).", "fade"),
+                             "'circle_in_to_out', find_tools: list transitions).", "fade"),
         "duration_seconds": number("Length of each transition in seconds. 0 = the Default Transition Length "
                                    "preference.", 1.0, minimum=0),
         "method": enum(["ripple", "handles", "existing_overlaps"],
@@ -773,7 +773,7 @@ def add_transitions_between_clips(track="", timeline_clip_ids=None, transition="
     clip). Read `method` for how the overlap is made; the receipt lists every join added,
     skipped (gap, too short, already has one, no spare media) and every clip moved. One undo
     step. Refused on a locked track; never deletes clips. For one specific pair you can also
-    use apply_transition_tool.
+    use find_tools (apply a transition).
     Example: track="1", transition="fade", duration_seconds=0.5.
     """
     from classes.query import Clip, Transition

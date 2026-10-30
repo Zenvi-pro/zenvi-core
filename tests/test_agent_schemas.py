@@ -3,7 +3,6 @@
 import pytest
 
 from classes.agent_tools.schema import (
-    PRIORITY_SCHEMAS,
     TOOL_SCHEMAS,
     UNSCHEMATIZED,
     get_schema,
@@ -24,8 +23,8 @@ def test_unschematized_allowlist_is_empty():
     assert UNSCHEMATIZED == frozenset()
 
 
-def test_priority_schemas_reject_unknown_keys():
-    for name in PRIORITY_SCHEMAS:
+def test_schemas_reject_unknown_keys():
+    for name in TOOL_SCHEMAS:
         schema = get_schema(name)
         assert schema is not None
         assert schema.get("additionalProperties") is False
@@ -72,45 +71,44 @@ def test_mcp_iter_tool_defs_uses_strict_schemas():
         assert defs[name]["inputSchema"]["additionalProperties"] is False
 
 
-def test_normalize_drops_empty_track_index_and_coerces_string_int():
+def test_normalize_drops_empty_track_and_coerces_string_int():
     from classes.agent_tools.schema import normalize_args
 
     dropped = normalize_args("get_transcript_tool", {
-        "clipId": "c1",
-        "trackIndex": "",
+        "timeline_clip_id": "c1",
+        "track": "",
         "force": "false",
     })
-    assert "trackIndex" not in dropped
+    assert "track" not in dropped
     assert dropped["force"] is False
-    assert dropped["clipId"] == "c1"
+    assert dropped["timeline_clip_id"] == "c1"
 
-    coerced = normalize_args("get_transcript_tool", {"trackIndex": "0", "force": "true"})
-    assert coerced["trackIndex"] == 0
+    coerced = normalize_args("get_transcript_tool", {"track": "0", "force": "true"})
+    assert coerced["track"] == 0
     assert coerced["force"] is True
 
 
 def test_validate_accepts_assistant_stringly_transcript_args():
     assert validate_args("get_transcript_tool", {
-        "clipId": "c1",
-        "trackIndex": "",
+        "timeline_clip_id": "c1",
+        "track": "",
         "force": "false",
     }) is None
     assert validate_args("get_transcript_tool", {
-        "fileId": "f1",
-        "trackIndex": "0",
+        "file_id": "f1",
+        "track": "0",
     }) is None
 
 
 def test_validate_accepts_timeline_detail_level():
     assert validate_args("get_timeline_state_tool", {"detail_level": "summary"}) is None
     assert validate_args("get_timeline_state_tool", {}) is None
-    assert validate_args("list_clips_tool", {"detail_level": "full"}) is None
-    assert validate_args("list_clips_tool", {}) is None
+    assert validate_args("get_timeline_state_tool", {"detail_level": "full"}) is None
 
 
 def test_validate_accepts_remove_words_matches():
     assert validate_args("remove_words_tool", {
-        "clipId": "c1",
+        "timeline_clip_id": "c1",
         "matches": ["FlowCut", "flocut"],
     }) is None
     assert validate_args("add_captions_tool", {
@@ -126,6 +124,17 @@ def test_validate_accepts_transcript_aliases():
     assert validate_args("get_transcript_tool", {
         "file_id": "FZOEBK3JJZ",
     }) is None
+
+
+@pytest.mark.parametrize("tool, args", [
+    ("get_transcript_tool", {"clipId": "c1"}),
+    ("remove_words_tool", {"timeline_clip_id": "c1", "wordIndices": [0]}),
+    ("remove_silence_tool", {"timeline_clip_id": "c1", "minPauseSec": 0.2}),
+    ("inspect_timeline_tool", {"clipId": "c1", "start": 0, "end": 1}),
+    ("add_captions_tool", {"clipId": "c1", "srtPath": "/x.srt"}),
+])
+def test_retired_argument_spellings_are_refused(tool, args):
+    assert validate_args(tool, args) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -147,36 +156,13 @@ from classes.editor_tools import coerce_args
 # Properties a handler takes through **kwargs instead of by name: read with
 # kwargs.get() or passed on to a callee that consumes them.
 KWARG_PROPS = {
-    # forwarded to add_clip_to_timeline(**_kw)
-    "import_video_url_and_add_to_timeline_tool": {
-        "query", "start_seconds", "end_seconds", "duration_seconds", "full_file",
-    },
     # read by the shared timeline-clip resolver
     "modify_clip_tool": {"occurrence", "position_near", "track"},
-    "search_clip_scenes_tool": {"occurrence", "position_near", "track"},
-    "watch_clip_window_tool": {"occurrence", "position_near", "track"},
-    "slice_clip_at_best_match_tool": {"track"},
-    "split_file_add_clip_tool": {"require_visual_match"},
-    "watch_clip_tool": {"query"},
-    # Phase 5 speech tools read the snake_case aliases for clipId / fileId
-    "transcribe_media_tool": {"file_id"},
-    "get_transcript_tool": {"file_id", "timeline_clip_id"},
-    "remove_words_tool": {"timeline_clip_id"},
-    "remove_silence_tool": {"timeline_clip_id"},
-    "export_captions_tool": {"timeline_clip_id"},
-    "detect_beats_tool": {"file_id", "timeline_clip_id"},
-    "diarize_media_tool": {"file_id", "timeline_clip_id"},
-    # Phase 6 colour tools accept camelCase allClips via **kwargs / **_kw
-    "apply_color_tool": {"allClips"},
-    "apply_look_tool": {"allClips"},
-    "match_color_to_reference_tool": {"allClips"},
 }
 
 # Sent by the assistant backend's stubs but unused by this handler. They stay in
 # the schema so those calls validate; list them here so the drift is visible.
 BACKEND_ONLY_PROPS = {
-    "get_timeline_state_tool": {"detail_level"},
-    "list_clips_tool": {"detail_level"},
 }
 
 
@@ -231,8 +217,13 @@ def _backend_value(annotation, prop_schema=None):
     ann = annotation.rstrip("!").replace(" ", "")
     if ann.startswith("Optional["):
         ann = ann[len("Optional["):-1]
+    types = (prop_schema or {}).get("type")
+    if ann == "str" and "array" in (types if isinstance(types, list) else [types]):
+        item = ((prop_schema or {}).get("items") or {}).get("type")
+        return '["x"]' if item == "string" else "[1]"  # the stub takes a JSON array as text, as the model sends it
     if ann == "float":
-        return 1.5
+        lo, hi = (prop_schema or {}).get("minimum"), (prop_schema or {}).get("maximum")
+        return 1.5 if (lo is None or lo <= 1.5) and (hi is None or hi >= 1.5) else (lo + hi) / 2
     if ann == "int":
         return 2
     if ann == "bool":
@@ -292,3 +283,12 @@ def test_import_files_accepts_a_list_of_paths():
     args = {"paths": ["/media/a.mp4", "/media/b.mp4"]}
     assert validate_args("import_files_tool", normalize_args("import_files_tool", args)) is None
     assert validate_args("import_files_tool", {"paths": "/media/a.mp4,/media/b.mp4"}) is None
+
+
+def test_watch_clip_tool_is_removed_from_core():
+    from classes.agent_mcp_server import iter_tool_defs
+
+    assert "watch_clip_tool" not in tool_handlers.AGENT_TOOL_HANDLERS
+    assert "watch_clip_tool" not in {d["name"] for d in iter_tool_defs()}
+    src = Path(__file__).resolve().parents[1] / "src"
+    assert [p for p in src.rglob("*.py") if "Feral" in p.read_text(encoding="utf-8")] == []

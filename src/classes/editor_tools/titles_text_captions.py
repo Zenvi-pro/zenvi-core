@@ -401,8 +401,8 @@ def build_captions(clip, style: str = cap.DEFAULT_STYLE, behind_subject: bool = 
     except cap.CaptionError as exc:
         raise ToolError(str(exc))
     if not hf.status()["ready"]:
-        raise ToolError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool "
-                        "(install=true) first")
+        raise ToolError("HyperFrames is not set up on this computer yet; call "
+                        "run_tool(name='hyperframes_setup_tool', args={'install': true}) first")
     if _is_retimed(clip.data):
         raise ToolError("this clip's speed was changed, so its words no longer line up with the timeline; "
                         "caption it before changing the speed")
@@ -572,7 +572,8 @@ def _place_overlays(clip, caption_file, subject, start, duration, project, out_r
     schema=obj({
         "timeline_clip_id": string("The clip to caption (id from get_timeline_state_tool).", ""),
         "clip_query": string("Or describe the clip ('the interview clip').", ""),
-        "style": enum(list(cap.STYLES), "Caption style; list_captions_tool describes each.", cap.DEFAULT_STYLE),
+        "style": enum(list(cap.STYLES), "Caption style; run_tool(name='list_captions_tool') describes each.",
+                      cap.DEFAULT_STYLE),
         "behind_subject": boolean("Put the captions BEHIND the speaker: a cut-out of the subject is placed on "
                                   "the track above the captions. Slower (subject matting).", False),
         "text": string("Corrected caption text, to fix what the transcript got wrong. Keep the word count to "

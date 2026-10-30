@@ -194,3 +194,77 @@ def test_the_time_limit_grows_with_the_audio(tmp_path):
         fh.truncate(32000 * 3600)
     assert whisper_cpp._time_limit(str(short)) == 600
     assert whisper_cpp._time_limit(str(hour)) == 4 * 3600
+
+
+# ---- the speech model is fetched when it is missing ----
+def _fake_opener(payloads):
+    import io
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    return lambda url: Resp(payloads[url])
+
+
+def test_the_model_table_matches_the_release_script():
+    """The hashes the app checks are the ones the release job pins."""
+    import re
+    from pathlib import Path
+    script = (Path(__file__).resolve().parents[1] / "installer" / "build-whisper-cli.sh").read_text()
+    pinned = {m.group(1): (m.group(2), m.group(3)) for m in re.finditer(r'"([\w.\-]+\.bin)\|([0-9a-f]{64})\|(https://[^"]+)"', script)}
+    assert pinned == {name: (src["sha256"], src["url"]) for name, src in whisper_cpp.MODEL_SOURCES.items()}
+
+
+def test_missing_models_are_fetched_checked_and_installed_once(tmp_path, monkeypatch):
+    import hashlib
+    monkeypatch.setattr(whisper_cpp, "models_dir", lambda: str(tmp_path / "whisper"))
+    monkeypatch.setattr(whisper_cpp, "_find", lambda env, name: next((str(p) for p in [tmp_path / "whisper" / name] if p.is_file()), ""))
+    payloads = {src["url"]: name.encode() * 10 for name, src in whisper_cpp.MODEL_SOURCES.items()}
+    for name, src in whisper_cpp.MODEL_SOURCES.items():
+        monkeypatch.setitem(src, "sha256", hashlib.sha256(payloads[src["url"]]).hexdigest())
+    steps = []
+    got = whisper_cpp.ensure_models(progress=steps.append, opener=_fake_opener(payloads))
+    assert sorted(got) == sorted(whisper_cpp.MODEL_SOURCES) and steps
+    assert all((tmp_path / "whisper" / n).is_file() for n in whisper_cpp.MODEL_SOURCES) and not list((tmp_path / "whisper").glob("*.part"))
+    assert whisper_cpp.ensure_models(opener=_fake_opener({})) == [], "nothing is fetched twice"
+
+
+def test_a_model_that_does_not_match_installs_nothing(tmp_path, monkeypatch):
+    from classes.verified_download import DownloadError
+    monkeypatch.setattr(whisper_cpp, "models_dir", lambda: str(tmp_path / "whisper"))
+    monkeypatch.setattr(whisper_cpp, "_find", lambda env, name: "")
+    payloads = {src["url"]: b"tampered" for src in whisper_cpp.MODEL_SOURCES.values()}
+    with pytest.raises(DownloadError, match="checksum"):
+        whisper_cpp.ensure_models(opener=_fake_opener(payloads))
+    assert not list((tmp_path / "whisper").glob("*"))
+
+
+def test_transcription_fetches_a_missing_model_when_the_engine_is_there(tmp_path, monkeypatch):
+    from classes.speech import asr
+    cli = tmp_path / "whisper-cli"
+    cli.write_text("#!/bin/sh\n")
+    state = {"model": ""}
+    monkeypatch.setattr(whisper_cpp, "cli_path", lambda: str(cli))
+    monkeypatch.setattr(whisper_cpp, "model_path", lambda: state["model"])
+    monkeypatch.setattr(whisper_cpp, "ensure_models", lambda *a, **k: state.update(model="ggml-base.bin") or ["ggml-base-q5_1.bin"])
+    assert isinstance(asr._whisper_transcriber(), whisper_cpp.WhisperCppTranscriber)
+    assert state["model"]
+
+
+def test_a_failed_model_download_says_so_instead_of_asking_for_pip(tmp_path, monkeypatch):
+    from classes.speech import asr
+    from classes.verified_download import DownloadError
+    cli = tmp_path / "whisper-cli"
+    cli.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(whisper_cpp, "cli_path", lambda: str(cli))
+    monkeypatch.setattr(whisper_cpp, "model_path", lambda: "")
+
+    def offline(*a, **k):
+        raise DownloadError("offline")
+    monkeypatch.setattr(whisper_cpp, "ensure_models", offline)
+    with pytest.raises(RuntimeError, match="speech model could not be downloaded"):
+        asr._whisper_transcriber()
