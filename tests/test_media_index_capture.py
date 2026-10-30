@@ -112,9 +112,11 @@ def test_capture_is_kept_in_the_manifest_and_loaded_with_the_file(tmp_path):
     assert fi.captured_at == "2024-05-01T14:03:09+00:00" and fi.gps == {"lat": 37.7749, "lon": -122.4194}
 
 
-def test_nothing_sent_to_the_cloud_contains_the_location(tagged, tmp_path):
+def test_nothing_sent_to_the_cloud_contains_the_location(tagged, tmp_path, monkeypatch):
     """The upload is the proxy file; the calls carry shots, transcript text and pictures. None may hold the GPS or date."""
+    from classes import local_describe
     from test_media_index_cloud import FakeClient
+    monkeypatch.setattr(local_describe, "enabled", lambda: False)     # Gemini is the path that uploads
     shelf = Shelf(str(tmp_path / "s"))
     sha = "8" * 64
     probe = P.probe_media(tagged)

@@ -306,9 +306,9 @@ def sequence_frames(pattern_path: str) -> List[str]:
 
 def render_svg_png(svg_path: str, png_path: str, width: int, height: int) -> None:
     """Rasterize a title / wipe SVG to a transparent PNG with QSvgRenderer, as libopenshot does."""
-    from classes.agent_tools.titles import _rasterize_svg
+    from classes.exporters.final_cut_pro import render_still_png
     from classes.handoff.jobs import run_on_qthread
-    run_on_qthread(lambda: _rasterize_svg(svg_path, png_path, width, height), timeout_seconds=120)
+    run_on_qthread(lambda: render_still_png(svg_path, png_path, width, height), timeout_seconds=120)
     if not os.path.isfile(png_path):
         raise AeHandoffError(f"could not render {os.path.basename(svg_path)} to an image")
 
