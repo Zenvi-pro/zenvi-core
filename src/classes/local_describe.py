@@ -54,8 +54,21 @@ SYSTEM = {"video": "Answer questions about the video using what you see and hear
           "image": "Answer questions about the image."}
 MEDIA_FLAG = {"video": "--video", "audio": "--audio", "image": "--image"}
 DESCRIBE_TIMEOUT = 900
+MAX_HEIGHT = 360        # chunk height: a quarter of 720p's image tokens, about 1.8x faster; small text suffers
+# Speech comes from the editor's own recogniser (the captions' word timings), not from this model.
+_SPEECH_FIELDS = ("transcript", "transcript_en", "transcript_cues")
+_CUE_GAP = 0.8          # seconds of silence that end a transcript cue
 _EXE = "llama.exe" if sys.platform == "win32" else "llama"
 _install_lock = threading.Lock()       # two index workers may both be the first
+
+
+def enabled() -> bool:
+    """The AI setting: this computer unless Gemini was picked (and with no editor running)."""
+    try:
+        from classes.app import get_app
+        return get_app().get_settings().get("index-describe") != "gemini"
+    except Exception:
+        return True
 
 
 def home() -> str:
@@ -142,6 +155,32 @@ def _environment() -> dict:
     return env
 
 
+def speech_words(path: str) -> list:
+    """The file's words from the local recogniser (cached with the captions'); none if it cannot run."""
+    try:
+        from classes.speech.asr import transcribe_file
+        return list(transcribe_file(path).words)
+    except Exception as exc:
+        log.warning("local indexing has no transcript for %s: %s", path, exc)
+        return []
+
+
+def speech(words: list, start: float, end: float) -> Dict[str, Any]:
+    """Transcript and cues for the words in [start, end), timed from the chunk's start."""
+    cues: List[Dict[str, Any]] = []
+    for w in (w for w in words if start <= float(w.startSec) < end):
+        text = str(w.text or "").strip()
+        if not text:
+            continue
+        s, e = round(float(w.startSec) - start, 3), round(float(w.endSec) - start, 3)
+        last = cues[-1] if cues else None
+        if last and s - last["end"] <= _CUE_GAP and not last["text"].endswith((".", "?", "!")):
+            last["text"], last["end"] = last["text"] + " " + text, e
+        else:
+            cues.append({"start": s, "end": e, "text": text})
+    return {"transcript": " ".join(c["text"] for c in cues), "transcript_cues": cues}
+
+
 def _json_answer(text: str) -> Dict[str, Any]:
     start, end = text.find("{"), text.rfind("}")
     if start < 0 or end <= start:
@@ -153,16 +192,21 @@ def _json_answer(text: str) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def describe(path: str, media_type: str, prompt: str, schema: Dict[str, Any]) -> Dict[str, Any]:
+def describe(path: str, media_type: str, prompt: str, schema: Dict[str, Any], duration: float = 0.0) -> Dict[str, Any]:
     """Describe one chunk; returns the model's JSON in the backend's schema."""
     mt = media_type if media_type in MEDIA_FLAG else "video"
+    schema = dict(schema or {})
+    schema["properties"] = {k: v for k, v in (schema.get("properties") or {}).items() if k not in _SPEECH_FIELDS}
+    if "required" in schema:
+        schema["required"] = [k for k in schema["required"] if k not in _SPEECH_FIELDS]
+    # The schema goes in the prompt: llama.cpp's grammar sampler fails on this model's chat template.
+    if duration > 0:        # unknown to the model otherwise; it then crowded every time into the first seconds
+        prompt += "\nThis segment is %.1f seconds long: times run from 0 to %.1f." % (duration, duration)
+    prompt = ("%s\nSpeech is transcribed separately: leave out the transcript fields.\n"
+              "Answer with one JSON object that follows this JSON schema:\n%s" % (prompt, json.dumps(schema)))
     with tempfile.TemporaryDirectory(prefix="zenvi-describe-") as tmp:
-        schema_file = os.path.join(tmp, "schema.json")
-        with open(schema_file, "w", encoding="utf-8") as fh:
-            json.dump(schema or {}, fh)
         argv = [llama_program(), "cli", "-m", _model_path(MODEL[0]), "-mm", _model_path(PROJECTOR[0]),
-                MEDIA_FLAG[mt], path, "-sys", SYSTEM[mt], "-p", prompt, "-st", "--no-display-prompt", "--temp", "0",
-                "--json-schema-file", schema_file]
+                MEDIA_FLAG[mt], path, "-sys", SYSTEM[mt], "-p", prompt, "-st", "--temp", "0"]
         try:
             proc = subprocess.run(argv, cwd=tmp, env=_environment(), capture_output=True, text=True,
                                   encoding="utf-8", errors="replace", timeout=DESCRIBE_TIMEOUT,
@@ -174,7 +218,7 @@ def describe(path: str, media_type: str, prompt: str, schema: Dict[str, Any]) ->
     if proc.returncode != 0:
         raise hf.HyperframesError("llama.cpp could not describe %s (exit code %d): %s"
                                   % (os.path.basename(path), proc.returncode, (proc.stderr or "")[-800:]))
-    answer = _json_answer(proc.stdout or "")
+    answer = _json_answer((proc.stdout or "").rsplit(prompt, 1)[-1])     # the CLI echoes the prompt first
     if not answer:
         log.warning("local describe gave no JSON for %s: %s", path, (proc.stdout or "")[-400:])
         raise hf.HyperframesError("the local model gave no description for %s" % os.path.basename(path))

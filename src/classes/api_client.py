@@ -853,12 +853,9 @@ class ZenviBackendClient:
 
         if not file_path or not os.path.isfile(file_path):
             return {"success": False, "error": f"File not found: {file_path}"}
-        if describe_locally is None:                # the AI setting; this computer unless Gemini was picked
-            try:
-                from classes.app import get_app
-                describe_locally = get_app().get_settings().get("index-describe") != "gemini"
-            except Exception:                       # no editor running (headless): the default
-                describe_locally = True
+        if describe_locally is None:
+            from classes import local_describe
+            describe_locally = local_describe.enabled()
 
         mt = (media_type or "video").strip().lower() or "video"
         if mt not in ("video", "image", "audio"):
@@ -922,6 +919,9 @@ class ZenviBackendClient:
 
             if progress_callback:
                 progress_callback("chunking", 5)
+            if describe_locally:
+                from classes import local_describe
+                max_height = min(max_height, local_describe.MAX_HEIGHT)
             chunk_infos, work_dir, chunk_err = extract_chunks(
                 file_path, plan, media_type=mt, max_height=max_height,
             )
@@ -988,14 +988,19 @@ class ZenviBackendClient:
                 }
 
             if describe_locally:
-                from classes import local_describe
-
                 if not local_describe.ready():
                     if progress_callback:
                         progress_callback("installing", 0)
                     local_describe.install()
+                words = local_describe.speech_words(file_path) if mt != "image" else []
                 # One at a time: each chunk runs the whole model.
                 for info in chunk_infos:
+                    description = local_describe.describe(
+                        info["path"], mt, str(plan_data.get("describe_prompt") or ""),
+                        plan_data.get("describe_schema") or {},
+                        duration=float(info["end"]) - float(info["start"]))
+                    if mt != "image":
+                        description.update(local_describe.speech(words, float(info["start"]), float(info["end"])))
                     uploaded_chunks.append({
                         "chunk_index": int(info["chunk_index"]),
                         "start_ts": float(info["start"]),
@@ -1003,9 +1008,7 @@ class ZenviBackendClient:
                         "size": int(info["size"]),
                         "mime_type": str(info.get("mime_type") or guess_mime(info["path"], mt)),
                         "media_type": mt,
-                        "description": local_describe.describe(
-                            info["path"], mt, str(plan_data.get("describe_prompt") or ""),
-                            plan_data.get("describe_schema") or {}),
+                        "description": description,
                     })
                     if progress_callback and total > 0:
                         progress_callback("describing", int(len(uploaded_chunks) * 80 / total))
