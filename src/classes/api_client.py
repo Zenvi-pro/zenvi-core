@@ -994,13 +994,16 @@ class ZenviBackendClient:
                     local_describe.install()
                 words = local_describe.speech_words(file_path) if mt != "image" else []
                 # One at a time: each chunk runs the whole model.
-                for info in chunk_infos:
+                starts = [float(i["start"]) for i in chunk_infos] + [float("inf")]
+                for n, info in enumerate(chunk_infos):
                     description = local_describe.describe(
                         info["path"], mt, str(plan_data.get("describe_prompt") or ""),
                         plan_data.get("describe_schema") or {},
                         duration=float(info["end"]) - float(info["start"]))
                     if mt != "image":
-                        description.update(local_describe.speech(words, float(info["start"]), float(info["end"])))
+                        # Up to the next chunk's start: overlapping chunks would each hold those words.
+                        stop = min(float(info["end"]), starts[n + 1])
+                        description.update(local_describe.speech(words, float(info["start"]), stop))
                     uploaded_chunks.append({
                         "chunk_index": int(info["chunk_index"]),
                         "start_ts": float(info["start"]),

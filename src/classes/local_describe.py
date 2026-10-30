@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from classes import hyperframes_local as hf
 from classes import info
+from classes.ffmpeg_cli import run_ffmpeg
 from classes.logger import log
 
 LLAMA_BUILD = "b11998"
@@ -155,24 +156,45 @@ def _environment() -> dict:
     return env
 
 
-def speech_words(path: str) -> list:
-    """The file's words from the local recogniser (cached with the captions'); none if it cannot run."""
+def speech_words(path: str) -> List[Dict[str, Any]]:
+    """The file's words as ``[{text, start, end}]``; [] when it has no speech or no recogniser runs.
+
+    The captions' recogniser: Whistle (18 MB, downloaded on first use), or whisper.cpp where
+    Whistle has no engine (Intel Macs). ponytail: Whistle even when the Captions dock picked
+    Parakeet; Parakeet is a 900 MB download behind a consent prompt indexing should not raise.
+    """
     try:
-        from classes.speech.asr import transcribe_file
-        return list(transcribe_file(path).words)
+        if not hf.speech_supported():
+            from classes.speech.asr import transcribe_file
+            return [{"text": w.text, "start": float(w.startSec), "end": float(w.endSec)}
+                    for w in transcribe_file(path).words]
+        from classes import dictation
+
+        if not hf.speech_ready(fresh=True):
+            hf.install_speech()
+        with tempfile.TemporaryDirectory(prefix="zenvi-speech-") as tmp:
+            wav = os.path.join(tmp, "speech.wav")
+            run_ffmpeg(["ffmpeg", "-y", "-v", "error", "-i", path, "-vn", "-ac", "1", "-ar", "16000", wav],
+                       check=True, capture_output=True)
+            if os.path.isfile(wav):             # the captions' loudness gate: a recogniser makes words up in ambience
+                with open(wav, "rb") as fh:
+                    pcm = fh.read()[44:]
+                if not dictation.heard_speech([dictation.rms(pcm[i:i + 3200]) for i in range(0, len(pcm), 3200)]):
+                    return []
+            return hf.transcribe(wav)
     except Exception as exc:
         log.warning("local indexing has no transcript for %s: %s", path, exc)
         return []
 
 
-def speech(words: list, start: float, end: float) -> Dict[str, Any]:
-    """Transcript and cues for the words in [start, end), timed from the chunk's start."""
+def speech(words: List[Dict[str, Any]], start: float, end: float) -> Dict[str, Any]:
+    """Transcript and cues for the words starting in [start, end), timed from ``start``."""
     cues: List[Dict[str, Any]] = []
-    for w in (w for w in words if start <= float(w.startSec) < end):
-        text = str(w.text or "").strip()
+    for w in (w for w in words if start <= float(w["start"]) < end):
+        text = str(w.get("text") or "").strip()
         if not text:
             continue
-        s, e = round(float(w.startSec) - start, 3), round(float(w.endSec) - start, 3)
+        s, e = round(float(w["start"]) - start, 3), round(float(w["end"]) - start, 3)
         last = cues[-1] if cues else None
         if last and s - last["end"] <= _CUE_GAP and not last["text"].endswith((".", "?", "!")):
             last["text"], last["end"] = last["text"] + " " + text, e

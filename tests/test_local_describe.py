@@ -141,7 +141,7 @@ def _index_locally(tmp_path, transcript):
     with patch("classes.index_chunker.extract_chunks", return_value=(chunks, str(tmp_path / "w"), "")) as extract, \
          patch("classes.index_chunker.cleanup_chunk_dir"), \
          patch("classes.gemini_direct_upload.upload_file_to_gemini_resumable") as gemini_upload, \
-         patch("classes.speech.asr.transcribe_file", **transcript) as transcribe, \
+         patch("classes.local_describe.speech_words", **transcript) as transcribe, \
          patch("classes.local_describe.ready", return_value=False), \
          patch("classes.local_describe.install") as install, \
          patch("classes.local_describe.describe", side_effect=lambda *a, **k: {"short_summary": "a dog"}) as describe, \
@@ -155,11 +155,10 @@ def _index_locally(tmp_path, transcript):
 
 
 def test_local_indexing_never_uploads_to_gemini_and_takes_speech_from_the_recogniser(tmp_path):
-    from classes.speech.cache import TranscriptRecord, Word
-
-    words = [Word("Hello", 1.0, 1.5), Word("world.", 1.6, 2.0), Word("Bye", 6.0, 6.5)]
-    record = TranscriptRecord(path="clip.mp4", size=11, mtimeNs=0, modelId="m", language="en", words=words)
-    result, m, sent = _index_locally(tmp_path, {"return_value": record})
+    words = [{"text": "Hello", "start": 1.0, "end": 1.5}, {"text": "world.", "start": 1.6, "end": 2.0},
+             {"text": "Overlap", "start": 4.5, "end": 4.8},     # in both chunks' video (4-5 s)
+             {"text": "Bye", "start": 6.0, "end": 6.5}]
+    result, m, sent = _index_locally(tmp_path, {"return_value": words})
 
     assert result.get("success") is True
     m.install.assert_called_once()
@@ -174,11 +173,12 @@ def test_local_indexing_never_uploads_to_gemini_and_takes_speech_from_the_recogn
     # each chunk's own words, timed from the chunk's start
     assert sent[0]["description"]["transcript"] == "Hello world."
     assert sent[0]["description"]["transcript_cues"] == [{"start": 1.0, "end": 2.0, "text": "Hello world."}]
-    assert sent[1]["description"]["transcript_cues"] == [{"start": 2.0, "end": 2.5, "text": "Bye"}]
+    assert sent[1]["description"]["transcript_cues"] == [{"start": 0.5, "end": 0.8, "text": "Overlap"},
+                                                         {"start": 2.0, "end": 2.5, "text": "Bye"}]  # once, not twice
 
 
 def test_a_clip_whose_speech_cannot_be_recognised_is_still_indexed(tmp_path):
-    result, _m, sent = _index_locally(tmp_path, {"side_effect": RuntimeError("no speech engine")})
+    result, _m, sent = _index_locally(tmp_path, {"return_value": []})
     assert result.get("success") is True
     assert sent[0]["description"]["transcript_cues"] == [] and sent[0]["description"]["transcript"] == ""
 
@@ -223,3 +223,25 @@ def test_two_first_imports_install_once_and_never_into_a_half_made_folder(home, 
         t.join()
     assert ld.ready() and sum(1 for a in asked if a[1] == ld._llama_download()[1]) == 1
     assert not os.path.exists(os.path.join(ld.home(), "llama.partial"))
+
+
+def test_speech_is_heard_by_the_captions_recogniser_installed_on_demand(home, monkeypatch, tmp_path):
+    installed = []
+    monkeypatch.setattr(hf, "speech_supported", lambda *a: True)
+    monkeypatch.setattr(hf, "speech_ready", lambda fresh=False: bool(installed))
+    monkeypatch.setattr(hf, "install_speech", lambda: installed.append(1))
+    monkeypatch.setattr(hf, "transcribe", lambda wav: [{"text": "Hi", "start": 0.2, "end": 0.4}])
+    monkeypatch.setattr(ld, "run_ffmpeg", lambda argv, **k: SimpleNamespace(returncode=0), raising=False)
+    assert ld.speech_words(str(tmp_path / "clip.mp4")) == [{"text": "Hi", "start": 0.2, "end": 0.4}]
+    assert installed == [1]                                     # Whistle (18 MB) fetched on first use
+
+
+def test_without_whistle_whisper_hears_it_and_a_failure_means_no_transcript(home, monkeypatch, tmp_path):
+    from classes.speech.cache import TranscriptRecord, Word
+
+    monkeypatch.setattr(hf, "speech_supported", lambda *a: False)       # Intel Macs
+    record = TranscriptRecord(path="c", size=1, mtimeNs=0, modelId="m", language="en", words=[Word("Yo", 1.0, 1.2)])
+    with patch("classes.speech.asr.transcribe_file", return_value=record):
+        assert ld.speech_words(str(tmp_path / "clip.mp4")) == [{"text": "Yo", "start": 1.0, "end": 1.2}]
+    with patch("classes.speech.asr.transcribe_file", side_effect=RuntimeError("no engine")):
+        assert ld.speech_words(str(tmp_path / "clip.mp4")) == []
