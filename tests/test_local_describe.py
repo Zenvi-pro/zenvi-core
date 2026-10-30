@@ -7,7 +7,7 @@ import sys
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -326,28 +326,6 @@ def test_two_first_imports_install_once_and_never_into_a_half_made_folder(home, 
         t.join()
     assert ld.ready() and sum(1 for a in asked if a[1] == ld._llama_download()[1]) == 1
     assert not os.path.exists(os.path.join(ld.home(), "llama.partial"))
-
-
-def test_speech_is_heard_by_the_captions_recogniser_installed_on_demand(home, monkeypatch, tmp_path):
-    installed = []
-    monkeypatch.setattr(hf, "speech_supported", lambda *a: True)
-    monkeypatch.setattr(hf, "speech_ready", lambda fresh=False: bool(installed))
-    monkeypatch.setattr(hf, "install_speech", lambda: installed.append(1))
-    monkeypatch.setattr(hf, "transcribe", lambda wav: [{"text": "Hi", "start": 0.2, "end": 0.4}])
-    monkeypatch.setattr(ld, "run_ffmpeg", lambda argv, **k: SimpleNamespace(returncode=0), raising=False)
-    assert ld.speech_words(str(tmp_path / "clip.mp4")) == [{"text": "Hi", "start": 0.2, "end": 0.4}]
-    assert installed == [1]                                     # Whistle (18 MB) fetched on first use
-
-
-def test_without_whistle_whisper_hears_it_and_a_failure_means_no_transcript(home, monkeypatch, tmp_path):
-    from classes.speech.cache import TranscriptRecord, Word
-
-    monkeypatch.setattr(hf, "speech_supported", lambda *a: False)       # Intel Macs
-    record = TranscriptRecord(path="c", size=1, mtimeNs=0, modelId="m", language="en", words=[Word("Yo", 1.0, 1.2)])
-    with patch("classes.speech.asr.transcribe_file", return_value=record):
-        assert ld.speech_words(str(tmp_path / "clip.mp4")) == [{"text": "Yo", "start": 1.0, "end": 1.2}]
-    with patch("classes.speech.asr.transcribe_file", side_effect=RuntimeError("no engine")):
-        assert ld.speech_words(str(tmp_path / "clip.mp4")) == []
 
 
 def test_a_one_shot_clip_answered_without_the_shots_list_is_still_described():
