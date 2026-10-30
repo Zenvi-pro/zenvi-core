@@ -222,7 +222,7 @@ class LoginWindow(QDialog):
         login_url, state = self._auth.start_auth_flow()
         self._url_label.setText(login_url)
         self._code = confirmation_code(state)
-        print(f"[zenvi-auth] browser flow started: {login_url}", file=sys.stderr)
+        print("[zenvi-auth] browser flow started", file=sys.stderr)
         QTimer.singleShot(1400, self._show_waiting)
 
         # The poll calls back on its own thread, possibly after this dialog

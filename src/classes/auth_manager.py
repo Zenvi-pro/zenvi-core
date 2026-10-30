@@ -694,7 +694,7 @@ class AuthManager:
         # v=2: this app shows confirmation_code(state), so the website may
         # offer a signed-in browser one-click approval next to the same code.
         url = f"{_zenvi_website()}/login?state={state}&v=2"
-        log.info("Opening auth URL: %s", url)
+        log.info("Opening auth URL")
         opened = False
         if sys.platform.startswith("linux"):
             try:
