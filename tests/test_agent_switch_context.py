@@ -314,7 +314,7 @@ def test_sign_in_recovery_is_for_the_cli_the_chat_is_on(window_cls, monkeypatch)
     assert "Claude" not in card[0]
 
     started = []
-    monkeypatch.setattr(ar, "start_cli_login", lambda backend: started.append(backend) or (True, "ok"))
+    monkeypatch.setattr(ar, "start_cli_login", lambda backend, **_kw: started.append(backend) or (True, "ok"))
     monkeypatch.setattr(ui, "QMetaObject", MagicMock())
     monkeypatch.setattr(ui, "Q_ARG", lambda *a: a)
     monkeypatch.setattr(ui.threading, "Thread", lambda target, **kw: types.SimpleNamespace(start=target))

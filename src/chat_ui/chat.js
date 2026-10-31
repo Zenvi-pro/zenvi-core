@@ -2892,8 +2892,9 @@
             if (cliEmptyStateEl.getAttribute('data-connect-for') === id + ':auth') return;
             cliEmptyStateEl.setAttribute('data-connect-for', id + ':auth');
             cliEmptyStateEl.innerHTML =
-                '<div class="chat-cli-connect-msg">' + escapeHtml(findBackendName(id)) +
-                ' needs you to sign in again.</div>' +
+                '<div class="chat-cli-connect-msg">' + escapeHtml(id === 'chatgpt'
+                    ? 'Sign in with ChatGPT to run the agent on your ChatGPT plan instead of Zenvi credits.'
+                    : findBackendName(id) + ' needs you to sign in again.') + '</div>' +
                 '<button type="button" id="chat-cli-connect-btn" class="chat-cli-connect-btn">' +
                 escapeHtml(signInLabel(id)) + '</button>' +
                 '<div id="chat-cli-connect-status" class="chat-cli-connect-status"></div>';
@@ -2951,7 +2952,7 @@
     var SIGN_IN_AGAIN = 'Open the sign-in page again';
 
     function signInLabel(id) {
-        return 'Sign in to ' + findBackendName(id);
+        return id === 'chatgpt' ? 'Sign in with ChatGPT' : 'Sign in to ' + findBackendName(id);
     }
 
     window.showCliAuthRecovery = function (backendId, message) {
@@ -2981,14 +2982,34 @@
         }
     };
 
+    window.onCliAuthProgress = function (backendId, phase) {
+        if (phase !== 'download') return;
+        var text = 'Downloading ChatGPT agent…';
+        ['chat-cli-connect-status', 'chat-cli-auth-status'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (el) { el.textContent = text; el.className = 'chat-cli-connect-status'; }
+        });
+    };
+
     window.onCliAuthResult = function (backendId, ok, message) {
-        var statusEl = document.getElementById('chat-cli-auth-status') ||
+        // The empty-state overlay hides the message list, so a recovery card
+        // appended there is invisible. A decline has to land on the overlay.
+        var overlayUp = cliEmptyStateEl && cliEmptyStateEl.style.display !== 'none';
+        var statusEl = (overlayUp && document.getElementById('chat-cli-connect-status')) ||
+            document.getElementById('chat-cli-auth-status') ||
             document.getElementById('chat-cli-connect-status');
-        var btn = document.getElementById('chat-cli-auth-btn') ||
+        var btn = (overlayUp && document.getElementById('chat-cli-connect-btn')) ||
+            document.getElementById('chat-cli-auth-btn') ||
             document.getElementById('chat-cli-connect-btn');
+        var text = message || (ok ? 'Signed in. Retrying…' : 'Sign-in failed.');
         if (statusEl) {
-            statusEl.textContent = message || (ok ? 'Signed in. Retrying…' : 'Sign-in failed.');
+            statusEl.textContent = text;
             statusEl.className = 'chat-cli-connect-status ' + (ok ? 'ok' : 'error');
+        }
+        var also = document.getElementById('chat-cli-auth-status');
+        if (also && also !== statusEl) {
+            also.textContent = text;
+            also.className = 'chat-cli-connect-status ' + (ok ? 'ok' : 'error');
         }
         if (btn && !ok) {
             btn.disabled = false;
