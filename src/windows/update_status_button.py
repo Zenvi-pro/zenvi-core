@@ -191,14 +191,14 @@ class UpdateStatusButton(QToolButton):
         )
 
     def set_failed(self, version, reason=""):
-        """The download (or installing it) failed; offer a manual download."""
+        """The download (or installing it) failed; offer an in-app retry."""
         self.version = version or self.version
         self.reason = reason
         self._set_state(
             STATE_FAILED,
-            self._tr("Update Available"),
-            self._tr("Version <b>%s</b> is available, but the download failed. "
-                     "Click to download it manually.") % self.version,
+            self._tr("Update Failed"),
+            self._tr("Version <b>%s</b> could not be downloaded. "
+                     "Click to try again.") % self.version,
             COLOR_DANGER,
         )
         if reason:

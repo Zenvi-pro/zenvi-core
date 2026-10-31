@@ -89,7 +89,8 @@ from windows.preview_thread import PreviewParent
 from windows.agent_selector_button import AgentSelectorButton
 from windows.update_panel import UpdatePanel
 from windows.update_status_button import (
-    UpdateStatusButton, STATE_DOWNLOADING, STATE_READY,
+    UpdateStatusButton, STATE_DOWNLOADING, STATE_READY, STATE_FAILED,
+    STATE_HIDDEN,
 )
 from windows.scope_panel import WaveformDockContent, HistogramDockContent, VectorscopeDockContent, AudioMeterWidget
 from windows.video_widget import VideoWidget
@@ -1786,9 +1787,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     def actionUpdate_trigger(self, checked=True):
         _ = get_app()._tr
 
-        if self.update_status_button.state in (STATE_DOWNLOADING, STATE_READY):
-            # There is something to show: live progress, or a staged update that
-            # only needs a restart. The popup covers both.
+        # Always show the in-app panel when we know about an update. Opening
+        # zenvi.pro/download from the toolbar used to dump signed-in users on
+        # the website dashboard with no install path.
+        if self.update_status_button.state not in (STATE_HIDDEN,):
             if self._update_panel is None:
                 self._update_panel = UpdatePanel(self)
             self._update_panel.sync_from_button(self.update_status_button)
@@ -1802,6 +1804,22 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             error_msg = f"Unable to open the Download url: {url}"
             QMessageBox.information(self, "Error", error_msg)
             log.error(error_msg, exc_info=1)
+
+    def retry_auto_update(self):
+        """Start (or restart) the in-app update download from the update panel."""
+        updater = getattr(self, "_auto_updater", None)
+        if updater is None:
+            log.warning("retry_auto_update: no AutoUpdater instance")
+            return
+        version = self.update_status_button.version or ""
+        # Flip the pill immediately so the click feels responsive; the
+        # background thread will overwrite with real progress or failure.
+        self.update_status_button.set_downloading(version, -1, 0, 0)
+        self._ensure_update_button()
+        self._sync_update_panel()
+        if not updater.retry():
+            # A check was already running — keep whatever progress it reports.
+            log.info("retry_auto_update: download already in progress")
 
     def should_play(self, requested_speed=0):
         """Determine if we should start playback, based on the current frame
@@ -4452,9 +4470,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     def foundCurrentVersion(self, version):
         """Handle the callback for detecting the latest released version."""
         if version and is_version_newer(version, info.VERSION):
-            # A download already running (or finished) is further along than
-            # "available" — never regress the pill to an earlier state
-            if self.update_status_button.state not in (STATE_DOWNLOADING, STATE_READY):
+            # A download already running, finished, or failed is further along
+            # than bare "available" — never regress the pill (failed used to
+            # get overwritten and send people to the website).
+            if self.update_status_button.state not in (
+                    STATE_DOWNLOADING, STATE_READY, STATE_FAILED):
                 self.update_status_button.set_available(version)
                 self._ensure_update_button()
 

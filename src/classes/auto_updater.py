@@ -246,9 +246,28 @@ class AutoUpdater:
             return
         self._thread = threading.Thread(
             target=self._run, name="AutoUpdater", daemon=True,
+            kwargs={"initial_delay": INITIAL_DELAY},
         )
         self._thread.start()
         log.info("AutoUpdater: Background thread started")
+
+    def retry(self):
+        """User asked to download again — skip the launch delay.
+
+        Returns True when a new check thread was started, False if one is
+        already running (so the UI can leave the existing progress alone).
+        """
+        if self._thread and self._thread.is_alive():
+            log.info("AutoUpdater: Retry ignored — a check is already running")
+            return False
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, name="AutoUpdater-retry", daemon=True,
+            kwargs={"initial_delay": 0},
+        )
+        self._thread.start()
+        log.info("AutoUpdater: Retry started (no launch delay)")
+        return True
 
     def stop(self):
         """Signal the background thread to stop as soon as possible."""
@@ -258,14 +277,14 @@ class AutoUpdater:
     # Internal
     # ------------------------------------------------------------------
 
-    def _run(self):
+    def _run(self, initial_delay=INITIAL_DELAY):
         """Entry point for the background thread."""
         try:
             self._tidy_staging()
             release, latest_version = self._fetch_latest_release()
 
             # Wait before download check so the UI is fully loaded
-            for _ in range(INITIAL_DELAY):
+            for _ in range(initial_delay):
                 if self._stop.is_set():
                     return
                 time.sleep(1)
@@ -404,8 +423,13 @@ class AutoUpdater:
                 "AutoUpdater: No asset matching '%s' for arch '%s' in release %s",
                 suffix, arch_hint, latest_version,
             )
-            # Still notify UI about the version
-            self._emit_version_signal(latest_version)
+            # Don't pretend this is a normal "available" pill — there is nothing
+            # in-app to download, so surface the failure and keep the website
+            # link as a fallback in the panel.
+            self._emit_failed_signal(
+                latest_version,
+                "No installer for this platform was published with that release",
+            )
             return
 
         log.info(
@@ -418,9 +442,9 @@ class AutoUpdater:
 
         if success:
             self._emit_update_ready_signal(latest_version)
-        else:
-            # Notify the UI that an update exists even if download failed
-            self._emit_version_signal(latest_version)
+        # On failure _download already emitted UpdateFailedSignal. Do not also
+        # emit FoundVersionSignal — that used to overwrite the failed state
+        # with "Update Available" and send people to the website.
 
     # ------------------------------------------------------------------
     # Download
