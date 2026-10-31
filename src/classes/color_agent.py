@@ -329,6 +329,13 @@ def _coerce_float(value, name: str) -> float:
     return out
 
 
+def _is_plain_scalar(value) -> bool:
+    """A bare number or non-blank string where a ColorGrade keyframe belongs."""
+    if isinstance(value, bool):
+        return False
+    return isinstance(value, (int, float)) or (isinstance(value, str) and value.strip() != "")
+
+
 def _merge_wheel(existing: dict, patch: dict) -> dict:
     base = copy.deepcopy(existing) if isinstance(existing, dict) else _wheel_entry()
     color = patch.get("color") or patch.get("hex")
@@ -385,8 +392,21 @@ def validate_color_patch(patch: dict) -> None:
     """Raise ValueError before opening an undo group."""
     if not isinstance(patch, dict):
         raise ValueError("color patch must be an object")
-    if patch.get("color") is not None and not isinstance(patch.get("color"), dict):
+    paste = patch.get("color")
+    if paste is not None and not isinstance(paste, dict):
         raise ValueError("'color' paste object must be a dict")
+    if isinstance(paste, dict):
+        # A pasted knob is a keyframe or a number; anything else (true, null,
+        # "") would overwrite the clip's keyframe with something that grades nothing.
+        for key in SCALAR_KEYS:
+            if key not in paste:
+                continue
+            value = paste[key]
+            if isinstance(value, dict) and isinstance(value.get("Points"), list):
+                continue
+            if not _is_plain_scalar(value):
+                raise ValueError(f"{key} must be a finite number")
+            _coerce_float(value, key)
     for key, raw in list(patch.items()):
         if key in DELTA_KEYS and raw is not None and not isinstance(raw, bool):
             _coerce_float(raw, key)
@@ -463,17 +483,24 @@ def merge_color_grade(effect_json: dict, patch: dict) -> dict:
                 "'boost_color'. For less color use ~0.7–0.9, never 0.2."
             )
 
-    # Full paste replaces color-bearing fields but keeps id/order.
+    # A paste lays its fields over the grade and keeps id/order, as the web
+    # engine's mergeColorGrade does: a partial paste keeps the fields (and the
+    # effect `type`) it leaves out.
     color_obj = patch.get("color")
     if isinstance(color_obj, dict):
         keep_id = payload.get("id")
         keep_order = payload.get("order")
-        payload = copy.deepcopy(color_obj)
+        payload.update(copy.deepcopy(color_obj))
         payload["class_name"] = COLOR_GRADE_CLASS_NAME
         if keep_id:
             payload["id"] = keep_id
         if keep_order is not None:
             payload["order"] = keep_order
+        # A hand-written paste ({"exposure": 1}) gives plain numbers; libopenshot
+        # reads only keyframes, so a plain number would silently grade nothing.
+        for key in SCALAR_KEYS:
+            if _is_plain_scalar(payload.get(key)):
+                set_scalar(payload, key, _coerce_float(payload[key], key))
         # Continue so additional top-level fields in the same call can nudge.
 
     for key, raw in patch.items():

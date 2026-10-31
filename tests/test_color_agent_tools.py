@@ -73,6 +73,45 @@ def test_color_paste_keeps_effect_id():
     assert scalar_y(merged, "exposure") == pytest.approx(0.4)
 
 
+def test_hand_written_paste_of_plain_numbers_grades():
+    # Same case as the web engine's color-agent.test.ts: plain numbers become keyframes.
+    merged = merge_color_grade(blank_color_grade("keep-me"), {"color": {"exposure": 1, "saturation": "1.5"}})
+    assert merged["exposure"]["Points"][0]["co"]["Y"] == pytest.approx(1.0)
+    assert scalar_y(merged, "saturation") == pytest.approx(1.5)
+
+
+def test_partial_paste_keeps_fields_it_leaves_out():
+    graded = merge_color_grade(dict(blank_color_grade("keep-me"), type="ColorGrade"), {"contrast": 1.3})
+    merged = merge_color_grade(graded, {"color": {"exposure": 1}})
+    assert merged["type"] == "ColorGrade"
+    assert merged["id"] == "keep-me"
+    assert scalar_y(merged, "contrast") == pytest.approx(1.3)
+    assert scalar_y(merged, "exposure") == pytest.approx(1.0)
+
+
+def test_paste_with_a_non_number_is_refused_before_merge():
+    graded = merge_color_grade(blank_color_grade("keep-me"), {"contrast": 1.3})
+    before = json.dumps(graded, sort_keys=True)
+    with pytest.raises(ValueError, match="exposure must be a finite number"):
+        validate_color_patch({"color": {"exposure": "bright"}})
+    with pytest.raises(ValueError, match="exposure must be a finite number"):
+        merge_color_grade(graded, {"color": {"exposure": "bright"}})
+    for junk in (True, None, "", [1.0], {"value": 1}):
+        with pytest.raises(ValueError, match="contrast must be a finite number"):
+            merge_color_grade(graded, {"color": {"contrast": junk}})
+    assert json.dumps(graded, sort_keys=True) == before
+
+
+def test_full_reference_paste_matches_the_reference():
+    # harmonize_look_tool pastes a whole reference grade: every knob ends up the reference's.
+    subject = merge_color_grade(blank_color_grade("subject"), {"temperature": -0.3, "lut_path": "a.cube"})
+    reference = merge_color_grade(blank_color_grade("ref"), {"temperature": 0.25, "exposure": 0.2})
+    reference.pop("id")
+    merged = merge_color_grade(subject, {"color": reference})
+    assert merged["id"] == "subject"
+    assert summarize_color_grade(merged) | {"id": None} == summarize_color_grade(reference) | {"id": None}
+
+
 def test_find_color_grade_and_reset_filter():
     from classes.color_agent import find_color_grade, is_color_grade_effect
 
