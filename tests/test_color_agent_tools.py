@@ -96,6 +96,9 @@ def test_paste_with_a_non_number_is_refused_before_merge():
         validate_color_patch({"color": {"exposure": "bright"}})
     with pytest.raises(ValueError, match="exposure must be a finite number"):
         merge_color_grade(graded, {"color": {"exposure": "bright"}})
+    for junk in (True, None, "", [1.0], {"value": 1}):
+        with pytest.raises(ValueError, match="contrast must be a finite number"):
+            merge_color_grade(graded, {"color": {"contrast": junk}})
     assert json.dumps(graded, sort_keys=True) == before
 
 

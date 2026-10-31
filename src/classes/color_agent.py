@@ -396,9 +396,17 @@ def validate_color_patch(patch: dict) -> None:
     if paste is not None and not isinstance(paste, dict):
         raise ValueError("'color' paste object must be a dict")
     if isinstance(paste, dict):
+        # A pasted knob is a keyframe or a number; anything else (true, null,
+        # "") would overwrite the clip's keyframe with something that grades nothing.
         for key in SCALAR_KEYS:
-            if _is_plain_scalar(paste.get(key)):
-                _coerce_float(paste[key], key)
+            if key not in paste:
+                continue
+            value = paste[key]
+            if isinstance(value, dict) and isinstance(value.get("Points"), list):
+                continue
+            if not _is_plain_scalar(value):
+                raise ValueError(f"{key} must be a finite number")
+            _coerce_float(value, key)
     for key, raw in list(patch.items()):
         if key in DELTA_KEYS and raw is not None and not isinstance(raw, bool):
             _coerce_float(raw, key)
