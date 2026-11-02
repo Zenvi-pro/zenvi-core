@@ -213,6 +213,18 @@ def loading() -> bool:
     return _loading[0] > 0
 
 
+def advertised_names() -> list:
+    """The engine tools this desktop runs right now, for the chat's ``engine_tools`` (in memory only).
+
+    The backend offers a chat no engine tool its client did not list
+    (zenvi-backend core/chat/client_tools.py). None while the catalog is
+    unread or the runtime missing, and none once the bridge is turned off.
+    """
+    if engine_bridge.bridge_setting() == "off":
+        return []
+    return sorted(BRIDGED)
+
+
 def description(name: str) -> str:
     """A bridged tool's description as the desktop lists it."""
     tool = BRIDGED.get(name) or {}

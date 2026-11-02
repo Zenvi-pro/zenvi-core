@@ -60,6 +60,15 @@ def client_features() -> list:
     return features
 
 
+def engine_tools() -> list:
+    """The engine tools this desktop runs through its engine bridge now; the backend offers no others."""
+    try:
+        from classes.editor_tools import engine_bridge
+        return engine_bridge.advertised_names()
+    except Exception:
+        return []
+
+
 def _refresh_credits_after_backend_billing() -> None:
     """Repaint the credits badge after a request the backend bills itself.
 
@@ -480,6 +489,9 @@ class ZenviBackendClient:
                 "editor_generation": "media-index-v2",
                 "client_features": client_features(),
             }
+            bridged = engine_tools()
+            if bridged:
+                payload_data["engine_tools"] = bridged
             if agent_mode in ("planning", "agent"):
                 payload_data["agent_mode"] = agent_mode
             if action in ("chat", "execute_plan", "cancel_execution"):
