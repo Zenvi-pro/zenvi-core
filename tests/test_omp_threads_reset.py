@@ -35,6 +35,8 @@ def load_store(tmp_path, monkeypatch):
 @pytest.mark.parametrize("saved, expected", [
     # Stale low count on an install that predates the reset.
     ({OMP: 2}, 12),
+    # Not a number at all: startup could not read it either.
+    ({OMP: "abc"}, 12),
     # Above the default is someone's deliberate choice.
     ({OMP: 16}, 16),
     ({OMP: 12}, 12),
