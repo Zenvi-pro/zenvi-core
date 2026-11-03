@@ -84,7 +84,7 @@ _TEX_FILE_RE = re.compile(r"\\(input|include|openin|openout|read|write|immediate
 # A path that leaves the render folder: Code(code_file=), ImageMobject, SVGMobject and add_sound open it as given.
 # ponytail: string literals only; a path built at run time ("C:" + "/x") still passes, sandbox the process if that matters
 # A leading backslash alone is TeX (\frac), not a path: only C:\, \\server, /root, ~/ and .. count.
-_OUTSIDE_RE = re.compile(r"^\s*(?:[A-Za-z]:[\\/]|[\\/]{2}\w|/(?=\w)|~[\\/])|(?:^|[\\/])\.\.(?:[\\/]|$)")
+_OUTSIDE_RE = re.compile(r"^\s*(?:[A-Za-z]:[\\/]|[\\/]{2}\w|/(?=\S)|~[\\/])|(?:^|[\\/])\.\.(?:[\\/]|$)")
 # numpy reads and writes files, and unpickling with np.load runs code: banned as names and as attributes.
 _NUMPY_IO = {"load", "save", "savez", "savez_compressed", "savetxt", "loadtxt", "genfromtxt", "fromfile",
              "tofile", "memmap", "DataSource", "lib", "ctypeslib", "f2py", "testing",

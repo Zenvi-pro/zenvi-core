@@ -184,6 +184,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: repo
+          persist-credentials: false
+          sparse-checkout: src/classes/music_local.py
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
@@ -205,6 +211,21 @@ jobs:
               && find . -type f | LC_ALL=C sort | zip -9 -X -@ "$GITHUB_WORKSPACE/$asset")
             sum=$(sha256sum "$asset" | cut -d' ' -f1)
             echo "\`$sum  $asset\`" >> "$GITHUB_STEP_SUMMARY"
+            # When the app already pins this release, the build must match its pin: a mismatched upload
+            # would break every first-time install. A new RELEASE_TAG is unpinned until music_local is updated.
+            pin=$(python3 - "$asset" "$RELEASE_TAG" repo/src/classes/music_local.py <<'PY'
+          import re, sys
+          asset, tag, path = sys.argv[1:]
+          src = open(path, encoding="utf-8").read()
+          release = re.search(r"releases/download/([^/\"]+)/%s", src)
+          pin = re.search(r'"%s",\s*"([0-9a-f]{64})"' % re.escape(asset), src)
+          print(pin.group(1) if release and release.group(1) == tag and pin else "")
+          PY
+            )
+            if [ -n "$pin" ] && [ "$pin" != "$sum" ]; then
+              echo "::error::$asset ($sum) does not match its pin in music_local.RUNTIME ($pin) for $RELEASE_TAG; bump RELEASE_TAG to rebuild."
+              exit 1
+            fi
             published=$(gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --json assets \
               --jq ".assets[] | select(.name == \"$asset\") | .digest" || true)
             if [ -z "$published" ]; then

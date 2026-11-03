@@ -416,12 +416,11 @@ def test_the_length_reads_real_durations_only(prompt, lyrics, seconds):
 
 def test_a_music_worker_whose_imports_fail_still_reports_back(monkeypatch):
     # "except music.Declined" with music never imported raised UnboundLocalError: no finished signal.
-    import classes
     from windows.views.stock_search_view import _MusicGenWorker
 
-    monkeypatch.setitem(sys.modules, "classes.editor_tools.ai_generation_music", None)   # import fails
-    if hasattr(classes, "editor_tools"):   # only loaded when an earlier test imported it
-        monkeypatch.delattr(classes.editor_tools, "ai_generation_music", raising=False)
+    _stub_generation(monkeypatch, None)   # classes.editor_tools and classes.music_local exist, whatever ran before
+    monkeypatch.setitem(sys.modules, "classes.editor_tools.ai_generation_music", None)   # this import fails
+    monkeypatch.delattr(sys.modules["classes.editor_tools"], "ai_generation_music")
     seen = []
     w = _MusicGenWorker("soft piano", "", "ace_step", 1, "bed")
     w.finished.connect(seen.append)

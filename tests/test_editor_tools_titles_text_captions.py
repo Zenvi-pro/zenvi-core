@@ -603,17 +603,19 @@ def test_one_clip_failing_for_any_reason_does_not_stop_the_whole_project(editor,
     assert [(s["clip_id"], "disk full" in s["reason"]) for s in r["skipped"]] == [(broken, True)]
 
 
-def test_a_gui_edit_still_running_stops_the_project_instead_of_overlapping(editor, studio, monkeypatch):
+@pytest.mark.parametrize("still_running", [True, False])
+def test_a_gui_timeout_stops_the_project_instead_of_carrying_on(editor, studio, monkeypatch, still_running):
     # MainThreadStillRunning: the last clip is still being placed, so starting the next would interleave edits.
     from classes.query import Clip
-    from classes.tool_handlers import MainThreadStillRunning
+    from classes.tool_handlers import MainThreadStillRunning, MainThreadTimeout
     file_id = Clip.get(id=studio.clip).data["file_id"]
     second = editor.add_clip(file_id, position=30.0, layer=L1, start=0.0, end=4.0)
     built = []
 
     def build(clip, *args, **kwargs):
         built.append(clip.id)
-        raise MainThreadStillRunning("placement still running", "job-1")
+        raise (MainThreadStillRunning("placement still running", "job-1") if still_running
+               else MainThreadTimeout("the editor did not respond; still running"))
 
     monkeypatch.setattr(captions, "build_captions", build)
     out = editor.call("add_captions_tool", whole_project=True, style="highlight")

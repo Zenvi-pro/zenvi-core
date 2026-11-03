@@ -635,9 +635,11 @@ def _caption_project(style: str, behind_subject: bool):
         try:
             captioned.append(dict(build_captions(clip, style, behind_subject), title=title))
         except Exception as exc:   # an OSError, a HyperframesError or a withdrawn GUI call: skip it, keep going
-            from classes.tool_handlers import MainThreadStillRunning
-            if isinstance(exc, MainThreadStillRunning):
-                raise   # the last clip is still being placed: the next one would interleave with it
+            from classes.tool_handlers import MainThreadTimeout
+            if isinstance(exc, MainThreadTimeout):
+                # The editor is not answering (or is still placing the last clip): carrying on would only time
+                # out again on every clip, or interleave with the placement still running.
+                raise
             if not isinstance(exc, ToolError):
                 log.warning("Captions: clip %s failed: %s", clip.id, exc)
             skipped.append({"clip_id": str(clip.id), "title": title, "reason": str(exc)})

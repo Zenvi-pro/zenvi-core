@@ -125,6 +125,7 @@ def test_render_refuses_what_is_not_a_scene_in_the_project(home, monkeypatch):
     "import manim\nt = manim.TexTemplate('calc.exe')",
     "self.add(Code(code_file=r'C:/Windows/win.ini'))",               # draws a file from outside the project
     "self.add(ImageMobject('/etc/passwd'))",
+    "self.add(Code(code_file='/./etc/passwd'))",
     "self.add(SVGMobject('../../secret.svg'))",
     "self.add_sound('~/private.wav')",
     "self.add(ImageMobject(r'C:\\Users\\me\\Pictures\\id.png'))",   # Windows backslashes too
