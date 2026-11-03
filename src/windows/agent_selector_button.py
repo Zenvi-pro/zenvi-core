@@ -286,6 +286,11 @@ class AgentSelectorButton(QToolButton):
         if panel is not None:
             panel.on_connect_result(backend_id, ok, message)
 
+    def on_connect_progress(self, backend_id: str, phase: str):
+        panel = getattr(self.window, "_agent_panel", None)
+        if panel is not None:
+            panel.on_connect_progress(backend_id, phase)
+
     # -- motion ------------------------------------------------------------
 
     def _channels(self):
