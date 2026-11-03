@@ -71,7 +71,7 @@ def generate_music(prompt, lyrics="", duration_seconds=30, engine="ace_step"):
     about a minute on a laptop GPU; songs with lyrics take longer, and yue2 takes
     several minutes. Only pass engine=yue2 when the user asks for it, and tell them
     its licence is non-commercial. The result carries a file_id: place it with
-    add_clip_to_timeline_tool. Nothing is uploaded and there is no undo step.
+    add_clips_to_timeline_tool. Nothing is uploaded and there is no undo step.
     """
     engine = engine or "ace_step"
     if engine not in ml.ENGINES:
@@ -81,5 +81,5 @@ def generate_music(prompt, lyrics="", duration_seconds=30, engine="ace_step"):
     file_id = import_track(path)
     kind = "song" if (lyrics or "").strip() else "instrumental bed"
     return ok("Generated a %s with %s and imported it into Project Files; place it with "
-              "add_clip_to_timeline_tool." % (kind, engine), file_id=file_id, path=path, engine=engine,
+              "add_clips_to_timeline_tool." % (kind, engine), file_id=file_id, path=path, engine=engine,
               licence=ml.LICENCE[engine])

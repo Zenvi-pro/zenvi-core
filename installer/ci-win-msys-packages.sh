@@ -32,6 +32,9 @@ install() {
     mingw-w64-ucrt-x86_64-python-pip
     mingw-w64-ucrt-x86_64-python-pyqt5
     mingw-w64-ucrt-x86_64-python-pyzmq
+    # media index v2 vector search; the venv uses --system-site-packages, so pip
+    # sees this as already satisfied instead of building numpy from source.
+    mingw-w64-ucrt-x86_64-python-numpy
     mingw-w64-ucrt-x86_64-rust
     mingw-w64-ucrt-x86_64-qt5-svg
     mingw-w64-ucrt-x86_64-python-cx-freeze

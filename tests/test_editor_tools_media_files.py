@@ -58,6 +58,28 @@ def test_list_full_detail_and_unknown_ids(editor):
     assert editor.call("list_project_files_tool", file_ids=["NOPE"]).startswith("Error")
 
 
+def test_list_rows_say_what_each_file_is(editor):
+    v = editor.add_file("video", ai_metadata={"analyzed": True, "short_summary": "Tennis rally on a court"})
+    row = {f["file_id"]: f for f in _receipt(editor.call("list_project_files_tool"))["files"]}[v]
+    assert row["analyzed"] is True and row["indexed"] is False
+    assert row["summary_preview"] == "Tennis rally on a court"
+
+
+def test_file_ids_read_full_media_info_and_ai_summary(editor):
+    v = editor.add_file("video", ai_metadata={"analyzed": True, "short_summary": "Tennis rally on a court"})
+    row = _receipt(editor.call("list_project_files_tool", file_ids=[v]))["files"][0]
+    assert row["fps"] == "30/1" and "path" in row and row["frames"] == 737
+    assert row["short_summary"] == "Tennis rally on a court"
+
+
+def test_full_detail_carries_ai_summary_and_chapters(editor):
+    chapters = [{"start": 0.0, "end": 12.0, "title": "Serve", "summary": "A serve from the baseline"}]
+    v = editor.add_file("video", ai_metadata={"analyzed": True, "short_summary": "Tennis rally",
+                                              "description": "Two players rally.", "chapters": chapters})
+    row = {f["file_id"]: f for f in _receipt(editor.call("list_project_files_tool", detail="full"))["files"]}[v]
+    assert row["description"] == "Two players rally." and row["chapters"][0]["title"] == "Serve"
+
+
 def test_list_marks_image_sequences_and_titles(editor, tmp_path):
     folder = tmp_path / "seq"
     folder.mkdir()

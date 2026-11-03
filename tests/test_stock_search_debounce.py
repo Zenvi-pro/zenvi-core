@@ -148,7 +148,7 @@ def test_the_composer_stays_in_the_files_dock_with_no_search(qapp):
     v._music_engine.setCurrentIndex(1)
     with patch.object(v, "_start_local_bed") as bed:
         v._music_generate.click()
-    bed.assert_called_once_with("lofi piano", "yue2", "")
+    bed.assert_called_once_with("lofi piano", "yue2", "", "bed")
 
 
 def test_no_stock_music_fills_the_prompt_and_does_not_start(qapp):

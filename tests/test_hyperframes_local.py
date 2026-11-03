@@ -206,6 +206,23 @@ def test_status_and_install_plan(home, monkeypatch):
     assert json.loads((home / "install.json").read_text())["node"] == "/opt/node"
 
 
+def test_the_setup_dialog_states_the_chrome_download_size():
+    ready = {"node": "/opt/node", "cli": hf.CLI_VERSION, "browser": None, "skills": 1,
+             "speech": True, "parakeet": True, "recogniser": "whistle"}
+    browser = [s for s in hf.install_plan(ready, platform="darwin") if s["id"] == "browser"]
+    assert browser and "360" in browser[0]["label"]
+
+
+def test_the_cli_install_uses_the_pinned_lockfile():
+    steps = hf.install_plan({"node": "/n", "cli": None, "browser": "/c", "skills": 1,
+                             "speech": True, "parakeet": True}, platform="win32")
+    cli = [s for s in steps if s["id"] == "cli"][0]
+    assert cli["argv"][:2] == ["npm", "ci"]
+    lock = os.path.join(os.path.dirname(hf.__file__), "hyperframes_npm", "package-lock.json")
+    text = open(lock, encoding="utf-8").read()
+    assert '"hyperframes"' in text and hf.CLI_VERSION in text
+
+
 def test_skills_come_from_a_pinned_skills_release_and_the_cli_tags_commit(home, monkeypatch):
     monkeypatch.setattr(hf, "find_program", lambda name: None)
     (step,) = [s for s in hf.install_plan(dict(hf.status(), skills=0)) if s["id"] == "skills"]

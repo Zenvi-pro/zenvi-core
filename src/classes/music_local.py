@@ -110,8 +110,11 @@ def install_plan(engine: str) -> List[dict]:
     return steps
 
 
+_download_lock = threading.RLock()   # not the speech lock: a multi-GB model must not block captions
+
+
 def _download_pinned(folder: str, files: List[tuple], what: str, progress=None) -> None:
-    hf._download_pinned(folder, files, what, progress)
+    hf._download_pinned(folder, files, what, progress, lock=_download_lock)
 
 
 def _unpack_runtime(engine: str, progress=None) -> None:

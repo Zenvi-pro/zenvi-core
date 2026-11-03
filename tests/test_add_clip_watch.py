@@ -1,4 +1,4 @@
-"""add_clip_to_timeline watches short video / bounded windows before place."""
+"""add_clip_to_timeline looks up the described moment in short video / bounded windows before place."""
 
 import os
 import re
@@ -32,19 +32,21 @@ def _no_placement_plans_between_tests():
     tool_handlers._planned_end_by_clip_id.clear()
 
 
-def _run_add(file_data, timeline_clips=(), clip_id="C1", **kwargs):
+def _run_add(file_data, timeline_clips=(), clip_id="C1", no_hit=False, **kwargs):
     watch_calls = []
     kwargs.setdefault("position_seconds", "0")
 
-    def fake_watch(path, start, end, query, **kw):
+    def fake_moment(query, file_id=None, window=None):
+        start, end = window
         watch_calls.append((float(start), float(end), query))
+        if no_hit:
+            return None
         return {
-            "cut_source": (float(start) + float(end)) / 2.0,
-            "in_source": float(start) + 0.4,
-            "out_source": float(end) - 0.4,
-            "matched": True,
-            "used_fallback": False,
-            "warning": "",
+            "file_id": file_id,
+            "start": float(start) + 0.4,
+            "end": float(end) - 0.4,
+            "peak": (float(start) + float(end)) / 2.0,
+            "why": "",
         }
 
     file_obj = MagicMock()
@@ -70,15 +72,10 @@ def _run_add(file_data, timeline_clips=(), clip_id="C1", **kwargs):
     placed = {"id": clip_id, "start": 0.0, "end": float(file_data.get("end") or file_data.get("duration") or 5)}
     app.window.timeline.addClip.return_value = placed
 
-    with patch.object(tool_handlers, "_watch_confirm_cut", fake_watch):
-        with patch.object(
-            tool_handlers,
-            "_lookup_watch_meta",
-            return_value=(file_data.get("path"), file_data.get("duration"), []),
-        ):
-            with patch.object(tool_handlers, "_get_app", return_value=app):
-                with patch.dict(sys.modules, {"classes.query": query_mod}):
-                    out = tool_handlers.add_clip_to_timeline(file_id="F1", **kwargs)
+    with patch.object(tool_handlers, "_v2_moment", fake_moment):
+        with patch.object(tool_handlers, "_get_app", return_value=app):
+            with patch.dict(sys.modules, {"classes.query": query_mod}):
+                out = tool_handlers.add_clip_to_timeline(file_id="F1", **kwargs)
     return out, watch_calls, placed
 
 
@@ -99,7 +96,7 @@ def test_add_clip_watches_a_named_window_of_a_short_ai_clip():
     assert not out.startswith("Error:"), out
     assert calls, out
     assert calls[0][2] == "a cat waving"
-    assert "watched" in out
+    assert "matched" in out
     assert abs(placed["start"] - 0.4) < 1e-9
     assert abs(placed["end"] - 4.6) < 1e-9
 
@@ -124,7 +121,7 @@ def test_placing_a_file_with_no_window_places_all_of_it(extra):
     )
     assert not out.startswith("Error:"), out
     assert calls == []
-    assert "watched" not in out
+    assert "matched" not in out
     assert placed["start"] == 0.0 and abs(placed["end"] - 24.6) < 1e-9
 
 
@@ -164,6 +161,15 @@ def test_start_seconds_past_the_end_of_the_file_is_refused():
     assert calls == []
 
 
+def test_a_first_n_seconds_trim_with_no_index_hit_is_refused_not_placed_blind():
+    out, calls, _placed = _run_add(
+        {"path": "/clips/stock.mp4", "name": "city_traffic.mp4", "duration": 90.0, "start": 0.0, "end": 90.0, "has_video": True},
+        no_hit=True, duration_seconds="6",
+    )
+    assert calls, out
+    assert out.startswith("Error:") and "matched" not in out, out
+
+
 def test_add_clip_watches_bounded_stock_window_without_query():
     out, calls, _placed = _run_add(
         {
@@ -199,7 +205,7 @@ def test_add_clip_snaps_watched_window_off_mid_sentence():
         end_seconds="5",
     )
     assert calls, out
-    assert "watched" in out
+    assert "matched" in out
     assert placed["start"] == 0.0
     assert placed["end"] == 5.0
 
@@ -218,7 +224,7 @@ def test_add_clip_skips_watch_on_audio():
         }
     )
     assert calls == []
-    assert "watched" not in out
+    assert "matched" not in out
 
 
 def test_add_clip_skips_watch_on_already_watched_subclip():
@@ -234,7 +240,7 @@ def test_add_clip_skips_watch_on_already_watched_subclip():
         }
     )
     assert calls == []
-    assert "watched" not in out
+    assert "matched" not in out
 
 
 def test_add_clip_skips_watch_on_long_untrimmed_file():
@@ -249,7 +255,7 @@ def test_add_clip_skips_watch_on_long_untrimmed_file():
         }
     )
     assert calls == []
-    assert "watched" not in out
+    assert "matched" not in out
 
 
 # --- #167: a named keep window must never be what arms the unwatched guard ---

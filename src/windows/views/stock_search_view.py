@@ -74,15 +74,15 @@ def _same_path(a: str, b: str) -> bool:
 def _length_for(prompt: str, lyrics: str) -> float:
     """Seconds for this request. A time written in the prompt wins; a song grows with its lines."""
     import re
-    match = re.search(r"(\d+(?:\.\d+)?)\s*(minutes?|mins?|min|seconds?|secs?|sec|s)\b",
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(minutes?|mins?|min|seconds?|secs?|sec)\b",
                       "%s\n%s" % (prompt or "", lyrics or ""), re.I)
     if match:
         seconds = float(match.group(1))
         if match.group(2).lower().startswith("min"):
             seconds *= 60
         return max(5.0, min(seconds, 240.0))
-    lines = [line for line in (lyrics or "").splitlines()
-             if line.strip() and not line.strip().startswith("[")]
+    # Section tags out, then any sung text: the lyrics box is one line, "[Verse] city lights".
+    lines = [line for line in re.sub(r"\[[^\]]*\]", "\n", lyrics or "").splitlines() if line.strip()]
     if lines:
         # A sung line needs a section, not the short instrumental bed.
         return max(45.0, min(240.0, 12.0 + 8.0 * len(lines)))
@@ -703,11 +703,11 @@ class StockSearchView(QWidget):
                                          if data.get("declined") else f"Local music generation failed: {error}")
                 self._gen_status.show()
             return
-        if not current:   # the user searched for something else meanwhile; the file stays in Downloads
-            log.info("Local music for an earlier search not imported: %s", path)
-            return
-        self._add_to_project(path)
-        self._gen_status.setText("Generated the track and added it to Project Files.")
+        # Started from the Music Gen panel, so it lands even if the search changed meanwhile.
+        if self._add_to_project(path):
+            self._gen_status.setText("Generated the track and added it to Project Files.")
+        else:
+            self._gen_status.setText("Generated the track but could not add it to Project Files: %s" % path)
         self._gen_status.show()
 
     def _card_for_image(self, key: int, search: int):
@@ -823,8 +823,8 @@ class StockSearchView(QWidget):
         except Exception as exc:
             log.warning("Could not store the stock credit for %s: %s", local_path, exc)
 
-    def _add_to_project(self, local_path: str):
-        """Import the downloaded file into Project Files (re-tag if already present)."""
+    def _add_to_project(self, local_path: str) -> bool:
+        """Import the downloaded file into Project Files (re-tag if already present). True when it is there."""
         try:
             from classes.app import get_app
             from classes.query import File
@@ -837,9 +837,15 @@ class StockSearchView(QWidget):
                         files_model._index_file_async(existing.id)
                 else:
                     files_model.add_files([local_path], quiet=True)   # an unreadable file is logged, no modal
+                    from classes.tool_handlers import resolve_imported_file
+                    if not resolve_imported_file(local_path):
+                        log.error("Stock media could not be imported: %s", local_path)
+                        return False
                     log.info("Stock media added to Project Files: %s", local_path)
+                return True
         except Exception as exc:
             log.error("Failed to add stock media to Project Files: %s", exc)
+        return False
 
     # ── Helpers ─────────────────────────────────────────────────────────────────
 

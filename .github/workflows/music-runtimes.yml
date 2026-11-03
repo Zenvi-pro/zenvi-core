@@ -1,7 +1,7 @@
 # Builds the local music runtimes (acestep.cpp: ace-lm, ace-synth; yue2.cpp: yue-synth)
 # and publishes one zip per platform to the RELEASE_TAG release, which
 # src/classes/music_local.py downloads (pinned by sha256) on first use.
-# Run by hand. Published assets are never replaced: a rebuild needs a new RELEASE_TAG,
+# Run by hand from main (actions pinned to commits). Published assets are never replaced: a rebuild needs a new RELEASE_TAG,
 # and each zip's sha256 (in the publish job summary) goes into music_local.RUNTIME.
 #
 # The third-party build runs with a read-only token and no Azure credentials; signing
@@ -44,14 +44,14 @@ jobs:
       run:
         shell: ${{ matrix.shell }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: ServeurpersoCom/acestep.cpp
           ref: ${{ env.ACESTEP_REF }}
           path: acestep.cpp
           submodules: recursive
           persist-credentials: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: ServeurpersoCom/yue2.cpp
           ref: ${{ env.YUE2_REF }}
@@ -61,7 +61,7 @@ jobs:
 
       - name: Toolchain (Windows, MSYS2 MinGW64)
         if: runner.os == 'Windows'
-        uses: msys2/setup-msys2@v2
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         with:
           msystem: MINGW64
           update: false
@@ -125,7 +125,7 @@ jobs:
             echo "$out" | grep -q "Usage" || { echo "::error::$b did not start"; exit 1; }
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.asset }}
           path: dist/
@@ -140,16 +140,16 @@ jobs:
       contents: read
       id-token: write   # Azure OIDC: the federated credential trusts main and tags only
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: zenvi-music-windows-x64-vulkan.zip
           path: dist
-      - uses: azure/login@v2
+      - uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
         with:
           client-id: ${{ secrets.AZURE_CODESIGNING_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_CODESIGNING_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_CODESIGNING_SUBSCRIPTION_ID }}
-      - uses: azure/artifact-signing-action@v1
+      - uses: azure/artifact-signing-action@b443cf8ea4124818d2ea9f043cba29fc3ec47b16 # v1
         with:
           endpoint: ${{ vars.AZURE_CODESIGNING_ENDPOINT }}
           signing-account-name: ${{ vars.AZURE_CODESIGNING_ACCOUNT_NAME }}
@@ -169,7 +169,7 @@ jobs:
           exclude-azure-powershell-credential: true
           exclude-azure-developer-cli-credential: true
           exclude-interactive-browser-credential: true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: zenvi-music-windows-x64-vulkan.zip
           path: dist/
@@ -178,12 +178,13 @@ jobs:
   publish:
     needs: [build, sign-windows]
     # Publish after signing, or unsigned when signing is not set up for this ref.
-    if: ${{ always() && needs.build.result == 'success' && (needs.sign-windows.result == 'success' || needs.sign-windows.result == 'skipped') }}
+    # Only main and tags publish: a branch dispatch builds and smoke-tests, nothing more.
+    if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && needs.build.result == 'success' && (needs.sign-windows.result == 'success' || needs.sign-windows.result == 'skipped') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
       - name: Zip and publish (never replaces a published asset)

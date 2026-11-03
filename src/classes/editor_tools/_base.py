@@ -46,14 +46,24 @@ def get_app():
     return th()._get_app()
 
 
-def on_main(func, *args, timeout=None):
+def on_main(func, *args, timeout=None, batch=True):
     """Run *func(*args)* on the Qt GUI thread and return its result.
 
     Inline when already on the GUI thread (mutating tools are dispatched
     there) and under the headless test stub. Keeps the caller's undo
     transaction id across the hop, so a background-safe tool's mutations
     still land in its one undo step.
+
+    Whatever the function changes is announced to the timeline, preview and minimap once when it returns, not once per change
+    (see classes.update_batch); pass ``batch=False`` only for a hop that must see the libopenshot timeline updated halfway through.
     """
+    if batch:
+        from classes import update_batch
+        plain = func
+
+        def func(*a):
+            with update_batch.batch():
+                return plain(*a)
     return th()._run_on_main_thread(func, *args, timeout=timeout)
 
 
@@ -151,10 +161,10 @@ def nullable(schema: dict) -> dict:
 # Reusable argument fragments -------------------------------------------------
 
 CLIP_TARGET = {
-    "timeline_clip_id": string("Timeline clip id from list_clips_tool / get_timeline_state_tool. Preferred.", ""),
-    "clip_query": string("Describe the clip instead of an id: its file name or what it shows (e.g. 'beach "
-                         "sunset'). Add track when several clips match. Prefer timeline_clip_id.", ""),
-    "track": string("Narrow clip_query to a track: UI track number (1 = bottom), track name, or layer number.", ""),
+    "timeline_clip_id": string("Timeline clip id from get_timeline_state_tool. Preferred.", ""),
+    "clip_query": string("Instead of an id: the clip's file name or what it shows ('beach sunset'); add track "
+                         "when several match.", ""),
+    "track": string("Narrows clip_query: UI track number (1 = bottom), name, or layer number.", ""),
 }
 
 CLIPS_TARGET = {
@@ -162,8 +172,8 @@ CLIPS_TARGET = {
     "clip_query": string("Describe one clip instead of ids.", ""),
     "track": string("Track for clip_query or scope='track': UI track number (1 = bottom), name, or layer number.", ""),
     "scope": enum(["", "selected", "track", "all"],
-                  "Instead of ids/query: 'selected' = the timeline selection, 'track' = every clip on track, "
-                  "'all' = every clip on the timeline.", ""),
+                  "Instead of ids/query: selected (timeline selection), track (every clip on track), all "
+                  "(every clip).", ""),
 }
 
 
@@ -231,6 +241,20 @@ def resolve_layer(track: Any) -> int:
     if layer is None:
         raise ToolError(f"no track matches {track!r}")
     return int(layer)
+
+
+def resolve_placement_layer(track: Any) -> tuple:
+    """(layer number, new tracks): resolve_layer, or up to three tracks past the top to add
+    (track_display.resolve_placement_track)."""
+    from classes.track_display import resolve_placement_track
+    if track is None or not str(track).strip():
+        raise ToolError("a track is required (UI track number, name, or layer number)")
+    layer, err, new_tracks = resolve_placement_track(str(track).strip(), layers())
+    if err:
+        raise ToolError(err)
+    if layer is None:
+        raise ToolError(f"no track matches {track!r}")
+    return int(layer), int(new_tracks)
 
 
 def track_label(layer_num: int) -> str:
@@ -472,7 +496,13 @@ def color_keyframe(value: Any) -> dict:
 # ---------------------------------------------------------------------------
 
 def refresh_preview() -> None:
-    """Ask the preview to redraw the current frame (after property edits)."""
+    """Ask the preview to redraw the current frame (after property edits).
+
+    Inside an update batch the timeline redraws once when the batch ends, so asking here as well would draw the frame twice.
+    """
+    from classes import update_batch
+    if update_batch.active():
+        return
     try:
         get_app().window.refreshFrameSignal.emit()
     except Exception:

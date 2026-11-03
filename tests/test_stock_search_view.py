@@ -201,6 +201,12 @@ def _stub_generation(monkeypatch, lyrics_out):
         return lyrics_out
 
     song_lyrics.prepare_lyrics = prepare
+    # "from classes import music_local" reads the package attribute before sys.modules, so an
+    # earlier test's real import would win over these stubs: patch both.
+    import classes
+    monkeypatch.setattr(classes, "music_local", music_local, raising=False)
+    monkeypatch.setattr(classes, "song_lyrics", song_lyrics, raising=False)
+    monkeypatch.setattr(classes, "editor_tools", package, raising=False)
     monkeypatch.setitem(sys.modules, "classes.music_local", music_local)
     monkeypatch.setitem(sys.modules, "classes.editor_tools", package)
     monkeypatch.setitem(sys.modules, "classes.editor_tools.ai_generation_music", music)
@@ -348,15 +354,6 @@ def test_footage_tooltips_show_provider_text_literally():
     assert "<a href" not in card.toolTip() and "&lt;a href" in card.toolTip()
 
 
-def test_a_bed_for_an_older_search_is_not_imported(view):
-    view._bed_busy = True
-    stale = view._search_gen - 1
-    with patch.object(view, "_add_to_project") as add:
-        view._on_local_bed_done({"path": "/tmp/bed.mp3", "error": "", "query": "ocean", "gen": stale})
-    add.assert_not_called()
-    assert view._bed_busy is False
-
-
 def test_only_a_real_decline_turns_that_engine_off(view):
     view._on_local_bed_done({"path": "", "error": "ggml: device declined to allocate", "engine": "ace_step",
                              "gen": view._search_gen})
@@ -387,3 +384,31 @@ def test_queued_image_fetches_from_an_older_search_are_skipped(view):
     with patch("requests.get") as get:
         runnable.run()
     get.assert_not_called()
+
+
+def test_a_track_you_asked_for_lands_even_if_the_search_changed(view):
+    # Generation is always started from the Music Gen panel: a filter edit meanwhile must not drop it.
+    view._bed_busy = True
+    with patch.object(view, "_add_to_project", return_value=True) as add:
+        view._on_local_bed_done({"path": "/tmp/bed.mp3", "error": "", "query": "ocean", "gen": view._search_gen - 1})
+    add.assert_called_once_with("/tmp/bed.mp3")
+    assert "added" in view._gen_status.text().lower()
+
+
+def test_a_failed_import_is_reported_not_called_added(view):
+    with patch.object(view, "_add_to_project", return_value=False):
+        view._on_local_bed_done({"path": "/tmp/bed.mp3", "error": "", "gen": view._search_gen})
+    assert "added" not in view._gen_status.text().lower() and "could not" in view._gen_status.text().lower()
+
+
+@pytest.mark.parametrize("prompt,lyrics,seconds", [
+    ("80s synthwave", "", 30.0),                       # a decade, not a length
+    ("808s and heartbreak", "", 30.0),
+    ("calm piano, 45 seconds", "", 45.0),
+    ("lofi beat 2 minutes", "", 120.0),
+    ("indie pop", "[Verse] city lights tonight we run", 45.0),   # one typed line still makes a song section
+])
+def test_the_length_reads_real_durations_only(prompt, lyrics, seconds):
+    from windows.views.stock_search_view import _length_for
+
+    assert _length_for(prompt, lyrics) == seconds

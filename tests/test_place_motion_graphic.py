@@ -82,6 +82,7 @@ def test_overlay_refuses_opaque():
         )
     assert out.startswith("Error:")
     assert "transparent" in out.lower()
+    assert "cut_in" not in out
     add_clip.assert_not_called()
 
 
@@ -114,6 +115,9 @@ def test_gap_refuses_primary_overlap():
         )
     assert out.startswith("Error:")
     assert "gap mode refused" in out.lower() or "overlapping" in out.lower()
+    # The refusal must not offer cut_in: that shifts the footage already on the timeline.
+    assert "cut_in" not in out
+    assert "overlay" in out.lower() and "transparent" in out.lower()
     add_clip.assert_not_called()
 
 

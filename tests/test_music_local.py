@@ -174,3 +174,14 @@ def test_linux_runs_find_the_bundled_vulkan_loader(home, monkeypatch):
     monkeypatch.setattr(ml.subprocess, "run", fake)
     ml._run(["x"], str(home), 5)
     assert seen["LD_LIBRARY_PATH"].split(os.pathsep)[0] == os.path.join(str(home), "bin")
+
+
+def test_music_downloads_do_not_hold_the_speech_install_lock(tmp_path, monkeypatch):
+    # A multi-GB model download must not make captions and dictation wait for it.
+    from classes import hyperframes_local as hf
+
+    seen = {}
+    monkeypatch.setattr(hf, "_download_pinned",
+                        lambda folder, files, what, progress=None, lock=None: seen.update(lock=lock))
+    ml._download_pinned(str(tmp_path), [], "music model")
+    assert seen["lock"] is not None and seen["lock"] is not hf._speech_install_lock

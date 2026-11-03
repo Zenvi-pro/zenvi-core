@@ -21,7 +21,7 @@ def studio(editor, tmp_path, monkeypatch):
     state = {"installed": set(), "asked": [], "generated": [], "imported": []}
     monkeypatch.setattr(ml, "status", lambda engine: {"runtime": engine in state["installed"],
                                                       "models": engine in state["installed"]})
-    monkeypatch.setattr(ml, "install", lambda engine: state["installed"].add(engine))
+    monkeypatch.setattr(ml, "install", lambda engine, progress=None: state["installed"].add(engine))
 
     def fake_generate(engine, style, lyrics="", duration=30.0, seed=-1):
         state["generated"].append((engine, style, lyrics, duration))
