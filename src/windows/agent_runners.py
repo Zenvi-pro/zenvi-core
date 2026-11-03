@@ -32,6 +32,8 @@ import uuid
 from classes import assistant_turns
 from qt_api import QObject, pyqtSignal, pyqtSlot
 
+from classes import chatgpt_plan
+
 log = logging.getLogger(__name__)
 
 
@@ -41,6 +43,7 @@ BACKEND_CODEX = "codex"
 BACKEND_CURSOR = "cursor_cli"
 BACKEND_OPENCODE = "opencode"
 BACKEND_HERMES = "hermes"
+BACKEND_CHATGPT = "chatgpt"
 
 
 # Models offered in the chat model picker per backend, in menu order. ``id`` is
@@ -488,6 +491,8 @@ def is_cli_auth_error(text: str) -> bool:
         "auth login",
         "codex login",
         "agent login",
+        # Codex on a rejected ChatGPT-plan token: "401 Unauthorized: Incorrect API key provided".
+        "incorrect api key provided",
     )
     return any(n in low for n in needles)
 
@@ -602,11 +607,25 @@ def cli_is_logged_in(backend: str) -> bool | None:
     return login[2]() if login else None
 
 
-def start_cli_login(backend: str) -> tuple[bool, str]:
+def start_cli_login(backend: str, on_progress=None) -> tuple[bool, str]:
     """Run the CLI's own sign-in (it opens the browser) and wait for it.
 
-    Blocking, up to five minutes. Returns (ok, message).
+    Blocking. ChatGPT waits ``SIGN_IN_TIMEOUT`` (15 minutes), the same allowance
+    as the agent panel; the others wait up to five minutes. Returns (ok, message).
+    ``on_progress("download")`` fires once ChatGPT sign-in has succeeded and the
+    private Codex download is about to start.
     """
+    if backend == BACKEND_CHATGPT:
+        # Zenvi's own Sign in with ChatGPT, then the one-time Codex download.
+        ok, message = chatgpt_plan.sign_in(timeout=chatgpt_plan.SIGN_IN_TIMEOUT)
+        if ok:
+            if on_progress:
+                on_progress("download")
+            try:
+                chatgpt_plan.install()
+            except Exception as e:
+                ok, message = False, "Signed in, but downloading the ChatGPT agent failed: %s" % e
+        return ok, message
     runner = CLI_RUNNERS.get(backend)
     name = runner.DISPLAY_NAME if runner else backend
     login = CLI_LOGINS.get(backend)
@@ -1697,7 +1716,7 @@ def refresh_cli_models(backend: str, version) -> bool:
     runner = CLI_RUNNERS.get(backend)
     if runner is None or runner.list_models is None:
         return False
-    cli = _which_cli(runner.CLI_NAME)
+    cli = runner.locate_cli()
     if not cli:
         return False
     key = (cli, version or "")
@@ -1974,7 +1993,7 @@ class BaseAgentRunner(QObject):
                 "another model." % (self.DISPLAY_NAME, asked_mode))
             return
 
-        self._cli_path = _which_cli(self.CLI_NAME)
+        self._cli_path = self.locate_cli()
         if not self._cli_path:
             self._emit_error(
                 "%s CLI not found. Install it and make sure '%s' is on your PATH, "
@@ -2102,9 +2121,9 @@ class BaseAgentRunner(QObject):
         if self._aborted:
             return
         blob = text or "Unknown error."
-        # Only for a CLI the chat can sign in again (CLI_LOGINS): the others
-        # keep the plain error.
-        if self.BACKEND_ID in CLI_LOGINS and (
+        # Only for a CLI the chat can sign in again: the others keep the plain error.
+        sign_in_again = self.BACKEND_ID in CLI_LOGINS or self.BACKEND_ID == BACKEND_CHATGPT
+        if sign_in_again and (
             is_cli_auth_error(blob)
             or any(is_cli_auth_error(line) for line in self._stderr_tail)
         ):
@@ -2157,6 +2176,16 @@ class BaseAgentRunner(QObject):
     list_models = None
     # Read the list once per CLI version instead of every 15 minutes.
     LIST_MODELS_ONCE = False
+
+    @classmethod
+    def locate_cli(cls):
+        """The executable to run, or None when it is not installed."""
+        return _which_cli(cls.CLI_NAME)
+
+    @classmethod
+    def detect(cls) -> dict:
+        """Status for the agent picker (see detect_cli). Blocking."""
+        return detect_cli(cls.CLI_NAME)
 
     def _ensure_ready(self):
         """Return an error string if the backend can't run, else None."""
@@ -2461,6 +2490,85 @@ class CodexRunner(BaseAgentRunner):
                 self.tool_started.emit(rid, "thinking", "{}")
                 self.tool_log.emit(rid, txt)
                 self.tool_completed.emit(rid, True, "")
+
+
+class ChatGPTPlanRunner(CodexRunner):
+    """The agent on the user's own ChatGPT plan (Sign in with ChatGPT, #274).
+
+    Same ``codex exec`` turns as CodexRunner, but on Zenvi's private Codex copy
+    (classes.chatgpt_plan): its own CODEX_HOME, and the model calls go to the
+    Responses API on the signed-in plan's token instead of a Codex login.
+    """
+
+    DISPLAY_NAME = "ChatGPT (your plan)"
+    BACKEND_ID = BACKEND_CHATGPT
+    MODELS: list = []     # no "CLI default": Codex's own default is refused on a ChatGPT plan
+    list_models = staticmethod(lambda _cli: chatgpt_plan.list_models())
+
+    @staticmethod
+    def register(port: int, token: str):
+        return True, "ChatGPT runs inside Zenvi with its tools already connected."
+
+    @classmethod
+    def locate_cli(cls):
+        return chatgpt_plan.codex_path()
+
+    @classmethod
+    def detect(cls) -> dict:
+        # Nothing to find on PATH: the private Codex is downloaded on first use.
+        signed = chatgpt_plan.signed_in()
+        email = (chatgpt_plan._load().get("email") or "") if signed else ""
+        return {"installed": True, "registered": True, "logged_in": signed,
+                "version": ("Codex %s %s" % (chatgpt_plan.CODEX_VERSION, email)).strip()}
+
+    def _coerce_model(self, model_id: str) -> str:
+        # Never left to Codex: its own default can be refused on a ChatGPT plan
+        # ("not supported when using Codex with a ChatGPT account").
+        # Signed out: no model-list fetch; the readiness check asks to sign in.
+        offered = models_for_backend(self.BACKEND_ID) or (
+            chatgpt_plan.list_models() if chatgpt_plan.signed_in() else [])
+        ids = [m["id"] for m in offered]
+        if model_id in ids:
+            return model_id
+        return next((m["id"] for m in offered if m.get("default")), ids[0] if ids else "")
+
+    def _ensure_ready(self):
+        try:
+            chatgpt_plan.access_token()     # refreshed here, so a dead sign-in asks to sign in
+        except chatgpt_plan.SignInRequired:
+            return CLI_AUTH_REQUIRED
+        except Exception as e:
+            return "Could not reach ChatGPT to refresh your sign-in: %s" % e
+        try:
+            chatgpt_plan.install()
+        except Exception as e:
+            log.warning("ChatGPT: Codex download failed: %s", e, exc_info=True)
+            return "Could not download the ChatGPT agent (Codex %s): %s" % (
+                chatgpt_plan.CODEX_VERSION, e)
+        try:
+            if not self._model_id:
+                # The list may have failed before the token refresh above; try once more.
+                self._model_id = self._coerce_model("")
+        except chatgpt_plan.SignInRequired:
+            return CLI_AUTH_REQUIRED
+        if not self._model_id:
+            return ("Could not load the models your ChatGPT plan offers. "
+                    "Check your connection, then try again.")
+        return None
+
+    def _build_env(self):
+        extra = {}
+        if self._server is not None and self._server.token:
+            extra["ZENVI_MCP_TOKEN"] = self._server.token
+        return chatgpt_plan.child_env(_cli_child_env(extra))
+
+    def _build_argv(self, text: str):
+        argv = super()._build_argv(text)     # ends with "-" (prompt on stdin)
+        return argv[:-1] + chatgpt_plan.provider_args() + argv[-1:]
+
+    def _emit_auth_required(self, text: str = ""):
+        super()._emit_auth_required(
+            "Sign in with ChatGPT to use your ChatGPT plan. Your last request was not run.")
 
 
 class CursorCliRunner(BaseAgentRunner):
@@ -3229,7 +3337,8 @@ def _hermes_tool_result(update: dict):
 # this, so adding a CLI is its runner class plus one entry here.
 CLI_RUNNERS = {
     runner.BACKEND_ID: runner
-    for runner in (ClaudeCodeRunner, CodexRunner, CursorCliRunner, OpenCodeRunner, HermesRunner)
+    for runner in (ClaudeCodeRunner, CodexRunner, CursorCliRunner, OpenCodeRunner, HermesRunner,
+                   ChatGPTPlanRunner)
 }
 
 
