@@ -420,7 +420,8 @@ def test_a_music_worker_whose_imports_fail_still_reports_back(monkeypatch):
     from windows.views.stock_search_view import _MusicGenWorker
 
     monkeypatch.setitem(sys.modules, "classes.editor_tools.ai_generation_music", None)   # import fails
-    monkeypatch.delattr(classes.editor_tools, "ai_generation_music", raising=False)
+    if hasattr(classes, "editor_tools"):   # only loaded when an earlier test imported it
+        monkeypatch.delattr(classes.editor_tools, "ai_generation_music", raising=False)
     seen = []
     w = _MusicGenWorker("soft piano", "", "ace_step", 1, "bed")
     w.finished.connect(seen.append)
