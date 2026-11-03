@@ -105,6 +105,7 @@ class _MusicGenWorker(QObject):
     @pyqtSlot()
     def run(self):
         path, error, declined = "", "", False
+        music = None   # bound before the imports: a failed import must still reach the generic handler
         try:
             from classes import music_local
             from classes.editor_tools import ai_generation_music as music
@@ -122,10 +123,9 @@ class _MusicGenWorker(QObject):
                 self.progress.emit("Rendering the instrumental bed. ACE-Step is quicker; YuE2 takes several minutes.")
             path = music_local.generate(
                 self._engine, self._prompt, lyrics, _length_for(self._prompt, lyrics))
-        except music.Declined as exc:
-            error, declined = str(exc), True
         except Exception as exc:
             error = str(exc)
+            declined = music is not None and isinstance(exc, music.Declined)
         self.finished.emit({"path": path, "error": error, "declined": declined, "query": self._prompt,
                             "engine": self._engine, "gen": self._gen})
 

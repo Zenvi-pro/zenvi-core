@@ -584,3 +584,38 @@ def test_captions_move_up_clear_of_a_lower_third(editor, studio):
     assert y < 0
     summary = out.split("\n", 1)[0]
     assert "moved up" in summary and "Dialogue Scene" in summary
+
+
+def test_one_clip_failing_for_any_reason_does_not_stop_the_whole_project(editor, studio, monkeypatch):
+    from classes.query import Clip
+    file_id = Clip.get(id=studio.clip).data["file_id"]
+    broken = editor.add_clip(file_id, position=30.0, layer=L1, start=0.0, end=4.0)
+    real = captions.build_captions
+
+    def build(clip, *args, **kwargs):
+        if clip.id == broken:
+            raise OSError("disk full")
+        return real(clip, *args, **kwargs)
+
+    monkeypatch.setattr(captions, "build_captions", build)
+    r = _receipt(editor.call("add_captions_tool", whole_project=True, style="highlight"))
+    assert [c["clip_id"] for c in r["captioned"]] == [studio.clip]
+    assert [(s["clip_id"], "disk full" in s["reason"]) for s in r["skipped"]] == [(broken, True)]
+
+
+def test_a_gui_edit_still_running_stops_the_project_instead_of_overlapping(editor, studio, monkeypatch):
+    # MainThreadStillRunning: the last clip is still being placed, so starting the next would interleave edits.
+    from classes.query import Clip
+    from classes.tool_handlers import MainThreadStillRunning
+    file_id = Clip.get(id=studio.clip).data["file_id"]
+    second = editor.add_clip(file_id, position=30.0, layer=L1, start=0.0, end=4.0)
+    built = []
+
+    def build(clip, *args, **kwargs):
+        built.append(clip.id)
+        raise MainThreadStillRunning("placement still running", "job-1")
+
+    monkeypatch.setattr(captions, "build_captions", build)
+    out = editor.call("add_captions_tool", whole_project=True, style="highlight")
+    assert out.startswith("Error") and "still running" in out
+    assert len(built) == 1 and second not in built   # the next clip was never started

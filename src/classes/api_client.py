@@ -980,9 +980,17 @@ class ZenviBackendClient:
                 json={"description": description},
                 timeout=60,
             )
-            data = response.json() if response.content else {}
+            if response.status_code == 401:
+                return {"error": SESSION_REJECTED_MESSAGE, "auth": True}
+            try:
+                data = response.json() if response.content else {}
+            except ValueError:   # an HTML error page from a proxy: report the status, not the parser
+                data = {}
             if response.status_code >= 400:
                 detail = data.get("detail") if isinstance(data, dict) else ""
+                if detail and not isinstance(detail, str):
+                    detail = "; ".join(str(d.get("msg", d)) if isinstance(d, dict) else str(d)
+                                       for d in (detail if isinstance(detail, list) else [detail]))
                 return {"error": detail or "Lyrics request failed (%s)" % response.status_code}
             return data if isinstance(data, dict) else {"error": "The indexing model returned nothing."}
         except Exception as exc:

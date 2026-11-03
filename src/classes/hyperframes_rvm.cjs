@@ -131,6 +131,12 @@ function dispose(...tensors) {
     frames++;
   }
   enc.stdin.end();
+  // The encoder died: the decoder may be paused on a full queue and would never close.
+  if (encoderGone) {
+    dec.stdout.removeAllListeners("data");   // the handler would pause it again on a full queue
+    dec.stdout.resume();
+    try { dec.kill(); } catch (_) { /* already exited: keep ffmpeg's own error */ }
+  }
   const [decCode, encCode] = [await decClosed, await encClosed];
   if (decCode || encCode || !frames || encoderGone && queue.length) {
     throw new Error(`ffmpeg could not ${frames ? "write the cut-out" : "read the clip"}: ${log.trim().slice(-400)}`);

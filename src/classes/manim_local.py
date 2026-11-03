@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 from typing import Callable, List, Optional, Tuple
 
@@ -70,9 +71,20 @@ RENDER_TIMEOUT = 1800
 _SCENE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,99}$")
 SCENE_IMPORTS = {"manim", "numpy", "math", "random", "itertools", "functools", "colour", "typing", "__future__"}
 _SCENE_BANNED_NAMES = {"open", "exec", "eval", "compile", "__import__", "input", "breakpoint", "globals",
-                       "locals", "vars", "getattr", "setattr", "delattr", "help", "exit", "quit", "memoryview"}
+                       "locals", "vars", "getattr", "setattr", "delattr", "help", "exit", "quit", "memoryview",
+                       "open_file", "open_media_file"}   # manim.utils.file_ops launches the OS opener
 _SCENE_BANNED_ATTRS = {"os", "sys", "subprocess", "shutil", "socket", "pathlib", "builtins", "importlib",
-                       "ctypes", "system", "popen", "spawnv", "urllib", "request", "requests", "http"}
+                       "ctypes", "system", "popen", "spawnv", "urllib", "request", "requests", "http",
+                       "file_ops", "open_file", "open_media_file",
+                       # Manim runs these as programs or opens the result with the OS opener.
+                       "tex_compiler", "ffmpeg_executable", "preview", "show_in_file_browser"}
+# TeX reads and writes local files with these, no shell escape needed.
+_TEX_FILE_RE = re.compile(r"\\(input|include|openin|openout|read|write|immediate|InputIfFileExists|"
+                          r"verbatiminput|lstinputlisting|includegraphics)(?![A-Za-z])")
+# A path that leaves the render folder: Code(code_file=), ImageMobject, SVGMobject and add_sound open it as given.
+# ponytail: string literals only; a path built at run time ("C:" + "/x") still passes, sandbox the process if that matters
+# A leading backslash alone is TeX (\frac), not a path: only C:\, \\server, /root, ~/ and .. count.
+_OUTSIDE_RE = re.compile(r"^\s*(?:[A-Za-z]:[\\/]|[\\/]{2}\w|/(?=\w)|~[\\/])|(?:^|[\\/])\.\.(?:[\\/]|$)")
 # numpy reads and writes files, and unpickling with np.load runs code: banned as names and as attributes.
 _NUMPY_IO = {"load", "save", "savez", "savez_compressed", "savetxt", "loadtxt", "genfromtxt", "fromfile",
              "tofile", "memmap", "DataSource", "lib", "ctypeslib", "f2py", "testing",
@@ -169,7 +181,10 @@ def _activation_dirs() -> List[str]:
 def _environment(path_first: Optional[str] = None) -> dict:
     # Allowlisted: not the editor's tokens and keys, PYTHONPATH (libopenshot, its venv) or conda settings.
     env = {k: v for k, v in os.environ.items() if k.upper() in _ENV_KEEP}
-    env.update(PYTHONNOUSERSITE="1", PYTHONIOENCODING="utf-8", MAMBA_ROOT_PREFIX=os.path.join(home(), "mamba"))
+    env.update(PYTHONNOUSERSITE="1", PYTHONIOENCODING="utf-8", MAMBA_ROOT_PREFIX=os.path.join(home(), "mamba"),
+               # TeX in paranoid mode: no reads or writes outside the render folder, however a scene spells
+               # \input or \openin, and no shell escape.
+               openin_any="p", openout_any="p", shell_escape="f")
     first = ([path_first] if path_first else []) + [d for d in _activation_dirs() if os.path.isdir(d)]
     path_key = next((k for k in env if k.upper() == "PATH"), "PATH")
     env[path_key] = os.pathsep.join(first + [env.get(path_key, "")])
@@ -187,10 +202,13 @@ def _run(argv: List[str], cwd: str, timeout: float, env: dict) -> Tuple[int, str
     return proc.returncode, hf._clean((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else ""))
 
 
+_download_lock = threading.RLock()   # not the speech lock: a 300+ MB installer must not block captions
+
+
 def _install_manim() -> None:
     url, name, digest = _micromamba_download()
     folder = os.path.join(home(), "bin")
-    hf._download_pinned(folder, [(url, name, digest)], "Manim installer (micromamba)")
+    hf._download_pinned(folder, [(url, name, digest)], "Manim installer (micromamba)", lock=_download_lock)
     env = os.path.join(home(), "env")
     shutil.rmtree(env, ignore_errors=True)                 # a half-made env from an earlier attempt
     code, out = _run([os.path.join(folder, name), "create", "-y", "-q", "-p", env, "-c", "conda-forge",
@@ -205,7 +223,7 @@ def _install_manim() -> None:
 def _install_latex() -> None:
     url, name, digest = _tinytex_download()
     downloads = os.path.join(home(), "downloads")
-    hf._download_pinned(downloads, [(url, name, digest)], "TinyTeX")
+    hf._download_pinned(downloads, [(url, name, digest)], "TinyTeX", lock=_download_lock)
     archive = os.path.join(downloads, name)
     shutil.rmtree(os.path.join(home(), "TinyTeX"), ignore_errors=True)
     if name.endswith(".exe"):                               # a 7-Zip self-extractor: unpacks quietly, no admin
@@ -252,6 +270,10 @@ def check_scene(source: str) -> None:
         tree = ast.parse(source)
     except SyntaxError as exc:
         raise hf.HyperframesError("the scene is not valid Python: %s (line %s)" % (exc.msg, exc.lineno))
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    # A function passing on its own **kwargs is safe: whoever fills them is checked at their call.
+    own_kwargs = {n.args.kwarg.arg for n in ast.walk(tree)
+                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)) and n.args.kwarg}
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             # The modules themselves, never a submodule: numpy.ctypeslib, numpy.f2py and numpy.lib reach native
@@ -261,14 +283,45 @@ def check_scene(source: str) -> None:
             if bad:
                 raise hf.HyperframesError("the scene may only import %s (not their submodules); not %s"
                                           % (", ".join(sorted(SCENE_IMPORTS - {"__future__"})), ", ".join(bad)))
-            taken = [a.name for a in node.names if a.name in _SCENE_BANNED_NAMES | _SCENE_BANNED_ATTRS]
+            taken = [a.name for a in node.names if a.name in _SCENE_BANNED_NAMES | _SCENE_BANNED_ATTRS
+                     or (a.name == "config" and a.asname)]   # an alias would hide config from the check below
             if isinstance(node, ast.ImportFrom) and taken:
                 raise hf.HyperframesError("the scene may only draw; %s is not available in a scene" % taken[0])
+        elif isinstance(node, ast.keyword) and (
+                (node.arg is None and not (isinstance(node.value, ast.Name) and node.value.id in own_kwargs))
+                or node.arg in _SCENE_BANNED_ATTRS):
+            # **{...} would hide a banned keyword such as tex_compiler.
+            raise hf.HyperframesError("the scene may only draw; %s is not available in a scene"
+                                      % ("**keywords" if node.arg is None else node.arg + "="))
+        elif isinstance(node, ast.Call) and node.args and (
+                (isinstance(node.func, ast.Name) and node.func.id == "TexTemplate")
+                or (isinstance(node.func, ast.Attribute) and node.func.attr == "TexTemplate")):
+            # TexTemplate's first positional is tex_compiler, run as a program: keywords (a preamble) only.
+            raise hf.HyperframesError("the scene may only draw; TexTemplate() takes keyword arguments only")
+        elif (isinstance(node, ast.Name) and node.id == "config" and not _reads_config(node, parents)) \
+                or (isinstance(node, ast.Attribute) and node.attr == "config") \
+                or (isinstance(node, ast.Name) and node.id == "tempconfig"):
+            # config may be read as config.<setting>; any other use (manim.config, an alias, a subscript,
+            # update(), tempconfig) can point Manim at a program to run.
+            raise hf.HyperframesError("the scene may only draw; it may only read Manim's config (config.<setting>)")
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and _TEX_FILE_RE.search(node.value):
+            raise hf.HyperframesError("the scene may only draw; TeX may not read or write files")
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and _OUTSIDE_RE.search(node.value):
+            raise hf.HyperframesError("the scene may only use files in its project folder (a relative path, no ..)")
         elif isinstance(node, ast.Name) and node.id in _SCENE_BANNED_NAMES:
             raise hf.HyperframesError("the scene may only draw; %s() is not available in a scene" % node.id)
         elif isinstance(node, ast.Attribute) and (
                 (node.attr.startswith("__") and not _is_super_init(node)) or node.attr in _SCENE_BANNED_ATTRS):
             raise hf.HyperframesError("the scene may only draw; .%s is not available in a scene" % node.attr)
+
+
+def _reads_config(node, parents) -> bool:
+    """config used as config.<setting> and only read."""
+    import ast
+
+    parent = parents.get(node)
+    return (isinstance(parent, ast.Attribute) and parent.value is node and isinstance(parent.ctx, ast.Load)
+            and parent.attr != "update" and parent.attr not in _SCENE_BANNED_ATTRS)
 
 
 def _is_super_init(node) -> bool:

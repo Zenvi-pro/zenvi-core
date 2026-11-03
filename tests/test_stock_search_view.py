@@ -412,3 +412,17 @@ def test_the_length_reads_real_durations_only(prompt, lyrics, seconds):
     from windows.views.stock_search_view import _length_for
 
     assert _length_for(prompt, lyrics) == seconds
+
+
+def test_a_music_worker_whose_imports_fail_still_reports_back(monkeypatch):
+    # "except music.Declined" with music never imported raised UnboundLocalError: no finished signal.
+    import classes
+    from windows.views.stock_search_view import _MusicGenWorker
+
+    monkeypatch.setitem(sys.modules, "classes.editor_tools.ai_generation_music", None)   # import fails
+    monkeypatch.delattr(classes.editor_tools, "ai_generation_music", raising=False)
+    seen = []
+    w = _MusicGenWorker("soft piano", "", "ace_step", 1, "bed")
+    w.finished.connect(seen.append)
+    w.run()
+    assert seen and seen[0]["error"] and seen[0]["declined"] is False

@@ -634,7 +634,12 @@ def _caption_project(style: str, behind_subject: bool):
         _stage("Clip %d of %d: %s" % (n, len(clips), title))
         try:
             captioned.append(dict(build_captions(clip, style, behind_subject), title=title))
-        except ToolError as exc:
+        except Exception as exc:   # an OSError, a HyperframesError or a withdrawn GUI call: skip it, keep going
+            from classes.tool_handlers import MainThreadStillRunning
+            if isinstance(exc, MainThreadStillRunning):
+                raise   # the last clip is still being placed: the next one would interleave with it
+            if not isinstance(exc, ToolError):
+                log.warning("Captions: clip %s failed: %s", clip.id, exc)
             skipped.append({"clip_id": str(clip.id), "title": title, "reason": str(exc)})
     if not captioned:
         raise ToolError("no clip could be captioned: " + "; ".join(

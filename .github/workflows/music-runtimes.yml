@@ -196,9 +196,23 @@ jobs:
             gh release create "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --prerelease --title "Music runtimes ($RELEASE_TAG)" \
               --notes "acestep.cpp ${ACESTEP_REF} and yue2.cpp ${YUE2_REF}, built by .github/workflows/music-runtimes.yml."
           fi
+          # Resumable: an asset a failed run already published is kept when its digest matches this
+          # build, so a rerun uploads only what is missing. A different digest still fails: never replaced.
           for dir in artifacts/*/; do
             asset=$(basename "$dir")
-            (cd "$dir" && chmod +x ace-lm* ace-synth* yue-synth* && zip -9 -r "$GITHUB_WORKSPACE/$asset" .)
-            echo "\`$(sha256sum "$asset")\`" >> "$GITHUB_STEP_SUMMARY"
-            gh release upload "$RELEASE_TAG" "$asset" -R "$GITHUB_REPOSITORY"   # fails if it already exists
+            # Fixed file times: a rerun's artifact download stamps "now", which would change the zip's bytes.
+            (cd "$dir" && chmod +x ace-lm* ace-synth* yue-synth* && find . -exec touch -h -d "2000-01-01T00:00:00Z" {} + \
+              && find . -type f | LC_ALL=C sort | zip -9 -X -@ "$GITHUB_WORKSPACE/$asset")
+            sum=$(sha256sum "$asset" | cut -d' ' -f1)
+            echo "\`$sum  $asset\`" >> "$GITHUB_STEP_SUMMARY"
+            published=$(gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --json assets \
+              --jq ".assets[] | select(.name == \"$asset\") | .digest" || true)
+            if [ -z "$published" ]; then
+              gh release upload "$RELEASE_TAG" "$asset" -R "$GITHUB_REPOSITORY"
+            elif [ "$published" = "sha256:$sum" ]; then
+              echo "$asset is already published with this digest; kept."
+            else
+              echo "::error::$asset is already published with a different digest ($published); bump RELEASE_TAG to rebuild."
+              exit 1
+            fi
           done
