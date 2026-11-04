@@ -238,6 +238,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "preview_url": _str(),
         "filename": _str(),
         "local_path": _str(),
+        "query": _str(description="The music search; with source='freesound', no hit generates a bed locally."),
     }),
     "reindex_project_file_tool": _obj({
         "file_id": _str(),

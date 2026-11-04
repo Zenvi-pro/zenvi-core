@@ -106,6 +106,30 @@ def test_render_refuses_what_is_not_a_scene_in_the_project(home, monkeypatch):
     "__import__('os').system('x')",
     "x = (1).__class__.__mro__",
     "import manim\nmanim.os.system('x')",
+    "import manim\nmanim.utils.file_ops.open_file('C:/Windows/System32/calc.exe')",   # launches a program
+    "open_media_file('x')",
+    "t = TexTemplate()\nt.tex_compiler = 'C:/Windows/System32/calc.exe'",   # Manim runs it as argv[0]
+    "t = TexTemplate(tex_compiler='calc.exe')",
+    "config['ffmpeg_executable'] = 'C:/Windows/System32/calc.exe'",
+    "config.preview = True",                                # opens the movie with the OS opener
+    "config.update({'preview': True})",
+    "Tex(r'\\input{C:/Users/me/.ssh/id_rsa}')",            # TeX reads a local file into the render
+    "MathTex(r'\\openin5=C:/secrets.txt')",
+    "import manim\nmanim.config['ffmpeg_executable'] = 'calc.exe'",   # config reached through manim
+    "import manim\nmanim.config.update({'preview': True})",
+    "from manim import config as cfg\ncfg['ffmpeg_executable'] = 'calc.exe'",
+    "c = config\nc['ffmpeg_executable'] = 'calc.exe'",
+    "with tempconfig({'ffmpeg_executable': 'calc.exe'}):\n    pass",
+    "t = TexTemplate(**{'tex_compiler': 'calc.exe'})",                 # a spread keyword hides the name
+    "t = TexTemplate(r'C:/Windows/System32/calc.exe')",                # the first positional is the compiler
+    "import manim\nt = manim.TexTemplate('calc.exe')",
+    "self.add(Code(code_file=r'C:/Windows/win.ini'))",               # draws a file from outside the project
+    "self.add(ImageMobject('/etc/passwd'))",
+    "self.add(Code(code_file='/./etc/passwd'))",
+    "self.add(SVGMobject('../../secret.svg'))",
+    "self.add_sound('~/private.wav')",
+    "self.add(ImageMobject(r'C:\\Users\\me\\Pictures\\id.png'))",   # Windows backslashes too
+    "self.add(ImageMobject(r'\\\\server\\share\\x.png'))",
     "getattr(config, 'x')",
     "import numpy as np\nnp.load('payload.npy', allow_pickle=True)",   # unpickling runs code
     "from numpy import load",
@@ -192,3 +216,39 @@ def test_render_before_setup_says_how_to_set_up(home):
     with pytest.raises(hf.HyperframesError) as err:
         ml.render("proof", "scene.py", "Pythagoras")
     assert "manim_setup_tool" in str(err.value)
+
+
+def test_manim_downloads_do_not_hold_the_speech_install_lock(home, monkeypatch):
+    # The 300+ MB installer must not make captions and dictation wait for it.
+    seen = {}
+    monkeypatch.setattr(hf, "_download_pinned", lambda folder, files, what, progress=None, lock=None:
+                        seen.update(lock=lock) or (_ for _ in ()).throw(hf.HyperframesError("stop")))
+    with pytest.raises(hf.HyperframesError):
+        ml._install_manim()
+    assert seen["lock"] is not None and seen["lock"] is not hf._speech_install_lock
+
+
+def test_tex_cannot_read_or_write_files_outside_the_render_folder(home):
+    # However a scene spells \input (concatenation, \csname, \pdffiledump, filecontents), TeX itself refuses.
+    env = ml._environment()
+    assert env["openin_any"] == "p" and env["openout_any"] == "p" and env["shell_escape"] == "f"
+
+
+def test_scenes_still_read_config():
+    ml.check_scene("from manim import *\nclass S(Scene):\n    def construct(self):\n"
+                   "        w = config.frame_width\n        self.add(Square(side_length=w / 4))\n")
+
+
+def test_a_custom_tex_template_for_the_preamble_is_still_allowed():
+    ml.check_scene(
+        "from manim import *\n"
+        "class S(Scene):\n"
+        "    def construct(self):\n"
+        "        t = TexTemplate()\n"
+        "        t.add_to_preamble(r'\\usepackage{amssymb}')\n"
+        "        self.add(MathTex(r'\\mathbb{R}', tex_template=t))\n")
+
+
+def test_files_inside_the_project_are_still_allowed():
+    ml.check_scene("from manim import *\nclass S(Scene):\n    def construct(self):\n"
+                   "        self.add(ImageMobject('logo.png'), SVGMobject('art/mark.svg'))\n")

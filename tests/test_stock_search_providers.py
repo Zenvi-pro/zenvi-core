@@ -77,3 +77,28 @@ def test_imported_files_resolve_from_a_windows_path_on_any_os(monkeypatch):
     with patch("classes.query.File.get", return_value=None), \
          patch("classes.query.File.filter", return_value=[stored]):
         assert tool_handlers.resolve_imported_file("C:/Users/me/Downloads/a.mp3") is stored
+
+
+def _lyrics_client(status, body, content_type="application/json"):
+    import json as _json
+    c = _client()
+    r = MagicMock(status_code=status, content=body.encode(), headers={"Content-Type": content_type})
+    r.json.side_effect = lambda: _json.loads(body)
+    c._session.post.return_value = r
+    return c
+
+
+def test_lyrics_errors_read_as_the_http_error_not_a_json_parser_message():
+    out = _lyrics_client(502, "<html>Bad gateway</html>", "text/html").write_song_lyrics("rain")
+    assert "502" in out["error"] and "Expecting value" not in out["error"]
+
+
+def test_lyrics_401_is_the_sign_in_message():
+    from classes.api_client import SESSION_REJECTED_MESSAGE
+    out = _lyrics_client(401, '{"detail": "bad token"}').write_song_lyrics("rain")
+    assert out == {"error": SESSION_REJECTED_MESSAGE, "auth": True}
+
+
+def test_a_structured_lyrics_detail_becomes_text():
+    out = _lyrics_client(422, '{"detail": [{"loc": ["body", "description"], "msg": "too long"}]}').write_song_lyrics("x")
+    assert isinstance(out["error"], str) and "too long" in out["error"]

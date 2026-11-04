@@ -79,3 +79,15 @@ def test_an_unreadable_clip_fails_cleanly(tmp_path):
     proc = subprocess.run([NODE, hf.RVM_RUNNER, str(tmp_path / "ort"), "m.onnx", FFMPEG, str(tmp_path / "in.mp4"),
                            str(tmp_path / "out.webm")], capture_output=True, text=True, timeout=60)
     assert proc.returncode == 1 and proc.stdout == ""
+
+
+def test_an_encoder_that_dies_early_ends_the_run_instead_of_hanging(tmp_path):
+    # An unwritable output kills the encoder while the decoder is paused on a full queue.
+    (tmp_path / "ort").mkdir()
+    (tmp_path / "ort" / "index.js").write_text(FAKE_ORT)
+    clip = tmp_path / "in.mp4"
+    subprocess.run([FFMPEG, "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=s=64x48:r=25:d=20",   # long enough to fill the decode queue
+                    "-pix_fmt", "yuv444p", str(clip)], check=True)
+    proc = subprocess.run([NODE, hf.RVM_RUNNER, str(tmp_path / "ort"), "m.onnx", FFMPEG, str(clip),
+                           str(tmp_path / "missing-dir" / "out.webm")], capture_output=True, text=True, timeout=90)
+    assert proc.returncode == 1
