@@ -24,7 +24,7 @@ class FakeWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.preview_thread = FakeThread()
+        self.preview_thread = None          # MainWindow builds its docks before the preview thread
 
 
 @pytest.fixture(scope="module")
@@ -42,6 +42,8 @@ def panel_with_words(qapp):
     win = FakeWindow()
     token = object()
     panel = index_panel.IndexPanel(win)
+    win.preview_thread = FakeThread()
+    panel.connect_playback()            # what MainWindow does once the preview thread exists
     panel._app = SimpleNamespace(window=win, project=SimpleNamespace(_data=token))
     panel._populate(receipt(), token)
     return win, panel
@@ -75,6 +77,27 @@ def test_playback_position_lights_the_word_without_a_frame_step(qapp):
     assert lit(panel) == ["Hello"]
     win.preview_thread.position_changed.emit(41)
     assert lit(panel) == ["there"]
+
+
+def test_scrubbing_lights_the_word_under_the_playhead(qapp):
+    win, panel = panel_with_words(qapp)
+    win.SeekSignal.emit(41)
+    assert lit(panel) == ["there"]
+
+
+def test_main_window_connects_playback_once_the_preview_thread_exists():
+    import ast
+    import pathlib
+
+    src = pathlib.Path(index_panel.__file__).with_name("main_window.py").read_text(encoding="utf-8")
+    lines = {}
+    for node in ast.walk(ast.parse(src)):
+        text = ast.unparse(node) if isinstance(node, (ast.Assign, ast.Expr)) else ""
+        if text == "self.preview_thread = self.preview_parent.worker":
+            lines["thread"] = node.lineno
+        elif text == "self.dockIndex.connect_playback()":
+            lines["dock"] = node.lineno
+    assert lines.get("thread") and lines.get("dock", 0) > lines["thread"]
 
 
 def test_clicking_a_word_seeks_the_playhead_to_it(qapp):

@@ -6083,6 +6083,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.preview_thread = self.preview_parent.worker
         self.sliderZoomWidget.connect_playback()
         self.timeline.connect_playback()
+        if getattr(self, "dockIndex", None) is not None:
+            self.dockIndex.connect_playback()
 
         # Scope analysis: debounced timer dispatches GetFrame+FrameScope to the
         # PlayerWorker thread so the UI thread only handles paint/update work.
