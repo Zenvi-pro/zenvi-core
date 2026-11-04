@@ -58,3 +58,24 @@ def test_scope_widget_reads_its_own_explanation(class_name, key):
 def test_the_audio_levels_dock_shows_its_explanation_not_just_a_tooltip():
     main_window = Path(scope_panel.__file__).with_name("main_window.py").read_text(encoding="utf-8")
     assert "self.dockAudio.setWidget(AudioLevelsDockContent(self.audio_meter))" in main_window
+
+
+def _untranslated_reads(class_name):
+    """SCOPE_EXPLANATIONS reads in the class that are not the argument of a _tr(...) call."""
+    tree = ast.parse(Path(scope_panel.__file__).read_text(encoding="utf-8"))
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == class_name)
+    translated = {id(call.args[0]) for call in ast.walk(cls)
+                  if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == "_tr" and call.args}
+    return [n for n in ast.walk(cls) if isinstance(n, ast.Subscript) and isinstance(n.value, ast.Name)
+            and n.value.id == "SCOPE_EXPLANATIONS" and id(n) not in translated]
+
+
+@pytest.mark.parametrize("class_name, _key", SHOWN_BY)
+def test_scope_explanations_are_shown_translated(class_name, _key):
+    assert _untranslated_reads(class_name) == []
+
+
+def test_translation_falls_back_to_the_english_text_without_an_app(monkeypatch):
+    import classes.app
+    monkeypatch.setattr(classes.app, "get_app", lambda: None)
+    assert scope_panel._tr("Brightness") == "Brightness"

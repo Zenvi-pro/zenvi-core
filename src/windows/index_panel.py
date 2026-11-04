@@ -175,9 +175,9 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
 
         self._data = receipt.get("data") or {}
         self._generation = self._data.get("transcript_generation")
-        self._render()
+        self._render(relight=False)                        # a new transcript starts unlit
 
-    def _render(self):
+    def _render(self, relight=True):
         """Read the selected clips' words, or every clip's when none is selected.
         Selection changes call this again without reloading."""
         if self._data is None:
@@ -195,7 +195,7 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
         self._all_starts = [w["frame"] for w in every]
         self._all_selected = [str(w["clip"]) in selected for w in every]
         self._show_words(model)
-        if self._frame is not None:
+        if relight and self._frame is not None:
             self.follow(self._frame)                       # keep the current word lit when paused
         n = len(model["words"])
         if selected and not n:

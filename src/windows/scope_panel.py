@@ -36,7 +36,7 @@ from qt_api import (
 )
 from classes import info
 from classes.logger import log
-from themes.cosmic.tokens import TOKENS
+from themes.cosmic.tokens import TOKENS, resolve
 from windows.color_grade_editor import draw_broadcast_hue_ring
 
 # ─── Persistent settings keys ────────────────────────────────────────────────
@@ -54,7 +54,7 @@ SCOPE_EXPLANATIONS = {
     ),
     "histogram": (
         "How many pixels sit at each brightness level, dark on the left to bright on the right. "
-        "Bunching at either edge means clipped shadows or highlights."
+        "Peaks piled against either edge may mean clipped shadows or highlights."
     ),
     "vectorscope": (
         "Color of the frame: angle is hue, distance from the center is saturation. "
@@ -66,6 +66,15 @@ SCOPE_EXPLANATIONS = {
         "samples clipped."
     ),
 }
+
+
+def _tr(text):
+    """Translate *text* for display (SCOPE_EXPLANATIONS stays English for the source)."""
+    try:
+        from classes.app import get_app
+        return get_app()._tr(text)
+    except Exception:
+        return text
 
 _VECTORSCOPE_HUE_LABELS = (
     ("R", 108.65, 360.0),
@@ -123,7 +132,7 @@ def _make_scope_region_button(parent):
 def _scope_explanation_label(parent, text):
     label = QLabel(text, parent)
     label.setWordWrap(True)
-    label.setStyleSheet("color: #8a8a8a; font-size: 11px;")
+    label.setStyleSheet(resolve("color: {text_muted}; font-size: 11px;"))
     return label
 
 
@@ -800,7 +809,7 @@ class AudioMeterWidget(QWidget):
         self.setMinimumSize(60, 80)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setFocusPolicy(Qt.NoFocus)
-        self.setToolTip(SCOPE_EXPLANATIONS["audio"])
+        self.setToolTip(_tr(SCOPE_EXPLANATIONS["audio"]))
 
     def update_data(self, audio_data):
         self._data = audio_data
@@ -889,7 +898,7 @@ class AudioLevelsDockContent(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 6)
         layout.setSpacing(4)
-        layout.addWidget(_scope_explanation_label(self, SCOPE_EXPLANATIONS["audio"]))
+        layout.addWidget(_scope_explanation_label(self, _tr(SCOPE_EXPLANATIONS["audio"])))
         layout.addWidget(meter, 1)
 
 
@@ -914,11 +923,11 @@ class WaveformDockContent(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFocusPolicy(Qt.NoFocus)
-        self.setToolTip(SCOPE_EXPLANATIONS["waveform"])
+        self.setToolTip(_tr(SCOPE_EXPLANATIONS["waveform"]))
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 6)
         layout.setSpacing(4)
-        layout.addWidget(_scope_explanation_label(self, SCOPE_EXPLANATIONS["waveform"]))
+        layout.addWidget(_scope_explanation_label(self, _tr(SCOPE_EXPLANATIONS["waveform"])))
 
         toolbar = QWidget(self)
         toolbar.setFocusPolicy(Qt.NoFocus)
@@ -998,11 +1007,11 @@ class HistogramDockContent(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFocusPolicy(Qt.NoFocus)
-        self.setToolTip(SCOPE_EXPLANATIONS["histogram"])
+        self.setToolTip(_tr(SCOPE_EXPLANATIONS["histogram"]))
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 6)
         layout.setSpacing(4)
-        layout.addWidget(_scope_explanation_label(self, SCOPE_EXPLANATIONS["histogram"]))
+        layout.addWidget(_scope_explanation_label(self, _tr(SCOPE_EXPLANATIONS["histogram"])))
 
         toolbar = QWidget(self)
         toolbar.setFocusPolicy(Qt.NoFocus)
@@ -1064,11 +1073,11 @@ class VectorscopeDockContent(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFocusPolicy(Qt.NoFocus)
-        self.setToolTip(SCOPE_EXPLANATIONS["vectorscope"])
+        self.setToolTip(_tr(SCOPE_EXPLANATIONS["vectorscope"]))
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 6)
         layout.setSpacing(4)
-        layout.addWidget(_scope_explanation_label(self, SCOPE_EXPLANATIONS["vectorscope"]))
+        layout.addWidget(_scope_explanation_label(self, _tr(SCOPE_EXPLANATIONS["vectorscope"])))
 
         toolbar = QWidget(self)
         toolbar.setFocusPolicy(Qt.NoFocus)

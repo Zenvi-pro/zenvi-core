@@ -20,6 +20,9 @@ def dark_wheels(monkeypatch):
     monkeypatch.setattr(zapp, "get_app", lambda: fake)
     import windows.color_grade_editor as cge
 
+    # cge may already be imported (scope_panel imports it) with its own reference to get_app.
+    monkeypatch.setattr(cge, "get_app", lambda: fake)
+
     palette = QPalette()
     black, light = QColor("#000000"), QColor("#d4d4d4")
     for role in (QPalette.Base, QPalette.Mid, QPalette.Window, QPalette.Dark):
