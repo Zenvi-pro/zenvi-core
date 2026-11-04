@@ -17,8 +17,12 @@ FAILED = "failed"
 SKIPPED = "skipped"
 
 PHASE_LABELS = {
+    "analyzing": "Analyzing shots, colour and sound…",
+    "installing": "Downloading the local indexing model (once)…",
+    "describing": "Describing on this computer…",
     "uploading": "Uploading for search…",
     "indexing": "Indexing for search…",
+    "downloading": "Downloading the search model (about 1.2 GB the first time)…",
     "summarizing": "Generating description…",
     "done": "Indexing complete",
 }
@@ -32,7 +36,7 @@ IndexingStatus = namedtuple("IndexingStatus", "state label tooltip")
 def phase_label(phase: Optional[str], percent: Optional[int] = None) -> str:
     """Human phase text, with the upload percentage when we have one."""
     base = PHASE_LABELS.get(phase or "", "Processing…")
-    if phase == "uploading" and percent is not None and percent >= 0:
+    if phase in ("uploading", "describing") and percent is not None and percent >= 0:
         return f"{base} ({percent}%)"
     return base
 

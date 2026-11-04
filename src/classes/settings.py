@@ -101,6 +101,7 @@ class SettingStore(JsonDataStore):
         # never write them -- a desktop window running alongside owns the file,
         # and whichever process saved last would silently undo the other.
         self.read_only = False
+        self.user_file_existed = False
 
     def write_to_file(self, file_path, data, path_mode="ignore", previous_path=None):
         """Write settings JSON to disk, unless this store is read-only."""
@@ -184,7 +185,9 @@ class SettingStore(JsonDataStore):
         # Load or create user settings
         file_path = os.path.join(info.USER_PATH, self.settings_filename)
         user_had_downloads_flag = False
-        if os.path.exists(os.fsencode(file_path)):
+        user_had_omp_flag = False
+        self.user_file_existed = os.path.exists(os.fsencode(file_path))
+        if self.user_file_existed:
             try:
                 user_settings = self.read_from_file(file_path)
                 if isinstance(user_settings, list):
@@ -193,7 +196,12 @@ class SettingStore(JsonDataStore):
                         and item.get("setting") == "exportDownloadsDefaultApplied"
                         for item in user_settings
                     )
-                new_keys = {name: self.get(name) for name in ("actionRedo", "actionAddTrack")}
+                    user_had_omp_flag = any(
+                        isinstance(item, dict)
+                        and item.get("setting") == "ompThreadsDefaultApplied"
+                        for item in user_settings
+                    )
+                new_keys ={name: self.get(name) for name in ("actionRedo", "actionAddTrack")}
                 # Merge sources, excluding user settings not found in default
                 self._data = self.merge_settings(default_settings, user_settings)
                 # Ctrl+Y used to add a track and Redo was Ctrl+Shift+Z only: a
@@ -212,6 +220,21 @@ class SettingStore(JsonDataStore):
             if not user_had_downloads_flag:
                 self.set("locationExportType", self.pathType.RECENT.value)
                 self.set("exportDownloadsDefaultApplied", True)
+
+            # A stored OMP count below this machine's default starves preview:
+            # 2 threads played a colour-graded project below real time, and the
+            # audio came out as static. One-time: back to the default; a count
+            # chosen after this is kept.
+            if not user_had_omp_flag:
+                omp_default = lib_default_thread_counts()[0]
+                try:
+                    stale = int(str(self.get("omp_threads_number"))) < omp_default
+                except ValueError:
+                    stale = True
+                if stale:
+                    log.info("Resetting stored OMP threads to the default of %s", omp_default)
+                    self.set("omp_threads_number", omp_default)
+                self.set("ompThreadsDefaultApplied", True)
 
         # Hardware decode auto-detect is intentionally NOT done here.
         # settings.load() runs before libopenshot/Qt are fully ready, so the
@@ -240,6 +263,7 @@ class SettingStore(JsonDataStore):
             'unique_install_id', 'tutorial_ids', 'tutorial_enabled', 'send_metrics',
             'recent_projects', 'restore_project_path', 'restore_draft_history_key',
             'custom_views', 'active_custom_view', 'active_builtin_view',
+            'hardwareAutoDetectApplied',
         ]
 
         requires_restart = False  # Track if any setting requires a restart

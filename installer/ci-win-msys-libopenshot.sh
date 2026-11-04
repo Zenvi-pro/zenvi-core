@@ -69,7 +69,7 @@ cmake --install "${AUDIO_SRC}/build"
 # libopenshot → /ucrt64 + FFmpeg 7+ compat patches (upstream may already include some)
 git clone --depth 1 --branch "${LIBOPENSHOT_TAG}" https://github.com/OpenShot/libopenshot.git "${DEPS}/libopenshot"
 export LOS="${DEPS}/libopenshot"
-# Tag-locked source patches (v1.0.1: the stream-copy trim pre-roll fix).
+# Tag-locked source patches (v1.0.1: the stream-copy trim pre-roll fix and the paused-edit cache refresh).
 apply_patches "${LOS}" "libopenshot-${LIBOPENSHOT_TAG}"
 find "${LOS}" \( -name "CMakeLists.txt" -o -name "*.cmake" \) -print0 | \
   xargs -0 -r grep -l "avresample" 2>/dev/null | while read -r f; do

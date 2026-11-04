@@ -107,3 +107,26 @@ def test_a_sign_in_that_ended_waits_for_a_click(qapp, monkeypatch):
     assert fake.callbacks is not None
     dlg._cancel()
     _spin(qapp)
+
+
+def test_the_browser_is_the_only_way_to_sign_in(qapp, monkeypatch):
+    fake = FakeAuth()
+    monkeypatch.setattr(am.AuthManager, "_instance", fake)
+    from PyQt5.QtWidgets import QLineEdit, QPushButton
+    from windows.login_window import LoginWindow
+
+    dlg = LoginWindow(parent=None)
+    dlg.show()
+    _spin(qapp)
+    buttons = [b.text().lower() for b in dlg.findChildren(QPushButton)]
+    assert not [text for text in buttons if "email" in text or "password" in text]
+    assert not [e for e in dlg.findChildren(QLineEdit) if e.echoMode() == QLineEdit.Password]
+
+    _, on_timeout = fake.callbacks
+    on_timeout()
+    _spin(qapp)
+    assert dlg._browser_btn.isVisibleTo(dlg), "a timed-out sign-in can be retried in the browser"
+    assert "email" not in dlg._browser_sub.text().lower()
+    dlg._cancel()
+    _spin(qapp)
+

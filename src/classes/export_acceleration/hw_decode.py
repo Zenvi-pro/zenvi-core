@@ -127,6 +127,11 @@ def maybe_auto_detect_hardware_decoder(settings_store) -> Optional[int]:
         already = False
     if already:
         return None
+    if getattr(settings_store, "user_file_existed", False):
+        # The flag was lost (Restore Defaults, an older build saving the file);
+        # keep this install's decoder choice instead of probing it back on.
+        settings_store.set("hardwareAutoDetectApplied", True)
+        return None
 
     # Probe before timelines open.
     detected = detect_best_hardware_decoder(

@@ -40,7 +40,7 @@ import openshot
 from qt_api import (
     Qt, QObject, pyqtSignal, pyqtSlot, QPointF, QCursor,
     QWidget, QLabel, QPushButton, QComboBox, QApplication,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QSizePolicy, QIcon, QTimer,
+    QVBoxLayout, QHBoxLayout, QGridLayout, QSizePolicy, QTimer,
     QPainter, QColor, QPen, QSpinBox, QImage, QPixmap, QButtonGroup,
     QScrollArea, QPainterPath,
 )
@@ -56,6 +56,7 @@ from classes.thumbnail import (
     ThumbnailPathForFrame,
 )
 from classes.tray_status import TrayStatus
+from themes.cosmic.tokens import TOKENS, resolve
 from windows.recording_widgets import (
     RecordingSourceCard, RecordingSection, SegmentButton,
     pick_screen_region, pick_screen_window, screen_capture_sources, screen_root_geometry,
@@ -104,7 +105,7 @@ class RecordingLevelMeter(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, False)
-        painter.fillRect(self.rect(), QColor(28, 30, 34))
+        painter.fillRect(self.rect(), QColor(TOKENS["sunken"]))
 
         channels = max(1, len(self._peak), len(self._rms))
         gap = 4
@@ -114,7 +115,7 @@ class RecordingLevelMeter(QWidget):
         for channel in range(channels):
             y = gap + channel * (bar_h + gap)
             rect_w = self.width() - (2 * gap)
-            painter.fillRect(gap, y, rect_w, bar_h, QColor(45, 48, 54))
+            painter.fillRect(gap, y, rect_w, bar_h, QColor(TOKENS["line_strong"]))
 
             rms = self._rms[channel] if channel < len(self._rms) else 0.0
             peak = self._peak[channel] if channel < len(self._peak) else 0.0
@@ -693,6 +694,17 @@ class WebcamPreviewJob(QObject):
                     log.debug("Unable to close webcam preview reader", exc_info=True)
             self._reader = None
 
+
+def _record_button_style(background, text, hover):
+    """Record button colors by token name. Every waiting state is disabled, so they share one look."""
+    return resolve(
+        "QPushButton { background-color: {%s}; color: {%s}; border: none; border-radius: 6px;"
+        " padding: 10px; font-weight: 600; }"
+        "QPushButton:hover, QPushButton:pressed { background-color: {%s}; }"
+        "QPushButton:disabled { background-color: {active}; color: {text_faint}; }" % (background, text, hover)
+    )
+
+
 class AudioRecordingDockContent(QWidget):
     """Compact dock for recording audio, screen, and webcam sources."""
 
@@ -767,16 +779,16 @@ class AudioRecordingDockContent(QWidget):
         for column in range(3):
             source_grid.setColumnStretch(column, 1)
             source_grid.setColumnMinimumWidth(column, 0)
-        self.mic_card = RecordingSourceCard(_("Mic"), _("Record your voice"), "🎙", self)
-        self.screen_card = RecordingSourceCard(_("Screen"), _("Capture your screen"), "▣", self)
-        self.camera_card = RecordingSourceCard(_("Webcam"), _("Record yourself"), "◉", self)
+        self.mic_card = RecordingSourceCard(_("Mic"), _("Record your voice"), "tool-microphone.svg", self)
+        self.screen_card = RecordingSourceCard(_("Screen"), _("Capture your screen"), "tool-scope-region.svg", self)
+        self.camera_card = RecordingSourceCard(_("Webcam"), _("Record yourself"), "nav-video.svg", self)
         self.mic_card.setChecked(False)
         source_grid.addWidget(self.mic_card, 0, 0)
         source_grid.addWidget(self.screen_card, 0, 1)
         source_grid.addWidget(self.camera_card, 0, 2)
         layout.addLayout(source_grid)
 
-        self.mic_section = RecordingSection(_("Mic"), "🎙", self)
+        self.mic_section = RecordingSection(_("Mic"), "tool-microphone.svg", self)
         self.level_meter = RecordingLevelMeter(self.mic_section)
         mic_input_row = QHBoxLayout()
         mic_input_row.setContentsMargins(0, 0, 0, 0)
@@ -823,7 +835,7 @@ class AudioRecordingDockContent(QWidget):
         self.mic_section.advanced_layout.addWidget(self.channels_combo, 3, 1)
         layout.addWidget(self.mic_section)
 
-        self.screen_section = RecordingSection(_("Screen"), "▣", self)
+        self.screen_section = RecordingSection(_("Screen"), "tool-scope-region.svg", self)
         self.screen_mode_widget = QWidget(self.screen_section)
         screen_mode_row = QHBoxLayout(self.screen_mode_widget)
         screen_mode_row.setContentsMargins(0, 0, 0, 0)
@@ -836,7 +848,7 @@ class AudioRecordingDockContent(QWidget):
             screen_mode_row.addWidget(button)
         self.screen_section.body_layout.addWidget(self.screen_mode_widget)
         self.screen_status_label = QLabel("", self.screen_section)
-        self.screen_status_label.setStyleSheet("color: #9aa8bd;")
+        self.screen_status_label.setStyleSheet(resolve("color: {text_muted};"))
         self.screen_status_label.setWordWrap(True)
         self.screen_section.body_layout.addWidget(self.screen_status_label)
 
@@ -925,13 +937,13 @@ class AudioRecordingDockContent(QWidget):
         self.screen_section.advanced_layout.addWidget(self.hide_openshot_combo, 6, 1)
         layout.addWidget(self.screen_section)
 
-        self.camera_section = RecordingSection(_("Webcam"), "◉", self)
+        self.camera_section = RecordingSection(_("Webcam"), "nav-video.svg", self)
         self.webcam_preview_label = QLabel(_("Preview"), self.camera_section)
         self.webcam_preview_label.setAlignment(Qt.AlignCenter)
         self.webcam_preview_label.setFixedSize(220, 124)
-        self.webcam_preview_label.setStyleSheet(
-            "QLabel { background-color: rgba(8, 14, 24, 170); color: #8c9aaf; border-radius: 8px; }"
-        )
+        self.webcam_preview_label.setStyleSheet(resolve(
+            "QLabel { background-color: {sunken}; color: {text_faint}; border: 1px solid {line_strong}; border-radius: 8px; }"
+        ))
         camera_details_row = QHBoxLayout()
         camera_details_row.setContentsMargins(0, 0, 0, 0)
         camera_details_row.addStretch()
@@ -1005,14 +1017,14 @@ class AudioRecordingDockContent(QWidget):
         layout.addLayout(target_row)
 
         control_row = QHBoxLayout()
+        control_row.setContentsMargins(10, 0, 10, 10)
         self.record_button = QPushButton(_("Start Recording"), self)
         self.record_button.setObjectName("recordingPrimary")
-        self.record_button.setIcon(QIcon(os.path.join(info.PATH, "themes/cosmic/images/tool-microphone.svg")))
         self.record_button.setMinimumHeight(38)
         self.record_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.record_button.setStyleSheet("font-weight: 600;")
         control_row.addWidget(self.record_button)
-        layout.addLayout(control_row)
+        outer_layout.addLayout(control_row)
 
         layout.addStretch()
 
@@ -1048,6 +1060,20 @@ class AudioRecordingDockContent(QWidget):
         self._sync_source_sections()
         self._webcam_layout_changed()
         self._sync_backend_state()
+        self._tracks_refresh_queued = False
+        get_app().updates.add_listener(self)
+
+    def changed(self, action):
+        """UpdateManager hook: a new or opened project, or a track change, refreshes the track list."""
+        if action and (action.type == "load" or (action.key and action.key[0] == "layers")):
+            # Once, after the change: a renumber updates layers one at a time.
+            if not self._tracks_refresh_queued:
+                self._tracks_refresh_queued = True
+                QTimer.singleShot(0, self._refresh_tracks_once)
+
+    def _refresh_tracks_once(self):
+        self._tracks_refresh_queued = False
+        self.refresh_tracks(keep_track=True)
 
     def _backend_available(self):
         audio_available = all(hasattr(openshot, name) for name in (
@@ -1743,9 +1769,17 @@ class AudioRecordingDockContent(QWidget):
             "YUYV": "yuyv422",
         }.get(str(format_code).upper(), str(format_code).lower())
 
-    def refresh_tracks(self):
+    def refresh_tracks(self, keep_track=False):
+        """Rebuild the track list. With *keep_track*, reselect the same track (by id) even if a
+        renumber gave it a new number."""
         _ = get_app()._tr
-        selected = self._context_track or self.track_combo.currentData()
+        id_role = Qt.UserRole + 1
+        if keep_track:                                     # the row on screen, "No Track" included
+            selected = self.track_combo.currentData()
+            selected_id = self.track_combo.currentData(id_role)
+        else:
+            selected, selected_id = self._context_track or self.track_combo.currentData(), None
+        kept = False
         self.track_combo.blockSignals(True)
         self.track_combo.clear()
         self.track_combo.addItem(_("No Track"), NO_RECORDING_TRACK)
@@ -1756,6 +1790,9 @@ class AudioRecordingDockContent(QWidget):
                 number = int(track.data.get("number", 0))
                 label = labels.get(number, _("Track %s") % number)
                 self.track_combo.addItem(str(label), number)
+                self.track_combo.setItemData(self.track_combo.count() - 1, track.id, id_role)
+                if selected_id is not None and track.id == selected_id:
+                    selected, kept = number, True
         except Exception as ex:
             log.debug("Unable to list timeline tracks for recording: %s", ex, exc_info=True)
         for index in range(self.track_combo.count()):
@@ -1765,6 +1802,10 @@ class AudioRecordingDockContent(QWidget):
         else:
             if self.track_combo.count() > 1:
                 self.track_combo.setCurrentIndex(1)
+        if kept and self._context_track is not None:
+            self._context_track = selected                 # the context track moved with its renumber
+        elif keep_track and selected == NO_RECORDING_TRACK:
+            self._context_track = None                     # the user chose no track over the context
         self.track_combo.blockSignals(False)
 
     def set_recording_context(self, start_time=None, track_number=None):
@@ -2762,12 +2803,7 @@ class AudioRecordingDockContent(QWidget):
         source_selected = self._has_selected_recording_source()
         self.record_button.setEnabled(source_selected)
         self.record_button.setText(get_app()._tr("Start Recording"))
-        self.record_button.setStyleSheet(
-            "QPushButton { background-color: #087cff; color: white; border: none; border-radius: 8px; padding: 11px; font-weight: 700; }"
-            "QPushButton:hover { background-color: #1688ff; }"
-            "QPushButton:pressed { background-color: #0567d6; }"
-            "QPushButton:disabled { background-color: #3c4655; color: #8b96a8; }"
-        )
+        self.record_button.setStyleSheet(_record_button_style("primary", "primary_text", "primary_hover"))
         self.record_button.setToolTip(
             "" if source_selected else get_app()._tr("Select at least one recording source.")
         )
@@ -2782,27 +2818,25 @@ class AudioRecordingDockContent(QWidget):
     def _set_record_button_unavailable(self):
         self.record_button.setEnabled(False)
         self.record_button.setText(get_app()._tr("Unavailable"))
-        self.record_button.setStyleSheet("QPushButton { color: #8b96a8; font-weight: 600; }")
+        self.record_button.setStyleSheet(_record_button_style("primary", "primary_text", "primary_hover"))
         self.record_button.setToolTip("")
 
     def _set_record_button_starting(self):
         self.record_button.setEnabled(False)
         self.record_button.setText(get_app()._tr("Starting..."))
-        self.record_button.setStyleSheet("QPushButton { color: #d8e3f2; font-weight: 600; }")
+        self.record_button.setStyleSheet(_record_button_style("primary", "primary_text", "primary_hover"))
         self.record_button.setToolTip("")
 
     def _set_record_button_stopping(self):
         self.record_button.setEnabled(False)
         self.record_button.setText(get_app()._tr("Stopping..."))
-        self.record_button.setStyleSheet(
-            "QPushButton { background-color: #8F2D2D; color: white; font-weight: 700; }"
-        )
+        self.record_button.setStyleSheet(_record_button_style("danger", "white", "danger"))
         self.record_button.setToolTip("")
 
     def _set_record_button_saving(self):
         self.record_button.setEnabled(False)
         self.record_button.setText(get_app()._tr("Saving..."))
-        self.record_button.setStyleSheet("QPushButton { color: #d8e3f2; font-weight: 600; }")
+        self.record_button.setStyleSheet(_record_button_style("primary", "primary_text", "primary_hover"))
         self.record_button.setToolTip("")
 
     def _set_record_button_recording(self, elapsed=None):
@@ -2812,11 +2846,7 @@ class AudioRecordingDockContent(QWidget):
         self.record_button.setText(
             "%s  %s" % (get_app()._tr("Stop Recording"), self._format_elapsed_time(elapsed))
         )
-        self.record_button.setStyleSheet(
-            "QPushButton { background-color: #B83232; color: white; font-weight: 700; }"
-            "QPushButton:hover { background-color: #C93A3A; }"
-            "QPushButton:pressed { background-color: #972626; }"
-        )
+        self.record_button.setStyleSheet(_record_button_style("danger", "white", "danger"))
         self.record_button.setToolTip("")
 
     def _format_changed(self):

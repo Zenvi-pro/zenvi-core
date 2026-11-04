@@ -31,6 +31,7 @@ from qt_api import QDrag, QListView
 from classes import emoji_catalog, info
 from classes.app import get_app
 from classes.logger import log
+from .files_thumbnail_overlay import TileDelegate, tile_grid_size
 import json
 import uuid
 
@@ -170,7 +171,8 @@ class EmojisListView(QListView):
 
         # Setup header columns and layout
         self.setIconSize(info.EMOJI_ICON_SIZE)
-        self.setGridSize(info.EMOJI_GRID_SIZE)
+        self.setGridSize(tile_grid_size(info.EMOJI_ICON_SIZE))
+        self.setItemDelegate(TileDelegate(self))
         self.setViewMode(QListView.IconMode)
         self.setResizeMode(QListView.Adjust)
         self.setUniformItemSizes(True)

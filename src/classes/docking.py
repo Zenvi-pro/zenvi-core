@@ -204,7 +204,8 @@ class DockingMixin:
                 dock_widget, title_text=dock_widget.windowTitle(),
                 show_buttons=True, floating=True)
         else:
-            titlebar = HiddenTitleBar(dock_widget, show_buttons=True)
+            titlebar = HiddenTitleBar(
+                dock_widget, title_text=dock_widget.windowTitle(), show_buttons=True)
 
         previous = dock_widget.titleBarWidget()
         dock_widget.setTitleBarWidget(titlebar)

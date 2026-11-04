@@ -42,6 +42,7 @@ def test_no_patch_is_left_for_an_older_1_0_tag():
              and not p.startswith(("libopenshot-%s-" % PINNED, "libopenshot-audio-%s-" % PINNED))]
     assert stale == []
     assert "libopenshot-%s-discard-preroll.patch" % PINNED in patches
+    assert "libopenshot-%s-same-frame-refresh.patch" % PINNED in patches
 
 
 def test_run_win_builds_the_pinned_tag_even_over_an_older_checkout():

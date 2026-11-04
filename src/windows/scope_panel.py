@@ -32,10 +32,11 @@ from qt_api import (
     Qt, pyqtSignal, pyqtSlot,
     QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy,
     QImage, QPainter, QColor, QPen, QBrush, QIcon,
-    QComboBox, QToolButton, QRect, QPainterPath, QPointF,
+    QComboBox, QToolButton, QLabel, QRect, QPainterPath, QPointF,
 )
 from classes import info
 from classes.logger import log
+from themes.cosmic.tokens import TOKENS, resolve
 from windows.color_grade_editor import draw_broadcast_hue_ring
 
 # ─── Persistent settings keys ────────────────────────────────────────────────
@@ -45,6 +46,35 @@ _S_HIST_CH    = "scope-histogram-channel" # rgba|luma|red|green|blue
 _S_HIST_SCALE = "scope-histogram-scale"   # log|linear
 _S_VEC_DISPLAY = "scope-vectorscope-display"  # colorized|density|intensity
 _S_VEC_ZOOM    = "scope-vectorscope-zoom"     # 100|200|400
+
+SCOPE_EXPLANATIONS = {
+    "waveform": (
+        "Brightness across the frame, left to right: black at the bottom, white at the top. "
+        "Dashed lines mark 10%, 50% and 90%."
+    ),
+    "histogram": (
+        "How many pixels sit at each brightness level, dark on the left to bright on the right. "
+        "Peaks piled against either edge may mean clipped shadows or highlights."
+    ),
+    "vectorscope": (
+        "Color of the frame: angle is hue, distance from the center is saturation. "
+        "Skin tones should sit along the dashed skin-tone line."
+    ),
+    "audio": (
+        "Level of each audio channel as it plays. "
+        "Green is safe, yellow is hot, red is the top of the scale; a red bar across the top means "
+        "samples clipped."
+    ),
+}
+
+
+def _tr(text):
+    """Translate *text* for display (SCOPE_EXPLANATIONS stays English for the source)."""
+    try:
+        from classes.app import get_app
+        return get_app()._tr(text)
+    except Exception:
+        return text
 
 _VECTORSCOPE_HUE_LABELS = (
     ("R", 108.65, 360.0),
@@ -97,6 +127,13 @@ def _make_scope_region_button(parent):
     button.setToolTip("Analyze selected preview region")
     button.setFocusPolicy(Qt.NoFocus)
     return button
+
+
+def _scope_explanation_label(parent, text):
+    label = QLabel(text, parent)
+    label.setWordWrap(True)
+    label.setStyleSheet(resolve("color: {text_muted}; font-size: 11px;"))
+    return label
 
 
 def normalize_vectorscope_display(value):
@@ -349,11 +386,12 @@ class WaveformWidget(QWidget):
         painter.setRenderHint(QPainter.Antialiasing, False)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         w, h = self.width(), self.height()
-        painter.fillRect(0, 0, w, h, QColor(0, 0, 0))
+        painter.fillRect(0, 0, w, h, QColor(TOKENS["bg"]))
 
         if not self._data or not self._data.get("present"):
-            painter.setPen(QColor(80, 80, 80))
-            painter.drawText(self.rect(), Qt.AlignCenter, "No Video")
+            painter.setPen(QColor(TOKENS["text_faint"]))
+            painter.drawText(self.rect(), Qt.AlignCenter | Qt.TextWordWrap,
+                             "Play or select a clip to see the waveform.")
             return
 
         wf      = self._data.get("waveform", {})
@@ -373,7 +411,7 @@ class WaveformWidget(QWidget):
                     painter.drawImage(QRect(i * band_w, 0, band_w, h), img)
 
             # Thin dividers between bands
-            painter.setPen(QPen(QColor(50, 50, 50), 1))
+            painter.setPen(QPen(QColor(TOKENS["line_strong"]), 1))
             painter.drawLine(band_w,     0, band_w,     h)
             painter.drawLine(band_w * 2, 0, band_w * 2, h)
 
@@ -417,7 +455,7 @@ class WaveformWidget(QWidget):
 
         # IRE reference lines at 10 / 50 / 90 %
         if self._ire:
-            painter.setPen(QPen(QColor(60, 60, 60), 1, Qt.DashLine))
+            painter.setPen(QPen(QColor(TOKENS["line_strong"]), 1, Qt.DashLine))
             for pct in (0.1, 0.5, 0.9):
                 y = int(h * (1.0 - pct))
                 painter.drawLine(0, y, w, y)
@@ -457,11 +495,12 @@ class HistogramWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, False)
         w, h = self.width(), self.height()
-        painter.fillRect(0, 0, w, h, QColor(20, 20, 20))
+        painter.fillRect(0, 0, w, h, QColor(TOKENS["bg"]))
 
         if not self._data or not self._data.get("present"):
-            painter.setPen(QColor(80, 80, 80))
-            painter.drawText(self.rect(), Qt.AlignCenter, "No Video")
+            painter.setPen(QColor(TOKENS["text_faint"]))
+            painter.drawText(self.rect(), Qt.AlignCenter | Qt.TextWordWrap,
+                             "Play or select a clip to see the histogram.")
             return
 
         hist  = self._data.get("histogram", {})
@@ -573,8 +612,8 @@ class VectorscopeWidget(QWidget):
     def _draw_guides(self, painter, center_x, center_y, radius):
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
-        ring_pen = QPen(QColor(90, 98, 110, 88), 1)
-        spoke_pen = QPen(QColor(90, 98, 110, 68), 1)
+        ring_pen = QPen(QColor(TOKENS["line_strong"]), 1)
+        spoke_pen = QPen(QColor(TOKENS["line_strong"]), 1)
         skin_pen = QPen(QColor(210, 170, 120, 110), 1, Qt.DashLine)
 
         painter.setPen(ring_pen)
@@ -607,7 +646,8 @@ class VectorscopeWidget(QWidget):
         """Draw hue labels per-frame, tinted toward their target color by proximity score."""
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
-        base_r, base_g, base_b, base_a = 160, 168, 176, 120
+        base = QColor(TOKENS["text_faint"])
+        base_r, base_g, base_b, base_a = base.red(), base.green(), base.blue(), 120  # idle labels fade
         for i, (label, angle_deg, display_hue) in enumerate(self._HUE_LABELS):
             score = scores[i] if scores else 0.0
             angle = math.radians(angle_deg)
@@ -683,7 +723,7 @@ class VectorscopeWidget(QWidget):
                 3.0,
                 alpha=220,
             )
-            painter.setPen(QPen(QColor(120, 128, 138, 110), 1))
+            painter.setPen(QPen(QColor(TOKENS["line_strong"]), 1))
             painter.drawEllipse(layout["plot_rect"])
         finally:
             painter.end()
@@ -736,11 +776,12 @@ class VectorscopeWidget(QWidget):
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
             w, h = self.width(), self.height()
-            painter.fillRect(0, 0, w, h, QColor(0, 0, 0))
+            painter.fillRect(0, 0, w, h, QColor(TOKENS["bg"]))
 
             if not self._data or not self._data.get("present"):
-                painter.setPen(QColor(80, 80, 80))
-                painter.drawText(self.rect(), Qt.AlignCenter, "No Video")
+                painter.setPen(QColor(TOKENS["text_faint"]))
+                painter.drawText(self.rect(), Qt.AlignCenter | Qt.TextWordWrap,
+                                 "Play or select a clip to see the vectorscope.")
                 return
 
             layout = self._layout_info()
@@ -768,6 +809,7 @@ class AudioMeterWidget(QWidget):
         self.setMinimumSize(60, 80)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setFocusPolicy(Qt.NoFocus)
+        self.setToolTip(_tr(SCOPE_EXPLANATIONS["audio"]))
 
     def update_data(self, audio_data):
         self._data = audio_data
@@ -777,11 +819,12 @@ class AudioMeterWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, False)
         w, h = self.width(), self.height()
-        painter.fillRect(0, 0, w, h, QColor(20, 20, 20))
+        painter.fillRect(0, 0, w, h, QColor(TOKENS["bg"]))
 
         if not self._data or not self._data.get("present"):
-            painter.setPen(QColor(80, 80, 80))
-            painter.drawText(self.rect(), Qt.AlignCenter, "No Audio")
+            painter.setPen(QColor(TOKENS["text_faint"]))
+            painter.drawText(self.rect(), Qt.AlignCenter | Qt.TextWordWrap,
+                             "Play or select a clip to see levels.")
             return
 
         summary   = self._data.get("summary", {})
@@ -794,15 +837,17 @@ class AudioMeterWidget(QWidget):
             return
 
         gap   = 4
-        bar_w = max(8, (w - (channels + 1) * gap) // channels)
+        # Thin strips like a mixer, but every channel stays on screen in a narrow panel
+        bar_w = max(1, min(24, (w - (channels + 1) * gap) // channels))
+        left  = max(0, (w - channels * bar_w - (channels - 1) * gap) // 2)
 
         for ch in range(channels):
-            x             = gap + ch * (bar_w + gap)
+            x             = left + ch * (bar_w + gap)
             rms           = rms_vals[ch]  if ch < len(rms_vals)  else 0.0
             peak          = peak_vals[ch] if ch < len(peak_vals) else 0.0
             clipped_count = clipped[ch]   if ch < len(clipped)   else 0
 
-            painter.fillRect(x, 0, bar_w, h, QColor(40, 40, 40))
+            painter.fillRect(x, 0, bar_w, h, QColor(TOKENS["sunken"]))
 
             rms_h = int(rms * h)
             for row in range(rms_h):
@@ -844,6 +889,19 @@ def _restore_combo(combo, value):
 
 # ─── Waveform dock content (painter + toolbar) ───────────────────────────────
 
+class AudioLevelsDockContent(QWidget):
+    """The Audio Levels dock: its explanation above the meter."""
+
+    def __init__(self, meter, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.NoFocus)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 6)
+        layout.setSpacing(4)
+        layout.addWidget(_scope_explanation_label(self, _tr(SCOPE_EXPLANATIONS["audio"])))
+        layout.addWidget(meter, 1)
+
+
 class WaveformDockContent(QWidget):
     """Waveform dock widget: filter toolbar above the waveform painter."""
     scopeRegionToggled = pyqtSignal(bool)
@@ -865,9 +923,11 @@ class WaveformDockContent(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFocusPolicy(Qt.NoFocus)
+        self.setToolTip(_tr(SCOPE_EXPLANATIONS["waveform"]))
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 6)
         layout.setSpacing(4)
+        layout.addWidget(_scope_explanation_label(self, _tr(SCOPE_EXPLANATIONS["waveform"])))
 
         toolbar = QWidget(self)
         toolbar.setFocusPolicy(Qt.NoFocus)
@@ -947,9 +1007,11 @@ class HistogramDockContent(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFocusPolicy(Qt.NoFocus)
+        self.setToolTip(_tr(SCOPE_EXPLANATIONS["histogram"]))
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 6)
         layout.setSpacing(4)
+        layout.addWidget(_scope_explanation_label(self, _tr(SCOPE_EXPLANATIONS["histogram"])))
 
         toolbar = QWidget(self)
         toolbar.setFocusPolicy(Qt.NoFocus)
@@ -1011,9 +1073,11 @@ class VectorscopeDockContent(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFocusPolicy(Qt.NoFocus)
+        self.setToolTip(_tr(SCOPE_EXPLANATIONS["vectorscope"]))
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 6)
         layout.setSpacing(4)
+        layout.addWidget(_scope_explanation_label(self, _tr(SCOPE_EXPLANATIONS["vectorscope"])))
 
         toolbar = QWidget(self)
         toolbar.setFocusPolicy(Qt.NoFocus)

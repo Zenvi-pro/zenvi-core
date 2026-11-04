@@ -240,31 +240,6 @@ def _cues_of(effective_metadata: Optional[dict]) -> List[dict]:
     return [c for c in cues if isinstance(c, dict)] if isinstance(cues, list) else []
 
 
-def snap_cut_out_of_speech(cut_source, cues, *, max_shift=None):
-    """Move *cut_source* off a spoken line, to the nearer edge of its cue.
-
-    Cutting mid-word is the reported "sliced through the middle of a said
-    speech" bug. Cues are in the same source-seconds frame as *cut_source*.
-    Returns (snapped_cut, cue) - cue is None when the cut was already clean.
-    """
-    cut = _f(cut_source, 0.0)
-    for cue in cues or []:
-        if not isinstance(cue, dict):
-            continue
-        start = _f(cue.get("source_start", cue.get("start")), None)
-        end = _f(cue.get("source_end", cue.get("end")), None)
-        if start is None or end is None or end <= start:
-            continue
-        # Strictly inside: a cut exactly on a boundary is already clean.
-        if not (start + _EPS < cut < end - _EPS):
-            continue
-        nearer = start if (cut - start) <= (end - cut) else end
-        if max_shift is not None and abs(nearer - cut) > max_shift:
-            return cut, None
-        return nearer, cue
-    return cut, None
-
-
 # A cut inside a spoken phrase may move this far to clear it. Beyond that the
 # cut is deep inside the line and was probably meant - relocating it by seconds
 # would change which words survive.

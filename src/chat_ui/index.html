@@ -51,7 +51,7 @@
         <div id="chat-tab-bar"
              class="flex-shrink-0 flex items-center gap-1 px-2 pt-1.5 overflow-x-auto"
              role="tablist" aria-label="Chat sessions"
-             style="display:flex; background: var(--chat-bg); border-bottom: 1px solid var(--chat-border, rgba(255,255,255,0.07));">
+             style="display:flex; background: var(--chat-bg); border-bottom: 1px solid var(--chat-border);">
             <button type="button" id="chat-tab-history"
                     class="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-md ml-auto
                            text-[13px] leading-none transition-colors"
@@ -72,14 +72,14 @@
 
         <!-- ── Preamble header ─────────────────────────────────────────── -->
         <div class="flex-shrink-0 mx-2.5 mt-2 mb-1 px-3.5 py-2.5"
-             style="background: #0d0d0d;">
+             style="background: transparent;">
             <div class="flex items-center justify-between">
                 <div id="chat-preamble-label"
                      class="text-[13px] leading-relaxed"
                      style="color: var(--chat-text);"></div>
                 <div id="chat-credits-badge"
                      class="flex-shrink-0 ml-2 px-2 py-0.5 rounded-full text-[11px] font-medium"
-                     style="display:none; background: rgba(77,156,246,0.12); color: rgba(77,156,246,0.95); border: 1px solid rgba(77,156,246,0.25);"
+                     style="display:none; background: var(--chat-surface); color: var(--chat-muted); border: 1px solid var(--chat-border-strong);"
                      title="AI credits remaining"></div>
             </div>
             <div id="chat-preamble-status"
@@ -91,14 +91,14 @@
         <div id="chat-messages"
              class="flex-1 min-h-0 overflow-y-auto px-3 py-2.5 mx-2.5 mb-2"
              role="log" aria-live="polite"
-             style="background: #0d0d0d;">
+             style="background: transparent;">
         </div>
 
         <!-- ── CLI empty state (shown instead of messages when the selected
              external agent's CLI isn't installed) ──────────────────────── -->
         <div id="chat-cli-empty-state"
              class="flex-1 min-h-0 mx-2.5 mb-2 flex flex-col items-center justify-center text-center px-6"
-             style="display:none; background: #0d0d0d; color: var(--chat-muted); font-size: 12px; line-height: 1.6;"></div>
+             style="display:none; background: transparent; color: var(--chat-placeholder); font-size: 12px; line-height: 1.6;"></div>
 
         <!-- ── Input row ───────────────────────────────────────────────── -->
         <div class="chat-input-row flex-shrink-0 flex flex-col mx-2.5 mb-2.5" id="chat-input-row">
@@ -134,7 +134,7 @@
 
                             <!-- Mode toggle: Plan / Agent -->
                             <div id="chat-mode-toggle" class="chat-mode-toggle flex items-center gap-0.5 rounded-full p-0.5 border"
-                                 style="border-color: var(--chat-border); background: var(--chat-surface);"
+                                 style="border-color: var(--chat-border); background: var(--chat-input-bg);"
                                  role="group" aria-label="Agent mode">
                                 <button type="button" id="chat-mode-plan" class="chat-mode-btn" data-mode="planning">Plan</button>
                                 <button type="button" id="chat-mode-agent" class="chat-mode-btn active" data-mode="agent">Agent</button>
@@ -147,7 +147,7 @@
                             <button type="button" id="chat-model-trigger"
                                     class="chat-model-trigger inline-flex items-center gap-1.5
                                            rounded-full px-2 py-[3px] text-[11px] border transition-colors cursor-pointer"
-                                    style="background: var(--chat-surface); border-color: var(--chat-border); color: var(--chat-text);"
+                                    style="background: var(--chat-surface); border-color: var(--chat-border-strong); color: var(--chat-text);"
                                     aria-label="Select model" aria-haspopup="listbox">
                                 <svg class="chat-model-icon flex-shrink-0 opacity-60" width="14" height="14"
                                      viewBox="0 0 16 16" fill="none">
@@ -175,8 +175,48 @@
                                            aria-label="Search models">
                                 </div>
                                 <div id="chat-model-list" class="chat-model-list py-1"></div>
+                                <!-- Effort and Ultracode of the picked model: only
+                                     shown when its CLI lists effort levels -->
+                                <div id="chat-model-effort" class="chat-model-effort" style="display: none;">
+                                    <div class="chat-effort-row">
+                                        <span>Effort <span id="chat-effort-name" class="chat-effort-name"></span></span>
+                                        <span id="chat-effort-dots" class="chat-effort-dots"
+                                              role="radiogroup" aria-label="Reasoning effort"></span>
+                                    </div>
+                                    <div id="chat-ultracode-row" class="chat-effort-row" style="display: none;">
+                                        <span>Ultracode</span>
+                                        <button type="button" id="chat-ultracode-toggle" class="chat-switch"
+                                                role="switch" aria-checked="false" aria-label="Ultracode"></button>
+                                    </div>
+                                </div>
                                 <div id="chat-model-footer" class="chat-model-footer"></div>
                             </div>
+
+                            <!-- Permission mode: only shown for a CLI agent's
+                                 model that lists modes (see setModels) -->
+                            <button type="button" id="chat-cli-mode" class="chat-mode-btn chat-cli-mode"
+                                    title="Permission mode (Shift+Tab to change)"
+                                    aria-label="Permission mode" style="display: none;"></button>
+
+                            <!-- Dictate the prompt -->
+                            <button type="button" id="chat-mic-btn"
+                                    class="chat-bottom-icon chat-mic-btn" title="Dictate the prompt"
+                                    aria-label="Dictate the prompt" aria-pressed="false">
+                                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                    <rect x="5.5" y="1.5" width="5" height="8" rx="2.5"
+                                          stroke="currentColor" stroke-width="1.2"/>
+                                    <path d="M3 7.5a5 5 0 0010 0M8 12.5v2"
+                                          stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                                </svg>
+                            </button>
+                            <button type="button" id="chat-mic-menu-btn"
+                                    class="chat-bottom-icon chat-mic-menu-btn" title="Choose how to dictate"
+                                    aria-label="Choose how to dictate" aria-haspopup="menu">
+                                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                                    <path d="M2.5 4L5 6.5 7.5 4" stroke="currentColor" stroke-width="1.2"
+                                          stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                            </button>
 
                             <!-- Agent Trace -->
                             <button type="button" id="chat-trace-btn"

@@ -242,6 +242,24 @@ def test_panel_height_never_changes_between_states(qapp):
     assert len(heights) == 1, "panel resizes between states: %s" % sorted(heights)
 
 
+def test_chatgpt_row_describes_sign_in_not_a_path_search(qapp):
+    """This agent never looks for `codex` on PATH, and Connect is a browser sign-in."""
+    panel = _panel(FakeChat({}))
+    checking = panel._rows["chatgpt"].desc.text()
+    assert "codex" not in checking.lower()
+    assert "ChatGPT" in checking
+
+    panel._connecting = "chatgpt"
+    panel.refresh()
+    row = panel._rows["chatgpt"]
+    assert "browser" in row.desc.text().lower()
+    assert "Registering" not in row.desc.text()
+
+    panel.on_connect_progress("chatgpt", "download")
+    assert "Download" in panel._rows["chatgpt"].desc.text()
+    assert panel._rows["chatgpt"].action.text().startswith("Download")
+
+
 def test_panel_reports_each_status(qapp):
     panel = _panel(FakeChat(CONNECTED))
     assert panel._rows[CLAUDE].word.text() == "connected"
@@ -268,7 +286,7 @@ def test_every_cli_backend_comes_from_the_runner_registry(qapp):
     from windows.ai_chat_ui import BACKENDS
 
     assert [b["id"] for b in BACKENDS] == ["zenvi", "claude_code", "codex", "cursor_cli",
-                                           "opencode", "hermes"]
+                                           "opencode", "hermes", "chatgpt"]
     for row in BACKENDS[1:]:
         runner = CLI_RUNNERS[row["id"]]
         assert row == {"id": runner.BACKEND_ID, "name": runner.DISPLAY_NAME,
@@ -308,21 +326,19 @@ def test_cursor_cli_row_follows_install_and_connect_status(qapp):
     assert panel._rows["cursor_cli"].action.isVisible() or not panel.isVisible()
 
 
-def test_footer_points_at_the_model_pill_only_when_it_has_models(qapp, monkeypatch):
-    """Codex has no list until the backend serves one, so its own config picks
-    the model; Cursor always offers at least "CLI default"."""
+def test_footer_points_at_the_model_pill_for_every_harness(qapp, monkeypatch):
+    """Every harness offers at least "CLI default" (#136), so the model is
+    always picked in the chat panel."""
     import windows.agent_runners as ar
     monkeypatch.setattr(ar, "_cli_lineups", {})
     ar.set_live_lineups({})
-    try:
-        assert "own config" in _panel(FakeChat(CONNECTED, active=CODEX)).footer.text()
-        ar.set_live_lineups({CODEX: [{"id": "gpt-5.3-codex", "name": "GPT-5.3 Codex"}]})
-        assert "chat panel" in _panel(FakeChat(CONNECTED, active=CODEX)).footer.text()
-    finally:
-        ar.set_live_lineups({})
+    assert "chat panel" in _panel(FakeChat(CONNECTED, active=CODEX)).footer.text()
     connected = {"cursor_cli": {"installed": True, "version": "2026.09.18", "registered": True}}
     assert "chat panel" in _panel(FakeChat(connected, active="cursor_cli")).footer.text()
     assert "chat panel" in _panel(FakeChat(CONNECTED, active=CLAUDE)).footer.text()
+    # Even with nothing listed, the panel never claims the pill is missing.
+    monkeypatch.setattr(ar, "models_for_backend", lambda backend: [])
+    assert "chat panel" in _panel(FakeChat(CONNECTED, active=CODEX)).footer.text()
 
 
 def test_opencode_row_follows_install_and_connect_status(qapp):

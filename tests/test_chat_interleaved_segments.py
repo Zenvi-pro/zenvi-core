@@ -127,7 +127,7 @@ def test_pre_tool_prose_is_kept_as_its_own_bubble(window_cls, keyed_store):
 def test_tool_blocks_restore_after_the_prose_that_preceded_them(window_cls, keyed_store):
     win = _window(window_cls)
     _stream(win, "Checking the clips.")
-    win._on_tool_started("call-1", "list_clips_tool", "{}")
+    win._on_tool_started("call-1", "get_timeline_state_tool", "{}")
 
     msgs = keyed_store.load_messages("s1")
     events = keyed_store.load_tool_events("s1")
@@ -138,7 +138,7 @@ def test_tool_blocks_restore_after_the_prose_that_preceded_them(window_cls, keye
 def test_whitespace_only_prose_is_dropped_not_committed(window_cls, keyed_store):
     win = _window(window_cls)
     _stream(win, "  \n", "Thinking...\n")
-    win._on_tool_started("call-1", "list_clips_tool", "{}")
+    win._on_tool_started("call-1", "get_timeline_state_tool", "{}")
 
     assert not any("commitStreamingSegment" in c for c in win.js)
     assert any("resetStreamingMessage" in c for c in win.js)
@@ -202,7 +202,7 @@ def test_a_cursor_turn_shows_each_message_once(window_cls, keyed_store):
 
     sess = win._sessions["s1"]
     first = ("I'll inspect the zenvi-editor tool schemas, then call "
-             "`list_files_tool` and `add_clip_to_timeline_tool` as requested.")
+             "`list_project_files_tool` and `add_clip_to_timeline_tool` as requested.")
     last = "`city.mp4` could not be added because Track 1 is locked."
     assert sess["turn_segments"] == [first]
     assert len(replies) == 1

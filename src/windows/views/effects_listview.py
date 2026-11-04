@@ -34,6 +34,7 @@ from classes import info
 from classes.app import get_app
 from classes.logger import log
 from .menu import StyledContextMenu, add_bound_action
+from .files_thumbnail_overlay import TileDelegate, tile_grid_size
 
 
 class EffectsListView(QListView):
@@ -123,7 +124,8 @@ class EffectsListView(QListView):
 
         # Setup header columns
         self.setIconSize(info.LIST_ICON_SIZE)
-        self.setGridSize(info.LIST_GRID_SIZE)
+        self.setGridSize(tile_grid_size(info.LIST_ICON_SIZE))
+        self.setItemDelegate(TileDelegate(self))
         self.setViewMode(QListView.IconMode)
         self.setResizeMode(QListView.Adjust)
         self.setUniformItemSizes(True)

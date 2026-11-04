@@ -27,6 +27,21 @@
    <bool>false</bool>
   </property>
   <layout class="QGridLayout" name="gridLayout" rowstretch="0,1,0,0">
+   <property name="leftMargin">
+    <number>16</number>
+   </property>
+   <property name="topMargin">
+    <number>16</number>
+   </property>
+   <property name="rightMargin">
+    <number>16</number>
+   </property>
+   <property name="bottomMargin">
+    <number>16</number>
+   </property>
+   <property name="spacing">
+    <number>8</number>
+   </property>
    <item row="2" column="0" alignment="Qt::AlignBottom">
     <widget class="QProgressBar" name="progressExportVideo">
      <property name="sizePolicy">
@@ -104,7 +119,7 @@
          <item>
           <widget class="QLabel" name="lblChooseProfile">
            <property name="text">
-            <string>&lt;b&gt;Select a Profile to start:&lt;/b&gt;</string>
+            <string>Select a profile to start:</string>
            </property>
           </widget>
          </item>
@@ -149,7 +164,7 @@
        <item row="1" column="0">
         <widget class="QLabel" name="label_2">
          <property name="text">
-          <string>&lt;b&gt;Select from the following options:&lt;/b&gt;</string>
+          <string>Select from the following options:</string>
          </property>
         </widget>
        </item>

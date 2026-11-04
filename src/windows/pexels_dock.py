@@ -6,20 +6,24 @@ duration overlay) → click a card to download and import into Project Files.
 """
 
 import os
+import html
 from typing import List, Dict, Any
 
 from qt_api import (
     Qt, QThread, pyqtSignal, QSize, QTimer, QRunnable, QThreadPool,
     pyqtSlot, QObject,
 )
-from qt_api import QPixmap, QColor, QPainter, QFont, QPen, QBrush
+from qt_api import QPixmap, QPainter, QPainterPath, QPen, QBrush, QRect, QRectF, QImage
 from qt_api import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QScrollArea, QGridLayout,
-    QLabel, QSizePolicy, QFrame, QProgressBar, QApplication,
-)
+    QLabel, QSizePolicy, QFrame, QProgressBar, QApplication, )
 
 from classes.logger import log
+from themes.cosmic import tokens
+from windows.views.files_thumbnail_overlay import (
+    TILE_RADIUS, paint_caption, paint_text, token_color,
+)
 
 
 # ── Async helpers ─────────────────────────────────────────────────────────────
@@ -82,19 +86,41 @@ class _DownloadWorker(QObject):
         self.finished.emit(self._video_id, local_path, error)
 
 
+_image_pool = None
+
+
+def image_pool():
+    """Where network image fetches run: never QThreadPool.globalInstance().
+
+    Qt smooth-scales a large image across the global pool and the GUI thread waits
+    for it; fetches parked there on a slow host froze the editor for minutes.
+    """
+    global _image_pool
+    if _image_pool is None:
+        _image_pool = QThreadPool()
+        _image_pool.setMaxThreadCount(4)
+    return _image_pool
+
+
 class _ThumbnailRunnable(QRunnable):
     """Fetches a thumbnail URL and emits the result via a signal carrier."""
 
     class _Signals(QObject):
-        ready = pyqtSignal(int, QPixmap)   # video_id, pixmap
+        ready = pyqtSignal(int, QImage, int)   # video_id, image (QPixmap is GUI-thread only), search
+        finished = pyqtSignal(int, int)        # video_id, search; success or not
 
-    def __init__(self, video_id: int, url: str):
+    def __init__(self, video_id: int, url: str, search: int, alive=None):
         super().__init__()
         self.signals = _ThumbnailRunnable._Signals()
         self._video_id = video_id
         self._url = url
+        self._search = search
+        self._alive = alive   # None, or False once its search is gone: skip the fetch
 
     def run(self):
+        if self._alive is not None and not self._alive():
+            self.signals.finished.emit(self._video_id, self._search)
+            return
         try:
             import requests as _req
             resp = _req.get(
@@ -103,22 +129,24 @@ class _ThumbnailRunnable(QRunnable):
                 timeout=10,
             )
             resp.raise_for_status()
-            pix = QPixmap()
-            pix.loadFromData(resp.content)
-            if not pix.isNull():
-                self.signals.ready.emit(self._video_id, pix)
+            image = QImage.fromData(resp.content)
+            if not image.isNull():
+                self.signals.ready.emit(self._video_id, image, self._search)
         except Exception as exc:
             log.warning("Pexels thumbnail fetch failed (%s): %s", self._url, exc)
+        finally:
+            self.signals.finished.emit(self._video_id, self._search)
 
 
 # ── Video card widget ─────────────────────────────────────────────────────────
 
 CARD_W = 160
-CARD_H = 108
+CARD_MEDIA_H = 90            # 16:9 thumbnail
+CARD_H = CARD_MEDIA_H + 40   # plus the name and metadata lines
 
 
 class _VideoCard(QFrame):
-    """A single result card: thumbnail + duration badge + hover overlay."""
+    """A result tile: thumbnail, then the photographer's name and resolution · duration."""
 
     clicked = pyqtSignal(dict)   # emits the video dict
 
@@ -126,38 +154,51 @@ class _VideoCard(QFrame):
         super().__init__(parent)
         self._video = video
         self._thumb: QPixmap | None = None
+        self._media_pending = bool(video.get("video_pictures") or video.get("image"))
         self._downloading = False
 
         self.setFixedSize(CARD_W, CARD_H)
         self.setFrameShape(QFrame.NoFrame)
         self.setCursor(Qt.PointingHandCursor)
 
-        # Duration label (bottom-left overlay)
         dur = video.get("duration", 0)
         mins, secs = divmod(int(dur), 60)
         self._dur_text = f"{mins}:{secs:02d}"
-
-        # Loading indicator
-        self._spinner = QLabel(self)
-        self._spinner.setText("⏳")
-        self._spinner.setAlignment(Qt.AlignCenter)
-        self._spinner.setStyleSheet("color: #8a8a8a; font-size: 18px;")
-        self._spinner.setGeometry(0, 0, CARD_W, CARD_H)
+        h = video.get("height", 0)
+        if h >= 2160:
+            res_text = "4K"
+        elif h >= 1080:
+            res_text = "HD"
+        elif h >= 720:
+            res_text = "720p"
+        else:
+            res_text = f"{h}p"
+        self._meta_text = f"{res_text} · {self._dur_text}"
 
         self._status_label = QLabel("", self)
         self._status_label.setAlignment(Qt.AlignCenter)
         self._status_label.setWordWrap(True)
-        self._status_label.setStyleSheet(
-            "color: #d4d4d4; font-size: 10px; background: transparent;"
-        )
-        self._status_label.setGeometry(4, CARD_H // 2, CARD_W - 8, CARD_H // 2)
+        self._status_label.setStyleSheet(tokens.resolve(
+            "color: {text}; font-size: 11px; background: transparent;"
+        ))
+        self._status_label.setGeometry(4, CARD_MEDIA_H // 2, CARD_W - 8, CARD_MEDIA_H // 2)
         self._status_label.hide()
 
-        self.setToolTip(f"User: {video.get('user_name','')}\n{video.get('width',0)}×{video.get('height',0)}  {self._dur_text}")
+        # Provider text, shown literally: a plain-text tooltip would turn any tags in it into markup.
+        tip = html.escape(f"User: {video.get('user_name','')}\n{video.get('width',0)}×{video.get('height',0)}  "
+                          f"{self._dur_text}")
+        self.setToolTip(f"<p style='white-space:pre-wrap'>{tip}</p>")
 
     def set_thumbnail(self, pix: QPixmap):
-        self._thumb = pix.scaled(CARD_W, CARD_H, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-        self._spinner.hide()
+        scaled = pix.scaled(CARD_W, CARD_MEDIA_H, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        x = (scaled.width() - CARD_W) // 2
+        y = (scaled.height() - CARD_MEDIA_H) // 2
+        self._thumb = scaled.copy(x, y, CARD_W, CARD_MEDIA_H)
+        self._media_pending = False
+        self.update()
+
+    def set_media_pending(self, pending: bool):
+        self._media_pending = pending
         self.update()
 
     def set_downloading(self, downloading: bool):
@@ -169,9 +210,9 @@ class _VideoCard(QFrame):
     def set_done(self):
         self._downloading = False
         self._status_label.setText("✓ Added")
-        self._status_label.setStyleSheet(
-            "color: #4d9cf6; font-size: 11px; font-weight: bold; background: transparent;"
-        )
+        self._status_label.setStyleSheet(tokens.resolve(
+            "color: {success}; font-size: 11px; background: transparent;"
+        ))
         self._status_label.show()
         QTimer.singleShot(2500, self._status_label.hide)
         self.update()
@@ -179,9 +220,9 @@ class _VideoCard(QFrame):
     def set_error(self, msg: str):
         self._downloading = False
         self._status_label.setText(f"Error: {msg[:40]}")
-        self._status_label.setStyleSheet(
-            "color: #ef4444; font-size: 10px; background: transparent;"
-        )
+        self._status_label.setStyleSheet(tokens.resolve(
+            "color: {danger}; font-size: 11px; background: transparent;"
+        ))
         self._status_label.show()
         self.update()
 
@@ -190,50 +231,28 @@ class _VideoCard(QFrame):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        rect = self.rect()
-
-        # Background
-        painter.fillRect(rect, QColor("#1a1a1a"))
-
-        # Thumbnail
+        well = QPainterPath()
+        well.addRoundedRect(QRectF(0, 0, CARD_W, CARD_MEDIA_H), TILE_RADIUS, TILE_RADIUS)
+        painter.fillPath(well, token_color("sunken"))
+        painter.save()
+        painter.setClipPath(well)
         if self._thumb:
-            # Centre-crop
-            tw, th = self._thumb.width(), self._thumb.height()
-            x = (tw - CARD_W) // 2
-            y = (th - CARD_H) // 2
-            painter.drawPixmap(rect, self._thumb, self._thumb.rect().adjusted(x, y, -(tw - CARD_W - x), -(th - CARD_H - y)))
-
-        # Dark overlay when downloading
+            painter.drawPixmap(0, 0, self._thumb)
+        elif self._media_pending:
+            paint_text(painter, QRect(0, 0, CARD_W, CARD_MEDIA_H), "Loading…", 11, "text_faint", Qt.AlignCenter)
         if self._downloading:
-            painter.fillRect(rect, QColor(0, 0, 0, 140))
+            veil = token_color("bg")
+            veil.setAlpha(140)
+            painter.fillRect(QRect(0, 0, CARD_W, CARD_MEDIA_H), veil)
+        painter.restore()
 
-        # Duration badge
-        dur_rect = self.rect().adjusted(0, CARD_H - 22, 0, 0)
-        painter.fillRect(dur_rect, QColor(0, 0, 0, 160))
-        painter.setPen(QColor("#d4d4d4"))
-        font = QFont()
-        font.setPointSize(8)
-        painter.setFont(font)
-        painter.drawText(dur_rect.adjusted(4, 0, -4, -2), Qt.AlignLeft | Qt.AlignVCenter, self._dur_text)
+        paint_caption(painter, QRect(6, CARD_MEDIA_H + 6, CARD_W - 12, 36),
+                      self._video.get("user_name", ""), self._meta_text)
 
-        # Resolution badge (bottom-right)
-        res_text = f"{self._video.get('width',0) // max(self._video.get('height',1), 1) >= 16 // 9 and self._video.get('height',0) or self._video.get('height',0)}p"
-        h = self._video.get("height", 0)
-        if h >= 2160:
-            res_text = "4K"
-        elif h >= 1080:
-            res_text = "HD"
-        elif h >= 720:
-            res_text = "720p"
-        else:
-            res_text = f"{h}p"
-        painter.drawText(dur_rect.adjusted(4, 0, -4, -2), Qt.AlignRight | Qt.AlignVCenter, res_text)
-
-        # Hover border
         if self.underMouse():
-            pen = QPen(QColor("#4d9cf6"), 2)
-            painter.setPen(pen)
-            painter.drawRect(rect.adjusted(1, 1, -1, -1))
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(QPen(token_color("line_strong"), 1))
+            painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), TILE_RADIUS, TILE_RADIUS)
 
     def enterEvent(self, event):
         self.update()
@@ -267,7 +286,7 @@ class PexelsDock(QDockWidget):
         self._dl_threads: Dict[int, QThread] = {}
         self._dl_workers: Dict[int, _DownloadWorker] = {}
         self._cards: Dict[int, _VideoCard] = {}
-        self._thumb_pool = QThreadPool.globalInstance()
+        self._thumb_pool = image_pool()
 
         self._build_ui()
 
@@ -281,42 +300,42 @@ class PexelsDock(QDockWidget):
     def _build_ui(self):
         root = QWidget()
         root.setObjectName("PexelsDockContents")
-        root.setStyleSheet("""
-            QWidget#PexelsDockContents { background: #0d0d0d; }
+        root.setStyleSheet(tokens.resolve("""
+            QWidget#PexelsDockContents { background: {surface}; }
             QLineEdit {
-                background: #1a1a1a;
-                border: 1px solid rgba(255,255,255,0.09);
-                border-radius: 4px;
-                color: #d4d4d4;
+                background: {sunken};
+                border: 1px solid {line_strong};
+                border-radius: 6px;
+                color: {text};
                 padding: 4px 8px;
                 font-size: 12px;
             }
-            QLineEdit:focus { border-color: #4d9cf6; }
+            QLineEdit:focus { border-color: {accent}; }
             QPushButton#searchBtn {
-                background: #4d9cf6;
-                border: none;
-                border-radius: 4px;
-                color: #fff;
-                font-size: 14px;
-                padding: 4px 10px;
-                min-width: 30px;
+                background: {raised};
+                border: 1px solid {line_strong};
+                border-radius: 6px;
+                color: {text};
+                font-size: 12px;
+                padding: 4px 12px;
             }
-            QPushButton#searchBtn:hover  { background: #3b8fe8; }
-            QPushButton#searchBtn:pressed { background: #2d7dd4; }
-            QLabel#statusLabel { color: #8a8a8a; font-size: 11px; }
-            QScrollArea { background: #0d0d0d; border: none; }
-            QWidget#scrollContents { background: #0d0d0d; }
+            QPushButton#searchBtn:hover { background: {hover}; }
+            QPushButton#searchBtn:pressed { background: {active}; }
+            QPushButton#searchBtn:disabled { color: {text_off}; }
+            QLabel#statusLabel { color: {text_faint}; font-size: 11px; }
+            QScrollArea { background: {surface}; border: none; }
+            QWidget#scrollContents { background: {surface}; }
             QPushButton#loadMoreBtn {
-                background: #252525;
-                border: 1px solid rgba(255,255,255,0.09);
-                border-radius: 4px;
-                color: #d4d4d4;
+                background: {raised};
+                border: 1px solid {line_strong};
+                border-radius: 6px;
+                color: {text};
                 padding: 6px;
-                font-size: 11px;
+                font-size: 12px;
                 margin: 6px;
             }
-            QPushButton#loadMoreBtn:hover { background: #2e2e2e; border-color: #4d9cf6; }
-        """)
+            QPushButton#loadMoreBtn:hover { background: {hover}; }
+        """))
 
         vbox = QVBoxLayout(root)
         vbox.setContentsMargins(8, 8, 8, 8)
@@ -330,7 +349,7 @@ class PexelsDock(QDockWidget):
         self._search_input.returnPressed.connect(self._on_search)
         bar.addWidget(self._search_input)
 
-        self._search_btn = QPushButton("🔍")
+        self._search_btn = QPushButton("Search")
         self._search_btn.setObjectName("searchBtn")
         self._search_btn.setToolTip("Search")
         self._search_btn.clicked.connect(self._on_search)
@@ -348,10 +367,10 @@ class PexelsDock(QDockWidget):
         self._progress.setRange(0, 0)   # indeterminate
         self._progress.setFixedHeight(3)
         self._progress.setTextVisible(False)
-        self._progress.setStyleSheet(
-            "QProgressBar { background: #1a1a1a; border: none; border-radius: 1px; }"
-            "QProgressBar::chunk { background: #4d9cf6; border-radius: 1px; }"
-        )
+        self._progress.setStyleSheet(tokens.resolve(
+            "QProgressBar { background: {sunken}; border: none; border-radius: 1px; }"
+            "QProgressBar::chunk { background: {accent}; border-radius: 1px; }"
+        ))
         self._progress.hide()
         vbox.addWidget(self._progress)
 
@@ -364,7 +383,8 @@ class PexelsDock(QDockWidget):
         self._grid_container.setObjectName("scrollContents")
         self._grid = QGridLayout(self._grid_container)
         self._grid.setContentsMargins(4, 4, 4, 4)
-        self._grid.setSpacing(6)
+        self._grid.setSpacing(8)
+        # Let the scroll area grow to the rows instead of squeezing them into the viewport.
         self._scroll.setWidget(self._grid_container)
         vbox.addWidget(self._scroll, 1)
 
@@ -440,7 +460,7 @@ class PexelsDock(QDockWidget):
 
         # Add cards
         existing = self._grid.count()
-        cols = max(1, (self.width() - 24) // (CARD_W + 6))
+        cols = max(1, (self.width() - 24) // (CARD_W + 8))
         for idx, video in enumerate(videos):
             vid_id = video.get("id", idx)
             card = _VideoCard(video)
@@ -460,22 +480,32 @@ class PexelsDock(QDockWidget):
             if not thumb_url:
                 thumb_url = video.get("image", "")
             if thumb_url:
-                runnable = _ThumbnailRunnable(vid_id, thumb_url)
+                runnable = _ThumbnailRunnable(vid_id, thumb_url, self._search_gen)
                 runnable.signals.ready.connect(self._on_thumbnail_ready)
+                runnable.signals.finished.connect(self._on_thumbnail_finished)
                 self._thumb_pool.start(runnable)
 
         # Show "Load more" if more pages exist
+        self._fit_grid()
+
         shown = self._current_page * data.get("per_page", 15)
         if shown < self._total_results:
             self._load_more_btn.show()
         else:
             self._load_more_btn.hide()
 
-    @pyqtSlot(int, QPixmap)
-    def _on_thumbnail_ready(self, video_id: int, pix: QPixmap):
-        card = self._cards.get(video_id)
+    @pyqtSlot(int, QImage, int)
+    def _on_thumbnail_ready(self, video_id: int, image: QImage, search: int):
+        card = self._cards.get(video_id) if search == self._search_gen else None
         if card:
-            card.set_thumbnail(pix)
+            card.set_thumbnail(QPixmap.fromImage(image))
+
+    @pyqtSlot(int, int)
+    def _on_thumbnail_finished(self, video_id: int, search: int):
+        # Failed or invalid thumbnail: stop showing "Loading…" (a stale search is ignored)
+        card = self._cards.get(video_id) if search == self._search_gen else None
+        if card:
+            card.set_media_pending(False)
 
     # ── Download flow ─────────────────────────────────────────────────────────
 
@@ -577,7 +607,21 @@ class PexelsDock(QDockWidget):
         else:
             self._progress.hide()
 
+    def _fit_grid(self):
+        """Re-flow cards to the viewport width; fix only the height so the dock can still narrow."""
+        cols = max(1, (self._scroll.viewport().width() - 8) // (CARD_W + 8))
+        widgets = []
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            if item and item.widget():
+                widgets.append(item.widget())
+        for idx, w in enumerate(widgets):
+            row, col = divmod(idx, cols)
+            self._grid.addWidget(w, row, col)
+        self._grid_container.setMinimumHeight(self._grid.sizeHint().height())
+
     def _clear_grid(self):
+        self._search_gen += 1
         while self._grid.count():
             item = self._grid.takeAt(0)
             if item and item.widget():
@@ -596,14 +640,5 @@ class PexelsDock(QDockWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # Re-flow grid on resize
         if self._cards:
-            cols = max(1, (self.width() - 24) // (CARD_W + 6))
-            widgets = []
-            while self._grid.count():
-                item = self._grid.takeAt(0)
-                if item and item.widget():
-                    widgets.append(item.widget())
-            for idx, w in enumerate(widgets):
-                row, col = divmod(idx, cols)
-                self._grid.addWidget(w, row, col)
+            self._fit_grid()

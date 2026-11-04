@@ -588,13 +588,14 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
                 scale = self.devicePixelRatioF()
                 # Use explicit QSize (int dimensions) to avoid QSizeF issues on Retina displays
-                scaled_img = current_image.scaled(
-                    QSize(max(1, round(pix_size.width() * scale)),
-                          max(1, round(pix_size.height() * scale))),
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation
-                )
-                painter.drawImage(viewport, scaled_img)
+                target_size = QSize(max(1, round(pix_size.width() * scale)),
+                                    max(1, round(pix_size.height() * scale)))
+                # Rescale only when the frame, target size or DPR changes; repaints reuse the copy
+                key = (current_image.cacheKey(), target_size.width(), target_size.height(), scale)
+                if self._scaled_cache is None or self._scaled_cache[0] != key:
+                    self._scaled_cache = (key, current_image.scaled(
+                        target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                painter.drawImage(viewport, self._scaled_cache[1])
 
             # Prep for transform UI
             fps = get_app().project.get("fps")
@@ -3172,6 +3173,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
         # Init current frame's QImage
         self.current_image = None
+        self._scaled_cache = None
 
         # Get a reference to the window object
         self.win = get_app().window

@@ -359,9 +359,6 @@
                  <height>160</height>
                 </size>
                </property>
-               <property name="styleSheet">
-                <string notr="true">background-color: #000000;</string>
-               </property>
                <property name="text">
                 <string/>
                </property>

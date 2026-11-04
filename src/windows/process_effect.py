@@ -68,6 +68,10 @@ from classes.effect_models import (  # noqa: E402,F401  (shared with the agent p
     yolo_model_path,
 )
 from classes import effect_models  # noqa: E402
+from themes.cosmic.tokens import resolve
+
+_STATUS_OK = resolve("color: {success};")
+_STATUS_BAD = resolve("color: {danger};")
 
 
 def yolo_model_label(model):
@@ -394,6 +398,7 @@ class ProcessEffect(QDialog):
         # Add buttons
         self.cancel_button = QPushButton(_('Cancel'))
         self.process_button = QPushButton(_('Process Effect'))
+        self.process_button.setObjectName("acceptButton")
         self.buttonBox.addButton(self.process_button, QDialogButtonBox.AcceptRole)
         self.buttonBox.addButton(self.cancel_button, QDialogButtonBox.RejectRole)
         self.sync_download_groups_to_selected_models()
@@ -463,7 +468,7 @@ class ProcessEffect(QDialog):
         status_layout.setSpacing(6)
 
         status_label = QLabel(_("Not Downloaded"))
-        status_label.setStyleSheet("color: #e53935; font-weight: bold;")
+        status_label.setStyleSheet(_STATUS_BAD)
         status_label.setToolTip(_("Required model files are not downloaded."))
 
         advanced_button = QPushButton(_("Advanced"))
@@ -471,13 +476,13 @@ class ProcessEffect(QDialog):
         advanced_button.setToolTip(_("Show model file paths."))
         advanced_button.setFlat(True)
         advanced_button.setObjectName("advancedLinkButton")
-        advanced_button.setStyleSheet(
+        advanced_button.setStyleSheet(resolve(
             "QPushButton#advancedLinkButton {"
             "border: none; background: transparent; padding: 0;"
-            "text-decoration: underline; color: palette(link);"
+            "text-decoration: underline; color: {text_muted};"
             "}"
-            "QPushButton#advancedLinkButton:hover { color: palette(highlight); }"
-        )
+            "QPushButton#advancedLinkButton:hover { color: {text}; }"
+        ))
         advanced_button.clicked.connect(functools.partial(self.advanced_clicked, advanced_button))
 
         status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -922,7 +927,7 @@ class ProcessEffect(QDialog):
                     button.setToolTip(_("Download valid Object Mask model files before selecting points."))
             status = field["status"]
             status.setText("✓" if valid else "✕")
-            status.setStyleSheet("color: #4caf50; font-weight: bold;" if valid else "color: #e53935; font-weight: bold;")
+            status.setStyleSheet(_STATUS_OK if valid else _STATUS_BAD)
             if valid:
                 status.setToolTip(_("Ready"))
             elif object_mask_ready:
@@ -950,7 +955,7 @@ class ProcessEffect(QDialog):
                 }
                 status = field["status"]
                 status.setText("✓" if valid else "✕")
-                status.setStyleSheet("color: #4caf50; font-weight: bold;" if valid else "color: #e53935; font-weight: bold;")
+                status.setStyleSheet(_STATUS_OK if valid else _STATUS_BAD)
                 status.setToolTip(message)
                 all_valid = all_valid and valid
 
@@ -984,7 +989,7 @@ class ProcessEffect(QDialog):
                     sorted(file_results.keys()),
                 )
                 status.setText(_("Not Downloaded"))
-                status.setStyleSheet("color: #e53935; font-weight: bold;")
+                status.setStyleSheet(_STATUS_BAD)
                 status.setToolTip(_("Required model files are not downloaded."))
                 continue
 
@@ -1012,19 +1017,19 @@ class ProcessEffect(QDialog):
             )
             if valid and not partial_downloads:
                 status.setText(_("Ready"))
-                status.setStyleSheet("color: #4caf50; font-weight: bold;")
+                status.setStyleSheet(_STATUS_OK)
                 status.setToolTip(_("All required model files are ready."))
             elif partial_downloads:
                 status.setText(_("Not Downloaded"))
-                status.setStyleSheet("color: #e53935; font-weight: bold;")
+                status.setStyleSheet(_STATUS_BAD)
                 status.setToolTip(_("A model download is incomplete. Download again to finish installation."))
             elif missing:
                 status.setText(_("Not Downloaded"))
-                status.setStyleSheet("color: #e53935; font-weight: bold;")
+                status.setStyleSheet(_STATUS_BAD)
                 status.setToolTip(_("Required model files are not downloaded."))
             else:
                 status.setText(_("Invalid"))
-                status.setStyleSheet("color: #e53935; font-weight: bold;")
+                status.setStyleSheet(_STATUS_BAD)
                 status.setToolTip(_("One or more model files are invalid."))
 
     def download_group_partial_files(self, group):

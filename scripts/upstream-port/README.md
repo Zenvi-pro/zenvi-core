@@ -1,7 +1,7 @@
 # Upstream port tooling (Zenvi <- OpenShot 4.0)
 
 Ports OpenShot 4.0 features into Zenvi one PR per feature, each built by a Claude Code agent in its own git
-worktree inside a tmux window. Branches are `jashan/<feature>`, cut from `develop` (or stacked on a
+worktree inside a tmux window. Branches are `jashan/<feature>`, cut from `main` (or stacked on a
 dependency's branch until it merges). All commits and PRs are authored by Jashan Pratap Singh only.
 
 ## Files
@@ -18,11 +18,11 @@ dependency's branch until it merges). All commits and PRs are authored by Jashan
 | `ensure-deps.sh <prefix> [tag] [audio_tag]` | locked, idempotent libopenshot build into a prefix |
 | `run-app.sh` / `test-all.sh` | isolated-HOME app launch and the agent test gate (run from a worktree) |
 | `set-status.sh` / `status.sh` | per-feature state files under `$PORT_ROOT/.state`, dashboard |
-| `retarget.sh <f>` | after a dependency merges: rebase onto develop, force-with-lease, `gh pr edit --base develop` |
+| `retarget.sh <f>` | after a dependency merges: rebase onto main, force-with-lease, `gh pr edit --base main` |
 | `shutdown.sh [--remove-merged|--remove-all]` | stop everything; optionally clean worktrees |
 
 Layout on disk: worktrees at `~/Projects/zenvi-worktrees/<feature>`, state/logs/isolated HOMEs under
-`~/Projects/zenvi-worktrees/.state|.logs|.home`. libopenshot prefixes: `~/zenvi-deps` (0.5.0, develop),
+`~/Projects/zenvi-worktrees/.state|.logs|.home`. libopenshot prefixes: `~/zenvi-deps` (0.5.0, main),
 `~/zenvi-deps-1.0` (1.0.0, built by the libopenshot-1.0 feature), `~/zenvi-deps-qt6` (later).
 
 ## Run
@@ -40,7 +40,7 @@ After a dependency PR merges: `bash scripts/upstream-port/retarget.sh <dependent
 Stop: `bash scripts/upstream-port/shutdown.sh`; clean merged worktrees: `--remove-merged`.
 
 ## Waves
-0. `libopenshot-1.0`, `pre-qt6-fixes`, `timeline-qwidget-default`, `qt-api` (parallel, from develop)
+0. `libopenshot-1.0`, `pre-qt6-fixes`, `timeline-qwidget-default`, `qt-api` (parallel, from main)
 1. `ai-masking`, `effects-basic-1.0`, `color-grade`, `post-qt6-fixes`, `optimize-preview`, `comfy-ui`
 2. `film-grain` (on color-grade), `screen-recording` (on ai-masking)
 3. `audio-viz-beat-sync` (on film-grain)
