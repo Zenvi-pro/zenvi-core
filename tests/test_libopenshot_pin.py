@@ -53,3 +53,18 @@ def test_run_win_builds_the_pinned_tag_even_over_an_older_checkout():
 
 def test_the_local_mac_freeze_falls_back_to_the_pinned_soname():
     assert '("libopenshot.%s.dylib", "libopenshot")' % SO_VERSION in _read("installer", "fix_macos_dylib_paths.py")
+
+
+def test_the_local_mac_build_links_protobufs_abseil_like_the_release_job():
+    # Homebrew protobuf links abseil; libopenshot 1.0.1's OpenCV build fails to link without its pkg-config flags.
+    with open(os.path.join(ROOT, "scripts", "build-mac-libopenshot.sh"), encoding="utf-8") as fh:
+        text = fh.read()
+    assert "pkg-config --libs protobuf" in text
+    assert '-DCMAKE_SHARED_LINKER_FLAGS="-L$LIBOMP_PREFIX/lib -lomp $PROTOBUF_LIBS"' in text
+
+
+def test_run_win_rebuilds_libopenshot_audio_when_libopenshot_has_no_bindings():
+    # A missing libopenshot build is rebuilt at the pinned tag, which an older OpenShotAudio under /usr cannot satisfy.
+    with open(os.path.join(ROOT, "run-win.ps1"), encoding="utf-8") as fh:
+        text = fh.read()
+    assert "No libopenshot build yet -- building it and libopenshot-audio" in text

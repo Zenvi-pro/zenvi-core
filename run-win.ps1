@@ -190,6 +190,10 @@ if find "$BINDINGS_DIR" -iname 'openshot.py' 2>/dev/null | grep -q .; then
             fi
         done
     fi
+else
+    # Built at the pinned tag below, which an older OpenShotAudio under /usr cannot satisfy.
+    echo "No libopenshot build yet -- building it and libopenshot-audio."
+    REBUILD_AUDIO=1
 fi
 
 echo ""
