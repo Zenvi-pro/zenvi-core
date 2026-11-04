@@ -8,10 +8,10 @@
  """
 
 from qt_api import Qt
-from qt_api import QColor, QFontMetrics
-from qt_api import QStyleOptionViewItem, QStyle
+from qt_api import QFontMetrics
 
 from classes.app import get_app
+from .files_thumbnail_overlay import token_color
 
 PLACEHOLDER_PREFIX = "__genjob__:"
 ACTIVE_STATUSES = ("queued", "running", "canceling")
@@ -70,11 +70,7 @@ def paint_generation_progress(delegate, painter, option, index):
     if progress <= 0:
         return
 
-    opt = QStyleOptionViewItem(option)
-    delegate.initStyleOption(opt, index)
-    widget = opt.widget
-    style = widget.style() if widget else delegate.parent().style()
-    deco_rect = style.subElementRect(QStyle.SE_ItemViewItemDecoration, opt, widget)
+    deco_rect = delegate._decoration_rect(option, index)
     if not deco_rect.isValid():
         return
 
@@ -91,9 +87,9 @@ def paint_generation_progress(delegate, painter, option, index):
 
     painter.save()
     painter.setPen(Qt.NoPen)
-    painter.setBrush(QColor("#283241"))
+    painter.setBrush(token_color("raised"))
     painter.drawRect(full_rect)
-    painter.setBrush(QColor("#53A0ED"))
+    painter.setBrush(token_color("accent"))
     painter.drawRect(fill_rect)
     if status == "queued":
         label = "Queued"
@@ -109,8 +105,8 @@ def paint_generation_progress(delegate, painter, option, index):
         badge_rect = deco_rect.adjusted(3, badge_top - deco_rect.top(), 0, 0)
         badge_rect.setWidth(badge_w)
         badge_rect.setHeight(badge_h)
-        painter.setBrush(QColor(18, 22, 30, 220))
-        painter.drawRoundedRect(badge_rect, 4, 4)
-        painter.setPen(QColor("#EAF5FF"))
+        painter.setBrush(token_color("raised"))
+        painter.drawRoundedRect(badge_rect, badge_h / 2, badge_h / 2)
+        painter.setPen(token_color("text_muted"))
         painter.drawText(badge_rect, Qt.AlignCenter, label)
     painter.restore()

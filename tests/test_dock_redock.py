@@ -40,6 +40,8 @@ from classes.title_bar import HiddenTitleBar  # noqa: E402
 @pytest.fixture(scope="module")
 def qapp():
     app = QApplication.instance() or QApplication([])
+    if not hasattr(app, "_tr"):
+        app._tr = lambda text: text  # OpenShotApp's translator, which the title bar uses
     yield app
 
 
@@ -242,3 +244,21 @@ def test_floating_a_dock_marks_dock_interaction_active(window):
 
     # Interaction is flagged first, then the usual (idle) restyle still runs
     assert calls == ["marked", "restyled"]
+
+
+def test_docked_cosmic_panels_are_named(window):
+    # Docked panels used to get an empty 20px strip, so nothing said which panel was which
+    window.apply_dock_titlebars(is_cosmic=True)
+    titlebar = window.files.titleBarWidget()
+    assert isinstance(titlebar, HiddenTitleBar)
+    assert titlebar.title_label.text() == "Files"
+    assert titlebar.height() == 32
+
+
+def test_a_long_panel_name_does_not_stop_the_dock_shrinking(window):
+    # The named title bar's label made the full title the dock's minimum width
+    window.files.setWindowTitle("Scene Descriptions and a much longer translated title")
+    window.apply_dock_titlebars(is_cosmic=True)
+    titlebar = window.files.titleBarWidget()
+    assert titlebar.minimumSizeHint().width() <= 80  # the float/close buttons, not the name
+    assert titlebar.title_label.text() == "Scene Descriptions and a much longer translated title"

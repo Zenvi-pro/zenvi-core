@@ -505,6 +505,10 @@ def enable_faulthandler():
     preview threads raise benign, handled COM exceptions (0x8001010e
     RPC_E_WRONG_THREAD) that faulthandler reports as "fatal", and concurrent
     dumps interleave into unreadable garbage in the app log.
+
+    Packaged builds always use the file: a macOS .app (or an AppImage started
+    from a launcher) has a stderr that exists but goes to /dev/null, so a
+    native crash -- after an update, say -- left no trace anywhere.
     """
     global _faulthandler_stream
 
@@ -513,7 +517,8 @@ def enable_faulthandler():
     except Exception:
         return False
 
-    if sys.platform != "win32" and getattr(sys, "stderr", None) is not None:
+    if sys.platform != "win32" and getattr(sys, "stderr", None) is not None \
+            and not getattr(sys, "frozen", False):
         try:
             faulthandler.enable(all_threads=True)
             return True

@@ -232,4 +232,4 @@ class RulerPainter(BasePainter):
             frame += fpt
 
     def paint_overlay(self, painter: QPainter):
-        self._draw_time_panel(painter, getattr(self, "_last_playhead_label", None))
+        self._draw_time_panel(painter)

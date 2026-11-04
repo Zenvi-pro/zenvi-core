@@ -148,6 +148,7 @@ def test_maybe_auto_detect_skips_when_flag_set():
 
 def test_maybe_auto_detect_applies_once(monkeypatch):
     store = MagicMock()
+    store.user_file_existed = False  # fresh install
     store.get.side_effect = lambda key: False if key == "hardwareAutoDetectApplied" else "0"
     monkeypatch.setattr(
         "classes.export_acceleration.hw_decode.detect_best_hardware_decoder",

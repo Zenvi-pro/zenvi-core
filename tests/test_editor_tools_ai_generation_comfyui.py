@@ -71,7 +71,8 @@ def test_catalogue_lists_create_and_enhance_templates_and_says_comfyui_is_off(ed
     assert all(row["needs_prompt"] for row in creates.values())
     actions = {(row["input"], row["action"]) for row in r["templates"] if row["category"] == "enhance"}
     assert ("video", "split_scenes") in actions and ("audio", "reduce_noise") in actions
-    assert ("image", "blur_object") in actions and ("video", "captions") in actions
+    assert ("image", "blur_object") in actions and ("video", "split_scenes") in actions
+    assert ("video", "captions") not in actions          # captions are HyperFrames overlays now
 
 
 def test_catalogue_for_a_file_is_what_the_enhance_menu_offers(editor, comfy_off, tmp_path):

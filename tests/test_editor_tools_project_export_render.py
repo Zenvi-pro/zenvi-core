@@ -416,6 +416,40 @@ def test_subclip_renders_run_on_a_qthread_not_the_worker(studio, tmp_path, monke
     assert data["files"][0]["status"] == "rendered" and len(seen) == 1 and writes == list(range(31, 61))
 
 
+def test_subclip_render_with_audio_trims_the_priming_before_install(studio, tmp_path, monkeypatch):
+    """The staged file is fixed, then moved into place (E2E B2: AAC 42.7 ms late)."""
+    from classes import export_audio_priming
+    from classes.editor_tools import project_export_render as render
+
+    src = tmp_path / "talk.mp4"
+    src.write_bytes(b"data")
+    fid = studio.add_file("video", path=str(src), start=1.0, end=2.0, has_audio=True)
+    fake = types.ModuleType("windows.export_clips")
+    fake.CLIP_AUDIO_CODEC = "aac"
+    fake.isClip = lambda f: True
+    fake.isImageSequence = lambda f: False
+    fake.nameOfExport = lambda f: "talk [1.00 - 2.00].mp4"
+    fake.startAndEndFrames = lambda c: (31, 33)
+    fake.setupWriter = lambda c, w: None
+    monkeypatch.setitem(sys.modules, "windows.export_clips", fake)
+    import windows
+    monkeypatch.setattr(windows, "export_clips", fake, raising=False)
+    fake_os = types.ModuleType("openshot")
+    fake_os.FFmpegWriter = lambda path: MagicMock(Close=lambda: open(path, "wb").write(b"x"))
+    fake_os.Clip = lambda path: MagicMock(GetFrame=lambda n: n)
+    monkeypatch.setitem(sys.modules, "openshot", fake_os)
+    trimmed = []
+    monkeypatch.setattr(export_audio_priming, "trim_export_audio_priming",
+                        lambda path, codec: trimmed.append((os.path.basename(path), os.path.isfile(path), codec)))
+    monkeypatch.setattr(render, "run_on_qthread", lambda func, *a: func())
+
+    data = _receipt(studio.call("export_files_to_folder_tool", file_ids=[fid], folder=str(tmp_path / "out")))
+
+    assert data["files"][0]["status"] == "rendered" and os.path.isfile(data["files"][0]["path"])
+    (name, existed, codec), = trimmed
+    assert ".partial-" in name and existed and codec == "aac"
+
+
 def test_a_second_export_while_one_renders_does_nothing(editor):
     """A retry after a timed-out call must not queue a second render over the same file."""
     from classes.editor_tools import project_export_render as per

@@ -12,11 +12,12 @@ from classes.editor_tools._base import (
     project_fps,
     resolve_clip,
     resolve_clips,
-    resolve_layer,
+    resolve_placement_layer,
     timeline_ui,
     ui_track_number,
 )
 from classes.logger import log
+from classes.track_display import TRACK_STRIDE
 
 EPS = 1e-6
 
@@ -180,15 +181,19 @@ def default_layer() -> int:
     return int(default_underlay_layer_number(layers()))
 
 
-def remap_layers(source_layers, dest_track) -> dict:
-    """Map source layers onto *dest_track*, keeping their relative stacking.
+def remap_layers(source_layers, dest_track) -> tuple:
+    """(layer map, new tracks): source layers mapped onto *dest_track*, keeping their relative stacking.
 
     The top-most source track lands on the destination and the others keep
-    their UI-track offsets below/above it (what paste does). Raises when a
-    mapped track does not exist.
+    their UI-track offsets below/above it (what paste does). A destination one
+    to three tracks past the top (resolve_placement_layer) counts the tracks
+    the caller must add first (track_ops.ensure_track). Raises when a mapped
+    track does not exist.
     """
     order = track_numbers_bottom_up()
-    dest = resolve_layer(dest_track)
+    dest, new_tracks = resolve_placement_layer(dest_track)
+    top_number = order[-1] if order else 0
+    order += [top_number + k * TRACK_STRIDE for k in range(1, new_tracks + 1)]
     sources = sorted({int(n) for n in source_layers})
     top = max(sources, key=lambda n: order.index(n) if n in order else -1)
     offset = order.index(dest) - order.index(top)
@@ -197,9 +202,18 @@ def remap_layers(source_layers, dest_track) -> dict:
         idx = order.index(n) + offset
         if idx < 0 or idx >= len(order):
             raise ToolError(f"moving these clips' {len(sources)} tracks onto {track_name(dest)} needs a "
-                            "track that does not exist; add one first (add_track_tool)")
+                            "track that does not exist; add one first (run_tool(name='add_track_tool'))")
         out[n] = order[idx]
-    return out
+    return out, new_tracks
+
+
+def ensure_mapped_tracks(layer_map) -> None:
+    """Add the tracks a remapped selection lands on, up to the highest one. GUI thread."""
+    from classes import track_ops
+    top = max(track_numbers_bottom_up(), default=0)
+    highest = max(layer_map.values())
+    if highest > top:
+        track_ops.ensure_track(highest)
 
 
 def transitions_between(clips) -> list:

@@ -46,6 +46,7 @@ from classes.metrics import *
 from classes.proxy_service import dialog_preview_reader_data
 from windows.preview_thread import PreviewParent
 from windows.video_widget import VideoWidget
+from themes.cosmic.tokens import TOKENS
 
 import json
 
@@ -154,22 +155,22 @@ class RegionAnnotatedSlider(QSlider):
             self._marker_positions.append((x, mid_y, int(frame)))
             if kind == "both":
                 painter.setPen(Qt.NoPen)
-                painter.setBrush(QBrush(QColor("#53A0ED")))
+                painter.setBrush(QBrush(QColor(TOKENS["accent"])))
                 painter.drawEllipse(x - 4, mid_y - 4, 8, 8)
-                painter.setBrush(QBrush(QColor("#E05757")))
+                painter.setBrush(QBrush(QColor(TOKENS["danger"])))
                 painter.drawEllipse(x, mid_y, 8, 8)
             elif kind == "negative":
                 painter.setPen(Qt.NoPen)
-                painter.setBrush(QBrush(QColor("#E05757")))
+                painter.setBrush(QBrush(QColor(TOKENS["danger"])))
                 painter.drawEllipse(x - 4, mid_y - 4, 8, 8)
             else:
                 painter.setPen(Qt.NoPen)
-                painter.setBrush(QBrush(QColor("#53A0ED")))
+                painter.setBrush(QBrush(QColor(TOKENS["accent"])))
                 painter.drawEllipse(x - 4, mid_y - 4, 8, 8)
 
         # Current-frame indicator
         cx = self._x_for_frame(self._current_frame)
-        cur_pen = QPen(QColor("#EAF5FF"), 1)
+        cur_pen = QPen(QColor(TOKENS["text"]), 1)
         painter.setPen(cur_pen)
         painter.drawLine(cx, max(0, groove.top() - 5), cx, min(self.height() - 1, groove.bottom() + 5))
         painter.end()

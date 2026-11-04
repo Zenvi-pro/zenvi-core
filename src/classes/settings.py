@@ -101,6 +101,7 @@ class SettingStore(JsonDataStore):
         # never write them -- a desktop window running alongside owns the file,
         # and whichever process saved last would silently undo the other.
         self.read_only = False
+        self.user_file_existed = False
 
     def write_to_file(self, file_path, data, path_mode="ignore", previous_path=None):
         """Write settings JSON to disk, unless this store is read-only."""
@@ -184,7 +185,8 @@ class SettingStore(JsonDataStore):
         # Load or create user settings
         file_path = os.path.join(info.USER_PATH, self.settings_filename)
         user_had_downloads_flag = False
-        if os.path.exists(os.fsencode(file_path)):
+        self.user_file_existed = os.path.exists(os.fsencode(file_path))
+        if self.user_file_existed:
             try:
                 user_settings = self.read_from_file(file_path)
                 if isinstance(user_settings, list):
@@ -240,6 +242,7 @@ class SettingStore(JsonDataStore):
             'unique_install_id', 'tutorial_ids', 'tutorial_enabled', 'send_metrics',
             'recent_projects', 'restore_project_path', 'restore_draft_history_key',
             'custom_views', 'active_custom_view', 'active_builtin_view',
+            'hardwareAutoDetectApplied',
         ]
 
         requires_restart = False  # Track if any setting requires a restart

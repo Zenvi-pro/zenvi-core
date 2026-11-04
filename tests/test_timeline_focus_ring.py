@@ -56,7 +56,7 @@ def _ring_pixel(widget, has_focus):
 @pytest.mark.parametrize("reason", [Qt.TabFocusReason, Qt.BacktabFocusReason])
 def test_tab_focus_draws_the_ring(timeline, reason):
     TimelineWidgetBase.focusInEvent(timeline, QFocusEvent(QEvent.FocusIn, reason))
-    assert _ring_pixel(timeline, True) == QColor("#4d9cf6")
+    assert _ring_pixel(timeline, True) == QColor("#3a72f5")
 
 
 @pytest.mark.parametrize("reason", [Qt.MouseFocusReason, Qt.OtherFocusReason])

@@ -192,3 +192,18 @@ def test_a_failed_headless_export_tears_down(monkeypatch, export_mod, out):
         dlg.run_export(out, _video(), _AUDIO, "Video Only")
     assert dlg.timeline.Close.call_count == 1
     assert dlg.cache_thread is None
+
+
+@pytest.mark.parametrize("export_type, trimmed", [("Video & Audio", True), ("Video Only", False)])
+def test_a_finished_export_trims_the_audio_priming(monkeypatch, export_mod, out, export_type, trimmed):
+    """libopenshot leaves AAC 42.7 ms late; the closed file is fixed in place (E2E B2)."""
+    _writers(monkeypatch, export_mod, "ok")
+    export_mod.openshot.FFmpegWriter.IsValidCodec.side_effect = lambda codec: codec == "aac"
+    calls = []
+    monkeypatch.setattr(export_mod, "trim_export_audio_priming", lambda path, codec: calls.append((path, codec)))
+    dlg = _dialog(export_mod)
+
+    dlg.run_export(out, _video(), _AUDIO, export_type)
+
+    assert not dlg.errors
+    assert calls == ([(out, "aac")] if trimmed else [])

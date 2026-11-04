@@ -138,6 +138,10 @@ class EffectsModel(QObject):
         for effect_info in raw_effects_list:
             # Get basic properties about each effect
             effect_name = effect_info["class_name"]
+            if effect_name == "Caption":
+                # Captions are HyperFrames overlays (Captions dock); libopenshot's
+                # Caption effect only stays loadable for projects that already use it.
+                continue
             title = effect_info["name"]
             description = effect_info["description"]
             # Remove any spaces from icon name

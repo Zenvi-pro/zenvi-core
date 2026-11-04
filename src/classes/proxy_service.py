@@ -1148,9 +1148,7 @@ class ProxyService(QObject):
              return
          try:
              mask_path = os.path.join(info.IMAGES_PATH, "mask.png")
-             # Zenvi bakes the play-overlay into video thumbnails (see httpThumbnailHandler)
-             overlay_path = os.path.join(info.IMAGES_PATH, "overlay.png")
-             GenerateThumbnailFromFrame(frame, thumb_path, 98, 64, mask_path, overlay_path, rotate=rotate)
+             GenerateThumbnailFromFrame(frame, thumb_path, 98, 64, mask_path, "", rotate=rotate)
          except Exception:
              log.debug("Optimize Preview thumbnail prewarm failed file=%s frame=%s", file_id, frame_number, exc_info=1)
 

@@ -87,5 +87,6 @@ def test_light_theme_is_not_painted_dark():
 def test_windows_fonts_replace_generic_fallbacks():
     """Tailwind's ui-sans-serif / ui-monospace resolve to Arial / Courier New here."""
     m = _probe(420, 620)
-    assert m["inputFont"].lstrip("'\"").startswith("Segoe UI")
+    # Inter is bundled and registered as an app font; Segoe UI stays the fallback
+    assert m["inputFont"].lstrip("'\"").startswith("Inter") and "Segoe UI" in m["inputFont"]
     assert "Consolas" in m["codeFont"]

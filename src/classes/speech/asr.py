@@ -62,9 +62,9 @@ class FasterWhisperTranscriber:
             from faster_whisper import WhisperModel
         except ImportError as exc:
             raise RuntimeError(
-                "No local speech engine: releases bundle whisper.cpp "
-                "(installer/build-whisper-cli.sh puts it in src/whisper); "
-                "or pip install -r requirements-speech.txt for faster-whisper"
+                "No local speech engine. macOS 26 or later uses the built-in Apple engine; releases bundle whisper.cpp "
+                "(installer/build-whisper-cli.sh puts it in src/whisper), and once whisper-cli is present the speech model "
+                "is downloaded on first use; otherwise pip install -r requirements-speech.txt for faster-whisper"
             ) from exc
         size = _MODEL_SIZES.get(self.model_id, "base")
         self._model = WhisperModel(size, device="cpu", compute_type="int8")
@@ -140,6 +140,13 @@ def make_transcriber(engine: str = "auto", model_id: str = DEFAULT_MODEL_ID) -> 
 def _whisper_transcriber(model_id: str = DEFAULT_MODEL_ID) -> Transcriber:
     """The bundled whisper.cpp when present (every release), else faster-whisper."""
     from classes.speech import whisper_cpp
+    if whisper_cpp.cli_path() and not whisper_cpp.model_path():
+        # The engine is here but its model is not (a lean install): fetch it now, once, rather than failing and asking the user to.
+        from classes.verified_download import DownloadError
+        try:
+            whisper_cpp.ensure_models()
+        except DownloadError as exc:
+            raise RuntimeError(f"the speech model could not be downloaded ({exc}); check the connection and try again") from exc
     if whisper_cpp.available():
         if model_id and model_id != DEFAULT_MODEL_ID:
             log.info("modelId %s ignored: whisper.cpp runs the model it was installed with (%s)",
@@ -181,6 +188,13 @@ def _cache_model_id(engine: str, model_id: str) -> str:
     if whisper_cpp.available():
         return whisper_cpp.model_id()  # the model it runs, whatever was asked for
     return (model_id or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
+
+
+def _engine_language(engine: str, lang_key: str):
+    """What each engine takes for a language: Apple a locale (ja-JP), whisper the two-letter code (ja); None means detect."""
+    if lang_key == "auto":
+        return None
+    return lang_key if engine == "apple" else lang_key.split("-")[0]
 
 
 def transcribe_file(
@@ -232,7 +246,7 @@ def transcribe_file(
             try:
                 words, detected = engine_obj.transcribe(
                     wav_path,
-                    language=None if lang_key == "auto" else lang_key,
+                    language=_engine_language(resolved, lang_key),
                     token=tok,
                 )
             except Exception as exc:
@@ -250,7 +264,7 @@ def transcribe_file(
                         engine_obj = _whisper_transcriber(model_id)
                     words, detected = engine_obj.transcribe(
                         wav_path,
-                        language=None if lang_key == "auto" else lang_key,
+                        language=_engine_language("whisper", lang_key),
                         token=tok,
                     )
                 else:
