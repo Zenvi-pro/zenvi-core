@@ -56,6 +56,8 @@ from classes.logger import log
 from classes.app import get_app
 from classes.metrics import track_metric_screen, track_metric_error
 from classes.query import File
+from classes.export_audio_priming import trim_export_audio_priming
+from themes.cosmic.tokens import TOKENS, resolve
 from classes.qt_main_thread import call_on_gui, invoke_on_gui
 
 import json
@@ -162,6 +164,8 @@ class Export(QDialog):
         # Load UI from designer & init
         ui_util.load_ui(self, self.ui_path)
         ui_util.init_ui(self)
+        for label in (self.lblChooseProfile, self.label_2):
+            label.setStyleSheet(resolve("color: {text_faint}; font-size: 12px;"))
         self._setup_toolbox_tab_order()
         self.exportTabs.tabBar().setFocusPolicy(Qt.StrongFocus)
 
@@ -1138,9 +1142,9 @@ class Export(QDialog):
             self.cancel_button.setVisible(False)
             self.export_button.setVisible(False)
             self.close_button.setVisible(True)
-            from qt_api import QPalette
+            from qt_api import QColor, QPalette
             p = QPalette()
-            p.setColor(QPalette.Highlight, Qt.green)
+            p.setColor(QPalette.Highlight, QColor(TOKENS["success"]))
             self.progressExportVideo.setPalette(p)
             self.enableControls()
             self.show()
@@ -1467,6 +1471,8 @@ class Export(QDialog):
                 self.cache_thread.StartThread()
 
             w = openshot.FFmpegWriter(export_file_path)
+            # Codec the writer was given audio for; set below, None = no audio.
+            export_audio_codec = None
 
             if export_type in [_("Video & Audio"), _("Video Only"), _("Image Sequence")]:
                 # Coerce to exact C++ types (bool, std::string, Fraction, int, int, Fraction, bool, bool, int)
@@ -1535,6 +1541,7 @@ class Export(QDialog):
                         cl,
                         audio_bps,
                     )
+                    export_audio_codec = ac
                 else:
                     # No audio codec available; tell timeline we have no audio so writer/encode loop don't expect it.
                     self.timeline.info.has_audio = False
@@ -1731,6 +1738,8 @@ class Export(QDialog):
                         break
 
             w.Close()
+            if export_audio_codec and self.timeline.info.has_audio:
+                trim_export_audio_priming(export_file_path, export_audio_codec)
 
             end_time_export = time.time()
             seconds_run = round((end_time_export - start_time_export))

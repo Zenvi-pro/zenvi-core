@@ -26,11 +26,12 @@
  """
 
 from qt_api import QtCore
-from qt_api import QColorDialog, QPushButton, QDialog, QFrame
+from qt_api import QColorDialog, QPushButton, QDialog, QDialogButtonBox, QFrame
 from qt_api import QColor, QPainter, QPen, QCursor
 from qt_api import Qt, QRect, QPoint
 from classes.logger import log
 from classes.app import get_app
+from themes.cosmic.tokens import TOKENS
 
 
 def draw_checkerboard(painter, rect):
@@ -116,6 +117,15 @@ class ColorPicker(QColorDialog):
         # Override the "Pick Screen Color" button signal
         self._override_pick_screen_color()
 
+        # The OK button is the primary action
+        button_box = self.findChild(QDialogButtonBox)
+        ok_button = button_box.button(QDialogButtonBox.Ok) if button_box else None
+        if ok_button is not None:
+            ok_button.setObjectName("acceptButton")
+            # QColorDialog has polished its buttons already, so the stylesheet needs a second pass
+            ok_button.style().unpolish(ok_button)
+            ok_button.style().polish(ok_button)
+
         # Automatically open the dialog
         self.open()
 
@@ -180,7 +190,7 @@ class PickingDialog(QDialog):
         self.setGeometry(get_app().window.geometry())
         self.setFixedSize(self.size())
         self.setCursor(Qt.CrossCursor)
-        self.color_preview = QColor("#FFFFFF")
+        self.color_preview = QColor(TOKENS["white"])
         self.setMouseTracking(True)
 
         # Get first pushbutton (color picker)

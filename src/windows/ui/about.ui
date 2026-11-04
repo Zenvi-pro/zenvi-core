@@ -24,6 +24,21 @@
     <normaloff>:/openshot.svg</normaloff>:/openshot.svg</iconset>
   </property>
   <layout class="QGridLayout" name="gridLayout">
+   <property name="leftMargin">
+    <number>16</number>
+   </property>
+   <property name="topMargin">
+    <number>16</number>
+   </property>
+   <property name="rightMargin">
+    <number>16</number>
+   </property>
+   <property name="bottomMargin">
+    <number>16</number>
+   </property>
+   <property name="spacing">
+    <number>8</number>
+   </property>
    <item row="1" column="0" colspan="3">
     <layout class="QVBoxLayout" name="verticalLayout">
      <item>
@@ -35,7 +50,7 @@
         </sizepolicy>
        </property>
        <property name="styleSheet">
-        <string notr="true">font-size: 16px; font-weight: bold; color: #FFFFFF; margin-bottom: 20px;</string>
+        <string notr="true">font-size: 16px; font-weight: 600; margin-bottom: 20px;</string>
        </property>
        <property name="text">
         <string>Create &amp; Edit Amazing Videos and Movies</string>
@@ -55,9 +70,6 @@
            <verstretch>0</verstretch>
           </sizepolicy>
          </property>
-         <property name="styleSheet">
-          <string notr="true">font-size: 12px; color: #FFFFFF; </string>
-         </property>
          <property name="text">
           <string>Version Loading</string>
          </property>
@@ -73,9 +85,6 @@
            <horstretch>0</horstretch>
            <verstretch>0</verstretch>
           </sizepolicy>
-         </property>
-         <property name="styleSheet">
-          <string notr="true">font-size: 12px; color: #FFFFFF; </string>
          </property>
          <property name="text">
           <string>© 2024 OpenShot Studios, LLC</string>

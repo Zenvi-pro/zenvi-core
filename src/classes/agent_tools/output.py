@@ -43,6 +43,18 @@ def set_last_output(output: ToolOutput) -> None:
     _tls.last = output
 
 
+def attach_images(images: list[ImageBlock]) -> None:
+    """Let a tool that returns text also hand pictures to the result (kept within the image budget); taken by the dispatcher."""
+    kept, _warnings = trim_to_budget(list(images))
+    _tls.pending_images = kept
+
+
+def take_attached_images() -> list[ImageBlock]:
+    images = list(getattr(_tls, "pending_images", None) or [])
+    _tls.pending_images = []
+    return images
+
+
 def get_last_output() -> Optional[ToolOutput]:
     return getattr(_tls, "last", None)
 

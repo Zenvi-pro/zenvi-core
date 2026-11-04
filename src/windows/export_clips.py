@@ -39,6 +39,7 @@ from classes import ui_util
 from classes import info
 from classes.app import get_app
 from classes.logger import log
+from classes.export_audio_priming import trim_export_audio_priming
 import openshot, os, re, shutil
 
 
@@ -132,6 +133,10 @@ def startAndEndFrames(clip):
     end_frame = max(start_frame - 1, int(round(end_time * fps)))
     return (start_frame, end_frame)
 
+# Clip exports are always H.264 + AAC (see setupWriter).
+CLIP_AUDIO_CODEC = "aac"
+
+
 def positiveInt(value, default: int) -> int:
     try:
         value = int(value)
@@ -159,7 +164,7 @@ def setupWriter(clip, writer):
     writer.PrepareStreams()
     # Set audio options
     writer.SetAudioOptions(has_audio,
-                           "aac",
+                           CLIP_AUDIO_CODEC,
                            positiveInt(clip.data.get("sample_rate"), 48000),
                            positiveInt(clip.data.get("channels"), 2),
                            positiveInt(clip.data.get("channel_layout"), 3),
@@ -341,6 +346,8 @@ class clipExportWindow(QDialog):
         if self.canceled:
             log.info("Reader and Writer closed. Exiting Dialog")
             return frames_written, total_frames
+        if clip.data.get("has_audio"):
+            trim_export_audio_priming(export_path, CLIP_AUDIO_CODEC)
         log.info("Finished Exporting Clip: %s" % export_path)
         return frames_written, total_frames
 

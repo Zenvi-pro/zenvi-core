@@ -2,7 +2,7 @@
 
 The hook is a Claude Code PreToolUse hook: it reads {"tool_name","tool_input":{"command"}} on stdin and
 prints a deny decision, or nothing to allow. These tests pin the allow/deny matrix so a refactor cannot
-silently let an agent push to develop or commit as someone else.
+silently let an agent push to main or commit as someone else.
 """
 import json
 import os
@@ -37,14 +37,14 @@ def _git(repo, *args, **env):
 
 @pytest.fixture
 def repo(tmp_path):
-    """A tiny repo whose refs/remotes/origin/develop is the base and HEAD has one Jashan-authored commit.
+    """A tiny repo whose refs/remotes/origin/main is the base and HEAD has one Jashan-authored commit.
 
-    The guard's push/PR check runs `git log origin/develop..HEAD`; the CI checkout has no such ref, so the
+    The guard's push/PR check runs `git log origin/main..HEAD`; the CI checkout has no such ref, so the
     tests bring their own instead of relying on the real repository."""
     r = tmp_path / "repo"; r.mkdir()
     _git(r, "init", "-q", "-b", "jashan/qt-api")
     (r / "base.txt").write_text("base\n"); _git(r, "add", "base.txt"); _git(r, "commit", "-q", "-m", "base")
-    _git(r, "update-ref", "refs/remotes/origin/develop", "HEAD")
+    _git(r, "update-ref", "refs/remotes/origin/main", "HEAD")
     (r / "feature.txt").write_text("feature\n"); _git(r, "add", "feature.txt")
     _git(r, "commit", "-q", "-m", "port(qt-api): feature commit")
     return r
@@ -54,32 +54,34 @@ def repo(tmp_path):
     "git status && git log -3",
     "git cherry-pick -m 1 -x abc123",
     "git commit --amend --reset-author --no-edit",
-    "git rebase origin/develop",
+    "git rebase origin/main",
     "git add src/qt_api.py tests/conftest.py",
     "ZENVI_DEPS=~/zenvi-deps-1.0 bash scripts/build-mac-libopenshot.sh",
     "cd /tmp/port-root/qt-api && ls",
     "cat /tmp/port-root/.state/qt-api.json",
-    "cat <<'EOF' > note.md\nnever run: git push origin develop\nEOF",
+    "cat <<'EOF' > note.md\nnever run: git push origin main\nEOF",
 ])
 def test_allowed(repo, cmd):
-    # Run from the fixture repo (on a feature branch), not the real checkout: CI checks out develop, and a
-    # rebase from a worktree sitting on develop is exactly what the guard must deny (see below).
+    # Run from the fixture repo (on a feature branch), not the real checkout: CI checks out main, and a
+    # rebase from a worktree sitting on main is exactly what the guard must deny (see below).
     assert run_guard(cmd, cwd=repo) is None
 
 
-def test_rebase_denied_when_worktree_is_on_develop(repo):
-    _git(repo, "checkout", "-q", "-b", "develop")
-    reason = run_guard("git rebase origin/develop", cwd=repo)
-    assert reason is not None and "HEAD is develop" in reason
+def test_rebase_denied_when_worktree_is_on_main(repo):
+    _git(repo, "checkout", "-q", "-b", "main")
+    reason = run_guard("git rebase origin/main", cwd=repo)
+    assert reason is not None and "HEAD is main" in reason
 
 
 @pytest.mark.parametrize("cmd,fragment", [
     ("git push --force origin jashan/qt-api", "force push"),
     ("git push -f origin jashan/qt-api", "force push"),
-    ("git push origin HEAD:develop", "never push to develop"),
+    ("git push origin HEAD:main", "never push to main"),
+    ("git push origin HEAD:develop", "never push to main"),  # a clone not yet renamed still has develop
     ("git push origin jashan/ai-masking", "another feature"),
-    ("git checkout develop", "never check out"),
-    ("git switch develop", "never check out"),
+    ("git checkout main", "never check out"),
+    ("git switch main", "never check out"),
+    ("git branch -D main", "never delete"),
     ("git branch -D develop", "never delete"),
     ("git add -A", "git add -A"),
     ("git add .", "git add -A"),
@@ -103,7 +105,7 @@ def test_denied(cmd, fragment):
 @pytest.mark.parametrize("cmd", [
     "git push -u origin jashan/qt-api",
     "git push --force-with-lease origin jashan/qt-api",
-    "gh pr create --draft --base develop --head jashan/qt-api --title t --body-file b.md",
+    "gh pr create --draft --base main --head jashan/qt-api --title t --body-file b.md",
 ])
 def test_push_allowed_when_every_commit_is_jashan(repo, cmd):
     assert run_guard(cmd, cwd=repo) is None

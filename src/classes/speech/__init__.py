@@ -1,6 +1,6 @@
 """Portable on-device speech / ML (Phase 5).
 
-ASR, VAD, diarize, beats, captions helpers, and visual index. Inference never
+ASR, VAD, diarize, beats and captions helpers. Inference never
 runs on the GUI thread; tools that call into this package are BACKGROUND_SAFE.
 """
 

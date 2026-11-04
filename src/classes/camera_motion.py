@@ -20,7 +20,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 
 PAN_AUTO = "auto"
@@ -220,6 +220,34 @@ def ken_burns_keyframes(
     if axis == "x":
         return CameraKeyframes((start_scale, end_scale), (start_scale, end_scale), (start_mag, end_mag), (0.0, 0.0))
     return CameraKeyframes((start_scale, end_scale), (start_scale, end_scale), (0.0, 0.0), (start_mag, end_mag))
+
+
+def apply_camera_keyframes(
+    clip_data: Dict,
+    values: CameraKeyframes,
+    first_frame: int,
+    last_frame: int,
+    point: Callable[[int, float], Dict],
+) -> None:
+    """Write a camera move into a clip's scale and location keyframes (Clip > Motion > Camera).
+
+    Each value pair runs from its start at *first_frame* to its end at
+    *last_frame* (the clip's own 1-based frames); points already inside that
+    range are dropped and points outside it kept. *point(frame, value)* builds
+    one keyframe point (``openshot.Point(...).Json()``). Camera moves frame a
+    picture that fills the frame: callers set scale mode crop.
+    """
+    pairs = (("scale_x", values.scale_x), ("scale_y", values.scale_y),
+             ("location_x", values.location_x), ("location_y", values.location_y))
+    for prop, (start, end) in pairs:
+        curve = clip_data[prop]
+        kept = [p for p in curve["Points"] if not first_frame <= p.get("co", {}).get("X", -1) <= last_frame]
+        for frame, value in ((first_frame, start), (last_frame, end)):
+            new_point = point(frame, value)
+            # Keyframe AddPoint: a point at the same frame is replaced.
+            kept = [p for p in kept if p.get("co", {}).get("X") != new_point.get("co", {}).get("X")]
+            kept.append(new_point)
+        curve["Points"] = kept
 
 
 def source_dimensions_from_reader(reader: Optional[Dict]) -> Tuple[Optional[float], Optional[float]]:

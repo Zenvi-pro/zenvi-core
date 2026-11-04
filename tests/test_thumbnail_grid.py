@@ -33,4 +33,4 @@ def test_thumbnail_path_for_frame_prefers_fingerprint_cache(tmp_path):
     fingerprint = {"sha256": "a" * 64}
     with patch("classes.media_cache.media_cache_root", return_value=str(tmp_path)):
         path = thumbnail.ThumbnailPathForFrame("F1", 9, fingerprint=fingerprint)
-    assert path == str(tmp_path / ("a" * 64) / "thumbs" / "9.png")
+    assert path == str(tmp_path / ("a" * 64) / "thumbs-v2" / "9.png")  # v2: no film-sprocket overlay

@@ -56,6 +56,7 @@ from classes.app import get_app
 from classes.metrics import track_metric_screen
 from windows.color_picker import ColorPicker, draw_checkerboard
 from classes.style_tools import style_to_dict
+from themes.cosmic.tokens import resolve
 from windows.views.titles_listview import TitlesListView
 
 
@@ -98,6 +99,8 @@ class TitleEditor(QDialog):
 
         # In your widget's initialization:
         self.lblPreviewLabel.installEventFilter(self)
+        self.lblPreviewLabel.setStyleSheet(resolve("background-color: {raised};"))
+        self.label.setStyleSheet(resolve("color: {text_faint}; font-size: 12px;"))
         self.lblPreviewLabel.setFocusPolicy(Qt.NoFocus)
         self.scrollArea.setFocusPolicy(Qt.NoFocus)
 
@@ -332,7 +335,7 @@ class TitleEditor(QDialog):
         layout = self.settingsContainer.layout()
 
         # Parse the svg object
-        self.xmldoc = minidom.parse(self.filename)
+        self.xmldoc = title_svg.load(self.filename)  # outlined titles come back as text
         # get the text elements (every tspan for styling; the ones holding text are the lines)
         self.tspan_nodes = self.xmldoc.getElementsByTagName('tspan')
         self.line_nodes = title_svg.line_nodes(self.xmldoc)
@@ -608,7 +611,7 @@ class TitleEditor(QDialog):
             s = node.getAttribute("style")
             ard = style_to_dict(s)
             # Get fill color or default to white
-            color = ard.get("fill", "#FFF")
+            color = ard.get("fill", "white")
             # Look up color if needed
             # Some colors are located in a different node
             if color.startswith("url(#") and self.xmldoc.getElementsByTagName("defs").length == 1:
@@ -643,7 +646,7 @@ class TitleEditor(QDialog):
             ard = style_to_dict(s)
 
             # Get fill color or default to black + full opacity
-            color = ard.get("fill", "#000")
+            color = ard.get("fill", "black")
             opacity = float(ard.get("opacity", 1.0))
 
             color = QColor(color)

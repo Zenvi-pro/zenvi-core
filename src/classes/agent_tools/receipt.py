@@ -19,14 +19,6 @@ MUTATION_CLIP_LIMIT = 30
 SHIFT_GROUP_MINIMUM = 3
 
 
-@dataclass
-class WatchSuggested:
-    clipId: str
-    start: float
-    end: float
-
-    def to_dict(self) -> dict:
-        return {"clipId": self.clipId, "start": self.start, "end": self.end}
 
 
 @dataclass

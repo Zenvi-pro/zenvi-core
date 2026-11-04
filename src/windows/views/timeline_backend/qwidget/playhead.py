@@ -25,7 +25,7 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from qt_api import QRectF, QPointF
+from qt_api import QRectF, QPointF, QWidget
 from classes.app import get_app
 
 
@@ -74,8 +74,8 @@ class PlayheadMixin:
         """Callback when position is changed"""
         self.current_frame = currentFrame
 
-        # Schedule repaint
-        self.update()
+        # Repaint the playhead over the cached clips, not the whole timeline
+        QWidget.update(self)
 
     def handle_play(self):
         """Callback when play button is clicked"""

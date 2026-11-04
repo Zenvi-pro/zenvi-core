@@ -11,11 +11,14 @@ try:
     from qt_api import Qt
     from qt_api import (
         QDockWidget,
+        QColor,
         QHBoxLayout,
         QLabel,
-        QListWidget,
-        QListWidgetItem,
+        QMessageBox,
         QPushButton,
+        QTextBrowser,
+        QTextCursor,
+        QTextEdit,
         QVBoxLayout,
         QWidget,
     )
@@ -25,58 +28,16 @@ except Exception:  # headless / stub
     QWidget = object  # type: ignore
 
 
-def _timecode(sec):
-    """0:03.2 style: minutes, seconds and tenths."""
-    tenths = round(sec * 10)
-    minutes, rest = divmod(tenths, 600)
-    return f"{minutes}:{rest // 10:02d}.{rest % 10}"
-
-
-def _line(words, clip_id):
-    first = words[0]
-    return {
-        "text": " ".join(t for t in (str(w.get("text") or "").strip() for w in words) if t),
-        "startSec": float(first.get("timelineStartSec", first.get("startSec")) or 0),
-        "startFrame": first.get("startFrame"),
-        "speakerId": first.get("speakerId") or "",
-        "clipId": clip_id,
-    }
-
-
-def _clip_title(clip_id):
-    """The timeline clip's name (what the user sees), else its id."""
-    try:
-        from classes.query import Clip
-        clip = Clip.get(id=clip_id)
-        return (clip.title() if clip else "") or clip_id
-    except Exception:
-        return clip_id
-
-
-def transcript_lines(words, pause=0.7, max_words=12, clip_id=""):
-    """Group one clip's word rows into readable lines. A line ends before a pause
-    of `pause` seconds or more, after a word ending in . ? !, at `max_words`
-    words, and where the speaker changes."""
-    lines, cur, last_end = [], [], 0.0
-    for w in words:
-        start = float(w.get("timelineStartSec", w.get("startSec")) or 0)
-        if cur and (
-            start - last_end >= pause
-            or len(cur) >= max_words
-            or (w.get("speakerId") or "") != (cur[0].get("speakerId") or "")
-            or str(cur[-1].get("text") or "").rstrip().endswith((".", "?", "!"))
-        ):
-            lines.append(_line(cur, clip_id))
-            cur = []
-        cur.append(w)
-        last_end = float(w.get("timelineEndSec", w.get("endSec", start)) or start)
-    if cur:
-        lines.append(_line(cur, clip_id))
-    return lines
+READER_STYLE = (
+    "body { font-size: 14px; line-height: 160%; }"
+    "p { margin: 0 0 14px 0; }"
+    "a { color: palette(text); text-decoration: none; }"
+    ".who { font-size: 11px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; color: palette(mid); }"
+)
 
 
 class IndexPanel(QDockWidget if QDockWidget is not object else object):
-    """Dockable transcript list. Click a line to seek the playhead."""
+    """Dockable transcript reader: clean paragraphs, the spoken word lit as the video plays, and a click on a word seeks to it."""
 
     def __init__(self, parent=None):
         if QDockWidget is object:
@@ -103,19 +64,37 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
         row.addWidget(self._refresh_btn, 0)
         layout.addLayout(row)
 
-        self._list = QListWidget()
-        self._list.itemActivated.connect(self._on_item)
-        self._list.itemClicked.connect(self._on_item)
-        layout.addWidget(self._list, 1)
+        self._people_btn = QPushButton("Delete people data…")
+        self._people_btn.setToolTip("Remove every face scan and every name stored on this computer")
+        self._people_btn.clicked.connect(self.delete_people_data)
+        layout.addWidget(self._people_btn, 0)
+
+        self._view = QTextBrowser()
+        self._view.setOpenLinks(False)
+        self._view.setFrameShape(QTextBrowser.NoFrame)
+        self._view.document().setDefaultStyleSheet(READER_STYLE)
+        self._view.anchorClicked.connect(self._on_link)
+        layout.addWidget(self._view, 1)
 
         self.setWidget(body)
         self._generation = None
         self._loading = False
+        self._model = {"words": [], "paragraphs": []}
+        self._starts = []
+        self._lit = -1
+        self._word_spans = {}
         self._data = None
-        # Built inside MainWindow.__init__, before get_app().window is set: follow the parent.
-        window = parent if hasattr(parent, "SelectionChanged") else getattr(self._app, "window", None)
-        if window is not None:
-            window.SelectionChanged.connect(self._render)
+        win = parent if hasattr(parent, "previewFrameSignal") else getattr(self._app, "window", None)
+        if win is not None:
+            # Playback and scrubbing move preview_thread.position_changed. previewFrameSignal
+            # fires only for a frame-step key, so the word has to follow both.
+            for signal in (getattr(win, "previewFrameSignal", None),
+                           getattr(getattr(win, "preview_thread", None), "position_changed", None)):
+                if signal is not None:
+                    signal.connect(self.follow)
+            # A clicked clip narrows the reading to its words.
+            if hasattr(win, "SelectionChanged"):
+                win.SelectionChanged.connect(self._render)
 
     def refresh(self):
         """Reload the word list. Transcription can take seconds on a cache
@@ -134,6 +113,30 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
             target=self._load_transcript, args=(token,), name="index_panel_transcript", daemon=True,
         ).start()
 
+    def _confirm_delete_people(self):
+        return QMessageBox.question(
+            self, "Delete people data",
+            "Delete every face scan and every name stored on this computer? This cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes
+
+    def delete_people_data(self):
+        """Remove all people data (face scans, names). The files are removed on a worker, never on the GUI thread."""
+        if QDockWidget is object or not self._confirm_delete_people():
+            return
+        self._status.setText("Deleting people data…")
+        threading.Thread(target=self._delete_people_worker, name="index_panel_delete_people", daemon=True).start()
+
+    def _delete_people_worker(self):
+        from classes.qt_main_thread import invoke_on_gui
+        try:
+            from classes.media_index import people
+            out = people.delete_all()
+            text = f"Deleted {out['scans']} face scan(s) and the people list."
+        except Exception as exc:
+            log.warning("Deleting people data failed: %s", exc)
+            text = f"Could not delete people data: {exc}"
+        invoke_on_gui(self._status.setText, text)
+
     def _project_token(self):
         """The open project's data dict: New and Open replace it."""
         return getattr(getattr(self._app, "project", None), "_data", None)
@@ -143,7 +146,7 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
         try:
             from classes.agent_tools.transcript import get_transcript
             # The default receipt is compact (script only); the list needs words.
-            raw = get_transcript(includeWords=True)
+            raw = get_transcript(include_words=True)
         except Exception as exc:
             log.warning("Index refresh failed: %s", exc)
             raw = exc
@@ -151,7 +154,7 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
 
     def _populate(self, raw, token=None):
         self._loading = False
-        self._list.clear()
+        self._show_words({"words": [], "paragraphs": []})
         self._data = None
         if token is not None and token is not self._project_token():
             # A project was opened while this one transcribed: its words
@@ -169,64 +172,95 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
             return
 
         self._data = receipt.get("data") or {}
-        self._generation = self._data.get("transcriptGeneration")
+        self._generation = self._data.get("transcript_generation")
         self._render()
 
     def _render(self):
-        """Fill the list from the last receipt: the selected clips' lines, or every
-        clip under its name. Selection changes call this again without reloading."""
+        """Read the selected clips' words, or every clip's when none is selected.
+        Selection changes call this again without reloading."""
         if self._data is None:
             return
-        self._list.clear()
         try:
             selected = {str(c) for c in self._app.window.selected_clips}
         except Exception:
             selected = set()
-        lines_n = words_n = 0
-        names = []
-        for clip in self._data.get("clips") or []:
-            cid = str(clip.get("clipId") or "")
-            if selected and cid not in selected:
-                continue
-            words = clip.get("words") or []
-            lines = transcript_lines(words, clip_id=cid)
-            if not lines:
-                continue
-            name = clip.get("title") or _clip_title(cid)
-            names.append(name)
-            lines_n += len(lines)
-            words_n += len(words)
-            if len(selected) != 1:
-                header = QListWidgetItem(name)
-                header.setFlags(Qt.NoItemFlags)
-                self._list.addItem(header)
-            for line in lines:
-                prefix = f"[{line['speakerId']}] " if line["speakerId"] else ""
-                item = QListWidgetItem(f"{_timecode(line['startSec'])}  {prefix}{line['text']}")
-                item.setData(Qt.UserRole, line)
-                self._list.addItem(item)
-
-        parts = [f"{lines_n} line{'s' * (lines_n != 1)}", f"{words_n} word{'s' * (words_n != 1)}"]
-        if selected:
-            parts.append(", ".join(names) or "not transcribed")
-        parts += [self._data.get("transcriptionSource") or "local", f"gen {self._generation}"]
-        self._status.setText(" · ".join(parts))
-
-    def _on_item(self, item):
-        if QDockWidget is object or item is None or self._app is None:
+        clips = [c for c in self._data.get("clips") or []
+                 if not selected or str(c.get("clipId") or "") in selected]
+        from classes.speech import transcript_view
+        model = transcript_view.reading_model(clips, fps=self._fps())
+        self._show_words(model)
+        n = len(model["words"])
+        if selected and not n:
+            self._status.setText("Selected clip not transcribed. Clear the selection to read every clip.")
             return
-        meta = item.data(Qt.UserRole) or {}
+        src = self._data.get("transcriptionSource") or "local"
+        self._status.setText(f"{n} word{'s' * (n != 1)} · {src} · gen {self._generation}")
+
+    def _fps(self):
         try:
-            frame = meta.get("startFrame")
+            from classes.clip_utils import project_fps_fraction
+            fps = project_fps_fraction()
+            return float(fps.num) / float(fps.den)
+        except Exception:
+            return 30.0
+
+    def _show_words(self, model):
+        from classes.speech import transcript_view
+        self._model = model
+        self._starts = [w["frame"] for w in model["words"]]
+        self._lit = -1
+        self._word_spans = {}
+        self._view.setExtraSelections([])
+        self._view.setHtml(transcript_view.reading_html(model))
+        # Where each word sits in the document, read from the link fragments themselves (never by searching the text).
+        block = self._view.document().begin()
+        while block.isValid():
+            it = block.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                fmt = frag.charFormat()
+                if frag.isValid() and fmt.isAnchor() and fmt.anchorHref().startswith("w:"):
+                    self._word_spans[int(fmt.anchorHref()[2:])] = (frag.position(), frag.position() + frag.length())
+                it += 1
+            block = block.next()
+
+    def follow(self, frame):
+        """Light the word spoken at this preview frame (connected to the preview's frame signal)."""
+        if QDockWidget is object or not self._starts:
+            return
+        from classes.speech import transcript_view
+        i = transcript_view.word_at(self._starts, int(frame) - 1)
+        if i == self._lit:
+            return
+        self._lit = i
+        span = self._word_spans.get(i)
+        if span is None:
+            self._view.setExtraSelections([])
+            return
+        cursor = QTextCursor(self._view.document())
+        cursor.setPosition(span[0])
+        cursor.setPosition(span[1], QTextCursor.KeepAnchor)
+        sel = QTextEdit.ExtraSelection()
+        sel.cursor = cursor
+        colour = self.palette().highlight().color()
+        sel.format.setBackground(QColor(colour.red(), colour.green(), colour.blue(), 110))
+        self._view.setExtraSelections([sel])
+        if self.isVisible():                                  # keep the lit word on screen as the reading moves down
+            caret = QTextCursor(self._view.document())
+            caret.setPosition(span[0])
+            self._view.setTextCursor(caret)
+            self._view.ensureCursorVisible()
+
+    def _on_link(self, url):
+        if QDockWidget is object or self._app is None:
+            return
+        from classes.speech import transcript_view
+        frame = transcript_view.seek_frame(self._model, url.toString())
+        if frame is None:
+            return
+        try:
             win = self._app.window
-            if frame is not None and hasattr(win, "SeekSignal"):
+            if hasattr(win, "SeekSignal"):
                 win.SeekSignal.emit(int(frame) + 1)
-                return
-            sec = meta.get("startSec")
-            if sec is not None and hasattr(win, "SeekSignal"):
-                from classes.frame_time import to_frame
-                from classes.clip_utils import project_fps_fraction
-                f = to_frame(float(sec), project_fps_fraction())
-                win.SeekSignal.emit(int(f) + 1)
         except Exception as exc:
             log.warning("Index seek failed: %s", exc)

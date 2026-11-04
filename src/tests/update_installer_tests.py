@@ -23,6 +23,30 @@ from unittest import mock
 SRC_DIR = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, os.path.abspath(SRC_DIR))
 
+_module_patches = []
+
+
+def setUpModule():
+    """Point every updater path at a private folder: these tests used to
+    write into the real ~/.openshot_qt/updates/install.log."""
+    from classes import update_installer as ui
+    stage = tempfile.mkdtemp(prefix="zenvi_update_tests_")
+    for name, value in (("UPDATE_STAGING_DIR", stage),
+                        ("UPDATE_MANIFEST", os.path.join(stage, "update_manifest.json")),
+                        ("UPDATE_LOG", os.path.join(stage, "install.log")),
+                        ("UPDATE_STATUS", os.path.join(stage, "update_status.json"))):
+        patch = mock.patch.object(ui, name, value)
+        patch.start()
+        _module_patches.append(patch)
+    notice = mock.patch.object(ui, "_show_update_notice")
+    notice.start()
+    _module_patches.append(notice)
+
+
+def tearDownModule():
+    for patch in reversed(_module_patches):
+        patch.stop()
+
 
 class UpdateHelperScriptTests(unittest.TestCase):
     """_build_update_helper_script generates the PowerShell source handed to
@@ -66,8 +90,24 @@ class UpdateHelperScriptTests(unittest.TestCase):
             r"C:\staged\install.log",
             parent_pid=4242,
         )
-        self.assertIn("Wait-Process -Id 4242", script)
+        self.assertIn("Get-Process -Id 4242", script)
         self.assertIn("External updater started", script)
+
+    def test_one_helper_at_a_time_and_other_sessions_postpone(self):
+        from classes import update_installer as ui
+        script = ui._build_update_helper_script(
+            r"C:\staged\Zenvi-Setup.exe",
+            r"C:\staged\update_manifest.json",
+            r"C:\Program Files\Zenvi\zenvi.exe",
+            r"C:\staged\install.log",
+            parent_pid=4242, status_path=r"C:\staged\update_status.json",
+        )
+        self.assertIn("Local\\ZenviUpdateHelper", script)
+        self.assertIn("Get-Process -Name zenvi", script)
+        self.assertIn("postponed", script)
+        # A reused pid that isn't Zenvi is not waited on (or ended).
+        self.assertIn("$p.Path -ne $ZenviExe", script)
+        self.assertNotIn("Wait-Process", script)
 
     def test_omits_wait_when_no_parent_pid(self):
         from classes import update_installer as ui
@@ -102,17 +142,22 @@ class UpdateHelperScriptTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "win32", "Windows-only")
     def test_script_is_syntactically_valid_powershell(self):
         """Parse (not execute) the generated script with PowerShell's own
-        tokenizer/parser so a real quoting bug would fail this test."""
+        tokenizer/parser so a real quoting bug would fail this test. Every
+        optional part is included: the wait, the lock, the status file and
+        the other-session check."""
         from classes import update_installer as ui
         script = ui._build_update_helper_script(
             r"C:\staged\Zenvi-Setup.exe",
             r"C:\staged\update_manifest.json",
             r"C:\Program Files\Zenvi\zenvi.exe",
             r"C:\staged\install.log",
+            parent_pid=4242, version="9.9.9", attempts=2,
+            status_path=r"C:\Users\José\.openshot_qt\updates\update_status.json",
         )
         fd, path = tempfile.mkstemp(suffix=".ps1")
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            # As _spawn_external_updater writes it: UTF-8 with a BOM.
+            with os.fdopen(fd, "w", encoding="utf-8-sig") as fh:
                 fh.write(script)
             result = subprocess.run(
                 ["powershell.exe", "-NoProfile", "-NonInteractive",
@@ -154,18 +199,35 @@ class SpawnExternalUpdaterTests(unittest.TestCase):
                 r"C:\staged\Zenvi-Setup.exe", r"C:\Program Files\Zenvi\zenvi.exe")
 
         self.assertTrue(ok)
-        script_path = os.path.join(
-            self.tmpdir, self.ui._UPDATE_HELPER_SCRIPT_NAME)
-        self.assertTrue(os.path.isfile(script_path))
-
         mock_popen.assert_called_once()
         args, kwargs = mock_popen.call_args
         cmd = args[0]
         self.assertEqual(cmd[0], "powershell.exe")
         self.assertIn("-File", cmd)
-        self.assertEqual(cmd[cmd.index("-File") + 1], script_path)
-        self.assertEqual(kwargs.get("creationflags"),
-                          self.ui._HELPER_CREATIONFLAGS)
+        script_path = cmd[cmd.index("-File") + 1]
+        self.assertTrue(os.path.isfile(script_path))
+        self.assertEqual(os.path.dirname(script_path), self.tmpdir)
+        # With a BOM, or Windows PowerShell 5.1 reads non-ASCII paths as ANSI.
+        with open(script_path, "rb") as fh:
+            self.assertTrue(fh.read().startswith(b"\xef\xbb\xbf"))
+        flags = kwargs.get("creationflags")
+        self.assertEqual(flags & self.ui._HELPER_CREATIONFLAGS,
+                         self.ui._HELPER_CREATIONFLAGS)
+
+    def test_a_job_that_forbids_breakaway_falls_back(self):
+        calls = []
+
+        def popen(cmd, creationflags=0, **kwargs):
+            calls.append(creationflags)
+            if creationflags & self.ui._CREATE_BREAKAWAY_FROM_JOB:
+                raise PermissionError("access denied")
+            return mock.Mock()
+
+        with mock.patch("subprocess.Popen", side_effect=popen):
+            ok = self.ui._spawn_external_updater(r"C:\staged\Zenvi-Setup.exe", None)
+        self.assertTrue(ok)
+        self.assertEqual(calls, [self.ui._HELPER_CREATIONFLAGS | self.ui._CREATE_BREAKAWAY_FROM_JOB,
+                                 self.ui._HELPER_CREATIONFLAGS])
 
     def test_popen_failure_returns_false(self):
         with mock.patch("subprocess.Popen", side_effect=OSError("boom")):
@@ -280,9 +342,14 @@ class ApplyPendingUpdateCleanupTests(unittest.TestCase):
         self._manifest_patch = mock.patch.object(
             self.ui, "UPDATE_MANIFEST", self.manifest_path)
         self._manifest_patch.start()
+        # Each test counts its own install attempts.
+        self._status_patch = mock.patch.object(
+            self.ui, "UPDATE_STATUS", os.path.join(self.tmpdir, "update_status.json"))
+        self._status_patch.start()
 
     def tearDown(self):
         self._manifest_patch.stop()
+        self._status_patch.stop()
         if hasattr(self, "_platform_patch"):
             self._platform_patch.stop()
         import shutil
@@ -313,15 +380,22 @@ class ApplyPendingUpdateCleanupTests(unittest.TestCase):
         self.assertTrue(os.path.exists(self.manifest_path))
         self.assertTrue(os.path.exists(self.installer_path))
 
-    def test_non_windows_success_cleans_up_immediately(self):
-        """Linux/macOS apply the update synchronously in-process, so a
-        confirmed success there really does mean it's safe to clean up now."""
+    def test_non_windows_success_hands_off_and_leaves_staged_files(self):
+        """Linux/macOS install from a helper that runs after Zenvi quits; it
+        removes the staged files once the install has really happened."""
         self._with_platform("Linux")
         with mock.patch.object(self.ui, "_apply_linux", return_value=True):
             result = self.ui.apply_pending_update()
         self.assertTrue(result)
-        self.assertFalse(os.path.exists(self.manifest_path))
-        self.assertFalse(os.path.exists(self.installer_path))
+        self.assertTrue(os.path.exists(self.manifest_path))
+        self.assertTrue(os.path.exists(self.installer_path))
+
+    def test_a_failed_hand_off_is_counted(self):
+        self._with_platform("Linux")
+        with mock.patch.object(self.ui, "_apply_linux", return_value=False):
+            self.ui.apply_pending_update()
+        self.assertEqual(self.ui.install_attempts("9.9.9"), 1)
+        self.assertTrue(self.ui.last_failure("9.9.9"))
 
     def test_non_windows_failure_keeps_staged_files_for_retry(self):
         self._with_platform("Linux")
@@ -377,42 +451,51 @@ class VerifyIntegrityTests(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
-class ApplyMacosSwapTests(unittest.TestCase):
-    def test_copytree_uses_symlinks_and_swaps_via_bak(self):
+class ApplyMacosHandOffTests(unittest.TestCase):
+    """_apply_macos never touches the installed app itself: it starts the
+    helper that swaps it after Zenvi quits (see tests/test_update_installer_helpers.py)."""
+
+    def test_hands_the_dmg_to_the_helper_for_the_running_bundle(self):
         from classes import update_installer as ui
-        recorded = {}
-
-        def fake_copytree(src, dst, symlinks=False):
-            recorded["copy"] = (src, dst, symlinks)
-
-        def fake_exists(path):
-            return path.endswith(".app") and ".new" not in path and ".bak" not in path
-
-        with mock.patch("os.listdir", return_value=["Zenvi.app"]), \
-             mock.patch("os.path.exists", side_effect=fake_exists), \
-             mock.patch("shutil.copytree", side_effect=fake_copytree), \
-             mock.patch("shutil.rmtree"), \
-             mock.patch("os.rename") as renamed, \
-             mock.patch.object(ui, "_relaunch"), \
-             mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)):
-            ok = ui._apply_macos("/tmp/Zenvi.dmg", "Zenvi.dmg")
+        with mock.patch.object(ui, "_spawn_posix_helper", return_value=True) as spawn, \
+             mock.patch.object(ui, "_macos_install_target", return_value="/Applications/Zenvi.app"):
+            ok = ui._apply_macos("/tmp/Zenvi.dmg", "Zenvi.dmg", "9.9.9", 4242, 1)
         self.assertTrue(ok)
-        self.assertTrue(recorded["copy"][2], "copytree must preserve symlinks")
-        self.assertTrue(recorded["copy"][1].endswith(".new"))
-        dests = [c[0][1] for c in renamed.call_args_list]
-        self.assertTrue(any(d.endswith(".bak") for d in dests))
+        script, args = spawn.call_args[0]
+        self.assertIs(script, ui._MACOS_HELPER)
+        self.assertEqual(args[:3], [4242, "/tmp/Zenvi.dmg", "/Applications/Zenvi.app"])
 
-
-class ApplyDebRelaunchTests(unittest.TestCase):
-    def test_deb_success_relaunches(self):
+    def test_rejects_a_package_that_is_not_a_dmg(self):
         from classes import update_installer as ui
-        with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0, stderr="")), \
-             mock.patch("shutil.which", return_value="/usr/bin/zenvi"), \
-             mock.patch("os.path.isfile", return_value=True), \
-             mock.patch.object(ui, "_relaunch") as relaunch:
-            ok = ui._apply_deb("/tmp/Zenvi.deb")
+        with mock.patch.object(ui, "_spawn_posix_helper") as spawn:
+            self.assertFalse(ui._apply_macos("/tmp/Zenvi.zip", "Zenvi.zip"))
+        spawn.assert_not_called()
+
+    def test_install_target_is_the_running_bundle_unless_read_only(self):
+        from classes import update_installer as ui
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ZENVI_UPDATE_APPLICATIONS_DIR", None)
+            with mock.patch.object(ui, "_running_bundle", return_value="/Users/u/Apps/Zenvi.app"):
+                self.assertEqual(ui._macos_install_target(), "/Users/u/Apps/Zenvi.app")
+            translocated = "/private/var/folders/x/AppTranslocation/ABC/d/Zenvi.app"
+            with mock.patch.object(ui, "_running_bundle", return_value=translocated):
+                self.assertEqual(ui._macos_install_target(), "/Applications/Zenvi.app")
+            with mock.patch.object(ui, "_running_bundle", return_value="/Volumes/Zenvi/Zenvi.app"), \
+                 mock.patch("os.access", return_value=False):
+                self.assertEqual(ui._macos_install_target(), "/Applications/Zenvi.app")
+
+
+class ApplyDebHandOffTests(unittest.TestCase):
+    def test_deb_is_installed_by_the_helper_and_reopened_through_the_launcher(self):
+        from classes import update_installer as ui
+        with mock.patch.object(ui, "_spawn_posix_helper", return_value=True) as spawn, \
+             mock.patch("shutil.which", return_value="/usr/bin/zenvi"):
+            ok = ui._apply_deb("/tmp/Zenvi.deb", "9.9.9", 4242, 1)
         self.assertTrue(ok)
-        relaunch.assert_called_once_with(["/usr/bin/zenvi"])
+        script, args = spawn.call_args[0]
+        self.assertIs(script, ui._DEB_HELPER)
+        self.assertEqual(args[0], 4242)
+        self.assertEqual(args[-1], "/usr/bin/zenvi")
 
 
 if __name__ == "__main__":

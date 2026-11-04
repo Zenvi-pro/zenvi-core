@@ -72,5 +72,5 @@ def test_add_clip_duration_without_watch_errors():
                 duration_seconds="60",
             )
     assert out.startswith("Error:")
-    assert "place_moment" in out
+    assert "place_moment" not in out
     assert "duration_seconds" in out

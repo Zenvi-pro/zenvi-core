@@ -14,7 +14,7 @@ from typing import Optional, Tuple
 
 from classes.editor_tools._base import (
     BEZIER, ToolError, clip_extent, ensure_unlocked, get_app, is_locked, keyframe, layers,
-    on_main, parse_color, project, project_fps, resolve_layer, track_label, ui_track_number,
+    on_main, parse_color, project, project_fps, resolve_placement_layer, track_label, ui_track_number,
 )
 from classes.logger import log
 
@@ -201,28 +201,54 @@ def clips_in_window(layer_num: Optional[int], start: float, end: float, exclude_
     return out
 
 
-def plan_overlay_track(start: float, end: float, track: str = "", exclude_ids=()) -> Tuple[int, bool]:
+def plan_overlay_track(start: float, end: float, track: str = "", exclude_ids=(),
+                       moved: Optional[list] = None) -> Tuple[int, bool]:
     """(layer number, needs_new_track) for an overlay shown over [start, end).
 
-    Explicit *track*: it must exist, be unlocked and be free in the window.
+    Explicit *track*: it must exist and be unlocked, or be one to three tracks
+    past the top (created, with the ones between). When it has a clip in the
+    window the overlay goes to the first free track above it instead, and the
+    reason is appended to *moved* (a receipt warning) when a list is given.
     Otherwise: the lowest free, unlocked track above every clip with video in
     the window; a new track on top when none is free. Read-only.
     """
     if str(track or "").strip():
-        layer = resolve_layer(track)
+        layer, new_tracks = resolve_placement_layer(track)
+        if new_tracks:
+            return layer, True
         ensure_unlocked(layer)
         busy = clips_in_window(layer, start, end, exclude_ids)
-        if busy:
-            d = busy[0].data
-            s, e, _ = clip_extent(d)
-            raise ToolError(
-                f"track {ui_track_number(layer) or layer} already has {d.get('title') or busy[0].id!r} at "
-                f"{s:.2f}-{e:.2f}s during {start:.2f}-{end:.2f}s; pick another track or leave track "
-                f"empty to use the first free track above the video")
-        return layer, False
+        if not busy:
+            return layer, False
+        d = busy[0].data
+        s, e, _ = clip_extent(d)
+        # Agents name a track they believe is free; the overlay is what matters, not the lane.
+        found, created = _first_free_track(start, end, exclude_ids, above=layer)
+        where = (f"a new track on top (track {len(layers()) + 1})" if created
+                 else f"track {ui_track_number(found) or found}")
+        if moved is not None:
+            moved.append(f"track {ui_track_number(layer) or layer} already has {d.get('title') or busy[0].id!r} at "
+                         f"{s:.2f}-{e:.2f}s during {start:.2f}-{end:.2f}s; placed on {where} instead")
+        return found, created
+    return _first_free_track(start, end, exclude_ids)
+
+
+def warning_note(warnings) -> str:
+    """The summary suffix for receipt warnings (" Warning: ....") so an agent that reads only the summary sees them."""
+    return "".join(f" Warning: {w}." for w in warnings)
+
+
+def warnings_field(warnings) -> dict:
+    """``{"warnings": [...]}`` for the receipt, or nothing when there are none."""
+    return {"warnings": list(warnings)} if warnings else {}
+
+
+def _first_free_track(start: float, end: float, exclude_ids=(), above: Optional[int] = None) -> Tuple[int, bool]:
+    """The lowest free, unlocked track above *above* and above every picture in the window; a new track on top otherwise."""
     numbers = sorted(int(t.get("number") or 0) for t in layers())
     visual = [c for c in clips_in_window(None, start, end, exclude_ids) if _is_visual(c.data)]
-    floor = max((int(c.data.get("layer") or 0) for c in visual), default=None)
+    floors = [int(c.data.get("layer") or 0) for c in visual] + ([] if above is None else [int(above)])
+    floor = max(floors, default=None)
     for num in numbers:
         if floor is not None and num <= floor:
             continue
@@ -235,12 +261,10 @@ def plan_overlay_track(start: float, end: float, track: str = "", exclude_ids=()
 
 
 def create_track(number: int, label: str) -> int:
-    """Add a track lane on top (actionAddTrack_trigger's record + a label). GUI thread."""
-    from classes.query import Track
-    t = Track()
-    t.data = {"number": int(number), "y": 0, "label": str(label or ""), "lock": False}
-    t.save()
-    return int(number)
+    """Add a track lane on top (actionAddTrack_trigger's record + a label), and the
+    empty lanes below it when *number* is more than one stride above the top. GUI thread."""
+    from classes import track_ops
+    return track_ops.ensure_track(number, label)
 
 
 def overlay_track(start: float, end: float, track: str, label: str, exclude_ids=()) -> Tuple[int, bool]:
@@ -283,12 +307,19 @@ def import_media_file(path: str, name: str = "", extra: Optional[dict] = None):
 
 
 def place_clip(file_id: str, position: float, duration: float, layer: int, *,
-               title: str = "", props: Optional[dict] = None) -> dict:
-    """Timeline.addClip (the drop path) + trim/props in the same undo step. GUI thread."""
+               title: str = "", props: Optional[dict] = None, ignore_refresh: bool = False) -> dict:
+    """Timeline.addClip (the drop path) + trim/props in the same undo step. GUI thread.
+
+    *ignore_refresh* skips the preview refresh (``QtPlayer`` seek + playback-cache
+    reset) this clip would trigger. A batch importer passes it for every clip but
+    the last -- whose normal refresh turns caching back on and redraws once -- and
+    calls :func:`end_clip_batch` if the batch stops early. Single clips: leave it off.
+    """
     from classes.editor_tools._base import timeline_ui
     from classes.query import Clip
     timeline = timeline_ui()
-    new_clip = timeline.addClip(file_id, _Point(position), int(layer), call_manual_move=False)
+    new_clip = timeline.addClip(file_id, _Point(position), int(layer), ignore_refresh=bool(ignore_refresh),
+                                call_manual_move=False)
     if not isinstance(new_clip, dict) or not new_clip.get("id"):
         raise ToolError("the timeline did not create the clip")
     start = float(new_clip.get("start") or 0.0)
@@ -299,9 +330,22 @@ def place_clip(file_id: str, position: float, duration: float, layer: int, *,
         new_clip["title"] = title
     for key, value in (props or {}).items():
         new_clip[key] = copy.deepcopy(value)
-    timeline.update_clip_data(new_clip, only_basic_props=False, ignore_refresh=False)
+    timeline.update_clip_data(new_clip, only_basic_props=False, ignore_refresh=bool(ignore_refresh))
     placed = Clip.get(id=new_clip["id"])
     return placed.data if placed else new_clip
+
+
+def end_clip_batch() -> None:
+    """After clips placed with ``ignore_refresh=True``: turn playback caching back on and redraw once.
+
+    Only needed when a batch stopped before placing its last clip normally (an
+    error, a refusal); the editor's own ``IgnoreUpdates(False)``. GUI thread.
+    """
+    win = get_app().window
+    try:
+        win.IgnoreUpdates.emit(False, False)
+    except Exception:
+        log.warning("could not refresh the preview after a batch of clips", exc_info=True)
 
 
 def fade_alpha(start: float, end: float, fade_in: float, fade_out: float, base: float = 1.0) -> Optional[dict]:

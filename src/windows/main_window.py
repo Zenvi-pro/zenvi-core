@@ -45,7 +45,7 @@ import openshot  # Python module for libopenshot (required video editing module 
 from qt_api import (
     Qt, pyqtSignal, pyqtSlot, QCoreApplication, QTimer, QDateTime, QFileInfo, QEvent, QUrl
 )
-from qt_api import QIcon, QCursor, QKeySequence, QTextCursor
+from qt_api import QIcon, QCursor, QKeySequence
 from qt_api import file_exists, show_open_file_dialog
 from qt_api import (
     QApplication, QMainWindow, QWidget, QDockWidget, QMenu,
@@ -76,7 +76,6 @@ from classes.proxy_service import ProxyService
 from classes.generation_queue import GenerationQueueManager
 from classes.generation_service import GenerationService
 from classes.thumbnail import httpThumbnailServerThread, httpThumbnailException
-from classes.time_parts import secondsToTimecode
 from classes.timeline import TimelineSync
 from classes.docking import DockingMixin
 from themes.manager import ThemeName
@@ -166,9 +165,6 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     projectChanged = pyqtSignal(str)
     ThumbnailUpdated = pyqtSignal(str, int)
     FileUpdated = pyqtSignal(str)
-    CaptionTextUpdated = pyqtSignal(str, object)
-    CaptionTextCommitted = pyqtSignal(object)
-    CaptionTextLoaded = pyqtSignal(str, object)
     TimelineZoom = pyqtSignal(float)     # Signal to zoom into timeline from zoom slider
     TimelineScrolled = pyqtSignal(list)  # Scrollbar changed signal from timeline
     TimelineResize = pyqtSignal()  # Timeline length changed signal from timeline
@@ -256,10 +252,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             # that never happened, and sends it through libopenshot_crash_recovery().
             self.destroy_lock_file()
 
-        # If this shutdown was triggered by "Restart to Apply Update", spawn a
-        # new instance now (after the lock file is gone, so the fresh process
-        # doesn't mistake the clean exit for a crash) — it will apply the
-        # staged update at startup, before this old process has fully exited.
+        # If this shutdown was triggered by "Restart to Update", start the
+        # installer helper now (after the lock file is gone, so the reopened
+        # Zenvi doesn't mistake this clean exit for a crash). It waits for
+        # this process to exit before installing, then opens Zenvi again.
         if getattr(self, "_restart_for_update", False):
             self._relaunch_for_update()
 
@@ -272,6 +268,15 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         """
         # Log the exit routine
         log.info('---------------- Shutting down -----------------')
+
+        # A launch arriving now must start its own window rather than hand its
+        # files to this one on its way out (it would answer, then vanish).
+        try:
+            server = getattr(app, "instance_server", None)
+            if server is not None:
+                server.close()
+        except Exception:
+            log.debug("Failed to close the single-instance server", exc_info=True)
 
         # Stop answering external agents first: the MCP discovery file goes
         # away before the editor they would drive starts tearing down.
@@ -656,9 +661,26 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 sleep(0.25)
 
     def _relaunch_for_update(self):
-        """Spawn a new instance of the app so the update staged by AutoUpdater
-        gets applied (launch.py applies pending updates at startup, before
-        this old process needs to have fully exited)."""
+        """Hand the update staged by AutoUpdater to the installer helper.
+
+        The helper waits for this process to exit, installs (with a rollback)
+        and opens Zenvi again -- the new version, or this one if installing
+        failed. Starting a second Zenvi here instead, as this used to, ran it
+        alongside this one's teardown while it swapped the app on disk.
+        """
+        if getattr(sys, "frozen", False):
+            try:
+                from classes import update_installer
+                if update_installer.apply_pending_update(wait_pid=os.getpid(), user_requested=True):
+                    log.info("Update helper started; it installs the update once Zenvi has quit")
+                    return
+                log.warning("No update could be handed to the installer; restarting as is")
+            except Exception:
+                log.error("Failed to start the update helper; restarting as is", exc_info=True)
+        self._relaunch_app()
+
+    def _relaunch_app(self):
+        """Start a new Zenvi (nothing to install): this one is quitting."""
         import subprocess
 
         try:
@@ -676,14 +698,18 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
                 if bundle and sys.platform == "darwin":
                     subprocess.Popen(["open", "-n", bundle])
+                elif os.environ.get("APPIMAGE"):
+                    # sys.executable lives in this AppImage's mount, which
+                    # disappears when this process exits.
+                    subprocess.Popen([os.environ["APPIMAGE"]], start_new_session=True)
                 else:
                     subprocess.Popen([sys.executable])
             else:
                 # Running from source (e.g. via run.sh)
                 subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:])
-            log.info("Spawned new Zenvi instance to apply staged update")
+            log.info("Spawned a new Zenvi instance")
         except Exception:
-            log.error("Failed to relaunch Zenvi for update", exc_info=True)
+            log.error("Failed to relaunch Zenvi", exc_info=True)
 
     def actionNew_trigger(self):
 
@@ -1154,7 +1180,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
             # Ensure that playhead, preview thread, and cache all agree that
             # Frame 1 is being previewed
-            self.preview_thread.player.Seek(1)
+            # Queued to the preview thread: Seek clears the player cache under
+            # the timeline lock, which froze the GUI while frames decoded.
+            self.SeekSignal.emit(1)
             self.movePlayhead(1)
             if loaded_project:
                 self._pending_project_open_refresh = True
@@ -3762,193 +3790,6 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             self.tutorial_manager = TutorialManager(self)
             self.tutorial_manager.process_visibility()
 
-    def actionInsertTimestamp_trigger(self, event):
-        """Insert the current timestamp into the caption editor
-        In the format: 00:00:23:000 --> 00:00:26:000.
-
-        When the cursor is on an incomplete timestamp line, use the current playhead position
-        as the missing end timestamp. Otherwise, insert a complete caption cue using a short
-        default duration.
-        """
-        # Get translation function
-        app = get_app()
-        _ = app._tr
-
-        if not self.selected_effects:
-            log.info("No caption effect selected")
-            return
-        effect_data = Effect.filter(id=self.selected_effects[0])[0].data
-        effect_id = effect_data.get("id")
-        if effect_data.get("type") != "Caption":
-            log.info("Captioning an effect that is not a Caption")
-            return
-
-        # Get the Clip that owns this caption effect
-        clip_data = None
-        for clip in Clip.filter():
-            for effect in clip.data.get('effects'):
-                if effect.get("id") == effect_id:
-                    clip_data = clip.data
-                    break
-            if clip_data is not None:
-                break
-
-        if clip_data is None:
-            log.info("No clip owns this caption effect")
-            return
-
-        if self.captionTextEdit.isReadOnly():
-            return
-
-        # Calculate fps / current seconds
-        default_caption_duration = 3.0
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
-        current_position = (self.preview_thread.current_frame - 1) / fps_float
-        relative_position = current_position - clip_data.get("position") + clip_data.get("start")
-
-        # Prevent captions before or after the clip
-        clip_start = clip_data.get('start')
-        clip_end = clip_data.get('end')
-        relative_position = max(clip_start, relative_position)
-        clip_seconds = clip_data.get("end") - clip_data.get("start")
-        relative_position = min(clip_end, relative_position)
-
-        # Get cursor / current line of text (where cursor is located)
-        cursor = self.captionTextEdit.textCursor()
-        cursor.movePosition(QTextCursor.StartOfLine)
-        line_text = cursor.block().text()
-        cursor.movePosition(QTextCursor.EndOfLine)
-        self.captionTextEdit.setTextCursor(cursor)
-
-        # Convert time in seconds to hours:minutes:seconds:milliseconds
-        current_timestamp = secondsToTimecode(relative_position, fps["num"], fps["den"], use_milliseconds=True)
-
-        if "-->" in line_text and line_text.count(':') == 3:
-            # Current line has only one timestamp. Add the second and go to the line below it.
-            timestamp_parts = line_text.split("-->", 1)
-            starting_timestamp = timestamp_parts[0].strip()
-            if starting_timestamp == current_timestamp:
-                relative_position = min(relative_position + default_caption_duration, clip_end)
-                current_timestamp = secondsToTimecode(relative_position, fps["num"], fps["den"], use_milliseconds=True)
-            self.captionTextEdit.insertPlainText(current_timestamp)
-            self.captionTextEdit.moveCursor(QTextCursor.Down)
-            self.captionTextEdit.moveCursor(QTextCursor.EndOfLine)
-        else:
-            # Current line isn't a starting timestamp, so add a starting timestamp
-            caption_start = relative_position
-            caption_end = min(caption_start + default_caption_duration, clip_end)
-            if caption_end <= caption_start:
-                caption_start = max(clip_start, clip_end - min(default_caption_duration, clip_seconds))
-                caption_end = clip_end
-                current_timestamp = secondsToTimecode(caption_start, fps["num"], fps["den"], use_milliseconds=True)
-            end_timestamp = secondsToTimecode(caption_end, fps["num"], fps["den"], use_milliseconds=True)
-
-            placeholder_text = _("Enter caption text...")
-            cue_header = "%s --> %s\n" % (current_timestamp, end_timestamp)
-
-            if self.captionTextEdit.textCursor().block().text().strip() != "":
-                cursor.movePosition(QTextCursor.End)
-                cursor.insertText("\n\n")
-
-            placeholder_start = cursor.position() + len(cue_header)
-            cursor.insertText("%s%s" % (cue_header, placeholder_text))
-            cursor.setPosition(placeholder_start)
-            cursor.setPosition(placeholder_start + len(placeholder_text), QTextCursor.KeepAnchor)
-            self.captionTextEdit.setTextCursor(cursor)
-
-        self._focus_caption_editor()
-
-    def captionTextEdit_TextChanged(self):
-        """Caption text was edited, start the save timer (to prevent spamming saves)"""
-        self.caption_save_timer.start()
-        self.caption_commit_timer.start()
-
-    def caption_editor_save(self):
-        """Emit the CaptionTextUpdated signal (and if that property is active/selected, it will be saved)"""
-        self.CaptionTextUpdated.emit(self.captionTextEdit.toPlainText(), self.caption_model_row)
-
-    def caption_editor_commit(self):
-        """Finalize the current caption edit as a single undoable transaction."""
-        self.caption_save_timer.stop()
-        self.caption_editor_save()
-        self.CaptionTextCommitted.emit(self.caption_model_row)
-
-    def _configure_caption_editor(self, editable):
-        """Apply the Caption dock's editable/read-only state in one place."""
-        focus_widgets = [self.captionTextEdit]
-        viewport = self.captionTextEdit.viewport()
-        if viewport is not None:
-            focus_widgets.append(viewport)
-        for widget in focus_widgets:
-            widget.setEnabled(True)
-            widget.setFocusPolicy(Qt.StrongFocus)
-            widget.setProperty("_original_focus_policy", None)
-        self.captionTextEdit.setTextInteractionFlags(Qt.TextEditorInteraction)
-        self.captionTextEdit.setReadOnly(not editable)
-
-    def _focus_caption_editor(self):
-        """Return keyboard focus to the Caption text editor after toolbar actions."""
-        self.captionTextEdit.setFocus(Qt.OtherFocusReason)
-        QTimer.singleShot(0, lambda: self.captionTextEdit.setFocus(Qt.OtherFocusReason))
-
-    def _caption_editor_has_focus(self):
-        """Return True if the Caption editor or its viewport currently owns focus."""
-        viewport = self.captionTextEdit.viewport()
-        return self.captionTextEdit.hasFocus() or (viewport is not None and viewport.hasFocus())
-
-    def _same_caption_model_row(self, first_row, second_row):
-        """Return True when two Caption model row handles reference the same property."""
-        if first_row is None or second_row is None:
-            return first_row is second_row
-        return bool(first_row and second_row and first_row[0] is second_row[0])
-
-    def caption_editor_load(self, new_caption_text, caption_model_row):
-        """Load the caption editor with text, or disable it if empty string detected"""
-        if (
-            self.caption_commit_timer.isActive()
-            and self.caption_model_row is not None
-            and not self._same_caption_model_row(self.caption_model_row, caption_model_row)
-        ):
-            self.caption_commit_timer.stop()
-            self.caption_editor_commit()
-
-        self.caption_model_row = caption_model_row
-        if self.captionTextEdit is None:
-            self.captionTextEdit = QTextEdit()
-            self._configure_caption_editor(False)
-            self.tabCaptions.layout().addWidget(self.captionTextEdit)
-            self.captionTextEdit.textChanged.connect(self.captionTextEdit_TextChanged)
-
-        new_caption_text = new_caption_text or ""
-        if self.captionTextEdit.toPlainText() != new_caption_text:
-            current_cursor = self.captionTextEdit.textCursor()
-            restore_cursor = caption_model_row is not None and self._caption_editor_has_focus()
-            cursor_position = current_cursor.position()
-            selection_start = current_cursor.selectionStart()
-            selection_end = current_cursor.selectionEnd()
-
-            self.captionTextEdit.blockSignals(True)
-            self.captionTextEdit.setPlainText(new_caption_text)
-            self.captionTextEdit.blockSignals(False)
-
-            if restore_cursor:
-                doc_length = len(new_caption_text)
-                cursor = self.captionTextEdit.textCursor()
-                cursor.setPosition(min(selection_start, doc_length))
-                cursor.setPosition(min(selection_end, doc_length), QTextCursor.KeepAnchor)
-                if selection_start == selection_end:
-                    cursor.setPosition(min(cursor_position, doc_length))
-                self.captionTextEdit.setTextCursor(cursor)
-
-        if caption_model_row is None:
-            self._configure_caption_editor(False)
-        else:
-            self._configure_caption_editor(True)
-
-            # Show this dock
-            self.dockCaptionEditor.show()
-            self.dockCaptionEditor.raise_()
 
     def SetWindowTitle(self, profile=None):
         """ Set the window title based on a variety of factors """
@@ -4059,9 +3900,6 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Notify UI that selection has been potentially changed
         self.SelectionChanged.emit()
-
-        # Clear caption editor (if nothing is selected)
-        get_app().window.CaptionTextLoaded.emit("", None)
 
         # Update transform handles based on current selection
         if get_app().get_settings().get("auto-transform"):
@@ -4418,11 +4256,6 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.filesFilter.setObjectName("filesFilter")
         self.filesFilter.setPlaceholderText(_("Search files, footage & music…"))
         self.filesFilter.setClearButtonEnabled(True)
-        self.filesFilter.setStyleSheet(
-            "QLineEdit#filesFilter { background: #1a1a1a; color: #d4d4d4;"
-            " border: 1px solid rgba(255,255,255,0.09); border-radius: 15px;"
-            " padding: 7px 14px; font-size: 12px; }"
-            "QLineEdit#filesFilter:focus { border: 1px solid #4d9cf6; }")
         self.filesToolbar.addWidget(self.filesFilter)
         self.tabFiles.layout().insertWidget(0, self.filesToolbar)
         # Debounce stock searches so we don't hit the network on every keystroke.
@@ -4489,31 +4322,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.timelineToolbar = QToolBar("Timeline Toolbar", self)
         self.timelineToolbar.setObjectName("timelineToolbar")
 
-        # Add Video Preview toolbar
-        self.captionToolbar = QToolBar(_("Caption Toolbar"))
-
-        # Add Caption text editor widget
-        self.captionTextEdit = QTextEdit()
-        self.captionTextEdit.setObjectName("captionTextEdit")
-        self._configure_caption_editor(False)
-
-        # Playback controls (centered)
-        self.captionToolbar.addAction(self.actionInsertTimestamp)
-        self.tabCaptions.layout().addWidget(self.captionToolbar)
-        self.tabCaptions.layout().addWidget(self.captionTextEdit)
-
-        # Hook up caption editor signal
-        self.captionTextEdit.textChanged.connect(self.captionTextEdit_TextChanged)
-        self.caption_save_timer = QTimer(self)
-        self.caption_save_timer.setInterval(250)
-        self.caption_save_timer.setSingleShot(True)
-        self.caption_save_timer.timeout.connect(self.caption_editor_save)
-        self.caption_commit_timer = QTimer(self)
-        self.caption_commit_timer.setInterval(2500)
-        self.caption_commit_timer.setSingleShot(True)
-        self.caption_commit_timer.timeout.connect(self.caption_editor_commit)
-        self.CaptionTextLoaded.connect(self.caption_editor_load)
-        self.caption_model_row = None
+        # Captions dock: HyperFrames caption styles for the selected clip
+        from windows.views.captions_dock import CaptionsDock
+        self.captionsDock = CaptionsDock(self)
+        self.tabCaptions.layout().addWidget(self.captionsDock)
 
         # Get project's initial zoom value
         initial_scale = float(get_app().project.get("scale") or 15.0)
@@ -4530,6 +4342,27 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Add timeline toolbar to web frame
         self.frameWeb.addWidget(self.timelineToolbar)
 
+    def zenvi_session_ended(self):
+        """The auth server rejected the stored sign-in (it was revoked or expired).
+
+        Explains and waits for a click before opening the browser, and keeps
+        the editor open if the user would rather sign in later.
+        """
+        if getattr(self, "_session_ended_prompt_open", False) or self.shutting_down:
+            return
+        self._session_ended_prompt_open = True
+        try:
+            from windows.login_window import LoginWindow
+            login_dlg = LoginWindow(
+                parent=None,
+                auto_open_browser=False,
+                message="Your Zenvi sign-in has ended",
+            )
+            if login_dlg.exec_() == LoginWindow.Accepted and getattr(self, "dockAIChat", None):
+                self.dockAIChat.refresh_credits_for_account()
+        finally:
+            self._session_ended_prompt_open = False
+
     def logout_clicked(self, checked=False):
         """Sign the current user out of their Zenvi account."""
         reply = QMessageBox.question(
@@ -4545,10 +4378,12 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         from classes.auth_manager import AuthManager
         AuthManager.instance().clear_session()
 
-        # Hide main window and re-show login dialog
+        # Hide main window and re-show login dialog. The browser opens only
+        # when asked: it may still be signed in to the account just left.
         self.hide()
         from windows.login_window import LoginWindow
-        login_dlg = LoginWindow(parent=None)
+        login_dlg = LoginWindow(parent=None, auto_open_browser=False,
+                                message="You're signed out of Zenvi")
         result = login_dlg.exec_()
         if result == LoginWindow.Accepted:
             self.show()
@@ -4649,7 +4484,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # The manifest carries the size, so a session that finds an update
         # staged by a previous run can still report how large it is
         manifest = get_update_manifest() or {}
-        self.update_status_button.set_ready(version, manifest.get("size", 0))
+        from classes import update_installer
+        self.update_status_button.set_ready(
+            version, manifest.get("size", 0), note=update_installer.last_failure(version))
         self._ensure_update_button()
         self._sync_update_panel()
 
@@ -4971,6 +4808,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.filesTreeView = FilesTreeView(self.files_model)
         self.filesListView = FilesListView(self.files_model)
         self.files_model.update_model()
+        # Footage indexed before (or with the other search model) is embedded again in the background.
+        self.projectChanged.connect(self.files_model.requeue_unsearchable)
 
         # Unified media browser: the project-files card view (filesListView) is
         # embedded together with stock footage + music in a single scroll area, so
@@ -5042,8 +4881,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         """Run the stock footage + music search for the current query."""
         if not hasattr(self, "stockSearchView"):
             return
+        self._stock_search_timer.stop()  # Enter must not let the pending debounce re-send it
         text = self.filesFilter.text().strip()
-        if len(text) >= 2:
+        if len(text) >= 3:
             self.stockSearchView.run_search(text)
         else:
             self.stockSearchView.clear_stock()
@@ -5053,8 +4893,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         stock search so it fires as the user types (not only on Enter)."""
         if not hasattr(self, "stockSearchView"):
             return
-        if len(text.strip()) >= 2:
-            self._stock_search_timer.start(400)
+        if len(text.strip()) >= 3:
+            self._stock_search_timer.start(700)
         else:
             self._stock_search_timer.stop()
             self.stockSearchView.clear_stock()
@@ -5117,6 +4957,15 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         menu.addSeparator()
         settings_action = menu.addAction(_("ComfyUI Settings..."))
         settings_action.triggered.connect(lambda checked=False: self.actionPreferences.trigger())
+
+        # The engine bridge runtime (Node + zenvi CLI): its status is read by the dialog, off this thread.
+        menu.addSeparator()
+        engine_action = menu.addAction(_("Zenvi Engine Tools..."))
+        engine_action.triggered.connect(lambda checked=False: self.show_engine_runtime_dialog())
+
+    def show_engine_runtime_dialog(self):
+        from windows.engine_runtime_dialog import show_engine_runtime_dialog
+        show_engine_runtime_dialog(self)
 
     def _init_ui_trace_recorder(self):
         """Enable env-configured UI trace recording for automated test capture."""
@@ -5670,7 +5519,6 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             getattr(self, "transitionsToolbar", None),
             getattr(self, "effectsToolbar", None),
             getattr(self, "emojisToolbar", None),
-            getattr(self, "captionToolbar", None),
         ]
         for toolbar in toolbars:
             if toolbar and toolbar.isAncestorOf(widget):
@@ -5943,6 +5791,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # File → Zenvi Cloud: push, open in the web editor, open a cloud project.
         from windows.cloud_sync_ui import install_cloud_menu
         self.cloud_sync = install_cloud_menu(self)
+        # Handoffs (After Effects, Premiere, Remotion, HyperFrames): Export / Import Project
+        # entries, File > Send To, and the linked-clips status bar (classes/handoff).
+        from windows.handoff_menus import install_handoff_menus
+        install_handoff_menus(self)
         self.refresh_comfy_availability_async()
 
         # Add window as watcher to receive undo/redo status updates
@@ -6241,7 +6093,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self._pending_preview_size = None
         self._scope_timer = QTimer(self)
         self._scope_timer.setSingleShot(True)
-        self._scope_timer.setInterval(0)   # latest-wins worker path handles stale frame dropping
+        self._scope_timer.setInterval(66)  # ~15 Hz; scopes analysed every played frame cost a second frame fetch
         self._scope_timer.timeout.connect(self._run_scope_analysis)
         self.preview_thread.position_changed.connect(self._on_scope_frame)
         self.SeekSignal.connect(self._on_scope_seek)
