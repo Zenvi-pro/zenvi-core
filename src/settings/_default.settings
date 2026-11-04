@@ -1594,6 +1594,14 @@
     "restart": false
   },
   {
+    "category": "Performance",
+    "title": "OMP Threads Default Applied",
+    "setting": "ompThreadsDefaultApplied",
+    "value": true,
+    "type": "hidden",
+    "restart": false
+  },
+  {
     "category": "Scopes",
     "title": "Waveform Mode",
     "setting": "scope-waveform-mode",
