@@ -1922,6 +1922,11 @@ class ColorGradeWheelsPanel(QWidget):
         self._frame_number = int(frame_number)
 
         layout = QVBoxLayout(self)
+        self.hint = QLabel(_("Select a clip's Color Grade effect to adjust these wheels."), self)
+        self.hint.setWordWrap(True)
+        self.hint.setAlignment(Qt.AlignCenter)
+        self.hint.hide()
+        layout.addWidget(self.hint)
 
         self.rows = {}
         for name, title in (
@@ -1949,6 +1954,11 @@ class ColorGradeWheelsPanel(QWidget):
         button_row.addWidget(reset_button)
         layout.addLayout(button_row)
         self._update_enabled_state()
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.EnabledChange:
+            self.hint.setVisible(not self.isEnabled())
+        super().changeEvent(event)
 
     def set_wheels_data(self, wheels_data):
         self._data = normalize_wheels_data(wheels_data)

@@ -32,11 +32,11 @@ from qt_api import (
     Qt, pyqtSignal, pyqtSlot,
     QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy,
     QImage, QPainter, QColor, QPen, QBrush, QIcon,
-    QComboBox, QToolButton, QRect, QPainterPath, QPointF,
+    QComboBox, QToolButton, QLabel, QRect, QPainterPath, QPointF,
 )
 from classes import info
 from classes.logger import log
-from themes.cosmic.tokens import TOKENS
+from themes.cosmic.tokens import TOKENS, resolve
 from windows.color_grade_editor import draw_broadcast_hue_ring
 
 # ─── Persistent settings keys ────────────────────────────────────────────────
@@ -46,6 +46,35 @@ _S_HIST_CH    = "scope-histogram-channel" # rgba|luma|red|green|blue
 _S_HIST_SCALE = "scope-histogram-scale"   # log|linear
 _S_VEC_DISPLAY = "scope-vectorscope-display"  # colorized|density|intensity
 _S_VEC_ZOOM    = "scope-vectorscope-zoom"     # 100|200|400
+
+SCOPE_EXPLANATIONS = {
+    "waveform": (
+        "Brightness across the frame, left to right: black at the bottom, white at the top. "
+        "Dashed lines mark 10%, 50% and 90%."
+    ),
+    "histogram": (
+        "How many pixels sit at each brightness level, dark on the left to bright on the right. "
+        "Peaks piled against either edge may mean clipped shadows or highlights."
+    ),
+    "vectorscope": (
+        "Color of the frame: angle is hue, distance from the center is saturation. "
+        "Skin tones should sit along the dashed skin-tone line."
+    ),
+    "audio": (
+        "Level of each audio channel as it plays. "
+        "Green is safe, yellow is hot, red is the top of the scale; a red bar across the top means "
+        "samples clipped."
+    ),
+}
+
+
+def _tr(text):
+    """Translate *text* for display (SCOPE_EXPLANATIONS stays English for the source)."""
+    try:
+        from classes.app import get_app
+        return get_app()._tr(text)
+    except Exception:
+        return text
 
 _VECTORSCOPE_HUE_LABELS = (
     ("R", 108.65, 360.0),
@@ -98,6 +127,13 @@ def _make_scope_region_button(parent):
     button.setToolTip("Analyze selected preview region")
     button.setFocusPolicy(Qt.NoFocus)
     return button
+
+
+def _scope_explanation_label(parent, text):
+    label = QLabel(text, parent)
+    label.setWordWrap(True)
+    label.setStyleSheet(resolve("color: {text_muted}; font-size: 11px;"))
+    return label
 
 
 def normalize_vectorscope_display(value):
@@ -773,6 +809,7 @@ class AudioMeterWidget(QWidget):
         self.setMinimumSize(60, 80)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setFocusPolicy(Qt.NoFocus)
+        self.setToolTip(_tr(SCOPE_EXPLANATIONS["audio"]))
 
     def update_data(self, audio_data):
         self._data = audio_data
@@ -852,6 +889,19 @@ def _restore_combo(combo, value):
 
 # ─── Waveform dock content (painter + toolbar) ───────────────────────────────
 
+class AudioLevelsDockContent(QWidget):
+    """The Audio Levels dock: its explanation above the meter."""
+
+    def __init__(self, meter, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.NoFocus)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 6)
+        layout.setSpacing(4)
+        layout.addWidget(_scope_explanation_label(self, _tr(SCOPE_EXPLANATIONS["audio"])))
+        layout.addWidget(meter, 1)
+
+
 class WaveformDockContent(QWidget):
     """Waveform dock widget: filter toolbar above the waveform painter."""
     scopeRegionToggled = pyqtSignal(bool)
@@ -873,9 +923,11 @@ class WaveformDockContent(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFocusPolicy(Qt.NoFocus)
+        self.setToolTip(_tr(SCOPE_EXPLANATIONS["waveform"]))
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 6)
         layout.setSpacing(4)
+        layout.addWidget(_scope_explanation_label(self, _tr(SCOPE_EXPLANATIONS["waveform"])))
 
         toolbar = QWidget(self)
         toolbar.setFocusPolicy(Qt.NoFocus)
@@ -955,9 +1007,11 @@ class HistogramDockContent(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFocusPolicy(Qt.NoFocus)
+        self.setToolTip(_tr(SCOPE_EXPLANATIONS["histogram"]))
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 6)
         layout.setSpacing(4)
+        layout.addWidget(_scope_explanation_label(self, _tr(SCOPE_EXPLANATIONS["histogram"])))
 
         toolbar = QWidget(self)
         toolbar.setFocusPolicy(Qt.NoFocus)
@@ -1019,9 +1073,11 @@ class VectorscopeDockContent(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFocusPolicy(Qt.NoFocus)
+        self.setToolTip(_tr(SCOPE_EXPLANATIONS["vectorscope"]))
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 6)
         layout.setSpacing(4)
+        layout.addWidget(_scope_explanation_label(self, _tr(SCOPE_EXPLANATIONS["vectorscope"])))
 
         toolbar = QWidget(self)
         toolbar.setFocusPolicy(Qt.NoFocus)
