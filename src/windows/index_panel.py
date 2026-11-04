@@ -42,7 +42,7 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
     def __init__(self, parent=None):
         if QDockWidget is object:
             return
-        super().__init__("Index", parent)
+        super().__init__("Transcription", parent)
         self.setObjectName("dockIndex")
         self._app = None
         try:
@@ -57,6 +57,7 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
 
         row = QHBoxLayout()
         self._status = QLabel("No transcript loaded.")
+        self._status.setWordWrap(True)
         self._refresh_btn = QPushButton("Refresh")
         self._refresh_btn.clicked.connect(self.refresh)
         row.addWidget(self._status, 1)
@@ -82,6 +83,9 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
         self._starts = []
         self._lit = -1
         self._word_spans = {}
+        self._data = None
+        self._all_starts, self._all_selected = [], []
+        self._frame = None
         win = parent if hasattr(parent, "previewFrameSignal") else getattr(self._app, "window", None)
         self._win = win
         if win is not None:
@@ -89,6 +93,9 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
             for signal in (getattr(win, "previewFrameSignal", None), getattr(win, "SeekSignal", None)):
                 if signal is not None:
                     signal.connect(self.follow)
+            # A clicked clip narrows the reading to its words.
+            if hasattr(win, "SelectionChanged"):
+                win.SelectionChanged.connect(self._render)
 
     def connect_playback(self):
         """Follow playback. MainWindow calls this once its preview thread exists (after the docks are built)."""
@@ -155,6 +162,7 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
     def _populate(self, raw, token=None):
         self._loading = False
         self._show_words({"words": [], "paragraphs": []})
+        self._data = None
         if token is not None and token is not self._project_token():
             # A project was opened while this one transcribed: its words
             # would seek in the wrong timeline.
@@ -170,13 +178,36 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
             self._status.setText(receipt.get("summary") or "No transcript.")
             return
 
-        data = receipt.get("data") or {}
-        self._generation = data.get("transcript_generation")
+        self._data = receipt.get("data") or {}
+        self._generation = self._data.get("transcript_generation")
+        self._render(relight=False)                        # a new transcript starts unlit
+
+    def _render(self, relight=True):
+        """Read the selected clips' words, or every clip's when none is selected.
+        Selection changes call this again without reloading."""
+        if self._data is None:
+            return
+        try:
+            selected = {str(c) for c in self._app.window.selected_clips}
+        except Exception:
+            selected = set()
+        clips = [c for c in self._data.get("clips") or []
+                 if not selected or str(c.get("clipId") or "") in selected]
         from classes.speech import transcript_view
-        model = transcript_view.reading_model(data.get("clips") or [], fps=self._fps())
+        model = transcript_view.reading_model(clips, fps=self._fps())
+        # Every clip's words, so a selected word goes dark while an unselected clip speaks.
+        every = transcript_view.reading_model(self._data.get("clips") or [], fps=self._fps())["words"] if selected else []
+        self._all_starts = [w["frame"] for w in every]
+        self._all_selected = [str(w["clip"]) in selected for w in every]
         self._show_words(model)
-        src = data.get("transcriptionSource") or "local"
-        self._status.setText(f"{len(model['words'])} words · {src} · gen {self._generation}")
+        if relight and self._frame is not None:
+            self.follow(self._frame)                       # keep the current word lit when paused
+        n = len(model["words"])
+        if selected and not n:
+            self._status.setText("Selected clip not transcribed. Clear the selection to read every clip.")
+            return
+        src = self._data.get("transcriptionSource") or "local"
+        self._status.setText(f"{n} word{'s' * (n != 1)} · {src} · gen {self._generation}")
 
     def _fps(self):
         try:
@@ -208,10 +239,15 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
 
     def follow(self, frame):
         """Light the word spoken at this preview frame (connected to the preview's frame signal)."""
+        self._frame = frame
         if QDockWidget is object or not self._starts:
             return
         from classes.speech import transcript_view
         i = transcript_view.word_at(self._starts, int(frame) - 1)
+        if i >= 0 and self._all_starts:
+            j = transcript_view.word_at(self._all_starts, int(frame) - 1)
+            if j >= 0 and not self._all_selected[j]:
+                i = -1                                     # an unselected clip is speaking
         if i == self._lit:
             return
         self._lit = i
