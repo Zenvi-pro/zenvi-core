@@ -31,6 +31,7 @@ def _panel(added):
         _status=MagicMock(),
         _generation=None,
         _fps=lambda: 30.0,
+        _frame=None,
     )
     panel._show_words = lambda model: (added.clear(), added.extend(model["words"]))      # what the reader would display
     panel._project_token = lambda: index_panel.IndexPanel._project_token(panel)

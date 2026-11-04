@@ -84,6 +84,8 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
         self._lit = -1
         self._word_spans = {}
         self._data = None
+        self._all_starts, self._all_selected = [], []
+        self._frame = None
         win = parent if hasattr(parent, "previewFrameSignal") else getattr(self._app, "window", None)
         if win is not None:
             # Playback and scrubbing move preview_thread.position_changed. previewFrameSignal
@@ -188,7 +190,13 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
                  if not selected or str(c.get("clipId") or "") in selected]
         from classes.speech import transcript_view
         model = transcript_view.reading_model(clips, fps=self._fps())
+        # Every clip's words, so a selected word goes dark while an unselected clip speaks.
+        every = transcript_view.reading_model(self._data.get("clips") or [], fps=self._fps())["words"] if selected else []
+        self._all_starts = [w["frame"] for w in every]
+        self._all_selected = [str(w["clip"]) in selected for w in every]
         self._show_words(model)
+        if self._frame is not None:
+            self.follow(self._frame)                       # keep the current word lit when paused
         n = len(model["words"])
         if selected and not n:
             self._status.setText("Selected clip not transcribed. Clear the selection to read every clip.")
@@ -226,10 +234,15 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
 
     def follow(self, frame):
         """Light the word spoken at this preview frame (connected to the preview's frame signal)."""
+        self._frame = frame
         if QDockWidget is object or not self._starts:
             return
         from classes.speech import transcript_view
         i = transcript_view.word_at(self._starts, int(frame) - 1)
+        if i >= 0 and self._all_starts:
+            j = transcript_view.word_at(self._all_starts, int(frame) - 1)
+            if j >= 0 and not self._all_selected[j]:
+                i = -1                                     # an unselected clip is speaking
         if i == self._lit:
             return
         self._lit = i

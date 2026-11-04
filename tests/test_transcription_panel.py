@@ -37,6 +37,7 @@ def _render(data, selected=()):
         _generation=2,
         _status=status,
         _fps=lambda: 30.0,
+        _frame=None,
         _show_words=lambda model: shown.extend(w["text"] for w in model["words"]),
         _app=SimpleNamespace(window=SimpleNamespace(selected_clips=list(selected))),
     )
@@ -109,3 +110,37 @@ def test_project_change_drops_the_last_receipt():
     index_panel.IndexPanel._populate(panel, None, token)
     assert panel._data is None
     panel._status.setText.assert_called_with("Project changed. Press Refresh.")
+
+
+def _follower(starts, spoken=None):
+    """spoken: (start frame, in the selection) for every clip's words, or None when nothing is selected."""
+    return SimpleNamespace(_starts=starts, _lit=-1, _word_spans={}, _frame=None, _view=MagicMock(),
+                           isVisible=lambda: False,
+                           _all_starts=[f for f, _ in spoken or []], _all_selected=[k for _, k in spoken or []])
+
+
+def test_a_filtered_reading_goes_dark_while_an_unselected_clip_speaks():
+    """C1 and C3 are selected; at frame 300 the unselected C2 is speaking, so C1's last word goes dark."""
+    panel = _follower([0, 15, 400], spoken=[(0, True), (15, True), (200, False), (400, True)])
+    index_panel.IndexPanel.follow(panel, 20)
+    assert panel._lit == 1
+    index_panel.IndexPanel.follow(panel, 300)
+    assert panel._lit == -1
+
+
+def test_a_filtered_reading_holds_its_word_through_its_own_pause():
+    panel = _follower([0, 15, 400], spoken=[(0, True), (15, True), (400, True)])
+    index_panel.IndexPanel.follow(panel, 300)
+    assert panel._lit == 1
+
+
+def test_changing_the_selection_while_paused_relights_the_current_word():
+    shown = []
+    panel = SimpleNamespace(
+        _data=TWO_CLIPS, _generation=2, _status=MagicMock(), _fps=lambda: 30.0, _frame=152,
+        _app=SimpleNamespace(window=SimpleNamespace(selected_clips=["C2"])),
+    )
+    panel._show_words = lambda model: shown.append(model)
+    panel.follow = MagicMock()
+    index_panel.IndexPanel._render(panel)
+    panel.follow.assert_called_once_with(152)
