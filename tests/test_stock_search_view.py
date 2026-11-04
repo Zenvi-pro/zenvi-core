@@ -42,7 +42,10 @@ def view():
     v._pool = MagicMock()
     with patch.object(v, "_start_search"):
         v.run_search("ocean")
-    return v
+    # Empty music results call this. The real worker imports editor tools on a
+    # QThread; under real Qt with no libopenshot that aborts the process.
+    with patch.object(v, "_start_local_bed"):
+        yield v
 
 
 def _started(v):
@@ -128,9 +131,116 @@ def test_project_files_say_when_the_search_hides_every_file(view):
 
 def test_a_failed_search_can_be_retried_with_the_same_query(view):
     view._on_music_results({"sounds": [], "rate_limited": True, "error": "Stock search is busy, try again in 30s."})
+    assert view._search_threads == []
+    view._start_local_bed.assert_not_called()
     with patch.object(view, "_start_search") as start:
         view.run_search("ocean")
     assert start.call_count == 2
+
+
+def test_no_stock_music_offers_a_prompt_and_a_model_dropdown(view):
+    view._on_music_results({"sounds": [], "count": 0})
+    view._start_local_bed.assert_not_called()
+    assert view._music_prompt.text() == "ocean"
+    assert not view._music_prompt.isHidden()
+    assert [view._music_engine.itemData(i) for i in range(view._music_engine.count())] == ["ace_step", "yue2"]
+    view._music_prompt.setText("rain on a piano")
+    assert view._music_lyrics.isHidden()
+    view._music_kind.setCurrentIndex(1)
+    assert not view._music_lyrics.isHidden()
+    view._music_lyrics.setText("[Chorus] hello")
+    view._music_engine.setCurrentIndex(1)
+    view._music_generate.click()
+    view._start_local_bed.assert_called_once_with("rain on a piano", "yue2", "[Chorus] hello", "song")
+
+
+def test_generate_stays_off_until_the_description_is_filled(view):
+    view._music_prompt.clear()
+    assert not view._music_generate.isEnabled()
+    view._music_generate.click()
+    view._start_local_bed.assert_not_called()
+    view._music_prompt.setText("soft piano")
+    assert view._music_generate.isEnabled()
+    assert view._music_lyrics.isHidden()
+    view._music_generate.click()
+    view._start_local_bed.assert_called_once_with("soft piano", "ace_step", "", "bed")
+
+
+def test_song_with_an_empty_lyrics_box_still_sings_the_description(view):
+    view._music_prompt.setText("rain on a piano")
+    view._music_kind.setCurrentIndex(1)
+    view._music_lyrics.clear()
+    view._music_generate.click()
+    view._start_local_bed.assert_called_once_with("rain on a piano", "ace_step", "", "song")
+
+
+def _stub_generation(monkeypatch, lyrics_out):
+    import sys
+    import types
+
+    seen = {}
+    music_local = types.ModuleType("classes.music_local")
+
+    def generate(engine, style, lyrics, duration):
+        seen["lyrics"] = lyrics
+        return "track.mp3"
+
+    music_local.generate = generate
+    music = types.ModuleType("classes.editor_tools.ai_generation_music")
+    music.Declined = type("Declined", (Exception,), {})
+    music.ensure_installed = lambda *args, **kwargs: None
+    package = types.ModuleType("classes.editor_tools")
+    package.__path__ = []
+    package.ai_generation_music = music
+    song_lyrics = types.ModuleType("classes.song_lyrics")
+
+    def prepare(prompt, typed):
+        if lyrics_out is None:
+            raise AssertionError("a bed must not write lyrics")
+        seen["prepared"] = True
+        return lyrics_out
+
+    song_lyrics.prepare_lyrics = prepare
+    # "from classes import music_local" reads the package attribute before sys.modules, so an
+    # earlier test's real import would win over these stubs: patch both.
+    import classes
+    monkeypatch.setattr(classes, "music_local", music_local, raising=False)
+    monkeypatch.setattr(classes, "song_lyrics", song_lyrics, raising=False)
+    monkeypatch.setattr(classes, "editor_tools", package, raising=False)
+    monkeypatch.setitem(sys.modules, "classes.music_local", music_local)
+    monkeypatch.setitem(sys.modules, "classes.editor_tools", package)
+    monkeypatch.setitem(sys.modules, "classes.editor_tools.ai_generation_music", music)
+    monkeypatch.setitem(sys.modules, "classes.song_lyrics", song_lyrics)
+    return seen
+
+
+def test_a_music_bed_stays_instrumental(monkeypatch):
+    from windows.views.stock_search_view import _MusicGenWorker
+
+    seen = _stub_generation(monkeypatch, None)
+    _MusicGenWorker("soft piano", "", "ace_step", 1, "bed").run()
+    assert seen["lyrics"] == ""
+    assert "prepared" not in seen
+
+
+def test_a_song_without_typed_lyrics_writes_them(monkeypatch):
+    from windows.views.stock_search_view import _MusicGenWorker
+
+    seen = _stub_generation(monkeypatch, "[Verse]\nRain")
+    _MusicGenWorker("rain on a piano", "", "ace_step", 1, "song").run()
+    assert seen["prepared"] is True
+    assert seen["lyrics"] == "[Verse]\nRain"
+
+
+def test_download_progress_drives_the_files_dock_bar(view):
+    view._music_status.setText("12 results")
+    view._on_music_progress("Downloading ACE-Step 1.5 models")
+    assert view._gen_progress.minimum() == view._gen_progress.maximum()
+    assert not view._gen_progress.isHidden()
+    view._on_music_progress("Downloading music model 1 of 4: ace.gguf, 15%")
+    assert view._gen_status.text() == "Downloading music model 1 of 4: ace.gguf, 15%"
+    assert view._gen_progress.value() == 15
+    assert view._music_status.text() == "12 results"
 
 
 def test_a_music_import_keeps_its_credit_line(view):
@@ -244,6 +354,15 @@ def test_footage_tooltips_show_provider_text_literally():
     assert "<a href" not in card.toolTip() and "&lt;a href" in card.toolTip()
 
 
+def test_only_a_real_decline_turns_that_engine_off(view):
+    view._on_local_bed_done({"path": "", "error": "ggml: device declined to allocate", "engine": "ace_step",
+                             "gen": view._search_gen})
+    assert "ace_step" not in view._declined_engines
+    view._on_local_bed_done({"path": "", "error": "x", "declined": True, "engine": "ace_step",
+                             "gen": view._search_gen})
+    assert view._declined_engines == {"ace_step"}
+
+
 def test_image_loads_never_use_the_global_thread_pool():
     # Qt's smooth scaling of a large image runs on QThreadPool.globalInstance() and the GUI
     # thread waits for it; network fetches parked there froze the editor for minutes.
@@ -265,3 +384,45 @@ def test_queued_image_fetches_from_an_older_search_are_skipped(view):
     with patch("requests.get") as get:
         runnable.run()
     get.assert_not_called()
+
+
+def test_a_track_you_asked_for_lands_even_if_the_search_changed(view):
+    # Generation is always started from the Music Gen panel: a filter edit meanwhile must not drop it.
+    view._bed_busy = True
+    with patch.object(view, "_add_to_project", return_value=True) as add:
+        view._on_local_bed_done({"path": "/tmp/bed.mp3", "error": "", "query": "ocean", "gen": view._search_gen - 1})
+    add.assert_called_once_with("/tmp/bed.mp3")
+    assert "added" in view._gen_status.text().lower()
+
+
+def test_a_failed_import_is_reported_not_called_added(view):
+    with patch.object(view, "_add_to_project", return_value=False):
+        view._on_local_bed_done({"path": "/tmp/bed.mp3", "error": "", "gen": view._search_gen})
+    assert "added" not in view._gen_status.text().lower() and "could not" in view._gen_status.text().lower()
+
+
+@pytest.mark.parametrize("prompt,lyrics,seconds", [
+    ("80s synthwave", "", 30.0),                       # a decade, not a length
+    ("808s and heartbreak", "", 30.0),
+    ("calm piano, 45 seconds", "", 45.0),
+    ("lofi beat 2 minutes", "", 120.0),
+    ("indie pop", "[Verse] city lights tonight we run", 45.0),   # one typed line still makes a song section
+])
+def test_the_length_reads_real_durations_only(prompt, lyrics, seconds):
+    from windows.views.stock_search_view import _length_for
+
+    assert _length_for(prompt, lyrics) == seconds
+
+
+def test_a_music_worker_whose_imports_fail_still_reports_back(monkeypatch):
+    # "except music.Declined" with music never imported raised UnboundLocalError: no finished signal.
+    from windows.views.stock_search_view import _MusicGenWorker
+
+    _stub_generation(monkeypatch, None)   # classes.editor_tools and classes.music_local exist, whatever ran before
+    monkeypatch.setitem(sys.modules, "classes.editor_tools.ai_generation_music", None)   # this import fails
+    monkeypatch.delattr(sys.modules["classes.editor_tools"], "ai_generation_music")
+    seen = []
+    w = _MusicGenWorker("soft piano", "", "ace_step", 1, "bed")
+    w.finished.connect(seen.append)
+    w.run()
+    assert seen and seen[0]["error"] and seen[0]["declined"] is False

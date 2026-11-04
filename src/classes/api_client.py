@@ -972,6 +972,31 @@ class ZenviBackendClient:
             payload["task_type"] = task_type
         return self._v2("POST", "/embed", payload, timeout=180, session=session)
 
+    def write_song_lyrics(self, description: str) -> dict:
+        """Ask the indexing model for lyrics. ``{lyrics, model}`` or ``{error}``."""
+        try:
+            response = self.session.post(
+                f"{self.api_url}/indexing/lyrics",
+                json={"description": description},
+                timeout=60,
+            )
+            if response.status_code == 401:
+                return {"error": SESSION_REJECTED_MESSAGE, "auth": True}
+            try:
+                data = response.json() if response.content else {}
+            except ValueError:   # an HTML error page from a proxy: report the status, not the parser
+                data = {}
+            if response.status_code >= 400:
+                detail = data.get("detail") if isinstance(data, dict) else ""
+                if detail and not isinstance(detail, str):
+                    detail = "; ".join(str(d.get("msg", d)) if isinstance(d, dict) else str(d)
+                                       for d in (detail if isinstance(detail, list) else [detail]))
+                return {"error": detail or "Lyrics request failed (%s)" % response.status_code}
+            return data if isinstance(data, dict) else {"error": "The indexing model returned nothing."}
+        except Exception as exc:
+            log.error("Song lyrics request failed: %s", exc)
+            return {"error": str(exc)}
+
     @staticmethod
     def _empty_ai_metadata() -> Dict[str, Any]:
         """Return a default empty ai_metadata dict (Gemini Flash summary shape)."""

@@ -4,6 +4,7 @@ Workstream: ai-generation. The tools live in topic modules registered below:
 
 * ``ai_generation_comfyui`` -- the optional local ComfyUI integration (AI Tools menu):
   template catalogue, Create with AI, Enhance with AI, the generation queue.
+* ``ai_generation_music`` -- music beds and songs generated on this computer (ACE-Step, YuE2).
 * ``ai_generation_tts`` -- narration from text, placed on a real track.
 * ``ai_generation_recording`` -- open and configure the Recording dock; the person
   presses Record (capture itself stays a human action).
@@ -17,6 +18,7 @@ from classes.editor_tools import (  # noqa: F401
     ai_generation_comfyui,
     ai_generation_hyperframes,
     ai_generation_manim,
+    ai_generation_music,
     ai_generation_recording,
     ai_generation_tts,
 )
