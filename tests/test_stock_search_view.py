@@ -354,18 +354,14 @@ def test_footage_tooltips_show_provider_text_literally():
     assert "<a href" not in card.toolTip() and "&lt;a href" in card.toolTip()
 
 
-def test_generate_after_a_declined_download_runs_again(view):
-    # A "no" used to switch the engine off for the session: Generate stayed enabled and did
-    # nothing, even once the model was installed another way. A click is a fresh request.
-    from windows.views.stock_search_view import StockSearchView
-
+def test_a_declined_download_says_how_to_try_again(view):
+    # The next Generate asks again (tests/test_stock_search_debounce.py drives that flow).
     view._on_local_bed_done({"path": "", "error": "the user declined the music download", "declined": True,
                              "engine": "yue2", "gen": view._search_gen})
-    assert "declined" in view._gen_status.text().lower() and "Generate" in view._gen_status.text()
+    assert view._gen_status.text() == "Download declined. Press Generate to be asked again."
     assert view._music_generate.isEnabled()
-    with patch.object(view, "_start_search") as start:
-        StockSearchView._start_local_bed(view, "soft piano", "yue2", "", "bed")
-    assert start.call_count == 1 and start.call_args.args[0]._engine == "yue2"
+    view._on_local_bed_done({"path": "", "error": "ggml: device lost", "engine": "yue2", "gen": view._search_gen})
+    assert view._gen_status.text() == "Local music generation failed: ggml: device lost"
 
 
 def test_image_loads_never_use_the_global_thread_pool():
