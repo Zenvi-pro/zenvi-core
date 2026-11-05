@@ -186,7 +186,8 @@ def _markdown_to_html(text: str) -> str:
     text = _unwrap_langchain_content(text)
     try:
         import markdown
-        md = markdown.Markdown(extensions=["extra"])
+        # Not "extra": its attr_list and md_in_html put arbitrary attributes (onerror=...) on real tags.
+        md = markdown.Markdown(extensions=["abbr", "def_list", "fenced_code", "footnotes", "tables"])
         # Raw HTML in a reply is shown as text: script in this page could press the Pay bridge (#272).
         md.preprocessors.deregister("html_block")
         md.inlinePatterns.deregister("html")
@@ -3382,7 +3383,13 @@ class AIChatWindow(QDockWidget):
             self._credits_timer.start(60_000)   # refresh every 60 seconds
 
     def show_topup_card(self, quote: dict):
-        """Top-up card (#272) in the chat; Pay calls ChatBridge.buyCredits."""
+        """Top-up card (#272) in the chat; Pay calls ChatBridge.buyCredits.
+
+        Each card allows one payment: its attempt id is the charge's idempotency key, so a
+        retry after an unknown outcome (a timeout) replays the same charge instead of a new one.
+        """
+        import uuid
+        self._topup_attempt, self._topup_busy = uuid.uuid4().hex, False
         if self._use_web_ui:
             self._run_js("if(window.showTopUpCard) showTopUpCard(%s);" % json.dumps(quote))
 
@@ -3400,15 +3407,23 @@ class AIChatWindow(QDockWidget):
         self.show_topup_card(json.loads(payload))
 
     def _buy_credits(self, pack: int):
+        attempt = getattr(self, "_topup_attempt", None)
+        if not attempt or getattr(self, "_topup_busy", False):
+            return  # no card on screen, or its payment is in flight
+        self._topup_busy = True
+
         def run():
             from classes.credits_client import credits as _creds
-            result = _creds.buy(pack, confirm=True)
+            result = _creds.buy(pack, confirm=True, attempt=attempt)
             QMetaObject.invokeMethod(self, "_on_topup_result", Qt.QueuedConnection, Q_ARG(str, json.dumps(result)))
         threading.Thread(target=run, daemon=True, name="credits-topup").start()
 
     @pyqtSlot(str)
     def _on_topup_result(self, payload: str):
         result = json.loads(payload)
+        self._topup_busy = False
+        if not result.get("error"):
+            self._topup_attempt = None  # paid, or handed to Checkout: this card is spent
         url = str(result.get("url") or "")
         if result.get("status") == "checkout":
             if url.startswith("https://checkout.stripe.com/"):

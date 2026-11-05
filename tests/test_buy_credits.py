@@ -159,9 +159,47 @@ def test_replies_cannot_inject_script_into_the_chat_that_holds_the_pay_bridge():
     for evil in ('<img src=x onerror="zenviChatBridge.buyCredits(15)">',
                  '<script>zenviChatBridge.buyCredits(15)</script>',
                  '<div onclick="x()">hi</div>',
-                 '[pay](javascript:zenviChatBridge.buyCredits(15))'):
+                 '[pay](javascript:zenviChatBridge.buyCredits(15))',
+                 '![x](https://invalid.invalid/x){: onerror="zenviChatBridge.buyCredits(15)"}',
+                 '[x](https://zenvi.pro){: onmouseover="zenviChatBridge.buyCredits(15)"}'):
         out = render(evil)
-        assert "<img" not in out and "<script" not in out and "<div onclick" not in out, out
+        assert "<script" not in out, out
         assert 'href="javascript:' not in out.lower(), out
+        assert not re.search(r"<[a-z][^>]*\son\w+=", out), out
     good = render("**bold** and `code <b>` and [top up](https://zenvi.pro/topup)")
     assert "<strong>bold</strong>" in good and "&lt;b&gt;" in good and 'href="https://zenvi.pro/topup"' in good
+
+
+def test_the_bridge_charges_once_per_card_and_retries_reuse_the_same_attempt(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cc.credits, "buy", lambda pack, confirm=False, attempt=None: calls.append((pack, confirm, attempt)) or {"error": "timeout"})
+    monkeypatch.setattr(ai_chat_ui.threading, "Thread", lambda target, **kw: SimpleNamespace(start=target))
+    monkeypatch.setattr(ai_chat_ui, "QMetaObject", SimpleNamespace(invokeMethod=lambda *a: None))
+    monkeypatch.setattr(ai_chat_ui, "Q_ARG", lambda t, v: v)
+    win = SimpleNamespace(_use_web_ui=True, _run_js=lambda c: None)
+    for name in ("show_topup_card", "_buy_credits", "_on_topup_result"):
+        setattr(win, name, getattr(ai_chat_ui.AIChatWindow, name).__get__(win))
+    win.refresh_credits_for_account = lambda: None
+
+    win._buy_credits(10)  # no card shown: a script cannot charge
+    assert calls == []
+
+    win.show_topup_card(dict(CARD))
+    win._buy_credits(10)
+    win._buy_credits(10)  # in flight: ignored
+    assert len(calls) == 1 and calls[0][:2] == (10, True) and calls[0][2]
+    win._on_topup_result(json.dumps({"error": "timeout"}))
+    win._buy_credits(10)  # a retry after an unknown outcome replays the same attempt
+    assert calls[1][2] == calls[0][2]
+    win._on_topup_result(json.dumps({"status": "paid", "credits": 1000}))
+    win._buy_credits(10)  # paid: the card is spent
+    assert len(calls) == 2
+
+
+def test_the_client_sends_the_attempt_id(monkeypatch):
+    sent = []
+    client = cc.CreditsClient()
+    monkeypatch.setattr(client, "_get_auth", lambda: (object(), {}, "https://sb.example"))
+    monkeypatch.setattr("requests.post", lambda url, **kw: sent.append(kw["json"]) or FakeResp(200, {"status": "paid"}))
+    client.buy(10, confirm=True, attempt="a1b2c3d4e5")
+    assert sent == [{"pack": 10, "confirm": True, "attempt": "a1b2c3d4e5"}]
