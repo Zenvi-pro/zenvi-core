@@ -140,10 +140,25 @@ def test_active_worker_still_wins_over_queue_flag():
 # ── timeline clips fall back to the source file for status ──────────────
 
 
-def test_status_source_prefers_analyzed_clip_metadata():
+def test_status_source_reads_the_source_file_like_its_media_bin_badge():
     clip = {"analyzed": True, "description": "trimmed"}
     source = {"analyzed": True, "description": "full"}
-    assert status_source(clip, source) is clip
+    assert status_source(clip, source) is source
+
+
+def test_a_stale_clip_snapshot_does_not_hide_a_failed_reindex_of_its_source():
+    """#143: the clip's snapshot predates the retry; the badge says it failed."""
+    clip = {"analyzed": True, "description": "trimmed, from the first run"}
+    source = {"analyzed": True, "description": "full", "error": "reindex failed"}
+    st = derive_indexing_status(status_source(clip, source))
+    assert st.state == FAILED
+    assert st.tooltip == "reindex failed"
+
+
+def test_status_source_uses_the_clip_when_there_is_no_source_metadata():
+    clip = {"analyzed": True, "description": "generated"}
+    assert status_source(clip, None) is clip
+    assert status_source(clip, {}) is clip
 
 
 def test_status_source_falls_back_to_source_when_clip_not_analyzed():

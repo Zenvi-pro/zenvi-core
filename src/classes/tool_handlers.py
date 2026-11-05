@@ -5349,30 +5349,37 @@ def _wait_for_file_indexing(file_id: str, files_model, timeout_sec: int = 1800, 
 
 
 def _queue_missing_index_layers(file_id: str) -> str:
-    """Send a file with missing index layers through the same indexing job an import uses; "" when it has none to send.
+    """Send a file with missing index layers, or whose last index failed, through the same indexing job an import uses;
+    "" when it has nothing to send.
 
     The job builds the local layers, then the search vectors with the model chosen in Preferences; nothing already saved is redone.
     """
     from classes.editor_tools.media_index_tools import missing_layers
+    from classes.indexing_status import FAILED, derive_indexing_status
     from classes.query import File
     f = File.get(id=file_id)
     if not f:
         return f"Error: File not found (id={file_id})."
     missing = missing_layers(f.data)
-    if not missing:
+    # A failed or interrupted index runs again even with every layer saved: the failure can predate them (no
+    # fingerprint yet, the footage indexed in another project since), and the file shows it until a run succeeds.
+    ai = f.data.get("ai_metadata")
+    status = derive_indexing_status(ai if isinstance(ai, dict) else None)
+    if not missing and status.state != FAILED:
         return ""
+    why = f"missing: {', '.join(missing)}" if missing else f"last index failed: {status.tooltip}"
     files_model = _get_app().window.files_model
     if files_model.is_file_indexing(file_id) or files_model.is_file_queued(file_id):
-        return f"File {file_id} is already being indexed (missing: {', '.join(missing)}). Call wait_until_project_indexed_tool, then index_status_tool."
+        return f"File {file_id} is already being indexed ({why}). Call wait_until_project_indexed_tool, then index_status_tool."
     files_model._index_file_async(file_id)
-    return (f"File {file_id} queued for indexing (missing: {', '.join(missing)}). The local layers (shots, colour, sound, speech) come "
+    return (f"File {file_id} queued for indexing ({why}). The local layers (shots, colour, sound, speech) come "
             "first, then the search vectors; nothing already saved is redone. Shot descriptions are separate: describe_shots_tool. "
             "Call wait_until_project_indexed_tool, then index_status_tool to see what is ready.")
 
 
 def reindex_project_file(file_id: str = "", **kwargs) -> str:
-    """Index a project file whose index is incomplete: queues it through the normal indexing job (local layers, then the
-    search vectors). A file whose index is complete is left as it is.
+    """Index a project file whose index is incomplete or whose last index failed: queues it through the normal indexing
+    job (local layers, then the search vectors). A file whose index is complete and clean is left as it is.
     Runs on a worker thread; the project-file read is marshalled to the Qt main thread.
     """
     try:

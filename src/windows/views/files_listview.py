@@ -246,6 +246,11 @@ class FilesListView(QListView):
             menu.addSeparator()
             add_bound_action(menu, self.win, "actionSplitFile", _("Split Clip"), "actionSplitFile_trigger")
             menu.addSeparator()
+            if self.files_model.offers_reindex(file.data):
+                # Re-index the right-clicked file (what the enabled state is about), not the selection.
+                add_bound_action(menu, self.win, "actionReindexFile", _("Re-index"),
+                                 lambda fid=file_id: self.files_model.reindex_file(fid),
+                                 enabled=self.files_model.can_reindex_file(file_id))
             # Linked Source (a file rendered from code / an After Effects comp)
             from windows.linked_source_menu import add_linked_source_menu
             if add_linked_source_menu(self.win, menu, file.id, parent=self):
