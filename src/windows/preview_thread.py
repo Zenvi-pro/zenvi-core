@@ -36,6 +36,7 @@ from qt_api import QMessageBox
 from qt_api import unwrapinstance, wrapinstance, _is_android_runtime
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
+from classes import update_batch
 from classes.app import get_app
 from classes.logger import log
 from classes.updates import UpdateInterface
@@ -52,13 +53,29 @@ class PreviewParent(QObject, UpdateInterface):
         if action and len(action.key) >= 1 and action.key[0].lower() in ["files", "history", "markers", "layers", "scale", "profile", "sample_rate", "export_settings"]:
             return
 
+        # Inside an update batch TimelineSync holds this change back from libopenshot, so the timeline
+        # still has its old length here: read it once the batch has applied (_after_update_batch).
+        if action and action.type != "load" and update_batch.active():
+            return
+
+        self._read_max_length(action)
+
+    def _read_max_length(self, action=None):
         try:
             # Keep track of max timeline frame # on any updates to the timeline
             self.timeline_max_length = self.timeline.GetMaxFrame()
             log.debug(f"Max timeline length/frames detected: {self.timeline_max_length}")
 
         except Exception as e:
-            log.info("Error calculating max timeline length on PreviewParent: %s. %s" % (e, action.json(is_array=True)))
+            log.info("Error calculating max timeline length on PreviewParent: %s. %s"
+                     % (e, action.json(is_array=True) if action else "after an update batch"))
+
+    def _after_update_batch(self):
+        """An update batch ended: TimelineSync's flush (registered before this one) has applied its diffs.
+
+        Without this, an edit made inside a batch (every Assistant tool) left Play stopping at the
+        timeline's old end: one frame after adding clips to an empty timeline."""
+        self._read_max_length()
 
     # Signal when the frame position changes in the preview player
     def onPositionChanged(self, current_frame):
@@ -114,6 +131,7 @@ class PreviewParent(QObject, UpdateInterface):
     def Stop(self, wait_for_thread=True):
         """Disconnect preview parent from update manager and stop worker thread"""
         get_app().updates.disconnect_listener(self)
+        update_batch.unregister(self._after_update_batch)
 
         # Stop preview thread
         self.worker.Stop()
@@ -171,6 +189,8 @@ class PreviewParent(QObject, UpdateInterface):
 
         # Add preview parent as listener for updates
         get_app().updates.add_listener(self)
+        # Registered after TimelineSync's flush (the window creates TimelineSync first), so it runs after it.
+        update_batch.register(self._after_update_batch)
 
 
 class PlayerWorker(QObject):
