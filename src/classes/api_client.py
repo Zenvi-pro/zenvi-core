@@ -281,13 +281,21 @@ class ZenviBackendClient:
                 timeout=timeout,
             )
             resp.raise_for_status()
-            with open(dest, "wb") as fh:
-                for chunk in resp.iter_content(chunk_size=1024 * 64):
-                    if chunk:
-                        fh.write(chunk)
-            if os.path.getsize(dest) > 0:
-                return {"local_path": dest}
-            return {"local_path": "", "error": "Downloaded file is empty"}
+            # Into a .part file first: a download cut off half way must not sit at dest, where the
+            # next call (or the next rendition of the same sound) would take it as a finished file.
+            part = dest + ".part"
+            try:
+                with open(part, "wb") as fh:
+                    for chunk in resp.iter_content(chunk_size=1024 * 64):
+                        if chunk:
+                            fh.write(chunk)
+                if os.path.getsize(part) <= 0:
+                    return {"local_path": "", "error": "Downloaded file is empty"}
+                os.replace(part, dest)
+            finally:
+                if os.path.exists(part):
+                    os.remove(part)
+            return {"local_path": dest}
         except Exception as exc:
             log.error("URL download failed: %s", exc)
             return {"local_path": "", "error": str(exc)}
@@ -1075,16 +1083,20 @@ class ZenviBackendClient:
         if "-hq.mp3" in url:
             candidates.append(url.replace("-hq.mp3", "-hq.ogg"))
 
-        last = {"success": False, "error": "No preview URL"}
+        error = "No preview URL"
         for candidate in candidates:
             ext = ".ogg" if candidate.endswith(".ogg") else ".mp3"
-            last = self._download_url_to_temp(
+            result = self._download_url_to_temp(
                 candidate, ext, filename_hint=hint, timeout=180,
             )
-            if last.get("success"):
-                return last
-            log.warning("Freesound preview failed (%s): %s", candidate, last.get("error"))
-        return last
+            # The helper reports a finished download as a local_path (it has no "success" key): checking
+            # "success" counted every download as failed, fetched each sound two or three times and
+            # could end on a 404 for a sound already on disk.
+            if result.get("local_path"):
+                return {"success": True, "local_path": result["local_path"]}
+            error = result.get("error") or "download failed"
+            log.warning("Freesound preview failed (%s): %s", candidate, error)
+        return {"success": False, "local_path": "", "error": error}
 
 
 # Singleton
