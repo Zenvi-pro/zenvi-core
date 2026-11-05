@@ -159,7 +159,6 @@ class StockSearchView(QWidget):
         self._credits: Dict[str, str] = {}
         self._pool = image_pool()
         self._bed_busy = False
-        self._declined_engines = set()   # a "no" on one model does not block the other
         self._prompt_seed = ""
 
         self._build_ui()
@@ -678,7 +677,9 @@ class StockSearchView(QWidget):
             self._gen_status.setText("Describe the music first.")
             self._gen_status.show()
             return
-        if engine in self._declined_engines or self._bed_busy:
+        # No "declined" memory: a click is a fresh request, asked again if the download is
+        # still missing, and run as is once it was installed some other way.
+        if self._bed_busy:
             return
         self._bed_busy = True
         self._sync_generate_enabled()
@@ -695,11 +696,9 @@ class StockSearchView(QWidget):
         error, path = data.get("error", ""), data.get("path", "")
         current = data.get("gen") == self._search_gen
         if error:
-            if data.get("declined") and data.get("engine"):
-                self._declined_engines.add(data["engine"])
             log.warning("Local music generation failed: %s", error)
             if current:
-                self._gen_status.setText("Local generation is off for this model (download declined)."
+                self._gen_status.setText("Download declined. Press Generate to be asked again."
                                          if data.get("declined") else f"Local music generation failed: {error}")
                 self._gen_status.show()
             return

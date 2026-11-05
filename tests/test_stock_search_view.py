@@ -354,13 +354,18 @@ def test_footage_tooltips_show_provider_text_literally():
     assert "<a href" not in card.toolTip() and "&lt;a href" in card.toolTip()
 
 
-def test_only_a_real_decline_turns_that_engine_off(view):
-    view._on_local_bed_done({"path": "", "error": "ggml: device declined to allocate", "engine": "ace_step",
-                             "gen": view._search_gen})
-    assert "ace_step" not in view._declined_engines
-    view._on_local_bed_done({"path": "", "error": "x", "declined": True, "engine": "ace_step",
-                             "gen": view._search_gen})
-    assert view._declined_engines == {"ace_step"}
+def test_generate_after_a_declined_download_runs_again(view):
+    # A "no" used to switch the engine off for the session: Generate stayed enabled and did
+    # nothing, even once the model was installed another way. A click is a fresh request.
+    from windows.views.stock_search_view import StockSearchView
+
+    view._on_local_bed_done({"path": "", "error": "the user declined the music download", "declined": True,
+                             "engine": "yue2", "gen": view._search_gen})
+    assert "declined" in view._gen_status.text().lower() and "Generate" in view._gen_status.text()
+    assert view._music_generate.isEnabled()
+    with patch.object(view, "_start_search") as start:
+        StockSearchView._start_local_bed(view, "soft piano", "yue2", "", "bed")
+    assert start.call_count == 1 and start.call_args.args[0]._engine == "yue2"
 
 
 def test_image_loads_never_use_the_global_thread_pool():
