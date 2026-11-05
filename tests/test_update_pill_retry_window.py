@@ -36,14 +36,17 @@ class _Updater:
 
 @pytest.fixture
 def ui(monkeypatch):
+    # Everything global is undone by monkeypatch, so neither the stub timeline
+    # nor a main_window built on it leaks into later tests in this process.
     if not hasattr(_APP, "get_settings"):
-        _APP.get_settings = lambda: MagicMock(get=lambda key, default=None: default)
+        monkeypatch.setattr(_APP, "get_settings",
+                            lambda: MagicMock(get=lambda key, default=None: default), raising=False)
     if not hasattr(_APP, "_tr"):
-        _APP._tr = lambda s: s
-    if "windows.views.timeline" not in sys.modules:
-        stub = types.ModuleType("windows.views.timeline")
-        stub.TimelineView = type("TimelineView", (), {})
-        sys.modules["windows.views.timeline"] = stub
+        monkeypatch.setattr(_APP, "_tr", lambda s: s, raising=False)
+    stub = types.ModuleType("windows.views.timeline")
+    stub.TimelineView = type("TimelineView", (), {})
+    monkeypatch.setitem(sys.modules, "windows.views.timeline", stub)
+    monkeypatch.delitem(sys.modules, "windows.main_window", raising=False)
     import windows.main_window as main_window
     from windows import update_panel
     from windows.update_status_button import UpdateStatusButton
@@ -57,14 +60,14 @@ def ui(monkeypatch):
 
     win = types.SimpleNamespace(update_status_button=button, _update_panel=panel,
                                 _auto_updater=None)
-    win._ensure_update_button = lambda: None
-    win._sync_update_panel = lambda: panel.sync_from_button(button)
-    for name in ("retry_auto_update", "updateFailed", "updateDownloadProgress"):
+    win._ensure_update_button = lambda: None   # the toolbar is not under test
+    for name in ("retry_auto_update", "updateFailed", "updateDownloadProgress", "_sync_update_panel"):
         setattr(win, name, types.MethodType(getattr(main_window.MainWindow, name), win))
     panel.window = win
     yield types.SimpleNamespace(win=win, button=button, panel=panel, opened=opened, host=host)
     panel.deleteLater()
     host.deleteLater()
+    sys.modules.pop("windows.main_window", None)
 
 
 def test_a_declined_retry_keeps_the_failed_pill_and_its_buttons(ui):
