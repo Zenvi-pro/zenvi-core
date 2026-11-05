@@ -745,12 +745,21 @@ class FilesModel(QObject, updates.UpdateInterface):
         """Fire-and-forget background indexing for an already-saved file."""
         self._enqueue_index(file_id)
 
-    def can_reindex_file(self, file_id):
-        """Whether Re-index applies: indexable media that is not indexing or queued already."""
-        f = File.get(id=str(file_id or ""))
-        if not f or not isinstance(f.data, dict):
+    @staticmethod
+    def offers_reindex(file_data):
+        """Whether a file gets the Re-index action: footage, pictures and sound, not titles.
+
+        A title is an SVG the Title tools write; it is imported as an image but never indexed.
+        """
+        data = file_data if isinstance(file_data, dict) else {}
+        if data.get("media_type") not in ("video", "image", "audio"):
             return False
-        if f.data.get("media_type") not in ("video", "image", "audio"):
+        return not str(data.get("path") or "").lower().endswith(".svg")
+
+    def can_reindex_file(self, file_id):
+        """Whether Re-index can run now: a file that offers it and is not indexing or queued already."""
+        f = File.get(id=str(file_id or ""))
+        if not f or not self.offers_reindex(f.data):
             return False
         return not (self.is_file_indexing(file_id) or self.is_file_queued(file_id))
 

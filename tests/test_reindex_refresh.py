@@ -134,7 +134,8 @@ class _Signal:
 _MODEL_METHODS = [
     "_apply_ai_metadata", "_save_file_untracked", "_set_indexing_progress", "file_indexing_status",
     "is_file_indexing", "is_file_queued", "get_indexing_progress", "_enqueue_index", "_timeline_file_ids",
-    "_drain_indexing_queue", "_index_file_async", "_start_indexing_worker", "can_reindex_file", "reindex_file",
+    "_drain_indexing_queue", "_index_file_async", "_start_indexing_worker", "offers_reindex", "can_reindex_file",
+    "reindex_file",
 ]
 
 
@@ -405,14 +406,26 @@ def test_reindex_queues_one_run_and_shows_it_waiting(editor, monkeypatch, tmp_pa
 
 def test_reindex_is_not_offered_while_indexing_or_for_files_that_are_never_indexed(editor, monkeypatch, tmp_path):
     w = World(editor, monkeypatch, tmp_path)
-    title = editor.add_file("image", path=str(tmp_path / "title.svg"), media_type="title")
     w.model._active_indexers = [types.SimpleNamespace(file_data={"id": w.fid})]
 
     assert w.model.can_reindex_file(w.fid) is False
-    assert w.model.can_reindex_file(title) is False
     assert w.model.can_reindex_file("missing") is False
     w.model.reindex_file(w.fid)
     assert w.model._indexing_queue == []
+
+
+def test_a_title_has_no_reindex(editor, monkeypatch, tmp_path):
+    """Found in the app: a title the Title tools wrote got Re-index. It is an SVG imported as an image."""
+    w = World(editor, monkeypatch, tmp_path)
+    title = editor.add_file("image", path=str(tmp_path / "title" / "Re-index test.svg"))
+    picture = editor.add_file("image", path=str(tmp_path / "still.png"))
+    assert query.File.get(id=title).data["media_type"] == "image"
+
+    assert w.model.offers_reindex(query.File.get(id=title).data) is False
+    assert w.model.can_reindex_file(title) is False
+    w.model.reindex_file(title)
+    assert w.model._indexing_queue == [] and w.model._active_indexers == []
+    assert w.model.offers_reindex(query.File.get(id=picture).data) is True
 
 
 # ── reindex_project_file_tool ──────────────────────────────────────────────

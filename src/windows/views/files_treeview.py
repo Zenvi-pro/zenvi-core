@@ -149,7 +149,7 @@ class FilesTreeView(QTreeView):
                 action.triggered.connect(lambda: get_app().window.actionProfileEdit_trigger(file_profile))
             menu.addMenu(profile_menu)
 
-            if file.data.get("media_type") in ("video", "image", "audio"):
+            if self.files_model.offers_reindex(file.data):
                 # Re-index the right-clicked file (what the enabled state is about), not the selection.
                 add_bound_action(menu, self.win, "actionReindexFile", _("Re-index"),
                                  lambda fid=file_id: self.files_model.reindex_file(fid),
