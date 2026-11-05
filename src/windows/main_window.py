@@ -1811,15 +1811,17 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         if updater is None:
             log.warning("retry_auto_update: no AutoUpdater instance")
             return
+        if not updater.retry():
+            # A download is already running; its own progress or failure
+            # reaches the pill, so leave the pill as it is.
+            log.info("retry_auto_update: download already in progress")
+            return
+        # Show the click took. The check always follows up with progress, a
+        # ready update, or a failure (queued signals, so they land after this).
         version = self.update_status_button.version or ""
-        # Flip the pill immediately so the click feels responsive; the
-        # background thread will overwrite with real progress or failure.
         self.update_status_button.set_downloading(version, -1, 0, 0)
         self._ensure_update_button()
         self._sync_update_panel()
-        if not updater.retry():
-            # A check was already running — keep whatever progress it reports.
-            log.info("retry_auto_update: download already in progress")
 
     def should_play(self, requested_speed=0):
         """Determine if we should start playback, based on the current frame

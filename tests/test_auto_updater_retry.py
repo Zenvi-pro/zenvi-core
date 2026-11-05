@@ -30,7 +30,7 @@ def test_retry_starts_when_idle(tmp_path, monkeypatch):
     assert started == [0]
 
 
-def test_retry_ignored_while_running(tmp_path, monkeypatch):
+def test_retry_ignored_while_downloading(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_updater_mod, "UPDATE_STAGING_DIR", str(tmp_path))
     updater = AutoUpdater()
     gate = threading.Event()
@@ -40,8 +40,10 @@ def test_retry_ignored_while_running(tmp_path, monkeypatch):
 
     updater._thread = threading.Thread(target=hang, daemon=True)
     updater._thread.start()
+    updater._delay_over = True  # past the launch delay: downloading
     try:
         assert updater.retry() is False
+        assert not updater._user_waiting.is_set()
     finally:
         gate.set()
         updater._thread.join(timeout=2.0)
@@ -94,3 +96,130 @@ def test_missing_asset_emits_failed_not_available(tmp_path, monkeypatch):
     assert version_emits == []
     assert len(failed_emits) == 1
     assert failed_emits[0][0] == "9.9.9"
+
+
+# ---------------------------------------------------------------------------
+# A retry the user waits on always ends in ready or failed (review of #365)
+# ---------------------------------------------------------------------------
+
+class _Signal:
+    def __init__(self, emits, name):
+        self._emits, self._name = emits, name
+
+    def emit(self, *args):
+        self._emits.append((self._name,) + args)
+
+
+class _Window:
+    """What the updater reaches through ``_main_window()``: four queued signals."""
+
+    def __init__(self):
+        self.emits = []
+        for attr, name in (("FoundVersionSignal", "found"), ("UpdateReadySignal", "ready"),
+                           ("UpdateProgressSignal", "progress"), ("UpdateFailedSignal", "failed")):
+            setattr(self, attr, _Signal(self.emits, name))
+
+    def named(self, name):
+        return [e for e in self.emits if e[0] == name]
+
+
+def _updater(tmp_path, monkeypatch, releases):
+    """An AutoUpdater whose GitHub answers come from *releases* (None = unreachable)."""
+    monkeypatch.setattr(auto_updater_mod, "UPDATE_STAGING_DIR", str(tmp_path))
+    monkeypatch.setattr(auto_updater_mod, "update_channel", lambda: "stable")
+    monkeypatch.setattr(auto_updater_mod, "has_pending_update", lambda: False)
+    monkeypatch.setattr(auto_updater_mod, "is_version_newer",
+                        lambda remote, local: remote == "9.9.9")
+    window = _Window()
+    monkeypatch.setattr(AutoUpdater, "_main_window", staticmethod(lambda: window))
+    updater = AutoUpdater()
+    monkeypatch.setattr(updater, "_tidy_staging", lambda: None)
+    monkeypatch.setattr(updater, "_get_json", lambda url, headers: releases)
+    return updater, window
+
+
+def _finish(updater):
+    updater._thread.join(timeout=5.0)
+    assert not updater._thread.is_alive()
+
+
+def test_retry_that_cannot_reach_github_reports_a_failure(tmp_path, monkeypatch):
+    # CodeRabbit (major): the pill was left on "Downloading update…" with its
+    # buttons disabled when GitHub could not be reached.
+    updater, window = _updater(tmp_path, monkeypatch, None)
+    assert updater.retry() is True
+    _finish(updater)
+    failed = window.named("failed")
+    assert len(failed) == 1
+    assert "GitHub" in failed[0][2]
+
+
+def test_retry_with_no_installer_for_this_platform_reports_a_failure(tmp_path, monkeypatch):
+    updater, window = _updater(tmp_path, monkeypatch, {"tag_name": "v9.9.9", "assets": []})
+    monkeypatch.setattr(auto_updater_mod, "_platform_asset_suffix", lambda: None)
+    assert updater.retry() is True
+    _finish(updater)
+    assert [e[1:] for e in window.named("failed")] == [
+        ("9.9.9", "Updates can't be downloaded on this platform")]
+
+
+def test_retry_that_finds_no_newer_release_reports_why(tmp_path, monkeypatch):
+    updater, window = _updater(tmp_path, monkeypatch, {"tag_name": "v1.0.0", "assets": []})
+    assert updater.retry() is True
+    _finish(updater)
+    assert [e[1:] for e in window.named("failed")] == [
+        ("1.0.0", "GitHub no longer lists a newer release")]
+
+
+def test_retry_that_downloads_reports_ready_only(tmp_path, monkeypatch):
+    release = {"tag_name": "v9.9.9", "assets": [{
+        "name": "Zenvi-v9.9.9-x86_64.exe", "browser_download_url": "https://example.test/z.exe", "size": 3}]}
+    updater, window = _updater(tmp_path, monkeypatch, release)
+    monkeypatch.setattr(auto_updater_mod, "_platform_asset_suffix", lambda: ".exe")
+    monkeypatch.setattr(auto_updater_mod, "_platform_asset_arch_hint", lambda: "x86_64")
+    monkeypatch.setattr(updater, "_published_checksum", lambda *a, **k: "")
+    monkeypatch.setattr(updater, "_download", lambda *a, **k: True)
+    assert updater.retry() is True
+    _finish(updater)
+    assert window.named("ready") == [("ready", "9.9.9")]
+    assert window.named("failed") == []
+
+
+def test_startup_check_that_cannot_reach_github_stays_quiet(tmp_path, monkeypatch):
+    # Nobody clicked anything: an offline launch must not flash "Update Failed".
+    updater, window = _updater(tmp_path, monkeypatch, None)
+    updater._run(initial_delay=0)
+    assert window.emits == []
+
+
+def test_retry_during_the_launch_delay_starts_the_download_now(tmp_path, monkeypatch):
+    # CodeRabbit: the startup check emits "available" before its 15 s delay. A
+    # Download click during that delay used to be ignored, leaving the pill on
+    # "Downloading" until the delay ran out. It now ends the delay, on the same thread.
+    release = {"tag_name": "v9.9.9", "assets": []}
+    updater, window = _updater(tmp_path, monkeypatch, release)
+    downloads = []
+    started = threading.Event()
+    monkeypatch.setattr(updater, "_check_and_download",
+                        lambda rel, ver: (downloads.append(threading.current_thread().name),
+                                          updater._emit_update_ready_signal(ver)))
+    monkeypatch.setattr(auto_updater_mod, "INITIAL_DELAY", 15)
+    real_fetch = updater._fetch_latest_release
+
+    def fetch():
+        result = real_fetch()
+        started.set()
+        return result
+
+    monkeypatch.setattr(updater, "_fetch_latest_release", fetch)
+    updater.start()
+    assert started.wait(5.0)
+    assert window.named("found") == [("found", "9.9.9")]   # the pill says "Update Available"
+    first = updater._thread
+    assert updater.retry() is True
+    first.join(timeout=5.0)
+    assert not first.is_alive(), "the retry did not end the 15 s launch delay"
+    assert updater._thread is first, "a second check thread was started"
+    assert downloads == ["AutoUpdater"]
+    assert window.named("ready") == [("ready", "9.9.9")]
+    assert window.named("failed") == []
