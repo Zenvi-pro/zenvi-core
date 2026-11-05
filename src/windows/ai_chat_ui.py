@@ -3389,6 +3389,8 @@ class AIChatWindow(QDockWidget):
         retry after an unknown outcome (a timeout) replays the same charge instead of a new one.
         """
         import uuid
+        if getattr(self, "_topup_busy", False):
+            return  # the card on screen is charging: never swap it for a fresh, re-armed one
         self._topup_attempt, self._topup_busy = uuid.uuid4().hex, False
         if self._use_web_ui:
             self._run_js("if(window.showTopUpCard) showTopUpCard(%s);" % json.dumps(quote))

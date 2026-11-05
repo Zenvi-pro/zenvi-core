@@ -1196,7 +1196,8 @@
     var topUpCard = null;
     window.showTopUpCard = function (quote) {
         if (!quote) return;
-        if (topUpCard && topUpCard.el.isConnected && !topUpCard.done) topUpCard.el.remove();
+        if (topUpCard && !topUpCard.done && topUpCard.pay.disabled) return; /* charging: keep that card */
+        if (topUpCard && !topUpCard.done && topUpCard.el.parentNode) topUpCard.el.parentNode.removeChild(topUpCard.el);
         var el = document.createElement('div');
         el.className = 'chat-topup';
         var title = document.createElement('div');

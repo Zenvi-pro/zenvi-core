@@ -203,3 +203,16 @@ def test_the_client_sends_the_attempt_id(monkeypatch):
     monkeypatch.setattr("requests.post", lambda url, **kw: sent.append(kw["json"]) or FakeResp(200, {"status": "paid"}))
     client.buy(10, confirm=True, attempt="a1b2c3d4e5")
     assert sent == [{"pack": 10, "confirm": True, "attempt": "a1b2c3d4e5"}]
+
+
+def test_a_new_card_never_replaces_one_whose_charge_is_in_flight(monkeypatch):
+    js = []
+    win = SimpleNamespace(_use_web_ui=True, _run_js=js.append, _topup_attempt="a" * 32, _topup_busy=True)
+    ai_chat_ui.AIChatWindow.show_topup_card(win, dict(CARD))
+    assert win._topup_attempt == "a" * 32 and win._topup_busy and js == []
+
+
+def test_the_card_js_runs_on_webkit_602():
+    text = (SRC / "chat_ui" / "chat.js").read_text(encoding="utf-8")
+    card = text[text.index("window.showTopUpCard"):text.index("window.onTopUpResult")]
+    assert "isConnected" not in card  # Safari 10 / WebKit 602 has no Node.isConnected
