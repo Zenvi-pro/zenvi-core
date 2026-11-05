@@ -5,6 +5,19 @@ Workstream: timeline-edit. Tools register themselves with ``@editor_tool`` from
 and ``timeline_edit_common``. The rules the menus also use (gaps, align, ripple,
 Add to Timeline placement) live in ``classes.timeline_ops``; speed, repeat,
 freeze and audio tools are in ``timeline_edit_time``.
+
+add_clips_to_timeline_tool requests: "make a 60-second vlog from these clips"
+(e.g. 8 files, fit_total_seconds=60, transition="fade",
+transition_seconds=0.5), "put all the beach shots on the timeline with
+crossfades", "make a slideshow of these photos, 3 seconds each". Per-file in/out
+points: items=[{"file_id": "F1", "source_start": 4, "source_end": 9},
+{"file_id": "F2"}]. fit_total_seconds keeps the middle of each clip because
+heads and tails are usually shaky.
+
+move_clips_tool requests: "move the intro to the end" (timeline_clip_ids=[intro],
+after_clip_id=<last clip>, ripple=true), "put the drone shot before the beach
+clip", "move this to track 2", "shift everything on track 1 two seconds later",
+"nudge it 3 frames left".
 """
 
 from __future__ import annotations
@@ -13,7 +26,7 @@ import copy
 import os
 import random
 
-from classes import timeline_ops
+from classes import timeline_ops, track_ops
 from classes.editor_tools._base import (
     CLIPS_TARGET,
     ToolError,
@@ -29,6 +42,7 @@ from classes.editor_tools._base import (
     ok,
     on_main,
     resolve_layer,
+    resolve_placement_layer,
     string,
     timeline_ui,
     ui_track_number,
@@ -39,6 +53,7 @@ from classes.editor_tools.timeline_edit_common import (
     check_overlaps,
     clip_summary,
     default_layer,
+    ensure_mapped_tracks,
     extend_timeline,
     frame_seconds,
     fresh,
@@ -57,8 +72,10 @@ from classes.editor_tools.timeline_edit_common import (
     title,
     tolerance,
     track_name,
+    track_numbers_bottom_up,
     transitions_between,
 )
+from classes.track_display import added_tracks_notes, new_tracks_note
 
 _OVERLAP_ARG = boolean(
     "Let the result overlap other clips on the track (the receipt lists what it covers). Off by default: "
@@ -70,6 +87,7 @@ _RIPPLE_NOTE = "Shift the later clips on the track to follow (close/open the roo
 # seconds on a loaded machine; giving up mid-way would leave a half-done edit
 # (the hop still runs later), so wait well past the 30 s GUI-dispatch default.
 HOP_TIMEOUT = 180
+PLACEMENT_HOP_CLIPS = 8          # clips inserted per GUI-thread hop: short enough that the interface keeps responding
 
 
 def _clips_or_query_given(timeline_clip_ids, clip_query, scope) -> bool:
@@ -90,12 +108,12 @@ _FADES = {"none": None, "in": timeline_ops.FADE_IN, "out": timeline_ops.FADE_OUT
 _ZOOMS = {"none": None, "in": timeline_ops.ZOOM_IN, "out": timeline_ops.ZOOM_OUT,
           "random": timeline_ops.ZOOM_RANDOM}
 _ITEM = mapping(
-    "One file to place, with optional source in/out points in seconds of that file.",
+    "One file, optional source in/out seconds.",
     properties={
-        "file_id": string("Project file id (list_files_tool). Sub-clip file ids work too."),
-        "source_start": number("Source in point in seconds; -1 or omitted = the file's own in point."),
-        "source_end": number("Source out point in seconds; -1 or omitted = the file's own out point. "
-                             "For a still image this sets how long it stays on screen."),
+        "file_id": string("Project file id (list_project_files_tool); sub-clip ids work."),
+        "source_start": number("Source in point, seconds; -1 or omitted = the file's own."),
+        "source_end": number("Source out point, seconds; -1 or omitted = the file's own. For a still image: "
+                             "how long it shows."),
     },
     additionalProperties=False, required=["file_id"])
 
@@ -123,7 +141,7 @@ def _transition_choice(name):
         return stems[near[0]], None
     sample = near[:8] or sorted(stems)[:8]
     raise ToolError(f"unknown transition {name!r}; use 'fade' (crossfade), 'random', or a name such as "
-                    f"{', '.join(sample)} (list_transitions_tool lists all)")
+                    f"{', '.join(sample)} (run_tool(name='list_transitions_tool') lists all)")
 
 
 def _fit_lengths(durations, fixed, keep, budget):
@@ -171,31 +189,30 @@ def _fit_lengths(durations, fixed, keep, budget):
     "add_clips_to_timeline_tool",
     label="Add clips to timeline",
     schema=obj({
-        "file_ids": array({"type": "string"}, "Project file ids to place, in timeline order (list_files_tool). "
-                          "Use this OR items.", []),
-        "items": array(_ITEM, "Files with their own in/out points, in timeline order. Use this OR file_ids.", []),
-        "order": enum(["as_given", "shuffle", "name"], "Order on the timeline: as given, shuffled, or by file name.",
+        "file_ids": array({"type": "string"}, "Project file ids (list_project_files_tool), in timeline order. "
+                          "This OR items.", []),
+        "items": array(_ITEM, "Files with their own in/out points, in timeline order. This OR file_ids.", []),
+        "order": enum(["as_given", "shuffle", "name"], "Timeline order: as given, shuffled, or by file name.",
                       "as_given"),
-        "start_seconds": number("Timeline time of the first clip; -1 = right after the last clip already on "
-                                "the track (0 on an empty track).", -1.0),
-        "track": string("Track to fill: UI track number (1 = bottom), name, or layer number. Empty = the "
-                        "selected track, else the bottom track.", ""),
-        "image_seconds": number("How long each still image stays on screen; 0 = the Default Image Length "
-                                "preference.", 0.0, minimum=0),
-        "fit_total_seconds": number("Make the whole sequence last exactly this long (e.g. 60 for a 60-second "
-                                    "vlog) by trimming the longest clips evenly, keeping the middle of each "
-                                    "(heads and tails are usually shaky); 0 = full lengths.", 0.0, minimum=0),
+        "start_seconds": number("Timeline time of the first clip; -1 = after the last clip on the track (0 if "
+                                "empty).", -1.0),
+        "track": string("UI track number (1 = bottom), name, or layer number. Empty = the selected track, else "
+                        "the bottom track.", ""),
+        "image_seconds": number("Seconds per still image; 0 = the Default Image Length preference.", 0.0,
+                                minimum=0),
+        "fit_total_seconds": number("Make the sequence last exactly this long by trimming the longest clips to "
+                                    "one common length, keeping the middle of each; 0 = full lengths.", 0.0,
+                                    minimum=0),
         "min_clip_seconds": number("Shortest a clip may be trimmed to by fit_total_seconds.", 1.0, minimum=0.1),
-        "transition": string("Transition between consecutive clips: '' = hard cuts, 'fade' = crossfade, "
-                             "'random', or a transition name such as 'wipe_left_to_right' or "
-                             "'circle_in_to_out' (list_transitions_tool).", ""),
-        "transition_seconds": number("Length of each transition; clips overlap by this much. 0 = the Default "
-                                     "Transition Length preference.", 0.0, minimum=0),
-        "fade": enum(["none", "in", "out", "in_out"], "Opacity fades on every clip, used instead of a "
-                     "transition; clips overlap by fade_seconds so the fades cross.", "none"),
+        "transition": string("Between consecutive clips: '' = hard cuts, 'fade' = crossfade, 'random', or a "
+                             "transition name such as 'wipe_left_to_right' (find_tools: list transitions).", ""),
+        "transition_seconds": number("Transition length; clips overlap by this much. 0 = the Default Transition "
+                                     "Length preference.", 0.0, minimum=0),
+        "fade": enum(["none", "in", "out", "in_out"], "Opacity fades on every clip instead of a transition; "
+                     "clips overlap by fade_seconds so the fades cross.", "none"),
         "fade_seconds": number("Fade length in seconds.", 2.0, minimum=0.04),
-        "zoom": enum(["none", "in", "out", "random"], "Slow zoom on every clip (Ken Burns): in = 100% to 125%, "
-                     "out = 125% to 100%, random = random zoom and pan.", "none"),
+        "zoom": enum(["none", "in", "out", "random"], "Slow zoom on every clip: in = 100% to 125%, out = 125% to "
+                     "100%, random = random zoom and pan.", "none"),
         "allow_overlap": _OVERLAP_ARG,
     }),
     background_safe=True,
@@ -205,23 +222,14 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
                           image_seconds=0.0, fit_total_seconds=0.0, min_clip_seconds=1.0, transition="",
                           transition_seconds=0.0, fade="none", fade_seconds=2.0, zoom="none",
                           allow_overlap=False):
-    """Place several project files back to back on one track in one step: the backbone of
-    "make a 60-second vlog from these clips", "put all the beach shots on the timeline with
-    crossfades", "make a slideshow of these photos, 3 seconds each".
+    """Place several project files back to back on one track in one step (vlogs, slideshows, montages).
 
-    Works like Project Files > Add to Timeline: files go on one track in the given order (or
-    shuffled / by name), starting at start_seconds (default: after the last clip on that track),
-    with optional crossfades or other transitions between consecutive clips, opacity fades, and a
-    slow zoom. Still images last image_seconds. Give per-file in/out points with items, e.g.
-    items=[{"file_id": "F1", "source_start": 4, "source_end": 9}, {"file_id": "F2"}].
-
-    fit_total_seconds trims the sequence to an exact length: the longest clips are cut to one
-    common length (never below min_clip_seconds), keeping the middle of each; clips given with
-    explicit in/out points are never trimmed; transition overlaps are accounted for. Example:
-    8 files, fit_total_seconds=60, transition="fade", transition_seconds=0.5.
-
-    For one file at a precise time use add_clip_to_timeline_tool. The call is one undo step.
-    Returns the new timeline clip ids in order with their positions and source in/out.
+    Like Project Files > Add to Timeline, with optional transitions or fades
+    between clips and a slow zoom. fit_total_seconds never trims clips given
+    explicit in/out points and accounts for transition overlaps. A transition
+    and fades together are refused. One file is a list of one (items=[...],
+    start_seconds = where it goes). One undo step. Returns the new timeline clip
+    ids in order with their positions and source in/out.
     """
     from classes.clip_placement import source_window_for_file
     from classes.query import File
@@ -230,7 +238,7 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
         raise ToolError("give file_ids (whole files) or items (with in/out points), not both")
     specs = [{"file_id": fid} for fid in file_ids] if file_ids else [dict(it) for it in items]
     if not specs:
-        raise ToolError("say which files to place: file_ids or items (list_files_tool lists the project files)")
+        raise ToolError("say which files to place: file_ids or items (list_project_files_tool lists the project files)")
     if fade != "none" and (transition or "").strip():
         raise ToolError("choose a transition or fades, not both (fade applies only without a transition)")
 
@@ -247,7 +255,7 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
         fid = str(spec.get("file_id") or "").strip()
         f = File.get(id=fid) if fid else None
         if not f:
-            raise ToolError(f"no project file with id={fid!r} (list_files_tool lists them)")
+            raise ToolError(f"no project file with id={fid!r} (list_project_files_tool lists them)")
         name = str(f.data.get("name") or os.path.basename(str(f.data.get("path") or fid)))
         s_arg = spec.get("source_start")
         e_arg = spec.get("source_end")
@@ -312,7 +320,7 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
     elif fit_total_seconds > 0:
         fit_note = f", already within {fit_total_seconds:g} s so nothing was trimmed"
 
-    layer = resolve_layer(track) if (track or "").strip() else default_layer()
+    layer, new_tracks = resolve_placement_layer(track) if (track or "").strip() else (default_layer(), 0)
     require_unlocked([layer])
     start = snap(start_seconds) if start_seconds >= 0 else snap(timeline_ops.track_end(layer))
 
@@ -354,23 +362,40 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
         require_unlocked([layer])
         return timeline_ops.insert_placement_step(step)
 
+    # One timeline update and one preview refresh for the whole placement (not one per clip), in short GUI-thread hops so the
+    # interface keeps answering; the batch is closed in `finally` even if a hop fails, and its lease ends it if this worker dies.
+    from classes import update_batch
+
+    def _insert_some(group):
+        return [_insert(step) for step in group]
+
     clip_ids, transition_ids = [], []
-    for step in steps:
-        clip_id, transition_id = on_main(_insert, step, timeout=HOP_TIMEOUT)
-        clip_ids.append(clip_id)
-        if transition_id:
-            transition_ids.append(transition_id)
-    on_main(_finish_edit, timeout=HOP_TIMEOUT)
+    on_main(update_batch.begin, timeout=HOP_TIMEOUT, batch=False)
+    try:
+        if new_tracks:
+            on_main(track_ops.ensure_track, layer, timeout=HOP_TIMEOUT)
+        for i in range(0, len(steps), PLACEMENT_HOP_CLIPS):
+            for clip_id, transition_id in on_main(_insert_some, steps[i:i + PLACEMENT_HOP_CLIPS], timeout=HOP_TIMEOUT):
+                clip_ids.append(clip_id)
+                if transition_id:
+                    transition_ids.append(transition_id)
+        on_main(_finish_edit, timeout=HOP_TIMEOUT)
+    finally:
+        on_main(update_batch.end, timeout=HOP_TIMEOUT, batch=False)
 
     placed = [clip_summary(fresh(cid)) for cid in clip_ids if fresh(cid)]
     end = max(p["end"] for p in placed)
     how = f", {os.path.splitext(os.path.basename(trans_path))[0]} transitions" if trans_path else (
         ", random transitions" if trans_random else (f", fade {fade}" if fade != "none" else ""))
-    return ok(f"Placed {len(placed)} clip(s) on {track_name(layer)} from {start:.2f} s to {end:.2f} s "
-              f"({end - start:.1f} s{how}{fit_note}).",
+    from classes.editor_tools import playback_health
+    copies_note = playback_health.start_preview_copies(
+        [str(getattr(fresh(cid), "data", {}).get("file_id") or "") for cid in clip_ids if fresh(cid)], len(placed))
+    extra = {"new_tracks": new_tracks} if new_tracks else {}
+    return ok(f"Placed {len(placed)} clip(s) on {track_name(layer)}{new_tracks_note(new_tracks)} from {start:.2f} s "
+              f"to {end:.2f} s ({end - start:.1f} s{how}{fit_note}).{copies_note}",
               track=ui_track_number(layer), start=r3(start), end=r3(end), total_seconds=r3(end - start),
               clips=placed, transition_ids=transition_ids, trimmed_file_ids=trimmed_ids,
-              overlap_seconds=r3(overlap))
+              overlap_seconds=r3(overlap), **extra)
 
 
 # ---------------------------------------------------------------------------
@@ -385,12 +410,12 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
         "position_seconds": number("New timeline start of the (first) clip; -1 = keep the time.", -1.0),
         "by_seconds": number("Move by this many seconds (negative = earlier).", 0.0),
         "by_frames": integer("Nudge by this many frames (negative = earlier), like Ctrl+Left/Right.", 0),
-        "to_track": string("Destination track: UI track number (1 = bottom), name, or layer number. "
-                           "Empty = stay on the same track(s).", ""),
+        "to_track": string("Destination track: UI track number (1 = bottom), name, or layer number; one to three "
+                           "past the top adds the track(s). Empty = stay on the same track(s).", ""),
         "after_clip_id": string("Place the clip(s) right after this timeline clip, on its track.", ""),
         "before_clip_id": string("Place the clip(s) right before this timeline clip, on its track.", ""),
-        "ripple": boolean("Reorder instead of overwrite: close the hole the clips leave and push the clips at the "
-                          "destination later to make room (use this to reorder a sequence).", False),
+        "ripple": boolean("Reorder instead of overwrite: close the hole left behind and push the clips at the "
+                          "destination later to make room.", False),
         "allow_overlap": _OVERLAP_ARG,
     }),
     covers=("clip.move", "clip.nudge"),
@@ -399,19 +424,14 @@ def move_clips(timeline_clip_ids=[], clip_query="", track="", scope="", position
                by_frames=0, to_track="", after_clip_id="", before_clip_id="", ripple=False, allow_overlap=False):
     """Move clips to another time and/or track, nudge them by frames, or reorder a sequence.
 
-    Use for "move the intro to the end", "put the drone shot before the beach clip", "move this
-    to track 2", "shift everything on track 1 two seconds later", "nudge it 3 frames left".
-    Several clips keep their spacing and their relative tracks. Give exactly one of
-    position_seconds, by_seconds, by_frames, after_clip_id or before_clip_id (or only to_track).
-
-    Without ripple the clips are placed over whatever is there; the tool refuses if that would
-    cover another clip unless allow_overlap=true. With ripple=true the move is a reorder: the
-    hole left behind closes and the clips at the destination slide later to make room, e.g.
-    move the first clip to the end of track 1: timeline_clip_ids=[intro], after_clip_id=<last
-    clip>, ripple=true. position_seconds counts in the timeline as it is before the move.
-    Transitions stay where they are (only clips move). On a crossfaded sequence an insertion
-    point falls inside the previous clip's tail and is refused: reorder first, then add the
-    transitions. One undo step. Locked tracks are refused.
+    Several clips keep their spacing and relative tracks. Give exactly one of
+    position_seconds, by_seconds, by_frames, after_clip_id, before_clip_id (or
+    only to_track). Without ripple, covering another clip is refused unless
+    allow_overlap=true. position_seconds counts in the timeline as it is
+    before the move. Transitions stay put (only clips move). On a crossfaded
+    sequence an insertion point falls inside the previous clip's tail and is
+    refused: reorder first, then add the transitions. One undo step. Locked
+    tracks are refused.
     """
     from classes.query import Clip
 
@@ -439,10 +459,11 @@ def move_clips(timeline_clip_ids=[], clip_query="", track="", scope="", position
             raise ToolError("after_clip_id/before_clip_id already choose the track (the anchor's); drop to_track")
 
     src_layers = {int(c.data.get("layer") or 0) for c in clips}
+    new_tracks = 0
     if anchor:
-        layer_map = remap_layers(src_layers, str(ui_track_number(int(anchor.data.get("layer") or 0))))
+        layer_map, _ = remap_layers(src_layers, str(ui_track_number(int(anchor.data.get("layer") or 0))))
     elif to_track.strip():
-        layer_map = remap_layers(src_layers, to_track)
+        layer_map, new_tracks = remap_layers(src_layers, to_track)
     else:
         layer_map = {n: n for n in src_layers}
     require_unlocked(src_layers | set(layer_map.values()))
@@ -548,6 +569,10 @@ def move_clips(timeline_clip_ids=[], clip_query="", track="", scope="", position
             if abs(pos[item_id] - float(obj_.data.get("position") or 0.0)) > 1e-9:
                 moved_items[item_id] = (obj_, pos[item_id], int(obj_.data.get("layer") or 0))
 
+    named = layer_map[int(clips[0].data.get("layer") or 0)]
+    named_is_new = named not in set(track_numbers_bottom_up())
+    if new_tracks:
+        on_main(ensure_mapped_tracks, layer_map, timeout=HOP_TIMEOUT)
     moved, shifted = [], []
     for item_id, (item, new_pos, new_layer) in moved_items.items():
         fields = {"position": snap(new_pos)}
@@ -563,10 +588,12 @@ def move_clips(timeline_clip_ids=[], clip_query="", track="", scope="", position
     extend_timeline()
     refresh()
     first = moved[0]["to"] if moved else {}
-    summary = (f"Moved {len(moved)} clip(s) to {track_name(layer_map[next(iter(src_layers))])} at "
-               f"{first.get('position', 0):.2f} s" + (f"; {len(shifted)} later clip(s) shifted" if shifted else "")
-               + (f"; overlaps {len(hits)} clip(s)" if hits else "") + ".")
-    return ok(summary, moved=moved, shifted=sorted(shifted), overlaps=hits, ripple=bool(ripple))
+    on_named, added = added_tracks_notes(new_tracks, named_is_new)
+    summary = (f"Moved {len(moved)} clip(s) to {track_name(named)}{on_named} at {first.get('position', 0):.2f} s"
+               + (f"; {len(shifted)} later clip(s) shifted" if shifted else "")
+               + (f"; overlaps {len(hits)} clip(s)" if hits else "") + added + ".")
+    extra = {"new_tracks": new_tracks} if new_tracks else {}
+    return ok(summary, moved=moved, shifted=sorted(shifted), overlaps=hits, ripple=bool(ripple), **extra)
 
 
 # ---------------------------------------------------------------------------
@@ -603,7 +630,7 @@ def trim_clips(timeline_clip_ids=[], clip_query="", track="", scope="", trim_sta
     opens. With ripple=true the clip keeps its start and every later clip on the track moves to
     close (or open) the room. Extending past the media, before 0 s, or over another clip is
     refused with the exact limit (allow_overlap=true overlaps anyway). Still images can be any
-    length. To cut a clip in two use slice_clips_tool; to change speed use set_clip_speed_tool.
+    length. To cut a clip in two use slice_clips_tool; to change speed use find_tools (set clip speed).
     One undo step for the whole batch.
     """
     from classes.clip_utils import clip_time_bounds
@@ -736,6 +763,13 @@ def slice_clips(at_seconds=-1.0, timeline_clip_ids=[], clip_query="", track="", 
         s, e = span(data)
         return s + tol < t < e - tol
 
+    shortest = 2 * frame_seconds()
+
+    def leaves_sliver(data):
+        """A cut that would leave a piece under two frames long: nobody means that, it is a cut placed on an edge."""
+        s, e = span(data)
+        return t - s < shortest or e - t < shortest
+
     scope = (scope or "").strip().lower()
     skipped = []
     trans = []
@@ -745,6 +779,11 @@ def slice_clips(at_seconds=-1.0, timeline_clip_ids=[], clip_query="", track="", 
             if not inside(c.data):
                 s, e = span(c.data)
                 raise ToolError(f"{title(c)!r} ({s:.2f}-{e:.2f} s) is not under {t:.2f} s; cut inside the clip")
+            if leaves_sliver(c.data):
+                s, e = span(c.data)
+                raise ToolError(f"cutting {title(c)!r} ({s:.2f}-{e:.2f} s) at {t:.3f} s would leave a piece of {min(t - s, e - t):.3f} s, "
+                                "under two frames. To cut where someone starts or stops talking, get the exact time from "
+                                "run_tool(name='get_voice_edges_tool') (or run_tool(name='refine_cut_tool') for a picture cut); to shorten a clip use trim_clips_tool")
         require_unlocked({int(c.data.get("layer") or 0) for c in clips})
         if scope == "selected" and include_transitions:
             sel = set(getattr(get_app().window, "selected_transitions", []) or [])
@@ -753,7 +792,7 @@ def slice_clips(at_seconds=-1.0, timeline_clip_ids=[], clip_query="", track="", 
         wanted = {resolve_layer(track)} if scope == "track" else {int(t_.get("number") or 0) for t_ in layers()}
         if scope == "track":
             require_unlocked(wanted)
-        clips = [c for c in Clip.filter() if int(c.data.get("layer") or 0) in wanted and inside(c.data)]
+        clips = [c for c in Clip.filter() if int(c.data.get("layer") or 0) in wanted and inside(c.data) and not leaves_sliver(c.data)]
         if include_transitions:
             trans = [tr for tr in Transition.filter() if int(tr.data.get("layer") or 0) in wanted and inside(tr.data)]
         for item in [c for c in clips if is_locked(int(c.data.get("layer") or 0))]:
@@ -878,8 +917,8 @@ def remove_gaps(track="", from_seconds=0.0, only_first=False):
     schema=obj({
         **CLIPS_TARGET,
         "position_seconds": number("Timeline time for the first copy; -1 = right after the copied clips.", -1.0),
-        "to_track": string("Track for the copies: UI track number (1 = bottom), name, or layer number. Empty = the "
-                           "same track(s).", ""),
+        "to_track": string("Track for the copies: UI track number (1 = bottom), name, or layer number; one to "
+                           "three past the top adds the track(s). Empty = the same track(s).", ""),
         "copies": integer("How many copies, placed back to back.", 1, minimum=1, maximum=50),
         "include_transitions": boolean("Also copy the transitions between the copied clips (crossfades inside "
                                        "the selection).", True),
@@ -899,7 +938,7 @@ def duplicate_clips(timeline_clip_ids=[], clip_query="", track="", scope="", pos
     and relative tracks, get new ids (and new effect ids), and land right after the originals by
     default. The tool refuses to cover existing clips unless ripple=true (insert, pushing later
     clips) or allow_overlap=true. The system clipboard is not touched. To move instead of copy
-    use move_clips_tool; to loop one clip's playback use repeat_clip_tool. One undo step.
+    use run_tool(name='move_clips_tool'); to loop one clip's playback use run_tool(name='repeat_clip_tool'). One undo step.
     """
     from classes.query import Clip, Transition
 
@@ -907,7 +946,10 @@ def duplicate_clips(timeline_clip_ids=[], clip_query="", track="", scope="", pos
         raise ToolError("say which clips to duplicate: timeline_clip_ids, clip_query, or scope")
     clips = targets(timeline_clip_ids, clip_query, track, scope)
     src_layers = {int(c.data.get("layer") or 0) for c in clips}
-    layer_map = remap_layers(src_layers, to_track) if (to_track or "").strip() else {n: n for n in src_layers}
+    if (to_track or "").strip():
+        layer_map, new_tracks = remap_layers(src_layers, to_track)
+    else:
+        layer_map, new_tracks = {n: n for n in src_layers}, 0
     dest_layers = set(layer_map.values())
     require_unlocked(dest_layers, "the copies' destination")
 
@@ -979,6 +1021,9 @@ def duplicate_clips(timeline_clip_ids=[], clip_query="", track="", scope="", pos
             batch_trans.append(new.id)
         return batch, batch_trans
 
+    layers_before = len(track_numbers_bottom_up())
+    if new_tracks:
+        on_main(ensure_mapped_tracks, layer_map, timeout=HOP_TIMEOUT)
     created, new_trans = [], []
     for k in range(int(copies)):
         batch, batch_trans = on_main(_insert_copy, k, timeout=HOP_TIMEOUT)
@@ -986,11 +1031,13 @@ def duplicate_clips(timeline_clip_ids=[], clip_query="", track="", scope="", pos
         new_trans += batch_trans
     on_main(_finish_edit, timeout=HOP_TIMEOUT)
     first = created[0][0]
+    on_first, added = added_tracks_notes(new_tracks, (first["track"] or 0) > layers_before)
     return ok(f"Made {int(copies)} cop{'y' if copies == 1 else 'ies'} of {len(clips)} clip(s); the first starts at "
-              f"{first['position']:.2f} s on track {first['track']}"
+              f"{first['position']:.2f} s on track {first['track']}{on_first}"
               + (f"; {len([i for i in shifted if isinstance(i, Clip)])} later clip(s) pushed" if shifted else "")
-              + (f"; overlaps {len(hits)} clip(s)" if hits else "") + ".",
-              copies=created, transition_ids=new_trans, shifted=shifted_receipt(shifted), overlaps=hits)
+              + (f"; overlaps {len(hits)} clip(s)" if hits else "") + added + ".",
+              copies=created, transition_ids=new_trans, shifted=shifted_receipt(shifted), overlaps=hits,
+              **({"new_tracks": new_tracks} if new_tracks else {}))
 
 
 # ---------------------------------------------------------------------------
@@ -1052,5 +1099,6 @@ def align_clips(timeline_clip_ids=[], clip_query="", track="", scope="", edge="s
               edge=edge, at_seconds=r3(at), moved=moved, overlaps=hits)
 
 
-# Speed, repeat, freeze and audio/video tools register from their own module.
-from classes.editor_tools import timeline_edit_time  # noqa: E402,F401
+# Speed, repeat, freeze and audio/video tools register from their own module, and so
+# does build_reel_tool (a whole short-form edit cut to the music).
+from classes.editor_tools import timeline_edit_reels, timeline_edit_time  # noqa: E402,F401

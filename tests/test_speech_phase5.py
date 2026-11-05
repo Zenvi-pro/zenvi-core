@@ -147,7 +147,7 @@ def test_words_for_clip_maps_frames():
     assert len(rows) == 2
     assert rows[0]["index"] == 0
     assert rows[0]["startFrame"] == 5 * 30  # 1.0s into clip at pos 5 → t=5.0
-    assert rows[0]["transcriptGeneration"] == 2
+    assert rows[0]["transcript_generation"] == 2
     # Word at source 2.0 → timeline 6.0
     assert rows[1]["startFrame"] == 6 * 30
 
@@ -210,12 +210,12 @@ def test_get_transcript_clip_with_fake_asr(tmp_cache, tmp_path):
                  return_value=Fraction(30, 1),
              ):
             from classes.agent_tools.transcript import get_transcript
-            raw = get_transcript(clipId="c1")
+            raw = get_transcript(timeline_clip_id="c1")
         receipt = parse_receipt(raw)
         assert receipt["status"] == "applied"
         data = receipt["data"]
         assert data["transcriptionSource"] == "local"
-        assert data["transcriptGeneration"] == 1
+        assert data["transcript_generation"] == 1
         clip = data["clips"][0]
         assert "words" not in clip  # compact by default
         assert "compactWords" not in clip  # matches=[] cuts don't need the array
@@ -224,7 +224,7 @@ def test_get_transcript_clip_with_fake_asr(tmp_cache, tmp_path):
         assert "hello" in data["script"] and "world" in data["script"]
         assert "clipIds" in data and data["clipIds"] == ["c1"]
         assert data.get("fileIds") == []
-        assert "clipId=c1" in receipt["summary"]
+        assert "timeline_clip_id=c1" in receipt["summary"]
         assert "Transcribed" in receipt["summary"]
         assert "remove_words_tool" in receipt["summary"]
         assert len(receipt["summary"]) < 500  # never dump the full script into summary
@@ -243,8 +243,8 @@ def test_file_only_transcript_does_not_label_file_as_clip_id():
     summary = _short_transcript_summary(
         word_count=1, source="local", file_ids=["LTQM6B501R"],
     )
-    assert "fileId=LTQM6B501R" in summary
-    assert "clipId=LTQM6B501R" not in summary
+    assert "file_id=LTQM6B501R" in summary
+    assert "timeline_clip_id=LTQM6B501R" not in summary
     assert "NOT a timeline" in summary or "not a timeline" in summary.lower()
 
     data = _transcript_data_payload(
@@ -259,11 +259,11 @@ def test_file_only_transcript_does_not_label_file_as_clip_id():
     assert data["clipIds"] == []
     assert data["fileIds"] == ["LTQM6B501R"]
     assert data["nextAction"] != "remove_words_tool"
-    assert "fileId" in data["nextAction"] or "timeline" in data["nextAction"]
+    assert "file_id" in data["nextAction"] or "timeline" in data["nextAction"]
 
 
 def test_remove_words_resolves_file_id_to_single_timeline_clip(tmp_cache, tmp_path):
-    """Passing a media-bin fileId as clipId must cut the timeline clip, not refuse."""
+    """Passing a media-bin file_id as timeline_clip_id must cut the timeline clip, not refuse."""
     from classes.speech import asr as asr_mod
     asr_mod.set_transcriber_factory(_FakeTranscriber)
     try:
@@ -320,8 +320,8 @@ def test_remove_words_resolves_file_id_to_single_timeline_clip(tmp_cache, tmp_pa
                  return_value=(["BT5C75FYT5"], []),
              ) as apply_mock:
             from classes.agent_tools.transcript import remove_words
-            # Fake ASR words don't include FlowCut — use filler or wordIndices
-            raw = remove_words(clipId="LTQM6B501R", wordIndices="[1]")
+            # Fake ASR words don't include FlowCut — use filler or word_indices
+            raw = remove_words(timeline_clip_id="LTQM6B501R", word_indices="[1]")
         receipt = parse_receipt(raw)
         assert receipt["status"] == "applied", receipt.get("summary")
         assert apply_mock.called
@@ -375,12 +375,12 @@ def test_get_transcript_resolves_file_id_passed_as_clip_id(tmp_cache, tmp_path):
                  return_value=Fraction(30, 1),
              ):
             from classes.agent_tools.transcript import get_transcript
-            raw = get_transcript(clipId="LTQM6B501R")
+            raw = get_transcript(timeline_clip_id="LTQM6B501R")
         receipt = parse_receipt(raw)
         assert receipt["status"] == "applied", receipt.get("summary")
         assert receipt["data"]["clipIds"] == ["BT5C75FYT5"]
-        assert "clipId=BT5C75FYT5" in receipt["summary"]
-        assert "Unknown clipId" not in receipt["summary"]
+        assert "timeline_clip_id=BT5C75FYT5" in receipt["summary"]
+        assert "Unknown timeline_clip_id" not in receipt["summary"]
     finally:
         asr_mod.reset_transcriber_factory()
 
@@ -431,7 +431,7 @@ def test_get_transcript_include_words_adds_verbose_array(tmp_cache, tmp_path):
                  return_value=Fraction(30, 1),
              ):
             from classes.agent_tools.transcript import get_transcript
-            raw = get_transcript(clipId="c1", includeWords=True)
+            raw = get_transcript(timeline_clip_id="c1", include_words=True)
         receipt = parse_receipt(raw)
         words = receipt["data"]["clips"][0]["words"]
         assert len(words) == 3
@@ -485,7 +485,7 @@ def test_get_transcript_no_audio_is_unchanged_not_error(tmp_cache, tmp_path):
                  return_value=Fraction(30, 1),
              ):
             from classes.agent_tools.transcript import get_transcript
-            raw = get_transcript(clipId="c1")
+            raw = get_transcript(timeline_clip_id="c1")
         receipt = parse_receipt(raw)
         assert receipt["status"] == "unchanged"
         assert receipt["summary"] == NO_AUDIO_USER_MSG
@@ -609,11 +609,11 @@ def test_remove_words_refuses_stale_generation(tmp_cache, tmp_path):
              ):
             from classes.agent_tools.transcript import remove_words
             raw = remove_words(
-                clipId="c1", wordIndices=[0], transcriptGeneration=99,
+                timeline_clip_id="c1", word_indices=[0], transcript_generation=99,
             )
         receipt = parse_receipt(raw)
         assert receipt["status"] == "refused"
-        assert "transcriptGeneration" in receipt["summary"]
+        assert "transcript_generation" in receipt["summary"]
     finally:
         asr_mod.reset_transcriber_factory()
 
@@ -623,19 +623,16 @@ def test_phase5_tools_registered():
     for name in (
         "get_transcript_tool",
         "remove_words_tool",
-        "transcribe_media_tool",
     ):
         assert name in th.AGENT_TOOL_HANDLERS
         assert name in th.TOOL_DISPLAY_LABELS
         assert name in th.BACKGROUND_SAFE_TOOLS
     assert "get_transcript_tool" in th.READ_ONLY_TOOLS
-    assert "transcribe_media_tool" in th.READ_ONLY_TOOLS
     assert "remove_words_tool" not in th.READ_ONLY_TOOLS
 
     from classes.agent_tools.schema import TOOL_SCHEMAS
     assert "get_transcript_tool" in TOOL_SCHEMAS
     assert "remove_words_tool" in TOOL_SCHEMAS
-    assert "transcribe_media_tool" in TOOL_SCHEMAS
 
 
 def test_remove_words_applies_fragments(tmp_cache, tmp_path):
@@ -696,9 +693,9 @@ def test_remove_words_applies_fragments(tmp_cache, tmp_path):
              ) as apply_mock:
             from classes.agent_tools.transcript import remove_words
             raw = remove_words(
-                clipId="c1",
-                wordIndices=[1],
-                transcriptGeneration=1,
+                timeline_clip_id="c1",
+                word_indices=[1],
+                transcript_generation=1,
             )
         receipt = parse_receipt(raw)
         assert receipt["status"] == "applied"
@@ -809,9 +806,9 @@ def test_remove_words_matches_ignores_stale_generation(tmp_cache, tmp_path):
              ):
             from classes.agent_tools.transcript import remove_words
             raw = remove_words(
-                clipId="c1",
+                timeline_clip_id="c1",
                 matches=["FlowCut", "flocut"],
-                transcriptGeneration=99,
+                transcript_generation=99,
             )
         receipt = parse_receipt(raw)
         assert receipt["status"] == "applied", receipt.get("summary")
@@ -825,7 +822,7 @@ def test_remove_words_matches_ignores_stale_generation(tmp_cache, tmp_path):
 
 
 def test_remove_words_refuses_stale_indices_even_with_matches(tmp_cache, tmp_path):
-    """wordIndices override matches, so stale ones must refuse, not cut other words."""
+    """word_indices override matches, so stale ones must refuse, not cut other words."""
     from classes.speech import asr as asr_mod
     asr_mod.set_transcriber_factory(_FakeTranscriber)
     try:
@@ -854,7 +851,7 @@ def test_remove_words_refuses_stale_indices_even_with_matches(tmp_cache, tmp_pat
              patch("classes.agent_tools.transcript.apply_compacted_fragments",
                    return_value=(["c2"], [])) as apply:
             from classes.agent_tools.transcript import remove_words
-            raw = remove_words(clipId="c1", wordIndices=[2], matches=["FlowCut"], transcriptGeneration=99)
+            raw = remove_words(timeline_clip_id="c1", word_indices=[2], matches=["FlowCut"], transcript_generation=99)
         receipt = parse_receipt(raw)
         assert receipt["status"] == "refused"
         assert "mismatch" in receipt["summary"]
@@ -924,7 +921,7 @@ def test_remove_words_refuses_a_retimed_clip(tmp_cache, tmp_path, retime):
              patch("classes.agent_tools.transcript.apply_compacted_fragments",
                    return_value=(["c2"], [])) as apply_mock:
             from classes.agent_tools.transcript import remove_words
-            receipt = parse_receipt(remove_words(clipId="c1", wordIndices=[1], transcriptGeneration=1))
+            receipt = parse_receipt(remove_words(timeline_clip_id="c1", word_indices=[1], transcript_generation=1))
         assert receipt["status"] == "refused", receipt
         assert "speed" in receipt["summary"].lower()
         assert not apply_mock.called

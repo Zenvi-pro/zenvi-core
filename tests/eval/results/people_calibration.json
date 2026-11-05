@@ -1,0 +1,13 @@
+{
+  "what": "Face matching thresholds, measured on LFW (62 people with 20+ photos, 900 photos sampled with seed 0). Development data only; no face data is kept in the repository.",
+  "models": {"detector": "YuNet 2023mar (MIT)", "recognizer": "SFace 2021dec (Apache-2.0)"},
+  "detected": "900/900 photos, 18 ms a photo on a laptop CPU (detect + align + embed)",
+  "pairs": {"same_person": 21056, "different_person": 383494},
+  "cosine": {"same_person": {"mean": 0.701, "p5": 0.572, "median": 0.721}, "different_person": {"mean": 0.115, "p95": 0.263, "p99": 0.325, "max": 0.821}},
+  "auc": 0.9847,
+  "by_threshold": {"0.30": {"same_accepted": 0.982, "false_merge": 0.01991}, "0.363": {"same_accepted": 0.981, "false_merge": 0.00307},
+                   "0.40": {"same_accepted": 0.981, "false_merge": 0.0007}, "0.45": {"same_accepted": 0.981, "false_merge": 0.00009},
+                   "0.50": {"same_accepted": 0.977, "false_merge": 0.00004}},
+  "chosen": {"MATCH": 0.45, "UNSURE_LOW": 0.35, "why": "a merge is the costly mistake (it puts one person's edits on another), so the match line sits where false merges are 1 in 11,000 pairs; the band below it is reported as unsure and never merged"},
+  "limits": "LFW is near-frontal, well lit and centred. Video has profile views, motion blur, masks, tiny faces and children, where agreement is lower; those show up as unsure or as separate people, not as wrong merges, because the match line is strict."
+}

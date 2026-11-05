@@ -463,9 +463,11 @@ def merge_indexing_result(previous: Optional[dict], result: Dict[str, Any]) -> D
 
     A usable result replaces everything, so a successful retry also drops the
     old ``error``; it is dated so clip snapshots of the old analysis read as
-    stale. An unusable result (a failure, a skip, the in-progress stub) must not
-    wipe earlier good analysis: keep that content but take this attempt's
-    status, so a second failure reports its own error rather than the first.
+    stale. A result with no analysis content (a failure, a skip, a search-only
+    index of footage nothing describes yet, a cancelled run) must not wipe
+    earlier good analysis: keep that content but take this attempt's status,
+    so a second failure reports its own error rather than the first, and a
+    retry that succeeded no longer shows the first one's.
     """
     prev = previous if isinstance(previous, dict) else {}
     if is_ai_metadata_usable(result) or not is_ai_metadata_usable(prev):

@@ -11,6 +11,12 @@ A Mask transition sits on a track over the overlap of two clips (a crossfade or
 wipe from the earlier clip to the later one) or over one clip's edge (a fade in
 or out). It only shows where clips overlap, so changing a crossfade's length
 also moves the later clip (and rippled items after it on that track).
+
+update_transition_tool requests: "make the crossfade 2 seconds" ->
+duration_seconds=2 (e.g. between_clip_ids=["A","B"]); "use a circle wipe
+instead" -> mask="circle_in_to_out"; "make the wipe go the other way" ->
+flip_wipe_side=true (or the mirrored mask, e.g. wipe_right_to_left); "harder
+edge" -> contrast=20.
 """
 
 from __future__ import annotations
@@ -49,21 +55,18 @@ EPS = 1e-4
 
 TRANSITION_TARGET = {
     "transition_ids": array({"type": "string"}, "Transition ids (list_timeline_transitions_tool or "
-                                                "get_timeline_state_tool 'Effects/Transitions'). Preferred."),
-    "between_clip_ids": array({"type": "string"}, "Instead of ids: the two timeline clip ids the transition "
-                                                  "joins, e.g. [clip_a, clip_b]."),
-    "track": string("Track to look on (UI track number, 1 = bottom; name; or layer number). With scope='track' "
-                    "every transition on it.", ""),
-    "at_seconds": nullable(number("Instead of ids: the transition under this timeline time (on `track` when "
-                                  "given).", minimum=0)),
+                                                "get_timeline_state_tool). Preferred."),
+    "between_clip_ids": array({"type": "string"}, "Instead of ids: the two timeline clip ids it joins."),
+    "track": string("Track to look on: UI track number (1 = bottom), name, or layer number.", ""),
+    "at_seconds": nullable(number("Instead of ids: the transition under this timeline time (on track if given).",
+                                  minimum=0)),
     "scope": enum(["", "selected", "track", "all"],
-                  "'selected' = selected transitions, 'track' = every transition on `track`, 'all' = every "
-                  "transition on the timeline.", ""),
+                  "selected transitions, every one on track, or all on the timeline.", ""),
 }
 
-KEYFRAME_ITEM = mapping("One keyframe of a transition curve.", properties={
-    "seconds": number("Time from the START of the transition, 0 = its first frame.", minimum=0),
-    "value": number("Curve value (brightness -1..1: 1 = wipe not started, -1 = finished; contrast 0..20)."),
+KEYFRAME_ITEM = mapping("Curve point.", properties={
+    "seconds": number("From the transition's start (0 = first frame).", minimum=0),
+    "value": number("brightness -1..1 (1 = not started, -1 = finished); contrast 0..20."),
     "interpolation": enum(["bezier", "linear", "constant"], "Easing into the next point.", "bezier"),
 }, required=["seconds", "value"], additionalProperties=False)
 
@@ -197,7 +200,7 @@ def resolve_transitions(transition_ids=None, between_clip_ids=None, track="", at
         for tid in transition_ids:
             t = Transition.get(id=str(tid).strip())
             if not t:
-                raise ToolError(f"no transition with id={tid!r} (list_timeline_transitions_tool lists them)")
+                raise ToolError(f"no transition with id={tid!r} (run_tool(name='list_timeline_transitions_tool') lists them)")
             out.append(t)
         return out
     if between_clip_ids:
@@ -280,7 +283,7 @@ def _pick_mask(name):
     entry, candidates = transition_ops.find_transition(name)
     if entry is None:
         hint = f"; did you mean {', '.join(candidates)}" if candidates else ""
-        raise ToolError(f"unknown transition {name!r}{hint} (list_transitions_tool / search_transitions_tool)")
+        raise ToolError(f"unknown transition {name!r}{hint} (run_tool(name='list_transitions_tool'))")
     return entry
 
 
@@ -338,7 +341,7 @@ def list_timeline_transitions(track="", timeline_clip_id="", at_seconds=None):
     'later_first' = the later clip shows first and flashes back) or the clip edge it fades
     (on_clip_start = fade in, on_clip_end = fade out).
     Use before changing, reversing, copying or removing a transition. The catalog of
-    transitions you can add is list_transitions_tool / search_transitions_tool. Read-only.
+    transitions you can add is run_tool(name='list_transitions_tool') (query narrows it by name). Read-only.
     """
     layer = resolve_layer(track) if str(track or "").strip() else None
     items = [t for t in _transitions() if layer is None or _layer_of(t.data) == layer]
@@ -363,36 +366,31 @@ def list_timeline_transitions(track="", timeline_clip_id="", at_seconds=None):
     label="Change transition",
     schema=obj({
         **TRANSITION_TARGET,
-        "duration_seconds": number("New length in seconds (0 = keep). On a crossfade between two clips the later "
-                                   "clip moves so the clips overlap by exactly this much (see keep_overlap).",
-                                   0.0, minimum=0),
-        "keep_overlap": boolean("With duration_seconds on a crossfade: do not move any clip (the transition may "
-                                "then run past the overlap and dip to the track below).", False),
-        "ripple": boolean("With duration_seconds on a crossfade: move everything after the later clip on that "
-                          "track too, so no gap or overlap opens further down. false = move only the later clip.",
-                          True),
-        "position_seconds": nullable(number("Move the transition to start at this timeline time (clips stay).",
+        "duration_seconds": number("New length, seconds (0 = keep). On a crossfade the later clip moves so the "
+                                   "clips overlap by exactly this much.", 0.0, minimum=0),
+        "keep_overlap": boolean("With duration_seconds on a crossfade: move no clip (the transition may run past "
+                                "the overlap and dip to the track below).", False),
+        "ripple": boolean("With duration_seconds on a crossfade: also move everything after the later clip on "
+                          "that track. false = only the later clip.", True),
+        "position_seconds": nullable(number("Move the transition to start here, timeline seconds (clips stay).",
                                             minimum=0)),
-        "mask": string("Change the wipe shape: a transition name ('fade', 'wipe_left_to_right', 'circle_in_to_out', "
-                       "any list_transitions_tool name) or an image file path. '' = keep.", ""),
-        "mask_file_id": string("Use this project image file (e.g. a gradient or logo) as the wipe shape. '' = keep.",
-                               ""),
-        "flip_wipe_side": boolean("Wipe from the other side (left-to-right becomes right-to-left, circle-out "
-                                  "becomes circle-in) and still go from the earlier clip to the later one. Works for "
-                                  "any mask (inverts it and reverses its curve).", False),
-        "invert_mask": nullable(boolean("Raw 'mask invert' property. Alone it makes the later clip show first "
-                                        "(it flashes back before the cut); use flip_wipe_side instead.")),
-        "contrast": nullable(number("Edge hardness of the wipe: 0 = very soft/blurry edge, 3 = the default soft "
-                                    "edge, 20 = a hard line.", minimum=0, maximum=20)),
-        "brightness_keyframes": array(KEYFRAME_ITEM, "Replace the progress curve (brightness): 1 = not started, "
-                                                     "-1 = finished; times from the transition start."),
-        "contrast_keyframes": array(KEYFRAME_ITEM, "Replace the edge-hardness curve over time."),
+        "mask": string("Wipe shape: a list_transitions_tool name ('fade', 'circle_in_to_out') or an image path. "
+                       "'' = keep.", ""),
+        "mask_file_id": string("Project image file to use as the wipe shape. '' = keep.", ""),
+        "flip_wipe_side": boolean("Wipe from the other side, still earlier clip to later (inverts the mask and "
+                                  "reverses its curve; any mask).", False),
+        "invert_mask": nullable(boolean("Raw 'mask invert'. Alone it shows the later clip first; use "
+                                        "flip_wipe_side instead.")),
+        "contrast": nullable(number("Wipe edge hardness: 0 very soft, 3 default, 20 a hard line.",
+                                    minimum=0, maximum=20)),
+        "brightness_keyframes": array(KEYFRAME_ITEM, "Replace the progress curve: 1 = not started, -1 = "
+                                                     "finished."),
+        "contrast_keyframes": array(KEYFRAME_ITEM, "Replace the edge-hardness curve."),
         "interpolation": enum(["", "bezier", "linear", "constant"],
-                              "Easing of the progress curve: bezier = ease in/out (default), linear = constant "
-                              "speed, constant = jump. '' = keep.", ""),
-        "audio_crossfade": nullable(boolean("Also crossfade the two clips' audio under the transition "
-                                            "(equal-power).")),
-        "replace_image": nullable(boolean("Show the mask image itself instead of transitioning (a preview aid).")),
+                              "Progress-curve easing: bezier = ease in/out (default), linear, constant = jump. "
+                              "'' = keep.", ""),
+        "audio_crossfade": nullable(boolean("Also crossfade the two clips' audio (equal-power).")),
+        "replace_image": nullable(boolean("Show the mask image itself instead of transitioning (preview aid).")),
     }),
     covers=("transition.update",),
 )
@@ -402,17 +400,13 @@ def update_transition(transition_ids=None, between_clip_ids=None, track="", at_s
                       contrast_keyframes=None, interpolation="", audio_crossfade=None, replace_image=None):
     """Change a transition on the timeline: length, position, wipe shape, softness, curves, audio crossfade.
 
-    "Make the crossfade 2 seconds" -> duration_seconds=2: on a transition between two clips
-    the later clip (and, with ripple=true, everything after it on that track) moves so the
-    clips overlap by 2 s and the transition covers the overlap; other tracks never move. On
-    a fade at a clip's start/end the transition keeps that edge. The progress curve is
-    rescaled to the new length (with the default soft edge the visible dissolve is shorter
-    than the transition; a lower contrast makes it more gradual). "Use a circle wipe
-    instead" -> mask="circle_in_to_out"; "make the wipe go the other way" ->
-    flip_wipe_side=true (or the mirrored mask, e.g. wipe_right_to_left); "harder edge" ->
-    contrast=20. Changes every chosen transition in one undo step. Refused on locked
-    tracks. Never deletes clips.
-    Example: between_clip_ids=["A","B"], duration_seconds=2.
+    New duration on a crossfade: the later clip (with ripple, everything after
+    it on that track) moves so the clips overlap by that much and the
+    transition covers the overlap; other tracks never move. A fade at a clip's
+    start/end keeps that edge. The progress curve is rescaled (with the
+    default soft edge the visible dissolve is shorter than the transition;
+    lower contrast = more gradual). One undo step for all chosen transitions.
+    Refused on locked tracks. Never deletes clips.
     """
     from classes.query import File
 
@@ -590,7 +584,7 @@ def reverse_transition(transition_ids=None, between_clip_ids=None, track="", at_
     fade-in becomes a fade-out and back. On a crossfade/wipe BETWEEN two clips it makes the
     later clip show first and the earlier one flash back before the cut (the receipt's
     order becomes 'later_first'), which is rarely wanted: for "make the wipe go the other
-    way" use update_transition_tool(flip_wipe_side=true). Several transitions in one undo
+    way" use run_tool(name='update_transition_tool', args={'flip_wipe_side': true}). Several transitions in one undo
     step (scope='track' reverses a whole track). Refused on locked tracks; never deletes clips.
     """
     targets = resolve_transitions(transition_ids, between_clip_ids, track, at_seconds, scope)
@@ -750,7 +744,7 @@ def _retimed(data):
         "timeline_clip_ids": array({"type": "string"}, "Only join these clips (all on one track, joined in "
                                                        "timeline order). Leave out for every clip on the track."),
         "transition": string("'fade' (crossfade, default), 'random', or any transition name ('wipe_left_to_right', "
-                             "'circle_in_to_out', list_transitions_tool).", "fade"),
+                             "'circle_in_to_out', find_tools: list transitions).", "fade"),
         "duration_seconds": number("Length of each transition in seconds. 0 = the Default Transition Length "
                                    "preference.", 1.0, minimum=0),
         "method": enum(["ripple", "handles", "existing_overlaps"],
@@ -779,7 +773,7 @@ def add_transitions_between_clips(track="", timeline_clip_ids=None, transition="
     clip). Read `method` for how the overlap is made; the receipt lists every join added,
     skipped (gap, too short, already has one, no spare media) and every clip moved. One undo
     step. Refused on a locked track; never deletes clips. For one specific pair you can also
-    use apply_transition_tool.
+    use find_tools (apply a transition).
     Example: track="1", transition="fade", duration_seconds=0.5.
     """
     from classes.query import Clip, Transition

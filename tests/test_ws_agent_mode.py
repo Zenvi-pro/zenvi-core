@@ -29,5 +29,38 @@ class TestWsPayloadAgentMode(unittest.TestCase):
         self.assertEqual(payload_data["plan_id"], "plan-123")
 
 
+def test_send_message_ws_sends_the_project_id_only_when_known(monkeypatch):
+    import json
+    import sys
+    import types
+
+    from classes import api_client
+
+    sent = []
+
+    class _FakeWs:
+        def send(self, raw):
+            sent.append(json.loads(raw))
+
+        def recv(self):
+            return json.dumps({"type": "done", "data": {}})
+
+        def ping(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(sys.modules, "websocket",
+                        types.SimpleNamespace(create_connection=lambda *a, **k: _FakeWs()))
+    client = api_client.ZenviBackendClient(base_url="https://backend.test")
+    client.send_message_ws("hi", auth_token="tok", project_id="P1")
+    client.send_message_ws("hi", auth_token="tok")
+
+    with_id, without_id = [f["data"] for f in sent if f["type"] == "user_message"]
+    assert with_id["project_id"] == "P1"
+    assert "project_id" not in without_id
+
+
 if __name__ == "__main__":
     unittest.main()

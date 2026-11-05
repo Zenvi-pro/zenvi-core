@@ -126,6 +126,8 @@ class AIMediaPanel(QDockWidget):
         files_model = getattr(get_app().window, "files_model", None)
         if files_model and self._display_file_id:
             files_model.reindex_file(self._display_file_id)
+            # A file waiting for a worker slot emits no progress yet: show it queued now.
+            self.update_selected_clip_description()
 
     def refresh(self):
         """Refresh the description view (based on current selection)."""

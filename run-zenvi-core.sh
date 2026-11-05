@@ -79,6 +79,9 @@ ENV_ARGS=(
   "PYTHONPATH=$COMBINED_PYTHONPATH"
   "PYTHONPATH_LIBOPENSHOT=$HOST_LIB"
 )
+if [[ -n "${ZENVI_BACKEND_URL:-}" ]]; then
+  ENV_ARGS+=("ZENVI_BACKEND_URL=$ZENVI_BACKEND_URL")
+fi
 
 # Windows Python ignores HOME and needs USERPROFILE; Claude/Codex login
 # state also lives under the Windows profile, not MSYS /home/$USER.

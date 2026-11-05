@@ -27,8 +27,9 @@ class PlanningToolGuardTests(unittest.TestCase):
     def test_allows_plan_crud(self):
         self.assertTrue(is_planning_tool_allowed("update_edit_plan_step_tool"))
 
-    def test_allows_search_clips(self):
-        self.assertTrue(is_planning_tool_allowed("search_clips_tool"))
+    def test_allows_footage_search_and_not_the_removed_cloud_search(self):
+        self.assertTrue(is_planning_tool_allowed("search_footage_tool"))
+        self.assertFalse(is_planning_tool_allowed("search_clips_tool"))
 
 
 class PlanningBlockMessageTests(unittest.TestCase):
@@ -53,7 +54,8 @@ class PlanningBlockMessageTests(unittest.TestCase):
         from windows.ai_chat_ui import _is_planning_tool_allowed
 
         self.assertFalse(_is_planning_tool_allowed("generate_video_and_add_to_timeline_tool"))
-        self.assertTrue(_is_planning_tool_allowed("search_clips_tool"))
+        self.assertTrue(_is_planning_tool_allowed("search_footage_tool"))
+        self.assertFalse(_is_planning_tool_allowed("search_clip_scenes_tool"))
 
 
 if __name__ == "__main__":

@@ -117,3 +117,44 @@ def test_remove_files_from_project_deletes_clips_then_the_file(editor):
     assert files == [fid] and set(clips) == {c1, c2}
     assert editor.file(fid) is None and editor.clip(keep) is not None
     editor.window.generation_queue.cancel_jobs_for_file.assert_called_with(fid)
+
+
+def test_sync_clips_never_clamps_for_float_error_in_the_duration(editor):
+    """A relinked ProRes file probes 2.5999999 s for 2.6 s: its clips keep their last frame."""
+    from classes.query import File
+    fid = editor.add_file("video", duration=2.6)
+    cid = editor.add_clip(fid, position=0.0, end=2.6)
+    f = File.get(id=fid)
+    f.data = dict(f.data, duration=2.5999999)
+    from classes.tool_handlers import _transaction
+    with _transaction(editor.app):
+        pf.save_file_and_sync_clips(f)
+    assert editor.clip(cid)["end"] == 2.6
+    f = File.get(id=fid)
+    f.data = dict(f.data, duration=1.99999)  # really shorter: clamped onto the frame grid
+    with _transaction(editor.app):
+        pf.save_file_and_sync_clips(f)
+    assert editor.clip(cid)["end"] == pytest.approx(2.0) and editor.clip(cid)["end"] == 60 / 30
+
+
+def test_media_frame_count_rounds_like_add_clip():
+    from fractions import Fraction
+    assert pf.media_frame_count(2.5999999, Fraction(30)) == 78
+    assert pf.media_frame_count(2.6, Fraction(30)) == 78
+    assert pf.media_frame_count(2.583, Fraction(30)) == 77  # 77.49 frames
+    assert pf.media_frame_count(0.0, Fraction(30)) == 1
+
+
+@pytest.mark.parametrize("path, expected", [
+    ("/media/frames/frame_%04d.png", True),
+    ("/media/frames/img%d.jpg", True),
+    ("C:\\renders\\shot_%3d.exr", True),
+    ("/media/promo 50% off.mp4", False),       # a % in the name, not a frame pattern
+    ("/media/clip 50%20off.mp4", False),       # URL-encoded space left in a file name
+    ("/media/seq_%04d.mp4", False),            # a pattern, but not an image
+    ("/media/escaped_%%04d.png", False),       # an escaped %%
+    ("/media/100%done/frame_0001.png", False), # one numbered frame, % only in the folder
+    ("", False),
+])
+def test_is_image_sequence_needs_a_frame_pattern_on_an_image(path, expected):
+    assert pf.is_image_sequence({"path": path, "media_type": "video"}) is expected

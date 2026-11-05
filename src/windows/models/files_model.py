@@ -99,241 +99,32 @@ class BackendIndexingWorker(QThread):
     """Background worker: Gemini index + Flash audiovisual summary."""
     completed = pyqtSignal(dict, object, object)  # file_data, metadata, error
     progress = pyqtSignal(str, str, int)  # file_id, phase, percent (-1 = indeterminate)
-    intermediate_save = pyqtSignal(str, object)  # file_id, metadata dict
 
-    def __init__(self, file_data, project_id="", force=False, parent=None):
+    def __init__(self, file_data, project_id="", parent=None):
         super().__init__(parent)
         self.file_data = file_data
         self.project_id = project_id or ""
-        # Re-index even a file whose last index finished cleanly (the Re-index action).
-        self.force = bool(force)
+        self._job = None
 
-    # Hard limit: clips longer than 30 minutes are not indexed or summarized.
-    _MAX_INDEXING_SECONDS = 30 * 60
 
     def run(self):
-        import os as _os
+        # The logic lives in classes.media_index.job (no Qt, so it is tested headlessly);
+        # this thread only supplies the backend client and the two signals.
+        from classes.media_index.job import IndexingJob
 
-        client = get_backend_client()
-        metadata = client._empty_ai_metadata()
-        error = None
-        try:
-            file_path = self.file_data.get("path", "")
-            file_id = self.file_data.get("id", "")
-            # Re-resolve type from path: libopenshot often marks MP3 as has_video.
-            from classes.image_types import get_media_type, is_audio_path
-            media_type = str(self.file_data.get("media_type") or "").strip().lower()
-            if is_audio_path(file_path):
-                media_type = "audio"
-                self.file_data["media_type"] = "audio"
-            elif media_type not in ("video", "image", "audio"):
-                media_type = get_media_type(self.file_data) if self.file_data else "video"
-            if media_type in ("video", "image", "audio"):
-
-                duration = float(self.file_data.get("duration") or 0)
-                if media_type != "image" and duration > self._MAX_INDEXING_SECONDS:
-                    log.warning(
-                        "Skipping indexing+summarize for %s: duration %.0fs > 30-minute limit.",
-                        file_path, duration,
-                    )
-                    metadata["skip_reason"] = (
-                        f"Clip duration {duration / 60:.1f} min exceeds the 30-minute limit. "
-                        "Indexing and description generation were skipped."
-                    )
-                    self.completed.emit(self.file_data, metadata, None)
-                    return
-
-                filename = _os.path.basename(file_path)
-                from classes.project_tl_index import build_project_index_name
-                from classes.twelvelabs_match import get_index_block, index_is_complete
-
-                index_name = build_project_index_name(self.project_id)
-                indexing_configured = client.is_indexing_configured()
-
-                existing_ai = self.file_data.get("ai_metadata") or {}
-                existing_idx = get_index_block(existing_ai)
-
-                # A failed run can leave ready index handles behind, so only a clean
-                # one counts as already indexed; Re-index (force) always runs again.
-                if not self.force and index_is_complete(existing_ai):
-                    metadata = dict(existing_ai) if isinstance(existing_ai, dict) else metadata
-                    metadata["index"] = dict(existing_idx)
-                    metadata["twelvelabs"] = dict(existing_idx)
-                    metadata["analyzed"] = bool(metadata.get("analyzed"))
-                    self.completed.emit(self.file_data, metadata, None)
-                    return
-
-                if not indexing_configured:
-                    metadata["error"] = "Gemini indexing is not configured on the backend (GOOGLE_API_KEY)."
-                    self.completed.emit(self.file_data, metadata, None)
-                    return
-
-                try:
-                    from classes.credits_client import check_operation
-
-                    credit_duration = duration if media_type != "image" else 60.0
-                    _, balance, blocked = check_operation(
-                        "indexing_per_minute",
-                        f"{media_type} indexing",
-                        duration_seconds=credit_duration,
-                    )
-                    if blocked:
-                        skip_block = {
-                            "status": "skipped",
-                            "error": blocked,
-                            "index_name": index_name,
-                            "provider": "gemini",
-                            "media_type": media_type,
-                        }
-                        metadata["index"] = skip_block
-                        metadata["twelvelabs"] = skip_block
-                        self.completed.emit(self.file_data, metadata, None)
-                        return
-                except Exception as cred_exc:
-                    log.warning("Indexing credits check failed: %s", cred_exc)
-                    fail_block = {
-                        "status": "failed",
-                        "error": str(cred_exc),
-                        "index_name": index_name,
-                        "provider": "gemini",
-                        "media_type": media_type,
-                    }
-                    metadata["index"] = fail_block
-                    metadata["twelvelabs"] = fail_block
-                    self.completed.emit(self.file_data, metadata, None)
-                    return
-
-                def _progress_cb(phase, percent):
-                    self.progress.emit(file_id, phase, percent)
-
-                self.progress.emit(file_id, "uploading", 0)
-                partial = client._empty_ai_metadata()
-                partial["media_type"] = media_type
-                partial["index"] = {
-                    "status": "indexing",
-                    "index_name": index_name,
-                    "video_id": file_id,
-                    "provider": "gemini",
-                    "media_type": media_type,
-                }
-                partial["twelvelabs"] = dict(partial["index"])
-                self.intermediate_save.emit(file_id, partial)
-
-                s = client._new_http_session()
-                try:
-                    idx_result = client.start_direct_indexing_job(
-                        file_path,
-                        index_name,
-                        file_id=file_id,
-                        filename=filename,
-                        session=s,
-                        progress_callback=_progress_cb,
-                        project_id=self.project_id,
-                        duration_sec=duration,
-                        force=self.force,
-                        media_type=media_type,
-                    )
-                except Exception as idx_exc:
-                    log.warning("Gemini indexing failed: %s", idx_exc)
-                    fail_block = {
-                        "status": "failed",
-                        "error": str(idx_exc),
-                        "index_name": index_name,
-                        "provider": "gemini",
-                        "media_type": media_type,
-                    }
-                    metadata["index"] = fail_block
-                    metadata["twelvelabs"] = fail_block
-                    self.completed.emit(self.file_data, metadata, None)
-                    return
-
-                if isinstance(idx_result, dict) and idx_result.get("error") and not idx_result.get("ai_metadata"):
-                    log.warning("Gemini indexing returned error: %s", idx_result.get("error"))
-                    fail_block = {
-                        "status": "failed",
-                        "error": idx_result.get("error"),
-                        "index_name": index_name,
-                        "provider": "gemini",
-                        "media_type": media_type,
-                    }
-                    metadata["index"] = fail_block
-                    metadata["twelvelabs"] = fail_block
-                    metadata["error"] = idx_result.get("error")
-                    self.completed.emit(self.file_data, metadata, None)
-                    return
-
-                has_payload = isinstance(idx_result, dict) and (
-                    idx_result.get("index_id")
-                    or idx_result.get("ai_metadata")
-                    or (idx_result.get("video_id") and not idx_result.get("error"))
-                )
-                if has_payload:
-                    from classes.credits_client import charge_operation_on_success
-                    charge_operation_on_success(
-                        True,
-                        "indexing_per_minute",
-                        provider="gemini",
-                        note=f"import {file_id}",
-                        duration_seconds=duration if media_type != "image" else 60.0,
-                    )
-                    ai_meta = idx_result.get("ai_metadata")
-                    if isinstance(ai_meta, dict) and ai_meta:
-                        metadata = ai_meta
-                    index_id = str(idx_result.get("index_id") or index_name)
-                    video_id = str(idx_result.get("video_id") or file_id)
-                    index_block = {
-                        "status": "ready",
-                        "index_id": index_id,
-                        "video_id": video_id,
-                        "index_name": index_name,
-                        "provider": "gemini",
-                        "media_type": media_type,
-                    }
-                    if isinstance(metadata.get("index"), dict):
-                        index_block.update(metadata["index"])
-                        index_block["status"] = "ready"
-                        index_block["media_type"] = media_type
-                        index_block["index_id"] = index_id or index_block.get("index_id") or index_name
-                    metadata["index"] = index_block
-                    metadata["twelvelabs"] = dict(index_block)
-                    metadata["provider"] = "gemini-flash"
-                    metadata["media_type"] = media_type
-                    if metadata.get("analyzed"):
-                        self.progress.emit(file_id, "done", 100)
-                    log.info(
-                        "Gemini indexing complete: index=%s index_id=%s video_id=%s media=%s analyzed=%s",
-                        index_name, index_id, video_id, media_type, metadata.get("analyzed"),
-                    )
-                else:
-                    err = ""
-                    if isinstance(idx_result, dict):
-                        err = str(
-                            idx_result.get("error")
-                            or idx_result.get("message")
-                            or ""
-                        ).strip()
-                    metadata["error"] = err or "Indexing returned no index_id"
-                    fail_block = {
-                        "status": "failed",
-                        "error": metadata["error"],
-                        "index_name": index_name,
-                        "provider": "gemini",
-                        "media_type": media_type,
-                    }
-                    metadata["index"] = fail_block
-                    metadata["twelvelabs"] = fail_block
-                    log.warning(
-                        "Gemini indexing missing payload for %s: %s",
-                        file_id,
-                        idx_result,
-                    )
-        except Exception as exc:
-            error = exc
-            log.error(f"Backend indexing/summarize worker failed: {exc}")
-        self.completed.emit(self.file_data, metadata, error)
+        self._job = IndexingJob(
+            self.file_data, self.project_id,
+            client_factory=get_backend_client,  # looked up now, so a test can patch the module name
+            emit_completed=self.completed.emit,
+            emit_progress=self.progress.emit,
+        )
+        self._job.run()
 
     def interrupt(self):
-        """Close the active HTTP session to unblock any pending request."""
+        """Stop local analysis and close the active HTTP session to unblock any pending request."""
+        job = getattr(self, "_job", None)
+        if job is not None:
+            job.cancel()
         try:
             client = get_backend_client()
             if client._session is not None:
@@ -468,6 +259,7 @@ class FileFilterProxyModel(QSortFilterProxyModel):
 class FilesModel(QObject, updates.UpdateInterface):
     ModelRefreshed = pyqtSignal()
     indexingProgress = pyqtSignal(str, str, int)  # file_id, phase, percent
+    sessionSaved = pyqtSignal()  # a Zenvi session was saved (any thread): resume "sign in to index" files
     PLACEHOLDER_PREFIX = "__genjob__:"
     PROJECT_FILE_THUMB_ATTEMPTS = 3
     _pending_icon = None
@@ -809,18 +601,17 @@ class FilesModel(QObject, updates.UpdateInterface):
         self._active_indexers.clear()
 
     def _apply_ai_metadata(self, file_obj, ai_metadata):
-        """Attach AI metadata to a file object (does not save)."""
+        """Attach an indexing result to a file object (does not save)."""
         if not ai_metadata or not isinstance(ai_metadata, dict):
             return
         from classes.ai_metadata_utils import is_ai_metadata_usable, merge_indexing_result
 
-        # A failed / empty result keeps previously-good analysis but records this
-        # attempt's error; a usable one replaces the old state, error included.
+        # A failed, skipped or search-only result keeps previously-good analysis but
+        # takes this attempt's status; a usable one replaces the old state, error included.
         merged = merge_indexing_result(file_obj.data.get("ai_metadata"), ai_metadata)
         file_obj.data["ai_metadata"] = merged
         # Cache bulky transcript/scene payload by fingerprint; keep index handles in project JSON.
-        # Only fresh analysis goes there: a failure has nothing new to cache, even
-        # when earlier analysis was kept.
+        # Only fresh analysis goes there: a failure has nothing new to cache.
         try:
             fp = file_obj.data.get("fingerprint")
             if fp and is_ai_metadata_usable(ai_metadata):
@@ -831,27 +622,15 @@ class FilesModel(QObject, updates.UpdateInterface):
         self._status_cache.pop(str(file_obj.data.get("id", "")), None)
         # Do not auto-fill legacy file.data["tags"] from AI analysis.
 
-    def apply_indexing_result(self, file_id, metadata):
-        """Store an indexing outcome on its file and repaint the views (main thread).
+    def _save_file_untracked(self, file_obj):
+        """Write an indexing result into the project without an undo step.
 
-        The import worker and the reindex tool both land here, so a retry
-        replaces a failed state the same way whichever one ran it.
+        Indexing finishes whenever it finishes. A normal save would put an entry in the
+        undo history, so a user's next Ctrl+Z would silently undo an index they never asked
+        for (and a half-finished "indexing..." marker with it). One user intent is one undo
+        step; background analysis is not a user intent.
         """
-        f = File.get(id=file_id)
-        if not f:
-            return
-        self._apply_ai_metadata(f, metadata)
-        from classes.ai_metadata_utils import is_ai_metadata_usable
-        if is_ai_metadata_usable(metadata):
-            f.save()
-        else:
-            # A failure, skip or in-progress stub must not add an undo step.
-            get_app().updates.update_untracked(f.key, f.data)
-        get_app().window.FileUpdated.emit(str(file_id))
-        try:
-            get_app().window.schedule_flush_project_to_disk()
-        except Exception:
-            pass
+        get_app().updates.update_untracked(file_obj.key, file_obj.data)
 
     def _set_indexing_progress(self, file_id, phase, percent):
         self._indexing_progress[str(file_id)] = {"phase": phase, "percent": percent}
@@ -898,7 +677,7 @@ class FilesModel(QObject, updates.UpdateInterface):
     def is_file_queued(self, file_id):
         """True while a file waits for one of the bounded indexing worker slots."""
         fid = str(file_id or "")
-        return any(qid == fid for qid, _ in self._indexing_queue)
+        return any(qid == fid for qid in self._indexing_queue)
 
     def has_active_indexing(self):
         """True while any file in the project is indexing or waiting to index."""
@@ -907,29 +686,64 @@ class FilesModel(QObject, updates.UpdateInterface):
     def get_indexing_progress(self, file_id):
         return self._indexing_progress.get(str(file_id or ""))
 
-    def _enqueue_index(self, file_id, force=False):
-        """Queue a file for background indexing/summarize with bounded concurrency."""
+    def _enqueue_index(self, file_id):
+        """Queue a file for background indexing with bounded concurrency."""
         fid = str(file_id or "")
         if not fid:
             return
         if self.is_file_indexing(fid):
             return
-        if any(qid == fid for qid, _ in self._indexing_queue):
+        if any(qid == fid for qid in self._indexing_queue):
             return
-        self._indexing_queue.append((fid, bool(force)))
+        self._indexing_queue.append(fid)
         self._status_cache.pop(fid, None)
         self._drain_indexing_queue()
 
+    def _timeline_file_ids(self):
+        """Files a timeline clip uses: they are indexed before files nobody has placed yet."""
+        try:
+            from classes.media_index.queue import timeline_file_ids
+            return timeline_file_ids(get_app().project.get("clips"))
+        except Exception:
+            return set()
+
+    def _schedule_index_retry(self):
+        """Try the queued search-model downloads again. They finish on their own once the network is back."""
+        timer = getattr(self, "_index_retry_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self.requeue_unsearchable)
+            self._index_retry_timer = timer
+        if not timer.isActive():
+            timer.start(15000)
+
+    def requeue_unsearchable(self, *_args):
+        """Index again the files with no search vectors from the chosen model: after a sign-in, a project open, or a change
+        of Preferences > Footage search model. Files already embedded by that model are left alone."""
+        try:
+            from classes.editor_tools.media_index_tools import missing_layers
+            from classes.media_index import schema as S
+            from classes.media_index.queue import unsearchable_ids
+            ids = unsearchable_ids(get_app().project.get("files"), lambda f: S.LAYER_VECTORS in missing_layers(f))
+        except Exception:
+            log.debug("Could not list files to index again", exc_info=1)
+            return
+        for fid in ids:
+            self._enqueue_index(fid)
+
     def _drain_indexing_queue(self):
+        from classes.media_index.queue import next_index
         while len(self._active_indexers) < self._MAX_INDEXING_WORKERS and self._indexing_queue:
-            file_id, force = self._indexing_queue.pop(0)
+            file_id = self._indexing_queue.pop(
+                next_index(self._indexing_queue, self._timeline_file_ids()))
             if self.is_file_indexing(file_id):
                 continue
-            self._start_indexing_worker(file_id, force=force)
+            self._start_indexing_worker(file_id)
 
-    def _index_file_async(self, file_id, force=False):
-        """Fire-and-forget background indexing/summarize for an already-saved file."""
-        self._enqueue_index(file_id, force=force)
+    def _index_file_async(self, file_id):
+        """Fire-and-forget background indexing for an already-saved file."""
+        self._enqueue_index(file_id)
 
     def can_reindex_file(self, file_id):
         """Whether Re-index applies: indexable media that is not indexing or queued already."""
@@ -941,11 +755,16 @@ class FilesModel(QObject, updates.UpdateInterface):
         return not (self.is_file_indexing(file_id) or self.is_file_queued(file_id))
 
     def reindex_file(self, file_id):
-        """The Re-index action: index the file again, even if it already has a clean index."""
-        if self.can_reindex_file(file_id):
-            self._enqueue_index(file_id, force=True)
+        """The Re-index action: run the file through the indexing job again.
 
-    def _start_indexing_worker(self, file_id, force=False):
+        The job redoes only what is missing or failed (nothing saved is redone or charged
+        again), then stores what the file has now, so a failed or interrupted index is
+        retried and a clean one is refreshed.
+        """
+        if self.can_reindex_file(file_id):
+            self._enqueue_index(file_id)
+
+    def _start_indexing_worker(self, file_id):
         from classes.query import File as _File
         file_obj = _File.get(id=file_id)
         if not file_obj or not isinstance(file_obj.data, dict):
@@ -962,7 +781,7 @@ class FilesModel(QObject, updates.UpdateInterface):
         except Exception:
             pass
         worker = BackendIndexingWorker(
-            dict(file_obj.data), project_id=project_id, force=force,
+            dict(file_obj.data), project_id=project_id,
         )
         self._active_indexers.append(worker)
         self._set_indexing_progress(file_id, "uploading", -1)
@@ -979,28 +798,30 @@ class FilesModel(QObject, updates.UpdateInterface):
         def _on_progress(fid, phase, percent):
             self._set_indexing_progress(fid, phase, percent)
 
-        def _on_intermediate(fid, metadata):
-            try:
-                if not metadata or not isinstance(metadata, dict):
-                    return
-                self.apply_indexing_result(fid, metadata)
-            except Exception as exc:
-                log.warning(f"Failed to apply intermediate indexing result: {exc}")
-
         def _on_complete(_file_data, metadata, error):
             try:
                 if error:
                     log.warning(f"Background indexing failed for {file_id}: {error}")
                     # Persist it, or the file keeps no status and shows no badge at all.
                     metadata = dict(metadata or {}, error=str(error))
+                elif (metadata or {}).get("retry_index"):
+                    self._schedule_index_retry()
                 if not metadata or not isinstance(metadata, dict):
                     return
-                self.apply_indexing_result(file_id, metadata)
+                f = _File.get(id=file_id)
+                if not f:
+                    return
+                self._apply_ai_metadata(f, metadata)
+                self._save_file_untracked(f)
+                get_app().window.FileUpdated.emit(str(file_id))
+                try:
+                    get_app().window.schedule_flush_project_to_disk()
+                except Exception:
+                    pass
             except Exception as exc:
                 log.warning(f"Failed to apply background indexing result: {exc}")
 
         worker.progress.connect(_on_progress)
-        worker.intermediate_save.connect(_on_intermediate)
         worker.completed.connect(_on_complete)
         worker.finished.connect(_on_finished)
         worker.start()
@@ -1461,7 +1282,7 @@ class FilesModel(QObject, updates.UpdateInterface):
         self.ignore_updates = False
         self.ignore_image_sequence_paths = []
         self._active_indexers = []  # strong refs to keep QThreads alive until finished
-        self._indexing_queue = []  # (file_id, force) waiting for a worker slot
+        self._indexing_queue = []  # file ids waiting for a worker slot
         self._indexing_progress = {}
         self._status_cache = {}
         self.thumbnails = None  # thumbnail worker, created below
@@ -1473,6 +1294,15 @@ class FilesModel(QObject, updates.UpdateInterface):
             get_app().aboutToQuit.connect(self._stop_active_indexers)
         except Exception:
             pass
+
+        # A sign-in can switch the search model to the cloud one the user picked: files are embedded again once a
+        # session is saved. The signal hops to the GUI thread, wherever the login finished.
+        try:
+            from classes.auth_manager import AuthManager
+            self.sessionSaved.connect(self.requeue_unsearchable)
+            AuthManager.instance().add_session_listener(self.sessionSaved.emit)
+        except Exception:
+            log.debug("Could not watch for sign-in", exc_info=1)
 
         # Create proxy model (for sorting and filtering) - used by TreeView
         self.proxy_model = FileFilterProxyModel(parent=self)

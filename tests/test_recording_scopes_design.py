@@ -11,6 +11,7 @@ import re
 import sys
 import tokenize
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -47,6 +48,8 @@ HEX = re.compile(r"#[0-9a-fA-F]{3,8}\b")
 
 
 class _Translator:
+    updates = SimpleNamespace(add_listener=lambda _listener: None)   # the dock follows project changes
+
     def _tr(self, text):
         return text
 

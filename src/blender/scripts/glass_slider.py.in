@@ -89,6 +89,32 @@ try:
 except NameError:
     pass
 
+# Render options first: the output path (and frame range) come from the
+# injected params even if a later step fails, never from the path saved in the .blend.
+# Set the render options.  It is important that these are set
+# to the same values as the current OpenShot project.  These
+# params are automatically set by OpenShot
+bpy.context.scene.render.filepath = params["output_path"]
+bpy.context.scene.render.fps = params["fps"]
+if "fps_base" in params:
+    bpy.context.scene.render.fps_base = params["fps_base"]
+bpy.context.scene.render.image_settings.file_format = params["file_format"]
+bpy.context.scene.render.image_settings.color_mode = params["color_mode"]
+bpy.context.scene.render.film_transparent = params["alpha_mode"]
+bpy.context.scene.render.resolution_x = params["resolution_x"]
+bpy.context.scene.render.resolution_y = params["resolution_y"]
+bpy.context.scene.render.resolution_percentage = params["resolution_percentage"]
+
+# Animation Speed (use Blender's time remapping to slow or speed up animation)
+length_multiplier = round(params["length_multiplier"])  # time remapping multiplier
+new_length = params["end_frame"] * length_multiplier  # new length (in frames)
+bpy.context.scene.render.frame_map_old = 1
+bpy.context.scene.render.frame_map_new = length_multiplier
+
+# Set render length/position
+bpy.context.scene.frame_start = params["start_frame"]
+bpy.context.scene.frame_end = new_length
+
 # TITLE 1 - Modify Text / Curve settings
 text_object1 = bpy.data.curves["Title1"]
 text_object1.extrude = params["extrude"]
@@ -135,10 +161,11 @@ bg_mat = keyframe_principled(
 if bg_mat:
     bg_mat.specular_intensity = params["specular_intensity_bg"]
     set_material_color("Background.Material", params["diffuse_color_bg"])
-if bpy.data.materials.get("Background.Material") and bpy.data.materials["Background.Material"].node_tree:
-    bg_nodes = bpy.data.materials["Background.Material"].node_tree.nodes
-    if len(bg_nodes) > 1 and hasattr(bg_nodes[1].inputs[18], "default_value"):
-        bg_nodes[1].inputs[18].default_value = params["alpha_bg"]
+# Glass opacity: look the socket up by name (Blender 5 reordered the Principled BSDF inputs)
+if bg_mat and bg_mat.node_tree:
+    alpha_socket = _input_socket(_get_principled_node(bg_mat), "Alpha")
+    if alpha_socket is not None:
+        alpha_socket.default_value = params["alpha_bg"]
 
 # ADJUST STARTING POSITION (Keyframes)
 text_action = bpy.data.actions.get("TextAction")
@@ -170,28 +197,3 @@ if text_action:
 
     _set_kp(loc_z, 1, 80.0, params["start_z"])
     _set_kp(loc_z, 2, 150.0, params["start_z"])
-
-
-# Set the render options.  It is important that these are set
-# to the same values as the current OpenShot project.  These
-# params are automatically set by OpenShot
-bpy.context.scene.render.filepath = params["output_path"]
-bpy.context.scene.render.fps = params["fps"]
-if "fps_base" in params:
-    bpy.context.scene.render.fps_base = params["fps_base"]
-bpy.context.scene.render.image_settings.file_format = params["file_format"]
-bpy.context.scene.render.image_settings.color_mode = params["color_mode"]
-bpy.context.scene.render.film_transparent = params["alpha_mode"]
-bpy.context.scene.render.resolution_x = params["resolution_x"]
-bpy.context.scene.render.resolution_y = params["resolution_y"]
-bpy.context.scene.render.resolution_percentage = params["resolution_percentage"]
-
-# Animation Speed (use Blender's time remapping to slow or speed up animation)
-length_multiplier = round(params["length_multiplier"])  # time remapping multiplier
-new_length = params["end_frame"] * length_multiplier  # new length (in frames)
-bpy.context.scene.render.frame_map_old = 1
-bpy.context.scene.render.frame_map_new = length_multiplier
-
-# Set render length/position
-bpy.context.scene.frame_start = params["start_frame"]
-bpy.context.scene.frame_end = new_length

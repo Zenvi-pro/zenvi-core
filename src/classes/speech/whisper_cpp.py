@@ -28,6 +28,14 @@ log = logging.getLogger("speech.whisper_cpp")
 MODEL_FILE = "ggml-base-q5_1.bin"
 VAD_FILE = "ggml-silero-v5.1.2.bin"
 MODEL_ID = "whisper.cpp-base-q5_1"
+# The two data files whisper.cpp needs, pinned to the revisions a release is tested with (the same hashes as installer/build-whisper-cli.sh;
+# a test keeps the two lists equal). A release may bundle them; when they are missing they are fetched the first time transcription needs them.
+MODEL_SOURCES = {
+    MODEL_FILE: {"sha256": "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898",
+                 "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base-q5_1.bin"},
+    VAD_FILE: {"sha256": "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf",
+               "url": "https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v5.1.2.bin"},
+}
 _CLI_NAMES = ("whisper-cli.exe", "whisper-cli") if sys.platform == "win32" else ("whisper-cli",)
 
 
@@ -59,6 +67,30 @@ def _find(env_name: str, file_name: str) -> str:
         if candidate and os.path.isfile(candidate):
             return candidate
     return ""
+
+
+def models_dir() -> str:
+    """Where fetched models live: the user's profile, which ``_find`` already searches."""
+    from classes import info
+    return os.path.join(info.USER_PATH, "whisper")
+
+
+def ensure_models(progress=None, should_cancel=None, opener=None) -> list:
+    """Fetch the speech model (and the voice-activity model) that is not here yet; returns the file names fetched.
+
+    Each file is checked against its pinned hash and installed only when whole. Blocks on the network: it runs on the transcription
+    worker, never the GUI thread. Raises ``classes.verified_download.DownloadError``.
+    """
+    from classes.verified_download import fetch_verified
+    fetched = []
+    for name, source in MODEL_SOURCES.items():
+        if _find({MODEL_FILE: "ZENVI_WHISPER_MODEL", VAD_FILE: "ZENVI_WHISPER_VAD"}[name], name):
+            continue
+        log.info("fetching the speech model %s (first use)", name)
+        fetch_verified(source["url"], os.path.join(models_dir(), name), sha256=source["sha256"], progress=progress,
+                       should_cancel=should_cancel, opener=opener)
+        fetched.append(name)
+    return fetched
 
 
 def model_path() -> str:

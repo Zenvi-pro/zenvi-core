@@ -28,7 +28,7 @@ def probe_has_audio(media_path: str) -> Tuple[Optional[bool], str]:
                 media_path,
             ],
             capture_output=True,
-            text=True,
+            encoding="utf-8", errors="replace",
             timeout=60,
             check=False,
         )
@@ -99,7 +99,7 @@ def extract_mono_16k_wav(
         proc = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
+            encoding="utf-8", errors="replace",
             timeout=600,
             check=False,
         )
