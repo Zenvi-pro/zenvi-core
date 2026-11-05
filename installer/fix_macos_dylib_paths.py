@@ -219,7 +219,7 @@ def fix_frozen_dir(frozen_dir: str) -> int:
     if not soname_fixups:
         soname_fixups = [
             ("libopenshot-audio.10.dylib", "libopenshot-audio"),
-            ("libopenshot.28.dylib", "libopenshot"),
+            ("libopenshot.32.dylib", "libopenshot"),
         ]
 
     for soname, prefix in soname_fixups:

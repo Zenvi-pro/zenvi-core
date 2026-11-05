@@ -5,11 +5,11 @@
 #
 # Installs to /usr/local (libraries are ldconfig'd; Python bindings land in
 # /usr/local/python) and exports the paths freeze.py needs via GITHUB_ENV.
-# Tags default to the same v1.0.0 the macOS and Windows jobs build.
+# Tags default to the same v1.0.1 the macOS and Windows jobs build.
 
 set -euo pipefail
 
-LIBOPENSHOT_TAG="${LIBOPENSHOT_TAG:-v1.0.0}"
+LIBOPENSHOT_TAG="${LIBOPENSHOT_TAG:-v1.0.1}"
 LIBOPENSHOT_AUDIO_TAG="${LIBOPENSHOT_AUDIO_TAG:-$LIBOPENSHOT_TAG}"
 ZENVI_OPENCV="${ZENVI_OPENCV:-ON}"
 WORKSPACE="${GITHUB_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -54,8 +54,8 @@ cmake --build "${SRC}/audio/build" --parallel "$(nproc)"
 sudo cmake --install "${SRC}/audio/build"
 sudo ldconfig
 
-# libopenshot, with the tag-locked source patches (non-crop location, stream-copy
-# pre-roll); both are cross-platform source fixes.
+# libopenshot, with the tag-locked source patch (stream-copy pre-roll), a
+# cross-platform source fix.
 git clone --depth 1 --branch "${LIBOPENSHOT_TAG}" \
   https://github.com/OpenShot/libopenshot.git "${SRC}/libopenshot"
 apply_patches "${SRC}/libopenshot" "libopenshot-${LIBOPENSHOT_TAG}"
