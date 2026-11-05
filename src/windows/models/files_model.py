@@ -749,7 +749,7 @@ class FilesModel(QObject, updates.UpdateInterface):
     def offers_reindex(file_data):
         """Whether a file gets the Re-index action: footage, pictures and sound, not titles.
 
-        A title is an SVG the Title tools write; it is imported as an image but never indexed.
+        A title is an SVG the Title tools write: imported as an image, with indexing skipped.
         """
         data = file_data if isinstance(file_data, dict) else {}
         if data.get("media_type") not in ("video", "image", "audio"):
