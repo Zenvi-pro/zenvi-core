@@ -331,6 +331,10 @@ class Preferences(QDialog):
                         # Add filesystem browser button
                         extraWidget = QPushButton(_("Browse..."))
                         extraWidget.clicked.connect(functools.partial(self.selectExecutable, widget, param))
+                    elif param.get("setting") == "engine-runtime-source":
+                        # Install or update the engine tools from the source typed here.
+                        extraWidget = QPushButton(_("Install..."))
+                        extraWidget.clicked.connect(self.show_engine_runtime_dialog)
                     elif param.get("setting") == "comfy-ui-url":
                         # Add an explicit connectivity check for ComfyUI URL.
                         extraWidget = QPushButton(_("Check"))
@@ -746,6 +750,10 @@ class Preferences(QDialog):
 
         # Check for restart
         self.check_for_restart(param)
+
+    def show_engine_runtime_dialog(self, checked=False):
+        from windows.engine_runtime_dialog import show_engine_runtime_dialog
+        show_engine_runtime_dialog(self)
 
     def check_comfy_ui_url(self, widget, param, btn=None):
         _ = get_app()._tr

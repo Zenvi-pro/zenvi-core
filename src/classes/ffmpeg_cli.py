@@ -52,7 +52,8 @@ def _candidate_dirs() -> List[str]:
 def find_ffmpeg(name: str = "ffmpeg") -> Optional[str]:
     exe = _exe_name(name)
     found = shutil.which(name) or shutil.which(exe)
-    if found:
+    # Frozen: the bundled copy (<app>/lib) beats PATH, and PATH is the fallback.
+    if found and not getattr(sys, "frozen", False):
         return found
     for directory in _candidate_dirs():
         if not directory:
@@ -60,7 +61,7 @@ def find_ffmpeg(name: str = "ffmpeg") -> Optional[str]:
         for candidate in (os.path.join(directory, exe), os.path.join(directory, name)):
             if os.path.isfile(candidate):
                 return candidate
-    return None
+    return found
 
 
 def ensure_ffmpeg_on_path() -> Optional[str]:
@@ -108,6 +109,15 @@ def _windows_kwargs(kwargs: dict) -> dict:
 def run_ffmpeg(args: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess:
     """subprocess.run for ffmpeg/ffprobe without flashing a Windows console."""
     return subprocess.run(resolve_ffmpeg_args(args), **_windows_kwargs(kwargs))
+
+
+def popen_ffmpeg(args: Sequence[str], **kwargs: Any) -> subprocess.Popen:
+    """subprocess.Popen for ffmpeg/ffprobe without flashing a Windows console.
+
+    For callers that stream a result (raw frames or samples on stdout) instead of
+    waiting for the process to finish.
+    """
+    return subprocess.Popen(resolve_ffmpeg_args(args), **_windows_kwargs(kwargs))
 
 
 def run_ffmpeg_with_progress(

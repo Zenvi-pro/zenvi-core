@@ -11,6 +11,12 @@ Threading: listing is read-only (worker thread). Relinking, sequence import,
 file removal and proxies are background-safe: disk checks and media probes run
 on the worker thread and only the project edit hops to the GUI thread, so each
 call is still one undo step. Sub-clips are a plain project edit (GUI thread).
+
+update_project_files_tool requests: "rename the clip to Intro" (name, plus
+rename_clips=true), "tag these as b-roll" (file_ids=["A1","B2"],
+add_tags=["b-roll"]), "I moved my footage to ~/Movies/shoot, fix the missing
+files" (search_folder, or path for one file), "only use 0:05-0:20 of this file"
+(source_start/end_seconds), "play this image sequence at 12 fps" (fps).
 """
 
 from __future__ import annotations
@@ -21,6 +27,8 @@ import os
 import time
 
 from classes import project_files
+from classes.ai_metadata_utils import build_summary_preview, get_effective_ai_metadata
+from classes.twelvelabs_match import get_index_block, twelvelabs_is_indexed
 from classes.editor_tools._base import (
     ToolError,
     array,
@@ -173,6 +181,7 @@ def describe_file(f, usage=None, full=False, check_missing=True) -> dict:
     start, end = _source_window(data)
     kind = kind_of(data)
     still = kind in ("image", "title")
+    ai = data.get("ai_metadata") if isinstance(data.get("ai_metadata"), dict) else {}
     out = {
         "file_id": str(f.id),
         "name": _display_name(data),
@@ -183,6 +192,9 @@ def describe_file(f, usage=None, full=False, check_missing=True) -> dict:
         "duration": None if still else round(max(0.0, end - start), 3),
         "tags": tags_of(data),
         "clip_count": len(clip_ids),
+        "analyzed": bool(ai.get("analyzed")),
+        "indexed": twelvelabs_is_indexed(get_index_block(ai)),
+        "summary_preview": build_summary_preview(get_effective_ai_metadata(data, rebased=True)),
     }
     if ("start" in data or "end" in data) and not still:
         out["source_in"] = round(start, 3)
@@ -222,8 +234,9 @@ def describe_file(f, usage=None, full=False, check_missing=True) -> dict:
             "pixel_ratio": "{}:{}".format((data.get("pixel_ratio") or {}).get("num", ""),
                                           (data.get("pixel_ratio") or {}).get("den", "")),
             "file_size": data.get("file_size"),
-            "analyzed": bool((data.get("ai_metadata") or {}).get("analyzed"))
-            if isinstance(data.get("ai_metadata"), dict) else False,
+            "short_summary": str(ai.get("short_summary") or ""),
+            "description": str(ai.get("description") or ""),
+            "chapters": [ch for ch in ai.get("chapters") or [] if isinstance(ch, dict)],
         })
         proxy = data.get("proxy_reader")
         if isinstance(proxy, dict) and proxy.get("path"):
@@ -322,11 +335,12 @@ def resolve_files(file_ids=None, file_query="") -> list:
                       "'unused' = files no timeline clip uses (what 'remove unused files' removes), "
                       "'used' = files on the timeline, '' = both.", ""),
         "missing_only": boolean("Only files whose media is missing on disk (moved or deleted; relink them "
-                                "with update_project_files_tool).", False),
-        "file_ids": array({"type": "string"}, "Only these file ids (e.g. to read full media info)."),
+                                "with find_tools: update project files).", False),
+        "file_ids": array({"type": "string"}, "Only these file ids, with their full media info and AI summary."),
         "detail": enum(["summary", "full"],
                        "'full' adds media info: size, fps, frames, codecs, sample rate, channels, bit rates, "
-                       "interlacing, aspect ratios, file size, optimized-preview path.", "summary"),
+                       "interlacing, aspect ratios, file size, optimized-preview path, and the AI summary "
+                       "and chapters.", "summary"),
         "limit": integer("Most files to return.", 100, minimum=1, maximum=1000),
     }),
     read_only=True,
@@ -341,8 +355,9 @@ def list_project_files(media_type="", query="", tags=None, usage="", missing_onl
     duration, codecs, audio channels) before editing. Each file reports its kind, duration,
     tags, how many timeline clips use it (with their ids), whether its media is missing on
     disk, and for videos the optimized-preview state (none/queued/running/ready/missing).
-    Sub-clips made with Split Clip / create_subclips_tool are listed too (with source_in/out).
-    Read-only. Example: usage="unused" before remove_files_from_project_tool(scope="unused").
+    Sub-clips made with Split Clip (or find_tools: create subclips) are listed too (with source_in/out).
+    Read-only. Example: usage="unused" before removing them (find_tools: remove files from project, scope="unused").
+    It lists only what is already imported: it cannot see files on disk until they are imported.
     """
     usage_map = _clip_usage()
     wanted_tags = [str(t).strip().lower() for t in (tags or []) if str(t).strip()]
@@ -374,7 +389,7 @@ def list_project_files(media_type="", query="", tags=None, usage="", missing_onl
         if missing_only and not media_missing(data):
             continue
         matched.append(f)
-    shown = [describe_file(f, usage_map, full=(detail == "full")) for f in matched[:int(limit)]]
+    shown = [describe_file(f, usage_map, full=(detail == "full" or bool(only_ids))) for f in matched[:int(limit)]]
     filters = [x for x in (media_type, q and f"'{q}'", wanted_tags and f"tags {wanted_tags}", usage,
                            missing_only and "missing") if x]
     summary = (f"{len(matched)} of {len(files)} project files match" + (f" ({', '.join(map(str, filters))})"
@@ -521,16 +536,11 @@ def update_project_files(file_ids=None, file_query="", name="", tags=None, add_t
                          reset_in_out=False, fps=0.0, rename_clips=False):
     """Change project files (File Properties): rename, tag, relink moved media, set in/out, set sequence fps.
 
-    Use for "rename the clip to Intro" (with rename_clips=true the timeline clips get the label
-    too), "tag these as b-roll" (add_tags on many file_ids at once), "I moved my footage to
-    ~/Movies/shoot, fix the missing files" (search_folder, or path for one file), "only use
-    0:05-0:20 of this file" (source_start/end_seconds, source seconds), "play this image
-    sequence at 12 fps" (fps; image sequences only). Timeline clips that use a changed file
-    are refreshed (their end is clamped to the new length, as the dialog does). Relinking
-    keeps the name, tags, AI metadata, in/out and optimized preview, and reports
-    same_content=false when the new media is a different file. One undo step. Does not
-    trim timeline clips (that is a timeline edit) and never deletes anything.
-    Example: file_ids=["A1","B2"], add_tags=["b-roll"].
+    Timeline clips using a changed file are refreshed (their end clamped to
+    the new length, as the dialog does). Relinking keeps the name, tags, AI
+    metadata, in/out and optimized preview, and reports same_content=false
+    when the new media is a different file. One undo step. Does not trim
+    timeline clips (a timeline edit) and never deletes anything.
     """
     from classes.query import Clip
 
@@ -686,7 +696,7 @@ def import_image_sequence(path, fps=0.0, name="", skip_indexing=False):
     Use for "import these frames as a sequence at 24 fps", renders from Blender/After
     Effects, stop-motion or time-lapse photo folders. The frames play at `fps` (the project
     rate when 0). It only adds the file to Project Files: place it with
-    add_clip_to_timeline_tool(file_id=...). To import photos as separate stills (a
+    add_clips_to_timeline_tool(file_ids=[...]). To import photos as separate stills (a
     slideshow), use import_files_tool instead. Returns the file id, pattern, frame count,
     fps and duration. One undo step.
     Example: path="~/renders/intro/", fps=24.
@@ -742,7 +752,7 @@ def import_image_sequence(path, fps=0.0, name="", skip_indexing=False):
     f = File.get(id=file_id)
     data = f.data
     return ok(f"Imported {len(frames)} frames of {details['pattern']} as one {num / den:g} fps sequence "
-              f"({float(data.get('duration') or 0):.2f}s). Place it with add_clip_to_timeline_tool.",
+              f"({float(data.get('duration') or 0):.2f}s). Place it with add_clips_to_timeline_tool(file_ids=[...]).",
               file_id=file_id, name=_display_name(data), path=details["path"], frames=len(frames),
               first_frame=frames[0], last_frame=frames[-1], fps=f"{num}/{den}",
               duration=round(float(data.get("duration") or 0.0), 3),
@@ -865,8 +875,8 @@ def create_subclips(file_id, subclips):
     1:10-1:30 'Demo' from interview.mp4". Each sub-clip is a new Project Files entry that
     plays only its range (times in seconds of the source media); AI scene descriptions are
     trimmed to the range. Nothing is placed on the timeline: put them there with
-    add_clip_to_timeline_tool(file_id=<new id>). To find a moment by description instead of
-    times use split_file_add_clip_tool(query=...). One undo step for all sub-clips.
+    add_clips_to_timeline_tool(file_ids=[<new id>]). To find a moment by description instead of
+    times, search_footage_tool returns each moment's file and in/out seconds. One undo step for all sub-clips.
     """
     from classes.ai_metadata_utils import adjust_scene_descriptions_for_subclip
     from classes.query import File
@@ -925,7 +935,7 @@ def create_subclips(file_id, subclips):
 
     created = on_main(_create)
     return ok(f"Created {len(created)} sub-clip(s) of {_display_name(src.data)!r}. Place one with "
-              f"add_clip_to_timeline_tool(file_id=...).",
+              f"add_clips_to_timeline_tool(file_ids=[...]).",
               subclips=[{"file_id": i, "name": n, "source_in": round(s, 3), "source_out": round(e, 3),
                          "duration": round(e - s, 3)} for i, n, s, e in created],
               parent_file_id=src.id)

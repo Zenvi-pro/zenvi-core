@@ -149,6 +149,10 @@ class FilesTreeView(QTreeView):
                 action.triggered.connect(lambda: get_app().window.actionProfileEdit_trigger(file_profile))
             menu.addMenu(profile_menu)
 
+            # Linked Source (a file rendered from code / an After Effects comp)
+            from windows.linked_source_menu import add_linked_source_menu
+            add_linked_source_menu(self.win, menu, file.id, parent=self)
+
             add_bound_action(menu, self.win, "actionFile_Properties", _("File Properties"), "actionFile_Properties_trigger")
             menu.addSeparator()
             add_bound_action(menu, self.win, "actionRemove_from_Project", _("Remove from Project"), "actionRemove_from_Project_trigger")

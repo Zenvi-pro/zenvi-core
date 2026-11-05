@@ -1060,6 +1060,20 @@ class AudioRecordingDockContent(QWidget):
         self._sync_source_sections()
         self._webcam_layout_changed()
         self._sync_backend_state()
+        self._tracks_refresh_queued = False
+        get_app().updates.add_listener(self)
+
+    def changed(self, action):
+        """UpdateManager hook: a new or opened project, or a track change, refreshes the track list."""
+        if action and (action.type == "load" or (action.key and action.key[0] == "layers")):
+            # Once, after the change: a renumber updates layers one at a time.
+            if not self._tracks_refresh_queued:
+                self._tracks_refresh_queued = True
+                QTimer.singleShot(0, self._refresh_tracks_once)
+
+    def _refresh_tracks_once(self):
+        self._tracks_refresh_queued = False
+        self.refresh_tracks(keep_track=True)
 
     def _backend_available(self):
         audio_available = all(hasattr(openshot, name) for name in (
@@ -1755,9 +1769,17 @@ class AudioRecordingDockContent(QWidget):
             "YUYV": "yuyv422",
         }.get(str(format_code).upper(), str(format_code).lower())
 
-    def refresh_tracks(self):
+    def refresh_tracks(self, keep_track=False):
+        """Rebuild the track list. With *keep_track*, reselect the same track (by id) even if a
+        renumber gave it a new number."""
         _ = get_app()._tr
-        selected = self._context_track or self.track_combo.currentData()
+        id_role = Qt.UserRole + 1
+        if keep_track:                                     # the row on screen, "No Track" included
+            selected = self.track_combo.currentData()
+            selected_id = self.track_combo.currentData(id_role)
+        else:
+            selected, selected_id = self._context_track or self.track_combo.currentData(), None
+        kept = False
         self.track_combo.blockSignals(True)
         self.track_combo.clear()
         self.track_combo.addItem(_("No Track"), NO_RECORDING_TRACK)
@@ -1768,6 +1790,9 @@ class AudioRecordingDockContent(QWidget):
                 number = int(track.data.get("number", 0))
                 label = labels.get(number, _("Track %s") % number)
                 self.track_combo.addItem(str(label), number)
+                self.track_combo.setItemData(self.track_combo.count() - 1, track.id, id_role)
+                if selected_id is not None and track.id == selected_id:
+                    selected, kept = number, True
         except Exception as ex:
             log.debug("Unable to list timeline tracks for recording: %s", ex, exc_info=True)
         for index in range(self.track_combo.count()):
@@ -1777,6 +1802,10 @@ class AudioRecordingDockContent(QWidget):
         else:
             if self.track_combo.count() > 1:
                 self.track_combo.setCurrentIndex(1)
+        if kept and self._context_track is not None:
+            self._context_track = selected                 # the context track moved with its renumber
+        elif keep_track and selected == NO_RECORDING_TRACK:
+            self._context_track = None                     # the user chose no track over the context
         self.track_combo.blockSignals(False)
 
     def set_recording_context(self, start_time=None, track_number=None):

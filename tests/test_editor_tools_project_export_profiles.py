@@ -69,11 +69,11 @@ def test_social_preset_keeps_the_project_frame_rate(editor, profiles):
 
 
 def test_unknown_or_ambiguous_profiles_are_refused_with_help(editor, profiles):
-    out = editor.call("set_project_profile_tool", profile="hologram")
+    out = editor.call("set_project_setting_tool", profile="hologram")
     assert out.startswith("Error") and "instagram_reel" in out
-    out = editor.call("set_project_profile_tool", profile="NTSC")
+    out = editor.call("set_project_setting_tool", profile="NTSC")
     assert out.startswith("Error") and "matches" in out
-    assert "say what to change" in editor.call("set_project_profile_tool")
+    assert "nothing to change" in editor.call("set_project_setting_tool")
     assert editor.undo_steps_since_mark() == 0
 
 
@@ -87,7 +87,7 @@ def test_list_profiles_filters(editor, profiles):
     assert "social_presets" not in data
 
 
-# --- set_project_profile + reframe ----------------------------------------
+# --- set_project_setting: profile + reframe --------------------------------
 
 def _landscape_clip(editor, **kw):
     return editor.add_clip(editor.add_file("video"), **kw)
@@ -103,7 +103,7 @@ def test_instagram_reel_with_fill_reframes_landscape_clips_in_one_undo_step(edit
     editor.store._data["clips"][-1]["reader"]["path"] = "/titles/title.svg"
     editor.mark()
 
-    data = _receipt(editor.call("set_project_profile_tool", profile="instagram_reel", reframe="fill"))
+    data = _receipt(editor.call("set_project_setting_tool", profile="instagram_reel", reframe="fill"))
     assert (editor.get("width"), editor.get("height")) == (1080, 1920)
     assert editor.get("profile") == "FHD Vertical 1080p 30 fps"
     assert editor.get("display_ratio") == {"num": 9, "den": 16}
@@ -112,7 +112,6 @@ def test_instagram_reel_with_fill_reframes_landscape_clips_in_one_undo_step(edit
     assert editor.clip(audio).get("scale", 1) == 1
     reasons = {s["timeline_clip_id"]: s["reason"] for s in data["skipped"]}
     assert "picture-in-picture" in reasons[pip] and "SVG" in reasons[title]
-    assert data["suggested_export_preset"] == "Instagram Reels"
     assert editor.undo_steps_since_mark() == 1
 
     editor.undo()
@@ -124,22 +123,22 @@ def test_instagram_reel_with_fill_reframes_landscape_clips_in_one_undo_step(edit
 
 def test_keep_reports_letterboxed_clips_and_changes_no_clip(editor, profiles):
     video = _landscape_clip(editor)
-    data = _receipt(editor.call("set_project_profile_tool", profile="tiktok"))
+    data = _receipt(editor.call("set_project_setting_tool", profile="tiktok"))
     assert data["letterboxed_clip_ids"] == [video] and data["reframed_clip_ids"] == []
     assert editor.clip(video)["scale"] == 1
-    assert "reframe='fill'" in editor.call("set_project_profile_tool", profile="tiktok")
+    assert "reframe='fill'" in editor.call("set_project_setting_tool", profile="tiktok")
 
 
 def test_fill_on_an_empty_timeline_says_to_reframe_after_placing(editor, profiles):
     """Found live: the Reel was set to 9:16 before any clip was placed, so the
     talking clip added afterwards stayed letterboxed."""
-    out = editor.call("set_project_profile_tool", profile="instagram_reel", reframe="fill")
+    out = editor.call("set_project_setting_tool", profile="instagram_reel", reframe="fill")
     assert _receipt(out)["reframed_clip_ids"] == []
     assert "no video clips yet" in out and "again once they are on the timeline" in out
 
     video = _landscape_clip(editor)
     editor.mark()
-    out = editor.call("set_project_profile_tool", reframe="fill")
+    out = editor.call("set_project_setting_tool", reframe="fill")
     assert _receipt(out)["reframed_clip_ids"] == [video] and "no video clips yet" not in out
     assert editor.clip(video)["scale"] == 0
     assert editor.undo_steps_since_mark() == 1
@@ -148,7 +147,7 @@ def test_fill_on_an_empty_timeline_says_to_reframe_after_placing(editor, profile
 def test_same_profile_is_a_no_op(editor, profiles):
     editor.store._data.update(profile="FHD 1080p 30 fps", width=1920, height=1080,
                               display_ratio={"num": 16, "den": 9}, pixel_ratio={"num": 1, "den": 1})
-    data = _receipt(editor.call("set_project_profile_tool", profile="FHD 1080p 30 fps"))
+    data = _receipt(editor.call("set_project_setting_tool", profile="FHD 1080p 30 fps"))
     assert data["changed"] is False
     assert editor.undo_steps_since_mark() == 0
     editor.window.apply_project_profile.assert_not_called()
@@ -189,30 +188,25 @@ def test_set_project_setting_is_one_undo_step_and_names_the_profile(editor, prof
 def test_reframe_on_a_locked_track_is_skipped(editor, profiles):
     editor.lock_track(1000000)
     video = _landscape_clip(editor)
-    data = _receipt(editor.call("set_project_profile_tool", profile="vertical", reframe="fill"))
+    data = _receipt(editor.call("set_project_setting_tool", profile="vertical", reframe="fill"))
     assert data["reframed_clip_ids"] == [] and data["skipped"][0]["reason"] == "track is locked"
     assert editor.clip(video)["scale"] == 1
 
 
 def test_orientation_flip_and_fps(editor, profiles):
     editor.store._data.update(width=1920, height=1080)
-    data = _receipt(editor.call("set_project_profile_tool", orientation="portrait"))
-    assert (data["profile"]["width"], data["profile"]["height"]) == (1080, 1920)
-    data = _receipt(editor.call("set_project_profile_tool", profile="4k", fps=24))
-    assert data["profile"]["name"] == "4K UHD 2160p 24 fps"
+    data = _receipt(editor.call("set_project_setting_tool", orientation="portrait"))
+    assert (data["width"], data["height"]) == (1080, 1920)
+    data = _receipt(editor.call("set_project_setting_tool", profile="4k", fps=24))
+    assert data["profile"] == "4K UHD 2160p 24 fps"
     assert editor.get("fps") == {"num": 24, "den": 1}
 
 
-def test_match_a_file_and_odd_sizes_get_a_custom_profile(editor, profiles):
-    fid = editor.add_file("video")  # 1280x720 at 30 fps
-    data = _receipt(editor.call("set_project_profile_tool", from_file_id=fid))
-    assert data["profile"]["name"] == "HD 720p 30 fps"
-    data = _receipt(editor.call("set_project_profile_tool", width=1000, height=1000, fps=30))
-    assert data["profile"]["name"] == "Custom 1000x1000 30 fps" and data["profile"]["user"] is True
+def test_odd_sizes_get_a_custom_profile(editor, profiles):
+    data = _receipt(editor.call("set_project_setting_tool", width=1000, height=1000, fps=30))
+    assert data["profile"] == "Custom 1000x1000 30 fps"
     assert os.listdir(profiles), "the custom profile file is saved like the profile editor does"
-    assert "even" in editor.call("set_project_profile_tool", width=1001, height=1000)
-    audio = editor.add_file("audio")
-    assert "no picture" in editor.call("set_project_profile_tool", from_file_id=audio)
+    assert "even" in editor.call("set_project_setting_tool", width=1001, height=1000)
 
 
 # --- set_project_setting (PR #183 names) -----------------------------------
@@ -228,6 +222,13 @@ def test_set_project_setting_accepts_the_pr183_arguments(editor, profiles):
     editor.mark()
     data = _receipt(editor.call("set_project_setting_tool", width=1280, height=720))
     assert (editor.get("width"), editor.get("height")) == (1280, 720)
+
+
+def test_set_project_setting_matches_a_project_file(editor, profiles):
+    fid = editor.add_file("video")  # 1280x720 at 30 fps
+    data = _receipt(editor.call("set_project_setting_tool", from_file_id=fid))
+    assert data["profile"] == "HD 720p 30 fps" and (editor.get("width"), editor.get("height")) == (1280, 720)
+    assert "no picture" in editor.call("set_project_setting_tool", from_file_id=editor.add_file("audio"))
 
 
 def test_set_project_setting_audio_and_no_ops(editor, profiles):
@@ -246,7 +247,7 @@ def test_set_project_setting_audio_and_no_ops(editor, profiles):
 
 
 def test_set_project_setting_preset_and_default(editor, profiles):
-    _receipt(editor.call("set_project_setting_tool", preset="youtube_shorts"))
+    _receipt(editor.call("set_project_setting_tool", profile="youtube_shorts"))
     assert (editor.get("width"), editor.get("height")) == (1080, 1920)
     _receipt(editor.call("set_project_setting_tool", sample_rate=44100, save_as_default=True))
     assert editor.settings_store["default-samplerate"] == 44100

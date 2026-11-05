@@ -6,6 +6,7 @@ duration overlay) → click a card to download and import into Project Files.
 """
 
 import os
+import html
 from typing import List, Dict, Any
 
 from qt_api import (
@@ -85,6 +86,22 @@ class _DownloadWorker(QObject):
         self.finished.emit(self._video_id, local_path, error)
 
 
+_image_pool = None
+
+
+def image_pool():
+    """Where network image fetches run: never QThreadPool.globalInstance().
+
+    Qt smooth-scales a large image across the global pool and the GUI thread waits
+    for it; fetches parked there on a slow host froze the editor for minutes.
+    """
+    global _image_pool
+    if _image_pool is None:
+        _image_pool = QThreadPool()
+        _image_pool.setMaxThreadCount(4)
+    return _image_pool
+
+
 class _ThumbnailRunnable(QRunnable):
     """Fetches a thumbnail URL and emits the result via a signal carrier."""
 
@@ -92,14 +109,18 @@ class _ThumbnailRunnable(QRunnable):
         ready = pyqtSignal(int, QImage, int)   # video_id, image (QPixmap is GUI-thread only), search
         finished = pyqtSignal(int, int)        # video_id, search; success or not
 
-    def __init__(self, video_id: int, url: str, search: int):
+    def __init__(self, video_id: int, url: str, search: int, alive=None):
         super().__init__()
         self.signals = _ThumbnailRunnable._Signals()
         self._video_id = video_id
         self._url = url
         self._search = search
+        self._alive = alive   # None, or False once its search is gone: skip the fetch
 
     def run(self):
+        if self._alive is not None and not self._alive():
+            self.signals.finished.emit(self._video_id, self._search)
+            return
         try:
             import requests as _req
             resp = _req.get(
@@ -163,7 +184,10 @@ class _VideoCard(QFrame):
         self._status_label.setGeometry(4, CARD_MEDIA_H // 2, CARD_W - 8, CARD_MEDIA_H // 2)
         self._status_label.hide()
 
-        self.setToolTip(f"User: {video.get('user_name','')}\n{video.get('width',0)}×{video.get('height',0)}  {self._dur_text}")
+        # Provider text, shown literally: a plain-text tooltip would turn any tags in it into markup.
+        tip = html.escape(f"User: {video.get('user_name','')}\n{video.get('width',0)}×{video.get('height',0)}  "
+                          f"{self._dur_text}")
+        self.setToolTip(f"<p style='white-space:pre-wrap'>{tip}</p>")
 
     def set_thumbnail(self, pix: QPixmap):
         scaled = pix.scaled(CARD_W, CARD_MEDIA_H, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
@@ -262,7 +286,7 @@ class PexelsDock(QDockWidget):
         self._dl_threads: Dict[int, QThread] = {}
         self._dl_workers: Dict[int, _DownloadWorker] = {}
         self._cards: Dict[int, _VideoCard] = {}
-        self._thumb_pool = QThreadPool.globalInstance()
+        self._thumb_pool = image_pool()
 
         self._build_ui()
 

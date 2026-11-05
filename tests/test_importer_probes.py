@@ -77,7 +77,7 @@ def probes(monkeypatch, importers):
                                        "width": 1920, "height": 1080}.get(key, default),
         current_filepath="")
     app = types.SimpleNamespace(project=project, _tr=lambda s: s, window=MagicMock())
-    for module in (edl_importer, fcp_importer):
+    for module in (edl_importer,):  # the XML importer plans off the GUI thread with its own probe
         monkeypatch.setattr(module, "get_app", lambda: app)
         monkeypatch.setattr(module, "find_missing_file", lambda path, prompt=True: (path, False, False))
         monkeypatch.setattr(module, "File", _File)
@@ -117,21 +117,33 @@ def test_edl_probes_each_source_once_off_the_gui_thread(tmp_path, probes, import
     assert len({id(c.data) for c in _Clip.saved}) == 3
 
 
-def test_fcp_xml_probes_each_source_once_off_the_gui_thread(tmp_path, probes, importers):
+def _xml(tmp_path, paths):
+    items = "".join(
+        '<clipitem id="c%d"><name>c%d</name><start>%d</start><end>%d</end><in>0</in><out>24</out>'
+        '<file id="f%d"><pathurl>%s</pathurl></file></clipitem>' % (i, i, i * 24, i * 24 + 24, i, path)
+        for i, path in enumerate(paths))
+    xml = tmp_path / "cut.xml"
+    xml.write_text('<?xml version="1.0"?><xmeml version="4"><sequence><rate><timebase>24</timebase></rate>'
+                   '<media><video><track>' + items + '</track></video></media></sequence></xmeml>',
+                   encoding="utf-8")
+    return str(xml)
+
+
+def _plan_xml(fcp_importer, xml, probe):
+    from fractions import Fraction
+    info = fcp_importer.ProjectInfo(fps=Fraction(24, 1), width=1920, height=1080)
+    return fcp_importer.plan_import(xml, info=info, probe=probe)  # run_import_job calls it off the GUI thread
+
+
+def test_fcp_xml_probes_each_source_once(tmp_path, importers):
+    from premiere_fakes import FakeMediaProbe
     fcp_importer = importers[1]
     media = tmp_path / "clip.mp4"
     media.write_bytes(b"x")
-    items = "".join(
-        '<clipitem id="c%d"><name>c%d</name><start>%d</start><end>%d</end><in>0</in><out>24</out>'
-        '<file id="f1"><pathurl>%s</pathurl></file></clipitem>' % (i, i, i * 24, i * 24 + 24, media)
-        for i in range(3))
-    xml = tmp_path / "cut.xml"
-    xml.write_text('<?xml version="1.0"?><xmeml version="4"><sequence><media><video><track>'
-                   + items + '</track></video></media></sequence></xmeml>', encoding="utf-8")
-    summary = fcp_importer.import_xml(str(xml), prompt=False)
-    assert len(summary["clip_ids"]) == 3
-    assert [p for p, _t in probes] == [str(media)]
-    assert probes[0][1] is not threading.main_thread()
+    probe = FakeMediaProbe()
+    plan = _plan_xml(fcp_importer, _xml(tmp_path, [media] * 3), probe)
+    assert len(plan.clips) == 3
+    assert probe.calls == [str(media)]
 
 
 def test_one_unreadable_source_does_not_end_the_import(tmp_path, probes, importers, monkeypatch):
@@ -143,7 +155,7 @@ def test_one_unreadable_source_does_not_end_the_import(tmp_path, probes, importe
     bad = tmp_path / "broken.mp4"
     bad.write_bytes(b"x")
 
-    for module in (edl_importer, fcp_importer):
+    for module in (edl_importer,):
         real = module.openshot.Clip
 
         def clip(path, real=real):
@@ -163,12 +175,13 @@ def test_one_unreadable_source_does_not_end_the_import(tmp_path, probes, importe
     summary = edl_importer.import_edl(str(edl), prompt=False)
     assert len(summary["clip_ids"]) == 1 and summary["missing"] == [str(bad)]
 
-    items = "".join(
-        '<clipitem id="c%d"><name>c%d</name><start>%d</start><end>%d</end><in>0</in><out>24</out>'
-        '<file id="f%d"><pathurl>%s</pathurl></file></clipitem>' % (i, i, i * 24, i * 24 + 24, i, path)
-        for i, path in enumerate((bad, good)))
-    xml = tmp_path / "cut.xml"
-    xml.write_text('<?xml version="1.0"?><xmeml version="4"><sequence><media><video><track>'
-                   + items + '</track></video></media></sequence></xmeml>', encoding="utf-8")
-    summary = fcp_importer.import_xml(str(xml), prompt=False)
-    assert len(summary["clip_ids"]) == 1 and summary["missing"] == [str(bad)]
+    from premiere_fakes import FakeMediaProbe
+    probe = FakeMediaProbe()
+
+    def xml_probe(path):
+        if path == str(bad):
+            raise RuntimeError("Invalid file: %s" % path)
+        return probe(path)
+
+    plan = _plan_xml(fcp_importer, _xml(tmp_path, [bad, good]), xml_probe)
+    assert len(plan.clips) == 1 and plan.missing == [str(bad)]

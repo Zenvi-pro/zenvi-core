@@ -96,6 +96,7 @@ from classes.camera_motion import (
     PAN_TOP_TO_BOTTOM,
     PAN_BOTTOM_TO_TOP,
     PAN_UP,
+    apply_camera_keyframes,
     camera_pan_keyframes,
     ken_burns_keyframes,
     push_pull_keyframes,
@@ -125,7 +126,7 @@ from .timeline_backend.qwidget import TimelineWidget
 from .timeline_backend.colors import effect_color_hex
 from .menu import StyledContextMenu
 from classes.clip_utils import (
-    clamp_timing_to_media, is_single_image_media, apply_file_caption_to_clip, project_fps_fraction,
+    clamp_timing_to_media, is_single_image_media, project_fps_fraction,
 )
 from classes.keyframe_rules import COPY_KEYFRAME_GROUPS, curve_plateau
 from classes.clip_placement import apply_audio_only_clip_overrides
@@ -2023,6 +2024,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
                 menu.addMenu(Slice_Menu)
 
+        # Linked Source (a clip rendered from code / an After Effects comp)
+        from windows.linked_source_menu import add_linked_source_menu
+        add_linked_source_menu(self.window, menu, clip.data.get("file_id"), parent=self)
+
         # Properties
         menu.addSeparator()
         menu.addAction(self.window.actionProperties)
@@ -2978,12 +2983,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
                 def _apply_camera_motion(values):
                     clip.data["scale"] = openshot.SCALE_CROP
-                    for prop in ("scale_x", "scale_y", "location_x", "location_y"):
-                        self._remove_keypoints_in_range(clip.data[prop], s, e)
-                    add("scale_x", kf(s, values.scale_x[0]), kf(e, values.scale_x[1]))
-                    add("scale_y", kf(s, values.scale_y[0]), kf(e, values.scale_y[1]))
-                    add("location_x", kf(s, values.location_x[0]), kf(e, values.location_x[1]))
-                    add("location_y", kf(s, values.location_y[0]), kf(e, values.location_y[1]))
+                    apply_camera_keyframes(clip.data, values, s, e, kf)
 
                 if action == MenuAnimate.NONE:
                     _reset_motion()
@@ -5170,10 +5170,6 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Skip clips that are missing a 'reader' attribute
         if not new_clip.get("reader"):
             return  # Skip this clip
-
-        # If the source file has stored caption text (e.g. ComfyUI Whisper
-        # captions), attach a Caption effect to this new clip.
-        apply_file_caption_to_clip(new_clip, file)
 
         # Audio-only media must not composite video (cover-art MP3s otherwise
         # paint an opaque frame over every lower layer)

@@ -432,6 +432,9 @@ class FakeCombo(FakeWidget):
     def itemData(self, i, role=None):
         return self._items[i][1]
 
+    def setItemData(self, i, value, role=None):
+        pass                                            # only the user-role data is modelled
+
     def findData(self, value):
         for i, (_t, d) in enumerate(self._items):
             if d == value:
@@ -447,7 +450,7 @@ class FakeCombo(FakeWidget):
         if changed and not self._blocked and self.on_change:
             self.on_change()
 
-    def currentData(self):
+    def currentData(self, role=None):
         return self._items[self._index][1] if 0 <= self._index < len(self._items) else None
 
     def currentText(self):
