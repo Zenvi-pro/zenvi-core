@@ -3385,13 +3385,17 @@ class AIChatWindow(QDockWidget):
     def show_topup_card(self, quote: dict):
         """Top-up card (#272) in the chat; Pay calls ChatBridge.buyCredits.
 
-        Each card allows one payment: its attempt id is the charge's idempotency key, so a
-        retry after an unknown outcome (a timeout) replays the same charge instead of a new one.
+        One payment per attempt: the attempt id (and its pack, fixed at the first Pay) is the
+        charge's idempotency key, so a retry after an unknown outcome (a timeout) replays that
+        charge, even from a later card. A new attempt starts only once a charge has settled.
         """
         import uuid
         if getattr(self, "_topup_busy", False):
             return  # the card on screen is charging: never swap it for a fresh, re-armed one
-        self._topup_attempt, self._topup_busy = uuid.uuid4().hex, False
+        if not getattr(self, "_topup_attempt", None):
+            self._topup_attempt, self._topup_pack = uuid.uuid4().hex, None
+        elif getattr(self, "_topup_pack", None):
+            quote = dict(quote, pack=self._topup_pack, locked=True)  # show the charge being retried
         if self._use_web_ui:
             self._run_js("if(window.showTopUpCard) showTopUpCard(%s);" % json.dumps(quote))
 
@@ -3413,6 +3417,7 @@ class AIChatWindow(QDockWidget):
         if not attempt or getattr(self, "_topup_busy", False):
             return  # no card on screen, or its payment is in flight
         self._topup_busy = True
+        pack = self._topup_pack = getattr(self, "_topup_pack", None) or pack  # a retry never changes the pack
 
         def run():
             from classes.credits_client import credits as _creds
@@ -3424,17 +3429,22 @@ class AIChatWindow(QDockWidget):
     def _on_topup_result(self, payload: str):
         result = json.loads(payload)
         self._topup_busy = False
-        if not result.get("error"):
-            self._topup_attempt = None  # paid, or handed to Checkout: this card is spent
-        url = str(result.get("url") or "")
-        if result.get("status") == "checkout":
-            if url.startswith("https://checkout.stripe.com/"):
+        settled = result.get("status") == "paid"
+        try:
+            url = str(result.get("url") or "")
+            if result.get("status") == "checkout":
+                if not url.startswith("https://checkout.stripe.com/"):
+                    raise ValueError("not a Stripe Checkout URL")
                 import webbrowser
                 webbrowser.open(url)
-            else:
-                result = {"error": "Could not open Stripe Checkout. Buy at https://zenvi.pro/topup."}
-        elif result.get("status") == "paid":
-            self.refresh_credits_for_account()
+                settled = True
+            elif settled:
+                self.refresh_credits_for_account()
+        except Exception as exc:
+            log.warning("top-up: could not open Checkout: %s", exc)
+            result = {"error": "Could not open Stripe Checkout. Buy at https://zenvi.pro/topup."}
+        if settled:
+            self._topup_attempt = None  # paid, or handed to Checkout: the next Pay is a new purchase
         self._run_js("if(window.onTopUpResult) onTopUpResult(%s);" % json.dumps(result))
 
     def _fetch_credits_balance(self):

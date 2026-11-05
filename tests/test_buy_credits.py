@@ -216,3 +216,36 @@ def test_the_card_js_runs_on_webkit_602():
     text = (SRC / "chat_ui" / "chat.js").read_text(encoding="utf-8")
     card = text[text.index("window.showTopUpCard"):text.index("window.onTopUpResult")]
     assert "isConnected" not in card  # Safari 10 / WebKit 602 has no Node.isConnected
+
+
+def _armed_window(monkeypatch, result):
+    calls, js = [], []
+    monkeypatch.setattr(cc.credits, "buy", lambda pack, confirm=False, attempt=None: calls.append((pack, attempt)) or result)
+    monkeypatch.setattr(ai_chat_ui.threading, "Thread", lambda target, **kw: SimpleNamespace(start=target))
+    monkeypatch.setattr(ai_chat_ui, "QMetaObject", SimpleNamespace(invokeMethod=lambda obj, name, conn, arg: getattr(obj, name)(arg)))
+    monkeypatch.setattr(ai_chat_ui, "Q_ARG", lambda t, v: v)
+    win = SimpleNamespace(_use_web_ui=True, _run_js=js.append, refresh_credits_for_account=lambda: None)
+    for name in ("show_topup_card", "_buy_credits", "_on_topup_result"):
+        setattr(win, name, getattr(ai_chat_ui.AIChatWindow, name).__get__(win))
+    return win, calls, js
+
+
+def test_an_unknown_outcome_keeps_its_attempt_and_pack_across_a_new_card(monkeypatch):
+    win, calls, js = _armed_window(monkeypatch, {"error": "Could not reach Zenvi billing."})
+    win.show_topup_card(dict(CARD))
+    win._buy_credits(10)
+    win.show_topup_card(dict(CARD))  # a later quote must not mint a fresh charge
+    win._buy_credits(15)  # nor change what is being retried
+    assert calls[0] == calls[1] and calls[1][0] == 10
+    assert js and "onTopUpResult" in js[-1]
+    assert any('"locked": true' in c and '"pack": 10' in c for c in js if "showTopUpCard" in c)
+
+
+def test_a_refused_checkout_url_keeps_the_card_retryable(monkeypatch):
+    win, calls, js = _armed_window(monkeypatch, {"status": "checkout", "url": "https://evil.example/pay"})
+    monkeypatch.setattr("webbrowser.open", lambda *a, **k: True)
+    win.show_topup_card(dict(CARD))
+    win._buy_credits(10)
+    win._buy_credits(10)
+    assert len(calls) == 2 and calls[0] == calls[1]
+    assert sum("onTopUpResult" in c for c in js) == 2
