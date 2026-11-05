@@ -27,6 +27,8 @@ PHASE_LABELS = {
     "done": "Indexing complete",
 }
 
+WAITING_FOR_NETWORK = "Waiting for the network to download the search model"
+
 _RUNNING_BLOCK_STATUS = ("uploading", "indexing", "processing", "pending", "validating")
 _FAILED_BLOCK_STATUS = ("failed", "error")
 
@@ -84,6 +86,11 @@ def derive_indexing_status(
     if is_active or (phase and phase != "done"):
         label = phase_label(phase or block_status or "indexing", percent)
         return IndexingStatus(RUNNING, label, label)
+
+    if meta.get("retry_index") and not meta.get("analyzed"):
+        # The job left it queued for a download (see media_index.job); the file model tries it again every 15 s.
+        return IndexingStatus(PENDING, WAITING_FOR_NETWORK,
+                              WAITING_FOR_NETWORK + ". Indexing carries on by itself once the network is back.")
 
     if block_status in _RUNNING_BLOCK_STATUS:
         # Saved mid-index but no worker owns it any more (app closed or killed).
