@@ -203,3 +203,16 @@ def test_other_skips_keep_their_own_label():
 def test_analysing_shows_its_own_phase_label():
     st = derive_indexing_status({}, progress={"phase": "analyzing", "percent": 40})
     assert st.state == RUNNING and "Analyzing" in st.tooltip
+
+
+def test_a_file_waiting_for_the_network_says_so():
+    """The job leaves an offline first index queued (retry_index); the badge and panel say why instead of nothing (#375)."""
+    from classes.indexing_status import WAITING_FOR_NETWORK
+    st = derive_indexing_status({"analyzed": False, "index": {}, "retry_index": True})
+    assert st.state == PENDING and st.label == WAITING_FOR_NETWORK and "network" in st.tooltip
+
+
+def test_the_retry_itself_shows_its_phase_and_a_finished_index_wins():
+    waiting = {"analyzed": False, "retry_index": True}
+    assert derive_indexing_status(waiting, progress={"phase": "downloading", "percent": 0}).state == RUNNING
+    assert derive_indexing_status(dict(waiting, analyzed=True)).state == SUCCESS

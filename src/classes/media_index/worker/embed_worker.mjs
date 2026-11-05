@@ -16,6 +16,20 @@ const SOFT_TOKENS = 70;
 env.cacheDir = process.env.ZENVI_MODEL_DIR;
 env.allowLocalModels = false;
 
+// Remember which download failed (a failed fetch does not name its URL), or else the last one started (a body can break
+// after fetch returned), so embedder.py checks that server: the model weights come from a CDN, not huggingface.co.
+let lastUrl = "", failedUrl = "";
+const download = env.fetch;
+env.fetch = async (url, init) => {
+  lastUrl = String(url?.url ?? url);
+  try {
+    return await download(url, init);
+  } catch (e) {
+    failedUrl = String(url?.url ?? url);
+    throw e;
+  }
+};
+
 const say = (o) => process.stdout.write(JSON.stringify(o) + "\n");
 const b64 = (t) => {
   const [n, d] = t.dims;
@@ -27,8 +41,7 @@ const cos = (a, b) => {
   return s / Math.sqrt(na * nb);
 };
 
-const processor = await AutoProcessor.from_pretrained(ID, { revision: REVISION });
-processor.image_processor.max_soft_tokens = SOFT_TOKENS;
+let processor;
 const load = (device) => AutoModel.from_pretrained(ID, { device, dtype: DTYPE, revision: REVISION,
   ...(device === "cpu" ? { session_options: { intraOpNumThreads: Number(process.env.ZENVI_EMBED_THREADS || 4), interOpNumThreads: 1 } } : {}) });
 const embed = async (model, ...inputs) => (await model(await processor(...inputs))).sentence_embedding;
@@ -50,14 +63,24 @@ async function agrees(model) {
 }
 
 let model = null, device = "cpu";
-if (process.env.ZENVI_EMBED_DEVICE !== "cpu") {
-  try {
-    model = await load("webgpu");
-    if (await agrees(model)) device = "webgpu";
-    else { await model.dispose(); model = null; }
-  } catch { model = null; }
+try {
+  // The first start downloads the model into ZENVI_MODEL_DIR.
+  processor = await AutoProcessor.from_pretrained(ID, { revision: REVISION });
+  processor.image_processor.max_soft_tokens = SOFT_TOKENS;
+  if (process.env.ZENVI_EMBED_DEVICE !== "cpu") {
+    try {
+      model = await load("webgpu");
+      if (await agrees(model)) device = "webgpu";
+      else { await model.dispose(); model = null; }
+    } catch { model = null; }
+  }
+  model = model || await load("cpu");
+} catch (e) {
+  // Say why instead of dying silently; embedder.py tells a missing network apart from a real failure.
+  // Wait for the line to leave: a pipe write is asynchronous on macOS, and exit() would drop it.
+  await new Promise((sent) => process.stdout.write(JSON.stringify({ ready: false, error: String(e && e.message || e), url: failedUrl || lastUrl }) + "\n", sent));
+  process.exit(1);
 }
-model = model || await load("cpu");
 say({ ready: true, device, dtype: DTYPE });
 
 for await (const line of readline.createInterface({ input: process.stdin })) {

@@ -23,7 +23,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import urllib.error
 import wave
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -45,6 +44,7 @@ IDLE_SECONDS = 120.0
 READY_TIMEOUT = 45 * 60                           # the first start downloads the model
 REQUEST_TIMEOUT = 15 * 60
 AUDIO_RATE = 16000
+NETWORK_WAIT = "waiting for the network to download the search model"
 
 Window = Tuple[float, float, np.ndarray]          # (start, end, 16 kHz mono float32 samples)
 
@@ -129,21 +129,34 @@ class LocalEmbedder:
         self.sent: List[Dict[str, Any]] = []      # the last requests, for diagnosis
 
     def _start(self) -> None:
+        from classes.media_index import embed_runtime
         command, env = self._command, self._env
         if command is None:
-            from classes.media_index import embed_runtime
             try:
                 command, env = embed_runtime.worker_command()
-            except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
-                raise EmbedError(f"the search model could not be downloaded: {exc}", offline=True) from exc
+            except embed_runtime.OFFLINE as exc:
+                raise EmbedError(f"{NETWORK_WAIT}: {exc}", offline=True) from exc
+            except (RuntimeError, OSError, subprocess.SubprocessError) as exc:      # a broken install, a full disk
+                raise EmbedError(str(exc)) from exc
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
         self._proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                       env={**os.environ, **(env or {})}, text=True, encoding="utf-8", bufsize=1,
                                       creationflags=flags)
-        hello = self._read(READY_TIMEOUT)
+        try:
+            hello = self._read(READY_TIMEOUT)
+        except (EmbedError, ValueError):          # it exited without a word, or said something else
+            hello = {}
         if not hello.get("ready"):
             self._stop()
-            raise EmbedError("the search model did not start: " + str(hello.get("error") or "no reply"))
+            if self._command is None:
+                # The worker downloads the model the first time it starts. Without a network that is a wait, not a failure.
+                # Check the download that failed: the weights come from a CDN (us.aws.cdn.hf.co), not huggingface.co.
+                url = str(hello.get("url") or "")
+                try:
+                    embed_runtime.check_network(url if url.startswith(("https://", "http://")) else embed_runtime.MODEL_HOST)
+                except embed_runtime.OFFLINE as exc:
+                    raise EmbedError(f"{NETWORK_WAIT}: {exc}", offline=True) from exc
+            raise EmbedError("the search model did not start: " + str(hello.get("error") or "no reply")[:200])
         self.device, self.dtype = str(hello.get("device") or ""), str(hello.get("dtype") or "")
         log.info("Search model ready on %s (%s)", self.device, self.dtype)
 
