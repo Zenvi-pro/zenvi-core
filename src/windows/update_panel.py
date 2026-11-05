@@ -140,6 +140,8 @@ class UpdatePanel(QFrame):
             self._show_failed()
         else:
             self._show_available()
+        if self.isVisible():
+            self._fit_height()
 
     def _show_available(self):
         self.title.setText(
@@ -250,7 +252,7 @@ class UpdatePanel(QFrame):
 
     def show_under(self, widget):
         """Pop up anchored beneath *widget*, kept inside the screen."""
-        self.adjustSize()
+        self._fit_height()
         below = widget.mapToGlobal(QPoint(0, widget.height() + 6))
         # Right-align with the button, which sits at the far right of the toolbar
         left = below.x() + widget.width() - self.width()
@@ -264,6 +266,14 @@ class UpdatePanel(QFrame):
         self.move(QPoint(left, below.y()))
         self.show()
         self.raise_()
+
+    def _fit_height(self):
+        """Grow or shrink to the wrapped text at the panel's fixed width.
+
+        adjustSize() alone sizes a top-level popup from the labels' previous
+        wrap, so a longer failure reason was cut off at the top and bottom."""
+        self.layout().activate()
+        self.resize(self.width(), self.heightForWidth(self.width()))
 
     def _stylesheet(self):
         return resolve(

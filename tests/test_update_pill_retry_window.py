@@ -118,3 +118,32 @@ def test_no_updater_leaves_the_pill_alone(ui):
     ui.button.set_available("9.9.9")
     ui.win.retry_auto_update()
     assert ui.button.state == "available"
+
+
+def test_the_panel_grows_to_show_the_whole_failure_reason(ui):
+    # e2e of #365: reopening the panel after a failure kept the "available"
+    # height, so the wrapped reason was cut off at the top and bottom.
+    from PyQt5.QtWidgets import QPushButton
+    ui.host.resize(1000, 600)
+    ui.host.show()
+    anchor = QPushButton("pill", ui.host)
+    anchor.move(800, 10)
+    ui.button.set_available("9.9.9")
+    ui.panel.sync_from_button(ui.button)
+    ui.panel.show_under(anchor)
+    ui.panel.close()
+
+    ui.button.set_failed("9.9.9", "The connection dropped after 115 of 607 MB")
+    ui.panel.sync_from_button(ui.button)
+    ui.panel.show_under(anchor)
+    _APP.processEvents()
+    detail = ui.panel.detail
+    assert detail.height() >= detail.heightForWidth(detail.width())
+
+    # A state change while the panel is open refits it too.
+    ui.button.set_failed("9.9.9", "A much longer reason that wraps onto a third line of the panel, "
+                                  "so the panel has to grow while it is already showing")
+    ui.win._sync_update_panel()
+    _APP.processEvents()
+    assert detail.height() >= detail.heightForWidth(detail.width())
+    ui.panel.close()

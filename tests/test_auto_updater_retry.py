@@ -223,3 +223,47 @@ def test_retry_during_the_launch_delay_starts_the_download_now(tmp_path, monkeyp
     assert downloads == ["AutoUpdater"]
     assert window.named("ready") == [("ready", "9.9.9")]
     assert window.named("failed") == []
+
+
+# ---------------------------------------------------------------------------
+# A failed download says why in a few words (e2e of #365: the panel showed a
+# nested IncompleteRead repr full of byte counts, cut off top and bottom)
+# ---------------------------------------------------------------------------
+
+import requests  # noqa: E402
+
+from classes.auto_updater import download_failure_reason  # noqa: E402
+
+
+def test_failure_reasons_are_short_and_human():
+    dropped = requests.exceptions.ChunkedEncodingError(
+        "('Connection broken: IncompleteRead(115343360 bytes read, 492591641 more expected)')")
+    assert download_failure_reason(dropped, 115_343_360, 607_935_001) == \
+        "The connection dropped after 115 of 607 MB"
+    assert download_failure_reason(dropped, 115_343_360, 0) == "The connection dropped after 115 MB"
+    assert download_failure_reason(requests.ConnectionError("refused"), 0, 607_935_001) == \
+        "Couldn't connect to the download server"
+    assert download_failure_reason(requests.Timeout("slow"), 5, 10) == "The download timed out"
+    not_found = requests.HTTPError("404")
+    not_found.response = type("R", (), {"status_code": 404})()
+    assert download_failure_reason(not_found, 0, 0) == "The download server answered HTTP 404"
+    assert download_failure_reason(OSError("disk full"), 0, 0) == "disk full"
+
+
+def test_a_connection_dropped_mid_download_reports_how_far_it_got(tmp_path, monkeypatch):
+    updater, window = _updater(tmp_path, monkeypatch, None)
+
+    class _Response:
+        headers = {}
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, chunk_size):
+            yield b"x" * 3_000_000
+            raise requests.exceptions.ChunkedEncodingError("Connection broken: IncompleteRead")
+
+    monkeypatch.setattr(auto_updater_mod.requests, "get", lambda *a, **k: _Response())
+    assert updater._download("https://example.test/z.dmg", "z.dmg", "9.9.9", 10_000_000) is False
+    assert window.named("failed") == [("failed", "9.9.9", "The connection dropped after 3 of 10 MB")]
+    assert not (tmp_path / "z.dmg.part").exists()

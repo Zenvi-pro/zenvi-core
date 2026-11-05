@@ -162,6 +162,25 @@ def parse_checksums(text):
     return sums
 
 
+def download_failure_reason(exc, downloaded, total):
+    """A short reason for the update panel; the log keeps the full exception.
+
+    requests reports a dropped connection as a nested IncompleteRead repr,
+    which filled the panel with byte counts."""
+    if isinstance(exc, requests.HTTPError) and exc.response is not None:
+        return "The download server answered HTTP %d" % exc.response.status_code
+    if isinstance(exc, requests.Timeout):
+        return "The download timed out"
+    if isinstance(exc, requests.RequestException):
+        if downloaded and total:
+            return "The connection dropped after %d of %d MB" % (
+                downloaded // 1_000_000, max(1, total // 1_000_000))
+        if downloaded:
+            return "The connection dropped after %d MB" % (downloaded // 1_000_000)
+        return "Couldn't connect to the download server"
+    return str(exc) or exc.__class__.__name__
+
+
 # ---------------------------------------------------------------------------
 # Manifest helpers — delegate to update_installer (single source of truth)
 # ---------------------------------------------------------------------------
@@ -509,6 +528,7 @@ class AutoUpdater:
         staging_file = os.path.join(UPDATE_STAGING_DIR, filename)
         temp_file = staging_file + ".part"
         throttle = ProgressThrottle(expected_size)
+        downloaded = 0
 
         try:
             resp = requests.get(url, stream=True, timeout=600)
@@ -520,7 +540,6 @@ class AutoUpdater:
                 throttle.total = int(resp.headers.get("Content-Length") or 0)
 
             sha256 = hashlib.sha256()
-            downloaded = 0
 
             # Flip the UI into its downloading state before the first chunk lands
             self._emit_progress_signal(
@@ -588,7 +607,8 @@ class AutoUpdater:
             self._safe_remove(temp_file)
             # A stop signal during shutdown is a normal abort, not a failure
             if not self._stop.is_set():
-                self._emit_failed_signal(version, str(exc) or exc.__class__.__name__)
+                self._emit_failed_signal(
+                    version, download_failure_reason(exc, downloaded, throttle.total))
             return False
 
     # ------------------------------------------------------------------
