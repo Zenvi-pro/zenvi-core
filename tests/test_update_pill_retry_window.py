@@ -1,0 +1,152 @@
+"""The update pill and panel around an in-app retry, with the real widgets.
+
+Review of #365: the window flipped the pill to "Downloading update…" before it
+knew a download would start, so a declined retry could leave the pill there with
+the panel's buttons disabled.
+"""
+
+import sys
+import types
+from unittest.mock import MagicMock
+
+import pytest
+
+# Real Qt and libopenshot (the main window): conftest keeps this file out of
+# the stubbed suite; ci.yml runs it in the pytest-suite job.
+pytest.importorskip("openshot")
+pytest.importorskip("PyQt5.QtWidgets")
+
+from PyQt5.QtWidgets import QAction, QApplication, QMainWindow  # noqa: E402
+
+if not hasattr(QApplication, "instance"):  # conftest's Qt stub, not real Qt
+    pytest.skip("real Qt required (run with ZENVI_REAL_QT=1)", allow_module_level=True)
+
+_APP = QApplication.instance() or QApplication([])
+
+
+class _Updater:
+    def __init__(self, starts):
+        self.starts = starts
+        self.calls = 0
+
+    def retry(self):
+        self.calls += 1
+        return self.starts
+
+
+@pytest.fixture
+def ui(monkeypatch):
+    # Everything global is undone by monkeypatch, so neither the stub timeline
+    # nor a main_window built on it leaks into later tests in this process.
+    if not hasattr(_APP, "get_settings"):
+        monkeypatch.setattr(_APP, "get_settings",
+                            lambda: MagicMock(get=lambda key, default=None: default), raising=False)
+    if not hasattr(_APP, "_tr"):
+        monkeypatch.setattr(_APP, "_tr", lambda s: s, raising=False)
+    stub = types.ModuleType("windows.views.timeline")
+    stub.TimelineView = type("TimelineView", (), {})
+    monkeypatch.setitem(sys.modules, "windows.views.timeline", stub)
+    monkeypatch.delitem(sys.modules, "windows.main_window", raising=False)
+    import windows.main_window as main_window
+    from windows import update_panel
+    from windows.update_status_button import UpdateStatusButton
+
+    host = QMainWindow()
+    host.actionUpdate = QAction("Update", host)
+    button = UpdateStatusButton(host)
+    panel = update_panel.UpdatePanel(host)
+    opened = []
+    monkeypatch.setattr(update_panel.webbrowser, "open", lambda url, new=0: opened.append(url))
+
+    win = types.SimpleNamespace(update_status_button=button, _update_panel=panel,
+                                _auto_updater=None)
+    win._ensure_update_button = lambda: None   # the toolbar is not under test
+    for name in ("retry_auto_update", "updateFailed", "updateDownloadProgress", "_sync_update_panel"):
+        setattr(win, name, types.MethodType(getattr(main_window.MainWindow, name), win))
+    panel.window = win
+    yield types.SimpleNamespace(win=win, button=button, panel=panel, opened=opened, host=host)
+    panel.deleteLater()
+    host.deleteLater()
+    sys.modules.pop("windows.main_window", None)
+
+
+def test_a_declined_retry_keeps_the_failed_pill_and_its_buttons(ui):
+    ui.button.set_failed("9.9.9", "Connection reset")
+    ui.win._auto_updater = _Updater(starts=False)
+    ui.win.retry_auto_update()
+    assert ui.win._auto_updater.calls == 1
+    assert ui.button.state == "failed"
+    ui.panel.sync_from_button(ui.button)
+    assert ui.panel.primary.isEnabled()
+    assert ui.panel.primary.text() == "Try again"
+
+
+def test_try_again_downloads_in_app_then_a_failure_offers_both_ways_out(ui):
+    ui.button.set_failed("9.9.9", "Connection reset")
+    ui.panel.sync_from_button(ui.button)
+    assert ui.panel.later.text() == "Open download page"
+    ui.win._auto_updater = _Updater(starts=True)
+
+    ui.panel.primary.click()                  # Try again
+    assert ui.win._auto_updater.calls == 1
+    assert ui.opened == []                    # the website is not the primary path
+    assert ui.button.state == "downloading"
+
+    # The check could not finish (e.g. GitHub unreachable): the updater sends a failure.
+    ui.win.updateFailed("", "Couldn't reach GitHub to check for the update")
+    assert ui.button.state == "failed"
+    assert ui.button.version == "9.9.9"
+    ui.panel.sync_from_button(ui.button)
+    assert ui.panel.primary.isEnabled() and ui.panel.primary.text() == "Try again"
+    assert "GitHub" in ui.panel.detail.text()
+
+    ui.panel.later.click()                    # Open download page
+    assert ui.opened == ["https://zenvi.pro/download"]
+
+
+def test_download_update_from_the_available_pill_starts_in_app(ui):
+    ui.button.set_available("9.9.9")
+    ui.panel.sync_from_button(ui.button)
+    assert ui.panel.primary.text() == "Download update"
+    assert ui.panel.later.text() == "Later"
+    ui.win._auto_updater = _Updater(starts=True)
+    ui.panel.primary.click()
+    assert ui.button.state == "downloading"
+    ui.panel.later.click()                    # Later only dismisses
+    assert ui.opened == []
+
+
+def test_no_updater_leaves_the_pill_alone(ui):
+    # Source runs have no AutoUpdater; nothing should pretend to download.
+    ui.button.set_available("9.9.9")
+    ui.win.retry_auto_update()
+    assert ui.button.state == "available"
+
+
+def test_the_panel_grows_to_show_the_whole_failure_reason(ui):
+    # e2e of #365: reopening the panel after a failure kept the "available"
+    # height, so the wrapped reason was cut off at the top and bottom.
+    from PyQt5.QtWidgets import QPushButton
+    ui.host.resize(1000, 600)
+    ui.host.show()
+    anchor = QPushButton("pill", ui.host)
+    anchor.move(800, 10)
+    ui.button.set_available("9.9.9")
+    ui.panel.sync_from_button(ui.button)
+    ui.panel.show_under(anchor)
+    ui.panel.close()
+
+    ui.button.set_failed("9.9.9", "The connection dropped after 115 of 607 MB")
+    ui.panel.sync_from_button(ui.button)
+    ui.panel.show_under(anchor)
+    _APP.processEvents()
+    detail = ui.panel.detail
+    assert detail.height() >= detail.heightForWidth(detail.width())
+
+    # A state change while the panel is open refits it too.
+    ui.button.set_failed("9.9.9", "A much longer reason that wraps onto a third line of the panel, "
+                                  "so the panel has to grow while it is already showing")
+    ui.win._sync_update_panel()
+    _APP.processEvents()
+    assert detail.height() >= detail.heightForWidth(detail.width())
+    ui.panel.close()
