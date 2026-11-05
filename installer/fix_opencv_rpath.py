@@ -103,6 +103,7 @@ def stage_opencv_dylibs(opencv_root, stage_dir, only_names=None):
         # may be read-only (Homebrew installs dylibs 0444): copying over one
         # failed with PermissionError on every build after the first.
         if os.path.lexists(staged):
+            os.chmod(staged, stat.S_IWUSR)  # Windows cannot unlink a read-only copy
             os.unlink(staged)
         shutil.copy2(dylib, staged)
         # install_name_tool rewrites the staged copy in place.

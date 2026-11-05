@@ -183,7 +183,7 @@ def _run(argv: List[str], cwd: str, timeout: float) -> Tuple[int, str]:
                               errors="replace", timeout=timeout, stdin=subprocess.DEVNULL,
                               creationflags=hf._NO_WINDOW)
     except subprocess.TimeoutExpired:
-        raise MusicError("%s did not finish within %d s" % (os.path.basename(argv[0]), timeout))
+        raise MusicError("%s did not finish within %d s" % (os.path.splitext(os.path.basename(argv[0]))[0], timeout))
     except OSError as exc:
         raise MusicError("could not start %s: %s" % (argv[0], exc))
     return proc.returncode, hf._clean((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else ""))
@@ -205,7 +205,7 @@ def _failure_reason(out: str) -> str:
 def _check(argv: List[str], cwd: str) -> None:
     code, out = _run(argv, cwd, RUN_TIMEOUT)
     if code != 0:
-        name = os.path.basename(argv[0])
+        name = os.path.splitext(os.path.basename(argv[0]))[0]   # no .exe in what the user reads
         log.warning("%s exited with code %d:\n%s", name, code, out)   # the full output, for a bug report
         raise MusicError("%s failed (exit code %d): %s" % (name, code, _failure_reason(out)))
 

@@ -99,7 +99,7 @@ def test_export_writes_a_complete_remotion_project(linked, tmp_path):  # noqa: F
     assert package["dependencies"]["remotion"] == exporter.REMOTION_VERSION == "4.0.532"
     assert package["dependencies"]["@remotion/cli"] == "4.0.532" and package["dependencies"]["zod"] == "4.5.4"
     assert package["scripts"]["render"] == "remotion render ZenviTimeline out/video.mp4"
-    readme = open(str(out / "README.md")).read()
+    readme = open(str(out / "README.md"), encoding="utf-8").read()
     assert "Import Project > Remotion Project" in readme and "remotion.dev/license" in readme
     assert "{{" not in readme and "1920×1080" in readme
     gitignore = open(str(out / ".gitignore")).read()

@@ -268,14 +268,14 @@ def test_render_passes_codec_props_frames_and_renames_the_finished_file(fake_pro
     run = helper.run_helper("render", project_dir=root, entry="src/index.ts", props={"title": "Launch day"},
                             options={"composition": "TitleCard", "codec": "prores4444", "output": out,
                                      "frames": "0-29", "concurrency": 2}, runtime=NODE)
-    assert run.result["output"] == out and open(out).read() == "movie"
+    assert os.path.normpath(run.result["output"]) == os.path.normpath(out) and open(out).read() == "movie"
     assert run.result["durationInFrames"] == 30 and run.result["compositionDurationInFrames"] == 90
     assert run.result["props"]["title"] == "Launch day" and run.result["props"]["accent"] == "#FF5A36"
     call = [c for c in read_log(log) if c["call"] == "renderMedia"][0]
     assert (call["codec"], call["proResProfile"], call["pixelFormat"], call["imageFormat"]) == \
         ("prores", "4444", "yuva444p10le", "png")
     assert call["frameRange"] == [0, 29] and call["concurrency"] == 2
-    assert call["outputLocation"] == str(tmp_path / "out" / "TitleCard.partial.mov")
+    assert os.path.normpath(call["outputLocation"]) == os.path.normpath(tmp_path / "out" / "TitleCard.partial.mov")
     assert not os.path.exists(call["outputLocation"])
     h264 = str(tmp_path / "out" / "Scene.mp4")
     helper.run_helper("render", project_dir=root, entry="src/index.ts",

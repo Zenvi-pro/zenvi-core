@@ -49,9 +49,11 @@ print("words=%d first=%d language=%s" % (len(words), ord(words[0].text), languag
 
 def test_the_speech_helpers_japanese_answer_is_read_as_utf8_under_an_ascii_locale(tmp_path):
     """The lyrics of a Japanese song came back as an 'ascii' decode error inside the app, so no lyrics were ever kept."""
-    helper = tmp_path / "zenvi-apple-speech-asr"
-    helper.write_text('#!/bin/sh\nprintf \'{"words":[{"text":"心","startSec":0.0,"endSec":0.5},{"text":"の","startSec":0.5,"endSec":0.9}],"language":"ja-JP"}\'\n', encoding="utf-8")
-    helper.chmod(0o755)
-    env = {"PATH": os.environ["PATH"], "LC_ALL": "C", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0", "ZENVI_APPLE_SPEECH_ASR": str(helper)}
-    out = subprocess.run([sys.executable, "-c", _APPLE_CHILD.format(src=os.path.abspath(SRC))], env=env, capture_output=True, text=True, timeout=60)
+    # The helper runs as `<helper> unused.wav --locale ja-JP`. Windows cannot run a shell script, so Python is the helper
+    # and the "wav" is a script that writes the answer's UTF-8 bytes to stdout.
+    answer = '{"words":[{"text":"心","startSec":0.0,"endSec":0.5},{"text":"の","startSec":0.5,"endSec":0.9}],"language":"ja-JP"}'
+    (tmp_path / "unused.wav").write_text("import sys\nsys.stdout.buffer.write(%r)\n" % answer.encode("utf-8"))
+    env = {"PATH": os.environ["PATH"], "LC_ALL": "C", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0", "ZENVI_APPLE_SPEECH_ASR": sys.executable}
+    out = subprocess.run([sys.executable, "-c", _APPLE_CHILD.format(src=os.path.abspath(SRC))], env=env, cwd=tmp_path,
+                         capture_output=True, text=True, timeout=60)
     assert "words=2 first=24515 language=ja-JP" in out.stdout, out.stdout + out.stderr
