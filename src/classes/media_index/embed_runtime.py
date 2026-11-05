@@ -47,6 +47,8 @@ WORKER_FILES = ("embed_worker.mjs", "embed_reference.json")
 OFFLINE = (urllib.error.URLError, TimeoutError, ConnectionError)
 NPM_REGISTRY = "https://registry.npmjs.org/"
 MODEL_HOST = "https://huggingface.co/"           # where the worker's Transformers.js downloads the model from
+# onnxruntime-node's install script downloads its CUDA providers from NuGet, on Linux x64 only (nothing elsewhere).
+NUGET_INDEX = "https://api.nuget.org/v3/index.json"
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 _setup_lock = threading.Lock()
 
@@ -176,6 +178,15 @@ def _npm_registry(npm: List[str], env: Dict[str, str]) -> str:
     return lines[-1] if lines else NPM_REGISTRY
 
 
+def _linux_x64() -> bool:
+    return sys.platform.startswith("linux") and platform.machine().lower() in ("x86_64", "amd64")
+
+
+def _npm_hosts(registry: str) -> List[str]:
+    """The servers ``npm ci`` downloads from: the registry, and NuGet on Linux x64."""
+    return [registry, NUGET_INDEX] if _linux_x64() else [registry]
+
+
 def _npm_failure(output: str) -> str:
     """npm's own one-line reason (``ENOSPC: no space left on device``), not its whole log."""
     code, said = "", []
@@ -208,15 +219,17 @@ def ensure() -> str:
                 shutil.copyfile(os.path.join(here, name), os.path.join(home(), name))
             npm = _npm(node)
             env = {**os.environ, "PATH": os.path.dirname(node) + os.pathsep + os.environ.get("PATH", "")}
-            registry = _npm_registry(npm, env)
-            check_network(registry)        # offline: say so now, not after npm has retried for minutes
-            # npm ci installs the pinned lockfile. onnxruntime-node's postinstall fetches its native binary, so scripts stay on.
+            hosts = _npm_hosts(_npm_registry(npm, env))
+            for url in hosts:
+                check_network(url)         # offline: say so now, not after npm has retried for minutes
+            # npm ci installs the pinned lockfile, install scripts on (onnxruntime-node's fetches CUDA providers on Linux x64).
             proc = subprocess.run([*npm, "ci", "--no-audit", "--no-fund"], cwd=home(),
                                   capture_output=True, text=True, timeout=1800, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW,
                                   env=env)
             if proc.returncode != 0:
                 log.info("npm ci failed:\n%s", (proc.stderr or proc.stdout)[-2000:])
-                check_network(registry)    # the network went away while npm worked
+                for url in hosts:
+                    check_network(url)     # the network went away while npm worked
                 raise RuntimeError("could not install the search model runtime: " + _npm_failure(proc.stderr or proc.stdout))
         for name in WORKER_FILES:
             shutil.copyfile(os.path.join(here, name), os.path.join(home(), name))

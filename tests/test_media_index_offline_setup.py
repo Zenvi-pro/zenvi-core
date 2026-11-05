@@ -49,16 +49,17 @@ NPM_DISK_FULL_LOG = textwrap.dedent("""\
 
 
 class Net:
-    """urllib as the setup sees it: the answers to successive requests, True for a reply and False for no network."""
+    """urllib as the setup sees it: the answers to successive requests, True for a reply and False for no network.
+    A URL in *down* never answers, whatever the sequence says."""
 
-    def __init__(self, monkeypatch, *answers):
-        self.answers, self.urls = list(answers), []
+    def __init__(self, monkeypatch, *answers, down=()):
+        self.answers, self.down, self.urls = list(answers or (True,)), tuple(down), []
         monkeypatch.setattr(R.urllib.request, "urlopen", self.urlopen)
 
     def urlopen(self, request, timeout=None):
         self.urls.append(request.full_url)
         up = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
-        if not up:
+        if not up or request.full_url in self.down:
             raise urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
         return MagicMock()
 
@@ -69,6 +70,7 @@ def system_node(monkeypatch, tmp_path):
     monkeypatch.setattr(info, "USER_PATH", str(tmp_path / "profile"))
     monkeypatch.setattr(R, "find_node", lambda: "/opt/homebrew/bin/node")
     monkeypatch.setattr(R, "_npm", lambda node: ["/opt/homebrew/bin/npm"])
+    monkeypatch.setattr(R, "_linux_x64", lambda: False)
     monkeypatch.setattr(E, "_shared", {})
     runs = {"argv": [], "ci": (0, "")}
 
@@ -134,6 +136,25 @@ def test_npm_is_asked_for_its_registry_so_a_mirror_is_what_gets_checked(system_n
     assert net.urls == ["https://npm.example.internal/"]
 
 
+def test_on_linux_x64_nuget_is_checked_too(system_node, monkeypatch):
+    """onnxruntime-node's install script downloads its CUDA providers from NuGet there; NuGet down is a wait too."""
+    monkeypatch.setattr(R, "_linux_x64", lambda: True)
+    system_node["ci"] = (1, "npm error Error: Failed to download Nuget index from https://api.nuget.org/v3/index.json\n")
+    net = Net(monkeypatch, True, down=[R.NUGET_INDEX])
+    with pytest.raises(E.EmbedError) as caught:
+        E.LocalEmbedder().start()
+    assert caught.value.flags.get("offline") is True and not _ran_npm_ci(system_node)
+    assert net.urls == ["https://registry.npmjs.org/", R.NUGET_INDEX]
+
+
+def test_elsewhere_npm_ci_downloads_nothing_from_nuget_so_it_is_not_checked(system_node, monkeypatch):
+    system_node["ci"] = (1, NPM_DISK_FULL_LOG)
+    net = Net(monkeypatch, True, down=[R.NUGET_INDEX])
+    with pytest.raises(E.EmbedError) as caught:
+        E.LocalEmbedder().start()
+    assert not caught.value.flags.get("offline") and R.NUGET_INDEX not in net.urls
+
+
 # -- the model download in the Node worker ----------------------------------------------------------------
 STUB_WORKER = 'import json, sys\n{}\nsys.exit(1)\n'
 
@@ -161,6 +182,18 @@ def test_the_model_download_failing_offline_is_a_wait(worker, monkeypatch, said)
     assert net.urls == [R.MODEL_HOST]
 
 
+CDN_URL = "https://huggingface.co/onnx-community/embeddinggemma-2-ONNX/resolve/daa72c5/onnx/model_q4.onnx"
+
+
+def test_the_download_that_failed_is_checked_not_just_huggingface(worker, monkeypatch):
+    """The weights 302 to a CDN (us.aws.cdn.hf.co): with only the CDN unreachable, huggingface.co still answers."""
+    worker(json.dumps({"ready": False, "error": "fetch failed", "url": CDN_URL}))
+    net = Net(monkeypatch, True, down=[CDN_URL])
+    with pytest.raises(E.EmbedError) as caught:
+        E.LocalEmbedder().start()
+    assert caught.value.flags.get("offline") is True and net.urls == [CDN_URL]
+
+
 def test_a_worker_that_fails_with_the_network_up_is_a_failure_with_its_reason(worker, monkeypatch):
     worker(json.dumps({"ready": False, "error": "Protobuf parsing failed"}))
     Net(monkeypatch, True)
@@ -179,7 +212,8 @@ def test_a_custom_worker_command_never_checks_the_network(monkeypatch, tmp_path)
 
 
 def test_the_worker_says_why_it_could_not_load_the_model(tmp_path):
-    """Run the real embed_worker.mjs against a Transformers.js whose download fails: it must say so on stdout, not die silently."""
+    """Run the real embed_worker.mjs against a Transformers.js whose download fails: it must say so on stdout, not die
+    silently, and name the download that failed."""
     node = shutil.which("node")
     if not node:
         pytest.skip("no Node.js on PATH")
@@ -190,16 +224,22 @@ def test_the_worker_says_why_it_could_not_load_the_model(tmp_path):
     pkg.mkdir(parents=True)
     (pkg / "package.json").write_text(json.dumps({"name": "@huggingface/transformers", "version": "4.3.1", "type": "module",
                                                   "main": "index.js"}))
-    (pkg / "index.js").write_text(textwrap.dedent("""\
-        export const env = {};
-        export class RawImage {}
-        export const AutoModel = { from_pretrained: async () => { throw new Error("not reached"); } };
-        export const AutoProcessor = { from_pretrained: async () => { throw new TypeError("fetch failed"); } };
+    (pkg / "index.js").write_text(textwrap.dedent(f"""\
+        export const env = {{ fetch: async (url) => {{
+          if (String(url).endsWith(".onnx")) throw new TypeError("fetch failed");
+          return {{ ok: true }};
+        }} }};
+        export class RawImage {{}}
+        export const AutoModel = {{ from_pretrained: async () => {{ throw new Error("not reached"); }} }};
+        export const AutoProcessor = {{ from_pretrained: async () => {{
+          await env.fetch("https://huggingface.co/m/resolve/r/config.json");
+          await env.fetch("{CDN_URL}");
+        }} }};
     """))
     proc = subprocess.run([node, str(tmp_path / "embed_worker.mjs")], capture_output=True, text=True, timeout=60,
                           stdin=subprocess.DEVNULL, env={**os.environ, "ZENVI_MODEL_DIR": str(tmp_path / "models")})
     assert proc.returncode == 1
-    assert json.loads(proc.stdout.splitlines()[0]) == {"ready": False, "error": "fetch failed"}
+    assert json.loads(proc.stdout.splitlines()[0]) == {"ready": False, "error": "fetch failed", "url": CDN_URL}
 
 
 # -- check_network ---------------------------------------------------------------------------------------
