@@ -43,6 +43,10 @@ NODE_SHA256 = {
     "win-x64.zip": "cbc74b5e0982c9dbb41525fd8fb5dcd32fbee237863f7829072f4639a1ce5f20",
 }
 WORKER_FILES = ("embed_worker.mjs", "embed_reference.json")
+# What a download raises when the network is not there. The indexing job keeps such a file queued and tries it again.
+OFFLINE = (urllib.error.URLError, TimeoutError, ConnectionError)
+NPM_REGISTRY = "https://registry.npmjs.org/"
+MODEL_HOST = "https://huggingface.co/"           # where the worker's Transformers.js downloads the model from
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 _setup_lock = threading.Lock()
 
@@ -79,6 +83,21 @@ def find_node() -> Optional[str]:
 
 def _fetch(url: str):
     return urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "Zenvi"}), timeout=120)
+
+
+def check_network(url: str) -> None:
+    """Raise one of ``OFFLINE`` when *url*'s server cannot be reached from here: no network, a dead proxy, or a gateway
+    that cannot get through (5xx). Any other answer, an HTTP error included, means the network is there.
+
+    npm and the Node worker download in other processes and only print what went wrong; this tells a missing network
+    apart from a real failure the same way the Node.js download above does, through urllib and the same proxy settings.
+    """
+    try:
+        urllib.request.urlopen(urllib.request.Request(url, method="HEAD", headers={"User-Agent": "Zenvi"}), timeout=20).close()
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        if exc.code >= 500:
+            raise
 
 
 def install_node() -> str:
@@ -146,8 +165,39 @@ def _installed_version() -> str:
         return ""
 
 
+def _npm_registry(npm: List[str], env: Dict[str, str]) -> str:
+    """The registry npm will install from (the user's .npmrc or proxy setup may name a mirror)."""
+    try:
+        out = subprocess.run([*npm, "config", "get", "registry"], cwd=home(), capture_output=True, text=True, timeout=60,
+                             stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW, env=env).stdout
+    except (OSError, subprocess.SubprocessError):
+        return NPM_REGISTRY
+    lines = [line.strip() for line in out.splitlines() if line.strip().startswith(("http://", "https://"))]
+    return lines[-1] if lines else NPM_REGISTRY
+
+
+def _npm_failure(output: str) -> str:
+    """npm's own one-line reason (``ENOSPC: no space left on device``), not its whole log."""
+    code, said = "", []
+    for line in output.splitlines():
+        text = next((line[len(p):].strip() for p in ("npm error ", "npm ERR! ") if line.startswith(p)), None)
+        if text is None:
+            continue
+        if text.startswith("code "):
+            code = code or text[5:].strip()
+        elif text and not text.startswith(("syscall ", "errno ", "path ", "dest ", "A complete log", "Log files were not")):
+            said.append(text)
+    reason = said[0] if said else next((line.strip() for line in reversed(output.splitlines()) if line.strip()), "")
+    if code and code not in reason:
+        reason = f"{reason} ({code})" if reason else code
+    return (reason or "npm stopped with an error")[:200]
+
+
 def ensure() -> str:
-    """Node and Transformers.js in place, the worker copied in; returns the Node executable."""
+    """Node and Transformers.js in place, the worker copied in; returns the Node executable.
+
+    Raises one of ``OFFLINE`` when a download it needs cannot reach its server, so the file waits for the network.
+    """
     with _setup_lock:
         node = find_node() or install_node()
         here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker")
@@ -156,12 +206,18 @@ def ensure() -> str:
             os.makedirs(home(), exist_ok=True)
             for name in ("package.json", "package-lock.json"):
                 shutil.copyfile(os.path.join(here, name), os.path.join(home(), name))
+            npm = _npm(node)
+            env = {**os.environ, "PATH": os.path.dirname(node) + os.pathsep + os.environ.get("PATH", "")}
+            registry = _npm_registry(npm, env)
+            check_network(registry)        # offline: say so now, not after npm has retried for minutes
             # npm ci installs the pinned lockfile. onnxruntime-node's postinstall fetches its native binary, so scripts stay on.
-            proc = subprocess.run([*_npm(node), "ci", "--no-audit", "--no-fund"], cwd=home(),
+            proc = subprocess.run([*npm, "ci", "--no-audit", "--no-fund"], cwd=home(),
                                   capture_output=True, text=True, timeout=1800, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW,
-                                  env={**os.environ, "PATH": os.path.dirname(node) + os.pathsep + os.environ.get("PATH", "")})
+                                  env=env)
             if proc.returncode != 0:
-                raise RuntimeError("could not install the search model runtime: " + (proc.stderr or proc.stdout)[-400:])
+                log.info("npm ci failed:\n%s", (proc.stderr or proc.stdout)[-2000:])
+                check_network(registry)    # the network went away while npm worked
+                raise RuntimeError("could not install the search model runtime: " + _npm_failure(proc.stderr or proc.stdout))
         for name in WORKER_FILES:
             shutil.copyfile(os.path.join(here, name), os.path.join(home(), name))
         return node

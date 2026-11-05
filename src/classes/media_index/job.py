@@ -11,13 +11,11 @@
 from __future__ import annotations
 
 import threading
-import urllib.error
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, Tuple
 
-_OFFLINE = (urllib.error.URLError, TimeoutError, ConnectionError)
-
 from classes.logger import log
+from classes.media_index.embed_runtime import OFFLINE as _OFFLINE
 
 PROVIDER = "media-index-v2"
 _FLIGHTS_LOCK = threading.Lock()
