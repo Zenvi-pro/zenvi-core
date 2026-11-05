@@ -354,13 +354,14 @@ def test_footage_tooltips_show_provider_text_literally():
     assert "<a href" not in card.toolTip() and "&lt;a href" in card.toolTip()
 
 
-def test_only_a_real_decline_turns_that_engine_off(view):
-    view._on_local_bed_done({"path": "", "error": "ggml: device declined to allocate", "engine": "ace_step",
-                             "gen": view._search_gen})
-    assert "ace_step" not in view._declined_engines
-    view._on_local_bed_done({"path": "", "error": "x", "declined": True, "engine": "ace_step",
-                             "gen": view._search_gen})
-    assert view._declined_engines == {"ace_step"}
+def test_a_declined_download_says_how_to_try_again(view):
+    # The next Generate asks again (tests/test_stock_search_debounce.py drives that flow).
+    view._on_local_bed_done({"path": "", "error": "the user declined the music download", "declined": True,
+                             "engine": "yue2", "gen": view._search_gen})
+    assert view._gen_status.text() == "Download declined. Press Generate to be asked again."
+    assert view._music_generate.isEnabled()
+    view._on_local_bed_done({"path": "", "error": "ggml: device lost", "engine": "yue2", "gen": view._search_gen})
+    assert view._gen_status.text() == "Local music generation failed: ggml: device lost"
 
 
 def test_image_loads_never_use_the_global_thread_pool():
