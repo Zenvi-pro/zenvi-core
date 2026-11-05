@@ -188,13 +188,13 @@ class CreditsClient:
             log.warning("credits_client: RPC %s failed: %s", function_name, exc)
             return None
 
-    def buy(self, pack: int, confirm: bool = False, attempt: Optional[str] = None) -> dict:
+    def buy(self, pack: int, confirm: bool = False) -> dict:
         """Top-up pack via the buy-credits edge function (#272): a quote, or with
         *confirm* the charge / Stripe Checkout URL. Errors come back as {"error": ...}."""
         auth, headers, url = self._get_auth()
         if auth is None:
             return {"error": "Sign in to Zenvi first (Zenvi menu > Sign in)."}
-        body = {"pack": pack, **({"confirm": True} if confirm else {}), **({"attempt": attempt} if attempt else {})}
+        body = {"pack": pack, **({"confirm": True} if confirm else {})}
         try:
             import requests
             resp = requests.post(f"{url}/functions/v1/buy-credits", headers=headers, json=body, timeout=30)

@@ -1214,7 +1214,7 @@
         status.className = 'chat-signin-status';
         el.appendChild(pay);
         el.appendChild(status);
-        var card = { el: el, pack: quote.pack || 10, done: false, pay: pay, status: status, locked: !!quote.locked };
+        var card = { el: el, pack: quote.pack || 10, done: false, pay: pay, status: status };
         var symbol = quote.currency === 'cad' ? 'CA$' : '$';
         function label() {
             var price = symbol + card.pack;
@@ -1227,7 +1227,7 @@
             b.className = 'chat-topup-pack' + (p === card.pack ? ' selected' : '');
             b.textContent = '$' + p + ' · ' + (p * 100).toLocaleString('en-US') + ' credits';
             b.addEventListener('click', function () {
-                if (card.done || pay.disabled || card.locked) return;
+                if (card.done || pay.disabled) return;
                 card.pack = p;
                 Array.prototype.forEach.call(packs.children, function (c) { c.classList.remove('selected'); });
                 b.classList.add('selected');
@@ -1238,7 +1238,6 @@
         pay.addEventListener('click', function () {
             if (card.done || pay.disabled) return;
             pay.disabled = true;
-            card.locked = true; /* a retry pays for the same pack */
             status.className = 'chat-signin-status';
             status.textContent = quote.mode === 'card' ? 'Charging…' : 'Opening Stripe…';
             getBridge(function (bridge) {

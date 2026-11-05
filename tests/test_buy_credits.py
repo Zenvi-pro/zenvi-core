@@ -170,48 +170,6 @@ def test_replies_cannot_inject_script_into_the_chat_that_holds_the_pay_bridge():
     assert "<strong>bold</strong>" in good and "&lt;b&gt;" in good and 'href="https://zenvi.pro/topup"' in good
 
 
-def test_the_bridge_charges_once_per_card_and_retries_reuse_the_same_attempt(monkeypatch):
-    calls = []
-    monkeypatch.setattr(cc.credits, "buy", lambda pack, confirm=False, attempt=None: calls.append((pack, confirm, attempt)) or {"error": "timeout"})
-    monkeypatch.setattr(ai_chat_ui.threading, "Thread", lambda target, **kw: SimpleNamespace(start=target))
-    monkeypatch.setattr(ai_chat_ui, "QMetaObject", SimpleNamespace(invokeMethod=lambda *a: None))
-    monkeypatch.setattr(ai_chat_ui, "Q_ARG", lambda t, v: v)
-    win = SimpleNamespace(_use_web_ui=True, _run_js=lambda c: None)
-    for name in ("show_topup_card", "_buy_credits", "_on_topup_result"):
-        setattr(win, name, getattr(ai_chat_ui.AIChatWindow, name).__get__(win))
-    win.refresh_credits_for_account = lambda: None
-
-    win._buy_credits(10)  # no card shown: a script cannot charge
-    assert calls == []
-
-    win.show_topup_card(dict(CARD))
-    win._buy_credits(10)
-    win._buy_credits(10)  # in flight: ignored
-    assert len(calls) == 1 and calls[0][:2] == (10, True) and calls[0][2]
-    win._on_topup_result(json.dumps({"error": "timeout"}))
-    win._buy_credits(10)  # a retry after an unknown outcome replays the same attempt
-    assert calls[1][2] == calls[0][2]
-    win._on_topup_result(json.dumps({"status": "paid", "credits": 1000}))
-    win._buy_credits(10)  # paid: the card is spent
-    assert len(calls) == 2
-
-
-def test_the_client_sends_the_attempt_id(monkeypatch):
-    sent = []
-    client = cc.CreditsClient()
-    monkeypatch.setattr(client, "_get_auth", lambda: (object(), {}, "https://sb.example"))
-    monkeypatch.setattr("requests.post", lambda url, **kw: sent.append(kw["json"]) or FakeResp(200, {"status": "paid"}))
-    client.buy(10, confirm=True, attempt="a1b2c3d4e5")
-    assert sent == [{"pack": 10, "confirm": True, "attempt": "a1b2c3d4e5"}]
-
-
-def test_a_new_card_never_replaces_one_whose_charge_is_in_flight(monkeypatch):
-    js = []
-    win = SimpleNamespace(_use_web_ui=True, _run_js=js.append, _topup_attempt="a" * 32, _topup_busy=True)
-    ai_chat_ui.AIChatWindow.show_topup_card(win, dict(CARD))
-    assert win._topup_attempt == "a" * 32 and win._topup_busy and js == []
-
-
 def test_the_card_js_runs_on_webkit_602():
     text = (SRC / "chat_ui" / "chat.js").read_text(encoding="utf-8")
     card = text[text.index("window.showTopUpCard"):text.index("window.onTopUpResult")]
@@ -220,7 +178,7 @@ def test_the_card_js_runs_on_webkit_602():
 
 def _armed_window(monkeypatch, result):
     calls, js = [], []
-    monkeypatch.setattr(cc.credits, "buy", lambda pack, confirm=False, attempt=None: calls.append((pack, attempt)) or result)
+    monkeypatch.setattr(cc.credits, "buy", lambda pack, confirm=False: calls.append((pack, confirm)) or result)
     monkeypatch.setattr(ai_chat_ui.threading, "Thread", lambda target, **kw: SimpleNamespace(start=target))
     monkeypatch.setattr(ai_chat_ui, "QMetaObject", SimpleNamespace(invokeMethod=lambda obj, name, conn, arg: getattr(obj, name)(arg)))
     monkeypatch.setattr(ai_chat_ui, "Q_ARG", lambda t, v: v)
@@ -230,15 +188,26 @@ def _armed_window(monkeypatch, result):
     return win, calls, js
 
 
-def test_an_unknown_outcome_keeps_its_attempt_and_pack_across_a_new_card(monkeypatch):
+def test_the_bridge_charges_only_for_a_card_on_screen_one_at_a_time(monkeypatch):
     win, calls, js = _armed_window(monkeypatch, {"error": "Could not reach Zenvi billing."})
+    win._buy_credits(10)  # no card shown: a script cannot charge
+    assert calls == []
+    win.show_topup_card(dict(CARD))
+    win._topup_busy = True
+    win._buy_credits(10)  # one in flight: ignored
+    assert calls == []
+    win._topup_busy = False
+    win._buy_credits(10)  # an error leaves the card retryable (the server dedupes a charge that did land)
+    win._buy_credits(15)
+    assert calls == [(10, True), (15, True)]
+
+
+def test_a_settled_charge_spends_the_card(monkeypatch):
+    win, calls, js = _armed_window(monkeypatch, {"status": "paid", "credits": 1000})
     win.show_topup_card(dict(CARD))
     win._buy_credits(10)
-    win.show_topup_card(dict(CARD))  # a later quote must not mint a fresh charge
-    win._buy_credits(15)  # nor change what is being retried
-    assert calls[0] == calls[1] and calls[1][0] == 10
-    assert js and "onTopUpResult" in js[-1]
-    assert any('"locked": true' in c and '"pack": 10' in c for c in js if "showTopUpCard" in c)
+    win._buy_credits(10)
+    assert calls == [(10, True)]
 
 
 def test_a_refused_checkout_url_keeps_the_card_retryable(monkeypatch):
@@ -247,5 +216,11 @@ def test_a_refused_checkout_url_keeps_the_card_retryable(monkeypatch):
     win.show_topup_card(dict(CARD))
     win._buy_credits(10)
     win._buy_credits(10)
-    assert len(calls) == 2 and calls[0] == calls[1]
-    assert sum("onTopUpResult" in c for c in js) == 2
+    assert len(calls) == 2 and sum("onTopUpResult" in c for c in js) == 2
+
+
+def test_a_new_card_never_replaces_one_whose_charge_is_in_flight():
+    js = []
+    win = SimpleNamespace(_use_web_ui=True, _run_js=js.append, _topup_busy=True)
+    ai_chat_ui.AIChatWindow.show_topup_card(win, dict(CARD))
+    assert js == []
