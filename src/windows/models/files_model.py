@@ -601,37 +601,22 @@ class FilesModel(QObject, updates.UpdateInterface):
         self._active_indexers.clear()
 
     def _apply_ai_metadata(self, file_obj, ai_metadata):
-        """Attach AI metadata to a file object (does not save)."""
+        """Attach an indexing result to a file object (does not save)."""
         if not ai_metadata or not isinstance(ai_metadata, dict):
             return
-        from classes.ai_metadata_utils import is_ai_metadata_usable
+        from classes.ai_metadata_utils import is_ai_metadata_usable, merge_indexing_result
 
-        # Don't let a failed / empty tagging result wipe out previously-good
-        # analysis. Keep the usable content; only record the new error and any
-        # fresh indexing status.
-        prev = file_obj.data.get("ai_metadata")
-        if (not is_ai_metadata_usable(ai_metadata)
-                and isinstance(prev, dict) and is_ai_metadata_usable(prev)):
-            merged = dict(prev)
-            if ai_metadata.get("error"):
-                merged["error"] = ai_metadata["error"]
-            if ai_metadata.get("index"):
-                merged["index"] = ai_metadata["index"]
-            if ai_metadata.get("twelvelabs"):
-                merged["twelvelabs"] = ai_metadata["twelvelabs"]
-            elif ai_metadata.get("index"):
-                merged["twelvelabs"] = ai_metadata["index"]
-            file_obj.data["ai_metadata"] = merged
-            self._status_cache.pop(str(file_obj.data.get("id", "")), None)
-            return
-
-        file_obj.data["ai_metadata"] = ai_metadata
+        # A failed, skipped or search-only result keeps previously-good analysis but
+        # takes this attempt's status; a usable one replaces the old state, error included.
+        merged = merge_indexing_result(file_obj.data.get("ai_metadata"), ai_metadata)
+        file_obj.data["ai_metadata"] = merged
         # Cache bulky transcript/scene payload by fingerprint; keep index handles in project JSON.
+        # Only fresh analysis goes there: a failure has nothing new to cache.
         try:
             fp = file_obj.data.get("fingerprint")
-            if fp:
+            if fp and is_ai_metadata_usable(ai_metadata):
                 from classes.media_cache import save_ai_metadata
-                save_ai_metadata(fp, ai_metadata)
+                save_ai_metadata(fp, merged)
         except Exception:
             log.debug("Could not cache ai_metadata", exc_info=1)
         self._status_cache.pop(str(file_obj.data.get("id", "")), None)
@@ -759,6 +744,34 @@ class FilesModel(QObject, updates.UpdateInterface):
     def _index_file_async(self, file_id):
         """Fire-and-forget background indexing for an already-saved file."""
         self._enqueue_index(file_id)
+
+    @staticmethod
+    def offers_reindex(file_data):
+        """Whether a file gets the Re-index action: footage, pictures and sound, not titles.
+
+        A title is an SVG the Title tools write: imported as an image, with indexing skipped.
+        """
+        data = file_data if isinstance(file_data, dict) else {}
+        if data.get("media_type") not in ("video", "image", "audio"):
+            return False
+        return not str(data.get("path") or "").lower().endswith(".svg")
+
+    def can_reindex_file(self, file_id):
+        """Whether Re-index can run now: a file that offers it and is not indexing or queued already."""
+        f = File.get(id=str(file_id or ""))
+        if not f or not self.offers_reindex(f.data):
+            return False
+        return not (self.is_file_indexing(file_id) or self.is_file_queued(file_id))
+
+    def reindex_file(self, file_id):
+        """The Re-index action: run the file through the indexing job again.
+
+        The job redoes only what is missing or failed (nothing saved is redone or charged
+        again), then stores what the file has now, so a failed or interrupted index is
+        retried and a clean one is refreshed.
+        """
+        if self.can_reindex_file(file_id):
+            self._enqueue_index(file_id)
 
     def _start_indexing_worker(self, file_id):
         from classes.query import File as _File
