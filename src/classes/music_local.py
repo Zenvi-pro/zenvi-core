@@ -9,7 +9,8 @@ returns the MP3 in ``USER_PATH/Downloads`` (where stock downloads land).
   (about 40 s for 30 s of audio on an Iris Xe); a song with lyrics runs the
   5 Hz LM first and renders its codes.
 * YuE2-3B (Q5_K_M) is CC BY-NC 4.0: non-commercial only. Slower (about 3 min
-  for a 30 s bed on an Iris Xe at 16 steps) but full songs with vocals.
+  for a 30 s bed on an Iris Xe at 16 steps) but full songs with vocals. A song
+  is as long as its lyrics sung once; a longer duration sings them again.
 
 Both run on the best ggml device (Vulkan, Metal, CUDA, else CPU). The VAE is
 tiled small: on an iGPU the default tile fails to pin memory and a 30 s decode
@@ -21,11 +22,13 @@ from __future__ import annotations
 import json
 import os
 import platform as _platform
+import re
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import zipfile
 from typing import List, Tuple
 
@@ -72,7 +75,19 @@ _BINARIES = {"ace_step": ("ace-lm", "ace-synth"), "yue2": ("yue-synth",)}
 ACE_VAE_CHUNK = "128"
 # Q5_K_M at 16 steps: a 30 s bed in about 165 s at 2.9 GB on an Iris Xe (Q8 at 32 steps: 389 s, 4.7 GB).
 YUE_STEPS, YUE_VAE_CORE = 16, "128"
-YUE_TOKENS_PER_S = 40   # score + semantic tokens per second of audio, with headroom
+# yue2.cpp (YUE2_REF in music-runtimes.yml) refuses a stage whose prompt + token budget + end token
+# does not fit in --max-seq. With lyrics the model first writes an ABC score (up to YUE_SCORE_TOKENS),
+# then the semantic codes, 25 per second of audio, follow the prompt and that score.
+YUE_FRAMES_PER_S = 25
+YUE_SCORE_TOKENS = 4096   # the checkpoint's own score budget, sent explicitly: the cache is sized on it
+YUE_PROMPT_TOKENS = 256   # instruction, section headers and control tokens around the style and lyrics
+# YuE2 sings its lyrics once and ends the song; the duration only caps it. Measured on the M4 test
+# Mac: four lines made 24-40 s songs, six 36-44 s, eight 51-60+ s. Forcing a longer score or more
+# codes past that end renders filler or silence, so a longer song gets more to sing instead.
+YUE_SONG_BASE_S, YUE_SECONDS_PER_LINE = 8.0, 6.0
+YUE_FILL = 0.9            # sing again until the estimate reaches this share of the duration
+_SECTION_TAG = re.compile(r"\[[^\]]*\]")
+_CHORUS = re.compile(r"\[[^\]]*chorus[^\]]*\][^\[]*", re.I)
 RUN_TIMEOUT = 3600
 _unpack_lock = threading.Lock()   # two first-time installs must not extract into bin/ together
 
@@ -174,10 +189,25 @@ def _run(argv: List[str], cwd: str, timeout: float) -> Tuple[int, str]:
     return proc.returncode, hf._clean((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else ""))
 
 
+_FAILURE_LINE = re.compile(r"\b(error|failed|cannot|could not|out of memory|device lost)\b", re.I)
+
+
+def _failure_reason(out: str) -> str:
+    """The line that says why a runtime stopped, not the device log printed before it."""
+    lines = [line.strip() for line in (out or "").splitlines() if line.strip()]
+    for wanted in (lambda line: "FATAL" in line, _FAILURE_LINE.search):
+        hits = [line for line in lines if wanted(line)]
+        if hits:
+            return hits[-1][:300]
+    return lines[-1][:300] if lines else "no output"
+
+
 def _check(argv: List[str], cwd: str) -> None:
     code, out = _run(argv, cwd, RUN_TIMEOUT)
     if code != 0:
-        raise MusicError("%s failed (exit code %d): %s" % (os.path.basename(argv[0]), code, out[-1500:]))
+        name = os.path.basename(argv[0])
+        log.warning("%s exited with code %d:\n%s", name, code, out)   # the full output, for a bug report
+        raise MusicError("%s failed (exit code %d): %s" % (name, code, _failure_reason(out)))
 
 
 def _write(path: str, data: dict) -> str:
@@ -186,9 +216,41 @@ def _write(path: str, data: dict) -> str:
     return path
 
 
-def _yue_max_seq(duration: float) -> int:
-    """KV cache rows: enough for the song's tokens (a smaller cache is less RAM), in 1024 steps."""
-    need = int(duration * YUE_TOKENS_PER_S) + 1024
+def _sung_lines(lyrics: str) -> int:
+    """Lines with words to sing; a section tag starts a new line ("[Verse] city lights" is one line)."""
+    return sum(1 for line in _SECTION_TAG.sub("\n", lyrics or "").splitlines() if line.strip())
+
+
+def _yue_song_seconds(lyrics: str) -> float:
+    """About how long YuE2 sings these lyrics once, intro and outro included."""
+    return YUE_SONG_BASE_S + YUE_SECONDS_PER_LINE * _sung_lines(lyrics)
+
+
+def _yue_lyrics_for(lyrics: str, duration: float) -> str:
+    """The lyrics, sung again until they fill about *duration*: whole while a repeat fits, then the chorus.
+
+    Four lines asked for 45 s become verse, chorus, chorus; for 60 s, verse, chorus, verse, chorus.
+    Lyrics with no chorus repeat whole and the duration cuts the last repeat.
+    """
+    if not _sung_lines(lyrics):
+        return lyrics
+    choruses = [m.group(0).strip() for m in _CHORUS.finditer(lyrics) if _sung_lines(m.group(0))]
+    sung = lyrics
+    while _yue_song_seconds(sung) < YUE_FILL * duration:
+        whole = sung + "\n\n" + lyrics
+        sung = whole if not choruses or _yue_song_seconds(whole) <= duration else sung + "\n\n" + choruses[-1]
+    return sung
+
+
+def _yue_max_seq(style: str, lyrics: str, duration: float) -> int:
+    """KV cache rows (--max-seq) that hold every stage of this request, in 1024 steps.
+
+    A song holds its prompt, a score of up to YUE_SCORE_TOKENS and the song's codes; a bed skips the
+    score. The prompt is bounded by its UTF-8 bytes: a byte-level BPE never makes more tokens than
+    bytes. A smaller cache is less RAM; 4096 keeps a bed under about 80 s in one acoustic chunk.
+    """
+    prompt = YUE_PROMPT_TOKENS + len(unicodedata.normalize("NFC", style + lyrics).encode("utf-8"))
+    need = prompt + (YUE_SCORE_TOKENS if lyrics else 0) + int(duration * YUE_FRAMES_PER_S) + 1
     return max(4096, -(-need // 1024) * 1024)
 
 
@@ -228,11 +290,14 @@ def generate(engine: str, style: str, lyrics: str = "", duration: float = 30.0, 
             raise MusicError("ACE-Step finished but wrote no audio")
         os.replace(rendered, out)
     else:
-        req = {"style": style, "lyrics": lyrics, "cot": "full" if lyrics else "off", "duration": duration,
+        sung = _yue_lyrics_for(lyrics, duration) if lyrics else ""
+        req = {"style": style, "lyrics": sung, "cot": "full" if sung else "off", "duration": duration,
                "lm_seed": seed, "seed": seed, "steps": YUE_STEPS, "output_format": "mp3"}
+        if sung:
+            req["abc_sampling"] = {"max_tokens": YUE_SCORE_TOKENS}
         _check([_exe("yue-synth"), "--model", _model(YUE_MODEL), "--vae", _model(YUE_VAE),
                 "--request", _write(os.path.join(work, "song.json"), req), "--out", out,
-                "--max-seq", str(_yue_max_seq(duration)), "--vae-core", YUE_VAE_CORE], work)
+                "--max-seq", str(_yue_max_seq(style, sung, duration)), "--vae-core", YUE_VAE_CORE], work)
     if not os.path.isfile(out) or os.path.getsize(out) <= 0:
         raise MusicError("%s finished but the audio file is missing or empty" % engine)
     log.info("Generated %s music: %s", engine, out)

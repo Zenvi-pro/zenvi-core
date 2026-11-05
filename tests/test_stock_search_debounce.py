@@ -164,15 +164,59 @@ def test_no_stock_music_fills_the_prompt_and_does_not_start(qapp):
         bed.assert_not_called()
 
 
-def test_a_declined_download_blocks_only_that_engine(qapp):
+def _stub_music(monkeypatch, state):
+    """classes.music_local and ai_generation_music stand-ins: consent is asked only while not installed."""
+    import types
+
+    import classes
+
+    music_local = types.ModuleType("classes.music_local")
+    music_local.generate = lambda engine, style, lyrics, duration: state["generated"].append(engine) or "t.mp3"
+    music = types.ModuleType("classes.editor_tools.ai_generation_music")
+    music.Declined = type("Declined", (Exception,), {})
+
+    def ensure_installed(engine, progress=None):
+        if engine in state["installed"]:
+            return
+        state["asked"].append(engine)
+        if not state["answers"].pop(0):
+            raise music.Declined("the user declined the music download")
+        state["installed"].add(engine)
+
+    music.ensure_installed = ensure_installed
+    package = types.ModuleType("classes.editor_tools")
+    package.__path__ = []
+    package.ai_generation_music = music
+    # "from classes import music_local" reads the package attribute first: patch both.
+    monkeypatch.setattr(classes, "music_local", music_local, raising=False)
+    monkeypatch.setattr(classes, "editor_tools", package, raising=False)
+    monkeypatch.setitem(sys.modules, "classes.music_local", music_local)
+    monkeypatch.setitem(sys.modules, "classes.editor_tools", package)
+    monkeypatch.setitem(sys.modules, "classes.editor_tools.ai_generation_music", music)
+
+
+def test_after_a_declined_download_generate_asks_again_and_runs_once_installed(qapp, monkeypatch):
+    # #360 blocked the engine for the session after a "No": Generate stayed enabled and did
+    # nothing, even once the model was installed another way.
     from windows.views.stock_search_view import StockSearchView
 
+    state = {"installed": set(), "asked": [], "answers": [False, False, True], "generated": []}
+    _stub_music(monkeypatch, state)
     v = StockSearchView()
-    v._on_local_bed_done({"path": "", "error": "the user declined the music download", "declined": True,
-                          "engine": "ace_step", "gen": v._search_gen})
-    assert "declined" in v._gen_status.text().lower()
-    with patch.object(v, "_start_search") as start:
-        v._start_local_bed("rain", "ace_step")
-        start.assert_not_called()
-        v._start_local_bed("rain", "yue2")
-        start.assert_called_once()
+
+    def run_here(worker, on_done):   # the real worker, on this thread, straight back to the panel
+        worker.finished.connect(on_done)
+        worker.run()
+
+    with patch.object(v, "_start_search", side_effect=run_here), \
+            patch.object(v, "_add_to_project", return_value=True):
+        v._start_local_bed("rain", "ace_step")                      # No
+        assert "declined" in v._gen_status.text().lower()
+        v._start_local_bed("rain", "ace_step")                      # asked again, No again
+        assert state["asked"] == ["ace_step", "ace_step"] and state["generated"] == []
+        state["installed"].add("ace_step")                          # installed some other way
+        v._start_local_bed("rain", "ace_step")                      # runs without asking
+        v._start_local_bed("rain", "yue2")                          # the other engine: its own question
+    assert state["asked"] == ["ace_step", "ace_step", "yue2"]
+    assert state["generated"] == ["ace_step", "yue2"]
+    assert "added it to project files" in v._gen_status.text().lower()

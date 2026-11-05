@@ -70,8 +70,10 @@ def generate_music(prompt, lyrics="", duration_seconds=30, engine="ace_step"):
     user asks for an original track or a song with their lyrics. A 30 s bed takes
     about a minute on a laptop GPU; songs with lyrics take longer, and yue2 takes
     several minutes. Only pass engine=yue2 when the user asks for it, and tell them
-    its licence is non-commercial. The result carries a file_id: place it with
-    add_clips_to_timeline_tool. Nothing is uploaded and there is no undo step.
+    its licence is non-commercial. A yue2 song sings its lyrics at about 6 s a
+    line and sings the chorus or the lyrics again to fill a longer duration. The
+    result carries a file_id: place it with add_clips_to_timeline_tool. Nothing is
+    uploaded and there is no undo step.
     """
     engine = engine or "ace_step"
     if engine not in ml.ENGINES:

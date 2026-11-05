@@ -3,7 +3,9 @@
 Beds (instrumental) render DiT-only on ACE-Step; songs with lyrics run its LM
 first. Every run tiles the VAE small (the iGPU otherwise runs out of pinned
 memory and a 30 s decode takes minutes). Runtimes and models are pinned
-downloads; a failed run surfaces the tool's own output.
+downloads; a failed run says why in one line (the full output goes to the log).
+A YuE2 song fits its cache at every length and sings its lyrics again to fill
+a longer duration.
 """
 
 import json
@@ -76,19 +78,106 @@ def test_yue2_uses_the_memory_capped_settings(home):
         ml.generate("yue2", "indie pop", lyrics="[Verse]\nCity lights", duration=60)
     name, argv, req = calls[0]
     assert name.startswith("yue-synth")
-    assert argv[argv.index("--max-seq") + 1] == "4096"   # 60 s of tokens fits; smaller cache, less RAM
     assert argv[argv.index("--vae-core") + 1] == "128"
     assert req["output_format"] == "mp3" and req["duration"] == 60 and req["steps"] == 16
     assert ml.YUE_MODEL == "YuE2-3B-Q5_K_M.gguf"
     assert os.path.basename(argv[argv.index("--model") + 1]) == ml.YUE_MODEL
 
 
-def test_yue2_long_songs_get_a_cache_big_enough_for_their_tokens(home):
+# yue2.cpp at YUE2_REF: the longest instruction (prompt.h), the checkpoint's default score budget
+# (sampling.h) and the refusal in generate.h, "[AR] FATAL: prefix + budget + end exceeds context".
+_YUE_INSTRUCTION = ("Generate a chord-annotated ABC transcription, then generate music with codec tokens from "
+                    "the given conditions.")
+_YUE_DEFAULT_SCORE_BUDGET = 4096
+_FOUR_LINES = ("[verse]\nMorning light on the city street\nCoffee steam and a steady beat\n"
+               "[chorus]\nWe keep on dancing through the rain\nSinging loud on the morning train")
+
+
+def _yue_synth_would_start(argv, req):
+    """What yue-synth checks before each stage, counting a token per prompt byte (the worst case)."""
+    context = int(argv[argv.index("--max-seq") + 1])
+    text = _YUE_INSTRUCTION + "\n[Tags]\n" + req["style"] + "\n[Lyrics]\n" + req["lyrics"] + "\n"
+    prompt = 2 + len(text.encode("utf-8"))   # <|endoftext|> ... <abc>
+    frames = min(int(req["duration"] * 25), 9000)
+    if req["cot"] == "off":
+        return prompt + 2 + frames + 1 <= context
+    sampling = req.get("abc_sampling", {})
+    budget = sampling.get("max_tokens", _YUE_DEFAULT_SCORE_BUDGET)
+    assert sampling.get("min_tokens", 32) <= budget   # yue-synth refuses a floor above the budget
+    score_stage = prompt + budget + 1
+    codes_stage = prompt + budget + 2 + frames + 1   # after a score that used its whole budget
+    return score_stage <= context and codes_stage <= context
+
+
+@pytest.mark.parametrize("duration", [5, 30, 45, 60, 76, 90, 240])
+def test_a_yue2_song_fits_the_cache_at_every_length(home, duration):
+    # A song under about 77 s got --max-seq 4096: the score stage alone needs the prompt + 4096.
     calls = []
     with patch.object(ml, "_run", side_effect=_fake_run(calls)):
-        ml.generate("yue2", "indie pop", lyrics="[Verse]\nCity lights", duration=240)
-    argv = calls[0][1]
-    assert int(argv[argv.index("--max-seq") + 1]) >= 240 * 40
+        ml.generate("yue2", "upbeat acoustic pop, female vocals", lyrics=_FOUR_LINES, duration=duration)
+    _, argv, req = calls[0]
+    assert req["cot"] == "full"
+    assert _yue_synth_would_start(argv, req)
+
+
+def test_long_non_latin_lyrics_still_fit(home):
+    lyrics = "\n".join(["[verse]"] + ["朝の光が街を照らす 🌅 雨の中で踊り続ける"] * 40)
+    calls = []
+    with patch.object(ml, "_run", side_effect=_fake_run(calls)):
+        ml.generate("yue2", "J-pop, female vocals", lyrics=lyrics, duration=45)
+    assert _yue_synth_would_start(calls[0][1], calls[0][2])
+
+
+@pytest.mark.parametrize("duration", [30, 45, 240])
+def test_a_yue2_bed_fits_and_writes_no_score(home, duration):
+    calls = []
+    with patch.object(ml, "_run", side_effect=_fake_run(calls)):
+        ml.generate("yue2", "calm ambient pads", duration=duration)
+    _, argv, req = calls[0]
+    assert req["cot"] == "off" and "abc_sampling" not in req
+    assert _yue_synth_would_start(argv, req)
+
+
+def _sung(duration, lyrics=_FOUR_LINES):
+    calls = []
+    with patch.object(ml, "_run", side_effect=_fake_run(calls)):
+        ml.generate("yue2", "upbeat acoustic pop", lyrics=lyrics, duration=duration)
+    req = calls[0][2]
+    assert req["duration"] == duration   # still the cap on the song's codes
+    return req["lyrics"]
+
+
+def test_a_yue2_song_sings_its_lyrics_again_to_fill_the_duration(home):
+    # YuE2 sings its lyrics once and stops: four lines came back about 33 s long whether 45 s or
+    # 90 s was asked for. The duration only caps the song, so the lyrics have to fill it.
+    verse, chorus = "Morning light on the city street", "We keep on dancing through the rain"
+    assert _sung(30) == _FOUR_LINES                                   # once is already about 30 s
+    at45 = _sung(45)
+    assert at45.startswith(_FOUR_LINES) and (at45.count(verse), at45.count(chorus)) == (1, 2)
+    at60 = _sung(60)
+    assert (at60.count(verse), at60.count(chorus)) == (2, 2)          # verse, chorus, verse, chorus
+    assert ml._yue_song_seconds(_sung(90)) >= 0.9 * 90
+
+
+def test_lyrics_without_a_chorus_repeat_whole_and_empty_tags_never_loop(home):
+    assert _sung(45, "la la la\nsing along") == "\n\n".join(["la la la\nsing along"] * 3)
+    assert _sung(45, "[Verse] city lights\n[Chorus]").count("city lights") >= 3
+
+
+_METAL_WALL = "\n".join(["ggml_metal_device_init: has bfloat            = true"] * 40 + [
+    "[Store] Load LM: 13485 ms",
+    "[AR] FATAL: prefix 73 + budget 4096 + end exceeds context 4096",
+    "[Store] Unload LM (1542.4 MB)",
+    "ggml_metal_free: deallocating"])
+
+
+def test_a_failed_run_says_why_not_the_device_log(home):
+    with patch.object(ml, "_run", return_value=(1, _METAL_WALL)):
+        with pytest.raises(ml.MusicError) as err:
+            ml.generate("yue2", "indie pop", lyrics="[Verse]\nCity lights", duration=45)
+    message = str(err.value)
+    assert "FATAL: prefix 73 + budget 4096" in message and "yue-synth failed (exit code 1)" in message
+    assert "ggml_metal" not in message and len(message) < 400
 
 
 def test_a_failed_run_reports_the_tools_output(home):
