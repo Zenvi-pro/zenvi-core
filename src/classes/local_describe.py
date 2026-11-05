@@ -179,7 +179,10 @@ def describe(path: str, media_type: str, prompt: str, schema: Dict[str, Any], du
               "Answer with one JSON object that follows this JSON schema:\n%s" % (prompt, json.dumps(schema)))
     with tempfile.TemporaryDirectory(prefix="zenvi-describe-") as tmp:
         argv = [llama_program(), "cli", "-m", _model_path(MODEL[0]), "-mm", _model_path(PROJECTOR[0]),
-                MEDIA_FLAG[mt], path, "-sys", SYSTEM[mt], "-p", prompt, "-st", "--temp", "0"]
+                MEDIA_FLAG[mt], path, "-sys", SYSTEM[mt], "-p", prompt, "-st", "--temp", "0",
+                # Without it, llama.cpp writes its answer to the controlling terminal rather than to our
+                # pipe whenever Zenvi has one (run.sh, a terminal launch): every description came back empty.
+                "--simple-io"]
         try:
             proc = subprocess.run(argv, cwd=tmp, env=_environment(), capture_output=True, text=True,
                                   encoding="utf-8", errors="replace", timeout=DESCRIBE_TIMEOUT,
