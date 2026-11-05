@@ -105,6 +105,8 @@ def test_describe_asks_the_model_with_the_backend_prompt_and_schema(home, monkey
     argv = seen["argv"]
     assert argv[:2] == [ld.llama_program(), "cli"]
     assert "-st" in argv and "--json-schema-file" not in argv   # its grammar breaks this model's chat template
+    # RC v1.3.0: with a controlling terminal (run.sh) llama.cpp wrote the answer there, not to our pipe.
+    assert "--simple-io" in argv
     assert argv[argv.index("--video") + 1] == str(clip)
     assert argv[argv.index("-m") + 1].endswith(ld.MODEL[0]) and argv[argv.index("-mm") + 1].endswith(ld.PROJECTOR[0])
     assert "You analyze a video segment." in " ".join(argv) and argv[argv.index("--temp") + 1] == "0"
