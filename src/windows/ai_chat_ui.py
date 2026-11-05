@@ -28,6 +28,9 @@ from windows.agent_runners import CLI_RUNNERS
 from windows.embedded_web import web_embed_backend
 from themes.cosmic.tokens import TOKENS
 
+# Zenvi's own credit refusals (backend credit_gate, credits_client), not a provider's balance.
+OUT_OF_CREDITS_RE = re.compile(r"out of credits|insufficient credits", re.I)
+
 # Theme colors for chat CEP UI (match theme QSS). Keys match ThemeName.value.
 # Bloomberg Light: high information density, sharp edges, accent #6366F1.
 CHAT_THEME_COLORS = {
@@ -1008,6 +1011,12 @@ class ChatBridge(QObject):
     def signInZenvi(self):
         if self.window:
             self.window._sign_in_zenvi()
+
+    @guarded_slot(int)
+    def buyCredits(self, pack: int):
+        """Pay on the top-up card: the only path that charges, and only from a click on the page."""
+        if self.window:
+            self.window._buy_credits(int(pack))
 
     @guarded_slot(str, result=str)
     def toolDetail(self, call_id: str) -> str:
@@ -3365,6 +3374,45 @@ class AIChatWindow(QDockWidget):
             self._credits_timer.timeout.connect(self._fetch_credits_balance)
             self._credits_timer.start(60_000)   # refresh every 60 seconds
 
+    def show_topup_card(self, quote: dict):
+        """Top-up card (#272) in the chat; Pay calls ChatBridge.buyCredits."""
+        if self._use_web_ui:
+            self._run_js("if(window.showTopUpCard) showTopUpCard(%s);" % json.dumps(quote))
+
+    def _offer_topup(self, pack: int = 10):
+        """Quote off the GUI thread, then show the card (after an out-of-credits error)."""
+        def run():
+            from classes.credits_client import credits as _creds
+            quote = _creds.buy(pack)
+            if not quote.get("error"):
+                QMetaObject.invokeMethod(self, "_show_topup_card_json", Qt.QueuedConnection, Q_ARG(str, json.dumps(quote)))
+        threading.Thread(target=run, daemon=True, name="credits-topup-quote").start()
+
+    @pyqtSlot(str)
+    def _show_topup_card_json(self, payload: str):
+        self.show_topup_card(json.loads(payload))
+
+    def _buy_credits(self, pack: int):
+        def run():
+            from classes.credits_client import credits as _creds
+            result = _creds.buy(pack, confirm=True)
+            QMetaObject.invokeMethod(self, "_on_topup_result", Qt.QueuedConnection, Q_ARG(str, json.dumps(result)))
+        threading.Thread(target=run, daemon=True, name="credits-topup").start()
+
+    @pyqtSlot(str)
+    def _on_topup_result(self, payload: str):
+        result = json.loads(payload)
+        url = str(result.get("url") or "")
+        if result.get("status") == "checkout":
+            if url.startswith("https://checkout.stripe.com/"):
+                import webbrowser
+                webbrowser.open(url)
+            else:
+                result = {"error": "Could not open Stripe Checkout. Buy at https://zenvi.pro/topup."}
+        elif result.get("status") == "paid":
+            self.refresh_credits_for_account()
+        self._run_js("if(window.onTopUpResult) onTopUpResult(%s);" % json.dumps(result))
+
     def _fetch_credits_balance(self):
         """Fetch balance in a background thread; the credits listener repaints."""
         def run():
@@ -4602,6 +4650,8 @@ class AIChatWindow(QDockWidget):
                 self._run_js("if(window.resetStreamingMessage) window.resetStreamingMessage();")
             self._add_system_msg("Error: %s" % text)
             self._set_processing_ui(False)
+            if OUT_OF_CREDITS_RE.search(text or ""):
+                self._offer_topup()
 
     @pyqtSlot(str)
     def _on_auth_required(self, text: str):

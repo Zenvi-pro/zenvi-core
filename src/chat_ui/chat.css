@@ -1392,3 +1392,11 @@ body {
 .chat-signin-status { font-size: 11px; color: var(--chat-muted); }
 .chat-signin-status.ok { color: var(--success); }
 .chat-signin-status.error { color: var(--danger); }
+
+/* Top-up card (#272) */
+.chat-topup { margin: 8px 0; padding: 12px; border: 1px solid var(--chat-border); border-radius: 10px; background: var(--chat-surface); }
+.chat-topup-title { font-weight: 600; margin-bottom: 8px; }
+.chat-topup-packs { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+.chat-topup-pack { flex: 1; padding: 6px 8px; border: 1px solid var(--chat-border); border-radius: 8px; background: transparent; color: inherit; cursor: pointer; font-size: 12px; }
+.chat-topup-pack.selected { border-color: var(--accent, #7c5cff); }
+.chat-topup-pay { width: 100%; margin-bottom: 6px; }

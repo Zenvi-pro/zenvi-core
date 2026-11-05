@@ -382,6 +382,15 @@ def _project_file_ids_from_event(event):
     return [str(x) for x in data if x]
 
 
+def open_web_link(url, link_clicked: bool) -> bool:
+    """A clicked http(s) link in a reply (a top-up or Checkout link, a doc) opens in the browser."""
+    if not link_clicked or url.scheme() not in ("http", "https"):
+        return False
+    import webbrowser
+    webbrowser.open(url.toString())
+    return True
+
+
 def _accept_chat_file_drag(event) -> bool:
     if accept_os_file_drag(event):
         return True
@@ -405,6 +414,8 @@ if QWebEnginePage is not None:
         def acceptNavigationRequest(self, url, nav_type, is_main_frame):
             if is_allowed_chat_navigation(url, self._chat_ui_dir):
                 return True
+            if open_web_link(url, nav_type == QWebEnginePage.NavigationTypeLinkClicked):
+                return False
             if is_main_frame:
                 path = ""
                 try:
@@ -472,6 +483,8 @@ if QWebView is not None and QWebPage is not None:
             url = request.url() if request is not None else QUrl()
             if is_allowed_chat_navigation(url, self._chat_ui_dir):
                 return True
+            if open_web_link(url, nav_type == QWebPage.NavigationTypeLinkClicked):
+                return False
             path = ""
             try:
                 if url.isLocalFile():

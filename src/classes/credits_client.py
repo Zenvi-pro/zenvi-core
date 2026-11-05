@@ -188,6 +188,25 @@ class CreditsClient:
             log.warning("credits_client: RPC %s failed: %s", function_name, exc)
             return None
 
+    def buy(self, pack: int, confirm: bool = False) -> dict:
+        """Top-up pack via the buy-credits edge function (#272): a quote, or with
+        *confirm* the charge / Stripe Checkout URL. Errors come back as {"error": ...}."""
+        auth, headers, url = self._get_auth()
+        if auth is None:
+            return {"error": "Sign in to Zenvi first (Zenvi menu > Sign in)."}
+        body = {"pack": pack, **({"confirm": True} if confirm else {})}
+        try:
+            import requests
+            resp = requests.post(f"{url}/functions/v1/buy-credits", headers=headers, json=body, timeout=30)
+            data = resp.json()
+        except Exception as exc:
+            log.warning("credits_client: buy-credits failed: %s", exc)
+            return {"error": "Could not reach Zenvi billing. Try again, or buy at %s." % topup_url(pack)}
+        if resp.status_code != 200 or not isinstance(data, dict) or data.get("error"):
+            message = data.get("error") if isinstance(data, dict) else None
+            return {"error": message or "Top-up failed (HTTP %s)." % resp.status_code}
+        return data
+
     def _rpc_then_refresh(self, function_name: str, payload: dict) -> None:
         """Run a spend/refund RPC, then refetch so the badge repaints right away."""
         result = self._rpc(function_name, payload)
@@ -403,10 +422,15 @@ class CreditsClient:
 credits = CreditsClient()
 
 
+def topup_url(pack: int = 0) -> str:
+    from classes.auth_manager import ZENVI_WEBSITE
+    return ZENVI_WEBSITE.rstrip("/") + "/topup" + (f"?pack={pack}" if pack else "")
+
+
 def credit_block_message(points_needed: int, label: str, balance: int) -> str:
     return (
         f"Insufficient credits ({balance} remaining, need {points_needed} for {label}). "
-        "Enable pay-as-you-go in Account → Credits, or wait for your next billing cycle."
+        'Buy more with run_tool(name="buy_credits_tool", args={"pack": 10}) or at %s.' % topup_url()
     )
 
 
