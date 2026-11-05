@@ -31,9 +31,10 @@ def _client(ok_urls):
 
     def _dl(url, ext, filename_hint="", timeout=0):
         tried.append(url)
+        # The real helper's shape (_download_url_to_temp): a local_path, or an empty one and an error.
         if url in ok_urls:
-            return {"success": True, "path": f"/tmp/x{ext}"}
-        return {"success": False, "error": "404 Client Error: Not Found"}
+            return {"local_path": f"/tmp/x{ext}"}
+        return {"local_path": "", "error": "404 Client Error: Not Found"}
 
     c._download_url_to_temp = _dl
     return c, tried
@@ -92,4 +93,65 @@ def test_no_duplicate_requests_for_the_same_url():
 def test_the_extension_matches_the_chosen_variant():
     ogg = HQ.replace("-hq.mp3", "-hq.ogg")
     c, _tried = _client({ogg})
-    assert c.freesound_download(749923, HQ)["path"].endswith(".ogg")
+    assert c.freesound_download(749923, HQ)["local_path"].endswith(".ogg")
+
+
+# RC v1.3.0 e2e: the helper never returns "success", so every finished download counted as failed and each
+# sound was fetched two or three times (12 minutes for one whoosh on Freesound's CDN).
+
+class _Resp:
+    def __init__(self, status, chunks):
+        self.status_code, self._chunks = status, chunks
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError("%d Client Error" % self.status_code)
+
+    def iter_content(self, chunk_size=0):
+        for chunk in self._chunks:
+            if isinstance(chunk, Exception):
+                raise chunk
+            yield chunk
+
+
+def _real_client(tmp_path, monkeypatch, responses):
+    """The real download helper against fake HTTP: *responses* maps a URL to a list of _Resp, one per request."""
+    from classes import info
+    import requests
+
+    monkeypatch.setattr(info, "USER_PATH", str(tmp_path))
+    gets = []
+
+    def get(url, **kwargs):
+        gets.append(url)
+        return responses[url].pop(0)
+
+    monkeypatch.setattr(requests, "get", get)
+    return ZenviBackendClient.__new__(ZenviBackendClient), gets
+
+
+def test_a_sound_that_downloads_is_fetched_once(tmp_path, monkeypatch):
+    c, gets = _real_client(tmp_path, monkeypatch, {HQ: [_Resp(200, [b"mp3-bytes"])]})
+    out = c.freesound_download(749923, HQ)
+    assert out["success"] is True
+    assert gets == [HQ]
+    assert open(out["local_path"], "rb").read() == b"mp3-bytes"
+
+
+def test_a_download_cut_off_half_way_is_not_taken_for_a_finished_file(tmp_path, monkeypatch):
+    lq = HQ.replace("-hq.mp3", "-lq.mp3")
+    c, gets = _real_client(tmp_path, monkeypatch, {
+        HQ: [_Resp(200, [b"half", ConnectionError("connection dropped")])],
+        lq: [_Resp(200, [b"whole-lq-file"])],
+    })
+    out = c.freesound_download(749923, HQ)
+    assert out["success"] is True
+    assert gets == [HQ, lq]
+    assert open(out["local_path"], "rb").read() == b"whole-lq-file"
+    assert not [n for n in os.listdir(tmp_path / "Downloads") if n.endswith(".part")]
+
+
+def test_the_tool_gets_the_path_of_the_finished_download(tmp_path, monkeypatch):
+    c, _ = _real_client(tmp_path, monkeypatch, {HQ: [_Resp(200, [b"x"])]})
+    out = c.freesound_download(749923, HQ, filename="whoosh")
+    assert out["local_path"].endswith("whoosh.mp3") and os.path.isfile(out["local_path"])
