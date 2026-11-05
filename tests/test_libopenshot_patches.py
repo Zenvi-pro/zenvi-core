@@ -15,8 +15,8 @@ import pytest
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 HELPER = os.path.join(ROOT, "installer", "apply-libopenshot-patches.sh")
 PATCH_DIR = os.path.join(ROOT, "installer", "mac-patches")
-DISCARD_PATCH = os.path.join(PATCH_DIR, "libopenshot-v1.0.0-discard-preroll.patch")
-REFRESH_PATCH = os.path.join(PATCH_DIR, "libopenshot-v1.0.0-same-frame-refresh.patch")
+DISCARD_PATCH = os.path.join(PATCH_DIR, "libopenshot-v1.0.1-discard-preroll.patch")
+REFRESH_PATCH = os.path.join(PATCH_DIR, "libopenshot-v1.0.1-same-frame-refresh.patch")
 
 JASHAN = ("Jashan Pratap Singh", "88160290+jashanpratapsingh@users.noreply.github.com")
 
@@ -161,7 +161,7 @@ def test_every_libopenshot_build_applies_patches_through_the_helper(path):
 def test_run_win_applies_the_discard_preroll_patch():
     # run-win.ps1 builds libopenshot's default branch, not a tag, so it names the patch directly.
     with open(os.path.join(ROOT, "run-win.ps1"), encoding="utf-8") as fh:
-        assert "installer/mac-patches/libopenshot-v1.0.0-discard-preroll.patch" in fh.read()
+        assert "installer/mac-patches/libopenshot-v1.0.1-discard-preroll.patch" in fh.read()
 
 def test_same_frame_refresh_patch_keeps_the_cache_on_a_paused_edit():
     # #320/#332: a paused edit's same-frame seek cleared every cached frame under the timeline lock
@@ -181,7 +181,7 @@ def test_same_frame_refresh_patch_keeps_the_cache_on_a_paused_edit():
 
 def test_run_win_applies_the_same_frame_refresh_patch():
     with open(os.path.join(ROOT, "run-win.ps1"), encoding="utf-8") as fh:
-        assert "installer/mac-patches/libopenshot-v1.0.0-same-frame-refresh.patch" in fh.read()
+        assert "installer/mac-patches/libopenshot-v1.0.1-same-frame-refresh.patch" in fh.read()
 
 
 def test_run_win_rebuilds_an_existing_build_missing_any_patch():
