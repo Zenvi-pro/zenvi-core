@@ -178,12 +178,19 @@ def _unwrap_langchain_content(value) -> str:
     return text
 
 
+_UNSAFE_HREF_RE = re.compile(r'href="\s*(?:javascript|vbscript|data):[^"]*"', re.I)
+
+
 def _markdown_to_html(text: str) -> str:
     """Convert markdown to HTML suitable for QTextEdit. Uses theme text color for body."""
     text = _unwrap_langchain_content(text)
     try:
         import markdown
-        body = markdown.markdown(text, extensions=["extra"])
+        md = markdown.Markdown(extensions=["extra"])
+        # Raw HTML in a reply is shown as text: script in this page could press the Pay bridge (#272).
+        md.preprocessors.deregister("html_block")
+        md.inlinePatterns.deregister("html")
+        body = _UNSAFE_HREF_RE.sub('href="#"', md.convert(text))
     except Exception as exc:
         log.warning("_markdown_to_html: markdown render failed: %s", exc)
         body = html.escape(text).replace("\n", "<br/>")

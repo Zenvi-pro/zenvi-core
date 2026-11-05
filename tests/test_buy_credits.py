@@ -152,3 +152,16 @@ def test_the_page_has_the_top_up_card():
     card = text[text.index("window.showTopUpCard"):]
     assert re.search(r"bridge\.buyCredits\(", card)
     assert "=>" not in card[: card.index("window.onTopUpResult")]  # ES5 for WebKit 602
+
+
+def test_replies_cannot_inject_script_into_the_chat_that_holds_the_pay_bridge():
+    render = ai_chat_ui._markdown_to_html
+    for evil in ('<img src=x onerror="zenviChatBridge.buyCredits(15)">',
+                 '<script>zenviChatBridge.buyCredits(15)</script>',
+                 '<div onclick="x()">hi</div>',
+                 '[pay](javascript:zenviChatBridge.buyCredits(15))'):
+        out = render(evil)
+        assert "<img" not in out and "<script" not in out and "<div onclick" not in out, out
+        assert 'href="javascript:' not in out.lower(), out
+    good = render("**bold** and `code <b>` and [top up](https://zenvi.pro/topup)")
+    assert "<strong>bold</strong>" in good and "&lt;b&gt;" in good and 'href="https://zenvi.pro/topup"' in good
