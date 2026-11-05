@@ -258,6 +258,8 @@ class JsonDataStore:
 
         elif "@assets" in path:
             new_path = path.replace("@assets", path_context["new_project_assets"])
+            # @assets tokens use `/`; turn them into a real host path before saving.
+            new_path = os.path.normpath(new_path)
             new_path = json.dumps(new_path, ensure_ascii=False)
             return '"%s": %s' % (key, new_path)
 

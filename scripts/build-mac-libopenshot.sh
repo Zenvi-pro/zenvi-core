@@ -36,13 +36,13 @@
 #
 # Usage:
 #   bash scripts/build-mac-libopenshot.sh
-#   ZENVI_DEPS=$HOME/zenvi-deps-1.0 LIBOPENSHOT_TAG=v1.0.0 LIBOPENSHOT_AUDIO_TAG=v1.0.0 \
+#   ZENVI_DEPS=$HOME/zenvi-deps-1.0 LIBOPENSHOT_TAG=v1.0.1 LIBOPENSHOT_AUDIO_TAG=v1.0.1 \
 #     bash scripts/build-mac-libopenshot.sh
 #
 # Environment:
 #   ZENVI_DEPS             install prefix                 (default: $HOME/zenvi-deps)
 #   SRC_DIR                where to clone the sources     (default: $HOME/src)
-#   LIBOPENSHOT_TAG        libopenshot tag to build       (default: v1.0.0)
+#   LIBOPENSHOT_TAG        libopenshot tag to build       (default: v1.0.1)
 #   LIBOPENSHOT_AUDIO_TAG  libopenshot-audio tag to build (default: $LIBOPENSHOT_TAG)
 #   ZENVI_OPENCV           ON|OFF, build the OpenCV effects (Tracker, Object
 #                          Detector, Stabilizer) against Homebrew opencv@4
@@ -59,7 +59,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PATCH_DIR="$REPO_ROOT/installer/mac-patches"
 ZENVI_DEPS="${ZENVI_DEPS:-$HOME/zenvi-deps}"
 SRC_DIR="${SRC_DIR:-$HOME/src}"
-TAG="${LIBOPENSHOT_TAG:-v1.0.0}"
+TAG="${LIBOPENSHOT_TAG:-v1.0.1}"
 AUDIO_TAG="${LIBOPENSHOT_AUDIO_TAG:-$TAG}"
 OPENCV="${ZENVI_OPENCV:-ON}"
 EXTRA_CXX_FLAGS="${ZENVI_CXX_FLAGS:-}"
@@ -171,6 +171,15 @@ apply_patches "$SRC_DIR/libopenshot" "libopenshot-${TAG}"
 echo "  Applying FFmpeg 8/9 AVCodec compatibility patch..."
 "$PY311" "$REPO_ROOT/installer/patch-libopenshot-ffmpeg.py" "$SRC_DIR/libopenshot"
 
+# Homebrew protobuf (for OpenCV) includes and links abseil, which CMake's FindProtobuf
+# module does not pass on: take protobuf's flags from its pkg-config file, as release.yml does.
+PROTOBUF_CFLAGS=""
+PROTOBUF_LIBS=""
+if [ "$OPENCV" = "ON" ]; then
+  PROTOBUF_CFLAGS="$(pkg-config --cflags protobuf)"
+  PROTOBUF_LIBS="$(pkg-config --libs protobuf)"
+fi
+
 # USE_QT6=OFF: libopenshot >= 1.0 auto-detects Qt 6 when a Homebrew Qt 6 is
 # present (opencv@4 drags one in via vtk). PyQt5 needs the Qt 5 build.
 cmake -S "$SRC_DIR/libopenshot" -B "$SRC_DIR/libopenshot/build" \
@@ -189,9 +198,10 @@ cmake -S "$SRC_DIR/libopenshot" -B "$SRC_DIR/libopenshot/build" \
   -DPYTHON_LIBRARY="$PY311_LIB" \
   -DOpenMP_ROOT="$LIBOMP_PREFIX" \
   -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX" \
-  -DCMAKE_CXX_FLAGS="-I$LIBOMP_PREFIX/include -Wno-deprecated-declarations $EXTRA_CXX_FLAGS" \
+  -DCMAKE_CXX_FLAGS="-I$LIBOMP_PREFIX/include -Wno-deprecated-declarations $EXTRA_CXX_FLAGS $PROTOBUF_CFLAGS" \
   -DCMAKE_EXE_LINKER_FLAGS="-L$LIBOMP_PREFIX/lib -lomp" \
-  -DCMAKE_SHARED_LINKER_FLAGS="-L$LIBOMP_PREFIX/lib -lomp"
+  -DCMAKE_SHARED_LINKER_FLAGS="-L$LIBOMP_PREFIX/lib -lomp $PROTOBUF_LIBS" \
+  -DCMAKE_MODULE_LINKER_FLAGS="$PROTOBUF_LIBS"
 cmake --build "$SRC_DIR/libopenshot/build" --parallel "$JOBS"
 cmake --install "$SRC_DIR/libopenshot/build"
 

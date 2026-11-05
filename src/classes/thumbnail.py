@@ -224,7 +224,7 @@ def _thumbnail_timestamp(file_path, thumbnail_frame):
                 file_path,
             ],
             capture_output=True,
-            text=True,
+            encoding="utf-8", errors="replace",
             check=False,
         )
         if proc.returncode == 0 and proc.stdout.strip():
@@ -592,11 +592,6 @@ class httpThumbnailHandler(BaseHTTPRequestHandler):
             # Generate thumbnail (since we can't find it)
             thumb_path = preferred_thumbnail_path(file_id, file_frame, fingerprint=fingerprint)
 
-            # Determine if video overlay should be applied to thumbnail
-            overlay_path = ""
-            if file.data["media_type"] == "video":
-                overlay_path = os.path.join(info.IMAGES_PATH, "overlay.png")
-
             # Create thumbnail image (sized like the project files list icons)
             thumb_width = info.LIST_ICON_SIZE.width()
             thumb_height = info.LIST_ICON_SIZE.height()
@@ -607,7 +602,7 @@ class httpThumbnailHandler(BaseHTTPRequestHandler):
                 thumb_width,
                 thumb_height,
                 mask_path,
-                overlay_path)
+                "")
 
         # Send message back to client
         if os.path.exists(thumb_path):

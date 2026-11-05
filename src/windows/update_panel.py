@@ -22,10 +22,10 @@ from qt_api import (
     QFrame, QLabel, QPushButton, QProgressBar, QHBoxLayout, QVBoxLayout,
 )
 
+from themes.cosmic.tokens import resolve
 from classes.logger import log
 from windows.update_status_button import (
-    STATE_AVAILABLE, STATE_DOWNLOADING, STATE_READY, STATE_FAILED,
-    COLOR_ACCENT, COLOR_SUCCESS, COLOR_WARNING, svg_icon,
+    STATE_AVAILABLE, STATE_DOWNLOADING, STATE_READY, STATE_FAILED, svg_icon,
 )
 
 
@@ -70,12 +70,12 @@ class UpdatePanel(QFrame):
         self.setStyleSheet(self._stylesheet())
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 14)
-        layout.setSpacing(4)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(8)
 
         # Headline row — state glyph + title
         header = QHBoxLayout()
-        header.setSpacing(10)
+        header.setSpacing(8)
         self.glyph = QLabel(self)
         self.glyph.setFixedSize(QSize(GLYPH_SIZE, GLYPH_SIZE))
         self.title = QLabel(self)
@@ -92,17 +92,13 @@ class UpdatePanel(QFrame):
         self.detail.setWordWrap(True)
         layout.addWidget(self.detail)
 
-        layout.addSpacing(10)
-
         self.progress = QProgressBar(self)
         self.progress.setFixedHeight(4)
         self.progress.setTextVisible(False)
         layout.addWidget(self.progress)
 
-        layout.addSpacing(12)
-
         self.primary = QPushButton(self)
-        self.primary.setObjectName("updatePanelPrimary")
+        self.primary.setObjectName("acceptButton")
         self.primary.setCursor(Qt.PointingHandCursor)
         self.primary.setFixedHeight(32)
         self.primary.clicked.connect(self._on_primary)
@@ -113,7 +109,7 @@ class UpdatePanel(QFrame):
         self.later.setCursor(Qt.PointingHandCursor)
         self.later.setFlat(True)
         self.later.setFixedHeight(24)
-        self.later.clicked.connect(self.close)
+        self.later.clicked.connect(self._on_secondary)
         layout.addWidget(self.later)
 
         self._glyphs = {
@@ -144,6 +140,8 @@ class UpdatePanel(QFrame):
             self._show_failed()
         else:
             self._show_available()
+        if self.isVisible():
+            self._fit_height()
 
     def _show_available(self):
         self.title.setText(
@@ -152,9 +150,9 @@ class UpdatePanel(QFrame):
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.progress.setVisible(False)
-        self.primary.setText(self._tr("Download from zenvi.pro"))
+        self.primary.setText(self._tr("Download update"))
         self.primary.setEnabled(True)
-        self._accent(COLOR_WARNING)
+        self.later.setText(self._tr("Later"))
 
     def _show_downloading(self, percent, downloaded, total):
         self.title.setText(
@@ -176,7 +174,7 @@ class UpdatePanel(QFrame):
         self.progress.setVisible(True)
         self.primary.setText(self._tr("Downloading…"))
         self.primary.setEnabled(False)
-        self._accent(COLOR_ACCENT)
+        self.later.setText(self._tr("Later"))
 
     def _show_ready(self, size):
         self.title.setText(
@@ -193,60 +191,27 @@ class UpdatePanel(QFrame):
         self.progress.setVisible(True)
         self.primary.setText(self._tr("Restart to Update"))
         self.primary.setEnabled(True)
-        self._accent(COLOR_SUCCESS)
+        self.later.setText(self._tr("Later"))
 
     def _show_failed(self):
         self.title.setText(
-            self._tr("Zenvi %s is available") % self.version)
+            self._tr("Couldn't download Zenvi %s") % self.version)
         if self.reason:
             self.detail.setText(
-                self._tr("Couldn't update automatically (%s) — download it from zenvi.pro")
+                self._tr("%s — try again, or open the download page.")
                 % self._short(self.reason))
         else:
-            self.detail.setText(self._tr("The download failed — try downloading it manually"))
+            self.detail.setText(
+                self._tr("The download failed — try again, or open the download page."))
         self.progress.setVisible(False)
-        self.primary.setText(self._tr("Download from zenvi.pro"))
+        self.primary.setText(self._tr("Try again"))
         self.primary.setEnabled(True)
-        self._accent(COLOR_WARNING)
+        self.later.setText(self._tr("Open download page"))
 
     @staticmethod
     def _short(text, limit=140):
         text = " ".join(str(text).split())
         return text if len(text) <= limit else text[:limit - 1] + "…"
-
-    def _accent(self, color):
-        """Recolor the progress chunk and primary button for the current state."""
-        self.progress.setStyleSheet(
-            "QProgressBar { background: #1a1a1a; border: none; border-radius: 2px; }"
-            f"QProgressBar::chunk {{ background: {color}; border-radius: 2px; }}"
-        )
-        self.primary.setStyleSheet(
-            "QPushButton#updatePanelPrimary {"
-            f"  background-color: {color};"
-            "   color: #0f0f0f;"
-            "   border: none;"
-            "   border-radius: 6px;"
-            "   font-weight: 600;"
-            "   font-size: 12px;"
-            "}"
-            "QPushButton#updatePanelPrimary:hover {"
-            f"  background-color: {self._lighten(color)};"
-            "}"
-            "QPushButton#updatePanelPrimary:disabled {"
-            "   background-color: #2a2a2a;"
-            "   color: #6b6b6b;"
-            "}"
-        )
-
-    @staticmethod
-    def _lighten(hex_color, amount=24):
-        """Nudge a #rrggbb color brighter for the hover state."""
-        try:
-            raw = hex_color.lstrip("#")
-            parts = [min(255, int(raw[i:i + 2], 16) + amount) for i in (0, 2, 4)]
-            return "#%02x%02x%02x" % tuple(parts)
-        except (ValueError, IndexError):
-            return hex_color
 
     # ------------------------------------------------------------------
     # Actions
@@ -261,7 +226,21 @@ class UpdatePanel(QFrame):
             self.window.close()
             return
 
+        if self.state in (STATE_AVAILABLE, STATE_FAILED):
+            self.close()
+            # Prefer the in-app downloader; the website is a secondary fallback.
+            if hasattr(self.window, "retry_auto_update"):
+                self.window.retry_auto_update()
+            return
+
         self.close()
+
+    def _on_secondary(self):
+        """Later (dismiss) — or open the website when the download failed."""
+        open_site = self.state == STATE_FAILED
+        self.close()
+        if not open_site:
+            return
         try:
             webbrowser.open(DOWNLOAD_URL, new=1)
         except Exception:
@@ -273,7 +252,7 @@ class UpdatePanel(QFrame):
 
     def show_under(self, widget):
         """Pop up anchored beneath *widget*, kept inside the screen."""
-        self.adjustSize()
+        self._fit_height()
         below = widget.mapToGlobal(QPoint(0, widget.height() + 6))
         # Right-align with the button, which sits at the far right of the toolbar
         left = below.x() + widget.width() - self.width()
@@ -288,31 +267,39 @@ class UpdatePanel(QFrame):
         self.show()
         self.raise_()
 
+    def _fit_height(self):
+        """Grow or shrink to the wrapped text at the panel's fixed width.
+
+        adjustSize() alone sizes a top-level popup from the labels' previous
+        wrap, so a longer failure reason was cut off at the top and bottom."""
+        self.layout().activate()
+        self.resize(self.width(), self.heightForWidth(self.width()))
+
     def _stylesheet(self):
-        return (
+        return resolve(
             "QFrame#updatePanel {"
-            "   background-color: #161616;"
-            "   border: 1px solid rgba(255, 255, 255, 0.08);"
-            "   border-radius: 10px;"
+            "   background-color: {raised};"
+            "   border: 1px solid {line_strong};"
+            "   border-radius: 8px;"
             "}"
             "QLabel#updatePanelTitle {"
-            "   color: #f2f2f2;"
+            "   color: {text};"
             "   font-size: 13px;"
             "   font-weight: 600;"
             "   background: transparent;"
             "}"
             "QLabel#updatePanelDetail {"
-            "   color: #8b8b8b;"
-            "   font-size: 11px;"
+            "   color: {text_muted};"
+            "   font-size: 12px;"
             "   background: transparent;"
             "}"
             "QPushButton#updatePanelLater {"
-            "   color: #8b8b8b;"
+            "   color: {text_muted};"
             "   background: transparent;"
             "   border: none;"
-            "   font-size: 11px;"
+            "   font-size: 12px;"
             "}"
-            "QPushButton#updatePanelLater:hover { color: #cfcfcf; }"
+            "QPushButton#updatePanelLater:hover { color: {text}; }"
         )
 
     def _tr(self, text):

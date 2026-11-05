@@ -256,8 +256,8 @@ def test_send_assistant_prompt_wires_a_tool_handler(monkeypatch):
     assert callable(seen.get("on_tool_call"))
     with patch.object(tool_handlers, "execute_tool",
                       return_value="tool ran") as ex:
-        assert seen["on_tool_call"]("list_files_tool", {}, "call-1") == "tool ran"
-    assert ex.call_args[0][0] == "list_files_tool"
+        assert seen["on_tool_call"]("list_project_files_tool", {}, "call-1") == "tool ran"
+    assert ex.call_args[0][0] == "list_project_files_tool"
 
 
 def test_assistant_prompt_is_mcp_extra_not_an_agent_tool():

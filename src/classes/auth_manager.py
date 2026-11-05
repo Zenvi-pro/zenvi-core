@@ -1,15 +1,11 @@
 """
 Zenvi authentication manager.
 
-Primary flow (browser OAuth):
+Sign-in (browser only: Supabase requires a captcha that only the website can solve):
   1. start_auth_flow() → opens browser at ZENVI_WEBSITE/login?state=<uuid>
   2. poll_for_session() → polls Supabase RPC every 2s in a background thread
   3. On success, saves session to disk and calls on_success(session_dict)
   4. On timeout, calls on_timeout() so the UI can offer to try again
-
-Fallback flow (email + password):
-  sign_in_with_password(email, password) / sign_up_with_password(email, password)
-  — call Supabase Auth REST API directly; no browser required.
 
 Keeping the session:
   A sign-in lasts until the server says the refresh token is dead. A refresh
@@ -109,10 +105,6 @@ _REVOKED_ERROR_CODES = frozenset({
     "user_banned",
     "invalid_grant",
 })
-
-
-class AuthError(Exception):
-    """Raised when sign-in fails."""
 
 
 # Letters and digits that can't be misread for each other (no I/1, O/0).
@@ -250,6 +242,22 @@ class AuthManager:
         self._file_lock_owner = threading.local()
         # Whether the in-memory session is the one in the file (read or written).
         self._session_on_disk = False
+        self._session_listeners: list = []
+
+    def add_session_listener(self, callback) -> None:
+        """Call *callback()* (on whichever thread saved it) after a session is saved.
+
+        Used to resume work that waited for a signed-in user. Keep it fast and thread-safe,
+        for example emitting a Qt signal.
+        """
+        if callback not in self._session_listeners:
+            self._session_listeners.append(callback)
+
+    def remove_session_listener(self, callback) -> None:
+        try:
+            self._session_listeners.remove(callback)
+        except ValueError:
+            pass
 
     # ── HTTP helpers ───────────────────────────────────────────────────────────
 
@@ -327,13 +335,19 @@ class AuthManager:
         session = self._with_identity(session)
         if getattr(self._file_lock_owner, "held", False):
             # Inside this thread's own refresh, which holds both locks.
-            self._store(session)
-            return
-        # A sign-in must not interleave with a refresh -- this process's, or
-        # another's -- which would then write the old sign-in over this one.
-        with self._refresh_lock:
-            with _interprocess_lock(AUTH_LOCK_FILE, 5):
-                self._store(session)
+            stored = self._store(session)
+        else:
+            # A sign-in must not interleave with a refresh -- this process's, or
+            # another's -- which would then write the old sign-in over this one.
+            with self._refresh_lock:
+                with _interprocess_lock(AUTH_LOCK_FILE, 5):
+                    stored = self._store(session)
+        if stored:          # outside the locks: a listener may hop threads
+            for callback in list(self._session_listeners):
+                try:
+                    callback()
+                except Exception as exc:  # a dead listener must never break sign-in
+                    log.debug("Session listener failed: %s", exc)
 
     def _store(self, session: dict, sign_outs: int | None = None) -> bool:
         """Make *session* current, on disk and in memory.
@@ -680,7 +694,7 @@ class AuthManager:
         # v=2: this app shows confirmation_code(state), so the website may
         # offer a signed-in browser one-click approval next to the same code.
         url = f"{_zenvi_website()}/login?state={state}&v=2"
-        log.info("Opening auth URL: %s", url)
+        log.info("Opening auth URL")
         opened = False
         if sys.platform.startswith("linux"):
             try:
@@ -736,8 +750,7 @@ class AuthManager:
                         rows = resp.json()
                         if rows and isinstance(rows, list) and rows[0].get("authenticated"):
                             if _cancelled():
-                                # Whoever asked has moved on (e.g. signed in with
-                                # a password): don't overwrite that sign-in.
+                                # Whoever asked has moved on: don't overwrite their sign-in.
                                 return
                             session = self._with_identity(
                                 {k: v for k, v in rows[0].items() if k != "authenticated"})
@@ -766,102 +779,6 @@ class AuthManager:
         """Stop polling for *handle*'s hand-off, or for every one in flight."""
         for poll in ([handle] if handle is not None else list(self._polls)):
             poll.set()
-
-    # ── Direct email/password fallback ────────────────────────────────────────
-
-    def sign_in_with_password(self, email: str, password: str) -> dict:
-        """
-        Sign in via Supabase email+password REST API.
-        Returns session dict on success; raises AuthError on failure.
-        """
-        if not _supabase_url() or not _supabase_anon_key():
-            raise AuthError("Supabase is not configured (check SUPABASE_URL / SUPABASE_ANON_KEY in .env).")
-
-        try:
-            resp = requests.post(
-                f"{_supabase_url()}/auth/v1/token?grant_type=password",
-                headers=self._anon_headers(),
-                json={"email": email, "password": password},
-                timeout=15,
-            )
-        except requests.RequestException as exc:
-            raise AuthError(f"Network error: {exc}") from exc
-
-        log.debug("sign_in status=%s body=%s", resp.status_code, resp.text[:500])
-        if resp.status_code == 200:
-            data = resp.json()
-            access_token = data.get("access_token")
-            if not access_token:
-                raise AuthError(f"No access_token in response: {resp.text[:300]}")
-            user = data.get("user") or {}
-            session = {
-                "access_token": access_token,
-                "refresh_token": data.get("refresh_token"),
-                "expires_at": data.get("expires_at"),
-                "user_id": user.get("id"),
-                "user_email": user.get("email") or email,
-            }
-            self.save_session(session)
-            return session
-
-        try:
-            err = resp.json()
-            msg = (err.get("error_description")
-                   or err.get("msg")
-                   or err.get("message")
-                   or err.get("error")
-                   or resp.text)
-        except Exception:
-            msg = resp.text or f"HTTP {resp.status_code}"
-        log.warning("sign_in failed: %s", msg)
-        raise AuthError(msg)
-
-    def sign_up_with_password(self, email: str, password: str) -> dict:
-        """
-        Register a new account via Supabase.
-        Raises AuthError on failure (including when email confirmation is required).
-        """
-        if not _supabase_url() or not _supabase_anon_key():
-            raise AuthError("Supabase is not configured (check SUPABASE_URL / SUPABASE_ANON_KEY in .env).")
-
-        try:
-            resp = requests.post(
-                f"{_supabase_url()}/auth/v1/signup",
-                headers=self._anon_headers(),
-                json={"email": email, "password": password},
-                timeout=15,
-            )
-        except requests.RequestException as exc:
-            raise AuthError(f"Network error: {exc}") from exc
-
-        log.debug("sign_up status=%s body=%s", resp.status_code, resp.text[:500])
-        if resp.status_code in (200, 201):
-            data = resp.json()
-            access_token = data.get("access_token")
-            if not access_token:
-                raise AuthError("Account created — check your email to confirm it, then sign in.")
-            user = data.get("user") or {}
-            session = {
-                "access_token": access_token,
-                "refresh_token": data.get("refresh_token"),
-                "expires_at": data.get("expires_at"),
-                "user_id": user.get("id"),
-                "user_email": user.get("email") or email,
-            }
-            self.save_session(session)
-            return session
-
-        try:
-            err = resp.json()
-            msg = (err.get("error_description")
-                   or err.get("msg")
-                   or err.get("message")
-                   or err.get("error")
-                   or resp.text)
-        except Exception:
-            msg = resp.text or f"HTTP {resp.status_code}"
-        log.warning("sign_up failed: %s", msg)
-        raise AuthError(msg)
 
     # ── Authenticated API calls ────────────────────────────────────────────────
 

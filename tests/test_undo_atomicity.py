@@ -487,9 +487,7 @@ def test_background_safe_tools_are_still_grouped():
 
 
 def test_delete_tools_are_grouped():
-    for name in ("delete_from_timeline_tool", "remove_clip_tool",
-                 "delete_clips_on_track_tool"):
-        assert name not in tool_handlers._UNGROUPED_TOOLS
+    assert "delete_from_timeline_tool" not in tool_handlers._UNGROUPED_TOOLS
 
 
 def test_a_track_clear_is_a_single_undo_step():

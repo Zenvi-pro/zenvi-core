@@ -82,6 +82,8 @@ class BackgroundRenderManager:
         self._wake = threading.Event()
         self._lock = threading.Lock()
         self._cursor_frame = 1
+        self._warm_done = False
+        self._warm_gen = 0
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -116,6 +118,10 @@ class BackgroundRenderManager:
         """Drop disk renders for the current project (call on project load)."""
         # Conservative: wipe the whole cache root for this session's project.
         # Per-hash files are orphaned naturally via budget eviction.
+        with self._lock:
+            self._cursor_frame = 1
+            self._warm_done = False
+            self._warm_gen += 1  # a chunk already rendering must not overwrite the reset
         self._wake.set()
 
     def lookup_render_file(self, digest: str) -> Optional[str]:
@@ -152,16 +158,28 @@ class BackgroundRenderManager:
         except Exception:
             return
         with self._lock:
+            # One pass, then idle until invalidate(): wrapping around re-rendered
+            # (and evicted) the cache forever while holding the timeline lock.
+            if self._warm_done:
+                return
+            if self._cursor_frame > max_frame:  # the timeline got shorter: this pass is over
+                self._warm_done = True
+                return
+            gen = self._warm_gen
             start = self._cursor_frame
             end = min(max_frame, start + 12)
-            self._cursor_frame = end + 1 if end < max_frame else 1
         for frame in range(start, end + 1):
             if self._stop.is_set() or self._is_user_busy():
                 return
             try:
                 timeline.GetFrame(frame)
             except Exception:
-                return
+                log.debug("Cache warming skipped frame %s", frame, exc_info=True)  # never retry it forever
+            with self._lock:
+                if gen != self._warm_gen:  # invalidate() reset the pass meanwhile
+                    return
+                self._cursor_frame = frame + 1
+                self._warm_done = frame >= max_frame
 
     def _disk_one_chunk(self) -> None:
         """Write a small hashed segment index file (metadata only in v1).

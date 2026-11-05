@@ -264,8 +264,10 @@ class OpenShotApp(QApplication):
                 logging.getLogger(__name__).error(
                     'OpenShotApp::Import Error', exc_info=True)
             diag_hint = ""
+            missing_notice = ""
             try:
-                from classes.openshot_import_diag import write_openshot_import_diagnostic
+                from classes.openshot_import_diag import (
+                    missing_files_notice, write_openshot_import_diagnostic)
 
                 _p = write_openshot_import_diagnostic(ex, show_message_box=False)
                 if _p:
@@ -273,11 +275,13 @@ class OpenShotApp(QApplication):
                         "\n\nDLL diagnostic log (share this when reporting the issue):\n%s"
                         % _p
                     )
+                missing_notice = missing_files_notice()
             except Exception:
                 pass
             self.errors.append(StartupError(
                 "Import Error",
-                "Module: %(name)s\n\n%(tb)s%(diag)s" % {
+                "%(missing)sModule: %(name)s\n\n%(tb)s%(diag)s" % {
+                    "missing": missing_notice + "\n\n" if missing_notice else "",
                     "name": getattr(ex, "name", "") or "(see traceback)",
                     "tb": tb,
                     "diag": diag_hint,

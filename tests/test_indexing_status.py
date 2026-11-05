@@ -140,10 +140,25 @@ def test_active_worker_still_wins_over_queue_flag():
 # ── timeline clips fall back to the source file for status ──────────────
 
 
-def test_status_source_prefers_analyzed_clip_metadata():
+def test_status_source_reads_the_source_file_like_its_media_bin_badge():
     clip = {"analyzed": True, "description": "trimmed"}
     source = {"analyzed": True, "description": "full"}
-    assert status_source(clip, source) is clip
+    assert status_source(clip, source) is source
+
+
+def test_a_stale_clip_snapshot_does_not_hide_a_failed_reindex_of_its_source():
+    """#143: the clip's snapshot predates the retry; the badge says it failed."""
+    clip = {"analyzed": True, "description": "trimmed, from the first run"}
+    source = {"analyzed": True, "description": "full", "error": "reindex failed"}
+    st = derive_indexing_status(status_source(clip, source))
+    assert st.state == FAILED
+    assert st.tooltip == "reindex failed"
+
+
+def test_status_source_uses_the_clip_when_there_is_no_source_metadata():
+    clip = {"analyzed": True, "description": "generated"}
+    assert status_source(clip, None) is clip
+    assert status_source(clip, {}) is clip
 
 
 def test_status_source_falls_back_to_source_when_clip_not_analyzed():
@@ -177,3 +192,27 @@ def test_persisted_running_block_with_live_progress_is_still_running():
         {"index": {"status": "indexing"}}, progress={"phase": "indexing", "percent": -1}
     )
     assert st.state == RUNNING
+
+
+def test_other_skips_keep_their_own_label():
+    st = derive_indexing_status({"skip_reason": "Clip exceeds the 30-minute limit."})
+    assert st.state == SKIPPED and st.label == "Indexing skipped"
+
+
+
+def test_analysing_shows_its_own_phase_label():
+    st = derive_indexing_status({}, progress={"phase": "analyzing", "percent": 40})
+    assert st.state == RUNNING and "Analyzing" in st.tooltip
+
+
+def test_a_file_waiting_for_the_network_says_so():
+    """The job leaves an offline first index queued (retry_index); the badge and panel say why instead of nothing (#375)."""
+    from classes.indexing_status import WAITING_FOR_NETWORK
+    st = derive_indexing_status({"analyzed": False, "index": {}, "retry_index": True})
+    assert st.state == PENDING and st.label == WAITING_FOR_NETWORK and "network" in st.tooltip
+
+
+def test_the_retry_itself_shows_its_phase_and_a_finished_index_wins():
+    waiting = {"analyzed": False, "retry_index": True}
+    assert derive_indexing_status(waiting, progress={"phase": "downloading", "percent": 0}).state == RUNNING
+    assert derive_indexing_status(dict(waiting, analyzed=True)).state == SUCCESS

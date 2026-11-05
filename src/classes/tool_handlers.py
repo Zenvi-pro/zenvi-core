@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import uuid as uuid_module
 from collections import Counter
 from time import monotonic as _monotonic
@@ -42,8 +43,6 @@ from classes.clip_placement import (
     source_window_for_file,
 )
 from classes.agent_tools.handlers import (
-    PHASE3_DISPLAY_LABELS,
-    PHASE3_HANDLERS,
     PHASE4_DISPLAY_LABELS,
     PHASE4_HANDLERS,
     PHASE5_DISPLAY_LABELS,
@@ -54,7 +53,9 @@ from classes.track_display import (
     format_track_label_for_llm,
     layer_number_to_display_index,
     layers_sorted_by_number,
+    new_tracks_note,
     normalize_track_or_layer_arg,
+    resolve_placement_track,
 )
 
 try:
@@ -525,68 +526,6 @@ def _describe_group(actions) -> str:
         return ""
 
 
-def _source_fps_parts(file_data):
-    """(num, den, fps_float) for a file reader's own fps."""
-    fps_data = file_data.get("fps") or {}
-    num = parse_timecode_token(fps_data.get("num")) or 30.0
-    den = parse_timecode_token(fps_data.get("den")) or 1.0
-    if num <= 0:
-        num = 30.0
-    if den <= 0:
-        den = 1.0
-    return int(num), int(den), num / den
-
-
-def _source_duration_seconds(file_data):
-    """Source duration in seconds, preferring real seconds over frame counts."""
-    start = parse_timecode_token(file_data.get("start")) or 0.0
-    end = parse_timecode_token(file_data.get("end")) or 0.0
-    if end > start:
-        return end - start
-    duration = parse_timecode_token(file_data.get("duration"))
-    if duration and duration > 0:
-        return duration
-    reader = file_data.get("reader") or {}
-    duration = parse_timecode_token(reader.get("duration"))
-    if duration and duration > 0:
-        return duration
-    frames = parse_timecode_token(file_data.get("video_length")) or 0.0
-    _, _, fps_float = _source_fps_parts(file_data)
-    return frames / fps_float if frames > 0 and fps_float > 0 else 0.0
-
-
-def _unreliable_source_fps(file_data):
-    """True when a file's own fps must not be used for frame math.
-
-    Audio and some broken imports report 1/1 with video_length counted in that
-    1 fps space, which is what sends agents into a place/retry loop.
-    """
-    _, _, fps_float = _source_fps_parts(file_data)
-    if is_audio_only_media(file_data):
-        return True
-    return fps_float <= 2.0 and _source_duration_seconds(file_data) > 2.0
-
-
-def _describe_file_for_llm(file_id, file_data):
-    fps_num, fps_den, _ = _source_fps_parts(file_data)
-    duration = _source_duration_seconds(file_data)
-    project_fps = _get_app().project.get("fps") or {}
-    p_num = int(parse_timecode_token(project_fps.get("num")) or 30)
-    p_den = int(parse_timecode_token(project_fps.get("den")) or 1)
-    media_type = file_data.get("media_type") or ("audio" if is_audio_only_media(file_data) else "video")
-    line = (
-        f"file_id={file_id} path={file_data.get('path','')} "
-        f"duration_seconds={duration:.2f} source_fps={fps_num}/{fps_den} "
-        f"project_fps={p_num}/{p_den} media_type={media_type}"
-    )
-    if _unreliable_source_fps(file_data):
-        line += (
-            f"\nNOTE: source_fps is {fps_num}/{fps_den} and cannot be used for frame math. "
-            "Pass start_seconds/end_seconds (in source seconds) - never frame numbers."
-        )
-    return line
-
-
 def _project_fps_float(fps) -> float:
     """Project fps as a float, tolerating string or malformed num/den."""
     fps = fps if isinstance(fps, dict) else {}
@@ -765,37 +704,6 @@ def _fmt_mmss(seconds: float) -> str:
     return f"{m}:{s:02d}"
 
 
-MAX_PLACE_SPAN_SEC = 20.0
-
-
-def _hit_peak(hit, seg_s: float, seg_e: float) -> float:
-    try:
-        if hit.get("peak") is not None and str(hit.get("peak")).strip() != "":
-            return float(hit.get("peak"))
-    except (TypeError, ValueError):
-        pass
-    return (float(seg_s) + float(seg_e)) / 2.0
-
-
-def _hit_is_degraded(hit) -> bool:
-    if not isinstance(hit, dict):
-        return False
-    if hit.get("degraded") is True:
-        return True
-    return str(hit.get("role") or "").strip().lower() == "orientation"
-
-
-def _format_search_window(hit, seg_s: float, seg_e: float) -> str:
-    if _hit_is_degraded(hit):
-        return (
-            "chapter-level match only — window not action-bounded; "
-            "re-index or narrow the query"
-        )
-    peak = _hit_peak(hit, seg_s, seg_e)
-    return (
-        f"start_seconds={float(seg_s):.3f} end_seconds={float(seg_e):.3f} "
-        f"peak_seconds={peak:.3f} ({_fmt_mmss(seg_s)}–{_fmt_mmss(seg_e)})"
-    )
 
 
 def _as_error(message) -> str:
@@ -813,7 +721,7 @@ def _ffmpeg_run(args):
     try:
         p = run_ffmpeg(
             args,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         if p.returncode != 0:
             return False, (p.stderr or p.stdout or "ffmpeg failed")
@@ -831,7 +739,7 @@ def _ffprobe_video_duration(path) -> float:
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", path],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         val = (p.stdout or "").strip()
         if val and val != "N/A":
@@ -840,7 +748,7 @@ def _ffprobe_video_duration(path) -> float:
         p2 = run_ffmpeg(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", path],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         val2 = (p2.stdout or "").strip()
         return float(val2) if val2 and val2 != "N/A" else 0.0
@@ -853,7 +761,7 @@ def _ffprobe_has_audio(path):
         p = run_ffmpeg(
             ["ffprobe", "-v", "error", "-select_streams", "a",
              "-show_entries", "stream=index", "-of", "csv=p=0", path],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         return bool((p.stdout or "").strip())
     except Exception:
@@ -885,28 +793,30 @@ def _is_extreme_for_4_seconds(prompt):
     return False, ""
 
 
-def _twelvelabs_search_in_window(index_id, query_text, *, page_limit=30, video_id=""):
+def _v2_moment(query, file_id=None, window=None):
+    """The best local-index hit for a described moment: {file_id, start, end, peak, why}, with start, end and peak clipped
+    to *window* (start, end) when one is given. None when the query is empty, nothing in the project (or in *file_id*) is
+    indexed, the query cannot be embedded or no hit is in the window."""
+    from classes.editor_tools._base import ToolError
+    from classes.editor_tools.media_index_tools import embed_query, project_indexes
+    from classes.media_index import search as msearch
+
+    q = str(query or "").strip()
+    if not q:
+        return None
+    files, _missing = project_indexes([str(file_id)] if file_id else None)
+    files = [f for f in files if f.vector_model]
+    if not files:
+        return None
     try:
-        from classes.api_client import get_backend_client
-        if not str(index_id or "").strip():
-            return [], "TwelveLabs index_id is missing for this file."
-        client = get_backend_client()
-        resp = client.search(
-            query=query_text,
-            index_id=index_id,
-            video_id=video_id,
-            page_limit=page_limit,
-            top_k=page_limit,
-        )
-        if isinstance(resp, dict) and resp.get("error"):
-            return [], resp["error"]
-        results = resp.get("results", []) if isinstance(resp, dict) else []
-        items = [type("SearchItem", (), r)() for r in results]
-        if video_id:
-            items = [it for it in items if str(getattr(it, "video_id", "")) == str(video_id)]
-        return items, None
-    except Exception as e:
-        return [], str(e)
+        query_vector = embed_query(q, files)
+    except ToolError:
+        return None
+    for h in msearch.search(files, query_vector=query_vector, query_text=q, limit=60)["hits"]:
+        start, end = (max(h["start"], window[0]), min(h["end"], window[1])) if window else (h["start"], h["end"])
+        if end > start:
+            return {**h, "start": start, "end": end, "peak": min(max(h["peak"], start), end)}
+    return None
 
 
 def _output_path_for_generated_video(ext=".mp4"):
@@ -982,21 +892,12 @@ def _upload_generation_assets(client, seed_path=None, frame_specs=None):
 
 
 # Kling O1 Pro via Runware — desktop-side constraints (mirror backend constants).
-_KLING_O1_ALLOWED_DURATIONS = [5, 10]
+
+
 _KLING_O1_MIN_DIM = 720
 _KLING_O1_MAX_DIM = 2160
 
 
-def _snap_kling_o1_duration(duration):
-    """Snap to Kling O1 Pro duration: default 5s; use 10s only when clearly requested (>= 8)."""
-    try:
-        val = float(duration)
-    except (TypeError, ValueError):
-        return 5
-    val = max(1, min(10, val))
-    if val >= 8:
-        return 10
-    return 5
 
 
 # Managed generation (Grok Imagine) takes any whole-second length in this range.
@@ -1064,62 +965,6 @@ _last_split_file_id_by_chat_session = {}
 
 
 # ---------------------------------------------------------------------------
-# Project tools
-# ---------------------------------------------------------------------------
-
-def list_files(**_kw) -> str:
-    """List media already in the project media bin (does not import from disk).
-
-    To add local folders or files into Project Files, call import_files_tool
-    (dry_run=true first for folders). list_files_tool only reports what is
-    already imported.
-    """
-    try:
-        import os
-        from classes.query import File
-        from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
-
-        files = File.filter()
-        if not files:
-            return (
-                "No files in project media bin. "
-                "list_files_tool does not import from disk — call "
-                "import_files_tool with folder=\"Downloads\" (or a path; prefer "
-                "C:/Users/... on Windows), dry_run=true first for folders, and "
-                "media_types=video when the user asked for videos only."
-            )
-        lines = []
-        visible = 0
-        for f in files:
-            d = f.data if isinstance(f.data, dict) else {}
-            if d.get("zenvi_subclip"):
-                continue
-            visible += 1
-            name = d.get("name") or os.path.basename(str(d.get("path") or "")) or "?"
-            dur = float(d.get("duration", 0) or 0)
-            ai = d.get("ai_metadata") if isinstance(d.get("ai_metadata"), dict) else {}
-            analyzed = bool(ai.get("analyzed"))
-            indexed = twelvelabs_is_indexed(get_index_block(ai))
-            preview = _summary_preview_for_file_data(d)
-            lines.append(
-                f"  media_bin_file_id={f.id} name={name!r} duration={dur:.2f}s "
-                f"analyzed={analyzed} indexed={indexed} "
-                f"summary_preview={preview!r} "
-                f"path={os.path.basename(d.get('path', ''))}"
-            )
-        if not lines:
-            return (
-                "No files in project media bin. "
-                "list_files_tool does not import from disk — call "
-                "import_files_tool with folder=\"Downloads\" or paths= "
-                "(folder or file), dry_run=true first for folders."
-            )
-        return f"Media bin files ({visible}):\n" + "\n".join(lines)
-    except Exception as e:
-        return f"Error: {e}"
-
-
-_TAGS_PREVIEW_MAX = 80
 
 
 def _summary_preview_for_file_data(file_data: dict, clip_data: dict | None = None) -> str:
@@ -1141,248 +986,9 @@ def _file_is_analyzed(file_data: dict) -> bool:
     return bool(ai.get("analyzed"))
 
 
-def list_clips(layer="", **_kw) -> str:
-    try:
-        from classes.query import Clip
-
-        app = _get_app()
-        layers_raw = app.project.get("layers") or []
-        kwargs = {}
-        if layer and str(layer).strip():
-            resolved, err = normalize_track_or_layer_arg(str(layer).strip(), layers_raw)
-            if err:
-                return err
-            kwargs["layer"] = resolved
-        clips = Clip.filter(**kwargs)
-        if not clips:
-            return "No clips in project."
-        from classes.timeline_clip_context import build_timeline_clip_context, clear_metadata_lookup_cache
-
-        clear_metadata_lookup_cache()
-        file_cache: dict[str, dict] = {}
-
-        file_dupes: dict[str, list] = {}
-        for c in clips:
-            fid = str(c.data.get("file_id") or "")
-            layer = c.data.get("layer")
-            if fid:
-                file_dupes.setdefault(f"{fid}:{layer}", []).append(c)
-
-        lines = []
-        for c in clips:
-            d = c.data
-            lid = d.get("layer", "")
-            try:
-                lid_int = int(lid) if lid != "" and lid is not None else None
-            except (TypeError, ValueError):
-                lid_int = None
-            ui = layer_number_to_display_index(lid_int, layers_raw) if lid_int is not None else None
-            ui_part = f" ui_track={ui}" if ui is not None else ""
-            tids = (
-                [
-                    str(L.get("id", ""))
-                    for L in layers_raw
-                    if int(L.get("number") or 0) == lid_int
-                ]
-                if lid_int is not None
-                else []
-            )
-            tid_part = f" track_id={tids[0]}" if tids and tids[0] else ""
-            title = d.get("title") or d.get("label") or ""
-            fid = d.get("file_id", "")
-            fname = ""
-            summary_preview = ""
-            parent_file_id = ""
-            audio_role = ""
-            source_start = d.get("start", 0)
-            source_end = d.get("end", 0)
-            timeline_end = float(d.get("position", 0) or 0)
-            if fid:
-                try:
-                    from classes.query import File as _File
-                    if fid not in file_cache:
-                        fobj = _File.get(id=str(fid))
-                        file_cache[fid] = fobj.data if fobj and isinstance(fobj.data, dict) else None
-                    fdata = file_cache.get(fid)
-                    if fdata:
-                        import os
-                        fname = (
-                            fdata.get("name")
-                            or os.path.basename(str(fdata.get("path") or ""))
-                        )
-                        ctx = build_timeline_clip_context(c, d, fdata, layers=layers_raw)
-                        summary_preview = ctx.summary_preview
-                        parent_file_id = ctx.parent_file_id
-                        source_start = ctx.source_start
-                        source_end = ctx.source_end
-                        timeline_end = ctx.timeline_end
-                        audio_role = _audio_role_of(d, fdata, ctx)
-                except Exception:
-                    pass
-            summary_part = f" summary_preview={summary_preview!r}" if summary_preview else ""
-            occ_hint = ""
-            dup_key = f"{fid}:{lid_int}"
-            dupes = file_dupes.get(dup_key, [])
-            if len(dupes) > 1:
-                ranked = sorted(dupes, key=lambda x: float(x.data.get("position", 0) or 0))
-                for idx, dc in enumerate(ranked, 1):
-                    if dc.id == c.id:
-                        occ_hint = f" occurrence_hint={idx}"
-                        break
-            parent_part = f" parent_file_id={parent_file_id}" if parent_file_id and parent_file_id != str(fid) else ""
-            lines.append(
-                f"  timeline_clip_id={c.id} media_bin_file_id={fid}{parent_part} "
-                f"title={title!r} file={fname!r}{summary_part}{occ_hint} "
-                f"layer_number={lid_int if lid_int is not None else lid}{ui_part}{tid_part} "
-                f"position={d.get('position',0)} timeline_end={timeline_end:.2f} "
-                f"source_start={source_start} source_end={source_end}"
-                f"{f' audio_role={audio_role}' if audio_role else ''}"
-            )
-        from classes.agent_tools.receipt import ToolReceipt
-        structured = []
-        for c in clips:
-            d = c.data if isinstance(c.data, dict) else {}
-            lid = d.get("layer", "")
-            try:
-                lid_int = int(lid) if lid != "" and lid is not None else None
-            except (TypeError, ValueError):
-                lid_int = None
-            ui = layer_number_to_display_index(lid_int, layers_raw) if lid_int is not None else None
-            structured.append({
-                "id": str(c.id),
-                "file_id": str(d.get("file_id") or ""),
-                "title": str(d.get("title") or d.get("label") or ""),
-                "layer": lid_int,
-                "track": ui,
-                "position": float(d.get("position") or 0),
-                "start": float(d.get("start") or 0),
-                "end": float(d.get("end") or 0),
-            })
-        return ToolReceipt.applied(
-            "list_clips_tool",
-            f"Timeline clips ({len(clips)}).",
-            undo_steps=0,
-            data={"clips": structured, "legacy_text": f"Timeline clips ({len(clips)}):\n" + "\n".join(lines)},
-        ).to_json()
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def list_layers(**_kw) -> str:
-    try:
-        from classes.track_display import build_track_stack, track_stack_json
-
-        layers = _get_app().project.get("layers") or []
-        if not layers:
-            return "No layers in project."
-        stack = build_track_stack(layers)
-        lock_by_num = {
-            int(L.get("number") or 0): bool(L.get("lock", False)) for L in layers
-        }
-        n = len(stack)
-        bottom = stack[0] if stack else {}
-        top = stack[-1] if stack else {}
-        lines = [
-            f"Layers ({n}). Z-ORDER uses layer_number only (higher covers lower). "
-            "Track labels/names are cosmetic — they can be anything and do NOT imply priority.",
-            f"BOTTOM (drawn under): layer_number={bottom.get('layer_number')} "
-            f"label={bottom.get('label')!r}",
-            f"TOP (covers all below): layer_number={top.get('layer_number')} "
-            f"label={top.get('label')!r}",
-            "Stack bottom→top:",
-        ]
-        for e in stack:
-            lines.append(
-                f"  layer_number={e['layer_number']} ui_track={e['ui_track']} "
-                f"z_from_bottom={e['z_from_bottom']} label={e.get('label')!r} "
-                f"track_id={e.get('track_id')!r} "
-                f"lock={lock_by_num.get(e['layer_number'], False)}"
-            )
-        lines.append(f"TRACK_STACK_JSON={track_stack_json(layers)}")
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Error: {e}"
-
-
 # ---------------------------------------------------------------------------
 # Playback & history
 # ---------------------------------------------------------------------------
-
-_WATCH_CLIP_DEFAULT_PATH = os.path.expanduser(
-    "~/Downloads/Feral - Concept Trailer.mp4"
-)
-
-
-def watch_clip_and_play(file_path: str = "", **_kw) -> str:
-    """Import a video file into the media bin, add it to the timeline, and start playback.
-
-    If file_path is empty, defaults to the Feral concept trailer test video.
-    This is the handler for natural-language commands like 'watch clip',
-    'play the feral trailer', 'show me the clip', etc.
-    """
-    try:
-        resolved_path = (file_path or _WATCH_CLIP_DEFAULT_PATH).strip()
-        if not os.path.isfile(resolved_path):
-            return f"Error: File not found: {resolved_path}"
-
-        from classes.query import File as _File
-        from qt_api import QUrl as _QUrl
-
-        app = _get_app()
-        win = app.window
-
-        # Step 1: Import into media bin (must run on main thread — uses libopenshot)
-        def _do_import():
-            existing = _File.get(path=resolved_path)
-            if existing:
-                return existing.id
-            win.files_model.add_files([resolved_path], quiet=True, prevent_image_seq=True)
-            added = _File.get(path=resolved_path)
-            return added.id if added else None
-
-        file_id = _run_on_main_thread(_do_import)
-        if not file_id:
-            return f"Error: Could not import file into media bin: {resolved_path}"
-
-        # Step 2: Add to timeline (position 0, top video track)
-        add_result = add_clip_to_timeline(file_id=file_id, position_seconds="0", **_kw)
-        if add_result.startswith("Error"):
-            return add_result
-
-        # Step 3: Seek to start + play
-        def _do_play():
-            win.actionJumpStart_trigger()
-            # Ensure player is playing (actionPlay_trigger toggles, so check mode)
-            try:
-                import openshot
-                player = win.preview_thread.player
-                if player.Mode() != openshot.PLAYBACK_PLAY:
-                    win.actionPlay_trigger()
-            except Exception:
-                win.actionPlay_trigger()
-
-        _run_on_main_thread(_do_play)
-        return f"Loaded and playing: {os.path.basename(resolved_path)}"
-    except Exception as e:
-        log.error("watch_clip_and_play failed: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def go_to_start(**_kw) -> str:
-    try:
-        _get_app().window.actionJumpStart_trigger()
-        return "Seeked to start."
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def go_to_end(**_kw) -> str:
-    try:
-        _get_app().window.actionJumpEnd_trigger()
-        return "Seeked to end."
-    except Exception as e:
-        return f"Error: {e}"
-
 
 def _undo_redo(app, direction, steps) -> str:
     """Apply *steps* sequential undo/redo operations and report what happened.
@@ -1451,7 +1057,7 @@ def _undo_redo(app, direction, steps) -> str:
         return (
             f"Error: {label} applied {done} history step(s) but the timeline "
             f"did not change. The edit you meant may span several steps -- "
-            f"check list_clips_tool, then {label} again with steps=N, or "
+            f"check get_timeline_state_tool, then {label} again with steps=N, or "
             f"delete the clip directly."
         )
 
@@ -1506,7 +1112,14 @@ def redo(steps=1, **_kw) -> str:
 
 def _locked_track_error(app, layer_num):
     """Return an error string if *layer_num* is a locked track, else ''."""
-    layers_out = app.project.get("layers") or []
+    project = getattr(app, "project", None)
+    get = getattr(project, "get", None)
+    if callable(get):
+        layers_out = get("layers") or []
+    elif isinstance(project, dict):
+        layers_out = project.get("layers") or []
+    else:
+        layers_out = []
     track_lbl = format_track_label_for_llm(layer_num, layers_out)
     for L in layers_out:
         try:
@@ -1670,7 +1283,7 @@ def delete_from_timeline(
     """Delete from the timeline: one clip placement, or an entire track.
 
     This is the ONLY timeline delete tool. Target it one of three ways:
-      * timeline_clip_id - an id from list_clips_tool or the timeline snapshot
+      * timeline_clip_id - an id from get_timeline_state_tool or the timeline snapshot
       * clip_query       - a description, narrowed with track / occurrence
                            (1-based) / position_near (timeline seconds)
       * track            - clear that whole track (UI "Track 1".."N", bottom=1,
@@ -1684,6 +1297,12 @@ def delete_from_timeline(
 
     The whole call is a single undo step, whether it removes one clip or fifty.
     """
+    from classes.agent_tools.schema import strip_hidden
+
+    unknown = sorted(strip_hidden(_kw))
+    if unknown:
+        guess = " (did you mean ripple=true?)" if any("gap" in k.lower() for k in unknown) else ""
+        return f"Error: unknown argument(s): {', '.join(unknown)}{guess}. Nothing was deleted."
     try:
         app = _get_app()
 
@@ -1706,7 +1325,7 @@ def delete_from_timeline(
         if not mode:
             return (
                 "Error: delete_from_timeline_tool needs a target. Pass "
-                "timeline_clip_id (from list_clips_tool) or clip_query to "
+                "timeline_clip_id (from get_timeline_state_tool) or clip_query to "
                 "delete one placement, or track to clear a whole track."
             )
 
@@ -1731,7 +1350,7 @@ def delete_from_timeline(
         if not has_clip_target:
             return (
                 "Error: scope='clip' needs timeline_clip_id or clip_query. Use "
-                "list_clips_tool to get a timeline_clip_id, or pass clip_query "
+                "get_timeline_state_tool to get a timeline_clip_id, or pass clip_query "
                 "with track/occurrence/position_near."
             )
 
@@ -1749,63 +1368,6 @@ def delete_from_timeline(
 
         wants_ripple = ripple is True or str(ripple).strip().lower() in ("1", "true", "yes", "on")
         return _delete_one_clip(app, resolved, ripple=wants_ripple)
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def remove_clip(
-    timeline_clip_id: str = "",
-    clip_query: str = "",
-    track: str = "",
-    occurrence: str = "0",
-    position_near=None,
-    **_kw,
-) -> str:
-    """Deprecated alias for delete_from_timeline (scope="clip").
-
-    Kept so stored plans and in-flight sessions that still name
-    remove_clip_tool keep working. The agent catalog exposes only
-    delete_from_timeline_tool.
-    """
-    return delete_from_timeline(
-        timeline_clip_id=timeline_clip_id,
-        clip_query=clip_query,
-        track=track,
-        scope="clip",
-        occurrence=occurrence,
-        position_near=position_near,
-    )
-
-
-def delete_clips_on_track(track: str = "", include_transitions: bool = True, **_kw) -> str:
-    """Deprecated alias for delete_from_timeline (scope="track")."""
-    if track is None or (isinstance(track, str) and not track.strip()):
-        return "Error: track is required."
-    return delete_from_timeline(
-        track=track, scope="track", include_transitions=include_transitions
-    )
-
-
-def zoom_in(**_kw) -> str:
-    try:
-        _get_app().window.actionTimelineZoomIn_trigger()
-        return "Timeline zoomed in."
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def zoom_out(**_kw) -> str:
-    try:
-        _get_app().window.actionTimelineZoomOut_trigger()
-        return "Timeline zoomed out."
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def center_on_playhead(**_kw) -> str:
-    try:
-        _get_app().window.actionCenterOnPlayhead_trigger()
-        return "Centered on playhead."
     except Exception as e:
         return f"Error: {e}"
 
@@ -1875,7 +1437,7 @@ def _format_capped_lines(lines, cap=_IMPORT_RESULT_LINE_CAP) -> str:
     rest = len(lines) - cap
     return (
         "\n".join(lines[:cap])
-        + "\n... and %d more. Use list_files_tool to see the rest." % rest
+        + "\n... and %d more. Use list_project_files_tool to see the rest." % rest
     )
 
 
@@ -2199,13 +1761,13 @@ def wait_until_project_indexed(timeout_seconds=1800, **_kw) -> str:
         return (
             "Error: %d of %d project file(s) are not indexed and nothing is indexing them (their import "
             "skipped indexing, or indexing is off), so there is nothing to wait for. Not indexed: %s. "
-            "reindex_project_file_tool indexes one; captions can also come from an .srt or cues." % (
+            "run_tool(name='reindex_project_file_tool') indexes one; captions can also come from an .srt or cues." % (
                 len(pending), len(targets), ", ".join(fid for fid, _err in pending))
         )
     # Not an answer the caller can plan on: say which files and why.
     return (
         "Error: indexing did not finish for %d of %d project file(s) within %ss "
-        "(%d indexed). Pending: %s. Wait again, or call reindex_project_file_tool "
+        "(%d indexed). Pending: %s. Wait again, or call run_tool(name='reindex_project_file_tool') "
         "for files that failed." % (
             len(pending), len(targets), budget, len(done),
             "; ".join("%s (%s)" % (fid, err) for fid, err in pending))
@@ -2225,225 +1787,6 @@ _EXPORT_MAIN_THREAD_TIMEOUT = 6 * 60 * 60
 # ---------------------------------------------------------------------------
 # Clipping (split, slice, add to timeline)
 # ---------------------------------------------------------------------------
-
-def get_file_info(file_id="", **_kw) -> str:
-    try:
-        from classes.query import File
-        if not file_id:
-            return "Error: file_id is required."
-        f = File.get(id=file_id.strip())
-        if not f:
-            return f"Error: File not found for id={file_id}."
-        return _describe_file_for_llm(file_id, f.data)
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def _coerce_time_arg(value):
-    if value is None:
-        return None
-    s = str(value).strip()
-    if not s:
-        return None
-    try:
-        return float(s)
-    except (TypeError, ValueError):
-        return None
-
-
-def _positive_int_arg(value):
-    if value is None:
-        return None
-    s = str(value).strip()
-    if not s:
-        return None
-    try:
-        n = int(float(s))
-    except (TypeError, ValueError):
-        return None
-    return n if n > 0 else None
-
-
-def split_file_add_clip(
-    file_id="",
-    start_frame=0,
-    end_frame=0,
-    name="",
-    start_seconds="",
-    end_seconds="",
-    query="",
-    **_kw,
-) -> str:
-    try:
-        from classes.query import File
-        from classes import time_parts
-        from classes.ai_metadata_utils import get_effective_ai_metadata, filter_tags_string_for_window
-
-        chat_session_id = str(_kw.get("chat_session_id", "") or "default")
-        query = str(query or _kw.get("query") or "").strip()
-
-        if not file_id:
-            return "Error: file_id is required."
-        file_id = str(file_id).strip()
-        f = File.get(id=file_id)
-        if not f:
-            return f"Error: File not found for id={file_id}."
-        fps_data = f.data.get("fps") or {}
-        fps_num = int(fps_data.get("num", 30))
-        fps_den = int(fps_data.get("den", 1))
-        fps = float(fps_num) / float(fps_den) if fps_den else 0.0
-        if fps <= 0:
-            return "Error: Invalid fps."
-
-        src_start, src_end = source_window_for_file(f.data)
-        t0 = _coerce_time_arg(start_seconds if str(start_seconds or "").strip() else _kw.get("start_seconds"))
-        t1 = _coerce_time_arg(end_seconds if str(end_seconds or "").strip() else _kw.get("end_seconds"))
-        sf = _positive_int_arg(start_frame if start_frame not in (None, "", 0, "0") else _kw.get("start_frame"))
-        ef = _positive_int_arg(end_frame if end_frame not in (None, "", 0, "0") else _kw.get("end_frame"))
-        if t0 is None or t1 is None:
-            if sf is None or ef is None:
-                return (
-                    "Error: Provide start_seconds+end_seconds (preferred) or "
-                    "start_frame+end_frame (1-based)."
-                )
-            t0 = src_start + (sf - 1) / fps
-            t1 = src_start + ef / fps
-            log.warning(
-                "split_file_add_clip used 1-based frames file=%s start_frame=%s end_frame=%s",
-                file_id, sf, ef,
-            )
-        if t1 < t0:
-            t0, t1 = t1, t0
-        t0 = max(src_start, min(float(t0), src_end))
-        t1 = max(src_start, min(float(t1), src_end))
-        if t1 <= t0 + 1e-3:
-            return (
-                f"Error: split window is empty after clamping to the file "
-                f"[{src_start:.2f}s–{src_end:.2f}s]."
-            )
-
-        skip_watch = _parse_explicit_source_time_range_sec(query) is not None
-        watched_note = ""
-        watch_record = {}
-        orig_span = float(t1) - float(t0)
-        require_visual = bool(_kw.get("require_visual_match")) or orig_span > MAX_PLACE_SPAN_SEC
-        if not skip_watch and not _window_is_dialogue_driven(f.data, t0, t1):
-            path, dur, cues = _lookup_watch_meta(file_id, file_data=f.data)
-            if not path:
-                try:
-                    path = f.absolute_path() if hasattr(f, "absolute_path") else ""
-                except Exception:
-                    path = str(f.data.get("path") or "")
-            watched = _watch_confirm_cut(
-                path, t0, t1, query or name or "the matching action in this window",
-                fallback=(t0 + t1) / 2.0,
-                duration=dur,
-                transcript_cues=cues,
-                fallback_in=t0,
-                fallback_out=t1,
-            )
-            in_s = float(watched.get("in_source") if watched.get("in_source") is not None else t0)
-            out_s = float(watched.get("out_source") if watched.get("out_source") is not None else t1)
-            in_s = max(src_start, min(in_s, src_end))
-            out_s = max(src_start, min(out_s, src_end))
-            if out_s > in_s + 1e-3:
-                t0, t1 = in_s, out_s
-            if watched.get("used_fallback"):
-                if require_visual:
-                    return (
-                        "Error: no visual match in this chapter-level window "
-                        f"[{orig_span:.1f}s]. Narrow the query or re-index the file "
-                        "so action-bounded scenes exist; do not place the chapter start."
-                    )
-                watched_note = " (text-index window; no visual match)"
-            elif watched.get("reason"):
-                watched_note = f" (watched: {str(watched.get('reason'))[:120]})"
-            log.info(
-                "split_file_add_clip watch file=%s window=%.3f-%.3f in=%.3f out=%.3f matched=%s",
-                file_id, float(watched.get("window_start") or t0),
-                float(watched.get("window_end") or t1), t0, t1,
-                watched.get("matched"),
-            )
-            watch_record = dict(watched)
-
-        # Vision picks frames, not words: keep both edges off a mid-phrase cue.
-        t0, t1, _snapped = _snap_window_off_boundaries(f.data, t0, t1)
-        start_sec, end_sec = t0, t1
-        result_box = [None]
-        error_box = [None]
-
-        def _do_save():
-            try:
-                new_file = File()
-                new_file.data = copy.deepcopy(f.data)
-                new_file.data.pop("name", None)
-                new_file.id = None
-                new_file.key = None
-                new_file.type = "insert"
-                q_start, q_end = quantize_placement_seconds(start_sec, end_sec)
-                new_file.data["start"] = q_start
-                new_file.data["end"] = q_end
-                new_file.data["parent_file_id"] = file_id
-
-                if "ai_metadata" in new_file.data and new_file.data["ai_metadata"].get("analyzed"):
-                    from classes.timeline_clip_context import resolve_root_ai_metadata
-                    from classes.ai_metadata_utils import materialize_clip_ai_metadata
-
-                    root_ai, _ = resolve_root_ai_metadata(f.data, file_id=file_id)
-                    if root_ai:
-                        effective = materialize_clip_ai_metadata(
-                            root_ai, q_start, q_end, rebased=True,
-                        )
-                    else:
-                        effective = get_effective_ai_metadata(
-                            f.data,
-                            clip_data={"start": q_start, "end": q_end},
-                            rebased=True,
-                        )
-                    new_file.data["ai_metadata"] = effective
-                    if new_file.data.get("tags"):
-                        new_file.data["tags"] = filter_tags_string_for_window(
-                            str(new_file.data.get("tags") or ""),
-                            effective,
-                        )
-
-                if name and isinstance(name, str) and name.strip():
-                    new_file.data["name"] = name.strip()
-                else:
-                    t = time_parts.secondsToTime(start_sec, fps_num, fps_den)
-                    timestamp = "{}:{}:{}:{}".format(t["hour"], t["min"], t["sec"], t["frame"])
-                    base = os.path.splitext(os.path.basename(f.data.get("path") or f.data.get("name", "clip")))[0]
-                    new_file.data["name"] = f"{base} ({timestamp})"
-                new_file.data["zenvi_subclip"] = True
-                if watch_record:
-                    new_file.data["zenvi_watch_confirmed"] = not bool(watch_record.get("used_fallback"))
-                    try:
-                        new_file.data["zenvi_watch_confidence"] = float(watch_record.get("confidence") or 0)
-                    except (TypeError, ValueError):
-                        new_file.data["zenvi_watch_confidence"] = 0.0
-                    new_file.data["zenvi_watch_sparse"] = bool(watch_record.get("sparse"))
-                new_file.save()
-                result_box[0] = (new_file.id, new_file.data.get("name", ""))
-            except Exception as exc:
-                error_box[0] = str(exc)
-
-        _run_on_main_thread(_do_save)
-        if error_box[0]:
-            return f"Error: {error_box[0]}"
-        if not result_box[0]:
-            return "Error: Failed to save subclip."
-        new_id, clip_name = result_box[0]
-        _last_split_file_id_by_chat_session[chat_session_id] = new_id
-        return (
-            f'Subclip created: "{clip_name}" (file_id={new_id}) '
-            f'from {_fmt_mmss(start_sec)}–{_fmt_mmss(end_sec)} source'
-            f'{watched_note}. '
-            f'Call add_clip_to_timeline_tool(file_id="{new_id}") to place it '
-            f'(do not pass duration_seconds — this subclip is already trimmed).'
-        )
-    except Exception as e:
-        return f"Error: {e}"
-
 
 # Where a placement was planned to end, for each one whose length snapping or a
 # watch changed: {timeline_clip_id: (position placed at, planned timeline end)}.
@@ -2506,7 +1849,7 @@ def add_clip_to_timeline(
                 return (
                     "Error: No clip was just created. "
                     "Pass tool_args.file_id with a media_bin file id, or run "
-                    "split_file_add_clip_tool / import_files_tool / import_stock_media_tool "
+                    "import_files_tool / run_tool(name='import_stock_media_tool') "
                     "immediately before this step (empty file_id only works right after those "
                     "tools in the same session)."
                 )
@@ -2564,7 +1907,7 @@ def add_clip_to_timeline(
             trim_dur = source_len - trim_start
 
         watched_start = watched_end = None
-        watched_info = {}
+        moment = None
         skip_watch = _parse_explicit_source_time_range_sec(query) is not None
         _is_image = file_looks_like_image(file_data)
         watch_q = placement_watch_query(file_data, query)
@@ -2585,35 +1928,18 @@ def add_clip_to_timeline(
             explicit_query=bool(query),
             window_sec=win_e - win_s,
         ) and not _window_is_dialogue_driven(file_data, win_s, win_e):
-            path, dur, cues = _lookup_watch_meta(file_id, file_data=file_data)
-            if not path:
-                path = str(file_data.get("path") or "")
-            watched = _watch_confirm_cut(
-                path, win_s, win_e, watch_q,
-                fallback=(win_s + win_e) / 2.0,
-                duration=dur,
-                transcript_cues=cues,
-                fallback_in=win_s,
-                fallback_out=min(src_end, win_s + (trim_dur or (win_e - win_s))),
-            )
-            in_s = float(watched.get("in_source") if watched.get("in_source") is not None else win_s)
-            out_s = float(watched.get("out_source") if watched.get("out_source") is not None else win_e)
-            in_s = max(src_start, min(in_s, src_end))
-            out_s = max(src_start, min(out_s, src_end))
-            if out_s <= in_s + 1e-3:
-                in_s, out_s = win_s, min(src_end, win_e)
-            if trim_dur and (out_s - in_s) > float(trim_dur) + 1e-6:
-                peak = float(watched.get("cut_source") or ((in_s + out_s) / 2.0))
-                peak = max(in_s, min(peak, out_s))
-                in_s = max(src_start, peak - float(trim_dur) / 2.0)
-                out_s = min(src_end, in_s + float(trim_dur))
-                if out_s - in_s < float(trim_dur):
-                    in_s = max(src_start, out_s - float(trim_dur))
-            watched_start, watched_end = in_s, out_s
-            watched_info = dict(watched)
+            moment = _v2_moment(watch_q, file_id=file_id, window=(win_s, win_e))
+            if moment:
+                in_s, out_s = moment["start"], moment["end"]
+                if (out_s - in_s) > float(trim_dur) + 1e-6:
+                    in_s = max(src_start, moment["peak"] - float(trim_dur) / 2.0)
+                    out_s = min(src_end, in_s + float(trim_dur))
+                    if out_s - in_s < float(trim_dur):
+                        in_s = max(src_start, out_s - float(trim_dur))
+                watched_start, watched_end = in_s, out_s     # only an index hit bounds the window; a miss stays a blind trim
             log.info(
-                "add_clip_to_timeline watch file=%s in=%.3f out=%.3f matched=%s query=%r",
-                file_id, in_s, out_s, watched.get("matched"), watch_q[:80],
+                "add_clip_to_timeline moment file=%s in=%s out=%s matched=%s query=%r",
+                file_id, watched_start, watched_end, bool(moment), watch_q[:80],
             )
 
         if blind_trim_rejected(
@@ -2637,8 +1963,7 @@ def add_clip_to_timeline(
             return (
                 "Error: duration_seconds alone cannot trim the first N seconds of a file "
                 "nothing has looked at. Name both edges of the section you want: pass "
-                "start_seconds and end_seconds (the keep window search_clips returned), "
-                "or place_moment with that window."
+                "start_seconds and end_seconds (the keep window search_footage_tool returned)."
                 + (" Times written in query are not read as the window." if skip_watch else "")
             )
 
@@ -2652,6 +1977,7 @@ def add_clip_to_timeline(
                 fps = app.project.get("fps") or {}
                 fps_float = float(fps.get("num", 30)) / float(fps.get("den", 1) or 1)
 
+                new_tracks = 0
                 if not track or (isinstance(track, str) and not track.strip()):
                     layers = app.project.get("layers") or []
                     if _is_audio_only:
@@ -2665,11 +1991,15 @@ def add_clip_to_timeline(
                             track_num = default_underlay_layer_number(layers)
                 else:
                     layers_for_track = app.project.get("layers") or []
-                    resolved, err = normalize_track_or_layer_arg(str(track).strip(), layers_for_track)
+                    resolved, err, new_tracks = resolve_placement_track(str(track).strip(), layers_for_track)
                     if err:
                         error_box[0] = err
                         return
                     track_num = resolved
+                    if new_tracks:
+                        # Same undo step as the clip (the _atomic below).
+                        from classes import track_ops
+                        track_ops.ensure_track(track_num)
 
                 if pos_arg is None:
                     if _is_audio_only:
@@ -2721,12 +2051,8 @@ def add_clip_to_timeline(
                     new_clip["start"] = start_sec
                     new_clip["end"] = end_sec
                     new_clip["duration"] = max(0.0, end_sec - start_sec)
-                    if watched_info:
-                        new_clip["zenvi_watch_confirmed"] = not bool(watched_info.get("used_fallback"))
-                        try:
-                            new_clip["zenvi_watch_confidence"] = float(watched_info.get("confidence") or 0)
-                        except (TypeError, ValueError):
-                            new_clip["zenvi_watch_confidence"] = 0.0
+                    if moment:
+                        new_clip["zenvi_watch_confirmed"] = True
                     win.timeline.update_clip_data(
                         new_clip, only_basic_props=False, ignore_refresh=False
                     )
@@ -2742,7 +2068,7 @@ def add_clip_to_timeline(
                         actual_end = planned_end
                     if abs(actual_end - planned_end) > 1e-6:
                         _planned_end_by_clip_id[new_id] = (pos_sec, planned_end)
-                result_box[0] = (new_clip, pos_sec, track_num, snapped)
+                result_box[0] = (new_clip, pos_sec, track_num, snapped, new_tracks)
             except Exception as exc:
                 error_box[0] = str(exc)
 
@@ -2758,7 +2084,7 @@ def add_clip_to_timeline(
         if not result_box[0]:
             return "Error: Failed to add clip to timeline."
 
-        placed, pos_sec, track_num, snapped = result_box[0]
+        placed, pos_sec, track_num, snapped, new_tracks = result_box[0]
         _snap_note = ", moved off mid-sentence" if snapped else ""
         if pos_arg is not None and abs(pos_sec - pos_arg) > 1e-9:
             _snap_note += f", moved from {pos_arg}s to butt against the previous clip"
@@ -2775,135 +2101,11 @@ def add_clip_to_timeline(
         dur_part = f" duration={eff_dur:.2f}s" if eff_dur is not None and eff_dur > 0 else ""
         clip_id = placed.get("id", "") if isinstance(placed, dict) else ""
         id_part = f" timeline_clip_id={clip_id}" if clip_id else ""
-        watch_part = " (watched)" if watched_start is not None else ""
+        watch_part = " (matched)" if moment else ""
         return (
-            f"Added clip to timeline at position {pos_sec}s on track {track_lbl}"
+            f"Added clip to timeline at position {pos_sec}s on track {track_lbl}{new_tracks_note(new_tracks)}"
             f"{dur_part}{id_part}{_snap_note}{watch_part}."
         )
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def slice_clip_at_playhead(**_kw) -> str:
-    """Slice every unlocked clip and transition under the playhead, keeping both sides.
-
-    slice_clips_tool targets one clip, a track or the selection; this keeps the
-    old everything-under-the-playhead behaviour. Items on locked tracks and
-    items whose edge sits exactly at the playhead (a cut there would leave a
-    zero-length clip) are not sliced and not counted.
-    """
-    try:
-        from windows.views.timeline_backend.enums import MenuSlice
-
-        # Read state and perform the slice entirely on the main thread
-        result_box = [None]
-
-        def _do_slice():
-            from classes.query import Clip, Transition
-            app = _get_app()
-            win = app.window
-            fps = app.project.get("fps") or {}
-            fps_float = _project_fps_float(fps)
-            playhead_position = float(win.preview_thread.current_frame - 1) / fps_float
-            half_frame = 0.5 / fps_float
-            locked = {t.get("number") for t in (app.project.get("layers") or []) if t.get("lock")}
-
-            def _sliceable(item):
-                start = float(item.data.get("position", 0.0) or 0.0)
-                end = start + float(item.data.get("end", 0.0) or 0.0) - float(item.data.get("start", 0.0) or 0.0)
-                return (item.data.get("layer") not in locked
-                        and start + half_frame < playhead_position < end - half_frame)
-
-            clip_ids = [c.id for c in Clip.filter(intersect=playhead_position) if _sliceable(c)]
-            tran_ids = [t.id for t in Transition.filter(intersect=playhead_position) if _sliceable(t)]
-            if not clip_ids and not tran_ids:
-                result_box[0] = (f"Error: no unlocked clip or transition under the playhead "
-                                 f"({playhead_position:.2f} s); nothing was sliced.")
-                return
-            win.timeline.Slice_Triggered(MenuSlice.KEEP_BOTH, clip_ids, tran_ids, playhead_position)
-            n = len(clip_ids) + len(tran_ids)
-            result_box[0] = f"Sliced {n} item(s) at the playhead ({playhead_position:.2f} s); both sides kept."
-
-        _run_on_main_thread(_do_slice)
-
-        return result_box[0] or "Error: the slice did not run."
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def reverse_clip(
-    timeline_clip_id="",
-    clip_query="",
-    track="",
-    occurrence="0",
-    mode="reverse",
-    **_kw,
-) -> str:
-    """Reverse a timeline clip (or reset time remapping).
-
-    Same as Timeline → Speed → Reverse / Reset. mode='reverse' plays backward;
-    mode='reset' clears reverse/speed time curves back to forward 1x.
-    Resolve with timeline_clip_id or clip_query (+ track/occurrence if needed).
-    """
-    action = str(mode or "reverse").strip().lower()
-    if action in ("reverse", "backward", "backwards"):
-        menu_action_name = "REVERSE"
-        done = "Reversed"
-    elif action in ("reset", "none", "forward", "unreverse"):
-        menu_action_name = "NONE"
-        done = "Reset time on"
-    else:
-        return "Error: mode must be 'reverse' or 'reset'."
-
-    if not str(timeline_clip_id or "").strip() and not str(clip_query or "").strip():
-        return "Error: reverse_clip_tool requires timeline_clip_id or clip_query."
-
-    try:
-        resolved = _resolve_timeline_clip_for_tool(
-            timeline_clip_id=timeline_clip_id,
-            clip_query=clip_query,
-            track=track,
-            occurrence=occurrence,
-        )
-        if not resolved.ok or not resolved.clip:
-            return resolved.error or "Error: Could not resolve timeline clip."
-
-        clip_id = str(getattr(resolved.clip, "id", "") or "")
-        if not clip_id:
-            return "Error: Resolved clip has no id."
-
-        result_box = [None]
-
-        def _do_reverse():
-            from classes.query import Clip
-            from windows.views.retime import time_curve_is_reversed
-            from windows.views.timeline_backend.enums import MenuTime
-
-            app = _get_app()
-            timeline = getattr(app.window, "timeline", None)
-            if timeline is None or not hasattr(timeline, "Time_Triggered"):
-                result_box[0] = "Error: Timeline view is not available."
-                return
-            clip = Clip.get(id=clip_id)
-            if clip is None:
-                result_box[0] = f"Error: timeline_clip_id={clip_id} is no longer on the timeline."
-                return
-            # Timeline > Speed > Reverse toggles, so asking a reversed clip to
-            # reverse would play it forward again; a no-op must not add an undo step.
-            time_data = clip.data.get("time")
-            points = time_data.get("Points") if isinstance(time_data, dict) else None
-            if menu_action_name == "REVERSE" and time_curve_is_reversed(time_data):
-                result_box[0] = f"timeline_clip_id={clip_id} is already reversed; nothing changed."
-                return
-            if menu_action_name == "NONE" and (not isinstance(points, list) or len(points) <= 1):
-                result_box[0] = f"timeline_clip_id={clip_id} already plays forward at 1x; nothing changed."
-                return
-            menu_action = getattr(MenuTime, menu_action_name)
-            timeline.Time_Triggered(menu_action, [clip_id], "1X")
-            result_box[0] = f"{done} timeline_clip_id={clip_id}."
-
-        _run_on_main_thread(_do_reverse)
-        return result_box[0] or f"{done} timeline_clip_id={clip_id}."
     except Exception as e:
         return f"Error: {e}"
 
@@ -2911,882 +2113,6 @@ def reverse_clip(
 # ---------------------------------------------------------------------------
 # Search (project-wide video index + in-clip scenes)
 # ---------------------------------------------------------------------------
-
-def get_project_catalog(**_kw) -> str:
-    """Orientation pass: list short summaries for all indexed project media."""
-    try:
-        from classes.api_client import get_backend_client
-        from classes.app import get_app
-
-        project_id = ""
-        try:
-            project_id = str(get_app().project.get("id") or "")
-        except Exception:
-            pass
-        if not project_id:
-            return "Error: project_id unavailable."
-        client = get_backend_client()
-        data = client.get_project_catalog(project_id)
-        if data.get("error"):
-            return f"Error: {data['error']}"
-        items = data.get("items") or []
-        if not items:
-            return (
-                "Catalog is empty — index/summarize project videos, images, and audio first, "
-                "then call get_project_catalog_tool again."
-            )
-        lines = [f"Project catalog ({len(items)} media items):"]
-        for it in items:
-            name = it.get("filename") or it.get("file_id") or it.get("video_id")
-            summary = (it.get("short_summary") or "").strip() or "(no summary)"
-            mt = str(it.get("media_type") or "video")
-            dur = it.get("duration_sec")
-            dur_s = f" [{dur:.1f}s]" if isinstance(dur, (int, float)) and mt != "image" else ""
-            lines.append(
-                f"- [{mt}] {name}{dur_s} file_id={it.get('file_id')}: {summary}"
-            )
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Error: {e}"
-
-
-_ORDINAL_MAP = {
-    "first": 1, "1st": 1,
-    "second": 2, "2nd": 2,
-    "third": 3, "3rd": 3,
-    "fourth": 4, "4th": 4,
-    "fifth": 5, "5th": 5,
-}
-
-
-def _search_rank_key(hit):
-    """Sort key that puts the best-ranked hit first; unranked hits sort last."""
-    try:
-        return float(hit.get("rank"))
-    except (TypeError, ValueError):
-        return float("inf")
-
-
-def _detect_ordinal(query: str) -> int:
-    words = (query or "").lower().split()
-    for word in words:
-        if word in _ORDINAL_MAP:
-            return _ORDINAL_MAP[word]
-    return 0
-
-
-def search_clips(query="", top_k="5", look_for="", **_kw) -> str:
-    """Project-wide video index search on this project's shared index.
-    look_for="on_screen" when the query describes who or what is visible ("the
-    guy with the iPad"), "spoken" when it describes what is said; omit for both.
-
-    Returns media_bin_file_id + timestamp (deeper than Gemini tags). The first
-    paragraph above is the MCP tool description, the only place an external
-    agent learns what look_for takes.
-    """
-    q = str(query or "").strip()
-    if not q:
-        return "Error: query is required."
-    try:
-        k = int(float(top_k)) if str(top_k).strip() else 5
-    except Exception:
-        k = 5
-    k = max(1, min(k, 20))
-
-    try:
-        from collections import defaultdict
-
-        from classes.api_client import get_backend_client
-        from classes.project_tl_index import (
-            collect_project_twelvelabs_index,
-            map_search_hit_to_file,
-        )
-
-        info = collect_project_twelvelabs_index()
-        if info.get("error") and not info.get("index_id"):
-            return (
-                f"Error: {info['error']} "
-                "Index/summarize project videos first, then search again."
-            )
-        index_id = str(info.get("index_id") or "").strip()
-        if not index_id:
-            return (
-                "Error: No project video index_id on project files. "
-                "Reindex clips so they share the project index, then retry."
-            )
-        video_map = info.get("video_map") or {}
-        client = get_backend_client()
-        if not client.is_indexing_configured():
-            return "Error: Video indexing is not configured on the backend."
-
-        page_limit = max(30, k * 10)
-        resp = client.search(
-            q,
-            top_k=page_limit,
-            index_id=index_id,
-            page_limit=page_limit,
-            look_for=str(look_for or "").strip() or None,
-        )
-        if resp.get("error"):
-            return f"Error: {resp['error']}"
-        results = resp.get("results") or []
-        if not results:
-            return (
-                f"No index matches for '{q}' in this project's index "
-                f"({info.get('index_name') or index_id}, "
-                f"{info.get('indexed_count', 0)} indexed media item(s)). "
-                "Try a more specific description, or check indexing finished."
-            )
-
-        requested_nth = _detect_ordinal(q)
-        grouped: dict = defaultdict(list)
-        for r in results:
-            if not isinstance(r, dict):
-                continue
-            vid = str(r.get("video_id") or "").strip()
-            fid, fname = map_search_hit_to_file(r, video_map)
-            key = fid or vid or fname or "unknown"
-            grouped[key].append({**r, "_file_id": fid, "_fname": fname, "_vid": vid})
-
-        lines = [
-            f"Found {len(results)} match(es) across {len(grouped)} project media item(s) "
-            f"(index_id={index_id}, index_name={info.get('index_name') or ''}):",
-        ]
-        shown = 0
-        for key, hits in grouped.items():
-            if shown >= k and requested_nth == 0:
-                break
-            fid = hits[0].get("_file_id") or ""
-            fname = hits[0].get("_fname") or key
-            vid = hits[0].get("_vid") or ""
-            mt = str(hits[0].get("media_type") or "video")
-            id_part = f" media_bin_file_id={fid}" if fid else " media_bin_file_id=(unmapped)"
-            vid_part = f" twelvelabs_video_id={vid}" if vid else ""
-            type_part = f" media_type={mt}"
-
-            hits_sorted = sorted(hits, key=lambda x: float(x.get("start") or 0))
-            if len(hits_sorted) == 1 and requested_nth == 0:
-                r = hits_sorted[0]
-                seg_s = float(r.get("start") or 0)
-                seg_e = float(r.get("end") or 0)
-                win = _format_search_window(r, seg_s, seg_e)
-                lines.append(
-                    f"  • {fname}{id_part}{vid_part}{type_part} — {win} "
-                    f"(rank={r.get('rank')})"
-                )
-                shown += 1
-                continue
-
-            if requested_nth > 0:
-                idx = min(requested_nth - 1, len(hits_sorted) - 1)
-                r = hits_sorted[idx]
-                seg_s = float(r.get("start") or 0)
-                seg_e = float(r.get("end") or 0)
-                win = _format_search_window(r, seg_s, seg_e)
-                lines.append(
-                    f"  • {fname}{id_part}{vid_part} — occurrence #{requested_nth} "
-                    f"{win}"
-                )
-                shown += 1
-            else:
-                lines.append(
-                    f"  • {fname}{id_part}{vid_part} — {len(hits_sorted)} occurrences:"
-                )
-                # Pick WHICH occurrences to show by rank, then show them in time
-                # order. Truncating the chronological list drops the best match
-                # whenever it sits late in the file, and an unmarked rank= is easy
-                # to read past - both send the agent to the wrong window.
-                by_rank = sorted(hits, key=_search_rank_key)
-                best = by_rank[0] if by_rank else None
-                # Number each row by its occurrence index in the FULL chronological
-                # list - that is what an ordinal ("the 3rd time") resolves against,
-                # so rank selection must not renumber the rows it kept.
-                nth_of = {id(h): n for n, h in enumerate(hits_sorted, 1)}
-                for r in sorted(by_rank[:8], key=lambda x: float(x.get("start") or 0)):
-                    seg_s = float(r.get("start") or 0)
-                    seg_e = float(r.get("end") or 0)
-                    win = _format_search_window(r, seg_s, seg_e)
-                    marker = "  <-- best match" if r is best else ""
-                    lines.append(
-                        f"      {nth_of.get(id(r), '?')}. {win} "
-                        f"(rank={r.get('rank')}){marker}"
-                    )
-                if len(hits_sorted) > 1:
-                    lines.append(
-                        "      Place the best match unless the user asked for a "
-                        "different one (e.g. 'the 2nd time')."
-                    )
-                shown += 1
-
-        unmapped = sum(1 for hits in grouped.values() if not hits[0].get("_file_id"))
-        if unmapped:
-            lines.append(
-                f"Note: {unmapped} hit group(s) had no media_bin_file_id mapping — "
-                "reindex those files into this project index."
-            )
-        lines.append(
-            "To PLACE a moment: place_moment(file_id=..., start_seconds=<keep in>, "
-            "end_seconds=<keep out>, query=<same description>, track=..., position_seconds=...). "
-            "Watch+trim+place are built in — do not call watch_clip_window_tool or convert to frames. "
-            "To SLICE an already-placed clip: slice_moment(query, clip_query=... or timeline_clip_id=...)."
-        )
-        return "\n".join(lines)
-    except Exception as e:
-        log.error("search_clips: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def _search_hit_value(hit, *names):
-    """First non-empty field of a search hit (a SearchItem object or a dict)."""
-    for name in names:
-        value = hit.get(name) if isinstance(hit, dict) else getattr(hit, name, None)
-        if value:
-            return value
-    return ""
-
-
-def _no_scene_matches(query, index_notes) -> str:
-    """No hit: a plain answer when the index was searched, an error when it could not be."""
-    if any(note.startswith("the index search failed") for note in index_notes):
-        return (
-            f"Error: {'; '.join(index_notes)}, and the clip's scene descriptions have no match "
-            f"for {query!r}."
-        )
-    if index_notes:
-        return f"No matches found for {query!r} in the scene descriptions ({'; '.join(index_notes)})."
-    return "No matches found."
-
-
-def search_clip_scenes(
-    query="",
-    top_k="5",
-    clip_query="",
-    timeline_clip_id="",
-    **_kw,
-) -> str:
-    """Find where something happens inside ONE timeline clip (semantic video search within its trimmed range).
-
-    For "where in the interview does she mention pricing?" or "find the goal in this clip".
-    Returns keep in/out and peak times relative to the clip's start (m:ss). Uses the clip's
-    video index; when the video is not indexed (or the index search fails) it falls back to
-    the clip's scene descriptions and says so. Read-only. For the whole project use
-    search_clips_tool.
-    """
-    try:
-        k = int(float(top_k)) if str(top_k).strip() else 5
-    except Exception:
-        k = 5
-
-    try:
-        from classes.ai_metadata_utils import get_effective_ai_metadata
-        from classes.api_client import get_backend_client
-        from classes.timeline_clip_context import build_timeline_clip_context, resolve_parent_file_data
-        from classes.twelvelabs_match import select_hits_for_display, get_index_block
-
-        resolved = _resolve_timeline_clip_for_tool(
-            clip_query=clip_query,
-            timeline_clip_id=timeline_clip_id,
-            **_kw,
-        )
-        if not resolved.ok or not resolved.clip:
-            return resolved.error or "Error: Could not resolve timeline clip."
-
-        clip_obj = resolved.clip
-        clip_data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
-        source_file = _get_source_file_for_clip(clip_obj)
-        file_data = source_file.data if source_file and isinstance(source_file.data, dict) else None
-        ctx = build_timeline_clip_context(clip_obj, clip_data, file_data)
-        clip_start = ctx.source_start
-        clip_end = ctx.source_end
-        clip_name = ctx.title or "Timeline clip"
-
-        per_clip_ai = clip_data.get("ai_metadata") if isinstance(clip_data.get("ai_metadata"), dict) else None
-        parent_data = resolve_parent_file_data(file_data, file_id=ctx.file_id)
-        source_ai = None
-        if parent_data:
-            source_ai = parent_data.get("ai_metadata") if isinstance(parent_data.get("ai_metadata"), dict) else None
-
-        watch_path, watch_dur, watch_cues = _lookup_watch_meta(
-            ctx.file_id, file_data=file_data, parent_data=parent_data,
-        )
-        if not watch_path:
-            watch_path = str(getattr(ctx, "source_path", "") or "")
-
-        client = get_backend_client()
-        nth = _parse_occurrence(str(_kw.get("occurrence", "0")), query)
-        # Why the index could not answer, so a fallback result (or none) says so.
-        index_notes = []
-
-        # TwelveLabs search (parent index + trim window)
-        if not client.is_indexing_configured():
-            index_notes.append("video indexing is not configured on the backend")
-        else:
-            tw = get_index_block(source_ai or {})
-            status = (tw.get("status") or "").lower()
-            index_id = tw.get("index_id") or ""
-            video_id = tw.get("video_id") or ""
-            if not (status == "ready" and index_id and video_id):
-                index_notes.append(
-                    "the clip's video is not indexed yet" if status in ("", "ready")
-                    else f"the clip's video index is {status}"
-                )
-
-            if status == "ready" and index_id and video_id:
-                search_query = _semantic_search_query(query)
-                items, err = _tl_search_items_in_window(
-                    str(index_id), search_query, page_limit=max(30, k * 10), video_id=str(video_id),
-                )
-                if err:
-                    index_notes.append(f"the index search failed ({err})")
-                if not err and items:
-                    matches = select_hits_for_display(
-                        items,
-                        clip_start=clip_start,
-                        clip_end=clip_end,
-                        occurrence=nth,
-                        top_k=k,
-                    )
-                    if matches:
-                        matches = [
-                            _apply_watch_to_match(m, watch_path, query, watch_dur, watch_cues)
-                            for m in matches
-                        ]
-                        lines = [
-                            f"Index matches in '{clip_name}' "
-                            f"({_fmt_mmss(clip_start)} - {_fmt_mmss(clip_end)}):"
-                        ]
-                        for m in matches:
-                            rel_cut = m["cut_source"] - clip_start
-                            in_s = float(m.get("in_source") if m.get("in_source") is not None else m["start"])
-                            out_s = float(m.get("out_source") if m.get("out_source") is not None else m["end"])
-                            rel_in = in_s - clip_start
-                            rel_out = out_s - clip_start
-                            lines.append(
-                                f"- keep {_fmt_mmss(rel_in)}-{_fmt_mmss(rel_out)}"
-                                f" peak {_fmt_mmss(rel_cut)}"
-                                f" (rank={m.get('rank')}, overlap={m['overlap_ratio']:.2f})"
-                            )
-                            if m.get("transcription"):
-                                lines.append(
-                                    f"  transcript: {str(m['transcription']).strip()[:180]}"
-                                )
-                            if m.get("_watch_fallback"):
-                                lines.append("  (text-index time; no visual match in watch window)")
-                        warn = next((m.get("_watch_warning") for m in matches if m.get("_watch_warning")), "")
-                        if warn:
-                            lines.append(f"Note: {warn}")
-                        return "\n".join(lines)
-
-                # Broader project search filtered to this video before tag fallback
-                search_query = _semantic_search_query(query)
-                broad_items, broad_err = _tl_search_items_in_window(
-                    str(index_id), search_query, page_limit=max(50, k * 15), video_id="",
-                )
-                if not broad_err and broad_items:
-                    # Search hits are SearchItem objects (or dicts from older callers).
-                    filtered = [
-                        it for it in broad_items
-                        if str(_search_hit_value(it, "video_id", "twelvelabs_video_id")) == str(video_id)
-                    ]
-                    if filtered:
-                        matches = select_hits_for_display(
-                            filtered,
-                            clip_start=clip_start,
-                            clip_end=clip_end,
-                            occurrence=nth,
-                            top_k=k,
-                        )
-                        if matches:
-                            matches = [
-                                _apply_watch_to_match(m, watch_path, query, watch_dur, watch_cues)
-                                for m in matches
-                            ]
-                            lines = [
-                                f"Index matches in '{clip_name}' "
-                                f"({_fmt_mmss(clip_start)} - {_fmt_mmss(clip_end)}):"
-                            ]
-                            for m in matches:
-                                rel_cut = m["cut_source"] - clip_start
-                                in_s = float(m.get("in_source") if m.get("in_source") is not None else m.get("start") or rel_cut)
-                                out_s = float(m.get("out_source") if m.get("out_source") is not None else m.get("end") or rel_cut)
-                                lines.append(
-                                    f"- keep {_fmt_mmss(in_s - clip_start)}-{_fmt_mmss(out_s - clip_start)} "
-                                    f"peak {_fmt_mmss(rel_cut)} (project search)"
-                                )
-                            warn = next((m.get("_watch_warning") for m in matches if m.get("_watch_warning")), "")
-                            if warn:
-                                lines.append(f"Note: {warn}")
-                            return "\n".join(lines)
-
-        # Local chapter / description fallback (Pegasus chapters or legacy scenes)
-        local_ai = per_clip_ai
-        if local_ai is None:
-            local_ai = get_effective_ai_metadata(
-                parent_data or file_data,
-                clip_data=clip_data,
-                rebased=True,
-            )
-
-        candidates = []
-        for ch in (local_ai or {}).get("chapters") or []:
-            if not isinstance(ch, dict):
-                continue
-            summary = (ch.get("summary") or ch.get("title") or "").strip()
-            if not summary:
-                continue
-            candidates.append({
-                "time": float(ch.get("start", 0.0) or 0.0),
-                "description": summary,
-            })
-        for s in (local_ai or {}).get("scene_descriptions") or []:
-            if not isinstance(s, dict):
-                continue
-            desc = (s.get("description") or "").strip()
-            if not desc:
-                continue
-            candidates.append({
-                "time": float(s.get("time", 0.0) or 0.0),
-                "description": desc,
-            })
-        # Also score transcript / sounds as whole-clip hints (time=0)
-        for key in ("transcript", "sounds", "description", "short_summary"):
-            text = str((local_ai or {}).get(key) or "").strip()
-            if text:
-                candidates.append({"time": float(clip_start or 0.0), "description": text[:500]})
-
-        if not candidates:
-            return _no_scene_matches(query, index_notes)
-        scored = []
-        q_lower = query.lower()
-        for s in candidates:
-            desc = (s.get("description") or "").strip()
-            if not desc:
-                continue
-            score = 0.0
-            if q_lower in desc.lower():
-                score = 10.0
-            else:
-                q_words = set(q_lower.split())
-                d_words = set(desc.lower().split())
-                overlap = len(q_words & d_words)
-                if overlap:
-                    score = overlap / (len(q_words) ** 0.5 * len(d_words) ** 0.5)
-            if score > 0:
-                scored.append({"time": float(s.get("time", 0.0)), "description": desc, "score": score})
-        scored.sort(key=lambda x: x["score"], reverse=True)
-        results = scored[:k]
-        if not results:
-            return _no_scene_matches(query, index_notes)
-        lines = [f"Description matches in '{clip_name}':"]
-        if index_notes:
-            lines.append(f"Note: {'; '.join(index_notes)}, so these come from the scene descriptions.")
-        for r in results:
-            watched = _watch_confirm_cut(
-                watch_path, r["time"], r["time"], query,
-                fallback=r["time"], duration=watch_dur, transcript_cues=watch_cues,
-            )
-            cut = watched.get("cut_source", r["time"])
-            lines.append(f"- [{_fmt_mmss(cut)}] score={r['score']:.3f}: {r['description'][:200]}")
-            if watched.get("warning"):
-                lines.append(f"  Note: {watched['warning']}")
-        return "\n".join(lines)
-    except Exception as e:
-        log.error("search_clip_scenes: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-# A time written into a watch query ("visible at 72.5 seconds", "45-62s") that
-# belongs in start/end - left there, the tool silently watched a search hit.
-_QUERY_TIME_RE = re.compile(
-    r"\b\d+(?:\.\d+)?\s*(?:s|secs?|seconds?)\b|\b\d{1,2}:\d{2}\b|\bat\s+\d+(?:\.\d+)?\b",
-    re.IGNORECASE,
-)
-
-
-def watch_clip_window(
-    query="",
-    start="",
-    end="",
-    clip_query="",
-    timeline_clip_id="",
-    **_kw,
-) -> str:
-    """Vision-check a window of a placed clip: confirm the query is on screen.
-    Call this after you place, slice, trim, or modify a clip to verify your own
-    edit. Read-only: start/end and every reported time are source seconds.
-
-    Reports the frames watched, the shot cuts in the window, and where the query
-    is visible. Put times in start/end, never in query. A shot boundary is in the
-    shot cuts line - do not re-watch to refine it. Distinct from watch_clip_tool,
-    which plays the clip in the editor.
-    """
-    try:
-        from classes.timeline_clip_context import build_timeline_clip_context, resolve_parent_file_data
-
-        # A time that does not parse ("0:14" used to) must not silently become
-        # "no window" - that watched a search hit instead of the window asked for.
-        try:
-            t0 = parse_seconds_arg(start, default=None, field="start")
-            t1 = parse_seconds_arg(end, default=None, field="end")
-        except ValueError as exc:
-            return f"Error: {exc}"
-
-        resolved = _resolve_timeline_clip_for_tool(
-            clip_query=clip_query,
-            timeline_clip_id=timeline_clip_id,
-            **_kw,
-        )
-        if not resolved.ok or not resolved.clip:
-            return resolved.error or "Error: Could not resolve timeline clip."
-
-        clip_obj = resolved.clip
-        clip_data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
-        source_file = _get_source_file_for_clip(clip_obj)
-        file_data = source_file.data if source_file and isinstance(source_file.data, dict) else None
-        ctx = build_timeline_clip_context(clip_obj, clip_data, file_data)
-        parent_data = resolve_parent_file_data(file_data, file_id=ctx.file_id)
-        watch_path, watch_dur, watch_cues = _lookup_watch_meta(
-            ctx.file_id, file_data=file_data, parent_data=parent_data,
-        )
-        if not watch_path:
-            watch_path = str(getattr(ctx, "source_path", "") or "")
-
-        if (t0 is None) != (t1 is None):
-            return (
-                "Error: Pass both start and end (source seconds), or neither to watch "
-                "the best search match."
-            )
-        if t0 is None and _QUERY_TIME_RE.search(query or ""):
-            return (
-                "Error: The query names a time but start/end are empty. Put the window in "
-                "start and end (source seconds) and describe only what to look for in query."
-            )
-        if t0 is not None and t1 is not None:
-            lo, hi = min(t0, t1), max(t0, t1)
-            if hi <= ctx.source_start or lo >= ctx.source_end:
-                return (
-                    f"Error: Window {lo:.2f}-{hi:.2f}s is outside this clip's source range "
-                    f"{ctx.source_start:.2f}-{ctx.source_end:.2f}s (start/end are source seconds)."
-                )
-            # Only what this clip plays can confirm an edit to it.
-            t0, t1 = max(lo, ctx.source_start), min(hi, ctx.source_end)
-        else:
-            search_query = _semantic_search_query(query)
-            hit_start = None
-            hit_end = None
-            if search_query:
-                from classes.api_client import get_backend_client
-                from classes.twelvelabs_match import get_index_block, select_hits_for_display
-
-                source_ai = (
-                    parent_data.get("ai_metadata")
-                    if parent_data and isinstance(parent_data.get("ai_metadata"), dict)
-                    else None
-                )
-                tw = get_index_block(source_ai or {})
-                client = get_backend_client()
-                if client.is_indexing_configured() and tw.get("index_id") and tw.get("video_id"):
-                    items, err = _tl_search_items_in_window(
-                        str(tw.get("index_id")), search_query, page_limit=30,
-                        video_id=str(tw.get("video_id")),
-                    )
-                    if not err and items:
-                        matches = select_hits_for_display(
-                            items,
-                            clip_start=ctx.source_start,
-                            clip_end=ctx.source_end,
-                            occurrence=_parse_occurrence(str(_kw.get("occurrence", "0")), query),
-                            top_k=1,
-                        )
-                        if matches:
-                            hit_start = float(matches[0].get("start") or 0)
-                            hit_end = float(matches[0].get("end") or hit_start)
-            if hit_start is None:
-                t0 = ctx.source_start
-                t1 = ctx.source_end
-            else:
-                t0 = hit_start
-                t1 = hit_end
-        if t1 < t0:
-            t0, t1 = t1, t0
-
-        watched = _watch_confirm_cut(
-            watch_path, t0, t1, query,
-            fallback=t0, duration=watch_dur, transcript_cues=watch_cues,
-        )
-        cut = float(watched.get("cut_source") or t0)
-        in_s = float(watched.get("in_source") if watched.get("in_source") is not None else t0)
-        out_s = float(watched.get("out_source") if watched.get("out_source") is not None else t1)
-
-        def _secs(times):
-            return ", ".join(f"{float(t):.2f}" for t in times)
-
-        frame_times = watched.get("frame_times") or []
-        scene_times = watched.get("scene_times") or []
-        clip_lo, clip_hi = float(ctx.source_start), float(ctx.source_end)
-        lines = [
-            f"Watched {len(frame_times)} frames of '{ctx.title or 'clip'}' "
-            f"(source seconds; this clip plays {clip_lo:.2f}-{clip_hi:.2f}): "
-            f"{_secs(frame_times) or 'none'}.",
-            f"Shot cuts in window (source s): {_secs(scene_times)}."
-            if scene_times else "Shot cuts in window: none.",
-        ]
-        # The watch pads its window for context, so a match can sit in frames this
-        # clip never plays. Only what the clip plays confirms (or refutes) an edit.
-        visible = [float(t) for t in watched.get("visible_at") or []]
-        visible_in_clip = [t for t in visible if clip_lo - 1e-3 <= t <= clip_hi + 1e-3]
-        seen = bool(watched.get("matched")) and not watched.get("used_fallback")
-        outside_only = (bool(visible) and not visible_in_clip) or out_s < clip_lo or in_s > clip_hi
-        if seen and not outside_only:
-            in_c, out_c = max(in_s, clip_lo), min(out_s, clip_hi)
-            cut_c = max(in_c, min(cut, out_c))
-            lines.append(
-                f"Visible {in_c:.3f}s–{out_c:.3f}s source; peak {cut_c:.3f}s source "
-                f"({_fmt_mmss(cut_c - clip_lo)} into the clip)."
-                + (f" Seen in frames: {_secs(visible_in_clip)}." if visible_in_clip else "")
-            )
-        elif seen:
-            lines.append(
-                "Not visible in this clip's frames"
-                + (f" - only outside it, at {_secs(visible)}s source." if visible else ".")
-            )
-        else:
-            lines.append("Not visible in these frames.")
-        if watched.get("reason"):
-            lines.append(str(watched.get("reason")))
-        if watched.get("warning"):
-            lines.append(str(watched.get("warning")))
-        return "\n".join(lines)
-    except Exception as e:
-        log.error("watch_clip_window: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def _parse_occurrence(occurrence_str: str, query: str) -> int:
-    """Return 1-based occurrence index (0 = best overlap+rank match)."""
-    try:
-        n = int(float(str(occurrence_str).strip()))
-        if n > 0:
-            return n
-    except Exception:
-        pass
-    q_lower = (query or "").lower()
-    for word, n in _ORDINAL_MAP.items():
-        if word in q_lower.split():
-            return n
-    return 0
-
-
-def _semantic_search_query(query: str) -> str:
-    """Strip ordinal words so TwelveLabs search uses semantic content only."""
-    if not query or not str(query).strip():
-        return ""
-    kept = []
-    for word in str(query).split():
-        bare = word.lower().strip(".,;:!?\"'")
-        if bare in _ORDINAL_MAP:
-            continue
-        kept.append(word)
-    cleaned = " ".join(kept).strip()
-    return cleaned if cleaned else str(query).strip()
-
-
-def _lookup_watch_meta(file_id_str, file_data=None, parent_data=None):
-    """Local path, duration, and transcript cues for a watch window."""
-    fd = file_data if isinstance(file_data, dict) else {}
-    parent = parent_data if isinstance(parent_data, dict) else None
-    if not fd and file_id_str:
-        try:
-            from classes.query import File
-            from classes.timeline_clip_context import resolve_parent_file_data
-
-            fobj = File.get(id=str(file_id_str))
-            fd = fobj.data if fobj and isinstance(fobj.data, dict) else {}
-            parent = resolve_parent_file_data(fd, file_id=str(file_id_str)) or fd
-        except Exception:
-            parent = parent or fd
-    data = parent or fd or {}
-    path = str(data.get("path") or fd.get("path") or "")
-    try:
-        dur = float(data.get("duration") or fd.get("duration") or 0)
-    except (TypeError, ValueError):
-        dur = 0.0
-    ai = data.get("ai_metadata") if isinstance(data.get("ai_metadata"), dict) else {}
-    cues = ai.get("transcript_cues") if isinstance(ai.get("transcript_cues"), list) else []
-    return path, dur, cues
-
-
-def _watch_confirm_cut(
-    source_path,
-    start,
-    end,
-    query,
-    *,
-    fallback=None,
-    duration=0.0,
-    transcript_cues=None,
-    fallback_in=None,
-    fallback_out=None,
-):
-    """Layer-3 watch: JPEG window then vision confirm. Fail-soft to fallback time."""
-    fb = fallback if fallback is not None else start
-    try:
-        fb = float(fb)
-    except (TypeError, ValueError):
-        fb = float(start or 0)
-    try:
-        fb_in = float(fallback_in if fallback_in is not None else start)
-    except (TypeError, ValueError):
-        fb_in = float(start or 0)
-    try:
-        fb_out = float(fallback_out if fallback_out is not None else end)
-    except (TypeError, ValueError):
-        fb_out = float(end or start or 0)
-    if not source_path:
-        return {
-            "cut_source": fb,
-            "in_source": fb_in,
-            "out_source": fb_out,
-            "matched": False,
-            "used_fallback": True,
-            "warning": "",
-            "reason": "No source path for watch window",
-            "window_start": float(start or 0),
-            "window_end": float(end or 0),
-        }
-    from classes.watch_window import confirm_watch_window
-
-    return confirm_watch_window(
-        source_path=str(source_path),
-        start=float(start),
-        end=float(end),
-        query=query or "",
-        duration=float(duration or 0),
-        transcript_cues=transcript_cues,
-        fallback_cut=fb,
-        fallback_in=fb_in,
-        fallback_out=fb_out,
-    )
-
-
-def _apply_watch_to_match(match, source_path, query, duration, cues):
-    m = dict(match or {})
-    try:
-        start = float(m.get("start") if m.get("start") is not None else m.get("cut_source") or 0)
-    except (TypeError, ValueError):
-        start = 0.0
-    try:
-        end = float(m.get("end") if m.get("end") is not None else start)
-    except (TypeError, ValueError):
-        end = start
-    if end < start:
-        start, end = end, start
-    watched = _watch_confirm_cut(
-        source_path, start, end, query,
-        fallback=m.get("cut_source", (start + end) / 2.0),
-        duration=duration,
-        transcript_cues=cues,
-        fallback_in=start,
-        fallback_out=end,
-    )
-    m["cut_source"] = watched.get("cut_source", start)
-    m["in_source"] = watched.get("in_source", start)
-    m["out_source"] = watched.get("out_source", end)
-    m["_watch_warning"] = watched.get("warning") or ""
-    m["_watch_matched"] = watched.get("matched")
-    m["_watch_fallback"] = watched.get("used_fallback")
-    return m
-
-
-def _audio_biased_tl_query(query: str, source_ai=None) -> str:
-    """Build an audio/dialogue-oriented TwelveLabs query."""
-    q = _semantic_search_query(query)
-    if not q:
-        return "spoken dialogue"
-    import re
-    if re.search(r"[^\x00-\x7F]", q):
-        return f"spoken words: {q}"
-    return f"spoken dialogue about {q}"
-
-
-def _tl_search_items_in_window(index_id, query_text, *, page_limit=30, video_id=""):
-    """Run TL search; on zero hits retry with audio-biased query."""
-    items, err = _twelvelabs_search_in_window(
-        index_id, query_text, page_limit=page_limit, video_id=video_id,
-    )
-    if err or items:
-        return items, err
-    audio_q = _audio_biased_tl_query(query_text)
-    if audio_q != query_text:
-        return _twelvelabs_search_in_window(
-            index_id, audio_q, page_limit=page_limit, video_id=video_id,
-        )
-    return items, err
-
-
-def _scene_description_cut_source(
-    clip_start: float,
-    clip_end: float,
-    source_ai,
-    query: str,
-    occurrence: int,
-    per_clip_ai=None,
-):
-    """Return a source-file cut time from Pegasus chapters or legacy scenes, or None."""
-    from classes.ai_metadata_utils import adjust_scene_descriptions_for_subclip
-
-    local_ai = per_clip_ai
-    if local_ai is None and source_ai is not None:
-        local_ai = adjust_scene_descriptions_for_subclip(source_ai, clip_start, clip_end)
-
-    candidates = []
-    for ch in (local_ai or {}).get("chapters") or []:
-        if not isinstance(ch, dict):
-            continue
-        summary = (ch.get("summary") or ch.get("title") or "").strip()
-        if not summary:
-            continue
-        candidates.append({"time": float(ch.get("start", 0.0) or 0.0), "description": summary})
-    for s in (local_ai or {}).get("scene_descriptions") or []:
-        if not isinstance(s, dict):
-            continue
-        desc = (s.get("description") or "").strip()
-        if not desc:
-            continue
-        candidates.append({"time": float(s.get("time", 0.0) or 0.0), "description": desc})
-
-    if not candidates:
-        return None
-    q_lower = (query or "").lower()
-    scored = []
-    for s in candidates:
-        desc = (s.get("description") or "").strip()
-        if not desc:
-            continue
-        t = float(s.get("time", 0.0) or 0.0)
-        if t < clip_start - 1e-3 or t > clip_end + 1e-3:
-            continue
-        score = 0.0
-        if q_lower and q_lower in desc.lower():
-            score = 10.0
-        elif q_lower:
-            qw = set(q_lower.split())
-            dw = set(desc.lower().split())
-            overlap = len(qw & dw)
-            if overlap:
-                score = overlap / (len(qw) ** 0.5 * len(dw) ** 0.5)
-        else:
-            score = 0.01
-        if score > 0:
-            scored.append((t, score))
-    if not scored:
-        return None
-    scored.sort(key=lambda x: x[1], reverse=True)
-    if occurrence and occurrence > 0:
-        idx = min(occurrence, len(scored)) - 1
-        return scored[idx][0]
-    return scored[0][0]
-
 
 def _clip_transcript_cues(clip_id_str):
     """Effective transcript cues for a timeline clip, in source seconds."""
@@ -3859,64 +2185,6 @@ def _snap_window_off_boundaries(file_data, start_sec, end_sec):
         return start_sec, end_sec, False
 
 
-def _snap_cut_off_speech(clip_id_str, cut_source):
-    """(cut, moved) - shift a cut that lands mid-sentence to the cue boundary."""
-    from classes import audio_mix as am
-
-    cues = _clip_transcript_cues(clip_id_str)
-    if not cues:
-        return cut_source, False
-    snapped, cue = am.snap_cut_out_of_speech(cut_source, cues)
-    return snapped, cue is not None
-
-
-def _slice_at_source_cut(
-    clip_id_str: str,
-    clip_start: float,
-    clip_end: float,
-    clip_pos: float,
-    cut_source: float,
-    *,
-    label: str = "match",
-) -> str:
-    from classes.twelvelabs_match import snap_source_time_to_frame, snap_timeline_position
-    from windows.views.timeline_backend.enums import MenuSlice
-
-    fps = _get_app().project.get("fps") or {}
-    fps_num = float(fps.get("num", 30))
-    fps_den = float(fps.get("den", 1)) or 1.0
-
-    # Never cut through a spoken line - snap to the nearer transcript boundary.
-    cut_source, moved_off_cue = _snap_cut_off_speech(clip_id_str, float(cut_source))
-    if moved_off_cue:
-        label = f"{label}, moved off speech"
-
-    cut_source = snap_source_time_to_frame(float(cut_source), fps_num, fps_den)
-    slice_pos = snap_timeline_position(
-        clip_pos + (cut_source - clip_start), fps_num, fps_den,
-    )
-    clip_timeline_end = clip_pos + (clip_end - clip_start)
-    if slice_pos <= clip_pos or slice_pos >= clip_timeline_end:
-        return (
-            f"Error: Computed slice position ({slice_pos:.3f}s) is outside "
-            f"the clip range [{clip_pos:.3f}s – {clip_timeline_end:.3f}s]."
-        )
-    slice_error_box = [None]
-
-    def _do_slice():
-        try:
-            _get_app().window.timeline.Slice_Triggered(
-                MenuSlice.KEEP_BOTH, [clip_id_str], [], slice_pos,
-            )
-        except Exception as exc:
-            slice_error_box[0] = str(exc)
-
-    _run_on_main_thread(_do_slice)
-    if slice_error_box[0]:
-        return f"Error during slice: {slice_error_box[0]}"
-    return f"Sliced at {_fmt_mmss(cut_source - clip_start)} ({label})."
-
-
 def _parse_mmss_or_hhmmss_token(tok: str):
     """Return seconds for 'SS', 'M:SS', or 'H:M:SS' tokens, else None."""
     if not isinstance(tok, str):
@@ -3981,535 +2249,6 @@ def _parse_explicit_source_time_range_sec(query: str):
             if t1 > t0:
                 return (t0, t1)
     return None
-
-
-def _slice_timeline_clip_at_source_times(
-    clip_id_str: str,
-    clip_start: float,
-    clip_end: float,
-    clip_pos: float,
-    layer_num: int,
-    file_id_str: str,
-    t0: float,
-    t1: float,
-) -> str:
-    """Slice once or twice so the middle segment is approximately source [t0, t1]."""
-    from windows.views.timeline_backend.enums import MenuSlice
-    from classes.query import Clip
-
-    app = _get_app()
-    win = app.window
-    fps = app.project.get("fps") or {}
-    fps_num = float(fps.get("num", 30))
-    fps_den = float(fps.get("den", 1)) or 1.0
-
-    def snap(pos: float) -> float:
-        return float(round((float(pos) * fps_num) / fps_den) * fps_den) / fps_num
-
-    eps = 1e-3
-    clip_tl_end = clip_pos + (clip_end - clip_start)
-
-    def _find_right_segment(after_pos: float, src_start: float) -> Optional[str]:
-        best_id, best_score = None, 1e9
-        for c in Clip.filter():
-            try:
-                c_ly = int(float(c.data.get("layer", 0) or 0))
-            except (TypeError, ValueError):
-                continue
-            if c_ly != int(layer_num):
-                continue
-            try:
-                p = float(c.data.get("position", 0))
-                st = float(c.data.get("start", 0))
-            except (TypeError, ValueError):
-                continue
-            if file_id_str and str(c.data.get("file_id") or "") != file_id_str:
-                continue
-            score = abs(p - after_pos) + abs(st - src_start)
-            if score < best_score:
-                best_score = score
-                best_id = str(c.id)
-        if best_id is not None and best_score < 0.25:
-            return best_id
-        return None
-
-    # Degenerate: full clip
-    if t0 <= clip_start + eps and t1 >= clip_end - eps:
-        return "Nothing to slice: the requested range spans the whole clip."
-
-    # Only upper boundary inside clip
-    if t0 <= clip_start + eps:
-        pos2 = snap(clip_pos + (t1 - clip_start))
-        if pos2 <= clip_pos + eps or pos2 >= clip_tl_end - eps:
-            return (
-                f"Error: End time maps outside the clip "
-                f"(clip source {clip_start:.3f}s–{clip_end:.3f}s on timeline)."
-            )
-        win.timeline.Slice_Triggered(MenuSlice.KEEP_BOTH, [clip_id_str], [], pos2)
-        return f"Sliced at {_fmt_mmss(t1 - clip_start)} from clip start; middle+right kept."
-
-    # Only lower boundary inside clip
-    if t1 >= clip_end - eps:
-        pos1 = snap(clip_pos + (t0 - clip_start))
-        if pos1 <= clip_pos + eps or pos1 >= clip_tl_end - eps:
-            return (
-                f"Error: Start time maps outside the clip "
-                f"(clip source {clip_start:.3f}s–{clip_end:.3f}s on timeline)."
-            )
-        win.timeline.Slice_Triggered(MenuSlice.KEEP_BOTH, [clip_id_str], [], pos1)
-        return f"Sliced at {_fmt_mmss(t0 - clip_start)} from clip start; left+middle kept."
-
-    pos1 = snap(clip_pos + (t0 - clip_start))
-    pos2_abs = snap(clip_pos + (t1 - clip_start))
-    if pos1 <= clip_pos + eps or pos1 >= clip_tl_end - eps:
-        return "Error: First slice position is outside the clip on the timeline."
-    if pos2_abs <= pos1 + eps or pos2_abs >= clip_tl_end - eps:
-        return "Error: Second slice position is outside the clip on the timeline."
-
-    win.timeline.Slice_Triggered(MenuSlice.KEEP_BOTH, [clip_id_str], [], pos1)
-    right_id = _find_right_segment(pos1, t0)
-    if not right_id:
-        return (
-            "Error: The first cut was made but the new right-hand segment could not be found "
-            "for the second cut. Undo, or slice the remaining boundary at the playhead."
-        )
-
-    pos2 = snap(pos1 + (t1 - t0))
-    right_tl_end = pos1 + (clip_end - t0)
-    if pos2 <= pos1 + eps or pos2 >= right_tl_end - eps:
-        return "Error: Second slice maps outside the trimmed segment."
-
-    win.timeline.Slice_Triggered(MenuSlice.KEEP_BOTH, [right_id], [], pos2)
-    return (
-        f"Sliced at {_fmt_mmss(t0 - clip_start)} and {_fmt_mmss(t1 - clip_start)} "
-        f"(source). Three segments: before, selected range, after."
-    )
-
-
-_SIBLING_EPS = 1e-3
-
-
-def _sibling_clips_from_same_file(file_id: str, exclude_clip_id: str = "") -> list:
-    """Other timeline placements cut from the same source file.
-
-    Returns ``[(clip_id, source_start, source_end, position, layer), ...]``
-    sorted by source_start. Must run on the main thread (reads project data).
-    Any failure yields ``[]`` so callers fall back to the single-clip path.
-    """
-    if not str(file_id or "").strip():
-        # No source identity: every other id-less clip would "match", and a cut
-        # outside this clip would land on a clip from a different file.
-        return []
-    try:
-        from classes.query import Clip
-        from classes.ai_metadata_utils import get_source_window
-    except Exception:
-        return []
-    out = []
-    try:
-        for c in Clip.filter():
-            d = c.data if isinstance(getattr(c, "data", None), dict) else {}
-            if str(d.get("file_id") or "") != str(file_id or ""):
-                continue
-            if str(c.id) == str(exclude_clip_id):
-                continue
-            sf = _get_source_file_for_clip(c)
-            fd = sf.data if sf and isinstance(sf.data, dict) else None
-            cs, ce = get_source_window(d, fd)
-            try:
-                layer = int(d.get("layer", 1) or 1)
-            except (TypeError, ValueError):
-                layer = 1
-            out.append((str(c.id), float(cs), float(ce), float(d.get("position", 0.0) or 0.0), layer))
-    except Exception as exc:
-        log.debug("sibling clip scan failed: %s", exc)
-        return []
-    out.sort(key=lambda t: t[1])
-    return out
-
-
-def _sibling_containing(siblings, t0: float, t1: float):
-    """First sibling whose source window contains [t0, t1] with room to cut.
-
-    A point cut (t0 == t1) must be strictly inside the sibling: a cut on its
-    edge would split off nothing. A range may touch one edge but not both.
-    """
-    for sib in siblings or []:
-        _sid, cs, ce, _pos, _layer = sib
-        if t1 - t0 <= _SIBLING_EPS:
-            if cs + _SIBLING_EPS < t0 < ce - _SIBLING_EPS:
-                return sib
-            continue
-        if cs - _SIBLING_EPS <= t0 and t1 <= ce + _SIBLING_EPS:
-            if t0 - cs > _SIBLING_EPS or ce - t1 > _SIBLING_EPS:
-                return sib
-    return None
-
-
-def _describe_siblings(siblings) -> str:
-    if not siblings:
-        return "it is the only clip from this file on the timeline"
-    parts = [
-        f"[{cs:.2f}s–{ce:.2f}s] at {_fmt_mmss(pos)} on track {layer} (timeline_clip_id={sid})"
-        for sid, cs, ce, pos, layer in siblings
-    ]
-    return "other clips from this file cover " + "; ".join(parts)
-
-
-def slice_clip_at_best_match(
-    query="",
-    occurrence="0",
-    clip_query="",
-    timeline_clip_id="",
-    start_seconds="",
-    end_seconds="",
-    **_kw,
-) -> str:
-    """Cut a timeline clip where a described moment happens, or at explicit source times.
-
-    query is either a description ("when the dog jumps") -- searched in the clip's video
-    index, confirmed by watching, moved off speech -- or a range in the clip's SOURCE time
-    ("from 4 seconds to 10 seconds", "0:04 to 0:10"), which cuts so that range becomes its own
-    segment. No match, an unindexed video or a cut outside the clip is an Error and nothing
-    is cut.
-    """
-    try:
-        from classes.api_client import get_backend_client
-
-        # Explicit source seconds (from a watch or the user) skip search + watch.
-        # One that does not parse must refuse, not fall through to a search and
-        # cut wherever the best match happens to be.
-        try:
-            t_in = parse_seconds_arg(start_seconds, default=None, field="start_seconds")
-            t_out = parse_seconds_arg(end_seconds, default=None, field="end_seconds")
-        except ValueError as exc:
-            return f"Error: {exc}"
-
-        clip_info_box = [None]
-        error_box_pre = [None]
-        siblings_box: list = [[]]
-
-        def _read_clip_info():
-            try:
-                from classes.clip_resolver import resolve_timeline_clip
-                from classes.ai_metadata_utils import get_source_window
-                from classes.timeline_clip_context import resolve_parent_file_data
-                from classes.twelvelabs_match import get_index_block
-
-                occ = _parse_occurrence(str(occurrence or _kw.get("occurrence", "0")), query)
-                resolved = resolve_timeline_clip(
-                    timeline_clip_id=str(timeline_clip_id or "").strip(),
-                    clip_query=str(clip_query or "").strip(),
-                    track=str(_kw.get("track") or _kw.get("prefer_track") or "").strip(),
-                    occurrence=occ,
-                )
-                if not resolved.ok or not resolved.clip:
-                    error_box_pre[0] = resolved.error or "Error: Could not resolve timeline clip."
-                    return
-                obj = resolved.clip
-                d = obj.data if isinstance(obj.data, dict) else {}
-                sf = _get_source_file_for_clip(obj)
-                fd = sf.data if sf and isinstance(sf.data, dict) else None
-                cs, ce = get_source_window(d, fd)
-                cp = float(d.get("position", 0.0) or 0.0)
-                ly = d.get("layer", 1)
-                try:
-                    layer_num = int(ly) if ly is not None else 1
-                except (TypeError, ValueError):
-                    layer_num = 1
-                fid = str(d.get("file_id") or "")
-                parent_data = resolve_parent_file_data(fd, file_id=fid)
-                sa = (
-                    parent_data.get("ai_metadata")
-                    if parent_data and isinstance(parent_data.get("ai_metadata"), dict)
-                    else None
-                )
-                # Extract TwelveLabs info (may be absent for old imports)
-                tw = get_index_block(sa or {})
-                tw_status = (tw.get("status") or "").lower()
-                iid = tw.get("index_id") or ""
-                vid = tw.get("video_id") or ""
-                if not iid:
-                    log.warning(
-                        "TwelveLabs metadata missing for source file; "
-                        "falling back to default index lookup."
-                    )
-                tw_err = str(tw.get("error") or "").strip()
-                clip_info_box[0] = (
-                    str(obj.id), cs, ce, cp, str(iid), str(vid), layer_num, fid, tw_status, tw_err
-                )
-                siblings_box[0] = _sibling_clips_from_same_file(fid, exclude_clip_id=str(obj.id))
-            except Exception as exc:
-                error_box_pre[0] = f"Error: {exc}"
-
-        _run_on_main_thread(_read_clip_info)
-
-        if error_box_pre[0]:
-            return error_box_pre[0]
-        if not clip_info_box[0]:
-            return "Error: Could not read clip metadata."
-
-        clip_id_str, clip_start, clip_end, clip_pos, index_id, video_id, layer_num, file_id_str, tw_status, tw_error = clip_info_box[0]
-
-        siblings = siblings_box[0] or []
-        if (t_in is None) != (t_out is None):
-            cut_at = t_in if t_out is None else t_out
-            if not clip_start < cut_at < clip_end:
-                # A cut on the clip's own edge splits off nothing. Say so
-                # plainly (not as an error) so the caller does not retry it.
-                if abs(cut_at - clip_start) <= _SIBLING_EPS:
-                    return (
-                        f"Nothing to slice: {cut_at:.2f}s is already the start of this clip "
-                        f"(source window [{clip_start:.2f}s–{clip_end:.2f}s])."
-                    )
-                if abs(cut_at - clip_end) <= _SIBLING_EPS:
-                    return (
-                        f"Nothing to slice: {cut_at:.2f}s is already the end of this clip "
-                        f"(source window [{clip_start:.2f}s–{clip_end:.2f}s])."
-                    )
-                sib = _sibling_containing(siblings, cut_at, cut_at)
-                if sib:
-                    sid, s_cs, s_ce, s_pos, _s_layer = sib
-                    return _slice_at_source_cut(
-                        sid, s_cs, s_ce, s_pos, cut_at,
-                        label=f"requested time, on the clip that holds it: timeline_clip_id={sid}",
-                    )
-                return (
-                    f"Error: Requested cut {cut_at:.2f}s is outside this clip's "
-                    f"source window [{clip_start:.2f}s–{clip_end:.2f}s], and "
-                    f"{_describe_siblings(siblings)}. Pick a time inside a clip's window, "
-                    f"or pass that clip's timeline_clip_id."
-                )
-            return _slice_at_source_cut(
-                clip_id_str, clip_start, clip_end, clip_pos, cut_at, label="requested time",
-            )
-        time_rng = _parse_explicit_source_time_range_sec(query or "")
-        if t_in is not None:
-            time_rng = (min(t_in, t_out), max(t_in, t_out))
-        if time_rng is not None:
-            t0, t1 = time_rng
-            eps = 1e-3
-            target = (clip_id_str, clip_start, clip_end, clip_pos, layer_num)
-            if t0 < clip_start - eps or t1 > clip_end + eps:
-                sib = _sibling_containing(siblings, t0, t1)
-                if sib is None:
-                    return (
-                        f"Error: Requested range [{t0:.2f}s–{t1:.2f}s] is outside this clip's "
-                        f"source window [{clip_start:.2f}s–{clip_end:.2f}s], and "
-                        f"{_describe_siblings(siblings)}. Pick a range inside one clip's window, "
-                        f"or pass that clip's timeline_clip_id."
-                    )
-                target = sib
-            elif abs(t0 - clip_start) <= eps and abs(t1 - clip_end) <= eps:
-                return (
-                    f"Nothing to slice: [{t0:.2f}s–{t1:.2f}s] is already exactly this clip's "
-                    f"source window."
-                )
-            tgt_id, tgt_cs, tgt_ce, tgt_pos, tgt_layer = target
-
-            def _do_time_slice():
-                return _slice_timeline_clip_at_source_times(
-                    tgt_id,
-                    tgt_cs,
-                    tgt_ce,
-                    tgt_pos,
-                    tgt_layer,
-                    file_id_str,
-                    t0,
-                    t1,
-                )
-
-            try:
-                return _run_on_main_thread(_do_time_slice)
-            except Exception as exc:
-                log.error("time-based slice failed: %s", exc, exc_info=True)
-                return f"Error: {exc}"
-
-        if tw_status == "failed":
-            detail = f" ({tw_error})" if tw_error else ""
-            return (
-                "Error: Video indexing failed for this clip's source"
-                + detail
-                + ". Re-import the file or run reindex_project_file_tool to upload and index again. "
-                "You can still slice by explicit times, e.g. 'from 4 seconds to 10 seconds'."
-            )
-        if tw_status == "indexing":
-            return (
-                "Error: This clip's video is still being indexed; nothing was sliced. "
-                "Call wait_until_project_indexed_tool, or slice by explicit times "
-                "(e.g. 'from 4 seconds to 10 seconds')."
-            )
-
-        # ── 2. Check backend connectivity (can run on any thread)
-        client = get_backend_client()
-        if not client.is_indexing_configured():
-            return "Error: TwelveLabs is not configured."
-
-        if not index_id:
-            return (
-                "Error: This clip's source file has no TwelveLabs index_id. "
-                "Re-import or re-index the file."
-            )
-        if not video_id:
-            return (
-                "Error: This clip's source file has no TwelveLabs video_id. "
-                "Re-import or re-index the file so searches target the correct video."
-            )
-
-        # ── 3. TwelveLabs search (REST call – fine from background thread)
-        from classes.twelvelabs_match import (
-            select_twelvelabs_match,
-            snap_source_time_to_frame,
-            snap_timeline_position,
-        )
-
-        search_query = _semantic_search_query(query)
-        if not search_query:
-            return "Error: Empty search query."
-
-        items, err = _twelvelabs_search_in_window(
-            index_id, search_query, page_limit=30, video_id=video_id,
-        )
-        if err:
-            return f"Error: {err}"
-        if not items:
-            sa_fb = None
-            try:
-                from classes.query import File
-                fobj = File.get(id=file_id_str)
-                if fobj and isinstance(fobj.data, dict):
-                    raw = fobj.data.get("ai_metadata")
-                    sa_fb = raw if isinstance(raw, dict) else None
-            except Exception:
-                pass
-            cut_from_scenes = _scene_description_cut_source(
-                clip_start, clip_end, sa_fb, query,
-                _parse_occurrence(occurrence, query),
-            )
-            if cut_from_scenes is not None:
-                path, dur, cues = _lookup_watch_meta(file_id_str)
-                watched = _watch_confirm_cut(
-                    path, cut_from_scenes, cut_from_scenes, query,
-                    fallback=cut_from_scenes, duration=dur, transcript_cues=cues,
-                )
-                return _slice_at_source_cut(
-                    clip_id_str, clip_start, clip_end, clip_pos,
-                    watched.get("cut_source", cut_from_scenes),
-                    label="scene description match",
-                )
-            return (
-                f"Error: No match for {query!r} in this clip (index and scene descriptions); "
-                "nothing was sliced."
-            )
-
-        nth = _parse_occurrence(occurrence, query)
-        chosen = select_twelvelabs_match(
-            items,
-            clip_start=clip_start,
-            clip_end=clip_end,
-            occurrence=nth,
-            cut_mode="mid",
-        )
-        if not chosen:
-            sa_fb = None
-            try:
-                from classes.query import File
-                fobj = File.get(id=file_id_str)
-                if fobj and isinstance(fobj.data, dict):
-                    raw = fobj.data.get("ai_metadata")
-                    sa_fb = raw if isinstance(raw, dict) else None
-            except Exception:
-                pass
-            cut_from_scenes = _scene_description_cut_source(
-                clip_start, clip_end, sa_fb, query, nth,
-            )
-            if cut_from_scenes is not None:
-                path, dur, cues = _lookup_watch_meta(file_id_str)
-                watched = _watch_confirm_cut(
-                    path, cut_from_scenes, cut_from_scenes, query,
-                    fallback=cut_from_scenes, duration=dur, transcript_cues=cues,
-                )
-                return _slice_at_source_cut(
-                    clip_id_str, clip_start, clip_end, clip_pos,
-                    watched.get("cut_source", cut_from_scenes),
-                    label="scene description match",
-                )
-            return (
-                f"Error: The index found {query!r} elsewhere in the source video but not inside "
-                "this clip's trimmed range; nothing was sliced."
-            )
-
-        ordinal_label = f"occurrence #{nth}" if nth > 0 else "best match"
-
-        path, dur, cues = _lookup_watch_meta(file_id_str)
-        try:
-            win_s = float(chosen.get("start") if chosen.get("start") is not None else chosen["cut_source"])
-        except (TypeError, ValueError, KeyError):
-            win_s = float(chosen["cut_source"])
-        try:
-            win_e = float(chosen.get("end") if chosen.get("end") is not None else win_s)
-        except (TypeError, ValueError):
-            win_e = win_s
-        watched = _watch_confirm_cut(
-            path, win_s, win_e, query,
-            fallback=chosen["cut_source"], duration=dur, transcript_cues=cues,
-            fallback_in=win_s, fallback_out=win_e,
-        )
-        confirmed = watched.get("cut_source", chosen["cut_source"])
-
-        fps = _get_app().project.get("fps") or {}
-        fps_num = float(fps.get("num", 30))
-        fps_den = float(fps.get("den", 1)) or 1.0
-        # Never cut through a spoken line - snap to the nearer cue boundary.
-        raw_cut, moved_off_cue = _snap_cut_off_speech(clip_id_str, float(confirmed))
-        if moved_off_cue:
-            ordinal_label += ", moved off speech"
-        cut_source = snap_source_time_to_frame(raw_cut, fps_num, fps_den)
-        slice_pos = snap_timeline_position(
-            clip_pos + (cut_source - clip_start), fps_num, fps_den,
-        )
-
-        log.info(
-            "slice_clip_at_best_match: clip_id=%s rank=%s overlap=%.3f "
-            "cut_source=%.3f slice_pos=%.3f (%s)",
-            clip_id_str,
-            chosen.get("rank"),
-            chosen.get("overlap_ratio", 0.0),
-            cut_source,
-            slice_pos,
-            ordinal_label,
-        )
-
-        # ── 4. Validate: slice_pos must fall inside the clip on the timeline
-        clip_timeline_end = clip_pos + (clip_end - clip_start)
-        if slice_pos <= clip_pos or slice_pos >= clip_timeline_end:
-            return (
-                f"Error: Computed slice position ({slice_pos:.3f}s) is outside "
-                f"the clip range [{clip_pos:.3f}s – {clip_timeline_end:.3f}s]."
-            )
-
-        # ── 5. Perform the slice on the Qt main thread
-        from windows.views.timeline_backend.enums import MenuSlice
-
-        slice_error_box = [None]
-
-        def _do_slice():
-            try:
-                _get_app().window.timeline.Slice_Triggered(
-                    MenuSlice.KEEP_BOTH, [clip_id_str], [], slice_pos,
-                )
-            except Exception as exc:
-                slice_error_box[0] = str(exc)
-
-        _run_on_main_thread(_do_slice)
-
-        if slice_error_box[0]:
-            return f"Error during slice: {slice_error_box[0]}"
-
-        return f"Sliced at {_fmt_mmss(cut_source - clip_start)} ({ordinal_label})."
-    except Exception as e:
-        log.error("slice_clip_at_best_match failed: %s", e, exc_info=True)
-        return f"Error: {e}"
 
 
 # ---------------------------------------------------------------------------
@@ -4635,7 +2374,7 @@ def _ffprobe_video_size(path):
                 "-show_entries", "stream=width,height",
                 "-of", "csv=s=x:p=0", path,
             ],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         w, h = (int(v) for v in (p.stdout or "").strip().splitlines()[0].split("x")[:2])
     except Exception:
@@ -4661,7 +2400,7 @@ def _ffprobe_pix_fmt(path) -> str:
                 "-show_entries", "stream=pix_fmt",
                 "-of", "default=noprint_wrappers=1:nokey=1", path,
             ],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         return (p.stdout or "").strip().lower()
     except Exception:
@@ -4677,7 +2416,7 @@ def _ffprobe_alpha_mode(path) -> str:
                 "-show_entries", "stream_tags=alpha_mode,ALPHA_MODE",
                 "-of", "default=noprint_wrappers=1:nokey=1", path,
             ],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace", check=False,
         )
         for line in (p.stdout or "").splitlines():
             val = line.strip().lower()
@@ -4705,10 +2444,6 @@ def _ffprobe_has_alpha(path) -> bool:
     return mode in ("1", "true", "yes")
 
 
-def _ffprobe_has_explicit_yuva(path) -> bool:
-    """True when primary pix_fmt is already yuva* (rare for libvpx WebM)."""
-    pix = _ffprobe_pix_fmt(path)
-    return bool(pix and "yuva" in pix)
 
 
 def _verify_decoded_alpha_pixels(path, *, force_libvpx=None) -> bool:
@@ -5004,64 +2739,6 @@ def _merge_baked_transition_metadata(
     return ", ".join(tag_tokens), ai_merged
 
 
-def _merge_file_tags_and_metadata(*file_objs):
-    """Merge comma-separated tags and ai_metadata tag lists from File objects."""
-    tag_tokens = []
-    seen_tags = set()
-    list_keys = ("objects", "scenes", "activities", "mood")
-    ai_merged = {
-        "analyzed": True,
-        "tags": {key: [] for key in list_keys},
-    }
-    seen_lists = {key: set() for key in list_keys}
-    descriptions = []
-    scene_descriptions = []
-
-    for file_obj in file_objs:
-        if not file_obj or not isinstance(getattr(file_obj, "data", None), dict):
-            continue
-        data = file_obj.data
-        for part in str(data.get("tags") or "").split(","):
-            token = part.strip()
-            if not token:
-                continue
-            key = token.lower()
-            if key in seen_tags:
-                continue
-            seen_tags.add(key)
-            tag_tokens.append(token)
-
-        ai = data.get("ai_metadata")
-        if not isinstance(ai, dict):
-            continue
-        tags = ai.get("tags")
-        if isinstance(tags, dict):
-            for key in list_keys:
-                vals = tags.get(key) or []
-                if not isinstance(vals, list):
-                    continue
-                for val in vals:
-                    text = str(val).strip()
-                    if not text:
-                        continue
-                    norm = text.lower()
-                    if norm in seen_lists[key]:
-                        continue
-                    seen_lists[key].add(norm)
-                    ai_merged["tags"][key].append(text)
-        desc = ai.get("description")
-        if desc and str(desc).strip():
-            descriptions.append(str(desc).strip())
-        for scene in ai.get("scene_descriptions") or []:
-            if isinstance(scene, dict) and scene.get("description"):
-                scene_descriptions.append(scene)
-
-    if descriptions:
-        ai_merged["description"] = " | ".join(descriptions[:3])
-    if scene_descriptions:
-        ai_merged["scene_descriptions"] = scene_descriptions[:24]
-
-    return ", ".join(tag_tokens), ai_merged
 
 
 def _clip_source_range(clip_data, file_data, fallback_duration=0.0):
@@ -5486,47 +3163,6 @@ def _stamp_generated_video_metadata(file_obj, prompt="", source="ai_video_genera
         return False
 
 
-def _download_motion_graphics_file(url, default_name="motion_segment.mp4"):
-    """Download a Supabase video to a fresh temp path. Returns (dest_path, size_mb)."""
-    import tempfile
-    import urllib.request
-    from urllib.parse import unquote
-
-    url_path = url.split("?")[0].rstrip("/")
-    raw_name = unquote(url_path.split("/")[-1] or default_name)
-    root, ext = os.path.splitext(raw_name)
-    if ext.lower() not in (".mp4", ".webm", ".mov", ".mkv", ".avi"):
-        # Infer from URL path fragments
-        lower = url_path.lower()
-        if lower.endswith(".webm") or "/output.webm" in lower:
-            ext = ".webm"
-        else:
-            ext = ".mp4"
-        raw_name = f"{root or 'motion_segment'}{ext}"
-
-    tmp_dir = tempfile.mkdtemp(prefix="zenvi_hyperframes_")
-    dest_path = os.path.join(tmp_dir, raw_name)
-
-    log.info("Downloading HyperFrames video from Supabase: %s → %s", url, dest_path)
-    req = urllib.request.Request(url, headers={"User-Agent": "ZenviApp/1.0"})
-    with urllib.request.urlopen(req, timeout=300) as response, open(dest_path, "wb") as out:
-        while True:
-            chunk = response.read(65536)
-            if not chunk:
-                break
-            out.write(chunk)
-
-    size_mb = os.path.getsize(dest_path) / (1024 * 1024)
-    size_bytes = os.path.getsize(dest_path)
-    if size_bytes <= 0:
-        raise ValueError(f"Downloaded file is empty (0 bytes): {dest_path}")
-    if size_mb < 0.1:
-        log.info("Download complete: %s (%.0f KB)", dest_path, size_bytes / 1024.0)
-    else:
-        log.info("Download complete: %s (%.1f MB)", dest_path, size_mb)
-    return dest_path, size_mb
-
-
 def _stamp_motion_graphics_file_metadata(file_obj, label="", transparent=None):
     """Agent-facing metadata only — does not enqueue Gemini indexing."""
     if not file_obj:
@@ -5578,413 +3214,15 @@ def _stamp_motion_graphics_file_metadata(file_obj, label="", transparent=None):
         log.warning("Could not stamp motion-graphics metadata: %s", exc)
 
 
-def _resolve_motion_graphics_label_from_job(render_job_id="", fallback=""):
-    """When the agent omits label=, recover summary from HyperFrames job status.
-
-    Returns (label, job_meta_dict).
-    """
-    job_id = (render_job_id or "").strip()
-    if not job_id:
-        return (fallback or "").strip(), {}
-    import json
-    import urllib.request
-
-    api = os.environ.get(
-        "HYPERFRAMES_URL",
-        os.environ.get("REMOTION_URL", "http://localhost:4500/api/v1"),
-    ).rstrip("/")
-    for kind in ("motion", "demo"):
-        try:
-            req = urllib.request.Request(
-                f"{api}/{kind}/jobs/{job_id}",
-                headers={"User-Agent": "ZenviApp/1.0"},
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read().decode() or "{}")
-            summary = str(data.get("summary") or "").strip()
-            if summary:
-                return summary, data
-            titles = data.get("segment_titles") or []
-            block_id = data.get("block_id") or ""
-            if titles or block_id:
-                title0 = titles[0] if titles else ""
-                transparent = data.get("transparent")
-                bits = []
-                if block_id:
-                    bits.append(f"HyperFrames {block_id}")
-                else:
-                    bits.append("HyperFrames motion graphic")
-                if title0 and title0 not in ("motion", block_id):
-                    bits.append(str(title0))
-                if transparent:
-                    bits.append("transparent overlay")
-                label = ": ".join(bits[:2]) + (f" ({bits[2]})" if len(bits) > 2 else "")
-                return label, data
-            return (fallback or "").strip(), data
-        except Exception as exc:
-            log.debug("MG label lookup %s/%s failed: %s", kind, job_id, exc)
-    return (fallback or "").strip(), {}
-
-
-def _download_and_import_one(url, label="", job_transparent=None):
-    """Download one Supabase video and import it as a project file (skip_indexing).
-
-    Returns (file_id, size_mb, error, transparent_ok, pix_fmt).
-    job_transparent: when True, force alpha-preserving import and fail closed (no opaque MP4).
-    """
-    try:
-        last_err = None
-        dest_path = None
-        size_mb = 0.0
-        for attempt in (1, 2):
-            try:
-                dest_path, size_mb = _download_motion_graphics_file(url)
-                break
-            except Exception as e:
-                last_err = e
-                log.warning("Download attempt %d failed for %s: %s", attempt, url, e)
-        if dest_path is None:
-            return "", 0.0, f"download failed: {last_err}", False, ""
-
-        try:
-            if job_transparent is True:
-                preserve_alpha = True
-            elif job_transparent is False:
-                preserve_alpha = False
-            else:
-                preserve_alpha = _looks_like_alpha_video(dest_path)
-
-            f, err = _import_generated_video(dest_path, preserve_alpha=preserve_alpha)
-            if err:
-                return "", size_mb, f"import failed: {err}", False, ""
-        finally:
-            _cleanup_scratch_parent(dest_path, "zenvi_hyperframes_")
-
-        imported_path = None
-        try:
-            imported_path = f.absolute_path() if f and hasattr(f, "absolute_path") else None
-        except Exception:
-            imported_path = None
-        if not imported_path and f and isinstance(getattr(f, "data", None), dict):
-            imported_path = f.data.get("path")
-
-        pix_fmt = _ffprobe_pix_fmt(imported_path) if imported_path else ""
-        alpha_mode = _ffprobe_alpha_mode(imported_path) if imported_path else ""
-        # libvpx VP9 WebM probes as yuv420p + ALPHA_MODE=1 (never yuva*). Accept that
-        # when decoded pixels actually have transparency.
-        transparent_ok = bool(imported_path and _openshot_transparent_ok(imported_path))
-        stamp_transparent = (
-            bool(job_transparent) if job_transparent is not None else transparent_ok
-        )
-        probe_note = f"pix_fmt={pix_fmt or 'unknown'} alpha_mode={alpha_mode or 'none'}"
-        if job_transparent and not transparent_ok:
-            return (
-                "",
-                size_mb,
-                (
-                    f"transparent job imported without usable VP9 alpha ({probe_note}) "
-                    "— re-compose as WebM; refusing solid plate"
-                ),
-                False,
-                pix_fmt,
-            )
-
-        _stamp_motion_graphics_file_metadata(f, label=label, transparent=stamp_transparent)
-        # Encode probe bits into pix_fmt field for fetch messaging: "yuva420p;alpha_mode=1"
-        probe_field = pix_fmt or "unknown"
-        if alpha_mode:
-            probe_field = f"{probe_field};alpha_mode={alpha_mode}"
-        return (f.id if f else ""), size_mb, None, transparent_ok or stamp_transparent, probe_field
-    except Exception as e:
-        log.error("download/import failed for %s: %s", url, e, exc_info=True)
-        return "", 0.0, str(e), False, ""
-
-
-def _motion_graphics_cleanup_storage(supabase_path="", render_job_id=""):
-    """Best-effort DELETE {HYPERFRAMES_URL}/cleanup. Non-critical — failures are logged only."""
-    import json
-    import urllib.request
-
-    if not (supabase_path or render_job_id):
-        return
-    api = os.environ.get(
-        "HYPERFRAMES_URL",
-        os.environ.get("REMOTION_URL", "http://localhost:4500/api/v1"),
-    ).rstrip("/")
-    try:
-        payload = {}
-        if supabase_path:
-            payload["supabase_path"] = supabase_path
-        if render_job_id:
-            payload["job_id"] = render_job_id
-        body = json.dumps(payload).encode()
-        cleanup_req = urllib.request.Request(
-            f"{api}/cleanup",
-            data=body,
-            method="DELETE",
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(cleanup_req, timeout=60) as cleanup_resp:
-            log.info("Supabase cleanup after import: %s", cleanup_resp.read().decode()[:500])
-    except Exception as cleanup_err:
-        log.warning("Supabase cleanup failed (non-critical): %s", cleanup_err)
-
-
-# Session-scoped URL → file_id so package/hand re-fetch is idempotent.
-_MG_IMPORTED_URLS: dict = {}
-
-
-def fetch_motion_graphics_video(
-    segment_urls=None,
-    supabase_url="",
-    supabase_path="",
-    render_job_id="",
-    label="",
-    **_kw,
-) -> str:
-    """Import rendered HyperFrames motion/demo segments into the project files panel.
-
-    Preferred: pass segment_urls — the ordered list of per-segment Supabase URLs.
-    Each segment is imported as its own clip; storage is cleaned up once after success.
-    Imports use skip_indexing=True (no Gemini summarize). Optional label stamps short_summary.
-
-    Legacy: pass a single supabase_url to import one video.
-    """
-    import json
-    import re
-
-    global _MG_IMPORTED_URLS
-
-    _GENERIC_LABELS = (
-        "hyperframes motion graphic",
-        "motion graphic",
-        "motion",
-    )
-
-    def _norm_url(u: str) -> str:
-        return (u or "").strip().split("?")[0].rstrip("/")
-
-    def _already_imported(urls: list):
-        ids = []
-        for u in urls:
-            fid = _MG_IMPORTED_URLS.get(_norm_url(u))
-            if not fid:
-                return None
-            ids.append(fid)
-        if not ids:
-            return None
-        return (
-            f"Already imported file_id={ids[0]} (file_ids: {ids}) — "
-            "place only if missing. Do NOT re-download these URLs."
-        )
-
-    def _is_generic(text: str) -> bool:
-        return (text or "").strip().lower() in _GENERIC_LABELS
-
-    job_meta = {}
-    stamp_label = (label or "").strip()
-    recovered = ""
-    if render_job_id:
-        recovered, job_meta = _resolve_motion_graphics_label_from_job(
-            render_job_id, fallback=stamp_label
-        )
-        # Prefer explicit agent label; else job.summary; never keep generic when job has better text
-        if not stamp_label:
-            stamp_label = recovered
-        elif _is_generic(stamp_label) and recovered and not _is_generic(recovered):
-            stamp_label = recovered
-    if not stamp_label:
-        stamp_label = "HyperFrames motion graphic"
-
-    job_transparent = job_meta.get("transparent")
-    if job_transparent is not None:
-        job_transparent = bool(job_transparent)
-
-    generic = _is_generic(stamp_label)
-    generic_warn = ""
-    if generic:
-        if render_job_id and job_meta.get("summary"):
-            # Job had summary but we somehow still stamped generic — surface loudly
-            generic_warn = (
-                " ⚠️ short_summary is still generic despite job.summary — "
-                "pass label= from compose suggested_label."
-            )
-        else:
-            generic_warn = (
-                " ⚠️ short_summary is generic — pass label= from compose suggested_label "
-                "(or ensure render_job_id is set so job.summary can be recovered)."
-            )
-
-    # The LLM may pass segment_urls as a JSON-encoded string.
-    if isinstance(segment_urls, str):
-        try:
-            segment_urls = json.loads(segment_urls)
-        except Exception:
-            segment_urls = [segment_urls]
-    segment_urls = [u.strip() for u in (segment_urls or []) if isinstance(u, str) and u.strip()]
-
-    # Prefer WebM when job is transparent but URLs still point at .mp4
-    if job_transparent and segment_urls:
-        fixed = []
-        for u in segment_urls:
-            if u.split("?")[0].lower().endswith(".mp4"):
-                webm = re.sub(r"\.mp4(\?|$)", r".webm\1", u, count=1, flags=re.I)
-                log.warning(
-                    "Job %s is transparent but URL is MP4 — trying WebM: %s",
-                    render_job_id,
-                    webm,
-                )
-                fixed.append(webm)
-            else:
-                fixed.append(u)
-        segment_urls = fixed
-
-    if segment_urls:
-        cached = _already_imported(segment_urls)
-        if cached:
-            return cached
-
-    # ---- Multi-segment import (preferred) ----
-    if segment_urls:
-        # Deterministic timeline order: sort by the numeric index in segment_NN.mp4,
-        # independent of the order the agent passed the URLs in.
-        def _seg_index(u):
-            name = u.split("?")[0].rsplit("/", 1)[-1]
-            m = re.search(r"segment[_-]?(\d+)", name, re.IGNORECASE)
-            return int(m.group(1)) if m else 1_000_000
-
-        ordered = sorted(enumerate(segment_urls), key=lambda iu: (_seg_index(iu[1]), iu[0]))
-
-        file_ids = []
-        failures = []  # (original_index, url, error)
-        total_mb = 0.0
-        any_transparent_ok = False
-        last_pix_fmt = ""
-        for orig_i, url in ordered:
-            path_base = url.lower().split("?")[0]
-            if job_transparent and path_base.endswith(".mp4"):
-                failures.append(
-                    (
-                        orig_i,
-                        url,
-                        "transparent job URL is .mp4 and WebM rewrite failed — "
-                        "re-compose as WebM; refusing opaque MP4 import",
-                    )
-                )
-                continue
-
-            file_id, size_mb, err, transparent_ok, pix_fmt = _download_and_import_one(
-                url, label=stamp_label, job_transparent=job_transparent
-            )
-            # Fail-closed: never import opaque MP4 as success for transparent jobs
-            if err and job_transparent and path_base.endswith(".webm"):
-                failures.append(
-                    (
-                        orig_i,
-                        url,
-                        f"{err} — re-compose WebM (no opaque MP4 fallback)",
-                    )
-                )
-                log.warning("Segment %d transparent WebM import failed (no MP4 fallback): %s", orig_i, err)
-                continue
-            if err:
-                failures.append((orig_i, url, err))
-                log.warning("Segment %d import failed: %s", orig_i, err)
-            else:
-                file_ids.append(file_id)
-                total_mb += size_mb
-                any_transparent_ok = any_transparent_ok or bool(transparent_ok)
-                if pix_fmt:
-                    last_pix_fmt = pix_fmt
-                _MG_IMPORTED_URLS[_norm_url(url)] = file_id
-
-        n = len(segment_urls)
-        if failures:
-            # Leave storage intact so the failed segments can be re-fetched without a re-render.
-            failed_lines = "\n".join(f"  [{i}] {u} ({e})" for i, u, e in failures)
-            return (
-                f"Error: Imported only {len(file_ids)}/{n} motion segments; {len(failures)} failed. "
-                f"Storage was NOT cleaned up so you can retry the failed ones. "
-                f"file_ids: {file_ids}\nFailed segments:\n{failed_lines}{generic_warn}"
-            )
-
-        # All segments imported — clean up Supabase storage once.
-        _motion_graphics_cleanup_storage(render_job_id=render_job_id, supabase_path=supabase_path)
-        alpha_note = (
-            "Transparent WebM alpha preserved — place as overlay on a HIGHER track than footage."
-            if any_transparent_ok or job_transparent
-            else "Opaque MP4 — prefer standalone/mid-layer placement away from hero peaks."
-        )
-        probe_bits = (
-            f" transparent_ok={str(any_transparent_ok).lower()}"
-            f" pix_fmt={last_pix_fmt or 'unknown'}"
-        )
-        return (
-            f"✅ Imported {len(file_ids)}/{n} HyperFrames segments as separate clips "
-            f"(file_id={file_ids[0]}, file_ids: {file_ids}, total {total_mb:.1f} MB). "
-            f"Indexing skipped (motion_graphics tag).{probe_bits}. {alpha_note}\n"
-            "MUST call place_motion_graphic_tool(file_id=..., mode=overlay|gap|cut_in) "
-            "for each file_id (transparent → mode=overlay high track; opaque → mode=gap or cut_in). "
-            "Do not use add_clip_to_timeline_tool for MG renders."
-            f"{generic_warn}"
-        )
-
-    # ---- Legacy single-video import (back-compat) ----
-    supabase_url = (supabase_url or "").strip()
-    if not supabase_url:
-        return "Error: segment_urls or supabase_url is required."
-
-    if job_transparent and supabase_url.split("?")[0].lower().endswith(".mp4"):
-        supabase_url = re.sub(r"\.mp4(\?|$)", r".webm\1", supabase_url, count=1, flags=re.I)
-
-    if job_transparent and supabase_url.split("?")[0].lower().endswith(".mp4"):
-        return (
-            "Error: transparent job URL is still .mp4 after WebM rewrite — "
-            "re-compose as WebM; refusing opaque MP4 import."
-            f"{generic_warn}"
-        )
-
-    cached_one = _already_imported([supabase_url])
-    if cached_one:
-        return cached_one
-
-    file_id, size_mb, err, transparent_ok, pix_fmt = _download_and_import_one(
-        supabase_url, label=stamp_label, job_transparent=job_transparent
-    )
-    if err:
-        return f"Error importing video: {err}{generic_warn}"
-    _MG_IMPORTED_URLS[_norm_url(supabase_url)] = file_id
-    _motion_graphics_cleanup_storage(supabase_path=supabase_path, render_job_id=render_job_id)
-    alpha_note = (
-        "Transparent WebM alpha preserved — overlay on a HIGHER track than footage."
-        if transparent_ok or job_transparent
-        else "Opaque MP4 — prefer standalone/mid-layer placement away from hero peaks."
-    )
-    return (
-        f"✅ HyperFrames motion graphic imported into project files "
-        f"(file_id={file_id}, size: {size_mb:.1f} MB). Indexing skipped (motion_graphics tag). "
-        f"transparent_ok={str(bool(transparent_ok)).lower()} pix_fmt={pix_fmt or 'unknown'}. "
-        f"{alpha_note}\n"
-        "MUST call place_motion_graphic_tool(file_id=..., mode=overlay|gap|cut_in) "
-        "with the placement mode above. Do not use add_clip_to_timeline_tool for MG renders."
-        f"{generic_warn}"
-    )
-
-
-# Hard-cut alias kept only so any stale backend tool name still resolves during one deploy.
-fetch_remotion_video_from_supabase = fetch_motion_graphics_video
-_download_remotion_file = _download_motion_graphics_file
-_remotion_cleanup_storage = _motion_graphics_cleanup_storage
-
-
 _KLING_O1_DEFAULT_T2V_DURATION = 5
 
 
 def import_video_url_and_add_to_timeline(video_url="", track="", position_seconds="", **_kw) -> str:
     """Download a video from a public URL, import it into project files, and place it on the timeline.
 
-    Used for server-rendered clips (e.g. Manim) delivered as a public URL. One shot:
+    Used for clips delivered as a public URL. One shot:
     download → re-encode/import (via _import_generated_video) → add_clip_to_timeline.
+    YouTube page URLs are not direct files — use ingest_web_video_tool instead.
     """
     import tempfile
     import urllib.request
@@ -5998,14 +3236,25 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
     _audio_exts = (".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma")
     if "freesound.org" in lower_path or any(lower_path.endswith(ext) for ext in _audio_exts):
         return (
-            "Error: import_video_url_and_add_to_timeline_tool is for video URLs only. "
-            "For Freesound / music / SFX use stock_music(query=..., track=...)."
+            "Error: run_tool(name='ingest_web_video_tool') is for video URLs only. "
+            "For Freesound / music / SFX use run_tool(name='import_stock_media_tool', args={'source': 'freesound', ...})."
         )
+    try:
+        from classes.web_video_ingest import is_youtube_url
+        if is_youtube_url(video_url) and not any(
+            lower_path.endswith(ext) for ext in (".mp4", ".mov", ".webm", ".mkv", ".avi")
+        ):
+            return (
+                "Error: that is a YouTube page URL, not a direct video file. "
+                "Use run_tool(name='ingest_web_video_tool', args={'url': ..., 'intent': 'timeline'}) instead."
+            )
+    except Exception as exc:
+        return f"Error: could not classify video URL: {exc}"
 
     # Check the target track before downloading anything.
     if track and str(track).strip():
         _app = _get_app()
-        _layer, _track_err = normalize_track_or_layer_arg(str(track).strip(), _app.project.get("layers") or [])
+        _layer, _track_err, _new = resolve_placement_track(str(track).strip(), _app.project.get("layers") or [])
         if _track_err or _layer is None:
             return _as_error(_track_err or f"no track matches {track!r}")
         _locked = _locked_track_error(_app, _layer)
@@ -6024,8 +3273,9 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
 
         try:
             log.info("Downloading video from URL: %s → %s", video_url, dest_path)
+            from classes.web_video_ingest import open_public_url
             req = urllib.request.Request(video_url, headers={"User-Agent": "ZenviApp/1.0"})
-            with urllib.request.urlopen(req, timeout=300) as response, open(dest_path, "wb") as out:
+            with open_public_url(req, timeout=300) as response, open(dest_path, "wb") as out:
                 while True:
                     chunk = response.read(65536)
                     if not chunk:
@@ -6051,7 +3301,7 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
                 return (
                     f"Error: Video imported (file_id={file_id}, {size_mb:.1f} MB) but placing it on the "
                     f"timeline failed: {placement or 'unknown'}. Do NOT download it again: call "
-                    f"add_clip_to_timeline_tool(file_id='{file_id}', track=..., position_seconds=...)."
+                    f"add_clips_to_timeline_tool(file_ids=['{file_id}'], track=..., start_seconds=...)."
                 )
             return (
                 f"✅ Video imported (file_id: {file_id}, {size_mb:.1f} MB) and added to the timeline.\n"
@@ -6062,6 +3312,520 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
     except Exception as e:
         log.error("import_video_url_and_add_to_timeline failed: %s", e, exc_info=True)
         return f"Error importing video from URL: {e}"
+
+
+def _byok_generation_kwargs():
+    """Route generation through the user's own Higgsfield key when one is stored (#60).
+
+    Returns (kwargs, error). BYOK calls bill the user's provider account, so Zenvi
+    credits are skipped. A stored key that cannot be read is an error, never a
+    silent fall-back to billed Zenvi generation.
+    """
+    from classes.provider_keys import KeyUnreadable, get_key
+
+    try:
+        key = get_key("higgsfield", strict=True)
+    except KeyUnreadable:
+        return {}, (
+            "Your Higgsfield key could not be read. Re-enter or remove it in "
+            "Preferences → AI → Integrations."
+        )
+    return ({"provider": "higgsfield", "provider_key": key} if key else {}), None
+def _ingest_web_video_fail(reason: str, *, url: str = "", intent: str = "") -> str:
+    """Stable JSON failure — agents should report this briefly and stop, not cascade."""
+    msg = str(reason or "Ingest failed.").strip()
+    # Never return multi-line stack noise to the model.
+    msg = " ".join(msg.split())
+    if len(msg) > 280:
+        msg = msg[:277] + "..."
+    return json.dumps({
+        "ok": False,
+        "status": "failed",
+        "error": msg,
+        "url": url or "",
+        "intent": intent or "",
+        "file_id": "",
+        "placed": False,
+        "message": msg,
+        "next": "Tell the user what failed in one short sentence. Do not retry the same URL in a loop.",
+    })
+
+
+# Claude Code / Desktop MCP clients abort tool calls around ~60s. Long YouTube
+# pulls often need 2–3+ minutes. Run the download on a daemon thread, wait a
+# short budget on the first call, then long-poll on job_id until done.
+_INGEST_SYNC_BUDGET_S = 25.0
+_INGEST_POLL_BUDGET_S = 45.0
+_INGEST_JOB_TTL_S = 30 * 60
+_ingest_jobs_lock = threading.Lock()
+_ingest_jobs = {}  # job_id -> dict
+_ingest_inflight = {}  # (url_key, intent, place_flag) -> job_id
+
+
+def _wait_ingest_job(job: dict, timeout_s: float) -> str:
+    """Block until the job finishes or *timeout_s* elapses, then snapshot."""
+    if (job.get("status") or "running") == "running":
+        ev = job.get("event")
+        if ev is not None:
+            ev.wait(timeout=max(0.0, float(timeout_s)))
+    return _ingest_job_public(job)
+
+
+def _ingest_job_public(job: dict) -> str:
+    """JSON snapshot for agents (running / completed / failed)."""
+    status = job.get("status") or "running"
+    if status == "running":
+        jid = job.get("job_id") or ""
+        return json.dumps({
+            "ok": True,
+            "status": "running",
+            "job_id": jid,
+            "url": job.get("url") or "",
+            "intent": job.get("intent") or "",
+            "file_id": "",
+            "placed": False,
+            "message": (
+                "YouTube/web download still in progress — long videos can take "
+                "a few minutes. This is not a failure."
+            ),
+            "next": (
+                f'Call run_tool(name="ingest_web_video_tool", args={{"job_id": "{jid}"}}) again — the tool '
+                "waits until the download finishes or ~45s, then returns. "
+                "Do not start another download of the same URL. A client "
+                "'operation timed out' is not failure — keep calling this job_id."
+            ),
+        })
+    raw = job.get("result")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = {
+                "ok": status == "completed",
+                "status": status,
+                "message": raw,
+            }
+    else:
+        data = {
+            "ok": False,
+            "status": "failed",
+            "error": job.get("error") or "Ingest failed.",
+            "message": job.get("error") or "Ingest failed.",
+        }
+    if not isinstance(data, dict):
+        data = {"ok": False, "status": status, "message": str(data)}
+    data["status"] = (
+        status if status in ("completed", "failed") else data.get("status") or status
+    )
+    data["job_id"] = job.get("job_id") or data.get("job_id") or ""
+    if data.get("ok") and data.get("status") == "completed":
+        data.setdefault(
+            "next",
+            data.get("next") or "Done. Reply briefly; do not re-ingest the same URL.",
+        )
+    return json.dumps(data)
+
+
+def _purge_stale_ingest_jobs(now: Optional[float] = None) -> None:
+    cutoff = float(now if now is not None else time.time()) - _INGEST_JOB_TTL_S
+    dead = [
+        jid for jid, job in _ingest_jobs.items()
+        if float(job.get("updated_at") or 0) < cutoff
+        and job.get("status") in ("completed", "failed")
+    ]
+    for jid in dead:
+        job = _ingest_jobs.pop(jid, None)
+        if not job:
+            continue
+        key = job.get("dedupe_key")
+        if key is not None and _ingest_inflight.get(key) == jid:
+            _ingest_inflight.pop(key, None)
+
+
+def _run_ingest_job(job: dict, kwargs: dict) -> None:
+    from classes import web_video_ingest as wvi
+
+    try:
+        # execute_tool's outer _atomic ends when we return "running"; group
+        # import+place here so one undo still reverses the whole ingest.
+        # Headless unit tests stub Qt — skip _atomic when the app is unavailable.
+        try:
+            app = _get_app()
+            use_atomic = getattr(app, "updates", None) is not None
+        except Exception:
+            app = None
+            use_atomic = False
+        if use_atomic:
+            result = _atomic(app, _ingest_web_video_impl)(**kwargs)
+        else:
+            result = _ingest_web_video_impl(**kwargs)
+        try:
+            parsed = json.loads(result) if isinstance(result, str) else {}
+            ok = bool(parsed.get("ok")) if isinstance(parsed, dict) else False
+        except Exception:
+            ok = False
+            parsed = {}
+        with _ingest_jobs_lock:
+            job["result"] = result if isinstance(result, str) else json.dumps(parsed)
+            job["status"] = "completed" if ok else "failed"
+            if not ok and isinstance(parsed, dict):
+                job["error"] = parsed.get("error") or parsed.get("message") or ""
+            job["updated_at"] = time.time()
+            key = job.get("dedupe_key")
+            if key is not None and _ingest_inflight.get(key) == job.get("job_id"):
+                _ingest_inflight.pop(key, None)
+    except Exception as e:
+        log.error("ingest_web_video job failed: %s", e, exc_info=True)
+        fail = _ingest_web_video_fail(
+            wvi.humanize_ingest_failure(e),
+            url=str(kwargs.get("url") or kwargs.get("video_url") or ""),
+            intent=str(kwargs.get("intent") or ""),
+        )
+        with _ingest_jobs_lock:
+            job["result"] = fail
+            job["status"] = "failed"
+            job["error"] = str(e)
+            job["updated_at"] = time.time()
+            key = job.get("dedupe_key")
+            if key is not None and _ingest_inflight.get(key) == job.get("job_id"):
+                _ingest_inflight.pop(key, None)
+    finally:
+        ev = job.get("event")
+        if ev is not None:
+            ev.set()
+
+
+def ingest_web_video(
+    url="",
+    video_url="",
+    intent="reference",
+    place="false",
+    track="",
+    position_seconds="",
+    write_subs="",
+    job_id="",
+    **_kw,
+) -> str:
+    """Fetch a YouTube/web video URL via yt-dlp into Imports/media bin (one undo).
+
+    FIRST tool for youtube/youtu.be (or similar) links — do not ToolSearch or use
+    import_files_tool for a page URL.
+
+    Long downloads return status=running with a job_id before MCP clients time
+    out (~60s). Call run_tool(name='ingest_web_video_tool', args={'job_id': ...}) again — each call waits
+    until completed/failed or ~45s. A client "operation timed out" is NOT
+    failure — keep calling the same job_id; do not start a second download.
+
+    Intents (pick from what the user asked — do NOT place unless they asked):
+      reference — DEFAULT. Media bin only. Colour/look: once it is indexed, read its look with
+                  run_tool(name='get_look_profile_tool', args={'file_id': ...}), then grade with color_grade_clip_tool. Never put the YouTube clip on the timeline for colour.
+      timeline  — ONLY if user asked to add/edit/clip that YouTube video on the timeline.
+      recreate  — Media bin watch-only reference; rebuild with user clips/stock/video_gen.
+                  Do not leave the YouTube original on the cut unless asked.
+
+    place=true is ignored for recreate; only timeline intent places.
+    Failure → JSON ok=false with a short reason (restricted / pull failed / upload MP4).
+    """
+    from classes import web_video_ingest as wvi
+
+    jid = str(job_id or _kw.get("job_id") or "").strip()
+    if jid:
+        with _ingest_jobs_lock:
+            _purge_stale_ingest_jobs()
+            job = _ingest_jobs.get(jid)
+        if not job:
+            return _ingest_web_video_fail(
+                f"Unknown ingest job_id {jid!r}. Pass the job_id from the "
+                "status=running reply, or call again with url= to start fresh.",
+                url=str(url or video_url or ""),
+                intent=str(intent or ""),
+            )
+        return _wait_ingest_job(job, _INGEST_POLL_BUDGET_S)
+
+    raw_url = str(url or video_url or _kw.get("webpage_url") or "").strip()
+    if not raw_url:
+        return _ingest_web_video_fail(
+            "Paste a YouTube (or other site) video link — url is required."
+        )
+    try:
+        intent_norm = wvi.normalize_intent(intent or "reference")
+    except wvi.WebVideoIngestError as exc:
+        return _ingest_web_video_fail(str(exc), url=raw_url)
+
+    place_flag = str(place or "").strip().lower() in ("1", "true", "yes", "on")
+    if intent_norm == "timeline":
+        place_flag = True
+    if intent_norm == "recreate":
+        place_flag = False
+
+    dedupe_key = (wvi.url_cache_key(raw_url), intent_norm, bool(place_flag))
+    kwargs = {
+        "url": raw_url,
+        "video_url": "",
+        "intent": intent_norm,
+        "place": "true" if place_flag else "false",
+        "track": track,
+        "position_seconds": position_seconds,
+        "write_subs": write_subs,
+    }
+
+    reused = False
+    with _ingest_jobs_lock:
+        _purge_stale_ingest_jobs()
+        existing_id = _ingest_inflight.get(dedupe_key)
+        job = _ingest_jobs.get(existing_id) if existing_id else None
+        if job and job.get("status") == "running":
+            reused = True
+        else:
+            new_id = str(uuid_module.uuid4())
+            event = threading.Event()
+            job = {
+                "job_id": new_id,
+                "status": "running",
+                "url": raw_url,
+                "intent": intent_norm,
+                "dedupe_key": dedupe_key,
+                "event": event,
+                "result": None,
+                "error": "",
+                "updated_at": time.time(),
+            }
+            _ingest_jobs[new_id] = job
+            _ingest_inflight[dedupe_key] = new_id
+            threading.Thread(
+                target=_run_ingest_job,
+                args=(job, kwargs),
+                name=f"ingest-web-video-{new_id[:8]}",
+                daemon=True,
+            ).start()
+
+    budget = _INGEST_POLL_BUDGET_S if reused else _INGEST_SYNC_BUDGET_S
+    return _wait_ingest_job(job, budget)
+
+
+def _ingest_web_video_impl(
+    url="",
+    video_url="",
+    intent="reference",
+    place="false",
+    track="",
+    position_seconds="",
+    write_subs="",
+    **_kw,
+) -> str:
+
+    from classes import web_video_ingest as wvi
+    from classes import info
+
+    raw_url = str(url or video_url or _kw.get("webpage_url") or "").strip()
+    if not raw_url:
+        return _ingest_web_video_fail(
+            "Paste a YouTube (or other site) video link — url is required."
+        )
+
+    try:
+        intent_norm = wvi.normalize_intent(intent or "reference")
+    except wvi.WebVideoIngestError as exc:
+        return _ingest_web_video_fail(str(exc), url=raw_url)
+
+    place_flag = str(place or "").strip().lower() in ("1", "true", "yes", "on")
+    if intent_norm == "timeline":
+        place_flag = True
+    if intent_norm == "recreate":
+        place_flag = False
+
+    if str(write_subs or "").strip() == "":
+        # Default: grab English subs when available for reference/recreate.
+        write_subs_flag = intent_norm in ("reference", "recreate")
+    else:
+        write_subs_flag = str(write_subs).strip().lower() in ("1", "true", "yes", "on")
+
+    # Direct file URL (mp4/mov/…): download it as is; do not force yt-dlp.
+    lower = raw_url.split("?")[0].lower()
+    if any(lower.endswith(ext) for ext in (".mp4", ".mov", ".webm", ".mkv", ".avi")):
+        try:
+            wvi.assert_public_http_url(raw_url)
+        except wvi.WebVideoIngestError as exc:
+            return _ingest_web_video_fail(str(exc), url=raw_url, intent=intent_norm)
+        if place_flag or intent_norm == "timeline":
+            placed_msg = import_video_url_and_add_to_timeline(
+                video_url=raw_url, track=track, position_seconds=position_seconds, **_kw
+            )
+            placed_text = str(placed_msg or "")
+            if placed_text.startswith("Error:"):
+                return _ingest_web_video_fail(placed_text, url=raw_url, intent=intent_norm)
+            return json.dumps({
+                "ok": True,
+                "intent": intent_norm,
+                "placed": True,
+                "url": raw_url,
+                "message": placed_text,
+                "next": "Direct media URL imported and placed on the timeline.",
+                "product_note": (
+                    "User-initiated local import. Do not re-upload the original as your own."
+                ),
+            })
+        # Import only: download then import without place.
+        # Fall through to yt-dlp for page URLs; for direct files use urllib path.
+        try:
+            import tempfile
+            import urllib.request
+            tmp_dir = tempfile.mkdtemp(prefix="zenvi_web_direct_")
+            raw_name = lower.rsplit("/", 1)[-1] or "video.mp4"
+            dest = os.path.join(tmp_dir, raw_name)
+            req = urllib.request.Request(raw_url, headers={"User-Agent": "ZenviApp/1.0"})
+            with wvi.open_public_url(req, timeout=300) as response, open(dest, "wb") as out:
+                while True:
+                    chunk = response.read(65536)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+            f, err = _import_generated_video(dest)
+            _cleanup_scratch_parent(dest, "zenvi_web_direct_")
+            if err:
+                return _ingest_web_video_fail(f"Could not import the file into the media bin: {err}", url=raw_url, intent=intent_norm)
+            file_id = f.id if f else ""
+            return json.dumps({
+                "ok": True,
+                "intent": intent_norm,
+                "file_id": file_id,
+                "placed": False,
+                "url": raw_url,
+                "message": "Direct media URL imported to media bin.",
+                "next": (
+                    f"Colour: once it is indexed, run_tool(name='get_look_profile_tool', args={{'file_id': '{file_id}'}}), "
+                    f"then color_grade_clip_tool. Timeline: add_clips_to_timeline_tool(file_ids=['{file_id}'])."
+                ),
+                "product_note": (
+                    "User-initiated local import. Do not re-upload the original as your own."
+                ),
+            })
+        except Exception as e:
+            return _ingest_web_video_fail(wvi.humanize_ingest_failure(e) if hasattr(wvi, "humanize_ingest_failure") else str(e), url=raw_url, intent=intent_norm)
+
+    root = wvi.cache_root(getattr(info, "USER_PATH", "") or "")
+    try:
+        purged = wvi.purge_expired_cache(root)
+    except Exception:
+        purged = 0
+
+    cache_dir = os.path.join(root, wvi.url_cache_key(raw_url))
+    try:
+        meta = wvi.download_web_video(
+            raw_url,
+            cache_dir=cache_dir,
+            intent=intent_norm,
+            write_subs=write_subs_flag,
+        )
+    except wvi.WebVideoIngestError as exc:
+        return _ingest_web_video_fail(str(exc), url=raw_url, intent=intent_norm)
+    except Exception as e:
+        log.error("ingest_web_video download failed: %s", e, exc_info=True)
+        return _ingest_web_video_fail(wvi.humanize_ingest_failure(e), url=raw_url, intent=intent_norm)
+
+    video_path = meta.get("video_path") or ""
+    f, err = _import_generated_video(video_path)
+    if err:
+        return _ingest_web_video_fail(f"Downloaded OK but import into the project failed: {err}", url=raw_url, intent=intent_norm)
+    file_id = f.id if f else ""
+    if not file_id:
+        return _ingest_web_video_fail("Downloaded OK but could not find the new media-bin file id.", url=raw_url, intent=intent_norm)
+
+    # Tag as web reference for recreate / colour.
+    tag_warning = ""
+    try:
+        tags = f.data.get("tags") if isinstance(f.data, dict) else None
+        if isinstance(tags, str):
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        elif isinstance(tags, list):
+            tag_list = [str(t).strip() for t in tags if str(t).strip()]
+        else:
+            tag_list = []
+        for tag in ("web_video", intent_norm, "youtube" if meta.get("is_youtube") else "web"):
+            if tag and tag not in tag_list:
+                tag_list.append(tag)
+        if intent_norm == "recreate" and "reference_only" not in tag_list:
+            tag_list.append("reference_only")
+
+        def _save_tags():
+            f.data["tags"] = ", ".join(tag_list)
+            title = meta.get("title") or ""
+            if title and isinstance(f.data, dict):
+                f.data["name"] = title[:120]
+            f.save()
+
+        _run_on_main_thread(_save_tags)
+    except Exception as tag_err:
+        log.warning("ingest_web_video tag failed: %s", tag_err)
+        tag_warning = f"Could not save media tags/title: {tag_err}"
+        if intent_norm == "recreate":
+            return _ingest_web_video_fail(
+                f"Imported as {file_id} but failed to mark reference_only: {tag_err}",
+                url=raw_url,
+                intent=intent_norm,
+            )
+
+    placement = ""
+    placed = False
+    if place_flag:
+        try:
+            placement = add_clip_to_timeline(
+                file_id=file_id, position_seconds=position_seconds, track=track, **_kw
+            )
+            placed = not str(placement).startswith("Error:")
+            if not placed:
+                placement = str(placement)
+        except Exception as place_err:
+            log.error("ingest_web_video place failed: %s", place_err, exc_info=True)
+            placement = f"In media bin as {file_id}, but could not place on timeline: {place_err}"
+            placed = False
+
+    next_steps = []
+    if intent_norm in ("reference", "recreate"):
+        next_steps.append(
+            f"Colour: once it is indexed, run_tool(name='get_look_profile_tool', args={{'file_id': '{file_id}'}}), then color_grade_clip_tool."
+        )
+    if intent_norm == "recreate":
+        next_steps.append(
+            "Recreate with the user's clips / stock_video / video_gen — "
+            "do not leave the YouTube original on the story cut unless asked."
+        )
+    if intent_norm == "timeline" and not placed:
+        next_steps.append(f"Place with add_clips_to_timeline_tool(file_ids=['{file_id}'], track=..., start_seconds=...).")
+    if meta.get("subtitle_paths"):
+        next_steps.append(
+            "Subtitles cached (paths in subtitle_paths); caption tool can consume later."
+        )
+
+    result = {
+        "ok": (not place_flag) or placed,
+        "intent": intent_norm,
+        "file_id": file_id,
+        "placed": placed,
+        "url": meta.get("webpage_url") or raw_url,
+        "title": meta.get("title"),
+        "duration_seconds": meta.get("duration_seconds"),
+        "extractor": meta.get("extractor"),
+        "is_youtube": bool(meta.get("is_youtube")),
+        "subtitle_paths": meta.get("subtitle_paths") or [],
+        "cache_purged": purged,
+        "placement": placement if place_flag else "",
+        "message": (
+            f"Ingested “{meta.get('title') or 'video'}” as media_bin file_id={file_id}."
+        ),
+        "next": " ".join(next_steps),
+        "product_note": meta.get("product_note"),
+        "undo": "one step",
+    }
+    if tag_warning:
+        result["warnings"] = [tag_warning]
+    if place_flag and not placed:
+        result["error"] = placement or "Timeline placement failed after import."
+        result["message"] = (
+            f"Imported to media bin as file_id={file_id}, but timeline placement failed."
+        )
+        result["next"] = f"Place with add_clips_to_timeline_tool(file_ids=['{file_id}'], track=..., start_seconds=...)."
+    return json.dumps(result)
 
 
 def _generated_video_ripple_plan(app, position_seconds, track):
@@ -6081,7 +3845,7 @@ def _generated_video_ripple_plan(app, position_seconds, track):
             return None, None, f"Error: position_seconds {position_seconds!r} is not a time (e.g. 12, 12.5, 0:12)."
     layer = None
     if track and str(track).strip():
-        layer, err = normalize_track_or_layer_arg(str(track).strip(), app.project.get("layers") or [])
+        layer, err, _new = resolve_placement_track(str(track).strip(), app.project.get("layers") or [])
         if err or layer is None:
             return None, None, _as_error(err or f"no track matches {track!r}")
         locked = _locked_track_error(app, layer)
@@ -6131,9 +3895,13 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
     try:
         from classes.credits_client import check_operation, credits
 
-        _, _, blocked = check_operation("video_generation", "video generation")
-        if blocked:
-            return _as_error(blocked)
+        byok, byok_err = _byok_generation_kwargs()
+        if byok_err:
+            return f"Error: {byok_err}"
+        if not byok:
+            _, _, blocked = check_operation("video_generation", "video generation")
+            if blocked:
+                return _as_error(blocked)
         from classes.api_client import get_backend_client
         client = get_backend_client()
         result = client.generate_video(
@@ -6142,6 +3910,7 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
             width=t2v_w,
             height=t2v_h,
             mode="t2v",
+            **byok,
         )
         video_url = result.get("video_url", "")
         err = result.get("error", "")
@@ -6238,8 +4007,8 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
                     f"Error: Video imported (file_id={f.id}) but timeline placement failed: "
                     f"{msg or 'unknown'}. "
                     + ("The clips moved to make room were put back. " if _rippled else "")
-                    + f"Do NOT regenerate — call add_clip_to_timeline_tool(file_id='{f.id}', "
-                    f"track=<layer_number from list_layers_tool>, position_seconds=...)."
+                    + f"Do NOT regenerate — call add_clips_to_timeline_tool(file_ids=['{f.id}'], "
+                    f"track=<layer_number from get_timeline_state_tool>, start_seconds=...)."
                 )
             if not stamped:
                 return (
@@ -6329,9 +4098,9 @@ def generate_image_and_add_to_timeline(prompt="", duration_seconds="", position_
                 return (
                     f"Error: Image imported (file_id={f.id}) but timeline placement failed: "
                     f"{msg or 'unknown'}. "
-                    f"Do NOT regenerate — call add_clip_to_timeline_tool(file_id='{f.id}', "
-                    f"track=<layer_number from list_layers_tool>, position_seconds=..., "
-                    f"duration_seconds={seconds:g})."
+                    f"Do NOT regenerate — call add_clips_to_timeline_tool(file_ids=['{f.id}'], "
+                    f"track=<layer_number from get_timeline_state_tool>, start_seconds=..., "
+                    f"image_seconds={seconds:g})."
                 )
             if not stamped:
                 return (
@@ -6392,54 +4161,21 @@ def insert_v2v_into_clip(
         else None
     )
 
-    from classes.twelvelabs_match import select_twelvelabs_match
-
     best_mid = None
 
-    # Strategy 1: TwelveLabs overlap-aware match; cut after the scene ends.
-    if source_ai:
-        tw = source_ai.get("twelvelabs") if isinstance(source_ai.get("twelvelabs"), dict) else {}
-        status = (tw.get("status") or "").lower()
-        index_id = tw.get("index_id") or ""
-        video_id = tw.get("video_id") or ""
-        if (status == "ready" and index_id and video_id):
-            search_query = _semantic_search_query(query)
-            items, err = _twelvelabs_search_in_window(
-                str(index_id), search_query, page_limit=30, video_id=str(video_id),
-            )
-            if not err and items:
-                chosen = select_twelvelabs_match(
-                    items,
-                    clip_start=clip_start,
-                    clip_end=clip_end,
-                    cut_mode="end",
-                )
-                if chosen:
-                    cues = (source_ai or {}).get("transcript_cues") or []
-                    try:
-                        dur = float((source_file.data or {}).get("duration") or 0)
-                    except (TypeError, ValueError):
-                        dur = 0.0
-                    watched = _watch_confirm_cut(
-                        source_path,
-                        chosen.get("start", chosen["cut_source"]),
-                        chosen.get("end", chosen["cut_source"]),
-                        query,
-                        fallback=chosen["cut_source"],
-                        duration=dur,
-                        transcript_cues=cues,
-                    )
-                    insertion = watched.get("cut_source", chosen["cut_source"])
-                    if insertion > clip_end - 1.0:
-                        insertion = max(clip_start, clip_end - 1.0)
-                    best_mid = insertion
-                    log.info(
-                        "insert_v2v: rank=%s segment [%.2f, %.2f] → insertion at %.2f",
-                        chosen.get("rank"),
-                        chosen["start"],
-                        chosen["end"],
-                        best_mid,
-                    )
+    # Strategy 1: the local index's best hit for the query inside this clip, cut where that moment ends ("insert after X").
+    moment = _v2_moment(query, file_id=str(source_file.id), window=(clip_start, clip_end))
+    if moment:
+        insertion = moment["end"]
+        if insertion > clip_end - 1.0:
+            insertion = max(clip_start, clip_end - 1.0)
+        best_mid = insertion
+        log.info(
+            "insert_v2v: match [%.2f, %.2f] → insertion at %.2f",
+            moment["start"],
+            moment["end"],
+            best_mid,
+        )
 
     # Strategy 2: Scene descriptions
     if best_mid is None and source_ai:
@@ -6880,9 +4616,13 @@ def generate_transition_clip(
 
             from classes.credits_client import check_operation
 
-            _, _, blocked = check_operation("morph_generation", "morph generation")
-            if blocked:
-                return _as_error(blocked)
+            byok, byok_err = _byok_generation_kwargs()
+            if byok_err:
+                return f"Error: {byok_err}"
+            if not byok:
+                _, _, blocked = check_operation("morph_generation", "morph generation")
+                if blocked:
+                    return _as_error(blocked)
 
             from classes.api_client import get_backend_client
             client = get_backend_client()
@@ -6902,6 +4642,7 @@ def generate_transition_clip(
                 duration_seconds=int(morph_duration),
                 frame_images_paths=frame_images_paths,
                 mode="frame_morph",
+                **byok,
             )
 
             video_url = result.get("video_url", "")
@@ -7006,16 +4747,18 @@ def generate_transition_clip(
 # Transitions tools
 # ---------------------------------------------------------------------------
 
-def list_transitions(category="all", **_kw) -> str:
-    """List the transitions of the Transitions dock (common, extra and the user folder)."""
+def list_transitions(category="all", query="", **_kw) -> str:
+    """List the transitions of the Transitions dock (common, extra and the user folder); query filters by name."""
     try:
         from classes import transition_ops
 
         category = str(category or "all").strip().lower()
         wanted = ("common", "extra", "user") if category == "all" else (category,)
+        query_lower = (query or "").lower()
         transitions = [
             {k: e[k] for k in ("name", "filename", "category", "path")}
             for e in transition_ops.catalog(wanted)
+            if query_lower in e["name"].lower() or query_lower in e["key"]
         ]
         if not transitions:
             return "No transitions found."
@@ -7026,31 +4769,10 @@ def list_transitions(category="all", **_kw) -> str:
         }
         if len(transitions) > 50:
             data["note"] = (f"Showing first 50 of {len(transitions)} transitions; "
-                            "search_transitions_tool finds the rest by name.")
+                            "narrow it with query or category.")
         return json.dumps(data, indent=2)
     except Exception as e:
         log.error("list_transitions: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def search_transitions(query="", **_kw) -> str:
-    """Search the transitions of the Transitions dock by name (common, extra and the user folder)."""
-    try:
-        from classes import transition_ops
-
-        query_lower = (query or "").lower()
-        matches = [
-            {k: e[k] for k in ("name", "filename", "category", "path")}
-            for e in transition_ops.catalog()
-            if query_lower in e["name"].lower() or query_lower in e["key"]
-        ]
-
-        if not matches:
-            return f"No transitions found matching '{query}'."
-
-        return json.dumps({"query": query, "matches": len(matches), "transitions": matches}, indent=2)
-    except Exception as e:
-        log.error("search_transitions: %s", e, exc_info=True)
         return f"Error: {e}"
 
 
@@ -7077,11 +4799,26 @@ def apply_transition(
     return "Error: placement must be 'between', 'start', or 'end'."
 
 
+def _pick_transition(transition_name):
+    """(entry, error) for a transition name: the one it names, or an error naming the candidates."""
+    from classes import transition_ops
+
+    entries = transition_ops.catalog()
+    entry, candidates = transition_ops.find_transition(transition_name, entries)
+    if entry is not None:
+        return entry, None
+    if candidates:
+        return None, (f"Error: '{transition_name}' matches several transitions ({', '.join(candidates)}). "
+                      "Use a full name.")
+    names = ", ".join(e["key"] for e in entries[:6]) or "none installed"
+    return None, (f"Error: Transition '{transition_name}' not found. Some valid names: {names}. "
+                  "Use run_tool(name='list_transitions_tool') with query.")
+
+
 def add_transition_between_clips(clip1_id="", clip2_id="", transition_name="", duration="1.0", **_kw) -> str:
     """Add a transition between two clips."""
     try:
         from classes.query import Clip
-        from classes import info
 
         app = _get_app()
         win = app.window
@@ -7092,28 +4829,18 @@ def add_transition_between_clips(clip1_id="", clip2_id="", transition_name="", d
         if not clip2:
             return f"Error: Clip '{clip2_id}' not found."
 
-        # Find transition file
-        transitions_dir = os.path.join(info.PATH, "transitions")
-        transition_path = None
-        search_name = (transition_name or "").lower().replace(" ", "_")
-        for cat in ["common", "extra"]:
-            cat_dir = os.path.join(transitions_dir, cat)
-            if os.path.exists(cat_dir):
-                for fn in os.listdir(cat_dir):
-                    fb = os.path.splitext(fn)[0]
-                    if search_name in fb.lower() or fb.lower() in search_name:
-                        transition_path = os.path.join(cat_dir, fn)
-                        break
-            if transition_path:
-                break
-        if not transition_path:
-            return f"Error: Transition '{transition_name}' not found. Use search_transitions_tool."
+        entry, err = _pick_transition(transition_name)
+        if err:
+            return err
+        transition_path = entry["path"]
 
         clip1_end = clip1.data.get("position", 0) + (clip1.data.get("end", 0) - clip1.data.get("start", 0))
         try:
-            dur = float(duration)
-        except ValueError:
-            dur = 1.0
+            dur = 1.0 if duration in (None, "") else float(duration)
+        except (TypeError, ValueError):
+            dur = 0.0
+        if not dur > 0:
+            return "Error: duration must be a number of seconds above 0."
 
         layer1 = clip1.data.get("layer", 0)
         layer2 = clip2.data.get("layer", 0)
@@ -7126,7 +4853,15 @@ def add_transition_between_clips(clip1_id="", clip2_id="", transition_name="", d
         # are NOT rippled.
         clip2_pos = float(clip2.data.get("position", 0))
         clip2_id_val = clip2.data.get("id", clip2_id)
-        new_clip2_pos = max(clip2_pos - dur, 0)
+        asked_dur = dur
+        dur = min(dur, clip2_pos)  # clip2 cannot move before 0, so the overlap is at most its start
+        new_clip2_pos = clip2_pos - dur
+        fps_data = app.project.get("fps") or {}
+        if round(dur * float(fps_data.get("num", 30)) / float(fps_data.get("den", 1) or 1)) < 1:
+            return (
+                f"Error: clip 2 starts at {clip2_pos:.2f}s, so there is no room to overlap the clips "
+                "for a transition. Move it later first."
+            )
 
         # ALL Qt/openshot calls MUST run on the Qt main thread
         result_box = [None]
@@ -7170,9 +4905,11 @@ def add_transition_between_clips(clip1_id="", clip2_id="", transition_name="", d
 
         # Moving clip2 + inserting the Mask is one user action -> one undo step.
         _run_on_main_thread(_atomic(app, _do_transition))
-        tid, actual_dur, actual_pos = result_box[0] if result_box[0] else ("?", dur, new_clip2_pos)
+        tid, actual_dur, actual_pos = result_box[0]
+        clamp = f" (clamped from {asked_dur:.2f}s)" if dur < asked_dur else ""
         return (
-            f"Added '{transition_name}' transition between clips (overlap: {actual_dur:.2f}s).\n"
+            f"Added '{transition_title}' transition between clips at {actual_pos:.2f}s, "
+            f"duration {actual_dur:.2f}s{clamp}.\n"
             f"Clip2 moved to {actual_pos:.2f}s. Transition ID: {tid}"
         )
     except Exception as e:
@@ -7184,28 +4921,16 @@ def add_transition_to_clip(clip_id="", transition_name="", position="start", dur
     """Add a transition (fade in/out) to a single clip."""
     try:
         from classes.query import Clip
-        from classes import info
 
         app = _get_app()
         clip = Clip.get(id=clip_id)
         if not clip:
             return f"Error: Clip '{clip_id}' not found."
 
-        transitions_dir = os.path.join(info.PATH, "transitions")
-        transition_path = None
-        search_name = (transition_name or "").lower().replace(" ", "_")
-        for cat in ["common", "extra"]:
-            cat_dir = os.path.join(transitions_dir, cat)
-            if os.path.exists(cat_dir):
-                for fn in os.listdir(cat_dir):
-                    fb = os.path.splitext(fn)[0]
-                    if search_name in fb.lower() or fb.lower() in search_name:
-                        transition_path = os.path.join(cat_dir, fn)
-                        break
-            if transition_path:
-                break
-        if not transition_path:
-            return f"Error: Transition '{transition_name}' not found. Use search_transitions_tool."
+        entry, err = _pick_transition(transition_name)
+        if err:
+            return err
+        transition_path = entry["path"]
 
         clip_position = clip.data.get("position", 0)
         clip_start = clip.data.get("start", 0)
@@ -7216,9 +4941,11 @@ def add_transition_to_clip(clip_id="", transition_name="", position="start", dur
         transition_title = os.path.splitext(os.path.basename(transition_path))[0]
 
         try:
-            dur = float(duration)
-        except ValueError:
-            dur = 1.0
+            dur = 1.0 if duration in (None, "") else float(duration)
+        except (TypeError, ValueError):
+            dur = 0.0
+        if not dur > 0:
+            return "Error: duration must be a number of seconds above 0."
 
         if (position or "").lower() == "end":
             trans_position = clip_position + clip_duration - dur
@@ -7268,9 +4995,9 @@ def add_transition_to_clip(clip_id="", transition_name="", position="start", dur
             result_box[0] = (tid, snapped_dur, snap(trans_position))
 
         _run_on_main_thread(_do_insert)
-        tid, actual_dur, actual_pos = result_box[0] if result_box[0] else ("?", dur, trans_position)
+        tid, actual_dur, actual_pos = result_box[0]
         return (
-            f"Added '{transition_name}' transition at {position} of clip.\n"
+            f"Added '{transition_title}' transition at {position} of clip.\n"
             f"ID: {tid}, Duration: {actual_dur:.2f}s, Position: {actual_pos:.2f}s"
         )
     except Exception as e:
@@ -7279,7 +5006,7 @@ def add_transition_to_clip(clip_id="", transition_name="", position="start", dur
 
 
 # ---------------------------------------------------------------------------
-# Stock media / resummarize / reindex / planning handlers
+# Stock media / reindex / planning handlers
 # ---------------------------------------------------------------------------
 
 def import_stock_media(
@@ -7290,9 +5017,13 @@ def import_stock_media(
     preview_url="",
     filename="",
     local_path="",
+    query="",
     **kwargs,
 ) -> str:
-    """Download stock media (pexels|freesound) and import into Project Files, or import local_path."""
+    """Download stock media (pexels|freesound) and import into Project Files, or import local_path.
+
+    With source='freesound', a missing or failed hit and a query generate a bed on this computer.
+    """
     path = (local_path or "").strip()
     if path:
         return add_stock_media_to_project(local_path=path, **kwargs)
@@ -7309,6 +5040,22 @@ def import_stock_media(
     else:
         return "Error: source must be 'pexels' or 'freesound' (or pass local_path)."
 
+    query = str(query or "").strip()
+    if dl.startswith("Error") and src == "freesound" and query:
+        # No hit, a dead preview or a rate-limited stock search: make the bed here instead.
+        from classes.editor_tools import ai_generation_hyperframes as hfx
+        from classes.editor_tools import ai_generation_music as music
+        from classes.editor_tools._base import ToolError
+        from classes import music_local
+        try:
+            music.ensure_installed("ace_step")
+            path = hfx._guard(music_local.generate_bed, query)
+        except ToolError as exc:
+            return f"{dl} The local fallback also failed: {exc}"
+        added = add_stock_media_to_project(local_path=path, **kwargs)
+        if added.startswith("Error"):
+            return f"{dl} The local fallback generated a bed but could not import it: {added}"
+        return "Stock music unavailable; generated locally with ACE-Step. " + added
     if dl.startswith("Error"):
         return dl
     if "Downloaded to:" in dl:
@@ -7360,8 +5107,13 @@ def modify_clip(
 def download_pexels_video_tool(video_id: str = "", link: str = "", filename: str = "", **kwargs) -> str:
     """Download a Pexels MP4 from the search-result link to the local machine."""
     try:
+        if not link and str(video_id).strip().isdigit():
+            # a clip found with search_stock_video_tool in this session: its link was remembered, so the id is enough
+            from classes.editor_tools.ai_generation_stock import remembered_link
+            link = remembered_link(video_id)
         if not link:
-            return "Error: link is required (use the MP4 URL from search_pexels_videos_tool)."
+            return ("Error: no link for that clip. Find one with run_tool(name='search_stock_video_tool'), "
+                    "then pass its video_id here, or pass its link.")
         from classes.credits_client import charge_operation_on_success, check_operation
 
         _, _, blocked = check_operation("stock_add", "stock media download")
@@ -7387,11 +5139,10 @@ def download_freesound_music_tool(sound_id: str = "", preview_url: str = "", fil
     """Download a Freesound HQ MP3 preview to the local machine."""
     try:
         if not preview_url:
-            return "Error: preview_url is required (from search_freesound_music_tool)."
-        try:
-            sid = int(sound_id)
-        except (ValueError, TypeError):
-            return f"Error: sound_id must be numeric Freesound ID, not '{sound_id}'."
+            return "Error: preview_url is required (from the music search result)."
+        sid = str(sound_id or "").strip()
+        if not sid:
+            return "Error: sound_id is required (from the music search result)."
 
         from classes.credits_client import charge_operation_on_success, check_operation
 
@@ -7413,6 +5164,50 @@ def download_freesound_music_tool(sound_id: str = "", preview_url: str = "", fil
         return f"Error downloading Freesound audio: {exc}"
 
 
+def resolve_imported_file(path: str):
+    """Match project File after add_files (path keys often differ on Windows)."""
+    import os
+    from classes.query import File
+
+    variants = []
+    for candidate in (path, os.path.normpath(path), os.path.realpath(path)):
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+    for p in variants:
+        f = File.get(path=p)
+        if f:
+            return f
+    def _base(p):   # both separators: os.path.basename on Linux/macOS keeps a whole C:\ path
+        return str(p or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+    base = _base(path)
+    best = None
+    for candidate in File.filter():
+        try:
+            cpath = candidate.data.get("path") or ""
+            abs_path = ""
+            try:
+                abs_path = candidate.absolute_path() or ""
+            except Exception:
+                abs_path = ""
+            names = {
+                _base(cpath),
+                _base(abs_path),
+            }
+            if base not in names:
+                continue
+            # Prefer exact absolute-path match when several share a basename.
+            if abs_path and os.path.normcase(os.path.normpath(abs_path)) in {
+                os.path.normcase(os.path.normpath(v)) for v in variants
+            }:
+                return candidate
+            if best is None:
+                best = candidate
+        except Exception:
+            continue
+    return best
+
+
 def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
     """Import a downloaded stock file into Project Files."""
     try:
@@ -7425,51 +5220,14 @@ def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
         files_model = app.window.files_model
         from classes.query import File
 
-        def _resolve_imported_file(path: str):
-            """Match project File after add_files (path keys often differ on Windows)."""
-            variants = []
-            for candidate in (path, os.path.normpath(path), os.path.realpath(path)):
-                if candidate and candidate not in variants:
-                    variants.append(candidate)
-            for p in variants:
-                f = File.get(path=p)
-                if f:
-                    return f
-            base = os.path.basename(path).lower()
-            best = None
-            for candidate in File.filter():
-                try:
-                    cpath = candidate.data.get("path") or ""
-                    abs_path = ""
-                    try:
-                        abs_path = candidate.absolute_path() or ""
-                    except Exception:
-                        abs_path = ""
-                    names = {
-                        os.path.basename(cpath).lower(),
-                        os.path.basename(abs_path).lower(),
-                    }
-                    if base not in names:
-                        continue
-                    # Prefer exact absolute-path match when several share a basename.
-                    if abs_path and os.path.normcase(os.path.normpath(abs_path)) in {
-                        os.path.normcase(os.path.normpath(v)) for v in variants
-                    }:
-                        return candidate
-                    if best is None:
-                        best = candidate
-                except Exception:
-                    continue
-            return best
 
-        existing = _resolve_imported_file(local_path)
+        existing = resolve_imported_file(local_path)
         if existing:
             chat_session_id = str(kwargs.get("chat_session_id", "") or "default")
             _last_split_file_id_by_chat_session[chat_session_id] = existing.id
             return (
                 f"File already in project (file_id={existing.id}): {local_path}. "
-                f"IMPORTANT: Call add_clip_to_timeline_tool with file_id='{existing.id}' "
-                f"(or empty file_id to use this just-imported file) to place it on the timeline."
+                f"IMPORTANT: place it with add_clips_to_timeline_tool(items=[{{'file_id': '{existing.id}'}}])."
             )
 
         # MUST run on main thread — files_model.add_files touches Qt objects
@@ -7479,7 +5237,7 @@ def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
 
         _run_on_main_thread(_do_add, timeout=30)
 
-        f = _resolve_imported_file(local_path)
+        f = resolve_imported_file(local_path)
         if f:
             chat_session_id = str(kwargs.get("chat_session_id", "") or "default")
             _last_split_file_id_by_chat_session[chat_session_id] = f.id
@@ -7505,16 +5263,14 @@ def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
                     f"Added to project: {local_path} (file_id={f.id}) but indexing "
                     f"did not finish: {wait_err}. "
                     f"Call reindex_project_file_tool before relying on search. "
-                    f"IMPORTANT: Call add_clip_to_timeline_tool with file_id='{f.id}' "
-                    f"(or empty file_id to use this just-imported file) to place it on the timeline."
+                    f"IMPORTANT: place it with add_clips_to_timeline_tool(items=[{{'file_id': '{f.id}'}}])."
                 )
             log.info("Stock media added to project: %s (id=%s)", local_path, f.id)
             summary_bit = f" Summary: {summary}" if summary else ""
             return (
                 f"Added to project and indexed: {local_path} (file_id={f.id})."
                 f"{summary_bit} "
-                f"IMPORTANT: Call add_clip_to_timeline_tool with file_id='{f.id}' "
-                f"(or empty file_id to use this just-imported file) to place it on the timeline."
+                f"IMPORTANT: place it with add_clips_to_timeline_tool(items=[{{'file_id': '{f.id}'}}])."
             )
         log.error("Stock media import produced no File record: %s", local_path)
         return (
@@ -7567,7 +5323,7 @@ def _wait_for_file_indexing(file_id: str, files_model, timeout_sec: int = 1800, 
                 return ""
             # Still queued / not started — keep waiting while queue may drain
             if hasattr(files_model, "_indexing_queue"):
-                queued = any(str(qid) == fid for qid, _ in (files_model._indexing_queue or []))
+                queued = any(str(qid) == fid for qid in (files_model._indexing_queue or []))
                 active = any(
                     str(getattr(w, "file_data", {}).get("id", "")) == fid
                     for w in (getattr(files_model, "_active_indexers", None) or [])
@@ -7592,361 +5348,64 @@ def _wait_for_file_indexing(file_id: str, files_model, timeout_sec: int = 1800, 
     return f"timed out after {timeout_sec}s"
 
 
-def resummarize_project_file(file_id: str = "", **kwargs) -> str:
-    """Re-run audiovisual summary for an already-indexed project file.
+def _queue_missing_index_layers(file_id: str) -> str:
+    """Send a file with missing index layers, or whose last index failed, through the same indexing job an import uses;
+    "" when it has nothing to send.
 
-    Gemini indexing has no summarize-only path — callers should reindex instead.
+    The job builds the local layers, then the search vectors with the model chosen in Preferences; nothing already saved is redone.
+    """
+    from classes.editor_tools.media_index_tools import missing_layers
+    from classes.indexing_status import FAILED, derive_indexing_status
+    from classes.query import File
+    f = File.get(id=file_id)
+    if not f:
+        return f"Error: File not found (id={file_id})."
+    missing = missing_layers(f.data)
+    # A failed or interrupted index runs again even with every layer saved: the failure can predate them (no
+    # fingerprint yet, the footage indexed in another project since), and the file shows it until a run succeeds.
+    ai = f.data.get("ai_metadata")
+    status = derive_indexing_status(ai if isinstance(ai, dict) else None)
+    if not missing and status.state != FAILED:
+        return ""
+    why = f"missing: {', '.join(missing)}" if missing else f"last index failed: {status.tooltip}"
+    files_model = _get_app().window.files_model
+    if files_model.is_file_indexing(file_id) or files_model.is_file_queued(file_id):
+        return f"File {file_id} is already being indexed ({why}). Call wait_until_project_indexed_tool, then index_status_tool."
+    files_model._index_file_async(file_id)
+    return (f"File {file_id} queued for indexing ({why}). The local layers (shots, colour, sound, speech) come "
+            "first, then the search vectors; nothing already saved is redone. Shot descriptions are separate: describe_shots_tool. "
+            "Call wait_until_project_indexed_tool, then index_status_tool to see what is ready.")
+
+
+def reindex_project_file(file_id: str = "", **kwargs) -> str:
+    """Index a project file whose index is incomplete or whose last index failed: queues it through the normal indexing
+    job (local layers, then the search vectors). A file whose index is complete and clean is left as it is.
+    Runs on a worker thread; the project-file read is marshalled to the Qt main thread.
     """
     try:
         if not file_id:
             return "Error: file_id is required."
-
-        def _read_file_meta():
-            from classes.query import File
-            from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
-            f = File.get(id=file_id)
-            if not f:
-                return None
-            ai = f.data.get("ai_metadata") if isinstance(f.data.get("ai_metadata"), dict) else {}
-            idx = get_index_block(ai)
-            return {
-                "path": f.data.get("path", ""),
-                "duration": f.data.get("duration", 0) or 0,
-                "indexed": twelvelabs_is_indexed(idx),
-                "video_id": idx.get("video_id") or "",
-                "provider": str(idx.get("provider") or "").lower(),
-            }
-
-        meta = _run_on_main_thread(_read_file_meta, timeout=10)
-        if meta is None:
-            return f"Error: File not found (id={file_id})."
-
-        if "gemini" in (meta.get("provider") or ""):
-            return (
-                "Error: Summarize-only is not supported for Gemini indexing. "
-                "Reindex the clip to refresh descriptions."
-            )
-
-        MAX_SECONDS = 30 * 60
-        if meta["duration"] > MAX_SECONDS:
-            return (
-                f"Error: Clip is {meta['duration'] / 60:.1f} min — exceeds the "
-                f"30-minute summarize limit."
-            )
-        if not meta.get("indexed") or not meta.get("video_id"):
-            return (
-                f"Error: File {file_id} is not indexed yet. "
-                "Call reindex_project_file_tool first, then resummarize."
-            )
-
-        def _kick_off_summarize():
-            try:
-                files_model = _get_app().window.files_model
-                files_model._index_file_async(file_id, summarize_only=True)
-            except Exception as exc:
-                log.warning("resummarize_project_file: failed to start summarize: %s", exc)
-
-        try:
-            # Fire and forget: nothing waits on this job, so nothing withdraws it.
-            dispatcher = _get_dispatcher()
-            dispatcher._dispatch.emit(_MainThreadJob(_kick_off_summarize, ()))
-        except Exception:
-            _kick_off_summarize()
-
-        return (
-            f"Summarize started for file {file_id} "
-            f"(video_id={meta.get('video_id')}, {meta['path']})."
-        )
-    except Exception as e:
-        log.error("resummarize_project_file: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> str:
-    """Re-index an existing project file in TwelveLabs.
-
-    Skips when the file is already indexed unless force=true.
-    Runs entirely on a worker thread.  Only the brief project-data reads
-    (file path, duration, project id) are marshalled to the Qt main
-    thread; the long-running reindex upload runs off the GUI thread.
-    """
-    try:
-        if not file_id:
-            return "Error: file_id is required."
-
-        force_reindex = str(force or kwargs.get("force", "false")).strip().lower() in (
-            "1", "true", "yes", "force",
-        )
-
-        def _read_project_state():
-            from classes.query import File
-            from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
-            f = File.get(id=file_id)
-            if not f:
-                return None
-            project_id = ""
-            try:
-                project_id = _get_app().project.get("id") or ""
-            except Exception:
-                pass
-            ai = f.data.get("ai_metadata") if isinstance(f.data.get("ai_metadata"), dict) else {}
-            tl = ai.get("twelvelabs") if isinstance(ai.get("twelvelabs"), dict) else {}
-            return {
-                "path": f.data.get("path", ""),
-                "duration": f.data.get("duration", 0) or 0,
-                "project_id": project_id,
-                "existing_index_id": tl.get("index_id") or "",
-                "twelvelabs": tl,
-                "already_indexed": twelvelabs_is_indexed(tl),
-            }
-
-        state = _run_on_main_thread(_read_project_state, timeout=10)
-        if state is None:
-            return f"Error: File not found (id={file_id})."
-
-        if state.get("already_indexed") and not force_reindex:
-            tl = state.get("twelvelabs") or {}
-            return (
-                f"File {file_id} is already indexed "
-                f"(index_id={tl.get('index_id', '')}, video_id={tl.get('video_id', '')}). "
-                "Pass force=true only when the file was replaced or indexing failed."
-            )
-
-        MAX_SECONDS = 30 * 60
-        if state["duration"] > MAX_SECONDS:
-            return (
-                f"Error: Clip is {state['duration'] / 60:.1f} min — exceeds the "
-                f"30-minute re-indexing limit."
-            )
-
-        from classes.api_client import get_backend_client
-        from classes.credits_client import charge_operation_on_success, check_operation
-
-        client = get_backend_client()
-        if not client.is_indexing_configured():
-            return "Error: Gemini indexing is not configured on the backend, so re-indexing is unavailable."
-
-        duration = float(state["duration"])
-        _, _, blocked = check_operation(
-            "indexing_per_minute",
-            "video re-indexing",
-            duration_seconds=duration,
-        )
-        if blocked:
-            return _as_error(blocked)
-
-        from classes.project_tl_index import build_project_index_name
-
-        index_name = build_project_index_name(state["project_id"])
-
-        result = client.reindex_video(
-            file_id,
-            state["path"],
-            index_name=index_name,
-            existing_index_id=state.get("existing_index_id") or "",
-            force=force_reindex,
-        )
-        if isinstance(result, dict) and result.get("success"):
-            charge_operation_on_success(
-                True,
-                "indexing_per_minute",
-                provider="gemini",
-                note=f"reindex {file_id}",
-                duration_seconds=duration,
-            )
-
-            def _persist_index_metadata():
-                from classes.query import File
-                f = File.get(id=file_id)
-                if not f:
-                    return
-                ai = f.data.get("ai_metadata") if isinstance(f.data.get("ai_metadata"), dict) else {}
-                index_block = {
-                    "status": "ready",
-                    "index_id": result.get("index_id", ""),
-                    "video_id": result.get("video_id", ""),
-                    "index_name": index_name,
-                    "provider": "gemini",
-                }
-                ai["index"] = index_block
-                ai["twelvelabs"] = dict(index_block)  # legacy key for older readers
-                f.data["ai_metadata"] = ai
-                f.save()
-
-            _run_on_main_thread(_persist_index_metadata, timeout=10)
-
-            video_id = str(result.get("video_id") or "")
-            summarize_note = ""
-            if video_id:
-                summarized = client.summarize_indexed_video(
-                    video_id,
-                    file_id=file_id,
-                    index_id=str(result.get("index_id") or ""),
-                    index_name=index_name,
-                )
-                if isinstance(summarized, dict) and summarized.get("analyzed"):
-                    def _persist_summary():
-                        from classes.query import File
-                        f = File.get(id=file_id)
-                        if not f:
-                            return
-                        tl = {
-                            "status": "ready",
-                            "index_id": result.get("index_id", ""),
-                            "video_id": video_id,
-                            "index_name": index_name,
-                            "provider": "gemini",
-                        }
-                        summarized["index"] = {
-                            **(summarized.get("index") or {}),
-                            **tl,
-                        }
-                        summarized["twelvelabs"] = {
-                            **(summarized.get("twelvelabs") or {}),
-                            **tl,
-                        }
-                        f.data["ai_metadata"] = summarized
-                        f.save()
-
-                    _run_on_main_thread(_persist_summary, timeout=10)
-                    summarize_note = " Gemini Flash summary updated."
-                else:
-                    summarize_note = (
-                        f" Warning: the index is ready but refreshing the summary failed: "
-                        f"{(summarized or {}).get('error', 'unknown')}"
-                    )
-
-            return (
-                f"Re-indexing complete for file {file_id}. "
-                f"index_id={result.get('index_id', '')}  video_id={video_id}."
-                f"{summarize_note}"
-            )
-        return f"Error: Re-indexing failed: {result.get('error', result.get('message', 'unknown'))}"
+        queued = _run_on_main_thread(_queue_missing_index_layers, file_id, timeout=10)
+        return queued or f"File {file_id} has every index layer it can have; nothing to re-index."
     except Exception as e:
         log.error("reindex_project_file: %s", e, exc_info=True)
         return f"Error: {e}"
 
 
-def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
-    """Return project files with AI metadata for planning (excludes hidden subclips by default)."""
-    try:
-        from classes.query import File
-        from classes.timeline_clip_context import resolve_parent_file_id
-
-        level = str(detail_level or kwargs.get("detail_level") or "summary").lower().strip()
-        files = File.filter()
-        if not files:
-            return "No files in project."
-        lines = ["Project files with full metadata:"]
-        for f in files:
-            d = f.data
-            if d.get("zenvi_subclip") and level != "full":
-                continue
-            dur = d.get("duration", 0) or 0
-            m, s = divmod(int(dur), 60)
-            media_type = d.get("media_type", "?")
-            name = d.get("name") or d.get("path", "?").split("/")[-1]
-            ai = d.get("ai_metadata") or {}
-            analyzed = ai.get("analyzed", False)
-            tl = ai.get("twelvelabs", {}) or {}
-            from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
-            from classes.tl_search_strategy import infer_tl_search_hint
-            indexed = twelvelabs_is_indexed(tl)
-            hint = infer_tl_search_hint(ai, name)
-            scene_count = len(ai.get("scene_descriptions") or [])
-            chapter_count = len(ai.get("chapters") or [])
-            short = (ai.get("short_summary") or "")[:160]
-            desc = (ai.get("description") or "")[:400]
-            sounds = (ai.get("sounds") or "")[:160]
-            transcript = (ai.get("transcript") or "")[:200]
-            parent_id = resolve_parent_file_id(d, file_id=str(f.id or ""))
-            alias_part = ""
-            if d.get("zenvi_subclip") and parent_id and parent_id != str(f.id):
-                alias_part = f"  alias_of={parent_id}\n"
-            lines.append(
-                f"\n  media_bin_file_id={f.id}  name={name}  type={media_type}  "
-                f"duration={m}:{s:02d}\n"
-                f"{alias_part}"
-                f"    analyzed={analyzed}  indexed={indexed}  "
-                f"chapter_count={chapter_count}  scene_count={scene_count}\n"
-                f"    tl_search_hint={hint}\n"
-                f"    twelvelabs_index_id={tl.get('index_id', '')}\n"
-                f"    twelvelabs_index_name={tl.get('index_name', '')}\n"
-                f"    twelvelabs_video_id={tl.get('video_id', '')}\n"
-                f"    short_summary={short}\n"
-                f"    description={desc}"
-            )
-            # Pre-Pegasus projects (or failed summarize) may only have Gemini tags.
-            if not short and not desc:
-                tags = ai.get("tags") if isinstance(ai.get("tags"), dict) else {}
-                legacy_bits = []
-                for key in ("objects", "scenes", "activities", "mood"):
-                    vals = tags.get(key) or []
-                    if isinstance(vals, list) and vals:
-                        legacy_bits.append(
-                            f"{key}=[{', '.join(str(v) for v in vals[:8] if v)}]"
-                        )
-                if legacy_bits:
-                    lines.append(f"    legacy_tags={' '.join(legacy_bits)}")
-                elif sounds or transcript:
-                    if sounds:
-                        lines.append(f"    sounds={sounds}")
-                    if transcript:
-                        lines.append(f"    transcript={transcript}")
-            if level == "full":
-                if sounds:
-                    lines.append(f"    sounds={sounds}")
-                if transcript:
-                    lines.append(f"    transcript={transcript}")
-            chapters = ai.get("chapters") or []
-            if chapters:
-                limit = len(chapters) if level == "full" else min(3, len(chapters))
-                lines.append("    chapter_snippets:")
-                for ch in chapters[:limit]:
-                    if isinstance(ch, dict) and (ch.get("summary") or ch.get("title")):
-                        t0 = float(ch.get("start", 0) or 0)
-                        t1 = float(ch.get("end", t0) or t0)
-                        title = str(ch.get("title") or "")
-                        summary = str(ch.get("summary") or "")[:160]
-                        lines.append(
-                            f"      [{_fmt_mmss(t0)}-{_fmt_mmss(t1)}] {title}: {summary}"
-                        )
-            snippets = ai.get("scene_descriptions") or []
-            if snippets and not chapters:
-                limit = len(snippets) if level == "full" else min(3, len(snippets))
-                lines.append("    scene_snippets:")
-                for sc in snippets[:limit]:
-                    if isinstance(sc, dict) and sc.get("description"):
-                        t = float(sc.get("time", 0) or 0)
-                        lines.append(f"      [{_fmt_mmss(t)}] {str(sc['description'])[:160]}")
-        return "\n".join(lines)
-    except Exception as e:
-        log.error("get_clips_with_full_metadata: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
 def _overlay_index_boosts(contexts) -> list:
-    """Optional TwelveLabs search boosts mapped onto timeline times.
+    """Index boosts mapped onto timeline times: where the local index finds the avoid and prefer queries, at each hit's peak.
 
-    Falls back to [] when indexing is unavailable (lexical scoring still applies).
+    Falls back to [] when nothing is indexed or the queries cannot be embedded (lexical scoring still applies).
     """
     boosts = []
     try:
-        from classes.api_client import get_backend_client
-        from classes.project_tl_index import (
-            collect_project_twelvelabs_index,
-            map_search_hit_to_file,
-        )
+        from classes.editor_tools.media_index_tools import embed_query, project_indexes
+        from classes.media_index import search as msearch
         from classes.mg_placement import AVOID_QUERY, PREFER_QUERY
 
-        info = collect_project_twelvelabs_index()
-        index_id = str((info or {}).get("index_id") or "").strip()
-        if not index_id:
+        files, _missing = project_indexes()
+        if not files:
             return []
-        client = get_backend_client()
-        if not client.is_indexing_configured():
-            return []
-        video_map = (info or {}).get("video_map") or {}
         queries = (
             (AVOID_QUERY, -3, True, False),
             (PREFER_QUERY, 3, False, True),
@@ -7960,26 +5419,13 @@ def _overlay_index_boosts(contexts) -> list:
                     by_file.setdefault(key, []).append(ctx)
 
         for query, delta, is_avoid, is_prefer in queries:
-            resp = client.search(query, top_k=12, index_id=index_id, page_limit=24)
-            if resp.get("error"):
-                continue
-            for r in resp.get("results") or []:
-                if not isinstance(r, dict):
-                    continue
-                fid, _fname = map_search_hit_to_file(r, video_map)
-                fid = str(fid or "").strip()
-                if not fid or fid not in by_file:
-                    continue
-                try:
-                    hit_start = float(r.get("start") or 0)
-                except (TypeError, ValueError):
-                    continue
-                for ctx in by_file[fid]:
+            for h in msearch.search(files, query_vector=embed_query(query, files), query_text=query, limit=12)["hits"]:
+                for ctx in by_file.get(h["file_id"], []):
                     pos = float(getattr(ctx, "timeline_position", 0) or 0)
                     end = float(getattr(ctx, "timeline_end", pos + 1) or (pos + 1))
                     src_start = float(getattr(ctx, "source_start", 0) or 0)
                     clip_dur = max(0.1, end - pos)
-                    local = hit_start - src_start
+                    local = float(h["peak"]) - src_start
                     if 0 <= local <= clip_dur:
                         boosts.append(
                             {
@@ -8001,7 +5447,7 @@ def propose_overlay_windows(beat_count="4", prefer_transparent="true", **_kw) ->
     windows[{t, score, avoid, prefer, scene_label, track_hint, confidence,
     suggest_transparent, layout_region}].
 
-    Agent must: bake layout_region into session/draft.html; publish with matching
+    Agent must: bake layout_region into the composition; render with the matching
     transparent flag; place via place_motion_graphic_tool (overlay|gap|cut_in).
     """
     import json
@@ -8241,11 +5687,12 @@ def propose_overlay_windows(beat_count="4", prefer_transparent="true", **_kw) ->
         "windows": out_windows,
         "guidance": (
             "For each beat: decide transparent vs opaque first. "
-            "layout_region → bake into session/draft.html "
+            "layout_region → bake into the composition "
             "(lower_third/corner_* = non-blocking overlay HTML; full_frame = sting; "
             "mid_plate = opaque plate). "
-            "publish_session_draft_tool(transparent=true|false) matching suggest_transparent. "
-            "Then place_motion_graphic_tool(mode=overlay|gap|cut_in) — never stack opaque "
+            "Render it (transparent=true|false, matching suggest_transparent) with run_tool(name='render_motion_graphic_tool', args={'transparent': ...}), then "
+            "run_tool(name='place_motion_graphic_tool', args={'file_id': ..., 'mode': 'overlay'}) "
+            "('gap' or 'cut_in' for opaque) — never stack opaque "
             "plates over hero footage with add_clip on the top overlay track."
         ),
     }
@@ -8265,9 +5712,10 @@ def place_motion_graphic(
     """Place a HyperFrames render with overlay/gap/cut_in enforcement.
 
     mode=overlay → transparent file on a HIGH layer (refuses opaque).
-    mode=gap → opaque only when primary track is clear at [t,t+dur).
-    mode=cut_in → opaque: ripple primary-track clips at/after t, then place as a cut.
+    mode=gap → opaque only when the picture track is clear at [t, t+dur).
+    mode=cut_in → shifts clips already on the picture track. Not how an overlay is placed.
     """
+    from classes.editor_tools.titles_text_common import _is_visual
     from classes.mg_placement import (
         file_looks_transparent,
         primary_track_overlaps,
@@ -8282,7 +5730,7 @@ def place_motion_graphic(
     try:
         fid = str(file_id or "").strip()
         if not fid:
-            return "Error: file_id is required for place_motion_graphic_tool"
+            return "Error: file_id is required for run_tool(name='place_motion_graphic_tool')"
         f = File.get(id=fid)
         if not f:
             return f"Error: File not found for id={fid}."
@@ -8308,7 +5756,18 @@ def place_motion_graphic(
                 )
             except (TypeError, ValueError):
                 dur = 3.0
-        dur = max(0.5, min(dur, 60.0))
+        ai_meta = file_data.get("ai_metadata")
+        rendered_mg = isinstance(ai_meta, dict) and ai_meta.get("source") == "hyperframes_motion_graphics"
+        # 60 s guards a runaway graphic; a caller that covers a whole clip (captions) raises it,
+        # and a finished render is as long as it is.
+        try:
+            own = float(file_data.get("duration") or 0) if rendered_mg else 0.0
+            longest = float(_kw.get("max_duration_seconds") or max(60.0, own))
+        except (TypeError, ValueError):
+            longest = 60.0
+        if not 0 < longest < float("inf"):              # negative, NaN or infinite
+            longest = 60.0
+        dur = max(0.5, min(dur, longest))
 
         app = _get_app()
         layers = app.project.get("layers") or []
@@ -8319,9 +5778,23 @@ def place_motion_graphic(
         )
         if not nums:
             nums = [1000000, 2000000, 3000000]
-        primary_layer = nums[0]
         mid_layer = nums[len(nums) // 2] if len(nums) > 1 else nums[0]
         overlay_layer = nums[-1]
+        new_overlay_track = False
+        clips_raw = [
+            dict(c.data or {})
+            for c in Clip.filter()
+            if isinstance(getattr(c, "data", None), dict)
+        ]
+        # The picture is the topmost track with footage at [t, t+dur): higher numbers draw on top.
+        # Transparent overlays (captions, renders) and titles (SVG images) sit over the picture, not in it.
+        overlay_fids = {str(f.id) for f in File.filter() if file_looks_transparent(f.data)
+                        or str(f.data.get("path") or "").lower().endswith(".svg")}
+        footage = [c for c in clips_raw if _is_visual(c) and str(c.get("file_id") or "") not in overlay_fids]
+        primary_layer = max(
+            (n for n in nums if primary_track_overlaps(footage, layer=n, t0=t, t1=t + dur)),
+            default=nums[0],
+        )
 
         if str(track or "").strip():
             resolved, err = normalize_track_or_layer_arg(str(track).strip(), layers)
@@ -8335,22 +5808,31 @@ def place_motion_graphic(
         else:
             track_num = int(primary_layer)
 
-        clips_raw = [
-            dict(c.data or {})
-            for c in Clip.filter()
-            if isinstance(getattr(c, "data", None), dict)
-        ]
-
         if mode_s == "overlay":
             if not is_transparent:
                 return (
                     "Error: mode=overlay requires a transparent HyperFrames import "
                     "(ai_metadata.transparent / transparent_overlay tag / webm). "
-                    "Use mode=gap or mode=cut_in for opaque plates — never stack opaque "
-                    "over hero footage."
+                    "Re-render with transparent=true and place it on a track above the footage. "
+                    "Do not place an opaque file over the picture, and do not move clips to make room."
                 )
             if track_num < mid_layer:
                 track_num = int(overlay_layer)
+            # An overlay never shares a lane with a clip in its window, nor sits under
+            # the picture -- whichever track was asked for. Keep the asked-for track
+            # when it is free, unlocked and above the picture; otherwise take the lowest
+            # such track, or add one on top (same rule as titles' plan_overlay_track).
+            def _taken(layer, clips):
+                return primary_track_overlaps(clips, layer=layer, t0=t, t1=t + dur)
+
+            locked = {int(L["number"]) for L in layers
+                      if isinstance(L, dict) and L.get("lock") and L.get("number") is not None}
+            picture = [c for c in clips_raw if _is_visual(c)]
+            floor = max((n for n in nums if _taken(n, picture)), default=-1)
+            usable = [n for n in nums if n > floor and n not in locked and not _taken(n, clips_raw)]
+            if track_num not in usable:
+                new_overlay_track = not usable
+                track_num = int(usable[0]) if usable else int(overlay_layer) + 1000000
         else:
             # gap / cut_in → opaque path
             if is_transparent:
@@ -8364,8 +5846,10 @@ def place_motion_graphic(
                 ):
                     return (
                         "Error: gap mode refused — primary track has footage overlapping "
-                        f"[{t:.2f}, {t + dur:.2f}). Use mode=cut_in to ripple clips, or "
-                        "pick a true gap from propose_overlay_windows_tool."
+                        f"[{t:.2f}, {t + dur:.2f}). Pick a true gap from "
+                        "run_tool(name='propose_overlay_windows_tool'), or "
+                        "re-render with transparent=true and place mode=overlay on a free track above the picture. "
+                        "Do not move the clips that are already there."
                     )
 
         region = str(layout_region or "").strip()
@@ -8376,11 +5860,19 @@ def place_motion_graphic(
         )
 
         shift_box = [[]]
+        new_lane = [None]
 
         def _ripple_and_stamp():
+            if new_overlay_track:
+                from classes.query import Track
+
+                lane = Track()
+                lane.data = {"number": int(track_num), "y": 0, "label": "", "lock": False}   # a plain track, like Add Track
+                lane.save()
+                new_lane[0] = lane
             if mode_s == "cut_in":
                 shifts = ripple_positions(
-                    clips_raw, layer=int(primary_layer), t=t, delta=dur
+                    clips_raw, layer=int(track_num), t=t, delta=dur
                 )
                 shift_box[0] = shifts
                 for cid, new_pos in shifts:
@@ -8414,14 +5906,20 @@ def place_motion_graphic(
 
         # Ripple + metadata stamp + placement are one user action, so they
         # share a transaction id and undo as a single step.
-        _composite_tid = _new_transaction_id()
+        # ...and join the caller's undo step when a tool is already inside one.
+        _composite_tid = getattr(app.updates, "transaction_id", None) or _new_transaction_id()
         _run_on_main_thread(_atomic(app, _ripple_and_stamp, tid=_composite_tid))
+        # A rendered motion graphic always goes on whole: a visual watch trims it to the window its query matched.
+        full_file = _kw.get("full_file") or ("true" if rendered_mg else "")
         # add_clip marshals Qt mutations itself
         result = add_clip_to_timeline(
             file_id=fid,
             position_seconds=str(t),
             track=str(track_num),
             duration_seconds=str(dur),
+            # full_file: the whole render, frame-exact, no visual search (captions are timed to speech).
+            end_seconds=str(dur) if full_file else "",
+            full_file=str(full_file),
             query=watch_query,
             chat_session_id=_kw.get("chat_session_id", ""),
             transaction_id=_composite_tid,
@@ -8437,9 +5935,14 @@ def place_motion_graphic(
                             {"position": float(new_pos) - float(dur)},
                         )
                 try:
-                    _run_on_main_thread(_undo_ripple)
+                    _run_on_main_thread(_atomic(app, _undo_ripple, tid=_composite_tid))
                 except Exception as undo_exc:
                     log.warning("cut_in ripple rollback failed: %s", undo_exc)
+            if new_lane[0] is not None:
+                try:
+                    _run_on_main_thread(_atomic(app, new_lane[0].delete, tid=_composite_tid))
+                except Exception as undo_exc:
+                    log.warning("could not remove the unused overlay track: %s", undo_exc)
             return result
         return (
             f"{result} [mg_place mode={mode_s} layout_region={region or 'n/a'} "
@@ -8452,77 +5955,28 @@ def place_motion_graphic(
 
 
 def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
-    """Deprecated — use propose_overlay_windows_tool (timing) + agent-authored beats_json."""
+    """Deprecated — use run_tool(name='propose_overlay_windows_tool') (timing) + agent-authored beats_json."""
     return (
-        "Error: suggest_motion_graphics_placements_tool is removed. "
-        "Call propose_overlay_windows_tool(beat_count=...) for timing/layout_region, "
-        "edit session/draft.html (lint optional), publish_session_draft_tool, "
-        "fetch_motion_graphics_video_tool, then place_motion_graphic_tool(mode=overlay|gap|cut_in). "
+        "Error: run_tool(name='suggest_motion_graphics_placements_tool') is removed. "
+        "Call run_tool(name='propose_overlay_windows_tool', args={'beat_count': ...}) for timing/layout_region, "
+        "author the composition with the hyperframes tools, "
+        "run_tool(name='render_motion_graphic_tool', args={'transparent': ...}), then "
+        "run_tool(name='place_motion_graphic_tool', args={'file_id': ..., 'mode': 'overlay'}) ('gap' or 'cut_in' for opaque). "
         "Never put the creative brief into on-screen title text."
     )
-
-
-def get_timeline_placements_metadata(detail_level="summary", **_kw) -> str:
-    """Return one row per timeline clip with trim-aware effective metadata."""
-    try:
-        from classes.timeline_clip_context import enumerate_timeline_contexts
-
-        level = str(detail_level or _kw.get("detail_level") or "summary").lower().strip()
-        contexts = enumerate_timeline_contexts()
-        if not contexts:
-            return "No clips on timeline."
-
-        dupe_groups: dict[str, list] = {}
-        for ctx in contexts:
-            key = f"{ctx.file_id}:{ctx.layer}"
-            dupe_groups.setdefault(key, []).append(ctx)
-
-        lines = [f"Timeline placements ({len(contexts)}):"]
-        for ctx in sorted(contexts, key=lambda c: (int(c.layer or 0), c.timeline_position)):
-            dup_key = f"{ctx.file_id}:{ctx.layer}"
-            dupes = dupe_groups.get(dup_key, [])
-            occ_hint = ""
-            if len(dupes) > 1:
-                ranked = sorted(dupes, key=lambda c: c.timeline_position)
-                for idx, dc in enumerate(ranked, 1):
-                    if dc.timeline_clip_id == ctx.timeline_clip_id:
-                        occ_hint = f" occurrence_hint={idx}"
-                        break
-            group_id = dup_key if len(dupes) > 1 else ""
-            ai = ctx.effective_metadata or {}
-            scenes = ai.get("scene_descriptions") or []
-            scene_limit = len(scenes) if level == "full" else min(3, len(scenes))
-            lines.append(
-                f"\n  timeline_clip_id={ctx.timeline_clip_id} file_id={ctx.file_id} "
-                f"parent_file_id={ctx.parent_file_id}{occ_hint}\n"
-                f"    title={ctx.title!r} track={ctx.layer} ui_track={ctx.ui_track} "
-                f"position={ctx.timeline_position:.2f}s timeline_end={ctx.timeline_end:.2f}s\n"
-                f"    source_window={ctx.source_start:.2f}-{ctx.source_end:.2f}s "
-                f"index_status={ctx.index_status!r} duplicate_group={group_id!r}\n"
-                f"    summary_preview={ctx.summary_preview!r}"
-            )
-            if scenes and scene_limit:
-                lines.append("    effective_scenes:")
-                for sc in scenes[:scene_limit]:
-                    if isinstance(sc, dict) and sc.get("description"):
-                        t = float(sc.get("time", 0) or 0)
-                        lines.append(f"      [{_fmt_mmss(t)}] {str(sc['description'])[:160]}")
-        return "\n".join(lines)
-    except Exception as e:
-        log.error("get_timeline_placements_metadata: %s", e, exc_info=True)
-        return f"Error: {e}"
 
 
 # ---------------------------------------------------------------------------
 # Tool name → handler mapping
 # ---------------------------------------------------------------------------
 
-def get_timeline_state(**_kw) -> str:
+def get_timeline_state(detail_level="summary", **_kw) -> str:
     """Return a structured snapshot of the current timeline: tracks, clips with positions, and effects.
 
     Always lists every project layer (including empty tracks) so planners can pick ui_track values
-    even when the timeline has no clips yet.
+    even when the timeline has no clips yet. detail_level=full adds each clip's trim-aware AI scenes.
     """
+    level = str(detail_level or "summary").lower().strip()
     try:
         from classes.query import Clip
         from classes.timeline_clip_context import build_timeline_clip_context
@@ -8562,13 +6016,14 @@ def get_timeline_state(**_kw) -> str:
                 parts.append(f"track_id={tid}")
             if label:
                 parts.append(f"label={label!r}")
+            if layer_obj is not None and layer_obj.get("lock"):
+                parts.append("lock=True")
             return " | ".join(parts)
 
         lines = ["=== TIMELINE STATE ==="]
         lines.append(
             "Z-ORDER: higher layer_number covers lower. "
             "Track labels are cosmetic names only — never infer priority from the label text. "
-            "Call list_layers_tool for TRACK_STACK_JSON before multi-track placement. "
             "Hero/foreground → highest layer_number; backgrounds → lowest."
         )
         if not clips and not effects_raw:
@@ -8588,7 +6043,9 @@ def get_timeline_state(**_kw) -> str:
                 if not layer_clips:
                     lines.append("  (empty)")
                     continue
-                for c, d in sorted(layer_clips, key=lambda x: x[1].get("position", 0)):
+                ordered = sorted(layer_clips, key=lambda x: x[1].get("position", 0))
+                fids = [d.get("file_id", "") for _, d in ordered]
+                for i, (c, d) in enumerate(ordered):
                     clip_dur = float(d.get("end", 0) or 0) - float(d.get("start", 0) or 0)
                     if clip_dur <= 0:
                         try:
@@ -8605,6 +6062,7 @@ def get_timeline_state(**_kw) -> str:
                     analyzed_part = ""
                     source_part = ""
                     role_part = ""
+                    scenes = []
                     try:
                         from classes.query import File as _File
                         fobj = _File.get(id=d.get("file_id", ""))
@@ -8616,6 +6074,7 @@ def get_timeline_state(**_kw) -> str:
                             )
                             ctx = build_timeline_clip_context(c, d, fobj.data, layers=layers)
                             summary_preview = ctx.summary_preview
+                            scenes = (ctx.effective_metadata or {}).get("scene_descriptions") or []
                             source_part = (
                                 f" source={ctx.source_start:.1f}-{ctx.source_end:.1f}s"
                             )
@@ -8627,12 +6086,20 @@ def get_timeline_state(**_kw) -> str:
                     except Exception:
                         fname = d.get("file_id", "?")
                     summary_part = f" summary_preview={summary_preview!r}" if summary_preview else ""
+                    occ = fids[:i + 1].count(d.get("file_id", ""))
+                    occ_part = f" occurrence_hint={occ}" if fids.count(d.get("file_id", "")) > 1 else ""
                     lines.append(
                         f"  timeline_clip_id={c.id} media_bin_file_id={d.get('file_id','')} "
                         f"file={fname!r} title={(d.get('title') or d.get('label') or '')!r}"
-                        f"{summary_part}{analyzed_part}{source_part}{role_part}"
+                        f"{summary_part}{occ_part}{analyzed_part}{source_part}{role_part}"
                         f" @ {d.get('position',0):.2f}s–{clip_end:.2f}s (dur={clip_dur:.2f}s)"
                     )
+                    if level == "full" and scenes:
+                        lines.append("    effective_scenes:")
+                        for sc in scenes:
+                            if isinstance(sc, dict) and sc.get("description"):
+                                t = float(sc.get("time", 0) or 0)
+                                lines.append(f"      [{_fmt_mmss(t)}] {str(sc['description'])[:160]}")
         else:
             lines.append("\n(No layers/tracks in project.)")
 
@@ -8754,7 +6221,7 @@ def build_editor_snapshot_for_chat(max_chars: int = 5500) -> str:
             shown = media_lines[:20]
             head += "MEDIA_BIN:\n" + "\n".join(shown)
             if n_visible > len(shown):
-                head += f"\n  ... and {n_visible - len(shown)} more (use list_files_tool / get_clips_with_full_metadata_tool)\n"
+                head += f"\n  ... and {n_visible - len(shown)} more (use list_project_files_tool)\n"
             else:
                 head += "\n"
         else:
@@ -9466,57 +6933,684 @@ def duck_under_speech(
         return f"Error: {e}"
 
 
+def _write_clip_effects(clip_obj, effects):
+    clip_obj.data = {"effects": list(effects)}
+    clip_obj.save()
+
+
+def _filter_unlocked_color_clip_ids(app, ids, warnings):
+    """Drop locked-track clips before opening a colour undo group."""
+    from classes.query import Clip
+
+    kept = []
+    for cid in ids:
+        clip_obj = Clip.get(id=cid)
+        if not clip_obj:
+            warnings.append(f"clip {cid} not found")
+            continue
+        data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
+        try:
+            layer = int(data.get("layer") or 0)
+        except (TypeError, ValueError):
+            layer = 0
+        if _locked_track_error(app, layer):
+            warnings.append(f"clip {cid}: track locked — skipped")
+            continue
+        kept.append(cid)
+    return kept
+
+
+def _framescope_from_frame(frame) -> dict:
+    """Run FrameScope on an openshot Frame object."""
+    import openshot
+    from classes import color_agent as ca
+
+    scope = openshot.FrameScope()
+    try:
+        scope.SetWaveformColumns(128)
+    except Exception:
+        pass
+    try:
+        scope.SetVectorscopeSize(96)
+    except Exception:
+        pass
+    scope.SetFrame(frame)
+    if not scope.HasVideo():
+        return {"present": False}
+    video = {
+        "present": True,
+        "histogram": {
+            "luma": list(scope.GetVideoHistogramLuma()),
+            "red": list(scope.GetVideoHistogramRed()),
+            "green": list(scope.GetVideoHistogramGreen()),
+            "blue": list(scope.GetVideoHistogramBlue()),
+        },
+        "summary": {
+            "avg_luma": scope.GetVideoAverageLuma(),
+            "clipped_shadows": scope.GetVideoClippedShadows(),
+            "clipped_highlights": scope.GetVideoClippedHighlights(),
+        },
+    }
+    return ca.scope_from_raw_video(video)
+
+
+
+
+def _clip_local_frame_number(clip_data: dict, timeline_frame: int, fps_float: float) -> int:
+    """Map a timeline frame into a 1-based frame on a solo timeline (clip at position 0)."""
+    try:
+        pos = float(clip_data.get("position") or 0)
+        start = float(clip_data.get("start") or 0)
+        end = float(clip_data.get("end") or (start + 1.0 / max(fps_float, 1e-6)))
+        duration = max(1.0 / max(fps_float, 1e-6), end - start)
+        timeline_sec = max(0.0, (int(timeline_frame) - 1) / max(fps_float, 1e-6))
+        # Time into the clip's trimmed window.
+        local_sec = timeline_sec - pos
+        if local_sec < 0 or local_sec > duration:
+            local_sec = duration * 0.5
+        return max(1, int(local_sec * fps_float) + 1)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _frame_to_jpeg_b64(frame, long_edge: int = 480, quality: int = 72) -> str:
+    """Encode an openshot Frame as a small JPEG base64 string (empty on failure)."""
+    import base64
+
+    if frame is None:
+        return ""
+    path = ""
+    try:
+        try:
+            w = max(1, int(frame.GetWidth()))
+            h = max(1, int(frame.GetHeight()))
+        except Exception:
+            w, h = long_edge, long_edge
+        scale = min(1.0, float(long_edge) / float(max(w, h)))
+        fd, path = tempfile.mkstemp(suffix=".jpg")
+        os.close(fd)
+        frame.Save(path, float(scale), "JPG", int(quality))
+        with open(path, "rb") as fh:
+            return base64.b64encode(fh.read()).decode("ascii")
+    except Exception as exc:
+        log.debug("_frame_to_jpeg_b64 failed: %s", exc)
+        return ""
+    finally:
+        if path:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def _solo_render_size(width: int, height: int, long_edge: int = 640) -> tuple[int, int]:
+    """Small render canvas with the project's aspect ratio.
+
+    Clamping each side on its own (640 x 360) turned a portrait project into a
+    near-square canvas, pillarboxing the clip; the black bars then dragged the
+    scopes (avg luma, histograms) and showed up in the preview the model reads.
+    """
+    width, height = max(1, int(width)), max(1, int(height))
+    scale = min(1.0, float(long_edge) / float(max(width, height)))
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
+def _render_clip_isolated(
+    clip_data: dict,
+    timeline_frame: int,
+    fps_float: float,
+    *,
+    with_jpeg: bool = True,
+) -> dict:
+    """Solo-render one clip (effects on) → scopes + optional preview JPEG.
+
+    Track/layer count does not matter: overlapping clips on other tracks are
+    not in this temporary timeline, so match/inspect cannot false-zero.
+    """
+    import openshot
+    from classes.query import File
+
+    if not isinstance(clip_data, dict):
+        return {"scopes": {"present": False, "error": "invalid clip"}, "preview_jpeg": ""}
+
+    app = _get_app()
+    project = app.project
+    try:
+        width = int(project.get("width") or 1280)
+        height = int(project.get("height") or 720)
+        sample_rate = int(project.get("sample_rate") or 48000)
+        channels = int(project.get("channels") or 2)
+        channel_layout = int(project.get("channel_layout") or 3)
+        fps = project.get("fps") or {"num": 30, "den": 1}
+        fps_num = int(fps.get("num", 30) or 30)
+        fps_den = int(fps.get("den", 1) or 1)
+    except (TypeError, ValueError):
+        width, height, sample_rate, channels, channel_layout = 1280, 720, 48000, 2, 3
+        fps_num, fps_den = 30, 1
+
+    width, height = _solo_render_size(width, height)
+
+    solo = copy.deepcopy(clip_data)
+    solo["position"] = 0.0
+    solo["layer"] = 1000000
+    try:
+        reader = solo.get("reader") if isinstance(solo.get("reader"), dict) else {}
+        path = str(reader.get("path") or "").strip()
+        if not path or not os.path.exists(path):
+            fid = str(solo.get("file_id") or reader.get("id") or "").strip()
+            if fid:
+                fobj = File.get(id=fid)
+                if fobj and hasattr(fobj, "absolute_path"):
+                    ap = fobj.absolute_path()
+                    if ap:
+                        if not isinstance(solo.get("reader"), dict):
+                            solo["reader"] = {}
+                        solo["reader"]["path"] = ap
+    except Exception:
+        pass
+
+    local_frame = _clip_local_frame_number(clip_data, timeline_frame, fps_float)
+    temp = None
+    try:
+        temp = openshot.Timeline(
+            width,
+            height,
+            openshot.Fraction(fps_num, fps_den),
+            sample_rate,
+            channels,
+            channel_layout,
+        )
+        try:
+            temp.SetMaxSize(int(width), int(height))
+        except Exception:
+            pass
+        clip_os = openshot.Clip()
+        clip_os.SetJson(json.dumps(solo))
+        temp.AddClip(clip_os)
+        temp.Open()
+        frame = temp.GetFrame(int(local_frame))
+        scopes = _framescope_from_frame(frame)
+        scopes["isolated"] = True
+        scopes["local_frame"] = int(local_frame)
+        jpeg = _frame_to_jpeg_b64(frame) if with_jpeg else ""
+        return {"scopes": scopes, "preview_jpeg": jpeg, "local_frame": int(local_frame)}
+    except Exception as exc:
+        return {
+            "scopes": {
+                "present": False,
+                "isolated": False,
+                "error": f"isolated render failed: {exc}",
+            },
+            "preview_jpeg": "",
+            "local_frame": 0,
+        }
+    finally:
+        if temp is not None:
+            try:
+                temp.Close()
+            except Exception:
+                pass
+
+
+
+
+def _clip_duration_seconds(clip_data: dict) -> float:
+    try:
+        start = float(clip_data.get("start") or 0)
+        end = float(clip_data.get("end") or 0)
+        if end > start:
+            return end - start
+    except (TypeError, ValueError):
+        pass
+    try:
+        reader = clip_data.get("reader") if isinstance(clip_data.get("reader"), dict) else {}
+        dur = float(reader.get("duration") or 0)
+        if dur > 0:
+            return dur
+    except (TypeError, ValueError):
+        pass
+    return 1.0
+
+
+def _sample_local_frames(duration_s: float, fps_float: float, sample_count: int) -> list:
+    """1-based local frame numbers evenly spaced across [0, duration)."""
+    from classes import color_agent as ca
+
+    n = max(1, int(sample_count or ca.sample_count_for_duration(duration_s)))
+    fps = max(float(fps_float or 30.0), 1e-6)
+    total_frames = max(1, int(round(max(duration_s, 1.0 / fps) * fps)))
+    if n == 1:
+        return [max(1, total_frames // 2)]
+    frames = []
+    for i in range(n):
+        # Even spacing including near start and end.
+        t = i / max(n - 1, 1)
+        fr = 1 + int(round(t * (total_frames - 1)))
+        frames.append(max(1, min(total_frames, fr)))
+    # de-dupe preserving order
+    out = []
+    seen = set()
+    for fr in frames:
+        if fr not in seen:
+            seen.add(fr)
+            out.append(fr)
+    return out
+
+
+def _profile_clip_dense(
+    clip_data: dict,
+    fps_float: float,
+    *,
+    with_jpegs: bool = True,
+    max_samples: int | None = None,
+) -> dict:
+    """Dense full-frame LookProfile across a timeline clip's duration."""
+    from classes import color_agent as ca
+
+    duration = _clip_duration_seconds(clip_data)
+    n = ca.sample_count_for_duration(duration)
+    if max_samples is not None:
+        n = max(1, min(int(max_samples), n))
+    local_frames = _sample_local_frames(duration, fps_float, n)
+    scopes = []
+    jpegs = []
+    # Solo timeline uses position=0; keep original clip_data intact for callers.
+    solo_data = dict(clip_data, position=0.0)
+    for i, local_frame in enumerate(local_frames):
+        want_jpeg = with_jpegs and (
+            i == 0 or i == len(local_frames) // 2 or i == len(local_frames) - 1
+        )
+        rendered = _render_clip_isolated(
+            solo_data, int(local_frame), fps_float, with_jpeg=want_jpeg
+        )
+        sc = rendered.get("scopes") or {"present": False}
+        if sc.get("present"):
+            scopes.append(sc)
+        if want_jpeg and rendered.get("preview_jpeg"):
+            jpegs.append(rendered["preview_jpeg"])
+    profile = ca.build_look_profile(scopes)
+    return {
+        "profile": profile,
+        "scopes_samples": len(scopes),
+        "sample_frames": local_frames,
+        "preview_jpegs": jpegs,
+        "preview_jpeg": jpegs[len(jpegs) // 2] if jpegs else (jpegs[0] if jpegs else ""),
+        "duration_s": duration,
+    }
+
+
+def _match_clips_to_reference(clip_ids, ref_clip_id) -> str:
+    """Match the look of clip_ids to the timeline clip ref_clip_id (the apply step of harmonize_look_tool).
+
+    Dense-samples the reference across its full duration, solves ColorGrade,
+    applies (one undo), re-profiles AFTER, recovers from nuke — up to 5 cycles.
+    """
+    try:
+        from classes import color_agent as ca
+        from classes.query import Clip
+
+        ids = [cid for cid in clip_ids if cid != ref_clip_id]
+        app = _get_app()
+        try:
+            fps = app.project.get("fps") or {"num": 30, "den": 1}
+            fps_float = float(fps.get("num", 30)) / float(fps.get("den", 1) or 1)
+        except (TypeError, ValueError, ZeroDivisionError):
+            fps_float = 30.0
+
+        match_warnings = []
+
+        def _filter_ids():
+            return _filter_unlocked_color_clip_ids(app, ids, match_warnings)
+
+        if QThread is not None and QThread.currentThread() is not app.thread():
+            ids = _run_on_main_thread(_filter_ids)
+        else:
+            ids = _filter_ids()
+        if not ids:
+            return "Error: " + ("; ".join(match_warnings) or "no clips to match")
+
+        def _load_clip(cid):
+            clip_obj = Clip.get(id=cid)
+            if not clip_obj:
+                return None
+            return clip_obj.data if isinstance(clip_obj.data, dict) else {}
+
+        def _on_main(fn):
+            if QThread is not None and QThread.currentThread() is not app.thread():
+                return _run_on_main_thread(fn)
+            return fn()
+
+        # --- Reference LookProfile (dense) ---------------------------------
+        ref_data = _on_main(lambda: _load_clip(ref_clip_id))
+        if not ref_data:
+            return f"Error: reference clip {ref_clip_id} not found."
+        ref_pack = _profile_clip_dense(ref_data, fps_float, with_jpegs=True)
+        ref_effect, ref_grain = _on_main(
+            lambda: (
+                ca.find_color_grade(ref_data.get("effects")),
+                ca.find_film_grain(ref_data.get("effects")),
+            )
+        )
+
+        ref_profile = ref_pack.get("profile") or {"present": False}
+        if not ref_profile.get("present"):
+            return json.dumps({
+                "ok": False,
+                "error": "Could not measure reference look",
+                "detail": ref_profile.get("error") or "no scopes",
+            })
+
+        # --- Subject profiles (first clip dense; others mid-frame for speed) -
+        subject_data = {}
+        for cid in ids:
+            data = _on_main(lambda c=cid: _load_clip(c))
+            if data:
+                subject_data[cid] = data
+        if not subject_data:
+            return "Error: no matching timeline clips."
+
+        primary_id = ids[0] if ids[0] in subject_data else next(iter(subject_data))
+        before_pack = _profile_clip_dense(
+            subject_data[primary_id], fps_float, with_jpegs=True
+        )
+        before_profile = before_pack.get("profile") or {"present": False}
+        outdoor = ca.is_outdoor_bright_profile(before_profile)
+        look_distance_before = ca.look_profile_distance(before_profile, ref_profile)
+
+        sub_effect = ca.find_color_grade(subject_data[primary_id].get("effects"))
+        sub_grain = ca.find_film_grain(subject_data[primary_id].get("effects"))
+        grade_action = ca.match_grade_action(sub_effect, ref_effect)
+        grain_action = ca.match_grain_action(sub_grain, ref_grain)
+
+        solved = ca.solve_grade_from_profiles(
+            before_profile, ref_profile, scale=1.0
+        )
+        # Prefer paste when reference is a graded timeline clip.
+        if grade_action.get("mode") in ("paste", "reset"):
+            initial_color = grade_action
+            match_mode = grade_action.get("mode")
+        elif solved:
+            initial_color = {"mode": "scopes", "patch": solved}
+            match_mode = "look_profile"
+        else:
+            initial_color = {"mode": "noop"}
+            match_mode = "vision"
+
+        result = {
+            "ok": True,
+            "timeline_clip_ids": list(subject_data.keys()),
+            "clips_graded": list(subject_data.keys()),
+            "reference": ref_clip_id,
+            "look_distance_before": look_distance_before,
+            "match_mode": match_mode,
+            "grain_mode": grain_action.get("mode"),
+            "samples_used": {
+                "subject": before_pack.get("scopes_samples"),
+                "reference": ref_pack.get("scopes_samples"),
+            },
+            "before_profile": before_profile,
+            "reference_profile": ref_profile,
+            "before_preview_jpeg": before_pack.get("preview_jpeg") or "",
+            "reference_preview_jpeg": ref_pack.get("preview_jpeg") or "",
+            "outdoor_bright": outdoor,
+            "vision": (
+                "Compare BEFORE vs REFERENCE vs AFTER. Match iterates until "
+                "look_distance is close or max steps; nuke_risk means recovery ran."
+            ),
+        }
+
+        if (
+            initial_color.get("mode") == "noop"
+            and grain_action.get("mode") == "noop"
+            and (look_distance_before is None or look_distance_before < ca.LOOK_DISTANCE_MATCHED)
+        ):
+            result["applied"] = False
+            result["status"] = "matched"
+            result["message"] = "Already close to reference look."
+            return json.dumps(result)
+
+        # --- Apply + verify loop (one undo for whole batch) -----------------
+        error_box = [None]
+        iterations = []
+        recovered = False
+        final_status = "still_far"
+        after_profile = before_profile
+        after_jpeg = ""
+        current_patch = dict(initial_color.get("patch") or {})
+        paste_color = initial_color.get("color") if initial_color.get("mode") == "paste" else None
+        do_reset = initial_color.get("mode") == "reset"
+        grain_done = False
+
+        def _apply_effects_batch(color_mode, patch, grain_act, *, first_pass):
+            from classes.query import Clip as _Clip
+            from classes.film_grain_presets import is_film_grain_effect as _is_grain
+
+            for cid, data in list(subject_data.items()):
+                    clip_obj = _Clip.get(id=cid)
+                    if not clip_obj:
+                        continue
+                    effects = list(
+                        (clip_obj.data if isinstance(clip_obj.data, dict) else {}).get("effects") or []
+                    )
+                    # Per-subject grade/grain on the first pass so batch match
+                    # does not reuse the primary clip's decision for everyone.
+                    cid_color_mode = color_mode
+                    cid_paste = paste_color
+                    cid_grain = grain_act
+                    if first_pass and ref_clip_id:
+                        sub_e = ca.find_color_grade(effects)
+                        sub_g = ca.find_film_grain(effects)
+                        g_act = ca.match_grade_action(sub_e, ref_effect)
+                        cid_grain = ca.match_grain_action(sub_g, ref_grain)
+                        if g_act.get("mode") == "reset":
+                            cid_color_mode = "reset"
+                            cid_paste = None
+                        elif g_act.get("mode") == "paste":
+                            cid_color_mode = "paste"
+                            cid_paste = g_act.get("color")
+                        elif color_mode == "patch":
+                            cid_color_mode = "patch"
+                        else:
+                            cid_color_mode = "noop"
+
+                    if cid_color_mode == "reset":
+                        effects = [e for e in effects if not ca.is_color_grade_effect(e)]
+                    elif cid_color_mode == "paste" and cid_paste:
+                        existing = ca.find_color_grade(effects)
+                        if existing is None:
+                            effect = ca.create_color_grade_effect_json(app.project.generate_id)
+                            effects.append(effect)
+                            existing = effect
+                        merged = ca.merge_color_grade(existing, {"color": cid_paste})
+                        new_effects = []
+                        replaced = False
+                        for effect in effects:
+                            if ca.is_color_grade_effect(effect):
+                                if not replaced:
+                                    new_effects.append(merged)
+                                    replaced = True
+                            else:
+                                new_effects.append(effect)
+                        if not replaced:
+                            new_effects.append(merged)
+                        effects = new_effects
+                    elif cid_color_mode == "patch" and patch:
+                        existing = ca.find_color_grade(effects)
+                        if existing is None:
+                            effect = ca.create_color_grade_effect_json(app.project.generate_id)
+                            effects.append(effect)
+                            existing = effect
+                        merge_kwargs = {}
+                        for k, v in patch.items():
+                            if k not in ca.SCALAR_KEYS:
+                                continue
+                            dkey = f"{k}_delta"
+                            if dkey in ca.DELTA_KEYS:
+                                merge_kwargs[dkey] = v
+                            else:
+                                cur = ca.scalar_y(existing, k)
+                                if cur is None:
+                                    cur = ca.SCALAR_DEFAULTS.get(k, 0.0)
+                                merge_kwargs[k] = float(cur) + float(v)
+                        merged = ca.merge_color_grade(existing, merge_kwargs)
+                        new_effects = []
+                        replaced = False
+                        for effect in effects:
+                            if ca.is_color_grade_effect(effect):
+                                if not replaced:
+                                    new_effects.append(merged)
+                                    replaced = True
+                            else:
+                                new_effects.append(effect)
+                        if not replaced:
+                            new_effects.append(merged)
+                        effects = new_effects
+
+                    if first_pass and cid_grain.get("mode") == "reset":
+                        effects = [e for e in effects if not _is_grain(e)]
+                    elif first_pass and cid_grain.get("mode") == "paste":
+                        paste_g = cid_grain.get("grain") or {}
+                        grain_indexes = [i for i, e in enumerate(effects) if _is_grain(e)]
+                        new_g = copy.deepcopy(paste_g) if isinstance(paste_g, dict) else {}
+                        new_g["class_name"] = "FilmGrain"
+                        if grain_indexes:
+                            if effects[grain_indexes[0]].get("id"):
+                                new_g["id"] = effects[grain_indexes[0]]["id"]
+                            elif not new_g.get("id"):
+                                new_g["id"] = app.project.generate_id()
+                            for index in reversed(grain_indexes[1:]):
+                                del effects[index]
+                            effects[grain_indexes[0]] = new_g
+                        else:
+                            if not new_g.get("id"):
+                                new_g["id"] = app.project.generate_id()
+                            effects.append(new_g)
+
+                    _write_clip_effects(clip_obj, effects)
+                    subject_data[cid] = (
+                        clip_obj.data if isinstance(clip_obj.data, dict) else data
+                    )
+            try:
+                app.window.refreshFrameSignal.emit()
+            except Exception:
+                pass
+
+        # Open one transaction for the whole closed loop.
+        with _transaction(app):
+            for it in range(5):
+                color_mode = (
+                    "reset" if do_reset and it == 0
+                    else ("paste" if paste_color and it == 0 else "patch")
+                )
+                patch = {} if color_mode in ("reset", "paste") else current_patch
+                if it == 0 and color_mode == "patch" and not patch and not paste_color and not do_reset:
+                    if grain_action.get("mode") == "noop":
+                        final_status = "still_far"
+                        break
+                _on_main(
+                    lambda cm=color_mode, p=patch, g=grain_action, fp=(it == 0):
+                    _apply_effects_batch(cm, p, g, first_pass=fp)
+                )
+                # Re-profile primary subject
+                after_pack = _profile_clip_dense(
+                    subject_data[primary_id], fps_float, with_jpegs=True,
+                    max_samples=min(24, before_pack.get("scopes_samples") or 16),
+                )
+                after_profile = after_pack.get("profile") or {"present": False}
+                after_jpeg = after_pack.get("preview_jpeg") or ""
+                outcome = ca.assess_grade_outcome(
+                    before_profile, after_profile, ref_profile, outdoor_bright=outdoor
+                )
+                iterations.append({
+                    "iteration": it + 1,
+                    "status": outcome.get("status"),
+                    "look_distance": outcome.get("look_distance_after"),
+                    "nuke_risk": outcome.get("nuke_risk"),
+                    "reasons": outcome.get("reasons") or [],
+                })
+                if outcome.get("ok"):
+                    final_status = "matched"
+                    break
+                if outcome.get("nuke_risk"):
+                    recovered = True
+                    current_patch = outcome.get("suggested_recovery_patch") or {}
+                    paste_color = None
+                    do_reset = False
+                    final_status = "recovered_from_nuke"
+                    if not current_patch:
+                        break
+                    continue
+                # Still far / closer — smaller solve step
+                current_patch = ca.solve_grade_from_profiles(
+                    after_profile, ref_profile, scale=max(0.25, 0.7 ** (it + 1))
+                )
+                paste_color = None
+                do_reset = False
+                final_status = outcome.get("status") or "closer_not_exact"
+                if not current_patch:
+                    break
+                before_profile = after_profile  # next assess uses latest as before
+
+        if error_box[0]:
+            return error_box[0]
+
+        result["applied"] = True
+        result["undo"] = "one step"
+        result["iterations"] = iterations
+        result["iteration_count"] = len(iterations)
+        result["status"] = final_status
+        result["recovered_from_nuke"] = recovered
+        result["after_profile"] = after_profile
+        result["after_preview_jpeg"] = after_jpeg
+        result["look_distance_after"] = ca.look_profile_distance(after_profile, ref_profile)
+        result["nuke_risk"] = any(i.get("nuke_risk") for i in iterations) and final_status != "matched"
+        if final_status == "matched":
+            result["message"] = (
+                f"Matched look on {len(subject_data)} clip(s) "
+                f"in {len(iterations)} iteration(s)."
+            )
+        elif recovered:
+            result["message"] = (
+                "Look was nuking highlights/shadows; recovered with a softer grade. "
+                "Inspect AFTER vs REFERENCE — nudge if still off."
+            )
+        else:
+            result["message"] = (
+                f"Closer but not exact (status={final_status}). "
+                "Look at AFTER vs REFERENCE and nudge, or re-run match."
+            )
+        return json.dumps(result)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+
 # Tools exposed to the main chat / video / transitions agents.
 AGENT_TOOL_HANDLERS = {
     # Project
-    "list_files_tool": list_files,
-    "list_clips_tool": list_clips,
-    "list_layers_tool": list_layers,
     # list_markers_tool: classes.editor_tools.tracks_nav
     # new/save/open_project_tool: classes.editor_tools.project_export
     # Playback
-    "watch_clip_tool": watch_clip_and_play,
-    "watch_clip_window_tool": watch_clip_window,
     # play_tool: classes.editor_tools.tracks_nav
-    "go_to_start_tool": go_to_start,
-    "go_to_end_tool": go_to_end,
     "undo_tool": undo,
     "redo_tool": redo,
     # Timeline
     # add_track_tool, add_marker_tool: classes.editor_tools.tracks_nav
     "delete_from_timeline_tool": delete_from_timeline,
-    # Deprecated aliases -- kept dispatchable for stored plans and in-flight
-    # sessions; the backend catalog exposes delete_from_timeline_tool only.
-    "remove_clip_tool": remove_clip,
-    "delete_clips_on_track_tool": delete_clips_on_track,
     # Audio mix / ducking
     "analyze_timeline_audio_tool": analyze_timeline_audio,
     "set_clip_volume_tool": set_clip_volume,
     "duck_under_speech_tool": duck_under_speech,
-    "zoom_in_tool": zoom_in,
-    "zoom_out_tool": zoom_out,
-    "center_on_playhead_tool": center_on_playhead,
     "import_files_tool": import_files,
     "wait_until_project_indexed_tool": wait_until_project_indexed,
     # Export
     # Clips
-    "get_file_info_tool": get_file_info,
-    "split_file_add_clip_tool": split_file_add_clip,
     "add_clip_to_timeline_tool": add_clip_to_timeline,
-    "import_video_url_and_add_to_timeline_tool": import_video_url_and_add_to_timeline,
-    "slice_clip_at_playhead_tool": slice_clip_at_playhead,
-    "reverse_clip_tool": reverse_clip,
+    "ingest_web_video_tool": ingest_web_video,
     # Search / slice / modify (tag-query resolved)
-    "search_clips_tool": search_clips,
-    "search_clip_scenes_tool": search_clip_scenes,
-    "get_project_catalog_tool": get_project_catalog,
-    "slice_clip_at_best_match_tool": slice_clip_at_best_match,
     "suggest_motion_graphics_placements_tool": suggest_motion_graphics_placements,
     "propose_overlay_windows_tool": propose_overlay_windows,
     "place_motion_graphic_tool": place_motion_graphic,
-    # Remotion / HyperFrames
-    "fetch_motion_graphics_video_tool": fetch_motion_graphics_video,
-    "fetch_remotion_video_from_supabase_tool": fetch_motion_graphics_video,
     # Video generation / AI edit
     "generate_video_and_add_to_timeline_tool": generate_video_and_add_to_timeline,
     "generate_image_and_add_to_timeline_tool": generate_image_and_add_to_timeline,
@@ -9524,15 +7618,11 @@ AGENT_TOOL_HANDLERS = {
     "generate_transition_clip_tool": generate_transition_clip,
     # OpenShot transitions (mask/dissolve)
     "list_transitions_tool": list_transitions,
-    "search_transitions_tool": search_transitions,
     "apply_transition_tool": apply_transition,
     # generate_tts_and_add_to_timeline_tool: classes.editor_tools.ai_generation_tts
     # Stock / planning
     "import_stock_media_tool": import_stock_media,
-    "resummarize_project_file_tool": resummarize_project_file,
     "reindex_project_file_tool": reindex_project_file,
-    "get_clips_with_full_metadata_tool": get_clips_with_full_metadata,
-    "get_timeline_placements_metadata_tool": get_timeline_placements_metadata,
     "get_timeline_state_tool": get_timeline_state,
 }
 
@@ -9542,76 +7632,49 @@ AGENT_TOOL_HANDLERS = {
 from classes.editor_tools import REGISTRY as _EDITOR_TOOL_SPECS  # noqa: E402
 from classes.agent_tools.schema import TOOL_SCHEMAS as _TOOL_SCHEMAS  # noqa: E402
 
-# #183's add_effect / add_title / set_keyframes / set_project_setting and #220's
-# add_captions are served by the editor tools of the same names, whose arguments
-# are a superset of theirs.
-for _phase_handlers in (PHASE3_HANDLERS, PHASE4_HANDLERS, PHASE5_HANDLERS):
-    AGENT_TOOL_HANDLERS.update({name: func for name, func in _phase_handlers.items()
-                                if name not in _EDITOR_TOOL_SPECS})
+from classes.agent_tools.legacy_desktop import LEGACY_HANDLERS, LEGACY_LABELS, LEGACY_SCHEMAS  # noqa: E402
+
+for _phase_handlers in (PHASE4_HANDLERS, PHASE5_HANDLERS, LEGACY_HANDLERS):
+    AGENT_TOOL_HANDLERS.update(_phase_handlers)
 _editor_overlap = set(_EDITOR_TOOL_SPECS) & set(AGENT_TOOL_HANDLERS)
 assert not _editor_overlap, f"editor_tools re-registers {sorted(_editor_overlap)}"
 AGENT_TOOL_HANDLERS.update({name: spec.func for name, spec in _EDITOR_TOOL_SPECS.items()})
 # One source of truth for an editor tool's arguments: its registry schema is the
 # one execute_tool validates against and the MCP server advertises.
 _TOOL_SCHEMAS.update({name: spec.schema for name, spec in _EDITOR_TOOL_SPECS.items()})
+_TOOL_SCHEMAS.update(LEGACY_SCHEMAS)
 
 TOOL_HANDLERS = dict(AGENT_TOOL_HANDLERS)
 
 # Humanized titles for chat tool-block headers (main agent tools only).
 TOOL_DISPLAY_LABELS = {
-    "list_files_tool": "List project media",
-    "list_clips_tool": "List clips",
-    "list_layers_tool": "List tracks",
-    "watch_clip_tool": "Load and play clip",
-    "watch_clip_window_tool": "Watch clip window",
-    "go_to_start_tool": "Seek to start",
-    "go_to_end_tool": "Seek to end",
     "undo_tool": "Undo",
     "redo_tool": "Redo",
     "delete_from_timeline_tool": "Delete from timeline",
-    "remove_clip_tool": "Delete from timeline",
-    "delete_clips_on_track_tool": "Delete from timeline",
     "analyze_timeline_audio_tool": "Analyze timeline audio",
     "set_clip_volume_tool": "Set clip volume",
     "duck_under_speech_tool": "Duck music under speech",
-    "zoom_in_tool": "Zoom in",
-    "zoom_out_tool": "Zoom out",
-    "center_on_playhead_tool": "Center on playhead",
     "import_files_tool": "Import files from disk",
     "wait_until_project_indexed_tool": "Wait for indexing",
-    "get_file_info_tool": "Read file info",
-    "split_file_add_clip_tool": "Split clip and add to timeline",
     "add_clip_to_timeline_tool": "Add clip to timeline",
-    "import_video_url_and_add_to_timeline_tool": "Import video to timeline",
-    "slice_clip_at_playhead_tool": "Slice clip at playhead",
-    "reverse_clip_tool": "Reverse clip",
-    "search_clips_tool": "Search project index",
-    "search_clip_scenes_tool": "Search clip scenes",
-    "get_project_catalog_tool": "Read project catalog",
-    "slice_clip_at_best_match_tool": "Slice clip at best match",
+    "ingest_web_video_tool": "Ingest web / YouTube video",
     "suggest_motion_graphics_placements_tool": "Suggest MG placements (deprecated)",
     "propose_overlay_windows_tool": "Propose overlay windows",
     "place_motion_graphic_tool": "Place motion graphic",
-    "fetch_motion_graphics_video_tool": "Fetch HyperFrames video",
-    "fetch_remotion_video_from_supabase_tool": "Fetch HyperFrames video",
     "generate_video_and_add_to_timeline_tool": "Generate video",
     "generate_image_and_add_to_timeline_tool": "Generate image",
     "modify_clip_tool": "AI edit clip",
     "generate_transition_clip_tool": "Bake A + morph + B",
     "list_transitions_tool": "List transitions",
-    "search_transitions_tool": "Search transitions",
     "apply_transition_tool": "Apply transition",
     "import_stock_media_tool": "Import stock media",
-    "resummarize_project_file_tool": "Resummarize file",
     "reindex_project_file_tool": "Reindex file",
-    "get_clips_with_full_metadata_tool": "Read clips metadata",
-    "get_timeline_placements_metadata_tool": "Read timeline placements",
     "get_timeline_state_tool": "Read timeline state",
 }
-TOOL_DISPLAY_LABELS.update(PHASE3_DISPLAY_LABELS)
 TOOL_DISPLAY_LABELS.update(PHASE4_DISPLAY_LABELS)
 TOOL_DISPLAY_LABELS.update(PHASE5_DISPLAY_LABELS)
 TOOL_DISPLAY_LABELS.update({name: spec.label for name, spec in _EDITOR_TOOL_SPECS.items()})
+TOOL_DISPLAY_LABELS.update(LEGACY_LABELS)
 
 assert set(TOOL_DISPLAY_LABELS) == set(AGENT_TOOL_HANDLERS), (
     "TOOL_DISPLAY_LABELS keys must match AGENT_TOOL_HANDLERS"
@@ -9621,25 +7684,19 @@ assert set(TOOL_DISPLAY_LABELS) == set(AGENT_TOOL_HANDLERS), (
 # appear as tool_started titles over the WebSocket.
 _EXTRA_TOOL_DISPLAY_LABELS = {
     "motion-graphics-agent": "Motion graphics",
-    "publish_session_draft_tool": "Publish motion graphic",
-    "lint_session_draft_tool": "Lint draft",
-    "product_demo": "Product demo",
-    "plan_product_demo_tool": "Plan product demo",
-    "render_product_demo_tool": "Render product demo",
-    "check_motion_graphics_health_tool": "Motion graphics health",
-    "get_motion_graphics_job_status_tool": "Motion job status",
     # The assistant harness contributes its own tool names to the transcript.
-    # `task` is the orchestrator handing work to a specialist; the file and
-    # shell tools only ever run inside the motion-graphics sandbox, on
-    # session/draft.html. Left to the generic fallback these read as "Task",
-    # "Bash" and "Edit" -- a coding runtime showing through a video editor.
+    # `task` is the orchestrator handing work to a specialist. The file and
+    # shell tools are denied to the assistant, but a refused call still lands
+    # in the transcript, and a CLI chat backend runs its own. Left to the
+    # generic fallback these read as "Task", "Bash" and "Edit" -- a coding
+    # runtime showing through a video editor.
     "task": "Handing off to a specialist",
-    "bash": "Building the motion graphic",
-    "edit": "Editing the motion graphic",
-    "write": "Writing the motion graphic",
-    "read": "Reading the motion graphic",
-    "glob": "Looking through motion graphic files",
-    "grep": "Searching the motion graphic",
+    "bash": "Running a command",
+    "edit": "Editing a file",
+    "write": "Writing a file",
+    "read": "Reading a file",
+    "glob": "Looking through files",
+    "grep": "Searching files",
     "question": "Asking you a question",
     "todowrite": "Updating the task list",
     # Denied to the assistant, but a refused call still lands in the transcript.
@@ -9671,26 +7728,17 @@ def humanize_tool_name(tool_name: str) -> str:
 # Tools that only READ project / timeline data and don't mutate Qt widgets.
 # Safe to invoke from worker threads, which lets the agent run several of them
 # concurrently without serializing through the Qt main-thread dispatcher.
-READ_ONLY_TOOLS = frozenset({
-    "list_files_tool",
-    "list_clips_tool",
-    "list_layers_tool",
+READ_ONLY_TOOLS = frozenset(LEGACY_HANDLERS) | frozenset({
     "get_timeline_state_tool",
-    "get_file_info_tool",
     "list_transitions_tool",
-    "search_transitions_tool",
-    "get_clips_with_full_metadata_tool",
-    "get_timeline_placements_metadata_tool",
     "propose_overlay_windows_tool",
     "analyze_timeline_audio_tool",
     "inspect_timeline_tool",
-    "inspect_media_tool",
     "get_transcript_tool",
-    "transcribe_media_tool",
-    "detect_beats_tool",
     "diarize_media_tool",
-    "search_media_local_tool",
     "export_captions_tool",
+    # Indexing lands its results itself, outside history: waiting for it changes nothing.
+    "wait_until_project_indexed_tool",
 }) | frozenset(name for name, spec in _EDITOR_TOOL_SPECS.items() if spec.read_only)
 
 # Tools that perform long-running network/IO work and only briefly touch Qt
@@ -9705,42 +7753,25 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     "import_files_tool",
     # Polls indexing state for minutes — must never occupy the GUI thread.
     "wait_until_project_indexed_tool",
-    # Downloads + re-encodes off the GUI thread; its timeline mutations
-    # marshal to the main thread internally.
-    "import_video_url_and_add_to_timeline_tool",
-    "resummarize_project_file_tool",
     "import_stock_media_tool",
     # Long-running Runware/ffmpeg work; Qt timeline touches are marshalled internally.
     "generate_video_and_add_to_timeline_tool",
     "generate_image_and_add_to_timeline_tool",
     "modify_clip_tool",
     "generate_transition_clip_tool",
-    # Network search against project TwelveLabs index (File reads are read-only).
-    "search_clips_tool",
-    "search_clip_scenes_tool",
-    "watch_clip_window_tool",
-    "get_project_catalog_tool",
-    "slice_clip_at_best_match_tool",
-    "split_file_add_clip_tool",
     "add_clip_to_timeline_tool",
     "propose_overlay_windows_tool",
-    # HyperFrames download + alpha re-encode can take a while.
-    "fetch_motion_graphics_video_tool",
-    "fetch_remotion_video_from_supabase_tool",
+    "ingest_web_video_tool",
     "inspect_timeline_tool",
-    "inspect_media_tool",
     # Local ASR / VAD / beats / embeds can take minutes; Qt mutations marshal themselves.
     "get_transcript_tool",
-    "transcribe_media_tool",
     "remove_words_tool",
     "remove_silence_tool",
     "add_captions_tool",
     "export_captions_tool",
     # Its no-cue fallback extracts audio and runs VAD; the writes marshal themselves.
     "duck_under_speech_tool",
-    "detect_beats_tool",
     "diarize_media_tool",
-    "search_media_local_tool",
 }) | frozenset(name for name, spec in _EDITOR_TOOL_SPECS.items() if spec.background_safe)
 
 # Tools whose main-thread work can legitimately run far longer than
@@ -9763,6 +7794,38 @@ _MAIN_THREAD_TIMEOUTS = {
 # transaction around that would stamp the caller's id onto the reversal
 # actions pushed into redoHistory, gluing separate steps together.
 _UNGROUPED_TOOLS = READ_ONLY_TOOLS | frozenset({"undo_tool", "redo_tool"})
+
+# Engine tools the desktop does not implement, run by the zenvi CLI
+# (classes/editor_tools/engine_bridge.py; on once classes/engine_runtime.py has
+# installed it, unless ZENVI_ENGINE_BRIDGE or the engine-bridge setting is off).
+# The catalog is read on a worker thread at start-up, or after an install, and
+# the tools appear when it arrives. Background-safe: Node runs on
+# the worker thread, the change is applied on the GUI thread inside the call's
+# one undo step.
+from classes.agent_api_proxy import MCP_EXTRA_TOOLS as _MCP_EXTRA_TOOLS  # noqa: E402
+from classes.editor_tools import engine_bridge as _engine_bridge  # noqa: E402
+
+
+def install_bridged_tools(handlers: dict) -> None:
+    """List bridged engine tools next to the desktop's (engine_bridge.register_tools' handlers)."""
+    global BACKGROUND_SAFE_TOOLS
+    TOOL_DISPLAY_LABELS.update({name: _engine_bridge.label(name) for name in handlers})
+    BACKGROUND_SAFE_TOOLS = BACKGROUND_SAFE_TOOLS | frozenset(handlers)
+    TOOL_HANDLERS.update(handlers)
+    AGENT_TOOL_HANDLERS.update(handlers)
+
+
+def _native_tool_names() -> set:
+    # Bridged tools listed before (an update re-lists them from the new catalog) are not native.
+    return (set(AGENT_TOOL_HANDLERS) - set(_engine_bridge.BRIDGED)) | set(_MCP_EXTRA_TOOLS)
+
+
+def refresh_bridged_tools():
+    """List the engine tools again on a worker thread (after the runtime was installed or updated)."""
+    return _engine_bridge.register_in_background(_native_tool_names, install_bridged_tools)
+
+
+refresh_bridged_tools()
 
 
 # Tools whose main-thread runtime scales with a `steps` argument.  A fixed 30s

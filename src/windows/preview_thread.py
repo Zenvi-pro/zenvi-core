@@ -36,6 +36,7 @@ from qt_api import QMessageBox
 from qt_api import unwrapinstance, wrapinstance, _is_android_runtime
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
+from classes import update_batch
 from classes.app import get_app
 from classes.logger import log
 from classes.updates import UpdateInterface
@@ -52,13 +53,29 @@ class PreviewParent(QObject, UpdateInterface):
         if action and len(action.key) >= 1 and action.key[0].lower() in ["files", "history", "markers", "layers", "scale", "profile", "sample_rate", "export_settings"]:
             return
 
+        # Inside an update batch TimelineSync holds this change back from libopenshot, so the timeline
+        # still has its old length here: read it once the batch has applied (_after_update_batch).
+        if action and action.type != "load" and update_batch.active():
+            return
+
+        self._read_max_length(action)
+
+    def _read_max_length(self, action=None):
         try:
             # Keep track of max timeline frame # on any updates to the timeline
             self.timeline_max_length = self.timeline.GetMaxFrame()
             log.debug(f"Max timeline length/frames detected: {self.timeline_max_length}")
 
         except Exception as e:
-            log.info("Error calculating max timeline length on PreviewParent: %s. %s" % (e, action.json(is_array=True)))
+            log.info("Error calculating max timeline length on PreviewParent: %s. %s"
+                     % (e, action.json(is_array=True) if action else "after an update batch"))
+
+    def _after_update_batch(self):
+        """An update batch ended: TimelineSync's flush (registered before this one) has applied its diffs.
+
+        Without this, an edit made inside a batch (every Assistant tool) left Play stopping at the
+        timeline's old end: one frame after adding clips to an empty timeline."""
+        self._read_max_length()
 
     # Signal when the frame position changes in the preview player
     def onPositionChanged(self, current_frame):
@@ -114,6 +131,7 @@ class PreviewParent(QObject, UpdateInterface):
     def Stop(self, wait_for_thread=True):
         """Disconnect preview parent from update manager and stop worker thread"""
         get_app().updates.disconnect_listener(self)
+        update_batch.unregister(self._after_update_batch)
 
         # Stop preview thread
         self.worker.Stop()
@@ -171,6 +189,8 @@ class PreviewParent(QObject, UpdateInterface):
 
         # Add preview parent as listener for updates
         get_app().updates.add_listener(self)
+        # Registered after TimelineSync's flush (the window creates TimelineSync first), so it runs after it.
+        update_batch.register(self._after_update_batch)
 
 
 class PlayerWorker(QObject):
@@ -202,6 +222,8 @@ class PlayerWorker(QObject):
         self._scope_lock = threading.Lock()
         self._pending_scope_request = None
         self._scope_analysis_active = False
+        self._seek_lock = threading.Lock()
+        self._pending_seek = None
 
         # Create QtPlayer class from libopenshot
         self.player = openshot.QtPlayer()
@@ -321,7 +343,7 @@ class PlayerWorker(QObject):
                 self.mode_changed.emit(self.current_mode)
 
             # wait for a small delay
-            time.sleep(0.01)
+            time.sleep(0.01 if self.player.Mode() == openshot.PLAYBACK_PLAY else 0.04)
             QCoreApplication.processEvents()
 
         self.finished.emit()
@@ -380,22 +402,26 @@ class PlayerWorker(QObject):
         """ Refresh a certain frame """
         log.debug("refreshFrame pos=%s mode=%s", self.player.Position(), self.player.Mode())
 
+        # Refresh signals arrive during playback too (every edit, selection change).
+        # Playback already renders the changed frames; re-setting the reader or
+        # seeking here crippled it until the user paused and played again (#332).
+        if self.player.Mode() == openshot.PLAYBACK_PLAY and self.player.Speed() != 0.0:
+            return
+
         # Re-set the timeline reader so libopenshot picks up any clip changes
         # (e.g. clips added since the last Reader() call at startup).
         # Without this, Play+Pause serves stale cached frames from before the clip was added.
         if not self.clip_path:
             self.player.Reader(self.timeline)
 
-        # Selection/UI refresh signals can arrive during active playback.
-        # Avoid seeking while playing, which can perturb frame progression.
-        if self.player.Mode() == openshot.PLAYBACK_PLAY and self.player.Speed() != 0.0:
-            return
-
         # Always load back in the timeline reader
         self.parent.LoadFileSignal.emit('')
 
-        # Mark frame number for processing (if parent is done initializing)
-        self.Seek(self.player.Position())
+        # Mark frame number for processing (if parent is done initializing); a seek
+        # still pending (e.g. project open's Seek(1)) wins over the current position
+        with self._seek_lock:
+            pending = self._pending_seek
+        self.Seek(pending if pending is not None else self.player.Position())
 
         log.debug("refreshFrame done pos=%s", self.player.Position())
 
@@ -648,14 +674,16 @@ class PlayerWorker(QObject):
     def Play(self):
         """ Start playing the video player """
 
-        # Start playback
+        # Start playback (from a seek still waiting in the queue, if any)
+        self._flush_seek()
         if self.parent.initialized:
             self.player.Play()
 
     def Pause(self):
         """ Pause the video player """
 
-        # Pause playback
+        # Pause playback (at a seek still waiting in the queue, if any)
+        self._flush_seek()
         if self.parent.initialized:
             self.player.Pause()
 
@@ -669,13 +697,33 @@ class PlayerWorker(QObject):
     def Seek(self, number):
         """ Seek to a specific frame """
 
+        # Keep only the newest request, and flush it once on the next event loop pass
+        with self._seek_lock:
+            schedule = self._pending_seek is None
+            self._pending_seek = number
+        if QThread.currentThread() is not self.thread():
+            # Direct calls (replay from start, then Play) must land before what follows
+            self._flush_seek()
+        elif schedule:
+            QTimer.singleShot(0, self._flush_seek)
+
+    def _flush_seek(self):
+        with self._seek_lock:
+            number, self._pending_seek = self._pending_seek, None
+        if number is None:
+            return
+
         # Seek to frame
         if self.parent.initialized:
+            # Read before seeking, and count loading as playing: a seek during
+            # playback reports a loading mode until it lands, and the timeline
+            # echoes the playhead every frame. Nudging then paused playback.
+            playing = self.player.Mode() in (openshot.PLAYBACK_PLAY, openshot.PLAYBACK_LOADING)
             self.player.Seek(number)
             # Force frame delivery when paused — libopenshot doesn't emit the
             # present signal on Seek alone when the player is not playing.
             # Play+Pause triggers the same frame-render path used at startup.
-            if self.player.Mode() != openshot.PLAYBACK_PLAY:
+            if not playing:
                 self.player.Play()
                 self.player.Pause()
 
@@ -693,6 +741,7 @@ class PlayerWorker(QObject):
     def Speed(self, new_speed):
         """ Set the speed of the video player """
 
-        # Set speed
+        # Set speed (after a seek still waiting in the queue, if any)
+        self._flush_seek()
         if self.parent.initialized and self.player.Speed() != new_speed:
             self.player.Speed(new_speed)

@@ -21,7 +21,7 @@ from PyQt5.QtCore import Qt  # noqa: E402
 from PyQt5.QtGui import QColor  # noqa: E402
 from PyQt5.QtWidgets import QApplication, QMainWindow, QToolBar, QWidget  # noqa: E402
 
-RING = QColor("#4d9cf6")
+RING = QColor("#3a72f5")
 
 
 @pytest.fixture(scope="module")

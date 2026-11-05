@@ -129,7 +129,6 @@ Qt WebEngine (used by Director, plan review, and the chat UI panels) is not avai
     /mingw64/bin/python.exe -m venv --system-site-packages .venv
     source .venv/bin/activate
     pip install -r requirements-noqt.txt
-    # pip install -r requirements-manim.txt   # if needed
     ```
 
 11. Run Zenvi against your build tree bindings:

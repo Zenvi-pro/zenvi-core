@@ -47,6 +47,7 @@ from classes.settings import apply_openmp_settings
 from classes.language import get_all_languages
 from classes.logger import log
 from classes.metrics import track_metric_screen
+from themes.cosmic.tokens import resolve
 
 import openshot
 
@@ -221,6 +222,8 @@ class Preferences(QDialog):
 
                 # Create tab widget and layout
                 layout = QVBoxLayout()
+                layout.setContentsMargins(16, 16, 16, 16)
+                layout.setSpacing(8)
                 tabWidget = QWidget(self)
                 tabWidget.setObjectName("PreferencePanel")
                 tabWidget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
@@ -243,6 +246,8 @@ class Preferences(QDialog):
             scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             scroll_area.setMinimumSize(675, 100)
             layout = QVBoxLayout()
+            layout.setContentsMargins(16, 16, 16, 16)
+            layout.setSpacing(8)
             tabWidget = QWidget(self)
             tabWidget.setObjectName("PreferencePanel")
             tabWidget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
@@ -326,6 +331,10 @@ class Preferences(QDialog):
                         # Add filesystem browser button
                         extraWidget = QPushButton(_("Browse..."))
                         extraWidget.clicked.connect(functools.partial(self.selectExecutable, widget, param))
+                    elif param.get("setting") == "engine-runtime-source":
+                        # Install or update the engine tools from the source typed here.
+                        extraWidget = QPushButton(_("Install..."))
+                        extraWidget.clicked.connect(self.show_engine_runtime_dialog)
                     elif param.get("setting") == "comfy-ui-url":
                         # Add an explicit connectivity check for ComfyUI URL.
                         extraWidget = QPushButton(_("Check"))
@@ -510,6 +519,11 @@ class Preferences(QDialog):
                     # Add widget to layout
                     tabWidget.layout().addWidget(label)
 
+            if category == "AI" and filterFound:
+                integrations_btn = QPushButton(_("Integrations (use your own keys)..."))
+                integrations_btn.clicked.connect(self.open_integrations)
+                tabWidget.layout().addWidget(integrations_btn)
+
             # Add stretch to bottom of layout
             tabWidget.layout().addStretch()
 
@@ -519,6 +533,10 @@ class Preferences(QDialog):
         self.DeleteAllTabs(onlyInVisible=True)
 
         self._apply_tab_order()
+
+    def open_integrations(self):
+        from windows.integrations import IntegrationsDialog
+        IntegrationsDialog(self).exec_()
 
     def register_setting_widget(self, param, widget, label=None):
         """Store widget references and register dependency relationships."""
@@ -732,6 +750,10 @@ class Preferences(QDialog):
 
         # Check for restart
         self.check_for_restart(param)
+
+    def show_engine_runtime_dialog(self, checked=False):
+        from windows.engine_runtime_dialog import show_engine_runtime_dialog
+        show_engine_runtime_dialog(self)
 
     def check_comfy_ui_url(self, widget, param, btn=None):
         _ = get_app()._tr
@@ -1016,7 +1038,7 @@ class Preferences(QDialog):
                 if widget:
                     if info['is_duplicate']:
                         # Mark the field with red text and border for duplicates
-                        widget.setStyleSheet("color: red;")
+                        widget.setStyleSheet(resolve("color: {danger};"))
 
     def closeEvent(self, event):
         """Signal for closing Preferences window"""

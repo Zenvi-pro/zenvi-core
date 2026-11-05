@@ -1,0 +1,1 @@
+export {Outro} from './Outro';

@@ -312,6 +312,10 @@ QLineEdit#txtChangeLogFilter_libopenshot:focus, QLineEdit#txtChangeLogFilter_lib
             {"action": self.app.window.actionExportVideo, "style": Qt.ToolButtonIconOnly},
             {"action": self.app.window.actionLogout, "style": Qt.ToolButtonIconOnly},
         ]
+        # Linked clips pill (classes/handoff): render progress, "N linked clips changed"
+        handoff_status = getattr(self.app.window, "handoff_status", None)
+        if handoff_status is not None:
+            toolbar_buttons.append({"widget": handoff_status, "visible": handoff_status.is_active})
         self.set_toolbar_buttons(self.app.window.toolBar, icon_size=24, settings=toolbar_buttons)
 
         # Timeline toolbar buttons

@@ -72,3 +72,12 @@ def test_the_badge_paints_after_a_browser_sign_in(auth, monkeypatch):
     assert client.balance() == (True, 24692)
     assert heard == [24692]
     assert client.cached_balance() == 24692
+
+
+def test_the_app_never_sends_a_password():
+    # Supabase requires a captcha on password sign-in, which only the website can solve.
+    from classes.auth_manager import AuthManager
+
+    assert not hasattr(AuthManager, "sign_in_with_password")
+    assert not hasattr(AuthManager, "sign_up_with_password")
+

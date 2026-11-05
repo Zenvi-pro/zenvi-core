@@ -162,6 +162,25 @@ def parse_checksums(text):
     return sums
 
 
+def download_failure_reason(exc, downloaded, total):
+    """A short reason for the update panel; the log keeps the full exception.
+
+    requests reports a dropped connection as a nested IncompleteRead repr,
+    which filled the panel with byte counts."""
+    if isinstance(exc, requests.HTTPError) and exc.response is not None:
+        return "The download server answered HTTP %d" % exc.response.status_code
+    if isinstance(exc, requests.Timeout):
+        return "The download timed out"
+    if isinstance(exc, requests.RequestException):
+        if downloaded and total:
+            return "The connection dropped after %d of %d MB" % (
+                downloaded // 1_000_000, max(1, total // 1_000_000))
+        if downloaded:
+            return "The connection dropped after %d MB" % (downloaded // 1_000_000)
+        return "Couldn't connect to the download server"
+    return str(exc) or exc.__class__.__name__
+
+
 # ---------------------------------------------------------------------------
 # Manifest helpers — delegate to update_installer (single source of truth)
 # ---------------------------------------------------------------------------
@@ -234,6 +253,15 @@ class AutoUpdater:
     def __init__(self):
         self._thread = None
         self._stop = threading.Event()
+        # Set while the user waits on the running check (the update panel's
+        # Download / Try again): it ends the launch delay at once, and the
+        # check must then end with a ready or failed signal.
+        self._user_waiting = threading.Event()
+        self._delay_over = False
+        # Whether this check sent the UI a ready or failed result, and why it
+        # stopped if it did not.
+        self._reported = False
+        self._stopped_because = ""
         os.makedirs(UPDATE_STAGING_DIR, exist_ok=True)
 
     # ------------------------------------------------------------------
@@ -246,9 +274,39 @@ class AutoUpdater:
             return
         self._thread = threading.Thread(
             target=self._run, name="AutoUpdater", daemon=True,
+            kwargs={"initial_delay": INITIAL_DELAY},
         )
         self._thread.start()
         log.info("AutoUpdater: Background thread started")
+
+    def retry(self):
+        """Download now, for the update panel's Download / Try again button.
+
+        Returns True when a download starts without the launch delay: a new
+        check thread was started, or the startup check was still waiting out
+        that delay and now goes on at once (still one thread). Either way the
+        check ends with a ready or failed signal. Returns False while a
+        download is already running; its progress or failure reaches the UI
+        on its own.
+        """
+        if self._thread and self._thread.is_alive():
+            if self._delay_over:
+                log.info("AutoUpdater: Retry ignored — a download is already running")
+                return False
+            self._user_waiting.set()
+            log.info("AutoUpdater: Retry ends the launch delay early")
+            return True
+        self._stop = threading.Event()
+        self._user_waiting = threading.Event()
+        self._user_waiting.set()
+        self._delay_over = False
+        self._thread = threading.Thread(
+            target=self._run, name="AutoUpdater-retry", daemon=True,
+            kwargs={"initial_delay": 0},
+        )
+        self._thread.start()
+        log.info("AutoUpdater: Retry started (no launch delay)")
+        return True
 
     def stop(self):
         """Signal the background thread to stop as soon as possible."""
@@ -258,17 +316,23 @@ class AutoUpdater:
     # Internal
     # ------------------------------------------------------------------
 
-    def _run(self):
+    def _run(self, initial_delay=INITIAL_DELAY):
         """Entry point for the background thread."""
+        self._reported = False
+        self._stopped_because = "The update check stopped before it could download anything"
+        latest_version = ""
         try:
             self._tidy_staging()
             release, latest_version = self._fetch_latest_release()
 
-            # Wait before download check so the UI is fully loaded
-            for _ in range(INITIAL_DELAY):
+            # Wait before download check so the UI is fully loaded; the user
+            # asking to download now (retry) ends the wait early
+            for _ in range(initial_delay):
                 if self._stop.is_set():
                     return
-                time.sleep(1)
+                if self._user_waiting.wait(1):
+                    break
+            self._delay_over = True
 
             # If a staged package is already ready, skip re-download unless
             # GitHub has something newer than what's staged.
@@ -293,11 +357,19 @@ class AutoUpdater:
                     return
 
             if release is None:
+                self._stopped_because = "Couldn't reach GitHub to check for the update"
                 return
 
             self._check_and_download(release, latest_version)
-        except Exception:
+        except Exception as exc:
             log.error("AutoUpdater: Unhandled error in background thread", exc_info=True)
+            self._stopped_because = str(exc) or exc.__class__.__name__
+        finally:
+            self._delay_over = True
+            if self._user_waiting.is_set() and not self._reported and not self._stop.is_set():
+                # The user clicked Download / Try again and is looking at a
+                # "Downloading" pill: never leave it there with no way out.
+                self._emit_failed_signal(latest_version, self._stopped_because)
 
     def _tidy_staging(self):
         """Drop downloads that will never be installed, report how the last
@@ -361,6 +433,7 @@ class AutoUpdater:
         """Download the platform asset from an already-fetched release payload."""
         if not latest_version:
             log.warning("AutoUpdater: Could not parse version from release tag")
+            self._stopped_because = "The latest release has no version number"
             return
 
         if not is_version_newer(latest_version, info.VERSION):
@@ -368,6 +441,7 @@ class AutoUpdater:
                 "AutoUpdater: Current version %s is up-to-date (latest: %s)",
                 info.VERSION, latest_version,
             )
+            self._stopped_because = "GitHub no longer lists a newer release"
             # Still emit the version signal so the UI can confirm up-to-date
             self._emit_version_signal(latest_version)
             return
@@ -382,6 +456,7 @@ class AutoUpdater:
         arch_hint = _platform_asset_arch_hint()
         if not suffix:
             log.warning("AutoUpdater: No known asset suffix for this platform")
+            self._stopped_because = "Updates can't be downloaded on this platform"
             return
 
         download_url = None
@@ -404,8 +479,13 @@ class AutoUpdater:
                 "AutoUpdater: No asset matching '%s' for arch '%s' in release %s",
                 suffix, arch_hint, latest_version,
             )
-            # Still notify UI about the version
-            self._emit_version_signal(latest_version)
+            # Don't pretend this is a normal "available" pill — there is nothing
+            # in-app to download, so surface the failure and keep the website
+            # link as a fallback in the panel.
+            self._emit_failed_signal(
+                latest_version,
+                "No installer for this platform was published with that release",
+            )
             return
 
         log.info(
@@ -418,9 +498,9 @@ class AutoUpdater:
 
         if success:
             self._emit_update_ready_signal(latest_version)
-        else:
-            # Notify the UI that an update exists even if download failed
-            self._emit_version_signal(latest_version)
+        # On failure _download already emitted UpdateFailedSignal. Do not also
+        # emit FoundVersionSignal — that used to overwrite the failed state
+        # with "Update Available" and send people to the website.
 
     # ------------------------------------------------------------------
     # Download
@@ -448,6 +528,7 @@ class AutoUpdater:
         staging_file = os.path.join(UPDATE_STAGING_DIR, filename)
         temp_file = staging_file + ".part"
         throttle = ProgressThrottle(expected_size)
+        downloaded = 0
 
         try:
             resp = requests.get(url, stream=True, timeout=600)
@@ -459,7 +540,6 @@ class AutoUpdater:
                 throttle.total = int(resp.headers.get("Content-Length") or 0)
 
             sha256 = hashlib.sha256()
-            downloaded = 0
 
             # Flip the UI into its downloading state before the first chunk lands
             self._emit_progress_signal(
@@ -527,7 +607,8 @@ class AutoUpdater:
             self._safe_remove(temp_file)
             # A stop signal during shutdown is a normal abort, not a failure
             if not self._stop.is_set():
-                self._emit_failed_signal(version, str(exc) or exc.__class__.__name__)
+                self._emit_failed_signal(
+                    version, download_failure_reason(exc, downloaded, throttle.total))
             return False
 
     # ------------------------------------------------------------------
@@ -562,6 +643,7 @@ class AutoUpdater:
 
     def _emit_update_ready_signal(self, version):
         """Emit a signal indicating the update has been downloaded and staged."""
+        self._reported = True
         window = self._main_window()
         if window:
             try:
@@ -582,7 +664,8 @@ class AutoUpdater:
                 pass
 
     def _emit_failed_signal(self, version, reason):
-        """Report that the download failed, so the UI can offer a manual download."""
+        """Report that the download failed, so the UI can offer a retry."""
+        self._reported = True
         window = self._main_window()
         if window:
             try:

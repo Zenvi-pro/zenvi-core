@@ -26,6 +26,7 @@ from qt_api import (
 )
 
 from classes.logger import log
+from themes.cosmic.tokens import TOKENS
 from windows.agent_runners import CLI_RUNNERS
 
 
@@ -42,20 +43,20 @@ DETECT_THROTTLE_S = 2.0
 REOPEN_GUARD_S = 0.15
 
 # ── Cosmic dark palette ───────────────────────────────────────────────────
-BG_PANEL = "#161616"
-BG_ROW_HOVER = "#1f1f1f"
-BG_ROW_SELECTED = "#202631"
-TEXT = "#e8e8e8"
-TEXT_DIM = "#8a8a8a"
-BORDER = "rgba(255, 255, 255, 0.07)"
-BORDER_HI = "rgba(255, 255, 255, 0.13)"
-ACCENT = "#4d9cf6"
-DANGER = "#ef4444"
+BG_PANEL = TOKENS["raised"]
+BG_ROW_HOVER = TOKENS["hover"]
+BG_ROW_SELECTED = TOKENS["accent_soft"]
+TEXT = TOKENS["text"]
+TEXT_DIM = TOKENS["text_muted"]
+BORDER = TOKENS["line"]
+BORDER_HI = TOKENS["line_strong"]
+ACCENT = TOKENS["accent"]
+DANGER = TOKENS["danger"]
 
 # Status vocabulary, shared with the toolbar button's tooltip.
-COLOR_READY = "#22c55e"     # installed and registered with Zenvi's MCP server
-COLOR_PARTIAL = "#f59e0b"   # installed, not connected yet
-COLOR_MISSING = "#6b7280"   # not installed / not probed yet
+COLOR_READY = TOKENS["success"]     # installed and registered with Zenvi's MCP server
+COLOR_PARTIAL = TOKENS["text_muted"]   # installed, not connected yet
+COLOR_MISSING = TOKENS["text_faint"]   # not installed / not probed yet
 
 CLI_BINARIES = {backend: runner.CLI_NAME for backend, runner in CLI_RUNNERS.items()}
 
@@ -109,7 +110,7 @@ def _circle_pixmap(diameter, fill, ring=None, inner=None):
 def _radio_pixmap(selected):
     if selected:
         return _circle_pixmap(RADIO_PX, None, ring=ACCENT, inner=ACCENT)
-    return _circle_pixmap(RADIO_PX, None, ring="#5a5a5a")
+    return _circle_pixmap(RADIO_PX, None, ring=TOKENS["text_faint"])
 
 
 def _dot_pixmap(color):
@@ -268,6 +269,7 @@ class AgentPanel(QFrame):
         self.window = window
         self._rows = {}
         self._connecting = None
+        self._connect_phase = ""
         self._connect_error = {}
         self._refreshing = False
         self._last_detect = 0.0
@@ -336,15 +338,6 @@ class AgentPanel(QFrame):
     def _chat(self):
         return getattr(self.window, "dockAIChat", None)
 
-    def _has_models(self, backend_id):
-        """Whether the chat's model pill offers anything for *backend_id*."""
-        try:
-            from windows.agent_runners import models_for_backend
-            return bool(models_for_backend(backend_id))
-        except Exception:
-            log.debug("model lineup unavailable", exc_info=True)
-            return False
-
     def _state_for(self, backend_id, detected):
         """(color, word, desc, connect, danger, tooltip) for one backend."""
         if backend_id not in CLI_BINARIES:
@@ -358,6 +351,14 @@ class AgentPanel(QFrame):
         name = self._rows[backend_id].name.text()
 
         if self._connecting == backend_id:
+            if backend_id == "chatgpt":
+                if self._connect_phase == "download":
+                    return (COLOR_PARTIAL, self._tr("connecting…"),
+                            self._tr("Downloading ChatGPT agent…"),
+                            (self._tr("Downloading…"), False), False, "")
+                return (COLOR_PARTIAL, self._tr("connecting…"),
+                        self._tr("Finish signing in in your browser…"),
+                        (self._tr("Signing in…"), False), False, "")
             return (COLOR_PARTIAL, self._tr("connecting…"),
                     self._tr("Registering Zenvi's tools…"),
                     (self._tr("Connecting…"), False), False, "")
@@ -368,6 +369,9 @@ class AgentPanel(QFrame):
                     error.splitlines()[0], (self._tr("Retry"), True), True, error)
 
         if detected is None:
+            if backend_id == "chatgpt":
+                return (COLOR_MISSING, self._tr("checking…"),
+                        self._tr("Checking your ChatGPT sign-in…"), None, False, "")
             return (COLOR_MISSING, self._tr("checking…"),
                     self._tr("Looking for the ‘%s’ command…") % binary, None, False, "")
 
@@ -378,6 +382,17 @@ class AgentPanel(QFrame):
                     % binary)
 
         version = _format_version(detected.get("version"))
+        if backend_id == "chatgpt" and detected.get("logged_in") is False:
+            return (COLOR_PARTIAL, self._tr("needs sign-in"), version,
+                    (self._tr("Sign in"), True), False,
+                    self._tr("Sign in with ChatGPT to run the agent on your ChatGPT plan "
+                             "instead of Zenvi credits."))
+        # Only a CLI the app can sign in reports logged_in (CLI_LOGINS).
+        if detected.get("logged_in") is False:
+            return (COLOR_PARTIAL, self._tr("needs sign-in"), version,
+                    (self._tr("Sign in"), True), False,
+                    self._tr("%s's login expired. Sign in again to continue.")
+                    % name)
         if not detected.get("registered"):
             return (COLOR_PARTIAL, self._tr("not connected"), version,
                     (self._tr("Connect"), True), False,
@@ -415,10 +430,7 @@ class AgentPanel(QFrame):
                     backend_id, status.get(backend_id))
                 row.set_state(backend_id == active, color, word, desc, connect, danger, tip)
 
-            if active in CLI_BINARIES and not self._has_models(active):
-                self.footer.setText(self._tr("This agent uses the model from its own config"))
-            else:
-                self.footer.setText(self._tr("Model is set in the chat panel  →"))
+            self.footer.setText(self._tr("Model is set in the chat panel  →"))
         finally:
             self._refreshing = False
 
@@ -462,7 +474,28 @@ class AgentPanel(QFrame):
         chat = self._chat()
         if chat is None:
             return
+        # Sign-in is the agent's own login (Anthropic, ChatGPT); Connect is MCP registration — do not mix.
+        status = {}
+        try:
+            status = chat.cli_status() or {}
+        except Exception:
+            pass
+        if (status.get(backend_id) or {}).get("logged_in") is False:
+            self._connecting = backend_id
+            self._connect_phase = ""
+            self._connect_error.pop(backend_id, None)
+            self.refresh()
+            # Login can take several minutes in the browser; ChatGPT then downloads Codex (~150 MB).
+            minutes = 15 if backend_id == "chatgpt" else 6
+            self._connect_timer.start(max(CONNECT_TIMEOUT_MS, minutes * 60 * 1000))
+            try:
+                chat._sign_in_cli(backend_id)
+            except Exception:
+                log.error("Failed to start sign-in for %s", backend_id, exc_info=True)
+                self.on_connect_result(backend_id, False, self._tr("Could not start sign-in."))
+            return
         self._connecting = backend_id
+        self._connect_phase = ""
         self._connect_error.pop(backend_id, None)
         self.refresh()
         self._connect_timer.start(CONNECT_TIMEOUT_MS)
@@ -478,6 +511,7 @@ class AgentPanel(QFrame):
             return   # stale result for the other CLI
         self._connect_timer.stop()
         self._connecting = None
+        self._connect_phase = ""
         if ok:
             self._connect_error.pop(backend_id, None)
             row = self._rows.get(backend_id)
@@ -497,8 +531,16 @@ class AgentPanel(QFrame):
             self._connect_error[backend_id] = message or self._tr("Connect failed.")
             self.refresh()
 
+    def on_connect_progress(self, backend_id, phase):
+        """ChatGPT sign-in finished; the row is now the Codex download."""
+        if self._connecting != backend_id:
+            return
+        self._connect_phase = phase or ""
+        self.refresh()
+
     def _on_connect_timeout(self):
         backend_id, self._connecting = self._connecting, None
+        self._connect_phase = ""
         if backend_id:
             self._connect_error[backend_id] = self._tr("Connect timed out — try again.")
             self.refresh()
@@ -603,7 +645,7 @@ class AgentPanel(QFrame):
             "}"
             "#agentPanel QLabel { background: transparent; }"
             "#agentPanel QLabel#agentPanelTitle {"
-            "   color: #f2f2f2; font-size: 13px; font-weight: 600; }"
+            "   color: %(title)s; font-size: 13px; font-weight: 600; }"
             "#agentPanel QLabel#agentPanelSubtitle {"
             "   color: %(dim)s; font-size: 11px; }"
             "#agentPanel QFrame#agentRow {"
@@ -620,12 +662,12 @@ class AgentPanel(QFrame):
             "   color: %(dim)s; font-size: 11px; }"
             "#agentPanel QLabel#agentRowDesc { color: %(dim)s; font-size: 11px; }"
             "#agentPanel QPushButton#agentRowConnect {"
-            "   color: #0f0f0f; background-color: %(accent)s; border: none;"
-            "   border-radius: 5px; padding: 2px 12px; font-size: 11px;"
+            "   color: %(primary_text)s; background-color: %(primary)s; border: none;"
+            "   border-radius: 6px; padding: 2px 12px; font-size: 11px;"
             "   font-weight: 600; min-height: 0px; }"
-            "#agentPanel QPushButton#agentRowConnect:hover { background-color: #67abf8; }"
+            "#agentPanel QPushButton#agentRowConnect:hover { background-color: %(primary_hover)s; }"
             "#agentPanel QPushButton#agentRowConnect:disabled {"
-            "   background-color: #2a2a2a; color: #6b6b6b; }"
+            "   background-color: %(raised)s; color: %(text_faint)s; }"
             "#agentPanel QPushButton#agentPanelFooter {"
             "   color: %(dim)s; background: transparent; border: none;"
             "   font-size: 11px; text-align: left; padding: 2px 0px; min-height: 0px; }"
@@ -633,7 +675,10 @@ class AgentPanel(QFrame):
         ) % {
             "bg": BG_PANEL, "border": BORDER, "border_hi": BORDER_HI,
             "hover": BG_ROW_HOVER, "sel": BG_ROW_SELECTED, "accent": ACCENT,
-            "text": TEXT, "dim": TEXT_DIM,
+            "text": TEXT, "dim": TEXT_DIM, "title": TOKENS["text"],
+            "primary": TOKENS["primary"], "primary_text": TOKENS["primary_text"],
+            "primary_hover": TOKENS["primary_hover"], "raised": TOKENS["raised"],
+            "text_faint": TOKENS["text_faint"],
         }
 
     def sizeHint(self):

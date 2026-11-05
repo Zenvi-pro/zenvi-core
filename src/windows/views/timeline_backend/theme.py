@@ -262,8 +262,8 @@ class TimelineTheme:
         self.selection: QColor = QColor(255, 255, 255, 80)
         self.selection_border: QColor = QColor()
         self.selection_border_width: float = 0.0
-        self.playback_cache_color: QColor = QColor("#4B92AD")
-        self.playback_cache_height: float = 5.0
+        self.playback_cache_color: QColor = QColor(58, 114, 245, 115)  # a quiet hint, not a stripe
+        self.playback_cache_height: float = 2.0
 
         self.clip: BasicTheme = BasicTheme()
         self.transition: BasicTheme = BasicTheme()

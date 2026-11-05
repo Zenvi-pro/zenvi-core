@@ -10,7 +10,7 @@ Ported from upstream OpenShot
 | OpenShot/openshot-qt#NNNN | `sha` | title | full pick / hunks only: paths |
 
 Requires libopenshot: <0.5.0 is fine | 1.0.0 (build with `ZENVI_DEPS=~/zenvi-deps-1.0 LIBOPENSHOT_TAG=v1.0.0 LIBOPENSHOT_AUDIO_TAG=v1.0.0 bash scripts/build-mac-libopenshot.sh`)>
-Stacked on: <none — targets develop | `jashan/<dep>` (PR #N); retarget to develop after it merges with `scripts/upstream-port/retarget.sh <feature>`>
+Stacked on: <none — targets main | `jashan/<dep>` (PR #N); retarget to main after it merges with `scripts/upstream-port/retarget.sh <feature>`>
 
 Platforms
 
