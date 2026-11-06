@@ -1260,12 +1260,14 @@
             card.status.textContent = result.error;
         } else if (result.status === 'paid') {
             card.done = true;
+            card.el.classList.add('chat-topup-done'); /* no Pay button left to press again */
             card.status.className = 'chat-signin-status ok';
             card.status.textContent = result.already
                 ? 'Already added a moment ago; you were not charged again.'
                 : (result.credits || card.pack * 100).toLocaleString('en-US') + ' credits added.';
         } else {
             card.done = true;
+            card.el.classList.add('chat-topup-done');
             card.status.textContent = 'Finish paying in your browser; the credits appear here when Stripe confirms.';
         }
     };
