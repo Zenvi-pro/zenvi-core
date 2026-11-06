@@ -178,7 +178,9 @@ def _unwrap_langchain_content(value) -> str:
     return text
 
 
-_UNSAFE_HREF_RE = re.compile(r'href="\s*(?:javascript|vbscript|data):[^"]*"', re.I)
+# Links in a reply keep only these schemes; anything else (data:, javascript: hidden behind
+# control characters or entities, ...) becomes "#".
+_UNSAFE_HREF_RE = re.compile(r'href="(?!(?:https?://|mailto:|#))[^"]*"', re.I)
 
 
 def _markdown_to_html(text: str) -> str:
@@ -1019,6 +1021,12 @@ class ChatBridge(QObject):
     def signInZenvi(self):
         if self.window:
             self.window._sign_in_zenvi()
+
+    @guarded_slot()
+    def disarmTopUp(self):
+        """The transcript was cleared: no card on screen, so nothing may charge."""
+        if self.window:
+            self.window._topup_armed = False
 
     @guarded_slot()
     def offerTopUp(self):
@@ -3394,11 +3402,11 @@ class AIChatWindow(QDockWidget):
         A card on screen allows one charge at a time; a settled charge spends it. A retry after
         an unknown outcome is safe: buy-credits never charges the same pack twice in minutes.
         """
-        if getattr(self, "_topup_busy", False):
-            return  # the card on screen is charging: never swap it for a fresh one
+        if getattr(self, "_topup_busy", False) or not self._use_web_ui:
+            return False  # charging (never swap that card), or no web chat to draw it in
         self._topup_armed = True
-        if self._use_web_ui:
-            self._run_js("if(window.showTopUpCard) showTopUpCard(%s);" % json.dumps(quote))
+        self._run_js("if(window.showTopUpCard) showTopUpCard(%s);" % json.dumps(quote))
+        return True
 
     def _offer_topup(self, pack: int = 10):
         """Quote off the GUI thread, then show the card (after an out-of-credits error)."""
@@ -3435,15 +3443,19 @@ class AIChatWindow(QDockWidget):
                 if not url.startswith("https://checkout.stripe.com/"):
                     raise ValueError("not a Stripe Checkout URL")
                 import webbrowser
-                webbrowser.open(url)
+                if not webbrowser.open(url):
+                    raise RuntimeError("no browser could be started")
                 settled = True
-            elif settled:
-                self.refresh_credits_for_account()
         except Exception as exc:
             log.warning("top-up: could not open Checkout: %s", exc)
             result = {"error": "Could not open Stripe Checkout. Buy at https://zenvi.pro/topup."}
         if settled:
             self._topup_armed = False  # paid, or handed to Checkout: this card is spent
+        if result.get("status") == "paid":
+            try:  # a failed repaint is not a failed payment
+                self.refresh_credits_for_account()
+            except Exception as exc:
+                log.warning("top-up: balance refresh failed: %s", exc)
         self._run_js("if(window.onTopUpResult) onTopUpResult(%s);" % json.dumps(result))
 
     def _fetch_credits_balance(self):

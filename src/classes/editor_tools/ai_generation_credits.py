@@ -11,15 +11,16 @@ from classes.editor_tools._registry import editor_tool
 from classes.logger import log
 
 
-def _show_card(quote: dict) -> None:
+def _show_card(quote: dict) -> bool:
+    """True when the chat dock rendered the card (not headless, not mid-charge, web chat)."""
     def show():
         dock = getattr(getattr(get_app(), "window", None), "dockAIChat", None)
-        if dock is not None:
-            dock.show_topup_card(quote)
+        return bool(dock is not None and dock.show_topup_card(quote))
     try:
-        on_main(show)
+        return bool(on_main(show))
     except Exception as exc:  # no editor window (headless MCP): the link is enough
         log.debug("buy_credits_tool: no chat dock to show the card: %s", exc)
+        return False
 
 
 @editor_tool(
@@ -41,12 +42,19 @@ def buy_credits_tool(pack: int = 10) -> str:
     quote = credits.buy(int(pack))
     if quote.get("error"):
         return fail(quote["error"])
-    _show_card(quote)
+    shown = _show_card(quote)
     amount = "%s$%s" % ("CA" if quote.get("currency") == "cad" else "", quote.get("amount", pack))
     how = ("charged to %s" % quote["card"]) if quote.get("mode") == "card" and quote.get("card") else "paid on Stripe Checkout"
+    credits_text = format(int(quote.get("credits", pack * 100)), ",")
+    if not shown:
+        return ok(
+            "%s = %s credits, %s. Give the user this link to buy them; nothing is charged until they "
+            "confirm there: %s" % (amount, credits_text, how, topup_url(int(pack))),
+            pack=int(pack), mode=quote.get("mode"), card_shown=False,
+        )
     return ok(
         "Showed the top-up card in the Zenvi chat: %s = %s credits, %s when the user presses Pay. "
         "Nothing is charged until they do. Outside the app they can buy at %s."
-        % (amount, format(int(quote.get("credits", pack * 100)), ","), how, topup_url(int(pack))),
-        pack=int(pack), mode=quote.get("mode"),
+        % (amount, credits_text, how, topup_url(int(pack))),
+        pack=int(pack), mode=quote.get("mode"), card_shown=True,
     )

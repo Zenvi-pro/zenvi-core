@@ -259,3 +259,88 @@ def test_sandbox_mode_asks_buy_credits_for_stripe_test_keys(monkeypatch):
     monkeypatch.delenv("ZENVI_STRIPE_TEST")
     client.buy(10)
     assert sent == ["https://sb.example/functions/v1/buy-credits?stripe_test=1", "https://sb.example/functions/v1/buy-credits"]
+
+
+# ============================ CodeRabbit review (#391) ============================
+def test_the_tool_only_claims_a_card_it_showed(monkeypatch):
+    monkeypatch.setattr(cc.credits, "buy", lambda pack, confirm=False: dict(CARD, pack=pack))
+    monkeypatch.setattr(tool_mod, "_show_card", lambda q: False)
+    out = tool_mod.buy_credits_tool(pack=10)
+    assert "Showed the top-up card" not in out and "https://zenvi.pro/topup?pack=10" in out
+    monkeypatch.setattr(tool_mod, "_show_card", lambda q: True)
+    assert "Showed the top-up card" in tool_mod.buy_credits_tool(pack=10)
+
+
+def test_the_dock_says_whether_it_rendered_the_card():
+    js = []
+    shown = ai_chat_ui.AIChatWindow.show_topup_card(SimpleNamespace(_use_web_ui=True, _run_js=js.append), dict(CARD))
+    assert shown is True and js
+    assert ai_chat_ui.AIChatWindow.show_topup_card(SimpleNamespace(_use_web_ui=False, _run_js=js.append), dict(CARD)) is False
+    assert ai_chat_ui.AIChatWindow.show_topup_card(SimpleNamespace(_use_web_ui=True, _run_js=js.append, _topup_busy=True), dict(CARD)) is False
+
+
+def test_reply_links_keep_only_safe_schemes():
+    render = ai_chat_ui._markdown_to_html
+    for evil in ("[x](data:text/html,<script>x</script>)", "[x](\x01javascript:alert(1))",
+                 "[x](java\tscript:alert(1))", "[x](&#106;avascript:alert(1))", "[x](vbscript:x)"):
+        out = render(evil)
+        assert not re.search(r'href="(?!#")', out) or 'href="#"' in out, out
+        assert not re.search(r'href="[^"#]', out), out
+    good = render("[a](https://zenvi.pro/topup) [b](http://x.example/y) [c](mailto:hi@zenvi.pro)")
+    for href in ('href="https://zenvi.pro/topup"', 'href="http://x.example/y"', 'href="mailto:hi@zenvi.pro"'):
+        assert href in good, good
+
+
+def test_no_browser_keeps_the_card_retryable(monkeypatch):
+    win, js, opened, _ = _window(monkeypatch)
+    monkeypatch.setattr("webbrowser.open", lambda url, *a, **k: False)
+    win._topup_armed = True
+    ai_chat_ui.AIChatWindow._on_topup_result(win, json.dumps({"status": "checkout", "url": "https://checkout.stripe.com/c/pay/x"}))
+    assert win._topup_armed is True
+    assert any("onTopUpResult" in c and '"error"' in c for c in js)
+
+
+def test_a_balance_refresh_failure_is_not_a_payment_error(monkeypatch):
+    win, js, opened, _ = _window(monkeypatch)
+    def boom():
+        raise RuntimeError("can't start thread")
+    win.refresh_credits_for_account = boom
+    win._topup_armed = True
+    ai_chat_ui.AIChatWindow._on_topup_result(win, json.dumps({"status": "paid", "credits": 1000}))
+    assert win._topup_armed is False
+    assert any("onTopUpResult" in c and '"paid"' in c for c in js) and not any('"error"' in c for c in js)
+
+
+def test_clearing_the_transcript_disarms_the_card():
+    win = SimpleNamespace(_topup_armed=True)
+    bridge = SimpleNamespace(window=win)
+    fn = getattr(ai_chat_ui.ChatBridge.disarmTopUp, "__wrapped__", None) or ai_chat_ui.ChatBridge.disarmTopUp
+    fn(bridge)
+    assert win._topup_armed is False
+    text = (SRC / "chat_ui" / "chat.js").read_text(encoding="utf-8")
+    clear = text[text.index("window.clearMessages = function"):]
+    clear = clear[:clear.index("};")]
+    assert "disarmTopUp" in clear and "topUpCard = null" in clear
+
+
+def test_link_clicks_use_the_enum_either_qt_binding_has():
+    from windows import chat_web_view
+    flat = type("Flat", (), {"NavigationTypeLinkClicked": 7})
+    scoped = type("Scoped", (), {"NavigationType": type("NT", (), {"NavigationTypeLinkClicked": 9})})
+    assert chat_web_view.link_clicked_type(flat) == 7
+    assert chat_web_view.link_clicked_type(scoped) == 9
+
+
+def test_web_links_open_off_the_gui_thread_and_a_failed_launch_is_logged(monkeypatch):
+    from windows import chat_web_view
+    started, warned = [], []
+    monkeypatch.setattr(chat_web_view.threading, "Thread", lambda target, args=(), daemon=None, **kw: SimpleNamespace(start=lambda: started.append((target, args))))
+    monkeypatch.setattr(chat_web_view.log, "warning", lambda *a, **k: warned.append(a))
+    url = SimpleNamespace(scheme=lambda: "https", toString=lambda: "https://zenvi.pro/topup")
+    assert chat_web_view.open_web_link(url, True) is True
+    assert len(started) == 1  # handed to a thread; the GUI thread did not wait on the browser
+    monkeypatch.setattr("webbrowser.open", lambda *a, **k: False)
+    target, args = started[0]
+    target(*args)
+    assert warned and "https://zenvi.pro/topup" in str(warned[0])
+
