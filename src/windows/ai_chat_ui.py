@@ -1020,6 +1020,12 @@ class ChatBridge(QObject):
         if self.window:
             self.window._sign_in_zenvi()
 
+    @guarded_slot()
+    def offerTopUp(self):
+        """A tool was refused for credits: quote and show the top-up card (no charge)."""
+        if self.window:
+            self.window._offer_topup()
+
     @guarded_slot(int)
     def buyCredits(self, pack: int):
         """Pay on the top-up card: the only path that charges, and only from a click on the page."""

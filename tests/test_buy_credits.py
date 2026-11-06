@@ -224,3 +224,38 @@ def test_a_new_card_never_replaces_one_whose_charge_is_in_flight():
     win = SimpleNamespace(_use_web_ui=True, _run_js=js.append, _topup_busy=True)
     ai_chat_ui.AIChatWindow.show_topup_card(win, dict(CARD))
     assert js == []
+
+
+def test_the_backends_turn_refusal_offers_the_card():
+    assert ai_chat_ui.OUT_OF_CREDITS_RE.search("Out of credits for the Assistant. Top up at https://zenvi.pro/topup or upgrade your plan.")
+
+
+def test_a_tool_refused_for_credits_offers_the_card_too():
+    text = (SRC / "chat_ui" / "chat.js").read_text(encoding="utf-8")
+    regex = re.search(r"var OUT_OF_CREDITS_RE = /(.+?)/i;", text).group(1)
+    assert re.search(regex, "Error: Out of credits for image generation. Need 3, have 0.", re.I)
+    assert not re.search(regex, "Error: clip not found", re.I)
+    assert "bridge.offerTopUp" in text
+    called = []
+    bridge = SimpleNamespace(window=SimpleNamespace(_offer_topup=lambda: called.append(1)))
+    fn = getattr(ai_chat_ui.ChatBridge.offerTopUp, "__wrapped__", None) or ai_chat_ui.ChatBridge.offerTopUp
+    fn(bridge)
+    assert called == [1]
+
+
+def test_a_new_card_moves_below_the_latest_prompt():
+    text = (SRC / "chat_ui" / "chat.js").read_text(encoding="utf-8")
+    card = text[text.index("window.showTopUpCard"):text.index("window.onTopUpResult")]
+    assert "removeChild(topUpCard.el)" in card and "messagesEl.appendChild(el)" in card
+
+
+def test_sandbox_mode_asks_buy_credits_for_stripe_test_keys(monkeypatch):
+    sent = []
+    client = cc.CreditsClient()
+    monkeypatch.setattr(client, "_get_auth", lambda: (object(), {}, "https://sb.example"))
+    monkeypatch.setattr("requests.post", lambda url, **kw: sent.append(url) or FakeResp(200, CARD))
+    monkeypatch.setenv("ZENVI_STRIPE_TEST", "1")
+    client.buy(10)
+    monkeypatch.delenv("ZENVI_STRIPE_TEST")
+    client.buy(10)
+    assert sent == ["https://sb.example/functions/v1/buy-credits?stripe_test=1", "https://sb.example/functions/v1/buy-credits"]

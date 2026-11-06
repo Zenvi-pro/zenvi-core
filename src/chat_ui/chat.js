@@ -1154,6 +1154,8 @@
     /* A tool that failed because nobody is signed in gets a Sign in button right there (the browser opens the website
        sign-in; the app comes back to the front when it finishes), then a Continue button to carry on. */
     var AUTH_FAILURE_RE = /login required|unauthori[sz]ed|not authenticated|sign in to zenvi/i;
+    /* Zenvi's own credit refusals (#272): a tool refused for credits offers the top-up card. */
+    var OUT_OF_CREDITS_RE = /out of credits|insufficient credits/i;
     var signInPrompts = [];
 
     function addSignInPrompt(block) {
@@ -1315,6 +1317,8 @@
                     fetchToolDetail(callId, function (detail) {
                         if (AUTH_FAILURE_RE.test(String(summary || '') + '\n' + String(detail.result || ''))) {
                             addSignInPrompt(block);
+                        } else if (OUT_OF_CREDITS_RE.test(String(summary || '') + '\n' + String(detail.result || ''))) {
+                            getBridge(function (bridge) { if (bridge && bridge.offerTopUp) bridge.offerTopUp(); });
                         }
                     });
                 }

@@ -197,7 +197,9 @@ class CreditsClient:
         body = {"pack": pack, **({"confirm": True} if confirm else {})}
         try:
             import requests
-            resp = requests.post(f"{url}/functions/v1/buy-credits", headers=headers, json=body, timeout=30)
+            # ZENVI_STRIPE_TEST=1 (local testing): Stripe test keys, if the project allows request test mode.
+            test = "?stripe_test=1" if os.environ.get("ZENVI_STRIPE_TEST") == "1" else ""
+            resp = requests.post(f"{url}/functions/v1/buy-credits{test}", headers=headers, json=body, timeout=30)
             data = resp.json()
         except Exception as exc:
             log.warning("credits_client: buy-credits failed: %s", exc)
