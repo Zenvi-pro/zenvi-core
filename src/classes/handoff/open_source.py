@@ -165,8 +165,10 @@ def windows_launcher(argv: List[str], exists: Callable[[str], bool] = os.path.is
         return argv, {}
     # Drop "." components (bin\.\cursor.cmd) so the climb below reaches the install root;
     # the launcher keeps its own separators.
+    # A drive or \\.\ / \\?\ prefix is kept as written: its "." is not a path component.
+    drive, rest = ntpath.splitdrive(exe)
     sep = "\\" if "\\" in exe else "/"
-    folder = ntpath.dirname(sep.join(p for p in exe.replace("/", "\\").split("\\") if p != "."))
+    folder = ntpath.dirname(drive + sep.join(p for p in rest.replace("/", "\\").split("\\") if p != "."))
     for _ in range(4):  # bin/ -> app root, or resources/app/bin/ -> install root
         cli = ntpath.join(folder, "resources", "app", "out", "cli.js")
         if exists(cli):
