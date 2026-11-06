@@ -163,7 +163,10 @@ def windows_launcher(argv: List[str], exists: Callable[[str], bool] = os.path.is
     exe = argv[0] if argv else ""
     if not exe.lower().endswith((".cmd", ".bat")):
         return argv, {}
-    folder = ntpath.dirname(exe)
+    # Drop "." components (bin\.\cursor.cmd) so the climb below reaches the install root;
+    # the launcher keeps its own separators.
+    sep = "\\" if "\\" in exe else "/"
+    folder = ntpath.dirname(sep.join(p for p in exe.replace("/", "\\").split("\\") if p != "."))
     for _ in range(4):  # bin/ -> app root, or resources/app/bin/ -> install root
         cli = ntpath.join(folder, "resources", "app", "out", "cli.js")
         if exists(cli):

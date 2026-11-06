@@ -125,3 +125,11 @@ def test_the_system_app_still_opens_source_files_and_projects(tmp_path, monkeypa
         assert osrc.open_in_editor(str(tmp_path / name), None, setting="system")["editor"] == "system"
     assert [os.path.basename(p) for p in opened] == ["Intro.tsx", "promo.aep", "index.html"]
     assert osrc.launches_with_system("/a/Evil.app/", "darwin") and not osrc.launches_with_system("/a/b.js", "darwin")
+
+
+def test_a_dot_in_the_launcher_path_still_finds_the_install_root():
+    import ntpath
+    root = r"C:\Cursor"
+    have = {ntpath.join(root, "resources", "app", "out", "cli.js"), ntpath.join(root, "Cursor.exe")}
+    argv, env = osrc.windows_launcher([root + r"\resources\app\bin\.\cursor.cmd", r"C:\a&b\x.tsx"], exists=lambda p: p in have)
+    assert argv[0] == ntpath.join(root, "Cursor.exe") and env == {"ELECTRON_RUN_AS_NODE": "1"}
