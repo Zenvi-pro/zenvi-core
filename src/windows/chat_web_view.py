@@ -391,7 +391,12 @@ def link_clicked_type(page_cls):
 
 def _launch_browser(target: str) -> None:
     import webbrowser
-    if not webbrowser.open(target):
+    try:
+        opened = webbrowser.open(target)
+    except Exception as exc:
+        log.warning("Could not open a browser for %s (%s); open it by hand", target, exc)
+        return
+    if not opened:
         log.warning("Could not open a browser for %s; open it by hand", target)
 
 

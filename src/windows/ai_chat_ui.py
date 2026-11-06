@@ -183,6 +183,23 @@ def _unwrap_langchain_content(value) -> str:
 _UNSAFE_HREF_RE = re.compile(r'href="(?!(?:https?://|mailto:|#))[^"]*"', re.I)
 
 
+def _open_checkout(result: dict) -> dict:
+    """Open a top-up's Stripe Checkout URL (called off the GUI thread); an error result if it cannot."""
+    if result.get("status") != "checkout":
+        return result
+    url = str(result.get("url") or "")
+    try:
+        if not url.startswith("https://checkout.stripe.com/"):
+            raise ValueError("not a Stripe Checkout URL")
+        import webbrowser
+        if not webbrowser.open(url):
+            raise RuntimeError("no browser could be started")
+    except Exception as exc:
+        log.warning("top-up: could not open Checkout: %s", exc)
+        return {"error": "Could not open Stripe Checkout. Buy at https://zenvi.pro/topup."}
+    return result
+
+
 def _markdown_to_html(text: str) -> str:
     """Convert markdown to HTML suitable for QTextEdit. Uses theme text color for body."""
     text = _unwrap_langchain_content(text)
@@ -1021,6 +1038,12 @@ class ChatBridge(QObject):
     def signInZenvi(self):
         if self.window:
             self.window._sign_in_zenvi()
+
+    @guarded_slot()
+    def armTopUp(self):
+        """The page drew a top-up card: its Pay may now charge once."""
+        if self.window:
+            self.window._topup_armed = True
 
     @guarded_slot()
     def disarmTopUp(self):
@@ -3402,11 +3425,13 @@ class AIChatWindow(QDockWidget):
         A card on screen allows one charge at a time; a settled charge spends it. A retry after
         an unknown outcome is safe: buy-credits never charges the same pack twice in minutes.
         """
-        if getattr(self, "_topup_busy", False) or not self._use_web_ui:
-            return False  # charging (never swap that card), or no web chat to draw it in
-        self._topup_armed = True
+        if getattr(self, "_topup_busy", False):
+            return "charging"  # never swap a card that is charging for a fresh one
+        if not self._use_web_ui:
+            return ""  # no web chat to draw it in
+        # The page arms it (ChatBridge.armTopUp) once drawn, in order with clearMessages.
         self._run_js("if(window.showTopUpCard) showTopUpCard(%s);" % json.dumps(quote))
-        return True
+        return "shown"
 
     def _offer_topup(self, pack: int = 10):
         """Quote off the GUI thread, then show the card (after an out-of-credits error)."""
@@ -3428,27 +3453,15 @@ class AIChatWindow(QDockWidget):
 
         def run():
             from classes.credits_client import credits as _creds
-            result = _creds.buy(pack, confirm=True)
+            result = _open_checkout(_creds.buy(pack, confirm=True))
             QMetaObject.invokeMethod(self, "_on_topup_result", Qt.QueuedConnection, Q_ARG(str, json.dumps(result)))
         threading.Thread(target=run, daemon=True, name="credits-topup").start()
 
     @pyqtSlot(str)
     def _on_topup_result(self, payload: str):
-        result = json.loads(payload)
+        result = json.loads(payload)  # a checkout result here was already opened (_open_checkout)
         self._topup_busy = False
-        settled = result.get("status") == "paid"
-        try:
-            url = str(result.get("url") or "")
-            if result.get("status") == "checkout":
-                if not url.startswith("https://checkout.stripe.com/"):
-                    raise ValueError("not a Stripe Checkout URL")
-                import webbrowser
-                if not webbrowser.open(url):
-                    raise RuntimeError("no browser could be started")
-                settled = True
-        except Exception as exc:
-            log.warning("top-up: could not open Checkout: %s", exc)
-            result = {"error": "Could not open Stripe Checkout. Buy at https://zenvi.pro/topup."}
+        settled = result.get("status") in ("paid", "checkout")
         if settled:
             self._topup_armed = False  # paid, or handed to Checkout: this card is spent
         if result.get("status") == "paid":

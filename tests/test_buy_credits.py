@@ -108,14 +108,16 @@ def test_paying_from_the_card_refreshes_the_badge(monkeypatch):
 
 def test_a_user_without_a_saved_card_finishes_on_stripe(monkeypatch):
     win, js, opened, _ = _window(monkeypatch)
-    ai_chat_ui.AIChatWindow._on_topup_result(win, json.dumps({"status": "checkout", "url": "https://checkout.stripe.com/c/pay/x"}))
+    result = ai_chat_ui._open_checkout({"status": "checkout", "url": "https://checkout.stripe.com/c/pay/x"})
+    ai_chat_ui.AIChatWindow._on_topup_result(win, json.dumps(result))
     assert opened == ["https://checkout.stripe.com/c/pay/x"]
 
 
 def test_only_a_stripe_checkout_url_is_opened(monkeypatch):
     win, js, opened, _ = _window(monkeypatch)
-    ai_chat_ui.AIChatWindow._on_topup_result(win, json.dumps({"status": "checkout", "url": "https://evil.example/pay"}))
-    assert opened == []
+    result = ai_chat_ui._open_checkout({"status": "checkout", "url": "https://evil.example/pay"})
+    ai_chat_ui.AIChatWindow._on_topup_result(win, json.dumps(result))
+    assert opened == [] and "error" in result
 
 
 def test_the_bridge_charges_only_through_the_page(monkeypatch):
@@ -136,7 +138,8 @@ def test_an_out_of_credits_error_offers_the_card():
 def test_links_in_the_chat_open_in_the_browser_not_in_the_dock(monkeypatch):
     from windows import chat_web_view
     opened = []
-    monkeypatch.setattr("webbrowser.open", opened.append)
+    monkeypatch.setattr("webbrowser.open", lambda u: opened.append(u) or True)
+    monkeypatch.setattr(chat_web_view.threading, "Thread", lambda target, args=(), daemon=None, **kw: SimpleNamespace(start=lambda: target(*args)))
     url = lambda u: SimpleNamespace(scheme=lambda: u.split(":")[0], toString=lambda: u)
     assert chat_web_view.open_web_link(url("https://zenvi.pro/topup?pack=10"), True)
     assert not chat_web_view.open_web_link(url("https://zenvi.pro/topup"), False)
@@ -185,6 +188,14 @@ def _armed_window(monkeypatch, result):
     win = SimpleNamespace(_use_web_ui=True, _run_js=js.append, refresh_credits_for_account=lambda: None)
     for name in ("show_topup_card", "_buy_credits", "_on_topup_result"):
         setattr(win, name, getattr(ai_chat_ui.AIChatWindow, name).__get__(win))
+    draw = win.show_topup_card
+
+    def show(quote):  # the page arms a card once it has drawn it (ChatBridge.armTopUp)
+        state = draw(quote)
+        if state == "shown":
+            win._topup_armed = True
+        return state
+    win.show_topup_card = show
     return win, calls, js
 
 
@@ -264,19 +275,30 @@ def test_sandbox_mode_asks_buy_credits_for_stripe_test_keys(monkeypatch):
 # ============================ CodeRabbit review (#391) ============================
 def test_the_tool_only_claims_a_card_it_showed(monkeypatch):
     monkeypatch.setattr(cc.credits, "buy", lambda pack, confirm=False: dict(CARD, pack=pack))
-    monkeypatch.setattr(tool_mod, "_show_card", lambda q: False)
+    monkeypatch.setattr(tool_mod, "_show_card", lambda q: "")
     out = tool_mod.buy_credits_tool(pack=10)
     assert "Showed the top-up card" not in out and "https://zenvi.pro/topup?pack=10" in out
-    monkeypatch.setattr(tool_mod, "_show_card", lambda q: True)
+    monkeypatch.setattr(tool_mod, "_show_card", lambda q: "charging")
+    out = tool_mod.buy_credits_tool(pack=10)
+    assert "being charged" in out and "zenvi.pro/topup" not in out  # no second payment path
+    monkeypatch.setattr(tool_mod, "_show_card", lambda q: "shown")
     assert "Showed the top-up card" in tool_mod.buy_credits_tool(pack=10)
 
 
 def test_the_dock_says_whether_it_rendered_the_card():
     js = []
-    shown = ai_chat_ui.AIChatWindow.show_topup_card(SimpleNamespace(_use_web_ui=True, _run_js=js.append), dict(CARD))
-    assert shown is True and js
-    assert ai_chat_ui.AIChatWindow.show_topup_card(SimpleNamespace(_use_web_ui=False, _run_js=js.append), dict(CARD)) is False
-    assert ai_chat_ui.AIChatWindow.show_topup_card(SimpleNamespace(_use_web_ui=True, _run_js=js.append, _topup_busy=True), dict(CARD)) is False
+    win = SimpleNamespace(_use_web_ui=True, _run_js=js.append)
+    assert ai_chat_ui.AIChatWindow.show_topup_card(win, dict(CARD)) == "shown" and js
+    assert not getattr(win, "_topup_armed", False)  # armed by the page once drawn, not before
+    assert ai_chat_ui.AIChatWindow.show_topup_card(SimpleNamespace(_use_web_ui=False, _run_js=js.append), dict(CARD)) == ""
+    assert ai_chat_ui.AIChatWindow.show_topup_card(SimpleNamespace(_use_web_ui=True, _run_js=js.append, _topup_busy=True), dict(CARD)) == "charging"
+    bridge = SimpleNamespace(window=win)
+    fn = getattr(ai_chat_ui.ChatBridge.armTopUp, "__wrapped__", None) or ai_chat_ui.ChatBridge.armTopUp
+    fn(bridge)
+    assert win._topup_armed is True
+    text = (SRC / "chat_ui" / "chat.js").read_text(encoding="utf-8")
+    card = text[text.index("window.showTopUpCard"):text.index("window.onTopUpResult")]
+    assert card.index("messagesEl.appendChild(el)") < card.index("bridge.armTopUp()")
 
 
 def test_reply_links_keep_only_safe_schemes():
@@ -295,7 +317,8 @@ def test_no_browser_keeps_the_card_retryable(monkeypatch):
     win, js, opened, _ = _window(monkeypatch)
     monkeypatch.setattr("webbrowser.open", lambda url, *a, **k: False)
     win._topup_armed = True
-    ai_chat_ui.AIChatWindow._on_topup_result(win, json.dumps({"status": "checkout", "url": "https://checkout.stripe.com/c/pay/x"}))
+    result = ai_chat_ui._open_checkout({"status": "checkout", "url": "https://checkout.stripe.com/c/pay/x"})
+    ai_chat_ui.AIChatWindow._on_topup_result(win, json.dumps(result))
     assert win._topup_armed is True
     assert any("onTopUpResult" in c and '"error"' in c for c in js)
 

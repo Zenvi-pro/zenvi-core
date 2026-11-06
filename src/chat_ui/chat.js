@@ -1250,6 +1250,7 @@
         topUpCard = card;
         messagesEl.appendChild(el);
         scrollToBottomIfPinned();
+        getBridge(function (bridge) { if (bridge && bridge.armTopUp) bridge.armTopUp(); });
     };
     window.onTopUpResult = function (result) {
         var card = topUpCard;

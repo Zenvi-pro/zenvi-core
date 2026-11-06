@@ -11,16 +11,16 @@ from classes.editor_tools._registry import editor_tool
 from classes.logger import log
 
 
-def _show_card(quote: dict) -> bool:
-    """True when the chat dock rendered the card (not headless, not mid-charge, web chat)."""
+def _show_card(quote: dict) -> str:
+    """"shown", "charging" (a top-up is already being paid), or "" (no chat to draw it in)."""
     def show():
         dock = getattr(getattr(get_app(), "window", None), "dockAIChat", None)
-        return bool(dock is not None and dock.show_topup_card(quote))
+        return dock.show_topup_card(quote) if dock is not None else ""
     try:
-        return bool(on_main(show))
+        return str(on_main(show) or "")
     except Exception as exc:  # no editor window (headless MCP): the link is enough
         log.debug("buy_credits_tool: no chat dock to show the card: %s", exc)
-        return False
+        return ""
 
 
 @editor_tool(
@@ -46,7 +46,12 @@ def buy_credits_tool(pack: int = 10) -> str:
     amount = "%s$%s" % ("CA" if quote.get("currency") == "cad" else "", quote.get("amount", pack))
     how = ("charged to %s" % quote["card"]) if quote.get("mode") == "card" and quote.get("card") else "paid on Stripe Checkout"
     credits_text = format(int(quote.get("credits", pack * 100)), ",")
-    if not shown:
+    if shown == "charging":
+        return ok(
+            "A top-up is being charged in the Zenvi chat right now. Do not offer another payment; "
+            "tell the user to wait for it to finish.", pack=int(pack), card_shown=False,
+        )
+    if shown != "shown":
         return ok(
             "%s = %s credits, %s. Give the user this link to buy them; nothing is charged until they "
             "confirm there: %s" % (amount, credits_text, how, topup_url(int(pack))),
