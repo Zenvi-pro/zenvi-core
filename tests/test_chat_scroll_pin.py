@@ -26,6 +26,8 @@ def _slice(src: str, start: str, end: str) -> str:
 
 _HARNESS = r"""
 var content = 0, top = 0, pending = false, listeners = [];
+var topUpCard = null;                    // clearMessages forgets the top-up card (#272)
+function getBridge(cb) { cb(null); }     // no Qt bridge in this harness
 var messagesEl = {
     clientHeight: 400,
     get scrollHeight() { return Math.max(content, this.clientHeight); },

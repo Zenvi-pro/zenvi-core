@@ -1154,6 +1154,8 @@
     /* A tool that failed because nobody is signed in gets a Sign in button right there (the browser opens the website
        sign-in; the app comes back to the front when it finishes), then a Continue button to carry on. */
     var AUTH_FAILURE_RE = /login required|unauthori[sz]ed|not authenticated|sign in to zenvi/i;
+    /* Zenvi's own credit refusals (#272): a tool refused for credits offers the top-up card. */
+    var OUT_OF_CREDITS_RE = /out of credits|insufficient credits/i;
     var signInPrompts = [];
 
     function addSignInPrompt(block) {
@@ -1191,6 +1193,85 @@
         });
         scrollToBottomIfPinned();
     }
+
+    /* Top-up card (#272). The only way to pay is the Pay button below: a click on this page. */
+    var topUpCard = null;
+    window.showTopUpCard = function (quote) {
+        if (!quote) return;
+        if (topUpCard && !topUpCard.done && topUpCard.pay.disabled) return; /* charging: keep that card */
+        if (topUpCard && !topUpCard.done && topUpCard.el.parentNode) topUpCard.el.parentNode.removeChild(topUpCard.el);
+        var el = document.createElement('div');
+        el.className = 'chat-topup';
+        var title = document.createElement('div');
+        title.className = 'chat-topup-title';
+        title.textContent = 'Add credits';
+        el.appendChild(title);
+        var packs = document.createElement('div');
+        packs.className = 'chat-topup-packs';
+        el.appendChild(packs);
+        var pay = document.createElement('button');
+        pay.type = 'button';
+        pay.className = 'chat-signin-btn chat-topup-pay';
+        var status = document.createElement('div');
+        status.className = 'chat-signin-status';
+        el.appendChild(pay);
+        el.appendChild(status);
+        var card = { el: el, pack: quote.pack || 10, done: false, pay: pay, status: status };
+        var symbol = quote.currency === 'cad' ? 'CA$' : '$';
+        function label() {
+            var price = symbol + card.pack;
+            pay.textContent = quote.mode === 'card' && quote.card ? 'Pay ' + price + ' with ' + quote.card : 'Pay ' + price + ' on Stripe';
+            status.textContent = quote.mode === 'card' ? 'Charged now to the card on your Zenvi subscription.' : 'Opens Stripe Checkout in your browser. Your card is saved for next time.';
+        }
+        [5, 10, 15].forEach(function (p) {
+            var b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'chat-topup-pack' + (p === card.pack ? ' selected' : '');
+            b.textContent = '$' + p + ' · ' + (p * 100).toLocaleString('en-US') + ' credits';
+            b.addEventListener('click', function () {
+                if (card.done || pay.disabled) return;
+                card.pack = p;
+                Array.prototype.forEach.call(packs.children, function (c) { c.classList.remove('selected'); });
+                b.classList.add('selected');
+                label();
+            });
+            packs.appendChild(b);
+        });
+        pay.addEventListener('click', function () {
+            if (card.done || pay.disabled) return;
+            pay.disabled = true;
+            status.className = 'chat-signin-status';
+            status.textContent = quote.mode === 'card' ? 'Charging…' : 'Opening Stripe…';
+            getBridge(function (bridge) {
+                if (bridge && bridge.buyCredits) bridge.buyCredits(card.pack);
+            });
+        });
+        label();
+        topUpCard = card;
+        messagesEl.appendChild(el);
+        scrollToBottomIfPinned();
+        getBridge(function (bridge) { if (bridge && bridge.armTopUp) bridge.armTopUp(); });
+    };
+    window.onTopUpResult = function (result) {
+        var card = topUpCard;
+        if (!card || !result) return;
+        if (result.error) {
+            card.pay.disabled = false;
+            card.status.className = 'chat-signin-status error';
+            card.status.textContent = result.error;
+        } else if (result.status === 'paid') {
+            card.done = true;
+            card.el.classList.add('chat-topup-done'); /* no Pay button left to press again */
+            card.status.className = 'chat-signin-status ok';
+            card.status.textContent = result.already
+                ? 'Already added a moment ago; you were not charged again.'
+                : (result.credits || card.pack * 100).toLocaleString('en-US') + ' credits added.';
+        } else {
+            card.done = true;
+            card.el.classList.add('chat-topup-done');
+            card.status.textContent = 'Finish paying in your browser; the credits appear here when Stripe confirms.';
+        }
+    };
 
     /* The website shows the same code: approving a sign-in that shows another one would sign in someone else. */
     window.onZenviSignInStarted = function (code) {
@@ -1239,6 +1320,8 @@
                     fetchToolDetail(callId, function (detail) {
                         if (AUTH_FAILURE_RE.test(String(summary || '') + '\n' + String(detail.result || ''))) {
                             addSignInPrompt(block);
+                        } else if (OUT_OF_CREDITS_RE.test(String(summary || '') + '\n' + String(detail.result || ''))) {
+                            getBridge(function (bridge) { if (bridge && bridge.offerTopUp) bridge.offerTopUp(); });
                         }
                     });
                 }
@@ -2013,6 +2096,8 @@
     window.clearMessages = function () {
         typingEl = null;
         messagesEl.innerHTML = '';
+        topUpCard = null; /* its card is gone: nothing may charge until a new one shows */
+        getBridge(function (bridge) { if (bridge && bridge.disarmTopUp) bridge.disarmTopUp(); });
         // A new transcript (tab switch, restore) opens at its newest message,
         // whatever the previous one was scrolled to.
         pinnedToBottom = true;

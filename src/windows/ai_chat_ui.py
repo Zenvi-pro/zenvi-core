@@ -28,6 +28,9 @@ from windows.agent_runners import CLI_RUNNERS
 from windows.embedded_web import web_embed_backend
 from themes.cosmic.tokens import TOKENS
 
+# Zenvi's own credit refusals (backend credit_gate, credits_client), not a provider's balance.
+OUT_OF_CREDITS_RE = re.compile(r"out of credits|insufficient credits", re.I)
+
 # Theme colors for chat CEP UI (match theme QSS). Keys match ThemeName.value.
 # Bloomberg Light: high information density, sharp edges, accent #6366F1.
 CHAT_THEME_COLORS = {
@@ -175,12 +178,39 @@ def _unwrap_langchain_content(value) -> str:
     return text
 
 
+# Links in a reply keep only these schemes; anything else (data:, javascript: hidden behind
+# control characters or entities, ...) becomes "#".
+_UNSAFE_HREF_RE = re.compile(r'href="(?!(?:https?://|mailto:|#))[^"]*"', re.I)
+
+
+def _open_checkout(result: dict) -> dict:
+    """Open a top-up's Stripe Checkout URL (called off the GUI thread); an error result if it cannot."""
+    if result.get("status") != "checkout":
+        return result
+    url = str(result.get("url") or "")
+    try:
+        if not url.startswith("https://checkout.stripe.com/"):
+            raise ValueError("not a Stripe Checkout URL")
+        import webbrowser
+        if not webbrowser.open(url):
+            raise RuntimeError("no browser could be started")
+    except Exception as exc:
+        log.warning("top-up: could not open Checkout: %s", exc)
+        return {"error": "Could not open Stripe Checkout. Buy at https://zenvi.pro/topup."}
+    return result
+
+
 def _markdown_to_html(text: str) -> str:
     """Convert markdown to HTML suitable for QTextEdit. Uses theme text color for body."""
     text = _unwrap_langchain_content(text)
     try:
         import markdown
-        body = markdown.markdown(text, extensions=["extra"])
+        # Not "extra": its attr_list and md_in_html put arbitrary attributes (onerror=...) on real tags.
+        md = markdown.Markdown(extensions=["abbr", "def_list", "fenced_code", "footnotes", "tables"])
+        # Raw HTML in a reply is shown as text: script in this page could press the Pay bridge (#272).
+        md.preprocessors.deregister("html_block")
+        md.inlinePatterns.deregister("html")
+        body = _UNSAFE_HREF_RE.sub('href="#"', md.convert(text))
     except Exception as exc:
         log.warning("_markdown_to_html: markdown render failed: %s", exc)
         body = html.escape(text).replace("\n", "<br/>")
@@ -1008,6 +1038,30 @@ class ChatBridge(QObject):
     def signInZenvi(self):
         if self.window:
             self.window._sign_in_zenvi()
+
+    @guarded_slot()
+    def armTopUp(self):
+        """The page drew a top-up card: its Pay may now charge once."""
+        if self.window:
+            self.window._topup_armed = True
+
+    @guarded_slot()
+    def disarmTopUp(self):
+        """The transcript was cleared: no card on screen, so nothing may charge."""
+        if self.window:
+            self.window._topup_armed = False
+
+    @guarded_slot()
+    def offerTopUp(self):
+        """A tool was refused for credits: quote and show the top-up card (no charge)."""
+        if self.window:
+            self.window._offer_topup()
+
+    @guarded_slot(int)
+    def buyCredits(self, pack: int):
+        """Pay on the top-up card: the only path that charges, and only from a click on the page."""
+        if self.window:
+            self.window._buy_credits(int(pack))
 
     @guarded_slot(str, result=str)
     def toolDetail(self, call_id: str) -> str:
@@ -3365,6 +3419,62 @@ class AIChatWindow(QDockWidget):
             self._credits_timer.timeout.connect(self._fetch_credits_balance)
             self._credits_timer.start(60_000)   # refresh every 60 seconds
 
+    def show_topup_card(self, quote: dict):
+        """Top-up card (#272) in the chat; Pay calls ChatBridge.buyCredits.
+
+        A card on screen allows one charge at a time; a settled charge spends it. A retry after
+        an unknown outcome is safe: buy-credits never charges the same pack twice in minutes.
+        """
+        if getattr(self, "_topup_busy", False):
+            return "charging"  # never swap a card that is charging for a fresh one
+        if not self._use_web_ui:
+            return ""  # no web chat to draw it in
+        # The page arms it (ChatBridge.armTopUp) once drawn, in order with clearMessages.
+        self._run_js("if(window.showTopUpCard) showTopUpCard(%s);" % json.dumps(quote))
+        return "shown"
+
+    def _offer_topup(self, pack: int = 10):
+        """Quote off the GUI thread, then show the card (after an out-of-credits error)."""
+        def run():
+            from classes.credits_client import credits as _creds
+            quote = _creds.buy(pack)
+            if not quote.get("error"):
+                QMetaObject.invokeMethod(self, "_show_topup_card_json", Qt.QueuedConnection, Q_ARG(str, json.dumps(quote)))
+        threading.Thread(target=run, daemon=True, name="credits-topup-quote").start()
+
+    @pyqtSlot(str)
+    def _show_topup_card_json(self, payload: str):
+        self.show_topup_card(json.loads(payload))
+
+    def _buy_credits(self, pack: int):
+        if not getattr(self, "_topup_armed", False) or getattr(self, "_topup_busy", False):
+            return  # no card on screen, or its payment is in flight
+        self._topup_busy = True
+
+        def run():
+            from classes.credits_client import credits as _creds
+            result = _open_checkout(_creds.buy(pack, confirm=True))
+            QMetaObject.invokeMethod(self, "_on_topup_result", Qt.QueuedConnection, Q_ARG(str, json.dumps(result)))
+        try:
+            threading.Thread(target=run, daemon=True, name="credits-topup").start()
+        except Exception as exc:  # nothing was sent: the card stays payable
+            log.warning("top-up: could not start the payment: %s", exc)
+            self._on_topup_result(json.dumps({"error": "Could not start the payment. Try again."}))
+
+    @pyqtSlot(str)
+    def _on_topup_result(self, payload: str):
+        result = json.loads(payload)  # a checkout result here was already opened (_open_checkout)
+        self._topup_busy = False
+        settled = result.get("status") in ("paid", "checkout")
+        if settled:
+            self._topup_armed = False  # paid, or handed to Checkout: this card is spent
+        if result.get("status") == "paid":
+            try:  # a failed repaint is not a failed payment
+                self.refresh_credits_for_account()
+            except Exception as exc:
+                log.warning("top-up: balance refresh failed: %s", exc)
+        self._run_js("if(window.onTopUpResult) onTopUpResult(%s);" % json.dumps(result))
+
     def _fetch_credits_balance(self):
         """Fetch balance in a background thread; the credits listener repaints."""
         def run():
@@ -4602,6 +4712,8 @@ class AIChatWindow(QDockWidget):
                 self._run_js("if(window.resetStreamingMessage) window.resetStreamingMessage();")
             self._add_system_msg("Error: %s" % text)
             self._set_processing_ui(False)
+            if OUT_OF_CREDITS_RE.search(text or ""):
+                self._offer_topup()
 
     @pyqtSlot(str)
     def _on_auth_required(self, text: str):
