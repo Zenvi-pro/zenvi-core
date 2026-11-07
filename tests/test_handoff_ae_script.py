@@ -14,6 +14,7 @@
 
 import json
 import os
+import pathlib
 import shutil
 import subprocess
 
@@ -133,7 +134,7 @@ def _materialize(name, tmp_path):
 
 def _run(script, media_json=None, *args):
     argv = [NODE, MOCK, str(script)] + (["--media", str(media_json)] if media_json else []) + list(args)
-    proc = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", timeout=120)
     assert proc.returncode == 0, proc.stderr
     out = json.loads(proc.stdout)
     assert out["error"] is None, out["error"]
@@ -548,7 +549,7 @@ def test_a_moved_export_folder_with_a_percent_escape_in_its_name_still_finds_its
     result, dump = _run(moved / "export" / "Trip.jsx", None)
     assert result["placeholders"] == [] and result["warnings"] == []
     files = [i["file"] for i in dump["items"] if i["type"] == "Footage"]
-    assert files == [str(moved / "export" / "media" / "beach.mp4")]
+    assert [pathlib.Path(f) for f in files] == [moved / "export" / "media" / "beach.mp4"]
 
 
 @needs_node

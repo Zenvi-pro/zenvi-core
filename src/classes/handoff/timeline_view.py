@@ -96,7 +96,8 @@ def resolve_media_path(raw: str, project_path: Optional[str] = None) -> str:
     if not raw:
         return ""
     normalized = raw.replace("\\", "/")
-    if os.path.isabs(normalized) and not normalized.startswith("~"):
+    # Python 3.13+ isabs() is False for a drive-less "/x" on Windows; accept it explicitly.
+    if (os.path.isabs(normalized) or normalized.startswith("/")) and not normalized.startswith("~"):
         # Keep POSIX absolute paths forward-slashed on Windows. ``os.path.normpath``
         # turns ``/media/...`` into ``\\media\\...``, which then invents a fake
         # ``C:`` drive in Premiere ``pathurl`` / remaps. Real Windows paths are

@@ -187,9 +187,10 @@ def test_appearances_give_when_where_and_how_sure():
 def test_files_are_owner_only_and_a_failed_write_leaves_nothing(home):
     P.assign_new_faces(SHA, scan_of(unit(0)))
     P._write_json(P._scan_path(SHA), scan_of(unit(0)))
-    for path in (P._registry_path(), P._scan_path(SHA)):
-        assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
-    assert stat.S_IMODE(os.stat(P.people_root()).st_mode) == 0o700
+    if os.name != "nt":  # POSIX permission bits
+        for path in (P._registry_path(), P._scan_path(SHA)):
+            assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+        assert stat.S_IMODE(os.stat(P.people_root()).st_mode) == 0o700
     with pytest.raises(TypeError):
         P._write_json(P._scan_path("c" * 64), {"x": object()})
     assert not [n for n in os.listdir(os.path.dirname(P._scan_path(SHA))) if n.endswith(".part")] and not os.path.exists(P._scan_path("c" * 64))
