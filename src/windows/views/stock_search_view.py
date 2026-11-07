@@ -291,7 +291,8 @@ class StockSearchView(QWidget):
         if height <= 0:
             return
         # Half the dock, and never a short strip: the open area is where more files land.
-        canvas = max(FILE_CANVAS_MIN, height // 2)
+        # An explicit minimum overrides the layout's, so keep room for every file or nothing scrolls.
+        canvas = max(FILE_CANVAS_MIN, height // 2, self._files_block.layout().minimumSize().height())
         if self._files_block.minimumHeight() != canvas:
             self._files_block.setMinimumHeight(canvas)
 
@@ -392,6 +393,7 @@ class StockSearchView(QWidget):
         files_view.setGridSize(tile_grid_size(FILE_ICON))
         files_view.setStyleSheet(_FILES_STYLE)
         self._files_holder_layout.addWidget(files_view)
+        files_view.installEventFilter(self)
 
         # Refit the embedded view's height to its contents so the outer scroll
         # area owns the only scrollbar.
@@ -418,13 +420,12 @@ class StockSearchView(QWidget):
         except Exception:
             total = count
         self._files_empty.setVisible(count == 0 and total > 0)
-        grid = view.gridSize()
-        gw = grid.width() or 110
-        gh = grid.height() or 95
-        width = view.viewport().width() or self.width() or 320
-        cols = max(1, width // gw)
-        rows = (count + cols - 1) // cols
-        content_h = rows * gh + 8 if rows else 0
+        # Measure the real layout: a guess from the grid size undercounts rows and clips the files.
+        content_h = 0
+        if count:
+            view.doItemsLayout()   # a pending relayout would report the old, shorter rows
+            last = view.visualRect(model.index(count - 1, 0))
+            content_h = last.bottom() + view.verticalScrollBar().value() + 2 * view.frameWidth() + 8
         view.setFixedHeight(max(content_h, EMPTY_FILES_DROP_MIN_HEIGHT))
         self._pin_files_half()
 
@@ -432,6 +433,10 @@ class StockSearchView(QWidget):
         # Catch Finder drops on the scroll area / empty Project Files space.
         # The embedded list view keeps its own handlers for drops on cards.
         etype = event.type()
+        if obj is self._files_view:
+            if etype == QEvent.Resize and event.size().width() != event.oldSize().width():
+                self._refit_files()   # a new width rewraps the files into a different number of rows
+            return False   # the list keeps its own drag and drop handling
         if obj is self._scroll.viewport() and etype == QEvent.Resize:
             self._pin_files_half()
             return False
