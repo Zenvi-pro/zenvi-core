@@ -401,11 +401,11 @@ def _launch_browser(target: str) -> None:
 
 
 def open_web_link(url, link_clicked: bool) -> bool:
-    """A clicked http(s) link in a reply (a top-up or Checkout link, a doc) opens in the browser.
+    """A clicked http(s) or mailto: link in a reply (a top-up or Checkout link, a doc) opens outside the chat.
 
     Off the GUI thread: a BROWSER command that runs in the foreground would freeze the editor.
     """
-    if not link_clicked or url.scheme() not in ("http", "https"):
+    if not link_clicked or url.scheme() not in ("http", "https", "mailto"):
         return False
     threading.Thread(target=_launch_browser, args=(url.toString(),), daemon=True).start()
     return True

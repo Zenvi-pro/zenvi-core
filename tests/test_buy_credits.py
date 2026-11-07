@@ -22,6 +22,16 @@ from classes.editor_tools import REGISTRY  # noqa: E402
 from classes.editor_tools import ai_generation_credits as tool_mod  # noqa: E402
 from windows import ai_chat_ui  # noqa: E402
 
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _production_urls(monkeypatch):
+    """URL assertions must not depend on the developer's ZENVI_STRIPE_TEST / ZENVI_WEBSITE."""
+    monkeypatch.delenv("ZENVI_STRIPE_TEST", raising=False)
+    monkeypatch.setattr("classes.auth_manager.ZENVI_WEBSITE", "https://zenvi.pro")
+
+
 CARD = {"pack": 10, "credits": 1000, "amount": 10, "currency": "usd", "mode": "card", "card": "Visa •4242"}
 
 
@@ -366,4 +376,26 @@ def test_web_links_open_off_the_gui_thread_and_a_failed_launch_is_logged(monkeyp
     target, args = started[0]
     target(*args)
     assert warned and "https://zenvi.pro/topup" in str(warned[0])
+
+
+def test_a_payment_thread_that_cannot_start_leaves_the_card_retryable(monkeypatch):
+    js = []
+    win = SimpleNamespace(_use_web_ui=True, _run_js=js.append, _topup_armed=True, refresh_credits_for_account=lambda: None)
+    win._on_topup_result = ai_chat_ui.AIChatWindow._on_topup_result.__get__(win)
+
+    def no_thread(*a, **k):
+        raise RuntimeError("can't start new thread")
+    monkeypatch.setattr(ai_chat_ui.threading, "Thread", lambda *a, **k: SimpleNamespace(start=no_thread))
+    ai_chat_ui.AIChatWindow._buy_credits(win, 10)
+    assert win._topup_busy is False and win._topup_armed is True
+    assert any("onTopUpResult" in c and '"error"' in c for c in js)
+
+
+def test_mailto_links_in_a_reply_open_the_mail_app(monkeypatch):
+    from windows import chat_web_view
+    started = []
+    monkeypatch.setattr(chat_web_view.threading, "Thread", lambda target, args=(), daemon=None, **kw: SimpleNamespace(start=lambda: started.append(args)))
+    url = SimpleNamespace(scheme=lambda: "mailto", toString=lambda: "mailto:hi@zenvi.pro")
+    assert chat_web_view.open_web_link(url, True) is True
+    assert started == [("mailto:hi@zenvi.pro",)]
 

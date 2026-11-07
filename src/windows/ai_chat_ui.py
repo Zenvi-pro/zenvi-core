@@ -3455,7 +3455,11 @@ class AIChatWindow(QDockWidget):
             from classes.credits_client import credits as _creds
             result = _open_checkout(_creds.buy(pack, confirm=True))
             QMetaObject.invokeMethod(self, "_on_topup_result", Qt.QueuedConnection, Q_ARG(str, json.dumps(result)))
-        threading.Thread(target=run, daemon=True, name="credits-topup").start()
+        try:
+            threading.Thread(target=run, daemon=True, name="credits-topup").start()
+        except Exception as exc:  # nothing was sent: the card stays payable
+            log.warning("top-up: could not start the payment: %s", exc)
+            self._on_topup_result(json.dumps({"error": "Could not start the payment. Try again."}))
 
     @pyqtSlot(str)
     def _on_topup_result(self, payload: str):
