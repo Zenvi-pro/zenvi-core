@@ -134,6 +134,7 @@ CAPABILITIES = [
     # ------------------------------------------------------------------ ai-generation
     ("ai.comfyui_create", "ai-generation", "AI Tools > Create with AI (Image, Video, Sound, Music)", "Generate new media with local ComfyUI templates"),
     ("ai.comfyui_enhance", "ai-generation", "AI Tools > Enhance with AI", "Upscale, restyle, image-to-video, track object blur/highlight/mask, depth/lines, split scenes, speech clarity, noise reduction"),
+    ("ai.credits", "ai-generation", "buy_credits_tool", "Top up credits from the Assistant: a card the user confirms, or a zenvi.pro/topup link"),
     ("ai.jobs", "ai-generation", "Cancel Job / generation queue", "List and cancel generation jobs"),
     ("ai.tts", "ai-generation", "generate_tts_and_add_to_timeline_tool", "Narration from text placed on a real track with its real duration (off the GUI thread)"),
     ("ai.video_generation", "ai-generation", "generate_video/modify_clip/generate_transition_clip tools", "AI video generation/edit/morph that replaces (not stacks on) the originals and reports failures as errors"),

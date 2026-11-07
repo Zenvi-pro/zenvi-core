@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 
 from qt_api import QEvent, QUrl, pyqtSignal
 from qt_api import QAction, QColor, QKeySequence
@@ -382,6 +383,34 @@ def _project_file_ids_from_event(event):
     return [str(x) for x in data if x]
 
 
+def link_clicked_type(page_cls):
+    """The link-click navigation type: PyQt5 has it on the class, PyQt6 only under NavigationType."""
+    flat = getattr(page_cls, "NavigationTypeLinkClicked", None)
+    return flat if flat is not None else page_cls.NavigationType.NavigationTypeLinkClicked
+
+
+def _launch_browser(target: str) -> None:
+    import webbrowser
+    try:
+        opened = webbrowser.open(target)
+    except Exception as exc:
+        log.warning("Could not open a browser for %s (%s); open it by hand", target, exc)
+        return
+    if not opened:
+        log.warning("Could not open a browser for %s; open it by hand", target)
+
+
+def open_web_link(url, link_clicked: bool) -> bool:
+    """A clicked http(s) or mailto: link in a reply (a top-up or Checkout link, a doc) opens outside the chat.
+
+    Off the GUI thread: a BROWSER command that runs in the foreground would freeze the editor.
+    """
+    if not link_clicked or url.scheme() not in ("http", "https", "mailto"):
+        return False
+    threading.Thread(target=_launch_browser, args=(url.toString(),), daemon=True).start()
+    return True
+
+
 def _accept_chat_file_drag(event) -> bool:
     if accept_os_file_drag(event):
         return True
@@ -405,6 +434,8 @@ if QWebEnginePage is not None:
         def acceptNavigationRequest(self, url, nav_type, is_main_frame):
             if is_allowed_chat_navigation(url, self._chat_ui_dir):
                 return True
+            if open_web_link(url, nav_type == link_clicked_type(QWebEnginePage)):
+                return False
             if is_main_frame:
                 path = ""
                 try:
@@ -472,6 +503,8 @@ if QWebView is not None and QWebPage is not None:
             url = request.url() if request is not None else QUrl()
             if is_allowed_chat_navigation(url, self._chat_ui_dir):
                 return True
+            if open_web_link(url, nav_type == link_clicked_type(QWebPage)):
+                return False
             path = ""
             try:
                 if url.isLocalFile():

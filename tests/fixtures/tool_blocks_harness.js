@@ -73,6 +73,7 @@ const PRELUDE = [
     'var ACTIVITY_X_SVG = "<svg class=\\"x\\"></svg>";',
     'var TOOL_CHEVRON_SVG = "<svg class=\\"chevron\\"></svg>";',
     varSource('AUTH_FAILURE_RE'),
+    varSource('OUT_OF_CREDITS_RE'),
     'function escapeHtml(s) { return String(s); }',
     'function scrollToBottomIfPinned() {}',
     'function clearReasoningStep() {}',
