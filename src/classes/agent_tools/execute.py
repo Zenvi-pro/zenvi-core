@@ -23,6 +23,56 @@ _MAIN_THREAD_TIMEOUT_DEFAULT = 30
 _MAIN_THREAD_TIMEOUT_PER_STEP = 8
 _EXPORT_MAIN_THREAD_TIMEOUT = 60 * 60 * 6
 
+_autosave_pause_depth = 0
+_autosave_was_running = False
+
+
+def _pause_window_autosave() -> bool:
+    """Stop the main-window autosave timer for a mutating tool. Nested-safe."""
+    global _autosave_pause_depth, _autosave_was_running
+    running = False
+    try:
+        app = _GET_APP() if _GET_APP is not None else None
+        if app is not None:
+            try:
+                app._agent_tool_in_progress = True
+            except Exception:
+                pass
+            timer = getattr(getattr(app, "window", None), "auto_save_timer", None)
+            if timer is not None and hasattr(timer, "isActive") and timer.isActive():
+                timer.stop()
+                running = True
+    except Exception:
+        log.debug("Could not pause autosave for agent tool", exc_info=True)
+    if _autosave_pause_depth == 0:
+        _autosave_was_running = running
+    else:
+        _autosave_was_running = _autosave_was_running or running
+    _autosave_pause_depth += 1
+    return _autosave_was_running
+
+
+def _resume_window_autosave(was_active: bool) -> None:
+    global _autosave_pause_depth, _autosave_was_running
+    _autosave_pause_depth = max(0, _autosave_pause_depth - 1)
+    if _autosave_pause_depth:
+        return
+    should = _autosave_was_running or was_active
+    _autosave_was_running = False
+    try:
+        app = _GET_APP() if _GET_APP is not None else None
+        if app is not None:
+            try:
+                app._agent_tool_in_progress = False
+            except Exception:
+                pass
+            if should:
+                timer = getattr(getattr(app, "window", None), "auto_save_timer", None)
+                if timer is not None and hasattr(timer, "start"):
+                    timer.start()
+    except Exception:
+        log.debug("Could not resume autosave after agent tool", exc_info=True)
+
 
 def bind_runtime(
     *,
@@ -163,6 +213,9 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
     if transaction_id is not None:
         public_args["transaction_id"] = transaction_id
 
+    pause_autosave = tool_name not in _READ_ONLY
+    was_active = _pause_window_autosave() if pause_autosave else False
+
     def _invoke() -> ToolOutput:
         out = _invoke_inner()
         attached = take_attached_images()
@@ -279,23 +332,27 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
         return ToolOutput(receipt=receipt)
 
     try:
-        if _QTHREAD is None:
-            out = _invoke()
-        else:
-            app = _GET_APP()
-            if _QTHREAD.currentThread() is app.thread():
-                out = _invoke()
-            elif tool_name in _READ_ONLY or tool_name in _BACKGROUND_SAFE:
+        try:
+            if _QTHREAD is None:
                 out = _invoke()
             else:
-                out = _RUN_ON_MAIN(
-                    _invoke, timeout=_main_thread_timeout(tool_name, public_args)
-                )
-                if not isinstance(out, ToolOutput):
-                    out = ToolOutput(receipt=ToolReceipt.error(tool_name, "bad dispatch result"))
-    except Exception as e:
-        log.error("Tool %s dispatch failed: %s", tool_name, e, exc_info=True)
-        out = ToolOutput(receipt=ToolReceipt.error(tool_name, str(e)))
+                app = _GET_APP()
+                if _QTHREAD.currentThread() is app.thread():
+                    out = _invoke()
+                elif tool_name in _READ_ONLY or tool_name in _BACKGROUND_SAFE:
+                    out = _invoke()
+                else:
+                    out = _RUN_ON_MAIN(
+                        _invoke, timeout=_main_thread_timeout(tool_name, public_args)
+                    )
+                    if not isinstance(out, ToolOutput):
+                        out = ToolOutput(receipt=ToolReceipt.error(tool_name, "bad dispatch result"))
+        except Exception as e:
+            log.error("Tool %s dispatch failed: %s", tool_name, e, exc_info=True)
+            out = ToolOutput(receipt=ToolReceipt.error(tool_name, str(e)))
 
-    set_last_output(out)
-    return out
+        set_last_output(out)
+        return out
+    finally:
+        if pause_autosave:
+            _resume_window_autosave(was_active)

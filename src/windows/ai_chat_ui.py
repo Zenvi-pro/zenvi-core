@@ -175,15 +175,23 @@ def _unwrap_langchain_content(value) -> str:
     return text
 
 
+_markdown_failed = False
+
+
 def _markdown_to_html(text: str) -> str:
     """Convert markdown to HTML suitable for QTextEdit. Uses theme text color for body."""
+    global _markdown_failed
     text = _unwrap_langchain_content(text)
-    try:
-        import markdown
-        body = markdown.markdown(text, extensions=["extra"])
-    except Exception as exc:
-        log.warning("_markdown_to_html: markdown render failed: %s", exc)
+    if _markdown_failed:
         body = html.escape(text).replace("\n", "<br/>")
+    else:
+        try:
+            import markdown
+            body = markdown.markdown(text, extensions=["extra"])
+        except Exception as exc:
+            _markdown_failed = True
+            log.warning("_markdown_to_html: markdown render failed: %s", exc)
+            body = html.escape(text).replace("\n", "<br/>")
     # Wrap in a div and style code blocks so they don't override theme colors
     # Use 'currentColor' so code inherits the widget's text color
     style = (

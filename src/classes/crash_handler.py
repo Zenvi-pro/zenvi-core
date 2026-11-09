@@ -189,7 +189,13 @@ def notify_with_guard(notify_impl, receiver, event):
     """
     try:
         return notify_impl(receiver, event)
+    except MemoryError:
+        _fallback_write("MemoryError in Qt event")
+        return False
     except Exception:
+        if getattr(_reporting, "active", False):
+            _fallback_write("Nested exception in Qt event suppressed")
+            return False
         report(*sys.exc_info(), context="Qt event")
         return False
 

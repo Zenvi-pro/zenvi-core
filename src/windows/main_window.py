@@ -582,6 +582,17 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             self.open_project(path)
             return
 
+        if kind == "too_large":
+            log.warning("Last project is too large to auto-open: %s", path)
+            status = getattr(self, "statusBar", None)
+            if status is not None:
+                _ = get_app()._tr
+                status.showMessage(
+                    _("Last project is too large to auto-open — use File → Open"),
+                    8000)
+            self._load_blank_project()
+            return
+
         if kind == "missing":
             log.info("Previous project is missing: %s", path)
             self._set_restore_project_path("")
@@ -943,6 +954,21 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 app.project.save(file_path)
 
                 log.info("Saved project %s", file_path)
+                self._autosave_oom = False
+
+            except MemoryError:
+                log.error("MemoryError saving project %s; autosave stopped", file_path, exc_info=1)
+                self._autosave_oom = True
+
+                def _stop_autosave():
+                    timer = getattr(self, "auto_save_timer", None)
+                    if timer is not None:
+                        timer.stop()
+
+                invoke_on_gui(_stop_autosave, context=self)
+                if raise_errors:
+                    raise
+                return
 
             except Exception as ex:
                 log.error("Couldn't save project %s", file_path, exc_info=1)
@@ -986,6 +1012,14 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # left an empty zip that File > Recovery offered as a previous version.
         if not os.path.exists(file_path):
             return
+
+        from classes.session_restore import AUTO_RESTORE_MAX_BYTES
+        try:
+            if os.path.getsize(file_path) > AUTO_RESTORE_MAX_BYTES:
+                log.info("Skipping recovery zip; project is too large: %s", file_path)
+                return
+        except OSError:
+            pass
 
         folder_path, file_name = os.path.split(file_path)
         file_name, file_ext = os.path.splitext(file_name)
@@ -1338,6 +1372,16 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         app = get_app()
         current_data_version = app.updates.data_version
 
+        if getattr(self, "_autosave_oom", False):
+            log.debug("auto_save_project: skipped — previous save ran out of memory")
+            return
+        if getattr(self, "_autosave_in_flight", False):
+            log.debug("auto_save_project: skipped — a save is already running")
+            return
+        if getattr(app, "_agent_tool_in_progress", False):
+            log.debug("auto_save_project: skipped — agent tool in progress")
+            return
+
         # Skip auto-save if a video generation pipeline is in progress.
         # The generation code pauses and resumes this timer, but as a
         # secondary safeguard we also check a flag.
@@ -1360,7 +1404,15 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             # A real project file exists (keep current path; may be .zvn / .osp / .flow)
             # Save project
             log.info("Auto save project file: %s", file_path)
-            threading.Thread(target=self.save_project, args=(file_path,), daemon=True).start()
+            self._autosave_in_flight = True
+
+            def _auto_save(path=file_path):
+                try:
+                    self.save_project(path)
+                finally:
+                    self._autosave_in_flight = False
+
+            threading.Thread(target=_auto_save, daemon=True).start()
 
             # Remove backup file (if any)
             if os.path.exists(info.BACKUP_FILE):
@@ -5723,6 +5775,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.shutting_down = False
         self._restart_for_update = False
         self.lock = threading.Lock()
+        self._autosave_in_flight = False
+        self._autosave_oom = False
         self.installEventFilter(self)
         self._project_loading = False
         self._pending_project_open_refresh = False
