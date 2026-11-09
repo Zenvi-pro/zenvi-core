@@ -381,6 +381,9 @@ def test_transcribe_parakeet_runs_the_cli_outside_any_project(home, monkeypatch,
     assert seen["argv"][:4] == ["node.exe", str(cli), "transcribe", wav]
     assert ("--engine", "parakeet") == tuple(seen["argv"][seen["argv"].index("--engine"):][:2])
     assert not os.path.exists(seen["argv"][seen["argv"].index("--dir") + 1])   # its scratch folder is removed
+    assert "--language" not in seen["argv"]
+    hf.transcribe_parakeet(wav, language="ja")
+    assert seen["argv"][seen["argv"].index("--language") + 1] == "ja"
 
     monkeypatch.setattr(hf, "_exec", lambda *a, **k: (2, "boom"))
     with pytest.raises(hf.HyperframesError, match="exit code 2"):

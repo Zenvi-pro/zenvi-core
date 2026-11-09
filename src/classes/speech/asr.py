@@ -65,7 +65,7 @@ class ParakeetTranscriber:
     def transcribe(self, wav_path, *, language, token):
         from classes import hyperframes_local as hf
         token.raise_if_cancelled()
-        return _words(hf.transcribe_parakeet(wav_path)), language or "unknown"
+        return _words(hf.transcribe_parakeet(wav_path, language=language)), language or "unknown"
 
 
 def _local_engine() -> str:

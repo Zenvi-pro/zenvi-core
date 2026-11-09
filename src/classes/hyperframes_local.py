@@ -684,15 +684,20 @@ def recognise(wav: str, language: Optional[str] = None, timeout: float = SPEECH_
         raise HyperframesError("the speech recogniser returned something unreadable: %s" % exc)
 
 
-def transcribe_parakeet(wav: str, timeout: float = SPEECH_TIMEOUT) -> List[dict]:
-    """Words of a WAV file as ``[{text, start, end}]`` from the CLI's Parakeet recogniser, outside any project."""
+def transcribe_parakeet(wav: str, language: Optional[str] = None, timeout: float = SPEECH_TIMEOUT) -> List[dict]:
+    """Words of a WAV file as ``[{text, start, end}]`` from the CLI's Parakeet recogniser, outside any project.
+
+    *language* (two-letter) keeps only speech in that language; otherwise it is detected.
+    """
     node = find_program("node")
     if not node or not os.path.isfile(cli_script()):
         raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
     out_dir = tempfile.mkdtemp(prefix="zenvi-parakeet-")
     try:
-        code, out = _exec([node, cli_script(), "transcribe", wav, "--engine", "parakeet", "--json", "--dir", out_dir],
-                          out_dir, node, timeout)
+        argv = [node, cli_script(), "transcribe", wav, "--engine", "parakeet", "--json", "--dir", out_dir]
+        if language:
+            argv += ["--language", language]
+        code, out = _exec(argv, out_dir, node, timeout)
         if code != 0:
             raise HyperframesError("the Parakeet recogniser failed (exit code %d): %s" % (code, out[-800:]))
         try:

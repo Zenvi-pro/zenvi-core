@@ -92,10 +92,13 @@ def test_whistle_downloads_on_first_use_and_passes_the_language():
 
 
 def test_parakeet_transcriber_runs_the_cli_recogniser():
+    seen = []
     with patch("classes.hyperframes_local.transcribe_parakeet",
-               lambda wav: [{"text": "yo", "start": 0.0, "end": 0.2}]):
+               lambda wav, language=None: seen.append(language) or [{"text": "yo", "start": 0.0, "end": 0.2}]):
         words, lang = make_transcriber("parakeet").transcribe("a.wav", language=None, token=CancelToken())
+        make_transcriber("parakeet").transcribe("a.wav", language="ja", token=CancelToken())
     assert words == [Word("yo", 0.0, 0.2)] and lang == "unknown"
+    assert seen == [None, "ja"]   # the requested language reaches the CLI
 
 
 def test_apple_failure_falls_back_to_the_captions_recogniser(tmp_path):
