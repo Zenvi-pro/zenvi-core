@@ -303,13 +303,16 @@ class HeadlessRuntime(QObject):
         # Again: libopenshot installs its own crash handlers with the window's
         # first Timeline, and the shutdown signals must stay ours.
         self._claim_signals()
-        if not self._open_project():
-            # Still through the event loop, so the window shuts down in order.
-            self._exit_request = ("the project could not be opened", EXIT_PROJECT)
-
-        QTimer.singleShot(0, self._on_loop_started)
+        # Open --project after the event loop is alive so WebEngine/QWidget
+        # exist. Do not load a fat .zvn on the import path.
+        QTimer.singleShot(0, self._open_project_when_loop_ready)
         exec_fn = getattr(self._app, "exec", None) or getattr(self._app, "exec_")
         return exec_fn()
+
+    def _open_project_when_loop_ready(self):
+        if not self._open_project():
+            self._exit_request = ("the project could not be opened", EXIT_PROJECT)
+        self._on_loop_started()
 
     def _open_project(self) -> bool:
         window = self._app.window

@@ -31,7 +31,7 @@ import re
 
 from classes import info
 from classes.app import get_app
-from classes.assets import get_assets_path
+from classes.assets import get_assets_path, resolve_assets_file
 
 
 def _project_file_path(project_file=None):
@@ -83,9 +83,8 @@ def absolute_media_path(path_value, project_file=None):
 
     if normalized.startswith("@assets"):
         project_file = _project_file_path(project_file)
-        assets_root = get_assets_path(project_file, create_paths=False)
         suffix = _token_suffix(normalized)
-        return os.path.normpath(os.path.join(assets_root, suffix))
+        return resolve_assets_file(project_file, suffix)
 
     if normalized.startswith("thumbnail/"):
         project_file = _project_file_path(project_file)

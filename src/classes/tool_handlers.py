@@ -6227,9 +6227,32 @@ def build_editor_snapshot_for_chat(max_chars: int = 5500) -> str:
         else:
             head += "MEDIA_BIN: (empty)\n"
 
-        tl = get_timeline_state()
-        body = (tl or "").strip()
-        out = f"{head}TIMELINE:\n{body}\n" if body else f"{head}TIMELINE: (empty or unavailable)\n"
+        from classes.query import Clip
+        clips = Clip.filter() or []
+        tl_lines = []
+        for clip in clips[:40]:
+            data = clip.data if isinstance(getattr(clip, "data", None), dict) else {}
+            reader = data.get("reader") if isinstance(data.get("reader"), dict) else {}
+            name = (
+                data.get("title")
+                or data.get("name")
+                or os.path.basename(str(reader.get("path") or data.get("file_id") or "?"))
+            )
+            pos = float(data.get("position") or 0)
+            start = float(data.get("start") or 0)
+            end = float(data.get("end") or 0)
+            dur = max(0.0, end - start)
+            tl_lines.append(
+                f"  id={clip.id} file={name!r} {pos:.2f}s–{pos + dur:.2f}s"
+            )
+        n_clips = len(clips)
+        if tl_lines:
+            body = "\n".join(tl_lines)
+            if n_clips > len(tl_lines):
+                body += f"\n  ... and {n_clips - len(tl_lines)} more"
+            out = f"{head}TIMELINE:\n{body}\n"
+        else:
+            out = f"{head}TIMELINE: (empty or unavailable)\n"
         if len(out) > max_chars:
             out = out[: max(0, max_chars - 24)].rstrip() + "\n... (truncated)\n"
         return out + "[/Editor snapshot]\n"

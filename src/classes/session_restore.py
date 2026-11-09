@@ -10,6 +10,10 @@ import os
 
 from classes import info
 
+# Auto-restore and recovery-zip skip the same cap: 209 MB recovered Marina
+# files were usable; 1.4 GB+ hung. A legitimate huge project is File → Open.
+AUTO_RESTORE_MAX_BYTES = 400 * 1024 * 1024
+
 
 def normalize_restore_project_path(file_path) -> str:
     """Absolute path for a named project, or "" for untitled / backup."""
@@ -56,6 +60,7 @@ def choose_restore_target(settings, backup_exists: bool):
     Returns one of:
       ("untitled_backup", None)
       ("named", absolute_path)
+      ("too_large", absolute_path)  — exists but over AUTO_RESTORE_MAX_BYTES
       ("blank", None)
       ("missing", absolute_path)  — remembered path is gone
     """
@@ -64,6 +69,11 @@ def choose_restore_target(settings, backup_exists: bool):
 
     restore_path = settings.get("restore_project_path") or ""
     if restore_path and os.path.exists(restore_path):
+        try:
+            if os.path.getsize(restore_path) > AUTO_RESTORE_MAX_BYTES:
+                return ("too_large", restore_path)
+        except OSError:
+            pass
         return ("named", restore_path)
     if restore_path:
         return ("missing", restore_path)

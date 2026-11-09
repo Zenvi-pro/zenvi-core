@@ -211,7 +211,7 @@ settings_path = os.path.join(_home, ".openshot_qt", "openshot.settings")
 
 try:
     if os.path.exists(settings_path):
-        with open(settings_path, "r", encoding="utf-8") as fh:
+        with open(settings_path, "r", encoding="utf-8-sig") as fh:
             for item in json.load(fh):
                 if item.get("setting") == "ui-scale":
                     scale = float(item.get("value", scale))
@@ -222,17 +222,24 @@ scale = max(1.0, min(3.0, scale))
 if scale != 1.0:
     os.environ["QT_SCALE_FACTOR"] = str(scale)
 
+# Scan argv before importing QtWebEngine: headless.activate() itself imports
+# qt_api, so the platform plugin has to be set here.
+_HEADLESS_ARGV = "--headless" in sys.argv
+if _HEADLESS_ARGV:
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
 # Prefer XWayland on Wayland sessions: Qt 5's Wayland plugin can't drag a
 # floating panel back into the main window (see classes/qt_platform.py).
 # Must happen before QApplication is constructed, which is when Qt reads this.
-try:
-    from classes.qt_platform import select_qt_platform
+if not _HEADLESS_ARGV:
+    try:
+        from classes.qt_platform import select_qt_platform
 
-    if select_qt_platform(os.environ):
-        logger.info("Wayland session detected: using the xcb (XWayland) Qt platform "
-                    "so dock panels stay draggable. Set QT_QPA_PLATFORM to override.")
-except Exception as exc:
-    logger.warning("Failed to select Qt platform plugin: %s", exc, exc_info=True)
+        if select_qt_platform(os.environ):
+            logger.info("Wayland session detected: using the xcb (XWayland) Qt platform "
+                        "so dock panels stay draggable. Set QT_QPA_PLATFORM to override.")
+    except Exception as exc:
+        logger.warning("Failed to select Qt platform plugin: %s", exc, exc_info=True)
 
 from qt_api import QtCore, QtWidgets, QtWebEngineWidgets
 
@@ -264,6 +271,9 @@ except ImportError:
     import openshot_qt
     sys.path.append(openshot_qt.OPENSHOT_PATH)
     from classes import info
+
+if _HEADLESS_ARGV:
+    info.WEB_BACKEND = "qwidget"
 
 # Global holder for QApplication instance
 app = None

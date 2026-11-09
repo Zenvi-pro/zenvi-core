@@ -81,3 +81,20 @@ def test_overwriting_a_saved_project_zips_the_previous_version(tmp_path):
         assert zf.namelist() == ["Edit.zvn"]
         assert zf.read("Edit.zvn") == b'{"version": "previous"}'
     assert errors == []
+
+
+def test_save_recovery_skips_a_project_over_the_size_cap(tmp_path, monkeypatch):
+    from classes import session_restore
+
+    monkeypatch.setattr(session_restore, "AUTO_RESTORE_MAX_BYTES", 10)
+    recovery = tmp_path / "recovery"
+    recovery.mkdir()
+    project = tmp_path / "Fat.zvn"
+    project.write_text("x" * 50, encoding="utf-8")
+    errors = []
+    window = _recovery_methods(str(recovery), errors)
+
+    window.save_recovery(str(project))
+
+    assert os.listdir(str(recovery)) == []
+    assert errors == []

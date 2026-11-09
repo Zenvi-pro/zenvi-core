@@ -182,6 +182,8 @@ def _unwrap_langchain_content(value) -> str:
 # control characters or entities, ...) becomes "#".
 _UNSAFE_HREF_RE = re.compile(r'href="(?!(?:https?://|mailto:|#))[^"]*"', re.I)
 
+_markdown_failed = False
+
 
 def _open_checkout(result: dict) -> dict:
     """Open a top-up's Stripe Checkout URL (called off the GUI thread); an error result if it cannot."""
@@ -202,18 +204,23 @@ def _open_checkout(result: dict) -> dict:
 
 def _markdown_to_html(text: str) -> str:
     """Convert markdown to HTML suitable for QTextEdit. Uses theme text color for body."""
+    global _markdown_failed
     text = _unwrap_langchain_content(text)
-    try:
-        import markdown
-        # Not "extra": its attr_list and md_in_html put arbitrary attributes (onerror=...) on real tags.
-        md = markdown.Markdown(extensions=["abbr", "def_list", "fenced_code", "footnotes", "tables"])
-        # Raw HTML in a reply is shown as text: script in this page could press the Pay bridge (#272).
-        md.preprocessors.deregister("html_block")
-        md.inlinePatterns.deregister("html")
-        body = _UNSAFE_HREF_RE.sub('href="#"', md.convert(text))
-    except Exception as exc:
-        log.warning("_markdown_to_html: markdown render failed: %s", exc)
+    if _markdown_failed:
         body = html.escape(text).replace("\n", "<br/>")
+    else:
+        try:
+            import markdown
+            # Not "extra": its attr_list and md_in_html put arbitrary attributes (onerror=...) on real tags.
+            md = markdown.Markdown(extensions=["abbr", "def_list", "fenced_code", "footnotes", "tables"])
+            # Raw HTML in a reply is shown as text: script in this page could press the Pay bridge (#272).
+            md.preprocessors.deregister("html_block")
+            md.inlinePatterns.deregister("html")
+            body = _UNSAFE_HREF_RE.sub('href="#"', md.convert(text))
+        except Exception as exc:
+            _markdown_failed = True
+            log.warning("_markdown_to_html: markdown render failed: %s", exc)
+            body = html.escape(text).replace("\n", "<br/>")
     # Wrap in a div and style code blocks so they don't override theme colors
     # Use 'currentColor' so code inherits the widget's text color
     style = (

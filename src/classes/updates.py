@@ -110,6 +110,65 @@ def reset_frame_guard_warnings():
     _FRAME_GUARD_WARNED.clear()
 
 
+# Clip/file paint arrays longer than this are reconstructable UI, not project
+# data. Unit-test stubs stay intact; a 1-hour waveform is hundreds of thousands.
+WAVEFORM_SAMPLE_KEEP = 32
+WAVEFORM_CACHED_MARKER = ["__cached__"]
+
+
+def _is_bulk_waveform_samples(value):
+    return isinstance(value, list) and len(value) > WAVEFORM_SAMPLE_KEEP
+
+
+def strip_bulk_waveforms(obj):
+    """Deep-copy *obj*, replacing bulk waveform arrays with persist markers.
+
+    ``audio_data`` lists longer than ``WAVEFORM_SAMPLE_KEEP`` become
+    ``["__cached__"]``; matching ``audio_data_rms`` become ``[]``. Other keys
+    (rate, format, token) are kept. Does not mutate *obj*.
+    """
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, dict):
+        out = {}
+        for key, value in obj.items():
+            if key == "audio_data" and _is_bulk_waveform_samples(value):
+                out[key] = list(WAVEFORM_CACHED_MARKER)
+            elif key == "audio_data_rms" and _is_bulk_waveform_samples(value):
+                out[key] = []
+            else:
+                out[key] = strip_bulk_waveforms(value)
+        return out
+    if isinstance(obj, list):
+        return [strip_bulk_waveforms(item) for item in obj]
+    if isinstance(obj, tuple):
+        return type(obj)(strip_bulk_waveforms(item) for item in obj)
+    return obj
+
+
+def copy_for_history(obj):
+    """Deep-copy *obj* for in-RAM undo, sharing bulk waveform list identity.
+
+    Paint arrays stay one copy in RAM. Persist paths must still call
+    ``strip_bulk_waveforms`` so JSON never clones those samples.
+    """
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, dict):
+        out = {}
+        for key, value in obj.items():
+            if key in ("audio_data", "audio_data_rms") and _is_bulk_waveform_samples(value):
+                out[key] = value
+            else:
+                out[key] = copy_for_history(value)
+        return out
+    if isinstance(obj, list):
+        return [copy_for_history(item) for item in obj]
+    if isinstance(obj, tuple):
+        return type(obj)(copy_for_history(item) for item in obj)
+    return obj
+
+
 @contextlib.contextmanager
 def nested_transaction(updates):
     """Group mutations into one undo step; join an outer tid when already set.
@@ -167,23 +226,41 @@ class UpdateAction:
 
     def copy(self):
         """Create and return a copy of UpdateAction - with no references to the original"""
-        # Serialize as JSON string, then load JSON string and cast back into UpdateAction
-        return UpdateAction(**json.loads(json.dumps(self, default=lambda o: o.__dict__)))
+        payload = copy_for_history({
+            "type": self.type,
+            "key": self.key,
+            "values": self.values,
+            "old_values": self.old_values,
+            "transaction": self.transaction,
+            "index": self.index,
+        })
+        return UpdateAction(**payload)
 
     def set_old_values(self, old_vals):
         self.old_values = old_vals
 
+    def strip_payloads(self):
+        """Replace values/old_values with copies that omit bulk waveform arrays.
+
+        Call after listeners have applied the live (paint) payload so history
+        does not share identity with the in-memory clip.
+        """
+        if self.type == "load":
+            return
+        self.values = strip_bulk_waveforms(self.values)
+        self.old_values = strip_bulk_waveforms(self.old_values)
+
     def json(self, is_array=False, only_value=False):
         """ Get the JSON string representing this UpdateAction """
 
-        # Build the dictionary to be serialized
+        # Build the dictionary to be serialized (never json.dumps bulk waveforms)
         if only_value:
-            data_dict = json.loads(json.dumps(self.values))
+            data_dict = strip_bulk_waveforms(self.values)
         else:
             data_dict = {"type": self.type,
                          "key": self.key,
-                         "value": json.loads(json.dumps(self.values)),
-                         "old_values": json.loads(json.dumps(self.old_values)),
+                         "value": strip_bulk_waveforms(self.values),
+                         "old_values": strip_bulk_waveforms(self.old_values),
                          "transaction": self.transaction}
             if self.index is not None:
                 data_dict["index"] = self.index
@@ -235,6 +312,9 @@ class UpdateAction:
                 self.old_values.pop("history", None)
         except Exception as ex:
             log.warning('Failed to clear history attribute from undo/redo data. {}'.format(ex))
+
+        # Legacy bloated .zvn history still hydrates; drop bulk arrays on load.
+        self.strip_payloads()
 
 
 class UpdateManager:
@@ -427,9 +507,9 @@ class UpdateManager:
                 reverse.key = reverse.key[:-1]
 
         # On updates, just swap the old and new values data
-        # Swap old and new values
-        reverse.old_values = json.loads(json.dumps(action.values))
-        reverse.values = json.loads(json.dumps(action.old_values))
+        # Share bulk waveform lists so undo of a trim/volume does not wipe paint.
+        reverse.old_values = copy_for_history(action.values)
+        reverse.values = copy_for_history(action.old_values)
 
         return reverse
 
@@ -652,7 +732,7 @@ class UpdateManager:
                 if isinstance(snapshot, dict):
                     for name, value in values.items():
                         if name in snapshot:
-                            snapshot[name] = json.loads(json.dumps(value))
+                            snapshot[name] = strip_bulk_waveforms(value)
 
     def delete(self, key):
         """ Delete an item from the UpdateManager with an UpdateAction
@@ -670,7 +750,7 @@ class UpdateManager:
     def apply_last_action_to_history(self, previous_value):
         """ Apply the last action to the history """
         if self.pending_action:
-            self.pending_action.set_old_values(previous_value)
+            self.pending_action.set_old_values(copy_for_history(previous_value))
             self.actionHistory.append(self.pending_action)
             self.last_action = self.pending_action
             self.pending_action = None

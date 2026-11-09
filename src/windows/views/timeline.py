@@ -301,13 +301,17 @@ def _save_waveform(item, tid, inserted_by_tid=False):
     ui = (getattr(item, "data", None) or {}).get("ui")
     if not ui or not inserted_by_tid:
         return
+    # Persist a marker, not the paint arrays: redo still knows a waveform
+    # existed, and hydrate rebuilds samples from cache / the reader.
+    from classes.updates import strip_bulk_waveforms
+    persist_ui = strip_bulk_waveforms(ui)
     # Newest first, stopping at the insert: the walk covers only the edits made
     # since the drop, however long the history is. Only asked for clips, which
     # the joined transaction inserted; a file has no insert to find.
     for action in reversed(history):
         if (action.transaction == tid and action.type == "insert"
                 and isinstance(action.values, dict) and action.values.get("id") == item.id):
-            action.values["ui"] = dict(action.values.get("ui") or {}, **ui)
+            action.values["ui"] = dict(action.values.get("ui") or {}, **persist_ui)
             break
 
 
