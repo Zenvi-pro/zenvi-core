@@ -4,7 +4,7 @@ import Speech
 
 /// CLI: zenvi-apple-speech-asr <audioPath> [--locale BCP47]
 /// Prints JSON: {engine, language, words:[{text,startSec,endSec}]}
-/// Exit 0 ok, 2 unavailable (OS too old) → Zenvi falls back to Whisper, 1 error.
+/// Exit 0 ok, 2 unavailable (OS too old) → Zenvi falls back to its captions recogniser, 1 error.
 
 @main
 struct ZenviAppleSpeechAsr {
@@ -37,7 +37,7 @@ struct ZenviAppleSpeechAsr {
                 exit(1)
             }
         } else {
-            fputs("SpeechAnalyzer requires macOS 26+; use whisper fallback\n", stderr)
+            fputs("SpeechAnalyzer requires macOS 26+\n", stderr)
             exit(2)
         }
     }

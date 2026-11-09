@@ -20,7 +20,7 @@ The automated suite stubs PyQt5 and libopenshot, so it cannot tell you the previ
 1. Backend (for descriptions, picture vectors, stock search, credits): start it from the matching branch; the editor needs
    `ZENVI_BACKEND_URL=http://localhost:8500`. Sign in with an account that has indexing allowance.
 2. Editor from source: `ZENVI_DEPS=$HOME/zenvi-deps-1.0 ZENVI_BACKEND_URL=http://localhost:8500 ./run.sh`.
-3. Watch the log in a second terminal: `tail -f ~/.openshot_qt/openshot-qt.log`. Useful filters: `grep -E "media_index|speech|whisper|update_batch|proxy|stock"`.
+3. Watch the log in a second terminal: `tail -f ~/.openshot_qt/openshot-qt.log`. Useful filters: `grep -E "media_index|speech|recogniser|update_batch|proxy|stock"`.
 4. Footage. Use **both**:
    - **The synthetic kit** (known answers, see section 5): `python scripts/make_recreation_test_kit.py ~/kit` (needs only ffmpeg, 10 s).
    - **Your own real clips**: one person talking (a few seconds of silence first), one song with sung words, 6-10 ordinary phone clips
@@ -42,7 +42,7 @@ The automated suite stubs PyQt5 and libopenshot, so it cannot tell you the previ
 | Shots, cuts, fades, motion (structure) | this computer | no | free | Turn Wi-Fi off, import a clip: `index_status_tool` shows structure ready |
 | Look (brightness, colour, contrast) | this computer | no | free | same; `get_look_profile_tool` returns numbers offline |
 | Audio facts (beats, loudness, silences) | this computer | no | free | offline: `slice_on_beats_tool`, `analyze_timeline_audio_tool` work |
-| Speech to text, English-like | this computer (Apple SpeechAnalyzer on macOS, bundled whisper.cpp elsewhere) | no | free | offline: `get_transcript_tool` returns words with times |
+| Speech to text, English-like | this computer (Apple SpeechAnalyzer on macOS 26+, else the Captions recogniser: Whistle, or Parakeet when installed) | no | free | offline: `get_transcript_tool` returns words with times |
 | Speech in another language, lyrics | this computer | first use may download a model | free | see "downloads" below; `get_lyrics_tool` |
 | Faces / people (opt-in, preference `media-index-people`) | this computer (onnxruntime) | model download once | free | off by default: `get_framing_tool` says it used saliency only; on: it says faces |
 | Scene descriptions (watch) and picture vectors | cloud (Gemini via the backend) | **yes** | credits, once per file content | the file shelf shows `watch` and `vectors` ready; a second import of the same file costs nothing |
@@ -58,9 +58,9 @@ credits. Turn the network on; the queued cloud jobs should finish by themselves 
 again** (or copy it elsewhere and import the copy). Expect: finished instantly, balance unchanged. Failure: balance drops again.
 
 **Downloads (do each on a machine that has not done it):**
-- *Whisper model* (non-Mac, or when Apple speech is unavailable): ask for a transcript of a talking clip. Expect a one-time download to
-  `~/.openshot_qt/whisper/` (checked against a pinned SHA-256), then the transcript. Failure: "faster-whisper is not installed" or a
-  file that is not checked. Log: `grep whisper`.
+- *Whistle recogniser* (non-Mac, or when Apple speech is unavailable): ask for a transcript of a talking clip. Expect a one-time 18 MB
+  download to `~/.openshot_qt/hyperframes/speech/` (checked against a pinned SHA-256), then the transcript. Failure: a download or
+  checksum error. Log: `grep recogniser`.
 - *Language fallback*: a clip whose speech is in another language than the computer's: `get_lyrics_tool(language="ja-JP")` (or the
   right locale). Expect words in that language, kept with the file's index.
 - *Stock clip*: `import_stock_media_tool(source="pexels", video_id=...)` lands in `~/.openshot_qt/Downloads/pexels_<id>.mp4`, is added

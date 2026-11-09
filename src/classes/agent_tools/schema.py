@@ -263,11 +263,11 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "timeline_clip_id": _str(description="Timeline clip id. Prefer this after edits."),
         "file_id": _str(description="Media-bin file id (source seconds at timeline 0)."),
         "track": _int(minimum=0, description="UI track index; omit for all clips."),
-        "language": _str(description="BCP-47 / whisper code, or 'auto'."),
-        "model_id": _str(description="faster-whisper model, e.g. faster-whisper-base; ignored by the bundled whisper.cpp engine (one model)."),
+        "language": _str(description="BCP-47 code (e.g. en, ja-JP), or 'auto'."),
+        "model_id": _str(description="Ignored (older backends send it); the engine picks the model."),
         "force": _bool(description="Ignore cache and re-run ASR."),
         "engine": _str(
-            description="auto|apple|whisper. auto=Apple SpeechAnalyzer on macOS 26+ when helper is present, else Whisper. Windows always Whisper.",
+            description="auto|apple|whistle|parakeet. auto=Apple SpeechAnalyzer on macOS 26+ when helper is present, else the Captions recogniser (Whistle, or Parakeet when picked and installed).",
         ),
         "detail_level": _str(
             description="Omit for a compact receipt (script + compactWords). Pass 'full' to also include the verbose words array.",
@@ -305,8 +305,8 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "language": _str(
             description="Prefer 'auto'. Do not pass detected language from a prior receipt.",
         ),
-        "model_id": _str(),
-        "engine": _str(description="auto|apple|whisper"),
+        "model_id": _str(description="Ignored (older backends send it); the engine picks the model."),
+        "engine": _str(description="auto|apple|whistle|parakeet"),
     }),
 
     "remove_silence_tool": _obj({
@@ -333,7 +333,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "timeline_clip_id": _str(description="Timeline clip id."),
         "max_speakers": _int(minimum=1, maximum=8),
         "language": _str(),
-        "model_id": _str(),
+        "model_id": _str(description="Ignored (older backends send it); the engine picks the model."),
     }),
 
 }

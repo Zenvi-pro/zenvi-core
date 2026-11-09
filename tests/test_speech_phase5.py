@@ -34,9 +34,10 @@ def tmp_cache(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def _force_whisper_in_unit_tests():
-    """Unit tests inject fakes / seeded whisper caches — don't pick Apple helper."""
-    with patch("classes.speech.apple_asr.apple_asr_available", return_value=False):
+def _force_local_engine_in_unit_tests():
+    """Unit tests inject fakes / seeded caches — don't pick Apple helper; resolve to Whistle."""
+    with patch("classes.speech.apple_asr.apple_asr_available", return_value=False), \
+         patch("classes.speech.asr._local_engine", return_value="whistle"):
         yield
 
 
@@ -47,14 +48,14 @@ def test_cache_roundtrip_and_lru(tmp_cache, tmp_path):
         path=str(media.resolve()),
         size=media.stat().st_size,
         mtimeNs=media.stat().st_mtime_ns,
-        modelId="faster-whisper-base",
+        modelId="whistle",
         language="en",
         requestLanguage="en",
         words=[Word("hello", 0.0, 0.4), Word("um", 0.5, 0.7)],
         generation=1,
     )
     tmp_cache.put(rec)
-    hit = tmp_cache.get(str(media), model_id="faster-whisper-base", language="en")
+    hit = tmp_cache.get(str(media), model_id="whistle", language="en")
     assert hit is not None
     assert len(hit.words) == 2
     assert hit.words[1].text == "um"
@@ -68,7 +69,7 @@ def test_cache_roundtrip_and_lru(tmp_cache, tmp_path):
             path=str(p.resolve()),
             size=p.stat().st_size,
             mtimeNs=p.stat().st_mtime_ns,
-            modelId="faster-whisper-base",
+            modelId="whistle",
             language="en",
             words=[Word(f"w{i}", 0.0, 0.1)],
             generation=1,
@@ -252,7 +253,7 @@ def test_file_only_transcript_does_not_label_file_as_clip_id():
         word_count=1,
         clips_out=[{"fileId": "LTQM6B501R", "wordCount": 1, "compactWords": []}],
         source="local",
-        model_out="faster-whisper-base",
+        model_out="whistle",
         language_out="en",
         generation=2,
     )
@@ -571,7 +572,7 @@ def test_remove_words_refuses_stale_generation(tmp_cache, tmp_path):
             path=str(media.resolve()),
             size=st.st_size,
             mtimeNs=st.st_mtime_ns,
-            modelId="faster-whisper-base",
+            modelId="whistle",
             language="en",
             requestLanguage="auto",
             words=[Word("um", 0.0, 0.2)],
@@ -646,7 +647,7 @@ def test_remove_words_applies_fragments(tmp_cache, tmp_path):
             path=str(media.resolve()),
             size=st.st_size,
             mtimeNs=st.st_mtime_ns,
-            modelId="faster-whisper-base",
+            modelId="whistle",
             language="en",
             requestLanguage="auto",
             words=[
@@ -760,7 +761,7 @@ def test_remove_words_matches_ignores_stale_generation(tmp_cache, tmp_path):
             path=str(media.resolve()),
             size=st.st_size,
             mtimeNs=st.st_mtime_ns,
-            modelId="faster-whisper-base",
+            modelId="whistle",
             language="en",
             requestLanguage="auto",
             words=[
@@ -831,7 +832,7 @@ def test_remove_words_refuses_stale_indices_even_with_matches(tmp_cache, tmp_pat
         st = media.stat()
         tmp_cache.put(TranscriptRecord(
             path=str(media.resolve()), size=st.st_size, mtimeNs=st.st_mtime_ns,
-            modelId="faster-whisper-base", language="en", requestLanguage="auto",
+            modelId="whistle", language="en", requestLanguage="auto",
             words=[Word("hello", 0.0, 0.4), Word("FlowCut", 0.5, 0.9), Word("world", 1.0, 1.4)],
             generation=1,
         ))
@@ -902,7 +903,7 @@ def test_remove_words_refuses_a_retimed_clip(tmp_cache, tmp_path, retime):
         st = media.stat()
         tmp_cache.put(TranscriptRecord(
             path=str(media.resolve()), size=st.st_size, mtimeNs=st.st_mtime_ns,
-            modelId="faster-whisper-base", language="en", requestLanguage="auto",
+            modelId="whistle", language="en", requestLanguage="auto",
             words=[Word("hello", 0.0, 0.4), Word("um", 0.5, 0.7), Word("world", 0.8, 1.2)],
             generation=1,
         ))
@@ -950,11 +951,11 @@ def test_an_explicit_language_never_reuses_another_languages_transcript(tmp_cach
     st = media.stat()
     path = str(media.resolve())
     tmp_cache.put(TranscriptRecord(
-        path=path, size=st.st_size, mtimeNs=st.st_mtime_ns, modelId="faster-whisper-base",
+        path=path, size=st.st_size, mtimeNs=st.st_mtime_ns, modelId="whistle",
         language="en", requestLanguage="auto", words=[Word("hello", 0.0, 0.3)], generation=1,
     ))
     tmp_cache._mem.clear()
-    assert tmp_cache.get(path, model_id="faster-whisper-base", language="fr") is None
+    assert tmp_cache.get(path, model_id="whistle", language="fr") is None
     # The same language (any region) and auto still share the record.
-    assert tmp_cache.get(path, model_id="faster-whisper-base", language="en-US") is not None
-    assert tmp_cache.get(path, model_id="faster-whisper-base", language="auto") is not None
+    assert tmp_cache.get(path, model_id="whistle", language="en-US") is not None
+    assert tmp_cache.get(path, model_id="whistle", language="auto") is not None

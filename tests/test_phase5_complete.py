@@ -20,8 +20,9 @@ from classes.speech.word_ranges import compact_fragments_after_remove
 
 
 @pytest.fixture(autouse=True)
-def _force_whisper_in_unit_tests():
-    with patch("classes.speech.apple_asr.apple_asr_available", return_value=False):
+def _force_local_engine_in_unit_tests():
+    with patch("classes.speech.apple_asr.apple_asr_available", return_value=False), \
+         patch("classes.speech.asr._local_engine", return_value="whistle"):
         yield
 
 
@@ -212,7 +213,7 @@ def test_diarize_media_tool(tmp_path):
     st = wav.stat()
     cache.put(TranscriptRecord(
         path=str(wav.resolve()), size=st.st_size, mtimeNs=st.st_mtime_ns,
-        modelId="faster-whisper-base", language="en", requestLanguage="auto",
+        modelId="whistle", language="en", requestLanguage="auto",
         words=[Word("a", 0.0, 0.2), Word("b", 0.3, 0.5), Word("c", 1.0, 1.2),
                Word("d", 1.3, 1.5), Word("e", 1.6, 1.8)],
         generation=1,

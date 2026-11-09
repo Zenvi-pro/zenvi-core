@@ -163,6 +163,10 @@ KWARG_PROPS = {
 # Sent by the assistant backend's stubs but unused by this handler. They stay in
 # the schema so those calls validate; list them here so the drift is visible.
 BACKEND_ONLY_PROPS = {
+    # Released backends still send the old faster-whisper model_id; the handlers drop it (the engine picks the model).
+    "get_transcript_tool": {"model_id"},
+    "remove_words_tool": {"model_id"},
+    "diarize_media_tool": {"model_id"},
 }
 
 

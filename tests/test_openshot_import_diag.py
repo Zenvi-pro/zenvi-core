@@ -29,7 +29,7 @@ def _fake_install(root: Path) -> Path:
         "lib/openshot.py",
         "lib/library.zip",
         "lib/PyQt5/Qt5/plugins/imageformats/qjpeg.dll",
-        "lib/whisper/whisper-cli.exe",
+        "lib/ffmpeg.exe",
     ):
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -48,8 +48,8 @@ def test_manifest_lists_native_binaries_only(tmp_path):
         "lib/PyQt5/Qt5/plugins/imageformats/qjpeg.dll",
         "lib/_openshot.cp314-mingw_x86_64_ucrt_gnu.pyd",
         "lib/avutil-60.dll",
+        "lib/ffmpeg.exe",
         "lib/libva.dll",
-        "lib/whisper/whisper-cli.exe",
     ]
 
 

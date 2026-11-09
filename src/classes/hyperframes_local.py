@@ -39,6 +39,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import threading
 import urllib.request
 import zipfile
@@ -388,6 +389,10 @@ def _parakeet_model() -> str:
     return os.path.join(home(), ".cache", "hyperframes", "parakeet", "parakeet-tdt-0.6b-v3-int8", "encoder.int8.onnx")
 
 
+def parakeet_ready() -> bool:
+    return os.path.isfile(_parakeet_model())
+
+
 def _cli_version() -> Optional[str]:
     if not os.path.isfile(cli_script()):
         return None
@@ -424,7 +429,7 @@ def status() -> dict:
         "ffmpeg": find_program("ffmpeg"),
         "caption_helpers": captions,
         "speech": speech_ready(),
-        "parakeet": os.path.isfile(_parakeet_model()),
+        "parakeet": parakeet_ready(),
         "recogniser": recogniser(),
         "matting": matting(),
         "rvm": rvm_ready(),
@@ -642,13 +647,20 @@ def matte(project: str, source: str, output: str, timeout: float = SPEECH_TIMEOU
 
 
 def transcribe(wav: str, timeout: float = SPEECH_TIMEOUT) -> List[dict]:
-    """Words of a WAV file as ``[{text, start, end}]`` (seconds), from the private Whistle engine.
+    """Words of a WAV file as ``[{text, start, end}]`` (seconds), from the private Whistle engine."""
+    return recognise(wav, timeout=timeout)["words"]
+
+
+def recognise(wav: str, language: Optional[str] = None, timeout: float = SPEECH_TIMEOUT) -> dict:
+    """``{"language", "words": [{text, start, end}]}`` of a WAV file, from the private Whistle engine.
 
     Not an assistant command: Zenvi runs it on audio it extracted itself. Audio of any
-    length is accepted (the engine windows it); seven European languages, detected.
+    length is accepted (the engine windows it); seven European languages, detected unless *language* is given.
     """
     argv = [speech_engine(), "--model", speech_model(), "--audio", wav, "--audio-word-timestamps",
             "--threads", str(max(1, min(SPEECH_THREADS, os.cpu_count() or 4)))]
+    if language:
+        argv += ["--audio-language", language]
     try:
         with _speech_install_lock:                      # no install swaps the files between the check and the run
             if not speech_ready(fresh=True):            # hashed again each run: this file is executed
@@ -663,10 +675,35 @@ def transcribe(wav: str, timeout: float = SPEECH_TIMEOUT) -> List[dict]:
         raise HyperframesError("the speech recogniser failed (exit code %d): %s"
                                % (proc.returncode, _clean(proc.stderr or proc.stdout)[-800:]))
     try:
-        words = json.loads(proc.stdout).get("words") or []
-        return [{"text": str(w["word"]), "start": float(w["start"]), "end": float(w["end"])} for w in words]
+        body = json.loads(proc.stdout)
+        words = body.get("words") or []
+        return {"language": str(body.get("language") or ""),
+                "words": [{"text": str(w["word"]), "start": float(w["start"]), "end": float(w["end"])}
+                          for w in words]}
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise HyperframesError("the speech recogniser returned something unreadable: %s" % exc)
+
+
+def transcribe_parakeet(wav: str, timeout: float = SPEECH_TIMEOUT) -> List[dict]:
+    """Words of a WAV file as ``[{text, start, end}]`` from the CLI's Parakeet recogniser, outside any project."""
+    node = find_program("node")
+    if not node or not os.path.isfile(cli_script()):
+        raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
+    out_dir = tempfile.mkdtemp(prefix="zenvi-parakeet-")
+    try:
+        code, out = _exec([node, cli_script(), "transcribe", wav, "--engine", "parakeet", "--json", "--dir", out_dir],
+                          out_dir, node, timeout)
+        if code != 0:
+            raise HyperframesError("the Parakeet recogniser failed (exit code %d): %s" % (code, out[-800:]))
+        try:
+            with open(os.path.join(out_dir, "transcript.json"), encoding="utf-8") as fh:
+                entries = json.load(fh)
+            return [{"text": str(w["text"]), "start": float(w["start"]), "end": float(w["end"])}
+                    for w in entries if str(w.get("text") or "").strip()]
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise HyperframesError("the Parakeet recogniser returned something unreadable: %s" % exc)
+    finally:
+        shutil.rmtree(out_dir, ignore_errors=True)
 
 
 def _node_tool(node: str, name: str) -> List[str]:

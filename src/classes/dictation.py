@@ -32,7 +32,7 @@ PROJECT = "dictation"        # hf.project_dir(PROJECT) holds speech.wav
 WISPR_FLOW_URL = "wispr-flow://start-hands-free"
 WISPR_FLOW_SITE = "https://wisprflow.ai"
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
-# What Whisper-family recognisers "hear" in a quiet room: a take that is only this is no words.
+# What speech recognisers "hear" in a quiet room: a take that is only this is no words.
 MADE_UP = {"", "you", "thank you", "thanks", "thank you very much", "thanks for watching",
            "thank you for watching", "bye"}
 _heard = threading.Lock()    # one speech.wav, one recogniser run at a time
