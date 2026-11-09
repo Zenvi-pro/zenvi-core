@@ -3222,7 +3222,7 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
 
     Used for clips delivered as a public URL. One shot:
     download → re-encode/import (via _import_generated_video) → add_clip_to_timeline.
-    YouTube page URLs are not direct files — use ingest_web_video_tool instead.
+    YouTube / Instagram page URLs are not direct files — use ingest_web_video_tool instead.
     """
     import tempfile
     import urllib.request
@@ -3240,12 +3240,15 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
             "For Freesound / music / SFX use run_tool(name='import_stock_media_tool', args={'source': 'freesound', ...})."
         )
     try:
-        from classes.web_video_ingest import is_youtube_url
-        if is_youtube_url(video_url) and not any(
-            lower_path.endswith(ext) for ext in (".mp4", ".mov", ".webm", ".mkv", ".avi")
+        from classes.web_video_ingest import is_instagram_url, is_youtube_url
+        if (
+            (is_youtube_url(video_url) or is_instagram_url(video_url))
+            and not any(
+                lower_path.endswith(ext) for ext in (".mp4", ".mov", ".webm", ".mkv", ".avi")
+            )
         ):
             return (
-                "Error: that is a YouTube page URL, not a direct video file. "
+                "Error: that is a YouTube/Instagram page URL, not a direct video file. "
                 "Use run_tool(name='ingest_web_video_tool', args={'url': ..., 'intent': 'timeline'}) instead."
             )
     except Exception as exc:
@@ -3312,7 +3315,6 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
     except Exception as e:
         log.error("import_video_url_and_add_to_timeline failed: %s", e, exc_info=True)
         return f"Error importing video from URL: {e}"
-
 
 def _byok_generation_kwargs():
     """Route generation through the user's own Higgsfield key when one is stored (#60).
@@ -3385,8 +3387,8 @@ def _ingest_job_public(job: dict) -> str:
             "file_id": "",
             "placed": False,
             "message": (
-                "YouTube/web download still in progress — long videos can take "
-                "a few minutes. This is not a failure."
+                "Web video download still in progress — long videos or profile "
+                "samples can take a few minutes. This is not a failure."
             ),
             "next": (
                 f'Call run_tool(name="ingest_web_video_tool", args={{"job_id": "{jid}"}}) again — the tool '
@@ -3424,7 +3426,6 @@ def _ingest_job_public(job: dict) -> str:
             data.get("next") or "Done. Reply briefly; do not re-ingest the same URL.",
         )
     return json.dumps(data)
-
 
 def _purge_stale_ingest_jobs(now: Optional[float] = None) -> None:
     cutoff = float(now if now is not None else time.time()) - _INGEST_JOB_TTL_S
@@ -3476,9 +3477,10 @@ def _run_ingest_job(job: dict, kwargs: dict) -> None:
                 _ingest_inflight.pop(key, None)
     except Exception as e:
         log.error("ingest_web_video job failed: %s", e, exc_info=True)
+        fail_url = str(kwargs.get("url") or kwargs.get("video_url") or "")
         fail = _ingest_web_video_fail(
-            wvi.humanize_ingest_failure(e),
-            url=str(kwargs.get("url") or kwargs.get("video_url") or ""),
+            wvi.humanize_ingest_failure(e, url=fail_url),
+            url=fail_url,
             intent=str(kwargs.get("intent") or ""),
         )
         with _ingest_jobs_lock:
@@ -3494,7 +3496,6 @@ def _run_ingest_job(job: dict, kwargs: dict) -> None:
         if ev is not None:
             ev.set()
 
-
 def ingest_web_video(
     url="",
     video_url="",
@@ -3504,12 +3505,20 @@ def ingest_web_video(
     position_seconds="",
     write_subs="",
     job_id="",
+    max_items="",
+    cookies_browser="",
     **_kw,
 ) -> str:
-    """Fetch a YouTube/web video URL via yt-dlp into Imports/media bin (one undo).
+    """Fetch a YouTube / Instagram / web video URL into Imports (one undo).
 
-    FIRST tool for youtube/youtu.be (or similar) links — do not ToolSearch or use
+    FIRST tool for youtube/youtu.be / instagram.com links — do not ToolSearch or use
     import_files_tool for a page URL.
+
+    Routing: single Reel/post → yt-dlp; profile / stories / highlights → optional
+    gallery-dl (pip install gallery-dl once if missing). Instagram needs a logged-in
+    browser session (Firefox by default). Profile = capped recent Reels (default 12,
+    hard max 20 via max_items) — not the whole grid; stories/highlights only when
+    those URLs are pasted.
 
     Long downloads return status=running with a job_id before MCP clients time
     out (~60s). Call run_tool(name='ingest_web_video_tool', args={'job_id': ...}) again — each call waits
@@ -3517,14 +3526,13 @@ def ingest_web_video(
     failure — keep calling the same job_id; do not start a second download.
 
     Intents (pick from what the user asked — do NOT place unless they asked):
-      reference — DEFAULT. Media bin only. Colour/look: once it is indexed, read its look with
-                  run_tool(name='get_look_profile_tool', args={'file_id': ...}), then grade with color_grade_clip_tool. Never put the YouTube clip on the timeline for colour.
-      timeline  — ONLY if user asked to add/edit/clip that YouTube video on the timeline.
+      reference — DEFAULT. Media bin only. Colour/look: once indexed, get_look_profile_tool
+                  then color_grade_clip_tool. Never put the source clip on the timeline for colour.
+      timeline  — ONLY if user asked to add/edit/clip that video on the timeline (single URL).
       recreate  — Media bin watch-only reference; rebuild with user clips/stock/video_gen.
-                  Do not leave the YouTube original on the cut unless asked.
 
-    place=true is ignored for recreate; only timeline intent places.
-    Failure → JSON ok=false with a short reason (restricted / pull failed / upload MP4).
+    place=true is ignored for recreate and for Instagram multi-item samples.
+    Failure → JSON ok=false with a short reason (cookies / restricted / pull failed / upload MP4).
     """
     from classes import web_video_ingest as wvi
 
@@ -3545,7 +3553,7 @@ def ingest_web_video(
     raw_url = str(url or video_url or _kw.get("webpage_url") or "").strip()
     if not raw_url:
         return _ingest_web_video_fail(
-            "Paste a YouTube (or other site) video link — url is required."
+            "Paste a YouTube or Instagram (Reel/profile) link — url is required."
         )
     try:
         intent_norm = wvi.normalize_intent(intent or "reference")
@@ -3557,8 +3565,22 @@ def ingest_web_video(
         place_flag = True
     if intent_norm == "recreate":
         place_flag = False
+    ig_kind = wvi.classify_instagram_url(raw_url)
+    if ig_kind in ("profile", "stories", "highlights"):
+        place_flag = False
 
-    dedupe_key = (wvi.url_cache_key(raw_url), intent_norm, bool(place_flag))
+    max_items_raw = max_items if str(max_items or "").strip() != "" else _kw.get("max_items", "")
+    cookies_raw = (
+        cookies_browser
+        if str(cookies_browser or "").strip() != ""
+        else _kw.get("cookies_browser", "")
+    )
+    dedupe_key = (
+        wvi.url_cache_key(raw_url),
+        intent_norm,
+        bool(place_flag),
+        wvi.clamp_profile_max_items(max_items_raw) if ig_kind in ("profile", "stories", "highlights") else 1,
+    )
     kwargs = {
         "url": raw_url,
         "video_url": "",
@@ -3567,6 +3589,8 @@ def ingest_web_video(
         "track": track,
         "position_seconds": position_seconds,
         "write_subs": write_subs,
+        "max_items": max_items_raw,
+        "cookies_browser": cookies_raw,
     }
 
     reused = False
@@ -3602,7 +3626,6 @@ def ingest_web_video(
     budget = _INGEST_POLL_BUDGET_S if reused else _INGEST_SYNC_BUDGET_S
     return _wait_ingest_job(job, budget)
 
-
 def _ingest_web_video_impl(
     url="",
     video_url="",
@@ -3611,6 +3634,8 @@ def _ingest_web_video_impl(
     track="",
     position_seconds="",
     write_subs="",
+    max_items="",
+    cookies_browser="",
     **_kw,
 ) -> str:
 
@@ -3620,7 +3645,7 @@ def _ingest_web_video_impl(
     raw_url = str(url or video_url or _kw.get("webpage_url") or "").strip()
     if not raw_url:
         return _ingest_web_video_fail(
-            "Paste a YouTube (or other site) video link — url is required."
+            "Paste a YouTube or Instagram (Reel/profile) link — url is required."
         )
 
     try:
@@ -3633,10 +3658,13 @@ def _ingest_web_video_impl(
         place_flag = True
     if intent_norm == "recreate":
         place_flag = False
+    ig_kind = wvi.classify_instagram_url(raw_url)
+    if ig_kind in ("profile", "stories", "highlights"):
+        place_flag = False
 
     if str(write_subs or "").strip() == "":
-        # Default: grab English subs when available for reference/recreate.
-        write_subs_flag = intent_norm in ("reference", "recreate")
+        # Default: grab English subs when available for reference/recreate (YouTube).
+        write_subs_flag = intent_norm in ("reference", "recreate") and not wvi.is_instagram_url(raw_url)
     else:
         write_subs_flag = str(write_subs).strip().lower() in ("1", "true", "yes", "on")
 
@@ -3701,7 +3729,11 @@ def _ingest_web_video_impl(
                 ),
             })
         except Exception as e:
-            return _ingest_web_video_fail(wvi.humanize_ingest_failure(e) if hasattr(wvi, "humanize_ingest_failure") else str(e), url=raw_url, intent=intent_norm)
+            return _ingest_web_video_fail(
+                wvi.humanize_ingest_failure(e, url=raw_url) if hasattr(wvi, "humanize_ingest_failure") else str(e),
+                url=raw_url,
+                intent=intent_norm,
+            )
 
     root = wvi.cache_root(getattr(info, "USER_PATH", "") or "")
     try:
@@ -3710,61 +3742,112 @@ def _ingest_web_video_impl(
         purged = 0
 
     cache_dir = os.path.join(root, wvi.url_cache_key(raw_url))
+    max_items_arg = max_items if str(max_items or "").strip() != "" else _kw.get("max_items", "")
+    cookies_arg = (
+        cookies_browser
+        if str(cookies_browser or "").strip() != ""
+        else _kw.get("cookies_browser", "")
+    )
     try:
         meta = wvi.download_web_video(
             raw_url,
             cache_dir=cache_dir,
             intent=intent_norm,
             write_subs=write_subs_flag,
+            max_items=max_items_arg,
+            cookies_browser=cookies_arg if str(cookies_arg or "").strip() else None,
         )
     except wvi.WebVideoIngestError as exc:
         return _ingest_web_video_fail(str(exc), url=raw_url, intent=intent_norm)
     except Exception as e:
         log.error("ingest_web_video download failed: %s", e, exc_info=True)
-        return _ingest_web_video_fail(wvi.humanize_ingest_failure(e), url=raw_url, intent=intent_norm)
+        return _ingest_web_video_fail(wvi.humanize_ingest_failure(e, url=raw_url), url=raw_url, intent=intent_norm)
 
-    video_path = meta.get("video_path") or ""
-    f, err = _import_generated_video(video_path)
-    if err:
-        return _ingest_web_video_fail(f"Downloaded OK but import into the project failed: {err}", url=raw_url, intent=intent_norm)
-    file_id = f.id if f else ""
-    if not file_id:
-        return _ingest_web_video_fail("Downloaded OK but could not find the new media-bin file id.", url=raw_url, intent=intent_norm)
+    item_metas = meta.get("items") if isinstance(meta.get("items"), list) else None
+    if not item_metas:
+        item_metas = [{
+            "video_path": meta.get("video_path") or "",
+            "title": meta.get("title") or "",
+            "description": meta.get("description") or "",
+            "uploader": meta.get("uploader") or "",
+            "id": meta.get("id") or "",
+        }]
 
-    # Tag as web reference for recreate / colour.
+    file_ids: list[str] = []
+    captions: list[str] = []
     tag_warning = ""
-    try:
-        tags = f.data.get("tags") if isinstance(f.data, dict) else None
-        if isinstance(tags, str):
-            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
-        elif isinstance(tags, list):
-            tag_list = [str(t).strip() for t in tags if str(t).strip()]
-        else:
-            tag_list = []
-        for tag in ("web_video", intent_norm, "youtube" if meta.get("is_youtube") else "web"):
-            if tag and tag not in tag_list:
-                tag_list.append(tag)
-        if intent_norm == "recreate" and "reference_only" not in tag_list:
-            tag_list.append("reference_only")
+    source_tag = (
+        "instagram" if meta.get("is_instagram") else ("youtube" if meta.get("is_youtube") else "web")
+    )
+    for item in item_metas:
+        if not isinstance(item, dict):
+            continue
+        video_path = str(item.get("video_path") or "").strip()
+        if not video_path:
+            continue
+        f, err = _import_generated_video(video_path)
+        if err:
+            if not file_ids:
+                return _ingest_web_video_fail(
+                    f"Downloaded OK but import into the project failed: {err}",
+                    url=raw_url,
+                    intent=intent_norm,
+                )
+            log.warning("ingest_web_video skipped one sample item: %s", err)
+            continue
+        file_id = f.id if f else ""
+        if not file_id:
+            if not file_ids:
+                return _ingest_web_video_fail(
+                    "Downloaded OK but could not find the new media-bin file id.",
+                    url=raw_url,
+                    intent=intent_norm,
+                )
+            continue
+        file_ids.append(file_id)
+        captions.append(str(item.get("description") or ""))
+        try:
+            tags = f.data.get("tags") if isinstance(f.data, dict) else None
+            if isinstance(tags, str):
+                tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+            elif isinstance(tags, list):
+                tag_list = [str(t).strip() for t in tags if str(t).strip()]
+            else:
+                tag_list = []
+            for tag in ("web_video", intent_norm, source_tag):
+                if tag and tag not in tag_list:
+                    tag_list.append(tag)
+            sample_tag = str(meta.get("kind") or "")
+            if sample_tag.endswith("_sample") and sample_tag not in tag_list:
+                tag_list.append(sample_tag)
+            if intent_norm == "recreate" and "reference_only" not in tag_list:
+                tag_list.append("reference_only")
 
-        def _save_tags():
-            f.data["tags"] = ", ".join(tag_list)
-            title = meta.get("title") or ""
-            if title and isinstance(f.data, dict):
-                f.data["name"] = title[:120]
-            f.save()
+            def _save_tags(file_obj=f, tag_names=tag_list, item_title=item.get("title") or ""):
+                file_obj.data["tags"] = ", ".join(tag_names)
+                if item_title and isinstance(file_obj.data, dict):
+                    file_obj.data["name"] = str(item_title)[:120]
+                file_obj.save()
 
-        _run_on_main_thread(_save_tags)
-    except Exception as tag_err:
-        log.warning("ingest_web_video tag failed: %s", tag_err)
-        tag_warning = f"Could not save media tags/title: {tag_err}"
-        if intent_norm == "recreate":
-            return _ingest_web_video_fail(
-                f"Imported as {file_id} but failed to mark reference_only: {tag_err}",
-                url=raw_url,
-                intent=intent_norm,
-            )
+            _run_on_main_thread(_save_tags)
+        except Exception as tag_err:
+            log.warning("ingest_web_video tag failed: %s", tag_err)
+            tag_warning = f"Could not save media tags/title: {tag_err}"
+            if intent_norm == "recreate" and len(file_ids) == 1:
+                return _ingest_web_video_fail(
+                    f"Imported as {file_id} but failed to mark reference_only: {tag_err}",
+                    url=raw_url,
+                    intent=intent_norm,
+                )
 
+    if not file_ids:
+        return _ingest_web_video_fail(
+            "Downloaded OK but could not import any files into the media bin.",
+            url=raw_url,
+            intent=intent_norm,
+        )
+
+    file_id = file_ids[0]
     placement = ""
     placed = False
     if place_flag:
@@ -3781,14 +3864,23 @@ def _ingest_web_video_impl(
             placed = False
 
     next_steps = []
+    is_sample = str(meta.get("kind") or "").endswith("_sample") or len(file_ids) > 1
     if intent_norm in ("reference", "recreate"):
-        next_steps.append(
-            f"Colour: once it is indexed, run_tool(name='get_look_profile_tool', args={{'file_id': '{file_id}'}}), then color_grade_clip_tool."
-        )
+        if is_sample:
+            ids_lit = ", ".join(f"'{fid}'" for fid in file_ids[:8])
+            next_steps.append(
+                f"Sampled {len(file_ids)} items. Look/style: "
+                f"run_tool(name='get_look_profile_tool', args={{'file_id': '{file_id}'}}) "
+                f"and/or get_edit_style_tool(file_ids=[{ids_lit}])."
+            )
+        else:
+            next_steps.append(
+                f"Colour: once it is indexed, run_tool(name='get_look_profile_tool', args={{'file_id': '{file_id}'}}), then color_grade_clip_tool."
+            )
     if intent_norm == "recreate":
         next_steps.append(
             "Recreate with the user's clips / stock_video / video_gen — "
-            "do not leave the YouTube original on the story cut unless asked."
+            "do not leave the source original on the story cut unless asked."
         )
     if intent_norm == "timeline" and not placed:
         next_steps.append(f"Place with add_clips_to_timeline_tool(file_ids=['{file_id}'], track=..., start_seconds=...).")
@@ -3801,17 +3893,27 @@ def _ingest_web_video_impl(
         "ok": (not place_flag) or placed,
         "intent": intent_norm,
         "file_id": file_id,
+        "file_ids": file_ids,
+        "captions": captions,
+        "sampled": len(file_ids) if is_sample else 1,
+        "kind": meta.get("kind") or "single",
         "placed": placed,
         "url": meta.get("webpage_url") or raw_url,
         "title": meta.get("title"),
+        "description": meta.get("description") or (captions[0] if captions else ""),
+        "uploader": meta.get("uploader") or "",
         "duration_seconds": meta.get("duration_seconds"),
         "extractor": meta.get("extractor"),
         "is_youtube": bool(meta.get("is_youtube")),
+        "is_instagram": bool(meta.get("is_instagram")),
         "subtitle_paths": meta.get("subtitle_paths") or [],
         "cache_purged": purged,
         "placement": placement if place_flag else "",
         "message": (
-            f"Ingested “{meta.get('title') or 'video'}” as media_bin file_id={file_id}."
+            f"Sampled {len(file_ids)} items from “{meta.get('title') or 'instagram'}” "
+            f"into media bin."
+            if is_sample
+            else f"Ingested “{meta.get('title') or 'video'}” as media_bin file_id={file_id}."
         ),
         "next": " ".join(next_steps),
         "product_note": meta.get("product_note"),
@@ -3826,7 +3928,6 @@ def _ingest_web_video_impl(
         )
         result["next"] = f"Place with add_clips_to_timeline_tool(file_ids=['{file_id}'], track=..., start_seconds=...)."
     return json.dumps(result)
-
 
 def _generated_video_ripple_plan(app, position_seconds, track):
     """(position or None, layer to ripple or None, error) -- checked before any credits are spent.
@@ -7657,7 +7758,7 @@ TOOL_DISPLAY_LABELS = {
     "import_files_tool": "Import files from disk",
     "wait_until_project_indexed_tool": "Wait for indexing",
     "add_clip_to_timeline_tool": "Add clip to timeline",
-    "ingest_web_video_tool": "Ingest web / YouTube video",
+    "ingest_web_video_tool": "Ingest web / YouTube / Instagram video",
     "suggest_motion_graphics_placements_tool": "Suggest MG placements (deprecated)",
     "propose_overlay_windows_tool": "Propose overlay windows",
     "place_motion_graphic_tool": "Place motion graphic",

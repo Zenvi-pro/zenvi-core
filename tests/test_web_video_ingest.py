@@ -9,15 +9,20 @@ from contextlib import contextmanager
 import pytest
 
 from classes.web_video_ingest import (
+    HARD_PROFILE_MAX_ITEMS,
     WebVideoIngestError,
     assert_public_http_url,
     cache_satisfies_request,
     check_rate_limit_cooldown,
+    classify_instagram_url,
+    clamp_profile_max_items,
     download_web_video,
     format_selector_for_intent,
+    is_instagram_url,
     is_probable_web_video_url,
     is_youtube_url,
     load_cached_download,
+    normalize_cookies_browser,
     normalize_intent,
     purge_expired_cache,
     url_cache_key,
@@ -29,10 +34,31 @@ def test_url_helpers():
     assert is_probable_web_video_url("https://youtu.be/dQw4w9WgXcQ")
     assert is_youtube_url("https://www.youtube.com/watch?v=abc")
     assert is_youtube_url("https://youtu.be/abc")
+    assert is_instagram_url("https://www.instagram.com/reel/ABC123/")
     assert not is_probable_web_video_url("/tmp/local.mp4")
     assert not is_probable_web_video_url("file:///tmp/x.mp4")
     assert url_cache_key("https://a") == url_cache_key("https://a")
     assert url_cache_key("https://a") != url_cache_key("https://b")
+
+
+def test_classify_instagram_urls():
+    assert classify_instagram_url("https://www.instagram.com/reel/ABC123/") == "single"
+    assert classify_instagram_url("https://instagram.com/reels/ABC123/") == "single"
+    assert classify_instagram_url("https://www.instagram.com/p/XYZ/") == "single"
+    assert classify_instagram_url("https://www.instagram.com/natgeo/") == "profile"
+    assert classify_instagram_url("https://www.instagram.com/natgeo/reels/") == "profile"
+    assert classify_instagram_url("https://www.instagram.com/stories/natgeo/1/") == "stories"
+    assert classify_instagram_url("https://www.instagram.com/stories/highlights/123/") == "highlights"
+    assert classify_instagram_url("https://www.instagram.com/natgeo/highlights/") == "highlights"
+    assert classify_instagram_url("https://www.instagram.com/explore/") is None
+    assert classify_instagram_url("https://www.instagram.com/natgeo/tagged/") is None
+    assert classify_instagram_url("https://youtu.be/abc") is None
+    assert clamp_profile_max_items("") == 12
+    assert clamp_profile_max_items(99) == HARD_PROFILE_MAX_ITEMS
+    assert clamp_profile_max_items(5) == 5
+    assert normalize_cookies_browser("off") is None
+    assert normalize_cookies_browser("chrome") == "chrome"
+    assert normalize_cookies_browser("") is None
 
 
 def test_normalize_intent_aliases():
@@ -139,8 +165,9 @@ def test_ingest_web_video_tool_reference_imports_without_place(monkeypatch, tmp_
     monkeypatch.setattr(
         wvi,
         "download_web_video",
-        lambda url, cache_dir, intent="reference", write_subs=False, ydl_factory=None: {
+        lambda url, cache_dir, intent="reference", write_subs=False, ydl_factory=None, **_k: {
             "ok": True,
+            "kind": "single",
             "url": url,
             "intent": intent,
             "title": "Look Ref",
@@ -254,7 +281,7 @@ def test_rate_limit_cooldown_blocks_then_expires(tmp_path):
     cache = str(tmp_path / "cool")
     write_rate_limit_cooldown(cache, now=1_000.0)
     msg = check_rate_limit_cooldown(cache, now=1_010.0)
-    assert msg and "rate-limiting" in msg.lower()
+    assert msg and "rate-limited" in msg.lower()
     assert check_rate_limit_cooldown(cache, now=1_000.0 + 11 * 60) is None
 
 
@@ -299,7 +326,9 @@ def test_ingest_fail_json_does_not_raise(monkeypatch):
     monkeypatch.setattr(
         wvi,
         "download_web_video",
-        lambda *a, **k: (_ for _ in ()).throw(wvi.WebVideoIngestError("ffmpeg is required to combine YouTube video+audio.")),
+        lambda *a, **k: (_ for _ in ()).throw(
+            wvi.WebVideoIngestError("ffmpeg is required to combine YouTube video+audio.")
+        ),
     )
     monkeypatch.setattr(wvi, "purge_expired_cache", lambda *a, **k: 0)
     monkeypatch.setattr(wvi, "cache_root", lambda *_: "/tmp/zenvi-cache-test")
@@ -321,11 +350,12 @@ def _slow_ingest_setup(monkeypatch, tmp_path, *, sync_budget=0.2, poll_budget=2.
     started = threading.Event()
     release = threading.Event()
 
-    def _slow_download(url, cache_dir, intent="reference", write_subs=False, ydl_factory=None):
+    def _slow_download(url, cache_dir, intent="reference", write_subs=False, ydl_factory=None, **_k):
         started.set()
         assert release.wait(timeout=10)
         return {
             "ok": True,
+            "kind": "single",
             "url": url,
             "intent": intent,
             "title": "Slow",
@@ -634,3 +664,254 @@ def test_a_redirect_to_a_public_address_is_still_followed(monkeypatch):
     req = urllib.request.Request("https://cdn.example.org/a.mp4")
     new = handler.redirect_request(req, None, 302, "Found", {}, "https://media.example.org/a.mp4")
     assert new is not None and new.full_url == "https://media.example.org/a.mp4"
+
+
+def test_instagram_reel_sets_cookies_and_caption_sidecar(tmp_path, monkeypatch):
+    from classes import web_video_ingest as wvi
+
+    cache = tmp_path / "ig"
+    cache.mkdir()
+    media = cache / "media.mp4"
+    media.write_bytes(b"ig-bytes")
+    seen = {}
+
+    class FakeYDL:
+        def __init__(self, opts):
+            seen["opts"] = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download=True):
+            return {
+                "title": "Sunset Reel",
+                "description": "Golden hour vibes #reel",
+                "uploader": "creator",
+                "id": "ABC123",
+                "ext": "mp4",
+                "duration": 15.0,
+                "extractor": "Instagram",
+                "webpage_url": url,
+                "requested_downloads": [{"filepath": str(media)}],
+            }
+
+    monkeypatch.setattr(wvi, "assert_public_http_url", lambda url: None)
+    monkeypatch.setattr(wvi, "ffmpeg_available", lambda: True)
+    monkeypatch.setattr(wvi, "resolve_cookies_browser", lambda explicit=None: "firefox")
+
+    meta = download_web_video(
+        "https://www.instagram.com/reel/ABC123/",
+        cache_dir=str(cache),
+        intent="reference",
+        ydl_factory=FakeYDL,
+    )
+    assert meta["ok"] is True
+    assert meta["kind"] == "single"
+    assert meta["is_instagram"] is True
+    assert meta["description"] == "Golden hour vibes #reel"
+    assert meta["uploader"] == "creator"
+    assert seen["opts"]["cookiesfrombrowser"] == ("firefox",)
+    assert seen["opts"]["noplaylist"] is True
+    assert "playlistend" not in seen["opts"]
+    sidecar = json.loads((cache / "ingest.json").read_text(encoding="utf-8"))
+    assert sidecar["description"] == "Golden hour vibes #reel"
+
+
+def test_instagram_profile_uses_gallery_dl_not_ytdlp(tmp_path, monkeypatch):
+    from classes import web_video_ingest as wvi
+
+    cache = tmp_path / "igp"
+    cache.mkdir()
+    files = []
+    for i in range(3):
+        p = cache / f"{i + 1:03d}-id{i}.mp4"
+        p.write_bytes(b"x" * (10 + i))
+        files.append(p)
+    seen = {}
+
+    def _fake_gdl(target_url, *, cache_dir, want_n, browser, ig_kind):
+        seen["url"] = target_url
+        seen["want_n"] = want_n
+        seen["browser"] = browser
+        seen["ig_kind"] = ig_kind
+        return [
+            {
+                "video_path": str(files[i]),
+                "title": f"Reel {i}",
+                "description": f"caption {i}",
+                "uploader": "natgeo",
+                "id": f"id{i}",
+            }
+            for i in range(3)
+        ]
+
+    monkeypatch.setattr(wvi, "assert_public_http_url", lambda url: None)
+    monkeypatch.setattr(wvi, "resolve_cookies_browser", lambda explicit=None: "firefox")
+
+    def _boom_ydl(opts):
+        raise AssertionError("yt-dlp must not run for IG profile samples")
+
+    meta = download_web_video(
+        "https://www.instagram.com/natgeo/",
+        cache_dir=str(cache),
+        intent="recreate",
+        max_items=99,
+        ydl_factory=_boom_ydl,
+        gdl_runner=_fake_gdl,
+    )
+    assert "/reels/" in seen["url"]
+    assert seen["want_n"] == HARD_PROFILE_MAX_ITEMS
+    assert seen["browser"] == "firefox"
+    assert seen["ig_kind"] == "profile"
+    assert meta["kind"] == "profile_sample"
+    assert meta["extractor"] == "gallery-dl"
+    assert meta["sampled"] == 3
+    assert meta["items"][0]["description"] == "caption 0"
+    assert meta["requested_max_items"] == HARD_PROFILE_MAX_ITEMS
+
+
+def test_instagram_stories_uses_gallery_dl(tmp_path, monkeypatch):
+    from classes import web_video_ingest as wvi
+
+    cache = tmp_path / "igs"
+    cache.mkdir()
+    media = cache / "story.mp4"
+    media.write_bytes(b"story")
+
+    def _fake_gdl(target_url, *, cache_dir, want_n, browser, ig_kind):
+        assert ig_kind == "stories"
+        return [{
+            "video_path": str(media),
+            "title": "Story",
+            "description": "",
+            "uploader": "natgeo",
+            "id": "s1",
+        }]
+
+    monkeypatch.setattr(wvi, "assert_public_http_url", lambda url: None)
+    monkeypatch.setattr(wvi, "resolve_cookies_browser", lambda explicit=None: "firefox")
+
+    meta = download_web_video(
+        "https://www.instagram.com/stories/natgeo/1/",
+        cache_dir=str(cache),
+        intent="reference",
+        gdl_runner=_fake_gdl,
+        ydl_factory=lambda o: (_ for _ in ()).throw(AssertionError("no ytdlp")),
+    )
+    assert meta["kind"] == "stories_sample"
+    assert meta["sampled"] == 1
+
+
+def test_instagram_tagged_still_refused(tmp_path, monkeypatch):
+    from classes import web_video_ingest as wvi
+
+    monkeypatch.setattr(wvi, "assert_public_http_url", lambda url: None)
+
+    with pytest.raises(WebVideoIngestError, match="not supported"):
+        download_web_video(
+            "https://www.instagram.com/natgeo/tagged/",
+            cache_dir=str(tmp_path),
+            intent="reference",
+            ydl_factory=lambda o: None,
+        )
+
+
+def test_missing_gallery_dl_clear_error(tmp_path, monkeypatch):
+    from classes import web_video_ingest as wvi
+
+    monkeypatch.setattr(wvi, "assert_public_http_url", lambda url: None)
+    monkeypatch.setattr(
+        wvi,
+        "_ensure_gallery_dl",
+        lambda: (_ for _ in ()).throw(
+            wvi.WebVideoIngestError(
+                "Instagram profile, stories, or highlights need gallery-dl "
+                "(optional — not required for YouTube or a single Reel). "
+                "Install with: pip install 'gallery-dl>=1.27' then retry."
+            )
+        ),
+    )
+
+    with pytest.raises(WebVideoIngestError, match="gallery-dl"):
+        download_web_video(
+            "https://www.instagram.com/natgeo/",
+            cache_dir=str(tmp_path),
+            intent="reference",
+        )
+
+
+def test_ingest_instagram_profile_returns_file_ids(monkeypatch, tmp_path):
+    import json
+    from classes import tool_handlers as th
+    from classes import web_video_ingest as wvi
+
+    media_a = tmp_path / "a.mp4"
+    media_b = tmp_path / "b.mp4"
+    media_a.write_bytes(b"a")
+    media_b.write_bytes(b"b")
+
+    monkeypatch.setattr(
+        wvi,
+        "download_web_video",
+        lambda url, cache_dir, intent="reference", write_subs=False, ydl_factory=None, **_k: {
+            "ok": True,
+            "kind": "profile_sample",
+            "url": url,
+            "intent": intent,
+            "title": "natgeo",
+            "extractor": "Instagram",
+            "duration_seconds": 10.0,
+            "video_path": str(media_a),
+            "subtitle_paths": [],
+            "webpage_url": url,
+            "id": "natgeo",
+            "is_youtube": False,
+            "is_instagram": True,
+            "sampled": 2,
+            "items": [
+                {"video_path": str(media_a), "title": "A", "description": "cap a", "uploader": "natgeo", "id": "a"},
+                {"video_path": str(media_b), "title": "B", "description": "cap b", "uploader": "natgeo", "id": "b"},
+            ],
+            "product_note": "note",
+        },
+    )
+    monkeypatch.setattr(wvi, "purge_expired_cache", lambda *a, **k: 0)
+    monkeypatch.setattr(wvi, "cache_root", lambda *_: str(tmp_path / "cache"))
+    monkeypatch.setattr(wvi, "url_cache_key", lambda *_: "ig-key")
+
+    ids = {"n": 0}
+
+    class FakeFile:
+        def __init__(self):
+            ids["n"] += 1
+            self.id = f"file-{ids['n']}"
+            self.data = {"tags": "", "path": ""}
+
+        def save(self):
+            return None
+
+    monkeypatch.setattr(th, "_import_generated_video", lambda *_a, **_k: (FakeFile(), None))
+    monkeypatch.setattr(th, "add_clip_to_timeline", lambda **_k: "placed")
+
+    with th._ingest_jobs_lock:
+        th._ingest_jobs.clear()
+        th._ingest_inflight.clear()
+
+    out = json.loads(
+        th.ingest_web_video(
+            url="https://www.instagram.com/natgeo/",
+            intent="recreate",
+            place="true",
+            max_items=2,
+        )
+    )
+    assert out["ok"] is True
+    assert out["kind"] == "profile_sample"
+    assert out["file_ids"] == ["file-1", "file-2"]
+    assert out["captions"] == ["cap a", "cap b"]
+    assert out["sampled"] == 2
+    assert out["placed"] is False
+    assert out["is_instagram"] is True

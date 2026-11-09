@@ -159,16 +159,22 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "full_file": _str_or_bool(),
     }),
     "ingest_web_video_tool": _obj({
-        "url": _str(description="YouTube / web page URL (preferred)."),
+        "url": _str(description="YouTube, Instagram Reel/profile/stories/highlights, or other web page URL."),
         "video_url": _str(description="Alias for url."),
         "intent": _str(
             description="'reference' (default, media bin), 'timeline' (place), or 'recreate'.",
         ),
-        "place": _str_or_bool(description="Place on timeline; ignored for recreate."),
+        "place": _str_or_bool(description="Place on timeline; ignored for recreate and IG samples."),
         "track": _str_or_num(),
         "position_seconds": _str_or_num(),
         "write_subs": _str_or_bool(),
         "job_id": _str(description="Long-poll id from a prior status=running reply."),
+        "max_items": _str_or_num(
+            description="IG profile/stories/highlights: items to sample (default 12, hard max 20).",
+        ),
+        "cookies_browser": _str(
+            description="Instagram only: firefox (default), chrome, edge, or off.",
+        ),
     }),
     "suggest_motion_graphics_placements_tool": _obj({
         "brief": _str(),

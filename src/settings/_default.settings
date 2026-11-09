@@ -224,6 +224,21 @@
     "type": "spinner-int"
   },
   {
+    "value": "firefox",
+    "title": "Web ingest cookies browser (Instagram)",
+    "category": "Cache",
+    "setting": "web-ingest-cookies-browser",
+    "type": "dropdown",
+    "translate_values": false,
+    "values": [
+      {"name": "Firefox (recommended)", "value": "firefox"},
+      {"name": "Chrome", "value": "chrome"},
+      {"name": "Edge", "value": "edge"},
+      {"name": "Off (no cookies)", "value": "off"}
+    ],
+    "restart": false
+  },
+  {
     "value": "HD 720p 30 fps",
     "title": "Default Profile",
     "category": "Preview",
