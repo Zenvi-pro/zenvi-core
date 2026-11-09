@@ -39,7 +39,7 @@ class AlphaError(RuntimeError):
 def _ffmpeg() -> str:
     exe = ffmpeg_cli.find_ffmpeg("ffmpeg")
     if not exe:
-        raise AlphaError("ffmpeg was not found; install it (brew install ffmpeg) or set ZENVI_FFMPEG_DIR")
+        raise AlphaError("ffmpeg was not found; install ffmpeg or set ZENVI_FFMPEG_DIR")
     return exe
 
 

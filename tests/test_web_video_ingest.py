@@ -634,3 +634,14 @@ def test_a_redirect_to_a_public_address_is_still_followed(monkeypatch):
     req = urllib.request.Request("https://cdn.example.org/a.mp4")
     new = handler.redirect_request(req, None, 302, "Found", {}, "https://media.example.org/a.mp4")
     assert new is not None and new.full_url == "https://media.example.org/a.mp4"
+
+
+def test_missing_ffmpeg_messages_are_not_mac_only():
+    """Releases ship ffmpeg on every platform; no error may tell a Windows user to run brew."""
+    import pathlib
+    from classes.web_video_ingest import humanize_ingest_failure
+
+    assert "brew" not in humanize_ingest_failure(RuntimeError("Merging requires ffmpeg")).lower()
+    src = pathlib.Path(__file__).resolve().parent.parent / "src" / "classes"
+    offenders = [str(p.relative_to(src)) for p in src.rglob("*.py") if "brew install ffmpeg" in p.read_text(encoding="utf-8")]
+    assert offenders == []
