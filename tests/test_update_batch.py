@@ -99,6 +99,7 @@ def _timeline_sync():
     import threading
     sync.timeline_lock = threading.RLock()
     sync._batched_diffs, sync._batched_property_edit = [], False
+    sync._batched_media_source_changed = False
     return sync, applied
 
 

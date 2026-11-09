@@ -31,9 +31,74 @@ import openshot  # Python module for libopenshot (required video editing module 
 from qt_api import QTimer
 
 from classes import crash_handler, update_batch
+from classes.path_utils import media_paths_equal
 from classes.updates import UpdateInterface
 from classes.logger import log
 from classes.app import get_app
+
+
+def _payload_reader_path(payload):
+    """Absolute-ish media path a clip/effect JSON would open, or None."""
+    if not isinstance(payload, dict):
+        return None
+    reader = payload.get("reader")
+    if isinstance(reader, dict) and reader.get("path"):
+        return str(reader["path"])
+    if payload.get("path"):
+        return str(payload["path"])
+    return None
+
+
+def _payload_proxy_path(payload):
+    """Optimized-preview path nested on the payload or its reader, or None."""
+    if not isinstance(payload, dict):
+        return None
+    containers = [payload]
+    reader = payload.get("reader")
+    if isinstance(reader, dict):
+        containers.append(reader)
+    for container in containers:
+        proxy = container.get("proxy_reader")
+        if isinstance(proxy, dict) and proxy.get("path"):
+            return str(proxy["path"])
+    return None
+
+
+def media_source_changed(action):
+    """True when a clip/effect update swaps the file (or proxy) behind the same timeline object.
+
+    ApplyJsonDiff drops frame ranges for property edits, but when only the
+    reader path / file_id changes the composite CacheMemory can keep serving
+    frames from the previous file — preview shows the old video while a fresh
+    export Timeline (SetJson) shows the new one. Proxy apply already clears
+    for the same reason; normal relinks and agent B-roll swaps must too.
+    """
+    if not action or getattr(action, "type", None) != "update":
+        return False
+    key = getattr(action, "key", None) or []
+    if not key or str(key[0]).lower() not in ("clips", "effects"):
+        return False
+    new = getattr(action, "values", None)
+    old = getattr(action, "old_values", None)
+    if not isinstance(new, dict):
+        return False
+    if not isinstance(old, dict):
+        # Untracked or history-less update: clear if it carries a media identity.
+        return new.get("file_id") is not None or _payload_reader_path(new) is not None
+
+    new_fid, old_fid = new.get("file_id"), old.get("file_id")
+    if new_fid is not None and old_fid is not None and new_fid != old_fid:
+        return True
+
+    new_path, old_path = _payload_reader_path(new), _payload_reader_path(old)
+    if new_path and old_path and not media_paths_equal(new_path, old_path):
+        return True
+
+    new_proxy, old_proxy = _payload_proxy_path(new), _payload_proxy_path(old)
+    if new_proxy and old_proxy:
+        return not media_paths_equal(new_proxy, old_proxy)
+    # Added or removed proxy under the same source path still changes what preview reads.
+    return bool(new_proxy) != bool(old_proxy)
 
 
 class TimelineSync(UpdateInterface):
@@ -78,6 +143,7 @@ class TimelineSync(UpdateInterface):
         # Diffs held back while an update batch is open (see classes.update_batch): applied in one call at the end.
         self._batched_diffs = []
         self._batched_property_edit = False
+        self._batched_media_source_changed = False
         update_batch.register(self.flush_batch)
 
         # Add self as listener to project data updates (at the beginning of the list)
@@ -98,10 +164,13 @@ class TimelineSync(UpdateInterface):
             # An edit is changing many things: keep the diffs in order and apply them once when it ends.
             self._batched_diffs.extend(json.loads(self._preview_payload(action.json(is_array=True))))
             self._batched_property_edit = self._batched_property_edit or action.type == "update"
+            self._batched_media_source_changed = (
+                self._batched_media_source_changed or media_source_changed(action))
             return
         if action and action.type == "load":
             self._batched_diffs = []        # a load replaces the whole timeline: held-back diffs would be stale
             self._batched_property_edit = False
+            self._batched_media_source_changed = False
 
         with self.timeline_lock:
             # Enter edit mode for property updates — disable caching until the user seeks or plays.
@@ -148,6 +217,10 @@ class TimelineSync(UpdateInterface):
                 else:
                     # This JSON DIFF is passed to libopenshot to update the timeline
                     self.timeline.ApplyJsonDiff(self._preview_payload(action.json(is_array=True)))
+                    # Path/file_id swaps keep the same frame ranges — drop the whole
+                    # preview cache or the widget keeps showing the previous file.
+                    if media_source_changed(action):
+                        self.timeline.ClearAllCache(True)
 
                     # Refresh the preview so the video widget reflects the change
                     self.window.refreshFrameSignal.emit()
@@ -175,6 +248,7 @@ class TimelineSync(UpdateInterface):
         """Apply every diff held back during an update batch in one libopenshot call, then refresh the preview once."""
         diffs, self._batched_diffs = self._batched_diffs, []
         property_edit, self._batched_property_edit = self._batched_property_edit, False
+        media_changed, self._batched_media_source_changed = self._batched_media_source_changed, False
         if not diffs:
             return
         with self.timeline_lock:
@@ -187,7 +261,10 @@ class TimelineSync(UpdateInterface):
                     openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
             try:
                 # ApplyJsonDiff drops the edited ranges; a full ClearAllCache starved playback (#332)
+                # unless the media behind a clip changed — then the ranges match and the cache lies.
                 self.timeline.ApplyJsonDiff(json.dumps(diffs))
+                if media_changed:
+                    self.timeline.ClearAllCache(True)
                 self.window.refreshFrameSignal.emit()
             except Exception as e:
                 log.error("Error applying batched JSON to timeline object in libopenshot: %s" % e)
