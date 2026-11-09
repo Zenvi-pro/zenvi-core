@@ -64,6 +64,46 @@ def _payload_proxy_path(payload):
     return None
 
 
+def _payload_fingerprint_sha(payload):
+    """sha256 from a clip/effect payload or its nested reader, or None."""
+    if not isinstance(payload, dict):
+        return None
+    for container in (payload, payload.get("reader") if isinstance(payload.get("reader"), dict) else None):
+        if not isinstance(container, dict):
+            continue
+        fingerprint = container.get("fingerprint")
+        if isinstance(fingerprint, dict) and fingerprint.get("sha256"):
+            return str(fingerprint["sha256"])
+    return None
+
+
+def _project_item_before_update(key):
+    """Clip/effect still in the project at *key* when TimelineSync runs.
+
+    TimelineSync is registered at listener index 0, so it runs *before*
+    ProjectDataStore commits the mutation and fills ``action.old_values``.
+    The project still holds the pre-update item here — that is the baseline
+    we must compare against on the live edit path.
+    """
+    if not key or len(key) < 2 or not isinstance(key[1], dict):
+        return None
+    item_id = key[1].get("id")
+    if not item_id:
+        return None
+    root = str(key[0]).lower()
+    if root not in ("clips", "effects"):
+        return None
+    try:
+        items = get_app().project.get(root) or []
+    except Exception:
+        log.debug("could not read project %s for media-source check", root, exc_info=True)
+        return None
+    for item in items:
+        if isinstance(item, dict) and item.get("id") == item_id:
+            return item
+    return None
+
+
 def media_source_changed(action):
     """True when a clip/effect update swaps the file (or proxy) behind the same timeline object.
 
@@ -72,6 +112,11 @@ def media_source_changed(action):
     frames from the previous file — preview shows the old video while a fresh
     export Timeline (SetJson) shows the new one. Proxy apply already clears
     for the same reason; normal relinks and agent B-roll swaps must too.
+
+    Do **not** treat "old_values is missing" as a media change: on every live
+    edit TimelineSync sees the action before ProjectDataStore sets old_values,
+    and a full clip save always carries ``file_id`` / ``reader.path``. Clearing
+    on that would reintroduce the #332 playback-cache starvation.
     """
     if not action or getattr(action, "type", None) != "update":
         return False
@@ -79,12 +124,14 @@ def media_source_changed(action):
     if not key or str(key[0]).lower() not in ("clips", "effects"):
         return False
     new = getattr(action, "values", None)
-    old = getattr(action, "old_values", None)
     if not isinstance(new, dict):
         return False
+
+    old = getattr(action, "old_values", None)
     if not isinstance(old, dict):
-        # Untracked or history-less update: clear if it carries a media identity.
-        return new.get("file_id") is not None or _payload_reader_path(new) is not None
+        old = _project_item_before_update(key)
+    if not isinstance(old, dict):
+        return False
 
     new_fid, old_fid = new.get("file_id"), old.get("file_id")
     if new_fid is not None and old_fid is not None and new_fid != old_fid:
@@ -94,10 +141,24 @@ def media_source_changed(action):
     if new_path and old_path and not media_paths_equal(new_path, old_path):
         return True
 
+    # Same path, new bytes on disk (relink / overwrite): fingerprints diverge.
+    new_sha, old_sha = _payload_fingerprint_sha(new), _payload_fingerprint_sha(old)
+    if new_sha and old_sha and new_sha != old_sha:
+        return True
+
+    # Proxy compare only when this update carries a reader (or top-level proxy).
+    # A partial property tweak must not look like "proxy removed" just because
+    # the new payload omitted reader entirely.
+    touches_reader = (
+        isinstance(new.get("reader"), dict)
+        or "proxy_reader" in new
+        or "path" in new
+    )
+    if not touches_reader:
+        return False
     new_proxy, old_proxy = _payload_proxy_path(new), _payload_proxy_path(old)
     if new_proxy and old_proxy:
         return not media_paths_equal(new_proxy, old_proxy)
-    # Added or removed proxy under the same source path still changes what preview reads.
     return bool(new_proxy) != bool(old_proxy)
 
 

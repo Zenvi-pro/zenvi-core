@@ -8,6 +8,10 @@ and blocked the GUI thread on the timeline lock.
 A media path / file_id swap is the exception: the frame ranges stay the same, so
 ApplyJsonDiff alone leaves CacheMemory serving the previous file in preview
 while export (fresh SetJson) shows the new one.
+
+Live edits reach TimelineSync *before* ProjectDataStore fills ``old_values``,
+so the baseline must come from the still-current project clip — not from a
+missing-old_values fallback that would clear on every full clip save (#332).
 """
 
 from __future__ import annotations
@@ -39,13 +43,23 @@ def _sync(monkeypatch, playing=False):
     return sync
 
 
+def _project_with_clip(monkeypatch, clip):
+    """TimelineSync runs before the store: project still holds the pre-update clip."""
+    project = SimpleNamespace(get=lambda key, _clip=clip: [_clip] if key == "clips" else [])
+    monkeypatch.setattr(timeline_module, "get_app", lambda: SimpleNamespace(project=project))
+
+
 def test_an_edit_does_not_clear_the_whole_cache(monkeypatch):
+    """Same media, full clip save (the common drag/property path): no ClearAllCache."""
+    clip = {"id": "C1", "file_id": "F1", "reader": {"path": "/a.mp4"}, "alpha": {"Points": []}}
+    _project_with_clip(monkeypatch, clip)
     sync = _sync(monkeypatch)
+    # Live path: old_values is still None when TimelineSync runs.
     action = SimpleNamespace(
         type="update",
         key=["clips", {"id": "C1"}],
-        values={"id": "C1", "file_id": "F1", "reader": {"path": "/a.mp4"}},
-        old_values={"id": "C1", "file_id": "F1", "reader": {"path": "/a.mp4"}},
+        values=dict(clip, alpha={"Points": [{"co": {"X": 1, "Y": 0.5}}]}),
+        old_values=None,
         json=lambda **k: "[]",
     )
 
@@ -57,12 +71,16 @@ def test_an_edit_does_not_clear_the_whole_cache(monkeypatch):
 
 
 def test_relinking_a_clip_to_new_media_clears_the_preview_cache(monkeypatch):
+    """Live path with no old_values yet: compare against the project clip."""
+    _project_with_clip(monkeypatch, {
+        "id": "C1", "file_id": "F1", "reader": {"path": "/broll_main.mp4"},
+    })
     sync = _sync(monkeypatch)
     action = SimpleNamespace(
         type="update",
         key=["clips", {"id": "C1"}],
         values={"id": "C1", "file_id": "F2", "reader": {"path": "/broll_v2.mp4"}},
-        old_values={"id": "C1", "file_id": "F1", "reader": {"path": "/broll_main.mp4"}},
+        old_values=None,
         json=lambda **k: "[]",
     )
 
@@ -73,7 +91,25 @@ def test_relinking_a_clip_to_new_media_clears_the_preview_cache(monkeypatch):
     sync.window.refreshFrameSignal.emit.assert_called_once()
 
 
-def test_media_source_changed_detects_path_file_id_and_proxy_swaps():
+def test_missing_old_values_alone_does_not_clear_the_cache(monkeypatch):
+    """Regression: the first revision cleared whenever reader.path was present and
+    old_values was None — which is every live full-clip save before the store runs."""
+    _project_with_clip(monkeypatch, {
+        "id": "C1", "file_id": "F1", "reader": {"path": "/a.mp4"},
+    })
+    assert not timeline_module.media_source_changed(SimpleNamespace(
+        type="update",
+        key=["clips", {"id": "C1"}],
+        values={"id": "C1", "file_id": "F1", "reader": {"path": "/a.mp4"}, "position": 1.0},
+        old_values=None,
+    ))
+
+
+def test_media_source_changed_detects_path_file_id_and_proxy_swaps(monkeypatch):
+    _project_with_clip(monkeypatch, {
+        "id": "C1", "file_id": "F1", "reader": {"path": r"C:\a\clip.mp4"},
+    })
+
     same = SimpleNamespace(
         type="update", key=["clips", {"id": "C1"}],
         values={"file_id": "F1", "reader": {"path": r"C:\a\clip.mp4"}},
@@ -103,15 +139,27 @@ def test_media_source_changed_detects_path_file_id_and_proxy_swaps():
     )
     assert timeline_module.media_source_changed(proxy_gone)
 
+    # Partial property update: no reader in the new payload — must not look like
+    # "proxy removed" just because the old clip had a proxy.
     alpha_only = SimpleNamespace(
         type="update", key=["clips", {"id": "C1"}],
         values={"alpha": {"Points": []}},
-        old_values={"alpha": {"Points": []}, "file_id": "F1", "reader": {"path": "/a.mp4"}},
+        old_values={"alpha": {"Points": []}, "file_id": "F1",
+                    "reader": {"path": "/a.mp4", "proxy_reader": {"path": "/p.mp4"}}},
     )
     assert not timeline_module.media_source_changed(alpha_only)
 
     assert not timeline_module.media_source_changed(
         SimpleNamespace(type="insert", key=["clips"], values={}, old_values=None))
+
+    same_path_new_bytes = SimpleNamespace(
+        type="update", key=["clips", {"id": "C1"}],
+        values={"file_id": "F1", "reader": {"path": "/a.mp4",
+                                            "fingerprint": {"sha256": "bbb"}}},
+        old_values={"file_id": "F1", "reader": {"path": "/a.mp4",
+                                                "fingerprint": {"sha256": "aaa"}}},
+    )
+    assert timeline_module.media_source_changed(same_path_new_bytes)
 
 
 def test_the_edited_frame_still_updates_without_a_full_clear(tmp_path):
@@ -149,24 +197,30 @@ def test_the_edited_frame_still_updates_without_a_full_clear(tmp_path):
     clip["alpha"] = {"Points": [{"co": {"X": 1.0, "Y": 0.0}, "interpolation": 2}]}
     diff = [{"type": "update", "key": ["clips", {"id": "C1"}], "value": clip, "partial": False}]
     sync.changed(SimpleNamespace(type="update", key=["clips", {"id": "C1"}],
+                                 values=clip, old_values=dict(clip, alpha={"Points": []}),
                                  json=lambda **k: json.dumps(diff)))
 
     assert not is_white()  # the transparent clip is gone from the cached frame
 
 
 def test_an_edit_rearms_background_cache_warming(monkeypatch):
+    _project_with_clip(monkeypatch, {"id": "C1"})
     sync = _sync(monkeypatch)
     warmer = MagicMock()
     sync.window.background_render_manager = warmer
     sync.changed(SimpleNamespace(
         type="update", key=["clips", {"id": "C1"}],
-        values={"id": "C1"}, old_values={"id": "C1"}, json=lambda **k: "[]"))
+        values={"id": "C1"}, old_values=None, json=lambda **k: "[]"))
     warmer.invalidate.assert_called_once()
+    sync.timeline.ClearAllCache.assert_not_called()
 
 
 def test_a_batched_media_relink_clears_the_preview_cache_once(monkeypatch):
     from classes import update_batch
 
+    _project_with_clip(monkeypatch, {
+        "id": "C1", "file_id": "F1", "reader": {"path": "/v1.mp4"},
+    })
     sync = _sync(monkeypatch)
     sync._batched_diffs = []
     sync._batched_property_edit = False
@@ -178,7 +232,7 @@ def test_a_batched_media_relink_clears_the_preview_cache_once(monkeypatch):
             "type": "update",
             "key": ["clips", {"id": "C1"}],
             "value": {"id": "C1", "file_id": "F2", "reader": {"path": "/v2.mp4"}},
-            "old_values": {"id": "C1", "file_id": "F1", "reader": {"path": "/v1.mp4"}},
+            "old_values": None,
         }
         import json
         return json.dumps([payload] if is_array else payload)
@@ -187,7 +241,7 @@ def test_a_batched_media_relink_clears_the_preview_cache_once(monkeypatch):
         sync.changed(SimpleNamespace(
             type="update", key=["clips", {"id": "C1"}],
             values={"id": "C1", "file_id": "F2", "reader": {"path": "/v2.mp4"}},
-            old_values={"id": "C1", "file_id": "F1", "reader": {"path": "/v1.mp4"}},
+            old_values=None,
             json=_json,
         ))
         sync.timeline.ApplyJsonDiff.assert_not_called()
@@ -195,3 +249,36 @@ def test_a_batched_media_relink_clears_the_preview_cache_once(monkeypatch):
     sync.timeline.ApplyJsonDiff.assert_called_once()
     sync.timeline.ClearAllCache.assert_called_once_with(True)
     sync.window.refreshFrameSignal.emit.assert_called_once()
+
+
+def test_a_batched_property_edit_still_skips_the_full_clear(monkeypatch):
+    from classes import update_batch
+
+    _project_with_clip(monkeypatch, {
+        "id": "C1", "file_id": "F1", "reader": {"path": "/a.mp4"},
+    })
+    sync = _sync(monkeypatch)
+    sync._batched_diffs = []
+    sync._batched_property_edit = False
+    sync._batched_media_source_changed = False
+    update_batch.register(sync.flush_batch)
+
+    def _json(is_array=False, only_value=False, **_):
+        import json
+        payload = {
+            "type": "update",
+            "key": ["clips", {"id": "C1"}],
+            "value": {"id": "C1", "file_id": "F1", "reader": {"path": "/a.mp4"}, "position": 2.0},
+        }
+        return json.dumps([payload] if is_array else payload)
+
+    with update_batch.batch():
+        sync.changed(SimpleNamespace(
+            type="update", key=["clips", {"id": "C1"}],
+            values={"id": "C1", "file_id": "F1", "reader": {"path": "/a.mp4"}, "position": 2.0},
+            old_values=None,
+            json=_json,
+        ))
+
+    sync.timeline.ApplyJsonDiff.assert_called_once()
+    sync.timeline.ClearAllCache.assert_not_called()
