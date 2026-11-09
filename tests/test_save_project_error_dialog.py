@@ -94,3 +94,31 @@ def _run(win):
         return None
     except Exception as exc:  # pragma: no cover - surfaced via assertion above
         return exc
+
+
+def test_save_project_memory_error_stops_autosave_without_a_dialog(monkeypatch):
+    win = main_window.MainWindow.__new__(main_window.MainWindow)
+    win.lock = threading.Lock()
+    win._autosave_oom = False
+    win.save_recovery = lambda file_path: None
+    timer = MagicMock()
+    win.auto_save_timer = timer
+
+    mock_app = MagicMock()
+    mock_app._tr = lambda s: s
+    mock_app.get_settings.return_value = _Settings()
+    mock_app.project.current_filepath = None
+    mock_app.project.save = MagicMock(side_effect=MemoryError("oom"))
+    monkeypatch.setattr(main_window, "get_app", lambda: mock_app)
+
+    captured = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", staticmethod(lambda *a, **k: captured.append(a))
+    )
+    monkeypatch.setattr(main_window, "invoke_on_gui", lambda fn, context=None: fn())
+
+    win.save_project("/tmp/fat.zvn")
+
+    assert win._autosave_oom is True
+    timer.stop.assert_called_once()
+    assert captured == []

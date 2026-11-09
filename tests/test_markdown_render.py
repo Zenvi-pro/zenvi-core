@@ -2,7 +2,7 @@
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 _ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(_ROOT) not in sys.path:
@@ -36,6 +36,29 @@ class MarkdownRenderTests(unittest.TestCase):
     def test_inline_code_renders_code_tag(self):
         html = _markdown_to_html("Use `foo` here")
         self.assertIn("<code>foo</code>", html)
+
+
+class MarkdownFailureOnceTests(unittest.TestCase):
+    def setUp(self):
+        import windows.ai_chat_ui as ui
+        self._ui = ui
+        self._prev = ui._markdown_failed
+        ui._markdown_failed = False
+
+    def tearDown(self):
+        self._ui._markdown_failed = self._prev
+
+    def test_markdown_failure_is_logged_once(self):
+        fake = MagicMock()
+        fake.markdown.side_effect = ImportError("no extra")
+        with patch.dict(sys.modules, {"markdown": fake}):
+            with patch("windows.ai_chat_ui.log") as log:
+                first = _markdown_to_html("hello")
+                second = _markdown_to_html("again")
+        self.assertIn("hello", first)
+        self.assertIn("again", second)
+        self.assertEqual(log.warning.call_count, 1)
+        self.assertTrue(self._ui._markdown_failed)
 
 
 if __name__ == "__main__":

@@ -78,6 +78,16 @@ def test_choose_restore_target_named(tmp_path):
     )
 
 
+def test_choose_restore_target_too_large(tmp_path, monkeypatch):
+    named = tmp_path / "fat.zvn"
+    named.write_text("x" * 64)
+    monkeypatch.setattr(session_restore, "AUTO_RESTORE_MAX_BYTES", 10)
+    settings = _Settings({"restore_project_path": str(named)})
+    assert session_restore.choose_restore_target(settings, False) == (
+        "too_large", str(named)
+    )
+
+
 def test_choose_restore_target_missing(tmp_path):
     missing = str(tmp_path / "gone.zvn")
     settings = _Settings({"restore_project_path": missing})

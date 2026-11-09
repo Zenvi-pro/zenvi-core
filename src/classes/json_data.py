@@ -33,7 +33,7 @@ import copy
 import os
 import re
 
-from classes.assets import get_assets_path, path_is_under
+from classes.assets import get_assets_path, path_is_under, resolve_assets_file
 from classes.logger import log
 from classes import info
 from classes.app import get_app
@@ -257,9 +257,12 @@ class JsonDataStore:
             return '"%s": %s' % (key, new_path)
 
         elif "@assets" in path:
-            new_path = path.replace("@assets", path_context["new_project_assets"])
-            # @assets tokens use `/`; turn them into a real host path before saving.
-            new_path = os.path.normpath(new_path)
+            suffix = path.split("@assets", 1)[-1]
+            new_path = resolve_assets_file(
+                path_context.get("project_file"),
+                suffix,
+                previous_path=path_context.get("previous_path"),
+            )
             new_path = json.dumps(new_path, ensure_ascii=False)
             return '"%s": %s' % (key, new_path)
 
@@ -277,6 +280,8 @@ class JsonDataStore:
             path_context["existing_project_folder"] = os.path.dirname(file_path)
             path_context["new_project_assets"] = get_assets_path(file_path, create_paths=False)
             path_context["existing_project_assets"] = get_assets_path(file_path, create_paths=False)
+            path_context["project_file"] = file_path
+            path_context["previous_path"] = None
 
             # Optimized regex replacement
             data = re.sub(path_regex, self.replace_string_to_absolute, data)
@@ -394,6 +399,8 @@ class JsonDataStore:
             path_context["new_project_assets"] = get_assets_path(file_path, create_paths=False)
             path_context["existing_project_folder"] = os.path.dirname(file_path)
             path_context["existing_project_assets"] = get_assets_path(file_path, create_paths=False)
+            path_context["project_file"] = file_path
+            path_context["previous_path"] = previous_path
             if previous_path and file_path != previous_path:
                 path_context["existing_project_folder"] = os.path.dirname(previous_path)
                 path_context["existing_project_assets"] = get_assets_path(previous_path, create_paths=False)

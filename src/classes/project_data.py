@@ -49,7 +49,7 @@ from classes.json_data import JsonDataStore
 from classes.logger import log
 from classes import frame_time as ft
 from classes.clip_utils import project_fps_fraction
-from classes.updates import UpdateInterface
+from classes.updates import UpdateInterface, copy_for_history, strip_bulk_waveforms
 from classes.assets import (
     get_assets_path,
     relocate_generated_media,
@@ -113,7 +113,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         if not self.current_filepath:
             return
 
-        asset_path = get_assets_path(self.current_filepath)
+        asset_path = get_assets_path(self.current_filepath, create_paths=False)
         legacy_proxy_path = os.path.join(asset_path, "proxies")
         optimized_path = os.path.join(asset_path, "optimized")
 
@@ -306,7 +306,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         # whole list (every clip) would make each insert's undo entry as large as the timeline.
         # A nested list (["clips", {...}, "effects"]) is the last part found, not its parent.
         target = parent if add and isinstance(parent, list) else obj if add and isinstance(obj, list) else None
-        ret = None if target is not None else json.loads(json.dumps(obj))
+        ret = None if target is not None else copy_for_history(obj)
 
         # Apply the correct action to the found item
         if remove:
@@ -548,15 +548,16 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             # On success, save current filepath
             self.current_filepath = file_path
 
-            # Update info paths to assets folders
+            # Update info paths to assets folders (do not mkdir on mere load)
             if clear_thumbnails:
-                info.THUMBNAIL_PATH = os.path.join(get_assets_path(self.current_filepath), "thumbnail")
-                info.TITLE_PATH = os.path.join(get_assets_path(self.current_filepath), "title")
-                info.BLENDER_PATH = os.path.join(get_assets_path(self.current_filepath), "blender")
-                info.PROTOBUF_DATA_PATH = os.path.join(get_assets_path(self.current_filepath), "protobuf_data")
-                info.CLIPBOARD_PATH = os.path.join(get_assets_path(self.current_filepath), "clipboard")
-                info.PROXY_PATH = os.path.join(get_assets_path(self.current_filepath), "optimized")
-                info.COMFYUI_OUTPUT_PATH = os.path.join(get_assets_path(self.current_filepath), "comfyui-output")
+                _assets = get_assets_path(self.current_filepath, create_paths=False)
+                info.THUMBNAIL_PATH = os.path.join(_assets, "thumbnail")
+                info.TITLE_PATH = os.path.join(_assets, "title")
+                info.BLENDER_PATH = os.path.join(_assets, "blender")
+                info.PROTOBUF_DATA_PATH = os.path.join(_assets, "protobuf_data")
+                info.CLIPBOARD_PATH = os.path.join(_assets, "clipboard")
+                info.PROXY_PATH = os.path.join(_assets, "optimized")
+                info.COMFYUI_OUTPUT_PATH = os.path.join(_assets, "comfyui-output")
 
             self._migrate_optimized_asset_paths()
 
@@ -1273,7 +1274,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         try:
             self.write_to_file(
                 file_path,
-                self._data,
+                strip_bulk_waveforms(self._data),
                 path_mode="ignore" if backup_only else "relative",
                 previous_path=self.current_filepath if not backup_only else None)
         except Exception:

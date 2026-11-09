@@ -755,6 +755,32 @@ def test_notify_with_guard_returns_the_impl_result(captured):
     assert captured["dialogs"] == []
 
 
+def test_notify_with_guard_memory_error_writes_log_not_dialog(captured):
+    def boom(_receiver, _event):
+        raise MemoryError("json.dumps")
+
+    result = crash_handler.notify_with_guard(boom, None, None)
+
+    assert result is False
+    assert captured["dialogs"] == []
+    assert any("MemoryError" in text for text in captured["fallback"])
+
+
+def test_notify_with_guard_nested_report_skips_second_dialog(captured, monkeypatch):
+    crash_handler._reporting.active = True
+    try:
+        def boom(_receiver, _event):
+            raise RuntimeError("already reporting")
+
+        result = crash_handler.notify_with_guard(boom, None, None)
+    finally:
+        crash_handler._reporting.active = False
+
+    assert result is False
+    assert captured["dialogs"] == []
+    assert captured["fallback"]
+
+
 def test_report_qt_thread_warning_surfaces_starttimer(captured):
     assert crash_handler.report_qt_thread_warning(
         "QObject::startTimer: Timers cannot be started from another thread") is True

@@ -131,6 +131,55 @@ def get_assets_path(file_path=None, create_paths=True):
         log.error("Error while getting/creating asset folder {}: {}".format(asset_path, ex))
 
 
+def resolve_assets_file(project_file, suffix, previous_path=None):
+    """Resolve an ``@assets`` suffix, falling back to sibling ``*_assets`` folders.
+
+    Opening a copied/salvaged ``.zvn`` must not mkdir an empty new assets
+    folder. If the file is not in ``{stem}_assets``, look at a previous
+    project's folder first, then any sibling ``*_assets`` that contains it.
+    Returns the missing primary candidate when nothing matches (Find Missing
+    File still runs).
+    """
+    suffix = (suffix or "").replace("\\", "/").lstrip("/")
+    primary = get_assets_path(project_file, create_paths=False)
+    rel = suffix.replace("/", os.sep)
+    candidate = os.path.normpath(os.path.join(primary, rel))
+    if os.path.exists(candidate):
+        return candidate
+
+    folder = os.path.dirname(os.path.abspath(project_file)) if project_file else ""
+    if not folder or not os.path.isdir(folder):
+        return candidate
+
+    def _hit(root):
+        path = os.path.normpath(os.path.join(root, rel))
+        return path if os.path.exists(path) else None
+
+    tried = {os.path.normpath(primary)}
+    if previous_path:
+        prev_root = get_assets_path(previous_path, create_paths=False)
+        prev_norm = os.path.normpath(prev_root) if prev_root else ""
+        if prev_norm and prev_norm not in tried:
+            tried.add(prev_norm)
+            found = _hit(prev_root)
+            if found:
+                return found
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return candidate
+    for name in names:
+        if not name.endswith("_assets"):
+            continue
+        root = os.path.normpath(os.path.join(folder, name))
+        if root in tried:
+            continue
+        found = _hit(root)
+        if found:
+            return found
+    return candidate
+
+
 def path_is_under(path, root):
     """True if *path* is inside *root* (or is *root*). Cross-drive paths are not."""
     try:

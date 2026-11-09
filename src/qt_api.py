@@ -762,7 +762,7 @@ def read_file_text(path) -> str:
     """Read UTF-8 text from *path* — works transparently for local paths and content:// URIs."""
     if is_content_uri(path):
         return read_from_content_uri(path)
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:
         return f.read()
 
 

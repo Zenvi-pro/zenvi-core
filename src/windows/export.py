@@ -128,6 +128,18 @@ def resume_window_auto_save(was_active):
         log.debug("Could not resume auto-save after export", exc_info=True)
 
 
+def export_project_copy(project):
+    """Shallow-copy the project store with bulk waveforms stripped from ``_data``.
+
+    Opening Export must not deepcopy hour-long paint arrays (or the whole
+    ProjectDataStore). Live paint data stays on the editor's project.
+    """
+    from classes.updates import strip_bulk_waveforms
+    cloned = copy.copy(project)
+    cloned._data = strip_bulk_waveforms(getattr(project, "_data", {}))
+    return cloned
+
+
 def friendly_export_error(error_type_str):
     """Turn a libopenshot/FFmpeg exception string into text the user can act on."""
     raw = str(error_type_str or "")
@@ -205,8 +217,13 @@ class Export(QDialog):
         # Set OMP thread disabled flag (for stability)
         openshot.Settings.Instance().HIGH_QUALITY_SCALING = True
 
+        # Stop autosave for the life of this dialog (not only during encode).
+        self._dialog_autosave_was_active = pause_window_auto_save()
+        self._auto_save_paused = True
+        self._auto_save_was_active = self._dialog_autosave_was_active
+
         # Copy project (so we don't change data in our current project)
-        self.project = copy.deepcopy(get_app().project)
+        self.project = export_project_copy(get_app().project)
 
         # Clear timeline preview cache (to get more available memory)
         self.old_cache_object = None
@@ -241,7 +258,7 @@ class Export(QDialog):
         self.timeline.info.video_length = project_timeline.info.video_length
         self.timeline.info.duration = project_timeline.info.duration
 
-        # Load the "export" Timeline reader with the JSON from the real timeline
+        # Load the "export" Timeline reader with the JSON from the stripped copy
         try:
             json_timeline = json.dumps(self.project._data)
             self.timeline.SetJson(json_timeline)
@@ -252,6 +269,7 @@ class Export(QDialog):
                           "Please save your project and inspect in a JSON editor to repair." %
                           {"error": str(ex)}))
             msg.exec_()
+            self._resume_dialog_autosave()
             return
 
         # Open the "export" Timeline reader
@@ -2101,6 +2119,14 @@ class Export(QDialog):
 
         log.info("Export settings loaded: %s", settings)
 
+    def _resume_dialog_autosave(self):
+        """Restart the window autosave timer paused when this dialog opened."""
+        was = getattr(self, "_dialog_autosave_was_active", False)
+        if was:
+            resume_window_auto_save(True)
+            self._dialog_autosave_was_active = False
+        self._auto_save_paused = False
+
     def reject(self):
         self.save_settings()
 
@@ -2123,6 +2149,7 @@ class Export(QDialog):
 
         # Stop cache thread and restore project cache
         self._cleanup_export_resources()
+        self._resume_dialog_autosave()
 
         # Cancel dialog
         self.exporting = False

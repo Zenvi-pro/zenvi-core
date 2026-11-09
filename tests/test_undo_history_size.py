@@ -156,3 +156,59 @@ def test_history_limit_saves_whole_undo_steps(editor):
     editor.manager.save_history(editor.store, 2)
     saved = editor.store._data["history"]["undo"]
     assert [a["transaction"] for a in saved] == ["step-1"] * 4 + ["step-2"] * 4
+
+
+def test_strip_bulk_waveforms_keeps_short_stubs_and_marks_long_arrays():
+    from classes.updates import WAVEFORM_CACHED_MARKER, strip_bulk_waveforms
+
+    short = {"ui": {"audio_data": [0.1, 0.4], "audio_data_rms": [0.2], "audio_data_rate": 200}}
+    assert strip_bulk_waveforms(short)["ui"]["audio_data"] == [0.1, 0.4]
+    long_clip = {
+        "id": "C1",
+        "ui": {
+            "audio_data": [0.01] * 50000,
+            "audio_data_rms": [0.02] * 50000,
+            "audio_data_rate": 200,
+            "waveform_token": "t1",
+        },
+    }
+    stripped = strip_bulk_waveforms(long_clip)
+    assert stripped["ui"]["audio_data"] == WAVEFORM_CACHED_MARKER
+    assert stripped["ui"]["audio_data_rms"] == []
+    assert stripped["ui"]["audio_data_rate"] == 200
+    assert stripped["ui"]["waveform_token"] == "t1"
+    assert len(long_clip["ui"]["audio_data"]) == 50000
+
+
+def test_a_volume_edit_does_not_serialize_clip_waveforms(editor):
+    from classes.updates import WAVEFORM_CACHED_MARKER
+
+    f = editor.add_file("video", duration=600)
+    clip_id = editor.add_clip(f, position=1.0, end=2.0)
+    clip = editor.clip(clip_id)
+    clip.setdefault("ui", {})["audio_data"] = [0.01] * 50000
+    clip["ui"]["audio_data_rms"] = [0.02] * 50000
+    editor.app.updates.update(["clips", {"id": clip_id}], {"alpha": 0.25})
+    action = editor.manager.actionHistory[-1]
+    payload = json.loads(action.json())
+    assert len(action.json()) < 20000
+    assert payload["old_values"]["ui"]["audio_data"] == WAVEFORM_CACHED_MARKER
+    assert payload["old_values"]["ui"]["audio_data_rms"] == []
+    assert editor.clip(clip_id)["alpha"] == 0.25
+    assert len(editor.clip(clip_id)["ui"]["audio_data"]) == 50000
+    editor.undo()
+    assert editor.clip(clip_id)["alpha"] != 0.25
+    assert len(editor.clip(clip_id)["ui"]["audio_data"]) == 50000
+
+
+def test_save_copy_strips_clip_waveforms_and_keeps_live_paint(editor):
+    from classes.updates import WAVEFORM_CACHED_MARKER, strip_bulk_waveforms
+
+    f = editor.add_file("video", duration=600)
+    clip_id = editor.add_clip(f, position=1.0, end=2.0)
+    editor.clip(clip_id).setdefault("ui", {})["audio_data"] = [0.01] * 50000
+    live = editor.clip(clip_id)["ui"]["audio_data"]
+    text = json.dumps(strip_bulk_waveforms(editor.store._data))
+    assert WAVEFORM_CACHED_MARKER[0] in text
+    assert len(live) == 50000
+    assert text.count("0.01") < 40
