@@ -1,7 +1,7 @@
 # Phase 5 — portable on-device speech / ML (optional install)
 # pip install -r requirements-speech.txt
 #
-# faster-whisper pulls CTranslate2; onnxruntime is shared by VAD / diarize / embeds.
+# onnxruntime is shared by VAD / diarize / embeds. Speech to text needs nothing here:
+# Whistle / Parakeet are downloaded on demand (classes/hyperframes_local.py).
 
-faster-whisper>=1.0.3
 onnxruntime>=1.17.0

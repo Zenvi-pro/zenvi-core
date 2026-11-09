@@ -194,7 +194,7 @@ def test_without_the_on_device_recogniser_the_indexed_transcript_is_used(editor,
     monkeypatch.setattr(hf, "home", lambda: str(studio.tmp / "hyperframes"))   # never the real install
     monkeypatch.setattr(captions, "_speech_words", lambda clip: [])           # no on-device recogniser here
     monkeypatch.setattr(transcript, "get_transcript", lambda **kw: ToolReceipt.error(
-        "get_transcript_tool", "Error: faster-whisper is not installed").to_json())
+        "get_transcript_tool", "Error: the speech recogniser is not installed").to_json())
     # stored at indexing time, in the media's own seconds; the clip plays 2.0-7.0 of it at 10.0 s
     monkeypatch.setattr(tool_handlers, "_clip_transcript_cues", lambda clip_id: [
         {"text": "Hello there", "source_start": 3.0, "source_end": 4.0}])
@@ -203,7 +203,7 @@ def test_without_the_on_device_recogniser_the_indexed_transcript_is_used(editor,
     assert words == [{"text": "Hello", "start": 1.0, "end": 1.5}, {"text": "there", "start": 1.5, "end": 2.0}]
 
     monkeypatch.setattr(tool_handlers, "_clip_transcript_cues", lambda clip_id: [])
-    with pytest.raises(captions.ToolError, match="faster-whisper"):
+    with pytest.raises(captions.ToolError, match="speech recogniser is not installed"):
         captions.clip_caption_words(Clip.get(id=studio.clip))
 
 
@@ -329,7 +329,7 @@ def test_the_bundled_recogniser_times_the_words_when_zenvis_own_is_missing(edito
     monkeypatch.undo()
     monkeypatch.setattr(hf, "home", lambda: str(studio.tmp / "hyperframes"))
     monkeypatch.setattr(transcript, "get_transcript", lambda **kw: ToolReceipt.error(
-        "get_transcript_tool", "Error: faster-whisper is not installed").to_json())
+        "get_transcript_tool", "Error: the speech recogniser is not installed").to_json())
     monkeypatch.setattr(tool_handlers, "_clip_transcript_cues", lambda clip_id: [
         {"text": "evenly spread guess", "source_start": 2.0, "source_end": 7.0}])
     ran, heard, state = [], [], {"speech": False, "parakeet": False, "installable": True, "whistle_here": True}
@@ -537,14 +537,14 @@ def test_a_clip_with_no_speech_is_not_counted_as_captioned(studio, monkeypatch):
 
 
 def test_a_quiet_clip_is_no_speech_not_a_missing_speech_engine(studio, monkeypatch):
-    """Whisper missing must not be the caption error after the on-device recogniser heard nothing."""
+    """A missing recogniser must not be the caption error after the on-device recogniser heard nothing."""
     from classes.agent_tools import transcript
     from classes.query import Clip
 
     _recogniser_hears(studio, monkeypatch, AMBIENCE, "Thank you, Mr. President.")
     monkeypatch.setattr(transcript, "get_transcript", lambda **kw: json.dumps({
         "contract": 3, "status": "error",
-        "summary": "Error: Could not transcribe any clip. No local speech engine: releases bundle whisper.cpp",
+        "summary": "Error: Could not transcribe any clip. No on-device speech recogniser for this computer yet",
         "data": {"clips": []},
     }))
     with pytest.raises(captions.ToolError, match="no spoken words") as raised:

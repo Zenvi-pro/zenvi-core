@@ -1,7 +1,7 @@
 """Apple SpeechAnalyzer bridge (macOS only).
 
 Runs the ``zenvi-apple-speech-asr`` helper (Swift SpeechAnalyzer). Exit code 2
-means the OS is too old / helper unavailable → caller falls back to Whisper.
+means the OS is too old / helper unavailable → caller falls back to the captions recogniser (Whistle / Parakeet).
 """
 
 from __future__ import annotations
@@ -118,7 +118,7 @@ class AppleSpeechTranscriber:
 
         if proc.returncode == 2:
             raise RuntimeError(
-                "Apple SpeechAnalyzer unavailable on this macOS (need 26+); use whisper"
+                "Apple SpeechAnalyzer unavailable on this macOS (need 26+)"
             )
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}"

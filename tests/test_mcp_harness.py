@@ -423,7 +423,7 @@ def test_headless_export_keeps_audio(tmp_path, monkeypatch):
 def test_audio_codec_prefers_aac_over_ac3(monkeypatch):
     """AC-3 in an .mp4 plays silent in most players, so it must be the last resort.
 
-    ffprobe and Whisper both decode ac3 happily, so an export can look correct in
+    ffprobe and the speech recogniser both decode ac3 happily, so an export can look correct in
     every automated check and still have no sound for a human.
     """
     export_mod = _import_real_export_module(monkeypatch)

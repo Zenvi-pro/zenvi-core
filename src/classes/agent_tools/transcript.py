@@ -100,16 +100,13 @@ def _ensure_transcript(
     media_path: str,
     *,
     language: str,
-    model_id: str,
     force: bool,
     engine: str = "auto",
 ):
     from classes.speech.asr import transcribe_file
-    from classes.speech.cache import DEFAULT_MODEL_ID
     return transcribe_file(
         media_path,
         language=language or "auto",
-        model_id=model_id or DEFAULT_MODEL_ID,
         force=force,
         engine=engine or "auto",
     )
@@ -362,7 +359,6 @@ def get_transcript(
     file_id: str = "",
     track=None,
     language: str = "auto",
-    model_id: str = "",
     force: bool = False,
     engine: str = "auto",
     detail_level: str = "",
@@ -372,7 +368,6 @@ def get_transcript(
     """Return spoken words in project frames for a clip, file, or whole track."""
     from classes.agent_tools.receipt import ToolReceipt
     from classes.agent_tools.inspect_render import snapshot_project
-    from classes.speech.cache import DEFAULT_MODEL_ID
     from classes.speech.map_timeline import clip_speed, resolve_media_path, words_for_clip
 
     clipId = _first_nonempty(timeline_clip_id)
@@ -395,7 +390,6 @@ def get_transcript(
         ).to_json()
 
     fps = _fps_from_project(app.project)
-    model = (model_id or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
     eng = engine or "auto"
     clips_out: list[dict] = []
     warnings: list[str] = []
@@ -434,7 +428,7 @@ def get_transcript(
             ).to_json()
         try:
             record = _ensure_transcript(
-                path, language=language or "auto", model_id=model,
+                path, language=language or "auto",
                 force=bool(force), engine=eng,
             )
         except InterruptedError:
@@ -498,7 +492,7 @@ def get_transcript(
             only_id, only_path, _ = usable[0]
             try:
                 record = _ensure_transcript(
-                    only_path, language=language or "auto", model_id=model,
+                    only_path, language=language or "auto",
                     force=bool(force), engine=eng,
                 )
             except InterruptedError:
@@ -542,7 +536,7 @@ def get_transcript(
     generations: list[int] = []
     source = "local"
     language_out = ""
-    model_out = model
+    model_out = ""
     script_parts: list[dict] = []
 
     for clip in targets:
@@ -557,7 +551,7 @@ def get_transcript(
             continue
         try:
             record = _ensure_transcript(
-                path, language=language or "auto", model_id=model,
+                path, language=language or "auto",
                 force=bool(force), engine=eng,
             )
         except InterruptedError:
@@ -672,14 +666,12 @@ def remove_words(
     filler_preset: str = "",
     transcript_generation=None,
     language: str = "auto",
-    model_id: str = "",
     engine: str = "auto",
     **_kw,
 ):
     """Cut selected words out of a clip and close the gaps (one undo)."""
     from classes.agent_tools.receipt import ToolReceipt
     from classes.agent_tools.inspect_render import snapshot_project
-    from classes.speech.cache import DEFAULT_MODEL_ID
     from classes.speech.map_timeline import clip_speed, resolve_media_path, words_for_clip
     from classes.speech.word_ranges import (
         FILLER_PRESETS,
@@ -754,7 +746,6 @@ def remove_words(
             ).to_json()
 
     fps = _fps_from_project(app.project)
-    model = (model_id or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
     file_data = _file_data_for_clip(clip)
     path = resolve_media_path(file_data) if file_data else ""
     if not path:
@@ -769,7 +760,6 @@ def remove_words(
         record = _ensure_transcript(
             path,
             language=language or "auto",
-            model_id=model,
             force=False,
             engine=engine or "auto",
         )

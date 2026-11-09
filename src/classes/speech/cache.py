@@ -17,7 +17,7 @@ from typing import Any, Optional
 
 log = logging.getLogger("speech.cache")
 
-DEFAULT_MODEL_ID = "faster-whisper-base"
+DEFAULT_MODEL_ID = "whistle"
 _MEMORY_CAP = 32
 
 

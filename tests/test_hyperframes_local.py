@@ -343,6 +343,53 @@ def test_transcribe_runs_the_private_engine_and_returns_timed_words(home, monkey
         hf.transcribe(wav)
 
 
+def test_recognise_forces_a_language_and_reports_the_detected_one(home, monkeypatch, tmp_path):
+    monkeypatch.setattr(hf, "speech_ready", lambda fresh=False: True)
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen["argv"] = argv
+        body = json.dumps({"language": "de", "words": [{"word": "hallo", "start": 0.1, "end": 0.4}]})
+        return type("P", (), {"returncode": 0, "stdout": body, "stderr": ""})()
+
+    monkeypatch.setattr(hf.subprocess, "run", fake_run)
+    wav = str(tmp_path / "speech.wav")
+    assert hf.recognise(wav) == {"language": "de", "words": [{"text": "hallo", "start": 0.1, "end": 0.4}]}
+    assert "--audio-language" not in seen["argv"]
+    hf.recognise(wav, language="de")
+    assert seen["argv"][seen["argv"].index("--audio-language") + 1] == "de"
+
+
+def test_transcribe_parakeet_runs_the_cli_outside_any_project(home, monkeypatch, tmp_path):
+    cli = home / "node_modules" / "hyperframes" / "dist" / "cli.js"
+    cli.parent.mkdir(parents=True)
+    cli.write_text("//")
+    monkeypatch.setattr(hf, "cli_script", lambda: str(cli))
+    monkeypatch.setattr(hf, "find_program", lambda name: "node.exe" if name == "node" else None)
+    seen = {}
+
+    def fake_exec(argv, cwd, node, timeout, isolated=True):
+        seen.update(argv=argv, cwd=cwd)
+        out = argv[argv.index("--dir") + 1]
+        with open(os.path.join(out, "transcript.json"), "w", encoding="utf-8") as fh:
+            json.dump([{"text": "hey", "start": 0.0, "end": 0.3}, {"text": " ", "start": 0.3, "end": 0.3}], fh)
+        return 0, ""
+
+    monkeypatch.setattr(hf, "_exec", fake_exec)
+    wav = str(tmp_path / "speech.wav")
+    assert hf.transcribe_parakeet(wav) == [{"text": "hey", "start": 0.0, "end": 0.3}]
+    assert seen["argv"][:4] == ["node.exe", str(cli), "transcribe", wav]
+    assert ("--engine", "parakeet") == tuple(seen["argv"][seen["argv"].index("--engine"):][:2])
+    assert not os.path.exists(seen["argv"][seen["argv"].index("--dir") + 1])   # its scratch folder is removed
+    assert "--language" not in seen["argv"]
+    hf.transcribe_parakeet(wav, language="ja")
+    assert seen["argv"][seen["argv"].index("--language") + 1] == "ja"
+
+    monkeypatch.setattr(hf, "_exec", lambda *a, **k: (2, "boom"))
+    with pytest.raises(hf.HyperframesError, match="exit code 2"):
+        hf.transcribe_parakeet(wav)
+
+
 def test_nothing_builds_whisper(home):
     # `hyperframes transcribe` falls back to cloning and compiling whisper.cpp when none is installed.
     assert not hasattr(hf, "whisper_dir")
