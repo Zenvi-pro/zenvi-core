@@ -20,6 +20,7 @@ from qt_api import (
 from qt_api import QColor, QTextCursor
 
 from classes import assistant_turns
+from classes import background_jobs
 from classes.bridge_guard import guarded_slot
 from classes.logger import log
 from classes.api_client import get_backend_client
@@ -3860,6 +3861,13 @@ class AIChatWindow(QDockWidget):
         if action == "chat" and cmd:
             self._request_preamble_summary(cmd)
         augmented_text = self._prepend_editor_snapshot(text) if text else text
+        if action == "chat" and augmented_text:
+            try:
+                notes = background_jobs.turn_notes()
+                if notes:
+                    augmented_text = f"{notes}\n\n{augmented_text}"
+            except Exception as exc:
+                log.debug("background job notes skipped: %s", exc)
         if action == "chat" and augmented_text:
             augmented_text = handoff + augmented_text
         # Hosted Zenvi only: CLI agents read attachment paths themselves.
