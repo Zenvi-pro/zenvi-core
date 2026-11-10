@@ -29,7 +29,6 @@ import os
 
 from qt_api import QObject, QMimeData, Qt, QSortFilterProxyModel, QModelIndex, pyqtSignal
 from qt_api import QStandardItemModel, QStandardItem, QIcon
-from qt_api import QMessageBox
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
 from classes import emoji_catalog, info
@@ -85,7 +84,6 @@ class EmojisModel(QObject):
         # Every emoji the dock lists (bundled OpenMoji + the user's folder), shared with the emoji tools
         for entry in emoji_catalog.entries():
             path = entry.path
-            filename = os.path.basename(path)
             fileBaseName = entry.code
             emoji_name = _(entry.name)
             emoji_group_name = _(entry.group_name)
@@ -124,12 +122,9 @@ class EmojisModel(QObject):
                     reader.Close()
                     clip.Close()
 
-                except Exception:
+                except Exception as ex:
                     # Handle exception
-                    log.info('Invalid emoji image file: %s' % filename)
-                    msg = QMessageBox()
-                    msg.setText(_("{} is not a valid image file.".format(filename)))
-                    msg.exec_()
+                    log.warning('Invalid emoji image file: %s (%s)' % (path, ex))
                     continue
 
             row = []

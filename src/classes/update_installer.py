@@ -368,11 +368,11 @@ def apply_pending_update(wait_pid=None, user_requested=False):
     return ok
 
 
-def _show_update_notice(system, version):
+def _show_update_notice(system, version, text=None):
     """Post a plain native OS notification while the update applies. This
     runs before PyQt is loaded, so it's the system notification center —
     no custom window, no dependencies, nothing to build or theme."""
-    message = f"Updating to version {version}…" if version else "Installing update…"
+    message = text or (f"Updating to version {version}…" if version else "Installing update…")
     try:
         if system == "darwin":
             safe = message.replace("\\", "\\\\").replace('"', '\\"')

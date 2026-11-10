@@ -216,6 +216,11 @@ class Export(QDialog):
             get_app().window.cache_object = openshot.CacheMemory(1 * 1024 * 1024) # 1 MB (limit cache for main project during export)
             project_timeline.SetCache(get_app().window.cache_object)
             self.old_cache_object.Clear()
+            # Clear() leaves clip and reader frames in RAM; the deep clear frees them.
+            try:
+                project_timeline.ClearAllCache(True)
+            except Exception:
+                log.warning("Failed to clear preview frames before export", exc_info=True)
 
         # Create cache thread
         self.cache_thread = openshot.VideoCacheThread()
