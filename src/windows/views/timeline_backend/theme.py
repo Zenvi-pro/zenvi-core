@@ -392,13 +392,13 @@ def _css_prop(
     m = re.search(block_pat, css, re.MULTILINE)
     if not m:
         if log_selector:
-            log.info("Theme MISS [%s] selector '%s'", source, selector)
+            log.debug("Theme MISS [%s] selector '%s'", source, selector)
         return None
     block = m.group(1)
     m2 = re.search(rf"(?:^|;)\s*{re.escape(prop)}\s*:\s*([^;]+)", block)
     if not m2:
         if log_property:
-            log.info(
+            log.debug(
                 "Theme MISS [%s] selector '%s' property '%s'",
                 source,
                 selector,
@@ -467,7 +467,7 @@ def _parse_color(
             break
     if val is None:
         if log_miss:
-            log.info(
+            log.debug(
                 "Theme MISS [%s] selector '%s' property '%s'",
                 source,
                 selector,
@@ -494,7 +494,7 @@ def _parse_color(
         if col and col.isValid():
             return col
     if log_miss:
-        log.info(
+        log.debug(
             "Theme MISS [%s] selector '%s' property '%s' invalid color '%s'",
             source,
             selector,
@@ -516,14 +516,14 @@ def _parse_gradient(
     val = _css_prop(css, selector, prop, source)
     if not val:
         if log_miss:
-            log.info("Theme MISS [%s] selector '%s' property '%s'", source, selector, prop)
+            log.debug("Theme MISS [%s] selector '%s' property '%s'", source, selector, prop)
         return None, None
     cols = re.findall(r"#(?:[0-9a-fA-F]{3,8})|rgba?\([^\)]+\)", val)
     qcols = [_color_from_str(c) for c in cols]
     qcols = [c for c in qcols if c and c.isValid()]
     if not qcols:
         if log_miss:
-            log.info(
+            log.debug(
                 "Theme MISS [%s] selector '%s' property '%s' invalid gradient '%s'",
                 source,
                 selector,
@@ -581,7 +581,7 @@ def _parse_float(
             break
     if val is None:
         if log_miss:
-            log.info(
+            log.debug(
                 "Theme MISS [%s] selector '%s' property '%s'",
                 source,
                 selector,
@@ -595,7 +595,7 @@ def _parse_float(
         except ValueError:
             pass
     if log_miss:
-        log.info(
+        log.debug(
             "Theme MISS [%s] selector '%s' property '%s' invalid number '%s'",
             source,
             selector,
@@ -616,7 +616,7 @@ def _parse_pixmap(
     val = _css_prop(css, selector, prop, source)
     if not val:
         if log_miss:
-            log.info("Theme MISS [%s] selector '%s' property '%s'", source, selector, prop)
+            log.debug("Theme MISS [%s] selector '%s' property '%s'", source, selector, prop)
         return None
     m = re.search(r"url\(([^)]+)\)", val)
     if m:
@@ -640,7 +640,7 @@ def _parse_pixmap(
             img = _load_pixmap_with_meta(path)
             if img:
                 if selector in {".playhead-top", ".marker_icon"} and prop == "background-image":
-                    log.info(
+                    log.debug(
                         "Theme [%s] %s %s loaded '%s'",
                         source,
                         selector,
@@ -649,7 +649,7 @@ def _parse_pixmap(
                     )
                 return img
     if log_miss:
-        log.info(
+        log.debug(
             "Theme MISS [%s] selector '%s' property '%s' invalid pixmap '%s'",
             source,
             selector,
@@ -666,7 +666,7 @@ def _parse_box_shadow(
     val = _css_prop(css, selector, "box-shadow", source)
     if not val:
         if log_miss:
-            log.info(
+            log.debug(
                 "Theme MISS [%s] selector '%s' property '%s'",
                 source,
                 selector,
@@ -684,7 +684,7 @@ def _parse_box_shadow(
     nums = re.findall(r"(-?[0-9.]+)", val)
     blur = int(float(nums[2])) if len(nums) >= 3 else None
     if col is None and blur is None and log_miss:
-        log.info(
+        log.debug(
             "Theme MISS [%s] selector '%s' property '%s' invalid value '%s'",
             source,
             selector,
@@ -743,7 +743,7 @@ def _theme_pixmap(
             img = _load_pixmap_with_meta(path)
             if img:
                 if selector in {".playhead-top", ".marker_icon"} and prop == "background-image":
-                    log.info(
+                    log.debug(
                         "Theme [theme] %s %s loaded '%s'",
                         selector,
                         prop,
@@ -751,7 +751,7 @@ def _theme_pixmap(
                     )
                 return img
     if log_miss:
-        log.info("Theme MISS [theme] %s %s invalid pixmap '%s'", selector, prop, val)
+        log.debug("Theme MISS [theme] %s %s invalid pixmap '%s'", selector, prop, val)
     return None
 
 
@@ -1202,7 +1202,7 @@ def _theme_apply_ruler(theme: TimelineTheme, qt_theme, css_sheet: str) -> None:
         "background2",
         lambda: _ruler_gradient(css_sheet, "theme"),
         lambda: _ruler_theme_background(qt_theme),
-        miss_log=lambda: log.info(
+        miss_log=lambda: log.debug(
             "Theme MISS [theme] selector '#scrolling_ruler' property 'background'"
         ),
     )
@@ -1721,7 +1721,7 @@ def _css_apply_ruler(theme: TimelineTheme, css: str, source: str, log_miss: bool
         "background2",
         lambda: _ruler_gradient(css, source),
         lambda: _ruler_css_background(css, source),
-        miss_log=lambda: log.info(
+        miss_log=lambda: log.debug(
             "Theme MISS [%s] selector '#scrolling_ruler' property 'background'",
             source,
         ),
@@ -2049,7 +2049,7 @@ def apply_theme(widget, css: str = "") -> bool:
         default_path = os.path.normpath(os.path.join(base, "../images/playhead.svg"))
         if os.path.exists(default_path):
             t.playhead_icon = QPixmap(default_path)
-            log.info(
+            log.debug(
                 "Theme [default] .playhead-top background-image loaded '%s'",
                 default_path,
             )
@@ -2061,7 +2061,7 @@ def apply_theme(widget, css: str = "") -> bool:
         pix = _load_pixmap_with_meta(path)
         if not pix:
             return None
-        log.info("Theme [default] fallback icon loaded '%s'", path)
+        log.debug("Theme [default] fallback icon loaded '%s'", path)
         return pix
 
     def _ensure_icon(attr, parts):

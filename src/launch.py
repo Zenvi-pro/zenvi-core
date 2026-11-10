@@ -317,6 +317,20 @@ def _install_staged_update(launch_paths):
         logger.exception("Failed to apply the pending update")
 
 
+def _exit_unanswered_handoff(outcome, detail):
+    """A second launch that the running Zenvi never answered: log why, then exit 1."""
+    logger.error("Zenvi is already running but did not take the request (%s): %s", outcome, detail)
+    try:
+        import platform
+        from classes import update_installer
+        update_installer._show_update_notice(
+            platform.system().lower(), "",
+            text="Zenvi is already running but is busy and did not answer. Wait for it to finish, or close it and try again.")
+    except Exception:
+        logger.error("Could not show the already-running notice", exc_info=True)
+    sys.exit(1)
+
+
 def main():
     """"Initialize settings (not implemented) and create main window/application."""
 
@@ -402,9 +416,7 @@ def main():
             print("Zenvi is already running; handed over %s" % (", ".join(launch_paths) or "focus"))
             sys.exit(0)
         if outcome != single_instance.NOT_RUNNING:
-            print("Zenvi is already running but did not take the request (%s): %s"
-                  % (outcome, detail), file=sys.stderr)
-            sys.exit(1)
+            _exit_unanswered_handoff(outcome, detail)
 
         # This is the only window: install a staged update before going on.
         _install_staged_update(launch_paths)

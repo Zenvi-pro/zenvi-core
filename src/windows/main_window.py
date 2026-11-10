@@ -2282,7 +2282,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         try:
             # Save current cache object and create a new CacheMemory object (ignore quality and scale prefs)
             old_cache_object = self.cache_object
-            new_cache_object = openshot.CacheMemory(app.get_settings().get("cache-limit-mb") * 1024 * 1024)
+            from classes.system_memory import ram_budget_bytes
+            new_cache_object = openshot.CacheMemory(
+                ram_budget_bytes(app.get_settings().get("cache-limit-mb") * 1024 * 1024))
             self.timeline_sync.timeline.SetCache(new_cache_object)
 
             # Set MaxSize to full project resolution and clear cache so we get a full resolution frame
@@ -4792,6 +4794,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         new_cache_object = None
         if s.get("cache-mode") == "CacheMemory":
             # Create CacheMemory object, and set on timeline
+            from classes.system_memory import ram_budget_bytes
+            cache_limit = ram_budget_bytes(cache_limit)  # 768 MB is a tenth of an 8 GB laptop
             log.info("Creating CacheMemory object with %s byte limit" % cache_limit)
             new_cache_object = openshot.CacheMemory(cache_limit)
             self.timeline_sync.timeline.SetCache(new_cache_object)

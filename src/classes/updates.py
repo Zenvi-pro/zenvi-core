@@ -242,6 +242,10 @@ class UpdateManager:
     Typically, only 1 instance of this class is needed, and many different
     listeners are connected with the add_listener() method. """
 
+    # Undo steps kept in memory. history-limit only bounds what is saved, so
+    # without this a long session keeps every edit's values and old values.
+    MEMORY_STEPS = 200
+
     def __init__(self):
         self.statusWatchers = []  # List of watchers
         self.updateListeners = []  # List of listeners
@@ -353,6 +357,11 @@ class UpdateManager:
                 break
             kept.add(action.transaction)
         return [a for a in history if a.transaction in kept]
+
+    def _trim_history(self):
+        """Drop undo steps older than the last MEMORY_STEPS."""
+        if len(self.actionHistory) > self.MEMORY_STEPS:
+            self.actionHistory[:] = self._last_steps(self.actionHistory, self.MEMORY_STEPS)
 
     def reset(self):
         """ Reset the UpdateManager, and clear all UpdateActions and History.
@@ -602,6 +611,7 @@ class UpdateManager:
             self.redoHistory.clear()
             self.pending_action = None
             self.actionHistory.append(self.last_action)
+            self._trim_history()
         self.dispatch_action(self.last_action)
 
     def update(self, key, values):
@@ -618,6 +628,7 @@ class UpdateManager:
                 self.redoHistory.clear()
             self.pending_action = None
             self.actionHistory.append(self.last_action)
+            self._trim_history()
         self.dispatch_action(self.last_action)
 
     def update_untracked(self, key, values):
@@ -665,6 +676,7 @@ class UpdateManager:
             self.redoHistory.clear()
             self.pending_action = None
             self.actionHistory.append(self.last_action)
+            self._trim_history()
         self.dispatch_action(self.last_action)
 
     def apply_last_action_to_history(self, previous_value):
@@ -672,6 +684,7 @@ class UpdateManager:
         if self.pending_action:
             self.pending_action.set_old_values(previous_value)
             self.actionHistory.append(self.pending_action)
+            self._trim_history()
             self.last_action = self.pending_action
             self.pending_action = None
 
