@@ -117,7 +117,7 @@ def get_export_pipeline_profile(
         pending = _clamp(pending + workers * 8, 32, 160)
     # The queue holds decoded frames: 60 of them at 4K is 1.85 GiB.
     frame_bytes = max(1, int(width)) * max(1, int(height)) * 4
-    pending = max(8, min(pending, ram_budget_bytes(pending * frame_bytes, ram) // frame_bytes))
+    pending = max(2, min(pending, ram_budget_bytes(pending * frame_bytes, ram) // frame_bytes))
 
     return ExportPipelineProfile(
         name=name,

@@ -32,6 +32,8 @@ def test_a_4k_export_on_8gb_queues_and_caches_half_a_gig_each():
     assert profile.max_pending_frames * FRAME_4K <= 512 * MIB
     assert profile.cache_bytes <= 512 * MIB
     assert export_cache_bytes(3840, 2160, ram=8 * GIB) <= 512 * MIB
+    uhd8k = get_export_pipeline_profile(7680, 4320, 30, enable_parallel_composite=False, ram=8 * GIB)
+    assert 2 <= uhd8k.max_pending_frames and uhd8k.max_pending_frames * 7680 * 4320 * 4 <= 512 * MIB
 
 
 def test_export_sizing_is_unchanged_with_plenty_of_ram_or_small_frames():
