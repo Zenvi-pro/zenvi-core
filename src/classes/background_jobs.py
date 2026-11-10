@@ -15,13 +15,15 @@ BACKGROUND_TOOLS = {
 }
 GRACE_SECONDS = 8.0
 BACKGROUND_PREFIX = "Running in the background"
+_RESULT_CHARS = 4000  # a whole receipt; the next turn needs its ids and paths
 
 _lock = threading.Lock()
-_jobs = {}  # (name, args json) -> _Job
+_jobs = {}  # (session, name, args json) -> _Job
 
 
 class _Job:
-    def __init__(self, name, args):
+    def __init__(self, session, name, args):
+        self.session = session
         self.name = name
         self.args = args
         self.started = time.monotonic()
@@ -41,15 +43,16 @@ def _work(job, call):
     job.done.set()
 
 
-def run(name, args, call):
+def run(name, args, call, session=""):
+    """Run *call*; a tool in BACKGROUND_TOOLS answers with a note after GRACE_SECONDS and keeps going."""
     if name not in BACKGROUND_TOOLS:
         return call()
-    key = (name, json.dumps(args, sort_keys=True, default=str))
+    key = (session or "", name, json.dumps(args, sort_keys=True, default=str))
     with _lock:
         job = _jobs.get(key)
         fresh = job is None
         if fresh:
-            job = _jobs[key] = _Job(name, args)
+            job = _jobs[key] = _Job(session or "", name, args)
     if fresh:
         # ponytail: detached jobs are uncapped (the four-slot limit no longer covers them); cap them if many pile up.
         threading.Thread(target=_work, args=(job, call), daemon=True, name="zenvi-background-job").start()
@@ -57,7 +60,9 @@ def run(name, args, call):
     job.done.wait(GRACE_SECONDS if fresh else None)
     with _lock:
         if job.done.is_set():
-            if _jobs.get(key) is job:
+            # A detached job stays until turn_notes() reports it: this answer may never reach the
+            # model (Stop, a dropped socket), and the result must not be lost with it.
+            if not job.detached and _jobs.get(key) is job:
                 del _jobs[key]
             return job.result
         job.detached = True
@@ -69,22 +74,23 @@ def run(name, args, call):
     )
 
 
-def turn_notes():
+def turn_notes(session=""):
+    """What *session*'s background calls did since its last message: a block for the next one, or ''."""
     lines = []
     with _lock:
         for key, job in list(_jobs.items()):
-            if not job.detached:
+            if not job.detached or job.session != (session or ""):
                 continue
             head = " ".join(part for part in (BACKGROUND_TOOLS[job.name], _args_summary(job.args)) if part)
             if job.done.is_set():
-                text = _one_line(str(job.result or "")[:300])
-                lines.append(f"- {head}: finished: {text}")
+                lines.append(f"- {head}: finished: {_one_line(str(job.result or '')[:_RESULT_CHARS])}")
                 del _jobs[key]
             else:
                 lines.append(f"- {head}: still running ({int(time.monotonic() - job.started)} s)")
     if not lines:
         return ""
-    return "\n".join(["[Background jobs]", *lines, "[/Background jobs]"])
+    head = "[Background jobs] Calls from earlier turns. A finished one is done: use its result, do not make the call again."
+    return "\n".join([head, *lines, "[/Background jobs]"])
 
 
 def reset():

@@ -60,9 +60,9 @@ def test_a_slow_background_tool_returns_a_note_and_its_result_is_reported_once()
 
     release.set()
     _settle()
-    assert background_jobs.turn_notes() == (
-        '[Background jobs]\n- AI video "a cat": finished: Clip placed\n[/Background jobs]'
-    )
+    lines = background_jobs.turn_notes().splitlines()
+    assert lines[0].startswith("[Background jobs]") and "do not make the call again" in lines[0]
+    assert lines[1:] == ['- AI video "a cat": finished: Clip placed', "[/Background jobs]"]
     assert background_jobs.turn_notes() == ""
 
 
@@ -104,6 +104,8 @@ def test_repeating_a_call_after_its_detached_job_finished_returns_the_stored_res
     _settle()
     assert background_jobs.run(TOOL, {"prompt": "a cat"}, slow) == "Clip placed"
     assert runs == [1]
+    # Still reported once: the repeat's answer may never have reached the model (Stop, dropped socket).
+    assert "finished: Clip placed" in background_jobs.turn_notes()
     assert background_jobs.turn_notes() == ""
 
 
@@ -118,3 +120,18 @@ def test_a_detached_tool_that_raises_is_reported_as_an_error_on_the_next_turn():
     release.set()
     _settle()
     assert "finished: Error: tool execution failed: export engine crashed" in background_jobs.turn_notes()
+
+
+def test_a_job_is_reported_whole_and_only_to_the_chat_that_started_it():
+    release = threading.Event()
+    receipt = '{"contract": 3, "summary": "%s", "data": {"timeline_clip_id": "CLIP42"}}' % ("x" * 600)
+
+    def slow():
+        release.wait(5)
+        return receipt
+
+    background_jobs.run(TOOL, {"prompt": "a cat"}, slow, session="chat-a")
+    release.set()
+    _settle()
+    assert background_jobs.turn_notes("chat-b") == ""
+    assert "CLIP42" in background_jobs.turn_notes("chat-a")

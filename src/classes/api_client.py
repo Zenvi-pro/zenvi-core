@@ -539,7 +539,8 @@ class ZenviBackendClient:
                     call_id = call_data.get("call_id", "")
                     try:
                         result = background_jobs.run(
-                            tool_name, tool_args, lambda: on_tool_call(tool_name, tool_args, call_id)
+                            tool_name, tool_args, lambda: on_tool_call(tool_name, tool_args, call_id),
+                            session=session_id or "",
                         )
                     except Exception as exc:  # noqa: BLE001
                         log.error("Tool execution error: %s", exc)

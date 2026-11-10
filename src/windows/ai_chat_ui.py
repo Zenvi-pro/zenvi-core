@@ -3863,7 +3863,7 @@ class AIChatWindow(QDockWidget):
         augmented_text = self._prepend_editor_snapshot(text) if text else text
         if action == "chat" and augmented_text:
             try:
-                notes = background_jobs.turn_notes()
+                notes = background_jobs.turn_notes(getattr(worker, "_backend_session_id", None) or "")
                 if notes:
                     augmented_text = f"{notes}\n\n{augmented_text}"
             except Exception as exc:
