@@ -149,3 +149,21 @@ def test_mings_cuda_only_autocast_runs_on_the_cpu_and_its_speaker_head_takes_flo
     FakeTorch.autocast("cpu")
     assert seen == ["cpu", "cpu"]
     assert head.forward("float input") == ("head", ("float input", "bf16"))
+
+
+def test_speech_shorter_than_the_clip_is_padded_so_ffmpeg_reads_every_frame():
+    cmd = dw.encode_cmd("in.wav", "out.mp4", 1280, 720, 30.0, 0.0)
+    assert "-shortest" in cmd and "apad" in " ".join(cmd)
+
+
+def test_a_very_short_line_still_gives_mel_windows():
+    pcm = np.zeros((int(48000 * 0.05), 2), np.int16)
+    windows = dw.extract_audio_frames(dw.create_spectrogram(dw.prepare_voice(pcm)), 30.0)
+    assert len(windows) >= 1 and windows[0].shape == (80, 16)
+
+
+def test_ffmpeg_runs_without_a_console_window_on_windows(monkeypatch):
+    monkeypatch.setattr(dw.sys, "platform", "win32")
+    assert dw._quiet().get("creationflags") == 0x08000000
+    monkeypatch.setattr(dw.sys, "platform", "linux")
+    assert dw._quiet() == {}

@@ -348,9 +348,24 @@ def read_image(path):
     return image
 
 
+def _quiet():
+    """No console window per ffmpeg run in a Windows GUI build."""
+    return {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+
+
+def encode_cmd(audio_in, out, width, height, fps, start):
+    """Frames on stdin plus the audio; audio shorter than the video is padded, so ffmpeg reads every frame."""
+    cmd = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{width}x{height}",
+           "-r", str(fps), "-i", "-"]
+    if start:
+        cmd += ["-ss", str(start)]
+    return cmd + ["-i", audio_in, "-map", "0:v", "-map", "1:a?", "-af", "apad", "-c:v", "libx264", "-preset",
+                  "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", out]
+
+
 def read_audio_48k(path):
     proc = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-vn", "-ac", "2", "-ar", "48000", "-f", "s16le", "-"],
-                          capture_output=True)
+                          capture_output=True, **_quiet())
     if proc.returncode:
         raise RuntimeError(proc.stderr.decode(errors="replace").strip() or f"ffmpeg could not read {path}")
     return proc.stdout
@@ -380,6 +395,7 @@ def prepare_audio(x):
 def prepare_voice(pcm):
     """48 kHz stereo int16 (or mono) -> 16 kHz mono, as FaceFusion's voice path. Skipping the resample makes lips 3x slow."""
     mono = pcm.mean(axis=1) if pcm.ndim > 1 else pcm.astype(np.float64)
+    mono = np.pad(mono, (0, max(0, 24000 - len(mono))))        # under 0.5 s: pad, so a short line still has windows
     return prepare_audio(resample(mono, round(len(mono) * 16000 / 48000)))
 
 
@@ -571,30 +587,29 @@ def _run_video(args, progress, tracker, mode, audio_in, label):
     last = min(total, int(round(float(args["end"]) * fps))) if args.get("end") else total
     cap.set(cv2.CAP_PROP_POS_FRAMES, first)
     os.makedirs(os.path.dirname(os.path.abspath(args["out"])), exist_ok=True)
-    cmd = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{width}x{height}",
-           "-r", str(fps), "-i", "-"]
-    if start:
-        cmd += ["-ss", str(start)]
-    cmd += ["-i", audio_in, "-map", "0:v", "-map", "1:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-            "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", args["out"]]
-    encoder = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+    encoder = subprocess.Popen(encode_cmd(audio_in, args["out"], width, height, fps, start), stdin=subprocess.PIPE,
+                               **_quiet())
     index, faced = first, 0
-    while index < last:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        points = tracker.step(frame, index)
-        faced += points is not None
-        for out in mode.frame(frame, points, index):
+    try:
+        while index < last:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            points = tracker.step(frame, index)
+            faced += points is not None
+            for out in mode.frame(frame, points, index):
+                encoder.stdin.write(out.tobytes())
+            index += 1
+            progress((index - first) / max(last - first, 1), f"{label}: {index - first}/{last - first} frames")
+        for out in mode.flush():
             encoder.stdin.write(out.tobytes())
-        index += 1
-        progress((index - first) / max(last - first, 1), f"{label}: {index - first}/{last - first} frames")
-    for out in mode.flush():
-        encoder.stdin.write(out.tobytes())
-    cap.release()
-    encoder.stdin.close()
-    if encoder.wait():
-        raise RuntimeError(f"ffmpeg could not write {args['out']}")
+        encoder.stdin.close()
+        if encoder.wait():
+            raise RuntimeError(f"ffmpeg could not write {args['out']}")
+    finally:
+        cap.release()
+        if encoder.poll() is None:
+            encoder.kill()
     frames = index - first
     return {"out": args["out"], "frames": frames, "frames_with_face": faced, "seconds": frames / fps}
 

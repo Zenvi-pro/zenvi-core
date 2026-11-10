@@ -233,6 +233,8 @@ def local_voice(editor, monkeypatch, tmp_path):
     fakes = install(editor, monkeypatch, tmp_path)
     calls = []
     monkeypatch.setattr(dubbing, "ensure_local", lambda features, consent, progress=None: {"probe": {"ming": {}}})
+    from classes.editor_tools import ai_generation_lipsync
+    monkeypatch.setattr(ai_generation_lipsync, "ask_person_consent", lambda text: True)
 
     def fake_tts(text, out, picks, instruction="", prompt_wav="", prompt_text=""):
         calls.append({"text": text, "instruction": instruction, "prompt_wav": prompt_wav, "prompt_text": prompt_text})

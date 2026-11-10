@@ -253,8 +253,11 @@ def _speak_local(text: str, instruction: str, reference: str) -> str:
     wav = file_path(reference, "voice reference") if reference else ""
     out = durable_media_path(ext=".wav")
     try:
-        dubbing.tts_local(text, out, picks, instruction=instruction, prompt_wav=wav,
-                          prompt_text=dubbing.heard(wav) if wav else "")
+        said = dubbing.heard(wav) if wav else ""
+    except Exception as exc:                            # no recogniser, or the reference has no speech
+        raise ToolError("the voice reference could not be transcribed (%s)" % exc) from None
+    try:
+        dubbing.tts_local(text, out, picks, instruction=instruction, prompt_wav=wav, prompt_text=said)
     except dubbing.DubbingError as exc:
         raise ToolError(str(exc)) from None
     return out
@@ -417,10 +420,10 @@ def generate_tts_and_add_to_timeline(text, voice="alloy", model="tts-1", speed=1
     chosen = dubbing.engine_for("tts", setting_for(engine, "tts-engine"))
     reference = str(voice_reference_file_id or "").strip()
     if reference:
-        if not consent_confirmed:
-            raise ToolError(VOICE_CONSENT)
         if chosen != "local":
             raise ToolError("voice cloning runs on this computer: pass engine='local'")
+        from classes.editor_tools.ai_generation_lipsync import check_consent
+        check_consent(consent_confirmed, VOICE_CONSENT, "Zenvi is about to copy a real person's voice.")
     if str(instruction or "").strip() and chosen != "local":
         raise ToolError("the instruction works on this computer only: pass engine='local'")
     start = _start_seconds(position_seconds, position)

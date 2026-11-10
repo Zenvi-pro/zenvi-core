@@ -33,10 +33,11 @@ _ENDS_SENTENCE = re.compile(r"[.!?…][\"'”’)\]]*$")
 PAUSE_S = 0.3
 MAX_S = 15            # Grok takes 1-15 s per request
 TARGET_S = 8
-XFADE_S = 0.15
 WORD_ERROR_MAX = 0.25
 MING_STEPS = 300
 DEFAULT_VOICE = "leo"   # a Grok preset; the backend needs a voice for every dialogue request
+MAX_JOB_S = 600         # one dub at most 10 minutes of clip
+MAX_SCRIPT_CHARS = 4096
 _LABELS = {"face": "Face models and the Python runtime for them (one time)",
            "ming": "Ming speech model, about 3 GB (one time)"}
 _PROMPT_DIALOGUE = "The speaker says the dialogue with natural mouth movement; keep the framing and the light."
@@ -214,7 +215,7 @@ def _take(pieces: list, max_s: float, target_s: float) -> int:
 def stitch_args(paths: list, out: str, fps: float, audio: Optional[str] = None, size: tuple = (1280, 720),
                 seconds: Optional[list] = None) -> list:
     """ffmpeg arguments: each clip's first video stream trimmed to its seconds, at fps and padded to size, joined
-    with its audio crossfaded (or the audio given, replacing the clips' own)."""
+    with its own audio cut to the same seconds (or the audio given, replacing the clips' own)."""
     seconds = list(seconds) if seconds else [None] * len(paths)
     width, height = size
     args = ["-y"]
@@ -230,12 +231,12 @@ def stitch_args(paths: list, out: str, fps: float, audio: Optional[str] = None, 
         args += ["-i", audio]
         audio_map = ["-map", f"{n}:a:0?", "-shortest"]
     else:
-        graph += [f"[{i}:a:0]aresample=48000,aformat=channel_layouts=stereo[a{i}]" for i in range(n)]
-        last = "a0"
-        for i in range(1, n):
-            graph.append(f"[{last}][a{i}]acrossfade=d={XFADE_S}:c1=tri:c2=tri[x{i}]")
-            last = f"x{i}"
-        audio_map = ["-map", f"[{last}]"]
+        # Audio joins at exactly the video's boundaries: a crossfade would pull every later word ahead of its mouth.
+        graph += [f"[{i}:a:0]aresample=48000,aformat=channel_layouts=stereo"
+                  + (f",apad,atrim=0:{secs:g}" if secs is not None else "") + f",asetpts=PTS-STARTPTS[a{i}]"
+                  for i, secs in enumerate(seconds)]
+        graph[n] = "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v][a]"
+        audio_map = ["-map", "[a]"]
     args += ["-filter_complex", ";".join(graph), "-map", "[v]"] + audio_map
     args += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
              "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", out]
@@ -337,6 +338,8 @@ def ensure_local(features: set, *, consent: Callable[[list], bool], progress: An
     if "ming" in features and not st.get("ming"):
         need.add("ming")
     if not need:
+        if picks_of(st) is None:                 # installed, but the probe's picks never reached the settings
+            st = rt.reprobe(set(features), progress=progress)
         return st
     if not consent([{"label": _LABELS[f]} for f in sorted(need)]):
         raise DubbingError("the one-time download was declined, so nothing was installed")
@@ -471,18 +474,21 @@ def _fetch(url: str, run: _Run, tag: str) -> str:
     return path
 
 
-def _pinned(run: _Run, t0: float, dur: int, first: str, tag: str) -> tuple:
-    """The first, last and two keyframe pictures for one window, pinned from the source clip."""
-    last = _frame(run.source, min(run.end, t0 + dur), _png(run, "last", tag))
-    keys = [(t, _frame(run.source, min(run.end, t0 + t), _png(run, "key%d" % n, tag)))
-            for n, t in enumerate(keyframe_times(dur))]
+def _pinned(run: _Run, t0: float, dur: int, span: float, first: str, tag: str) -> tuple:
+    """The first, last and keyframe pictures for one window, pinned from the source clip inside the chunk only
+    (Grok's whole-second window can run past the chunk's end, into the next shot)."""
+    inside = max(0.0, min(dur, span) - 1.0 / run.fps)
+    last = _frame(run.source, t0 + inside, _png(run, "last", tag))
+    keys = [(t, _frame(run.source, t0 + t, _png(run, "key%d" % n, tag)))
+            for n, t in enumerate(keyframe_times(dur)) if t < inside]
     return first, last, keys
 
 
 def _dialogue_try(run: _Run, chunk: dict, prev: Optional[str], tag: str) -> str:
     dur = chunk["duration"]
     t0 = run.start + chunk["start"]
-    first, last, keys = _pinned(run, t0, dur, prev or _frame(run.source, t0, _png(run, "first", tag)), tag)
+    first, last, keys = _pinned(run, t0, dur, chunk["end"] - chunk["start"],
+                                prev or _frame(run.source, t0, _png(run, "first", tag)), tag)
     text = strip_tags(chunk["text"])
     kwargs = {"mode": "dialogue", "dialogue_text": text, "generate_audio": True,
               "voice_id": run.voice or DEFAULT_VOICE,
@@ -490,7 +496,11 @@ def _dialogue_try(run: _Run, chunk: dict, prev: Optional[str], tag: str) -> str:
                                {"file_id": _upload(run.client, last), "frame": "last"}],
               "keyframes": [{"file_id": _upload(run.client, p), "timestamp_s": t} for t, p in keys]}
     raw = _fetch(_generate(run.client, _PROMPT_DIALOGUE, dur, **kwargs), run, tag)
-    if word_error_rate(text, heard(raw)) > WORD_ERROR_MAX:
+    try:
+        said = heard(raw)
+    except Exception as exc:                     # no recogniser, or no audio in the file: an attempt that failed
+        raise _Refused("the words could not be checked (%s)" % exc) from None
+    if word_error_rate(text, said) > WORD_ERROR_MAX:
         raise _Refused("the words did not match the script")
     return raw
 
@@ -498,14 +508,15 @@ def _dialogue_try(run: _Run, chunk: dict, prev: Optional[str], tag: str) -> str:
 def _reference_try(run: _Run, chunk: dict, prev: Optional[str], face_image: str, tag: str) -> str:
     dur = chunk["duration"]
     t0 = run.start + chunk["start"]
-    first, last, keys = _pinned(run, t0, dur, prev or _frame(run.source, t0, _png(run, "first", tag)), tag)
+    first, last, keys = _pinned(run, t0, dur, chunk["end"] - chunk["start"],
+                                prev or _frame(run.source, t0, _png(run, "first", tag)), tag)
     swapped = _swap_frames([first, last] + [p for _, p in keys], face_image, _picks(run),
                            os.path.join(run.work, "swap-" + tag), run.job)
     ids = [_upload(run.client, p) for p in swapped]
     kwargs = {"mode": "reference", "generate_audio": False,
               "reference_images": [{"file_id": _upload(run.client, face_image)}],
               "frame_images": [{"file_id": ids[0], "frame": "first"}, {"file_id": ids[1], "frame": "last"}],
-              "keyframes": [{"file_id": fid, "timestamp_s": t} for fid, t in zip(ids[2:], keyframe_times(dur))]}
+              "keyframes": [{"file_id": fid, "timestamp_s": t} for fid, (t, _) in zip(ids[2:], keys)]}
     return _fetch(_generate(run.client, _PROMPT_SWAP, dur, **kwargs), run, tag)
 
 

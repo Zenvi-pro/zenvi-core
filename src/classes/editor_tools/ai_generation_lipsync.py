@@ -49,6 +49,27 @@ def file_path(file_id: str, what: str) -> str:
     return path
 
 
+def ask_person_consent(text: str) -> bool:
+    """The person at the computer says yes or no; an agent's consent_confirmed alone never counts."""
+    def _ask():
+        from qt_api import QMessageBox
+
+        box = QMessageBox(QMessageBox.Question, get_app()._tr("Confirm consent"), text + "\n\n"
+                          + get_app()._tr("Does everyone involved agree?"), QMessageBox.Yes | QMessageBox.No,
+                          get_app().window)
+        box.setDefaultButton(QMessageBox.No)
+        return box.exec_() == QMessageBox.Yes
+
+    return bool(on_main(_ask, timeout=600))
+
+
+def check_consent(confirmed: bool, refusal: str, question: str) -> None:
+    if not confirmed:
+        raise ToolError(refusal)
+    if not ask_person_consent(question):
+        raise ToolError("the person at the computer declined, so nothing was changed")
+
+
 def _consent(steps) -> bool:
     return hfx._ask_install_consent(
         steps, title="Set up dubbing on this computer",
@@ -74,6 +95,8 @@ def _target(clip_id: str):
     end = float(clip.data.get("end") or 0.0)
     if end - start < 0.2:
         raise ToolError("the clip is too short to dub")
+    if not end - start <= dubbing.MAX_JOB_S:           # also catches a NaN or infinite end
+        raise ToolError(f"the clip is too long to dub: at most {dubbing.MAX_JOB_S // 60} minutes per call")
     source = th()._get_source_file_for_clip(clip)
     path = source.absolute_path() if source else ""
     if not path:
@@ -120,9 +143,11 @@ def lip_sync_clip(clip_id, text="", audio_file_id="", voice="", engine="auto", c
     or a credits shortfall runs on this computer (Ming speech and edtalk lip sync; a one-time download).
     Needs consent_confirmed=true, which you ask the user first. Returns the new timeline_clip_id and file_id.
     """
-    if not consent_confirmed:
-        raise ToolError(LIP_CONSENT)
+    check_consent(consent_confirmed, LIP_CONSENT,
+                  "Zenvi is about to make a real person's mouth say new words in this clip.")
     text = str(text or "").strip()
+    if len(text) > dubbing.MAX_SCRIPT_CHARS:
+        raise ToolError(f"the words are too long: at most {dubbing.MAX_SCRIPT_CHARS} characters per call")
     audio_file_id = str(audio_file_id or "").strip()
     if bool(text) == bool(audio_file_id):
         raise ToolError("give the words to say (text) or a recording (audio_file_id): exactly one of them")
@@ -174,11 +199,11 @@ def face_swap_clip(clip_id, face_image_file_id, engine="auto", consent_confirmed
     this computer, so the lips stay in sync; silent clips can use Grok (credits). Needs
     consent_confirmed=true, which you ask the user first. Returns the new timeline_clip_id and file_id.
     """
-    if not consent_confirmed:
-        raise ToolError(FACE_CONSENT)
+    check_consent(consent_confirmed, FACE_CONSENT, "Zenvi is about to put another person's face on this clip.")
     clip, source, path, start, end, size = _target(clip_id)
     face = file_path(face_image_file_id, "face image")
-    speech = bool((source.data.get("ai_metadata") or {}).get("has_speech"))
+    # Not yet checked for speech counts as speech: the cloud would regenerate the lips without hearing them.
+    speech = (source.data.get("ai_metadata") or {}).get("has_speech") is not False
     setting = setting_for(engine, "face-swap-engine")
     chosen = dubbing.engine_for("face_swap", setting, has_speech=speech)
     picks = local_picks({"face"})

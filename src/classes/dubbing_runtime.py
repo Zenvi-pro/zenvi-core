@@ -37,7 +37,7 @@ _download_lock = threading.RLock()        # not the speech lock: a 3 GB model mu
 BASE_PIP = ["numpy==2.2.6", "opencv-python-headless==4.11.0.86", "onnx==1.18.0", "onnxslim==0.1.99", "psutil==7.0.0"]
 PACKS = {                                 # one ONNX Runtime per env; the first requirement names its distribution
     "cpu": ["onnxruntime==1.24.1"],
-    "openvino": ["onnxruntime-openvino==1.24.1", "openvino==2025.4.*"],
+    "openvino": ["onnxruntime-openvino==1.24.1", "openvino==2025.4.1"],
     "webgpu": ["onnxruntime-webgpu==1.27.0"],
 }
 ORT_DISTS = ("onnxruntime", "onnxruntime-openvino", "onnxruntime-webgpu")
@@ -148,7 +148,9 @@ def _saved_picks() -> Optional[dict]:
 
 def save_picks(picks: dict) -> None:
     from classes.app import get_app
-    get_app().get_settings().set(PICKS_SETTING, json.dumps(picks))
+    settings = get_app().get_settings()
+    settings.set(PICKS_SETTING, json.dumps(picks))
+    settings.save()                                  # now: an installed runtime without picks cannot run anything
 
 
 def pinned_files(features: Iterable[str]) -> List[Tuple[str, str, str, int]]:
@@ -272,6 +274,13 @@ def _probe(say: Callable[[str], None], cancel: Optional[threading.Event]) -> Non
     names = (["edtalk", "wav2lip", "hyperswap", "yoloface", "arcface", "fan68"] if st["face_models"] else []) + \
             (["ming_backbone", "ming_flow", "ming_decoder"] if st["ming"] else [])
     save_picks(_work("probe", say, cancel, models=names)["picks"])
+
+
+def reprobe(features: Iterable[str], progress: Optional[Callable[[str], None]] = None,
+            cancel: Optional[threading.Event] = None) -> dict:
+    """Probe the installed parts again (their picks went missing); returns the new status."""
+    _probe(progress or (lambda message: None), cancel)
+    return status()
 
 
 def install(features: Iterable[str], progress: Optional[Callable[[str], None]] = None,

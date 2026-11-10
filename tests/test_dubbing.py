@@ -118,11 +118,12 @@ def test_a_clip_with_no_words_is_cut_into_pieces_of_at_most_fifteen_seconds():
 
 # --- ffmpeg stitch and the validation helpers ------------------------------------------
 
-def test_stitch_takes_one_video_stream_per_clip_resamples_and_crossfades_the_audio():
+def test_stitch_joins_video_and_audio_at_the_same_boundaries_so_the_words_stay_on_the_mouth():
     args = dubbing.stitch_args(["a.mp4", "b.mp4"], "out.mp4", 24, size=(1280, 720), seconds=[7, 8])
     graph = args[args.index("-filter_complex") + 1]
     assert "[0:v:0]fps=24" in graph and "[1:v:0]fps=24" in graph
-    assert "concat=n=2" in graph and "acrossfade=d=0.15" in graph
+    assert "concat=n=2:v=1:a=1" in graph and "acrossfade" not in graph
+    assert "atrim=0:7" in graph and "atrim=0:8" in graph       # each piece's audio is exactly its video
     assert args.count("-t") == 2 and args[-1] == "out.mp4"
 
 
@@ -156,10 +157,16 @@ class FakeRuntime:
     def __init__(self):
         self.status_value = {"env": True, "pack": "cpu", "face_models": True, "ming": True, "probe": PICKS}
         self.installed = []
+        self.reprobed = []
         self.worker_calls = []
 
     def status(self):
         return dict(self.status_value)
+
+    def reprobe(self, features, progress=None, cancel=None):
+        self.reprobed.append(set(features))
+        self.status_value["probe"] = PICKS
+        return self.status()
 
     def install(self, features, progress=None, cancel=None):
         self.installed.append(set(features))
@@ -436,3 +443,23 @@ def test_chunks_cover_the_whole_clip_with_no_gaps():
                                  total=13.0)
     assert chunks[0]["start"] == 0.0 and chunks[-1]["end"] == 13.0
     assert all(a["end"] == b["start"] for a, b in zip(chunks, chunks[1:]))
+
+
+def test_a_chunk_the_recogniser_cannot_score_is_a_failed_attempt_not_a_crash(rig, monkeypatch):
+    def broken(path):
+        raise RuntimeError("no speech engine")
+    monkeypatch.setattr(dubbing, "heard", broken)
+    result = _lip(rig, FakeClient())
+    assert (result["cloud_chunks"], result["local_chunks"]) == (0, 2)
+
+
+def test_pinned_frames_never_come_from_past_the_chunks_end(rig):
+    _lip(rig, FakeClient())                              # chunk 1 spans 0..6.4 s but asks Grok for 7 s
+    pinned = [a for a in rig.ffmpeg if str(a[-1]).endswith("-1.png") and "-ss" in a]
+    assert pinned and all(float(a[a.index("-ss") + 1]) < 6.4 for a in pinned)
+
+
+def test_picks_missing_after_an_install_are_probed_again(rig):
+    rig.rt.status_value["probe"] = None
+    st = dubbing.ensure_local({"face"}, consent=lambda steps: True)
+    assert rig.rt.reprobed == [{"face"}] and st["probe"] == PICKS

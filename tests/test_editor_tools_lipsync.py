@@ -9,6 +9,7 @@ from ai_generation_fakes import install
 from classes import dubbing, tool_handlers
 from classes.editor_tools import REGISTRY, coverage
 from classes.editor_tools import ai_generation_hyperframes as hfx
+from classes.editor_tools import ai_generation_lipsync as lipsync
 
 LIP = "lip_sync_clip_tool"
 FACE = "face_swap_clip_tool"
@@ -35,6 +36,7 @@ def studio(editor, monkeypatch, tmp_path):
     monkeypatch.setattr(tool_handlers, "QPointF", FakePoint)     # the baked clip is placed through it
     state = {"lip": [], "swap": [], "features": []}
     monkeypatch.setattr(hfx, "_ask_install_consent", lambda steps, **kw: True)
+    monkeypatch.setattr(lipsync, "ask_person_consent", lambda text: True)
     monkeypatch.setattr(dubbing, "ensure_local",
                         lambda features, consent, progress=None: state["features"].append(set(features))
                         or {"probe": PICKS})
@@ -135,7 +137,7 @@ def test_face_swap_on_a_clip_with_speech_runs_on_this_computer(editor, studio):
 
 
 def test_face_swap_on_a_silent_clip_uses_the_cloud_under_auto(editor, studio):
-    clip = _clip(editor)
+    clip = _clip(editor, ai_metadata={"has_speech": False})
     _receipt(editor.call(FACE, clip_id=clip, face_image_file_id=editor.add_file("image"), consent_confirmed=True))
     assert studio["swap"][0]["engine"] == "cloud" and studio["swap"][0]["allow_local_fallback"] is True
 
@@ -150,3 +152,28 @@ def test_the_dubbing_settings_are_dropdowns_with_auto_or_local_defaults():
     assert rows["tts-engine"]["value"] == "local"
     assert rows["dubbing-backend-picks"]["type"] == "hidden" and rows["dubbing-backend-picks"]["value"] == ""
     assert all(rows[k]["category"] == "AI" for k in ("lip-sync-engine", "face-swap-engine", "tts-engine"))
+
+
+def test_face_swap_on_a_clip_not_yet_checked_for_speech_stays_on_this_computer(editor, studio):
+    clip = _clip(editor)
+    _receipt(editor.call(FACE, clip_id=clip, face_image_file_id=editor.add_file("image"), consent_confirmed=True))
+    assert studio["swap"][0]["engine"] == "local"
+
+
+def test_the_person_at_the_computer_must_confirm_even_when_the_agent_says_yes(editor, studio, monkeypatch):
+    asked = []
+    monkeypatch.setattr(lipsync, "ask_person_consent", lambda text: asked.append(text) or False)
+    clip = _clip(editor)
+    out = editor.call(LIP, clip_id=clip, text="Hello there.", consent_confirmed=True)
+    assert out.startswith("Error") and "declined" in out and asked
+    assert studio["lip"] == [] and editor.undo_steps_since_mark() == 0
+
+
+def test_oversized_clips_and_scripts_are_refused_before_any_work(editor, studio):
+    seconds = dubbing.MAX_JOB_S + 60
+    video = editor.add_file("video", duration=seconds)
+    long_clip = editor.add_clip(video, position=0.0, layer=L1, end=seconds)
+    too_long = editor.call(LIP, clip_id=long_clip, text="Hello.", consent_confirmed=True)
+    wordy = editor.call(LIP, clip_id=_clip(editor), text="word " * 1000, consent_confirmed=True)
+    assert too_long.startswith("Error") and "too long" in too_long
+    assert wordy.startswith("Error") and "too long" in wordy and studio["lip"] == []

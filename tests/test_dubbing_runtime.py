@@ -142,3 +142,17 @@ def test_the_worker_finds_the_editors_ffmpeg_on_its_path(monkeypatch, tmp_path):
     monkeypatch.setattr(ffmpeg_cli, "find_ffmpeg", lambda name="ffmpeg": str(tools / "ffmpeg"))
     path = next(v for k, v in dr._environment().items() if k.upper() == "PATH")
     assert str(tools) in path.split(os.pathsep)
+
+
+def test_saved_picks_are_written_to_disk_at_once(monkeypatch):
+    import types
+    calls = []
+    settings = types.SimpleNamespace(set=lambda k, v: calls.append(("set", k)), save=lambda: calls.append(("save",)))
+    from classes import app
+    monkeypatch.setattr(app, "get_app", lambda: types.SimpleNamespace(get_settings=lambda: settings), raising=False)
+    dr.save_picks({"edtalk": {"backend": "cpu"}})
+    assert calls == [("set", dr.PICKS_SETTING), ("save",)]
+
+
+def test_openvino_is_pinned_to_one_exact_version():
+    assert all("*" not in spec for pack in dr.PACKS.values() for spec in pack)
