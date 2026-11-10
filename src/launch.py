@@ -325,9 +325,9 @@ def _exit_unanswered_handoff(outcome, detail):
         from classes import update_installer
         update_installer._show_update_notice(
             platform.system().lower(), "",
-            text="Zenvi is already starting. If no window appears, end zenvi.exe in Task Manager and try again.")
+            text="Zenvi is already running but is busy and did not answer. Wait for it to finish, or close it and try again.")
     except Exception:
-        logger.error("Could not show the already-starting notice", exc_info=True)
+        logger.error("Could not show the already-running notice", exc_info=True)
     sys.exit(1)
 
 

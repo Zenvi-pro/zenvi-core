@@ -134,7 +134,7 @@ def test_the_give_up_shows_a_notice_and_exits_1_even_if_the_notice_fails(monkeyp
         give_up("no-reply", "no answer within 5 s")
 
     assert exited.value.code == 1
-    assert shown == ["Zenvi is already starting. If no window appears, end zenvi.exe in Task Manager and try again."]
+    assert shown == ["Zenvi is already running but is busy and did not answer. Wait for it to finish, or close it and try again."]
 
 
 def test_an_update_notice_keeps_its_own_text_unless_one_is_given(monkeypatch):
