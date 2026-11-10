@@ -21,6 +21,7 @@ def _receipt(out):
 
 @pytest.fixture
 def tts(editor, monkeypatch, tmp_path):
+    editor.settings["tts-engine"] = "cloud"              # the backend voice; the default is this computer
     return install(editor, monkeypatch, tmp_path, duration=3.2)
 
 
@@ -147,6 +148,7 @@ def test_locked_tracks_are_skipped_by_the_default_rule(editor, tts):
 
 
 def test_backend_failure_is_an_error_and_changes_nothing(editor, monkeypatch, tmp_path):
+    editor.settings["tts-engine"] = "cloud"
     fakes = install(editor, monkeypatch, tmp_path, backend=FakeBackend(error="402 Payment Required"))
     out = editor.call(TOOL, text="Hi.")
     assert out.startswith("Error: text-to-speech failed: 402 Payment Required")
@@ -155,6 +157,7 @@ def test_backend_failure_is_an_error_and_changes_nothing(editor, monkeypatch, tm
 
 
 def test_empty_audio_is_an_error(editor, monkeypatch, tmp_path):
+    editor.settings["tts-engine"] = "cloud"
     install(editor, monkeypatch, tmp_path, backend=FakeBackend(audio=b""))
     out = editor.call(TOOL, text="Hi.")
     assert out.startswith("Error: text-to-speech returned empty audio")
@@ -218,3 +221,82 @@ def test_backend_requests_carry_the_users_bearer_token():
     client._auth_token = lambda: None
     signed_out = client.session.prepare_request(requests.Request("GET", client.api_url + "/models"))
     assert "Authorization" not in signed_out.headers
+
+
+# --- the local voice (Ming, on this computer) and voice cloning --------------------------------
+
+@pytest.fixture
+def local_voice(editor, monkeypatch, tmp_path):
+    """The Speech setting at its default (this computer); the runtime and Ming are fakes that write a WAV."""
+    from classes import dubbing
+
+    fakes = install(editor, monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(dubbing, "ensure_local", lambda features, consent, progress=None: {"probe": {"ming": {}}})
+
+    def fake_tts(text, out, picks, instruction="", prompt_wav="", prompt_text=""):
+        calls.append({"text": text, "instruction": instruction, "prompt_wav": prompt_wav, "prompt_text": prompt_text})
+        with open(out, "wb") as fh:
+            fh.write(b"RIFF-fake")
+        return {"out": out, "seconds": 3.2}
+
+    monkeypatch.setattr(dubbing, "tts_local", fake_tts)
+    monkeypatch.setattr(dubbing, "heard", lambda path: "the reference words")
+    return fakes, calls
+
+
+def test_this_computer_is_the_default_speech_engine_and_spends_no_credits(editor, local_voice):
+    fakes, calls = local_voice
+    r = _receipt(editor.call(TOOL, text="Welcome [chuckle] to Lisbon."))
+    assert fakes.backend.tts_calls == []
+    assert calls[0]["text"] == "Welcome [Laughter] to Lisbon."
+    assert r["voice"] == "ming" and r["model"] == "ming-3.0-tts-0.5b"
+    assert r["duration"] == pytest.approx(3.2, abs=1 / 30)
+
+
+def test_a_voice_reference_needs_consent_and_runs_on_this_computer(editor, local_voice):
+    fakes, calls = local_voice
+    ref = editor.add_file("audio", path="/media/ref.wav")
+    out = editor.call(TOOL, text="Hi there.", voice_reference_file_id=ref)
+    assert out.startswith("Error") and "consent" in out
+    assert calls == [] and fakes.backend.tts_calls == [] and editor.undo_steps_since_mark() == 0
+    r = _receipt(editor.call(TOOL, text="Hi there.", voice_reference_file_id=ref, consent_confirmed=True))
+    assert calls[0]["prompt_wav"].endswith("ref.wav") and calls[0]["prompt_text"] == "the reference words"
+    assert r["voice"] == "clone" and editor.file(r["file_id"])["ai_metadata"]["voice_cloned"] is True
+
+
+def test_a_cloud_voice_cannot_copy_a_voice(editor, local_voice):
+    fakes, calls = local_voice
+    ref = editor.add_file("audio", path="/media/ref.wav")
+    out = editor.call(TOOL, text="Hi.", engine="cloud", voice_reference_file_id=ref, consent_confirmed=True)
+    assert out.startswith("Error") and "engine='local'" in out
+    assert fakes.backend.tts_calls == [] and calls == []
+
+
+def test_an_instruction_speaks_the_local_voice_freeform(editor, local_voice):
+    _fakes, calls = local_voice
+    _receipt(editor.call(TOOL, text="Good morning.", instruction="slow and clear"))
+    assert calls[0]["instruction"] == "slow and clear"
+
+
+def test_the_cloud_voice_strips_the_tags_it_cannot_read(editor, monkeypatch, tmp_path):
+    fakes = install(editor, monkeypatch, tmp_path)
+    editor.settings["tts-engine"] = "cloud"
+    _receipt(editor.call(TOOL, text="Welcome [chuckle] to Lisbon."))
+    assert fakes.backend.tts_calls[0]["text"] == "Welcome to Lisbon."
+
+
+def test_cloud_out_of_credits_says_to_run_it_on_this_computer(editor, monkeypatch, tmp_path):
+    from classes import api_client
+
+    install(editor, monkeypatch, tmp_path)
+    editor.settings["tts-engine"] = "cloud"
+
+    class Broke:
+        def generate_tts(self, **kwargs):
+            return {"success": False, "error": "Out of credits.", "credits": True}
+
+    monkeypatch.setattr(api_client, "get_backend_client", lambda: Broke())
+    out = editor.call(TOOL, text="Hi.")
+    assert out.startswith("Error") and "Out of credits" in out and "engine='local'" in out
+    assert editor.undo_steps_since_mark() == 0

@@ -20,6 +20,8 @@ from typing import Iterable, Optional
 
 from classes.editor_tools._base import (
     ToolError,
+    boolean,
+    enum,
     get_app,
     is_locked,
     layers,
@@ -40,6 +42,9 @@ from classes.logger import log
 MAX_TTS_CHARS = 4096          # OpenAI speech input limit (the backend forwards to it)
 NARRATION_TRACK_NAME = "Narration"
 TTS_SOURCE = "tts"
+LOCAL_MODEL = "ming-3.0-tts-0.5b"
+VOICE_CONSENT = ("Voice cloning copies a real person's voice. Ask the user to confirm that the person whose voice "
+                 "this is agrees, then call again with consent_confirmed=true.")
 _VOICE_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{0,31}$")
 _MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,63}$")
 _EPS = 1e-3
@@ -170,6 +175,7 @@ def _narration_metadata(text: str, duration: float, voice: str, model: str, spee
         "transcript_cues": estimated_cues(text, duration),
         "cue_timing": "estimated",
         "has_speech": True,
+        "voice_cloned": voice == "clone",
         "tts": {"voice": voice, "model": model, "speed": speed},
     }
 
@@ -213,7 +219,10 @@ def _synthesize(text: str, voice: str, model: str, speed: float) -> str:
     resp = get_backend_client().generate_tts(text=text, voice=voice, model=model, speed=float(speed))
     if not isinstance(resp, dict) or not resp.get("success"):
         err = (resp or {}).get("error") if isinstance(resp, dict) else resp
-        raise ToolError(f"text-to-speech failed: {err or 'the backend returned no audio'}")
+        message = f"text-to-speech failed: {err or 'the backend returned no audio'}"
+        if isinstance(resp, dict) and resp.get("credits"):
+            message = message.rstrip(".") + ". Run it on this computer instead: pass engine='local'."
+        raise ToolError(message)
     try:
         raw = base64.b64decode(resp.get("audio_base64") or "")
     except (ValueError, TypeError) as exc:
@@ -232,6 +241,23 @@ def _synthesize(text: str, voice: str, model: str, speed: float) -> str:
     except OSError as exc:
         raise ToolError(f"could not write the narration audio to {path}: {exc}") from None
     return path
+
+
+def _speak_local(text: str, instruction: str, reference: str) -> str:
+    """Ming on this computer, into a WAV in the media folder; a reference recording copies its voice."""
+    from classes import dubbing
+    from classes.assets import durable_media_path
+    from classes.editor_tools.ai_generation_lipsync import file_path, local_picks
+
+    picks = local_picks({"ming"})
+    wav = file_path(reference, "voice reference") if reference else ""
+    out = durable_media_path(ext=".wav")
+    try:
+        dubbing.tts_local(text, out, picks, instruction=instruction, prompt_wav=wav,
+                          prompt_text=dubbing.heard(wav) if wav else "")
+    except dubbing.DubbingError as exc:
+        raise ToolError(str(exc)) from None
+    return out
 
 
 def _qpoint(x: float):
@@ -336,7 +362,8 @@ def _import_and_place(path: str, text: str, start: float, explicit_layer: Option
                         "shimmer, ash, coral, sage.", "alloy"),
         "model": string("Speech model: tts-1 (default, fast), tts-1-hd (higher quality), gpt-4o-mini-tts.",
                         "tts-1"),
-        "speed": number("Speaking rate: 1 = normal, 0.8 = slower, 1.25 = faster.", 1.0, minimum=0.25, maximum=4.0),
+        "speed": number("Speaking rate of the cloud voice: 1 = normal, 0.8 = slower, 1.25 = faster.", 1.0,
+                        minimum=0.25, maximum=4.0),
         "track": string("Track for the narration: UI track number (1 = bottom), track name or layer number. "
                         "Leave empty to use a free narration track (never the bottom picture track; a "
                         "'Narration' track is created above it when every track is busy).", ""),
@@ -345,23 +372,36 @@ def _import_and_place(path: str, text: str, start: float, explicit_layer: Option
         "position": nullable(number("Older name for position_seconds (same meaning); prefer position_seconds.",
                                     minimum=0)),
         "name": string("Project Files name for the narration (default 'Narration - <first words>').", ""),
+        "engine": enum(["auto", "local", "cloud"], "auto follows the Speech (TTS) With setting, this computer by default "
+                       "(Ming, free after a one-time download). cloud = the backend voice (credits).", "auto"),
+        "voice_reference_file_id": string("Project Files id of a short recording of a voice to copy, on this computer. "
+                                          "Needs consent_confirmed.", ""),
+        "instruction": string("How to speak, on this computer only: e.g. 'slow and clear', 'warm presenter'.", ""),
+        "consent_confirmed": boolean("true only after the user confirms that the person whose voice is copied agrees.",
+                                     False),
     }, required=["text"]),
     background_safe=True,
-    covers=("ai.tts",),
+    covers=("ai.tts", "ai.voice_clone"),
 )
 def generate_tts_and_add_to_timeline(text, voice="alloy", model="tts-1", speed=1.0, track="",
-                                     position_seconds=None, position=None, name=""):
+                                     position_seconds=None, position=None, name="", engine="auto",
+                                     voice_reference_file_id="", instruction="", consent_confirmed=False):
     """Speak text with AI text-to-speech and place it on the timeline as a narration / voiceover clip.
 
     Use for "add a voiceover saying ...", "narrate this intro", "read this script over the
     video". The audio is imported into Project Files (probed, with its transcript) and placed
     at position_seconds (timeline seconds; default the playhead) with its real duration, on
     the given track or, by default, a free narration track above the bottom picture track
-    (created when needed). Uses AI credits; generate one line or paragraph per call.
+    (created when needed). It runs on this computer by default (Ming, a one-time download);
+    engine cloud uses AI credits. voice_reference_file_id copies a voice from a short recording
+    (this computer only; needs consent_confirmed). Generate one line or paragraph per call.
     Returns the new timeline_clip_id, file_id, track and start/end. One undo step removes the
     clip, the file and any track it created. Example: {"text": "Welcome to Lisbon.",
     "position_seconds": 2} -> a ~1.5 s clip at 0:02 on track 2.
     """
+    from classes import dubbing
+    from classes.editor_tools.ai_generation_lipsync import setting_for
+
     narration = str(text or "").strip()
     if not narration:
         raise ToolError("text is empty; pass the words to speak")
@@ -374,10 +414,23 @@ def generate_tts_and_add_to_timeline(text, voice="alloy", model="tts-1", speed=1
     model = str(model or "tts-1").strip()
     if not _MODEL_RE.match(model):
         raise ToolError(f"model {model!r} is not a model name (tts-1, tts-1-hd, gpt-4o-mini-tts)")
+    chosen = dubbing.engine_for("tts", setting_for(engine, "tts-engine"))
+    reference = str(voice_reference_file_id or "").strip()
+    if reference:
+        if not consent_confirmed:
+            raise ToolError(VOICE_CONSENT)
+        if chosen != "local":
+            raise ToolError("voice cloning runs on this computer: pass engine='local'")
+    if str(instruction or "").strip() and chosen != "local":
+        raise ToolError("the instruction works on this computer only: pass engine='local'")
     start = _start_seconds(position_seconds, position)
     explicit_layer = on_main(lambda: _explicit_layer(track))
 
-    path = _synthesize(narration, voice, model, speed)
+    if chosen == "local":
+        path = _speak_local(dubbing.sanitize_tags(narration), str(instruction or "").strip(), reference)
+        voice, model, speed = ("clone" if reference else "ming"), LOCAL_MODEL, 1.0
+    else:
+        path = _synthesize(dubbing.strip_tags(narration), voice, model, speed)
     try:
         placed = on_main(lambda: _import_and_place(path, narration, start, explicit_layer, name, voice, model,
                                                    float(speed)), timeout=PLACE_TIMEOUT)
