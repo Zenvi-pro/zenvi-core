@@ -27,6 +27,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Callable
 from classes.logger import log
+from classes import background_jobs
 
 # Shown when a paid action cannot run because of the login. The wording matters: the plan runner treats
 # "login required" / "unauthorized" as an auth failure to report, never as a step to repair with another tool.
@@ -533,11 +534,13 @@ class ZenviBackendClient:
                     return
 
                 def _runner():
+                    tool_name = call_data.get("tool_name", "")
+                    tool_args = call_data.get("tool_args", {})
+                    call_id = call_data.get("call_id", "")
                     try:
-                        result = on_tool_call(
-                            call_data.get("tool_name", ""),
-                            call_data.get("tool_args", {}),
-                            call_data.get("call_id", ""),
+                        result = background_jobs.run(
+                            tool_name, tool_args, lambda: on_tool_call(tool_name, tool_args, call_id),
+                            session=session_id or "",
                         )
                     except Exception as exc:  # noqa: BLE001
                         log.error("Tool execution error: %s", exc)

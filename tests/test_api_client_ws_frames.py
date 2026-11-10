@@ -99,3 +99,29 @@ def test_a_call_queued_before_stop_never_runs_even_after_a_new_turn():
     client._turn_cancels.add(cancelled)
     client.cancel_current_request()
     assert cancelled.is_set() and not client._turn_cancels
+
+
+def test_a_slow_background_tool_gets_a_note_and_the_turn_does_not_wait_for_it(monkeypatch):
+    from classes import background_jobs
+
+    monkeypatch.setattr(background_jobs, "GRACE_SECONDS", 0.05)
+    background_jobs.reset()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def slow_tool(name, args, call_id):
+        release.wait(2)
+        finished.set()
+        return "Clip placed"
+
+    call = {"call_id": "c1", "tool_name": "generate_video_and_add_to_timeline_tool", "tool_args": {"prompt": "a cat"}}
+    try:
+        fake, _ = _run_ws([json.dumps({"type": "tool_call", "data": call}), _frame("done")], on_tool_call=slow_tool)
+        assert not finished.is_set(), "the chat turn waited for the background tool"
+        results = [m["data"] for m in fake.sent if m.get("type") == "tool_result"]
+        assert [r["call_id"] for r in results] == ["c1"]
+        assert results[0]["result"].startswith(background_jobs.BACKGROUND_PREFIX)
+    finally:
+        release.set()
+        finished.wait(2)
+        background_jobs.reset()
