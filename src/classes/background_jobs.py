@@ -68,9 +68,10 @@ def run(name, args, call, session=""):
         job.detached = True
     return (
         f"{BACKGROUND_PREFIX}: this call has not finished after {GRACE_SECONDS:g} s and keeps going on its own; "
-        "its result is placed in the project when it is done. Carry on with anything that does not need it "
-        "and tell the user it is still running. If your next step needs its result, make the same call again "
-        "with the same arguments to wait for it."
+        "its result is placed in the project when it is done. If what the user asked for needs its result "
+        "(an id, a path, a size, an edit on what it makes), make the same call again now with the same "
+        "arguments: that waits for it and returns the result. Otherwise carry on with the rest and tell the "
+        "user it is still running."
     )
 
 

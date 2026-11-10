@@ -56,6 +56,8 @@ def test_a_slow_background_tool_returns_a_note_and_its_result_is_reported_once()
     assert note.startswith(background_jobs.BACKGROUND_PREFIX)
     assert "after 0.05 s" in note
     assert TOOL not in note
+    # Live, a model asked for a clip id offered to wait instead of waiting: the note has to say when to.
+    assert "needs its result" in note and "make the same call again now" in note
     assert "still running" in background_jobs.turn_notes()
 
     release.set()
