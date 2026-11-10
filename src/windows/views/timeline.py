@@ -790,17 +790,17 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 if self._action_contains_item_id(action, item_id):
                     self._apply_pending_trim_refresh()
 
+        # Bail out if change unrelated to webview
+        if action and len(action.key) >= 1 and action.key[0] not in ["clips", "effects", "duration", "layers", "markers"]:
+            log.debug(f"Skipping unneeded webview update for '{action.key[0]}'")
+            return
+
         try:
             # Duplicate UpdateAction, and remove unused action attribute (old_values)
             action = action.copy()
             action.old_values = {}
         except:
             log.error("Error duplicating UpdateAction", exc_info=1)
-            return
-
-        # Bail out if change unrelated to webview
-        if action and len(action.key) >= 1 and action.key[0] not in ["clips", "effects", "duration", "layers", "markers"]:
-            log.debug(f"Skipping unneeded webview update for '{action.key[0]}'")
             return
 
         redraw_waveforms = self._should_refresh_waveforms(action)

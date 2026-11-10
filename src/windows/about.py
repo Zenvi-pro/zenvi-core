@@ -30,7 +30,6 @@ import os
 import codecs
 import re
 import platform
-import ctypes
 
 from qt_api import Qt, pyqtSignal
 from qt_api import QDialog
@@ -274,32 +273,8 @@ class About(QDialog):
 
     def get_ram_details(self):
         """Return total system RAM in GB when available."""
-        total_bytes = 0
-        try:
-            if platform.system() == "Windows":
-                class MEMORYSTATUSEX(ctypes.Structure):
-                    _fields_ = [
-                        ("dwLength", ctypes.c_ulong),
-                        ("dwMemoryLoad", ctypes.c_ulong),
-                        ("ullTotalPhys", ctypes.c_ulonglong),
-                        ("ullAvailPhys", ctypes.c_ulonglong),
-                        ("ullTotalPageFile", ctypes.c_ulonglong),
-                        ("ullAvailPageFile", ctypes.c_ulonglong),
-                        ("ullTotalVirtual", ctypes.c_ulonglong),
-                        ("ullAvailVirtual", ctypes.c_ulonglong),
-                        ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
-                    ]
-
-                memory_status = MEMORYSTATUSEX()
-                memory_status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-                if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory_status)):
-                    total_bytes = int(memory_status.ullTotalPhys)
-            else:
-                page_size = os.sysconf("SC_PAGE_SIZE")
-                phys_pages = os.sysconf("SC_PHYS_PAGES")
-                total_bytes = int(page_size * phys_pages)
-        except Exception:
-            log.warning("Failed to gather RAM details", exc_info=1)
+        from classes.system_memory import physical_ram_bytes
+        total_bytes = physical_ram_bytes()
 
         if total_bytes <= 0:
             return ""

@@ -289,7 +289,7 @@ try:
     print("Imported classes.info", flush=True)
     from classes.logger import log
     print("Imported classes.logger", flush=True)
-    from classes.openshot_import_diag import write_bundle_manifest
+    from classes.openshot_import_diag import prune_bundled_sources, write_bundle_manifest
 except BaseException:
     import traceback
     traceback.print_exc()
@@ -1072,6 +1072,7 @@ if sys.platform == "win32":
     # antivirus quarantines one of these, the startup error names it.
     for frozen_path in os.listdir(build_path):
         if frozen_path.startswith("exe") and os.path.isdir(os.path.join(build_path, frozen_path, "lib")):
+            prune_bundled_sources(os.path.join(build_path, frozen_path))
             log.info("Wrote %s" % write_bundle_manifest(os.path.join(build_path, frozen_path)))
 
 # Frozen macOS: indexing, transcription audio extraction and thumbnails shell out to

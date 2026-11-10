@@ -30,6 +30,26 @@ def write_bundle_manifest(install_dir: str) -> str:
     return path
 
 
+def prune_bundled_sources(install_dir: str) -> None:
+    """Leave one bytecode-only copy of the app under ``install_dir``/lib.
+
+    freeze.py copies every source file next to the .pyc cx_Freeze compiled, and
+    Python prefers the source: with no writable __pycache__ under Program Files
+    it recompiled the app on every launch. lib/src and lib/openshot_qt were
+    second and third copies of the whole tree. A .py with no .pyc stays: nothing
+    compiled it, so the source is the only copy.
+    """
+    import shutil
+
+    lib = os.path.join(install_dir, "lib")
+    for duplicate in ("src", "openshot_qt"):
+        shutil.rmtree(os.path.join(lib, duplicate), ignore_errors=True)
+    for root, _dirs, files in os.walk(lib):
+        for name in files:
+            if name.endswith(".py") and os.path.isfile(os.path.join(root, name + "c")):
+                os.remove(os.path.join(root, name))
+
+
 def missing_bundled_files(install_dir: str) -> List[str]:
     """Manifest entries no longer on disk (quarantined by antivirus, usually).
 
