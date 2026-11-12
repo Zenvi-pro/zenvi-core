@@ -163,9 +163,26 @@ def plan_chunks(cues: list, cut_times: list, max_s: float = MAX_S, target_s: flo
             start = lo if k == 0 else float(group[0]["start"])
             end = hi if k == len(groups) - 1 else float(groups[k + 1][0]["start"])
             text = " ".join(p["text"] for p in group if p.get("text"))
-            chunks.append({"start": round(start, 3), "end": round(end, 3), "text": text,
-                           "duration": min(max_s, max(1, math.ceil(round(end - start, 6))))})
+            # The speech fits max_s; a long pause before or after it becomes silent windows of at most max_s.
+            speech_start, speech_end = max(start, float(group[0]["start"])), min(end, float(group[-1]["end"]))
+            core_start = max(start, min(speech_start, speech_end - max_s))
+            core_end = min(end, core_start + max_s)
+            spans = [(a, b, "") for a, b in _tiles(start, core_start, max_s)] + [(core_start, core_end, text)] + \
+                    [(a, b, "") for a, b in _tiles(core_end, end, max_s)]
+            for n, (a, b, words) in enumerate(spans):
+                chunks.append({"start": round(a, 3), "end": round(b, 3), "text": words,
+                               "after_cut": lo > 0.0 and k == 0 and n == 0,
+                               "duration": min(max_s, max(1, math.ceil(round(b - a, 6))))})
     return chunks
+
+
+def _tiles(a: float, b: float, max_s: float) -> list:
+    """[a, b) cut into equal spans of at most max_s; nothing when it is empty."""
+    if b - a <= 1e-6:
+        return []
+    n = math.ceil(round((b - a) / max_s, 9))
+    step = (b - a) / n
+    return [(a + i * step, a + (i + 1) * step) for i in range(n)]
 
 
 def _cut(item: dict, at: float) -> list:
@@ -282,11 +299,6 @@ def _frame(source: str, seconds: float, out: str) -> str:
     return out
 
 
-def _last_frame(video: str, out: str) -> str:
-    _ffmpeg(["-y", "-sseof", "-0.1", "-i", video, "-frames:v", "1", out])
-    return out
-
-
 def _window(source: str, start: float, seconds: float, fps: float, out: str) -> str:
     """The clip's own picture and sound from *start*, at the project fps."""
     _ffmpeg(["-y", "-ss", "%.3f" % start, "-i", source, "-t", "%.3f" % seconds, "-vf", f"fps={fps:g}",
@@ -339,7 +351,10 @@ def ensure_local(features: set, *, consent: Callable[[list], bool], progress: An
         need.add("ming")
     if not need:
         if picks_of(st) is None:                 # installed, but the probe's picks never reached the settings
-            st = rt.reprobe(set(features), progress=progress)
+            try:
+                st = rt.reprobe(set(features), progress=progress)
+            except (rt.DubbingRuntimeError, OSError) as exc:
+                raise DubbingError(str(exc)) from None
         return st
     if not consent([{"label": _LABELS[f]} for f in sorted(need)]):
         raise DubbingError("the one-time download was declined, so nothing was installed")
@@ -388,20 +403,26 @@ def _speak(text: str, out: str, picks, job=None, instruction: str = "", prompt_w
 
 
 def tts_local(text: str, out: str, picks, *, instruction: str = "", prompt_wav: str = "",
-              prompt_text: str = "") -> dict:
+              prompt_text: str = "", job=None) -> dict:
     """Speech on this computer (Ming): plain, FREEFORM with an instruction, or a copied voice from prompt_wav.
     The text is spoken as given: callers sanitize its tags first (sanitize_tags)."""
     with _JOB_LOCK:
-        return _speak(text, out, picks, instruction=instruction, prompt_wav=prompt_wav, prompt_text=prompt_text)
+        return _speak(text, out, picks, job, instruction=instruction, prompt_wav=prompt_wav, prompt_text=prompt_text)
+
+
+def _faces_found(res: dict) -> dict:
+    if not res.get("frames_with_face"):
+        raise DubbingError("no face was found in the clip, so nothing was changed")
+    return res
 
 
 def _lipsync(video: str, audio: str, out: str, picks, job=None) -> dict:
-    return _worker("lipsync", {"video": video, "audio": audio, "out": out, "model": "edtalk", "picks": picks,
-                               "detect_every": 10}, job)
+    return _faces_found(_worker("lipsync", {"video": video, "audio": audio, "out": out, "model": "edtalk",
+                                            "picks": picks, "detect_every": 10}, job))
 
 
 def _swap_window(video: str, face_image: str, out: str, picks, job=None) -> str:
-    _worker("faceswap", {"video": video, "face_image": face_image, "out": out, "picks": picks}, job)
+    _faces_found(_worker("faceswap", {"video": video, "face_image": face_image, "out": out, "picks": picks}, job))
     return out
 
 
@@ -554,7 +575,10 @@ def _cloud_loop(run: _Run, chunks: list, cloud_part, local_part) -> tuple:
             local += 1
         parts.append(part)
         if i < len(chunks):
-            prev = _last_frame(part, _png(run, "prev", str(i)))
+            # The next window starts where this chunk ends, inside the part (a cloud part runs past it to a whole
+            # second), and after a shot cut it starts from the new shot's own frame instead.
+            span = chunk["end"] - chunk["start"]
+            prev = None if chunks[i].get("after_cut") else                 _frame(part, max(0.0, span - 1.0 / run.fps), _png(run, "prev", str(i)))
     return parts, cloud, local
 
 
@@ -603,10 +627,22 @@ def lip_sync(*, source: str, start: float, end: float, size: tuple, fps: float, 
         chunks = plan_chunks(cues or [{"start": 0.0, "end": seconds, "text": text}],
                              cut_times=shot_cuts(source, float(start), seconds), total=seconds)
 
+        def silent_part(chunk, tag):              # a pause in the script: the footage as is, with no voice
+            t0 = run.start + chunk["start"]
+            out_part = os.path.join(work, "part-%s.mp4" % tag)
+            _ffmpeg(["-y", "-ss", "%.3f" % t0, "-t", "%.3f" % (chunk["end"] - chunk["start"]), "-i", source,
+                     "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a:0",
+                     "-shortest", "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", out_part])
+            return out_part
+
         def cloud_part(chunk, prev, tag):
+            if not chunk["text"].strip():
+                return silent_part(chunk, tag)
             return _dialogue_try(run, chunk, prev, tag)
 
         def local_part(chunk, tag):
+            if not chunk["text"].strip():
+                return silent_part(chunk, tag)
             t0 = run.start + chunk["start"]
             span = chunk["end"] - chunk["start"]
             window = _window(source, t0, span, run.fps, os.path.join(work, "win-%s.mp4" % tag))

@@ -177,3 +177,34 @@ def test_oversized_clips_and_scripts_are_refused_before_any_work(editor, studio)
     wordy = editor.call(LIP, clip_id=_clip(editor), text="word " * 1000, consent_confirmed=True)
     assert too_long.startswith("Error") and "too long" in too_long
     assert wordy.startswith("Error") and "too long" in wordy and studio["lip"] == []
+
+
+def test_the_raw_result_is_removed_once_its_copy_is_in_project_files(editor, studio, monkeypatch, tmp_path):
+    import shutil
+
+    def imported_copy(video_path, **kw):             # as the real import: a re-encoded copy in the media folder
+        from classes.query import File
+        copy = str(tmp_path / "imported.mp4")
+        shutil.copy(video_path, copy)
+        return File.get(id=editor.add_file("video", path=copy)), None
+
+    monkeypatch.setattr(tool_handlers, "_import_generated_video", imported_copy)
+    _receipt(editor.call(LIP, clip_id=_clip(editor), text="Hello there.", consent_confirmed=True))
+    assert not os.path.exists(studio["lip"][0]["out"]) and os.path.exists(tmp_path / "imported.mp4")
+
+
+def test_a_clip_trimmed_while_the_job_ran_is_not_overwritten(editor, studio, monkeypatch):
+    clip = _clip(editor)
+
+    def trimmed_meanwhile(**kw):
+        from classes.query import Clip
+        live = Clip.get(id=clip)
+        live.data["end"] = 3.0                      # the person trims the clip while the job runs
+        live.save()
+        with open(kw["out"], "wb") as fh:
+            fh.write(b"lip-synced")
+        return {"out": kw["out"], "seconds": 6.0, "chunks": 1, "cloud_chunks": 1, "local_chunks": 0}
+    monkeypatch.setattr(dubbing, "lip_sync", trimmed_meanwhile)
+    out = editor.call(LIP, clip_id=clip, text="Hello there.", consent_confirmed=True)
+    assert out.startswith("Error") and "changed" in out
+    assert editor.clip(clip)["end"] == 3.0 and editor.undo_steps_since_mark() == 1   # only the person's trim

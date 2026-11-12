@@ -236,8 +236,9 @@ def local_voice(editor, monkeypatch, tmp_path):
     from classes.editor_tools import ai_generation_lipsync
     monkeypatch.setattr(ai_generation_lipsync, "ask_person_consent", lambda text: True)
 
-    def fake_tts(text, out, picks, instruction="", prompt_wav="", prompt_text=""):
-        calls.append({"text": text, "instruction": instruction, "prompt_wav": prompt_wav, "prompt_text": prompt_text})
+    def fake_tts(text, out, picks, instruction="", prompt_wav="", prompt_text="", job=None):
+        calls.append({"text": text, "instruction": instruction, "prompt_wav": prompt_wav, "prompt_text": prompt_text,
+                      "job": job})
         with open(out, "wb") as fh:
             fh.write(b"RIFF-fake")
         return {"out": out, "seconds": 3.2}
@@ -302,3 +303,15 @@ def test_cloud_out_of_credits_says_to_run_it_on_this_computer(editor, monkeypatc
     out = editor.call(TOOL, text="Hi.")
     assert out.startswith("Error") and "Out of credits" in out and "engine='local'" in out
     assert editor.undo_steps_since_mark() == 0
+
+
+def test_local_speech_runs_as_a_cancellable_job(editor, local_voice):
+    _fakes, calls = local_voice
+    _receipt(editor.call(TOOL, text="Good morning."))
+    assert calls[0]["job"] is not None
+
+
+def test_a_cloud_voice_asked_for_on_this_computer_is_refused_not_swapped_for_ming(editor, local_voice):
+    _fakes, calls = local_voice
+    out = editor.call(TOOL, text="Good morning.", voice="nova")
+    assert out.startswith("Error") and "engine='cloud'" in out and calls == []

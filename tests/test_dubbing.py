@@ -159,6 +159,7 @@ class FakeRuntime:
         self.installed = []
         self.reprobed = []
         self.worker_calls = []
+        self.faces = 10
 
     def status(self):
         return dict(self.status_value)
@@ -187,7 +188,7 @@ class FakeRuntime:
                 paths.append(dst)
             return {"images": paths}
         _write(args["out"], command.encode())
-        return {"out": args["out"], "seconds": 2.0, "frames": 10, "frames_with_face": 10}
+        return {"out": args["out"], "seconds": 2.0, "frames": 10, "frames_with_face": self.faces}
 
 
 class FakeClient:
@@ -196,8 +197,10 @@ class FakeClient:
     def __init__(self, replies=()):
         self.replies = list(replies)
         self.calls = []
+        self.uploads = []
 
     def upload_media_file(self, local_path, file_id="", filename=None, session=None):
+        self.uploads.append(local_path)
         return {"success": True}
 
     def generate_video(self, prompt, duration_seconds=5, **kwargs):
@@ -463,3 +466,47 @@ def test_picks_missing_after_an_install_are_probed_again(rig):
     rig.rt.status_value["probe"] = None
     st = dubbing.ensure_local({"face"}, consent=lambda steps: True)
     assert rig.rt.reprobed == [{"face"}] and st["probe"] == PICKS
+
+
+def test_a_pause_longer_than_fifteen_seconds_never_makes_a_window_over_fifteen():
+    chunks = dubbing.plan_chunks([_cue(0, 5, "Hi."), _cue(25, 28, "Bye.")], cut_times=[], total=28.0)
+    assert all(c["end"] - c["start"] <= 15 for c in chunks)
+    assert chunks[0]["start"] == 0.0 and chunks[-1]["end"] == 28.0
+    assert all(a["end"] == b["start"] for a, b in zip(chunks, chunks[1:]))
+    assert [c["text"] for c in chunks if c["text"]] == ["Hi.", "Bye."]
+
+
+def test_a_silent_window_keeps_the_footage_and_is_not_sent_to_the_cloud(rig):
+    client = FakeClient()
+    result = _lip(rig, client, cues=[_cue(0, 5, "Hi."), _cue(25, 28, "Bye.")])
+    assert [c["dialogue_text"] for c in client.calls] == ["Hi.", "Bye."]
+    assert result["chunks"] > 2
+
+
+def test_a_failed_reprobe_is_a_dubbing_error(rig):
+    rig.rt.status_value["probe"] = None
+
+    def broken(features, progress=None, cancel=None):
+        raise rig.rt.DubbingRuntimeError("probe crashed")
+    rig.rt.reprobe = broken
+    with pytest.raises(DubbingError, match="probe crashed"):
+        dubbing.ensure_local({"face"}, consent=lambda steps: True)
+
+
+def test_a_local_job_that_found_no_face_is_an_error_not_a_success(rig, tmp_path):
+    rig.rt.faces = 0
+    with pytest.raises(DubbingError, match="no face"):
+        _lip(rig, FakeClient(), engine="local")
+
+
+def test_the_chunk_after_a_shot_cut_starts_from_the_new_shot_not_the_previous_output(rig, monkeypatch):
+    monkeypatch.setattr(dubbing, "shot_cuts", lambda source, start, seconds: [6.4])
+    client = FakeClient()
+    _lip(rig, client)
+    assert not any("prev-1" in p for p in client.uploads)
+
+
+def test_the_next_chunk_starts_from_the_frame_at_the_previous_chunks_end_not_its_padded_end(rig):
+    _lip(rig, FakeClient())
+    prev = [a for a in rig.ffmpeg if str(a[-1]).endswith("prev-1.png")]
+    assert prev and "-sseof" not in prev[0] and float(prev[0][prev[0].index("-ss") + 1]) < 6.4

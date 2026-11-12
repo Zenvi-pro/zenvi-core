@@ -7,6 +7,9 @@ The work runs on the calling worker thread; only the import and the placement ho
 
 from __future__ import annotations
 
+import contextlib
+import os
+
 from classes import dubbing
 from classes.editor_tools import ai_generation_hyperframes as hfx
 from classes.editor_tools._base import (
@@ -107,7 +110,19 @@ def _target(clip_id: str):
 
 def _place(clip, res: dict, start: float, end: float, what: str, source_label: str):
     """Import the result, stamp it and put it over the clip: one undo step with the tool call."""
+    def unchanged():
+        from classes.query import Clip
+        now = Clip.get(id=clip.id)
+        return bool(now) and (float(now.data.get("start") or 0.0), float(now.data.get("end") or 0.0),
+                              now.data.get("file_id")) == (start, end, clip.data.get("file_id"))
+
+    if not on_main(unchanged):
+        raise ToolError("the clip changed while this ran (trimmed, moved to another file or deleted), so nothing "
+                        "was replaced; run it again on the clip as it is now")
     f, err = th()._import_generated_video(res["out"])
+    if f and os.path.abspath(f.absolute_path() or "") != os.path.abspath(res["out"]):
+        with contextlib.suppress(OSError):
+            os.remove(res["out"])                     # the import made its own copy in the media folder
     if not f:
         raise ToolError("the result could not be imported (%s)" % (err or "unknown error"))
     th()._stamp_generated_video_metadata(f, what, source=source_label)

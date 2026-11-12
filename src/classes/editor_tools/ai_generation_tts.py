@@ -256,8 +256,10 @@ def _speak_local(text: str, instruction: str, reference: str) -> str:
         said = dubbing.heard(wav) if wav else ""
     except Exception as exc:                            # no recogniser, or the reference has no speech
         raise ToolError("the voice reference could not be transcribed (%s)" % exc) from None
+    from classes.handoff.jobs import track_job
     try:
-        dubbing.tts_local(text, out, picks, instruction=instruction, prompt_wav=wav, prompt_text=said)
+        with track_job("Speech", kind="dubbing") as job:
+            dubbing.tts_local(text, out, picks, instruction=instruction, prompt_wav=wav, prompt_text=said, job=job)
     except dubbing.DubbingError as exc:
         raise ToolError(str(exc)) from None
     return out
@@ -361,8 +363,8 @@ def _import_and_place(path: str, text: str, start: float, explicit_layer: Option
     schema=obj({
         "text": string("The words to speak, exactly as they should be read (up to 4096 characters). "
                        "Punctuation shapes the pauses."),
-        "voice": string("Speaker voice, e.g. alloy (neutral, default), echo, fable, onyx (deep), nova, "
-                        "shimmer, ash, coral, sage.", "alloy"),
+        "voice": string("Cloud speaker voice (engine cloud only), e.g. alloy (neutral, default), echo, fable, onyx "
+                        "(deep), nova, shimmer, ash, coral, sage. Leave empty on this computer.", ""),
         "model": string("Speech model: tts-1 (default, fast), tts-1-hd (higher quality), gpt-4o-mini-tts.",
                         "tts-1"),
         "speed": number("Speaking rate of the cloud voice: 1 = normal, 0.8 = slower, 1.25 = faster.", 1.0,
@@ -386,7 +388,7 @@ def _import_and_place(path: str, text: str, start: float, explicit_layer: Option
     background_safe=True,
     covers=("ai.tts", "ai.voice_clone"),
 )
-def generate_tts_and_add_to_timeline(text, voice="alloy", model="tts-1", speed=1.0, track="",
+def generate_tts_and_add_to_timeline(text, voice="", model="tts-1", speed=1.0, track="",
                                      position_seconds=None, position=None, name="", engine="auto",
                                      voice_reference_file_id="", instruction="", consent_confirmed=False):
     """Speak text with AI text-to-speech and place it on the timeline as a narration / voiceover clip.
@@ -411,7 +413,8 @@ def generate_tts_and_add_to_timeline(text, voice="alloy", model="tts-1", speed=1
     if len(narration) > MAX_TTS_CHARS:
         raise ToolError(f"text is {len(narration)} characters; the limit is {MAX_TTS_CHARS} per call. "
                         "Split the script and place each part after the previous one.")
-    voice = str(voice or "alloy").strip().lower()
+    asked_voice = str(voice or "").strip().lower()
+    voice = asked_voice or "alloy"
     if not _VOICE_RE.match(voice):
         raise ToolError(f"voice {voice!r} is not a voice name (e.g. alloy, echo, nova, onyx, shimmer)")
     model = str(model or "tts-1").strip()
@@ -424,6 +427,9 @@ def generate_tts_and_add_to_timeline(text, voice="alloy", model="tts-1", speed=1
             raise ToolError("voice cloning runs on this computer: pass engine='local'")
         from classes.editor_tools.ai_generation_lipsync import check_consent
         check_consent(consent_confirmed, VOICE_CONSENT, "Zenvi is about to copy a real person's voice.")
+    if asked_voice and chosen == "local":
+        raise ToolError(f"{asked_voice} is a cloud voice; this computer speaks with Ming or a copied voice. "
+                        "Pass engine='cloud' for it, or leave voice out")
     if str(instruction or "").strip() and chosen != "local":
         raise ToolError("the instruction works on this computer only: pass engine='local'")
     start = _start_seconds(position_seconds, position)
