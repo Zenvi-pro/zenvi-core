@@ -480,7 +480,8 @@ def _summary_of(plan: dict) -> dict:
     covers=("export.presets",),
 )
 def list_export_presets(category="", query="", include_unavailable=False):
-    """List export targets (the Export dialog's Profile / Target / Quality choices) with what they produce.
+    """Use for listing export targets and what each produces. Not for the project's own profile (run_tool(name='list_project_profiles_tool')).
+    List export targets (the Export dialog's Profile / Target / Quality choices) with what they produce.
 
     Each preset has its title (pass it as export_video_tool's preset), category,
     export_to (Video & Audio / Video Only / Audio Only), container format,
@@ -810,7 +811,8 @@ def _parse_setting(key: str, value: str) -> dict:
     covers=("export.settings",),
 )
 def get_export_settings():
-    """Show what export_video_tool would render right now with no arguments, and the stored overrides.
+    """Use for seeing what export_video_tool would render with no arguments, and the stored overrides. Not for rendering: use export_video_tool.
+    Show what export_video_tool would render right now with no arguments, and the stored overrides.
 
     Reports preset, quality, type, output path, size, fps, codecs, bitrates,
     audio format and frame range (seconds and frames), the overrides saved with
@@ -843,7 +845,8 @@ def get_export_settings():
     covers=("export.settings",),
 )
 def set_export_setting(key="", value="", clear=False):
-    """Store an export default in the project (used by export_video_tool when that argument is not given).
+    """Use for storing an export default in the project, for when the user wants it remembered. Not for a one-off export (pass arguments to export_video_tool).
+    Store an export default in the project (used by export_video_tool when that argument is not given).
 
     Values are validated (unknown keys are refused with the list of valid ones)
     and saved with the project, outside undo history -- like the Export
@@ -896,7 +899,8 @@ def set_export_setting(key="", value="", clear=False):
     covers=("export.frame",),
 )
 def save_frame_image(time=-1, file_path="", overwrite=False):
-    """Save one frame of the timeline as a full-resolution image (File > Save Current Frame).
+    """Use for saving one frame of the timeline as a full-resolution image (a thumbnail or still). Not for a video (export_video_tool).
+    Save one frame of the timeline as a full-resolution image (File > Save Current Frame).
 
     For a thumbnail or still ("save this frame", "grab a still at 12 s").
     Renders at the project's full size, not the preview size. Changes nothing
@@ -989,7 +993,8 @@ def save_frame_image(time=-1, file_path="", overwrite=False):
     covers=("export.selected_files",),
 )
 def export_files_to_folder(file_ids, folder=""):
-    """Export chosen project files to a folder (Project Files > Export Selected Clips).
+    """Use for exporting chosen project files to a folder. Not for collecting media into the project (run_tool(name='consolidate_project_media_tool')).
+    Export chosen project files to a folder (Project Files > Export Selected Clips).
 
     Plain files are copied; sub-clips (files with in/out points, e.g. from
     run_tool(name='create_subclips_tool')) and image sequences are rendered as H.264/AAC MP4

@@ -222,7 +222,7 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
                           image_seconds=0.0, fit_total_seconds=0.0, min_clip_seconds=1.0, transition="",
                           transition_seconds=0.0, fade="none", fade_seconds=2.0, zoom="none",
                           allow_overlap=False):
-    """Place several project files back to back on one track in one step (vlogs, slideshows, montages).
+    """Use for placing project files back to back on a track (vlogs, slideshows, montages). Not for titles or graphics (find_tools).
 
     Like Project Files > Add to Timeline, with optional transitions or fades
     between clips and a slow zoom. fit_total_seconds never trims clips given
@@ -422,7 +422,8 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
 )
 def move_clips(timeline_clip_ids=[], clip_query="", track="", scope="", position_seconds=-1.0, by_seconds=0.0,
                by_frames=0, to_track="", after_clip_id="", before_clip_id="", ripple=False, allow_overlap=False):
-    """Move clips to another time and/or track, nudge them by frames, or reorder a sequence.
+    """Use for moving clips to another time or track, nudging them by frames, or reordering a sequence. Not for copies (run_tool(name='duplicate_clips_tool')).
+    Move clips to another time and/or track, nudge them by frames, or reorder a sequence.
 
     Several clips keep their spacing and relative tracks. Give exactly one of
     position_seconds, by_seconds, by_frames, after_clip_id, before_clip_id (or
@@ -930,7 +931,8 @@ def remove_gaps(track="", from_seconds=0.0, only_first=False):
 )
 def duplicate_clips(timeline_clip_ids=[], clip_query="", track="", scope="", position_seconds=-1.0, to_track="",
                     copies=1, include_transitions=True, ripple=False, allow_overlap=False):
-    """Copy clips (with their effects, keyframes and the transitions between them) and paste the
+    """Use for copying clips and pasting the copies at a time or track (copies=3 makes three). Not for looping one clip's playback (run_tool(name='repeat_clip_tool')).
+    Copy clips (with their effects, keyframes and the transitions between them) and paste the
     copies at a time and track: Copy + Paste / Duplicate in the editor.
 
     Use for "duplicate this clip", "copy the intro to the end", "repeat this section three times"
@@ -1058,7 +1060,8 @@ def duplicate_clips(timeline_clip_ids=[], clip_query="", track="", scope="", pos
 )
 def align_clips(timeline_clip_ids=[], clip_query="", track="", scope="", edge="start", to_seconds=-1.0,
                 allow_overlap=False):
-    """Line up the starts (or ends) of clips on different tracks: Clip menu > Align Left / Right.
+    """Use for lining up the starts or ends of clips on different tracks (Align Left or Right). Not for moving a group to a time (run_tool(name='move_clips_tool')).
+    Line up the starts (or ends) of clips on different tracks: Clip menu > Align Left / Right.
 
     Use for "start the title and the music together with the video", "make all these clips end
     at the same time", "line these up at 10 seconds". Each clip keeps its track and length; only

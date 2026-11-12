@@ -691,7 +691,8 @@ TARGETS = {
     covers=("effect.catalog",),
 )
 def list_effects(kind="all", query="", effect="", include_properties=False):
-    """List the effects Zenvi can put on clips (libopenshot 1.0's full set: 34 video, 9 audio) with what they
+    """Use for the effects Zenvi can add to clips and their exact property names, before run_tool(name='add_effect_tool') or run_tool(name='update_effect_tool'). Not for the effects already on a clip (run_tool(name='get_clip_effects_tool')).
+    List the effects Zenvi can put on clips (libopenshot 1.0's full set: 34 video, 9 audio) with what they
     do, and, for one effect or with include_properties, every property with its range, default and choices.
 
     Use this to find the right effect and the exact property names before run_tool(name='add_effect_tool') /
@@ -749,7 +750,8 @@ def _common_properties() -> dict:
 )
 def get_clip_effects(timeline_clip_id="", clip_query="", track="", timeline_clip_ids=None, scope="",
                      detail="full"):
-    """List the effects already applied to clip(s): effect ids, class, name, and their current property
+    """Use for the effects already applied to clips, with ids and values, before update or remove. Not for the catalogue (run_tool(name='list_effects_tool')).
+    List the effects already applied to clip(s): effect ids, class, name, and their current property
     values (keyframed properties as timed points). Use it before run_tool(name='update_effect_tool') / run_tool(name='remove_effect_tool')
     to get effect ids, or to answer "what effects are on this clip?". Timeline listings do not show
     effects; this does.
@@ -826,7 +828,8 @@ def _add_or_update_plan(clip, class_name, properties, if_exists, interpolation, 
 def add_effect(timeline_clip_id="", clip_query="", track="", timeline_clip_ids=None, scope="",
                effect="", effect_name="", occurrence=0, position_near=None, properties=None,
                interpolation="bezier", if_exists="update", processing=None):
-    """Add any named effect to one or more clips, optionally with properties set or keyframed; one undo step.
+    """Use for adding any named effect to clips, with properties set or keyframed, when the user names an effect or no intent tool fits. Not for a grade, look, green screen or audio preset (color_grade_clip_tool, run_tool(name='apply_look_preset_tool'), run_tool(name='chroma_key_clip_tool'), run_tool(name='apply_audio_effect_tool')).
+    Add any named effect to one or more clips, optionally with properties set or keyframed; one undo step.
 
     For when the user names an effect or no intent tool fits. Prefer
     color_grade_clip_tool (grading, LUTs, black & white),
@@ -941,7 +944,8 @@ def _effects_to_edit(effect_id, timeline_clip_id, clip_query, track, timeline_cl
 )
 def update_effect(*, properties, effect_id="", timeline_clip_id="", clip_query="", track="",
                   timeline_clip_ids=None, scope="", effect="", occurrence=0, interpolation="bezier"):
-    """Change properties of an effect that is already on a clip: static values, or keyframes to animate
+    """Use for changing properties of an effect already on a clip, as values or keyframes. Not for adding one (run_tool(name='add_effect_tool')).
+    Change properties of an effect that is already on a clip: static values, or keyframes to animate
     them ("make the blur stronger", "fade the pixelation out over 2 seconds", "set the echo mix to 0.2").
     Target one effect by effect_id, or name the effect class on one or several clips (scope='all' for
     "every clip's blur"). Only the given properties change; one undo step.
@@ -988,7 +992,8 @@ def update_effect(*, properties, effect_id="", timeline_clip_id="", clip_query="
 )
 def remove_effect(effect_ids=None, timeline_clip_id="", clip_query="", track="", timeline_clip_ids=None,
                   scope="", effect="", all_effects=False):
-    """Remove effects from clips (effect badge > Remove Effect). It never deletes timeline clips; to
+    """Use for removing effects from clips. Not for deleting clips (delete_from_timeline_tool; this tool never deletes timeline clips).
+    Remove effects from clips (effect badge > Remove Effect). It never deletes timeline clips; to
     delete clips use delete_from_timeline_tool. Target effect ids, or an effect name on clip(s)
     ("remove the blur", "take the green screen key off"), or all_effects=true to strip every effect.
     For Look presets you can also use run_tool(name='apply_look_preset_tool', args={'look': "reset_look"}). One undo step.
@@ -1056,7 +1061,8 @@ def remove_effect(effect_ids=None, timeline_clip_id="", clip_query="", track="",
 )
 def copy_effects(source_clip_id="", source_clip_query="", timeline_clip_ids=None, clip_query="", track="",
                  scope="", effects=None, mode="merge"):
-    """Copy the effects of one clip onto other clips (Copy > Effects, then Paste): "give all clips the same
+    """Use for copying one clip's effects onto other clips. Not for keyframes (run_tool(name='copy_clip_keyframes_tool')).
+    Copy the effects of one clip onto other clips (Copy > Effects, then Paste): "give all clips the same
     grade as this one", "copy the blur and sharpen to clip 3". One undo step for every target.
     mode='merge' matches the editor's Paste (same-kind effect overwritten, new ones appended); pasted
     effects get new ids.

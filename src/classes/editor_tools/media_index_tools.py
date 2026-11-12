@@ -163,7 +163,7 @@ def restrict_files(files, captured_after: str, captured_before: str, place_id: i
 )
 def search_footage(query="", look_for="", reference_file_id="", reference_start=None, reference_end=None, match="picture",
                    filters=None, file_ids=None, sort="relevance", captured_after="", captured_before="", place_id=-1, place="", person="", limit=10, cursor=0):
-    """Search every indexed file in the project and return the best moments, each with the file, the in and out
+    """Use for the best moments in the footage (what is said or seen). Not for where one object sits (find_tools). Each result has the file, the in and out
     seconds (snapped to the real cut, or to the spoken sentence), where in it the match peaks and why.
 
     It searches shot descriptions, what people say, and the pictures themselves, then ranks them together, so
@@ -300,7 +300,8 @@ def _person_shots(files, person: str):
     read_only=True,
 )
 def get_segment_dossier(file_id="", file_query="", start=None, end=None, max_chars=6000):
-    """Everything the index knows about a file, or a stretch of it, as compact text, without looking at frames:
+    """Use for reading text about a file or a stretch of it: each shot, what is said, camera move, sounds, loudness, with no pictures. Not for looking at frames (run_tool(name='get_moment_tool'), run_tool(name='view_frames_tool')).
+    Everything the index knows about a file, or a stretch of it, as compact text, without looking at frames:
     each shot in time order with what happens, who says what, camera move, shot type, mood, objects, on-screen
     text, sounds and its measured look (brightness, warmth, saturation, palette), plus the file's loudness,
     tempo and silent stretches. Use it to understand footage before editing it. Layers not indexed yet are named.
@@ -328,7 +329,8 @@ def get_segment_dossier(file_id="", file_query="", start=None, end=None, max_cha
     read_only=True,
 )
 def get_look_profile(file_id="", file_query="", start=None, end=None, compare_to_file_id=""):
-    """The measured colour look of a file or a range of it, read from the index with no rendering: brightness,
+    """Use for a file's measured colour look from the index, with no rendering (color or colour, brightness, warmth). Not for one frame (run_tool(name='analyze_frame_colors_tool')).
+    The measured colour look of a file or a range of it, read from the index with no rendering: brightness,
     warmth, green/magenta tint, saturation, contrast, clipping and average colour (0-1 units), plus
     per-shot variation for the whole file and the colour pipeline flags (HDR / log footage). Pass
     compare_to_file_id to get a distance to another file's look, the number the grading tools aim to shrink.
@@ -395,7 +397,8 @@ def _vectors_current(shelf, sha) -> bool:
     read_only=True,
 )
 def index_status(file_ids=None, only_incomplete=False):
-    """Which parts of each file's index are ready: structure (cuts, camera motion), look (colour), audio (loudness,
+    """Use for checking which parts of each file's index are ready and what is still being worked on. Not for starting an index (run_tool(name='reindex_project_file_tool')).
+    Which parts of each file's index are ready: structure (cuts, camera motion), look (colour), audio (loudness,
     tempo), speech (transcript) and vectors_local (search; vector_model names the model that made them).
     described_shots counts the shots described so far, on this computer or by Gemini (made on demand by run_tool(name='describe_shots_tool'), not needed
     for search). Use it to know whether search_footage_tool can already see a file, and what is still being worked on.
@@ -553,7 +556,8 @@ def describe_file_shots(f, fi, shot_ids):
     read_only=True,
 )
 def describe_shots(file_id="", shot_ids=None, start_seconds=None, end_seconds=None):
-    """Words for shots: what happens, actions, objects, text on screen, sounds, mood, shot type, how interesting and
+    """Use for writing words for chosen shots (shot_ids or a time range of one file) that you are about to reason about. Not for reading the storyboard (storyboard_tool) or a whole long file without approval.
+    Words for shots: what happens, actions, objects, text on screen, sounds, mood, shot type, how interesting and
     usable each is. Made on this computer by default (free, no sign-in, but slow on a laptop: several times the footage's length), or
     by Gemini when Preferences > Index Footage With picks it (uses credits and needs sign-in). Search does NOT need this
     (every file is searchable from its pictures, speech and sound); call it for the shots you are about to reason about or
@@ -596,7 +600,8 @@ def describe_shots(file_id="", shot_ids=None, start_seconds=None, end_seconds=No
     read_only=True,
 )
 def locate_in_footage(what, kind="auto", file_ids=None, start=None, end=None, limit=30, for_action=""):
-    """Find where an object or on-screen text appears, with when (seconds in the file) and where in the frame.
+    """Use for where an object or on-screen text appears in a file, with its time and a rough box. Not for a moment search (search_footage_tool).
+    Find where an object or on-screen text appears, with when (seconds in the file) and where in the frame.
     box is [x, y, width, height] as 0-1 fractions from the top-left. It is a ROUGH box from the indexing pass:
     good for choosing where to look, point-masking or a region prompt, but not pixel-exact; refine it on a
     frame (run_tool(name='view_frames_tool'), then the masking or tracking effect) before masking, blurring, removing or
@@ -647,7 +652,8 @@ def locate_in_footage(what, kind="auto", file_ids=None, start=None, end=None, li
     read_only=True,
 )
 def view_audio(file_id="", file_query="", start=None, end=None, timeline=False):
-    """Draw a spectrogram of a stretch of audio as a PNG you can look at: time across, frequency up (logarithmic, 20 Hz to 11 kHz),
+    """Use for a spectrogram picture of a stretch of audio when the numbers leave a question open (a section edge, two takes, a finished mix). Not for loudness, silence, beats or speech windows (run_tool(name='analyze_timeline_audio_tool'), run_tool(name='analyze_music_tool')).
+    Draw a spectrogram of a stretch of audio as a PNG you can look at: time across, frequency up (logarithmic, 20 Hz to 11 kHz),
     brightness = loudness in dBFS, with labelled axes and a legend. NUMBERS FIRST: loudness, silence, beats, tempo, speech and
     music sections are already in the dossier, search results, run_tool(name='analyze_music_tool') and review_edit_tool, and answer "find the quiet
     part", "cut on the beat", "where does she speak", "where is the music loud". Use the picture only (1) where

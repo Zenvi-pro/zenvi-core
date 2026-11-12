@@ -359,7 +359,8 @@ def _project_titles(query: str) -> list:
     covers=("title.templates", "title.animated"),
 )
 def list_title_templates(kind="static", query=""):
-    """List title templates (and the titles already in the project) with their editable text fields.
+    """Use for listing static or animated title templates and their editable text fields, before run_tool(name='add_title_tool') or run_tool(name='add_animated_title_tool'), to pick a look such as a lower third. Not for placing a title.
+    List title templates (and the titles already in the project) with their editable text fields.
 
     Use before run_tool(name='add_title_tool') when the user wants a particular look ("lower third",
     "end card", "gold title"), before run_tool(name='edit_title_tool') to see a title's current text,
@@ -446,12 +447,10 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
               subtitle="", lines=None, font="", font_weight="", font_style="", font_scale=1.0, text_color="",
               background_color="", fit_text=True, fade_in_seconds=0.0, fade_out_seconds=0.0,
               screen_position="auto"):
-    """Create an on-screen title from a template and place it on the timeline, over the video.
+    """Use for static title cards, lower thirds, intros (also opening titles), outros, end cards and credits over video. Not for 3D animated titles (run_tool(name='add_animated_title_tool')), word-by-word type (a kinetic title, found with find_tools), speech captions (add_captions_tool), countdowns (run_tool(name='add_timer_tool')) or emoji (run_tool(name='add_emoji_tool')).
+    Create an on-screen title from a template and place it on the timeline, over the video.
 
-    For titles, title cards, lower thirds, end cards, credits and any static
-    text over video. Not for captions of speech (add_captions_tool),
-    countdowns (run_tool(name='add_timer_tool')), emoji (run_tool(name='add_emoji_tool'))
-    or 3D animated titles (run_tool(name='add_animated_title_tool')). Writes a new SVG
+    Writes a new SVG
     title from the template, adds it to Project Files and places it above the
     video (never under it). Unfilled placeholder text (e.g. 'Sub-Title') is
     blanked. No text with a background_color makes a blank colour card
@@ -679,7 +678,8 @@ def _version_path(folder: str, current: str) -> str:
 def edit_title(timeline_clip_id="", file_id="", title_query="", text="", subtitle="", lines=None, font="",
                font_weight="", font_style="", font_scale=1.0, text_color="", background_color="",
                fit_text=True, scope="all_clips"):
-    """Change an existing title's text, font or colours, or duplicate it.
+    """Use for changing the text, font or colours of an existing title, or duplicating it. Not for adding a new title (run_tool(name='add_title_tool')).
+    Change an existing title's text, font or colours, or duplicate it.
 
     With no target, the selected title clip or the project's only title is
     used. Only what you pass changes. One undo step restores the previous

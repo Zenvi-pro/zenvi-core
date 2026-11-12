@@ -54,7 +54,7 @@ def inspect_timeline(
     overview=False,
     **_kw,
 ):
-    """Look at composited timeline frames to check an edit: given frame numbers (0-index) or the watchSuggested window."""
+    """Use for checking the edit as it renders, not source footage (find_tools): composited timeline frames, given frame numbers (0-index) or the watchSuggested window."""
     from classes.agent_tools.inspect_overlay import COORDINATE_GRID_NOTE
     from classes.agent_tools.inspect_render import (
         InspectBusy,

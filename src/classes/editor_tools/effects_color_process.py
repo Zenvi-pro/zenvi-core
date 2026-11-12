@@ -480,7 +480,8 @@ def process_clip_effect(*, effect, timeline_clip_id="", clip_query="", track="",
                         class_filter="", confidence=None, points=None, negative_points=None, boxes=None,
                         mask_quality="", properties=None, interpolation="bezier", if_exists="auto",
                         timeout_seconds=900):
-    """Run an analysis effect (stabilize, track, detect, mask) on a video clip and add the result as an effect.
+    """Use for an analysis effect: stabilize, track, detect or mask a video clip. Not for a grade or a look (color_grade_clip_tool, run_tool(name='apply_look_preset_tool')).
+    Run an analysis effect (stabilize, track, detect, mask) on a video clip and add the result as an effect.
 
     Runs off the GUI thread: seconds to minutes (about real time for
     Stabilizer); changes nothing on failure or timeout; one undo step.

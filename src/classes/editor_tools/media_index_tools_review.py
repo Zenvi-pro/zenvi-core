@@ -196,7 +196,7 @@ def _brief(form: str, target_seconds: Optional[float], vibe: str, wants_music: s
 )
 def review_edit(form="", target_seconds=None, vibe="", wants_music="", wants_captions="", wants_grade="", render_mix=True,
                 measure_colour=True, max_clips_measured=24):
-    """Audit the edit on the timeline right now and say what still needs doing, with numbers.
+    """Use for auditing the timeline edit right now: what still needs doing, with numbers. Not for a finished render (find_tools).
 
     Picture: do the clips match in brightness and warmth after grading, any exposure or HDR problems, is a grade
     applied. Story: length against the target, pacing, how strong the opening shot is, blurry or shaky shots used,
@@ -340,7 +340,7 @@ def survey(files: List[Any], not_indexed: List[str], *, top: int = 8, precise_pl
     read_only=True,
 )
 def get_project_overview(top_moments=8, precise_places=False):
-    """Everything about the project's footage in one call: how much there is and of what kind, when and where it was
+    """Use first for the project's footage as a whole. Not for one moment (find_tools). In one call: how much there is and of what kind, when and where it was
     shot (days and places, from the clips' own tags), the best moments by highlight score, near-duplicate takes, which
     clips have speech, the music files with their energy and sections, the look clusters (dark/cool, bright/warm...),
     orientation mix and what is not indexed yet. Start here before planning a vlog, montage or film: it says what you
@@ -395,7 +395,8 @@ def _no_audio_analysis(f) -> ToolError:
 )
 def analyze_music(file_id="", file_query="", describe=False, bpm_min=None, bpm_max=None, seconds_needed=None, energy="",
                   timeline_clip_id=""):
-    """Understand a music file as an editor would: tempo and beats, loudness, the energy curve, its sections (intro,
+    """Use for understanding a music file: tempo, beats, energy, sections, phrase points, and a fit verdict for your edit (BPM, soundtrack). Not for finding new music (run_tool(name='audition_music_tool')).
+    Understand a music file as an editor would: tempo and beats, loudness, the energy curve, its sections (intro,
     build, peak, break, outro), bars and phrase points (good places to cut or end), and, on request, what it is: genre,
     mood, instruments, vocals, what moments it suits. Pass bpm_min/bpm_max, seconds_needed or energy to get a fit verdict
     for your edit, with the measured reason for each line. Phrase points are where to loop or end the track so it does
@@ -455,7 +456,8 @@ def analyze_music(file_id="", file_query="", describe=False, bpm_min=None, bpm_m
     read_only=True,
 )
 def listen(start=None, end=None, file_id="", form="", vibe=""):
-    """Get a second opinion on how the audio sounds, from a model that listens to the rendered mix (about 6 s and a
+    """Use for a second opinion on how the audio sounds, from a model that listens to the rendered mix for gross faults. Not for fine loudness balance (review_edit_tool).
+    Get a second opinion on how the audio sounds, from a model that listens to the rendered mix (about 6 s and a
     few cents of audio per minute). It reliably catches gross faults: speech buried under music, distortion, noise,
     dead air that looks unintended, jarring jumps at cuts. It is NOT a judge of fine loudness balance: it can call a
     well-balanced mix too loud, so trust review_edit_tool's measured voice-over-music margin and loudness for levels.

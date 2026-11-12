@@ -351,7 +351,7 @@ def _import_and_place(path: str, text: str, start: float, explicit_layer: Option
 )
 def generate_tts_and_add_to_timeline(text, voice="alloy", model="tts-1", speed=1.0, track="",
                                      position_seconds=None, position=None, name=""):
-    """Speak text with AI text-to-speech and place it on the timeline as a narration / voiceover clip.
+    """Speak text with AI text-to-speech (read aloud, voice-over, speech) and place it on the timeline as a narration / voiceover clip.
 
     Use for "add a voiceover saying ...", "narrate this intro", "read this script over the
     video". The audio is imported into Project Files (probed, with its transcript) and placed

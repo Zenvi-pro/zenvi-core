@@ -282,7 +282,7 @@ def _name_clash(name: str, exclude_layer: Optional[int] = None) -> str:
     covers=("track.add",),
 )
 def add_track(position="top", relative_to="", name="", count=1):
-    """Add an empty track (a timeline lane) for music, voiceover, B-roll, titles or overlays.
+    """Use for adding an empty track (a timeline lane) for music, voiceover, B-roll, titles or overlays. Not for a colour background or colour card (run_tool(name='add_title_tool'), Solid_Color).
 
     Works with nothing selected. Tracks higher in the stack cover the ones below
     them in the video. position: 'top' (default: above every track, like the
@@ -774,7 +774,8 @@ def _transport_summary(action: str, state: dict, changed: bool) -> str:
     covers=("playback.transport",),
 )
 def play(action="toggle", speed=None, frames=1):
-    """Control preview playback: play, pause, stop, fast-forward, rewind, play at a speed, or step frames.
+    """Use for controlling preview playback: play, pause, stop, speed, step frames. Not for jumping to a time or marker (run_tool(name='seek_playhead_tool')).
+    Control preview playback: play, pause, stop, fast-forward, rewind, play at a speed, or step frames.
 
     Always pass action: 'play' plays from the playhead at normal speed (does
     nothing if it already is), 'pause' pauses, 'toggle' flips it like the
@@ -956,7 +957,8 @@ def _start_play_here() -> dict:
     covers=("playback.seek", "marker.navigate"),
 )
 def seek_playhead(seconds=None, frame=None, marker="", to="", track="", play=False):
-    """Move the playhead (go to a time, frame, marker, the start/end, or the next/previous marker or cut).
+    """Use for moving the playhead to a time, frame, marker or edit; play=true starts playback from there. Not for transport controls (run_tool(name='play_tool')).
+    Move the playhead (go to a time, frame, marker, the start/end, or the next/previous marker or cut).
 
     Give exactly one of: seconds (timeline seconds: "go to 1:05" -> 65), frame,
     marker (a name like 'Drop' or a marker_id), or to = 'start' | 'end' |
@@ -1439,7 +1441,8 @@ def select_timeline_items(mode="replace", timeline_clip_ids=None, transition_ids
     covers=("selection.select", "playback.seek"),
 )
 def get_playhead_and_selection():
-    """Read what the editor is showing right now: the playhead, playback, the selection and the timeline view.
+    """Use for reading the playhead, playback, selection and view (read-only). Not for changing them (run_tool(name='seek_playhead_tool')).
+    Read what the editor is showing right now: the playhead, playback, the selection and the timeline view.
 
     Returns the playhead (frame, seconds, timecode as on the ruler), whether
     the preview is playing and at what speed, the selected clips /

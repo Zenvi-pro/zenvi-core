@@ -122,12 +122,12 @@ def test_new_project_discard_and_unknown_profile_is_refused_before_anything(edit
 
 # --- open -----------------------------------------------------------------
 
-def test_open_project_validates_before_touching_anything(editor, tmp_path):
+def test_open_project_validates_before_touching_anything(editor, settings, tmp_path):
     assert "not found" in editor.call("open_project_tool", file_path=str(tmp_path / "nope.zvn"))
     media = tmp_path / "clip.mp4"
     media.write_bytes(b"x")
     assert "not a project file" in editor.call("open_project_tool", file_path=str(media))
-    assert "give file_path" in editor.call("open_project_tool")
+    assert _receipt(editor.call("open_project_tool"))["projects"] == []  # no file given: the recent list
     editor.window.open_project.assert_not_called()
 
 
@@ -204,7 +204,7 @@ def test_recent_projects_list_and_forget(editor, settings, tmp_path):
     kept.write_text("{}")
     gone = str(tmp_path / "gone.zvn")
     settings.values["recent_projects"] = [gone, str(kept)]
-    data = _receipt(editor.call("list_recent_projects_tool"))
+    data = _receipt(editor.call("open_project_tool"))
     assert [p["name"] for p in data["projects"]] == ["kept", "gone"]
     assert [p["exists"] for p in data["projects"]] == [True, False]
 

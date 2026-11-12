@@ -126,11 +126,11 @@ def test_no_answer_in_time_counts_as_no(project, fake_helper, tmp_path):
 
 
 def test_the_linked_clip_tools_keep_running_without_a_question(linked, project, fake_helper, asked):  # noqa: F811
-    """rerender_linked_clip_tool & co run on the tool's own thread: documented behaviour, no prompt."""
+    """update_linked_clip_tool & co run on the tool's own thread: documented behaviour, no prompt."""
     lm.register_provider(provider.RemotionProvider())
     path, completed = lm.render_link(provider.make_link(project, "Scene"))
     receipt = lm.add_linked_media(path, {k: v for k, v in completed.items() if k != "warnings"}, position=0.0)
-    out = linked.call("rerender_linked_clip_tool", file_id=receipt["file_id"])
+    out = linked.call("update_linked_clip_tool", file_id=receipt["file_id"])
     assert not out.startswith("Error"), out
     assert asked.calls == [] and fake_helper.commands().count("render") == 2
 

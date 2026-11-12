@@ -59,7 +59,8 @@ def _technical(f, shelf) -> Dict[str, Any]:
     read_only=True,
 )
 def check_media_health(file_ids=None, file_query="", only_problems=True):
-    """Find what about the project's footage will cause trouble before editing: a variable frame rate (typical of
+    """Use for footage problems before editing: variable frame rate, interlacing, HDR, wrong size. Not for missing files (list_project_files_tool, missing_only).
+    Find what about the project's footage will cause trouble before editing: a variable frame rate (typical of
     phone clips: audio and picture drift apart), interlaced or HDR footage, clips whose frame rate does not fit the
     project, clips too small or in the wrong orientation for it, and heavy files that will play back slowly. Each
     issue says how serious it is and what to do about it. Reads the file's technical facts (kept with the index, or a
@@ -211,7 +212,8 @@ def _speech_layer(shelf, sha: str) -> Dict[str, Any]:
     read_only=True,
 )
 def get_voice_edges(start_seconds, end_seconds, file_ids=None, file_query=""):
-    """Find the exact instants a voice starts and stops in a stretch of a file, to cut right where it stops. Word times from
+    """Use for the exact instants a voice starts and stops in a file, to cut on them. Not for transcript words (get_transcript_tool) or speech windows already on the timeline (run_tool(name='analyze_timeline_audio_tool')).
+    Find the exact instants a voice starts and stops in a stretch of a file, to cut right where it stops. Word times from
     transcription are only good to a few tenths of a second; this reads the sound itself and returns when the voice first rises
     above the room's noise and when it last falls back, the pauses inside it, how far the transcript's timing was off, and how
     sure it is (the contrast between the voice and the noise). Cut a little after the end it gives, not on it, so the last
@@ -277,7 +279,8 @@ def _level_fn(fi):
     read_only=True,
 )
 def find_retakes(file_ids=None, file_query="", min_similarity=0.75):
-    """Find lines that were said more than once (retakes and false starts) in the transcripts of the project's files, so the best
+    """Use for finding lines said more than once (retakes, false starts) and ranking the takes. Not for filler words alone (run_tool(name='remove_words_tool')).
+    Find lines that were said more than once (retakes and false starts) in the transcripts of the project's files, so the best
     take can be chosen and the others cut. Each group lists the takes in order with what can be measured about each: filler
     words (um, uh), whether it finished its sentence, how fast it was said, its level, and the pause after it; and which take
     looks best and why (the one with the fewest fillers that finished its sentence, the later on a tie). That is a starting point:
@@ -334,7 +337,8 @@ def _refined(f, shelf, sha: str, probe: Dict[str, Any], near: float, radius: flo
     read_only=True,
 )
 def refine_cut(file_ids=None, file_query="", near_seconds=None, shot_id=None, radius_seconds=0.5):
-    """Find the exact frame of a cut. The index finds boundaries to about a tenth of a second; this decodes the stretch around
+    """Use for the exact frame of a cut the index located to about a tenth of a second. Not for finding moments (search_footage_tool).
+    Find the exact frame of a cut. The index finds boundaries to about a tenth of a second; this decodes the stretch around
     one at every frame (with each frame's real timestamp, so variable frame rate is safe) and returns the first frame of the
     new shot for a hard cut, or the whole span and centre of a dissolve or a fade through black. A flash is not a cut and
     comes back as none. It tells you how far the hint was off. Run it only for the cut you are about to make: it is computed on
@@ -465,7 +469,8 @@ def _window_of(source_aspect: float, frame_aspect: float):
     read_only=True,
 )
 def get_framing(start_seconds, end_seconds, file_ids=None, file_query="", aspect="project", person=""):
-    """Find where the subject of a shot is, and where a crop window of another shape (a vertical 9:16 from landscape footage,
+    """Use for where a shot's subject is and where a crop window of another shape should sit over time. Not for applying the crop (run_tool(name='reframe_to_subject_tool')).
+    Find where the subject of a shot is, and where a crop window of another shape (a vertical 9:16 from landscape footage,
     say) should sit to keep it in shot. It reads a few frames, finds the part of the picture that draws the eye, and returns
     the window's position over time, whether the subject moves, and a confidence. It is an attention heuristic, not an
     understanding of the picture: a small subject against bright clutter can be missed, and when confidence is low it says so
@@ -518,7 +523,8 @@ def get_framing(start_seconds, end_seconds, file_ids=None, file_query="", aspect
     }),
 )
 def reframe_to_subject(timeline_clip_ids=None, aspect="project", dry_run=False, person=""):
-    """Fill the frame with footage of another shape (landscape clips in a vertical project, say) and keep the subject in shot,
+    """Use for filling the frame with footage of another shape and keeping the subject in shot, on each picture clip. Not for reading the crop window (run_tool(name='get_framing_tool')).
+    Fill the frame with footage of another shape (landscape clips in a vertical project, say) and keep the subject in shot,
     instead of cutting people in half with a centre crop. For each full-frame picture clip it sets crop-to-fill and positions
     the picture on the subject (a fixed position, or keyframes across the clip when the subject moves), all in one undo step.
     Clips moved or resized as picture-in-picture, titles, and clips on locked tracks are left alone, and every clip reports
@@ -603,7 +609,8 @@ def reframe_to_subject(timeline_clip_ids=None, aspect="project", dry_run=False, 
     read_only=True,
 )
 def get_edit_style(file_ids=None, file_query="", compare_to_timeline=True):
-    """Read the style of a finished video in numbers, so "make it like this" has something to match: how fast it cuts (shot
+    """Use for reading the style of a finished video in numbers, so 'make it like this' has something to match. Not for a library style (find with find_tools).
+    Read the style of a finished video in numbers, so "make it like this" has something to match: how fast it cuts (shot
     lengths, cuts a minute, whether it speeds up), how it changes shots (hard cuts, dissolves, fades), how much of it is
     still, panning or handheld, how many cuts land on the beat, how much is speech and how fast it is spoken, how loud it is,
     its look, and how much text is on screen. With compare_to_timeline it measures the timeline being built the same way and
@@ -648,7 +655,8 @@ def get_edit_style(file_ids=None, file_query="", compare_to_timeline=True):
     read_only=True,
 )
 def view_frames(start_seconds, end_seconds, file_ids=None, file_query="", per_second=None, count=None, every_frame=False, tile_width=320):
-    """Look at a range of a video as one picture of frames, each stamped with the exact file time and frame number it shows, so
+    """Use for looking at a range of a source video as a picture of stamped frames, so a cut can be chosen exactly. Not for a timeline range as rendered (inspect_timeline_tool).
+    Look at a range of a video as one picture of frames, each stamped with the exact file time and frame number it shows, so
     what you see can be cut exactly. Two zoom levels: a wide range at about a frame a second to find a moment, then a second or
     two at 5 to 10 a second (or every_frame) to choose the cut. At most 48 tiles; the picture comes back as image_path (open
     it to look). Tiles are 320 px wide by default: small things like a logo or a screen need that much. Measured from the
@@ -743,7 +751,7 @@ def _frames_pack(f, start_seconds, end_seconds, per_second=None, count=None, eve
     read_only=True,
 )
 def storyboard(file_ids=None, file_query="", start_seconds=0, detail="full", pictures=True, look=False, describe=True, tile_width=320):
-    """Understand or recreate a video in ONE call: every shot with its exact start and end, camera move, shot type and (when the picture
+    """Use first for 'describe this video'. Not for new words (find_tools). In ONE call: every shot with its exact start and end, camera move, shot type and (when the picture
     layer was built) what happens, plus one stamped keyframe per shot. Cuts are measured at 10 frames a second (about 0.1 s); run_tool(name="refine_cut_tool")
     gives the exact frame. This is the first call for "describe
     this video", "what happens scene by scene" or "recreate this". Never sample frames at a fixed interval to find cuts. Use detail=list
@@ -972,7 +980,8 @@ def _timeline_use(clip, clips, tracks, transitions, opacity, links) -> Dict[str,
     read_only=True,
 )
 def get_moment(start_seconds, end_seconds, file_ids=None, file_query="", frames=8, tile_width=320, audio_picture=False):
-    """Everything known about ONE range of ONE file, in one call, sized to read at once: frames of it as a stamped picture, the
+    """Use for judging one range (at most 60 s) of one file before cutting it: frames, shots, words, measured quality and where it is used on the timeline. Not for a survey of the library (search_footage_tool, get_project_overview_tool).
+    Everything known about ONE range of ONE file, in one call, sized to read at once: frames of it as a stamped picture, the
     shots in it with their description, measured quality and look, the words spoken, notes on what happens, a spectrogram only
     when it helps (a music section edge the numbers are unsure of) or when you ask, and where this footage is used on the
     timeline with what is above, below and around it there. Use it when you have found a moment (from search) and want to

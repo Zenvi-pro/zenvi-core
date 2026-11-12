@@ -161,7 +161,7 @@ def test_send_reports_a_host_refusal_with_the_xml_path(ppro, tmp_path):
     assert _failed(r) and "no project is open" in r["summary"] and ".xml" in r["summary"]
 
 
-# --- import_timeline_xml_tool ------------------------------------------------------------------------------------
+# --- import_project_file_tool------------------------------------------------------------------------------------
 
 @pytest.fixture
 def speed_xml(ppro, tmp_path, monkeypatch):
@@ -177,7 +177,7 @@ def speed_xml(ppro, tmp_path, monkeypatch):
 
 def test_import_tool_is_one_undo_step(ppro, speed_xml):
     ppro.mark()
-    r = ppro.call_receipt("import_timeline_xml_tool", path=speed_xml)
+    r = ppro.call_receipt("import_project_file_tool", file_path=speed_xml)
     assert r["status"] == "applied" and r["undoSteps"] == 1, r["summary"]
     data = r["data"]
     assert len(data["timeline_clip_ids"]) == 3 and len(data["layers"]) == 1 and data["missing_media"] == []
@@ -192,7 +192,7 @@ def test_import_lands_as_one_preview_batch(ppro, speed_xml, monkeypatch):
     from classes.importers import final_cut_pro as imp
     emit = ppro.window.IgnoreUpdates.emit
     emit.reset_mock()
-    r = ppro.call_receipt("import_timeline_xml_tool", path=speed_xml)
+    r = ppro.call_receipt("import_project_file_tool", file_path=speed_xml)
     assert r["status"] == "applied" and len(r["data"]["timeline_clip_ids"]) == 3, r["summary"]
     assert [c.args for c in emit.call_args_list] == [(True, False), (False, False)]
     emit.reset_mock()                                    # a commit that fails still ends the batch
@@ -208,7 +208,7 @@ def test_import_lands_as_one_preview_batch(ppro, speed_xml, monkeypatch):
 
 def test_import_tool_at_playhead(ppro, speed_xml):
     ppro.window.preview_thread.player.Position.return_value = 301      # 10 s at 30 fps
-    r = ppro.call_receipt("import_timeline_xml_tool", path=speed_xml, placement="at_playhead")
+    r = ppro.call_receipt("import_project_file_tool", file_path=speed_xml, placement="at_playhead")
     assert r["status"] == "applied" and r["data"]["offset"] == pytest.approx(10.0)
     first = min(float(c["position"]) for c in ppro.clips() if c["id"] in r["data"]["timeline_clip_ids"])
     assert first == pytest.approx(10.0)
@@ -221,28 +221,28 @@ def test_import_tool_picks_a_sequence_by_name(ppro, speed_xml, tmp_path):
     two = tmp_path / "Two.xml"
     two.write_text(text.split("<xmeml version=\"4\">", 1)[0] + "<xmeml version=\"4\"><project><children>"
                    + body + second + "</children></project></xmeml>")
-    r = ppro.call_receipt("import_timeline_xml_tool", path=str(two))
+    r = ppro.call_receipt("import_project_file_tool", file_path=str(two))
     assert r["status"] == "applied" and r["data"]["sequence_name"] == "Speeds", r["summary"]
     assert any("Director's cut" in w for w in r["data"]["warnings"])
-    r = ppro.call_receipt("import_timeline_xml_tool", path=str(two), sequence="director's cut")
+    r = ppro.call_receipt("import_project_file_tool", file_path=str(two), sequence="director's cut")
     assert r["status"] == "applied" and r["data"]["sequence_name"] == "Director's cut", r["summary"]
-    r = ppro.call_receipt("import_timeline_xml_tool", path=str(two), sequence="Nope")
+    r = ppro.call_receipt("import_project_file_tool", file_path=str(two), sequence="Nope")
     assert _failed(r) and "no sequence named 'Nope'" in r["summary"]
 
 
 def test_import_tool_refusals_leave_history_alone(ppro, tmp_path):
     ppro.mark()
-    r = ppro.call_receipt("import_timeline_xml_tool", path=str(tmp_path / "nope.xml"))
-    assert _failed(r) and "no XML file" in r["summary"]
+    r = ppro.call_receipt("import_project_file_tool", file_path=str(tmp_path / "nope.xml"))
+    assert _failed(r) and "file not found" in r["summary"]
     junk = tmp_path / "junk.xml"
     junk.write_text("<fcpxml version='1.9'/>")
-    r = ppro.call_receipt("import_timeline_xml_tool", path=str(junk))
+    r = ppro.call_receipt("import_project_file_tool", file_path=str(junk))
     assert _failed(r) and "not a Final Cut Pro 7" in r["summary"]
     lost = tmp_path / "lost.xml"
     lost.write_text((FIXTURES / "premiere_speed.xml").read_text().replace("/media/speed/", "/nowhere/at/all/"))
-    r = ppro.call_receipt("import_timeline_xml_tool", path=str(lost))
+    r = ppro.call_receipt("import_project_file_tool", file_path=str(lost))
     assert _failed(r) and "missing media clip.mp4" in r["summary"]
-    r = ppro.call_receipt("import_timeline_xml_tool", path=str(junk), placement="sideways")
+    r = ppro.call_receipt("import_project_file_tool", file_path=str(junk), placement="sideways")
     assert r["status"] in ("error", "refused") and "must be one of" in r["summary"]
     assert ppro.undo_steps_since_mark() == 0
 

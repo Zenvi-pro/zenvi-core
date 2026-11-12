@@ -11,8 +11,8 @@ next to the desktop's own (chat, MCP, the editor-tool manifest), except:
   and the CLI's UI, player, storage and exporter tools.
 
 Linked clips the engine renders (Zenvi Motion blocks, Zenvi 3D scenes, Zenvi
-FX) get ``get_linked_clip_tool`` / ``rerender_linked_clip_tool`` from
-``engine_links`` when the desktop has no linked-clip tools of its own.
+FX) get ``get_linked_clip_tool`` from ``engine_links`` when the desktop has
+no linked-clip tools of its own; ``update_linked_clip_tool`` re-renders them.
 
 The catalog is read off the GUI thread at start-up (``register_in_background``);
 the MCP server lists tools as they arrive. A call runs like this:
@@ -63,7 +63,7 @@ NATIVE_TWINS = {
     "split_clip_tool": "slice_clips_tool",
     "set_clip_property_tool": "set_clip_properties_tool",
     "set_effect_property_tool": "update_effect_tool",
-    "add_transition_tool": "apply_transition_tool",
+    "add_transition_tool": "add_transitions_between_clips_tool",
     "probe_media_tool": "view_frames_tool",
 }
 SURFACE_NOTE = "Runs in the Zenvi engine (engine bridge)."

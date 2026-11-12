@@ -23,7 +23,7 @@ plug-in registry) is described in [handoff.md](handoff.md). The panel and its `p
    Premiere: File > Export > Final Cut Pro XML, or the panel's Send to Zenvi (premiere_export_xml)
    File > Import Project > Premiere Pro XML...         ┐
    File > Import Project > Import XML (Final Cut Pro)  ├─► importers/final_cut_pro.py ─► new tracks, ONE undo step
-   import_timeline_xml_tool                            ┘
+   import_project_file_tool                            ┘
 ```
 
 ## Zenvi → Premiere
@@ -138,7 +138,7 @@ In Zenvi, use **File > Import Project > Premiere Pro XML...** (or *Import XML (F
 | A sequence of another size or frame rate | Scaled to fit and snapped to the project's frames (reported) |
 | Generators (Premiere titles, colour mattes, bars), clip markers, effects Zenvi lacks | Left out and listed in the report |
 | Image sequences (Premiere links them by their first frame, `shot.0001.png`) | A single still frame, listed in the report: import the sequence into Zenvi and replace the clip |
-| An XML with several sequences (an FCP7 project) | The first top-level sequence; the report names the others (`import_timeline_xml_tool` takes `sequence`) |
+| An XML with several sequences (an FCP7 project) | The first top-level sequence; the report names the others (`import_project_file_tool` takes `sequence`) |
 | Old Zenvi / OpenShot XML exports | Their per-keyframe holds and eases, keyframes written straight under `<effect>`, pixel centres, 1-based keyframe times and `@assets` paths are read as before |
 
 ## Editor tools
@@ -147,11 +147,11 @@ In Zenvi, use **File > Import Project > Premiere Pro XML...** (or *Import XML (F
 | --- | --- | --- |
 | `export_to_premiere_tool` | `output_path` (default `<project> (Premiere).xml`, a free name), `collect_media` (false), `overwrite` (false) | Writes the XML (and title stills); returns `path`, `media_dir`, `titles`, `copied_media`, `warnings`, `counts`. Refuses an existing file unless `overwrite`. No undo step |
 | `send_to_premiere_tool` | — | Export + `premiere_import_xml` in the connected Premiere. Returns `sequence_name`, `sequences`, `offline`, `warnings`, `xml`. Refused, with how to connect, when Premiere is not connected |
-| `import_timeline_xml_tool` | `path`, `placement` (`new_tracks` / `at_playhead`), `sequence` (name; default the first top-level one) | One undo step. Returns `timeline_clip_ids`, `layers`, `transition_ids`, `marker_ids`, `file_ids`, `missing_media`, `warnings`, `offset`. Missing media is skipped and listed (no dialog); refused when nothing can be imported |
+| `import_project_file_tool` | `file_path`, `placement` (`new_tracks` / `at_playhead`), `sequence` (name; default the first top-level one) | One undo step. Returns `timeline_clip_ids`, `layers`, `transition_ids`, `marker_ids`, `file_ids`, `missing_media`, `warnings`, `offset`. Missing media is skipped and listed (no dialog); refused when nothing can be imported |
 
 Coverage ids: `handoff.premiere_export`, `handoff.premiere_send`, `handoff.timeline_xml_import`.
 `import_project_file_tool` (format `fcpxml`) and `export_project_file_tool` use the same importer and exporter
-(the import reads and probes off the GUI thread and commits on it, like `import_timeline_xml_tool`).
+(the import reads and probes off the GUI thread and commits on it).
 
 ### Other editors
 

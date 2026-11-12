@@ -48,7 +48,7 @@ def remove_silence(
     max_remove_fraction=0.85,
     **_kw,
 ):
-    """Remove silent pauses: quiet non-speech gaps inside a clip, closed (one undo)."""
+    """Use for removing quiet non-speech gaps (silent pauses, dead air) inside one clip, closing them (one undo). Not for filler words (run_tool(name='remove_words_tool'))."""
     from classes.agent_tools.receipt import ToolReceipt
     from classes.agent_tools.transcript import (
         _first_nonempty,
@@ -189,7 +189,7 @@ def export_captions(
     language: str = "auto",
     **_kw,
 ):
-    """Export timeline (or clip) dialogue as SRT/VTT."""
+    """Use for subtitles: exporting the timeline's (or one clip's) dialogue as an SRT or VTT file. Not for captions drawn on the picture (add_captions_tool)."""
     from classes.agent_tools.receipt import ToolReceipt, parse_receipt
     from classes.agent_tools.transcript import _first_nonempty, get_transcript
     from classes.speech.captions import cues_to_srt, cues_to_vtt, phrase_words
@@ -253,7 +253,7 @@ def diarize_media(
     model_id: str = "",
     **_kw,
 ):
-    """Attach speakerIds to cached transcript words for a file/clip."""
+    """Use for labelling who speaks when, after get_transcript_tool: it attaches speakerIds to the cached transcript words of a file or clip. Not for the words themselves (get_transcript_tool)."""
     from classes.agent_tools.receipt import ToolReceipt
     from classes.agent_tools.transcript import _first_nonempty
     from classes.speech.asr import transcribe_file

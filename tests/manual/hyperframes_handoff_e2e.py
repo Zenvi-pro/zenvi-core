@@ -393,7 +393,7 @@ def part_import(work, project_dir):
             fh.write(text.replace('"default":"#FF5A36"', '"default":"#2F6BFF"'))
         state = lm.check_link(editor.file(fid)).state
         t0 = time.time()
-        rr = editor.call_receipt("rerender_linked_clip_tool", file_id=fid)
+        rr = editor.call_receipt("update_linked_clip_tool", file_id=fid)
         link_now = lm.read_link(editor.file(fid))
         result["html_edit"] = {"state_after_edit": state, "status": rr["status"], "seconds": round(time.time() - t0, 1),
                                "stored_props": lm.link_props(link_now),
