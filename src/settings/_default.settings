@@ -1743,6 +1743,51 @@
   },
   {
     "category": "AI",
+    "title": "Lip Sync With",
+    "setting": "lip-sync-engine",
+    "value": "auto",
+    "type": "dropdown",
+    "values": [
+      {"value": "auto", "name": "Automatic (Grok; this computer for your own recording or when credits run out)"},
+      {"value": "cloud", "name": "Grok (cloud credits)"},
+      {"value": "local", "name": "This computer (edtalk, downloads once)"}
+    ],
+    "restart": false
+  },
+  {
+    "category": "AI",
+    "title": "Face Swap With",
+    "setting": "face-swap-engine",
+    "value": "auto",
+    "type": "dropdown",
+    "values": [
+      {"value": "auto", "name": "Automatic (this computer for clips with speech; Grok for silent clips)"},
+      {"value": "cloud", "name": "Grok (cloud credits; also downloads the face models once)"},
+      {"value": "local", "name": "This computer (hyperswap)"}
+    ],
+    "restart": false
+  },
+  {
+    "category": "AI",
+    "title": "Speech (TTS) With",
+    "setting": "tts-engine",
+    "value": "local",
+    "type": "dropdown",
+    "values": [
+      {"value": "local", "name": "This computer (Ming, downloads about 3 GB once)"},
+      {"value": "cloud", "name": "Cloud (credits)"}
+    ],
+    "restart": false
+  },
+  {
+    "value": "",
+    "title": "",
+    "type": "hidden",
+    "category": "AI",
+    "setting": "dubbing-backend-picks"
+  },
+  {
+    "category": "AI",
     "title": "Chat Dictation (mic button)",
     "setting": "dictation-engine",
     "value": "auto",
