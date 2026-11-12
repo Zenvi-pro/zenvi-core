@@ -556,7 +556,7 @@ def describe_file_shots(f, fi, shot_ids):
     read_only=True,
 )
 def describe_shots(file_id="", shot_ids=None, start_seconds=None, end_seconds=None):
-    """Use for writing words for chosen shots (shot_ids or a time range of one file) that you are about to reason about. Not for reading the storyboard (storyboard_tool) or a whole long file without approval.
+    """Use for writing words for chosen shots (shot_ids or a time range of one file) that you are about to reason about. Not for reading the storyboard (the shot list with its pictures) or a whole long file without approval.
     Words for shots: what happens, actions, objects, text on screen, sounds, mood, shot type, how interesting and
     usable each is. Made on this computer by default (free, no sign-in, but slow on a laptop: several times the footage's length), or
     by Gemini when Preferences > Index Footage With picks it (uses credits and needs sign-in). Search does NOT need this
