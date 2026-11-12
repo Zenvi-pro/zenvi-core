@@ -123,8 +123,9 @@ def _place(clip, res: dict, start: float, end: float, what: str, source_label: s
     if f and os.path.abspath(f.absolute_path() or "") != os.path.abspath(res["out"]):
         with contextlib.suppress(OSError):
             os.remove(res["out"])                     # the import made its own copy in the media folder
-    if not f:
-        raise ToolError("the result could not be imported (%s)" % (err or "unknown error"))
+    if not f:      # the result is kept: it is the only copy of work that may already have cost credits
+        raise ToolError("the result could not be imported (%s); it is saved at %s"
+                        % (err or "unknown error", res["out"]))
     th()._stamp_generated_video_metadata(f, what, source=source_label)
     try:
         placed = on_main(lambda: th()._install_baked_head(clip.id, f.id, end - start, res["seconds"]))

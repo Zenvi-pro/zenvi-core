@@ -208,3 +208,10 @@ def test_a_clip_trimmed_while_the_job_ran_is_not_overwritten(editor, studio, mon
     out = editor.call(LIP, clip_id=clip, text="Hello there.", consent_confirmed=True)
     assert out.startswith("Error") and "changed" in out
     assert editor.clip(clip)["end"] == 3.0 and editor.undo_steps_since_mark() == 1   # only the person's trim
+
+
+def test_a_failed_import_keeps_the_result_and_says_where_it_is(editor, studio, monkeypatch):
+    monkeypatch.setattr(tool_handlers, "_import_generated_video", lambda video_path, **kw: (None, "disk full"))
+    out = editor.call(LIP, clip_id=_clip(editor), text="Hello there.", consent_confirmed=True)
+    kept = studio["lip"][0]["out"]
+    assert out.startswith("Error") and "disk full" in out and kept in out and os.path.exists(kept)
