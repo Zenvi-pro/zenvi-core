@@ -673,7 +673,7 @@ def list_comfyui_jobs(job_id="", active_only=False, wait_seconds=0):
 
     Use after run_tool(name='create_media_with_comfyui_tool') / run_tool(name='enhance_file_with_comfyui_tool') to wait for a
     result (job_id + wait_seconds) and get imported_file_ids to place with
-    run_tool(name='add_clip_to_timeline_tool'), or to answer "is my generation done?". Jobs live for this
+    add_clips_to_timeline_tool, or to answer "is my generation done?". Jobs live for this
     editor session only. A failed job's error says why (e.g. a missing ComfyUI node/model).
     """
     wanted = str(job_id or "").strip()

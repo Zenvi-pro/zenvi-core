@@ -403,7 +403,7 @@ AUDIO_PRESETS = {
 )
 def apply_audio_effect(*, preset, timeline_clip_id="", clip_query="", track="", timeline_clip_ids=None, scope="",
                        properties=None):
-    """Use for named audio character effects on clips' sound: echo, phone, robot, whisper, noise gate, delay the audio, plus reverb and equalizer. Not for compression or EQ on a track or stem (find with find_tools) or for volume and ducking (run_tool(name='set_clip_volume_tool'), run_tool(name='duck_under_speech_tool')).
+    """Use for a named audio effect on clips' sound: compressor, EQ (low cut, bass or treble boost, voice presence), echo, phone, robot, whisper, noise gate, distortion, audio delay. Not for volume and ducking (run_tool(name='set_clip_volume_tool'), run_tool(name='duck_under_speech_tool')).
     Put an audio effect on clips' sound with sensible settings: "add a compressor to the voice", "add
     echo", "remove the low rumble", "boost the bass", "make it sound like a phone call", "robot voice",
     "whisper effect", "noise gate", "delay the audio 100 ms to fix sync". A clip that already has the

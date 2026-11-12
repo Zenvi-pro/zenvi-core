@@ -810,8 +810,8 @@ def add_transitions_between_clips(track="", timeline_clip_ids=None, transition="
             if chosen_ids is not None and c.id not in chosen_ids:
                 continue
             c_len = end[c.id] - start[c.id]
-            d = max(frame, round(min(length, c_len) * fps) / fps)
-            at = pos[c.id] if placement == "start" else pos[c.id] + c_len - d
+            d = max(frame, int(min(length, c_len) * fps + 1e-9) / fps)  # whole frames, never past the clip
+            at = pos[c.id] if placement == "start" else int((pos[c.id] + c_len) * fps + 1e-9) / fps - d
             on_edge = [t for t in existing if tpos[t.id] < at + d + frame
                        and tpos[t.id] + _span(t.data)[1] - _span(t.data)[0] > at - frame]
             if c_len < 2 * frame:

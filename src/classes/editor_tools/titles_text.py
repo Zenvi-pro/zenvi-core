@@ -670,7 +670,7 @@ def _version_path(folder: str, current: str) -> str:
         "scope": enum(["all_clips", "this_clip", "duplicate"],
                       "all_clips = every clip using the title (Edit Title); this_clip = only timeline_clip_id, "
                       "as its own copy; duplicate = save the edit as a new Project Files title, no clip changes "
-                      "(place it with add_clip_to_timeline_tool).", "all_clips"),
+                      "(place it with add_clips_to_timeline_tool).", "all_clips"),
     }),
     background_safe=True,
     covers=("title.edit",),

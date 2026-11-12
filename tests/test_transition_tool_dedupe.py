@@ -106,6 +106,19 @@ def test_reverse_transition_tool_is_retired():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("placement", ["start", "end"])
+def test_an_edge_fade_on_a_short_clip_stays_inside_the_clip(tl, placement):
+    """Review: rounding 0.12 s up to 4 frames at 30 fps ran the fade past the clip into its neighbour."""
+    f = tl.add_file("video", duration=30.0)
+    c = tl.add_clip(f, position=2.0, layer=L1, end=0.12)
+    receipt = tl.call_receipt("add_transitions_between_clips_tool", timeline_clip_ids=[c], placement=placement,
+                              transition="fade", duration_seconds=1.0)
+    assert receipt["status"] == "applied", receipt
+    (added,) = _added_on(tl, L1)
+    length = added["end"] - added["start"]
+    assert added["position"] >= 2.0 - 1e-9 and added["position"] + length <= 2.12 + 1e-9
+
+
+@pytest.mark.parametrize("placement", ["start", "end"])
 def test_add_transitions_places_an_edge_fade_like_apply_transition(tl, openshot, placement):
     f = tl.add_file("video", duration=30.0)
     old = tl.add_clip(f, position=2.0, layer=L1, end=5.0)
