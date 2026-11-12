@@ -482,14 +482,15 @@ def list_comfyui_templates(file_id="", media_type=""):
     covers=("ai.comfyui_create",),
 )
 def create_media_with_comfyui(prompt, kind="", template="", name="", reference_image_file_id=""):
-    """Generate a new image, video clip, sound effect or music track with the local ComfyUI server (AI Tools > Create with AI).
+    """Use for generating an image, video, sound effect or music track (lofi, soundtrack, background music) with the local ComfyUI server; the result lands in Project Files and is not placed. Not for cloud text-to-image or text-to-video (image_gen, video_gen).
+    Generate a new image, video clip, sound effect or music track with the local ComfyUI server (AI Tools > Create with AI).
 
     Use only when the user wants local/ComfyUI generation and run_tool(name='list_comfyui_templates_tool')
     reports comfyui.status=ready; when ComfyUI is not configured this refuses with how to set
-    it up (cloud video generation is run_tool(name='generate_video_and_add_to_timeline_tool')). Queues a job
+    it up (cloud video generation is video_gen). Queues a job
     and returns its job_id at once; the result lands in Project Files when it finishes -- wait
     with run_tool(name='list_comfyui_jobs_tool', args={'job_id': ..., 'wait_seconds': 120}), then place it with
-    run_tool(name='add_clip_to_timeline_tool'). Nothing changes on the timeline and there is no undo step.
+    add_clips_to_timeline_tool. Nothing changes on the timeline and there is no undo step.
     Example: {"kind": "image", "prompt": "misty pine forest at dawn, cinematic"}.
     """
     prompt = str(prompt or "").strip()
@@ -569,7 +570,8 @@ def enhance_file_with_comfyui(file_id, action="", template="", prompt="", name="
                               auto_detect=False, seed_frame=1, highlight_color=DEFAULT_HIGHLIGHT_COLOR,
                               highlight_opacity=0.28, border_color=DEFAULT_BORDER_COLOR, border_width=2,
                               mask_brightness=1.15, background_brightness=0.75):
-    """Process a Project Files image, video or audio file with a local ComfyUI template (Project Files > Enhance with AI).
+    """Use for processing a Project Files image, video or audio file with a local ComfyUI template (blur, highlight or mask an object). Not for generating new media (run_tool(name='create_media_with_comfyui_tool')).
+    Process a Project Files image, video or audio file with a local ComfyUI template (Project Files > Enhance with AI).
 
     Needs comfyui.status=ready (run_tool(name='list_comfyui_templates_tool')); otherwise refuses
     with setup steps. Queues a job and returns its job_id at once; the output
@@ -671,7 +673,7 @@ def list_comfyui_jobs(job_id="", active_only=False, wait_seconds=0):
 
     Use after run_tool(name='create_media_with_comfyui_tool') / run_tool(name='enhance_file_with_comfyui_tool') to wait for a
     result (job_id + wait_seconds) and get imported_file_ids to place with
-    run_tool(name='add_clip_to_timeline_tool'), or to answer "is my generation done?". Jobs live for this
+    add_clips_to_timeline_tool, or to answer "is my generation done?". Jobs live for this
     editor session only. A failed job's error says why (e.g. a missing ComfyUI node/model).
     """
     wanted = str(job_id or "").strip()

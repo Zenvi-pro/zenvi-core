@@ -124,7 +124,7 @@ def _status_line(st: dict) -> str:
     covers=("ai.hyperframes",),
 )
 def hyperframes_setup(install=False, captions=False, accurate_speech=False):
-    """Check, and with install=true install, HyperFrames on this computer (Node.js, the CLI, Chrome, the skills).
+    """Use for checking, or with install=true installing, HyperFrames on this computer (Node.js, the CLI, Chrome, the skills). Not for running it (run_tool(name='hyperframes_run_tool')).
 
     Call it first whenever another hyperframes tool says HyperFrames is not set
     up. The install is one-time and can take a few minutes; the paths are saved
@@ -171,7 +171,7 @@ def hyperframes_setup(install=False, captions=False, accurate_speech=False):
     covers=("ai.hyperframes",),
 )
 def hyperframes_read_file(project, path, offset=1, limit=MAX_READ_LINES):
-    """Read a text file from a HyperFrames project, or from the installed skills, with line numbers.
+    """Use for reading a HyperFrames project or skill file with line numbers. Not for listing files (run_tool(name='hyperframes_list_files_tool')).
 
     Read skills/hyperframes/SKILL.md first for any new motion graphic, product
     demo or caption request: it routes to the workflow skill to follow. Long
@@ -202,7 +202,7 @@ def hyperframes_read_file(project, path, offset=1, limit=MAX_READ_LINES):
     covers=("ai.hyperframes",),
 )
 def hyperframes_write_file(project, path, content):
-    """Create or replace a text file in a HyperFrames project (HTML composition, JSON plan, CSS).
+    """Use for creating or fully replacing a text file in a HyperFrames project (HTML composition, JSON plan, CSS). Not for a small change (run_tool(name='hyperframes_edit_file_tool')).
 
     For a small change to an existing file use run_tool(name='hyperframes_edit_file_tool', args={...})
     instead of rewriting it. The installed skills are read-only.
@@ -231,7 +231,7 @@ def hyperframes_write_file(project, path, content):
     covers=("ai.hyperframes",),
 )
 def hyperframes_edit_file(project, path, old_text, new_text="", replace_all=False):
-    """Replace an exact piece of text in a HyperFrames project file.
+    """Use for an exact text replacement inside a HyperFrames project file. Not for a whole new file (run_tool(name='hyperframes_write_file_tool')).
 
     Refused, with the file untouched, when old_text is missing or ambiguous.
     """
@@ -266,7 +266,7 @@ def hyperframes_edit_file(project, path, old_text, new_text="", replace_all=Fals
     covers=("ai.hyperframes",),
 )
 def hyperframes_list_files(project, pattern="**/*"):
-    """List files in a HyperFrames project, or the installed skills and their references."""
+    """Use for listing the files in a HyperFrames project or the installed skills. Not for reading one (run_tool(name='hyperframes_read_file_tool'))."""
     files = _guard(hf.list_files, project, pattern)
     return "\n".join(files) if files else "(no files match %s)" % pattern
 
@@ -291,7 +291,7 @@ def hyperframes_list_files(project, pattern="**/*"):
     covers=("ai.hyperframes",),
 )
 def hyperframes_run(project, program, args, timeout_seconds=hf.DEFAULT_TIMEOUT):
-    """Run the HyperFrames CLI, a skill script, ffmpeg or ffprobe inside a project folder on this computer.
+    """Use for the HyperFrames CLI, or a skill script, ffmpeg or ffprobe, run inside a project folder on this computer. Not for making a motion graphic or title (run_tool(name='render_motion_graphic_tool'), run_tool(name='place_motion_graphic_tool') or run_tool(name='add_title_tool')).
 
     The working directory is the project folder. hyperframes subcommands:
     init, add, catalog, capture, lint, check, validate, inspect, snapshot,
@@ -435,7 +435,7 @@ _TRANSPARENT = boolean("true = transparent overlay to sit above footage (WebM wi
     covers=("ai.hyperframes",),
 )
 def render_motion_graphic(project, label, transparent=True, composition="", fps=30, quality="standard"):
-    """Render a HyperFrames project on this computer and import the video into Project Files.
+    """Use for rendering a HyperFrames composition folder into Project Files, after hyperframes check passes. Not for a video a skill already rendered (run_tool(name='import_motion_graphic_tool')) or for raw CLI runs (run_tool(name='hyperframes_run_tool')).
 
     It first runs 'hyperframes check' and refuses to render while that reports
     an error or anything painted outside the canvas -- you cannot see the frame,
@@ -477,7 +477,7 @@ def render_motion_graphic(project, label, transparent=True, composition="", fps=
     covers=("ai.hyperframes",),
 )
 def import_motion_graphic(project, path, label, transparent=True):
-    """Import a video a skill script already rendered in a HyperFrames project into Project Files.
+    """Use for importing a video that a HyperFrames skill script already rendered into Project Files. Not for a composition folder (run_tool(name='render_motion_graphic_tool')).
 
     For outputs that run_tool(name='hyperframes_run_tool', args={...}) produced (a captions skill's
     final.mp4, a demo's composite). For a plain composition use

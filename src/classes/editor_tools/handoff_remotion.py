@@ -48,7 +48,7 @@ def _fail(exc: Exception) -> ToolError:
     covers=("handoff.remotion_list",),
 )
 def list_remotion_compositions(project_dir):
-    """List a Remotion project's compositions before importing them into Zenvi.
+    """Use for listing a Remotion project's compositions and props before importing them. Not for importing (run_tool(name='import_remotion_project_tool')).
 
     Use for "what's in this Remotion project", or before run_tool(name='import_remotion_project_tool', args={...}) to pick
     composition ids and see which props they take. Returns each composition's id, kind
@@ -107,7 +107,8 @@ def list_remotion_compositions(project_dir):
 )
 def import_remotion_project(project_dir, compositions=None, props=None, codec="auto", position=None, track="",
                             restore_native=True):
-    """Bring a Remotion project into the timeline: compositions as linked clips, or a Zenvi export as native clips.
+    """Use for putting a Remotion project's compositions on the timeline as linked clips, or restoring a Zenvi export as native clips. Not for listing what a project contains (run_tool(name='list_remotion_compositions_tool')).
+    Bring a Remotion project into the timeline: compositions as linked clips, or a Zenvi export as native clips.
 
     Use for "put my Remotion intro on the timeline", "import the TitleCard composition with the
     title Launch day", "bring back the project I exported to Remotion". Each composition renders with
@@ -117,7 +118,7 @@ def import_remotion_project(project_dir, compositions=None, props=None, codec="a
     (restoring a Zenvi export natively runs nothing): change props with
     run_tool(name='update_linked_clip_tool', args={...}), open the code or Remotion Studio with
     run_tool(name='open_linked_source_tool', args={...}), re-render after code edits with
-    run_tool(name='rerender_linked_clip_tool', args={...}). Clips land together at position (default the
+    run_tool(name='update_linked_clip_tool', args={...}). Clips land together at position (default the
     playhead) on free tracks above the video, transparent ones on top. A project Zenvi exported comes
     back as native clips (lossless) when restore_native is true. Everything one call adds is ONE
     undo step; a failed or cancelled render changes nothing. Example: {"project_dir":
@@ -181,7 +182,8 @@ def import_remotion_project(project_dir, compositions=None, props=None, codec="a
     covers=("handoff.remotion_export",),
 )
 def export_to_remotion(output_dir, copy_media=True, install=False, replace_edits=False):
-    """Write the timeline as a working Remotion project that renders it and comes back to Zenvi losslessly.
+    """Use for handing the timeline to a developer as a Remotion project (React code). Not for importing a Remotion project (run_tool(name='import_remotion_project_tool')).
+    Write the timeline as a working Remotion project that renders it and comes back to Zenvi losslessly.
 
     Use for "export this to Remotion", "give me this edit as React/Remotion code", "hand the timeline
     to a developer". Writes package.json (Remotion 4.0.532 pinned), src/Root.tsx with one composition

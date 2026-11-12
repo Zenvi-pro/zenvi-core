@@ -85,7 +85,8 @@ def _music_beats(music_clip_id, own_clip_id=""):
     }),
 )
 def sync_cuts_to_beats(music_clip_id="", max_shift_seconds=0.25, include_speech=False, dry_run=False):
-    """Nudge the cuts between neighbouring picture clips onto the beat of the music, so the edit feels tight.
+    """Use for nudging existing cuts between clips onto the beat, so the edit feels tight. Not for cutting one clip into beat pieces (run_tool(name='slice_on_beats_tool')).
+    Nudge the cuts between neighbouring picture clips onto the beat of the music, so the edit feels tight.
 
     For each cut the earlier clip's out point and the later clip's in point shift together by the same small amount
     (to the nearest beat within max_shift_seconds, on a whole frame), so the picture on each side stays continuous, no
@@ -151,7 +152,8 @@ def sync_cuts_to_beats(music_clip_id="", max_shift_seconds=0.25, include_speech=
     }, required=["timeline_clip_id"]),
 )
 def slice_on_beats(timeline_clip_id, music_clip_id="", every=1, from_seconds=None, to_seconds=None, dry_run=False):
-    """Cut one clip into pieces that each run from one beat of the music to the next (a montage from one long shot).
+    """Use for cutting one clip into pieces, one per beat of the music (a montage from one long shot). Not for moving existing cuts (run_tool(name='sync_cuts_to_beats_tool')).
+    Cut one clip into pieces that each run from one beat of the music to the next (a montage from one long shot).
 
     Use it when the user wants a clip cut to the beat; to tighten cuts that already exist between several clips use
     run_tool(name='sync_cuts_to_beats_tool') instead. Cuts land on whole frames, never leave a piece under two frames, and are refused
@@ -215,7 +217,8 @@ def _is_error(text: Any) -> bool:
     }),
 )
 def balance_mix(even_out_voices=True, speech_target_db=None, duck_music=True, set_loudness=True, form="", target_lufs=None, dry_run=False):
-    """Make the sound of the edit sit right in one pass: even out the voices, duck the music under them, then set the
+    """Use for one native pass that evens the voices, ducks the music under them and sets the overall loudness (LUFS) to a target, for social media or online video. Not for final mastering after the edit (find with find_tools).
+    Make the sound of the edit sit right in one pass: even out the voices, duck the music under them, then set the
     overall level to the target loudness. It reads the measured levels of every clip (as indexed, plus the gain set),
     applies the changes with the editor's own volume and ducking operations (volume curves, no re-encoding, one undo step),
     renders the mix to measure its real loudness and peaks, and reports before and after. Levels that cannot be raised
@@ -361,7 +364,8 @@ def read_brief() -> Dict[str, Any]:
     }, required=["brief"]),
 )
 def set_edit_brief(brief, replace=False):
-    """Save the plan and intent of this edit inside the project, so a long job (a vlog, a whole film) survives a long
+    """Use for saving the plan and intent of this edit inside the project, so a long job survives a restart. Not for the creative brief (find with find_tools).
+    Save the plan and intent of this edit inside the project, so a long job (a vlog, a whole film) survives a long
     conversation, a restart or another agent picking it up. It is stored with the project (saved with it, never an undo
     step, shared by the Zenvi Assistant and Claude Code). Update it as you go: mark scenes done, note decisions.
     review_edit_tool and run_tool(name='get_edit_brief_tool') read it.
@@ -388,7 +392,8 @@ def set_edit_brief(brief, replace=False):
     read_only=True,
 )
 def get_edit_brief():
-    """Read the edit brief saved with this project: the intent, plan and progress someone (or you, earlier) recorded
+    """Use for reading the edit brief saved with this project before picking up an edit. Not for the creative brief (find with find_tools).
+    Read the edit brief saved with this project: the intent, plan and progress someone (or you, earlier) recorded
     with run_tool(name='set_edit_brief_tool'). Read it first when picking up an edit you did not start or after a long break.
     """
     brief = read_brief()
@@ -416,7 +421,8 @@ def get_edit_brief():
     }),
 )
 def harmonize_look(reference="median", tolerance=0.15, max_clips=12, measure_limit=24, dry_run=False, timeline_clip_ids=None):
-    """Make the clips of an edit look like they belong together. It measures how every picture clip looks as it plays
+    """Use for matching the colour of picture clips to each other (match colour, match the look, colour match, color match), evening out strays against a reference clip. Not for a creative look (color_grade_clip_tool) or exposure and white-balance continuity across a cut (find with find_tools).
+    Make the clips of an edit look like they belong together. It measures how every picture clip looks as it plays
     (grade included), picks the reference look (the median clip unless you name one), finds the clips that stray beyond
     the tolerance and matches them to it with the editor's own colour matching (it solves the grade, applies it as one
     undo step, re-measures and recovers if a result goes wrong), then re-measures and reports each clip's distance
@@ -497,7 +503,8 @@ def harmonize_look(reference="median", tolerance=0.15, max_clips=12, measure_lim
     read_only=True,
 )
 def audition_music(candidates, bpm_min=None, bpm_max=None, seconds_needed=None, energy=""):
-    """Listen before you choose: download each candidate's preview, analyse it (tempo, beats, energy curve, sections,
+    """Use for choosing a sound from stock candidates (royalty-free, free music, background music, BPM, soundtrack): it downloads each preview, analyses it and ranks the candidates by fit. Not for a one-step search and place.
+    Listen before you choose: download each candidate's preview, analyse it (tempo, beats, energy curve, sections,
     phrase points) and rank the sounds by how well they fit the music you need, with the measured reason for each.
     Free (previews cost nothing, the analysis is local) and nothing is imported. Then import the winner with
     run_tool(name="import_stock_media_tool", args={"source": "freesound", "sound_id": <id>, "preview_url": <its preview_url>})

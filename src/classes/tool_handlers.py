@@ -1509,7 +1509,7 @@ def import_files(
     files="",
     **_kw
 ) -> str:
-    """Import local media by path into Project Files — never opens a file dialog; use dry_run=true to preview.
+    """Use for files or folders on disk, by path (never a file dialog). Not for numbered frames (find_tools). dry_run=true previews.
 
     Call with the user's path immediately (dry_run=true for folders). Bare names
     like folder=Downloads or Desktop work. For “all videos”, pass
@@ -1716,7 +1716,8 @@ def import_files(
 
 
 def wait_until_project_indexed(timeout_seconds=1800, **_kw) -> str:
-    """Block until every media file in the project has finished indexing.
+    """Use for blocking until every media file has finished indexing, before searching or planning. Not for one file (run_tool(name='reindex_project_file_tool')).
+    Block until every media file in the project has finished indexing.
 
     Returns once all files report analyzed, or lists the file ids still pending
     when ``timeout_seconds`` runs out. Use this after import_files_tool and
@@ -3506,7 +3507,7 @@ def ingest_web_video(
     job_id="",
     **_kw,
 ) -> str:
-    """Fetch a YouTube/web video URL via yt-dlp into Imports/media bin (one undo).
+    """Use for downloading a YouTube or web video by URL with yt-dlp into the Imports/media bin (one undo). Not for a file already on disk (import_files_tool).
 
     FIRST tool for youtube/youtu.be (or similar) links — do not ToolSearch or use
     import_files_tool for a page URL.
@@ -4748,7 +4749,7 @@ def generate_transition_clip(
 # ---------------------------------------------------------------------------
 
 def list_transitions(category="all", query="", **_kw) -> str:
-    """List the transitions of the Transitions dock (common, extra and the user folder); query filters by name."""
+    """Use for the transition catalogue (wipe, dissolve, fade, circle) from the Transitions dock: common, extra and the user folder; query filters by name. Not for transitions already on the timeline (run_tool(name='list_timeline_transitions_tool')) or motion transitions (find with find_tools)."""
     try:
         from classes import transition_ops
 
@@ -4784,7 +4785,7 @@ def apply_transition(
     placement="between",
     **_kw,
 ) -> str:
-    """Apply an OpenShot transition: placement='between' (two clips) or 'start'/'end' (one clip)."""
+    """Use for a transition (fade, fade in, fade out, dissolve, wipe) between two clips (placement='between') or on the first or last part of a clip (placement='start' or 'end')."""
     place = (placement or "between").lower().strip()
     if place == "between":
         if not clip2_id:
@@ -5020,7 +5021,7 @@ def import_stock_media(
     query="",
     **kwargs,
 ) -> str:
-    """Download stock media (pexels|freesound) and import into Project Files, or import local_path.
+    """Use for downloading a stock clip or sound (Pexels, Freesound) into Project Files, or importing a local_path. Not for placing it on the timeline (add_clips_to_timeline_tool).
 
     With source='freesound', a missing or failed hit and a query generate a bed on this computer.
     """
@@ -5378,7 +5379,8 @@ def _queue_missing_index_layers(file_id: str) -> str:
 
 
 def reindex_project_file(file_id: str = "", **kwargs) -> str:
-    """Index a project file whose index is incomplete or whose last index failed: queues it through the normal indexing
+    """Use for indexing a project file whose index is incomplete or failed. Not for checking progress (run_tool(name='index_status_tool')).
+    Index a project file whose index is incomplete or whose last index failed: queues it through the normal indexing
     job (local layers, then the search vectors). A file whose index is complete and clean is left as it is.
     Runs on a worker thread; the project-file read is marshalled to the Qt main thread.
     """
@@ -5709,7 +5711,8 @@ def place_motion_graphic(
     query="",
     **_kw,
 ) -> str:
-    """Place a HyperFrames render with overlay/gap/cut_in enforcement.
+    """Use for placing a rendered HyperFrames motion graphic (title, lower third, promo card) on the timeline with overlay, gap or cut-in rules. Not for a plain clip (add_clips_to_timeline_tool) or for rendering the graphic (run_tool(name='render_motion_graphic_tool')).
+    Place a HyperFrames render with overlay/gap/cut_in enforcement.
 
     mode=overlay → transparent file on a HIGH layer (refuses opaque).
     mode=gap → opaque only when the picture track is clear at [t, t+dur).
@@ -6422,7 +6425,7 @@ def _refresh_audio_ui(app, refreshed, tid):
 
 
 def analyze_timeline_audio(track="", timeline_clip_id="", detail="summary", **_kw) -> str:
-    """Report the audio role, level and speech windows of every timeline clip.
+    """Use for reading each timeline clip's audio role, level and speech windows before mixing. Not for a mix score or fixes (find with find_tools).
 
     Roles: speech (has transcript cues), music/sfx (audio-only, no cues),
     ambient (video, no cues), unknown (not indexed yet). Use this before mixing
@@ -6506,7 +6509,7 @@ def set_clip_volume(
     mode="replace",
     **_kw,
 ) -> str:
-    """Set a timeline clip's audio level, over the whole clip or one time window.
+    """Use for a static level on one clip (gain, lower, louder, quieter) in dB or linear, over the whole clip or one time window. Not for a relative change to a track or stem (find with find_tools), keyframed curves (find with find_tools) or ducking under speech (run_tool(name='duck_under_speech_tool')).
 
     Give exactly one of level_db (decibels, negative = quieter) or level
     (0.0-1.3 linear). mode='replace' sets the level outright and replaces the
@@ -6634,7 +6637,7 @@ def duck_under_speech(
     dry_run="false",
     **_kw,
 ) -> str:
-    """Duck music/SFX beds under speech with volume keyframes, restoring in gaps.
+    """Use for ducking music or SFX beds under dialogue, voice-over or voiceover, with volume keyframes, restored in gaps. Not for a static balance (run_tool(name='set_clip_volume_tool')) or a whole-mix loudness target (run_tool(name='balance_mix_tool')).
 
     Writes timeline volume automation only — no media is re-encoded and no clip
     changes track or position. With speech_clip_ids='auto' the speech clips are
@@ -7618,6 +7621,7 @@ AGENT_TOOL_HANDLERS = {
     "generate_transition_clip_tool": generate_transition_clip,
     # OpenShot transitions (mask/dissolve)
     "list_transitions_tool": list_transitions,
+    # Shipped backends still call this one; models get add_transitions_between_clips_tool.
     "apply_transition_tool": apply_transition,
     # generate_tts_and_add_to_timeline_tool: classes.editor_tools.ai_generation_tts
     # Stock / planning

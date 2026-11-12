@@ -73,7 +73,8 @@ def rows_from(videos: List[Dict[str, Any]], min_seconds: float, orientation: str
     read_only=True,
 )
 def search_stock_video(query, count=8, min_seconds=0.0, orientation="any"):
-    """Search Pexels stock videos (free to use) and list matches with their length, size, photographer and a preview picture. Then bring one
+    """Use for searching Pexels stock videos (royalty-free, free footage) and picking one to bring in. Not for a one-step search and place.
+    Search Pexels stock videos (free to use) and list matches with their length, size, photographer and a preview picture. Then bring one
     into the project with run_tool(name='import_stock_media_tool', args={'source': "pexels", 'video_id': <video_id>}): the link is remembered from this search. A download
     uses stock credits where the account is metered. Use it for shots your own footage cannot cover.
     """

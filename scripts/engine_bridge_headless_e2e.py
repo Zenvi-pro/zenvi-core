@@ -185,7 +185,7 @@ async def first_session(info: dict, t: Transcript, media: list, project: str, wi
         names = await s.tools()
         bridged = [n for n in ("apply_motion_transition_tool", "add_sfx_tool", "add_motion_block_tool",
                                "speed_ramp_tool", "add_3d_scene_tool", "get_linked_clip_tool",
-                               "rerender_linked_clip_tool") if n in names]
+                               "update_linked_clip_tool") if n in names]
         t.note(f"\nMCP lists {len(names)} tools; engine-bridge tools among them: {', '.join(bridged)}")
         t.check("move_clip_tool" not in names, "the engine's move_clip_tool twin is not listed (move_clips_tool is)")
         imported = await s.call("import_files_tool", paths=media)
@@ -220,7 +220,7 @@ async def first_session(info: dict, t: Transcript, media: list, project: str, wi
         if block_file:
             info_r = await s.call("get_linked_clip_tool", file_id=block_file)
             t.check((info_r.get("data") or {}).get("kind") == "zenvi-motion", "get_linked_clip_tool reads the block's link")
-            again = await s.call("rerender_linked_clip_tool", file_id=block_file)
+            again = await s.call("update_linked_clip_tool", file_id=block_file)
             t.check(again.get("status") == "unchanged" and again.get("undoSteps") == 0,
                     "re-rendering an up-to-date block is unchanged, no undo step")
         edits = ["motion transition", "sound effect", "motion block"]
@@ -235,9 +235,9 @@ async def first_session(info: dict, t: Transcript, media: list, project: str, wi
             if scene_file:
                 info_r = await s.call("get_linked_clip_tool", file_id=scene_file)
                 t.check((info_r.get("data") or {}).get("kind") == "blender", "get_linked_clip_tool reads the scene's link")
-                again = await s.call("rerender_linked_clip_tool", file_id=scene_file)
+                again = await s.call("update_linked_clip_tool", file_id=scene_file)
                 t.check(not str(again.get("summary", "")).startswith("Error"),
-                        f"rerender_linked_clip_tool re-renders the scene through rerender_3d_scene_tool ({again.get('status')})")
+                        f"update_linked_clip_tool re-renders the scene through rerender_3d_scene_tool ({again.get('status')})")
                 if again.get("undoSteps") == 1:
                     edits.append("scene re-render")
         undone = edits[::-1]

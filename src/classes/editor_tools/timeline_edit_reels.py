@@ -639,7 +639,8 @@ _STYLE_LINES = " ".join(f"{sid}: {REEL_STYLES[sid].summary}" for sid in REEL_STY
 )
 def build_reel(style="hype", file_ids=None, music_file_id="", duration_seconds=None, hook="", end_card="",
                end_card_subtitle="", labels=None, beats=None, replace=False):
-    """Cut a finished short-form video (Reels, TikTok, Shorts, ads) in one step from media already in the
+    """Use for a finished short-form promo, montage or vlog (Reels, TikTok, Shorts, ads) cut from project media in one step. Not for a montage of files that share a shape or pose (a match-cut montage, found with find_tools).
+    Cut a finished short-form video (Reels, TikTok, Shorts, ads) in one step from media already in the
     project: shots cut on the music's beats, camera moves, flashes, a look, an opening hook title, shot
     labels, an end card and the music faded out. One undo step.
 

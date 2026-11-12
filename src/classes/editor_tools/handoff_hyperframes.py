@@ -62,7 +62,8 @@ def _hf_dir(project_dir: str) -> str:
     covers=("handoff.hyperframes_import",),
 )
 def import_hyperframes_project(project_dir, mode="auto", position=None, track=""):
-    """Bring a HyperFrames (HTML video) project into the timeline as one undo step: media as editable clips, compositions as linked clips.
+    """Use for bringing a HyperFrames project folder onto the timeline as native clips. Not for one rendered video (run_tool(name='import_motion_graphic_tool')).
+    Bring a HyperFrames (HTML video) project into the timeline as one undo step: media as editable clips, compositions as linked clips.
 
     Use for "open this HyperFrames project in Zenvi", "import my hyperframes
     folder", "bring the HyperFrames video back". Zenvi reads HyperFrames' own
@@ -134,7 +135,8 @@ def import_hyperframes_project(project_dir, mode="auto", position=None, track=""
     covers=("handoff.hyperframes_export",),
 )
 def export_to_hyperframes(output_dir, copy_media=True, replace_edits=False):
-    """Write the timeline as a HyperFrames project that previews, lints and renders, and comes back to Zenvi losslessly.
+    """Use for exporting the timeline as a HyperFrames project folder that comes back to Zenvi losslessly. Not for a video render (export_video_tool).
+    Write the timeline as a HyperFrames project that previews, lints and renders, and comes back to Zenvi losslessly.
 
     Use for "export this edit to HyperFrames", "make a HyperFrames project
     from my timeline", "hand this to HyperFrames / Framey". Every clip becomes

@@ -65,7 +65,7 @@ A re-render you start (the toolbar pill, **Linked Source > Re-render**, **Edit P
 **Open in Studio** run the project's code as well. For a folder not trusted this session -- say a `.zvn` and its
 Remotion project someone sent you -- Zenvi asks first; **Cancel** runs nothing and changes nothing. A project you
 imported this session is already trusted. Nothing runs on its own: the freshness check only reads files. Agent
-tools (`rerender_linked_clip_tool`, `open_linked_source_tool`, ...) work as documented, without asking.
+tools (`update_linked_clip_tool`, `open_linked_source_tool`, ...) work as documented, without asking.
 
 ### Props
 
@@ -238,7 +238,7 @@ and the background. Changes to the renderer code are not read back either; to se
 | `export_to_remotion_tool` | `output_dir`, `copy_media` (default true), `install` (default false), `replace_edits` (default false) | Writes the Remotion project; the receipt lists the files, removed media, notes and next steps. Into an earlier export with changes made in it, it refuses unless `replace_edits` (only after the user agreed). Changes nothing in the project. |
 
 The shared tools work on Remotion clips too: `get_linked_clip_tool` (state, `editable_props`),
-`update_linked_clip_tool`, `rerender_linked_clip_tool`, `open_linked_source_tool` (`code` or `studio`) and
+`update_linked_clip_tool`, `open_linked_source_tool` (`code` or `studio`) and
 `unlink_clip_tool`.
 
 ## Licence

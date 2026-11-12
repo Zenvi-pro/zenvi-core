@@ -37,7 +37,7 @@ def _status_line(st: dict) -> str:
     covers=("ai.hyperframes",),
 )
 def manim_setup(install=False, latex=False):
-    """Check, and with install=true install, Manim on this computer (its own Python; LaTeX on request).
+    """Use for checking, or with install=true installing, Manim and LaTeX on this computer (its own Python; LaTeX on request). Not for rendering (run_tool(name='render_manim_tool')).
 
     Call it first whenever run_tool(name='render_manim_tool', args={...}) says Manim is not set up, or that a
     scene needs LaTeX. Nothing needs admin rights; the user sees a confirmation
@@ -82,7 +82,8 @@ def manim_setup(install=False, latex=False):
     covers=("ai.hyperframes",),
 )
 def render_manim(project, scene_file, scene, label, transparent=True, full_frame=False, quality="standard"):
-    """Render a Manim scene on this computer and import it into Project Files.
+    """Use for rendering a Manim scene file on this computer (equations, plots, geometry, 3D) into Project Files, for math and science explainers. Not for text-to-animation without a scene file (the server path, used when Manim is not set up here).
+    Render a Manim scene on this computer and import it into Project Files.
 
     Use Manim for math and science: an equation morphing into another
     (TransformMatchingTex), plots on axes, geometry, 3D. Use HyperFrames for

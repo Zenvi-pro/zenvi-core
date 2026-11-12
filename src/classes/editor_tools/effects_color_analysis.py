@@ -468,7 +468,8 @@ def _analysis_time(clip_data: Optional[dict], time) -> float:
 )
 def analyze_frame_colors(timeline_clip_id="", clip_query="", track="", time=None, whole_timeline=False,
                          region=None, compare_without_effects=False, save_frame_path=""):
-    """Measure a frame the way the scopes do, as numbers, to grade objectively and to check that an
+    """Use for measuring one frame's exposure, brightness, colour cast and saturation (color or colour) before grading. Not for a whole file's look (run_tool(name='get_look_profile_tool')).
+    Measure a frame the way the scopes do, as numbers, to grade objectively and to check that an
     effect or grade did what was asked: luma percentiles p1-p99 and mean (0 = black, 1 = white),
     clipped shadows/highlights %, mean RGB, warmth (R-B), green/magenta balance, the white-balance cast
     of near-neutral pixels (neutral_tint_uv, cast label),
