@@ -15,6 +15,7 @@ from classes.speech.runtime import CancelToken, inference_slot
 log = logging.getLogger("speech.vad")
 
 _VOICE_RANGE_DB = 20.0  # a voice's soft syllables sit within this of its loud ones
+_SILENT_DB = -60.0  # below this nothing is speech (digital silence, near-mute)
 
 
 class VadEngine(Protocol):
@@ -91,10 +92,10 @@ class EnergyVad:
         ranked = sorted(db)
         floor = ranked[int(0.10 * (len(ranked) - 1))]
         level = ranked[int(0.95 * (len(ranked) - 1))]
-        thr = min(
+        thr = max(_SILENT_DB, min(
             floor + max(MIN_CONTRAST_DB / 2, THRESHOLD_SHARE * (level - floor)),
             level - _VOICE_RANGE_DB,
-        )
+        ))
         mask = [d >= thr for d in db]
         windows: list[tuple[float, float]] = []
         i = 0

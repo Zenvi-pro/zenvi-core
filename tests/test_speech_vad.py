@@ -78,3 +78,15 @@ def test_energy_vad_continuous_speech_has_no_silence(tmp_path, layout):
     assert silence_ranges_from_speech(
         speech, duration=duration, min_pause_sec=0.4, pad_sec=0.08,
     ) == []
+
+
+def test_energy_vad_digital_silence_has_no_speech(tmp_path):
+    wav = tmp_path / "silent.wav"
+    with wave.open(str(wav), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(RATE)
+        wf.writeframes(b"\0\0" * RATE * 2)
+    assert EnergyVad().speech_windows(
+        str(wav), token=CancelToken(), min_speech_sec=0.12, min_silence_sec=0.4,
+    ) == []
