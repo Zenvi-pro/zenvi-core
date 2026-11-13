@@ -87,9 +87,12 @@ class EnergyVad:
         # most of it as silence. Threshold from the room's noise floor instead
         # (same rule as media_index.voice.voiced_spans). With few pauses the
         # quietest 10% is soft speech, not the room, so never set it closer
-        # than _VOICE_RANGE_DB under the voice.
+        # than _VOICE_RANGE_DB under the voice. Digitally silent stretches are
+        # left out of the measure so they cannot drag the floor down.
         db = [20.0 * math.log10(max(e, 1e-9)) for e in energies]
-        ranked = sorted(db)
+        ranked = sorted(d for d in db if d > _SILENT_DB)
+        if not ranked:
+            return []
         floor = ranked[int(0.10 * (len(ranked) - 1))]
         level = ranked[int(0.95 * (len(ranked) - 1))]
         thr = max(_SILENT_DB, min(

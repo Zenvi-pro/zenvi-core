@@ -38,6 +38,8 @@ def _write_talking_head(path, layout=LAYOUT):
                 env = 0.2
             if env:
                 x += env * math.sin(2 * math.pi * 180.0 * t)
+            if kind == "zero":  # digital silence, e.g. a muted tail
+                x = 0.0
             out.append(max(-32768, min(32767, int(x * 32767))))
         t0 += secs
     with wave.open(str(path), "wb") as wf:
@@ -48,9 +50,10 @@ def _write_talking_head(path, layout=LAYOUT):
     return t0
 
 
-def test_energy_vad_keeps_speech_and_finds_only_real_pauses(tmp_path):
+@pytest.mark.parametrize("tail", [0.0, 2.0])
+def test_energy_vad_keeps_speech_and_finds_only_real_pauses(tmp_path, tail):
     wav = tmp_path / "talk.wav"
-    duration = _write_talking_head(wav)
+    duration = _write_talking_head(wav, LAYOUT + [("zero", tail)]) - tail
     speech = EnergyVad().speech_windows(
         str(wav), token=CancelToken(), min_speech_sec=0.12, min_silence_sec=0.4,
     )
