@@ -7,6 +7,8 @@ import random
 import struct
 import wave
 
+import pytest
+
 from classes.speech.runtime import CancelToken
 from classes.speech.vad import EnergyVad, silence_ranges_from_speech
 
@@ -26,7 +28,9 @@ def _write_talking_head(path, layout=LAYOUT):
             t = t0 + i / RATE
             x = rng.gauss(0.0, 0.003)
             env = 0.0
-            if kind == "speech":
+            if kind == "flat":  # compressed voice, no dips: about -23 dB throughout
+                env = 0.1
+            elif kind == "speech":
                 env = 0.03 + 0.27 * abs(math.sin(2 * math.pi * 3.0 * t))
                 if 1.0 <= t < 1.03:
                     env = 0.95
@@ -60,9 +64,14 @@ def test_energy_vad_keeps_speech_and_finds_only_real_pauses(tmp_path):
     assert all(b <= SYLLABLE[0] or a >= SYLLABLE[1] for a, b in gaps), gaps
 
 
-def test_energy_vad_continuous_speech_has_no_silence(tmp_path):
+@pytest.mark.parametrize("layout", [
+    [("speech", 4.0)],
+    # No room floor to measure: a soft, flat sentence is the quietest 10%.
+    [("flat", 6.0), ("speech", 2.0)],
+])
+def test_energy_vad_continuous_speech_has_no_silence(tmp_path, layout):
     wav = tmp_path / "talk.wav"
-    duration = _write_talking_head(wav, [("speech", 4.0)])
+    duration = _write_talking_head(wav, layout)
     speech = EnergyVad().speech_windows(
         str(wav), token=CancelToken(), min_speech_sec=0.12, min_silence_sec=0.4,
     )

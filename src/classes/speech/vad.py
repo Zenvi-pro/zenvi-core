@@ -14,6 +14,8 @@ from classes.speech.runtime import CancelToken, inference_slot
 
 log = logging.getLogger("speech.vad")
 
+_VOICE_RANGE_DB = 20.0  # a voice's soft syllables sit within this of its loud ones
+
 
 class VadEngine(Protocol):
     def speech_windows(
@@ -82,12 +84,17 @@ class EnergyVad:
             return []
         # Speech swings 20+ dB between syllables, so a share of the peak reads
         # most of it as silence. Threshold from the room's noise floor instead
-        # (same rule as media_index.voice.voiced_spans).
+        # (same rule as media_index.voice.voiced_spans). With few pauses the
+        # quietest 10% is soft speech, not the room, so never set it closer
+        # than _VOICE_RANGE_DB under the voice.
         db = [20.0 * math.log10(max(e, 1e-9)) for e in energies]
         ranked = sorted(db)
         floor = ranked[int(0.10 * (len(ranked) - 1))]
         level = ranked[int(0.95 * (len(ranked) - 1))]
-        thr = floor + max(MIN_CONTRAST_DB / 2, THRESHOLD_SHARE * (level - floor))
+        thr = min(
+            floor + max(MIN_CONTRAST_DB / 2, THRESHOLD_SHARE * (level - floor)),
+            level - _VOICE_RANGE_DB,
+        )
         mask = [d >= thr for d in db]
         windows: list[tuple[float, float]] = []
         i = 0
