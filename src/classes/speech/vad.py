@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import logging
+import math
 import struct
 import wave
 from typing import Callable, Optional, Protocol, Sequence
 
+from classes.media_index.voice import MIN_CONTRAST_DB, THRESHOLD_SHARE
 from classes.speech.audio_extract import extract_mono_16k_wav
 from classes.speech.runtime import CancelToken, inference_slot
 
 log = logging.getLogger("speech.vad")
+
+_VOICE_RANGE_DB = 20.0  # a voice's soft syllables sit within this of its loud ones
+_SILENT_DB = -60.0  # below this nothing is speech (digital silence, near-mute)
 
 
 class VadEngine(Protocol):
@@ -48,7 +53,7 @@ def _read_pcm16_mono(wav_path: str) -> tuple[list[float], int]:
 
 
 class EnergyVad:
-    """Always-available VAD: RMS energy vs a speech-relative threshold.
+    """Always-available VAD: RMS energy vs a noise-floor-relative threshold.
 
     Music beds that sit near speech level can still trigger — remove_silence
     applies a separate level gate. This matches 'portable first' over Silero.
@@ -62,7 +67,6 @@ class EnergyVad:
         min_speech_sec: float = 0.15,
         min_silence_sec: float = 0.35,
         frame_ms: float = 30.0,
-        speech_ratio: float = 0.35,
     ) -> list[tuple[float, float]]:
         token.raise_if_cancelled()
         samples, rate = _read_pcm16_mono(wav_path)
@@ -79,10 +83,23 @@ class EnergyVad:
             energies.append(rms)
         if not energies:
             return []
-        peak = max(energies) or 1e-9
-        thr = peak * float(speech_ratio)
-        # Binary mask → merge
-        mask = [e >= thr for e in energies]
+        # Speech swings 20+ dB between syllables, so a share of the peak reads
+        # most of it as silence. Threshold from the room's noise floor instead
+        # (same rule as media_index.voice.voiced_spans). With few pauses the
+        # quietest 10% is soft speech, not the room, so never set it closer
+        # than _VOICE_RANGE_DB under the voice. Digitally silent stretches are
+        # left out of the measure so they cannot drag the floor down.
+        db = [20.0 * math.log10(max(e, 1e-9)) for e in energies]
+        ranked = sorted(d for d in db if d > _SILENT_DB)
+        if not ranked:
+            return []
+        floor = ranked[int(0.10 * (len(ranked) - 1))]
+        level = ranked[int(0.95 * (len(ranked) - 1))]
+        thr = max(_SILENT_DB, min(
+            floor + max(MIN_CONTRAST_DB / 2, THRESHOLD_SHARE * (level - floor)),
+            level - _VOICE_RANGE_DB,
+        ))
+        mask = [d >= thr for d in db]
         windows: list[tuple[float, float]] = []
         i = 0
         while i < len(mask):
@@ -92,12 +109,10 @@ class EnergyVad:
             j = i
             while j < len(mask) and mask[j]:
                 j += 1
-            start = i * frame / rate
-            end = j * frame / rate
-            if end - start >= min_speech_sec:
-                windows.append((start, end))
+            windows.append((i * frame / rate, j * frame / rate))
             i = j
-        # Merge windows separated by short silence
+        # Merge across short silence first, so a short syllable next to speech
+        # joins it; only then drop bursts too short to be speech (clicks).
         if not windows:
             return []
         merged = [windows[0]]
@@ -107,7 +122,7 @@ class EnergyVad:
                 merged[-1] = (ps, e)
             else:
                 merged.append((s, e))
-        return merged
+        return [(s, e) for s, e in merged if e - s >= min_speech_sec]
 
 
 class SileroOnnxVad:
