@@ -41,6 +41,7 @@ import sys
 import tarfile
 import threading
 import urllib.request
+import wave
 import zipfile
 from typing import Callable, Iterable, List, Optional, Tuple
 
@@ -709,8 +710,37 @@ def _clean(text: str) -> str:
     return text
 
 
+def _whole_ms_for_parakeet(argv: List[str], cwd: str) -> None:
+    """Pad the WAV a Parakeet transcribe reads with up to 7 silent samples (under 0.5 ms).
+
+    hyperframes 0.8.115 gives the decoder a Node timeout of file size / 16 ms once a 16 kHz mono WAV
+    passes 15 minutes, and Node refuses a fractional timeout, so long recordings never transcribed.
+    """
+    # ponytail: drop when CLI_VERSION reaches 0.9, which rounds the timeout itself.
+    if "transcribe" not in argv[:-1] or "parakeet" not in argv:
+        return
+    path = os.path.join(cwd, argv[argv.index("transcribe") + 1])
+    try:
+        size = os.path.getsize(path)
+        if not path.lower().endswith(".wav") or size <= 900 * 32000 or size % 16 == 0:
+            return
+        with wave.open(path, "rb") as src:
+            if (src.getframerate(), src.getnchannels(), src.getsampwidth()) != (16000, 1, 2):
+                return
+            frames = src.readframes(src.getnframes())
+        pad = next(k for k in range(8) if (44 + len(frames) + 2 * k) % 16 == 0)
+        with wave.open(path, "wb") as out:  # a plain 44-byte header, so the size is exact
+            out.setnchannels(1)
+            out.setsampwidth(2)
+            out.setframerate(16000)
+            out.writeframes(frames + b"\x00\x00" * pad)
+    except (OSError, wave.Error, EOFError) as exc:
+        log.warning("could not pad %s for Parakeet: %s", path, exc)
+
+
 def _exec(argv: List[str], cwd: str, node: Optional[str], timeout: float,
           isolated: bool = True) -> Tuple[int, str]:
+    _whole_ms_for_parakeet(argv, cwd)
     try:
         proc = subprocess.run(
             argv, cwd=cwd, env=_environment(node, isolated), capture_output=True, text=True, encoding="utf-8",

@@ -497,3 +497,48 @@ def test_matte_runs_the_runner_with_the_private_node_and_reports_the_device(home
     with pytest.raises(hf.HyperframesError, match="not installed"):
         hf.matte("cap", "subject-source.mp4", "renders/subject.webm")
     assert "argv" not in seen
+
+
+def _wav(path, frames, rate=16000):
+    import wave
+
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"\x01\x00" * frames)
+
+
+def test_parakeet_gets_a_whole_millisecond_timeout_for_audio_over_15_minutes(home, monkeypatch):
+    """hyperframes 0.8.115 sets Parakeet's Node timeout to size/16 ms of a 16 kHz mono WAV, and Node
+    refuses a fraction: any recording over 15 minutes failed ("timeout is out of range")."""
+    import wave
+
+    (home / "node_modules" / "hyperframes" / "dist").mkdir(parents=True)
+    (home / "node_modules" / "hyperframes" / "dist" / "cli.js").write_text("//")
+    os.makedirs(hf.project_dir("demo"))
+    monkeypatch.setattr(hf, "find_program", lambda name: "/opt/%s" % name)
+    sizes = []
+
+    def fake_run(argv, **kw):
+        sizes.append(os.path.getsize(os.path.join(kw["cwd"], "speech.wav")))
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(hf.subprocess, "run", fake_run)
+    speech = os.path.join(hf.project_dir("demo"), "speech.wav")
+    frames = 16000 * 1331 + 9  # a 22-minute take
+    _wav(speech, frames)
+    assert os.path.getsize(speech) % 16  # the CLI would time it out after a fraction of a millisecond
+    hf.run("demo", "hyperframes", ["transcribe", "speech.wav", "--engine", "parakeet", "--json"])
+    assert sizes[-1] % 16 == 0
+    with wave.open(speech, "rb") as w:
+        assert (w.getframerate(), w.getnchannels(), w.getsampwidth()) == (16000, 1, 2)
+        kept = w.readframes(w.getnframes())
+    assert kept[:2 * frames] == b"\x01\x00" * frames and set(kept[2 * frames:]) <= {0}  # silence only
+    assert len(kept) - 2 * frames < 16  # under half a millisecond
+
+    short = 16000 * 60 + 9  # the CLI's 30-minute floor already covers it: left exactly as recorded
+    _wav(speech, short)
+    before = os.path.getsize(speech)
+    hf.run("demo", "hyperframes", ["transcribe", "speech.wav", "--engine", "parakeet", "--json"])
+    assert sizes[-1] == before
