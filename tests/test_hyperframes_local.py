@@ -514,11 +514,12 @@ def _cli_timeout_ms(size):
     return max(18e5, (size / 32000) * 2000)
 
 
-@pytest.mark.parametrize("frames, engine", [
-    (16000 * 1331 + 9, ["--engine", "parakeet"]),     # a 22-minute take
-    (16_384_058, ["--engine=parakeet"]),             # 17.1 min: size % 16 == 0 is not enough in doubles
+@pytest.mark.parametrize("frames, args", [
+    (16000 * 1331 + 9, ["transcribe", "speech.wav", "--engine", "parakeet", "--json"]),  # a 22-minute take
+    # 17.1 min: size % 16 == 0 is not enough in doubles; and the engine flag may come before the input
+    (16_384_058, ["transcribe", "--engine=parakeet", "speech.wav", "--json"]),
 ])
-def test_parakeet_gets_a_whole_millisecond_timeout_for_audio_over_15_minutes(home, monkeypatch, frames, engine):
+def test_parakeet_gets_a_whole_millisecond_timeout_for_audio_over_15_minutes(home, monkeypatch, frames, args):
     """hyperframes 0.8.115 sets Parakeet's Node timeout from the WAV's size, and Node refuses a fraction:
     recordings over 15 minutes failed ("timeout is out of range")."""
     import wave
@@ -532,9 +533,11 @@ def test_parakeet_gets_a_whole_millisecond_timeout_for_audio_over_15_minutes(hom
     def fake_run(argv, **kw):
         if not argv[1].endswith("cli.js"):
             return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-        heard = os.path.join(kw["cwd"], argv[3])
+        given = next(a for a in argv[3:] if a.endswith(".wav"))
+        heard = os.path.join(kw["cwd"], given)
+        out_dir = argv[argv.index("--dir") + 1] if "--dir" in argv else os.path.dirname(heard)
         with wave.open(heard, "rb") as w:
-            seen.append((argv[3], os.path.getsize(heard), w.getparams()[:3], w.readframes(w.getnframes())))
+            seen.append((given, os.path.getsize(heard), w.getparams()[:3], w.readframes(w.getnframes()), out_dir))
         return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(hf.subprocess, "run", fake_run)
@@ -542,13 +545,21 @@ def test_parakeet_gets_a_whole_millisecond_timeout_for_audio_over_15_minutes(hom
     _wav(speech, frames)
     before = open(speech, "rb").read()
     assert not _cli_timeout_ms(len(before)).is_integer()  # what failed before the fix
-    hf.run("demo", "hyperframes", ["transcribe", "speech.wav", *engine, "--json"])
-    name, size, params, heard = seen[-1]
+    hf.run("demo", "hyperframes", args)
+    name, size, params, heard, out_dir = seen[-1]
     assert name != "speech.wav" and _cli_timeout_ms(size).is_integer()
     assert params == (1, 2, 16000)
     assert heard[:2 * frames] == b"\x01\x00" * frames and set(heard[2 * frames:]) <= {0}  # silence only
     assert open(speech, "rb").read() == before  # the recording itself is never rewritten
     assert sorted(os.listdir(hf.project_dir("demo"))) == ["speech.wav"]  # the padded copy is gone
+    # transcript.json still lands where the CLI writes it for the recording: beside it
+    assert os.path.normcase(os.path.abspath(out_dir)) == os.path.normcase(hf.project_dir("demo"))
+    # each call pads its own copy, so two transcriptions running at once never share one
+    argv = ["/opt/node", "cli.js", *args]
+    first, second = hf._parakeet_copy(argv, hf.project_dir("demo")), hf._parakeet_copy(argv, hf.project_dir("demo"))
+    assert first and second and first != second
+    for copy in (first, second):
+        os.remove(copy)
 
     short = os.path.join(hf.project_dir("demo"), "short.wav")
     _wav(short, 16000 * 60 + 9)  # the CLI's 30-minute floor covers it: passed as it is
