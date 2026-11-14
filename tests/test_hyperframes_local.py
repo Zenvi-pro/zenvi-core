@@ -509,36 +509,50 @@ def _wav(path, frames, rate=16000):
         w.writeframes(b"\x01\x00" * frames)
 
 
-def test_parakeet_gets_a_whole_millisecond_timeout_for_audio_over_15_minutes(home, monkeypatch):
-    """hyperframes 0.8.115 sets Parakeet's Node timeout to size/16 ms of a 16 kHz mono WAV, and Node
-    refuses a fraction: any recording over 15 minutes failed ("timeout is out of range")."""
+def _cli_timeout_ms(size):
+    """What hyperframes 0.8.115 hands Node: getPreparedWavDurationSeconds(wav) * 2e3, in doubles."""
+    return max(18e5, (size / 32000) * 2000)
+
+
+@pytest.mark.parametrize("frames, engine", [
+    (16000 * 1331 + 9, ["--engine", "parakeet"]),     # a 22-minute take
+    (16_384_058, ["--engine=parakeet"]),             # 17.1 min: size % 16 == 0 is not enough in doubles
+])
+def test_parakeet_gets_a_whole_millisecond_timeout_for_audio_over_15_minutes(home, monkeypatch, frames, engine):
+    """hyperframes 0.8.115 sets Parakeet's Node timeout from the WAV's size, and Node refuses a fraction:
+    recordings over 15 minutes failed ("timeout is out of range")."""
     import wave
 
     (home / "node_modules" / "hyperframes" / "dist").mkdir(parents=True)
     (home / "node_modules" / "hyperframes" / "dist" / "cli.js").write_text("//")
     os.makedirs(hf.project_dir("demo"))
     monkeypatch.setattr(hf, "find_program", lambda name: "/opt/%s" % name)
-    sizes = []
+    seen = []
 
     def fake_run(argv, **kw):
-        sizes.append(os.path.getsize(os.path.join(kw["cwd"], "speech.wav")))
+        if not argv[1].endswith("cli.js"):
+            return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        heard = os.path.join(kw["cwd"], argv[3])
+        with wave.open(heard, "rb") as w:
+            seen.append((argv[3], os.path.getsize(heard), w.getparams()[:3], w.readframes(w.getnframes())))
         return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(hf.subprocess, "run", fake_run)
     speech = os.path.join(hf.project_dir("demo"), "speech.wav")
-    frames = 16000 * 1331 + 9  # a 22-minute take
     _wav(speech, frames)
-    assert os.path.getsize(speech) % 16  # the CLI would time it out after a fraction of a millisecond
-    hf.run("demo", "hyperframes", ["transcribe", "speech.wav", "--engine", "parakeet", "--json"])
-    assert sizes[-1] % 16 == 0
-    with wave.open(speech, "rb") as w:
-        assert (w.getframerate(), w.getnchannels(), w.getsampwidth()) == (16000, 1, 2)
-        kept = w.readframes(w.getnframes())
-    assert kept[:2 * frames] == b"\x01\x00" * frames and set(kept[2 * frames:]) <= {0}  # silence only
-    assert len(kept) - 2 * frames < 16  # under half a millisecond
+    before = open(speech, "rb").read()
+    assert not _cli_timeout_ms(len(before)).is_integer()  # what failed before the fix
+    hf.run("demo", "hyperframes", ["transcribe", "speech.wav", *engine, "--json"])
+    name, size, params, heard = seen[-1]
+    assert name != "speech.wav" and _cli_timeout_ms(size).is_integer()
+    assert params == (1, 2, 16000)
+    assert heard[:2 * frames] == b"\x01\x00" * frames and set(heard[2 * frames:]) <= {0}  # silence only
+    assert open(speech, "rb").read() == before  # the recording itself is never rewritten
+    assert sorted(os.listdir(hf.project_dir("demo"))) == ["speech.wav"]  # the padded copy is gone
 
-    short = 16000 * 60 + 9  # the CLI's 30-minute floor already covers it: left exactly as recorded
-    _wav(speech, short)
-    before = os.path.getsize(speech)
-    hf.run("demo", "hyperframes", ["transcribe", "speech.wav", "--engine", "parakeet", "--json"])
-    assert sizes[-1] == before
+    short = os.path.join(hf.project_dir("demo"), "short.wav")
+    _wav(short, 16000 * 60 + 9)  # the CLI's 30-minute floor covers it: passed as it is
+    hf.run("demo", "hyperframes", ["transcribe", "short.wav", "--engine", "parakeet", "--json"])
+    assert seen[-1][0] == "short.wav"
+    hf.run("demo", "ffprobe", ["transcribe", "speech.wav", "parakeet"])  # only the CLI's own transcribe
+    assert open(speech, "rb").read() == before

@@ -710,37 +710,68 @@ def _clean(text: str) -> str:
     return text
 
 
-def _whole_ms_for_parakeet(argv: List[str], cwd: str) -> None:
-    """Pad the WAV a Parakeet transcribe reads with up to 7 silent samples (under 0.5 ms).
+def _cli_timeout_ms(size: int) -> float:
+    """The decoder timeout hyperframes 0.8.115 gives Node for a 16 kHz mono WAV of *size* bytes."""
+    return max(18e5, (size / 32000) * 2000)  # the CLI's own double arithmetic
 
-    hyperframes 0.8.115 gives the decoder a Node timeout of file size / 16 ms once a 16 kHz mono WAV
-    passes 15 minutes, and Node refuses a fractional timeout, so long recordings never transcribed.
+
+def _parakeet_copy(argv: List[str], cwd: str) -> Optional[str]:
+    """A silence-padded copy of the WAV a Parakeet ``transcribe`` reads, when the CLI would time it out.
+
+    hyperframes 0.8.115 derives the decoder's Node timeout from the WAV's size, and Node refuses a
+    fraction, so most recordings over 15 minutes never transcribed. The copy (in *cwd*, under 4 ms of
+    added silence) has a size whose timeout is whole; the recording itself is never written.
     """
     # ponytail: drop when CLI_VERSION reaches 0.9, which rounds the timeout itself.
-    if "transcribe" not in argv[:-1] or "parakeet" not in argv:
-        return
-    path = os.path.join(cwd, argv[argv.index("transcribe") + 1])
+    if len(argv) < 4 or os.path.basename(argv[1]) != "cli.js" or argv[2] != "transcribe":
+        return None
+    if "parakeet" not in argv and "--engine=parakeet" not in argv:
+        return None
+    path = os.path.join(cwd, argv[3])
+    copy = os.path.join(cwd, "zenvi-parakeet-%d.wav" % os.getpid())
     try:
         size = os.path.getsize(path)
-        if not path.lower().endswith(".wav") or size <= 900 * 32000 or size % 16 == 0:
-            return
+        if not path.lower().endswith(".wav") or _cli_timeout_ms(size).is_integer():
+            return None
         with wave.open(path, "rb") as src:
             if (src.getframerate(), src.getnchannels(), src.getsampwidth()) != (16000, 1, 2):
-                return
-            frames = src.readframes(src.getnframes())
-        pad = next(k for k in range(8) if (44 + len(frames) + 2 * k) % 16 == 0)
-        with wave.open(path, "wb") as out:  # a plain 44-byte header, so the size is exact
-            out.setnchannels(1)
-            out.setsampwidth(2)
-            out.setframerate(16000)
-            out.writeframes(frames + b"\x00\x00" * pad)
+                return None
+            frames = src.getnframes()
+            pad = next((k for k in range(64) if _cli_timeout_ms(44 + 2 * (frames + k)).is_integer()), None)
+            if pad is None:
+                return None
+            with wave.open(copy, "wb") as out:  # a plain 44-byte header, so the size is exact
+                out.setnchannels(1)
+                out.setsampwidth(2)
+                out.setframerate(16000)
+                while True:
+                    chunk = src.readframes(1 << 20)
+                    if not chunk:
+                        break
+                    out.writeframes(chunk)
+                out.writeframes(b"\x00\x00" * pad)
+        return copy
     except (OSError, wave.Error, EOFError) as exc:
         log.warning("could not pad %s for Parakeet: %s", path, exc)
+        if os.path.exists(copy):
+            os.remove(copy)
+        return None
 
 
 def _exec(argv: List[str], cwd: str, node: Optional[str], timeout: float,
           isolated: bool = True) -> Tuple[int, str]:
-    _whole_ms_for_parakeet(argv, cwd)
+    copy = _parakeet_copy(argv, cwd)
+    if copy:
+        argv = argv[:3] + [copy] + argv[4:]
+    try:
+        return _run_process(argv, cwd, node, timeout, isolated)
+    finally:
+        if copy and os.path.exists(copy):
+            os.remove(copy)
+
+
+def _run_process(argv: List[str], cwd: str, node: Optional[str], timeout: float,
+                 isolated: bool) -> Tuple[int, str]:
     try:
         proc = subprocess.run(
             argv, cwd=cwd, env=_environment(node, isolated), capture_output=True, text=True, encoding="utf-8",
