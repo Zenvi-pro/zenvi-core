@@ -44,5 +44,17 @@ def test_full_detail_carries_each_clips_trimmed_scenes(editor):
     assert "early-serve" not in full
 
 
+def test_chat_snapshot_timeline_is_readable_text_not_receipt_json(editor):
+    from classes.tool_handlers import build_editor_snapshot_for_chat
+    editor.add_track(2000000, label="Music")
+    f = editor.add_file("video", duration=60.0)
+    editor.add_clip(f, position=0.0, start=0.0, end=10.0)
+    editor.add_clip(f, position=10.0, start=0.0, end=10.0, layer=2000000)
+    snap = build_editor_snapshot_for_chat()
+    timeline = snap.split("TIMELINE:\n", 1)[1].rsplit("[/Editor snapshot]", 1)[0].strip()
+    assert timeline == _timeline_text(editor).strip()
+    assert '"legacy_text"' not in snap and '"status"' not in snap
+
+
 if __name__ == "__main__":
     print("test_tool_handlers_timeline_search: run with pytest")
