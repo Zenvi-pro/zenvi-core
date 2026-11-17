@@ -198,8 +198,11 @@ def run_once(agent, rollout, prompt, seed, narrow=False):
     project = make_project(seed)
     best = moments_of(project)
     with World(project, rollout) as w:
-        if not w.store[EC.CONTRACT_KEY] and not narrow:
-            w.store[EC.CONTRACT_KEY] = EC.new_contract(EC.MODE_FINISHED, source="classifier")      # what the desktop's classifier sets for a whole piece
+        # What the desktop does with the user's message (AIChatWindow._note_edit_intent): the classifier alone starts the contract.
+        started = (EC.contract_for_ask(w.store[EC.CONTRACT_KEY], prompt, timeline_empty=True, media_minutes=sum(f.duration for f in project) / 60.0)
+                   if rollout != "off" else None)
+        if started is not None:
+            w.store[EC.CONTRACT_KEY] = started
         if narrow:
             run_narrow(w, prompt)
         else:

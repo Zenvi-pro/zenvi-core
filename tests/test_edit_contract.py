@@ -386,6 +386,61 @@ def test_every_tool_the_contract_names_is_a_real_registered_tool():
     assert not (EC.OBSERVED_TOOLS | EC.PLACEMENT_TOOLS) - real, sorted((EC.OBSERVED_TOOLS | EC.PLACEMENT_TOOLS) - real)
 
 
+# ------------------------------------------------------------------ how a finished piece starts (the desktop classifies the message)
+def start(contract, text, **kw):
+    kw.setdefault("timeline_empty", True)
+    kw.setdefault("media_minutes", 40.0)
+    return EC.contract_for_ask(contract, text, **kw)
+
+
+def test_a_whole_piece_ask_starts_a_finished_piece_from_the_classifier():
+    c = start(None, "make something cool with my trip")
+    assert c["mode"] == EC.MODE_FINISHED and c["phase"] == "idle" and c["source"] == "classifier"
+    assert EC.check_policy(c, "add_clips_to_timeline_tool", rollout="enforce").action == "refuse"
+
+
+@pytest.mark.parametrize("text", ["make it warmer", "add captions", "45 seconds", "yes", "what is in my footage?", ""])
+def test_narrow_asks_answers_and_chatter_never_start_or_change_a_contract(text):
+    assert start(None, text) is None
+    mid = EC.advance(EC.new_contract(EC.MODE_FINISHED), "begin_ok", ready=True)
+    assert start(mid, text) is None
+
+
+def test_a_free_message_never_downgrades_a_piece_under_way():
+    idle = EC.new_contract(EC.MODE_FINISHED)
+    assert start(idle, "45 seconds") is None and start(idle, "make it warmer") is None
+
+
+def test_the_same_whole_piece_ask_again_does_not_reset_a_piece_under_way():
+    mid = EC.advance(EC.advance(EC.new_contract(EC.MODE_FINISHED), "begin_ok", ready=True), "placed")
+    assert start(mid, "make a vlog") is None, "the audit and phase of a piece under way are kept"
+
+
+def test_a_finished_piece_starts_a_fresh_round_for_a_new_ask():
+    done = EC.advance(EC.advance(EC.new_contract(EC.MODE_FINISHED), "begin_ok", ready=True), "review_done", needs=["x"])
+    done = EC.advance(done, "review_done", needs=[])
+    assert done["phase"] == "done"
+    fresh = start(done, "make a vlog")
+    assert fresh["phase"] == "idle" and fresh["audit"]["rounds"] == 0 and fresh["mode"] == EC.MODE_FINISHED
+
+
+def test_a_busy_timeline_or_no_media_starts_nothing_unless_the_user_restarts():
+    assert start(None, "make a vlog", timeline_empty=False) is None
+    assert start(None, "make a vlog", media_minutes=0.0) is None
+    assert start(None, "start over and make a vlog from scratch", timeline_empty=False)["mode"] == EC.MODE_FINISHED
+
+
+def test_recreate_is_started_once():
+    c = start(None, "recreate this video from my footage")
+    assert c["mode"] == EC.MODE_RECREATE and start(c, "recreate this video from my footage") is None
+    assert EC.check_policy(c, "add_clips_to_timeline_tool", rollout="enforce").action == "allow"
+
+
+def test_the_refusal_tells_the_agent_how_to_get_plain_editing_back():
+    msg = EC.check_policy(contract(EC.MODE_FINISHED, "idle"), "add_clips_to_timeline_tool", rollout="enforce").message
+    assert "mode='free'" in msg and "begin_edit_tool" in msg
+
+
 # ------------------------------------------------------------------ export warning and snapshot line
 def test_export_is_never_refused_only_warned():
     assert EC.export_warning(contract(EC.MODE_FREE, "idle")) is None

@@ -2851,6 +2851,31 @@ class AIChatWindow(QDockWidget):
         brief = self._edit_brief_context()
         return f"{recap}\n{brief}\n" if recap and brief else (recap or (f"{brief}\n" if brief else ""))
 
+    def _note_edit_intent(self, text: str) -> None:
+        """Start (or leave alone) the edit contract from what the user just typed. Main thread, project data in memory only.
+
+        A whole-piece ask on an empty timeline starts a finished piece, so placing clips waits for a brief whichever agent answers,
+        including one that never calls begin_edit_tool. Never downgrades a piece under way. Off when the ``edit_contract`` flag is
+        off; any error leaves the contract as it was.
+        """
+        try:
+            from classes import edit_contract
+            if edit_contract.rollout_setting() == "off":
+                return
+            from classes.app import get_app
+            from classes.editor_tools.media_index_tools_edit import read_contract, write_contract
+            from classes.query import File
+
+            minutes = sum(float(f.data.get("duration") or 0) for f in (File.filter() or [])
+                          if isinstance(getattr(f, "data", None), dict) and not f.data.get("zenvi_subclip")
+                          and str(f.data.get("media_type") or "video") == "video") / 60.0
+            new = edit_contract.contract_for_ask(read_contract(), text, timeline_empty=not (get_app().project.get("clips") or []),
+                                                 media_minutes=minutes)
+            if new is not None:
+                write_contract(new)
+        except Exception as e:
+            log.debug("edit intent: %s", e)
+
     def _edit_brief_context(self) -> str:
         """The project's edit brief and contract as a short block ('' when there is none). Main thread; reads memory only."""
         try:
@@ -3874,6 +3899,8 @@ class AIChatWindow(QDockWidget):
             sess["last_user_images"] = list(images or []) if images else []
         if action == "chat" and cmd:
             self._request_preamble_summary(cmd)
+        if action == "chat" and text:
+            self._note_edit_intent(text)            # before the snapshot, so its EDIT_STATE line already shows it
         augmented_text = self._prepend_editor_snapshot(text) if text else text
         if action == "chat" and augmented_text:
             augmented_text = handoff + augmented_text

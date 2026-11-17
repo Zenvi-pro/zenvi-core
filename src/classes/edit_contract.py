@@ -474,6 +474,24 @@ class Verdict:
 ALLOW = Verdict("allow")
 
 
+def contract_for_ask(contract: Any, text: str, *, timeline_empty: bool, media_minutes: float = 0.0) -> Optional[Dict[str, Any]]:
+    """The contract to store for a new user message, or None to leave it alone. This is how a finished piece *starts*: the desktop
+    classifies what the user typed (``classify_intent``), so the gate holds for any agent, including one that never calls
+    begin_edit_tool. A free-looking message never downgrades a piece under way (an answer like "45 seconds" is free), and a piece that
+    is ``done`` starts a fresh round when the user asks for a new one on an empty timeline."""
+    c = normalize(contract)
+    mode = classify_intent(text, timeline_empty=timeline_empty, media_minutes=media_minutes)
+    if mode == MODE_FINISHED:
+        if c["mode"] == MODE_FINISHED and c["phase"] != "done":
+            return None
+        fresh = advance(c, "new_piece")
+        fresh["source"] = "classifier"
+        return fresh
+    if mode == MODE_RECREATE:
+        return None if c["mode"] == MODE_RECREATE else new_contract(MODE_RECREATE, source="classifier")
+    return None
+
+
 def _refusal_text(c: Dict[str, Any]) -> str:
     r = c.get("readiness") or {}
     tier, total, structured = r.get("tier"), r.get("total"), r.get("structured")
@@ -481,7 +499,7 @@ def _refusal_text(c: Dict[str, Any]) -> str:
     if tier in ("none", "partial") and total:
         wait = f" {structured or 0}/{total} videos have a structure index yet: call begin_edit_tool again shortly. Do not sample frames."
     return ("edit contract: placing clips waits for a brief. Call begin_edit_tool (or set_edit_brief_tool with form + target_seconds) first, "
-            f"then place. phase={c.get('phase')}.{wait}")
+            f"then place. If the user only wants plain editing, call begin_edit_tool with mode='free'. phase={c.get('phase')}.{wait}")
 
 
 def check_policy(contract: Any, tool_name: str, *, brief: Optional[Dict[str, Any]] = None, rollout: str = DEFAULT_ROLLOUT) -> Verdict:

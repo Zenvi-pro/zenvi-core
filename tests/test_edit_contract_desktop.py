@@ -219,3 +219,97 @@ def test_the_hint_rides_the_ws_payload_only_when_there_is_one(project, monkeypat
     assert sent_payloads(monkeypatch, "hi")["edit_contract_mode"] == "finished_piece"
     project[EC.CONTRACT_KEY] = {}
     assert "edit_contract_mode" not in sent_payloads(monkeypatch, "hello")
+
+
+# ------------------------------------------------------------------ the desktop starts the contract from what the user typed
+@pytest.fixture
+def desk(project, monkeypatch):
+    """A free project with ten minutes of video in the bin, an empty timeline, and a way to see what was written."""
+    import classes.app as app_mod
+    import classes.query as Q
+    writes = []
+    files = [SimpleNamespace(data={"duration": 600.0, "media_type": "video"}), SimpleNamespace(data={"duration": 30.0, "media_type": "audio"})]
+    monkeypatch.setattr(app_mod, "get_app", lambda: SimpleNamespace(project=SimpleNamespace(get=lambda k, d=None: project.get(k, d))), raising=False)
+    monkeypatch.setattr(Q.File, "filter", staticmethod(lambda *a, **k: files), raising=False)
+    monkeypatch.setattr(TE, "write_contract", lambda c: (writes.append(c), project.__setitem__(EC.CONTRACT_KEY, c)))
+    monkeypatch.delenv("ZENVI_EDIT_CONTRACT", raising=False)
+    return SimpleNamespace(project=project, writes=writes, files=files)
+
+
+def note(text):
+    from windows.ai_chat_ui import AIChatWindow
+    AIChatWindow._note_edit_intent(None, text)
+
+
+def test_a_whole_piece_message_starts_the_contract(desk):
+    note("make something cool with my trip")
+    (c,) = desk.writes
+    assert c["mode"] == EC.MODE_FINISHED and c["phase"] == "idle" and c["source"] == "classifier"
+
+
+@pytest.mark.parametrize("text", ["make it warmer", "add captions", "45 seconds", "", "what is in my footage?"])
+def test_a_narrow_message_writes_nothing(desk, text):
+    note(text)
+    assert desk.writes == []
+
+
+def test_the_flag_off_writes_nothing(desk, monkeypatch):
+    monkeypatch.setenv("ZENVI_EDIT_CONTRACT", "off")
+    note("make a vlog")
+    assert desk.writes == []
+
+
+def test_a_piece_under_way_is_neither_downgraded_nor_rewritten(desk):
+    desk.project[EC.CONTRACT_KEY] = EC.advance(EC.advance(EC.new_contract(EC.MODE_FINISHED), "begin_ok", ready=True), "placed")
+    note("make a vlog")
+    note("make it warmer")
+    assert desk.writes == []
+
+
+def test_a_busy_timeline_starts_nothing(desk):
+    desk.project["clips"] = [{"id": "c1"}]
+    note("make a vlog")
+    assert desk.writes == []
+
+
+def test_no_video_in_the_bin_starts_nothing(desk):
+    desk.files[:] = [SimpleNamespace(data={"duration": 30.0, "media_type": "audio"}),
+                     SimpleNamespace(data={"zenvi_subclip": True, "duration": 99, "media_type": "video"})]
+    note("make a vlog")
+    assert desk.writes == []
+
+
+def test_any_error_leaves_the_contract_alone_and_never_raises(desk, monkeypatch):
+    monkeypatch.setattr(TE, "read_contract", lambda: (_ for _ in ()).throw(RuntimeError("no project")))
+    note("make a vlog")
+    assert desk.writes == []
+
+
+def test_the_message_pipeline_notes_the_intent_before_it_builds_the_snapshot():
+    import inspect
+    from windows.ai_chat_ui import AIChatWindow
+    src = inspect.getsource(AIChatWindow._dispatch_user_message)
+    assert "self._note_edit_intent(text)" in src and src.index("_note_edit_intent(") < src.index("_prepend_editor_snapshot(")
+    import re
+    guard = r'if action == "chat" and text:' + r"\s+" + r"self\._note_edit_intent\(text\)"
+    assert re.search(guard, src), "only a chat message counts, never a plan action"
+
+
+def test_end_to_end_a_vague_message_then_an_eager_placement_is_held_back_in_enforce(desk, monkeypatch):
+    """The gap the eval first hid: nothing but the user's message sets the contract, and the executor then holds the placement."""
+    from classes.agent_tools import execute as X
+    monkeypatch.setenv("ZENVI_EDIT_CONTRACT", "enforce")
+    note("make a vlog of my trip")
+    app = SimpleNamespace(project=SimpleNamespace(get=lambda k, d=None: desk.project.get(k, d)), updates=SimpleNamespace(actionHistory=[]), thread=lambda: None)
+    calls = []
+    monkeypatch.setattr(X, "_HANDLERS", {"add_clips_to_timeline_tool": lambda **k: calls.append(k) or "Placed."})
+    monkeypatch.setattr(X, "_READ_ONLY", frozenset())
+    monkeypatch.setattr(X, "_BACKGROUND_SAFE", frozenset())
+    monkeypatch.setattr(X, "_UNGROUPED", frozenset())
+    monkeypatch.setattr(X, "_GET_APP", lambda: app)
+    monkeypatch.setattr(X, "_RUN_ON_MAIN", lambda fn, timeout=None: fn())
+    monkeypatch.setattr(X, "_ATOMIC", lambda a, h: h)
+    monkeypatch.setattr(X, "_QTHREAD", None)
+    monkeypatch.setattr("classes.agent_tools.schema.validate_args", lambda t, a: None)
+    receipt = X.execute_tool_rich("add_clips_to_timeline_tool", {"items": []}).receipt
+    assert receipt.status == "refused" and "begin_edit_tool" in receipt.summary and calls == []
