@@ -8,13 +8,15 @@ desktop gate still protects the timeline, and every field below is optional and 
 
 ## 1. What the desktop already does (you get it for free)
 
+- The desktop starts the contract itself from the user's message (a whole-piece ask on an empty timeline), so the gate does not depend on the model calling anything.
 - A project-level contract, stored with the edit brief (`edit_contract`), says `free`, `finished_piece` or `recreate`, and the
   phase (`idle`, `surveying`, `briefed`, `assembling`, `finishing`, `audited`, `done`).
 - In a `finished_piece`, `add_clips_to_timeline_tool` / `add_clip_to_timeline_tool` are refused until the project has a brief
   with a form and a target length. The refusal names the fix. Rollout flag `edit_contract` = `off` | `warn` (default) | `enforce`.
 - `begin_edit_tool` (core) surveys the footage and writes brief defaults in one call.
-- Every chat turn already carries an `[Editor snapshot]` with an edit-state line: `contract=finished_piece/briefed · brief: form=vlog
-  target=210s · index_v2: videos=32 structure=28 · audit: needs=2 rounds=1`.
+- Every chat turn already carries an `[Editor snapshot]` with an `EDIT_STATE:` line: `contract=finished_piece/briefed · brief: form=vlog
+  target=210s · index: videos=32 ready=20 analyzed=8 not_indexed=4 · audit: needs=2 rounds=1` (a free edit with no brief gets the
+  `index:` part only).
 - The WS `user_message` may carry an optional `edit_contract_mode` (`free` | `finished_piece` | `recreate`) when the desktop knows it.
   Treat it as a hint; absent means unknown.
 

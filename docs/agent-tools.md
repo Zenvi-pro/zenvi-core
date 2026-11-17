@@ -98,7 +98,13 @@ shares (`agent_tools/execute.py`), so it holds for the Zenvi Assistant and for e
   `set_edit_brief_tool` are core too, so no agent has to find them. A narrow ask needs none of it.
 * **The gate (v1)** holds back only `add_clips_to_timeline_tool` / `add_clip_to_timeline_tool`, only in a `finished_piece`,
   only until the brief has a form and a length. Export is never refused; it carries a warning if the piece was not audited.
-* **Rollout flag** `edit_contract`: `off` | `warn` (default: the call runs, the receipt carries a warning) | `enforce`.
+* **How a piece starts:** the desktop classifies each chat message before the snapshot is built
+  (`AIChatWindow._note_edit_intent` -> `edit_contract.contract_for_ask`). A whole-piece ask on an empty timeline starts a
+  `finished_piece`; "recreate this video" is its own mode; a narrow ask or an answer ("45 seconds") never starts or downgrades one.
+  So the gate holds for an agent that never calls `begin_edit_tool`. Plain editing comes back with `begin_edit_tool(mode='free')`.
+* **Rollout flag:** environment variable `ZENVI_EDIT_CONTRACT` (or the `edit-contract` desktop setting) = `off` | `warn` | `enforce`.
+  Default `warn`: the call runs and the receipt carries a warning. Only `enforce` refuses; `off` is byte-identical to before.
+  (The offline eval in `tests/eval/results/EDIT_CONTRACT.md` shows `warn` changes nothing for an agent that ignores warnings.)
 * The backend side (prompts, model routing) is specified in `docs/backend-handoff-edit-contract.md`.
 
 ## Testing
