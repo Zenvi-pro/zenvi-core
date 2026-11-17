@@ -85,6 +85,22 @@ Rules (the contract tests in `tests/test_editor_tools_*.py` enforce most of them
   includes the trimmed start (`_base.clip_frame_at`).
 * **Keyframe interpolation:** `bezier` (default), `linear`, `constant`.
 
+## Finished pieces: the edit contract
+
+A whole piece ("make me a vlog / reel / trailer") must not be cut before anyone has looked at the footage and decided what film
+this is. The rule lives in `src/classes/edit_contract.py` (pure Python, no Qt) and is enforced in the one executor every agent
+shares (`agent_tools/execute.py`), so it holds for the Zenvi Assistant and for every CLI agent alike.
+
+* **State** is stored with the project next to the edit brief (`edit_contract`, untracked: never an undo step): the mode
+  (`free` | `finished_piece` | `recreate`), the phase (`idle`, `surveying`, `briefed`, `assembling`, `finishing`, `audited`, `done`),
+  index readiness and the last audit.
+* **`begin_edit_tool`** (core) surveys the footage and writes the brief defaults in one call. `get_edit_brief_tool` and
+  `set_edit_brief_tool` are core too, so no agent has to find them. A narrow ask needs none of it.
+* **The gate (v1)** holds back only `add_clips_to_timeline_tool` / `add_clip_to_timeline_tool`, only in a `finished_piece`,
+  only until the brief has a form and a length. Export is never refused; it carries a warning if the piece was not audited.
+* **Rollout flag** `edit_contract`: `off` | `warn` (default: the call runs, the receipt carries a warning) | `enforce`.
+* The backend side (prompts, model routing) is specified in `docs/backend-handoff-edit-contract.md`.
+
 ## Testing
 
 * **Unit tests:** use the `editor` fixture (`tests/editor_tools_harness.py`): the real

@@ -25,4 +25,8 @@ CORE_TOOL_NAMES = (
     "review_edit_tool",
     "inspect_timeline_tool",
     "undo_tool",
+    # A whole piece starts here: begin_edit_tool surveys and writes the brief, and placing clips waits for one (edit_contract.py).
+    "begin_edit_tool",
+    "get_edit_brief_tool",
+    "set_edit_brief_tool",
 )

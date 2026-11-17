@@ -11,9 +11,11 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
+from classes import edit_contract as EC
 from classes.editor_tools._base import ToolError, array, boolean, enum, get_app, integer, mapping, number, obj, ok, on_main, string, th
 from classes.editor_tools._registry import editor_tool
-from classes.editor_tools.media_index_tools_review import MAX_MIX_SECONDS, build_timeline, measure_looks, render_timeline_mix
+from classes.editor_tools.media_index_tools import project_indexes
+from classes.editor_tools.media_index_tools_review import MAX_MIX_SECONDS, build_timeline, measure_looks, render_timeline_mix, survey
 from classes.editor_tools.timeline_edit_common import extend_timeline, frame_seconds, refresh, require_unlocked, save_clip, snap, tolerance
 from classes.media_index import audition, beatsync, harmonize, library, mixplan, review as R
 from classes.media_index.store import default_shelf
@@ -389,12 +391,160 @@ def set_edit_brief(brief, replace=False):
 )
 def get_edit_brief():
     """Read the edit brief saved with this project: the intent, plan and progress someone (or you, earlier) recorded
-    with run_tool(name='set_edit_brief_tool'). Read it first when picking up an edit you did not start or after a long break.
+    with set_edit_brief_tool or begin_edit_tool. Read it first when picking up an edit you did not start or after a long break.
+    For a whole piece the receipt also carries the contract: its phase and what the last audit still named.
     """
     brief = read_brief()
+    contract = read_contract()
+    extra = {"contract": contract} if contract["mode"] != EC.MODE_FREE else {}
     if not brief:
-        return ok("No edit brief is saved for this project yet.", brief={})
-    return ok(f"Edit brief with {len(brief)} item(s).", brief=brief)
+        return ok("No edit brief is saved for this project yet.", brief={}, **extra)
+    return ok(f"Edit brief with {len(brief)} item(s).", brief=brief, **extra)
+
+
+# ============================ the edit contract and begin_edit_tool ============================
+def read_contract() -> Dict[str, Any]:
+    """The edit contract saved with the project (``free`` when there is none or it is unreadable)."""
+    return EC.normalize(get_app().project.get(EC.CONTRACT_KEY))
+
+
+def write_contract(contract: Dict[str, Any]) -> None:
+    """Save the contract with the project: untracked, like the brief, so it is never an undo step."""
+    _write_project_keys(None, contract)
+
+
+def _write_project_keys(brief_values: Optional[Dict[str, Any]], contract: Optional[Dict[str, Any]]) -> None:
+    """Brief and contract in one hop to the GUI thread. Both are untracked writes: no undo step, no history."""
+    contract_value = EC.to_json(contract) if contract is not None else None
+
+    def write() -> None:
+        if brief_values is not None:
+            get_app().updates.update_untracked([BRIEF_KEY], brief_values)
+        if contract_value is not None:
+            get_app().updates.update_untracked([EC.CONTRACT_KEY], contract_value)
+    on_main(write)
+
+
+def _project_state():
+    """(brief, contract, clip count): read on the GUI thread, where the project is."""
+    def read():
+        return read_brief(), read_contract(), len(get_app().project.get("clips") or [])
+    return on_main(read)
+
+
+def _index_counts(files: List[Any], missing: List[str]) -> Dict[str, Any]:
+    """How much of the footage can be planned from. A file with no saved index counts as not structured (conservative)."""
+    videos = [f for f in files if str(getattr(f, "media_type", "video") or "video") == "video"]
+    structured = [f for f in videos if getattr(f, "shots", None)]
+    searchable = [f for f in structured if getattr(f, "rows", None) or getattr(f, "vector_model", "")]
+    rich = [f for f in structured if getattr(f, "sentences", None) or (((getattr(f, "look_file", None) or {}).get("profile") or {}).get("present"))]
+    return {"total": len(videos) + len(missing), "structured": len(structured), "searchable": len(searchable), "rich": len(rich),
+            "structured_minutes": round(sum(float(getattr(f, "duration", 0) or 0) for f in structured) / 60.0, 1)}
+
+
+_NEXT_TOOLS = ["search_footage_tool", "add_clips_to_timeline_tool", "review_edit_tool"]
+
+
+@editor_tool(
+    "begin_edit_tool",
+    covers=("index.brief",),
+    label="Start the edit",
+    background_safe=True,
+    schema=obj({
+        "user_ask": string("What the user asked for, in their words. Used to tell a whole piece from a narrow tweak and to pick the form and length they named.", ""),
+        "mode": enum(["", "free", "finished_piece", "recreate"], "Leave empty to let the editor decide from user_ask. 'free' reopens plain editing; "
+                     "'finished_piece' is a whole vlog, reel, trailer or film; 'recreate' remakes a reference video.", ""),
+        "form": string("The kind of piece if the user said it (vlog, reel, tiktok, short, trailer, montage, film, ...). Free text is matched to a known form.", ""),
+        "vibe": string("The feel the user asked for, in a few words ('warm, cinematic').", ""),
+        "target_seconds": number("The length the user wants, in seconds. Leave out to take it from user_ask or the footage.", None, minimum=0),
+        "aspect": string("'16:9', '9:16' or '1:1'. Leave out to take it from the footage and the form.", ""),
+        "bans": array({"type": "string"}, "Things the user ruled out ('no stock', 'no AI').", None),
+        "commit_brief": boolean("Save the brief and the contract with the project (default). False only proposes them.", True),
+        "detail": enum(["digest", "full"], "'full' returns a longer survey (more moments, days, music) for a long film.", "digest"),
+    }),
+)
+def begin_edit(user_ask="", mode="", form="", vibe="", target_seconds=None, aspect="", bans=None, commit_brief=True, detail="digest"):
+    """Start a whole piece (a vlog, a reel, a trailer, a film) the right way, in one call: it surveys the footage, writes the
+    brief a careful editor would (form, length, aspect, music, captions, the strongest opening, a beat map of acts) from
+    what the footage is and what the user said, saves it with the project, and returns a short survey to plan from. Until
+    a brief exists, placing clips on a finished piece is held back, so call this first for any "make me a ..." ask and
+    again whenever the footage changes. A narrow ask ("make it warmer", "add captions") needs no call: it returns at once.
+    Anything the user or an earlier call already put in the brief is kept; what you pass here wins over it. While the footage
+    is still being indexed it says so and writes no brief: call it again shortly. Then search_footage_tool for the best
+    moments, place them with add_clips_to_timeline_tool, finish each layer and run review_edit_tool before you say it is done.
+    """
+    files, missing = project_indexes()
+    if not files and not missing:
+        raise ToolError("the project has no media files yet: import footage with import_files_tool, then call begin_edit_tool again")
+    ask = str(user_ask or "").strip()
+    old_brief, contract, _clips = _project_state()
+    minutes = sum(float(getattr(f, "duration", 0) or 0) for f in files if str(getattr(f, "media_type", "video") or "video") == "video") / 60.0
+
+    explicit_mode = str(mode or "")
+    if explicit_mode:
+        chosen = explicit_mode
+    elif not ask:
+        chosen = EC.MODE_FINISHED                        # a bare call means "start a piece"
+    else:
+        # The agent asked: judge the words, not the timeline. The project has media (checked above) even if none is indexed yet.
+        chosen = EC.classify_intent(ask, timeline_empty=True, media_minutes=max(minutes, 1.0))
+
+    if chosen == EC.MODE_FREE:
+        if explicit_mode and commit_brief:
+            contract = EC.advance(contract, "user_free")
+            _write_project_keys(None, contract)
+        return ok("Free edit: no gate. " + ("Plain editing is open again." if explicit_mode else
+                  "This reads as a narrow edit. If you are making a whole piece, call begin_edit_tool again with mode='finished_piece'."),
+                  contract=contract)
+
+    if chosen == EC.MODE_RECREATE:
+        contract = EC.advance(contract, "begin_ok", mode=EC.MODE_RECREATE, readiness={}, ready=True)
+        contract["phase"] = "idle"                        # the recreation tools carry their own checks
+        if commit_brief:
+            _write_project_keys(None, contract)
+        return ok("Recreate: run storyboard_tool (detail=list) on the reference first, then plan, build and check the recreation "
+                  "(find_tools: plan recreation). Nothing is held back.", contract=contract, committed=bool(commit_brief))
+
+    if contract["phase"] == "done" and contract["mode"] != EC.MODE_FREE:
+        contract = EC.advance(contract, "new_piece")      # a finished piece starts a fresh round; an unfinished one keeps its audit
+    top = 15 if detail == "full" else 8
+    sv = survey(files, missing, top=top)
+    brief_new, questions, inferred = EC.default_brief(sv, user_ask=ask, form=str(form or ""), vibe=str(vibe or ""),
+                                                      target_seconds=target_seconds, aspect=str(aspect or ""), bans=list(bans or []))
+    explicit: Dict[str, Any] = {}
+    if form or EC.normalize_form(ask):
+        explicit["form"] = brief_new["form"]
+    if target_seconds or EC.parse_length_seconds(ask):
+        explicit["target_seconds"] = brief_new["target_seconds"]
+    for key, given in (("vibe", vibe), ("aspect", aspect), ("bans", bans)):
+        if given:
+            explicit[key] = brief_new[key]
+    merged = {**brief_new, **old_brief, **explicit}
+    merged = {k: v for k, v in merged.items() if v is not None}
+    brief_clean = _clean_brief(merged)                     # ToolError over the size cap, before anything is written
+
+    counts = _index_counts(files, missing)
+    tier = EC.readiness(counts["total"], counts["structured"], searchable=counts["searchable"], rich=counts["rich"],
+                        structured_minutes=counts["structured_minutes"], needed_minutes=float(merged.get("target_seconds") or 0) / 60.0 * 3.0)
+    info = {"tier": tier, **{k: counts[k] for k in ("total", "structured", "searchable", "rich")}}
+
+    if not EC.can_start(tier, contract["attempts"]):
+        waiting = EC.advance(contract, "begin_wait", mode=EC.MODE_FINISHED, readiness=info)
+        if commit_brief:
+            _write_project_keys(None, waiting)
+        return ok(f"Footage is still being indexed ({counts['structured']}/{counts['total']} videos have a structure index yet): call "
+                  "run_tool(name='wait_until_project_indexed_tool'), then begin_edit_tool again. Do not sample frames to find cuts.",
+                  wait=True, contract=waiting, survey_digest={"readiness": info}, committed=False)
+
+    started = EC.advance(contract, "begin_ok", mode=EC.MODE_FINISHED, readiness=info, ready=True)
+    if commit_brief:
+        _write_project_keys(brief_clean, started)
+    digest = EC.build_digest(sv, info, cap=EC.DIGEST_FULL_CAP_CHARS if detail == "full" else EC.DIGEST_CAP_CHARS)
+    usable = float((sv.get("totals") or {}).get("usable_minutes") or 0.0)
+    return ok(f"Finished-piece brief ready: {merged['form']}, about {int(float(merged['target_seconds']))} s from {usable:g} min of usable footage"
+              + (" (some footage still indexing)" if tier == "partial" else "") + ".",
+              contract=started, brief=merged, survey_digest=digest, next_tools=list(_NEXT_TOOLS), questions=questions,
+              inferred=inferred, committed=bool(commit_brief))
 
 
 # ============================ harmonize_look_tool ============================
