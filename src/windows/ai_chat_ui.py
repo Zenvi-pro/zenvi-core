@@ -2849,6 +2849,7 @@ class AIChatWindow(QDockWidget):
             chat_history.load_messages(self._active_sid), seen.get(backend, 0))
         # The taste decisions live in the project's brief, not in the chat: a new agent needs them too.
         brief = self._edit_brief_context()
+        brief = brief if isinstance(brief, str) else ""      # a stand-in window (tests) answers with a mock: that is no brief
         return f"{recap}\n{brief}\n" if recap and brief else (recap or (f"{brief}\n" if brief else ""))
 
     def _note_edit_intent(self, text: str) -> None:
@@ -4019,6 +4020,7 @@ class AIChatWindow(QDockWidget):
             # The CLI's plan lives in its own conversation, but the brief it saved lives in the project: say it again so a
             # long plan turn cannot lose the taste decisions between planning and carrying out.
             brief = self._edit_brief_context()
+            brief = brief if isinstance(brief, str) else ""
             self._dispatch_user_message(
                 "Carry out the plan." + (f"\n\n{brief}" if brief else ""), sess.get("last_user_model_id") or "",
                 agent_mode="agent", effort=sess.get("last_user_effort") or "")

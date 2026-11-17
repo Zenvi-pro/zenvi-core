@@ -313,3 +313,46 @@ def test_end_to_end_a_vague_message_then_an_eager_placement_is_held_back_in_enfo
     monkeypatch.setattr("classes.agent_tools.schema.validate_args", lambda t, a: None)
     receipt = X.execute_tool_rich("add_clips_to_timeline_tool", {"items": []}).receipt
     assert receipt.status == "refused" and "begin_edit_tool" in receipt.summary and calls == []
+
+
+# ------------------------------------------------------------------ the existing window tests use a MagicMock window: a mock is no brief
+def test_a_mock_window_hands_over_exactly_what_it_did_before(handoff):
+    """tests/test_agent_switch_context.py (which needs a real PyQt5) builds `win = MagicMock()`; its `_edit_brief_context()` is a
+    mock. That must read as no brief, so those tests' exact-string assertions keep holding wherever they do run."""
+    from unittest.mock import MagicMock
+    from windows.ai_chat_ui import AIChatWindow
+    sess = {"backend": "claude_code", "seen_seq": {"claude_code": 3}}
+    win = MagicMock()
+    win._active_sid = "s1"
+    assert AIChatWindow._handoff_prefix(win, sess) == "RECAP of missed turns"
+    handoff.recap = ""
+    assert AIChatWindow._handoff_prefix(win, sess) == ""
+
+
+def test_a_mock_window_still_sends_the_plain_carry_out_text():
+    from unittest.mock import MagicMock
+    from windows.ai_chat_ui import AIChatWindow
+    sess = {"backend": "claude_code", "current_plan": {"cli": True}, "last_user_model_id": "opus", "last_user_effort": "high"}
+    win = MagicMock()
+    win.is_processing = False
+    win._active_session.return_value = sess
+    win._dispatch_user_message = MagicMock()
+    AIChatWindow._execute_plan(win, "", "")
+    assert win._dispatch_user_message.call_args.args[0] == "Carry out the plan."
+
+
+def test_a_mock_window_can_dispatch_a_message_without_the_intent_note_breaking_anything():
+    from unittest.mock import MagicMock
+    from windows.ai_chat_ui import AIChatWindow
+    win = MagicMock()
+    sess = {"worker": MagicMock(), "backend": "claude_code", "agent_mode": "agent"}
+    win._active_session.return_value = sess
+    win.is_processing = False
+    win._resolve_agent_mode.return_value = "agent"
+    win._handoff_prefix.return_value = ""
+    win._prepend_editor_snapshot.side_effect = lambda t: t
+    try:
+        AIChatWindow._dispatch_user_message(win, "make a vlog", "opus")
+    except Exception as e:       # the dispatcher needs more of the real window than a mock gives; only the new call matters here
+        assert "_note_edit_intent" not in repr(e)
+    win._note_edit_intent.assert_called_once_with("make a vlog")
