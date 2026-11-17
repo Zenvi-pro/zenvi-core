@@ -6180,6 +6180,35 @@ def get_timeline_state(detail_level="summary", **_kw) -> str:
         return f"Error: {e}"
 
 
+def _snapshot_edit_state(files) -> str:
+    """One line for the editor snapshot: where a whole piece stands (contract, brief headline, audit) and how much footage is
+    indexed. Reads only project data already in memory (no disk), so it is safe on the GUI thread. '' on any error."""
+    try:
+        from classes import edit_contract as EC
+        from classes.editor_tools.media_index_tools_edit import read_brief, read_contract
+        from classes.twelvelabs_match import get_index_block, twelvelabs_is_indexed
+
+        videos = ready = analyzed = 0
+        for f in files:
+            d = f.data if isinstance(getattr(f, "data", None), dict) else {}
+            if d.get("zenvi_subclip") or str(d.get("media_type") or "video") != "video":
+                continue
+            ai = d.get("ai_metadata") if isinstance(d.get("ai_metadata"), dict) else {}
+            videos += 1
+            if twelvelabs_is_indexed(get_index_block(ai)):     # legacy name: media-index v2 writes its own "ready" block here
+                ready += 1
+            elif ai.get("analyzed"):
+                analyzed += 1
+        index_line = f"index: videos={videos} ready={ready} analyzed={analyzed} not_indexed={videos - ready - analyzed}" if videos else ""
+        contract, brief = read_contract(), read_brief()
+        if contract["mode"] == EC.MODE_FREE and not brief:
+            return index_line
+        return EC.edit_state_line(contract, brief, index_line)
+    except Exception as e:
+        log.debug("_snapshot_edit_state: %s", e)
+        return ""
+
+
 def build_editor_snapshot_for_chat(max_chars: int = 5500) -> str:
     """Compact media-bin + timeline for LLM grounding. Call from Qt GUI thread.
 
@@ -6216,6 +6245,9 @@ def build_editor_snapshot_for_chat(max_chars: int = 5500) -> str:
             f"NOTE: media-bin files exist independently of the timeline; "
             f"an empty timeline does NOT mean no project files.\n"
         )
+        edit_state = _snapshot_edit_state(files)           # before the media list, so truncation (which cuts the end) never drops it
+        if edit_state:
+            head += f"EDIT_STATE: {edit_state}\n"
         if media_lines:
             # Cap listing so snapshot stays within max_chars with timeline.
             shown = media_lines[:20]

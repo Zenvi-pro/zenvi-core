@@ -513,7 +513,7 @@ def export_warning(contract: Any) -> Optional[str]:
 def edit_state_line(contract: Any, brief: Optional[Dict[str, Any]], index_line: str = "") -> str:
     """One line for the editor snapshot: the contract, the brief's headline and the audit state."""
     c = normalize(contract)
-    parts = [f"contract={c['mode']}/{effective_phase(c, brief)}"]
+    parts = [f"contract={c['mode']}" + ("" if c["mode"] == MODE_FREE else f"/{effective_phase(c, brief)}")]    # a free edit has no phases
     b = brief or {}
     if b.get("form"):
         bits = [f"form={b.get('form')}"]

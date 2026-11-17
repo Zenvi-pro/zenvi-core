@@ -402,4 +402,5 @@ def test_the_edit_state_line_is_short_and_says_what_the_agent_needs():
     line = EC.edit_state_line(c, {"form": "vlog", "target_seconds": 210, "vibe": "warm cinematic"}, "index_v2: videos=32 structure=28")
     assert "finished_piece/briefed" in line and "form=vlog" in line and "target=210s" in line and "structure=28" in line
     assert len(EC.edit_state_line(c, {"form": "v", "vibe": "x" * 500}, "i" * 900)) <= 600
-    assert EC.edit_state_line(None, None) == "contract=free/idle"
+    assert EC.edit_state_line(None, None) == "contract=free"
+    assert EC.edit_state_line(None, {"form": "reel", "target_seconds": 45}).startswith("contract=free · brief: form=reel target=45s")
