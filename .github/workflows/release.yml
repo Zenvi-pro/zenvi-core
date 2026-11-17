@@ -133,14 +133,20 @@ jobs:
   # protocol is not src/classes/engine_bridge.py's PROTOCOL.
   engine-cli:
     runs-on: ubuntu-latest
+    # Runs zenvi-web's npm scripts and CLI: read-only token, no OIDC.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/checkout@v4
         with:
           repository: Zenvi-pro/zenvi-web
           ref: ${{ env.ZENVI_WEB_REF }}
           path: zenvi-web
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
