@@ -255,6 +255,20 @@ def test_a_local_cli_build_is_copied(runtime, tmp_path):
         rt.install(str(tmp_path / "nowhere"))
 
 
+def test_a_cli_the_app_ships_needs_only_node_and_no_source(runtime):
+    rt, bridge = runtime.module, runtime.bridge
+    bundled = runtime.root / "app" / "engine"
+    bundled.mkdir(parents=True)
+    shutil.copy(FAKE, bundled / "zenvi.mjs")
+    before = rt.status()
+    assert not before["ready"] and before["bundled"] and before["node_needed"]
+    status = rt.install("")
+    assert status["ready"] and status["cli"] == str(bundled / "zenvi.mjs") and not status["managed"]
+    assert status["node"] == bridge.managed_node()
+    assert not any(name.startswith("zenvi-cli") for name in runtime.downloads)
+    assert not os.path.exists(bridge.managed_cli_dir())
+
+
 def test_without_a_source_the_install_says_where_to_set_one(runtime):
     with pytest.raises(runtime.module.RuntimeInstallError, match="Zenvi Engine Tools Source"):
         runtime.module.install("")

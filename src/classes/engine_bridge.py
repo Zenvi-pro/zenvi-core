@@ -117,6 +117,12 @@ def managed_cli_dir() -> str:
     return os.path.join(info.USER_PATH, RUNTIME_DIR, "cli")
 
 
+def bundled_cli() -> str:
+    """The CLI a release build ships: src/engine, which freeze.py copies into the app's lib/ (info.PATH)."""
+    from classes import info
+    return os.path.join(info.PATH, "engine", CLI_NAME)
+
+
 def managed_cli() -> str:
     return os.path.join(managed_cli_dir(), CLI_NAME)
 
@@ -145,12 +151,11 @@ def installed_runtime() -> dict:
 
 def cli_candidates(env=None) -> list:
     """Where the CLI bundle may be, in the order :func:`find_cli` tries them."""
-    from classes import info
     env = _env(env)
     named = [env.get("ZENVI_ENGINE_CLI", "")]
     if env is os.environ:
         named.append(_setting("engine-cli-path"))
-    return [p for p in named if p] + [os.path.join(info.PATH, "engine", CLI_NAME), managed_cli()]
+    return [p for p in named if p] + [bundled_cli(), managed_cli()]
 
 
 def find_cli(env=None) -> str:
