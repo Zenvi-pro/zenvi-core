@@ -267,6 +267,9 @@ def test_a_cli_the_app_ships_needs_only_node_and_no_source(runtime):
     assert status["node"] == bridge.managed_node()
     assert not any(name.startswith("zenvi-cli") for name in runtime.downloads)
     assert not os.path.exists(bridge.managed_cli_dir())
+    # An update from a source replaces what runs: the installed CLI wins over the shipped one.
+    status = rt.install(runtime.release(version="0.2.0"))
+    assert status["managed"] and status["cli"] == bridge.managed_cli() and status["cli_version"] == "0.2.0"
 
 
 def test_without_a_source_the_install_says_where_to_set_one(runtime):
