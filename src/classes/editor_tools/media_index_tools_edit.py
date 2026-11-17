@@ -12,6 +12,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from classes import edit_contract as EC
+from classes import edit_contract_log as ECL
 from classes.editor_tools._base import ToolError, array, boolean, enum, get_app, integer, mapping, number, obj, ok, on_main, string, th
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.media_index_tools import project_indexes
@@ -532,6 +533,7 @@ def begin_edit(user_ask="", mode="", form="", vibe="", target_seconds=None, aspe
         waiting = EC.advance(contract, "begin_wait", mode=EC.MODE_FINISHED, readiness=info)
         if commit_brief:
             _write_project_keys(None, waiting)
+        ECL.record("begin_edit", status="wait", tier=tier, structured=counts["structured"], total=counts["total"], attempts=waiting["attempts"])
         return ok(f"Footage is still being indexed ({counts['structured']}/{counts['total']} videos have a structure index yet): wait for "
                   "indexing to finish (find_tools: wait until project indexed), then call begin_edit_tool again. Do not sample frames to find cuts.",
                   wait=True, contract=waiting, survey_digest={"readiness": info}, committed=False)
@@ -539,6 +541,7 @@ def begin_edit(user_ask="", mode="", form="", vibe="", target_seconds=None, aspe
     started = EC.advance(contract, "begin_ok", mode=EC.MODE_FINISHED, readiness=info, ready=True)
     if commit_brief:
         _write_project_keys(brief_clean, started)
+        ECL.record("begin_edit", status="ok", tier=tier, structured=counts["structured"], total=counts["total"])
     digest = EC.build_digest(sv, info, cap=EC.DIGEST_FULL_CAP_CHARS if detail == "full" else EC.DIGEST_CAP_CHARS)
     usable = float((sv.get("totals") or {}).get("usable_minutes") or 0.0)
     return ok(f"Finished-piece brief ready: {merged['form']}, about {int(float(merged['target_seconds']))} s from {usable:g} min of usable footage"

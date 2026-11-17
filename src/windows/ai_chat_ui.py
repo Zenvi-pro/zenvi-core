@@ -2874,6 +2874,8 @@ class AIChatWindow(QDockWidget):
                                                  media_minutes=minutes)
             if new is not None:
                 write_contract(new)
+                from classes import edit_contract_log
+                edit_contract_log.record("piece_started", mode=new["mode"], source="classifier", rollout=edit_contract.rollout_setting())
         except Exception as e:
             log.debug("edit intent: %s", e)
 

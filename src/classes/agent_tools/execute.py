@@ -124,7 +124,12 @@ def _contract_gate(tool_name: str):
             return None, None
         from classes.editor_tools.media_index_tools_edit import read_brief, read_contract
 
-        verdict = EC.check_policy(read_contract(), tool_name, brief=read_brief(), rollout=rollout)
+        contract = read_contract()
+        verdict = EC.check_policy(contract, tool_name, brief=read_brief(), rollout=rollout)
+        if verdict.action != "allow":
+            from classes import edit_contract_log
+
+            edit_contract_log.record("gate", action=verdict.action, tool=tool_name, rollout=rollout, mode=contract["mode"], phase=contract["phase"])
     except Exception as e:
         log.debug("edit contract gate skipped: %s", e, exc_info=True)
         return None, None
@@ -159,6 +164,9 @@ def _contract_after(tool_name: str, out, warning: Optional[str]):
             note = EC.export_warning(contract)
             if note and receipt.status == "applied":
                 receipt.warnings.append(note)
+                from classes import edit_contract_log
+
+                edit_contract_log.record("export_warned", phase=contract["phase"], rounds=contract["audit"]["rounds"])
             return out
         data = receipt.data if isinstance(receipt.data, dict) else {}
         fix: list = []                                   # the tools the audit's own findings name, not its generic "how to run" note
@@ -169,6 +177,12 @@ def _contract_after(tool_name: str, out, warning: Optional[str]):
         updated = EC.apply_observation(contract, tool_name, receipt.status, needs=data.get("needs"), unknown=data.get("unknown"), fix_with=fix[:10])
         if updated != contract:
             write_contract(updated)
+            from classes import edit_contract_log
+
+            if tool_name in EC.PLACEMENT_TOOLS:
+                edit_contract_log.record("placed", tool=tool_name, phase=updated["phase"])
+            elif tool_name == "review_edit_tool":
+                edit_contract_log.record("audit", phase=updated["phase"], rounds=updated["audit"]["rounds"], needs=len(updated["audit"]["needs"]))
     except Exception as e:
         log.debug("edit contract observation skipped: %s", e, exc_info=True)
     return out

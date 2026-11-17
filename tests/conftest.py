@@ -32,6 +32,8 @@ if _ROOT not in sys.path:
 # The engine bridge turns itself on when this computer has its runtime
 # (~/.openshot_qt/engine): tests never list a developer's real engine tools.
 os.environ.setdefault("ZENVI_ENGINE_BRIDGE", "off")
+# The edit-contract log writes under the user's data folder: tests never write there (tests/test_edit_contract_log.py opts in, to a temp file).
+os.environ.setdefault("ZENVI_EDIT_CONTRACT_LOG", "0")
 
 
 def _qtcore_stub():
