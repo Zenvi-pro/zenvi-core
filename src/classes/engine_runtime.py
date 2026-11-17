@@ -1,8 +1,9 @@
 """The engine bridge's runtime on this computer: Node.js and the zenvi CLI, installed on demand.
 
-Nothing of it ships with the desktop. The first time the user asks for Zenvi
-engine tools (AI Tools > Zenvi Engine Tools..., or Preferences > AI) it is
-downloaded into ``~/.openshot_qt/engine``:
+Release builds ship the CLI (``<app>/engine``, from scripts/bundle_engine_cli.py);
+then only Node is installed here, and only when none is found. Otherwise, the
+first time the user asks for Zenvi engine tools (AI Tools > Zenvi Engine
+Tools..., or Preferences > AI) both are downloaded into ``~/.openshot_qt/engine``:
 
     node/          the official Node.js NODE_VERSION build -- only when no usable
                    Node is found: the local HyperFrames setup's private copy
@@ -120,7 +121,8 @@ def status(env=None) -> dict:
     saved = installed()
     out = {"ready": False, "home": home(), "source": source(env), "cli": None, "cli_version": "",
            "protocol": engine_bridge.PROTOCOL, "node": None, "node_version": "", "problem": "",
-           "node_needed": False, "managed": False, "outdated": False}
+           "node_needed": False, "managed": False, "outdated": False,
+           "bundled": os.path.isfile(engine_bridge.bundled_cli())}
     try:
         node, cli = engine_bridge.locate_cli(env)
         out.update(ready=True, cli=cli, node=node)
@@ -157,6 +159,8 @@ def install(src: Optional[str] = None, progress: Optional[Progress] = None,
     (InstallCancelled when *cancel* is set) with nothing changed.
     """
     src = (src if src is not None else source(env)).strip()
+    if not src and os.path.isfile(engine_bridge.bundled_cli()):
+        return _install_node(progress, cancel, env)
     if not src:
         raise RuntimeInstallError(
             "No download source is set for Zenvi engine tools: set Preferences > AI > Zenvi Engine Tools "
@@ -194,6 +198,25 @@ def install(src: Optional[str] = None, progress: Optional[Progress] = None,
         _install_lock.release()
     engine_bridge.forget_node_versions()
     log.info("Zenvi engine tools installed from %s", src)
+    return status(env)
+
+
+def _install_node(progress: Optional[Progress], cancel: Optional[threading.Event], env=None) -> dict:
+    """The app ships the CLI (src/engine): only Node is installed, when none is found."""
+    if not _install_lock.acquire(blocking=False):
+        raise RuntimeInstallError("Zenvi engine tools are already being installed")
+    try:
+        os.makedirs(home(), exist_ok=True)
+        staging = tempfile.mkdtemp(prefix="install-", dir=home())
+        try:
+            _ensure_node(staging, progress or (lambda text, done, total: None), cancel or threading.Event(), env)
+        except OSError as exc:
+            raise RuntimeInstallError(f"Could not install Node.js into {home()}: {exc}") from exc
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+    finally:
+        _install_lock.release()
+    engine_bridge.set_client(None)
     return status(env)
 
 
