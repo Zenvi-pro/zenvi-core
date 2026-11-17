@@ -25,8 +25,8 @@ for the model. Run it by hand: `cd tests && python -m eval.contract_eval`.
 
 `contract_live.py` runs it with `claude -p` as the agent (no tools of its own, empty folder): `ZENVI_EVAL_LIVE=1 python -m eval.contract_live --model sonnet --repeat 2`
 (about $5 and 7 minutes for 48 runs on Sonnet; Haiku costs cents). Results and what they do and do not show: `results/EDIT_CONTRACT_LIVE.md`.
-It is not a human rating of the films, and it is not the app: for the real before/after use the `zenvi-bench` repo (`tasks/vague.json`,
-which already has a `looked_first` check; never tune on its held-out split), run with the contract off and on against the desktop app.
+It is not a human rating of the films, and it is not the app: for the real before/after use the separate agent-benchmark repo (its vague-asks set
+already has a `looked_first` check; never tune on its held-out split), run with the contract off and on against the desktop app.
 
 ## The fuller protocol (human scoring, the real app)
 

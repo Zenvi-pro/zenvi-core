@@ -53,5 +53,5 @@ Narrow asks (trim, grade, captions; 4 runs per condition per model): 0 refusals 
 
 `warn` stays the default. Nothing here shows that refusing a placement buys anything for these models, and a refusal costs a call
 and risks a false positive. The log (`python -m classes.edit_contract_log`) will show, on real use, how often a placement would have
-been refused and whether agents recover; the real before/after belongs in `zenvi-bench` (`tasks/vague.json`, which already has a
+been refused and whether agents recover; the real before/after belongs in the separate agent-benchmark repo (its vague-asks set already has a
 `looked_first` check), run with `ZENVI_EDIT_CONTRACT=off` and `enforce` on a machine with the desktop app.
