@@ -34,6 +34,13 @@ MIN_SHOTS_FOR_PACING = 6
 SLOW_MEDIAN_SHORT_FORM = 8.0     # a short-form edit whose median shot is this long is slow
 REPEAT_OVERLAP = 0.5             # source ranges overlapping this much (of the shorter) are the same moment
 VARIETY_TOP_SHARE = 0.8
+BEST_MIN_HIGHLIGHT = 0.75        # a moment this strong is worth noting when it is left out (relative taste check; info only)
+OPENING_GAP_NOTE = 0.30          # the opening is this far below the best unused moment: say so
+BEST_UNUSED_MIN_HIGHLIGHT = 0.80
+BEST_TOP_N = 5
+BEST_MIN_CANDIDATES = 3          # fewer strong moments than this and "most are unused" says nothing
+BEST_USED_FRACTION = 0.5         # a moment counts as used when at least this much of it plays on the timeline
+BEST_MIN_EDIT_SECONDS = 30.0     # a shorter edit is not expected to use the best moments
 
 # ---- picture ----------------------------------------------------------------------------------
 LUMA_SPREAD = 0.22               # p90 - p10 of clip brightness across the edit
@@ -216,8 +223,55 @@ def _shot_at(index: Any, t: float) -> Optional[Dict[str, Any]]:
 
 
 # ============================ story ============================
+def _moment_used(moment: Dict[str, Any], clips: Sequence[TimelineClip]) -> bool:
+    """Does at least BEST_USED_FRACTION of this source moment play on the timeline (any clip of the same file)?"""
+    lo, hi = float(moment.get("start") or 0.0), float(moment.get("end") or 0.0)
+    if hi <= lo:
+        return False
+    spans = [(c.src_in, c.src_out) for c in clips if c.kind in ("video", "image") and c.file_id == moment.get("file_id")]
+    return _covered(spans, lo, hi) / (hi - lo) >= BEST_USED_FRACTION
+
+
+def best_moment_findings(shots: Sequence[Dict[str, Any]], clips: Sequence[TimelineClip], index_for: Provider,
+                         best_moments: Sequence[Dict[str, Any]], duration: float) -> List[Dict[str, Any]]:
+    """The edit against what the project has: is there a much stronger moment the edit leaves out, and are most of the best ones unused?
+
+    Relative taste checks that the absolute hook check cannot make. Notes only (status 'info' or 'ok', never 'needs'): a taste
+    hint must not start an audit-and-fix loop. With no best moments given they say nothing.
+    """
+    strong = sorted((m for m in (best_moments or ()) if float(m.get("highlight") or 0.0) >= BEST_MIN_HIGHLIGHT),
+                    key=lambda m: -float(m.get("highlight") or 0.0))
+    if not strong or not shots:
+        return []
+    out: List[Dict[str, Any]] = []
+    unused = [m for m in strong if not _moment_used(m, clips)]
+    first = shots[0]
+    sh = _shot_at(index_for(first["clip"]), first["clip"].to_source(first["start"]))
+    opening = ((sh or {}).get("quality") or {}).get("highlight")
+    if opening is not None:
+        best = unused[0] if unused else None
+        gap = (float(best["highlight"]) - float(opening)) if best else 0.0
+        if best is not None and gap >= OPENING_GAP_NOTE:
+            label = {k: best.get(k) for k in ("file_id", "name", "start", "end", "highlight")}
+            out.append(finding("opening_best", "story", "info",
+                               f"A much stronger moment is not in the edit ({best.get('name') or best.get('file_id')} at {float(best.get('start') or 0):.1f} s, "
+                               f"highlight {float(best['highlight']):.2f}); the opening scores {float(opening):.2f}. Consider opening with it.",
+                               {"opening_highlight": opening, "best": label}, ["search_footage_tool", "add_clips_to_timeline_tool"]))
+        else:
+            out.append(finding("opening_best", "story", "ok", "The opening is as strong as the best moment left out.", {"opening_highlight": opening}))
+    top = [m for m in strong if float(m.get("highlight") or 0.0) >= BEST_UNUSED_MIN_HIGHLIGHT][:BEST_TOP_N]
+    if duration >= BEST_MIN_EDIT_SECONDS and len(top) >= BEST_MIN_CANDIDATES:
+        missing = [m for m in top if not _moment_used(m, clips)]
+        many = len(missing) * 2 > len(top)
+        out.append(finding("best_unused", "story", "info" if many else "ok",
+                           (f"{len(missing)} of your {len(top)} best moments are not in the edit." if many else "Most of your best moments are in the edit."),
+                           {"unused": len(missing), "of": len(top), "names": [str(m.get("name") or m.get("file_id")) for m in missing[:5]]},
+                           ["search_footage_tool", "add_clips_to_timeline_tool"] if many else []))
+    return out
+
+
 def story_findings(clips: Sequence[TimelineClip], project: ProjectInfo, brief: Brief, index_for: Provider,
-                   take_groups: Sequence[Dict[str, Any]] = ()) -> List[Dict[str, Any]]:
+                   take_groups: Sequence[Dict[str, Any]] = (), best_moments: Sequence[Dict[str, Any]] = ()) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     shots = visible_shots(clips)
     duration = project.duration or (shots[-1]["end"] if shots else 0.0)
@@ -317,6 +371,7 @@ def story_findings(clips: Sequence[TimelineClip], project: ProjectInfo, brief: B
         out.append(finding("variety", "story", "info" if share > VARIETY_TOP_SHARE else "ok",
                            f"{share * 100:.0f}% of the shots are '{top}': mix in other framings." if share > VARIETY_TOP_SHARE else "Good mix of shot types.",
                            {"top": top, "share": round(share, 2)}, ["search_footage_tool"] if share > VARIETY_TOP_SHARE else []))
+    out += best_moment_findings(shots, clips, index_for, best_moments, duration)
     return out
 
 
@@ -537,11 +592,12 @@ _ORDER = {"needs": 0, "unknown": 1, "info": 2, "ok": 3}
 
 def review(clips: Sequence[TimelineClip], project: ProjectInfo, brief: Brief, *, index_for: Provider,
            looks: Optional[Dict[str, Dict[str, Any]]] = None, mix: Optional[Dict[str, Any]] = None,
-           captions: Optional[Sequence[Tuple[float, float]]] = None, take_groups: Sequence[Dict[str, Any]] = ()) -> Dict[str, Any]:
+           captions: Optional[Sequence[Tuple[float, float]]] = None, take_groups: Sequence[Dict[str, Any]] = (),
+           best_moments: Sequence[Dict[str, Any]] = ()) -> Dict[str, Any]:
     """The audit: findings per layer, what needs work first, and what could not be measured."""
     speech_ranges = [(c.start, c.end) for c in clips if c.role == "speech" and c.length > 0]
     findings: List[Dict[str, Any]] = []
-    findings += story_findings(clips, project, brief, index_for, take_groups)
+    findings += story_findings(clips, project, brief, index_for, take_groups, best_moments)
     findings += picture_findings(clips, brief, looks or {}, index_for)
     findings += sound_findings(clips, project, brief, index_for, mix)
     findings += text_findings(clips, brief, captions, speech_ranges)
