@@ -358,6 +358,34 @@ def test_garbage_contracts_never_block():
         assert EC.check_policy(junk, "add_clips_to_timeline_tool", rollout="enforce").action == "allow"
 
 
+@pytest.mark.parametrize("env,expected", [({}, "warn"), ({"ZENVI_EDIT_CONTRACT": "off"}, "off"), ({"ZENVI_EDIT_CONTRACT": " ENFORCE "}, "enforce"),
+                                          ({"ZENVI_EDIT_CONTRACT": "warn"}, "warn"), ({"ZENVI_EDIT_CONTRACT": "yes"}, "warn"),
+                                          ({"ZENVI_EDIT_CONTRACT": ""}, "warn")])
+def test_the_rollout_flag_defaults_to_warn_and_ignores_typos(env, expected):
+    assert EC.rollout_setting(env) == expected
+
+
+def test_finishing_tools_move_a_piece_to_finishing_and_only_when_they_applied():
+    c = EC.advance(EC.advance(EC.new_contract(EC.MODE_FINISHED), "begin_ok", ready=True), "placed")
+    for tool in sorted(EC.FINISH_TOOLS):
+        assert EC.apply_observation(c, tool, "applied")["phase"] == "finishing"
+        assert EC.apply_observation(c, tool, "refused")["phase"] == "assembling"
+    briefed = EC.advance(EC.new_contract(EC.MODE_FINISHED), "begin_ok", ready=True)
+    assert EC.apply_observation(briefed, "color_grade_clip_tool", "applied")["phase"] == "briefed", "grading before placing is not finishing"
+
+
+def test_only_the_tools_that_matter_are_observed():
+    assert EC.OBSERVED_TOOLS == EC.PLACEMENT_TOOLS | EC.FINISH_TOOLS | {"review_edit_tool", "export_video_tool"}
+    assert "get_project_overview_tool" not in EC.OBSERVED_TOOLS and "undo_tool" not in EC.OBSERVED_TOOLS
+
+
+def test_every_tool_the_contract_names_is_a_real_registered_tool():
+    from classes import tool_handlers
+    from classes.editor_tools import REGISTRY
+    real = set(REGISTRY) | set(tool_handlers.AGENT_TOOL_HANDLERS)
+    assert not (EC.OBSERVED_TOOLS | EC.PLACEMENT_TOOLS) - real, sorted((EC.OBSERVED_TOOLS | EC.PLACEMENT_TOOLS) - real)
+
+
 # ------------------------------------------------------------------ export warning and snapshot line
 def test_export_is_never_refused_only_warned():
     assert EC.export_warning(contract(EC.MODE_FREE, "idle")) is None

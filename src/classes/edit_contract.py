@@ -39,8 +39,29 @@ CONTRACT_MAX_BYTES = 8 * 1024
 # v1 gates only the tools that place footage on the timeline. Everything else stays open.
 PLACEMENT_TOOLS = frozenset({"add_clips_to_timeline_tool", "add_clip_to_timeline_tool"})
 
+# Tools whose success moves a finished piece along. Everything else is never looked at (no project read on the hot path).
+FINISH_TOOLS = frozenset({"color_grade_clip_tool", "add_captions_tool", "balance_mix_tool", "harmonize_look_tool", "duck_under_speech_tool"})
+OBSERVED_TOOLS = PLACEMENT_TOOLS | FINISH_TOOLS | frozenset({"review_edit_tool", "export_video_tool"})
+
 ROLLOUT_MODES = ("off", "warn", "enforce")
 DEFAULT_ROLLOUT = "warn"
+
+
+def rollout_setting(env: Optional[Dict[str, str]] = None) -> str:
+    """``off`` | ``warn`` | ``enforce``, from ``ZENVI_EDIT_CONTRACT`` or the ``edit-contract`` desktop setting; ``warn`` when unset.
+
+    Reads no files, so it is safe on the GUI thread. Anything unrecognised means the default: a typo must not switch the gate.
+    """
+    import os
+    value = str((env if env is not None else os.environ).get("ZENVI_EDIT_CONTRACT", "")).strip().lower()
+    if not value and env is None:
+        try:
+            from classes.app import get_app
+            stored = get_app().get_settings().get("edit-contract")
+            value = stored.strip().lower() if isinstance(stored, str) else ""
+        except Exception:
+            value = ""
+    return value if value in ROLLOUT_MODES else DEFAULT_ROLLOUT
 
 # Readiness: minimum viable, so a slow indexer never deadlocks the agent.
 READY_FRACTION = 0.70
@@ -436,6 +457,8 @@ def apply_observation(contract: Dict[str, Any], tool_name: str, status: str, *, 
         return normalize(contract)
     if tool_name in PLACEMENT_TOOLS and status == "applied":
         return advance(contract, "placed")
+    if tool_name in FINISH_TOOLS and status == "applied":
+        return advance(contract, "finish_layer")
     if tool_name == "review_edit_tool":
         return advance(contract, "review_done", needs=needs or [], unknown=unknown or [], fix_with=fix_with or [])
     return normalize(contract)
