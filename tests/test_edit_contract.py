@@ -397,6 +397,35 @@ def test_export_is_never_refused_only_warned():
     assert "dead air" in EC.export_warning(open_needs)
 
 
+def test_the_brief_block_is_empty_for_a_free_edit_with_no_brief():
+    assert EC.brief_block(None) == "" and EC.brief_block({}, EC.new_contract()) == "" and EC.brief_block({"form": None, "vibe": ""}) == ""
+
+
+def test_the_brief_block_lists_the_important_keys_first_and_the_contract():
+    c = EC.advance(EC.advance(EC.new_contract(EC.MODE_FINISHED), "begin_ok", ready=True), "review_done", needs=["dead_air"])
+    text = EC.brief_block({"notes": "keep the tram", "vibe": "warm", "form": "vlog", "target_seconds": 210, "zzz": 1}, c)
+    lines = text.splitlines()
+    assert lines[0] == "[Edit brief] contract=finished_piece/audited" and lines[-1] == "[/Edit brief]"
+    keys = [ln.split(":")[0] for ln in lines[1:-1]]
+    assert keys[:4] == ["form", "target_seconds", "vibe", "notes"] and "zzz" in keys and keys[-1] == "last audit still names"
+
+
+def test_the_brief_block_never_exceeds_its_cap_and_never_cuts_a_value_in_half():
+    brief = {"form": "vlog", "target_seconds": 90, "beat_map": [{"label": f"act {i}", "notes": "n" * 60} for i in range(80)],
+             "notes": "x" * 5000, "vibe": "warm"}
+    for cap in (300, 800, 1500):
+        text = EC.brief_block(brief, EC.new_contract(EC.MODE_FINISHED), max_chars=cap)
+        assert len(text) <= cap and "form:" in text and "target_seconds:" in text
+        for ln in text.splitlines()[1:-1]:
+            if ln.startswith("beat_map"):
+                assert ln.endswith("]") or ln.endswith("...")      # whole, or visibly shortened
+
+
+def test_a_brief_alone_with_a_free_contract_is_still_handed_over():
+    text = EC.brief_block({"form": "reel", "target_seconds": 45})
+    assert text.startswith("[Edit brief] contract=free\n") and "form: \"reel\"" in text
+
+
 def test_the_edit_state_line_is_short_and_says_what_the_agent_needs():
     c = EC.advance(EC.new_contract(EC.MODE_FINISHED), "begin_ok", ready=True)
     line = EC.edit_state_line(c, {"form": "vlog", "target_seconds": 210, "vibe": "warm cinematic"}, "index_v2: videos=32 structure=28")

@@ -287,6 +287,8 @@ _PLANNING_SAFE_TOOLS = frozenset({
     "save_edit_plan_tool", "save_planning_research_brief_tool",
     "update_edit_plan_step_tool", "finalize_edit_plan_tool",
     "present_planning_questions_tool",
+    # The brief is the plan's artifact: surveying and saving it never touches the timeline (untracked project keys).
+    "begin_edit_tool", "get_edit_brief_tool", "set_edit_brief_tool",
 })
 
 
@@ -2843,8 +2845,21 @@ class AIChatWindow(QDockWidget):
         if not seen or seen.get(backend, 0) is None:
             return ""
         from classes import chat_history
-        return chat_history.handoff_recap(
+        recap = chat_history.handoff_recap(
             chat_history.load_messages(self._active_sid), seen.get(backend, 0))
+        # The taste decisions live in the project's brief, not in the chat: a new agent needs them too.
+        brief = self._edit_brief_context()
+        return f"{recap}\n{brief}\n" if recap and brief else (recap or (f"{brief}\n" if brief else ""))
+
+    def _edit_brief_context(self) -> str:
+        """The project's edit brief and contract as a short block ('' when there is none). Main thread; reads memory only."""
+        try:
+            from classes import edit_contract
+            from classes.editor_tools.media_index_tools_edit import read_brief, read_contract
+
+            return edit_contract.brief_block(read_brief(), read_contract(), max_chars=1500)
+        except Exception:
+            return ""
 
     def _prepend_editor_snapshot(self, text: str) -> str:
         """Ground the model with a bounded timeline snapshot (main thread).
@@ -3974,8 +3989,11 @@ class AIChatWindow(QDockWidget):
             self._set_agent_mode("agent")
             # Straight to the dispatcher: the composer's send would spend the
             # files staged for the user's next message on this one.
+            # The CLI's plan lives in its own conversation, but the brief it saved lives in the project: say it again so a
+            # long plan turn cannot lose the taste decisions between planning and carrying out.
+            brief = self._edit_brief_context()
             self._dispatch_user_message(
-                "Carry out the plan.", sess.get("last_user_model_id") or "",
+                "Carry out the plan." + (f"\n\n{brief}" if brief else ""), sess.get("last_user_model_id") or "",
                 agent_mode="agent", effort=sess.get("last_user_effort") or "")
             return
         worker = sess.get("worker")

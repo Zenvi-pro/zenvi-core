@@ -19,10 +19,10 @@ PLAYBOOK = """EDITING PLAYBOOK: how to finish a piece. It is guidance, not a scr
 
 SCOPE
 - A narrow request ("make it warmer", "cut this clip", "add captions") gets only what was asked. Do not overshoot.
-- A finished piece ("make a vlog / reel / short / trailer / ad / montage / film", "edit my footage into...", "with this vibe") has six layers, all on by default: STORY (what is used, order, pacing, the opening), PICTURE (consistency, exposure, grade), SOUND (voice, music, ambience, mix), TEXT (titles, captions), GRAPHICS/EFFECTS (only as the form needs), DELIVERY (format, length, loudness, export). Drop a layer only because the user banned it, review_edit_tool shows it is already fine, or it does not suit the form, and say so in your report.
+- A finished piece ("make a vlog / reel / short / trailer / ad / montage / film", "edit my footage into...", "with this vibe") has six layers, all on by default: STORY (what is used, order, pacing, the opening), PICTURE (consistency, exposure, grade), SOUND (voice, music, ambience, mix), TEXT (titles, captions), GRAPHICS/EFFECTS (only as the form needs), DELIVERY (format, length, loudness, export). Drop a layer only if the user banned it, review_edit_tool shows it is fine, or the form does not need it, and say so.
 
 THE LOOP (the audit is the one step not to skip before exporting a finished piece)
-1. Brief: form, length, vibe or reference, bans, delivery. Save it in the edit brief so a long job survives; read it back when picking one up.
+1. Brief: begin_edit_tool surveys and saves it (form, length, vibe, bans, delivery); placing clips waits for it. Adjust with set_edit_brief_tool; read it back when picking a job up.
 2. Survey: get_project_overview_tool shows what you have to cut with (amounts, days and places, best moments, music, look clusters, what is not indexed yet: wait until project indexed). Then search_footage_tool (usable_only, min_highlight, sort, dates, places) and the dossier for detail. Missing footage: stock or generate it, and note that you did.
 3. Plan: a beat map (acts, scenes, shots with intent), the music (analyze it, audition candidates, run_tool(name="import_stock_media_tool", args={"source": "freesound", "sound_id": ..., "preview_url": ...}), add_clips_to_timeline_tool(items=[{"file_id": ..., "source_start": <phrase in>, "source_end": <phrase out>}], start_seconds=<timeline time>)), the look target, the text. Keep the plan in the brief.
 4. Assemble with the placement tools. When the edit is cut to music, sync cuts to beats (it puts the cuts on the beat); to cut one long clip (a trailer, a performance, a song's own video) into beat-length pieces use slice on beats with that clip as timeline_clip_id (it follows the music on the timeline, which can be that same clip). Check dry_run first on a long clip.
@@ -31,7 +31,7 @@ THE LOOP (the audit is the one step not to skip before exporting a finished piec
 7. Export with the platform preset. Report what you did, what you skipped and why, and anything still open.
 
 WHEN EACH LAYER IS NEEDED (the audit measures; you decide)
-- Colour: at least a consistency pass on any multi-clip edit; a style when a vibe is asked for or implied ("set a scene", "cinematic"); required for HDR footage.
+- Colour: a consistency pass on any multi-clip edit; a style when a vibe is asked for or implied ("cinematic"); required for HDR footage.
 - Voice: any speech gets level and clarity checks: voices even, music at least 10 dB under them.
 - Music: on by default for a vlog, reel or short, montage, trailer, ad, scene or film; off by default for podcasts, interviews and tutorials unless a mood is asked for.
 - Mix: always check loudness (online video about -14 LUFS, podcast -16, film -23, peaks under -1 dB) and dead air.

@@ -510,6 +510,39 @@ def export_warning(contract: Any) -> Optional[str]:
     return None
 
 
+_BRIEF_KEY_ORDER = ("form", "target_seconds", "aspect", "vibe", "bans", "wants_music", "wants_captions", "wants_grade", "opening",
+                    "music", "look_target", "beat_map", "scenes", "done", "notes")
+
+
+def brief_block(brief: Optional[Dict[str, Any]], contract: Any = None, *, max_chars: int = 1500) -> str:
+    """The brief as a compact text block for an agent that missed the conversation (a backend switch, a CLI "carry out the plan").
+
+    '' when there is nothing to say (no brief and a free edit). The most important keys come first and whatever does not fit in
+    *max_chars* is dropped whole, never cut mid-value, so the block always parses at a glance.
+    """
+    b = {k: v for k, v in (brief or {}).items() if v not in (None, "", [], {})}
+    c = normalize(contract)
+    if not b and c["mode"] == MODE_FREE:
+        return ""
+    head = "[Edit brief] contract=" + c["mode"] + ("" if c["mode"] == MODE_FREE else f"/{effective_phase(c, brief)}")
+    tail = "[/Edit brief]"
+    keys = [k for k in _BRIEF_KEY_ORDER if k in b] + sorted(k for k in b if k not in _BRIEF_KEY_ORDER)
+    lines: List[str] = []
+    used = len(head) + len(tail) + 2
+    for k in keys:
+        line = f"{k}: {json.dumps(b[k], ensure_ascii=False, separators=(',', ':'))}"
+        if len(line) > 400:
+            line = line[:397] + "..."
+        if used + len(line) + 1 > max_chars:
+            continue
+        lines.append(line)
+        used += len(line) + 1
+    open_needs = (c["audit"].get("open_needs") or c["audit"].get("needs") or [])[:3]
+    if open_needs and used + 40 < max_chars:
+        lines.append("last audit still names: " + "; ".join(str(x) for x in open_needs))
+    return "\n".join([head] + lines + [tail])
+
+
 def edit_state_line(contract: Any, brief: Optional[Dict[str, Any]], index_line: str = "") -> str:
     """One line for the editor snapshot: the contract, the brief's headline and the audit state."""
     c = normalize(contract)

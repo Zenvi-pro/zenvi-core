@@ -136,7 +136,10 @@ def test_an_empty_project_says_to_import_first_and_writes_nothing(project):
 def test_nothing_indexed_yet_waits_and_commits_no_brief(project):
     project.files, project.missing = [], ["a.mov", "b.mov", "c.mov"]
     head, r = call(user_ask="make a vlog")
-    assert r["wait"] is True and "wait_until_project_indexed_tool" in head
+    assert r["wait"] is True and "wait until project indexed" in head and "begin_edit_tool again" in head
+    import re
+    from classes.agent_tools.core_tools import CORE_TOOL_NAMES
+    assert set(re.findall(r"\b[a-z][a-z_]*_tool\b", head)) <= set(CORE_TOOL_NAMES), "model-facing text names only core tools (AGENTS.md)"
     assert r["contract"]["phase"] == "surveying" and r["contract"]["attempts"] == 1
     assert brief_writes(project) == [] and project.store[TE.BRIEF_KEY] == {}
     assert EC.check_policy(project.store[EC.CONTRACT_KEY], "add_clips_to_timeline_tool", rollout="enforce").action == "refuse"

@@ -532,8 +532,8 @@ def begin_edit(user_ask="", mode="", form="", vibe="", target_seconds=None, aspe
         waiting = EC.advance(contract, "begin_wait", mode=EC.MODE_FINISHED, readiness=info)
         if commit_brief:
             _write_project_keys(None, waiting)
-        return ok(f"Footage is still being indexed ({counts['structured']}/{counts['total']} videos have a structure index yet): call "
-                  "run_tool(name='wait_until_project_indexed_tool'), then begin_edit_tool again. Do not sample frames to find cuts.",
+        return ok(f"Footage is still being indexed ({counts['structured']}/{counts['total']} videos have a structure index yet): wait for "
+                  "indexing to finish (find_tools: wait until project indexed), then call begin_edit_tool again. Do not sample frames to find cuts.",
                   wait=True, contract=waiting, survey_digest={"readiness": info}, committed=False)
 
     started = EC.advance(contract, "begin_ok", mode=EC.MODE_FINISHED, readiness=info, ready=True)
