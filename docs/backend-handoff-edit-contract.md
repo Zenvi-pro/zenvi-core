@@ -54,3 +54,24 @@ band. The desktop keeps a local-only log of the same events; nothing leaves the 
 Old backend + new desktop: the gate works; `begin_edit_tool` appears in the tool manifest's `core_tools`; unknown WS fields are
 ignored. New backend + old desktop: `begin_edit_tool` does not exist, so the preamble must be skipped when the manifest's
 `core_tools` does not list it.
+
+## 5. Checked against the backend code (read-only, 2026-11-17)
+
+What was verified in `zenvi-backend`, and what it means:
+
+- **An extra WS field is safe.** `api/routes/chat.py` reads the `user_message` payload field by field with `data.get(...)`; it does not
+  validate the whole payload, so `edit_contract_mode` is ignored today. Read it next to `agent_mode` (around line 267) when you want it.
+- **The tool list is a checked-in copy.** `core/tools/openshot/editor_tools_manifest.json` (exported by the desktop's
+  `scripts/export_editor_tool_manifest.py`) holds the tools, `core_tools` (19 today) and the playbook with its sha. Until that file is
+  re-exported from the desktop build that has this change, the Assistant does not see `begin_edit_tool` or the new playbook line.
+  Nothing breaks: the desktop gate still protects the timeline, and the refusal also names `set_edit_brief_tool` (already in the
+  manifest) as a way to unlock placement. The backend's own tests only check the manifest against itself (hash equals text), so a
+  re-export is a plain file replacement.
+- **Plan mode on the backend blocks the new tool.** `core/planning/tool_catalog.py` builds `PLANNING_ALLOWLIST` from a fixed set plus
+  the manifest's read-only tools. `get_edit_brief_tool` is read-only so it is included, but `begin_edit_tool` and
+  `set_edit_brief_tool` write (untracked project keys, never the timeline) and must be added by name, mirroring the desktop's
+  `_PLANNING_SAFE_TOOLS`.
+- **Order of work:** merge the desktop change, re-export the manifest into the backend, add the two names to the allowlist, then
+  consider moving the default flag from `warn` to `enforce`.
+- **Where to measure:** `zenvi-bench` (`tasks/vague.json`, held-out split untouched) already has a `looked_first` check (the media
+  index read before the first edit). Run the vague set with the contract off and on; that is the real before/after.

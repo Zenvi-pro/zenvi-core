@@ -98,11 +98,12 @@ class World:
             thread=lambda: None)
         handlers = {"begin_edit_tool": REGISTRY["begin_edit_tool"].func, PLACE: self._place, "trim_clips_tool": lambda **k: "Trimmed.",
                     "color_grade_clip_tool": lambda **k: "Graded.", "add_captions_tool": lambda **k: "Captioned.",
-                    "review_edit_tool": self._review, "export_video_tool": lambda **k: "Exported."}
+                    "review_edit_tool": self._review, "export_video_tool": lambda **k: "Exported.",
+                    "search_footage_tool": self._search, "get_project_overview_tool": self._overview}
         patches = [
             mock.patch.dict(os.environ, {"ZENVI_EDIT_CONTRACT": self.rollout}),
-            mock.patch.object(X, "_HANDLERS", handlers), mock.patch.object(X, "_READ_ONLY", frozenset({"review_edit_tool"})),
-            mock.patch.object(X, "_BACKGROUND_SAFE", frozenset()), mock.patch.object(X, "_UNGROUPED", frozenset({"review_edit_tool"})),
+            mock.patch.object(X, "_HANDLERS", handlers), mock.patch.object(X, "_READ_ONLY", frozenset({"review_edit_tool", "search_footage_tool", "get_project_overview_tool"})),
+            mock.patch.object(X, "_BACKGROUND_SAFE", frozenset()), mock.patch.object(X, "_UNGROUPED", frozenset({"review_edit_tool", "search_footage_tool", "get_project_overview_tool"})),
             mock.patch.object(X, "_GET_APP", lambda: app), mock.patch.object(X, "_RUN_ON_MAIN", lambda fn, timeout=None: fn()),
             mock.patch.object(X, "_ATOMIC", lambda a, h: h), mock.patch.object(X, "_QTHREAD", None),
             mock.patch("classes.agent_tools.schema.validate_args", lambda tool, args: None),
@@ -122,6 +123,15 @@ class World:
             self.placed.append(dict(it))
         self.store["clips"] = [{"id": f"c{i}"} for i in range(len(self.placed))]
         return f"Placed {len(items or [])} clip(s)."
+
+    def _search(self, query="", limit=8, min_highlight=0.0, **_kw):
+        """The best moments, strongest first (the real tool searches the index; the order and fields are what an agent uses)."""
+        hits = [m for m in moments_of(self.project) if m["highlight"] >= float(min_highlight or 0)][: max(1, min(int(limit or 8), 20))]
+        return f"Found {len(hits)} moment(s)." + chr(10) + json.dumps({"hits": hits}, separators=(",", ":"))
+
+    def _overview(self, **_kw):
+        sv = TE.survey(self.project, [], top=8)
+        return f"{len(self.project)} indexed file(s)." + chr(10) + json.dumps(sv, separators=(",", ":"), default=str)
 
     def timeline(self):
         clips, t = [], 0.0
