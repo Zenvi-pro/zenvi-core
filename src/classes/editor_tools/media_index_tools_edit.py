@@ -430,7 +430,10 @@ def _project_state():
     """(brief, contract, clip count): read on the GUI thread, where the project is."""
     def read():
         return read_brief(), read_contract(), len(get_app().project.get("clips") or [])
-    return on_main(read)
+    state = on_main(read)
+    if state is None:                                   # on_main gave nothing back: treat as an empty project
+        return {}, {}, 0
+    return state
 
 
 def _index_counts(files: List[Any], missing: List[str]) -> Dict[str, Any]:
