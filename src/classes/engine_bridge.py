@@ -107,7 +107,8 @@ def runtime_ready(env=None) -> bool:
     """Whether the CLI and a Node it runs on are found (blocks: file checks, ``node --version``)."""
     try:
         locate_cli(env)
-    except BridgeUnavailable:
+    except BridgeUnavailable as exc:
+        log.info("Engine bridge: no engine tools listed: %s", exc)
         return False
     return True
 
@@ -159,11 +160,17 @@ def cli_candidates(env=None) -> list:
     return [p for p in named if p] + [managed_cli(), bundled_cli()]
 
 
+def named_cli(env=None) -> str:
+    """The CLI the user named (ZENVI_ENGINE_CLI or the engine-cli-path setting), '' for none."""
+    env = _env(env)
+    return env.get("ZENVI_ENGINE_CLI", "") or (_setting("engine-cli-path") if env is os.environ else "")
+
+
 def find_cli(env=None) -> str:
     """The zenvi CLI bundle (``zenvi.mjs``), absolute; BridgeUnavailable with what was searched."""
     env = _env(env)
     candidates = cli_candidates(env)
-    explicit = env.get("ZENVI_ENGINE_CLI", "") or (_setting("engine-cli-path") if env is os.environ else "")
+    explicit = named_cli(env)
     if explicit:
         # A path the user gave is the one they mean: no quiet fallback to another build.
         if os.path.isfile(explicit):

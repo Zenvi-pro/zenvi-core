@@ -77,7 +77,8 @@ NODE_SHA256 = {
     "win-x64.zip": "d2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5",
 }
 NODE_DOWNLOAD_MB = 55
-# No zenvi CLI release is published yet: until one is, the source is a setting.
+# Release builds ship the CLI (status "shipped") and update it with each Zenvi release. No zenvi CLI
+# release is published to update from in between, so the source is a setting until one is.
 DEFAULT_SOURCE = ""
 FETCH_TIMEOUT = 60
 BLOCK = 1 << 20
@@ -122,7 +123,7 @@ def status(env=None) -> dict:
     out = {"ready": False, "home": home(), "source": source(env), "cli": None, "cli_version": "",
            "protocol": engine_bridge.PROTOCOL, "node": None, "node_version": "", "problem": "",
            "node_needed": False, "managed": False, "outdated": False,
-           "bundled": os.path.isfile(engine_bridge.bundled_cli())}
+           "bundled": os.path.isfile(engine_bridge.bundled_cli()), "shipped": False, "named": False}
     try:
         node, cli = engine_bridge.locate_cli(env)
         out.update(ready=True, cli=cli, node=node)
@@ -130,12 +131,22 @@ def status(env=None) -> dict:
         out["problem"] = str(exc)
     try:
         out["node"] = out["node"] or engine_bridge.find_node(env)
-    except engine_bridge.BridgeUnavailable:
+    except engine_bridge.BridgeUnavailable as exc:
         out["node_needed"] = True
+        node_problem = str(exc)
     if out["node"]:
         major = engine_bridge.node_major(out["node"])
         out["node_version"] = "v%d" % major if major is not None else ""
     out["managed"] = bool(out["cli"]) and os.path.abspath(out["cli"]) == engine_bridge.managed_cli()
+    out["shipped"] = bool(out["cli"]) and os.path.abspath(out["cli"]) == os.path.abspath(engine_bridge.bundled_cli())
+    # A path the user named is what runs, so installing cannot help: say so, and log it with the path.
+    named_cli = engine_bridge.named_cli(env)
+    if named_cli and not os.path.isfile(named_cli):
+        out["named"] = True
+    elif out["node_needed"] and engine_bridge._explicit_node(engine_bridge._env(env)):
+        out.update(named=True, problem=node_problem)
+    if out["named"]:
+        log.warning("Zenvi engine tools cannot run: %s", out["problem"])
     if out["managed"]:
         out["cli_version"] = str((saved.get("cli") or {}).get("version") or "")
     # An installed CLI this desktop does not run (another bridge protocol, or an install cut short).
