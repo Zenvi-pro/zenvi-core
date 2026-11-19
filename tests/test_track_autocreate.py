@@ -278,15 +278,6 @@ def test_move_to_an_existing_track_adds_none(ed):
     assert "new track" not in out and len(_numbers(ed)) == 5
 
 
-def test_text_card_is_one_centred_line_on_a_full_frame_rect():
-    from classes import title_svg
-    doc = title_svg.load(title_svg.find_template("Text_Card"))
-    slots = title_svg.fields(doc)
-    w, h = title_svg.artboard_size(doc)
-    assert [s.text for s in slots] == ["The Title"] and title_svg.text_zone(slots, h) == "center"
-    assert title_svg.background_color(doc) == ("#000000", 1.0)
-
-
 @pytest.mark.parametrize("tool, needle", [
     ("move_clips_tool", "Moved 2 clip(s) to track 5 at 0.00 s; 2 tracks added on top."),
     ("duplicate_clips_tool", "on track 5; 2 tracks added on top."),

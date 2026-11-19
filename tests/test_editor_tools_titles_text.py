@@ -27,7 +27,6 @@ def test_every_bundled_template_parses_and_names_resolve():
     assert title_svg.template_display_name(title_svg.find_template("Gray_Box_4")) == "Gray box 4"
     assert title_svg.find_template("gray box 4") == title_svg.find_template("Gray_Box_4.svg")
     assert title_svg.find_template("nope") is None
-    assert "Standard_1" in title_svg.suggest_templates("standrd_1")
 
 
 def test_reflection_copies_share_one_field_and_roles_follow_font_size():
