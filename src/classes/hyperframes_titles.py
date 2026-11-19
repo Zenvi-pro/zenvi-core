@@ -234,13 +234,14 @@ def _body(s: Dict, u: float) -> (str, str):
             '<p class="c" style="font-size:%spx;margin:%spx 0">%s</p>' % (px(size), px(size * 0.32), html.escape(r))
             for r in rows)
         if len(rows) > ROLL_LINES:
-            js = 'tl.fromTo(".roll",{yPercent:0,y:H*0.55},{yPercent:-100,y:-H*0.55,duration:END,ease:"none"},0);'
-            exit_ = ""
+            # the roll is the whole title: it runs on the main clock (exit), never sped up with the entrance
+            js = ""
+            exit_ = 'tl.fromTo(".roll",{yPercent:0,y:H*0.55},{yPercent:-100,y:-H*0.55,duration:END,ease:"none"},0);'
         else:
             js = 'tl.fromTo(".c",{opacity:0,y:%s},{opacity:1,y:0,duration:0.6,ease:"power3.out",stagger:0.18},0.1);' \
                  % px(20)
             exit_ = 'tl.to(".roll",{opacity:0,duration:OUT,ease:"power2.in"},END-OUT);'
-    return html_, js + exit_
+    return html_, js, exit_
 
 
 def compile_composition(s: Dict, width: int, height: int, duration: float, fps: float = 30.0) -> str:
@@ -254,7 +255,7 @@ def compile_composition(s: Dict, width: int, height: int, duration: float, fps: 
     accent = _css_colour(s["accent_color"] or ("#ffffff" if s["style"] == "bold_box" else "#ffd166"))
     background = s["background_color"] or ("#0b0b0f" if entry.get("full_frame") else "")
     justify = {"top": "flex-start", "center": "center", "bottom": "flex-end"}[s["zone"]]
-    body, js = _body(s, u) if (s["title"] or s["subtitle"] or s["lines"]) else ("", "")
+    body, intro, exit_ = _body(s, u) if (s["title"] or s["subtitle"] or s["lines"]) else ("", "", "")
     outro = _num(min(0.5, max(duration * 0.2, 0.0)))
     css = """
 *{margin:0;padding:0;box-sizing:border-box}
@@ -274,9 +275,9 @@ html,body{width:%(w)dpx;height:%(h)dpx;overflow:hidden;background:transparent}
 .caps{text-transform:uppercase;letter-spacing:0.24em;font-weight:600}
 .lt{display:flex;align-items:stretch;align-self:flex-start;max-width:78%%}
 .bar{background:%(accent)s;transform-origin:50%% 100%%}
-.plate{background:rgba(12,12,16,0.82);display:flex;flex-direction:column;justify-content:center}
-.n{font-weight:700;line-height:1.1;letter-spacing:-0.01em;white-space:nowrap}
-.r{font-weight:500;line-height:1.2;opacity:0.78;white-space:nowrap}
+.plate{background:rgba(12,12,16,0.82);display:flex;flex-direction:column;justify-content:center;min-width:0}
+.n{font-weight:700;line-height:1.1;letter-spacing:-0.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.r{font-weight:500;line-height:1.2;opacity:0.78;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .boxrow{line-height:1;margin:%(gap)spx 0}
 .box{display:inline-block;background:%(accent)s;color:%(ink)s;font-weight:800;line-height:1.15;
   letter-spacing:-0.01em;border-radius:%(rad)spx}
@@ -290,10 +291,12 @@ html,body{width:%(w)dpx;height:%(h)dpx;overflow:hidden;background:transparent}
        "rad": _num(8 * u), "lw": _num(90 * u), "lh": _num(max(2 * u, 1))}
     fonts = "https://fonts.googleapis.com/css2?family=%s:wght@400;500;600;700;800&display=block" % (
         font.replace(" ", "+"))
+    # The entrance is its own timeline, sped up on a short title so it ends before the exit starts.
     script = ("var END=%s,OUT=%s,H=%d;window.__timelines=window.__timelines||{};"
-              "var tl=gsap.timeline({paused:true});%s"
-              "tl.set({},{},END);window.__timelines[\"zenvi-title\"]=tl;tl.seek(0);") % (
-        _num(duration), outro, height, js)
+              "var main=gsap.timeline({paused:true});var intro=gsap.timeline();%s"
+              "intro.timeScale(Math.max(1,intro.duration()/Math.max(0.05,END-OUT)));main.add(intro,0);%s"
+              "main.set({},{},END);window.__timelines[\"zenvi-title\"]=main;main.seek(0);") % (
+        _num(duration), outro, height, intro.replace("tl.", "intro."), exit_.replace("tl.", "main."))
     return """<!doctype html>
 <html lang="en">
 <head>

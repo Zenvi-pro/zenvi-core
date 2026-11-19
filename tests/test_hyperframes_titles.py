@@ -16,9 +16,9 @@ def _attr(html, name):
 def test_every_style_compiles_to_a_seekable_composition(style):
     s = ht.spec(style, title="Tokyo Day 1", subtitle="Shibuya", lines=["A", "B"] if style == "credits" else None)
     html = ht.compile_composition(s, 1920, 1080, 4.0, 30)
-    assert 'data-composition-id="zenvi-title"' in html and 'window.__timelines["zenvi-title"]=tl' in html
+    assert 'data-composition-id="zenvi-title"' in html and 'window.__timelines["zenvi-title"]=main' in html
     assert _attr(html, "data-duration") == "4" and _attr(html, "data-width") == "1920"
-    assert "gsap.timeline({paused:true})" in html and "tl.set({},{},END)" in html   # runs the whole duration
+    assert "gsap.timeline({paused:true})" in html and "main.set({},{},END)" in html   # runs the whole duration
     assert ("Tokyo" in html) != (style == "credits")
 
 
@@ -79,3 +79,14 @@ def test_long_credits_roll_and_title_spec_reads_back():
     assert ht.title_spec({"ai_metadata": {"source": ht.SOURCE, "title": s}}) == s
     assert ht.title_spec({"ai_metadata": {"source": "hyperframes_captions"}}) is None
     assert ht.title_spec({"path": "a.svg"}) is None
+
+
+def test_a_short_title_plays_its_entrance_before_its_exit():
+    s = ht.spec("lower_third", title="Jane", subtitle="Host")
+    short = ht.compile_composition(s, 1920, 1080, 1.0)
+    # The entrance is its own timeline, sped up to end before the exit starts at END-OUT.
+    assert "intro.timeScale(Math.max(1,intro.duration()/Math.max(0.05,END-OUT)))" in short
+    assert "main.add(intro,0)" in short and 'window.__timelines["zenvi-title"]=main' in short
+    rows = ["Line %d" % i for i in range(ht.ROLL_LINES + 2)]
+    roll = ht.compile_composition(ht.spec("credits", lines=rows), 1920, 1080, 8.0)
+    assert 'main.fromTo(".roll"' in roll                    # the roll runs on the main clock, not sped up

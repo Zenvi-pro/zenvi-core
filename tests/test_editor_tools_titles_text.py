@@ -313,16 +313,57 @@ def test_edit_a_hyperframes_title_renders_it_again_for_every_clip(tt, hft):
     assert out.startswith("Updated title 'Day 2 / Tokyo' on 2 clip(s)")
     assert edit["path"].endswith("Day 1 v2.mov") and len(hft.renders) == 2 and "Day 2" in hft.html[-1]
     assert 'data-duration="5"' in hft.html[-1]                    # the file keeps its length
-    f = tt.file(rec["file_id"])
+    # The new render is a new Project Files entry with its own probe; every clip plays it, the old entry goes.
+    f = tt.file(edit["file_id"])
+    assert edit["file_id"] != rec["file_id"] and tt.file(rec["file_id"]) is None
     assert f["path"] == edit["path"] and f["ai_metadata"]["title"]["style"] == "kicker"
     assert f["ai_metadata"]["title"]["subtitle"] == "Tokyo"         # only what was passed changes
     for cid in (rec["timeline_clip_id"], other):
-        assert tt.clip(cid)["reader"]["path"] == edit["path"]
-    assert os.path.isfile(rec["path"])                             # the old version is kept
+        assert tt.clip(cid)["file_id"] == edit["file_id"] and tt.clip(cid)["reader"]["path"] == edit["path"]
+    assert os.path.isfile(rec["path"])                             # the old version is kept on disk
     assert tt.undo_steps_since_mark() == 1
     tt.undo()
     assert tt.file(rec["file_id"])["path"] == rec["path"] and tt.clip(other)["reader"]["path"] == rec["path"]
     assert tt.file(rec["file_id"])["ai_metadata"]["title"]["style"] == "headline"
+
+
+def test_edit_to_an_opaque_card_carries_the_new_files_probe(tt, hft):
+    rec = receipt(tt.call("add_title_tool", text="Thanks"))
+    edit = receipt(tt.call("edit_title_tool", timeline_clip_id=rec["timeline_clip_id"], style="end_card"))
+    assert edit["path"].endswith(".mp4")
+    assert tt.clip(rec["timeline_clip_id"])["reader"] == {k: v for k, v in tt.file(edit["file_id"]).items()
+                                                          if k in tt.clip(rec["timeline_clip_id"])["reader"]}
+
+
+def test_font_scale_on_edit_is_kept_in_range(tt, hft):
+    rec = receipt(tt.call("add_title_tool", text="Big", font_scale=3))
+    edit = receipt(tt.call("edit_title_tool", timeline_clip_id=rec["timeline_clip_id"], font_scale=3))
+    assert tt.file(edit["file_id"])["ai_metadata"]["title"]["font_scale"] == 5.0
+
+
+def test_a_track_locked_during_the_render_refuses_the_edit(tt, hft, monkeypatch):
+    from classes import hyperframes_local as hf
+    rec = receipt(tt.call("add_title_tool", text="Day 1"))
+    layer = tt.clip(rec["timeline_clip_id"])["layer"]
+    run = hf.run
+
+    def locking_run(*args, **kw):
+        tt.lock_track(layer)                     # the person locks the track while the render runs
+        return run(*args, **kw)
+
+    monkeypatch.setattr(hf, "run", locking_run)
+    tt.mark()
+    out = tt.call("edit_title_tool", timeline_clip_id=rec["timeline_clip_id"], text="Day 2")
+    assert out.startswith("Error") and "locked" in out
+    assert tt.undo_steps_since_mark() == 0 and tt.clip(rec["timeline_clip_id"])["file_id"] == rec["file_id"]
+
+
+def test_a_project_files_name_is_never_reused_even_when_its_media_is_gone(tt, hft):
+    first = receipt(tt.call("add_title_tool", text="Intro"))
+    os.remove(first["path"])                     # deleted on disk, still in Project Files
+    second = receipt(tt.call("add_title_tool", text="Intro", position_seconds=6))
+    assert second["path"] != first["path"] and second["file_id"] != first["file_id"]
+    assert tt.file(first["file_id"])["ai_metadata"]["title"]["title"] == "Intro"
 
 
 def test_edit_a_hyperframes_title_for_one_clip_and_refusals(tt, hft):

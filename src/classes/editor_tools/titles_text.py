@@ -154,6 +154,11 @@ def _fit(doc, slots) -> dict:
     return fitted
 
 
+def _project_paths() -> list:
+    from classes.query import File
+    return [f.absolute_path() for f in File.filter()]
+
+
 def _project_title_paths() -> list:
     from classes.query import File
     return [f.absolute_path() for f in File.filter() if str(f.data.get("path") or "").lower().endswith(".svg")]
@@ -208,10 +213,12 @@ def _hf_metadata(s: dict, duration: float) -> dict:
             "short_summary": "%s title: %s" % (ht.STYLES[s["style"]]["label"], _hf_shown(s))}
 
 
-def _free_path(folder: str, base: str, ext: str) -> str:
+def _free_path(folder: str, base: str, ext: str, taken=()) -> str:
+    """'<base><ext>' in *folder*, else '<base> (1)<ext>'...: free on disk and not a Project Files path in *taken*."""
     base = title_svg.safe_base_name(base)
+    used = {os.path.normcase(os.path.abspath(p)) for p in taken}
     path, n = os.path.join(folder, base + ext), 0
-    while os.path.exists(path):
+    while os.path.exists(path) or os.path.normcase(os.path.abspath(path)) in used:
         n += 1
         path = os.path.join(folder, "%s (%d)%s" % (base, n, ext))
     return path
@@ -422,14 +429,14 @@ def add_title(text="", subtitle="", lines=None, style=ht.DEFAULT_STYLE, font="",
 
     def _precheck():
         plan_overlay_track(position, end, track)        # where it goes (a refused call renders nothing)
-        return project_size()
+        return project_size(), _project_paths()
 
-    size = precheck_on_main(_precheck)
+    size, taken = precheck_on_main(_precheck)
     if not hf.status()["ready"]:
         raise ToolError(SETUP_HINT)
     opaque = ht.is_opaque(s)
     base = str(file_name or "").strip() or (s["title"] or (s["lines"] or [""])[0]).split("\n")[0] or "Title"
-    out_path = _free_path(title_dir(), base, ".mp4" if opaque else ".mov")
+    out_path = _free_path(title_dir(), base, ".mp4" if opaque else ".mov", taken)
     _render_title(s, size, fps, duration, out_path)
     ai = _hf_metadata(s, duration)
     moved = []
@@ -545,13 +552,14 @@ def _clips_of(file_id: str) -> list:
     return [c for c in Clip.filter(file_id=file_id) if c.data.get("file_id") == file_id]
 
 
-def _version_path(folder: str, current: str, ext: str) -> str:
+def _version_path(folder: str, current: str, ext: str, taken=()) -> str:
     stem = os.path.splitext(os.path.basename(current))[0]
     m = re.match(r"^(.*?) v(\d+)$", stem)
     base, n = (m.group(1), int(m.group(2))) if m else (stem, 1)
+    used = {os.path.normcase(os.path.abspath(p)) for p in taken}
     for k in range(n + 1, n + 1000):
         path = os.path.join(folder, f"{base} v{k}{ext}")
-        if not os.path.exists(path):
+        if not os.path.exists(path) and os.path.normcase(os.path.abspath(path)) not in used:
             return path
     raise ToolError(f"no free version name for {stem!r}")
 
@@ -571,13 +579,33 @@ def _edited_spec(old: dict, text, subtitle, lines, style, font, font_scale, text
         zone = old["zone"] if new_style == old["style"] else ""
     return _spec(new_style, title, sub, lines, text_color or old["text_color"],
                  accent_color or old["accent_color"], background_color or old["background_color"],
-                 font or old["font"], old["font_scale"] * float(font_scale or 1.0), zone)
+                 font or old["font"], max(0.2, min(5.0, old["font_scale"] * float(font_scale or 1.0))), zone)
 
 
-def _commit_edit(f, scope_used, clip_id, out_path, src_path, extra=None):
-    """Point the title's clips (all_clips), one clip (this_clip) or nothing (duplicate) at *out_path*. GUI thread."""
+def _commit_edit(f, scope_used, clip_id, out_path, src_path, extra=None, replace=False):
+    """Point the title's clips (all_clips), one clip (this_clip) or nothing (duplicate) at *out_path*. GUI thread.
+
+    *replace* (a rendered title): all_clips imports the render as a new Project Files entry, with its own
+    probe, plays it in every clip and removes the old entry; an SVG title keeps its entry, re-pointed.
+    """
     from classes.media_fingerprint import fingerprint
     from classes.query import Clip, File
+    clips = _clips_of(f.id) if scope_used == "all_clips" else [c for c in _clips_of(f.id) if c.id == clip_id]
+    if scope_used != "duplicate":
+        _refuse_locked(clips)
+    if scope_used == "all_clips" and replace:
+        new_file = import_media_file(out_path, extra=extra)
+        ids = []
+        for c in clips:
+            live = Clip.get(id=c.id)
+            live.data = {"file_id": new_file.id, "reader": dict(new_file.data)}
+            live.save()
+            ids.append(c.id)
+        old = File.get(id=f.id)
+        if old:
+            old.delete()
+        refresh_file_and_clips(new_file.id, ids)
+        return new_file.id, ids
     new_fp = fingerprint(out_path)
     if scope_used == "all_clips":
         current = File.get(id=f.id)
@@ -605,6 +633,14 @@ def _commit_edit(f, scope_used, clip_id, out_path, src_path, extra=None):
         refresh_file_and_clips(new_file.id, [clip_id])
         return new_file.id, [clip_id]
     return new_file.id, []
+
+
+def _refuse_locked(clips) -> None:
+    locked = [c for c in clips if is_locked(int(c.data.get("layer") or 0))]
+    if locked:
+        raise ToolError("title clip(s) on locked track(s): "
+                        + ", ".join(f"{c.id} (track {ui_track_number(int(c.data.get('layer') or 0))})"
+                                    for c in locked) + "; unlock first")
 
 
 def _commit_or_discard(func, out_path):
@@ -666,7 +702,7 @@ def edit_title(timeline_clip_id="", file_id="", title_query="", text="", subtitl
 
     def _gather():
         found, found_clip = _resolve_title(timeline_clip_id, file_id, title_query)
-        return found, found_clip, _clips_of(found.id), _project_title_paths(), installed_font_families(), \
+        return found, found_clip, _clips_of(found.id), _project_paths(), installed_font_families(), \
             project_size()
 
     f, clip_id, clips, taken, families, size = precheck_on_main(_gather)
@@ -675,15 +711,11 @@ def edit_title(timeline_clip_id="", file_id="", title_query="", text="", subtitl
     scope_used = "all_clips" if scope == "this_clip" and len(clips) <= 1 else scope
     affected = clips if scope_used == "all_clips" else [c for c in clips if c.id == clip_id]
     if scope_used != "duplicate":
-        locked = [c for c in affected if is_locked(int(c.data.get("layer") or 0))]
-        if locked:
-            raise ToolError("title clip(s) on locked track(s): "
-                            + ", ".join(f"{c.id} (track {ui_track_number(int(c.data.get('layer') or 0))})"
-                                        for c in locked) + "; unlock first")
+        _refuse_locked(affected)
     src_path = f.absolute_path()
     old = ht.title_spec(f.data)
     if old:
-        return _edit_hyperframes(f, old, clip_id, scope, scope_used, src_path, size, text, subtitle, lines, style,
+        return _edit_hyperframes(f, old, clip_id, scope, scope_used, src_path, size, taken, text, subtitle, lines, style,
                                  font, font_scale, text_color, accent_color, background_color, screen_position)
     if looks:
         raise ToolError("this is an SVG title from the Title Editor: style, accent_color and screen_position only "
@@ -692,7 +724,7 @@ def edit_title(timeline_clip_id="", file_id="", title_query="", text="", subtitl
                      has_text)
 
 
-def _edit_hyperframes(f, old, clip_id, scope, scope_used, src_path, size, text, subtitle, lines, style, font,
+def _edit_hyperframes(f, old, clip_id, scope, scope_used, src_path, size, taken, text, subtitle, lines, style, font,
                       font_scale, text_color, accent_color, background_color, screen_position):
     new = _edited_spec(old, text, subtitle, lines, style, font, font_scale, text_color, accent_color,
                        background_color, screen_position)
@@ -704,12 +736,13 @@ def _edit_hyperframes(f, old, clip_id, scope, scope_used, src_path, size, text, 
     ext = ".mp4" if ht.is_opaque(new) else ".mov"
     folder = title_dir()
     if scope_used == "all_clips":
-        out_path = _version_path(folder, src_path, ext)
+        out_path = _version_path(folder, src_path, ext, taken)
     else:
-        out_path = _free_path(folder, os.path.splitext(os.path.basename(src_path))[0], ext)
+        out_path = _free_path(folder, os.path.splitext(os.path.basename(src_path))[0], ext, taken)
     _render_title(new, size, project_fps(), duration, out_path)
     new_id, clip_ids = _commit_or_discard(
-        lambda: _commit_edit(f, scope_used, clip_id, out_path, src_path, {"ai_metadata": _hf_metadata(new, duration)}),
+        lambda: _commit_edit(f, scope_used, clip_id, out_path, src_path, {"ai_metadata": _hf_metadata(new, duration)},
+                             replace=True),
         out_path)
     return _edit_receipt(scope, scope_used, clip_id, out_path, new_id, f.id, clip_ids, _hf_shown(new),
                          dict(style=new["style"], fields=_hf_fields(new)))
@@ -738,7 +771,7 @@ def _edit_svg(f, clip_id, scope, scope_used, src_path, taken, families, style, t
 
     folder = title_dir()
     if scope_used == "all_clips":
-        out_path = _version_path(folder, src_path, ".svg")
+        out_path = _version_path(folder, src_path, ".svg", taken)
     else:
         pattern, offset = title_svg.duplicate_pattern(os.path.basename(src_path))
         free = title_svg.free_name(pattern, offset, folder, taken=taken)
