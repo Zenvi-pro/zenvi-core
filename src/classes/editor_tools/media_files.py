@@ -104,11 +104,12 @@ def _tags_string(tags) -> str:
 
 
 def kind_of(data) -> str:
-    """video | audio | image | image_sequence | title (an SVG title)."""
+    """video | audio | image | image_sequence | title (an SVG or add_title_tool title)."""
     path = str(data.get("path") or "")
     if "%" in path:
         return "image_sequence"
-    if path.lower().endswith(".svg") and "emoji" not in path.lower():
+    if ((data.get("ai_metadata") or {}).get("source") == "hyperframes_title"
+            or path.lower().endswith(".svg") and "emoji" not in path.lower()):
         return "title"
     media_type = str(data.get("media_type") or "").lower()
     return media_type if media_type in ("video", "audio", "image") else "video"
