@@ -47,7 +47,8 @@ def _titles(titles: list) -> list:
     covers=("handoff.ae_export",),
 )
 def export_to_after_effects(output_dir="", collect_media=True, open_folder=False):
-    """Export the timeline as an After Effects script (.jsx) that rebuilds it as a composition (File > Export Project > After Effects).
+    """Use for an After Effects script (.jsx) that rebuilds the timeline as a comp. Not when After Effects is connected (run_tool(name='send_to_after_effects_tool')).
+    Export the timeline as an After Effects script (.jsx) that rebuilds it as a composition (File > Export Project > After Effects).
 
     Use for "open this edit in After Effects", "make an AE comp of this
     timeline", or to hand the edit to someone with After Effects. When After
@@ -112,7 +113,8 @@ def export_to_after_effects(output_dir="", collect_media=True, open_folder=False
     covers=("handoff.ae_send",),
 )
 def send_to_after_effects(collect_media=False):
-    """Build the timeline as a comp in the open After Effects through the Zenvi Link panel (File > Send To > After Effects).
+    """Use for building the timeline as a comp in a connected After Effects. Not for a script file (run_tool(name='export_to_after_effects_tool')).
+    Build the timeline as a comp in the open After Effects through the Zenvi Link panel (File > Send To > After Effects).
 
     Use for "send this to After Effects" / "build it in AE" when After Effects
     is running with Zenvi Link (run_tool(name='list_link_hosts_tool') shows it connected). It

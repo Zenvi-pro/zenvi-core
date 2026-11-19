@@ -401,7 +401,7 @@ def import_linked_media(path, link, position=None, track="", name=""):
     project's links folder (the original stays where it is), added to Project Files
     with the link and placed at position (default the playhead) on the lowest
     free track above the video. Later: run_tool(name='get_linked_clip_tool', args={...}) (freshness),
-    run_tool(name='update_linked_clip_tool', args={...}) / run_tool(name='rerender_linked_clip_tool', args={...}),
+    run_tool(name='update_linked_clip_tool', args={...}) (props, re-render),
     run_tool(name='open_linked_source_tool', args={...}), run_tool(name='unlink_clip_tool', args={...}).
     One undo step removes the clip and the file.
     Example: {"path": "/tmp/Promo.mov", "link": {"kind": "aftereffects", "source":
@@ -493,7 +493,7 @@ def get_linked_clip(clip_id="", file_id=""):
     Use before editing or re-rendering a linked clip (Remotion / HyperFrames
     composition or After Effects comp) or when the user asks "is this clip up
     to date?". state is fresh (rendered from the current source), stale (the
-    code / comp / props changed: run_tool(name='rerender_linked_clip_tool', args={...})), rendering, error
+    code / comp / props changed: run_tool(name='update_linked_clip_tool', args={...})), rendering, error
     (the last render failed; detail says why) or missing_source (the project
     folder or .aep is gone). Also lists editable_props with current values and
     the timeline clips that use the file. Read-only.
@@ -531,24 +531,31 @@ def update_linked_clip(clip_id="", file_id="", props=None, rerender=True):
     """Change a linked clip's props (Remotion input props / HyperFrames variables) and re-render it.
 
     Use for "change the title text in the intro to Launch day", "make the
-    accent orange" on a clip that came from code. Props merge into the current
-    ones; the composition is re-rendered with its own toolchain (seconds to
-    minutes) and every clip of the file switches to the new render as one undo
-    step (a shorter render shortens clips and says so in warnings). A failed
-    render changes nothing. With rerender=false only the props are stored (one
-    undo step) and the clip reads stale. Example: {"clip_id": "A1B2", "props":
-    {"title": "Launch day"}}.
+    accent orange" on a clip that came from code, or "I edited the composition,
+    update it" (no props: the clip re-renders from its source as it is, Zenvi
+    Motion / 3D / FX clips included). Props merge into the current ones; the
+    composition is re-rendered with its own toolchain (seconds to minutes) and
+    every clip of the file switches to the new render as one undo step (a
+    shorter render shortens clips and says so in warnings). A failed render
+    changes nothing. With rerender=false only the props are stored (one undo
+    step) and the clip reads stale. Zenvi Motion / 3D / FX props change through
+    their own engine tools (the refusal says which). Example: {"clip_id": "A1B2",
+    "props": {"title": "Launch day"}}.
     """
     lm = _lm()
     fid = _resolve_file_id(clip_id, file_id)
     _linked_file(fid)
     kind = _engine_kind(fid)
     if kind:
+        # Zenvi Motion / 3D / FX: the engine re-renders its own links; their props change through its own tools.
         from classes.editor_tools import engine_links
         engine = engine_links.ENGINE_KINDS[kind]
-        raise ToolError(f"{engine.label} clips change through {engine.rerender_tool}, which takes its own "
-                        "arguments; run_tool(name='rerender_linked_clip_tool', args={...}) "
-                        "renders one again as it is")
+        if props:
+            raise ToolError(f"{engine.label} clips change through {engine.rerender_tool}, which takes its own "
+                            "arguments; without props this tool re-renders the clip as it is")
+        if not rerender:
+            raise ToolError("nothing to change: pass props, or rerender=true to re-render as is")
+        return engine_links.rerender_linked_clip(clip_id=clip_id, file_id=fid)
     if props is not None and not isinstance(props, dict):
         raise ToolError("props must be an object of prop names to values")
     if not props and not rerender:
@@ -562,7 +569,7 @@ def update_linked_clip(clip_id="", file_id="", props=None, rerender=True):
             return ok("No change: the clip already has those props.", changed=False, file_id=fid,
                       props=res["link"]["props"])
         return ok("Stored the new props; the clip is stale until it is re-rendered "
-                  "(run_tool(name='rerender_linked_clip_tool', args={...})).",
+                  "(run_tool(name='update_linked_clip_tool', args={...})).",
                   changed=True, file_id=fid, props=res["link"]["props"], state="stale")
     return _rerender(fid, props or None)
 
@@ -586,32 +593,6 @@ def _rerender(file_id: str, props: Optional[dict]) -> str:
 
 
 @editor_tool(
-    "rerender_linked_clip_tool",
-    label="Re-render linked clip",
-    schema=obj(dict(_FILE_TARGET)),
-    background_safe=True,
-    covers=("handoff.linked_update",),
-)
-def rerender_linked_clip(clip_id="", file_id=""):
-    """Re-render a linked clip from its source after the code, comp or assets changed.
-
-    Use when run_tool(name='get_linked_clip_tool', args={...}) says stale, or the user says "I edited the
-    Remotion composition, update it in Zenvi". Renders with the source's own
-    toolchain (Remotion / HyperFrames CLI, or After Effects through Zenvi Link)
-    with the stored props, then swaps the media of every clip using the file as
-    one undo step. A failed or cancelled render changes nothing (the error is
-    reported and run_tool(name='get_linked_clip_tool', args={...}) shows it).
-    """
-    fid = _resolve_file_id(clip_id, file_id)
-    _linked_file(fid)
-    if _engine_kind(fid):
-        # The engine re-renders its own kinds: a whole tool call through the bridge, not a render provider.
-        from classes.editor_tools import engine_links
-        return engine_links.rerender_linked_clip(clip_id=clip_id, file_id=fid)
-    return _rerender(fid, None)
-
-
-@editor_tool(
     "open_linked_source_tool",
     label="Open linked source",
     schema=obj({
@@ -628,7 +609,7 @@ def open_linked_source(clip_id="", file_id="", target="code"):
 
     Use for "show me the code for this intro", "open it in Remotion Studio",
     "open the After Effects project". Opens an app on the user's screen; the
-    project is not changed. After they edit, run_tool(name='rerender_linked_clip_tool', args={...}) brings
+    project is not changed. After they edit, run_tool(name='update_linked_clip_tool', args={...}) brings
     the change in.
     """
     lm = _lm()

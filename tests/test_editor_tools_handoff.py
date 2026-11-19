@@ -168,18 +168,18 @@ def test_update_without_rerender_stores_props_and_goes_stale(linked, provider):
 def test_failed_rerender_is_an_error_and_changes_nothing(linked, provider):
     out = _import(linked, provider)
     provider.fail = RuntimeError("Composition 'Intro' not found")
-    r = linked.call_receipt("rerender_linked_clip_tool", file_id=out["file_id"])
+    r = linked.call_receipt("update_linked_clip_tool", file_id=out["file_id"])
     assert r["status"] == "error" and "not found" in r["summary"] and linked.undo_steps_since_mark() == 0
     assert linked.call_receipt("get_linked_clip_tool", file_id=out["file_id"])["data"]["state"] == "error"
     provider.fail = None
-    r = linked.call_receipt("rerender_linked_clip_tool", file_id=out["file_id"])
+    r = linked.call_receipt("update_linked_clip_tool", file_id=out["file_id"])
     assert r["status"] == "applied" and r["undoSteps"] == 1
 
 
 def test_rerender_without_a_provider_is_refused(linked, provider):
     out = _import(linked, provider)
     lm.unregister_provider("remotion")
-    r = linked.call_receipt("rerender_linked_clip_tool", file_id=out["file_id"])
+    r = linked.call_receipt("update_linked_clip_tool", file_id=out["file_id"])
     assert _failed(r) and "cannot render" in r["summary"]
 
 
@@ -371,7 +371,7 @@ def test_a_late_commit_is_not_reported_as_a_failed_render(linked, provider, monk
     out = _import(linked, provider)
     monkeypatch.setattr(lm, "rerender_linked", lambda *a, **k: (_ for _ in ()).throw(
         CommitTimeout("the editor was too busy; the change is still running -- check before trying again")))
-    r = linked.call_receipt("rerender_linked_clip_tool", file_id=out["file_id"])
+    r = linked.call_receipt("update_linked_clip_tool", file_id=out["file_id"])
     assert _failed(r) and "still running" in r["summary"] and "Nothing changed" not in r["summary"]
 
 

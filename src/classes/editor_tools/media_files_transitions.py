@@ -16,7 +16,7 @@ update_transition_tool requests: "make the crossfade 2 seconds" ->
 duration_seconds=2 (e.g. between_clip_ids=["A","B"]); "use a circle wipe
 instead" -> mask="circle_in_to_out"; "make the wipe go the other way" ->
 flip_wipe_side=true (or the mirrored mask, e.g. wipe_right_to_left); "harder
-edge" -> contrast=20.
+edge" -> contrast=20; "play it backwards" -> reverse=true.
 """
 
 from __future__ import annotations
@@ -332,7 +332,8 @@ def _curve_from_points(points, duration):
     covers=("transition.list",),
 )
 def list_timeline_transitions(track="", timeline_clip_id="", at_seconds=None):
-    """List the transitions placed on the timeline, with what each one does.
+    """Use for the transitions already placed on the timeline, with the clips or clip edge each one joins. Not for the catalogue (run_tool(name='list_transitions_tool')).
+    List the transitions placed on the timeline, with what each one does.
 
     For each: id, mask shape (fade, wipe_left_to_right, circle_in_to_out...), track, start,
     end and duration (timeline seconds), direction of the curve ('default' / 'reversed'),
@@ -379,6 +380,8 @@ def list_timeline_transitions(track="", timeline_clip_id="", at_seconds=None):
         "mask_file_id": string("Project image file to use as the wipe shape. '' = keep.", ""),
         "flip_wipe_side": boolean("Wipe from the other side, still earlier clip to later (inverts the mask and "
                                   "reverses its curve; any mask).", False),
+        "reverse": boolean("Play backwards: a fade in becomes a fade out. Between two clips the later clip shows "
+                           "first (flip_wipe_side changes the wipe side instead).", False),
         "invert_mask": nullable(boolean("Raw 'mask invert'. Alone it shows the later clip first; use "
                                         "flip_wipe_side instead.")),
         "contrast": nullable(number("Wipe edge hardness: 0 very soft, 3 default, 20 a hard line.",
@@ -392,13 +395,15 @@ def list_timeline_transitions(track="", timeline_clip_id="", at_seconds=None):
         "audio_crossfade": nullable(boolean("Also crossfade the two clips' audio (equal-power).")),
         "replace_image": nullable(boolean("Show the mask image itself instead of transitioning (preview aid).")),
     }),
-    covers=("transition.update",),
+    covers=("transition.update", "transition.reverse"),
 )
 def update_transition(transition_ids=None, between_clip_ids=None, track="", at_seconds=None, scope="",
                       duration_seconds=0.0, keep_overlap=False, ripple=True, position_seconds=None, mask="",
-                      mask_file_id="", flip_wipe_side=False, invert_mask=None, contrast=None, brightness_keyframes=None,
-                      contrast_keyframes=None, interpolation="", audio_crossfade=None, replace_image=None):
-    """Change a transition on the timeline: length, position, wipe shape, softness, curves, audio crossfade.
+                      mask_file_id="", flip_wipe_side=False, reverse=False, invert_mask=None, contrast=None,
+                      brightness_keyframes=None, contrast_keyframes=None, interpolation="", audio_crossfade=None,
+                      replace_image=None):
+    """Use for changing a transition's length, position, wipe shape, softness, curves or audio crossfade, or reversing it (reverse=true). Not for adding one (add_transitions_between_clips_tool).
+    Change a transition on the timeline: length, position, wipe shape, softness, curves, audio crossfade, reverse.
 
     New duration on a crossfade: the later clip (with ripple, everything after
     it on that track) moves so the clips overlap by that much and the
@@ -419,7 +424,9 @@ def update_transition(transition_ids=None, between_clip_ids=None, track="", at_s
             raise ToolError("duration_seconds must be at least one frame")
     if flip_wipe_side and invert_mask is not None:
         raise ToolError("pass flip_wipe_side or invert_mask, not both")
-    if not (new_dur or position_seconds is not None or mask or mask_file_id or flip_wipe_side
+    if reverse and flip_wipe_side:
+        raise ToolError("pass reverse or flip_wipe_side, not both")
+    if not (new_dur or position_seconds is not None or mask or mask_file_id or flip_wipe_side or reverse
             or invert_mask is not None
             or contrast is not None or brightness_keyframes or contrast_keyframes or interpolation
             or audio_crossfade is not None or replace_image is not None):
@@ -513,6 +520,8 @@ def update_transition(transition_ids=None, between_clip_ids=None, track="", at_s
                 transition_ops.set_mask_defaults(data, fps)
                 if direction == "reversed":
                     transition_ops.reverse_transition_data(data)
+        if reverse:
+            transition_ops.reverse_transition_data(data)
         length = _span(data)[1] - _span(data)[0]
         if brightness_keyframes:
             data["brightness"] = _curve_from_points(brightness_keyframes, length)
@@ -568,43 +577,6 @@ def update_transition(transition_ids=None, between_clip_ids=None, track="", at_s
 
 
 # ---------------------------------------------------------------------------
-# reverse_transition_tool
-# ---------------------------------------------------------------------------
-
-@editor_tool(
-    "reverse_transition_tool",
-    label="Reverse transition",
-    schema=obj(dict(TRANSITION_TARGET)),
-    covers=("transition.reverse",),
-)
-def reverse_transition(transition_ids=None, between_clip_ids=None, track="", at_seconds=None, scope=""):
-    """Reverse transitions (Transition menu > Reverse Transition): play the transition backwards.
-
-    Mirrors the progress and edge curves in time. Right for a fade on ONE clip edge: a
-    fade-in becomes a fade-out and back. On a crossfade/wipe BETWEEN two clips it makes the
-    later clip show first and the earlier one flash back before the cut (the receipt's
-    order becomes 'later_first'), which is rarely wanted: for "make the wipe go the other
-    way" use run_tool(name='update_transition_tool', args={'flip_wipe_side': true}). Several transitions in one undo
-    step (scope='track' reverses a whole track). Refused on locked tracks; never deletes clips.
-    """
-    targets = resolve_transitions(transition_ids, between_clip_ids, track, at_seconds, scope)
-    _ensure_unlocked(targets)
-    changed = []
-    for t in targets:
-        before = copy.deepcopy(t.data)
-        data = transition_ops.reverse_transition_data(copy.deepcopy(t.data))
-        if data != before:
-            _save(t, data)
-            changed.append(t)
-    if not changed:
-        return ok("No change: those transitions have constant curves, so reversing does nothing.", changed=False,
-                  transitions=[describe_transition(t) for t in targets])
-    refresh_preview()
-    return ok(f"Reversed {len(changed)} transition(s).", changed=True,
-              transitions=[describe_transition(t) for t in changed])
-
-
-# ---------------------------------------------------------------------------
 # remove_transition_tool
 # ---------------------------------------------------------------------------
 
@@ -615,7 +587,8 @@ def reverse_transition(transition_ids=None, between_clip_ids=None, track="", at_
     covers=("transition.remove",),
 )
 def remove_transition(transition_ids=None, between_clip_ids=None, track="", at_seconds=None, scope=""):
-    """Remove transitions from the timeline (Transition menu > Remove Transition). Never deletes clips.
+    """Use for removing crossfades, dissolves or wipes (OpenShot transitions) from the timeline; the clips stay where they are. Not for motion transitions (find with find_tools) or deleting clips (delete_from_timeline_tool).
+    Remove transitions from the timeline (Transition menu > Remove Transition). Never deletes clips.
 
     The clips stay exactly where they are: two clips that overlapped keep overlapping and
     now cut at the start of the later clip. "Remove all transitions on track 2" ->
@@ -670,7 +643,8 @@ _COPY_KEYS = {
 )
 def copy_transition(source_transition_id, transition_ids=None, between_clip_ids=None, track="", at_seconds=None,
                     scope="", what="all", fit_duration=True):
-    """Copy one transition's settings onto other transitions (Copy > Transition / Keyframes, then Paste).
+    """Use for copying one transition's settings onto other transitions. Not for adding new transitions (add_transitions_between_clips_tool).
+    Copy one transition's settings onto other transitions (Copy > Transition / Keyframes, then Paste).
 
     "Make all the transitions on track 1 like this one" -> source_transition_id=X,
     scope='track', track='1'. Targets keep their own position, track and length (the
@@ -743,6 +717,9 @@ def _retimed(data):
                         "layer number). Required unless timeline_clip_ids are given.", ""),
         "timeline_clip_ids": array({"type": "string"}, "Only join these clips (all on one track, joined in "
                                                        "timeline order). Leave out for every clip on the track."),
+        "placement": enum(["between", "start", "end"],
+                          "'between' (default): joins between consecutive clips. 'start' / 'end': a fade in / out on "
+                          "the first / last part of each clip in timeline_clip_ids (nothing moves).", "between"),
         "transition": string("'fade' (crossfade, default), 'random', or any transition name ('wipe_left_to_right', "
                              "'circle_in_to_out', find_tools: list transitions).", "fade"),
         "duration_seconds": number("Length of each transition in seconds. 0 = the Default Transition Length "
@@ -764,16 +741,16 @@ def _retimed(data):
 )
 def add_transitions_between_clips(track="", timeline_clip_ids=None, transition="fade", duration_seconds=1.0,
                                   method="ripple", audio_crossfade=True, replace_existing=False,
-                                  max_gap_seconds=0.05):
-    """Add a transition at every join between consecutive clips on a track ("crossfades between all clips").
+                                  max_gap_seconds=0.05, placement="between"):
+    """Use for fades, dissolves or wipes at each join on a track, or at one clip's start or end. Not for changing one (find_tools).
 
     Use for "add crossfades between all my clips", "put a 0.5 s dissolve between every shot
     on track 1", "random transitions between the photos". Each join gets one transition of
     `duration_seconds` over the overlap of the two clips (clamped to half of the shorter
     clip). Read `method` for how the overlap is made; the receipt lists every join added,
     skipped (gap, too short, already has one, no spare media) and every clip moved. One undo
-    step. Refused on a locked track; never deletes clips. For one specific pair you can also
-    use find_tools (apply a transition).
+    step. Refused on a locked track; never deletes clips. One pair: timeline_clip_ids=[A, B].
+    A fade on one clip's edge: placement='start' (fade in) or 'end' (fade out), timeline_clip_ids=[clip].
     Example: track="1", transition="fade", duration_seconds=0.5.
     """
     from classes.query import Clip, Transition
@@ -818,7 +795,7 @@ def add_transitions_between_clips(track="", timeline_clip_ids=None, transition="
         missing = chosen_ids - {c.id for c in clips}
         if missing:
             raise ToolError(f"clips {sorted(missing)} are not on that track")
-    if len(clips) < 2:
+    if placement == "between" and len(clips) < 2:
         raise ToolError(f"track {ui_track_number(layer_num) or layer_num} has fewer than two clips to join")
     existing = [t for t in _transitions() if _layer_of(t.data) == layer_num]
 
@@ -828,7 +805,24 @@ def add_transitions_between_clips(track="", timeline_clip_ids=None, transition="
     end = {c.id: float(c.data.get("end") or 0.0) for c in clips}
     tpos = {t.id: float(t.data.get("position") or 0.0) for t in existing}
     joins, skipped, replaced = [], [], []
-    for a, b in zip(clips, clips[1:]):
+    if placement != "between":
+        for c in clips:
+            if chosen_ids is not None and c.id not in chosen_ids:
+                continue
+            c_len = end[c.id] - start[c.id]
+            d = max(frame, int(min(length, c_len) * fps + 1e-9) / fps)  # whole frames, never past the clip
+            at = pos[c.id] if placement == "start" else int((pos[c.id] + c_len) * fps + 1e-9) / fps - d
+            on_edge = [t for t in existing if tpos[t.id] < at + d + frame
+                       and tpos[t.id] + _span(t.data)[1] - _span(t.data)[0] > at - frame]
+            if c_len < 2 * frame:
+                skipped.append({"join": c.id, "reason": "clip too short"})
+            elif on_edge and not replace_existing:
+                skipped.append({"join": c.id, "reason": "already has a transition"})
+            else:
+                joins.append({"a": c, "b": None, "position": at, "duration": d, "replaces": on_edge,
+                              "reverse": placement == "end"})
+    pairs = zip(clips, clips[1:]) if placement == "between" else []
+    for a, b in pairs:
         if chosen_ids is not None and not (a.id in chosen_ids and b.id in chosen_ids):
             continue
         a_len, b_len = end[a.id] - start[a.id], end[b.id] - start[b.id]
@@ -931,10 +925,13 @@ def add_transitions_between_clips(track="", timeline_clip_ids=None, transition="
             duration=snap_seconds(j["duration"]), fps_float=fps, title=e["key"],
             fade_audio=bool(audio_crossfade))
         data.pop("id", None)
+        if j.get("reverse"):
+            transition_ops.reverse_transition_data(data)
         t = Transition()
         t.data = data
         t.save()
-        added.append({"transition_id": t.id, "mask": e["key"], "between_clip_ids": [j["a"].id, j["b"].id],
+        ids = {"between_clip_ids": [j["a"].id, j["b"].id]} if j["b"] is not None else {"on_clip": j["a"].id}
+        added.append({"transition_id": t.id, "mask": e["key"], **ids,
                       "position": data["position"], "duration": data["end"]})
     refresh_preview()
     summary = f"Added {len(added)} transition(s) on track {ui_track_number(layer_num) or layer_num}"

@@ -140,7 +140,8 @@ _SUMMARY_KEYS = ("alpha", "scale", "gravity", "scale_x", "scale_y", "location_x"
 )
 def get_clip_properties(timeline_clip_id="", clip_query="", track="", at_seconds=None, properties=[],
                         include_keyframes=True):
-    """Read every property of one timeline clip, the way the Properties dock shows it.
+    """Use for reading every property and keyframe of one clip before changing it. Not for effects (run_tool(name='get_clip_effects_tool')).
+    Read every property of one timeline clip, the way the Properties dock shows it.
 
     Use this before changing how a clip looks or moves: it tells you each
     property's value at a time (opacity 'alpha', 'scale' mode, 'gravity',
@@ -223,7 +224,8 @@ def get_clip_properties(timeline_clip_id="", clip_query="", track="", at_seconds
     covers=("clip.properties_set",),
 )
 def set_clip_properties(properties, timeline_clip_ids=None, clip_query="", track="", scope="", at_seconds=None):
-    """Set one or more properties of one or more timeline clips to fixed values.
+    """Use for setting fixed values on properties of one or more clips. Not for animation (run_tool(name='set_keyframes_tool')) or presets (run_tool(name='apply_clip_preset_tool')).
+    Set one or more properties of one or more timeline clips to fixed values.
 
     Several properties and clips in one call, one undo step. A static value
     replaces any animation of that property (the receipt says so); mirroring
@@ -386,7 +388,8 @@ _POINT = {
 )
 def set_keyframes(property, points, timeline_clip_id="", clip_query="", track="", occurrence=0, position_near=None,
                   mode="replace", interpolation="", ease=""):
-    """Animate one property of one timeline clip with timed keyframes.
+    """Use for animating one property of a clip with timed keyframes: custom motion or any exact curve. Not for whole-clip zooms, fades or slides (run_tool(name='apply_clip_preset_tool')) or a fixed value (run_tool(name='set_clip_properties_tool')).
+    Animate one property of one timeline clip with timed keyframes.
 
     For custom motion the presets do not cover, or any exact curve. Every
     point must land inside the clip. For whole-clip zooms, pans, fades and
@@ -528,7 +531,8 @@ def _merge_curve(curve, built, mode):
 )
 def remove_keyframes(properties, timeline_clip_ids=None, clip_query="", track="", scope="", start_seconds=None,
                      end_seconds=None):
-    """Remove keyframes (animation points) from clip properties; never deletes clips.
+    """Use for removing keyframes (animation points) from clip properties, such as removing a zoom or stopping a move. Not for deleting clips (delete_from_timeline_tool) or effects (run_tool(name='remove_effect_tool')).
+    Remove keyframes (animation points) from clip properties; never deletes clips.
 
     Use it for "remove the zoom", "stop it moving", "delete the keyframe at
     3 s", "clear all animation on these clips". Give the properties (or

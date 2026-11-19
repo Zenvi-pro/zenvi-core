@@ -691,7 +691,8 @@ def update_project_files(file_ids=None, file_query="", name="", tags=None, add_t
     covers=("files.import_sequence",),
 )
 def import_image_sequence(path, fps=0.0, name="", skip_indexing=False):
-    """Import a folder of numbered images as ONE image-sequence file (an animation/video clip).
+    """Use for numbered frames that play as one sequence (renders, stop-motion, time-lapse folders at a set fps). Not for photos imported as separate stills (import_files_tool).
+    Import a folder of numbered images as ONE image-sequence file (an animation/video clip).
 
     Use for "import these frames as a sequence at 24 fps", renders from Blender/After
     Effects, stop-motion or time-lapse photo folders. The frames play at `fps` (the project

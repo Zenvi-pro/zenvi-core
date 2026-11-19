@@ -159,7 +159,7 @@ def test_update_noop_adds_no_undo_step(tl):
 
 def test_change_mask_keeps_direction_and_curve(tl):
     a, b, c, t1, t2 = crossfaded(tl)
-    tl.call("reverse_transition_tool", transition_ids=[t1])
+    tl.call("update_transition_tool", transition_ids=[t1], reverse=True)
     tl.mark()
     _receipt(tl.call("update_transition_tool", transition_ids=[t1], mask="circle"))
     data = transition(tl, t1)
@@ -206,13 +206,13 @@ def test_mask_from_a_project_image(tl):
 
 def test_reverse_flips_and_undoes(tl):
     a, b, c, t1, t2 = crossfaded(tl)
-    r = _receipt(tl.call("reverse_transition_tool", scope="track", track="1"))
+    r = _receipt(tl.call("update_transition_tool", scope="track", track="1", reverse=True))
     assert [x["direction"] for x in r["transitions"]] == ["reversed", "reversed"]
     assert tl.undo_steps_since_mark() == 1
     tl.undo()
     assert ops.direction_of(transition(tl, t1)) == "default"
     tl.lock_track(L1)
-    assert "locked" in tl.call("reverse_transition_tool", transition_ids=[t1])
+    assert "locked" in tl.call("update_transition_tool", transition_ids=[t1], reverse=True)
 
 
 def test_remove_keeps_clips(tl):
@@ -236,7 +236,7 @@ def test_copy_all_fits_each_targets_length(tl):
     a, b, c, t1, t2 = crossfaded(tl)
     tl.call("update_transition_tool", transition_ids=[t2], duration_seconds=2.0, keep_overlap=True)
     tl.call("update_transition_tool", transition_ids=[t1], mask="wipe_left_to_right", contrast=15)
-    tl.call("reverse_transition_tool", transition_ids=[t1])
+    tl.call("update_transition_tool", transition_ids=[t1], reverse=True)
     tl.mark()
     r = _receipt(tl.call("copy_transition_tool", source_transition_id=t1, scope="track", track="1"))
     target = transition(tl, t2)
@@ -339,7 +339,7 @@ def test_flip_wipe_side_keeps_the_clip_order(tl):
     assert data["mask_invert"] is True and ops.direction_of(data) == "reversed"
     row = _receipt(tl.call("list_timeline_transitions_tool", timeline_clip_id=a))["transitions"][0]
     assert row["order"] == "earlier_to_later"
-    tl.call("reverse_transition_tool", transition_ids=[t1])
+    tl.call("update_transition_tool", transition_ids=[t1], reverse=True)
     row = _receipt(tl.call("list_timeline_transitions_tool", timeline_clip_id=a))["transitions"][0]
     assert row["order"] == "later_first"
     assert tl.call("update_transition_tool", transition_ids=[t1], flip_wipe_side=True,

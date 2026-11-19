@@ -247,18 +247,22 @@ def new_project(discard_unsaved=False, save_first=False, profile=""):
     "open_project_tool",
     label="Open project",
     schema=obj({
-        "file_path": string("Path of a .zvn project (legacy .osp/.flow also open). Leave empty when using recent_index.", ""),
-        "recent_index": integer("Open a recent project instead: 1 = most recent (see list_recent_projects_tool). 0 = use file_path.",
+        "file_path": string("Path of a .zvn project (legacy .osp/.flow also open). Leave both file_path and "
+                            "recent_index empty to list the recent projects.", ""),
+        "recent_index": integer("Open a recent project instead: 1 = most recent. 0 = use file_path.",
                                 0, minimum=0, maximum=10),
         "discard_unsaved": boolean("Throw away unsaved changes in the current project. Only after the user agreed.", False),
         "save_first": boolean("Save the current project to its existing file before opening the other one.", False),
     }),
     background_safe=True,
-    covers=("project.open",),
+    covers=("project.open", "project.recent"),
 )
 def open_project(file_path="", recent_index=0, discard_unsaved=False, save_first=False):
     """Open a saved project file and wait until it is loaded (File > Open Project / Recent Projects).
 
+    With neither file_path nor recent_index it lists the recent projects, most recent first, with
+    whether each file still exists; recent_index then opens one ("open my last project").
+    run_tool(name='forget_recent_projects_tool') tidies the list.
     Refuses while the current project has unsaved changes unless save_first=true
     or discard_unsaved=true (ask the user). Never shows a dialog: media that
     cannot be found stays in the project and is listed in missing_media.
@@ -274,7 +278,7 @@ def open_project(file_path="", recent_index=0, discard_unsaved=False, save_first
         file_path = recent[recent_index - 1]
     path = normalize_path(file_path)
     if not path:
-        raise ToolError("give file_path (a .zvn project) or recent_index")
+        return _recent_listing()
     if not path.lower().endswith(info.ALL_PROJECT_EXTS):
         raise ToolError(f"{os.path.basename(path)} is not a project file (.zvn, .osp or .flow); "
                         "use import_files_tool for media or run_tool(name='import_project_file_tool') for EDL/XML")
@@ -360,19 +364,8 @@ def save_project(file_path="", overwrite=False):
 # Recent projects
 # ---------------------------------------------------------------------------
 
-@editor_tool(
-    "list_recent_projects_tool",
-    label="List recent projects",
-    schema=obj({}),
-    read_only=True,
-    covers=("project.recent",),
-)
-def list_recent_projects():
-    """List File > Recent Projects, most recent first, with whether each file still exists.
-
-    Use the index with run_tool(name='open_project_tool', args={'recent_index': N}) ("open my last
-    project"), or run_tool(name='forget_recent_projects_tool') to tidy the list.
-    """
+def _recent_listing():
+    """What open_project_tool answers with neither file_path nor recent_index: File > Recent Projects."""
     out = []
     for i, path in enumerate(_recent_projects(), start=1):
         exists = os.path.isfile(path)
@@ -560,19 +553,26 @@ def _media_resolvable(path: str) -> bool:
     "import_project_file_tool",
     label="Import EDL / XML",
     schema=obj({
-        "file_path": string("Path of an .edl (Edit Decision List) or Final Cut Pro .xml file."),
+        "file_path": string("Path of an .edl (Edit Decision List) or a Final Cut Pro / Premiere .xml sequence."),
         "format": enum(["auto", "edl", "fcpxml"], "File format; auto = from the extension.", "auto"),
+        "placement": enum(["new_tracks", "at_playhead"], "XML only. new_tracks = keep the sequence's own timing on new "
+                          "tracks above the existing ones; at_playhead = the same, but starting at the playhead.",
+                          "new_tracks"),
+        "sequence": string("XML only. Which sequence to import when the XML holds several (its name, as listed in the "
+                           "warnings). Empty = the first top-level sequence.", ""),
     }, required=["file_path"]),
     background_safe=True,
-    covers=("project.import_edl", "project.import_fcpxml"),
+    covers=("project.import_edl", "project.import_fcpxml", "handoff.timeline_xml_import"),
 )
-def import_project_file(file_path, format="auto"):
-    """Import an EDL or Final Cut Pro XML timeline into new tracks of this project (File > Import Project).
+def import_project_file(file_path, format="auto", placement="new_tracks", sequence=""):
+    """Import an EDL or Final Cut Pro / Premiere XML timeline into new tracks of this project (File > Import Project).
 
     Clips keep their positions, trims and opacity/volume (and, from XML,
     position/scale/rotation) keyframes; media not already in the project is
     added. Media that cannot be found is skipped and listed (no dialog). An EDL
     becomes one new track "EDL Import"; XML creates one track per source track.
+    A multi-sequence XML imports its first sequence unless sequence names another;
+    the other sequences, generators and effects Zenvi lacks are listed in warnings.
     One undo step removes everything it added.
     """
     path = normalize_path(file_path)
@@ -580,6 +580,8 @@ def import_project_file(file_path, format="auto"):
         raise ToolError(f"file not found: {path}")
     fmt = _format_of(path, format)
     if fmt == "edl":
+        if placement != "new_tracks" or sequence:
+            raise ToolError("placement and sequence apply to XML only")
         media = _edl_media_paths(path)
         if not media:
             raise ToolError(f"{os.path.basename(path)} has no clips with a media path (FROM CLIP NAME / SOURCE FILE)")
@@ -597,29 +599,43 @@ def import_project_file(file_path, format="auto"):
         except Exception as exc:
             raise ToolError(f"importing {os.path.basename(path)} failed: {exc}") from exc
     else:
-        summary = _import_xml(path)
+        summary = _import_xml(path, placement, sequence)
     summary = summary or {}
     clip_ids = list(summary.get("clip_ids") or [])
     missing = sorted(set(summary.get("missing") or []))
     if not clip_ids:
         raise ToolError("no clip could be imported" + (": missing media " + ", ".join(missing[:5]) if missing else ""))
     tracks = summary.get("track_numbers") or ([summary["track_number"]] if summary.get("track_number") else [])
-    return ok(f"Imported {len(clip_ids)} clip(s) from {os.path.basename(path)} onto {len(tracks)} new track(s)"
+    at = f" at {summary['offset']:.2f}s" if summary.get("placement") == "at_playhead" else ""
+    return ok(f"Imported {len(clip_ids)} clip(s) from {os.path.basename(path)} onto {len(tracks)} new track(s){at}"
               f"{f'; {len(missing)} missing media skipped' if missing else ''}.",
-              format=fmt, timeline_clip_ids=clip_ids, layers=tracks, missing_media=missing)
+              format=fmt, timeline_clip_ids=clip_ids, layers=tracks, missing_media=missing,
+              sequence_name=summary.get("sequence_name"), placement=summary.get("placement"),
+              offset=summary.get("offset"), transition_ids=list(summary.get("transition_ids") or []),
+              marker_ids=list(summary.get("marker_ids") or []), file_ids=list(summary.get("file_ids") or []),
+              warnings=list(summary.get("warnings") or []))
 
 
-def _import_xml(path: str) -> dict:
-    """FCP7 / Premiere XML: parse, find and probe the media here (off the GUI thread), commit on it."""
+def _import_xml(path: str, placement: str, sequence: str) -> dict:
+    """The one XML import path: parse, find and probe the media here (off the GUI thread), commit on it as one step."""
     from classes.editor_tools.titles_text_common import commit_on_main, precheck_on_main
+    from classes.handoff import jobs
     from classes.importers import final_cut_pro as importer
     info = precheck_on_main(importer.read_project_info)
     try:
-        plan = importer.plan_import(path, info=info)
+        with jobs.track_job("Importing %s" % os.path.basename(path), kind="xml-import") as job:
+            plan = importer.plan_import(path, placement=placement, info=info, should_cancel=job.should_cancel,
+                                        sequence=sequence)
+    except jobs.JobCancelled:
+        raise ToolError("the import was cancelled; nothing changed") from None
+    except importer.XmlImportError as exc:
+        raise ToolError(str(exc)) from None
+    try:
         summary = dict(commit_on_main(importer.commit_import, plan) or {})
     except importer.XmlImportError as exc:
         raise ToolError(str(exc)) from None
-    summary["warnings"] = list(plan.warnings)
+    summary.update(sequence_name=plan.sequence_name, warnings=list(plan.warnings), placement=plan.placement,
+                   offset=round(plan.offset, 3))
     return summary
 
 
