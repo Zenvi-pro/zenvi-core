@@ -359,9 +359,10 @@ class UpdateManager:
         return [a for a in history if a.transaction in kept]
 
     def _trim_history(self):
-        """Drop undo steps older than the last MEMORY_STEPS."""
-        if len(self.actionHistory) > self.MEMORY_STEPS:
-            self.actionHistory[:] = self._last_steps(self.actionHistory, self.MEMORY_STEPS)
+        """Drop undo steps older than the last MEMORY_STEPS, once per new step (not per action of one)."""
+        history = self.actionHistory
+        if len(history) > self.MEMORY_STEPS and (len(history) < 2 or history[-1].transaction != history[-2].transaction):
+            history[:] = self._last_steps(history, self.MEMORY_STEPS)
 
     def reset(self):
         """ Reset the UpdateManager, and clear all UpdateActions and History.

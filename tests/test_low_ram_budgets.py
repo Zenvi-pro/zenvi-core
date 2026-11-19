@@ -63,6 +63,21 @@ def test_undo_history_in_memory_keeps_only_the_last_steps_and_keeps_them_whole()
     assert manager.actionHistory[-1].values == {"position": 99}
 
 
+def test_a_long_transaction_is_not_rescanned_for_every_action():
+    manager = UpdateManager()
+    manager.MEMORY_STEPS = 5
+    for n in range(6):
+        _edit(manager, n)
+    scans = []
+    real = manager._last_steps
+    manager._last_steps = lambda history, steps: scans.append(1) or real(history, steps)
+    for n in range(500):
+        _edit(manager, n, transaction="sound-design")  # one undo step of 500 actions
+    assert len(scans) <= 1
+    assert len({a.transaction for a in manager.actionHistory}) == 5
+    assert sum(a.transaction == "sound-design" for a in manager.actionHistory) == 500
+
+
 def test_pruning_a_bundle_leaves_bytecode_only_and_drops_the_duplicate_trees(tmp_path):
     lib = tmp_path / "lib"
     for tree in ("classes", "src/classes", "openshot_qt/classes", "blender/scripts"):
