@@ -445,6 +445,14 @@ def _agent_bash_prompt():
     )
 
 
+def _edit_contract_prompt() -> str:
+    """One short steer for the agents that have a prompt channel (Claude's append file, Codex's first-turn prefix): a whole
+    piece starts with begin_edit_tool. The rule itself is enforced in the executor (classes/edit_contract.py); this only
+    saves the agent a refused call. Cursor, OpenCode and Hermes get the same words from the playbook in the MCP instructions."""
+    return ('Whole pieces ("make me a vlog / reel / trailer / film"): call begin_edit_tool first and plan from its survey; '
+            'placing clips is held back until the brief exists. Narrow asks (warmer, captions, trim) need no begin_edit_tool.')
+
+
 def _claude_code_system_prompt():
     """Append-system-prompt for Claude Code: editor fast-path + bash recipes."""
     return (
@@ -464,6 +472,7 @@ def _claude_code_system_prompt():
         "- After a successful ingest+place: one short sentence. "
         "Do NOT call inspect_timeline_tool unless the user asked to check "
         "the picture.\n"
+        "- " + _edit_contract_prompt() + "\n"
         "\n"
         + _agent_bash_prompt()
     )
@@ -2426,7 +2435,7 @@ class CodexRunner(BaseAgentRunner):
         # Codex has no --append-system-prompt; prefix import steering so it
         # does not Glob /mnt/c the way Claude did before the Claude prompt fix.
         # The prompt goes in through stdin ("-"), see _send_prompt_on_stdin.
-        self._stdin_prompt = _agent_import_prompt() + "\n\n" + (text or "")
+        self._stdin_prompt = _agent_import_prompt() + "\n\n" + _edit_contract_prompt() + "\n\n" + (text or "")
         return [cli, "exec", *common, *_add_dir_args(), "-"]
 
     def _after_launch(self, text: str):

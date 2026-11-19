@@ -287,6 +287,8 @@ _PLANNING_SAFE_TOOLS = frozenset({
     "save_edit_plan_tool", "save_planning_research_brief_tool",
     "update_edit_plan_step_tool", "finalize_edit_plan_tool",
     "present_planning_questions_tool",
+    # The brief is the plan's artifact: surveying and saving it never touches the timeline (untracked project keys).
+    "begin_edit_tool", "get_edit_brief_tool", "set_edit_brief_tool",
 })
 
 
@@ -2843,8 +2845,49 @@ class AIChatWindow(QDockWidget):
         if not seen or seen.get(backend, 0) is None:
             return ""
         from classes import chat_history
-        return chat_history.handoff_recap(
+        recap = chat_history.handoff_recap(
             chat_history.load_messages(self._active_sid), seen.get(backend, 0))
+        # The taste decisions live in the project's brief, not in the chat: a new agent needs them too.
+        brief = self._edit_brief_context()
+        brief = brief if isinstance(brief, str) else ""      # a stand-in window (tests) answers with a mock: that is no brief
+        return f"{recap}\n{brief}\n" if recap and brief else (recap or (f"{brief}\n" if brief else ""))
+
+    def _note_edit_intent(self, text: str) -> None:
+        """Start (or leave alone) the edit contract from what the user just typed. Main thread, project data in memory only.
+
+        A whole-piece ask on an empty timeline starts a finished piece, so placing clips waits for a brief whichever agent answers,
+        including one that never calls begin_edit_tool. Never downgrades a piece under way. Off when the ``edit_contract`` flag is
+        off; any error leaves the contract as it was.
+        """
+        try:
+            from classes import edit_contract
+            if edit_contract.rollout_setting() == "off":
+                return
+            from classes.app import get_app
+            from classes.editor_tools.media_index_tools_edit import read_contract, write_contract
+            from classes.query import File
+
+            minutes = sum(float(f.data.get("duration") or 0) for f in (File.filter() or [])
+                          if isinstance(getattr(f, "data", None), dict) and not f.data.get("zenvi_subclip")
+                          and str(f.data.get("media_type") or "video") == "video") / 60.0
+            new = edit_contract.contract_for_ask(read_contract(), text, timeline_empty=not (get_app().project.get("clips") or []),
+                                                 media_minutes=minutes)
+            if new is not None:
+                write_contract(new)
+                from classes import edit_contract_log
+                edit_contract_log.record("piece_started", mode=new["mode"], source="classifier", rollout=edit_contract.rollout_setting())
+        except Exception as e:
+            log.debug("edit intent: %s", e)
+
+    def _edit_brief_context(self) -> str:
+        """The project's edit brief and contract as a short block ('' when there is none). Main thread; reads memory only."""
+        try:
+            from classes import edit_contract
+            from classes.editor_tools.media_index_tools_edit import read_brief, read_contract
+
+            return edit_contract.brief_block(read_brief(), read_contract(), max_chars=1500)
+        except Exception:
+            return ""
 
     def _prepend_editor_snapshot(self, text: str) -> str:
         """Ground the model with a bounded timeline snapshot (main thread).
@@ -3859,6 +3902,8 @@ class AIChatWindow(QDockWidget):
             sess["last_user_images"] = list(images or []) if images else []
         if action == "chat" and cmd:
             self._request_preamble_summary(cmd)
+        if action == "chat" and text:
+            self._note_edit_intent(text)            # before the snapshot, so its EDIT_STATE line already shows it
         augmented_text = self._prepend_editor_snapshot(text) if text else text
         if action == "chat" and augmented_text:
             augmented_text = handoff + augmented_text
@@ -3974,8 +4019,12 @@ class AIChatWindow(QDockWidget):
             self._set_agent_mode("agent")
             # Straight to the dispatcher: the composer's send would spend the
             # files staged for the user's next message on this one.
+            # The CLI's plan lives in its own conversation, but the brief it saved lives in the project: say it again so a
+            # long plan turn cannot lose the taste decisions between planning and carrying out.
+            brief = self._edit_brief_context()
+            brief = brief if isinstance(brief, str) else ""
             self._dispatch_user_message(
-                "Carry out the plan.", sess.get("last_user_model_id") or "",
+                "Carry out the plan." + (f"\n\n{brief}" if brief else ""), sess.get("last_user_model_id") or "",
                 agent_mode="agent", effort=sess.get("last_user_effort") or "")
             return
         worker = sess.get("worker")
