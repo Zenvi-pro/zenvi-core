@@ -63,6 +63,18 @@ def test_undo_history_in_memory_keeps_only_the_last_steps_and_keeps_them_whole()
     assert manager.actionHistory[-1].values == {"position": 99}
 
 
+def test_a_history_mark_still_finds_what_was_added_after_the_limit_trims_the_front():
+    manager = UpdateManager()
+    manager.MEMORY_STEPS = 3
+    for n in range(3):
+        _edit(manager, n)
+    mark = manager.history_mark()
+    _edit(manager, 10, transaction="import")
+    _edit(manager, 11, transaction="import")  # the oldest step was trimmed off the front
+    added = manager.actionHistory[manager.since_mark(mark):]
+    assert [a.values for a in added] == [{"position": 10}, {"position": 11}]
+
+
 def test_a_long_transaction_is_not_rescanned_for_every_action():
     manager = UpdateManager()
     manager.MEMORY_STEPS = 5

@@ -255,6 +255,7 @@ class UpdateManager:
         self.last_action = None  # The last action processed
         self.pending_action = None  # Last action not added to actionHistory list
         self.data_version = 0  # Incremented on every dispatch to invalidate caches
+        self.trimmed = 0  # Actions the undo limit has dropped off the front (see history_mark)
 
         # transaction_id and ignore_history are per-thread (see the properties
         # below).  Agent tool calls arrive one worker thread each
@@ -362,7 +363,17 @@ class UpdateManager:
         """Drop undo steps older than the last MEMORY_STEPS, once per new step (not per action of one)."""
         history = self.actionHistory
         if len(history) > self.MEMORY_STEPS and (len(history) < 2 or history[-1].transaction != history[-2].transaction):
-            history[:] = self._last_steps(history, self.MEMORY_STEPS)
+            kept = self._last_steps(history, self.MEMORY_STEPS)
+            self.trimmed += len(history) - len(kept)
+            history[:] = kept
+
+    def history_mark(self):
+        """Where actionHistory ends now, as a mark that stays right after the undo limit trims its front."""
+        return len(self.actionHistory) + self.trimmed
+
+    def since_mark(self, mark):
+        """Index in actionHistory of the first action recorded after *mark*."""
+        return max(0, mark - self.trimmed)
 
     def reset(self):
         """ Reset the UpdateManager, and clear all UpdateActions and History.
