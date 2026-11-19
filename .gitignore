@@ -69,3 +69,6 @@ native/apple-speech-asr/.build/
 
 # Bundled by installer/build-whisper-cli.sh at release time
 src/whisper/
+
+# Bundled by scripts/bundle_engine_cli.py at release time
+src/engine/

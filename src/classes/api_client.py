@@ -69,6 +69,15 @@ def engine_tools() -> list:
         return []
 
 
+def unavailable_tools() -> list:
+    """Editor tools whose runtime this computer lacks; the backend offers the chat none of them."""
+    try:
+        from classes.editor_tools import unavailable_tools as missing
+        return sorted(missing())
+    except Exception:
+        return []
+
+
 def _refresh_credits_after_backend_billing() -> None:
     """Repaint the credits badge after a request the backend bills itself.
 
@@ -500,6 +509,9 @@ class ZenviBackendClient:
             bridged = engine_tools()
             if bridged:
                 payload_data["engine_tools"] = bridged
+            missing = unavailable_tools()
+            if missing:
+                payload_data["unavailable_tools"] = missing
             if agent_mode in ("planning", "agent"):
                 payload_data["agent_mode"] = agent_mode
             if action in ("chat", "execute_plan", "cancel_execution"):

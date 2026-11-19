@@ -22,6 +22,15 @@ MAX_LISTED = 40
 MINOR_SECONDS = 2.0
 
 
+def unavailable() -> set:
+    """These tools when onnxruntime is missing (release builds do not ship it): no agent is offered them."""
+    from classes.editor_tools._registry import REGISTRY
+
+    if pm.runtime_available():
+        return set()
+    return {name for name, spec in REGISTRY.items() if spec.func.__module__ == __name__}
+
+
 def _need_on() -> None:
     if not people_enabled():
         raise ToolError("people identity is off: turn on 'recognise people' in Preferences (it needs Media Index v2 on too)")

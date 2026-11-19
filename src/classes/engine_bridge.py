@@ -17,10 +17,10 @@ Node and the CLI, downloaded on demand into ``~/.openshot_qt/engine``);
 * ``off`` -- the kill switch: no engine tools, whatever is installed.
 
 Where the CLI comes from (:func:`find_cli`, first hit wins):
-``ZENVI_ENGINE_CLI``, the ``engine-cli-path`` setting, the copy a build bundles
-at ``<app>/engine/zenvi.mjs``, then the installed runtime's
+``ZENVI_ENGINE_CLI``, the ``engine-cli-path`` setting, the installed runtime's
 ``~/.openshot_qt/engine/cli/zenvi.mjs`` (only while its recorded bridge
-protocol is this desktop's). Node (:func:`find_node`, 22 or newer):
+protocol is this desktop's), then the copy a release build ships at
+``<app>/engine/zenvi.mjs``. Node (:func:`find_node`, 22 or newer):
 ``ZENVI_NODE``, the ``engine-node-path`` setting, the runtime's own
 ``~/.openshot_qt/engine/node``, the private Node the local HyperFrames setup
 installs under ``~/.openshot_qt/hyperframes/node``, then ``PATH`` and the
@@ -107,7 +107,8 @@ def runtime_ready(env=None) -> bool:
     """Whether the CLI and a Node it runs on are found (blocks: file checks, ``node --version``)."""
     try:
         locate_cli(env)
-    except BridgeUnavailable:
+    except BridgeUnavailable as exc:
+        log.info("Engine bridge: no engine tools listed: %s", exc)
         return False
     return True
 
@@ -115,6 +116,12 @@ def runtime_ready(env=None) -> bool:
 def managed_cli_dir() -> str:
     from classes import info
     return os.path.join(info.USER_PATH, RUNTIME_DIR, "cli")
+
+
+def bundled_cli() -> str:
+    """The CLI a release build ships: src/engine, which freeze.py copies into the app's lib/ (info.PATH)."""
+    from classes import info
+    return os.path.join(info.PATH, "engine", CLI_NAME)
 
 
 def managed_cli() -> str:
@@ -145,19 +152,25 @@ def installed_runtime() -> dict:
 
 def cli_candidates(env=None) -> list:
     """Where the CLI bundle may be, in the order :func:`find_cli` tries them."""
-    from classes import info
     env = _env(env)
     named = [env.get("ZENVI_ENGINE_CLI", "")]
     if env is os.environ:
         named.append(_setting("engine-cli-path"))
-    return [p for p in named if p] + [os.path.join(info.PATH, "engine", CLI_NAME), managed_cli()]
+    # An install the user made (AI Tools > Zenvi Engine Tools...) wins; the CLI the app ships is the fallback.
+    return [p for p in named if p] + [managed_cli(), bundled_cli()]
+
+
+def named_cli(env=None) -> str:
+    """The CLI the user named (ZENVI_ENGINE_CLI or the engine-cli-path setting), '' for none."""
+    env = _env(env)
+    return env.get("ZENVI_ENGINE_CLI", "") or (_setting("engine-cli-path") if env is os.environ else "")
 
 
 def find_cli(env=None) -> str:
     """The zenvi CLI bundle (``zenvi.mjs``), absolute; BridgeUnavailable with what was searched."""
     env = _env(env)
     candidates = cli_candidates(env)
-    explicit = env.get("ZENVI_ENGINE_CLI", "") or (_setting("engine-cli-path") if env is os.environ else "")
+    explicit = named_cli(env)
     if explicit:
         # A path the user gave is the one they mean: no quiet fallback to another build.
         if os.path.isfile(explicit):
