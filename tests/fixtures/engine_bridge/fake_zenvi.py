@@ -3,7 +3,7 @@
 Run as ``python fake_zenvi.py bridge`` (JSON-RPC lines on stdio),
 ``python fake_zenvi.py bridge --tools`` or ``python fake_zenvi.py tool-run ...``.
 ``run`` answers like the real CLI: add_motion_template_tool inserts a track, a
-drawing file and its clip (template ``seek``: only moves the saved playhead,
+drawing file and its clip (template ``hang``: never answers; ``seek``: only moves the saved playhead,
 untracked; ``future``: an action kind no desktop knows); update_motion_block_tool
 and update_fx_tool re-render a linked file (a new path on its record);
 review_frames_tool answers a PNG frame; anything else is refused. Every request is appended
@@ -14,6 +14,7 @@ to ``$FAKE_ZENVI_LOG`` (one JSON object per line) for the test to inspect.
 import json
 import os
 import sys
+import time
 
 TOOLS = [
     {"name": "add_motion_template_tool", "title": "Add motion template", "description": "Place a motion template.",
@@ -50,6 +51,8 @@ def receipt(status, tool, summary, **data):
 
 
 def run(params):
+    if (params.get("args") or {}).get("template") == "hang":
+        time.sleep(60)
     log({"tool": params.get("tool"), "args": params.get("args"), "project_file": params.get("project_file"),
          "backend_token": params.get("backend_token"), "project_keys": sorted((params.get("project") or {}).keys()),
          "clips": len((params.get("project") or {}).get("clips") or [])})
