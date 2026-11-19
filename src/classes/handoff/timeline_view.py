@@ -128,7 +128,7 @@ class FileView:
     height: int
     duration: float
     fps: Optional[Fraction]
-    is_title: bool            # an SVG title (Title Editor / add_title_tool)
+    is_title: bool            # an SVG title (Title Editor); add_title_tool titles are videos
     is_image_sequence: bool
     zenvi_link: Optional[Mapping[str, Any]]
     data: Mapping[str, Any] = field(repr=False, compare=False)
