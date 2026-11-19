@@ -72,7 +72,7 @@ def test_asking_for_a_language_keeps_the_better_transcript_only(tmp_path):
     assert shelf.read_json(SHA, "speech.json")["language"] == "ja-JP"
 
 
-def test_whisper_gets_the_two_letter_code_and_apple_the_locale():
+def test_the_local_recogniser_gets_the_two_letter_code_and_apple_the_locale():
     from classes.speech.asr import _engine_language
-    assert _engine_language("apple", "ja-JP") == "ja-JP" and _engine_language("whisper", "ja-JP") == "ja"
-    assert _engine_language("apple", "auto") is None and _engine_language("whisper", "auto") is None
+    assert _engine_language("apple", "ja-JP") == "ja-JP" and _engine_language("whistle", "ja-JP") == "ja"
+    assert _engine_language("apple", "auto") is None and _engine_language("whistle", "auto") is None

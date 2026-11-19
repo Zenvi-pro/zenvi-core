@@ -2,7 +2,7 @@
  @file
  @brief What is said, from the app's own local transcription, kept on the shelf by content.
 
- The editor already transcribes locally (Apple SpeechAnalyzer or whisper.cpp) and caches by
+ The editor already transcribes locally (Apple SpeechAnalyzer, Whistle or Parakeet) and caches by
  file *path*. This layer adds what the index needs without changing that: the transcript is
  stored on the shelf by fingerprint, so a moved, renamed or re-imported file reuses it instead
  of transcribing again, and a transcript found on the shelf is handed back to the path cache so
@@ -140,10 +140,10 @@ def _prime_path_cache(path: str, layer: Dict[str, Any], cache: Any) -> None:
     """Give the path-keyed transcript cache this transcript, so tools that ask for it by path hit."""
     try:
         from classes.speech import asr
-        from classes.speech.cache import DEFAULT_MODEL_ID, TranscriptRecord, Word, file_identity
+        from classes.speech.cache import TranscriptRecord, Word, file_identity
 
         abspath, size, mtime_ns = file_identity(path)
-        current_model = asr._cache_model_id(asr.resolve_engine("auto"), DEFAULT_MODEL_ID)
+        current_model = asr._cache_model_id(asr.resolve_engine("auto"))
         if layer.get("model") != current_model:
             return  # a transcript from another engine is not what this machine's tools would ask for
         record = TranscriptRecord(
