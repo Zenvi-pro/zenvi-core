@@ -119,6 +119,28 @@ def _run(monkeypatch, tool_name, data, history, edit):
     return execute.execute_tool_rich(tool_name, {}).receipt
 
 
+def test_an_edit_at_the_undo_limit_still_counts_as_an_undo_step(monkeypatch):
+    from types import SimpleNamespace
+
+    from classes.agent_tools import execute
+
+    data = {"fps": {"num": 30, "den": 1}, "clips": [_clip("a")]}
+    updates = SimpleNamespace(actionHistory=["old"], trimmed=0)
+    app = SimpleNamespace(project=_Project(data), updates=updates)
+
+    def handler(**_kw):
+        updates.actionHistory[:] = ["new"]  # the limit trimmed one step off the front: same length
+        updates.trimmed += 1
+        return "Done."
+
+    monkeypatch.setattr(execute, "_HANDLERS", {"fake_tag_tool": handler})
+    monkeypatch.setattr(execute, "_GET_APP", lambda: app)
+    monkeypatch.setattr(execute, "_QTHREAD", None)
+    monkeypatch.setattr(execute, "_UNGROUPED", frozenset({"fake_tag_tool"}))
+    monkeypatch.setattr(execute, "_READ_ONLY", frozenset())
+    assert execute.execute_tool_rich("fake_tag_tool", {}).receipt.undoSteps == 1
+
+
 def _clip(cid, position=0.0, start=0.0, end=2.0, layer=1):
     return {"id": cid, "position": position, "start": start, "end": end, "layer": layer}
 

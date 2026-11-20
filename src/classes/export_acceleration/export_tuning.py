@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from classes.system_memory import ram_budget_bytes
+
 
 @dataclass(frozen=True)
 class ExportPipelineProfile:
@@ -60,7 +62,7 @@ def _clamp(value: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, value))
 
 
-def export_cache_bytes(width: int, height: int, *, frame_budget: int = 24) -> int:
+def export_cache_bytes(width: int, height: int, *, frame_budget: int = 24, ram: Optional[int] = None) -> int:
     """Size the export CacheMemory from resolution.
 
     A 4K RGBA frame is ~33 MB; the historical 250 MB cap held only ~7 frames.
@@ -70,8 +72,8 @@ def export_cache_bytes(width: int, height: int, *, frame_budget: int = 24) -> in
     # libopenshot Frame is typically 4 bytes/pixel for the QImage path.
     bytes_per_frame = w * h * 4
     target = bytes_per_frame * max(8, int(frame_budget))
-    # Floor 256 MB, soft-cap 2 GB so we do not OOM low-RAM machines.
-    return _clamp(target, 256 * 1024 * 1024, 2 * 1024 * 1024 * 1024)
+    # Floor 256 MB, soft-cap 2 GB, and never more than the machine's RAM allows.
+    return ram_budget_bytes(_clamp(target, 256 * 1024 * 1024, 2 * 1024 * 1024 * 1024), ram)
 
 
 def get_export_pipeline_profile(
@@ -81,6 +83,7 @@ def get_export_pipeline_profile(
     *,
     hardware_concurrency: Optional[int] = None,
     enable_parallel_composite: bool = True,
+    ram: Optional[int] = None,
 ) -> ExportPipelineProfile:
     """Choose composite-worker count and pending-frame depth."""
     import os
@@ -112,10 +115,13 @@ def get_export_pipeline_profile(
     pending = _clamp(int(round(fps * 2.0)), 24, 120)
     if workers > 1:
         pending = _clamp(pending + workers * 8, 32, 160)
+    # The queue holds decoded frames: 60 of them at 4K is 1.85 GiB.
+    frame_bytes = max(1, int(width)) * max(1, int(height)) * 4
+    pending = max(2, min(pending, ram_budget_bytes(pending * frame_bytes, ram) // frame_bytes))
 
     return ExportPipelineProfile(
         name=name,
         composite_workers=workers,
         max_pending_frames=pending,
-        cache_bytes=export_cache_bytes(width, height, frame_budget=max(16, pending // 2)),
+        cache_bytes=export_cache_bytes(width, height, frame_budget=max(16, pending // 2), ram=ram),
     )

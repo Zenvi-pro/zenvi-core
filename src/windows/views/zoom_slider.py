@@ -48,10 +48,19 @@ def _event_posf(event):
         return event.position()
     return QPointF(event.pos())
 from classes.app import get_app
-from classes.query import Clip, Track, Transition, Marker
+from classes.query import Track
 from classes.logger import log
 from classes.recompute_queue import CoalescingRecomputeQueue
 from windows.views.minimap_geometry import compute_minimap_rects
+
+# Only the fields compute_minimap_rects reads; the rest of a project item is never copied.
+_MINIMAP_ITEM_FIELDS = ("id", "position", "layer", "start", "end")
+_MINIMAP_MARKER_FIELDS = ("id", "position")
+
+
+def _copy_minimap_items(items, fields):
+    """Detached copies of project items holding only the given (scalar) fields."""
+    return [{field: item[field] for field in fields if field in item} for item in (items or ()) if item]
 
 
 class _MinimapGeometryWorker(QThread):
@@ -154,9 +163,8 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
     def _build_snapshot(self):
         """Capture an immutable, plain-data snapshot for off-thread recompute.
 
-        Reads project data on the GUI thread (where the query cache lives) and
-        returns only plain dicts/sets so the worker never touches Qt or the
-        shared query cache.
+        Reads live project data on the GUI thread and copies only the fields the
+        minimap geometry reads, so the worker never touches Qt or a live project dict.
         """
         app = get_app()
         if not app or not getattr(app, "window", None) or not getattr(app.window, "timeline", None):
@@ -167,26 +175,23 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
             return None
 
         # Layer lookup: layer number -> row index (0 at top), matching paint order.
+        layers = [layer for layer in (app.project.get("layers") or ()) if layer]
         layer_index = {}
-        for count, layer in enumerate(reversed(sorted(Track.filter()))):
-            layer_index[layer.data.get('number')] = count
+        for count, layer in enumerate(reversed(sorted(layers, key=lambda layer: layer.get("number", 0)))):
+            layer_index[layer.get("number")] = count
 
-        # clip.data is an already-detached cached copy; the worker only reads it.
-        clips = [clip.data for clip in Clip.filter()]
-        transitions = [t.data for t in Transition.filter()]
-        markers = [m.data for m in Marker.filter()]
         selected = set(app.window.selected_clips) | set(app.window.selected_transitions)
 
         return {
-            "clips": clips,
-            "transitions": transitions,
-            "markers": markers,
+            "clips": _copy_minimap_items(app.project.get("clips"), _MINIMAP_ITEM_FIELDS),
+            "transitions": _copy_minimap_items(app.project.get("effects"), _MINIMAP_ITEM_FIELDS),
+            "markers": _copy_minimap_items(app.project.get("markers"), _MINIMAP_MARKER_FIELDS),
             "selected_ids": selected,
             "layer_index": layer_index,
             "width": float(self.width()),
             "height": float(self.height()),
             "duration": float(project_duration),
-            "overrides": dict(self._drag_overrides) if self._drag_overrides else None,
+            "overrides": copy.deepcopy(self._drag_overrides) if self._drag_overrides else None,
         }
 
     def _schedule_recompute(self):
