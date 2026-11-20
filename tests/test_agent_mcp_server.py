@@ -230,6 +230,39 @@ def test_server_requires_bearer_token(tool_stub):
         srv.stop()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="the proactor loop is Windows-only")
+def test_server_survives_an_aborted_accept(tool_stub, monkeypatch):
+    """A client that resets mid-accept fails the proactor's accept with
+    WinError 64, and CPython then closes the listener for good. One bad
+    client must not cost the editor its MCP server."""
+    _require_fastmcp()
+    from asyncio import windows_events
+    from classes.agent_mcp_server import ZenviMcpServer
+
+    real_accept = windows_events.IocpProactor.accept
+    failed = []
+
+    def aborted_once(self, listener):
+        if not failed:
+            failed.append(True)
+            fut = asyncio.get_running_loop().create_future()
+            fut.set_exception(OSError(
+                22, "The specified network name is no longer available", None, 64))
+            return fut
+        return real_accept(self, listener)
+
+    monkeypatch.setattr(windows_events.IocpProactor, "accept", aborted_once)
+    srv = ZenviMcpServer().start()
+    time.sleep(0.5)
+    try:
+        req = urllib.request.Request(srv.url(), method="POST", data=b"{}")
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=3)
+        assert exc.value.code == 401
+    finally:
+        srv.stop()
+
+
 # --- fixed port + persisted token (Phase 7) ---------------------------------
 
 def test_bind_port_prefers_stable_port_when_free():

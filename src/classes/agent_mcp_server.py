@@ -20,6 +20,7 @@ While it listens, the app's server also advertises itself in a discovery file
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
@@ -417,7 +418,8 @@ class ZenviMcpServer:
                                     log_level="warning", loop="asyncio",
                                     log_config=None)
             self._uvicorn = uvicorn.Server(config)
-            self._thread = threading.Thread(target=self._uvicorn.run,
+            self._thread = threading.Thread(target=self._serve,
+                                            args=(self._uvicorn,),
                                             name="zenvi-mcp", daemon=True)
             self._thread.start()
 
@@ -445,6 +447,14 @@ class ZenviMcpServer:
             self._watch_project()
             self._publish_discovery(_current_project_path())
         return self
+
+    @staticmethod
+    def _serve(server) -> None:
+        # Not uvicorn's run(): on Windows it picks the proactor loop, which
+        # closes the listener for good when one client resets mid-accept
+        # (WinError 64), refusing every later connection.
+        with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+            runner.run(server.serve())
 
     def _connect_shutdown_hook(self):
         try:
