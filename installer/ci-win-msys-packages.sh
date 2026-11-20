@@ -23,6 +23,7 @@ install() {
     git
     curl
     mingw-w64-ucrt-x86_64-toolchain
+    mingw-w64-ucrt-x86_64-make  # mingw32-make: no longer in the toolchain group
     mingw-w64-ucrt-x86_64-ffmpeg
     mingw-w64-ucrt-x86_64-swig
     mingw-w64-ucrt-x86_64-cmake
