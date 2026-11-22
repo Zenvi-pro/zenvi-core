@@ -1,9 +1,13 @@
 """Shot descriptions on this computer: pinned on-demand install, one llama.cpp call per clip, no backend."""
 
+import ast
 import io
 import json
 import os
+import subprocess
 import sys
+import threading
+import time
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from classes import credits_client as cc  # noqa: E402
 from classes import hyperframes_local as hf  # noqa: E402
 from classes import local_describe as ld  # noqa: E402
+from classes.handoff import node_runtime  # noqa: E402
 from classes.media_index import cloud  # noqa: E402
 from classes.media_index import embedder as E  # noqa: E402
 from classes.media_index.store import Shelf  # noqa: E402
@@ -82,6 +87,55 @@ def test_install_downloads_once_unpacks_llama_and_is_then_ready(home, monkeypatc
     assert asked == []
 
 
+class _Llama:
+    """Stand in for llama.cpp at subprocess.Popen: *answer(argv, **kwargs)* gives (exit code, stdout), or raises."""
+
+    def __init__(self, monkeypatch, answer):
+        self.answer, self.started, self.running, self.most = answer, [], 0, 0
+        self.killed = threading.Event()
+        self._lock = threading.Lock()
+        monkeypatch.setattr(subprocess, "Popen", self._popen)
+        monkeypatch.setattr(node_runtime, "kill_process_tree", lambda proc: proc.kill())
+
+    def _popen(self, argv, **kwargs):
+        llama = self
+
+        class Proc:
+            args, pid, returncode = argv, 0, None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                pass
+
+            def communicate(self, input=None, timeout=None):
+                if self.returncode is not None:
+                    return "", ""
+                with llama._lock:
+                    llama.running += 1
+                    llama.most = max(llama.most, llama.running)
+                try:
+                    self.returncode, out = llama.answer(argv, timeout=timeout, **kwargs)
+                finally:
+                    with llama._lock:
+                        llama.running -= 1
+                kwargs["stdout"].write(out.replace("\n", "\r\n").encode())     # as it comes on Windows
+
+            def kill(self):
+                self.returncode = 1
+                llama.killed.set()
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+        self.started.append(argv)
+        return Proc()
+
+
 def test_describe_asks_the_model_with_the_backend_prompt_and_schema(home, monkeypatch, tmp_path):
     _fake_downloads(monkeypatch)
     ld.install()
@@ -94,10 +148,9 @@ def test_describe_asks_the_model_with_the_backend_prompt_and_schema(home, monkey
         seen["prompt"] = argv[argv.index("-p") + 1]
         seen["env"] = kwargs.get("env") or {}
         # As the real CLI does: the prompt (schema braces and all) is echoed before the answer.
-        return SimpleNamespace(returncode=0, stdout="> " + seen["prompt"] + "\n\n" + json.dumps(answer) + "\n",
-                               stderr="log")
+        return 0, "> " + seen["prompt"] + "\n\n" + json.dumps(answer) + "\n"
 
-    monkeypatch.setattr(ld.subprocess, "run", run)
+    _Llama(monkeypatch, run)
     clip = tmp_path / "chunk.mp4"
     clip.write_bytes(b"x")
     schema = {"type": "object", "properties": {"short_summary": {"type": "string"}}}
@@ -120,10 +173,10 @@ def test_a_failed_or_unparseable_answer_is_an_error(home, monkeypatch, tmp_path)
     ld.install()
     clip = tmp_path / "chunk.mp4"
     clip.write_bytes(b"x")
-    monkeypatch.setattr(ld.subprocess, "run", lambda argv, **k: SimpleNamespace(returncode=1, stdout="", stderr="no"))
+    _Llama(monkeypatch, lambda argv, **k: (1, ""))
     with pytest.raises(hf.HyperframesError):
         ld.describe(str(clip), "video", "p", {})
-    monkeypatch.setattr(ld.subprocess, "run", lambda argv, **k: SimpleNamespace(returncode=0, stdout="sorry", stderr=""))
+    _Llama(monkeypatch, lambda argv, **k: (0, "sorry"))
     with pytest.raises(hf.HyperframesError):
         ld.describe(str(clip), "video", "p", {})
 
@@ -132,8 +185,7 @@ def test_the_model_is_not_asked_to_transcribe(home, monkeypatch, tmp_path):
     _fake_downloads(monkeypatch)
     ld.install()
     seen = {}
-    monkeypatch.setattr(ld.subprocess, "run", lambda argv, **k: seen.update(prompt=argv[argv.index("-p") + 1])
-                        or SimpleNamespace(returncode=0, stdout='{"visual": "x"}', stderr=""))
+    _Llama(monkeypatch, lambda argv, **k: seen.update(prompt=argv[argv.index("-p") + 1]) or (0, '{"visual": "x"}'))
     clip = tmp_path / "chunk.mp4"
     clip.write_bytes(b"x")
     schema = {"type": "object", "required": ["visual", "transcript_cues"],
@@ -142,6 +194,136 @@ def test_the_model_is_not_asked_to_transcribe(home, monkeypatch, tmp_path):
     ld.describe(str(clip), "video", "p", schema)
     asked = json.loads(seen["prompt"].rsplit("\n", 1)[-1])
     assert asked == {"type": "object", "required": ["visual"], "properties": {"visual": {"type": "string"}}}
+
+
+# ---- one model at a time (about 5 GB each: three at once filled a 16 GB computer) ---------------
+@pytest.fixture
+def engine(home, monkeypatch, tmp_path):
+    _fake_downloads(monkeypatch)
+    ld.install()
+    clip = tmp_path / "chunk.mp4"
+    clip.write_bytes(b"x")
+    return str(clip)
+
+
+def _at_once(*work):
+    """Run every callable in its own thread; returns their results, an exception standing for its own."""
+    out = [None] * len(work)
+
+    def run(i):
+        try:
+            out[i] = work[i]()
+        except Exception as exc:
+            out[i] = exc
+
+    threads = [threading.Thread(target=run, args=(i,), daemon=True) for i in range(len(work))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(20)
+    assert not any(t.is_alive() for t in threads), "a describe never got its turn"
+    return out
+
+
+def test_concurrent_describes_never_run_two_models_at_once(engine, monkeypatch):
+    llama = _Llama(monkeypatch, lambda argv, **k: time.sleep(0.3) or (0, '{"visual": "x"}'))
+    found = _at_once(*[lambda: ld.describe(engine, "video", "p", {})] * 3)
+    assert found == [{"visual": "x"}] * 3
+    assert len(llama.started) == 3 and llama.most == 1
+
+
+def _exits(argv, **k):
+    return 1, ""
+
+
+def _times_out(argv, timeout=None, **k):
+    raise subprocess.TimeoutExpired(argv, timeout)
+
+
+def _cannot_start(argv, **k):
+    raise OSError("no such program")
+
+
+@pytest.mark.parametrize("failure", [_exits, _times_out, _cannot_start])
+def test_a_failed_describe_gives_the_model_to_the_next_one(engine, monkeypatch, failure):
+    llama = _Llama(monkeypatch, failure)
+    if failure is _cannot_start:
+        monkeypatch.setattr(subprocess, "Popen", failure)
+    failed = _at_once(lambda: ld.describe(engine, "video", "p", {}))[0]
+    assert isinstance(failed, hf.HyperframesError) and not isinstance(failed, ld.Busy)
+    assert llama.killed.is_set() == (failure is _times_out)          # a run that is too long is stopped, not left behind
+    _Llama(monkeypatch, lambda argv, **k: (0, '{"visual": "x"}'))
+    assert _at_once(lambda: ld.describe(engine, "video", "p", {})) == [{"visual": "x"}]
+
+
+def test_a_run_that_is_too_long_takes_what_it_started_down_with_it(monkeypatch, tmp_path):
+    """Real processes: an ffmpeg that hangs holds llama.cpp's output open, and the next describe would never get its turn."""
+    monkeypatch.setattr(ld, "DESCRIBE_TIMEOUT", 3)
+    child = "import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); time.sleep(60)"
+    begun = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        ld._run([sys.executable, "-c", child], str(tmp_path))
+    assert time.monotonic() - begun < 30
+
+
+def test_a_run_ends_when_the_model_does_even_if_something_it_started_lives_on(tmp_path):
+    child = ("import subprocess, sys; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(40)']); "
+             "print('caf\\u00e9'.encode()); sys.stderr.write('log')")
+    begun = time.monotonic()
+    code, out, err = ld._run([sys.executable, "-c", child], str(tmp_path))
+    assert time.monotonic() - begun < 20 and (code, err) == (0, "log") and "caf" in out
+
+
+def test_a_waiting_describe_can_give_up_and_never_starts_the_model(engine, monkeypatch):
+    started, finish = threading.Event(), threading.Event()
+    llama = _Llama(monkeypatch, lambda argv, **k: started.set() or finish.wait(15) and (0, '{"visual": "x"}'))
+
+    def second():
+        started.wait(10)
+        try:
+            ld.describe(engine, "video", "p", {}, give_up=lambda: True)
+        finally:
+            finish.set()
+
+    first, gave_up = _at_once(lambda: ld.describe(engine, "video", "p", {}), second)
+    assert first == {"visual": "x"} and isinstance(gave_up, ld.Busy) and len(llama.started) == 1
+
+
+def test_quitting_stops_the_running_model_and_the_ones_waiting(engine, monkeypatch):
+    monkeypatch.setattr(ld, "_stopping", False)
+    started = threading.Event()
+
+    def answer(argv, **k):
+        started.set()
+        return (1, "") if llama.killed.wait(15) else (0, '{"visual": "x"}')
+
+    llama = _Llama(monkeypatch, answer)
+
+    def quit_editor():
+        started.wait(10)
+        ld.stop()
+
+    first, second, _ = _at_once(lambda: ld.describe(engine, "video", "p", {}),
+                                lambda: started.wait(10) and ld.describe(engine, "video", "p", {}), quit_editor)
+    assert isinstance(first, hf.HyperframesError) and isinstance(second, ld.Busy)
+    assert len(llama.started) == 1 and llama.killed.is_set()
+    with pytest.raises(ld.Busy):                     # nothing new starts while the editor is closing
+        ld.describe(engine, "video", "p", {})
+    assert len(llama.started) == 1
+
+
+def test_the_editor_quitting_stops_the_model(monkeypatch):
+    """The real FilesModel method, compiled without importing Qt."""
+    tree = ast.parse((_REPO / "src" / "windows" / "models" / "files_model.py").read_text(encoding="utf-8"))
+    method = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_stop_active_indexers")
+    ns = {}
+    exec(compile(ast.Module([method], []), "files_model.py", "exec"), ns)
+    events = []
+    monkeypatch.setattr(ld, "stop", lambda: events.append("stop"))
+    worker = SimpleNamespace(interrupt=lambda: events.append("interrupt"), quit=lambda: None,
+                             wait=lambda ms: events.append("wait"))
+    ns["_stop_active_indexers"](SimpleNamespace(_indexing_queue=[1], _active_indexers=[worker]))
+    assert events == ["stop", "interrupt", "wait"]   # stopped before the wait, or a worker cannot finish in time
 
 
 # ---- shot descriptions on this computer (the cloud pass's layer, no backend) -----------------
@@ -169,7 +351,7 @@ def _model(monkeypatch, clips, shots, fail_on=(), events=None):
     """Stand in for LFM3-Omni: answers for the shots inside the clip it is shown, and fails when one of them is in fail_on."""
     calls = []
 
-    def describe(clip, media_type, prompt, schema, duration=0.0):
+    def describe(clip, media_type, prompt, schema, duration=0.0, give_up=None):
         span = clips[clip]
         inside = [s for s in shots if span["start"] <= s["start"] and s["end"] <= span["end"]]
         calls.append({"prompt": prompt, "schema": schema, "duration": duration, "media_type": media_type})
@@ -226,6 +408,69 @@ def test_cancelling_stops_between_clips(tmp_path, monkeypatch, clips):
     with pytest.raises(cloud.Cancelled):
         cloud.run_watch(MagicMock(), "/m/clip.mp4", PROBE, "F1", {"shots": LONG}, None, uploader=MagicMock(),
                         should_cancel=lambda: bool(model.calls))
+    assert len(model.calls) == 1
+
+
+def _busy_after(monkeypatch, model, n):
+    """The model is in use by someone else from the n-th clip on: a describe waits until it gives up."""
+    mine = ld.describe
+
+    def describe(*args, give_up=None, **kwargs):
+        if len(model.calls) < n:
+            return mine(*args, **kwargs)
+        if not (give_up and give_up()):
+            pytest.fail("it would wait for ever")        # not an Exception, so a failing clip cannot swallow it
+        raise ld.Busy("the local model is busy")
+
+    monkeypatch.setattr(ld, "describe", describe)
+
+
+def test_a_tool_call_stops_queueing_for_the_model_and_keeps_what_it_has(tmp_path, monkeypatch, clips):
+    monkeypatch.setattr("classes.media_index.vectors.add_descriptions", lambda *a, **k: None)
+    shelf = _shelf(tmp_path, LONG)
+    model = _model(monkeypatch, clips, LONG)
+    _busy_after(monkeypatch, model, 1)
+    out = cloud.describe_shots(MagicMock(), "/m/clip.mp4", PROBE, SHA, shelf, [0, 1, 2], None, give_up=lambda: True)
+    assert out["described"] == [0] and len(clips) == 2           # it did not go on to cut a third clip
+    out = cloud.describe_shots(MagicMock(), "/m/clip.mp4", PROBE, SHA, shelf, [1], None, give_up=lambda: True)
+    assert "busy" in out["error"]
+
+
+def test_giving_up_before_a_later_run_still_returns_and_indexes_the_earlier_one(tmp_path, monkeypatch, clips):
+    indexed = []
+    monkeypatch.setattr("classes.media_index.vectors.add_descriptions", lambda sh, sha, emb, shots: indexed.extend(shots))
+    far = [{"id": 0, "start": 0.0, "end": 4.0}, {"id": 1, "start": 80.0, "end": 84.0}]      # too far apart for one run
+    model = _model(monkeypatch, clips, far)
+    _busy_after(monkeypatch, model, 1)
+    out = cloud.describe_shots(MagicMock(), "/m/clip.mp4", PROBE, SHA, _shelf(tmp_path, far), [0, 1], None, give_up=lambda: True)
+    assert out["described"] == [0] and [s["id"] for s in indexed] == [0]
+
+
+def test_giving_up_part_way_through_a_run_does_not_start_the_next_one(tmp_path, monkeypatch, clips):
+    monkeypatch.setattr("classes.media_index.vectors.add_descriptions", lambda *a, **k: None)
+    far = LONG + [{"id": 3, "start": 180.0, "end": 184.0}]
+    model = _model(monkeypatch, clips, far)
+    _busy_after(monkeypatch, model, 1)
+    out = cloud.describe_shots(MagicMock(), "/m/clip.mp4", PROBE, SHA, _shelf(tmp_path, far), [0, 1, 2, 3], None, give_up=lambda: True)
+    assert out["described"] == [0] and len(clips) == 2
+
+
+def test_a_tool_call_does_not_hang_behind_the_same_file_being_described(tmp_path, monkeypatch, clips):
+    from classes.media_index.job import single_flight
+    model = _model(monkeypatch, clips, SHORT)
+    shelf = _shelf(tmp_path, SHORT)
+    with single_flight(SHA):
+        out = _at_once(lambda: cloud.describe_shots(MagicMock(), "/m/clip.mp4", PROBE, SHA, shelf, [0], None,
+                                                    give_up=lambda: True))[0]
+    assert out["error"] and not model.calls
+
+
+def test_cancelling_a_job_that_waits_for_the_model_stops_it(tmp_path, monkeypatch, clips):
+    model = _model(monkeypatch, clips, LONG)
+    _busy_after(monkeypatch, model, 1)
+    with pytest.raises(cloud.Cancelled):             # cancelled once the second clip is cut and waiting
+        cloud.run_watch(MagicMock(), "/m/clip.mp4", PROBE, "F1", {"shots": LONG}, None, uploader=MagicMock(),
+                        should_cancel=lambda: len(clips) > 1)
     assert len(model.calls) == 1
 
 
@@ -295,10 +540,14 @@ def test_the_describe_tool_on_this_computer_needs_no_sign_in_or_credits(monkeypa
     monkeypatch.setattr("classes.path_utils.absolute_media_path", lambda p: p)
     monkeypatch.setattr(E, "get_embedder", lambda model: "embedder")
     monkeypatch.setattr(T, "default_shelf", lambda: "shelf")
-    monkeypatch.setattr(cloud, "describe_shots", lambda *a, **k: described.append(a) or {"described": [0], "shots": [], "usage": {}})
+    monkeypatch.setattr(cloud, "describe_shots", lambda *a, **k: described.append(k) or {"described": [0], "shots": [], "usage": {}})
 
     out, why = T.describe_file_shots(f, fi, [0])
     assert why is None and out["described"] == [0] and not charge.called
+    give_up, now = described[0]["give_up"], time.monotonic()       # a tool call queues for the model only so long
+    assert not give_up()
+    monkeypatch.setattr(time, "monotonic", lambda: now + T.DESCRIBE_QUEUE_SECONDS + 1)
+    assert give_up()
     monkeypatch.setattr(ld, "enabled", lambda: False)
     out, why = T.describe_file_shots(f, fi, [1])
     assert out is None and "sign in" in why and len(described) == 1
@@ -318,8 +567,6 @@ def test_the_media_bin_says_what_local_indexing_is_doing():
 
 
 def test_two_first_imports_install_once_and_never_into_a_half_made_folder(home, monkeypatch):
-    import threading
-
     asked = _fake_downloads(monkeypatch)
     threads = [threading.Thread(target=ld.install) for _ in range(2)]
     for t in threads:

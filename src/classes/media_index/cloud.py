@@ -316,11 +316,12 @@ def _clips_of(shots: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
 
 
 def _describe_here(path: str, probe: Dict[str, Any], shots: List[Dict[str, Any]], *, should_cancel: Optional[Callable[[], bool]],
-                   on_progress: Optional[Callable[[float], None]]) -> Dict[str, Any]:
+                   on_progress: Optional[Callable[[float], None]], give_up: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
     """Describe *shots* with LFM3-Omni on this computer: adjacent shots share one clip (up to LOCAL_CLIP_SECONDS), one model run each.
 
     The model is installed on first use. A clip that fails marks its shots missing and the rest are kept; only when no shot
-    comes back is it an error.
+    comes back is it an error. The model runs for one clip at a time in the whole editor: *give_up* (or a cancel) ends the
+    wait for it, and then the clips not yet described are missing too.
     """
     from classes import local_describe
     if should_cancel and should_cancel():
@@ -334,6 +335,11 @@ def _describe_here(path: str, probe: Dict[str, Any], shots: List[Dict[str, Any]]
     answers: Dict[int, Dict[str, Any]] = {}
     clip_starts: Dict[int, float] = {}
     errors: List[str] = []
+    busy = False
+
+    def stop_waiting() -> bool:
+        return any(check() for check in (should_cancel, give_up) if check)
+
     # ponytail: a cancel drops the clips finished so far; keep each on the shelf as it lands if long runs get cancelled.
     with tempfile.TemporaryDirectory(prefix="zenvi_describe_") as tmp:
         for n, members in enumerate(groups):
@@ -347,20 +353,26 @@ def _describe_here(path: str, probe: Dict[str, Any], shots: List[Dict[str, Any]]
                 if not ok:
                     raise RuntimeError("could not make the clip: %s" % err)
                 found = _local_answers(local_describe.describe(clip, "video", _local_prompt(members, start), LOCAL_SCHEMA,
-                                                               duration=end - start), members)
+                                                               duration=end - start, give_up=stop_waiting), members)
                 answers.update((i, raw) for i, raw in found.items() if i in ids)
                 clip_starts.update((i, start) for i in ids)
+            except local_describe.Busy as exc:
+                if should_cancel and should_cancel():
+                    raise Cancelled() from exc
+                errors.append(str(exc))
+                busy = True
+                break
             except Exception as exc:         # this clip's shots are missing; the rest of the file is kept
                 log.warning("describing shots %s on this computer failed: %s", sorted(ids), exc)
                 errors.append(str(exc))
             if on_progress:
                 on_progress((n + 1) / len(groups))
     if not answers:
-        return {"error": errors[0] if errors else "no shot descriptions came back"}
+        return {"error": errors[0] if errors else "no shot descriptions came back", "busy": busy}
     out = [_local_shot(answers[i], by_id[i], clip_starts[i]) if i in answers else
            {"id": i, "start": float(by_id[i]["start"]), "end": float(by_id[i]["end"]), "missing": True} for i in sorted(by_id)]
     return {"shots": out, "usage": {"prompt_tokens": 0, "output_tokens": 0, "batches": len(groups), "model": LOCAL_MODEL},
-            "missing": sum(1 for s in out if s.get("missing")), "errors": errors}
+            "missing": sum(1 for s in out if s.get("missing")), "errors": errors, "busy": busy}
 
 
 PASS_UP = ("error", "unsupported", "auth", "credits", "rate_limited", "forbidden", "retry_after")
@@ -369,14 +381,14 @@ PASS_UP = ("error", "unsupported", "auth", "credits", "rate_limited", "forbidden
 def _watch_window(client: Any, path: str, probe: Dict[str, Any], file_id: str, shots: List[Dict[str, Any]],
                   transcript: List[Dict[str, Any]], *, start: Optional[float], end: Optional[float],
                   should_cancel: Optional[Callable[[], bool]], on_progress: Optional[Callable[[float], None]],
-                  uploader: Callable[..., Any]) -> Dict[str, Any]:
+                  uploader: Callable[..., Any], give_up: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
     """Describe *shots* from a proxy of the whole file, or of [start, end) when given (then times are shifted to match).
 
     On this computer (the Preferences choice, the default) they are described from clips here instead: ``_describe_here``.
     """
     from classes import local_describe
     if local_describe.enabled():
-        return _describe_here(path, probe, shots, should_cancel=should_cancel, on_progress=on_progress)
+        return _describe_here(path, probe, shots, should_cancel=should_cancel, on_progress=on_progress, give_up=give_up)
     offset = float(start or 0.0)
     request = [{**s, "start": s["start"] - offset, "end": s["end"] - offset} for s in shots] if offset else shots
     rows = ([{**r, "start": r["start"] - offset, "end": r["end"] - offset} for r in transcript
@@ -518,7 +530,8 @@ def upload_seconds(shots: List[Dict[str, Any]]) -> float:
 
 
 def _describe_runs(client: Any, path: str, probe: Dict[str, Any], file_id: str, todo: List[Dict[str, Any]], shelf: Shelf, sha: str,
-                   should_cancel: Optional[Callable[[], bool]], uploader: Callable[..., Any]) -> Dict[str, Any]:
+                   should_cancel: Optional[Callable[[], bool]], uploader: Callable[..., Any],
+                   give_up: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
     """Describe *todo* one run at a time, keeping each finished run, so a failure or a cancel never repays one already done."""
     speech = shelf.read_json(sha, "speech.json") if shelf.layer_ready(sha, S.LAYER_SPEECH) else None
     per_shot = (speech or {}).get("per_shot") or {}
@@ -528,13 +541,17 @@ def _describe_runs(client: Any, path: str, probe: Dict[str, Any], file_id: str, 
                     "fps": plan_shot_fps(s, per_shot.get(str(s["id"])))} for s in run]
         start, end = request[0]["start"], request[-1]["end"]
         result = _watch_window(client, path, probe, file_id, request, transcript_rows(speech), start=start if start > 0 else None,
-                               end=end, should_cancel=should_cancel, on_progress=None, uploader=uploader)
+                               end=end, should_cancel=should_cancel, on_progress=None, uploader=uploader, give_up=give_up)
+        if result.get("busy") and usage:          # gave up waiting for the model: the runs before this one still count
+            break
         if result.get("error") or not result.get("shots"):
             fail = {k: result[k] for k in PASS_UP if k in result}
             fail.setdefault("error", "no shot descriptions came back")
             return fail
         usage = result.get("usage") or usage
         _merge(shelf, sha, result["shots"], usage)
+        if result.get("busy"):
+            break
     return {"usage": usage}
 def _described(shelf: Shelf, sha: str) -> Dict[int, Dict[str, Any]]:
     """{shot id: description} of the shots already described (a shot the cloud left out does not count)."""
@@ -588,8 +605,11 @@ def compute_cloud(client: Any, path: str, probe: Dict[str, Any], sha: str, shelf
 
 def describe_shots(client: Any, path: str, probe: Dict[str, Any], sha: str, shelf: Shelf, shot_ids: List[int], embedder: Any,
                    *, file_id: str = "", should_cancel: Optional[Callable[[], bool]] = None,
-                   uploader: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
+                   uploader: Optional[Callable[..., Any]] = None, give_up: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
     """Describe the asked-for shots that have no description yet, keep them, and add them to the file's search vectors.
+
+    *give_up* says when to stop waiting for other work (this file's, or the model on this computer); what is described by
+    then is kept.
 
     Returns ``{"described": [newly described ids], "shots": [descriptions of every asked-for shot], "usage"}``, or an
     error dict as ``compute_cloud`` does.
@@ -598,7 +618,10 @@ def describe_shots(client: Any, path: str, probe: Dict[str, Any], sha: str, shel
     from classes.media_index import vectors
     from classes.media_index.job import single_flight
 
-    with single_flight(sha):          # one describe per file at a time: two would pay twice and the last write would win
+    # One describe per file at a time: two would pay twice and the last write would win.
+    with single_flight(sha, give_up or (lambda: False)) as turn:
+        if not turn:
+            return {"error": "this file is still being indexed or described; ask again later"}
         structure = shelf.read_json(sha, "structure.json") or {}
         wanted = {int(i) for i in shot_ids}
         have = _described(shelf, sha)
@@ -606,7 +629,7 @@ def describe_shots(client: Any, path: str, probe: Dict[str, Any], sha: str, shel
         usage: Dict[str, Any] = {}
         if todo:
             out = _describe_runs(client, path, probe, file_id or sha[:12], todo, shelf, sha, should_cancel,
-                                 uploader or upload_file_to_gemini_resumable)
+                                 uploader or upload_file_to_gemini_resumable, give_up)
             if out.get("error"):
                 return out
             usage = out["usage"]
