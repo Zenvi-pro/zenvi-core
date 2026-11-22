@@ -47,7 +47,7 @@ def _titles(titles: list) -> list:
     covers=("handoff.ae_export",),
 )
 def export_to_after_effects(output_dir="", collect_media=True, open_folder=False):
-    """Use for an After Effects script (.jsx) that rebuilds the timeline as a comp. Not when After Effects is connected (run_tool(name='send_to_after_effects_tool')).
+    """Use for an After Effects script (.jsx) that rebuilds the timeline as a comp: a portable script, or one in a folder the user names. To build it in a connected After Effects, use run_tool(name='send_to_after_effects_tool').
     Export the timeline as an After Effects script (.jsx) that rebuilds it as a composition (File > Export Project > After Effects).
 
     Use for "open this edit in After Effects", "make an AE comp of this

@@ -118,6 +118,18 @@ def test_an_edge_fade_on_a_short_clip_stays_inside_the_clip(tl, placement):
     assert added["position"] >= 2.0 - 1e-9 and added["position"] + length <= 2.12 + 1e-9
 
 
+def test_a_transition_that_only_touches_an_edge_fade_does_not_occupy_it(tl):
+    f = tl.add_file("video", duration=30.0)
+    tl.add_clip(f, position=0.0, end=5.0)
+    b = tl.add_clip(f, position=5.0, end=5.0)
+    fade_out = _mask(tl, 4.0, 1.0)
+    receipt = tl.call_receipt("add_transitions_between_clips_tool", timeline_clip_ids=[b], placement="start",
+                              transition="fade", duration_seconds=1.0, replace_existing=True)
+    assert receipt["status"] == "applied", receipt
+    added = _added_on(tl, L1)
+    assert fade_out in [t["id"] for t in added] and len(added) == 2
+
+
 @pytest.mark.parametrize("placement", ["start", "end"])
 def test_add_transitions_places_an_edge_fade_like_apply_transition(tl, openshot, placement):
     f = tl.add_file("video", duration=30.0)

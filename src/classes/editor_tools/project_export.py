@@ -626,6 +626,7 @@ def _import_xml(path: str, placement: str, sequence: str) -> dict:
         with jobs.track_job("Importing %s" % os.path.basename(path), kind="xml-import") as job:
             plan = importer.plan_import(path, placement=placement, info=info, should_cancel=job.should_cancel,
                                         sequence=sequence)
+            job.raise_if_cancelled()
     except jobs.JobCancelled:
         raise ToolError("the import was cancelled; nothing changed") from None
     except importer.XmlImportError as exc:

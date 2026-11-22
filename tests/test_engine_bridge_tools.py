@@ -301,7 +301,8 @@ def test_links_the_engine_does_not_render_are_refused_without_history(bridge, tm
 def test_updating_an_engine_clips_props_points_at_its_engine_tool(bridge, tmp_path):  # noqa: F811
     block = bridge.add_file("video", path=str(tmp_path / "counter.mov"), zenvi_link=_link("zenvi-motion"))
     receipt = bridge.call_receipt("update_linked_clip_tool", file_id=block, props={"title": "x"})
-    assert receipt["status"] in ("error", "refused") and "update_motion_block_tool" in receipt["summary"]
+    assert receipt["status"] in ("error", "refused")
+    assert "run_tool(name='update_motion_block_tool'" in receipt["summary"]
     assert bridge.undo_steps_since_mark() == 0
 
 

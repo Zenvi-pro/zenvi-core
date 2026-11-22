@@ -28,7 +28,7 @@ def fake_transcribe(path, **kw):
     fake_transcribe.calls.append(path)
     a, size, mt = file_identity(path)
     words = [Word("Hello", 0.5, 0.9, 0.9), Word("there.", 0.95, 1.4, 0.9), Word("Second", 4.5, 4.9, 0.8), Word("scene.", 4.95, 5.4, 0.8)]
-    return TranscriptRecord(path=a, size=size, mtimeNs=mt, modelId="whisper.cpp-base-q5_1", language="en", words=words)
+    return TranscriptRecord(path=a, size=size, mtimeNs=mt, modelId="whistle", language="en", words=words)
 
 
 fake_transcribe.calls = []
@@ -216,7 +216,7 @@ def test_one_failing_layer_does_not_stop_the_others_and_is_recorded(media, shelf
 
 def test_a_missing_speech_engine_leaves_the_rest_intact(media, shelf):
     def no_engine(path, **kw):
-        raise RuntimeError("faster-whisper is not installed")
+        raise RuntimeError("the speech recogniser is not installed")
 
     out = run(media["av"], shelf, transcribe=no_engine)
     assert out["layers"]["speech"] == "unavailable" and "not installed" in out["errors"]["speech"]

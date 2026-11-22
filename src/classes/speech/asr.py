@@ -1,9 +1,10 @@
 """Local ASR with platform routing.
 
-* **macOS:** prefer Apple SpeechAnalyzer (native helper); fall back to faster-whisper.
-* **Windows / Linux:** faster-whisper only.
+* **macOS 26+:** Apple SpeechAnalyzer (native helper) when present.
+* **Everywhere else, and when Apple fails:** the recogniser the Captions dock uses:
+  Whistle (18 MB, downloaded on first use) or Parakeet when the user picked it and it is installed.
 
-``engine`` arg on tools: ``auto`` | ``apple`` | ``whisper``.
+``engine`` arg on tools: ``auto`` | ``apple`` | ``whistle`` | ``parakeet``.
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ from typing import Callable, Optional, Protocol
 
 from classes.speech.audio_extract import extract_mono_16k_wav
 from classes.speech.cache import (
-    DEFAULT_MODEL_ID,
     TranscriptRecord,
     Word,
     file_identity,
@@ -25,15 +25,8 @@ from classes.speech.runtime import CancelToken, inference_slot
 
 log = logging.getLogger("speech.asr")
 
-# Map our modelId → faster-whisper size name.
-_MODEL_SIZES = {
-    "faster-whisper-tiny": "tiny",
-    "faster-whisper-base": "base",
-    "faster-whisper-small": "small",
-    "faster-whisper-medium": "medium",
-}
-
 APPLE_MODEL_ID = "apple-speech-analyzer"
+LOCAL_ENGINES = ("whistle", "parakeet")
 
 
 class Transcriber(Protocol):
@@ -48,77 +41,61 @@ class Transcriber(Protocol):
         ...
 
 
-class FasterWhisperTranscriber:
-    model_id = DEFAULT_MODEL_ID
+def _words(entries) -> list[Word]:
+    return [Word(text=w["text"], startSec=float(w["start"]), endSec=float(w["end"])) for w in entries]
 
-    def __init__(self, model_id: str = DEFAULT_MODEL_ID) -> None:
-        self.model_id = model_id or DEFAULT_MODEL_ID
-        self._model = None
 
-    def _load(self):
-        if self._model is not None:
-            return self._model
-        try:
-            from faster_whisper import WhisperModel
-        except ImportError as exc:
-            raise RuntimeError(
-                "No local speech engine. macOS 26 or later uses the built-in Apple engine; releases bundle whisper.cpp "
-                "(installer/build-whisper-cli.sh puts it in src/whisper), and once whisper-cli is present the speech model "
-                "is downloaded on first use; otherwise pip install -r requirements-speech.txt for faster-whisper"
-            ) from exc
-        size = _MODEL_SIZES.get(self.model_id, "base")
-        self._model = WhisperModel(size, device="cpu", compute_type="int8")
-        return self._model
+class WhistleTranscriber:
+    """The small captions recogniser; downloaded (pinned, checksummed) the first time it is needed."""
+    model_id = "whistle"
 
-    def transcribe(
-        self,
-        wav_path: str,
-        *,
-        language: Optional[str],
-        token: CancelToken,
-    ) -> tuple[list[Word], str]:
-        model = self._load()
+    def transcribe(self, wav_path, *, language, token):
+        from classes import hyperframes_local as hf
+        if not hf.speech_ready(fresh=True):
+            hf.install_speech()
         token.raise_if_cancelled()
-        lang = None if not language or language == "auto" else language
-        segments, info = model.transcribe(
-            wav_path,
-            language=lang,
-            word_timestamps=True,
-            vad_filter=True,
-        )
-        words: list[Word] = []
-        for seg in segments:
-            token.raise_if_cancelled()
-            for w in getattr(seg, "words", None) or []:
-                text = (getattr(w, "word", None) or "").strip()
-                if not text:
-                    continue
-                words.append(
-                    Word(
-                        text=text,
-                        startSec=float(getattr(w, "start", 0) or 0),
-                        endSec=float(getattr(w, "end", 0) or 0),
-                        confidence=(
-                            float(w.probability)
-                            if getattr(w, "probability", None) is not None
-                            else None
-                        ),
-                    )
-                )
-        detected = str(getattr(info, "language", None) or lang or "unknown")
-        return words, detected
+        out = hf.recognise(wav_path, language=language)
+        return _words(out["words"]), out.get("language") or language or "unknown"
+
+
+class ParakeetTranscriber:
+    """The larger captions recogniser, run by the HyperFrames CLI once the user installed it."""
+    model_id = "parakeet"
+
+    def transcribe(self, wav_path, *, language, token):
+        from classes import hyperframes_local as hf
+        token.raise_if_cancelled()
+        return _words(hf.transcribe_parakeet(wav_path, language=language)), language or "unknown"
+
+
+def _local_engine() -> str:
+    """The captions recogniser: Parakeet when picked and installed, else Whistle where it has an engine."""
+    from classes import hyperframes_local as hf
+    if hf.recogniser() == "parakeet" and hf.parakeet_ready():
+        return "parakeet"
+    if hf.speech_supported():
+        return "whistle"
+    raise RuntimeError(
+        "No on-device speech recogniser for this computer yet: install Parakeet (about 900 MB) "
+        "from HyperFrames setup with accurate speech, then try again")
 
 
 def resolve_engine(engine: str = "auto") -> str:
-    """Return ``apple`` or ``whisper`` after applying platform rules."""
+    """Return ``apple``, ``whistle`` or ``parakeet`` after applying platform rules."""
     choice = (engine or "auto").strip().lower() or "auto"
-    if choice == "whisper":
-        return "whisper"
     if choice == "apple":
         if sys.platform != "darwin":
             raise RuntimeError("Apple SpeechAnalyzer is only available on macOS")
         return "apple"
-    # auto
+    if choice == "parakeet":
+        from classes import hyperframes_local as hf
+        if not hf.parakeet_ready():
+            raise RuntimeError("Parakeet is not installed; install it from HyperFrames setup with accurate speech")
+        return "parakeet"
+    if choice == "whistle":
+        return "whistle"
+    if choice != "auto":
+        raise RuntimeError(f"unknown speech engine {engine!r}; use auto, apple, whistle or parakeet")
     if sys.platform == "darwin":
         try:
             from classes.speech.apple_asr import apple_asr_available
@@ -126,40 +103,22 @@ def resolve_engine(engine: str = "auto") -> str:
                 return "apple"
         except Exception as exc:
             log.info("Apple ASR probe failed: %s", exc)
-    return "whisper"
+    return _local_engine()
 
 
-def make_transcriber(engine: str = "auto", model_id: str = DEFAULT_MODEL_ID) -> Transcriber:
-    resolved = resolve_engine(engine)
+def make_transcriber(engine: str = "auto") -> Transcriber:
+    resolved = engine if engine in ("apple", *LOCAL_ENGINES) else resolve_engine(engine)
     if resolved == "apple":
         from classes.speech.apple_asr import AppleSpeechTranscriber
         return AppleSpeechTranscriber()
-    return _whisper_transcriber(model_id)
-
-
-def _whisper_transcriber(model_id: str = DEFAULT_MODEL_ID) -> Transcriber:
-    """The bundled whisper.cpp when present (every release), else faster-whisper."""
-    from classes.speech import whisper_cpp
-    if whisper_cpp.cli_path() and not whisper_cpp.model_path():
-        # The engine is here but its model is not (a lean install): fetch it now, once, rather than failing and asking the user to.
-        from classes.verified_download import DownloadError
-        try:
-            whisper_cpp.ensure_models()
-        except DownloadError as exc:
-            raise RuntimeError(f"the speech model could not be downloaded ({exc}); check the connection and try again") from exc
-    if whisper_cpp.available():
-        if model_id and model_id != DEFAULT_MODEL_ID:
-            log.info("modelId %s ignored: whisper.cpp runs the model it was installed with (%s)",
-                     model_id, whisper_cpp.model_id())
-        return whisper_cpp.WhisperCppTranscriber()
-    return FasterWhisperTranscriber(model_id=model_id or DEFAULT_MODEL_ID)
+    return ParakeetTranscriber() if resolved == "parakeet" else WhistleTranscriber()
 
 
 _transcriber_factory: Optional[Callable[[str, str], Transcriber]] = None
 
 
 def set_transcriber_factory(factory: Callable[[str], Transcriber]) -> None:
-    """Tests: factory(model_id) → Transcriber (Whisper-shaped). Forces whisper path."""
+    """Tests: factory(model_id) → Transcriber, whichever engine resolves."""
     global _transcriber_factory
 
     def _wrap(engine: str, model_id: str) -> Transcriber:
@@ -181,27 +140,28 @@ def reset_transcriber_factory() -> None:
     _transcriber_factory = None
 
 
-def _cache_model_id(engine: str, model_id: str) -> str:
-    if engine == "apple":
-        return APPLE_MODEL_ID
-    from classes.speech import whisper_cpp
-    if whisper_cpp.available():
-        return whisper_cpp.model_id()  # the model it runs, whatever was asked for
-    return (model_id or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
+def _cache_model_id(engine: str) -> str:
+    """Transcripts are cached per engine: the recogniser that heard them."""
+    return APPLE_MODEL_ID if engine == "apple" else engine
 
 
 def _engine_language(engine: str, lang_key: str):
-    """What each engine takes for a language: Apple a locale (ja-JP), whisper the two-letter code (ja); None means detect."""
+    """What each engine takes for a language: Apple a locale (ja-JP), the others the two-letter code (ja); None means detect."""
     if lang_key == "auto":
         return None
     return lang_key if engine == "apple" else lang_key.split("-")[0]
+
+
+def _engine(engine: str) -> Transcriber:
+    if _transcriber_factory is not None:
+        return _transcriber_factory(engine, _cache_model_id(engine))
+    return make_transcriber(engine)
 
 
 def transcribe_file(
     media_path: str,
     *,
     language: str = "auto",
-    model_id: str = DEFAULT_MODEL_ID,
     force: bool = False,
     engine: str = "auto",
     cache=None,
@@ -210,17 +170,11 @@ def transcribe_file(
     """Return a word-level transcript for *media_path*, using cache unless forced."""
     store = cache if cache is not None else get_default_cache()
     lang_key = (language or "auto").strip().lower() or "auto"
+    auto = (engine or "auto").strip().lower() in ("", "auto")
 
     # Resolve engine up front so cache keys match the provider we will use.
-    try:
-        resolved = resolve_engine(engine)
-    except RuntimeError:
-        # e.g. engine=apple on Windows — fall back for auto only; re-raise for explicit
-        if (engine or "auto").strip().lower() == "apple":
-            raise
-        resolved = "whisper"
-
-    cache_model = _cache_model_id(resolved, model_id)
+    resolved = resolve_engine(engine)
+    cache_model = _cache_model_id(resolved)
 
     if not force:
         hit = store.get(media_path, model_id=cache_model, language=lang_key)
@@ -238,37 +192,24 @@ def transcribe_file(
         used_model = cache_model
         try:
             tok.raise_if_cancelled()
-            if _transcriber_factory is not None:
-                engine_obj = _transcriber_factory(resolved, cache_model)
-            else:
-                engine_obj = make_transcriber(resolved, model_id=model_id)
-
             try:
-                words, detected = engine_obj.transcribe(
+                words, detected = _engine(resolved).transcribe(
                     wav_path,
                     language=_engine_language(resolved, lang_key),
                     token=tok,
                 )
             except Exception as exc:
-                # Mac auto: Apple failed → Whisper once.
-                if (
-                    resolved == "apple"
-                    and (engine or "auto").strip().lower() in ("", "auto")
-                ):
-                    log.warning("Apple ASR failed (%s); falling back to whisper", exc)
-                    used_engine = "whisper"
-                    used_model = _cache_model_id("whisper", model_id)
-                    if _transcriber_factory is not None:
-                        engine_obj = _transcriber_factory("whisper", used_model)
-                    else:
-                        engine_obj = _whisper_transcriber(model_id)
-                    words, detected = engine_obj.transcribe(
-                        wav_path,
-                        language=_engine_language("whisper", lang_key),
-                        token=tok,
-                    )
-                else:
+                if resolved != "apple" or not auto:
                     raise
+                # Mac auto: Apple failed → the captions recogniser once.
+                used_engine = _local_engine()
+                used_model = _cache_model_id(used_engine)
+                log.warning("Apple ASR failed (%s); falling back to %s", exc, used_engine)
+                words, detected = _engine(used_engine).transcribe(
+                    wav_path,
+                    language=_engine_language(used_engine, lang_key),
+                    token=tok,
+                )
         finally:
             try:
                 if os.path.isfile(wav_path):

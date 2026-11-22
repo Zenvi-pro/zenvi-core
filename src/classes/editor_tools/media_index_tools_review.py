@@ -395,7 +395,7 @@ def _no_audio_analysis(f) -> ToolError:
 )
 def analyze_music(file_id="", file_query="", describe=False, bpm_min=None, bpm_max=None, seconds_needed=None, energy="",
                   timeline_clip_id=""):
-    """Use for understanding a music file: tempo, beats, energy, sections, phrase points, and a fit verdict for your edit (BPM, soundtrack). Not for finding new music (run_tool(name='audition_music_tool')).
+    """Use for understanding a music file: tempo, beats, energy, sections, phrase points, and a fit verdict for your edit (BPM, soundtrack). To find new music, look for stock music with find_tools; run_tool(name='audition_music_tool') compares the candidates of a search.
     Understand a music file as an editor would: tempo and beats, loudness, the energy curve, its sections (intro,
     build, peak, break, outro), bars and phrase points (good places to cut or end), and, on request, what it is: genre,
     mood, instruments, vocals, what moments it suits. Pass bpm_min/bpm_max, seconds_needed or energy to get a fit verdict

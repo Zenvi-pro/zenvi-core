@@ -317,6 +317,23 @@ def test_import_xml_validates_the_file(editor, tmp_path):
     assert "cannot tell the format" in editor.call("import_project_file_tool", file_path=str(other))
 
 
+def test_an_xml_import_cancelled_while_planning_changes_nothing(editor, tmp_path, monkeypatch):
+    from classes.handoff import jobs
+    from classes.importers import final_cut_pro as importer
+    xml = tmp_path / "cut.xml"
+    xml.write_text("<xmeml><sequence/></xmeml>")
+    committed = []
+
+    def plan(path, **kwargs):  # the cancel lands after its last check
+        for job in jobs.running_jobs(kind="xml-import"):
+            job.cancel()
+        return types.SimpleNamespace(sequence_name="s", warnings=[], placement="start", offset=0.0)
+    monkeypatch.setattr(importer, "plan_import", plan)
+    monkeypatch.setattr(importer, "commit_import", lambda p: committed.append(p) or {})
+    assert "cancelled" in editor.call("import_project_file_tool", file_path=str(xml))
+    assert not committed
+
+
 def test_export_fcpxml_and_edl(editor, tmp_path, monkeypatch):
     assert "no clips" in editor.call("export_project_file_tool", file_path=str(tmp_path / "a.xml"))
     editor.add_clip(editor.add_file("video"))

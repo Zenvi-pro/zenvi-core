@@ -354,7 +354,7 @@ def _ffmpeg_movie(cmd_tail: List[str], output: str, on_progress: Optional[Callab
     from classes.handoff.jobs import JobCancelled
     exe = ffmpeg_cli.find_ffmpeg("ffmpeg")
     if not exe:
-        raise LinkError("ffmpeg was not found; install it (brew install ffmpeg) or set ZENVI_FFMPEG_DIR")
+        raise LinkError("ffmpeg was not found; install ffmpeg or set ZENVI_FFMPEG_DIR")
     partial = os.path.splitext(output)[0] + ".partial" + os.path.splitext(output)[1]
     result = ffmpeg_cli.run_ffmpeg_with_progress([exe, "-y", "-nostdin"] + cmd_tail + [partial],
                                                  on_progress=on_progress, should_cancel=should_cancel)

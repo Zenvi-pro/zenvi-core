@@ -388,7 +388,7 @@ _POINT = {
 )
 def set_keyframes(property, points, timeline_clip_id="", clip_query="", track="", occurrence=0, position_near=None,
                   mode="replace", interpolation="", ease=""):
-    """Use for animating one property of a clip with timed keyframes: custom motion or any exact curve. Not for whole-clip zooms, fades or slides (run_tool(name='apply_clip_preset_tool')) or a fixed value (run_tool(name='set_clip_properties_tool')).
+    """Use for animating one property of a clip with timed keyframes: custom motion or any exact curve. For standard whole-clip zooms, fades or slides prefer run_tool(name='apply_clip_preset_tool'). Not for a fixed value (run_tool(name='set_clip_properties_tool')).
     Animate one property of one timeline clip with timed keyframes.
 
     For custom motion the presets do not cover, or any exact curve. Every

@@ -551,8 +551,8 @@ def update_linked_clip(clip_id="", file_id="", props=None, rerender=True):
         from classes.editor_tools import engine_links
         engine = engine_links.ENGINE_KINDS[kind]
         if props:
-            raise ToolError(f"{engine.label} clips change through {engine.rerender_tool}, which takes its own "
-                            "arguments; without props this tool re-renders the clip as it is")
+            raise ToolError(f"{engine.label} clips change through run_tool(name='{engine.rerender_tool}', "
+                            "args={...}), which takes its own arguments; without props this tool re-renders the clip as it is")
         if not rerender:
             raise ToolError("nothing to change: pass props, or rerender=true to re-render as is")
         return engine_links.rerender_linked_clip(clip_id=clip_id, file_id=fid)

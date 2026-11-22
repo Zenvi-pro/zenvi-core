@@ -359,7 +359,7 @@ def timeline(project_dir: str, cli: Optional[Cli] = None, **kwargs) -> dict:
     """
     if zenvi_ffmpeg("ffprobe") is None:
         raise CliError("Zenvi has no ffprobe of its own, so HyperFrames' timeline (which measures media with it) is "
-                       "not run; install ffmpeg (brew install ffmpeg)")
+                       "not run; install ffmpeg or set ZENVI_FFMPEG_DIR")
     plain = direct(cli or resolve_cli(project_dir), should_cancel=kwargs.get("should_cancel"))
     return run_json(plain, ["timeline"], cwd=project_dir, **kwargs)
 

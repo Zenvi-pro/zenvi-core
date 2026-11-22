@@ -222,7 +222,7 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
                           image_seconds=0.0, fit_total_seconds=0.0, min_clip_seconds=1.0, transition="",
                           transition_seconds=0.0, fade="none", fade_seconds=2.0, zoom="none",
                           allow_overlap=False):
-    """Use for placing project files back to back on a track (vlogs, slideshows, montages). Not for titles or graphics (find_tools).
+    """Use for placing project files back to back on a track (vlogs, slideshows, montages). Title files already in the project too; to make a new title or graphic, use find_tools.
 
     Like Project Files > Add to Timeline, with optional transitions or fades
     between clips and a slow zoom. fit_total_seconds never trims clips given
