@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from classes import hyperframes_local as hf
 from classes import info
+from classes.handoff import node_runtime
 from classes.logger import log
 
 LLAMA_BUILD = "b11998"
@@ -59,6 +60,12 @@ MAX_HEIGHT = 360        # chunk height: a quarter of 720p's image tokens, about 
 _SPEECH_FIELDS = ("transcript", "transcript_en", "transcript_cues")
 _EXE = "llama.exe" if sys.platform == "win32" else "llama"
 _install_lock = threading.Lock()       # two index workers may both be the first
+_running: Optional[subprocess.Popen] = None     # the one model run there can be
+_stopping = False                       # the editor is closing: no new run starts
+
+
+class Busy(hf.HyperframesError):
+    """The model was not run: another description has it and the caller gave up waiting, or the editor is closing."""
 
 
 def enabled() -> bool:
@@ -165,8 +172,49 @@ def _json_answer(text: str) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def describe(path: str, media_type: str, prompt: str, schema: Dict[str, Any], duration: float = 0.0) -> Dict[str, Any]:
-    """Describe one chunk; returns the model's JSON in the backend's schema."""
+def stop() -> None:
+    """Stop the running model and let no other start: the editor is closing, and on Windows a child outlives it."""
+    global _stopping
+    _stopping = True
+    proc = _running
+    if proc is not None:
+        node_runtime.kill_process_tree(proc)
+
+
+def _run(argv: List[str], cwd: str) -> Tuple[int, str, str]:
+    """Run llama.cpp to its end and return (exit code, stdout, stderr).
+
+    Its output goes to files: an ffmpeg that hangs would hold pipes open, and the model with them, after llama.cpp is gone.
+    """
+    global _running
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err, \
+            subprocess.Popen(argv, cwd=cwd, env=_environment(), stdout=out, stderr=err, stdin=subprocess.DEVNULL,
+                             creationflags=hf._NO_WINDOW) as proc:
+        _running = proc
+        try:
+            if _stopping:               # stop() ran while this was starting, and did not see it
+                node_runtime.kill_process_tree(proc)
+            proc.communicate(timeout=DESCRIBE_TIMEOUT)
+        except BaseException:
+            node_runtime.kill_process_tree(proc)
+            raise
+        finally:
+            _running = None
+        texts = []
+        for stream in (out, err):
+            stream.seek(0)
+            texts.append(stream.read().decode("utf-8", "replace").replace("\r\n", "\n"))
+    return proc.returncode, texts[0], texts[1]
+
+
+def describe(path: str, media_type: str, prompt: str, schema: Dict[str, Any], duration: float = 0.0,
+             give_up: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
+    """Describe one chunk; returns the model's JSON in the backend's schema.
+
+    One model runs at a time in the whole editor (it takes about 5 GB): a call waits for the one before it, and raises
+    ``Busy`` when *give_up* says to stop waiting. A run that has started is not interrupted by *give_up*.
+    """
+    from classes.media_index.job import single_flight
     mt = media_type if media_type in MEDIA_FLAG else "video"
     schema = dict(schema or {})
     schema["properties"] = {k: v for k, v in (schema.get("properties") or {}).items() if k not in _SPEECH_FIELDS}
@@ -177,25 +225,26 @@ def describe(path: str, media_type: str, prompt: str, schema: Dict[str, Any], du
         prompt += "\nThis segment is %.1f seconds long: times run from 0 to %.1f." % (duration, duration)
     prompt = ("%s\nSpeech is transcribed separately: leave out the transcript fields.\n"
               "Answer with one JSON object that follows this JSON schema:\n%s" % (prompt, json.dumps(schema)))
-    with tempfile.TemporaryDirectory(prefix="zenvi-describe-") as tmp:
+    with single_flight("local describe model", lambda: _stopping or bool(give_up and give_up())) as turn, \
+            tempfile.TemporaryDirectory(prefix="zenvi-describe-", ignore_cleanup_errors=True) as tmp:
+        if not turn or _stopping:
+            raise Busy("the local model is busy with other footage; ask again later")
         argv = [llama_program(), "cli", "-m", _model_path(MODEL[0]), "-mm", _model_path(PROJECTOR[0]),
                 MEDIA_FLAG[mt], path, "-sys", SYSTEM[mt], "-p", prompt, "-st", "--temp", "0",
                 # Without it, llama.cpp writes its answer to the controlling terminal rather than to our
                 # pipe whenever Zenvi has one (run.sh, a terminal launch): every description came back empty.
                 "--simple-io"]
         try:
-            proc = subprocess.run(argv, cwd=tmp, env=_environment(), capture_output=True, text=True,
-                                  encoding="utf-8", errors="replace", timeout=DESCRIBE_TIMEOUT,
-                                  stdin=subprocess.DEVNULL, creationflags=hf._NO_WINDOW)
+            code, out, err = _run(argv, tmp)
         except subprocess.TimeoutExpired:
             raise hf.HyperframesError("describing %s took longer than %d s" % (os.path.basename(path), DESCRIBE_TIMEOUT))
         except OSError as exc:
             raise hf.HyperframesError("could not start llama.cpp: %s" % exc)
-    if proc.returncode != 0:
+    if code != 0:
         raise hf.HyperframesError("llama.cpp could not describe %s (exit code %d): %s"
-                                  % (os.path.basename(path), proc.returncode, (proc.stderr or "")[-800:]))
-    answer = _json_answer((proc.stdout or "").rsplit(prompt, 1)[-1])     # the CLI echoes the prompt first
+                                  % (os.path.basename(path), code, (err or "")[-800:]))
+    answer = _json_answer((out or "").rsplit(prompt, 1)[-1])     # the CLI echoes the prompt first
     if not answer:
-        log.warning("local describe gave no JSON for %s: %s", path, (proc.stdout or "")[-400:])
+        log.warning("local describe gave no JSON for %s: %s", path, (out or "")[-400:])
         raise hf.HyperframesError("the local model gave no description for %s" % os.path.basename(path))
     return answer

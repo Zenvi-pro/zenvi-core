@@ -589,8 +589,10 @@ class FilesModel(QObject, updates.UpdateInterface):
     _MAX_INDEXING_WORKERS = 2
 
     def _stop_active_indexers(self):
-        """Called at app quit — interrupt any pending HTTP requests, then wait briefly."""
+        """Called at app quit — stop the local model, interrupt any pending HTTP requests, then wait briefly."""
+        from classes import local_describe
         self._indexing_queue.clear()
+        local_describe.stop()
         for worker in list(self._active_indexers):
             try:
                 worker.interrupt()  # close session to unblock requests.post()

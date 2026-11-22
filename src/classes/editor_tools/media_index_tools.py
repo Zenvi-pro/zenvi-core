@@ -6,6 +6,8 @@ same footage is searchable in every project. Nothing here mutates the project.
 
 from __future__ import annotations
 
+import time
+
 from classes.editor_tools._base import ToolError, array, boolean, enum, get_app, integer, mapping, number, obj, ok, on_main, string
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.media_files import FILE_TARGET, _display_name, resolve_files
@@ -501,6 +503,7 @@ def index_long_file(file_ids=None, file_query="", approve=False):
 
 
 MAX_DESCRIBE_SHOTS = 300
+DESCRIBE_QUEUE_SECONDS = 240       # a tool call queues behind other describing only this long (the assistant waits 900 s for a tool)
 
 
 def describe_file_shots(f, fi, shot_ids):
@@ -531,9 +534,11 @@ def describe_file_shots(f, fi, shot_ids):
         if blocked:
             return None, blocked
     path = absolute_media_path(f.data.get("path")) or str(f.data.get("path") or "")
+    deadline = time.monotonic() + DESCRIBE_QUEUE_SECONDS
     try:
         out = cloud.describe_shots(get_backend_client(), path, probe_media(path), fi.sha, default_shelf(), wanted,
-                                   E.get_embedder(fi.vector_model or E.MODEL_LOCAL), file_id=str(f.id))
+                                   E.get_embedder(fi.vector_model or E.MODEL_LOCAL), file_id=str(f.id),
+                                   give_up=lambda: time.monotonic() > deadline)
     except (cloud.Cancelled, E.EmbedError) as exc:
         return None, str(exc)
     if out.get("auth"):
