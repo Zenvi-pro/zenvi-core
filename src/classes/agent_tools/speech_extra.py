@@ -250,14 +250,13 @@ def diarize_media(
     timeline_clip_id: str = "",
     max_speakers=2,
     language: str = "auto",
-    model_id: str = "",
     **_kw,
 ):
     """Attach speakerIds to cached transcript words for a file/clip."""
     from classes.agent_tools.receipt import ToolReceipt
     from classes.agent_tools.transcript import _first_nonempty
     from classes.speech.asr import transcribe_file
-    from classes.speech.cache import DEFAULT_MODEL_ID, get_default_cache
+    from classes.speech.cache import get_default_cache
     from classes.speech.diarize import diarize_file_words, speaker_turns
     from classes.speech.map_timeline import resolve_media_path, words_for_clip
 
@@ -299,9 +298,8 @@ def diarize_media(
             "diarize_media_tool", "Error: Media path missing.",
         ).to_json()
 
-    model = (model_id or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
     try:
-        record = transcribe_file(path, language=language or "auto", model_id=model)
+        record = transcribe_file(path, language=language or "auto")
         labelled, warnings = diarize_file_words(
             path, record.words, max_speakers=int(max_speakers or 2),
         )

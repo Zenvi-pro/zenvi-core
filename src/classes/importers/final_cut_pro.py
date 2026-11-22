@@ -1815,7 +1815,7 @@ def _commit(plan: ImportPlan) -> dict:
             log.warning("Crop effect unavailable; crop not imported", exc_info=True)
             plan.warnings.append(_app_tr("crops were left out: this build has no Crop effect (%s)") % exc)
     updates = app.updates
-    history_len, redo = len(updates.actionHistory), list(updates.redoHistory)
+    history_len, redo = updates.history_mark(), list(updates.redoHistory)
     try:
         return _add_to_project(plan, fade, crop_template)
     except Exception as exc:
@@ -1841,6 +1841,7 @@ def _roll_back(updates, history_len: int, redo: list) -> None:
     Not ``updates.undo()``: that reverts the whole transaction id, which may include a caller's own
     earlier edits in the same transaction.
     """
+    history_len = updates.since_mark(history_len)
     added = list(updates.actionHistory[history_len:])
     del updates.actionHistory[history_len:]
     for action in reversed(added):

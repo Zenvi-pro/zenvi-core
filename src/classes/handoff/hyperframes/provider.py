@@ -213,7 +213,7 @@ def _ffprobe() -> str:
     from classes import ffmpeg_cli
     exe = ffmpeg_cli.find_ffmpeg("ffprobe")
     if not exe:
-        raise HyperFramesLinkError("ffprobe was not found; install ffmpeg (brew install ffmpeg) or set "
+        raise HyperFramesLinkError("ffprobe was not found; install ffmpeg or set "
                                    "ZENVI_FFMPEG_DIR")
     return exe
 
@@ -266,7 +266,7 @@ def to_h264(src: str, dst: str, *, has_audio: bool, should_cancel=None) -> str:
     from classes import ffmpeg_cli
     ffmpeg = ffmpeg_cli.find_ffmpeg("ffmpeg")
     if not ffmpeg:
-        raise HyperFramesLinkError("ffmpeg was not found; install it (brew install ffmpeg)")
+        raise HyperFramesLinkError("ffmpeg was not found; install ffmpeg or set ZENVI_FFMPEG_DIR")
     cmd = [ffmpeg, "-y", "-nostdin", "-i", src] + H264_ARGS
     cmd += ["-c:a", "aac", "-b:a", "192k"] if has_audio else ["-an"]
     cmd.append(dst)
