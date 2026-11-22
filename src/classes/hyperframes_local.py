@@ -691,7 +691,7 @@ def transcribe_parakeet(wav: str, language: Optional[str] = None, timeout: float
     """
     node = find_program("node")
     if not node or not os.path.isfile(cli_script()):
-        raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
+        raise HyperframesError("HyperFrames is not set up on this computer yet; call run_tool(name='hyperframes_setup_tool', args={'install': true})")
     out_dir = tempfile.mkdtemp(prefix="zenvi-parakeet-")
     try:
         argv = [node, cli_script(), "transcribe", wav, "--engine", "parakeet", "--json", "--dir", out_dir]
