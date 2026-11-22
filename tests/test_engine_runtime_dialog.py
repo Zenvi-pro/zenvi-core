@@ -96,6 +96,18 @@ def test_an_outdated_install_says_update_not_not_installed(dialog_env, monkeypat
     dlg.reject()
 
 
+def test_a_cli_the_app_ships_offers_only_the_node_download(dialog_env, monkeypatch):
+    dlg_mod, calls = dialog_env
+    monkeypatch.setattr(engine_runtime, "status", lambda: {
+        "ready": False, "bundled": True, "home": "/tmp/engine", "source": "", "node_needed": True, "protocol": 2})
+    dlg = dlg_mod.EngineRuntimeDialog()
+    assert _wait(lambda: dlg._label.text().startswith("Not installed"))
+    assert "Node.js 24.22.1" in dlg._label.text() and "zenvi CLI" not in dlg._label.text()
+    assert "Engine Tools Source" not in dlg._label.text() and dlg._install_btn.isEnabled()
+    assert _wait(lambda: dlg._worker is None)
+    dlg.reject()
+
+
 def test_close_during_the_status_check_is_instant_and_the_check_ends_detached(dialog_env, monkeypatch):
     import gc
 
