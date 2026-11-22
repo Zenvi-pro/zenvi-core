@@ -239,7 +239,7 @@ def review_edit(form="", target_seconds=None, vibe="", wants_music="", wants_cap
             mix_note = why
     files = [f for f in (index_for(c) for c in clips if c.sha) if f is not None]
     result = R.review(clips, project, brief, index_for=index_for, looks=looks, mix=mix, captions=caption_intervals(objs),
-                      take_groups=quality.take_groups(files))
+                      take_groups=quality.take_groups(files), best_moments=_best_moments_if_a_finished_piece())
     needs, unknown = result["needs"], result["unknown"]
     summary = (f"{len(needs)} thing(s) need work: {', '.join(needs[:6])}" if needs else "Nothing needs work") + \
               (f"; {len(unknown)} could not be measured: {', '.join(unknown[:5])}" if unknown else "") + "."
@@ -250,11 +250,50 @@ def review_edit(form="", target_seconds=None, vibe="", wants_music="", wants_cap
                           "hook) are labelled inferred in the segment dossier and never override a measured defect.")
 
 
+def _best_moments_if_a_finished_piece() -> List[Dict[str, Any]]:
+    """The project's best moments, but only while a finished piece is under way: the relative taste check needs every file's
+    index, so ordinary audits (a narrow edit) stay exactly as cheap as before. Any failure means no check, never a failed audit."""
+    try:
+        from classes import edit_contract as EC
+        from classes.editor_tools.media_index_tools_edit import read_contract
+
+        if read_contract()["mode"] != EC.MODE_FINISHED:
+            return []
+        return best_moments_for(project_indexes()[0])
+    except Exception as exc:
+        log.debug("best moments for the audit: %s", exc)
+        return []
+
+
 # ============================ get_project_overview_tool ============================
 def _bucket(value: Optional[float], cuts: Tuple[float, float], names: Tuple[str, str, str]) -> str:
     if value is None:
         return "unknown"
     return names[0] if value < cuts[0] else (names[1] if value < cuts[1] else names[2])
+
+
+def _moments(unique: List[Any]) -> List[Dict[str, Any]]:
+    """Every usable shot of these (de-duplicated) file indexes as a moment, best highlight first."""
+    moments = []
+    for f in unique:
+        for s in f.shots:
+            q = s.get("quality") or {}
+            if s.get("black") or (q.get("inferred") or {}).get("usable") is False:
+                continue
+            w = s.get("watch") or {}
+            moments.append({"file_id": f.file_id, "name": f.name, "start": round(s["start"], 2), "end": round(s["end"], 2),
+                            "highlight": q.get("highlight", 0.0), "why": (q.get("inferred") or {}).get("highlight_reason") or w.get("description", "")[:100],
+                            "flags": q.get("flags", [])})
+    moments.sort(key=lambda m: -float(m["highlight"] or 0.0))
+    return moments
+
+
+def best_moments_for(files: List[Any], n: int = 12) -> List[Dict[str, Any]]:
+    """The *n* best usable moments in the whole project (the same footage imported twice counts once), for the audit's relative check."""
+    firsts: Dict[str, Any] = {}
+    for f in files:
+        firsts.setdefault(f.sha, f)
+    return _moments(list(firsts.values()))[:n]
 
 
 def survey(files: List[Any], not_indexed: List[str], *, top: int = 8, precise_places: bool = False) -> Dict[str, Any]:
@@ -267,17 +306,7 @@ def survey(files: List[Any], not_indexed: List[str], *, top: int = 8, precise_pl
     audios = [f for f in unique if f.media_type == "audio"]
     images = [f for f in unique if f.media_type == "image"]
 
-    moments = []
-    for f in unique:
-        for s in f.shots:
-            q = s.get("quality") or {}
-            if s.get("black") or (q.get("inferred") or {}).get("usable") is False:
-                continue
-            w = s.get("watch") or {}
-            moments.append({"file_id": f.file_id, "name": f.name, "start": round(s["start"], 2), "end": round(s["end"], 2),
-                            "highlight": q.get("highlight", 0.0), "why": (q.get("inferred") or {}).get("highlight_reason") or w.get("description", "")[:100],
-                            "flags": q.get("flags", [])})
-    moments.sort(key=lambda m: -float(m["highlight"] or 0.0))
+    moments = _moments(unique)
 
     groups = quality.take_groups(unique)
     capture = [{"file_id": f.file_id, "captured_at": f.captured_at or None, "gps": f.gps, "duration": f.duration} for f in unique]

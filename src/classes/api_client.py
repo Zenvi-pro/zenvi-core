@@ -70,6 +70,34 @@ def engine_tools() -> list:
         return []
 
 
+def edit_contract_hint(message: str) -> str:
+    """``finished_piece`` or ``recreate`` when the project's edit contract or the user's own words say so, else ''.
+
+    Sent to the backend as the optional ``edit_contract_mode`` so the hosted Assistant can start a whole piece with
+    begin_edit_tool (docs/backend-handoff-edit-contract.md). '' leaves the field out, so ordinary requests are unchanged and a
+    backend that does not know it never sees it. Reads project data in memory only; any error means no hint.
+    """
+    try:
+        from classes import edit_contract as EC
+        from classes.editor_tools.media_index_tools_edit import read_contract
+
+        stored = read_contract()["mode"]
+        if stored != EC.MODE_FREE:
+            return stored
+        from classes.app import get_app
+        from classes.query import File
+
+        # The message arrives with the editor snapshot (and maybe a handoff brief) in front of it: file names in those must not
+        # be read as the user asking for a vlog.
+        import re
+        own = re.sub(r"\[(Editor snapshot|Edit brief)\].*?\[/\1\]", " ", message or "", flags=re.S)
+        mode = EC.classify_intent(own, timeline_empty=not (get_app().project.get("clips") or []),
+                                  media_minutes=1.0 if (File.filter() or []) else 0.0)
+        return "" if mode == EC.MODE_FREE else mode
+    except Exception:
+        return ""
+
+
 def _refresh_credits_after_backend_billing() -> None:
     """Repaint the credits badge after a request the backend bills itself.
 
@@ -521,6 +549,9 @@ class ZenviBackendClient:
                 payload_data["images"] = list(images)
             if project_id:
                 payload_data["project_id"] = project_id
+            hint = edit_contract_hint(message)
+            if hint:
+                payload_data["edit_contract_mode"] = hint        # optional: a backend that does not know it ignores it
             _ws_send({"type": "user_message", "data": payload_data})
 
             # At most four tool calls run at once. Daemon threads, so quitting the

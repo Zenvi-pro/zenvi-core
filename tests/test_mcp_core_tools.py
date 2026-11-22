@@ -82,8 +82,17 @@ PLAYBOOK_ACTIONS = {
     "even out the look so clips match each other": "harmonize_look_tool",
     "sync cuts to the music beats": "sync_cuts_to_beats_tool",
     "remove filler words like um and uh": "remove_words_tool",
-    "record the edit brief: goal, form, length": "set_edit_brief_tool",
+    # The brief tools are core now (listed directly), so find_tools no longer returns them: see the test below.
 }
+
+
+def test_the_edit_brief_tools_and_begin_edit_are_core_so_no_agent_has_to_find_them():
+    """A whole piece starts with begin_edit_tool and keeps its plan in the brief; hidden behind find_tools, Hermes, Cursor
+    and OpenCode (no append prompt) never wrote the brief, so a long job lost its taste decisions."""
+    from classes.agent_tools.core_tools import CORE_TOOL_NAMES
+
+    assert {"begin_edit_tool", "get_edit_brief_tool", "set_edit_brief_tool"} <= set(CORE_TOOL_NAMES)
+    assert len(set(CORE_TOOL_NAMES)) == len(CORE_TOOL_NAMES)
 
 
 def test_playbook_actions_find_their_tool_in_the_top_three():

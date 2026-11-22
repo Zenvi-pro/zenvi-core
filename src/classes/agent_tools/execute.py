@@ -108,6 +108,87 @@ def _engine_hint() -> str:
             f"{runtime.INSTALL_HINT}. Ask the user to install them, then try again.")
 
 
+def _contract_gate(tool_name: str):
+    """``(refusal ToolOutput or None, warning text or None)`` from the edit contract (``classes.edit_contract``).
+
+    Only the tools that place footage are looked at, so every other call pays nothing. In ``warn`` the call runs and the
+    receipt carries the warning; in ``enforce`` it is refused here, before an undo group opens. A bug in the gate must never
+    stop an edit: any error means "allow".
+    """
+    try:
+        from classes import edit_contract as EC
+
+        if tool_name not in EC.PLACEMENT_TOOLS:
+            return None, None
+        rollout = EC.rollout_setting()
+        if rollout == "off":
+            return None, None
+        from classes.editor_tools.media_index_tools_edit import read_brief, read_contract
+
+        contract = read_contract()
+        verdict = EC.check_policy(contract, tool_name, brief=read_brief(), rollout=rollout)
+        if verdict.action != "allow":
+            from classes import edit_contract_log
+
+            edit_contract_log.record("gate", action=verdict.action, tool=tool_name, rollout=rollout, mode=contract["mode"], phase=contract["phase"])
+    except Exception as e:
+        log.debug("edit contract gate skipped: %s", e, exc_info=True)
+        return None, None
+    if verdict.action == "refuse":
+        from classes.agent_tools.output import ToolOutput
+        from classes.agent_tools.receipt import ToolReceipt
+
+        return ToolOutput(receipt=ToolReceipt.refused(tool_name, verdict.message)), None
+    return None, (verdict.message if verdict.action == "warn" else None)
+
+
+def _contract_after(tool_name: str, out, warning: Optional[str]):
+    """Add the gate's warning to a call that ran, and let a finished call move the contract along (placed, finished a layer, audited).
+
+    Export is never refused: a finished piece that was not audited gets a warning on its receipt. Errors here are logged and
+    swallowed; the tool's own result always stands.
+    """
+    try:
+        receipt = out.receipt
+        if warning and receipt.status in ("applied", "unchanged"):
+            receipt.warnings.append(warning)
+        from classes import edit_contract as EC
+
+        if tool_name not in EC.OBSERVED_TOOLS or EC.rollout_setting() == "off":
+            return out
+        from classes.editor_tools.media_index_tools_edit import read_contract, write_contract
+
+        contract = read_contract()
+        if contract["mode"] != EC.MODE_FINISHED:
+            return out
+        if tool_name == "export_video_tool":
+            note = EC.export_warning(contract)
+            if note and receipt.status == "applied":
+                receipt.warnings.append(note)
+                from classes import edit_contract_log
+
+                edit_contract_log.record("export_warned", phase=contract["phase"], rounds=contract["audit"]["rounds"])
+            return out
+        data = receipt.data if isinstance(receipt.data, dict) else {}
+        fix: list = []                                   # the tools the audit's own findings name, not its generic "how to run" note
+        for layer in (data.get("layers") or {}).values():
+            for finding in layer if isinstance(layer, list) else []:
+                if isinstance(finding, dict) and finding.get("status") == "needs":
+                    fix += [t for t in (finding.get("fix") or []) if t not in fix]
+        updated = EC.apply_observation(contract, tool_name, receipt.status, needs=data.get("needs"), unknown=data.get("unknown"), fix_with=fix[:10])
+        if updated != contract:
+            write_contract(updated)
+            from classes import edit_contract_log
+
+            if tool_name in EC.PLACEMENT_TOOLS:
+                edit_contract_log.record("placed", tool=tool_name, phase=updated["phase"])
+            elif tool_name == "review_edit_tool":
+                edit_contract_log.record("audit", phase=updated["phase"], rounds=updated["audit"]["rounds"], needs=len(updated["audit"]["needs"]))
+    except Exception as e:
+        log.debug("edit contract observation skipped: %s", e, exc_info=True)
+    return out
+
+
 def execute_tool_rich(tool_name: str, tool_args: dict):
     """Execute a tool; return ToolOutput (receipt + optional images)."""
     from contextlib import nullcontext
@@ -165,7 +246,10 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
         public_args["transaction_id"] = transaction_id
 
     def _invoke() -> ToolOutput:
-        out = _invoke_inner()
+        refused, warning = _contract_gate(tool_name)
+        if refused is not None:
+            return refused                      # before any snapshot or undo group: a held-back call leaves history untouched
+        out = _contract_after(tool_name, _invoke_inner(), warning)
         attached = take_attached_images()
         if attached and not out.images:
             out = ToolOutput(receipt=out.receipt, images=attached)
