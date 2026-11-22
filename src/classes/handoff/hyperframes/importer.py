@@ -601,6 +601,7 @@ def _overlaps(a: Tuple[float, float], b: Tuple[float, float], tol: float) -> boo
 
 def _rollback(updates, start: int, redo: list) -> None:
     """Undo the actions a failed commit recorded after *start* and drop them from the history (GUI thread)."""
+    start = updates.since_mark(start)
     added = list(updates.actionHistory[start:])
     for action in reversed(added):
         try:
@@ -629,7 +630,7 @@ def _commit(insp: Inspection, readers: Dict[int, dict], restore_readers: Dict[st
         raise ToolError("another project was opened while the HyperFrames import was rendering; nothing was "
                         "added -- import it again into this project")
     updates = app.updates
-    start, redo = len(updates.actionHistory), list(updates.redoHistory)
+    start, redo = updates.history_mark(), list(updates.redoHistory)
     batch = {"open": False}
     try:
         return _commit_all(app, insp, readers, restore_readers, position, track, batch)

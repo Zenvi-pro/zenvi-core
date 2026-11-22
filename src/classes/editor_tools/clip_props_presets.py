@@ -230,15 +230,16 @@ class _History:
 
     def __init__(self, updates):
         self.updates = updates
-        self.start = len(updates.actionHistory)
+        self.mark = updates.history_mark()
         self.redo = list(updates.redoHistory)
 
     def drop_noops(self) -> bool:
         history = self.updates.actionHistory
-        added = history[self.start:]
+        start = self.updates.since_mark(self.mark)
+        added = history[start:]
         real = [a for a in added if not _is_noop_action(a)]
         if len(real) != len(added):
-            del history[self.start:]
+            del history[start:]
             history.extend(real)
         if not real:
             self.updates.redoHistory[:] = self.redo
@@ -346,7 +347,8 @@ for _p in PRESETS.values():
 )
 def apply_clip_preset(preset, timeline_clip_ids=None, clip_query="", track="", scope="", duration_seconds=None,
                       at_seconds=None, level_percent=None):
-    """Apply a one-click Fade, Motion, Transform or Volume preset from the timeline's clip menu.
+    """Use for one-click fade, volume and motion presets (fade_in, fade_out, volume_level with level_percent, slow zoom, PiP). Not for an exact dB level (run_tool(name='set_clip_volume_tool')).
+    Apply a one-click Fade, Motion, Transform or Volume preset from the timeline's clip menu.
 
     Same as the clip menu, on one or many clips, as one undo step. E.g. slow
     zoom = zoom_in, Ken Burns = ken_burns_in, PiP top right =

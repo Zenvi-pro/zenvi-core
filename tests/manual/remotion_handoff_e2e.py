@@ -698,7 +698,7 @@ def part_helper(work, app_dir):
     from classes.handoff import linked_media as lm
     link_data = lm.read_link(editor.file(clip["file_id"]))
     result["linked_props"] = lm.link_props(link_data)
-    again = editor.call_receipt("rerender_linked_clip_tool", file_id=clip["file_id"])
+    again = editor.call_receipt("update_linked_clip_tool", file_id=clip["file_id"])
     result["rerender"] = again["status"]
     log("linked DateCard props:", result["linked_props"], "| re-render:", again["status"], again["summary"][:160])
     assert result["linked_props"]["when"] == "remotion-date:2026-05-01T00:00:00.000Z" and again["status"] == "applied"
@@ -1044,9 +1044,9 @@ def part_dynamic(work, app_dir):
     log("accepted trust:", result["accepted"])
     assert accepted.get("error") is None and len(questions) == 3
     # 4) the agent tool keeps its documented behaviour: no question
-    tool = editor.call_receipt("rerender_linked_clip_tool", file_id=clip["file_id"])
+    tool = editor.call_receipt("update_linked_clip_tool", file_id=clip["file_id"])
     result["tool_rerender"] = {"status": tool["status"], "questions": len(questions)}
-    log("rerender_linked_clip_tool:", result["tool_rerender"])
+    log("update_linked_clip_tool:", result["tool_rerender"])
     assert tool["status"] == "applied" and len(questions) == 3
     trust.set_asker(None)
     REPORT["dynamic"] = result

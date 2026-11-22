@@ -42,6 +42,7 @@ import tarfile
 import tempfile
 import threading
 import urllib.request
+import wave
 import zipfile
 from typing import Callable, Iterable, List, Optional, Tuple
 
@@ -594,7 +595,7 @@ def install_parakeet() -> None:
     """Have the CLI download its Parakeet recogniser (runtime and model) into Zenvi's folder."""
     node = find_program("node")
     if not node or not os.path.isfile(cli_script()):
-        raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
+        raise HyperframesError("HyperFrames is not set up on this computer yet; call run_tool(name='hyperframes_setup_tool', args={'install': true})")
     code, out = _exec([node, cli_script(), *PARAKEET_INSTALL], home(), node, INSTALL_TIMEOUT)
     if code != 0:
         raise HyperframesError("could not install the Parakeet speech recogniser (exit code %d): %s"
@@ -610,7 +611,7 @@ def install_rvm() -> None:
             return
         node = find_program("node")
         if not node:
-            raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
+            raise HyperframesError("HyperFrames is not set up on this computer yet; call run_tool(name='hyperframes_setup_tool', args={'install': true})")
         code, out = _exec(_node_tool(node, "npm") + ["install", "onnxruntime-node@" + ORT_VERSION, "--prefix",
                                                       _ort_dir(), "--no-audit", "--no-fund"],
                           home(), node, INSTALL_TIMEOUT, isolated=False)
@@ -632,7 +633,7 @@ def matte(project: str, source: str, output: str, timeout: float = SPEECH_TIMEOU
         _check_value(project, "ffmpeg", "", path, ())
     node, ffmpeg = find_program("node"), find_program("ffmpeg")
     if not node or not ffmpeg:
-        raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
+        raise HyperframesError("HyperFrames is not set up on this computer yet; call run_tool(name='hyperframes_setup_tool', args={'install': true})")
     os.makedirs(os.path.dirname(os.path.join(root, output)) or root, exist_ok=True)
     code, out = _exec([node, RVM_RUNNER, _ort_module(), rvm_model(), ffmpeg, source, output], root, node, timeout)
     if code != 0:
@@ -664,7 +665,7 @@ def recognise(wav: str, language: Optional[str] = None, timeout: float = SPEECH_
     try:
         with _speech_install_lock:                      # no install swaps the files between the check and the run
             if not speech_ready(fresh=True):            # hashed again each run: this file is executed
-                raise HyperframesError("the speech recogniser is not installed; call hyperframes_setup_tool")
+                raise HyperframesError("the speech recogniser is not installed; call run_tool(name='hyperframes_setup_tool', args={'install': true})")
             proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                   timeout=timeout, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
     except subprocess.TimeoutExpired:
@@ -691,7 +692,7 @@ def transcribe_parakeet(wav: str, language: Optional[str] = None, timeout: float
     """
     node = find_program("node")
     if not node or not os.path.isfile(cli_script()):
-        raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
+        raise HyperframesError("HyperFrames is not set up on this computer yet; call run_tool(name='hyperframes_setup_tool', args={'install': true})")
     out_dir = tempfile.mkdtemp(prefix="zenvi-parakeet-")
     try:
         argv = [node, cli_script(), "transcribe", wav, "--engine", "parakeet", "--json", "--dir", out_dir]
@@ -751,8 +752,100 @@ def _clean(text: str) -> str:
     return text
 
 
+def _cli_timeout_ms(size: int) -> float:
+    """The decoder timeout hyperframes 0.8.115 gives Node for a 16 kHz mono WAV of *size* bytes."""
+    return max(18e5, (size / 32000) * 2000)  # the CLI's own double arithmetic
+
+
+# ``hyperframes transcribe`` options that take a value as the next argument (``--opt=value`` needs no skip).
+_TRANSCRIBE_VALUE_FLAGS = frozenset(("--dir", "-d", "--engine", "-e", "--model", "-m", "--language", "-l",
+                                     "--to", "--output", "-o", "--timeout"))
+
+
+def _parakeet_input(argv: List[str]) -> Optional[int]:
+    """Index in *argv* of the ``.wav`` a Parakeet ``hyperframes transcribe`` reads, or None."""
+    if len(argv) < 4 or os.path.basename(argv[1]) != "cli.js" or argv[2] != "transcribe":
+        return None
+    if "parakeet" not in argv and "--engine=parakeet" not in argv:
+        return None
+    i = 3
+    while i < len(argv):
+        arg = argv[i]
+        if arg in _TRANSCRIBE_VALUE_FLAGS:
+            i += 2
+            continue
+        if not arg.startswith("-"):
+            return i if arg.lower().endswith(".wav") else None  # the input is the first positional
+        i += 1
+    return None
+
+
+def _has_dir(argv: List[str]) -> bool:
+    return any(a in ("--dir", "-d") or a.startswith(("--dir=", "-d=")) for a in argv[3:])
+
+
+def _parakeet_copy(argv: List[str], cwd: str) -> Optional[str]:
+    """A silence-padded copy of the WAV a Parakeet ``transcribe`` reads, when the CLI would time it out.
+
+    hyperframes 0.8.115 derives the decoder's Node timeout from the WAV's size, and Node refuses a
+    fraction, so most recordings over 15 minutes never transcribed. The copy (in *cwd*, under 4 ms of
+    added silence, a fresh name per call) has a size whose timeout is whole; the recording itself is
+    never written.
+    """
+    # ponytail: drop when CLI_VERSION reaches 0.9, which rounds the timeout itself.
+    index = _parakeet_input(argv)
+    if index is None:
+        return None
+    path = os.path.join(cwd, argv[index])
+    copy = None
+    try:
+        size = os.path.getsize(path)
+        if _cli_timeout_ms(size).is_integer():
+            return None
+        with wave.open(path, "rb") as src:
+            if (src.getframerate(), src.getnchannels(), src.getsampwidth()) != (16000, 1, 2):
+                return None
+            frames = src.getnframes()
+            pad = next((k for k in range(64) if _cli_timeout_ms(44 + 2 * (frames + k)).is_integer()), None)
+            if pad is None:
+                return None
+            fd, copy = tempfile.mkstemp(dir=cwd, prefix="zenvi-parakeet-", suffix=".wav")
+            os.close(fd)
+            with wave.open(copy, "wb") as out:  # a plain 44-byte header, so the size is exact
+                out.setnchannels(1)
+                out.setsampwidth(2)
+                out.setframerate(16000)
+                while True:
+                    chunk = src.readframes(1 << 20)
+                    if not chunk:
+                        break
+                    out.writeframes(chunk)
+                out.writeframes(b"\x00\x00" * pad)
+        return copy
+    except (OSError, wave.Error, EOFError) as exc:
+        log.warning("could not pad %s for Parakeet: %s", path, exc)
+        if copy and os.path.exists(copy):
+            os.remove(copy)
+        return None
+
+
 def _exec(argv: List[str], cwd: str, node: Optional[str], timeout: float,
           isolated: bool = True) -> Tuple[int, str]:
+    index, copy = _parakeet_input(argv), _parakeet_copy(argv, cwd)
+    if copy and index is not None:
+        source = argv[index]
+        argv = argv[:index] + [copy] + argv[index + 1:]
+        if not _has_dir(argv):  # the CLI writes transcript.json beside its input: keep it beside the recording
+            argv += ["--dir", os.path.dirname(os.path.join(cwd, source)) or cwd]
+    try:
+        return _run_process(argv, cwd, node, timeout, isolated)
+    finally:
+        if copy and os.path.exists(copy):
+            os.remove(copy)
+
+
+def _run_process(argv: List[str], cwd: str, node: Optional[str], timeout: float,
+                 isolated: bool) -> Tuple[int, str]:
     try:
         proc = subprocess.run(
             argv, cwd=cwd, env=_environment(node, isolated), capture_output=True, text=True, encoding="utf-8",
@@ -855,7 +948,7 @@ def check_command(project: str, program: str, args: Iterable[str], inputs: Itera
                  if a.startswith(("-e", "--e")) or a == "-m" or a.startswith("--m")]
         if not flags or any(a != "--engine=parakeet" and (a, value) != ("--engine", "parakeet") for a, value in flags):
             raise HyperframesError("hyperframes transcribe runs here only with --engine parakeet (install it with "
-                                   "hyperframes_setup_tool accurate_speech=true); for captions use add_captions_tool")
+                                   "run_tool(name='hyperframes_setup_tool', args={'install': true, 'accurate_speech': true})); for captions use add_captions_tool")
     out = list(args)
     if program in SCRIPT_PROGRAMS:
         if not sub or sub.startswith("-"):
@@ -886,12 +979,12 @@ def run(project: str, program: str, args: Iterable[str], timeout: float = DEFAUL
     node = find_program("node")
     if program == "hyperframes":
         if not node or not os.path.isfile(cli_script()):
-            raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
+            raise HyperframesError("HyperFrames is not set up on this computer yet; call run_tool(name='hyperframes_setup_tool', args={'install': true})")
         argv = [node, cli_script()] + tail
     else:
         exe = find_program(program)
         if not exe:
-            raise HyperframesError("%s was not found on this computer; call hyperframes_setup_tool" % program)
+            raise HyperframesError("%s was not found on this computer; call run_tool(name='hyperframes_setup_tool', args={'install': true})" % program)
         argv = [exe] + tail
     cwd = project_dir(project)
     os.makedirs(cwd, exist_ok=True)

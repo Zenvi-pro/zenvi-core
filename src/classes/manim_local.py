@@ -346,7 +346,7 @@ def render(project: str, scene_file: str, scene: str, transparent: bool = True, 
     check_scene(source)
     manim = manim_program()
     if not manim:
-        raise hf.HyperframesError("Manim is not set up on this computer yet; call manim_setup_tool with install=true")
+        raise hf.HyperframesError("Manim is not set up on this computer yet; call run_tool(name='manim_setup_tool', args={'install': true})")
     # Run exactly the checked text, from a folder of its own: Manim puts the scene's folder first on
     # sys.path, where a project file (colour.py, numpy.py) would shadow an allowed module.
     run_dir = tempfile.mkdtemp(prefix="zenvi-manim-")
@@ -372,7 +372,7 @@ def _render_checked(root, path, scene, transparent, quality, fps, timeout, manim
     code, out = _run(argv, root, timeout, _environment(tex))
     if code != 0:
         hint = ("; this scene typesets text or equations with LaTeX, which is not installed: call "
-                "manim_setup_tool with install=true latex=true, or use Text() instead of Tex()/MathTex()"
+                "run_tool(name='manim_setup_tool', args={'install': true, 'latex': true}), or use Text() instead of Tex()/MathTex()"
                 if not tex and _NO_LATEX_RE.search(out) else "")
         raise hf.HyperframesError("the Manim render failed (exit code %d)%s:\n%s" % (code, hint, out[-2000:]))
     found = glob.glob(os.path.join(root, "manim-media", "videos", "**", out_name + ".*"), recursive=True)

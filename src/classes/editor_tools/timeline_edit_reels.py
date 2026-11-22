@@ -572,7 +572,7 @@ def _commit(job: _Job) -> dict:
     from classes.updates import nested_transaction
     updates = get_app().updates
     _check_timeline(job.replace)
-    mark = len(updates.actionHistory)
+    mark = updates.history_mark()
     redo = list(updates.redoHistory)
     tid = None
     try:
@@ -588,7 +588,7 @@ def _roll_back(updates, mark: int, redo: list, tid: Optional[str]) -> None:
     """Undo what a failed build recorded and restore the redo stack, so history is as it was."""
     try:
         history = updates.actionHistory
-        if len(history) > mark:
+        if len(history) > updates.since_mark(mark):
             if history[-1].transaction != tid:
                 # Something else was recorded after the build (undo would take that back instead).
                 log.error("build_reel_tool: another edit landed after the failed build; it was not rolled back")
@@ -639,7 +639,8 @@ _STYLE_LINES = " ".join(f"{sid}: {REEL_STYLES[sid].summary}" for sid in REEL_STY
 )
 def build_reel(style="hype", file_ids=None, music_file_id="", duration_seconds=None, hook="", end_card="",
                end_card_subtitle="", labels=None, beats=None, replace=False):
-    """Cut a finished short-form video (Reels, TikTok, Shorts, ads) in one step from media already in the
+    """Use for a finished short-form promo, montage or vlog (Reels, TikTok, Shorts, ads) cut from project media in one step. Not for a montage of files that share a shape or pose (a match-cut montage, found with find_tools).
+    Cut a finished short-form video (Reels, TikTok, Shorts, ads) in one step from media already in the
     project: shots cut on the music's beats, camera moves, flashes, a look, an opening hook title, shot
     labels, an end card and the music faded out. One undo step.
 

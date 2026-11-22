@@ -17,7 +17,7 @@ from classes.track_display import (
     resolve_placement_track,
 )
 from timeline_edit_fakes import FakeTimeline, fake_openshot
-from titles_text_fakes import receipt, tt  # noqa: F401  (fixture)
+from titles_text_fakes import hft, receipt, tt  # noqa: F401  (fixtures)
 
 LAYERS = [{"id": f"L{n}", "number": n * 1000000, "label": ""} for n in range(1, 6)]
 TOP = 5000000
@@ -112,10 +112,10 @@ def test_add_clips_four_past_the_top_is_refused_without_history(ed):
     assert ed.undo_steps_since_mark() == 0 and len(_numbers(ed)) == 5
 
 
-def test_add_title_on_a_track_past_the_top(tt):
+def test_add_title_on_a_track_past_the_top(tt, hft):
     tt.mark()
     out = tt.call("add_title_tool", text="Hi", track="7")
-    assert out.startswith("Added title 'Hi' (Bar_1) on track 7 at 0.00-5.00s on a new track."), out
+    assert out.startswith("Added title 'Hi' (Headline) on track 7 at 0.00-5.00s on a new track."), out
     rec = receipt(out)
     assert rec["new_track"] is True and rec["layer"] == 7000000
     assert _numbers(tt)[5:] == [6000000, 7000000]
@@ -124,19 +124,12 @@ def test_add_title_on_a_track_past_the_top(tt):
     assert len(_numbers(tt)) == 5
 
 
-def test_blank_title_with_a_background_colour_is_a_solid_colour_card(tt):
-    from classes import title_svg
+def test_blank_title_with_a_background_colour_is_a_solid_colour_card(tt, hft):
     tt.mark()
     rec = receipt(tt.call("add_title_tool", text=" ", background_color="#FFFFFF", duration_seconds=0.1))
-    assert rec["template"] == "Solid_Color" and rec["background_color"] == "#ffffff"
-    assert title_svg.background_color(title_svg.load(rec["path"])) == ("#ffffff", 1.0)
+    assert rec["opaque"] is True and rec["path"].endswith(".mp4")
+    assert tt.file(rec["file_id"])["ai_metadata"]["title"]["background_color"] == "#ffffff"
     assert tt.undo_steps_since_mark() == 1
-
-
-def test_blank_named_text_template_with_a_background_colour_blanks_its_fields(tt):
-    from classes import title_svg
-    rec = receipt(tt.call("add_title_tool", template="Standard_1", background_color="black"))
-    assert all(not t.strip() or t == title_svg.BLANK for t in title_svg.line_texts(title_svg.load(rec["path"])))
 
 
 class _Point:
@@ -172,7 +165,7 @@ def test_add_clip_to_timeline_four_past_the_top_is_refused_without_history(tt):
 # A busy named track: the overlay goes to the first free track above, with a warning
 # ---------------------------------------------------------------------------
 
-def test_title_for_a_busy_explicit_track_goes_to_the_first_free_track_above(tt):
+def test_title_for_a_busy_explicit_track_goes_to_the_first_free_track_above(tt, hft):
     video = tt.add_file("video", duration=10.0)
     tt.add_clip(video, position=0.0, layer=2000000)
     tt.mark()
@@ -186,7 +179,7 @@ def test_title_for_a_busy_explicit_track_goes_to_the_first_free_track_above(tt):
     assert tt.undo_steps_since_mark() == 1
 
 
-def test_title_for_a_busy_track_opens_a_new_track_when_all_above_are_busy_too(tt):
+def test_title_for_a_busy_track_opens_a_new_track_when_all_above_are_busy_too(tt, hft):
     video = tt.add_file("video", duration=30.0)
     for n in range(1, 6):
         tt.add_clip(video, position=0.0, layer=n * 1000000)
@@ -199,7 +192,7 @@ def test_title_for_a_busy_track_opens_a_new_track_when_all_above_are_busy_too(tt
     assert len(_numbers(tt)) == 5
 
 
-def test_title_for_a_busy_track_skips_a_locked_free_one(tt):
+def test_title_for_a_busy_track_skips_a_locked_free_one(tt, hft):
     video = tt.add_file("video", duration=10.0)
     tt.add_clip(video, position=0.0, layer=2000000)
     tt.lock_track(3000000)
@@ -207,7 +200,7 @@ def test_title_for_a_busy_track_skips_a_locked_free_one(tt):
     assert rec["layer"] == 4000000 and len(rec["warnings"]) == 1
 
 
-def test_a_free_named_track_has_no_warning(tt):
+def test_a_free_named_track_has_no_warning(tt, hft):
     rec = receipt(tt.call("add_title_tool", text="X", track="2"))
     assert "warnings" not in rec and rec["layer"] == 2000000
 
@@ -221,32 +214,6 @@ def test_timer_for_a_busy_explicit_track_goes_above_with_a_warning(tt):
     assert rec["layer"] == 2000000 and rec["warnings"][0].endswith("placed on track 2 instead")
     assert " Warning: track 1 already has" in out.partition("\n")[0]
     assert tt.undo_steps_since_mark() == 1
-
-
-# ---------------------------------------------------------------------------
-# Text on a colour card
-# ---------------------------------------------------------------------------
-
-def test_text_on_solid_color_is_drawn_with_a_text_template_over_the_colour(tt):
-    from classes import title_svg
-    tt.mark()
-    out = tt.call("add_title_tool", template="Solid_Color", text="DOUBT", background_color="#d4141c",
-                  text_color="#ffffff")
-    rec = receipt(out)
-    assert rec["template"] == "Text_Card" and rec["background_color"] == "#d4141c"
-    doc = title_svg.load(rec["path"])
-    assert title_svg.background_color(doc) == ("#d4141c", 1.0)
-    assert title_svg.line_texts(doc)[0] == "DOUBT"
-    assert rec["warnings"] == ["Solid_Color has no text; drew the text with Text_Card over the colour #d4141c"]
-    assert " Warning: Solid_Color has no text; drew the text with Text_Card" in out.partition("\n")[0]
-    assert tt.undo_steps_since_mark() == 1
-
-
-def test_text_on_solid_color_keeps_the_cards_own_colour_without_a_background_colour(tt):
-    from classes import title_svg
-    rec = receipt(tt.call("add_title_tool", template="Solid_Color", text="Hi"))
-    colour, alpha = title_svg.background_color(title_svg.load(rec["path"]))
-    assert alpha == 1.0 and rec["background_color"] == colour
 
 
 # ---------------------------------------------------------------------------
@@ -311,26 +278,6 @@ def test_move_to_an_existing_track_adds_none(ed):
     assert "new track" not in out and len(_numbers(ed)) == 5
 
 
-def test_text_card_is_one_centred_line_on_a_full_frame_rect():
-    from classes import title_svg
-    doc = title_svg.load(title_svg.find_template("Text_Card"))
-    slots = title_svg.fields(doc)
-    w, h = title_svg.artboard_size(doc)
-    assert [s.text for s in slots] == ["The Title"] and title_svg.text_zone(slots, h) == "center"
-    assert title_svg.background_color(doc) == ("#000000", 1.0)
-
-
-def test_text_on_a_translucent_card_keeps_its_opacity(tt, tmp_path):
-    from classes import title_svg
-    card = tmp_path / "Glass_Card.svg"
-    card.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080"><g>'
-                    '<rect style="opacity:0.5;fill:#112233" width="1920" height="1080" x="0" y="0"/></g></svg>')
-    rec = receipt(tt.call("add_title_tool", template=str(card), text="Hi"))
-    assert rec["template"] == "Text_Card" and rec["background_color"] == "#112233"
-    assert title_svg.background_color(title_svg.load(rec["path"])) == ("#112233", 0.502)
-    assert rec["warnings"] == ["Glass_Card has no text; drew the text with Text_Card over the colour #11223380"]
-
-
 @pytest.mark.parametrize("tool, needle", [
     ("move_clips_tool", "Moved 2 clip(s) to track 5 at 0.00 s; 2 tracks added on top."),
     ("duplicate_clips_tool", "on track 5; 2 tracks added on top."),
@@ -346,35 +293,3 @@ def test_a_lower_source_landing_on_an_existing_track_does_not_call_it_new(ed, to
     assert ed.undo_steps_since_mark() == 1
 
 
-def test_text_on_a_card_stays_vertically_centred_when_the_font_is_scaled(tt):
-    from classes import title_svg
-    rec = receipt(tt.call("add_title_tool", template="Solid_Color", text="DOUBT", font_scale=2.5))
-    doc = title_svg.load(rec["path"])
-    line = title_svg.line_nodes(doc)[0]
-    size = float(line.getAttribute("style").split("font-size:")[1].split("px")[0])
-    assert size == 400 and abs(float(line.getAttribute("y")) - (540 + 0.36 * size)) < 1e-6
-    assert float(line.parentNode.getAttribute("y")) == float(line.getAttribute("y"))
-
-
-@pytest.mark.parametrize("fill, alpha, kept, over", [
-    ("red", 0.5, ("#ff0000", 0.502), "the colour #ff000080"),     # a colour name, translucent
-    ("#123456", 0.0, ("#123456", 0.0), "the video"),              # see-through stays see-through
-])
-def test_text_on_a_named_or_see_through_card_keeps_its_colour(tt, monkeypatch, fill, alpha, kept, over):
-    from classes import title_svg
-    real = title_svg.background_color
-    monkeypatch.setattr(title_svg, "background_color",
-                        lambda doc: (fill, alpha) if not title_svg.fields(doc) else real(doc))
-    rec = receipt(tt.call("add_title_tool", template="Solid_Color", text="Hi"))
-    assert real(title_svg.load(rec["path"])) == kept
-    assert rec["warnings"] == [f"Solid_Color has no text; drew the text with Text_Card over {over}"]
-
-
-def test_a_long_line_on_a_card_is_centred_at_the_size_it_was_fitted_to(tt):
-    from classes import title_svg
-    rec = receipt(tt.call("add_title_tool", template="Solid_Color", font_scale=2.5,
-                          text="THE LONGEST HEADLINE ANYONE EVER PUT ON ONE CARD"))
-    line = title_svg.line_nodes(title_svg.load(rec["path"]))[0]
-    size = float(line.getAttribute("style").split("font-size:")[1].split("px")[0])
-    assert size < 400                                             # _fit shrank it
-    assert abs(float(line.getAttribute("y")) - (540 + 0.36 * size)) < 1e-3

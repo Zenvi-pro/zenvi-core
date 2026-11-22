@@ -242,6 +242,10 @@ class UpdateManager:
     Typically, only 1 instance of this class is needed, and many different
     listeners are connected with the add_listener() method. """
 
+    # Undo steps kept in memory. history-limit only bounds what is saved, so
+    # without this a long session keeps every edit's values and old values.
+    MEMORY_STEPS = 200
+
     def __init__(self):
         self.statusWatchers = []  # List of watchers
         self.updateListeners = []  # List of listeners
@@ -251,6 +255,7 @@ class UpdateManager:
         self.last_action = None  # The last action processed
         self.pending_action = None  # Last action not added to actionHistory list
         self.data_version = 0  # Incremented on every dispatch to invalidate caches
+        self.trimmed = 0  # Actions the undo limit has dropped off the front (see history_mark)
 
         # transaction_id and ignore_history are per-thread (see the properties
         # below).  Agent tool calls arrive one worker thread each
@@ -260,6 +265,7 @@ class UpdateManager:
         # other's group apart.  The Qt main thread keeps its own slot, so every
         # GUI path behaves exactly as it did before.
         self._tls = threading.local()
+        self._open_transactions = {}  # thread ident -> its transaction_id, while one is set
         # Guard against re-entrant undo/redo while processEvents() runs mid-step.
         self._undo_redo_busy = False
 
@@ -275,6 +281,10 @@ class UpdateManager:
     @transaction_id.setter
     def transaction_id(self, value):
         self._tls.transaction_id = value
+        if value:
+            self._open_transactions[threading.get_ident()] = value
+        else:
+            self._open_transactions.pop(threading.get_ident(), None)
 
     @property
     def ignore_history(self):
@@ -353,6 +363,31 @@ class UpdateManager:
                 break
             kept.add(action.transaction)
         return [a for a in history if a.transaction in kept]
+
+    def _trim_history(self):
+        """Drop undo steps older than the last MEMORY_STEPS, once per new step (not per action of one).
+
+        Only off the front, so a history_mark stays right, and never a step still
+        open on some thread: its later actions would be undone without its first.
+        """
+        history = self.actionHistory
+        if len(history) > self.MEMORY_STEPS and (len(history) < 2 or history[-1].transaction != history[-2].transaction):
+            kept = {a.transaction for a in self._last_steps(history, self.MEMORY_STEPS)}
+            kept.update(list(self._open_transactions.values()))
+            cut, last = next(i for i, a in enumerate(history) if a.transaction in kept), -1
+            while cut != last:  # a step that interleaves with a kept one stays whole too
+                kept.update(a.transaction for a in history[cut:])
+                cut, last = next(i for i, a in enumerate(history) if a.transaction in kept), cut
+            self.trimmed += cut
+            del history[:cut]
+
+    def history_mark(self):
+        """Where actionHistory ends now, as a mark that stays right after the undo limit trims its front."""
+        return len(self.actionHistory) + self.trimmed
+
+    def since_mark(self, mark):
+        """Index in actionHistory of the first action recorded after *mark*."""
+        return max(0, mark - self.trimmed)
 
     def reset(self):
         """ Reset the UpdateManager, and clear all UpdateActions and History.
@@ -602,6 +637,7 @@ class UpdateManager:
             self.redoHistory.clear()
             self.pending_action = None
             self.actionHistory.append(self.last_action)
+            self._trim_history()
         self.dispatch_action(self.last_action)
 
     def update(self, key, values):
@@ -618,6 +654,7 @@ class UpdateManager:
                 self.redoHistory.clear()
             self.pending_action = None
             self.actionHistory.append(self.last_action)
+            self._trim_history()
         self.dispatch_action(self.last_action)
 
     def update_untracked(self, key, values):
@@ -665,6 +702,7 @@ class UpdateManager:
             self.redoHistory.clear()
             self.pending_action = None
             self.actionHistory.append(self.last_action)
+            self._trim_history()
         self.dispatch_action(self.last_action)
 
     def apply_last_action_to_history(self, previous_value):
@@ -672,6 +710,7 @@ class UpdateManager:
         if self.pending_action:
             self.pending_action.set_old_values(previous_value)
             self.actionHistory.append(self.pending_action)
+            self._trim_history()
             self.last_action = self.pending_action
             self.pending_action = None
 

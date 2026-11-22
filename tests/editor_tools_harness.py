@@ -214,11 +214,11 @@ class EditorHarness:
 
     # -- undo bookkeeping ---------------------------------------------------
     def mark(self):
-        self._mark = len(self.manager.actionHistory)
+        self._mark = self.manager.history_mark()
 
     def undo_steps_since_mark(self) -> int:
         """Distinct undo transactions added since the last mark()."""
-        actions = list(self.manager.actionHistory)[self._mark:]
+        actions = list(self.manager.actionHistory)[self.manager.since_mark(self._mark):]
         return len({a.transaction for a in actions})
 
     def undo(self):

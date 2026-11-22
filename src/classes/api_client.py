@@ -27,6 +27,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Callable
 from classes.logger import log
+from classes import background_jobs
 
 # Shown when a paid action cannot run because of the login. The wording matters: the plan runner treats
 # "login required" / "unauthorized" as an auth failure to report, never as a step to repair with another tool.
@@ -65,6 +66,15 @@ def engine_tools() -> list:
     try:
         from classes.editor_tools import engine_bridge
         return engine_bridge.advertised_names()
+    except Exception:
+        return []
+
+
+def unavailable_tools() -> list:
+    """Editor tools whose runtime this computer lacks; the backend offers the chat none of them."""
+    try:
+        from classes.editor_tools import unavailable_tools as missing
+        return sorted(missing())
     except Exception:
         return []
 
@@ -510,6 +520,9 @@ class ZenviBackendClient:
             bridged = engine_tools()
             if bridged:
                 payload_data["engine_tools"] = bridged
+            missing = unavailable_tools()
+            if missing:
+                payload_data["unavailable_tools"] = missing
             if agent_mode in ("planning", "agent"):
                 payload_data["agent_mode"] = agent_mode
             if action in ("chat", "execute_plan", "cancel_execution"):
@@ -543,11 +556,13 @@ class ZenviBackendClient:
                     return
 
                 def _runner():
+                    tool_name = call_data.get("tool_name", "")
+                    tool_args = call_data.get("tool_args", {})
+                    call_id = call_data.get("call_id", "")
                     try:
-                        result = on_tool_call(
-                            call_data.get("tool_name", ""),
-                            call_data.get("tool_args", {}),
-                            call_data.get("call_id", ""),
+                        result = background_jobs.run(
+                            tool_name, tool_args, lambda: on_tool_call(tool_name, tool_args, call_id),
+                            session=session_id or "",
                         )
                     except Exception as exc:  # noqa: BLE001
                         log.error("Tool execution error: %s", exc)

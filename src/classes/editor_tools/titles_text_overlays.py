@@ -88,7 +88,7 @@ def add_timer(mode="count_down", position_seconds=0.0, duration_seconds=0.0, cou
               margin_percent=3.0, font="", text_size=0.07, text_color="#ffffff", stroke_color="#000000",
               stroke_width=0.03, background=True, background_color="#000000", background_opacity=0.45,
               timeline_clip_id="", track=""):
-    """Put a live timer on screen: countdown, stopwatch, clock, timecode or frame counter.
+    """Use for a live timer on screen: countdown, stopwatch, clock, timecode or frame counter. Not for static text (run_tool(name='add_title_tool')).
 
     Adds a transparent 'Timer' overlay clip (or, with timeline_clip_id, a
     Timer effect on that clip) drawn live by libopenshot's Timer effect, not

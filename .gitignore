@@ -67,3 +67,5 @@ graphify_output/
 .gstack/
 native/apple-speech-asr/.build/
 
+# Bundled by scripts/bundle_engine_cli.py at release time
+src/engine/

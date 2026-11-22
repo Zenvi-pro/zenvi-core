@@ -14,7 +14,9 @@ from __future__ import annotations
 import copy
 import json
 import os
+import shutil
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -39,6 +41,10 @@ class FakeReader:
 
 
 def _image_reader_data(editor, path):
+    if path.lower().endswith((".mov", ".mp4", ".webm")):          # a rendered title
+        data = copy.deepcopy(editor._fixtures["files"]["video"])
+        data.update(path=path, media_type="video", has_audio=False, duration=60.0)
+        return data
     data = copy.deepcopy(editor._fixtures["files"]["image"])
     data["path"] = path
     if path.lower().endswith(".svg"):
@@ -181,3 +187,35 @@ def receipt(out: str) -> dict:
     assert not out.startswith("Error"), out
     lines = out.split("\n", 1)
     return json.loads(lines[1]) if len(lines) > 1 else {}
+
+
+@pytest.fixture
+def hft(tt, monkeypatch):
+    """HyperFrames 'installed': render writes a stand-in video, the alpha pass copies it to .mov."""
+    from classes import hyperframes_local as hf
+    from classes import tool_handlers
+    state = SimpleNamespace(renders=[], html=[], reencodes=[], fail=False)
+    monkeypatch.setattr(hf, "home", lambda: str(tt.tmp_path / "hyperframes"))
+    monkeypatch.setattr(hf, "status", lambda: {"ready": True})
+
+    def fake_run(project, program, args, **_kw):
+        root = hf.project_dir(project)
+        state.renders.append((program, list(args)))
+        state.html.append(open(os.path.join(root, "index.html"), encoding="utf-8").read())
+        if state.fail:
+            return 1, "Error: chrome crashed"
+        out = os.path.join(root, args[args.index("-o") + 1])
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        open(out, "wb").write(b"\x1a\x45\xdf\xa3" + b"0" * 256)
+        return 0, "ok"
+
+    def fake_alpha(src, output_path=None, width=1920, height=1080):
+        state.reencodes.append((width, height))
+        shutil.copyfile(src, output_path)
+        return output_path, None
+
+    monkeypatch.setattr(hf, "run", fake_run)
+    monkeypatch.setattr(tool_handlers, "_reencode_alpha_for_openshot", fake_alpha)
+    state.projects = lambda: [p for p in os.listdir(hf.home() + "/projects")] if os.path.isdir(
+        hf.home() + "/projects") else []
+    return state

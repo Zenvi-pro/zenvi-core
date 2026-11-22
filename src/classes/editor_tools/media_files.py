@@ -104,11 +104,12 @@ def _tags_string(tags) -> str:
 
 
 def kind_of(data) -> str:
-    """video | audio | image | image_sequence | title (an SVG title)."""
+    """video | audio | image | image_sequence | title (an SVG or add_title_tool title)."""
     path = str(data.get("path") or "")
     if "%" in path:
         return "image_sequence"
-    if path.lower().endswith(".svg") and "emoji" not in path.lower():
+    if ((data.get("ai_metadata") or {}).get("source") == "hyperframes_title"
+            or path.lower().endswith(".svg") and "emoji" not in path.lower()):
         return "title"
     media_type = str(data.get("media_type") or "").lower()
     return media_type if media_type in ("video", "audio", "image") else "video"
@@ -180,7 +181,7 @@ def describe_file(f, usage=None, full=False, check_missing=True) -> dict:
     clip_ids = (usage or {}).get(str(f.id), [])
     start, end = _source_window(data)
     kind = kind_of(data)
-    still = kind in ("image", "title")
+    still = kind == "image" or (kind == "title" and _base_name(data).lower().endswith(".svg"))
     ai = data.get("ai_metadata") if isinstance(data.get("ai_metadata"), dict) else {}
     out = {
         "file_id": str(f.id),
@@ -691,7 +692,8 @@ def update_project_files(file_ids=None, file_query="", name="", tags=None, add_t
     covers=("files.import_sequence",),
 )
 def import_image_sequence(path, fps=0.0, name="", skip_indexing=False):
-    """Import a folder of numbered images as ONE image-sequence file (an animation/video clip).
+    """Use for numbered frames that play as one sequence (renders, stop-motion, time-lapse folders at a set fps). Not for photos imported as separate stills (import_files_tool).
+    Import a folder of numbered images as ONE image-sequence file (an animation/video clip).
 
     Use for "import these frames as a sequence at 24 fps", renders from Blender/After
     Effects, stop-motion or time-lapse photo folders. The frames play at `fps` (the project

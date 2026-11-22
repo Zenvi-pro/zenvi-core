@@ -75,3 +75,9 @@ from classes.editor_tools import (  # noqa: E402,F401
     media_index_tools_recreate,
     handoff,
 )
+
+
+def unavailable_tools() -> set:
+    """Tools whose runtime this computer lacks and Zenvi cannot install: left out of MCP find_tools and sent as
+    the chat's ``unavailable_tools``. Runtimes Zenvi installs itself stay offered; their tools say what to install."""
+    return media_index_tools_people.unavailable()

@@ -37,6 +37,7 @@ on:
       - ".github/workflows/release.yml"
       - "installer/**"
       - "freeze.py"
+      - "scripts/bundle_engine_cli.py"
       - "src/launch.py"
       - "src/classes/update_installer.py"
       - "src/classes/auto_updater.py"
@@ -55,6 +56,8 @@ permissions:
 env:
   # Parsed from src/classes/info.py at build time
   APP_NAME: Zenvi
+  # zenvi-web (public) commit whose zenvi CLI every build ships as its Zenvi engine tools.
+  ZENVI_WEB_REF: ad1e9748a41fc76923c8d4cc9e2b4f2fc9d0e6ea
 
 jobs:
 
@@ -124,9 +127,49 @@ jobs:
           echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "### Version: $VER" >> "$GITHUB_STEP_SUMMARY"
 
+  # ── 1b. The zenvi CLI (Zenvi engine tools), built once for every platform ──
+  # Plain JavaScript + WebAssembly: one build serves Linux, macOS and Windows.
+  # bundle_engine_cli.py starts it and fails the release when its bridge
+  # protocol is not src/classes/engine_bridge.py's PROTOCOL.
+  engine-cli:
+    runs-on: ubuntu-latest
+    # Runs zenvi-web's npm scripts and CLI: read-only token, no OIDC.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Zenvi-pro/zenvi-web
+          ref: ${{ env.ZENVI_WEB_REF }}
+          path: zenvi-web
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build the zenvi CLI
+        working-directory: zenvi-web
+        run: |
+          npm ci
+          npm run build -w @zenvi/cli -- --no-plugin
+
+      - name: Check its bridge protocol and stage it
+        run: python3 scripts/bundle_engine_cli.py zenvi-web/packages/cli/dist --node "$(which node)" --dest engine-cli
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-cli
+          path: engine-cli
+          if-no-files-found: error
+
   # ── 2. Linux build (AppImage + .deb) ──────────────────────────────────
   build-linux:
-    needs: version
+    needs: [version, engine-cli]
     runs-on: ubuntu-22.04
     env:
       VER: ${{ needs.version.outputs.version }}
@@ -144,8 +187,20 @@ jobs:
           pip3 install --upgrade pip
           pip3 install -r requirements.txt
 
+      # freeze.py copies all of src/ into lib/, where the app finds lib/engine/zenvi.mjs.
+      - name: Bundle the zenvi CLI (Zenvi engine tools)
+        uses: actions/download-artifact@v4
+        with:
+          name: engine-cli
+          path: src/engine
+
       - name: Freeze with cx_Freeze
         run: python3 freeze.py build --git-branch=production
+
+      - name: Verify the zenvi CLI is in the frozen app
+        run: |
+          found="$(find build -path '*/lib/engine/zenvi.mjs' -type f | head -1)"
+          [ -n "$found" ] || { echo "::error::lib/engine/zenvi.mjs is missing from the frozen app"; exit 1; }
 
       - name: Smoke test frozen zenvi
         run: |
@@ -294,7 +349,7 @@ jobs:
   # which still produced arm64 binaries and no libopenshot: v1.2.1's Intel DMG
   # could not start on any Intel Mac. verify-arch below now refuses such a build.
   build-macos:
-    needs: version
+    needs: [version, engine-cli]
     strategy:
       fail-fast: false
       matrix:
@@ -506,6 +561,13 @@ jobs:
           FFMPEG_ARCH: ${{ matrix.arch }}
         run: bash installer/build-ffmpeg-cli.sh
 
+      # freeze.py copies all of src/ into lib/, where the app finds lib/engine/zenvi.mjs.
+      - name: Bundle the zenvi CLI (Zenvi engine tools)
+        uses: actions/download-artifact@v4
+        with:
+          name: engine-cli
+          path: src/engine
+
       - name: Freeze with cx_Freeze
         run: |
           python3 freeze.py build --git-branch=production
@@ -518,6 +580,11 @@ jobs:
           done
           [ -d "$(find build -maxdepth 3 -type d -path '*/lib/numpy' | head -1)" ] \
             || { echo "::error::numpy is missing from the frozen app"; exit 1; }
+
+      - name: Verify the zenvi CLI is in the frozen app
+        run: |
+          found="$(find build -path '*/lib/engine/zenvi.mjs' -type f | head -1)"
+          [ -n "$found" ] || { echo "::error::lib/engine/zenvi.mjs is missing from the frozen app"; exit 1; }
 
       # Fix OpenSSL dylib mismatch (arm64 only).
       # cx_Freeze may bundle libssl.3.dylib from the Python toolchain (OpenSSL 3.2+)
@@ -1109,12 +1176,20 @@ jobs:
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_NOTARIZE_PASSWORD" \
             --wait \
-            --output-format json | tee "$SUBMIT_LOG"
+            --output-format json 2>&1 | tee "$SUBMIT_LOG"
           SUBMIT_EXIT=$?
           set -e
 
           STATUS=$(grep -o '"status":"[^"]*"' "$SUBMIT_LOG" | head -1 | cut -d'"' -f4 || echo "")
           SUBMIT_ID=$(grep -o '"id":"[^"]*"' "$SUBMIT_LOG" | head -1 | cut -d'"' -f4 || echo "")
+
+          # An expired Apple agreement is not the pull request's fault and only the
+          # account holder can sign it. Nothing ships from a pull request, so test
+          # the signed DMG; a tag or releases build still fails below.
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ] && grep -q "required agreement is missing or has expired" "$SUBMIT_LOG"; then
+            echo "::warning::Not notarized: the Apple developer agreement must be accepted before the next release"
+            exit 0
+          fi
 
           if [ "$STATUS" != "Accepted" ] || [ "$SUBMIT_EXIT" -ne 0 ]; then
             echo "::error::Notarization did not succeed (status=$STATUS, exit=$SUBMIT_EXIT)"
@@ -1165,7 +1240,7 @@ jobs:
   # MSYS2 UCRT x64 — babl is only published for ucrt64/clang*, not legacy mingw64 (packages.msys2.org).
   # freeze.py uses MSYSTEM (lowercased) for c:/msys64/<prefix>/lib/babl-0.1/ on Windows.
   build-windows:
-    needs: version
+    needs: [version, engine-cli]
     runs-on: windows-latest
     # OIDC subject for Azure login is environment-based (stable across v* tags).
     # Entra federated credential subject must be:
@@ -1261,6 +1336,13 @@ jobs:
           # FastMCP import dies with ModuleNotFoundError: pywintypes without it.
           ./.venv/bin/python -c "import pywintypes, win32api, win32con, win32job; import mcp.types; from mcp.server.fastmcp import FastMCP; print('mcp import OK'); print('pywin32', pywintypes.__file__)"
 
+      # freeze.py copies all of src/ into lib/, where the app finds lib/engine/zenvi.mjs.
+      - name: Bundle the zenvi CLI (Zenvi engine tools)
+        uses: actions/download-artifact@v4
+        with:
+          name: engine-cli
+          path: src/engine
+
       - name: Freeze with cx_Freeze
         shell: msys2 {0}
         run: |
@@ -1269,6 +1351,13 @@ jobs:
           export PATH="/ucrt64/bin:$PATH"
           cd "${GITHUB_WORKSPACE}"
           ./.venv/bin/python freeze.py build --git-branch=production
+
+      - name: Verify the zenvi CLI is in the frozen app
+        shell: msys2 {0}
+        run: |
+          cd "${GITHUB_WORKSPACE}"
+          found="$(find build -path '*/lib/engine/zenvi.mjs' -type f | head -1)"
+          [ -n "$found" ] || { echo "::error::lib/engine/zenvi.mjs is missing from the frozen app"; exit 1; }
 
       - name: Verify production env present in frozen build (Supabase)
         shell: powershell

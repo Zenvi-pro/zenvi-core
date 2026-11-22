@@ -11,8 +11,8 @@ next to the desktop's own (chat, MCP, the editor-tool manifest), except:
   and the CLI's UI, player, storage and exporter tools.
 
 Linked clips the engine renders (Zenvi Motion blocks, Zenvi 3D scenes, Zenvi
-FX) get ``get_linked_clip_tool`` / ``rerender_linked_clip_tool`` from
-``engine_links`` when the desktop has no linked-clip tools of its own.
+FX) get ``get_linked_clip_tool`` from ``engine_links`` when the desktop has
+no linked-clip tools of its own; ``update_linked_clip_tool`` re-renders them.
 
 The catalog is read off the GUI thread at start-up (``register_in_background``);
 the MCP server lists tools as they arrive. A call runs like this:
@@ -63,7 +63,7 @@ NATIVE_TWINS = {
     "split_clip_tool": "slice_clips_tool",
     "set_clip_property_tool": "set_clip_properties_tool",
     "set_effect_property_tool": "update_effect_tool",
-    "add_transition_tool": "apply_transition_tool",
+    "add_transition_tool": "add_transitions_between_clips_tool",
     "probe_media_tool": "view_frames_tool",
 }
 SURFACE_NOTE = "Runs in the Zenvi engine (engine bridge)."
@@ -446,6 +446,17 @@ def _output(name: str, answer: dict, tracked: bool):
     return out
 
 
+def _timeline_seconds(data: dict) -> float:
+    """Where the timeline's last clip ends, in seconds (0 when it has none)."""
+    ends = [0.0]
+    for clip in list(data.get("clips") or []):
+        try:
+            ends.append(float(clip.get("position") or 0) + float(clip.get("end") or 0) - float(clip.get("start") or 0))
+        except (TypeError, ValueError, AttributeError):
+            continue
+    return max(ends)
+
+
 def run_tool(name: str, args: dict):
     """Run bridged tool *name*: the engine's contract-3 receipt (a ToolOutput with frames), or ``Error: ...``."""
     project_file, version, data = on_main(_snapshot)
@@ -455,7 +466,8 @@ def run_tool(name: str, args: dict):
     if project_json is None:
         return fail("the project kept changing while it was read for the engine; nothing was applied, try again")
     try:
-        answer = engine_bridge.get_client().run(name, args, project_json, project_file, _backend_token())
+        answer = engine_bridge.get_client().run(name, args, project_json, project_file, _backend_token(),
+                                                timeout=engine_bridge.deadline(_timeline_seconds(data)))
     except engine_bridge.BridgeUnavailable as exc:
         return fail(f"engine bridge: {exc}")
     text = str(answer.get("text") or "")

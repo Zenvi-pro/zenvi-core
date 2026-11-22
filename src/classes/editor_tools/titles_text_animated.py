@@ -175,11 +175,12 @@ def _project_file_choices() -> dict:
 )
 def add_animated_title(template="", text="", params=None, length_multiplier=1, position_seconds=0.0, track="",
                        file_name="", timeout_seconds=900):
-    """Render a 3D animated title with Blender and place it on the timeline (Title > Animated Title).
+    """Use for a three-dimensional animated title with text (flying, neon or space movie intro), rendered with Blender from a template (needs Blender). Not for a flat title (run_tool(name='add_title_tool')) or a 3D scene or object (find with find_tools).
+    Render a 3D animated title with Blender and place it on the timeline (Title > Animated Title).
 
     Use for "animated title", "3D flying title", "neon title", "space movie intro".
     Needs Blender (Preferences > General > Blender Command); without it the call is
-    refused with setup steps -- offer run_tool(name='add_title_tool') (static SVG titles with fades)
+    refused with setup steps -- offer run_tool(name='add_title_tool') (animated HyperFrames titles)
     instead. Rendering runs in the background and takes from tens of seconds to
     several minutes; the result is a transparent image-sequence clip on the lowest
     free track above the video. run_tool(name='list_title_templates_tool') kind=animated lists the
@@ -206,7 +207,7 @@ def add_animated_title(template="", text="", params=None, length_multiplier=1, p
     if not exe:
         raise ToolError(f"Blender is not available (Blender Command = {command or 'not set'!r}). Install Blender "
                         f"{_min_version()}+ from blender.org and set Preferences > General > Blender Command to "
-                        "its executable; or use run_tool(name='add_title_tool') for a static title with fades")
+                        "its executable; or use run_tool(name='add_title_tool') for an animated HyperFrames title")
     try:
         version = blender_titles.blender_version(exe)
     except Exception as exc:

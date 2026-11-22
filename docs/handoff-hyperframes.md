@@ -224,7 +224,7 @@ exports. That is a libopenshot issue to fix there, for all media.
   only, so it changes nothing in the project (no undo step); the receipt carries the lint result and the edited
   files it replaced (`replaced_edits`).
 
-The shared tools (`get_linked_clip_tool`, `update_linked_clip_tool`, `rerender_linked_clip_tool`,
+The shared tools (`get_linked_clip_tool`, `update_linked_clip_tool`,
 `open_linked_source_tool`) work on HyperFrames clips like on any linked clip.
 
 ## Code map
