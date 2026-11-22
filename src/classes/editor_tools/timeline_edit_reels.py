@@ -572,7 +572,7 @@ def _commit(job: _Job) -> dict:
     from classes.updates import nested_transaction
     updates = get_app().updates
     _check_timeline(job.replace)
-    mark = len(updates.actionHistory)
+    mark = updates.history_mark()
     redo = list(updates.redoHistory)
     tid = None
     try:
@@ -588,7 +588,7 @@ def _roll_back(updates, mark: int, redo: list, tid: Optional[str]) -> None:
     """Undo what a failed build recorded and restore the redo stack, so history is as it was."""
     try:
         history = updates.actionHistory
-        if len(history) > mark:
+        if len(history) > updates.since_mark(mark):
             if history[-1].transaction != tid:
                 # Something else was recorded after the build (undo would take that back instead).
                 log.error("build_reel_tool: another edit landed after the failed build; it was not rolled back")

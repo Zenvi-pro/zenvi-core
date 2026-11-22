@@ -32,7 +32,6 @@ from qt_api import (
     QSortFilterProxyModel, QPersistentModelIndex, QItemSelectionModel, QItemSelection, QModelIndex,
 )
 from qt_api import QIcon, QStandardItemModel, QStandardItem
-from qt_api import QMessageBox
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
 from classes import info
@@ -241,12 +240,9 @@ class TransitionsModel(QObject):
                         reader.Close()
                         clip.Close()
 
-                    except Exception:
+                    except Exception as ex:
                         # Handle exception
-                        log.debug('Invalid transition image file %s', filename, exc_info=1)
-                        msg = QMessageBox()
-                        msg.setText(_("{} is not a valid transition file.".format(filename)))
-                        msg.exec_()
+                        log.warning('Invalid transition image file %s: %s', path, ex, exc_info=1)
                         continue
 
                 row = []
