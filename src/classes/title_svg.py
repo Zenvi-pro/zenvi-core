@@ -137,13 +137,6 @@ def template_display_name(path: str, tr=None) -> str:
     return tr(title_name)
 
 
-def is_bundled(path: str) -> bool:
-    try:
-        return os.path.commonpath([os.path.abspath(path), bundled_titles_dir()]) == bundled_titles_dir()
-    except ValueError:
-        return False
-
-
 def find_template(name: str) -> Optional[str]:
     """A template path by name ('Gray_Box_4', 'gray box 4', 'Gray_Box_4.svg') or an existing .svg path."""
     raw = str(name or "").strip()
@@ -162,18 +155,6 @@ def find_template(name: str) -> Optional[str]:
         if norm(base) == wanted or norm(template_display_name(path)) == wanted:
             return path
     return None
-
-
-def suggest_templates(name: str, limit: int = 6) -> List[str]:
-    """Template names that look like *name* (for 'did you mean' refusals)."""
-    import difflib
-    names = [os.path.splitext(os.path.basename(p))[0] for p in template_paths()]
-    raw = str(name or "").strip()
-    close = difflib.get_close_matches(raw, names, n=limit, cutoff=0.4)
-    if not close:
-        low = raw.lower().split("_")[0]
-        close = [n for n in names if low and low in n.lower()][:limit]
-    return close
 
 
 # ---------------------------------------------------------------------------
@@ -347,25 +328,6 @@ def apply_font(nodes, family: Optional[str] = None, italic: Optional[bool] = Non
 
 
 # Where the middle of capital letters sits above the baseline, as a share of the font size.
-CAP_MIDDLE = 0.36
-
-
-def center_lines(xmldoc) -> None:
-    """Put each line's capitals on the artboard's middle at its current font size.
-
-    A card with one centred word (Text_Card) stays centred when the font size is scaled;
-    QtSvg ignores dy="0.36em", so the baseline is written as a number.
-    """
-    middle = artboard_size(xmldoc)[1] / 2.0
-    for node in line_nodes(xmldoc):
-        size = _px(node_property(node, "font-size"))
-        if size is None:
-            continue
-        y = _fmt(middle + CAP_MIDDLE * size)
-        node.setAttribute("y", y)
-        parent = node.parentNode
-        if parent is not None and parent.nodeName == "text" and parent.hasAttribute("y"):
-            parent.setAttribute("y", y)
 
 
 def _fmt(value: float) -> str:
@@ -610,19 +572,6 @@ def set_field_text(xmldoc, slot: TextField, text: str) -> None:
     for node in slot.nodes:
         _replace_text(xmldoc, node, value)
     slot.text = value
-
-
-def text_zone(slots: List[TextField], artboard_h: float) -> str:
-    """Where a title's main text sits on its artboard: top / center / bottom."""
-    main = field_by_role(slots, "title") or (slots[0] if slots else None)
-    if main is None or main.y is None or not artboard_h:
-        return "center"
-    y = abs(main.y) / float(artboard_h)
-    if y < 0.3:
-        return "top"
-    if y > 0.7:
-        return "bottom"
-    return "center"
 
 
 # ---------------------------------------------------------------------------

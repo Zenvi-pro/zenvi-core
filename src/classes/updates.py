@@ -374,7 +374,10 @@ class UpdateManager:
         if len(history) > self.MEMORY_STEPS and (len(history) < 2 or history[-1].transaction != history[-2].transaction):
             kept = {a.transaction for a in self._last_steps(history, self.MEMORY_STEPS)}
             kept.update(list(self._open_transactions.values()))
-            cut = next(i for i, a in enumerate(history) if a.transaction in kept)
+            cut, last = next(i for i, a in enumerate(history) if a.transaction in kept), -1
+            while cut != last:  # a step that interleaves with a kept one stays whole too
+                kept.update(a.transaction for a in history[cut:])
+                cut, last = next(i for i, a in enumerate(history) if a.transaction in kept), cut
             self.trimmed += cut
             del history[:cut]
 

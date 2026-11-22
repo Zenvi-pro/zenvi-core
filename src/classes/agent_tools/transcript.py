@@ -365,7 +365,10 @@ def get_transcript(
     include_words=None,
     **_kw,
 ):
-    """Return spoken words (subtitles) in project frames for a clip, file, or whole track."""
+    """Return spoken words (subtitles): project frames for a clip or whole track, source frames for a file_id.
+
+    The word list itself comes with include_words=true.
+    """
     from classes.agent_tools.receipt import ToolReceipt
     from classes.agent_tools.inspect_render import snapshot_project
     from classes.speech.map_timeline import clip_speed, resolve_media_path, words_for_clip

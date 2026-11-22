@@ -435,9 +435,10 @@ _TRANSPARENT = boolean("true = transparent overlay to sit above footage (WebM wi
     covers=("ai.hyperframes",),
 )
 def render_motion_graphic(project, label, transparent=True, composition="", fps=30, quality="standard"):
-    """Use for rendering a HyperFrames composition folder into Project Files, after hyperframes check passes. Not for a video a skill already rendered (run_tool(name='import_motion_graphic_tool')) or for raw CLI runs (run_tool(name='hyperframes_run_tool')).
+    """Use for rendering a HyperFrames composition folder into Project Files. Not for a video a skill already rendered (run_tool(name='import_motion_graphic_tool')) or for raw CLI runs (run_tool(name='hyperframes_run_tool')).
 
-    It first runs 'hyperframes check' and refuses to render while that reports
+    It first runs 'hyperframes check' (best effort: a check that cannot run does not
+    stop the render) and refuses to render while that reports
     an error or anything painted outside the canvas -- you cannot see the frame,
     so fix what it lists and call again (an intentional off-canvas entrance is
     marked with data-layout-allow-overflow). Render one graphic per project (title,

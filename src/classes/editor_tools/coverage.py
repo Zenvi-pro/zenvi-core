@@ -92,8 +92,8 @@ CAPABILITIES = [
     ("audio.effects", "effects-color", "Audio effects (Compressor, Expander, EQ, Delay, Echo, Distortion, Noise, Robotization, Whisperization)", "Apply and tune audio effects"),
 
     # ------------------------------------------------------------------ titles-text
-    ("title.templates", "titles-text", "Title > Title (template list)", "List the 50 title templates + user titles with their editable text fields"),
-    ("title.create", "titles-text", "Title Editor > Save", "Create a title from a template with texts, font, colors, alpha, and place it on the timeline"),
+    ("title.templates", "titles-text", "Title > Title (template list)", "List the animated title styles and the project's titles with their text"),
+    ("title.create", "titles-text", "Title Editor > Save", "Render an animated HyperFrames title (headline, lower third, end card...) and place it on the timeline"),
     ("title.edit", "titles-text", "Project Files > Edit Title / Duplicate", "Change an existing title's text/font/colors (updating its clips) or duplicate it"),
     ("title.animated", "titles-text", "Title > Animated Title (Blender, 19 templates)", "List Blender templates with parameters and render one into an image sequence clip"),
     ("caption.add", "titles-text", "Captions dock", "Add animated word-timed captions from the clip's on-device transcript in a HyperFrames caption style, optionally behind the speaker"),

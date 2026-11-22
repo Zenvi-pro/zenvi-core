@@ -97,22 +97,33 @@ def test_a_transaction_still_open_on_another_thread_is_not_trimmed():
     def tool():
         _edit(manager, 1, transaction="tool")
         first.set()
-        resume.wait(5)
+        resume.wait()
         _edit(manager, 2, transaction="tool")
         manager.transaction_id = None
 
     worker = threading.Thread(target=tool)
     worker.start()
-    assert first.wait(5)
-    for n in range(10, 20):
-        _edit(manager, n)
-    resume.set()
-    worker.join(5)
+    try:
+        assert first.wait(30)
+        for n in range(10, 20):
+            _edit(manager, n)
+    finally:
+        resume.set()
+        worker.join()
     assert [a.values["position"] for a in manager._tail_transaction(manager.actionHistory)] == [2, 1]
     for n in range(20, 24):
         _edit(manager, n)
     assert "tool" not in {a.transaction for a in manager.actionHistory}  # closed: it ages out
     assert len(manager.actionHistory) == 3
+
+
+def test_the_trim_never_splits_a_step_that_interleaves_with_a_kept_one():
+    manager = UpdateManager()
+    manager.MEMORY_STEPS = 2
+    for n, tid in enumerate(("A", "B", "A", "C", "B")):
+        _edit(manager, n, transaction=tid)
+        manager._open_transactions = {-1: "B"}  # still open on another thread
+    assert [a.transaction for a in manager.actionHistory] == ["A", "B", "A", "C", "B"]
 
 
 def test_a_long_transaction_is_not_rescanned_for_every_action():

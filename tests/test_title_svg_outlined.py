@@ -83,12 +83,12 @@ def test_strip_counts_groups_and_survives_nesting():
 
 
 def test_edit_title_tool_on_an_outlined_title_leaves_visible_text(tt, tmp_path):
-    first = receipt(tt.call("add_title_tool", text="Base", template="Standard_1", subtitle="Role"))
-    outlined = _write(tmp_path)
-    rec = receipt(tt.call("add_title_tool", template=outlined, text="Hello", position_seconds=6))
-    edit = receipt(tt.call("edit_title_tool", timeline_clip_id=rec["timeline_clip_id"], text="Bye"))
+    from classes.editor_tools import titles_text_common as common
+    outlined = _write(tmp_path)              # a Title Editor title with outlined text, placed on the timeline
+    clip = common.place_clip(common.import_media_file(outlined).id, 6.0, 5.0, 1000000)
+    edit = receipt(tt.call("edit_title_tool", timeline_clip_id=clip["id"], text="Bye"))
     saved = open(edit["path"], encoding="utf-8").read()
-    assert first["path"] != edit["path"]
+    assert edit["path"] != outlined
     assert "data-zenvi-outline" not in saved and "<path" not in saved and 'display="none"' not in saved
     assert title_svg.line_texts(title_svg.parse_string(saved))[0] == "Bye"
-    assert "Bye" in saved and "Hello" not in saved
+    assert "Bye" in saved and "The Title" not in saved

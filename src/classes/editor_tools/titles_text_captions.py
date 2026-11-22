@@ -24,6 +24,7 @@ from typing import List, Optional
 
 from classes import dictation
 from classes import hyperframes_captions as cap
+from classes import hyperframes_titles as ht
 from classes import hyperframes_local as hf
 from classes.editor_tools._base import (
     ToolError,
@@ -521,7 +522,8 @@ def _overlays_over(start: float, end: float) -> list:
     out = []
     for c in Clip.filter():
         f = File.get(id=str(c.data.get("file_id") or ""))
-        motion = bool(f) and (f.data.get("ai_metadata") or {}).get("source") == "hyperframes_motion_graphics"
+        motion = bool(f) and (f.data.get("ai_metadata") or {}).get("source") in (
+            "hyperframes_motion_graphics", ht.SOURCE)
         # a title is an SVG, as titles_text finds them
         svg = bool(f) and str(f.data.get("path") or "").lower().endswith(".svg")
         position, stop, _duration = clip_extent(c.data)

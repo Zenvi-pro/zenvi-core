@@ -29,7 +29,7 @@ PLACE_DECIMALS = 1           # about 11 km: enough to name a city, not a street,
 def _file_kind(file_data: Optional[Dict[str, Any]], clip_data: Dict[str, Any]) -> str:
     kind = str((file_data or {}).get("media_type") or "video")
     path = str(((clip_data.get("reader") or {}).get("path")) or (file_data or {}).get("path") or "").lower()
-    if kind == "title" or path.endswith(".svg"):
+    if kind == "title" or path.endswith(".svg") or ((file_data or {}).get("ai_metadata") or {}).get("source") == "hyperframes_title":
         return "title"
     return kind if kind in ("video", "audio", "image") else "video"
 
